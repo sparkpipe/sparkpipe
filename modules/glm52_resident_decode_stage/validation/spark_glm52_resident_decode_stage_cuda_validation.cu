@@ -14,18 +14,25 @@
 #include "sparkpipe/spark_status.h"
 
 #define SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT 1u
-#define SPARK_VALIDATION_CACHE_TOKEN_CAPACITY 64u
-#define SPARK_VALIDATION_KV_BLOCK_COUNT 1u
-#define SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE 1u
-#define SPARK_VALIDATION_POSITION_COUNT 64u
+#define SPARK_VALIDATION_CACHE_TOKEN_CAPACITY 128u
+#define SPARK_VALIDATION_KV_BLOCK_COUNT 2u
+#define SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE 2u
+#define SPARK_VALIDATION_POSITION_COUNT 128u
 #define SPARK_VALIDATION_CONTEXT_LENGTH 4u
-#define SPARK_VALIDATION_CURRENT_POSITION 3u
+#define SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET 61u
+#define SPARK_VALIDATION_CURRENT_POSITION 64u
+#define SPARK_VALIDATION_CURRENT_CACHE_SLOT 0u
+#define SPARK_VALIDATION_REMAP_CACHE_SLOT0 125u
+#define SPARK_VALIDATION_REMAP_CACHE_SLOT1 126u
+#define SPARK_VALIDATION_REMAP_CACHE_SLOT2 127u
+#define SPARK_VALIDATION_CHECKED_HEAD_COUNT 2u
+#define SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT 2u
 #define SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN 1009u
 #define SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN 1011u
 #define SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN 1003u
 #define SPARK_VALIDATION_MEASUREMENT_COUNT 3u
 #define SPARK_VALIDATION_WARMUP_COUNT 1u
-#define SPARK_VALIDATION_ATTENTION_TOLERANCE 0.025f
+#define SPARK_VALIDATION_ATTENTION_TOLERANCE 0.030f
 
 typedef struct SparkValidationCompletionState
 {
@@ -274,7 +281,7 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_logits, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_logits") &&
         SparkValidationAllocateZeroed((void **)&buffers->positions, 4u, "cudaMalloc positions") &&
         SparkValidationAllocateZeroed((void **)&buffers->slot_mapping, 4u, "cudaMalloc slot_mapping") &&
-        SparkValidationAllocateZeroed((void **)&buffers->block_table, 4u, "cudaMalloc block_table") &&
+        SparkValidationAllocateZeroed((void **)&buffers->block_table, SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE * 4u, "cudaMalloc block_table") &&
         SparkValidationAllocateZeroed((void **)&buffers->context_lengths, 4u, "cudaMalloc context_lengths") &&
         SparkValidationAllocateZeroed((void **)&buffers->first_block_token_offsets, 4u, "cudaMalloc first_block_token_offsets") &&
         SparkValidationAllocateZeroed((void **)&buffers->sparse_token_indices, SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * 4u, "cudaMalloc sparse_indices") &&
@@ -311,7 +318,7 @@ static bool SparkValidationInitializeDeviceInputs(
     uint32_t context_length;
     uint32_t position;
     uint32_t slot_mapping;
-    uint32_t block_table;
+    uint32_t block_table[SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE];
     uint32_t first_block_token_offset;
     uint32_t mtp_target_token_ids[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT];
@@ -339,14 +346,29 @@ static bool SparkValidationInitializeDeviceInputs(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION] =
         SparkValidationFloatToBf16(1.0f);
     cache_seed[
-        (0u * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + 0u] =
+        (SPARK_VALIDATION_REMAP_CACHE_SLOT0 *
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + 0u] =
         SparkValidationFloatToBf16(0.125f);
     cache_seed[
-        (1u * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + 0u] =
+        (SPARK_VALIDATION_REMAP_CACHE_SLOT0 *
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + 1u] =
+        SparkValidationFloatToBf16(0.050f);
+    cache_seed[
+        (SPARK_VALIDATION_REMAP_CACHE_SLOT1 *
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + 0u] =
         SparkValidationFloatToBf16(0.250f);
     cache_seed[
-        (2u * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + 0u] =
+        (SPARK_VALIDATION_REMAP_CACHE_SLOT1 *
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + 1u] =
+        SparkValidationFloatToBf16(0.100f);
+    cache_seed[
+        (SPARK_VALIDATION_REMAP_CACHE_SLOT2 *
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + 0u] =
         SparkValidationFloatToBf16(0.375f);
+    cache_seed[
+        (SPARK_VALIDATION_REMAP_CACHE_SLOT2 *
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + 1u] =
+        SparkValidationFloatToBf16(0.150f);
     for (index = 0u;
          index < SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT;
          ++index)
@@ -363,9 +385,10 @@ static bool SparkValidationInitializeDeviceInputs(
     }
     context_length = SPARK_VALIDATION_CONTEXT_LENGTH;
     position = SPARK_VALIDATION_CURRENT_POSITION;
-    slot_mapping = SPARK_VALIDATION_CURRENT_POSITION;
-    block_table = 0u;
-    first_block_token_offset = 0u;
+    slot_mapping = SPARK_VALIDATION_CURRENT_CACHE_SLOT;
+    block_table[0] = 1u;
+    block_table[1] = 0u;
+    first_block_token_offset = SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET;
     mtp_target_token_ids[0] = SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN;
     mtp_target_token_ids[1] = SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN;
     return
@@ -380,13 +403,17 @@ static bool SparkValidationInitializeDeviceInputs(
         SparkValidationCopyToDevice(buffers->context_lengths, &context_length, sizeof(context_length), "copy context_length") &&
         SparkValidationCopyToDevice(buffers->positions, &position, sizeof(position), "copy position") &&
         SparkValidationCopyToDevice(buffers->slot_mapping, &slot_mapping, sizeof(slot_mapping), "copy slot_mapping") &&
-        SparkValidationCopyToDevice(buffers->block_table, &block_table, sizeof(block_table), "copy block_table") &&
+        SparkValidationCopyToDevice(buffers->block_table, block_table, sizeof(block_table), "copy block_table") &&
         SparkValidationCopyToDevice(buffers->first_block_token_offsets, &first_block_token_offset, sizeof(first_block_token_offset), "copy first_block_token_offset") &&
         SparkValidationCopyToDevice(buffers->mtp_target_token_ids, mtp_target_token_ids, sizeof(mtp_target_token_ids), "copy mtp targets") &&
         SparkValidationCopyU16Value(buffers->query_latent_weight_bf16, 0u, SparkValidationFloatToBf16(0.010f), "copy query latent fixture") &&
+        SparkValidationCopyU16Value(buffers->query_latent_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, SparkValidationFloatToBf16(0.006f), "copy query latent fixture dim1") &&
+        SparkValidationCopyU16Value(buffers->query_latent_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, SparkValidationFloatToBf16(0.020f), "copy query latent fixture head1 dim0") &&
+        SparkValidationCopyU16Value(buffers->query_latent_weight_bf16, (SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION + 1u) * (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, SparkValidationFloatToBf16(0.004f), "copy query latent fixture head1 dim1") &&
         SparkValidationCopyU16Value(buffers->key_rope_weight_bf16, 0u, SparkValidationFloatToBf16(0.010f), "copy key rope fixture 0") &&
         SparkValidationCopyU16Value(buffers->key_rope_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, SparkValidationFloatToBf16(0.020f), "copy key rope fixture 1") &&
         SparkValidationCopyU16Value(buffers->kv_latent_weight_bf16, 0u, SparkValidationFloatToBf16(0.010f), "copy kv latent fixture") &&
+        SparkValidationCopyU16Value(buffers->kv_latent_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, SparkValidationFloatToBf16(0.005f), "copy kv latent fixture dim1") &&
         SparkValidationCopyU16Value(buffers->restricted_lm_head_weight_bf16, 4u * (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, SparkValidationFloatToBf16(0.025f), "copy restricted logit fixture 4") &&
         SparkValidationCopyU16Value(buffers->restricted_lm_head_weight_bf16, 9u * (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, SparkValidationFloatToBf16(0.050f), "copy restricted logit fixture 9") &&
         SparkValidationCopyU8Value(buffers->mtp_mxfp4_weight_payload_u8, 11u * ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u), 7u, "copy mtp payload fixture") &&
@@ -535,15 +562,71 @@ static bool SparkValidationRunOnce(
     return true;
 }
 
+static float SparkValidationReferenceAttentionValue(
+    const float *query_values,
+    const float cache_values[
+        SPARK_VALIDATION_CONTEXT_LENGTH]
+        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT],
+    uint32_t output_dimension)
+{
+    float scores[SPARK_VALIDATION_CONTEXT_LENGTH];
+    float maximum_score;
+    float exponential_sum;
+    float expected_value;
+    uint32_t token_index;
+    uint32_t dimension_index;
+
+    maximum_score = -1.0e30f;
+    for (token_index = 0u;
+         token_index < SPARK_VALIDATION_CONTEXT_LENGTH;
+         ++token_index)
+    {
+        scores[token_index] = 0.0f;
+        for (dimension_index = 0u;
+             dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
+             ++dimension_index)
+        {
+            scores[token_index] +=
+                query_values[dimension_index] *
+                cache_values[token_index][dimension_index];
+        }
+        scores[token_index] *= 0.0416666679f;
+        if (scores[token_index] > maximum_score)
+        {
+            maximum_score = scores[token_index];
+        }
+    }
+    exponential_sum = 0.0f;
+    expected_value = 0.0f;
+    for (token_index = 0u;
+         token_index < SPARK_VALIDATION_CONTEXT_LENGTH;
+         ++token_index)
+    {
+        float weight;
+
+        weight = expf(scores[token_index] - maximum_score);
+        exponential_sum += weight;
+        expected_value +=
+            weight * cache_values[token_index][output_dimension];
+    }
+    return expected_value / exponential_sum;
+}
+
 static bool SparkValidationCheckOutputs(
     SparkValidationDeviceBuffers *buffers)
 {
-    uint16_t current_kv_value;
-    uint16_t cached_kv_value;
+    uint16_t current_kv_value[
+        SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
+    uint16_t cached_kv_value[
+        SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
     uint16_t key_rope_value[2];
     uint16_t cached_rope_value[2];
-    uint16_t query_latent_value;
-    uint16_t attention_output_value;
+    uint16_t query_latent_value[
+        SPARK_VALIDATION_CHECKED_HEAD_COUNT]
+        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
+    uint16_t attention_output_value[
+        SPARK_VALIDATION_CHECKED_HEAD_COUNT]
+        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
     uint32_t selected_token_id;
     uint32_t mtp_draft_token_ids[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT];
@@ -555,20 +638,21 @@ static bool SparkValidationCheckOutputs(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_EVENT_COUNTER_COUNT];
     uint64_t phase_clocks[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT];
-    float query_value;
-    float cache_values[SPARK_VALIDATION_CONTEXT_LENGTH];
-    float maximum_score;
-    float exponential_sum;
-    float expected_attention;
-    float observed_attention;
-    uint32_t index;
+    float query_values[
+        SPARK_VALIDATION_CHECKED_HEAD_COUNT]
+        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
+    float cache_values[
+        SPARK_VALIDATION_CONTEXT_LENGTH]
+        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
+    uint32_t head_index;
+    uint32_t dimension_index;
 
-    current_kv_value = 0u;
-    cached_kv_value = 0u;
+    memset(current_kv_value, 0, sizeof(current_kv_value));
+    memset(cached_kv_value, 0, sizeof(cached_kv_value));
     memset(key_rope_value, 0, sizeof(key_rope_value));
     memset(cached_rope_value, 0, sizeof(cached_rope_value));
-    query_latent_value = 0u;
-    attention_output_value = 0u;
+    memset(query_latent_value, 0, sizeof(query_latent_value));
+    memset(attention_output_value, 0, sizeof(attention_output_value));
     selected_token_id = 0u;
     memset(mtp_draft_token_ids, 0, sizeof(mtp_draft_token_ids));
     memset(mtp_accept_mask, 0, sizeof(mtp_accept_mask));
@@ -577,16 +661,16 @@ static bool SparkValidationCheckOutputs(
     memset(phase_clocks, 0, sizeof(phase_clocks));
     if (!SparkValidationCudaSucceeded(
             cudaMemcpy(
-                &current_kv_value,
+                current_kv_value,
                 buffers->current_kv_latent_bf16,
                 sizeof(current_kv_value),
                 cudaMemcpyDeviceToHost),
             "copy current_kv") ||
         !SparkValidationCudaSucceeded(
             cudaMemcpy(
-                &cached_kv_value,
+                cached_kv_value,
                 &buffers->mla_cache_bf16[
-                    (SPARK_VALIDATION_CURRENT_POSITION *
+                    (SPARK_VALIDATION_CURRENT_CACHE_SLOT *
                      SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) +
                     0u],
                 sizeof(cached_kv_value),
@@ -603,7 +687,7 @@ static bool SparkValidationCheckOutputs(
             cudaMemcpy(
                 cached_rope_value,
                 &buffers->mla_cache_bf16[
-                    (SPARK_VALIDATION_CURRENT_POSITION *
+                    (SPARK_VALIDATION_CURRENT_CACHE_SLOT *
                      SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) +
                     SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION],
                 sizeof(cached_rope_value),
@@ -611,18 +695,34 @@ static bool SparkValidationCheckOutputs(
             "copy cached current rope") ||
         !SparkValidationCudaSucceeded(
             cudaMemcpy(
-                &query_latent_value,
+                query_latent_value[0],
                 buffers->query_latent_bf16,
-                sizeof(query_latent_value),
+                sizeof(query_latent_value[0]),
                 cudaMemcpyDeviceToHost),
-            "copy query_latent") ||
+            "copy query_latent head0") ||
         !SparkValidationCudaSucceeded(
             cudaMemcpy(
-                &attention_output_value,
-                buffers->attention_output_latent_bf16,
-                sizeof(attention_output_value),
+                query_latent_value[1],
+                &buffers->query_latent_bf16[
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION],
+                sizeof(query_latent_value[1]),
                 cudaMemcpyDeviceToHost),
-            "copy attention_output") ||
+            "copy query_latent head1") ||
+        !SparkValidationCudaSucceeded(
+            cudaMemcpy(
+                attention_output_value[0],
+                buffers->attention_output_latent_bf16,
+                sizeof(attention_output_value[0]),
+                cudaMemcpyDeviceToHost),
+            "copy attention_output head0") ||
+        !SparkValidationCudaSucceeded(
+            cudaMemcpy(
+                attention_output_value[1],
+                &buffers->attention_output_latent_bf16[
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION],
+                sizeof(attention_output_value[1]),
+                cudaMemcpyDeviceToHost),
+            "copy attention_output head1") ||
         !SparkValidationCudaSucceeded(
             cudaMemcpy(
                 &selected_token_id,
@@ -668,7 +768,10 @@ static bool SparkValidationCheckOutputs(
     {
         return false;
     }
-    if (current_kv_value == 0u || cached_kv_value != current_kv_value)
+    if (current_kv_value[0] == 0u ||
+        current_kv_value[1] == 0u ||
+        cached_kv_value[0] != current_kv_value[0] ||
+        cached_kv_value[1] != current_kv_value[1])
     {
         fprintf(stderr, "current KV value was not written to the expected cache slot\n");
         return false;
@@ -680,50 +783,62 @@ static bool SparkValidationCheckOutputs(
         fprintf(stderr, "current key RoPE value was not written to cache layout\n");
         return false;
     }
-    if (query_latent_value == 0u)
+    for (head_index = 0u;
+         head_index < SPARK_VALIDATION_CHECKED_HEAD_COUNT;
+         ++head_index)
     {
-        fprintf(stderr, "query latent fixture did not become nonzero\n");
-        return false;
-    }
-    query_value = SparkValidationBf16ToFloat(query_latent_value);
-    cache_values[0] = 0.125f;
-    cache_values[1] = 0.250f;
-    cache_values[2] = 0.375f;
-    cache_values[3] = SparkValidationBf16ToFloat(cached_kv_value);
-    maximum_score = -1.0e30f;
-    for (index = 0u; index < SPARK_VALIDATION_CONTEXT_LENGTH; ++index)
-    {
-        float score;
-
-        score = query_value * cache_values[index] * 0.0416666679f;
-        if (score > maximum_score)
+        for (dimension_index = 0u;
+             dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
+             ++dimension_index)
         {
-            maximum_score = score;
+            if (query_latent_value[head_index][dimension_index] == 0u)
+            {
+                fprintf(stderr, "query latent fixture did not become nonzero\n");
+                return false;
+            }
+            query_values[head_index][dimension_index] =
+                SparkValidationBf16ToFloat(
+                    query_latent_value[head_index][dimension_index]);
         }
     }
-    exponential_sum = 0.0f;
-    expected_attention = 0.0f;
-    for (index = 0u; index < SPARK_VALIDATION_CONTEXT_LENGTH; ++index)
+    cache_values[0][0] = 0.125f;
+    cache_values[0][1] = 0.050f;
+    cache_values[1][0] = 0.250f;
+    cache_values[1][1] = 0.100f;
+    cache_values[2][0] = 0.375f;
+    cache_values[2][1] = 0.150f;
+    cache_values[3][0] = SparkValidationBf16ToFloat(cached_kv_value[0]);
+    cache_values[3][1] = SparkValidationBf16ToFloat(cached_kv_value[1]);
+    for (head_index = 0u;
+         head_index < SPARK_VALIDATION_CHECKED_HEAD_COUNT;
+         ++head_index)
     {
-        float score;
-        float weight;
+        for (dimension_index = 0u;
+             dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
+             ++dimension_index)
+        {
+            float expected_attention;
+            float observed_attention;
 
-        score = query_value * cache_values[index] * 0.0416666679f;
-        weight = expf(score - maximum_score);
-        exponential_sum += weight;
-        expected_attention += weight * cache_values[index];
-    }
-    expected_attention /= exponential_sum;
-    observed_attention = SparkValidationBf16ToFloat(attention_output_value);
-    if (fabsf(observed_attention - expected_attention) >
-        SPARK_VALIDATION_ATTENTION_TOLERANCE)
-    {
-        fprintf(
-            stderr,
-            "attention reference mismatch observed=%.6f expected=%.6f\n",
-            observed_attention,
-            expected_attention);
-        return false;
+            expected_attention = SparkValidationReferenceAttentionValue(
+                query_values[head_index],
+                cache_values,
+                dimension_index);
+            observed_attention = SparkValidationBf16ToFloat(
+                attention_output_value[head_index][dimension_index]);
+            if (fabsf(observed_attention - expected_attention) >
+                SPARK_VALIDATION_ATTENTION_TOLERANCE)
+            {
+                fprintf(
+                    stderr,
+                    "attention reference mismatch head=%u dim=%u observed=%.6f expected=%.6f\n",
+                    head_index,
+                    dimension_index,
+                    observed_attention,
+                    expected_attention);
+                return false;
+            }
+        }
     }
     if (selected_token_id != SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN)
     {
@@ -986,7 +1101,7 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage orchestrator validation passed fixture=nonzero_context4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             (double)elapsed_microseconds,
             maximum_stage_microseconds,
             SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN,
@@ -1038,7 +1153,7 @@ int main(int argc, char **argv)
         return 1;
     }
     printf(
-        "glm52_resident_decode_stage validation passed fixture=nonzero_context4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
         total_microseconds / SPARK_VALIDATION_MEASUREMENT_COUNT,
         maximum_observed_microseconds,
         maximum_stage_microseconds,

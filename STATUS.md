@@ -31,7 +31,7 @@
 - Model-specific node binding for caller-owned streams, resident device buffers, paged KV storage, RoPE tables, CUDA graph slots, and capacities; the sparse-MLA and decode-stage drivers choose opaque dispatch slots through admission functions and report zero memcpy/host-staging counters plus private queue pressure.
 - Cold-build module workflow with dependency files and self-contained archive creation.
 - Target-hardware sparse-MLA validator source covering nonzero first-block offset, block-table remapping, fused KV write, RoPE, full 64-head output comparison, completion semantics, and a mandatory maximum submission-to-completion wall-clock threshold.
-- Target-hardware decode-stage validator source covering full-shape resident device buffer allocation, deterministic nonzero context-length-4 fixture tensors, KV write layout, cached attention host reference, restricted argmax, MTP accept/reject counters, latency ceiling, and post-package generated-driver/orchestrator submit.
+- Target-hardware decode-stage validator source covering full-shape resident device buffer allocation, deterministic nonzero context-length-4 fixture tensors, two-block KV remapping, two checked attention heads/dimensions, cached attention host reference, restricted argmax, MTP accept/reject counters, latency ceiling, and post-package generated-driver/orchestrator submit.
 - End-to-end host control-path test proving one-time publication, validation reuse, complete JSON-to-package compilation, hidden archive symbols, direct driver execution, slot ownership, asynchronous completion, and quiescent destruction.
 - Remaining iteration-073 CUDA implementation work preserved outside the active build as candidate source.
 
@@ -61,9 +61,9 @@ docs/HANDOFF_RELEASE_079.md            release-specific handoff summary
 ## Current boundary
 
 - The sparse-MLA and decode-stage CUDA firmware archives have been compiled with CUDA 13.0 for `sm_121` on a GB10 Spark node, admitted by hardware validators, published into the module library, compiled into generated drivers, and loaded from packaged `model_driver.so` outputs.
-- The decode-stage package target additionally runs a generated-driver/orchestrator submit smoke test after package compilation. This proves driver load, route resolution, admission, CUDA backend submit, stream-ordered completion, runtime snapshot counters, and zero host-staging/device-memcpy accounting through the LLM driver boundary while checking deterministic nonzero tensor outputs.
+- The decode-stage package target additionally runs a generated-driver/orchestrator submit smoke test after package compilation. This proves driver load, route resolution, admission, CUDA backend submit, stream-ordered completion, runtime snapshot counters, and zero host-staging/device-memcpy accounting through the LLM driver boundary while checking deterministic nonzero tensor outputs over a remapped two-block KV layout.
 - The sparse-MLA module covers resident sparse MLA plus fused RoPE/current-token KV placement.
-- The decode-stage module fills the first CUDA gaps around projections, native DSA selection, restricted logits, and MTP draft/verify, but it is still correctness-first code. The current validator proves one deterministic nonzero cached-attention/restricted-logit/MTP path, not full GLM logits equivalence against checkpoint artifacts.
+- The decode-stage module fills the first CUDA gaps around projections, native DSA selection, restricted logits, and MTP draft/verify, but it is still correctness-first code. The current validator proves one deterministic nonzero remapped cached-attention/restricted-logit/MTP path, not full GLM logits equivalence against checkpoint artifacts.
 - MoE expert execution, resident transport handoff, and tensor-core/persistent-kernel optimization remain outside the new decode-stage archive. CUDA graph state and replay hooks are present, but target execution and graph-update debugging remain to be done on hardware.
 - Publication is intentionally impossible without a user-supplied maximum full-stage latency and a target-hardware pass; a slow implementation must be optimized, not accepted because it is numerically correct.
 - The orchestrator currently manages local driver instances. Remote node agents and wire transport are unfinished.
@@ -74,8 +74,8 @@ docs/HANDOFF_RELEASE_079.md            release-specific handoff summary
 
 ## Next engineering sequence
 
-1. Extend the nonzero fixture from one checked attention dimension/head to multiple dimensions and heads.
-2. Run multi-token cached attention with nontrivial physical block-table remapping and verify KV read/write checksums across positions.
+1. Extend the nonzero fixture from two checked attention dimensions/heads to broader head and latent coverage.
+2. Add varied sparse-token selection and multi-position KV read/write checksums across several remapped blocks.
 3. If the latency ceiling fails with real tensor fixtures, replace the correctness-first projection, DSA, attention, logits, and MTP kernels with measured tiled, tensor-core, persistent, or graph-captured implementations; do not publish the slow artifact.
 4. Add resident MoE expert execution, graph capture, and transport handoff inside one or a few model-specific GLM firmware archives.
 5. Publish only exact archives that pass numerical and model-stage performance qualification, then compile the GLM model JSON into direct-call drivers.

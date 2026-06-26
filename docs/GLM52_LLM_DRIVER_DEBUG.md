@@ -46,8 +46,9 @@ The decode-stage package gate verifies:
 nvcc archive build
 hardware backend-submit validator execution
 deterministic nonzero GLM-shaped smoke tensors
-KV current-token write into the expected cache slot
-cached attention over context length 4
+KV current-token write into a block-table-remapped cache slot
+cached attention over context length 4 crossing two physical KV blocks
+two checked latent dimensions across two checked heads
 restricted-vocabulary argmax
 MTP draft accept/reject/commit counters
 module-library publication
@@ -66,14 +67,14 @@ Latest observed decode-stage timings:
 
 ```text
 backend validator:
-    fixture=nonzero_context4
-    average_us=6343.243
-    maximum_us=6652.352
+    fixture=remapped_nonzero_context4
+    average_us=5814.261
+    maximum_us=6452.608
     limit_us=10000.000
 
 generated-driver/orchestrator validator:
-    fixture=nonzero_context4
-    elapsed_us=6656.384
+    fixture=remapped_nonzero_context4
+    elapsed_us=6288.512
     limit_us=10000.000
 ```
 
@@ -97,10 +98,11 @@ CUDA chain.
 The checked invariants are:
 
 ```text
-cache slot 3 receives the current KV latent value
-cache slot 3 receives the current key RoPE pair
-query latent is nonzero
-attention output[0] matches a host softmax reference over 4 cached tokens
+logical context tokens 61..64 resolve through physical block table [1,0]
+cache slot 0 receives the current KV latent value
+cache slot 0 receives the current key RoPE pair
+query latent is nonzero for two checked heads and two checked dimensions
+attention outputs match a host softmax reference over remapped slots 125,126,127,0
 restricted argmax selects token 1009
 MTP drafts token 1011 twice
 MTP accepts the first draft and rejects the second against token 1003
@@ -120,8 +122,7 @@ nonzero GLM fixtures and check:
 
 ```text
 multiple positions
-nonzero block-table remapping
-more than one nonzero attention dimension/head
+larger nonzero attention dimension/head coverage
 restricted-vocabulary logits against a richer host reference
 MTP draft and verify/commit behavior with varied target patterns
 runtime snapshot counters after real tensor work
@@ -141,17 +142,18 @@ logits, or MTP verification before it exposes transport-level failures.
 Result:
 
 ```text
-The B1 context-length-4 nonzero fixture passed on GB10. KV write layout,
-single-dimension cached attention, restricted argmax, and MTP accept/reject
-matched the host reference.
+The B1 context-length-4 remapped fixture passed on GB10. KV write layout,
+two-block cached attention over slots 125,126,127,0, restricted argmax, and MTP
+accept/reject matched the host reference through both direct backend submit and
+generated-driver/orchestrator submit.
 ```
 
 Next hypothesis:
 
 ```text
 The next likely gap is not the driver boundary. It is richer GLM tensor
-semantics: block-table remapping beyond one physical block, multiple nonzero
-attention dimensions/heads, and real checkpoint quantization layout.
+semantics: larger nonzero attention coverage, varied sparse-token selection,
+and real checkpoint quantization layout.
 ```
 
 If it fails:
