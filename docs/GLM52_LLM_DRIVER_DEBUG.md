@@ -45,6 +45,11 @@ The decode-stage package gate verifies:
 ```text
 nvcc archive build
 hardware backend-submit validator execution
+deterministic nonzero GLM-shaped smoke tensors
+KV current-token write into the expected cache slot
+cached attention over context length 4
+restricted-vocabulary argmax
+MTP draft accept/reject/commit counters
 module-library publication
 model package compilation
 generated driver loadability
@@ -61,12 +66,14 @@ Latest observed decode-stage timings:
 
 ```text
 backend validator:
-    average_us=5910.752
-    maximum_us=6601.600
+    fixture=nonzero_context4
+    average_us=6343.243
+    maximum_us=6652.352
     limit_us=10000.000
 
 generated-driver/orchestrator validator:
-    elapsed_us=6392.128
+    fixture=nonzero_context4
+    elapsed_us=6656.384
     limit_us=10000.000
 ```
 
@@ -80,27 +87,49 @@ It also proves the current resident decode-stage control path does not use
 host-staged frame buffers or serving-path device copies for the submitted
 frame. The counters are checked by the validator, not just printed.
 
+## New nonzero fixture
+
+The decode-stage validator now seeds deterministic nonzero tensors directly
+into the resident device buffers. The pattern is intentionally small enough for
+a host reference but still uses full-shape resident allocations and the real
+CUDA chain.
+
+The checked invariants are:
+
+```text
+cache slot 3 receives the current KV latent value
+cache slot 3 receives the current key RoPE pair
+query latent is nonzero
+attention output[0] matches a host softmax reference over 4 cached tokens
+restricted argmax selects token 1009
+MTP drafts token 1011 twice
+MTP accepts the first draft and rejects the second against token 1003
+MTP event counters are accepted=1 rejected=1 committed=2 rollback=1 cancelled=0
+phase completion marker is written
+driver/orchestrator counters remain clean
+```
+
 ## What this does not prove yet
 
-This is not a full GLM 5.2 inference pass. The decode-stage validator still
-uses deterministic smoke tensors and mostly zero weights. It proves the
-hardware path and driver ownership model before it proves model logits.
+This is not a full GLM 5.2 inference pass. The decode-stage validator now uses
+deterministic nonzero smoke tensors, but it still does not load real checkpoint
+weights or compare final logits against a known GLM artifact.
 
 The next correctness gate must replace smoke tensors with deterministic
 nonzero GLM fixtures and check:
 
 ```text
-KV write layout per position
-cached attention reads over context length greater than one
-block-table remapping
-restricted-vocabulary logits
-MTP draft and verify/commit behavior
+multiple positions
+nonzero block-table remapping
+more than one nonzero attention dimension/head
+restricted-vocabulary logits against a richer host reference
+MTP draft and verify/commit behavior with varied target patterns
 runtime snapshot counters after real tensor work
 ```
 
 ## Next experiment hypothesis
 
-Hypothesis:
+Previous hypothesis:
 
 ```text
 If deterministic nonzero GLM-shaped tensors are used, the current resident
@@ -109,13 +138,20 @@ but expose numerical gaps in KV layout, sparse-index semantics, restricted
 logits, or MTP verification before it exposes transport-level failures.
 ```
 
-Experiment:
+Result:
 
 ```text
-Add a nonzero-fixture mode to the decode-stage validator.
-Run B1 with context length 4, one remapped KV block, and fixed restricted vocab.
-Compare device outputs against a small host reference for KV write, attention
-output checksum, selected token, MTP accept mask, and committed token ids.
+The B1 context-length-4 nonzero fixture passed on GB10. KV write layout,
+single-dimension cached attention, restricted argmax, and MTP accept/reject
+matched the host reference.
+```
+
+Next hypothesis:
+
+```text
+The next likely gap is not the driver boundary. It is richer GLM tensor
+semantics: block-table remapping beyond one physical block, multiple nonzero
+attention dimensions/heads, and real checkpoint quantization layout.
 ```
 
 If it fails:
