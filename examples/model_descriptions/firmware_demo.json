@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "sparkpipe.firmware.demo",
+    "revision": "1"
+  },
+  "metadata": {
+    "architecture": "test_transform",
+    "purpose": "firmware compiler and heterogeneous orchestrator test"
+  },
+  "stages": [
+    {
+      "name": "cpu_stage",
+      "target": "host.cpu",
+      "programs": [
+        {
+          "name": "decode",
+          "id": 1,
+          "max_inflight": 4,
+          "completion": "submit_return",
+          "operations": [
+            {
+              "name": "add_one",
+              "module": "spark.test.add_one.v1",
+              "configuration": {}
+            },
+            {
+              "name": "double",
+              "module": "spark.test.double.v1",
+              "configuration": {}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "accelerator_stage",
+      "target": "host.accelerator",
+      "programs": [
+        {
+          "name": "decode",
+          "id": 1,
+          "max_inflight": 8,
+          "completion": "submit_return",
+          "operations": [
+            {
+              "name": "double",
+              "module": "spark.test.double.v1",
+              "configuration": {}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

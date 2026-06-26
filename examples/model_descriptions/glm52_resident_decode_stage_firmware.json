@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "zai.glm-5.2.resident-decode-stage-firmware",
+    "revision": "bf16-h8192-h64-d512-r64-k2048-b64-rv256-mtp2-v1"
+  },
+  "metadata": {
+    "architecture": "glm52_resident_decode_stage",
+    "purpose": "exact resident decode-stage firmware with projections, native DSA selection, fused RoPE/KV write, sparse MLA, restricted logits, and MXFP4 MTP verify",
+    "module_geometry": {
+      "hidden_dimension": 8192,
+      "heads": 64,
+      "latent_dimension": 512,
+      "rope_dimension": 64,
+      "selected_tokens": 2048,
+      "kv_block_tokens": 64,
+      "restricted_vocab_count": 256,
+      "mtp_draft_tokens": 2
+    }
+  },
+  "stages": [
+    {
+      "name": "resident_decode",
+      "target": "cuda.sm121.glm52.resident_decode_stage.bf16",
+      "programs": [
+        {
+          "name": "decode",
+          "id": 1,
+          "max_inflight": 64,
+          "completion": "external",
+          "operations": [
+            {
+              "name": "resident_decode_stage",
+              "module": "spark.glm52.resident_decode_stage.bf16.h8192.h64.d512.r64.k2048.b64.rv256.mtp2.v1",
+              "configuration": {}
+            }
+          ],
+          "scheduling": {
+            "flags": [
+              "stream_ordered",
+              "driver_owns_resident_state",
+              "driver_owns_kv_cache",
+              "jit_kv_cache",
+              "zero_copy_node_context",
+              "private_queue_pressure",
+              "no_host_staging",
+              "fixed_firmware",
+              "captured_cuda_graph",
+              "no_device_memcpy",
+              "stream_event_dependencies",
+              "batch_shape_fixed",
+              "driver_private_expert_queues"
+            ],
+            "max_active_slots": 64,
+            "max_new_tokens": 3,
+            "max_resident_sequences": 64,
+            "max_sequence_tokens": 8192,
+            "target_latency_ns": 0,
+            "validated_latency_ns": 0,
+            "resident_weight_bytes": 0,
+            "resident_kv_bytes": 0,
+            "static_workspace_bytes": 0,
+            "device_memcpy_bytes_per_submit_ceiling": 0,
+            "host_staging_bytes_per_submit_ceiling": 0,
+            "private_queue_count": 64
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,537 @@
+#define _POSIX_C_SOURCE 200809L
+
+#include <cuda_runtime.h>
+
+#include <atomic>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "spark_glm52_resident_decode_stage_backend.h"
+#include "sparkpipe/spark_status.h"
+
+#define SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT 1u
+#define SPARK_VALIDATION_CACHE_TOKEN_CAPACITY 64u
+#define SPARK_VALIDATION_KV_BLOCK_COUNT 1u
+#define SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE 1u
+#define SPARK_VALIDATION_POSITION_COUNT 64u
+#define SPARK_VALIDATION_MEASUREMENT_COUNT 3u
+#define SPARK_VALIDATION_WARMUP_COUNT 1u
+
+typedef struct SparkValidationCompletionState
+{
+    std::atomic<uint32_t> completion_count;
+} SparkValidationCompletionState;
+
+typedef struct SparkValidationDeviceBuffers
+{
+    uint16_t *input_hidden_bf16;
+    uint16_t *normalized_hidden_bf16;
+    uint16_t *query_latent_bf16;
+    uint16_t *query_rope_input_bf16;
+    uint16_t *key_rope_input_bf16;
+    uint16_t *current_kv_latent_bf16;
+    uint16_t *mla_cache_bf16;
+    uint16_t *rotated_query_rope_bf16;
+    uint16_t *attention_output_latent_bf16;
+    uint16_t *attention_projected_hidden_bf16;
+    uint16_t *post_attention_hidden_bf16;
+    uint16_t *mtp_draft_hidden_bf16;
+    uint16_t *attention_norm_weight_bf16;
+    uint16_t *query_latent_weight_bf16;
+    uint16_t *query_rope_weight_bf16;
+    uint16_t *key_rope_weight_bf16;
+    uint16_t *kv_latent_weight_bf16;
+    uint16_t *attention_output_weight_bf16;
+    uint16_t *final_norm_weight_bf16;
+    uint16_t *restricted_lm_head_weight_bf16;
+    uint8_t *mtp_mxfp4_weight_payload_u8;
+    uint8_t *mtp_mxfp4_scale_e8m0_u8;
+    float *cos_table;
+    float *sin_table;
+    float *dsa_token_scores;
+    float *restricted_logits;
+    float *restricted_selected_token_scores;
+    float *mtp_draft_logits;
+    uint32_t *positions;
+    uint32_t *slot_mapping;
+    uint32_t *block_table;
+    uint32_t *context_lengths;
+    uint32_t *first_block_token_offsets;
+    uint32_t *sparse_token_indices;
+    uint32_t *restricted_token_ids;
+    uint32_t *restricted_selected_token_ids;
+    uint32_t *mtp_draft_token_ids;
+    uint32_t *mtp_target_token_ids;
+    uint32_t *mtp_accept_mask;
+    uint32_t *mtp_committed_token_ids;
+    uint32_t *mtp_event_counters;
+    uint64_t *phase_clock_cycles;
+} SparkValidationDeviceBuffers;
+
+static bool SparkValidationCudaSucceeded(
+    cudaError_t cuda_status,
+    const char *operation)
+{
+    if (cuda_status == cudaSuccess)
+    {
+        return true;
+    }
+    fprintf(
+        stderr,
+        "%s failed: %s\n",
+        operation,
+        cudaGetErrorString(cuda_status));
+    return false;
+}
+
+static bool SparkValidationAllocateZeroed(
+    void **device_pointer,
+    uint64_t byte_count,
+    const char *name)
+{
+    if (!SparkValidationCudaSucceeded(
+            cudaMalloc(device_pointer, (size_t)byte_count),
+            name))
+    {
+        return false;
+    }
+    return SparkValidationCudaSucceeded(
+        cudaMemset(*device_pointer, 0, (size_t)byte_count),
+        name);
+}
+
+static bool SparkValidationCopyToDevice(
+    void *device_pointer,
+    const void *host_pointer,
+    uint64_t byte_count,
+    const char *name)
+{
+    return SparkValidationCudaSucceeded(
+        cudaMemcpy(
+            device_pointer,
+            host_pointer,
+            (size_t)byte_count,
+            cudaMemcpyHostToDevice),
+        name);
+}
+
+static uint16_t SparkValidationFloatToBf16(float value)
+{
+    union
+    {
+        uint32_t bits;
+        float value;
+    } conversion;
+    uint32_t rounding_bias;
+
+    conversion.value = value;
+    rounding_bias = 0x7fffu + ((conversion.bits >> 16u) & 1u);
+    return (uint16_t)((conversion.bits + rounding_bias) >> 16u);
+}
+
+static void SparkValidationCompletion(void *completion_context)
+{
+    SparkValidationCompletionState *state;
+
+    state = (SparkValidationCompletionState *)completion_context;
+    if (state != 0)
+    {
+        state->completion_count.fetch_add(1u, std::memory_order_release);
+    }
+}
+
+static bool SparkValidationAllocateDeviceBuffers(
+    SparkValidationDeviceBuffers *buffers)
+{
+    uint64_t hidden_count;
+    uint64_t query_latent_count;
+    uint64_t query_rope_count;
+    uint64_t cache_count;
+    uint64_t big_projection_weight_count;
+    uint64_t restricted_weight_count;
+    uint64_t mtp_payload_count;
+    uint64_t mtp_scale_count;
+    uint64_t rope_table_count;
+
+    memset(buffers, 0, sizeof(*buffers));
+    hidden_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    query_latent_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION;
+    query_rope_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION;
+    cache_count =
+        SPARK_VALIDATION_CACHE_TOKEN_CAPACITY *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
+    big_projection_weight_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    restricted_weight_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    mtp_payload_count = restricted_weight_count / 2u;
+    mtp_scale_count =
+        restricted_weight_count /
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MXFP4_GROUP_SIZE;
+    rope_table_count =
+        SPARK_VALIDATION_POSITION_COUNT *
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION / 2u);
+    return
+        SparkValidationAllocateZeroed((void **)&buffers->input_hidden_bf16, hidden_count * 2u, "cudaMalloc input_hidden") &&
+        SparkValidationAllocateZeroed((void **)&buffers->normalized_hidden_bf16, hidden_count * 2u, "cudaMalloc normalized_hidden") &&
+        SparkValidationAllocateZeroed((void **)&buffers->query_latent_bf16, query_latent_count * 2u, "cudaMalloc query_latent") &&
+        SparkValidationAllocateZeroed((void **)&buffers->query_rope_input_bf16, query_rope_count * 2u, "cudaMalloc query_rope") &&
+        SparkValidationAllocateZeroed((void **)&buffers->key_rope_input_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION * 2u, "cudaMalloc key_rope") &&
+        SparkValidationAllocateZeroed((void **)&buffers->current_kv_latent_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u, "cudaMalloc current_kv") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mla_cache_bf16, cache_count * 2u, "cudaMalloc mla_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->rotated_query_rope_bf16, query_rope_count * 2u, "cudaMalloc rotated_query_rope") &&
+        SparkValidationAllocateZeroed((void **)&buffers->attention_output_latent_bf16, query_latent_count * 2u, "cudaMalloc attention_output_latent") &&
+        SparkValidationAllocateZeroed((void **)&buffers->attention_projected_hidden_bf16, hidden_count * 2u, "cudaMalloc attention_projected_hidden") &&
+        SparkValidationAllocateZeroed((void **)&buffers->post_attention_hidden_bf16, hidden_count * 2u, "cudaMalloc post_attention_hidden") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_hidden_bf16, hidden_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 2u, "cudaMalloc mtp_draft_hidden") &&
+        SparkValidationAllocateZeroed((void **)&buffers->attention_norm_weight_bf16, hidden_count * 2u, "cudaMalloc attention_norm_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->query_latent_weight_bf16, big_projection_weight_count * 2u, "cudaMalloc query_latent_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->query_rope_weight_bf16, query_rope_count * hidden_count * 2u, "cudaMalloc query_rope_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->key_rope_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION * hidden_count * 2u, "cudaMalloc key_rope_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->kv_latent_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * hidden_count * 2u, "cudaMalloc kv_latent_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->attention_output_weight_bf16, big_projection_weight_count * 2u, "cudaMalloc attention_output_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->final_norm_weight_bf16, hidden_count * 2u, "cudaMalloc final_norm_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->restricted_lm_head_weight_bf16, restricted_weight_count * 2u, "cudaMalloc restricted_lm_head_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_mxfp4_weight_payload_u8, mtp_payload_count, "cudaMalloc mtp_payload") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_mxfp4_scale_e8m0_u8, mtp_scale_count, "cudaMalloc mtp_scale") &&
+        SparkValidationAllocateZeroed((void **)&buffers->cos_table, rope_table_count * 4u, "cudaMalloc cos_table") &&
+        SparkValidationAllocateZeroed((void **)&buffers->sin_table, rope_table_count * 4u, "cudaMalloc sin_table") &&
+        SparkValidationAllocateZeroed((void **)&buffers->dsa_token_scores, 64u * 4u, "cudaMalloc dsa_scores") &&
+        SparkValidationAllocateZeroed((void **)&buffers->restricted_logits, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * 4u, "cudaMalloc restricted_logits") &&
+        SparkValidationAllocateZeroed((void **)&buffers->restricted_selected_token_scores, 4u, "cudaMalloc selected_scores") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_logits, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_logits") &&
+        SparkValidationAllocateZeroed((void **)&buffers->positions, 4u, "cudaMalloc positions") &&
+        SparkValidationAllocateZeroed((void **)&buffers->slot_mapping, 4u, "cudaMalloc slot_mapping") &&
+        SparkValidationAllocateZeroed((void **)&buffers->block_table, 4u, "cudaMalloc block_table") &&
+        SparkValidationAllocateZeroed((void **)&buffers->context_lengths, 4u, "cudaMalloc context_lengths") &&
+        SparkValidationAllocateZeroed((void **)&buffers->first_block_token_offsets, 4u, "cudaMalloc first_block_token_offsets") &&
+        SparkValidationAllocateZeroed((void **)&buffers->sparse_token_indices, SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * 4u, "cudaMalloc sparse_indices") &&
+        SparkValidationAllocateZeroed((void **)&buffers->restricted_token_ids, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * 4u, "cudaMalloc restricted_token_ids") &&
+        SparkValidationAllocateZeroed((void **)&buffers->restricted_selected_token_ids, 4u, "cudaMalloc selected_token_ids") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_token_ids, SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_draft_token_ids") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_target_token_ids, SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_target_token_ids") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_accept_mask, SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_accept_mask") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_committed_token_ids, SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_committed_token_ids") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_event_counters, SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_EVENT_COUNTER_COUNT * 4u, "cudaMalloc mtp_event_counters") &&
+        SparkValidationAllocateZeroed((void **)&buffers->phase_clock_cycles, SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT * 8u, "cudaMalloc phase_clocks");
+}
+
+static bool SparkValidationInitializeDeviceInputs(
+    SparkValidationDeviceBuffers *buffers)
+{
+    float cos_table[
+        SPARK_VALIDATION_POSITION_COUNT *
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION / 2u)];
+    uint16_t one_bf16[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint32_t restricted_token_ids[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT];
+    uint32_t context_length;
+    uint32_t index;
+
+    for (index = 0u;
+         index < SPARK_VALIDATION_POSITION_COUNT *
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION / 2u);
+         ++index)
+    {
+        cos_table[index] = 1.0f;
+    }
+    for (index = 0u;
+         index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+         ++index)
+    {
+        one_bf16[index] = SparkValidationFloatToBf16(1.0f);
+    }
+    for (index = 0u;
+         index < SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT;
+         ++index)
+    {
+        restricted_token_ids[index] = index;
+    }
+    context_length = 1u;
+    return
+        SparkValidationCopyToDevice(buffers->cos_table, cos_table, sizeof(cos_table), "copy cos_table") &&
+        SparkValidationCopyToDevice(buffers->attention_norm_weight_bf16, one_bf16, sizeof(one_bf16), "copy attention_norm_weight") &&
+        SparkValidationCopyToDevice(buffers->final_norm_weight_bf16, one_bf16, sizeof(one_bf16), "copy final_norm_weight") &&
+        SparkValidationCopyToDevice(buffers->restricted_token_ids, restricted_token_ids, sizeof(restricted_token_ids), "copy restricted_token_ids") &&
+        SparkValidationCopyToDevice(buffers->context_lengths, &context_length, sizeof(context_length), "copy context_length");
+}
+
+static void SparkValidationConfigureNode(
+    SparkValidationDeviceBuffers *buffers,
+    cudaStream_t cuda_stream,
+    SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    memset(pipeline_slot, 0, sizeof(*pipeline_slot));
+    memset(cuda_slot_state, 0, sizeof(*cuda_slot_state));
+    memset(node_context, 0, sizeof(*node_context));
+    pipeline_slot->cuda_stream = (void *)cuda_stream;
+    pipeline_slot->input_hidden_bf16 = buffers->input_hidden_bf16;
+    pipeline_slot->normalized_hidden_bf16 = buffers->normalized_hidden_bf16;
+    pipeline_slot->query_latent_bf16 = buffers->query_latent_bf16;
+    pipeline_slot->query_rope_input_bf16 = buffers->query_rope_input_bf16;
+    pipeline_slot->key_rope_input_bf16 = buffers->key_rope_input_bf16;
+    pipeline_slot->current_kv_latent_bf16 = buffers->current_kv_latent_bf16;
+    pipeline_slot->positions = buffers->positions;
+    pipeline_slot->slot_mapping = buffers->slot_mapping;
+    pipeline_slot->block_table = buffers->block_table;
+    pipeline_slot->context_lengths = buffers->context_lengths;
+    pipeline_slot->first_block_token_offsets = buffers->first_block_token_offsets;
+    pipeline_slot->dsa_token_scores = buffers->dsa_token_scores;
+    pipeline_slot->sparse_token_indices = buffers->sparse_token_indices;
+    pipeline_slot->rotated_query_rope_bf16 = buffers->rotated_query_rope_bf16;
+    pipeline_slot->attention_output_latent_bf16 = buffers->attention_output_latent_bf16;
+    pipeline_slot->attention_projected_hidden_bf16 = buffers->attention_projected_hidden_bf16;
+    pipeline_slot->post_attention_hidden_bf16 = buffers->post_attention_hidden_bf16;
+    pipeline_slot->mtp_draft_hidden_bf16 = buffers->mtp_draft_hidden_bf16;
+    pipeline_slot->restricted_logits = buffers->restricted_logits;
+    pipeline_slot->mtp_draft_logits = buffers->mtp_draft_logits;
+    pipeline_slot->restricted_selected_token_ids = buffers->restricted_selected_token_ids;
+    pipeline_slot->restricted_selected_token_scores = buffers->restricted_selected_token_scores;
+    pipeline_slot->mtp_draft_token_ids = buffers->mtp_draft_token_ids;
+    pipeline_slot->mtp_target_token_ids = buffers->mtp_target_token_ids;
+    pipeline_slot->mtp_accept_mask = buffers->mtp_accept_mask;
+    pipeline_slot->mtp_committed_token_ids = buffers->mtp_committed_token_ids;
+    pipeline_slot->mtp_event_counters = buffers->mtp_event_counters;
+    pipeline_slot->phase_clock_cycles = buffers->phase_clock_cycles;
+    cuda_slot_state->abi_version =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_SLOT_STATE_ABI_VERSION;
+    node_context->abi_version =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
+    node_context->pipeline_slot_count = 1u;
+    node_context->max_active_sequence_count =
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT;
+    node_context->cache_token_capacity = SPARK_VALIDATION_CACHE_TOKEN_CAPACITY;
+    node_context->kv_block_count = SPARK_VALIDATION_KV_BLOCK_COUNT;
+    node_context->max_blocks_per_sequence =
+        SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE;
+    node_context->position_count = SPARK_VALIDATION_POSITION_COUNT;
+    node_context->dsa_candidate_count = 64u;
+    node_context->qk_scale = 0.0416666679f;
+    node_context->rms_norm_epsilon = 0.000001f;
+    node_context->cos_table = buffers->cos_table;
+    node_context->sin_table = buffers->sin_table;
+    node_context->mla_cache_bf16 = buffers->mla_cache_bf16;
+    node_context->attention_norm_weight_bf16 =
+        buffers->attention_norm_weight_bf16;
+    node_context->query_latent_weight_bf16 =
+        buffers->query_latent_weight_bf16;
+    node_context->query_rope_weight_bf16 = buffers->query_rope_weight_bf16;
+    node_context->key_rope_weight_bf16 = buffers->key_rope_weight_bf16;
+    node_context->kv_latent_weight_bf16 = buffers->kv_latent_weight_bf16;
+    node_context->attention_output_weight_bf16 =
+        buffers->attention_output_weight_bf16;
+    node_context->final_norm_weight_bf16 = buffers->final_norm_weight_bf16;
+    node_context->restricted_lm_head_weight_bf16 =
+        buffers->restricted_lm_head_weight_bf16;
+    node_context->mtp_mxfp4_weight_payload_u8 =
+        buffers->mtp_mxfp4_weight_payload_u8;
+    node_context->mtp_mxfp4_scale_e8m0_u8 =
+        buffers->mtp_mxfp4_scale_e8m0_u8;
+    node_context->restricted_token_ids = buffers->restricted_token_ids;
+    node_context->pipeline_slots = pipeline_slot;
+    node_context->cuda_pipeline_slot_states = cuda_slot_state;
+    node_context->sparse_index_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_PRESELECTED;
+    node_context->launch_check_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAUNCH_CHECK_SYNC_ON_ERROR;
+    node_context->phase_clock_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_DEVICE_CLOCK64;
+}
+
+static bool SparkValidationRunOnce(
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    cudaStream_t cuda_stream,
+    float *elapsed_microseconds)
+{
+    SparkValidationCompletionState completion_state;
+    SparkGlm52ResidentDecodeStageBackendCompletion completion;
+    cudaEvent_t start_event;
+    cudaEvent_t stop_event;
+    SparkStatus status;
+    float elapsed_milliseconds;
+    bool succeeded;
+
+    completion_state.completion_count.store(0u, std::memory_order_release);
+    completion.function = SparkValidationCompletion;
+    completion.context = &completion_state;
+    start_event = 0;
+    stop_event = 0;
+    succeeded =
+        SparkValidationCudaSucceeded(cudaEventCreate(&start_event), "cudaEventCreate start") &&
+        SparkValidationCudaSucceeded(cudaEventCreate(&stop_event), "cudaEventCreate stop") &&
+        SparkValidationCudaSucceeded(cudaEventRecord(start_event, cuda_stream), "cudaEventRecord start");
+    if (!succeeded)
+    {
+        return false;
+    }
+    status = SparkGlm52ResidentDecodeStageBackendSubmit(
+        node_context,
+        0u,
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT,
+        &completion);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "backend submit failed: %s\n", SparkStatusToString(status));
+        return false;
+    }
+    if (!SparkValidationCudaSucceeded(cudaEventRecord(stop_event, cuda_stream), "cudaEventRecord stop") ||
+        !SparkValidationCudaSucceeded(cudaEventSynchronize(stop_event), "cudaEventSynchronize stop"))
+    {
+        return false;
+    }
+    if (completion_state.completion_count.load(std::memory_order_acquire) != 1u)
+    {
+        fprintf(stderr, "backend completion callback did not run\n");
+        return false;
+    }
+    if (!SparkValidationCudaSucceeded(
+            cudaEventElapsedTime(&elapsed_milliseconds, start_event, stop_event),
+            "cudaEventElapsedTime"))
+    {
+        return false;
+    }
+    cudaEventDestroy(start_event);
+    cudaEventDestroy(stop_event);
+    *elapsed_microseconds = elapsed_milliseconds * 1000.0f;
+    return true;
+}
+
+static bool SparkValidationCheckOutputs(
+    SparkValidationDeviceBuffers *buffers)
+{
+    uint32_t counters[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_EVENT_COUNTER_COUNT];
+    uint64_t phase_clocks[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT];
+
+    memset(counters, 0, sizeof(counters));
+    memset(phase_clocks, 0, sizeof(phase_clocks));
+    if (!SparkValidationCudaSucceeded(
+            cudaMemcpy(
+                counters,
+                buffers->mtp_event_counters,
+                sizeof(counters),
+                cudaMemcpyDeviceToHost),
+            "copy mtp_event_counters") ||
+        !SparkValidationCudaSucceeded(
+            cudaMemcpy(
+                phase_clocks,
+                buffers->phase_clock_cycles,
+                sizeof(phase_clocks),
+                cudaMemcpyDeviceToHost),
+            "copy phase_clock_cycles"))
+    {
+        return false;
+    }
+    if (phase_clocks[
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_COMPLETION_READY] == 0u)
+    {
+        fprintf(stderr, "phase clock completion marker was not written\n");
+        return false;
+    }
+    if (counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_COMMITTED] == 0u)
+    {
+        fprintf(stderr, "MTP commit counter was not incremented\n");
+        return false;
+    }
+    return true;
+}
+
+int main(int argc, char **argv)
+{
+    SparkValidationDeviceBuffers buffers;
+    SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slot;
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState cuda_slot_state;
+    SparkGlm52ResidentDecodeStageNodeContext node_context;
+    cudaStream_t cuda_stream;
+    double maximum_stage_microseconds;
+    double total_microseconds;
+    double maximum_observed_microseconds;
+    uint32_t iteration;
+
+    if (argc != 2)
+    {
+        fprintf(stderr, "usage: %s MAX_STAGE_MICROSECONDS\n", argv[0]);
+        return 2;
+    }
+    maximum_stage_microseconds = atof(argv[1]);
+    if (maximum_stage_microseconds <= 0.0)
+    {
+        fprintf(stderr, "MAX_STAGE_MICROSECONDS must be positive\n");
+        return 2;
+    }
+    cuda_stream = 0;
+    if (!SparkValidationCudaSucceeded(cudaSetDevice(0), "cudaSetDevice") ||
+        !SparkValidationCudaSucceeded(
+            cudaStreamCreateWithFlags(&cuda_stream, cudaStreamNonBlocking),
+            "cudaStreamCreate") ||
+        !SparkValidationAllocateDeviceBuffers(&buffers) ||
+        !SparkValidationInitializeDeviceInputs(&buffers))
+    {
+        return 2;
+    }
+    SparkValidationConfigureNode(
+        &buffers,
+        cuda_stream,
+        &pipeline_slot,
+        &cuda_slot_state,
+        &node_context);
+    total_microseconds = 0.0;
+    maximum_observed_microseconds = 0.0;
+    for (iteration = 0u;
+         iteration < SPARK_VALIDATION_WARMUP_COUNT + SPARK_VALIDATION_MEASUREMENT_COUNT;
+         ++iteration)
+    {
+        float elapsed_microseconds;
+
+        if (!SparkValidationRunOnce(
+                &node_context,
+                cuda_stream,
+                &elapsed_microseconds))
+        {
+            return 2;
+        }
+        if (iteration >= SPARK_VALIDATION_WARMUP_COUNT)
+        {
+            total_microseconds += (double)elapsed_microseconds;
+            if ((double)elapsed_microseconds > maximum_observed_microseconds)
+            {
+                maximum_observed_microseconds = (double)elapsed_microseconds;
+            }
+        }
+    }
+    if (!SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
+        !SparkValidationCheckOutputs(&buffers))
+    {
+        return 2;
+    }
+    SparkGlm52ResidentDecodeStageBackendQuiesce(&node_context);
+    if (maximum_observed_microseconds > maximum_stage_microseconds)
+    {
+        fprintf(
+            stderr,
+            "glm52_resident_decode_stage validation failed average_us=%.3f maximum_us=%.3f limit_us=%.3f\n",
+            total_microseconds / SPARK_VALIDATION_MEASUREMENT_COUNT,
+            maximum_observed_microseconds,
+            maximum_stage_microseconds);
+        return 1;
+    }
+    printf(
+        "glm52_resident_decode_stage validation passed average_us=%.3f maximum_us=%.3f limit_us=%.3f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+        total_microseconds / SPARK_VALIDATION_MEASUREMENT_COUNT,
+        maximum_observed_microseconds,
+        maximum_stage_microseconds,
+        (unsigned long long)cuda_slot_state.launch_chain_count,
+        (unsigned long long)cuda_slot_state.graph_capture_count,
+        (unsigned long long)cuda_slot_state.graph_replay_count);
+    return 0;
+}

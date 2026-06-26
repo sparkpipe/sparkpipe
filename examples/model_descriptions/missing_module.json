@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "sparkpipe.missing.module",
+    "revision": "1"
+  },
+  "stages": [
+    {
+      "name": "stage0",
+      "target": "host.cpu",
+      "programs": [
+        {
+          "name": "decode",
+          "id": 1,
+          "operations": [
+            {
+              "name": "missing",
+              "module": "spark.test.not_published.v1",
+              "configuration": {}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
