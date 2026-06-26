@@ -82,6 +82,10 @@ package: publish
 		--cc-arg -L$(CUDA_HOME)/lib64 \
 		--cc-arg -lcudart \
 		--cc-arg -lstdc++
+	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) \
+		validation/validate_glm52_resident_decode_stage_cuda.sh \
+		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE) \
+		$(PACKAGE_DIRECTORY)/stages/stage_000/model_driver.so
 
 clean:
 	rm -rf $(BUILD_DIRECTORY)

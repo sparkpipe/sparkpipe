@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "spark_glm52_resident_decode_stage_backend.h"
+#include "sparkpipe/spark_orchestrator.h"
 #include "sparkpipe/spark_status.h"
 
 #define SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT 1u
@@ -23,6 +24,12 @@ typedef struct SparkValidationCompletionState
 {
     std::atomic<uint32_t> completion_count;
 } SparkValidationCompletionState;
+
+typedef struct SparkValidationDriverCompletionState
+{
+    std::atomic<uint32_t> completion_count;
+    SparkModelDriverCompletion completion;
+} SparkValidationDriverCompletionState;
 
 typedef struct SparkValidationDeviceBuffers
 {
@@ -138,6 +145,20 @@ static void SparkValidationCompletion(void *completion_context)
     state = (SparkValidationCompletionState *)completion_context;
     if (state != 0)
     {
+        state->completion_count.fetch_add(1u, std::memory_order_release);
+    }
+}
+
+static void SparkValidationDriverCompletion(
+    void *completion_context,
+    const SparkModelDriverCompletion *completion)
+{
+    SparkValidationDriverCompletionState *state;
+
+    state = (SparkValidationDriverCompletionState *)completion_context;
+    if (state != 0 && completion != 0)
+    {
+        state->completion = *completion;
         state->completion_count.fetch_add(1u, std::memory_order_release);
     }
 }
@@ -446,6 +467,162 @@ static bool SparkValidationCheckOutputs(
     return true;
 }
 
+static bool SparkValidationRunDriverOnce(
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    cudaStream_t cuda_stream,
+    const char *driver_path,
+    float *elapsed_microseconds)
+{
+    SparkValidationDriverCompletionState completion_state;
+    SparkOrchestratorConfiguration orchestrator_configuration;
+    SparkOrchestrator *orchestrator;
+    SparkOrchestratorNodeHandle node_handle;
+    SparkOrchestratorDriverHandle driver_handle;
+    SparkOrchestratorRouteHandle route_handle;
+    SparkModelDriverRuntimeSnapshot runtime_snapshot;
+    SparkModelDriverFrame frame;
+    cudaEvent_t start_event;
+    cudaEvent_t stop_event;
+    SparkStatus status;
+    char error_buffer[1024];
+    float elapsed_milliseconds;
+
+    memset(&completion_state, 0, sizeof(completion_state));
+    memset(&orchestrator_configuration, 0, sizeof(orchestrator_configuration));
+    memset(&frame, 0, sizeof(frame));
+    orchestrator_configuration.node_capacity = 1u;
+    orchestrator_configuration.driver_capacity = 1u;
+    orchestrator_configuration.route_capacity = 1u;
+    orchestrator_configuration.route_endpoint_capacity = 1u;
+    orchestrator_configuration.completion_function =
+        SparkValidationDriverCompletion;
+    orchestrator_configuration.completion_context = &completion_state;
+    orchestrator = 0;
+    start_event = 0;
+    stop_event = 0;
+    status = SparkCreateOrchestrator(
+        &orchestrator_configuration,
+        &orchestrator);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "SparkCreateOrchestrator failed: %s\n", SparkStatusToString(status));
+        return false;
+    }
+    status = SparkOrchestratorAddNode(
+        orchestrator,
+        "cuda-node-0",
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_TARGET,
+        node_context,
+        &node_handle);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "SparkOrchestratorAddNode failed: %s\n", SparkStatusToString(status));
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
+    status = SparkOrchestratorAttachDriver(
+        orchestrator,
+        node_handle,
+        driver_path,
+        &driver_handle,
+        error_buffer,
+        sizeof(error_buffer));
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "SparkOrchestratorAttachDriver failed: %s: %s\n", SparkStatusToString(status), error_buffer);
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
+    status = SparkOrchestratorResolveRoute(
+        orchestrator,
+        "zai.glm-5.2.resident-decode-stage-firmware",
+        "bf16-h8192-h64-d512-r64-k2048-b64-rv256-mtp2-v1",
+        "resident_decode",
+        "decode",
+        &route_handle);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "SparkOrchestratorResolveRoute failed: %s\n", SparkStatusToString(status));
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
+    if (!SparkValidationCudaSucceeded(cudaEventCreate(&start_event), "cudaEventCreate start") ||
+        !SparkValidationCudaSucceeded(cudaEventCreate(&stop_event), "cudaEventCreate stop") ||
+        !SparkValidationCudaSucceeded(cudaEventRecord(start_event, cuda_stream), "cudaEventRecord start"))
+    {
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
+    frame.request_id = 9001u;
+    frame.sequence_id = 70001u;
+    frame.sequence_position = 17u;
+    frame.active_slot_count = SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT;
+    frame.new_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u;
+    frame.residency.owner = 1u;
+    status = SparkOrchestratorSubmit(orchestrator, route_handle, &frame);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "SparkOrchestratorSubmit failed: %s\n", SparkStatusToString(status));
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
+    if ((frame.flags & SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) == 0u ||
+        frame.driver_dispatch_slot != 0u)
+    {
+        fprintf(stderr, "driver dispatch slot was not assigned by admission\n");
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
+    if (!SparkValidationCudaSucceeded(cudaEventRecord(stop_event, cuda_stream), "cudaEventRecord stop") ||
+        !SparkValidationCudaSucceeded(cudaEventSynchronize(stop_event), "cudaEventSynchronize stop"))
+    {
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
+    if (completion_state.completion_count.load(std::memory_order_acquire) != 1u ||
+        completion_state.completion.request_id != frame.request_id ||
+        completion_state.completion.status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "orchestrator completion did not match submitted frame\n");
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
+    status = SparkOrchestratorGetDriverProgramSnapshot(
+        orchestrator,
+        driver_handle,
+        "decode",
+        &runtime_snapshot);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "SparkOrchestratorGetDriverProgramSnapshot failed: %s\n", SparkStatusToString(status));
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
+    if (runtime_snapshot.submitted_count != 1u ||
+        runtime_snapshot.completed_count != 1u ||
+        runtime_snapshot.active_submission_count != 0u ||
+        runtime_snapshot.host_callback_completion_count != 1u ||
+        runtime_snapshot.host_staging_bytes_per_submit != 0u ||
+        runtime_snapshot.device_memcpy_bytes_per_submit != 0u)
+    {
+        fprintf(stderr, "orchestrator snapshot counters are not clean\n");
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
+    if (!SparkValidationCudaSucceeded(
+            cudaEventElapsedTime(&elapsed_milliseconds, start_event, stop_event),
+            "cudaEventElapsedTime"))
+    {
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
+    cudaEventDestroy(start_event);
+    cudaEventDestroy(stop_event);
+    *elapsed_microseconds = elapsed_milliseconds * 1000.0f;
+    SparkDestroyOrchestrator(orchestrator);
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     SparkValidationDeviceBuffers buffers;
@@ -458,9 +635,9 @@ int main(int argc, char **argv)
     double maximum_observed_microseconds;
     uint32_t iteration;
 
-    if (argc != 2)
+    if (argc != 2 && argc != 3)
     {
-        fprintf(stderr, "usage: %s MAX_STAGE_MICROSECONDS\n", argv[0]);
+        fprintf(stderr, "usage: %s MAX_STAGE_MICROSECONDS [DRIVER_SO]\n", argv[0]);
         return 2;
     }
     maximum_stage_microseconds = atof(argv[1]);
@@ -485,6 +662,38 @@ int main(int argc, char **argv)
         &pipeline_slot,
         &cuda_slot_state,
         &node_context);
+    if (argc == 3)
+    {
+        float elapsed_microseconds;
+
+        if (!SparkValidationRunDriverOnce(
+                &node_context,
+                cuda_stream,
+                argv[2],
+                &elapsed_microseconds) ||
+            !SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
+            !SparkValidationCheckOutputs(&buffers))
+        {
+            return 2;
+        }
+        if ((double)elapsed_microseconds > maximum_stage_microseconds)
+        {
+            fprintf(
+                stderr,
+                "glm52_resident_decode_stage orchestrator validation failed elapsed_us=%.3f limit_us=%.3f\n",
+                (double)elapsed_microseconds,
+                maximum_stage_microseconds);
+            return 1;
+        }
+        printf(
+            "glm52_resident_decode_stage orchestrator validation passed elapsed_us=%.3f limit_us=%.3f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            (double)elapsed_microseconds,
+            maximum_stage_microseconds,
+            (unsigned long long)cuda_slot_state.launch_chain_count,
+            (unsigned long long)cuda_slot_state.graph_capture_count,
+            (unsigned long long)cuda_slot_state.graph_replay_count);
+        return 0;
+    }
     total_microseconds = 0.0;
     maximum_observed_microseconds = 0.0;
     for (iteration = 0u;

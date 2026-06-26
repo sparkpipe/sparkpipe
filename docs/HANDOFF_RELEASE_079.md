@@ -56,8 +56,32 @@ phase-clock mode disabled by default
 MXFP4-only MTP draft path
 ```
 
+## What is now hardware-validated
+
+After import into the live Spark repo, both active CUDA firmware packages have
+been built and validated on a GB10 / CUDA 13.0 / `sm_121` Spark node.
+
+The decode-stage package target now goes past raw backend validation. After
+`sparkpipe_model_compile` emits the generated `model_driver.so`, it runs an
+orchestrator smoke test that attaches the generated driver, resolves the
+resident decode route, admits one frame, submits through the driver into CUDA,
+waits for stream-ordered completion, and checks runtime counters.
+
+Latest live timings are recorded in:
+
+```text
+docs/GLM52_LLM_DRIVER_DEBUG.md
+```
+
 ## What is still not claimed
 
-No CUDA archive is hardware-validated in this environment. There is no `nvcc` and no SM121 Spark target here. The arithmetic kernels are shaped for handoff but several remain correctness-first.
+The CUDA path is hardware-executed, but this is not yet a full GLM 5.2
+inference pass. The decode-stage validator still uses deterministic smoke
+tensors and mostly zero weights. Full inference requires deterministic nonzero
+GLM tensor fixtures, reference comparisons for KV writes/cached attention,
+restricted logits, MTP verify/commit behavior, and then real checkpoint tensor
+loading.
 
-The next developer pass should compile on target hardware, run the full-stage validator, inspect CUDA traces, and replace the projection/attention/MTP kernels that miss the latency ceiling. The architecture now localizes that work inside model-specific firmware archives instead of spreading it through SparkPipe.
+The next developer pass should add that nonzero-fixture correctness mode before
+performance tuning. The architecture now localizes that work inside
+model-specific firmware archives instead of spreading it through SparkPipe.

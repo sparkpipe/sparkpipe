@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-    echo "usage: $0 MAX_STAGE_MICROSECONDS MODULE_ARCHIVE" >&2
+if [[ $# -ne 2 && $# -ne 3 ]]; then
+    echo "usage: $0 MAX_STAGE_MICROSECONDS MODULE_ARCHIVE [DRIVER_SO]" >&2
     exit 2
 fi
 
 maximum_stage_microseconds="$1"
 module_archive="$2"
+driver_path="${3:-}"
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 module_directory="$(cd "${script_directory}/.." && pwd)"
 repository_root="$(cd "${module_directory}/../.." && pwd)"
 validation_directory="$(mktemp -d)"
 trap 'rm -rf "${validation_directory}"' EXIT
 common_archive="${repository_root}/build/libsparkpipe_common.a"
+runtime_archive="${repository_root}/build/libsparkpipe_runtime.a"
 
 if [[ "${maximum_stage_microseconds}" == "0" ]]; then
     echo "MAX_STAGE_MICROSECONDS must be nonzero" >&2
@@ -21,6 +23,10 @@ if [[ "${maximum_stage_microseconds}" == "0" ]]; then
 fi
 if [[ ! -s "${module_archive}" ]]; then
     echo "module archive is missing or empty" >&2
+    exit 2
+fi
+if [[ -n "${driver_path}" && ! -s "${driver_path}" ]]; then
+    echo "driver shared object is missing or empty" >&2
     exit 2
 fi
 
@@ -36,7 +42,7 @@ if [[ "${cuda_architecture}" != "sm_121" ]]; then
     exit 2
 fi
 
-make -C "${repository_root}" "${common_archive}"
+make -C "${repository_root}" "${common_archive}" "${runtime_archive}"
 
 "${nvcc_path}" \
     -std=c++17 \
@@ -48,8 +54,16 @@ make -C "${repository_root}" "${common_archive}"
     -I"${module_directory}/source" \
     "${script_directory}/spark_glm52_resident_decode_stage_cuda_validation.cu" \
     "${module_archive}" \
+    "${runtime_archive}" \
     "${common_archive}" \
+    -ldl \
     -o "${validation_directory}/glm52_resident_decode_stage_validator"
 
-"${validation_directory}/glm52_resident_decode_stage_validator" \
-    "${maximum_stage_microseconds}"
+if [[ -n "${driver_path}" ]]; then
+    "${validation_directory}/glm52_resident_decode_stage_validator" \
+        "${maximum_stage_microseconds}" \
+        "${driver_path}"
+else
+    "${validation_directory}/glm52_resident_decode_stage_validator" \
+        "${maximum_stage_microseconds}"
+fi
