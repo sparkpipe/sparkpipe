@@ -29,9 +29,32 @@ num_hidden_layers=78
 Commands:
 
 ```sh
+build/sparkpipe_glm52_artifact_check --model-dir /home/spark1/models/hf/nvidia/GLM-5.2-NVFP4
+build/sparkpipe_glm52_artifact_check --model-dir /home/spark1/models/hf/lukealonso/GLM-5.2-NVFP4
+build/sparkpipe_glm52_artifact_check --model-dir /home/spark1/models/hf/zai-org/GLM-5.2-FP8
 PATH=/usr/local/cuda-13.0/bin:$PATH make -j1 test
 PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_sparse_mla_firmware_package MAX_STAGE_MICROSECONDS=1500
 PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_decode_stage_firmware_package MAX_STAGE_MICROSECONDS=10000
+```
+
+The artifact gate verifies the live `config.json` against the compiled resident
+decode-stage constants and the model-description route before any launch claim:
+
+```text
+hidden_size=6144
+num_attention_heads=64
+kv_lora_rank=512
+qk_rope_head_dim=64
+index_topk=2048
+num_hidden_layers=78
+vocab_size=154880
+num_experts=256
+num_experts_per_tok=8
+qk_nope_head_dim=192
+qk_head_dim=256
+v_head_dim=256
+model_revision=bf16-h6144-h64-d512-r64-k2048-b64-rv256-mtp2-v1
+module=spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1
 ```
 
 The sparse-MLA package gate verifies:
