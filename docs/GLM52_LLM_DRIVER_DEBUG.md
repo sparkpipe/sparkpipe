@@ -48,7 +48,9 @@ hardware backend-submit validator execution
 deterministic nonzero GLM-shaped smoke tensors
 KV current-token write into a block-table-remapped cache slot
 cached attention over context length 4 crossing two physical KV blocks
-two checked latent dimensions across two checked heads
+eight checked latent dimensions across four checked heads
+four checked RoPE dimensions with non-identity rotation
+attention output projection feeding restricted logits
 restricted-vocabulary argmax
 MTP draft accept/reject/commit counters
 module-library publication
@@ -67,14 +69,14 @@ Latest observed decode-stage timings:
 
 ```text
 backend validator:
-    fixture=remapped_nonzero_context4
-    average_us=5814.261
-    maximum_us=6452.608
+    fixture=remapped_nonzero_context4_h4_d8_r4
+    average_us=5890.336
+    maximum_us=6882.432
     limit_us=10000.000
 
 generated-driver/orchestrator validator:
-    fixture=remapped_nonzero_context4
-    elapsed_us=6288.512
+    fixture=remapped_nonzero_context4_h4_d8_r4
+    elapsed_us=7121.216
     limit_us=10000.000
 ```
 
@@ -100,9 +102,11 @@ The checked invariants are:
 ```text
 logical context tokens 61..64 resolve through physical block table [1,0]
 cache slot 0 receives the current KV latent value
-cache slot 0 receives the current key RoPE pair
-query latent is nonzero for two checked heads and two checked dimensions
+cache slot 0 receives non-identity-rotated current key RoPE values
+query latent is nonzero for four checked heads and eight checked dimensions
+rotated query RoPE is nonzero for four checked heads and four checked dimensions
 attention outputs match a host softmax reference over remapped slots 125,126,127,0
+restricted logits depend on attention output projection, not only input hidden
 restricted argmax selects token 1009
 MTP drafts token 1011 twice
 MTP accepts the first draft and rejects the second against token 1003
@@ -145,15 +149,18 @@ Result:
 The B1 context-length-4 remapped fixture passed on GB10. KV write layout,
 two-block cached attention over slots 125,126,127,0, restricted argmax, and MTP
 accept/reject matched the host reference through both direct backend submit and
-generated-driver/orchestrator submit.
+generated-driver/orchestrator submit. The fixture was then broadened to four
+heads, eight latent dimensions, four RoPE dimensions, non-identity key/query
+RoPE, and attention-output-projection-fed restricted logits; that also passed
+on Spark1 / GB10 under the 10000 us package ceiling.
 ```
 
 Next hypothesis:
 
 ```text
-The next likely gap is not the driver boundary. It is richer GLM tensor
-semantics: larger nonzero attention coverage, varied sparse-token selection,
-and real checkpoint quantization layout.
+The next likely gap is not the driver boundary or the small remapped-cache
+layout. It is real GLM tensor semantics: varied positions, varied sparse-token
+selection, multi-block KV checksums, and checkpoint quantization layout.
 ```
 
 If it fails:
