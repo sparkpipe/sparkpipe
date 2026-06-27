@@ -118,7 +118,7 @@ One submission launches a fused RoPE/current-token-KV placement kernel followed 
 
 ```text
 cuda.sm121.glm52.resident_decode_stage.bf16
-8192 hidden elements
+6144 hidden elements
 64 MLA heads
 512 latent elements
 64 adjacent-pair RoPE elements

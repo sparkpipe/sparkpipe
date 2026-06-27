@@ -14,6 +14,18 @@ CUDA: 13.0
 Target: sm_121
 ```
 
+Live GLM artifact geometry checked on Spark1:
+
+```text
+model_dirs=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4,/home/spark1/models/hf/lukealonso/GLM-5.2-NVFP4,/home/spark1/models/hf/zai-org/GLM-5.2-FP8
+hidden_size=6144
+num_attention_heads=64
+kv_lora_rank=512
+qk_rope_head_dim=64
+index_topk=2048
+num_hidden_layers=78
+```
+
 Commands:
 
 ```sh

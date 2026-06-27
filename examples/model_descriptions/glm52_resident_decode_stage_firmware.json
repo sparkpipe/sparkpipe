@@ -2,13 +2,13 @@
   "schema_version": 1,
   "model": {
     "id": "zai.glm-5.2.resident-decode-stage-firmware",
-    "revision": "bf16-h8192-h64-d512-r64-k2048-b64-rv256-mtp2-v1"
+    "revision": "bf16-h6144-h64-d512-r64-k2048-b64-rv256-mtp2-v1"
   },
   "metadata": {
     "architecture": "glm52_resident_decode_stage",
     "purpose": "exact resident decode-stage firmware with projections, native DSA selection, fused RoPE/KV write, sparse MLA, restricted logits, and MXFP4 MTP verify",
     "module_geometry": {
-      "hidden_dimension": 8192,
+      "hidden_dimension": 6144,
       "heads": 64,
       "latent_dimension": 512,
       "rope_dimension": 64,
@@ -31,7 +31,7 @@
           "operations": [
             {
               "name": "resident_decode_stage",
-              "module": "spark.glm52.resident_decode_stage.bf16.h8192.h64.d512.r64.k2048.b64.rv256.mtp2.v1",
+              "module": "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1",
               "configuration": {}
             }
           ],

@@ -58,7 +58,7 @@ publish: require_sm121 require_latency_limit cold_archive
 	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 		--library $(MODULE_LIBRARY_ROOT) \
-		--module spark.glm52.resident_decode_stage.bf16.h8192.h64.d512.r64.k2048.b64.rv256.mtp2.v1 \
+		--module spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1 \
 		--target cuda.sm121.glm52.resident_decode_stage.bf16 \
 		--link-unit $(MODULE_ARCHIVE) \
 		--recipe $(VALIDATION_RECIPE) \
