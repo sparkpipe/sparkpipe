@@ -31,7 +31,6 @@ Commands:
 ```sh
 build/sparkpipe_glm52_artifact_check --model-dir /home/spark1/models/hf/nvidia/GLM-5.2-NVFP4
 build/sparkpipe_glm52_artifact_check --model-dir /home/spark1/models/hf/lukealonso/GLM-5.2-NVFP4
-build/sparkpipe_glm52_artifact_check --model-dir /home/spark1/models/hf/zai-org/GLM-5.2-FP8
 PATH=/usr/local/cuda-13.0/bin:$PATH make -j1 test
 PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_sparse_mla_firmware_package MAX_STAGE_MICROSECONDS=1500
 PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_decode_stage_firmware_package MAX_STAGE_MICROSECONDS=10000
@@ -62,7 +61,15 @@ model_revision=bf16-h6144-h64-d512-r64-k2048-b64-rv256-mtp2-v1
 module=spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1
 tensor_contract_ready=1
 tensor_count=9
+tensor_bytes=2233222144
 ```
+
+The same geometry check against `/home/spark1/models/hf/zai-org/GLM-5.2-FP8`
+passes through the config fields, but the raw tensor contract correctly fails
+for the current BF16 resident decode-stage module: FP8 attention projection
+tensors are `F8_E4M3` and require `weight_scale_inv` tensors. Do not claim FP8
+resident decode-stage readiness until there is either an FP8-specific module or
+a checked lowering path into the BF16 resident weight ABI.
 
 The sparse-MLA package gate verifies:
 
@@ -207,6 +214,10 @@ Next hypothesis:
 The next likely gap is not the driver boundary or the small remapped-cache
 layout. It is real GLM tensor semantics: varied positions, varied sparse-token
 selection, multi-block KV checksums, and checkpoint quantization layout.
+
+The raw tensor gate narrowed that: NVFP4/BF16 attention tensors match the first
+resident checkpoint contract, while FP8 needs a separate quantized-weight
+contract and lowering/module path.
 ```
 
 If it fails:
