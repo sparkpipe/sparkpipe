@@ -73,10 +73,14 @@ generated driver loadability
 Latest observed sparse-MLA timing:
 
 ```text
-average_us=396.328
-maximum_us=414.014
+average_us=579.980
+maximum_us=1229.486
 limit_us=1500.000
 ```
+
+This pass is valid, but the sparse-MLA maximum widened relative to the earlier
+~414 us observation. Treat that as a performance-variance/regression signal to
+retest before tightening the ceiling.
 
 The decode-stage package gate verifies:
 
