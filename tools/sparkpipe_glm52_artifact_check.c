@@ -6,17 +6,7 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_description.h"
 
-#define SPARK_GLM52_EXPECTED_REVISION \
-    "bf16-h6144-h64-d512-r64-k2048-b64-rv256-mtp2-v1"
-#define SPARK_GLM52_EXPECTED_LAYER_COUNT 78u
-#define SPARK_GLM52_EXPECTED_VOCAB_SIZE 154880u
-#define SPARK_GLM52_EXPECTED_EXPERT_COUNT 256u
-#define SPARK_GLM52_EXPECTED_EXPERTS_PER_TOKEN 8u
-#define SPARK_GLM52_EXPECTED_QK_NOPE_HEAD_DIMENSION 192u
-#define SPARK_GLM52_EXPECTED_QK_HEAD_DIMENSION 256u
-#define SPARK_GLM52_EXPECTED_VALUE_HEAD_DIMENSION 256u
-
-typedef struct SparkGlm52ArtifactSummary
+typedef struct SparkGlm52ArtifactGeometry
 {
     uint32_t hidden_size;
     uint32_t head_count;
@@ -30,7 +20,7 @@ typedef struct SparkGlm52ArtifactSummary
     uint32_t qk_nope_head_dimension;
     uint32_t qk_head_dimension;
     uint32_t value_head_dimension;
-} SparkGlm52ArtifactSummary;
+} SparkGlm52ArtifactGeometry;
 
 static SparkStatus SparkSetToolError(
     SparkStatus status,
@@ -143,9 +133,10 @@ static SparkStatus SparkReadAndExpectUInt32(
         error_buffer_bytes);
 }
 
-static SparkStatus SparkCheckGlm52Config(
+static SparkStatus SparkReadHfConfigGeometry(
     const char *config_path,
-    SparkGlm52ArtifactSummary *summary,
+    const SparkGlm52ArtifactGeometry *expected,
+    SparkGlm52ArtifactGeometry *actual,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
@@ -175,18 +166,18 @@ static SparkStatus SparkCheckGlm52Config(
             return status; \
         } \
     } while (0)
-    SPARK_CHECK_CONFIG_U32("hidden_size", SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, &summary->hidden_size);
-    SPARK_CHECK_CONFIG_U32("num_attention_heads", SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT, &summary->head_count);
-    SPARK_CHECK_CONFIG_U32("kv_lora_rank", SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION, &summary->latent_dimension);
-    SPARK_CHECK_CONFIG_U32("qk_rope_head_dim", SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION, &summary->rope_dimension);
-    SPARK_CHECK_CONFIG_U32("index_topk", SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT, &summary->selected_token_count);
-    SPARK_CHECK_CONFIG_U32("num_hidden_layers", SPARK_GLM52_EXPECTED_LAYER_COUNT, &summary->layer_count);
-    SPARK_CHECK_CONFIG_U32("vocab_size", SPARK_GLM52_EXPECTED_VOCAB_SIZE, &summary->vocab_size);
-    SPARK_CHECK_CONFIG_U32("num_experts", SPARK_GLM52_EXPECTED_EXPERT_COUNT, &summary->expert_count);
-    SPARK_CHECK_CONFIG_U32("num_experts_per_tok", SPARK_GLM52_EXPECTED_EXPERTS_PER_TOKEN, &summary->experts_per_token);
-    SPARK_CHECK_CONFIG_U32("qk_nope_head_dim", SPARK_GLM52_EXPECTED_QK_NOPE_HEAD_DIMENSION, &summary->qk_nope_head_dimension);
-    SPARK_CHECK_CONFIG_U32("qk_head_dim", SPARK_GLM52_EXPECTED_QK_HEAD_DIMENSION, &summary->qk_head_dimension);
-    SPARK_CHECK_CONFIG_U32("v_head_dim", SPARK_GLM52_EXPECTED_VALUE_HEAD_DIMENSION, &summary->value_head_dimension);
+    SPARK_CHECK_CONFIG_U32("hidden_size", expected->hidden_size, &actual->hidden_size);
+    SPARK_CHECK_CONFIG_U32("num_attention_heads", expected->head_count, &actual->head_count);
+    SPARK_CHECK_CONFIG_U32("kv_lora_rank", expected->latent_dimension, &actual->latent_dimension);
+    SPARK_CHECK_CONFIG_U32("qk_rope_head_dim", expected->rope_dimension, &actual->rope_dimension);
+    SPARK_CHECK_CONFIG_U32("index_topk", expected->selected_token_count, &actual->selected_token_count);
+    SPARK_CHECK_CONFIG_U32("num_hidden_layers", expected->layer_count, &actual->layer_count);
+    SPARK_CHECK_CONFIG_U32("vocab_size", expected->vocab_size, &actual->vocab_size);
+    SPARK_CHECK_CONFIG_U32("num_experts", expected->expert_count, &actual->expert_count);
+    SPARK_CHECK_CONFIG_U32("num_experts_per_tok", expected->experts_per_token, &actual->experts_per_token);
+    SPARK_CHECK_CONFIG_U32("qk_nope_head_dim", expected->qk_nope_head_dimension, &actual->qk_nope_head_dimension);
+    SPARK_CHECK_CONFIG_U32("qk_head_dim", expected->qk_head_dimension, &actual->qk_head_dimension);
+    SPARK_CHECK_CONFIG_U32("v_head_dim", expected->value_head_dimension, &actual->value_head_dimension);
 #undef SPARK_CHECK_CONFIG_U32
     SparkJsonDocumentDestroy(&document);
     return SPARK_STATUS_OK;
@@ -264,8 +255,96 @@ static SparkStatus SparkCheckMetadataGeometry(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkReadArtifactGeometryFromMetadata(
+    const SparkModelDescription *description,
+    SparkGlm52ArtifactGeometry *expected,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    SparkJsonDocument document;
+    int32_t root_token_index;
+    int32_t geometry_token_index;
+    SparkStatus status;
+
+    if (description->metadata_json == 0)
+    {
+        return SparkSetToolError(SPARK_STATUS_NOT_FOUND, error_buffer, error_buffer_bytes, "model description metadata is missing");
+    }
+    SparkJsonDocumentReset(&document);
+    status = SparkJsonParseText(description->metadata_json, description->metadata_json_bytes, &document);
+    if (status != SPARK_STATUS_OK)
+    {
+        return SparkSetToolError(status, error_buffer, error_buffer_bytes, "could not parse model description metadata");
+    }
+    root_token_index = SparkJsonGetRootToken(&document);
+    geometry_token_index = SparkJsonFindObjectMember(&document, root_token_index, "hf_config_geometry");
+    if (geometry_token_index < 0)
+    {
+        SparkJsonDocumentDestroy(&document);
+        return SparkSetToolError(SPARK_STATUS_NOT_FOUND, error_buffer, error_buffer_bytes, "model description metadata.hf_config_geometry is missing");
+    }
+#define SPARK_READ_HF_GEOMETRY(member_name, destination) \
+    do \
+    { \
+        status = SparkReadRequiredUInt32(&document, geometry_token_index, member_name, destination, error_buffer, error_buffer_bytes); \
+        if (status != SPARK_STATUS_OK) \
+        { \
+            SparkJsonDocumentDestroy(&document); \
+            return status; \
+        } \
+    } while (0)
+    SPARK_READ_HF_GEOMETRY("hidden_size", &expected->hidden_size);
+    SPARK_READ_HF_GEOMETRY("num_attention_heads", &expected->head_count);
+    SPARK_READ_HF_GEOMETRY("kv_lora_rank", &expected->latent_dimension);
+    SPARK_READ_HF_GEOMETRY("qk_rope_head_dim", &expected->rope_dimension);
+    SPARK_READ_HF_GEOMETRY("index_topk", &expected->selected_token_count);
+    SPARK_READ_HF_GEOMETRY("num_hidden_layers", &expected->layer_count);
+    SPARK_READ_HF_GEOMETRY("vocab_size", &expected->vocab_size);
+    SPARK_READ_HF_GEOMETRY("num_experts", &expected->expert_count);
+    SPARK_READ_HF_GEOMETRY("num_experts_per_tok", &expected->experts_per_token);
+    SPARK_READ_HF_GEOMETRY("qk_nope_head_dim", &expected->qk_nope_head_dimension);
+    SPARK_READ_HF_GEOMETRY("qk_head_dim", &expected->qk_head_dimension);
+    SPARK_READ_HF_GEOMETRY("v_head_dim", &expected->value_head_dimension);
+#undef SPARK_READ_HF_GEOMETRY
+    SparkJsonDocumentDestroy(&document);
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkCheckArtifactGeometryAgainstFirmware(
+    const SparkGlm52ArtifactGeometry *expected,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    SparkStatus status;
+
+    status = SparkExpectUInt32("hf_config_geometry.hidden_size", expected->hidden_size, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, error_buffer, error_buffer_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkExpectUInt32("hf_config_geometry.num_attention_heads", expected->head_count, SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT, error_buffer, error_buffer_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkExpectUInt32("hf_config_geometry.kv_lora_rank", expected->latent_dimension, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION, error_buffer, error_buffer_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkExpectUInt32("hf_config_geometry.qk_rope_head_dim", expected->rope_dimension, SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION, error_buffer, error_buffer_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkExpectUInt32("hf_config_geometry.index_topk", expected->selected_token_count, SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT, error_buffer, error_buffer_bytes);
+}
+
 static SparkStatus SparkCheckModelDescription(
     const char *model_description_path,
+    SparkGlm52ArtifactGeometry *expected_geometry,
+    char *revision_buffer,
+    uint32_t revision_buffer_bytes,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
@@ -280,7 +359,14 @@ static SparkStatus SparkCheckModelDescription(
     {
         return status;
     }
-    status = SparkExpectString("model.revision", description.model_revision, SPARK_GLM52_EXPECTED_REVISION, error_buffer, error_buffer_bytes);
+    if (description.model_revision == 0 || description.model_revision[0] == '\0')
+    {
+        status = SparkSetToolError(SPARK_STATUS_SCHEMA_ERROR, error_buffer, error_buffer_bytes, "model.revision is missing");
+    }
+    else if (snprintf(revision_buffer, (size_t)revision_buffer_bytes, "%s", description.model_revision) >= (int)revision_buffer_bytes)
+    {
+        status = SparkSetToolError(SPARK_STATUS_CAPACITY_EXCEEDED, error_buffer, error_buffer_bytes, "model.revision is too long");
+    }
     if (status == SPARK_STATUS_OK)
     {
         stage = SparkFindModelStage(&description, "resident_decode");
@@ -309,6 +395,14 @@ static SparkStatus SparkCheckModelDescription(
     {
         status = SparkCheckMetadataGeometry(&description, error_buffer, error_buffer_bytes);
     }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkReadArtifactGeometryFromMetadata(&description, expected_geometry, error_buffer, error_buffer_bytes);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkCheckArtifactGeometryAgainstFirmware(expected_geometry, error_buffer, error_buffer_bytes);
+    }
     SparkModelDescriptionDestroy(&description);
     return status;
 }
@@ -330,16 +424,20 @@ static int SparkBuildConfigPath(
 
 int main(int argument_count, char **arguments)
 {
-    SparkGlm52ArtifactSummary summary;
+    SparkGlm52ArtifactGeometry expected_geometry;
+    SparkGlm52ArtifactGeometry actual_geometry;
     const char *config_path;
     const char *model_directory;
     const char *model_description_path;
     char config_path_buffer[4096];
+    char revision_buffer[256];
     char error_buffer[1024];
     int argument_index;
     SparkStatus status;
 
-    memset(&summary, 0, sizeof(summary));
+    memset(&expected_geometry, 0, sizeof(expected_geometry));
+    memset(&actual_geometry, 0, sizeof(actual_geometry));
+    memset(revision_buffer, 0, sizeof(revision_buffer));
     config_path = 0;
     model_directory = 0;
     model_description_path = "examples/model_descriptions/glm52_resident_decode_stage_firmware.json";
@@ -380,10 +478,16 @@ int main(int argument_count, char **arguments)
         }
         config_path = config_path_buffer;
     }
-    status = SparkCheckGlm52Config(config_path, &summary, error_buffer, sizeof(error_buffer));
+    status = SparkCheckModelDescription(
+        model_description_path,
+        &expected_geometry,
+        revision_buffer,
+        sizeof(revision_buffer),
+        error_buffer,
+        sizeof(error_buffer));
     if (status == SPARK_STATUS_OK)
     {
-        status = SparkCheckModelDescription(model_description_path, error_buffer, sizeof(error_buffer));
+        status = SparkReadHfConfigGeometry(config_path, &expected_geometry, &actual_geometry, error_buffer, sizeof(error_buffer));
     }
     if (status != SPARK_STATUS_OK)
     {
@@ -394,19 +498,19 @@ int main(int argument_count, char **arguments)
         "ready=1 config=%s model=%s revision=%s module=%s hidden_size=%u heads=%u kv_lora_rank=%u qk_rope_head_dim=%u index_topk=%u layers=%u vocab_size=%u experts=%u experts_per_tok=%u qk_nope_head_dim=%u qk_head_dim=%u v_head_dim=%u\n",
         config_path,
         model_description_path,
-        SPARK_GLM52_EXPECTED_REVISION,
+        revision_buffer,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MODULE_ID,
-        summary.hidden_size,
-        summary.head_count,
-        summary.latent_dimension,
-        summary.rope_dimension,
-        summary.selected_token_count,
-        summary.layer_count,
-        summary.vocab_size,
-        summary.expert_count,
-        summary.experts_per_token,
-        summary.qk_nope_head_dimension,
-        summary.qk_head_dimension,
-        summary.value_head_dimension);
+        actual_geometry.hidden_size,
+        actual_geometry.head_count,
+        actual_geometry.latent_dimension,
+        actual_geometry.rope_dimension,
+        actual_geometry.selected_token_count,
+        actual_geometry.layer_count,
+        actual_geometry.vocab_size,
+        actual_geometry.expert_count,
+        actual_geometry.experts_per_token,
+        actual_geometry.qk_nope_head_dimension,
+        actual_geometry.qk_head_dimension,
+        actual_geometry.value_head_dimension);
     return 0;
 }

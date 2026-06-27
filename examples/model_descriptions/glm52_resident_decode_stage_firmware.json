@@ -16,6 +16,20 @@
       "kv_block_tokens": 64,
       "restricted_vocab_count": 256,
       "mtp_draft_tokens": 2
+    },
+    "hf_config_geometry": {
+      "hidden_size": 6144,
+      "num_attention_heads": 64,
+      "kv_lora_rank": 512,
+      "qk_rope_head_dim": 64,
+      "index_topk": 2048,
+      "num_hidden_layers": 78,
+      "vocab_size": 154880,
+      "num_experts": 256,
+      "num_experts_per_tok": 8,
+      "qk_nope_head_dim": 192,
+      "qk_head_dim": 256,
+      "v_head_dim": 256
     }
   },
   "stages": [

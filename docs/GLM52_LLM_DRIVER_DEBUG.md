@@ -37,8 +37,10 @@ PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_sparse_mla_firmware_pack
 PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_decode_stage_firmware_package MAX_STAGE_MICROSECONDS=10000
 ```
 
-The artifact gate verifies the live `config.json` against the compiled resident
-decode-stage constants and the model-description route before any launch claim:
+The artifact gate verifies the live `config.json` against
+`metadata.hf_config_geometry`, verifies `metadata.module_geometry` against the
+compiled resident decode-stage constants, and verifies the route selects the
+same module before any launch claim:
 
 ```text
 hidden_size=6144
