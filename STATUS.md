@@ -81,3 +81,21 @@ docs/HANDOFF_RELEASE_079.md            release-specific handoff summary
 5. Publish only exact archives that pass numerical and model-stage performance qualification, then compile the GLM model JSON into direct-call drivers.
 6. Measure end-to-end stage latency and throughput before deciding whether another module split or fusion is profitable.
 7. Add the remote node agent and fixed submission/completion wire path without changing the driver ABI.
+
+## Deferred research backlog
+
+- Track DeepSeek DeepSpec/DSpark as a post-basics speculative-decoding item.
+  The public drop is a Python/PyTorch training and evaluation framework, not a
+  C/CUDA kernel library. It is still useful as an algorithmic reference for a
+  future GLM 5.2 block-draft path: selected target-layer hidden-state taps,
+  block proposals, Markov bias correction, confidence-gated proposal length,
+  and target verification.
+- Do not put DSpark adoption on the critical path for first working GLM 5.2
+  inference. The current priority remains deterministic nonzero GLM fixtures,
+  real checkpoint tensor loading, cached attention/KV correctness, restricted
+  logits, MTP verify/commit checks, and a live smoke test.
+- Revisit DSpark only after the baseline GLM resident decode stage produces
+  checkpoint-backed logits through the driver boundary. At that point, define a
+  GLM-specific DSpark-style drafter contract before writing CUDA: target layer
+  IDs, hidden-state export layout, per-slot context cache, block size, Markov
+  rank, confidence threshold, verification counters, and performance gates.
