@@ -31,7 +31,54 @@
       "qk_nope_head_dim": 192,
       "qk_head_dim": 256,
       "v_head_dim": 256
-    }
+    },
+    "hf_tensor_contract": [
+      {
+        "name": "model.layers.0.input_layernorm.weight",
+        "dtype": "BF16",
+        "shape": [6144]
+      },
+      {
+        "name": "model.layers.0.self_attn.q_a_proj.weight",
+        "dtype": "BF16",
+        "shape": [2048, 6144]
+      },
+      {
+        "name": "model.layers.0.self_attn.q_a_layernorm.weight",
+        "dtype": "BF16",
+        "shape": [2048]
+      },
+      {
+        "name": "model.layers.0.self_attn.q_b_proj.weight",
+        "dtype": "BF16",
+        "shape": [16384, 2048]
+      },
+      {
+        "name": "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
+        "dtype": "BF16",
+        "shape": [576, 6144]
+      },
+      {
+        "name": "model.layers.0.self_attn.kv_a_layernorm.weight",
+        "dtype": "BF16",
+        "shape": [512]
+      },
+      {
+        "name": "model.layers.0.self_attn.kv_b_proj.weight",
+        "dtype": "BF16",
+        "shape": [28672, 512]
+      },
+      {
+        "name": "model.layers.0.self_attn.o_proj.weight",
+        "dtype": "BF16",
+        "shape": [6144, 16384]
+      },
+      {
+        "name": "lm_head.weight",
+        "dtype": "BF16",
+        "shape": [154880, 6144]
+      }
+    ]
   },
   "stages": [
     {

@@ -40,7 +40,9 @@ PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_decode_stage_firmware_pa
 The artifact gate verifies the live `config.json` against
 `metadata.hf_config_geometry`, verifies `metadata.module_geometry` against the
 compiled resident decode-stage constants, and verifies the route selects the
-same module before any launch claim:
+same module before any launch claim. With `--model-dir`, it also validates the
+first raw checkpoint tensor contract through `model.safetensors.index.json` and
+the safetensors shard headers without reading full tensor bodies:
 
 ```text
 hidden_size=6144
@@ -58,6 +60,8 @@ qk_head_dim=256
 v_head_dim=256
 model_revision=bf16-h6144-h64-d512-r64-k2048-b64-rv256-mtp2-v1
 module=spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1
+tensor_contract_ready=1
+tensor_count=9
 ```
 
 The sparse-MLA package gate verifies:
