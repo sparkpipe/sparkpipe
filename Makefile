@@ -34,8 +34,7 @@ LIBRARIES := $(COMMON_LIBRARY) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY)
 TOOL_NAMES := \
     sparkpipe_module_publish \
     sparkpipe_model_compile \
-    sparkpipe_driver_inspect \
-    sparkpipe_glm52_artifact_check
+    sparkpipe_driver_inspect
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -120,9 +119,6 @@ build/sparkpipe_model_compile: tools/sparkpipe_model_compile.c $(COMPILER_LIBRAR
 
 build/sparkpipe_driver_inspect: tools/sparkpipe_driver_inspect.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/sparkpipe_glm52_artifact_check: tools/sparkpipe_glm52_artifact_check.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 $(TEST_SUPPORT_OBJECT): tests/test_support.c tests/test_support.h $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) -c tests/test_support.c -o $@

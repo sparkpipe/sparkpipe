@@ -29,8 +29,8 @@ num_hidden_layers=78
 Commands:
 
 ```sh
-build/sparkpipe_glm52_artifact_check --model-dir /home/spark1/models/hf/nvidia/GLM-5.2-NVFP4
-build/sparkpipe_glm52_artifact_check --model-dir /home/spark1/models/hf/lukealonso/GLM-5.2-NVFP4
+make -C modules/glm52_resident_decode_stage artifact_check GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4
+make -C modules/glm52_resident_decode_stage artifact_check GLM52_MODEL_DIR=/home/spark1/models/hf/lukealonso/GLM-5.2-NVFP4
 PATH=/usr/local/cuda-13.0/bin:$PATH make -j1 test
 PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_sparse_mla_firmware_package MAX_STAGE_MICROSECONDS=1500
 PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_decode_stage_firmware_package MAX_STAGE_MICROSECONDS=10000
@@ -42,6 +42,9 @@ compiled resident decode-stage constants, and verifies the route selects the
 same module before any launch claim. With `--model-dir`, it also validates the
 first raw checkpoint tensor contract through `model.safetensors.index.json` and
 the safetensors shard headers without reading full tensor bodies:
+
+This gate is deliberately module-local. Generic SparkPipe compiler/runtime code
+does not parse GLM tensor names, dtypes, or safetensors layouts.
 
 ```text
 hidden_size=6144
