@@ -108,13 +108,13 @@ Latest observed decode-stage timings:
 ```text
 backend validator:
     fixture=remapped_nonzero_context4_h4_d8_r4
-    average_us=4570.848
-    maximum_us=4821.600
+    average_us=4724.181
+    maximum_us=4884.800
     limit_us=10000.000
 
 generated-driver/orchestrator validator:
     fixture=remapped_nonzero_context4_h4_d8_r4
-    elapsed_us=5121.408
+    elapsed_us=4963.296
     limit_us=10000.000
 ```
 
