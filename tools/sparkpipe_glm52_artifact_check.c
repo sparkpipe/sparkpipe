@@ -15,7 +15,8 @@ typedef struct SparkGlm52ArtifactGeometry
     uint32_t selected_token_count;
     uint32_t layer_count;
     uint32_t vocab_size;
-    uint32_t expert_count;
+    uint32_t routed_expert_count;
+    uint32_t shared_expert_count;
     uint32_t experts_per_token;
     uint32_t qk_nope_head_dimension;
     uint32_t qk_head_dimension;
@@ -173,7 +174,8 @@ static SparkStatus SparkReadHfConfigGeometry(
     SPARK_CHECK_CONFIG_U32("index_topk", expected->selected_token_count, &actual->selected_token_count);
     SPARK_CHECK_CONFIG_U32("num_hidden_layers", expected->layer_count, &actual->layer_count);
     SPARK_CHECK_CONFIG_U32("vocab_size", expected->vocab_size, &actual->vocab_size);
-    SPARK_CHECK_CONFIG_U32("num_experts", expected->expert_count, &actual->expert_count);
+    SPARK_CHECK_CONFIG_U32("n_routed_experts", expected->routed_expert_count, &actual->routed_expert_count);
+    SPARK_CHECK_CONFIG_U32("n_shared_experts", expected->shared_expert_count, &actual->shared_expert_count);
     SPARK_CHECK_CONFIG_U32("num_experts_per_tok", expected->experts_per_token, &actual->experts_per_token);
     SPARK_CHECK_CONFIG_U32("qk_nope_head_dim", expected->qk_nope_head_dimension, &actual->qk_nope_head_dimension);
     SPARK_CHECK_CONFIG_U32("qk_head_dim", expected->qk_head_dimension, &actual->qk_head_dimension);
@@ -300,7 +302,8 @@ static SparkStatus SparkReadArtifactGeometryFromMetadata(
     SPARK_READ_HF_GEOMETRY("index_topk", &expected->selected_token_count);
     SPARK_READ_HF_GEOMETRY("num_hidden_layers", &expected->layer_count);
     SPARK_READ_HF_GEOMETRY("vocab_size", &expected->vocab_size);
-    SPARK_READ_HF_GEOMETRY("num_experts", &expected->expert_count);
+    SPARK_READ_HF_GEOMETRY("n_routed_experts", &expected->routed_expert_count);
+    SPARK_READ_HF_GEOMETRY("n_shared_experts", &expected->shared_expert_count);
     SPARK_READ_HF_GEOMETRY("num_experts_per_tok", &expected->experts_per_token);
     SPARK_READ_HF_GEOMETRY("qk_nope_head_dim", &expected->qk_nope_head_dimension);
     SPARK_READ_HF_GEOMETRY("qk_head_dim", &expected->qk_head_dimension);
@@ -495,7 +498,7 @@ int main(int argument_count, char **arguments)
         return 1;
     }
     printf(
-        "ready=1 config=%s model=%s revision=%s module=%s hidden_size=%u heads=%u kv_lora_rank=%u qk_rope_head_dim=%u index_topk=%u layers=%u vocab_size=%u experts=%u experts_per_tok=%u qk_nope_head_dim=%u qk_head_dim=%u v_head_dim=%u\n",
+        "ready=1 config=%s model=%s revision=%s module=%s hidden_size=%u heads=%u kv_lora_rank=%u qk_rope_head_dim=%u index_topk=%u layers=%u vocab_size=%u n_routed_experts=%u n_shared_experts=%u experts_per_tok=%u qk_nope_head_dim=%u qk_head_dim=%u v_head_dim=%u\n",
         config_path,
         model_description_path,
         revision_buffer,
@@ -507,7 +510,8 @@ int main(int argument_count, char **arguments)
         actual_geometry.selected_token_count,
         actual_geometry.layer_count,
         actual_geometry.vocab_size,
-        actual_geometry.expert_count,
+        actual_geometry.routed_expert_count,
+        actual_geometry.shared_expert_count,
         actual_geometry.experts_per_token,
         actual_geometry.qk_nope_head_dimension,
         actual_geometry.qk_head_dimension,
