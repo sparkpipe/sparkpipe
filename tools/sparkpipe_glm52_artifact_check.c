@@ -754,6 +754,7 @@ static SparkStatus SparkCheckSafetensorsOffsets(
     uint64_t expected_bytes;
     SparkStatus status;
 
+    expected_bytes = 0u;
     offsets_token_index = SparkJsonFindObjectMember(document, tensor_token_index, "data_offsets");
     if (offsets_token_index < 0 || SparkJsonGetArrayElementCount(document, offsets_token_index) != 2u)
     {
@@ -885,6 +886,7 @@ static SparkStatus SparkCheckTensorContract(
         int32_t file_token_index;
 
         file_name = 0;
+        tensor_bytes = 0u;
         file_token_index = SparkJsonFindObjectMember(&index_document, weight_map_token_index, contracts[contract_index].name);
         if (file_token_index < 0)
         {
