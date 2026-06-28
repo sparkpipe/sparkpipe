@@ -226,25 +226,56 @@ static __device__ __forceinline__ float SparkGlm52ResidentSparseMlaWarpReduceSum
     return value;
 }
 
+static __device__ __forceinline__ float SparkGlm52ResidentSparseMlaWarpReduceMax(
+    float value)
+{
+    float other_value;
+
+    other_value = __shfl_down_sync(0xffffffffu, value, 16);
+    value = other_value > value ? other_value : value;
+    other_value = __shfl_down_sync(0xffffffffu, value, 8);
+    value = other_value > value ? other_value : value;
+    other_value = __shfl_down_sync(0xffffffffu, value, 4);
+    value = other_value > value ? other_value : value;
+    other_value = __shfl_down_sync(0xffffffffu, value, 2);
+    value = other_value > value ? other_value : value;
+    other_value = __shfl_down_sync(0xffffffffu, value, 1);
+    value = other_value > value ? other_value : value;
+    return value;
+}
+
 static __device__ float SparkGlm52ResidentSparseMlaBlockReduceMax(
     float value,
     float *shared_reduction)
 {
-    uint32_t stride;
+    uint32_t lane_index;
+    uint32_t warp_index;
+    uint32_t warp_count;
 
-    shared_reduction[threadIdx.x] = value;
-    __syncthreads();
-    for (stride = blockDim.x >> 1u; stride != 0u; stride >>= 1u)
+    lane_index = threadIdx.x &
+        (SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES - 1u);
+    warp_index = threadIdx.x / SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES;
+    warp_count = (blockDim.x +
+        SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES - 1u) /
+        SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES;
+
+    value = SparkGlm52ResidentSparseMlaWarpReduceMax(value);
+    if (lane_index == 0u)
     {
-        if (threadIdx.x < stride &&
-            shared_reduction[threadIdx.x + stride] >
-                shared_reduction[threadIdx.x])
-        {
-            shared_reduction[threadIdx.x] =
-                shared_reduction[threadIdx.x + stride];
-        }
-        __syncthreads();
+        shared_reduction[warp_index] = value;
     }
+    __syncthreads();
+
+    value = threadIdx.x < warp_count ? shared_reduction[lane_index] : -FLT_MAX;
+    if (warp_index == 0u)
+    {
+        value = SparkGlm52ResidentSparseMlaWarpReduceMax(value);
+        if (lane_index == 0u)
+        {
+            shared_reduction[0] = value;
+        }
+    }
+    __syncthreads();
     return shared_reduction[0];
 }
 
@@ -252,19 +283,34 @@ static __device__ float SparkGlm52ResidentSparseMlaBlockReduceSum(
     float value,
     float *shared_reduction)
 {
-    uint32_t stride;
+    uint32_t lane_index;
+    uint32_t warp_index;
+    uint32_t warp_count;
 
-    shared_reduction[threadIdx.x] = value;
-    __syncthreads();
-    for (stride = blockDim.x >> 1u; stride != 0u; stride >>= 1u)
+    lane_index = threadIdx.x &
+        (SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES - 1u);
+    warp_index = threadIdx.x / SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES;
+    warp_count = (blockDim.x +
+        SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES - 1u) /
+        SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES;
+
+    value = SparkGlm52ResidentSparseMlaWarpReduceSum(value);
+    if (lane_index == 0u)
     {
-        if (threadIdx.x < stride)
-        {
-            shared_reduction[threadIdx.x] +=
-                shared_reduction[threadIdx.x + stride];
-        }
-        __syncthreads();
+        shared_reduction[warp_index] = value;
     }
+    __syncthreads();
+
+    value = threadIdx.x < warp_count ? shared_reduction[lane_index] : 0.0f;
+    if (warp_index == 0u)
+    {
+        value = SparkGlm52ResidentSparseMlaWarpReduceSum(value);
+        if (lane_index == 0u)
+        {
+            shared_reduction[0] = value;
+        }
+    }
+    __syncthreads();
     return shared_reduction[0];
 }
 
@@ -880,6 +926,79 @@ static SparkStatus SparkGlm52ResidentSparseMlaCheckCudaLaunch(
     return SPARK_STATUS_OK;
 }
 
+typedef SparkStatus (*SparkGlm52ResidentSparseMlaAttentionLaunchFunction)(
+    const SparkGlm52ResidentSparseMlaAttentionPlan *attention_plan,
+    const SparkGlm52ResidentSparseMlaNodeContext *node_context,
+    const SparkGlm52ResidentSparseMlaPipelineSlot *pipeline_slot,
+    uint32_t active_sequence_count,
+    void *cuda_stream);
+
+static SparkStatus SparkGlm52ResidentSparseMlaTryLaunchAttentionPlan(
+    const SparkGlm52ResidentSparseMlaNodeContext *node_context,
+    const SparkGlm52ResidentSparseMlaPipelineSlot *pipeline_slot,
+    SparkGlm52ResidentSparseMlaCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count,
+    bool *plan_was_launched)
+{
+    const SparkGlm52ResidentSparseMlaAttentionPlan *attention_plan;
+    SparkGlm52ResidentSparseMlaAttentionLaunchFunction launch_function;
+    SparkStatus status;
+
+    if (plan_was_launched == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *plan_was_launched = false;
+    if (node_context == 0 || node_context->attention_plan == 0)
+    {
+        if ((node_context != 0) &&
+            ((node_context->execution_flags &
+              SPARK_GLM52_RESIDENT_SPARSE_MLA_EXECUTION_REQUIRE_CUSTOM_ATTENTION_PLAN) != 0u))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        return SPARK_STATUS_OK;
+    }
+
+    attention_plan = node_context->attention_plan;
+    if (attention_plan->abi_version !=
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_ATTENTION_PLAN_ABI_VERSION ||
+        attention_plan->reserved != 0u ||
+        attention_plan->launch_function == 0 ||
+        active_sequence_count > attention_plan->maximum_active_sequence_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    launch_function = (SparkGlm52ResidentSparseMlaAttentionLaunchFunction)
+        attention_plan->launch_function;
+    status = launch_function(
+        attention_plan,
+        node_context,
+        pipeline_slot,
+        active_sequence_count,
+        (void *)cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    *plan_was_launched = true;
+    if (cuda_slot_state != 0)
+    {
+        cuda_slot_state->launch_chain_count += 1u;
+        if ((attention_plan->capability_flags &
+             SPARK_GLM52_RESIDENT_SPARSE_MLA_ATTENTION_CAPABILITY_CUDA_GRAPH_REPLAY) != 0u)
+        {
+            cuda_slot_state->graph_replay_count += 1u;
+        }
+    }
+    return SparkGlm52ResidentSparseMlaCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+}
+
 static void CUDART_CB SparkGlm52ResidentSparseMlaCudaCompletion(
     void *completion_context)
 {
@@ -930,6 +1049,7 @@ extern "C" SparkStatus SparkGlm52ResidentSparseMlaBackendSubmit(
     cudaGraphExec_t captured_graph_exec;
     uint32_t graph_capture_active;
     dim3 attention_grid;
+    bool attention_plan_was_launched;
     SparkStatus status;
 
     if (node_context == 0 || completion == 0 ||
@@ -937,6 +1057,12 @@ extern "C" SparkStatus SparkGlm52ResidentSparseMlaBackendSubmit(
         pipeline_slot_index >= node_context->pipeline_slot_count ||
         active_sequence_count == 0u ||
         active_sequence_count > node_context->max_active_sequence_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((node_context->execution_flags &
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_EXECUTION_REQUIRE_FIXED_ACTIVE_BATCH) != 0u &&
+        active_sequence_count != node_context->max_active_sequence_count)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -948,6 +1074,26 @@ extern "C" SparkStatus SparkGlm52ResidentSparseMlaBackendSubmit(
     captured_graph = 0;
     captured_graph_exec = 0;
     graph_capture_active = 0u;
+    attention_plan_was_launched = false;
+
+    status = SparkGlm52ResidentSparseMlaTryLaunchAttentionPlan(
+        node_context,
+        pipeline_slot,
+        cuda_slot_state,
+        cuda_stream,
+        active_sequence_count,
+        &attention_plan_was_launched);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (attention_plan_was_launched)
+    {
+        return SparkGlm52ResidentSparseMlaEnqueueCompletion(
+            cuda_stream,
+            cuda_slot_state,
+            completion);
+    }
 
     if (node_context->enable_cuda_graph_replay != 0u &&
         cuda_slot_state != 0 &&

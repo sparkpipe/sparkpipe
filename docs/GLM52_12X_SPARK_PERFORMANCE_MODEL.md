@@ -169,3 +169,13 @@ MTP acceptance
 restricted-vocab banks
 transport handoff packet layout
 ```
+
+## Iteration 081 note
+
+Iteration 081 does not change the expected 12-node speed bands by itself because those bands require target-hardware compilation and profiling. It does, however, make the firmware stricter: a package can now demand the fast projection, attention, graph replay, MoE/logit, MTP, fixed-batch, and validated-latency resources and fail closed if a correctness-only kernel would otherwise run. This prevents optimistic 12-node projections from being backed by debug/reference CUDA paths.
+
+## Iteration 082 note
+
+The 12-node speed bands do not change until target hardware measures the new full-stage plans. The important change is the qualification rule: optimistic 12-node projections should be attached only to modules that require and satisfy the full-stage SOTA plan or an equivalent custom sparse-attention plan. Component-fast or diagnostic NVFP4 routes remain correctness/bring-up evidence unless their artifact record includes the full-stage or grouped-MoE latency gate.
+
+The measured top-8 routed NVFP4 diagnostic path remains the first performance target. The new route-slot cache removes one known artificial overhead, but the production solution is still grouped expert execution with driver-private route queues and tensor-core/FP4 kernels inside the GLM firmware module.
