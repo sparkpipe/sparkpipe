@@ -459,6 +459,66 @@ those actual cache rows. This is still not a full GLM inference pass because
 the final post-attention and dense layer outputs are not yet compared against
 an external checkpoint-derived reference activation.
 
+Negative result from the first sampled-reference attempt at commit `974746d`:
+
+```text
+attention_norm sampled reference mismatch index=0
+observed=1.24218750
+expected=0.02941895
+```
+
+That did not indicate the layer-0 attention norm kernel was wrong. The failed
+assumption was that `normalized_hidden_bf16` still held the attention-norm
+output after a full stage run. It does not; the resident stage reuses the same
+buffer for final RMSNorm before restricted logits. The reference gate was fixed
+to reconstruct the attention-norm vector on the CPU from the final input
+embedding row and checkpoint norm weights, then use that reconstructed BF16
+vector as the q/kv projection reference input.
+
+Latest sampled-reference layer-0 BF16 evidence from `spark1` at commit
+`3fe97034e0deab3fc0c4b3aeab8cbf95f2fa30cb`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer0_reference_bf16 MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.layer0_reference_bf16.max_us_10000.v1
+input_embedding_bf16_fixture_ready=1
+input_embedding_token=1000
+input_embedding_bf16_bytes=12288
+prefill_kv_bf16_fixture_ready=1
+prefill_first_token=997
+prefill_token_count=3
+prefill_kv_bf16_bytes=49152
+layer0_reference_sampled=1
+layer0_attention_bf16_fixture_ready=1
+layer0_attention_bf16_bytes=330056704
+layer0_dense_bf16_fixture_ready=1
+layer0_dense_bf16_bytes=452997120
+real_lm_head_fixture_ready=1
+real_lm_head_bytes=3145728
+backend_average_us=4844.341
+backend_maximum_us=4961.600
+orchestrator_elapsed_us=5478.560
+limit_us=10000.000
+restricted_token=1021
+real_lm_head=1
+real_lm_head_max_logit_error=0.00000000
+backend_launch_chains=7
+orchestrator_launch_chains=4
+module_artifact=8e4ff2ebf555bde8eee60a798ad3600785cd80c7322fd5d3bdc1d33d4e33232e
+package_manifest_sha256=dd0108eda40dc1d3f3c27151c1257a92fc1265c733c44991cc2675674c3fc7c1
+```
+
+This adds sampled CPU-reference agreement for the live checkpoint-backed
+layer-0 q/kv projections, q/kv RMSNorms, `o_proj`, residual, post-attention
+RMSNorm, dense gate/up/SwiGLU/down, and dense residual boundaries. The next
+correctness step is full-vector checksum comparison or an external reference
+activation for the same layer, then multi-layer progression.
+
 ## What this proves
 
 The generated GLM 5.2 decode-stage `model_driver.so` can be loaded by the

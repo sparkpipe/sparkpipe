@@ -43,6 +43,8 @@
 #define SPARK_VALIDATION_WARMUP_COUNT 1u
 #define SPARK_VALIDATION_ATTENTION_TOLERANCE 0.030f
 #define SPARK_VALIDATION_LOGIT_TOLERANCE 0.010f
+#define SPARK_VALIDATION_REFERENCE_RELATIVE_TOLERANCE 0.020f
+#define SPARK_VALIDATION_REFERENCE_ABSOLUTE_TOLERANCE 0.0625f
 #define SPARK_VALIDATION_RESTRICTED_LM_HEAD_FIRST_TOKEN 1000u
 #define SPARK_VALIDATION_LOGIT_REDUCTION_THREADS 256u
 #define SPARK_VALIDATION_SAFETENSORS_HEADER_MAX_BYTES (128ull * 1024ull * 1024ull)
@@ -2444,6 +2446,430 @@ static float SparkValidationReferenceRestrictedLogit(
     return partial_sums[0];
 }
 
+static float SparkValidationReferenceLinearRow(
+    const uint16_t *input_bf16,
+    const uint16_t *weight_row_bf16,
+    uint32_t input_dimension)
+{
+    float partial_sums[SPARK_VALIDATION_LOGIT_REDUCTION_THREADS];
+    uint32_t thread_index;
+    uint32_t stride;
+
+    memset(partial_sums, 0, sizeof(partial_sums));
+    for (thread_index = 0u;
+         thread_index < SPARK_VALIDATION_LOGIT_REDUCTION_THREADS;
+         ++thread_index)
+    {
+        uint32_t input_index;
+
+        for (input_index = thread_index;
+             input_index < input_dimension;
+             input_index += SPARK_VALIDATION_LOGIT_REDUCTION_THREADS)
+        {
+            partial_sums[thread_index] +=
+                SparkValidationBf16ToFloat(input_bf16[input_index]) *
+                SparkValidationBf16ToFloat(weight_row_bf16[input_index]);
+        }
+    }
+    for (stride = SPARK_VALIDATION_LOGIT_REDUCTION_THREADS >> 1u;
+         stride != 0u;
+         stride >>= 1u)
+    {
+        for (thread_index = 0u; thread_index < stride; ++thread_index)
+        {
+            partial_sums[thread_index] += partial_sums[thread_index + stride];
+        }
+    }
+    return partial_sums[0];
+}
+
+static float SparkValidationReferenceRmsNormValue(
+    const uint16_t *input_bf16,
+    const uint16_t *weight_bf16,
+    uint32_t dimension,
+    uint32_t output_index,
+    float epsilon)
+{
+    float partial_sums[SPARK_VALIDATION_LOGIT_REDUCTION_THREADS];
+    uint32_t thread_index;
+    uint32_t stride;
+    float inverse_rms;
+
+    memset(partial_sums, 0, sizeof(partial_sums));
+    for (thread_index = 0u;
+         thread_index < SPARK_VALIDATION_LOGIT_REDUCTION_THREADS;
+         ++thread_index)
+    {
+        uint32_t dimension_index;
+
+        for (dimension_index = thread_index;
+             dimension_index < dimension;
+             dimension_index += SPARK_VALIDATION_LOGIT_REDUCTION_THREADS)
+        {
+            float value;
+
+            value = SparkValidationBf16ToFloat(input_bf16[dimension_index]);
+            partial_sums[thread_index] += value * value;
+        }
+    }
+    for (stride = SPARK_VALIDATION_LOGIT_REDUCTION_THREADS >> 1u;
+         stride != 0u;
+         stride >>= 1u)
+    {
+        for (thread_index = 0u; thread_index < stride; ++thread_index)
+        {
+            partial_sums[thread_index] += partial_sums[thread_index + stride];
+        }
+    }
+    inverse_rms = 1.0f / sqrtf((partial_sums[0] / (float)dimension) + epsilon);
+    return SparkValidationBf16ToFloat(input_bf16[output_index]) *
+        inverse_rms *
+        SparkValidationBf16ToFloat(weight_bf16[output_index]);
+}
+
+static bool SparkValidationCheckBf16ReferenceValue(
+    const char *name,
+    uint32_t index,
+    uint16_t observed_bf16,
+    float expected_value)
+{
+    float observed_value;
+    float expected_rounded;
+    float tolerance;
+    float error;
+
+    observed_value = SparkValidationBf16ToFloat(observed_bf16);
+    expected_rounded = SparkValidationBf16ToFloat(
+        SparkValidationFloatToBf16(expected_value));
+    error = fabsf(observed_value - expected_rounded);
+    tolerance = SPARK_VALIDATION_REFERENCE_ABSOLUTE_TOLERANCE +
+        (fabsf(expected_rounded) * SPARK_VALIDATION_REFERENCE_RELATIVE_TOLERANCE);
+    if (error > tolerance)
+    {
+        fprintf(
+            stderr,
+            "%s sampled reference mismatch index=%u observed=%.8f expected=%.8f error=%.8f tolerance=%.8f\n",
+            name,
+            index,
+            observed_value,
+            expected_rounded,
+            error,
+            tolerance);
+        return false;
+    }
+    return true;
+}
+
+static bool SparkValidationCopyDeviceBf16Vector(
+    uint16_t *host_vector,
+    const uint16_t *device_vector,
+    uint64_t element_count,
+    const char *name)
+{
+    return SparkValidationCudaSucceeded(
+        cudaMemcpy(
+            host_vector,
+            device_vector,
+            (size_t)(element_count * 2u),
+            cudaMemcpyDeviceToHost),
+        name);
+}
+
+static bool SparkValidationCopyDeviceBf16Row(
+    uint16_t *host_row,
+    const uint16_t *device_rows,
+    uint32_t row_index,
+    uint32_t row_width,
+    const char *name)
+{
+    return SparkValidationCudaSucceeded(
+        cudaMemcpy(
+            host_row,
+            &device_rows[(uint64_t)row_index * (uint64_t)row_width],
+            (size_t)((uint64_t)row_width * 2u),
+            cudaMemcpyDeviceToHost),
+        name);
+}
+
+static bool SparkValidationCheckSampledAttentionReferences(
+    SparkValidationDeviceBuffers *buffers)
+{
+    static const uint32_t query_a_indices[4] = {0u, 17u, 511u, 2047u};
+    static const uint32_t query_b_indices[4] = {0u, 191u, 256u, 16383u};
+    static const uint32_t kv_a_indices[4] = {0u, 511u, 512u, 575u};
+    static const uint32_t kv_b_indices[4] = {0u, 191u, 192u, 28671u};
+    uint16_t input_hidden[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t attention_norm_weight[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t normalized_hidden_reference[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t raw_query_a[SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION];
+    uint16_t raw_query_a_norm_weight[SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION];
+    uint16_t raw_query_a_normalized[SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION];
+    uint16_t raw_query_b[SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION];
+    uint16_t raw_kv_a[SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION];
+    uint16_t raw_kv_a_norm_weight[SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION];
+    uint16_t raw_kv_a_normalized[SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION];
+    uint16_t raw_kv_b[SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION];
+    uint16_t row[SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION];
+    uint32_t sample_index;
+    uint32_t hidden_index;
+
+    if (!SparkValidationCopyDeviceBf16Vector(input_hidden, buffers->input_hidden_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, "copy reference input_hidden") ||
+        !SparkValidationCopyDeviceBf16Vector(attention_norm_weight, buffers->attention_norm_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, "copy reference attention_norm_weight") ||
+        !SparkValidationCopyDeviceBf16Vector(raw_query_a, buffers->raw_query_a_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION, "copy reference raw_query_a") ||
+        !SparkValidationCopyDeviceBf16Vector(raw_query_a_norm_weight, buffers->raw_query_a_norm_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION, "copy reference raw_query_a_norm_weight") ||
+        !SparkValidationCopyDeviceBf16Vector(raw_query_a_normalized, buffers->raw_query_a_normalized_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION, "copy reference raw_query_a_normalized") ||
+        !SparkValidationCopyDeviceBf16Vector(raw_query_b, buffers->raw_query_b_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION, "copy reference raw_query_b") ||
+        !SparkValidationCopyDeviceBf16Vector(raw_kv_a, buffers->raw_kv_a_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION, "copy reference raw_kv_a") ||
+        !SparkValidationCopyDeviceBf16Vector(raw_kv_a_norm_weight, buffers->raw_kv_a_norm_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION, "copy reference raw_kv_a_norm_weight") ||
+        !SparkValidationCopyDeviceBf16Vector(raw_kv_a_normalized, buffers->raw_kv_a_normalized_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION, "copy reference raw_kv_a_normalized") ||
+        !SparkValidationCopyDeviceBf16Vector(raw_kv_b, buffers->raw_kv_b_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION, "copy reference raw_kv_b"))
+        return false;
+    for (hidden_index = 0u;
+         hidden_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+         ++hidden_index)
+    {
+        normalized_hidden_reference[hidden_index] =
+            SparkValidationFloatToBf16(
+                SparkValidationReferenceRmsNormValue(
+                    input_hidden,
+                    attention_norm_weight,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                    hidden_index,
+                    0.000001f));
+    }
+    for (sample_index = 0u; sample_index < 4u; ++sample_index)
+    {
+        uint32_t query_a_index;
+        uint32_t query_b_index;
+        uint32_t kv_a_index;
+        uint32_t kv_b_index;
+
+        query_a_index = query_a_indices[sample_index];
+        query_b_index = query_b_indices[sample_index];
+        kv_a_index = kv_a_indices[sample_index];
+        kv_b_index = kv_b_indices[sample_index];
+        if (!SparkValidationCopyDeviceBf16Row(
+                row,
+                buffers->raw_query_a_weight_bf16,
+                query_a_index,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                "copy reference q_a row") ||
+            !SparkValidationCheckBf16ReferenceValue(
+                "q_a_proj",
+                query_a_index,
+                raw_query_a[query_a_index],
+                SparkValidationReferenceLinearRow(
+                    normalized_hidden_reference,
+                    row,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)) ||
+            !SparkValidationCheckBf16ReferenceValue(
+                "q_a_norm",
+                query_a_index,
+                raw_query_a_normalized[query_a_index],
+                SparkValidationReferenceRmsNormValue(
+                    raw_query_a,
+                    raw_query_a_norm_weight,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+                    query_a_index,
+                    0.000001f)) ||
+            !SparkValidationCopyDeviceBf16Row(
+                row,
+                buffers->raw_query_b_weight_bf16,
+                query_b_index,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+                "copy reference q_b row") ||
+            !SparkValidationCheckBf16ReferenceValue(
+                "q_b_proj",
+                query_b_index,
+                raw_query_b[query_b_index],
+                SparkValidationReferenceLinearRow(
+                    raw_query_a_normalized,
+                    row,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION)) ||
+            !SparkValidationCopyDeviceBf16Row(
+                row,
+                buffers->raw_kv_a_weight_bf16,
+                kv_a_index,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                "copy reference kv_a row") ||
+            !SparkValidationCheckBf16ReferenceValue(
+                "kv_a_proj",
+                kv_a_index,
+                raw_kv_a[kv_a_index],
+                SparkValidationReferenceLinearRow(
+                    normalized_hidden_reference,
+                    row,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)))
+            return false;
+        if (kv_a_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION &&
+            !SparkValidationCheckBf16ReferenceValue(
+                "kv_a_norm",
+                kv_a_index,
+                raw_kv_a_normalized[kv_a_index],
+                SparkValidationReferenceRmsNormValue(
+                    raw_kv_a,
+                    raw_kv_a_norm_weight,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
+                    kv_a_index,
+                    0.000001f)))
+            return false;
+        if (!SparkValidationCopyDeviceBf16Row(
+                row,
+                buffers->raw_kv_b_weight_bf16,
+                kv_b_index,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
+                "copy reference kv_b row") ||
+            !SparkValidationCheckBf16ReferenceValue(
+                "kv_b_proj",
+                kv_b_index,
+                raw_kv_b[kv_b_index],
+                SparkValidationReferenceLinearRow(
+                    raw_kv_a_normalized,
+                    row,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION)))
+            return false;
+    }
+    return true;
+}
+
+static bool SparkValidationCheckSampledOutputAndDenseReferences(
+    SparkValidationDeviceBuffers *buffers)
+{
+    static const uint32_t hidden_indices[4] = {0u, 3u, 1024u, 6143u};
+    static const uint32_t intermediate_indices[4] = {0u, 17u, 2047u, 12287u};
+    uint16_t input_hidden[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t attention_output[SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION];
+    uint16_t attention_projected_hidden[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t post_attention_hidden[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t post_attention_norm_weight[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t post_attention_normalized[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t gate[SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION];
+    uint16_t up[SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION];
+    uint16_t intermediate[SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION];
+    uint16_t layer_output[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t row[SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION];
+    uint32_t sample_index;
+
+    if (!SparkValidationCopyDeviceBf16Vector(input_hidden, buffers->input_hidden_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, "copy reference output input_hidden") ||
+        !SparkValidationCopyDeviceBf16Vector(attention_output, buffers->attention_output_latent_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION, "copy reference attention_output") ||
+        !SparkValidationCopyDeviceBf16Vector(attention_projected_hidden, buffers->attention_projected_hidden_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, "copy reference attention_projected") ||
+        !SparkValidationCopyDeviceBf16Vector(post_attention_hidden, buffers->post_attention_hidden_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, "copy reference post_attention") ||
+        !SparkValidationCopyDeviceBf16Vector(post_attention_norm_weight, buffers->post_attention_norm_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, "copy reference post_attention_norm_weight") ||
+        !SparkValidationCopyDeviceBf16Vector(post_attention_normalized, buffers->post_attention_normalized_hidden_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, "copy reference post_attention_normalized") ||
+        !SparkValidationCopyDeviceBf16Vector(gate, buffers->moe_gate_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION, "copy reference dense gate") ||
+        !SparkValidationCopyDeviceBf16Vector(up, buffers->moe_up_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION, "copy reference dense up") ||
+        !SparkValidationCopyDeviceBf16Vector(intermediate, buffers->moe_intermediate_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION, "copy reference dense intermediate") ||
+        !SparkValidationCopyDeviceBf16Vector(layer_output, buffers->layer_output_hidden_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, "copy reference layer output"))
+        return false;
+    for (sample_index = 0u; sample_index < 4u; ++sample_index)
+    {
+        uint32_t hidden_index;
+        uint32_t intermediate_index;
+        float gate_value;
+        float up_value;
+        float silu_value;
+
+        hidden_index = hidden_indices[sample_index];
+        intermediate_index = intermediate_indices[sample_index];
+        if (!SparkValidationCopyDeviceBf16Row(
+                row,
+                buffers->attention_output_weight_bf16,
+                hidden_index,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,
+                "copy reference o_proj row") ||
+            !SparkValidationCheckBf16ReferenceValue(
+                "o_proj",
+                hidden_index,
+                attention_projected_hidden[hidden_index],
+                SparkValidationReferenceLinearRow(
+                    attention_output,
+                    row,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION)) ||
+            !SparkValidationCheckBf16ReferenceValue(
+                "attention_residual",
+                hidden_index,
+                post_attention_hidden[hidden_index],
+                SparkValidationBf16ToFloat(input_hidden[hidden_index]) +
+                    SparkValidationBf16ToFloat(attention_projected_hidden[hidden_index])) ||
+            !SparkValidationCheckBf16ReferenceValue(
+                "post_attention_norm",
+                hidden_index,
+                post_attention_normalized[hidden_index],
+                SparkValidationReferenceRmsNormValue(
+                    post_attention_hidden,
+                    post_attention_norm_weight,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                    hidden_index,
+                    0.000001f)) ||
+            !SparkValidationCopyDeviceBf16Row(
+                row,
+                buffers->moe_gate_weight_bf16,
+                intermediate_index,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                "copy reference dense gate row") ||
+            !SparkValidationCheckBf16ReferenceValue(
+                "dense_gate",
+                intermediate_index,
+                gate[intermediate_index],
+                SparkValidationReferenceLinearRow(
+                    post_attention_normalized,
+                    row,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)) ||
+            !SparkValidationCopyDeviceBf16Row(
+                row,
+                buffers->moe_up_weight_bf16,
+                intermediate_index,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                "copy reference dense up row") ||
+            !SparkValidationCheckBf16ReferenceValue(
+                "dense_up",
+                intermediate_index,
+                up[intermediate_index],
+                SparkValidationReferenceLinearRow(
+                    post_attention_normalized,
+                    row,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)))
+            return false;
+        gate_value = SparkValidationBf16ToFloat(gate[intermediate_index]);
+        up_value = SparkValidationBf16ToFloat(up[intermediate_index]);
+        silu_value = gate_value / (1.0f + expf(-gate_value));
+        if (!SparkValidationCheckBf16ReferenceValue(
+                "dense_silu",
+                intermediate_index,
+                intermediate[intermediate_index],
+                silu_value * up_value) ||
+            !SparkValidationCopyDeviceBf16Row(
+                row,
+                buffers->moe_down_weight_bf16,
+                hidden_index,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,
+                "copy reference dense down row") ||
+            !SparkValidationCheckBf16ReferenceValue(
+                "dense_down_residual",
+                hidden_index,
+                layer_output[hidden_index],
+                SparkValidationBf16ToFloat(post_attention_hidden[hidden_index]) +
+                    SparkValidationReferenceLinearRow(
+                        intermediate,
+                        row,
+                        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION)))
+            return false;
+    }
+    return true;
+}
+
+static bool SparkValidationCheckSampledLayer0References(
+    SparkValidationDeviceBuffers *buffers,
+    uint32_t use_dense_mlp)
+{
+    if (!SparkValidationCheckSampledAttentionReferences(buffers))
+        return false;
+    if (use_dense_mlp != 0u &&
+        !SparkValidationCheckSampledOutputAndDenseReferences(buffers))
+        return false;
+    return true;
+}
+
 static bool SparkValidationCheckRealRestrictedLogits(
     SparkValidationDeviceBuffers *buffers,
     SparkValidationRealLmHeadFixture *fixture,
@@ -3303,6 +3729,7 @@ int main(int argc, char **argv)
     const char *load_layer0_attention;
     const char *input_token_text;
     const char *prefill_kv_text;
+    const char *check_layer0_reference_text;
     double maximum_stage_microseconds;
     double total_microseconds;
     double maximum_observed_microseconds;
@@ -3311,6 +3738,7 @@ int main(int argc, char **argv)
     uint32_t use_attention_bf16;
     uint32_t use_input_embedding;
     uint32_t use_prefill_kv;
+    uint32_t check_layer0_reference;
     uint32_t input_token_id;
 
     if (argc != 2 && argc != 3)
@@ -3334,6 +3762,7 @@ int main(int argc, char **argv)
     load_layer0_attention = getenv("GLM52_LOAD_LAYER0_ATTENTION_BF16");
     input_token_text = getenv("GLM52_INPUT_TOKEN_ID");
     prefill_kv_text = getenv("GLM52_PREFILL_KV_FROM_EMBEDDINGS");
+    check_layer0_reference_text = getenv("GLM52_CHECK_LAYER0_REFERENCE");
     use_dense_mlp = load_layer0_dense != 0 && load_layer0_dense[0] != '\0' &&
         strcmp(load_layer0_dense, "0") != 0;
     use_attention_bf16 =
@@ -3342,6 +3771,10 @@ int main(int argc, char **argv)
     use_input_embedding = input_token_text != 0 && input_token_text[0] != '\0';
     use_prefill_kv = prefill_kv_text != 0 && prefill_kv_text[0] != '\0' &&
         strcmp(prefill_kv_text, "0") != 0;
+    check_layer0_reference =
+        check_layer0_reference_text != 0 &&
+        check_layer0_reference_text[0] != '\0' &&
+        strcmp(check_layer0_reference_text, "0") != 0;
     input_token_id = 0u;
     if (use_input_embedding != 0u)
     {
@@ -3365,6 +3798,15 @@ int main(int argc, char **argv)
          use_dense_mlp == 0u))
     {
         fprintf(stderr, "GLM52_PREFILL_KV_FROM_EMBEDDINGS requires input embedding, layer0 attention, and layer0 dense fixtures\n");
+        return 2;
+    }
+    if (check_layer0_reference != 0u &&
+        (use_input_embedding == 0u ||
+         use_prefill_kv == 0u ||
+         use_attention_bf16 == 0u ||
+         use_dense_mlp == 0u))
+    {
+        fprintf(stderr, "GLM52_CHECK_LAYER0_REFERENCE requires input embedding, prefilled KV, layer0 attention, and layer0 dense fixtures\n");
         return 2;
     }
     if (use_prefill_kv != 0u &&
@@ -3453,7 +3895,9 @@ int main(int argc, char **argv)
                 argv[2],
                 &elapsed_microseconds) ||
             !SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
-            !SparkValidationCheckOutputs(&buffers, &real_lm_head, use_dense_mlp, use_prefill_kv))
+            !SparkValidationCheckOutputs(&buffers, &real_lm_head, use_dense_mlp, use_prefill_kv) ||
+            (check_layer0_reference != 0u &&
+             !SparkValidationCheckSampledLayer0References(&buffers, use_dense_mlp)))
         {
             return 2;
         }
@@ -3467,7 +3911,7 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu prefill_kv_bf16=%u prefill_kv_tokens=%u prefill_kv_bytes=%llu real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu prefill_kv_bf16=%u prefill_kv_tokens=%u prefill_kv_bytes=%llu layer0_reference_sampled=%u real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             (double)elapsed_microseconds,
             maximum_stage_microseconds,
             real_lm_head.ready != 0u
@@ -3481,6 +3925,7 @@ int main(int argc, char **argv)
             prefill_kv.ready,
             prefill_kv.token_count,
             (unsigned long long)prefill_kv.copied_bytes,
+            check_layer0_reference,
             real_lm_head.ready,
             layer0_attention.ready,
             (unsigned long long)layer0_attention.copied_bytes,
@@ -3517,7 +3962,9 @@ int main(int argc, char **argv)
         }
     }
     if (!SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
-        !SparkValidationCheckOutputs(&buffers, &real_lm_head, use_dense_mlp, use_prefill_kv))
+        !SparkValidationCheckOutputs(&buffers, &real_lm_head, use_dense_mlp, use_prefill_kv) ||
+        (check_layer0_reference != 0u &&
+         !SparkValidationCheckSampledLayer0References(&buffers, use_dense_mlp)))
     {
         return 2;
     }
@@ -3533,7 +3980,7 @@ int main(int argc, char **argv)
         return 1;
     }
     printf(
-        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu prefill_kv_bf16=%u prefill_kv_tokens=%u prefill_kv_bytes=%llu real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu prefill_kv_bf16=%u prefill_kv_tokens=%u prefill_kv_bytes=%llu layer0_reference_sampled=%u real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
         total_microseconds / SPARK_VALIDATION_MEASUREMENT_COUNT,
         maximum_observed_microseconds,
         maximum_stage_microseconds,
@@ -3548,6 +3995,7 @@ int main(int argc, char **argv)
         prefill_kv.ready,
         prefill_kv.token_count,
         (unsigned long long)prefill_kv.copied_bytes,
+        check_layer0_reference,
         real_lm_head.ready,
         layer0_attention.ready,
         (unsigned long long)layer0_attention.copied_bytes,
