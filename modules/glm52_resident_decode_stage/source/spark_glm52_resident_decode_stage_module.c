@@ -345,6 +345,28 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageLayerPointers(
         }
         return SPARK_STATUS_OK;
     }
+    if (node_context->layer_progression_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY)
+    {
+        if (node_context->moe_expert_count == 0u ||
+            node_context->moe_expert_count >
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT ||
+            node_context->moe_top_k !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->post_attention_norm_weight_bf16,
+                2u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_router_weight_bf16,
+                2u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_router_score_bias_f32,
+                4u))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        return SPARK_STATUS_OK;
+    }
     if (node_context->layer_progression_mode !=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE)
     {
@@ -408,7 +430,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->projection_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3 ||
         node_context->layer_progression_mode >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP ||
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY ||
         node_context->sparse_index_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DEBUG_SERIAL_TOPK ||
         node_context->launch_check_mode >

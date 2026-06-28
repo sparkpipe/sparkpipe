@@ -659,6 +659,56 @@ output-side BF16 reference at every layer. The failed-assumption risk has moved
 from "per-layer KV ownership is probably wrong" to "the first sparse/MoE layer
 and external activation equivalence are not yet proven."
 
+Latest sparse layer-3 router/top-k evidence from `spark1` at commit `01a6b6a`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer3_router_bf16 MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.layer3_router_bf16.max_us_10000.v1
+input_embedding_token=1000
+layer_attention_bf16_bytes=330056704
+layer3_router_bf16_bytes=3159040
+real_lm_head=1
+
+direct backend result:
+layer3_router_topk_reference_ready=1
+first_expert=233
+first_weight=0.31670687
+elapsed_us=3574.720
+limit_us=10000.000
+launch_chains=1
+
+generated-driver/orchestrator result:
+layer3_router_topk_reference_ready=1
+first_expert=233
+first_weight=0.31670687
+elapsed_us=3662.816
+limit_us=10000.000
+launch_chains=1
+```
+
+The first attempt passed direct backend validation but failed package attach
+with `driver instance creation failed with invalid_argument`. The cause was a
+host-side module validator that still capped `layer_progression_mode` at
+`SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP`; the new
+`SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY` mode never
+reached CUDA through the generated driver. The fix widens that generated-driver
+initialization gate and keeps the direct backend and packaged path equivalent.
+
+This router gate loads live layer-3 `mlp.gate.weight` BF16 and
+`mlp.gate.e_score_correction_bias` F32 tensors, computes sigmoid router scores,
+selects top-8 experts using the corrected scores, then normalizes the original
+selected sigmoid scores with the live `routed_scaling_factor=2.5`. The validator
+CPU reference recomputes the same GLM router math from CUDA's
+`post_attention_normalized_hidden_bf16` and checks expert IDs plus route
+weights. This is router/top-k evidence only; it does not yet execute NVFP4
+expert gate/up/down projection, shared expert projection, or combined sparse
+MoE output.
+
 ## What this proves
 
 The generated GLM 5.2 decode-stage `model_driver.so` can be loaded by the
@@ -673,6 +723,11 @@ The dense-prefix chain additionally proves that layers 0, 1, and 2 can be
 loaded from the live checkpoint, executed in order through the resident CUDA
 stage, and kept in separate layer-local KV caches while passing hidden state to
 the next layer without a host bounce.
+
+The sparse layer-3 router gate proves that the first sparse layer can produce
+checkpoint-backed top-8 routing decisions through the same driver boundary. The
+remaining sparse-layer gap is expert execution and combine, not router
+selection.
 
 ## New nonzero fixture
 
@@ -704,9 +759,9 @@ driver/orchestrator counters remain clean
 
 This is not a full GLM 5.2 inference pass. The decode-stage validator now uses
 real checkpoint `embed_tokens.weight`, dense-prefix attention/dense weights,
-and restricted `lm_head.weight` rows when `GLM52_MODEL_DIR` is set. It does not
-yet load sparse-layer router/expert tensors, all 78 layers, or compare final
-logits against an external GLM artifact.
+sparse layer-3 router weights/bias, and restricted `lm_head.weight` rows when
+`GLM52_MODEL_DIR` is set. It does not yet load sparse-layer expert tensors,
+all 78 layers, or compare final logits against an external GLM artifact.
 
 The next correctness gate must replace smoke tensors with deterministic
 nonzero GLM fixtures and check:
@@ -716,7 +771,7 @@ multiple positions
 larger nonzero attention dimension/head coverage
 checkpoint-derived cached attention and MoE references
 external checkpoint-derived activation comparison for the dense-prefix chain
-checkpoint-derived router/top-k/expert references for sparse layer 3
+checkpoint-derived expert references for sparse layer 3
 MTP draft and verify/commit behavior with varied target patterns
 runtime snapshot counters after real tensor work
 ```
