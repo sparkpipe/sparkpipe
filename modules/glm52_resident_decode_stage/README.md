@@ -96,6 +96,21 @@ checkpoint-backed layer-0 projection, RMSNorm, residual, and dense MLP
 boundaries. It intentionally stays validator-local; the model driver ABI does
 not learn GLM tensor names or reference math.
 
+The stronger layer-0 output-side full-reference gate is:
+
+```sh
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer0_full_reference_bf16 MAX_STAGE_MICROSECONDS=10000
+```
+
+That gate preserves the sampled q/kv/gate/up coverage, then checks every
+output element of `o_proj`, the attention residual, post-attention RMSNorm,
+SwiGLU activation, and dense-down residual against validator CPU reference
+math. It still does not replace an external activation artifact for full-model
+equivalence.
+
 The node context binds resident weight pointers, paged KV cache, streams, workspaces, RoPE tables, token maps, and output buffers once when the driver instance is created. Per-submission inputs are only dynamic decode facts such as active sequence count, requested token count, sequence identity, deadline, priority, and residency token. The firmware admission function chooses the opaque pipeline slot; SparkPipe does not assign or interpret CUDA stream/KV ownership.
 
 The module also publishes direct admission and snapshot symbols. They expose only neutral scheduling data: accepted/rejected, dispatch slot, dispatch generation/cookies, private queue pressure, resident token capacity, active submissions, CUDA graph capture/replay counts, stale-admission count, and zero memcpy/host-staging counters.

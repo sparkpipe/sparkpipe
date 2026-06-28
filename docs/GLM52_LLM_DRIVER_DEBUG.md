@@ -519,6 +519,51 @@ RMSNorm, dense gate/up/SwiGLU/down, and dense residual boundaries. The next
 correctness step is full-vector checksum comparison or an external reference
 activation for the same layer, then multi-layer progression.
 
+Latest full-reference layer-0 BF16 evidence from `spark1` at commit
+`722dd307fc0f88ab9d7921b72203e7ed8ffc2b05`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer0_full_reference_bf16 MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.layer0_full_reference_bf16.max_us_10000.v1
+input_embedding_bf16_fixture_ready=1
+input_embedding_token=1000
+input_embedding_bf16_bytes=12288
+prefill_kv_bf16_fixture_ready=1
+prefill_first_token=997
+prefill_token_count=3
+prefill_kv_bf16_bytes=49152
+layer0_reference_sampled=1
+layer0_reference_full=1
+layer0_reference_full_max_error=0.00195312
+layer0_attention_bf16_fixture_ready=1
+layer0_attention_bf16_bytes=330056704
+layer0_dense_bf16_fixture_ready=1
+layer0_dense_bf16_bytes=452997120
+real_lm_head_fixture_ready=1
+real_lm_head_bytes=3145728
+backend_average_us=5087.840
+backend_maximum_us=5274.624
+orchestrator_elapsed_us=5368.064
+limit_us=10000.000
+restricted_token=1021
+real_lm_head=1
+real_lm_head_max_logit_error=0.00000000
+backend_launch_chains=7
+orchestrator_launch_chains=4
+module_artifact=762b7d2125110a690a77168be8bcb2fd2aa784abb8d4b5a003b74db716c79ef3
+package_manifest_sha256=6c5aeae90d675f5fbafe53d75be31bb2711236f514923ceee3c35b8de781d173
+```
+
+This converts the prior "sampled only" layer-0 gate into a full output-side
+BF16 reference check for `o_proj`, attention residual, post-attention RMSNorm,
+SwiGLU activation, and dense-down residual. It still deliberately does not
+teach the generic SparkPipe runtime about GLM tensor names or reference math.
+
 ## What this proves
 
 The generated GLM 5.2 decode-stage `model_driver.so` can be loaded by the
