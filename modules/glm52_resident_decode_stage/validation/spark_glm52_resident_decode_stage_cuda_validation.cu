@@ -74,6 +74,12 @@ typedef struct SparkValidationLayer0DenseBf16Fixture
     uint32_t ready;
 } SparkValidationLayer0DenseBf16Fixture;
 
+typedef struct SparkValidationLayer0AttentionBf16Fixture
+{
+    uint64_t copied_bytes;
+    uint32_t ready;
+} SparkValidationLayer0AttentionBf16Fixture;
+
 typedef struct SparkValidationDeviceBuffers
 {
     uint16_t *input_hidden_bf16;
@@ -603,6 +609,98 @@ static bool SparkValidationLoadLayer0DenseBf16Fixture(
     }
     fixture->ready = 1u;
     fprintf(stderr, "layer0_dense_bf16_fixture_ready=1 model_dir=%s bytes=%llu\n", model_directory, (unsigned long long)fixture->copied_bytes);
+    return true;
+}
+
+static bool SparkValidationLoadLayer0AttentionBf16Fixture(
+    SparkValidationDeviceBuffers *buffers,
+    const char *model_directory,
+    SparkValidationLayer0AttentionBf16Fixture *fixture)
+{
+    const uint64_t hidden_shape[1] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t query_a_norm_shape[1] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION};
+    const uint64_t kv_a_norm_shape[1] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION};
+    const uint64_t query_a_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t query_b_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION};
+    const uint64_t kv_a_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t kv_b_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION};
+    const uint64_t output_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION};
+
+    memset(fixture, 0, sizeof(*fixture));
+    if (!SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.input_layernorm.weight",
+            hidden_shape,
+            1u,
+            buffers->attention_norm_weight_bf16,
+            &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.self_attn.q_a_proj.weight",
+            query_a_shape,
+            2u,
+            buffers->raw_query_a_weight_bf16,
+            &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.self_attn.q_a_layernorm.weight",
+            query_a_norm_shape,
+            1u,
+            buffers->raw_query_a_norm_weight_bf16,
+            &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.self_attn.q_b_proj.weight",
+            query_b_shape,
+            2u,
+            buffers->raw_query_b_weight_bf16,
+            &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
+            kv_a_shape,
+            2u,
+            buffers->raw_kv_a_weight_bf16,
+            &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.self_attn.kv_a_layernorm.weight",
+            kv_a_norm_shape,
+            1u,
+            buffers->raw_kv_a_norm_weight_bf16,
+            &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.self_attn.kv_b_proj.weight",
+            kv_b_shape,
+            2u,
+            buffers->raw_kv_b_weight_bf16,
+            &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.self_attn.o_proj.weight",
+            output_shape,
+            2u,
+            buffers->attention_output_weight_bf16,
+            &fixture->copied_bytes))
+    {
+        return false;
+    }
+    fixture->ready = 1u;
+    fprintf(stderr, "layer0_attention_bf16_fixture_ready=1 model_dir=%s bytes=%llu\n", model_directory, (unsigned long long)fixture->copied_bytes);
     return true;
 }
 
@@ -1802,7 +1900,8 @@ static void SparkValidationConfigureNode(
     SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    uint32_t use_dense_mlp)
+    uint32_t use_dense_mlp,
+    uint32_t use_attention_bf16)
 {
     memset(pipeline_slot, 0, sizeof(*pipeline_slot));
     memset(cuda_slot_state, 0, sizeof(*cuda_slot_state));
@@ -1930,8 +2029,9 @@ static void SparkValidationConfigureNode(
     node_context->restricted_token_ids = buffers->restricted_token_ids;
     node_context->pipeline_slots = pipeline_slot;
     node_context->cuda_pipeline_slot_states = cuda_slot_state;
-    node_context->projection_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
+    node_context->projection_mode = use_attention_bf16 != 0u
+        ? SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16
+        : SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
     node_context->layer_progression_mode = use_dense_mlp != 0u
         ? SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP
         : SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE;
@@ -2863,14 +2963,17 @@ int main(int argc, char **argv)
     SparkGlm52ResidentDecodeStageNodeContext node_context;
     SparkValidationRealLmHeadFixture real_lm_head;
     SparkValidationLayer0DenseBf16Fixture layer0_dense;
+    SparkValidationLayer0AttentionBf16Fixture layer0_attention;
     cudaStream_t cuda_stream;
     const char *model_directory;
     const char *load_layer0_dense;
+    const char *load_layer0_attention;
     double maximum_stage_microseconds;
     double total_microseconds;
     double maximum_observed_microseconds;
     uint32_t iteration;
     uint32_t use_dense_mlp;
+    uint32_t use_attention_bf16;
 
     if (argc != 2 && argc != 3)
     {
@@ -2885,10 +2988,15 @@ int main(int argc, char **argv)
     }
     memset(&real_lm_head, 0, sizeof(real_lm_head));
     memset(&layer0_dense, 0, sizeof(layer0_dense));
+    memset(&layer0_attention, 0, sizeof(layer0_attention));
     model_directory = getenv("GLM52_MODEL_DIR");
     load_layer0_dense = getenv("GLM52_LOAD_LAYER0_DENSE_BF16");
+    load_layer0_attention = getenv("GLM52_LOAD_LAYER0_ATTENTION_BF16");
     use_dense_mlp = load_layer0_dense != 0 && load_layer0_dense[0] != '\0' &&
         strcmp(load_layer0_dense, "0") != 0;
+    use_attention_bf16 =
+        load_layer0_attention != 0 && load_layer0_attention[0] != '\0' &&
+        strcmp(load_layer0_attention, "0") != 0;
     cuda_stream = 0;
     if (!SparkValidationCudaSucceeded(cudaSetDevice(0), "cudaSetDevice") ||
         !SparkValidationCudaSucceeded(
@@ -2899,10 +3007,18 @@ int main(int argc, char **argv)
     {
         return 2;
     }
-    if (use_dense_mlp != 0u &&
+    if ((use_dense_mlp != 0u || use_attention_bf16 != 0u) &&
         (model_directory == 0 || model_directory[0] == '\0'))
     {
-        fprintf(stderr, "GLM52_LOAD_LAYER0_DENSE_BF16 requires GLM52_MODEL_DIR\n");
+        fprintf(stderr, "layer0 checkpoint fixtures require GLM52_MODEL_DIR\n");
+        return 2;
+    }
+    if (use_attention_bf16 != 0u &&
+        !SparkValidationLoadLayer0AttentionBf16Fixture(
+            &buffers,
+            model_directory,
+            &layer0_attention))
+    {
         return 2;
     }
     if (use_dense_mlp != 0u &&
@@ -2927,7 +3043,8 @@ int main(int argc, char **argv)
         &pipeline_slot,
         &cuda_slot_state,
         &node_context,
-        use_dense_mlp);
+        use_dense_mlp,
+        use_attention_bf16);
     if (argc == 3)
     {
         float elapsed_microseconds;
@@ -2952,7 +3069,7 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             (double)elapsed_microseconds,
             maximum_stage_microseconds,
             real_lm_head.ready != 0u
@@ -2961,6 +3078,8 @@ int main(int argc, char **argv)
             SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
             SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
             real_lm_head.ready,
+            layer0_attention.ready,
+            (unsigned long long)layer0_attention.copied_bytes,
             layer0_dense.ready,
             (unsigned long long)layer0_dense.copied_bytes,
             real_lm_head.maximum_logit_error,
@@ -3010,7 +3129,7 @@ int main(int argc, char **argv)
         return 1;
     }
     printf(
-        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
         total_microseconds / SPARK_VALIDATION_MEASUREMENT_COUNT,
         maximum_observed_microseconds,
         maximum_stage_microseconds,
@@ -3020,6 +3139,8 @@ int main(int argc, char **argv)
         SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
         SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
         real_lm_head.ready,
+        layer0_attention.ready,
+        (unsigned long long)layer0_attention.copied_bytes,
         layer0_dense.ready,
         (unsigned long long)layer0_dense.copied_bytes,
         real_lm_head.maximum_logit_error,
