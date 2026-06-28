@@ -422,6 +422,71 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageLayerPointers(
         }
         return SPARK_STATUS_OK;
     }
+    if (node_context->layer_progression_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK)
+    {
+        if (node_context->moe_expert_count == 0u ||
+            node_context->moe_expert_count >
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT ||
+            node_context->moe_top_k !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K ||
+            node_context->moe_intermediate_dimension !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION ||
+            node_context->moe_nvfp4_bound_expert_count !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->post_attention_norm_weight_bf16,
+                2u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_router_weight_bf16,
+                2u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_router_score_bias_f32,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_bound_expert_ids,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_gate_input_scale_f32,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_gate_weight_scale_2_f32,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_up_input_scale_f32,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_up_weight_scale_2_f32,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_down_input_scale_f32,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_down_weight_scale_2_f32,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_gate_weight_u8,
+                1u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_up_weight_u8,
+                1u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_down_weight_u8,
+                1u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_gate_weight_scale_e4m3,
+                1u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_up_weight_scale_e4m3,
+                1u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->moe_nvfp4_down_weight_scale_e4m3,
+                1u))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        return SPARK_STATUS_OK;
+    }
     if (node_context->layer_progression_mode !=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE)
     {
@@ -485,7 +550,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->projection_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3 ||
         node_context->layer_progression_mode >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOP1 ||
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK ||
         node_context->sparse_index_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DEBUG_SERIAL_TOPK ||
         node_context->launch_check_mode >

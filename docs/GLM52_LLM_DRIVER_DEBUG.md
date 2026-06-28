@@ -961,3 +961,76 @@ NVFP4 routed expert can execute on GB10. It is still top-1 diagnostic execution
 for expert 233, not production top-8 grouped MoE, not all sparse layers, and
 not a final-logit comparison against the external GLM reference.
 ```
+
+## Layer-3 top-k routed NVFP4 expert gate
+
+Hypothesis:
+
+```text
+The same checkpoint-backed sparse layer-3 path should execute all eight routed
+experts selected by the GLM router for token 1000, keep the official NVFP4
+weights resident in device memory, and use the existing weighted top-k combine
+instead of the diagnostic top-1 combine.
+```
+
+Live route set:
+
+```text
+ids=233,41,166,174,186,37,117,223
+weights=0.31670687,0.31149870,0.31321883,0.31138751,0.31398267,0.31224731,0.31077883,0.31017926
+```
+
+Fix:
+
+```text
+commit=c0001ec
+change=add SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK
+change=add resident bound-expert ID and per-expert scale arrays
+change=load eight official NVFP4 expert tensor sets from the checkpoint
+change=run route-indexed hidden quant, gate/up, fused SiLU quant, down, combine
+```
+
+Validation:
+
+```text
+cd /home/spark1/src/sparkpipe-551c3ea
+git reset --hard origin/codex/glm52-layer3-top8-routed-nvfp4
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+MAX_STAGE_MICROSECONDS=10000000 \
+NVCC=/usr/local/cuda-13.0/bin/nvcc \
+make -C modules/glm52_resident_decode_stage package_layer3_routed_expert_nvfp4_topk
+```
+
+Result:
+
+```text
+layer3_routed_expert_nvfp4_fixture_ready=1
+bound_count=8
+bytes=169869312
+layer3_router_topk_reference_ready=1
+ids=233,41,166,174,186,37,117,223
+layer3_routed_expert_nvfp4_reference_ready=1
+route_count=8
+gate_scratch_nonzero=16160
+up_nonzero=16384
+intermediate_nonzero=16384
+intermediate_fp4_payload_nonzero=6423
+intermediate_fp4_scale_nonzero=1024
+route_nonzero=49143
+up_max=0.17578125
+intermediate_max=0.017089844
+route_max=0.0013427734
+layer_checksum64=1.73610687
+orchestrator_validation=passed
+elapsed_us=7662.272
+```
+
+Remaining gap:
+
+```text
+This now proves a checkpoint-backed top-8 sparse MoE layer-3 diagnostic path.
+It is still B1/token-1000/layer-3 evidence with scalar diagnostic dot-product
+kernels, not a production grouped GEMM implementation, all-layer sparse MoE
+loop, external reference-logit comparison, or end-to-end GLM decode.
+```
