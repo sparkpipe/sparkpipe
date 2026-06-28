@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 3u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 4u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION 6144u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT 64u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION 512u
@@ -21,6 +21,9 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION 192u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION 256u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION 256u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT 256u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K 8u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION 2048u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK 128u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS 576u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION 32768u
@@ -52,10 +55,12 @@ typedef enum SparkGlm52ResidentDecodeStagePhase
     SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_ROPE_KV_WRITE = 4,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_MLA_ATTENTION = 5,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_OUTPUT_PROJECTION = 6,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_RESTRICTED_LOGITS = 7,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_MTP_DRAFT = 8,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_MTP_VERIFY = 9,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_COMPLETION_READY = 10
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_POST_ATTENTION_NORM = 7,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE = 8,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_RESTRICTED_LOGITS = 9,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_MTP_DRAFT = 10,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_MTP_VERIFY = 11,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_COMPLETION_READY = 12
 } SparkGlm52ResidentDecodeStagePhase;
 
 typedef enum SparkGlm52ResidentDecodeStageMtpCounter
@@ -94,6 +99,12 @@ typedef enum SparkGlm52ResidentDecodeStageProjectionMode
     SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3 = 2
 } SparkGlm52ResidentDecodeStageProjectionMode;
 
+typedef enum SparkGlm52ResidentDecodeStageLayerProgressionMode
+{
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ATTENTION_ONLY = 0,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE = 1
+} SparkGlm52ResidentDecodeStageLayerProgressionMode;
+
 typedef struct SparkGlm52ResidentDecodeStageCudaPipelineSlotState
 {
     uint32_t abi_version;
@@ -131,6 +142,14 @@ typedef struct SparkGlm52ResidentDecodeStagePipelineSlot
     void *attention_output_latent_bf16;
     void *attention_projected_hidden_bf16;
     void *post_attention_hidden_bf16;
+    void *post_attention_normalized_hidden_bf16;
+    const uint32_t *moe_topk_expert_ids;
+    const float *moe_topk_weights;
+    void *moe_gate_bf16;
+    void *moe_up_bf16;
+    void *moe_intermediate_bf16;
+    void *moe_route_output_bf16;
+    void *layer_output_hidden_bf16;
     const void *mtp_draft_hidden_bf16;
     float *restricted_logits;
     float *mtp_draft_logits;
@@ -179,6 +198,10 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     const uint8_t *raw_kv_b_weight_fp8_e4m3;
     const float *raw_kv_b_weight_scale_inv_f32;
     const void *attention_output_weight_bf16;
+    const void *post_attention_norm_weight_bf16;
+    const void *moe_gate_weight_bf16;
+    const void *moe_up_weight_bf16;
+    const void *moe_down_weight_bf16;
     const void *final_norm_weight_bf16;
     const void *restricted_lm_head_weight_bf16;
     const uint8_t *mtp_mxfp4_weight_payload_u8;
@@ -187,6 +210,12 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slots;
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_pipeline_slot_states;
     uint32_t projection_mode;
+    uint32_t layer_progression_mode;
+    uint32_t moe_expert_count;
+    uint32_t moe_first_bound_expert_id;
+    uint32_t moe_bound_expert_count;
+    uint32_t moe_top_k;
+    uint32_t moe_intermediate_dimension;
     uint32_t sparse_index_mode;
     uint32_t launch_check_mode;
     uint32_t phase_clock_mode;
