@@ -68,11 +68,26 @@ tensor_bytes=2233222144
 ```
 
 The same geometry check against `/home/spark1/models/hf/zai-org/GLM-5.2-FP8`
-passes through the config fields, but the raw tensor contract correctly fails
-for the current BF16 resident decode-stage module: FP8 attention projection
-tensors are `F8_E4M3` and require `weight_scale_inv` tensors. Do not claim FP8
-resident decode-stage readiness until there is either an FP8-specific module or
-a checked lowering path into the BF16 resident weight ABI.
+passes through the config fields, but the full artifact contract correctly
+fails closed today. The resident CUDA path now has raw FP8 q/kv projection
+support for:
+
+```text
+q_a_proj.weight F8_E4M3 [2048,6144]
+q_a_proj.weight_scale_inv F32 [16,48]
+q_b_proj.weight F8_E4M3 [16384,2048]
+q_b_proj.weight_scale_inv F32 [128,16]
+kv_a_proj_with_mqa.weight F8_E4M3 [576,6144]
+kv_a_proj_with_mqa.weight_scale_inv F32 [5,48]
+kv_b_proj.weight F8_E4M3 [28672,512]
+kv_b_proj.weight_scale_inv F32 [224,4]
+```
+
+Do not claim full FP8 resident decode-stage readiness yet. The live FP8
+`o_proj` is `F8_E4M3 [6144,16384]`, while the current resident smoke attention
+path still projects from the legacy latent attention output layout. Accepting
+the full FP8 artifact before the real value-cache/output-projection path lands
+would be a false readiness signal.
 
 The sparse-MLA package gate verifies:
 
@@ -126,15 +141,32 @@ Latest observed decode-stage timings:
 ```text
 backend validator:
     fixture=remapped_nonzero_context4_h4_d8_r4
-    average_us=4724.181
-    maximum_us=4884.800
+    average_us=5861.643
+    maximum_us=6801.984
     limit_us=10000.000
 
 generated-driver/orchestrator validator:
     fixture=remapped_nonzero_context4_h4_d8_r4
-    elapsed_us=4963.296
+    elapsed_us=6499.168
     limit_us=10000.000
 ```
+
+The latest decode-stage gate includes resident local MoE layer progression:
+
+```text
+post-attention RMSNorm
+preselected top8 local expert routes
+BF16 gate/up projections
+SiLU gate
+BF16 down projection
+top8 weighted combine into layer_output_hidden_bf16
+final norm/logits consume layer_output_hidden_bf16
+```
+
+This proves the resident driver can execute local expert math and continue the
+layer progression on device. It does not prove production NVFP4 expert
+throughput; the production next step is to replace the BF16 expert fixture with
+pre-bound NVFP4 expert weights and grouped/persistent expert GEMM.
 
 ## What this proves
 
@@ -163,6 +195,7 @@ query latent is nonzero for four checked heads and eight checked dimensions
 rotated query RoPE is nonzero for four checked heads and four checked dimensions
 attention outputs match a host softmax reference over remapped slots 125,126,127,0
 restricted logits depend on attention output projection, not only input hidden
+local MoE route output and layer output become nonzero
 restricted argmax selects token 1009
 MTP drafts token 1011 twice
 MTP accepts the first draft and rejects the second against token 1003

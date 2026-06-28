@@ -6,7 +6,7 @@
   },
   "metadata": {
     "architecture": "glm52_resident_decode_stage",
-    "purpose": "exact resident decode-stage firmware with projections, native DSA selection, fused RoPE/KV write, sparse MLA, restricted logits, and MXFP4 MTP verify",
+    "purpose": "exact resident decode-stage firmware with raw q/kv projections, native DSA selection, fused RoPE/KV write, sparse MLA, local MoE layer progression, restricted logits, and MXFP4 MTP verify",
     "module_geometry": {
       "hidden_dimension": 6144,
       "heads": 64,
@@ -14,6 +14,9 @@
       "rope_dimension": 64,
       "selected_tokens": 2048,
       "kv_block_tokens": 64,
+      "moe_expert_count": 256,
+      "moe_top_k": 8,
+      "moe_intermediate_dimension": 2048,
       "restricted_vocab_count": 256,
       "mtp_draft_tokens": 2
     },
