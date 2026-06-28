@@ -16,6 +16,29 @@ attention output projection + residual
 final RMSNorm + restricted-vocabulary logits + argmax
 MXFP4 E2M1/E8M0 MTP draft logits + argmax
 MTP verify / commit / rollback counters
+BF16 dense MLP layer progression for GLM 5.2's first dense layers
+
+The live layer-0 dense gate is:
+
+```sh
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage validate_layer0_dense_bf16 MAX_STAGE_MICROSECONDS=10000
+```
+
+The package-level gate, which uses a distinct validation recipe and then runs
+the generated driver/orchestrator path, is:
+
+```sh
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer0_dense_bf16 MAX_STAGE_MICROSECONDS=10000
+```
+
+That gate loads the real BF16 `post_attention_layernorm`, `gate_proj`,
+`up_proj`, and `down_proj` tensors for layer 0, runs the dense layer body on
+device, and then checks restricted logits against real checkpoint
+`lm_head.weight` rows.
 external completion
 ```
 

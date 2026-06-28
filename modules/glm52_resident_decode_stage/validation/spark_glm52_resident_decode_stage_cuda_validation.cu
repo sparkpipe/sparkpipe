@@ -68,6 +68,12 @@ typedef struct SparkValidationRealLmHeadFixture
     float maximum_logit_error;
 } SparkValidationRealLmHeadFixture;
 
+typedef struct SparkValidationLayer0DenseBf16Fixture
+{
+    uint64_t copied_bytes;
+    uint32_t ready;
+} SparkValidationLayer0DenseBf16Fixture;
+
 typedef struct SparkValidationDeviceBuffers
 {
     uint16_t *input_hidden_bf16;
@@ -329,6 +335,275 @@ static bool SparkValidationReadLmHeadShardName(
     }
     SparkJsonDocumentDestroy(&document);
     return succeeded;
+}
+
+static bool SparkValidationReadTensorShardName(
+    const char *model_directory,
+    const char *tensor_name,
+    char **file_name)
+{
+    SparkJsonDocument document;
+    char index_path[4096];
+    int32_t root_token_index;
+    int32_t weight_map_token_index;
+    int32_t file_token_index;
+    SparkStatus status;
+    bool succeeded;
+
+    *file_name = 0;
+    if (!SparkValidationBuildModelPath(model_directory, "model.safetensors.index.json", index_path, sizeof(index_path)))
+    {
+        fprintf(stderr, "safetensors index path is too long\n");
+        return false;
+    }
+    SparkJsonDocumentReset(&document);
+    status = SparkJsonLoadFile(index_path, &document);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "could not load safetensors index %s: %s\n", index_path, SparkStatusToString(status));
+        return false;
+    }
+    root_token_index = SparkJsonGetRootToken(&document);
+    weight_map_token_index = SparkJsonFindObjectMember(&document, root_token_index, "weight_map");
+    file_token_index = weight_map_token_index >= 0
+        ? SparkJsonFindObjectMember(&document, weight_map_token_index, tensor_name)
+        : -1;
+    succeeded = file_token_index >= 0 &&
+        SparkJsonCopyString(&document, file_token_index, file_name) == SPARK_STATUS_OK;
+    if (!succeeded)
+    {
+        fprintf(stderr, "%s is missing from safetensors index\n", tensor_name);
+    }
+    SparkJsonDocumentDestroy(&document);
+    return succeeded;
+}
+
+static bool SparkValidationReadBf16TensorOffsets(
+    const char *tensor_path,
+    const char *tensor_name,
+    const uint64_t *expected_shape,
+    uint32_t expected_rank,
+    uint64_t *payload_file_offset,
+    uint64_t *tensor_bytes)
+{
+    SparkJsonDocument document;
+    char *header_text;
+    uint64_t header_bytes;
+    uint64_t start_offset;
+    uint64_t end_offset;
+    uint64_t expected_bytes;
+    int32_t root_token_index;
+    int32_t tensor_token_index;
+    int32_t dtype_token_index;
+    int32_t shape_token_index;
+    int32_t offsets_token_index;
+    uint32_t dimension_index;
+    SparkStatus status;
+    bool succeeded;
+
+    header_text = 0;
+    if (!SparkValidationReadSafetensorsHeader(tensor_path, &header_text, &header_bytes))
+    {
+        return false;
+    }
+    SparkJsonDocumentReset(&document);
+    status = SparkJsonParseText(header_text, (size_t)header_bytes, &document);
+    free(header_text);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "could not parse safetensors header %s: %s\n", tensor_path, SparkStatusToString(status));
+        return false;
+    }
+    root_token_index = SparkJsonGetRootToken(&document);
+    tensor_token_index = SparkJsonFindObjectMember(&document, root_token_index, tensor_name);
+    dtype_token_index = tensor_token_index >= 0 ? SparkJsonFindObjectMember(&document, tensor_token_index, "dtype") : -1;
+    shape_token_index = tensor_token_index >= 0 ? SparkJsonFindObjectMember(&document, tensor_token_index, "shape") : -1;
+    offsets_token_index = tensor_token_index >= 0 ? SparkJsonFindObjectMember(&document, tensor_token_index, "data_offsets") : -1;
+    succeeded = tensor_token_index >= 0 &&
+        dtype_token_index >= 0 &&
+        SparkJsonStringEquals(&document, dtype_token_index, "BF16") &&
+        shape_token_index >= 0 &&
+        SparkJsonGetArrayElementCount(&document, shape_token_index) == expected_rank &&
+        offsets_token_index >= 0 &&
+        SparkJsonGetArrayElementCount(&document, offsets_token_index) == 2u;
+    expected_bytes = 2u;
+    for (dimension_index = 0u; succeeded && dimension_index < expected_rank; ++dimension_index)
+    {
+        uint64_t observed_dimension;
+
+        succeeded =
+            SparkJsonGetUInt64(
+                &document,
+                SparkJsonGetArrayElement(&document, shape_token_index, dimension_index),
+                &observed_dimension) == SPARK_STATUS_OK &&
+            observed_dimension == expected_shape[dimension_index] &&
+            expected_shape[dimension_index] != 0u &&
+            expected_bytes <= UINT64_MAX / expected_shape[dimension_index];
+        if (succeeded)
+        {
+            expected_bytes *= expected_shape[dimension_index];
+        }
+    }
+    if (succeeded)
+    {
+        succeeded =
+            SparkJsonGetUInt64(&document, SparkJsonGetArrayElement(&document, offsets_token_index, 0u), &start_offset) == SPARK_STATUS_OK &&
+            SparkJsonGetUInt64(&document, SparkJsonGetArrayElement(&document, offsets_token_index, 1u), &end_offset) == SPARK_STATUS_OK &&
+            end_offset >= start_offset &&
+            end_offset - start_offset == expected_bytes;
+    }
+    if (!succeeded)
+    {
+        fprintf(stderr, "%s metadata is not the expected BF16 GLM shape\n", tensor_name);
+        SparkJsonDocumentDestroy(&document);
+        return false;
+    }
+    *payload_file_offset = 8u + header_bytes + start_offset;
+    *tensor_bytes = end_offset - start_offset;
+    SparkJsonDocumentDestroy(&document);
+    return true;
+}
+
+static bool SparkValidationCopyBf16TensorToDevice(
+    const char *model_directory,
+    const char *tensor_name,
+    const uint64_t *expected_shape,
+    uint32_t expected_rank,
+    void *device_pointer,
+    uint64_t *copied_bytes)
+{
+    char *shard_name;
+    char tensor_path[4096];
+    uint64_t payload_file_offset;
+    uint64_t tensor_bytes;
+    uint64_t nonzero_bytes;
+    uint8_t *host_tensor;
+    FILE *file;
+    size_t read_bytes;
+    bool succeeded;
+
+    shard_name = 0;
+    host_tensor = 0;
+    file = 0;
+    succeeded =
+        SparkValidationReadTensorShardName(model_directory, tensor_name, &shard_name) &&
+        SparkValidationBuildModelPath(model_directory, shard_name, tensor_path, sizeof(tensor_path)) &&
+        SparkValidationReadBf16TensorOffsets(tensor_path, tensor_name, expected_shape, expected_rank, &payload_file_offset, &tensor_bytes);
+    free(shard_name);
+    if (!succeeded)
+    {
+        return false;
+    }
+    if (payload_file_offset > (uint64_t)LONG_MAX || tensor_bytes > (uint64_t)SIZE_MAX)
+    {
+        fprintf(stderr, "%s body span is unsupported by validator host\n", tensor_name);
+        return false;
+    }
+    host_tensor = (uint8_t *)malloc((size_t)tensor_bytes);
+    if (host_tensor == 0)
+    {
+        fprintf(stderr, "could not allocate host tensor for %s\n", tensor_name);
+        return false;
+    }
+    file = fopen(tensor_path, "rb");
+    if (file == 0)
+    {
+        fprintf(stderr, "could not open tensor shard %s\n", tensor_path);
+        free(host_tensor);
+        return false;
+    }
+    if (fseek(file, (long)payload_file_offset, SEEK_SET) != 0)
+    {
+        fprintf(stderr, "could not seek tensor %s\n", tensor_name);
+        fclose(file);
+        free(host_tensor);
+        return false;
+    }
+    read_bytes = fread(host_tensor, 1u, (size_t)tensor_bytes, file);
+    fclose(file);
+    if (read_bytes != (size_t)tensor_bytes)
+    {
+        fprintf(stderr, "could not read tensor %s\n", tensor_name);
+        free(host_tensor);
+        return false;
+    }
+    nonzero_bytes = 0u;
+    for (uint64_t byte_index = 0u; byte_index < tensor_bytes; ++byte_index)
+    {
+        if (host_tensor[byte_index] != 0u)
+        {
+            nonzero_bytes += 1u;
+        }
+    }
+    if (nonzero_bytes == 0u)
+    {
+        fprintf(stderr, "%s tensor body is all zero\n", tensor_name);
+        free(host_tensor);
+        return false;
+    }
+    succeeded = SparkValidationCopyToDevice(
+        device_pointer,
+        host_tensor,
+        tensor_bytes,
+        tensor_name);
+    free(host_tensor);
+    if (!succeeded)
+    {
+        return false;
+    }
+    *copied_bytes += tensor_bytes;
+    return true;
+}
+
+static bool SparkValidationLoadLayer0DenseBf16Fixture(
+    SparkValidationDeviceBuffers *buffers,
+    const char *model_directory,
+    SparkValidationLayer0DenseBf16Fixture *fixture)
+{
+    const uint64_t norm_shape[1] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t gate_up_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t down_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION};
+
+    memset(fixture, 0, sizeof(*fixture));
+    if (!SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.post_attention_layernorm.weight",
+            norm_shape,
+            1u,
+            buffers->post_attention_norm_weight_bf16,
+            &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.mlp.gate_proj.weight",
+            gate_up_shape,
+            2u,
+            buffers->moe_gate_weight_bf16,
+            &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.mlp.up_proj.weight",
+            gate_up_shape,
+            2u,
+            buffers->moe_up_weight_bf16,
+            &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "model.layers.0.mlp.down_proj.weight",
+            down_shape,
+            2u,
+            buffers->moe_down_weight_bf16,
+            &fixture->copied_bytes))
+    {
+        return false;
+    }
+    fixture->ready = 1u;
+    fprintf(stderr, "layer0_dense_bf16_fixture_ready=1 model_dir=%s bytes=%llu\n", model_directory, (unsigned long long)fixture->copied_bytes);
+    return true;
 }
 
 static bool SparkValidationReadLmHeadOffsets(
@@ -1526,7 +1801,8 @@ static void SparkValidationConfigureNode(
     cudaStream_t cuda_stream,
     SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
-    SparkGlm52ResidentDecodeStageNodeContext *node_context)
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t use_dense_mlp)
 {
     memset(pipeline_slot, 0, sizeof(*pipeline_slot));
     memset(cuda_slot_state, 0, sizeof(*cuda_slot_state));
@@ -1641,6 +1917,9 @@ static void SparkValidationConfigureNode(
     node_context->moe_gate_weight_bf16 = buffers->moe_gate_weight_bf16;
     node_context->moe_up_weight_bf16 = buffers->moe_up_weight_bf16;
     node_context->moe_down_weight_bf16 = buffers->moe_down_weight_bf16;
+    node_context->dense_gate_weight_bf16 = buffers->moe_gate_weight_bf16;
+    node_context->dense_up_weight_bf16 = buffers->moe_up_weight_bf16;
+    node_context->dense_down_weight_bf16 = buffers->moe_down_weight_bf16;
     node_context->final_norm_weight_bf16 = buffers->final_norm_weight_bf16;
     node_context->restricted_lm_head_weight_bf16 =
         buffers->restricted_lm_head_weight_bf16;
@@ -1653,8 +1932,9 @@ static void SparkValidationConfigureNode(
     node_context->cuda_pipeline_slot_states = cuda_slot_state;
     node_context->projection_mode =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
-    node_context->layer_progression_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE;
+    node_context->layer_progression_mode = use_dense_mlp != 0u
+        ? SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP
+        : SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE;
     node_context->moe_expert_count = SPARK_VALIDATION_MOE_BOUND_EXPERT_COUNT;
     node_context->moe_first_bound_expert_id = 0u;
     node_context->moe_bound_expert_count =
@@ -1662,6 +1942,8 @@ static void SparkValidationConfigureNode(
     node_context->moe_top_k = SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
     node_context->moe_intermediate_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+    node_context->dense_intermediate_dimension =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION;
     node_context->sparse_index_mode =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_PRESELECTED;
     node_context->launch_check_mode =
@@ -1926,7 +2208,8 @@ static bool SparkValidationCheckRealRestrictedLogits(
 
 static bool SparkValidationCheckOutputs(
     SparkValidationDeviceBuffers *buffers,
-    SparkValidationRealLmHeadFixture *real_lm_head)
+    SparkValidationRealLmHeadFixture *real_lm_head,
+    uint32_t use_dense_mlp)
 {
     uint16_t current_kv_value[
         SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
@@ -2352,10 +2635,15 @@ static bool SparkValidationCheckOutputs(
          dimension_index < SPARK_VALIDATION_MOE_CHECKED_INTERMEDIATE;
          ++dimension_index)
     {
-        if (moe_route_output_value[dimension_index] == 0u ||
-            layer_output_value[dimension_index] == 0u)
+        if (use_dense_mlp == 0u &&
+            moe_route_output_value[dimension_index] == 0u)
         {
-            fprintf(stderr, "local MoE route/layer output stayed zero\n");
+            fprintf(stderr, "local MoE route output stayed zero\n");
+            return false;
+        }
+        if (layer_output_value[dimension_index] == 0u)
+        {
+            fprintf(stderr, "layer output stayed zero\n");
             return false;
         }
     }
@@ -2574,12 +2862,15 @@ int main(int argc, char **argv)
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState cuda_slot_state;
     SparkGlm52ResidentDecodeStageNodeContext node_context;
     SparkValidationRealLmHeadFixture real_lm_head;
+    SparkValidationLayer0DenseBf16Fixture layer0_dense;
     cudaStream_t cuda_stream;
     const char *model_directory;
+    const char *load_layer0_dense;
     double maximum_stage_microseconds;
     double total_microseconds;
     double maximum_observed_microseconds;
     uint32_t iteration;
+    uint32_t use_dense_mlp;
 
     if (argc != 2 && argc != 3)
     {
@@ -2593,7 +2884,11 @@ int main(int argc, char **argv)
         return 2;
     }
     memset(&real_lm_head, 0, sizeof(real_lm_head));
+    memset(&layer0_dense, 0, sizeof(layer0_dense));
     model_directory = getenv("GLM52_MODEL_DIR");
+    load_layer0_dense = getenv("GLM52_LOAD_LAYER0_DENSE_BF16");
+    use_dense_mlp = load_layer0_dense != 0 && load_layer0_dense[0] != '\0' &&
+        strcmp(load_layer0_dense, "0") != 0;
     cuda_stream = 0;
     if (!SparkValidationCudaSucceeded(cudaSetDevice(0), "cudaSetDevice") ||
         !SparkValidationCudaSucceeded(
@@ -2604,12 +2899,20 @@ int main(int argc, char **argv)
     {
         return 2;
     }
-    SparkValidationConfigureNode(
-        &buffers,
-        cuda_stream,
-        &pipeline_slot,
-        &cuda_slot_state,
-        &node_context);
+    if (use_dense_mlp != 0u &&
+        (model_directory == 0 || model_directory[0] == '\0'))
+    {
+        fprintf(stderr, "GLM52_LOAD_LAYER0_DENSE_BF16 requires GLM52_MODEL_DIR\n");
+        return 2;
+    }
+    if (use_dense_mlp != 0u &&
+        !SparkValidationLoadLayer0DenseBf16Fixture(
+            &buffers,
+            model_directory,
+            &layer0_dense))
+    {
+        return 2;
+    }
     if (model_directory != 0 && model_directory[0] != '\0' &&
         !SparkValidationLoadRealLmHeadFixture(
             &buffers,
@@ -2618,6 +2921,13 @@ int main(int argc, char **argv)
     {
         return 2;
     }
+    SparkValidationConfigureNode(
+        &buffers,
+        cuda_stream,
+        &pipeline_slot,
+        &cuda_slot_state,
+        &node_context,
+        use_dense_mlp);
     if (argc == 3)
     {
         float elapsed_microseconds;
@@ -2628,7 +2938,7 @@ int main(int argc, char **argv)
                 argv[2],
                 &elapsed_microseconds) ||
             !SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
-            !SparkValidationCheckOutputs(&buffers, &real_lm_head))
+            !SparkValidationCheckOutputs(&buffers, &real_lm_head, use_dense_mlp))
         {
             return 2;
         }
@@ -2642,7 +2952,7 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             (double)elapsed_microseconds,
             maximum_stage_microseconds,
             real_lm_head.ready != 0u
@@ -2651,6 +2961,8 @@ int main(int argc, char **argv)
             SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
             SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
             real_lm_head.ready,
+            layer0_dense.ready,
+            (unsigned long long)layer0_dense.copied_bytes,
             real_lm_head.maximum_logit_error,
             (unsigned long long)cuda_slot_state.launch_chain_count,
             (unsigned long long)cuda_slot_state.graph_capture_count,
@@ -2682,7 +2994,7 @@ int main(int argc, char **argv)
         }
     }
     if (!SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
-        !SparkValidationCheckOutputs(&buffers, &real_lm_head))
+        !SparkValidationCheckOutputs(&buffers, &real_lm_head, use_dense_mlp))
     {
         return 2;
     }
@@ -2698,7 +3010,7 @@ int main(int argc, char **argv)
         return 1;
     }
     printf(
-        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
         total_microseconds / SPARK_VALIDATION_MEASUREMENT_COUNT,
         maximum_observed_microseconds,
         maximum_stage_microseconds,
@@ -2708,6 +3020,8 @@ int main(int argc, char **argv)
         SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
         SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
         real_lm_head.ready,
+        layer0_dense.ready,
+        (unsigned long long)layer0_dense.copied_bytes,
         real_lm_head.maximum_logit_error,
         (unsigned long long)cuda_slot_state.launch_chain_count,
         (unsigned long long)cuda_slot_state.graph_capture_count,
