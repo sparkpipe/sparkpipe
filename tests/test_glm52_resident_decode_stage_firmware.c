@@ -38,6 +38,8 @@ static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
     SparkGlm52ResidentDecodeStageFakeStream fake_streams[2])
 {
     static uint32_t MlaCacheStorage[2];
+    static uint32_t KeyNopeCacheStorage[2];
+    static uint32_t ValueCacheStorage[2];
     static float CosTableStorage[2];
     static float SinTableStorage[2];
     static uint16_t Bf16Storage[64];
@@ -112,12 +114,16 @@ static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
     node_context->cos_table = CosTableStorage;
     node_context->sin_table = SinTableStorage;
     node_context->mla_cache_bf16 = MlaCacheStorage;
+    node_context->key_nope_cache_bf16 = KeyNopeCacheStorage;
+    node_context->value_cache_bf16 = ValueCacheStorage;
     node_context->attention_norm_weight_bf16 = Bf16Storage;
     node_context->query_latent_weight_bf16 = Bf16Storage;
     node_context->query_rope_weight_bf16 = Bf16Storage;
     node_context->key_rope_weight_bf16 = Bf16Storage;
     node_context->kv_latent_weight_bf16 = Bf16Storage;
     node_context->attention_output_weight_bf16 = Bf16Storage;
+    node_context->attention_output_weight_fp8_e4m3 = Mxfp4PayloadStorage;
+    node_context->attention_output_weight_scale_inv_f32 = F32Storage;
     node_context->final_norm_weight_bf16 = Bf16Storage;
     node_context->restricted_lm_head_weight_bf16 = Bf16Storage;
     node_context->mtp_mxfp4_weight_payload_u8 = Mxfp4PayloadStorage;
@@ -301,7 +307,7 @@ int main(void)
     assert(SparkOrchestratorResolveRoute(
                orchestrator,
                "zai.glm-5.2.resident-decode-stage-firmware",
-               "bf16-h8192-h64-d512-r64-k2048-b64-rv256-mtp2-v1",
+               "bf16-h6144-h64-d512-r64-k2048-b64-rv256-mtp2-v1",
                "resident_decode",
                "decode",
                &route_handle) == SPARK_STATUS_OK);

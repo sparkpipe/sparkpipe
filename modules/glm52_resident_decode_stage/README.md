@@ -2,7 +2,7 @@
 
 This directory is an exact model-specific CUDA firmware link unit. It is not a generic serving backend and it is not a reusable graph interpreter.
 
-The fixed stage program is specialized for SM121 GLM 5.2 BF16 decode with 8192 hidden elements, 64 MLA heads, 512 latent elements, 64 adjacent-pair RoPE elements, 2048 selected context tokens, 64-token KV blocks, a 256-token restricted vocabulary head, and depth-2 MXFP4 MTP draft verification.
+The fixed stage program is specialized for SM121 GLM 5.2 BF16 decode with 6144 hidden elements, 64 MLA heads, 512 latent elements, 64 adjacent-pair RoPE elements, 2048 selected context tokens, 64-token KV blocks, a 256-token restricted vocabulary head, and depth-2 MXFP4 MTP draft verification.
 
 One submission executes this stream-ordered sequence:
 

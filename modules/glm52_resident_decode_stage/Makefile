@@ -13,11 +13,12 @@ CUDA_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda.o
 HOST_DEPENDENCY := $(HOST_OBJECT:.o=.d)
 CUDA_DEPENDENCY := $(CUDA_OBJECT:.o=.d)
 MODULE_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_resident_decode_stage.a
+ARTIFACT_CHECK_TOOL := $(BUILD_DIRECTORY)/glm52_artifact_check
 PACKAGE_DIRECTORY ?= $(REPOSITORY_ROOT)/build/packages/glm52_resident_decode_stage
 CUDA_HOME ?= $(abspath $(dir $(shell command -v $(NVCC)))/..)
 VALIDATION_RECIPE := glm52.resident_decode_stage.$(CUDA_ARCH).max_us_$(MAX_STAGE_MICROSECONDS).v1
 
-.PHONY: archive cold_archive validate publish package clean require_sm121 require_latency_limit
+.PHONY: archive cold_archive artifact_check validate publish package clean require_sm121 require_latency_limit require_model_dir
 
 archive: require_sm121 $(MODULE_ARCHIVE)
 
@@ -28,6 +29,10 @@ require_sm121:
 require_latency_limit:
 	@test "$(MAX_STAGE_MICROSECONDS)" != "0" || \
 		{ echo "set MAX_STAGE_MICROSECONDS to the qualified stage limit" >&2; exit 2; }
+
+require_model_dir:
+	@test -n "$(GLM52_MODEL_DIR)" || \
+		{ echo "set GLM52_MODEL_DIR to the live GLM artifact directory" >&2; exit 2; }
 
 $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
@@ -44,9 +49,20 @@ $(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT)
 	rm -f $@
 	$(AR) rcs $@ $^
 
+$(ARTIFACT_CHECK_TOOL): tools/glm52_artifact_check.c | $(BUILD_DIRECTORY)
+	$(MAKE) -C $(REPOSITORY_ROOT) build/libsparkpipe_compiler.a build/libsparkpipe_common.a
+	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/src -Iinclude $(CFLAGS) \
+		$< $(REPOSITORY_ROOT)/build/libsparkpipe_compiler.a \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_common.a -ldl -o $@
+
 cold_archive: require_sm121
 	rm -rf $(BUILD_DIRECTORY)
 	$(MAKE) archive
+
+artifact_check: require_model_dir $(ARTIFACT_CHECK_TOOL)
+	$(ARTIFACT_CHECK_TOOL) \
+		--model-dir "$(GLM52_MODEL_DIR)" \
+		--model "$(REPOSITORY_ROOT)/examples/model_descriptions/glm52_resident_decode_stage_firmware.json"
 
 validate: require_sm121 require_latency_limit cold_archive
 	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) \
@@ -58,7 +74,7 @@ publish: require_sm121 require_latency_limit cold_archive
 	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 		--library $(MODULE_LIBRARY_ROOT) \
-		--module spark.glm52.resident_decode_stage.bf16.h8192.h64.d512.r64.k2048.b64.rv256.mtp2.v1 \
+		--module spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1 \
 		--target cuda.sm121.glm52.resident_decode_stage.bf16 \
 		--link-unit $(MODULE_ARCHIVE) \
 		--recipe $(VALIDATION_RECIPE) \

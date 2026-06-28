@@ -14,12 +14,112 @@ CUDA: 13.0
 Target: sm_121
 ```
 
+Live GLM artifact geometry checked on Spark1:
+
+```text
+model_dirs=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4,/home/spark1/models/hf/lukealonso/GLM-5.2-NVFP4,/home/spark1/models/hf/zai-org/GLM-5.2-FP8
+hidden_size=6144
+num_attention_heads=64
+kv_lora_rank=512
+qk_rope_head_dim=64
+index_topk=2048
+num_hidden_layers=78
+```
+
 Commands:
 
 ```sh
+make -C modules/glm52_resident_decode_stage artifact_check GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4
+make -C modules/glm52_resident_decode_stage artifact_check GLM52_MODEL_DIR=/home/spark1/models/hf/lukealonso/GLM-5.2-NVFP4
 PATH=/usr/local/cuda-13.0/bin:$PATH make -j1 test
 PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_sparse_mla_firmware_package MAX_STAGE_MICROSECONDS=1500
 PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_decode_stage_firmware_package MAX_STAGE_MICROSECONDS=10000
+```
+
+The artifact gate verifies the live `config.json` against
+`metadata.hf_config_geometry`, verifies `metadata.module_geometry` against the
+compiled resident decode-stage constants, and verifies the route selects the
+same module before any launch claim. With `--model-dir`, it also validates the
+first raw checkpoint tensor contract through `model.safetensors.index.json` and
+the safetensors shard headers without reading full tensor bodies:
+
+This gate is deliberately module-local. Generic SparkPipe compiler/runtime code
+does not parse GLM tensor names, dtypes, or safetensors layouts.
+
+```text
+hidden_size=6144
+num_attention_heads=64
+kv_lora_rank=512
+qk_rope_head_dim=64
+index_topk=2048
+num_hidden_layers=78
+vocab_size=154880
+n_routed_experts=256
+n_shared_experts=1
+num_experts_per_tok=8
+qk_nope_head_dim=192
+qk_head_dim=256
+v_head_dim=256
+model_revision=bf16-h6144-h64-d512-r64-k2048-b64-rv256-mtp2-v1
+module=spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1
+tensor_contract_ready=1
+tensor_count=9
+tensor_bytes=2233222144
+```
+
+The same geometry check against `/home/spark1/models/hf/zai-org/GLM-5.2-FP8`
+uses the `hf_tensor_contract_fp8_e4m3` model-description contract. The resident
+CUDA path now has raw FP8 q/kv/o projection support for:
+
+```text
+q_a_proj.weight F8_E4M3 [2048,6144]
+q_a_proj.weight_scale_inv F32 [16,48]
+q_b_proj.weight F8_E4M3 [16384,2048]
+q_b_proj.weight_scale_inv F32 [128,16]
+kv_a_proj_with_mqa.weight F8_E4M3 [576,6144]
+kv_a_proj_with_mqa.weight_scale_inv F32 [5,48]
+kv_b_proj.weight F8_E4M3 [28672,512]
+kv_b_proj.weight_scale_inv F32 [224,4]
+o_proj.weight F8_E4M3 [6144,16384]
+o_proj.weight_scale_inv F32 [48,128]
+```
+
+Do not claim full FP8 resident decode-stage readiness from the artifact check
+alone. The resident CUDA path now writes explicit key-nope and value caches from
+`kv_b_proj`, emits value-head attention output with shape `64 x 256`, and feeds
+the real `[6144,16384]` `o_proj` path. Full readiness still requires hardware
+validator success and checkpoint-derived logits equivalence across layer
+progression.
+
+Latest value-cache / `o_proj` evidence from `spark1` at commit `d9ee92a`:
+
+```text
+NVFP4 artifact gate:
+ready=1
+tensor_contract_ready=1
+tensor_count=9
+tensor_bytes=2233222144
+
+FP8 artifact gate:
+ready=1
+tensor_contract_ready=1
+tensor_count=14
+tensor_bytes=2068242880
+
+CUDA package gate:
+average_us=5151.669
+maximum_us=5480.000
+limit_us=10000.000
+restricted_token=1009
+mtp_draft=1011
+mtp_reject=1003
+
+Generated-driver/orchestrator gate:
+elapsed_us=5251.264
+limit_us=10000.000
+restricted_token=1009
+mtp_draft=1011
+mtp_reject=1003
 ```
 
 The sparse-MLA package gate verifies:
@@ -35,10 +135,14 @@ generated driver loadability
 Latest observed sparse-MLA timing:
 
 ```text
-average_us=396.328
-maximum_us=414.014
+average_us=579.980
+maximum_us=1229.486
 limit_us=1500.000
 ```
+
+This pass is valid, but the sparse-MLA maximum widened relative to the earlier
+~414 us observation. Treat that as a performance-variance/regression signal to
+retest before tightening the ceiling.
 
 The decode-stage package gate verifies:
 
@@ -48,7 +152,9 @@ hardware backend-submit validator execution
 deterministic nonzero GLM-shaped smoke tensors
 KV current-token write into a block-table-remapped cache slot
 cached attention over context length 4 crossing two physical KV blocks
-two checked latent dimensions across two checked heads
+eight checked latent dimensions across four checked heads
+four checked RoPE dimensions with non-identity rotation
+attention output projection feeding restricted logits
 restricted-vocabulary argmax
 MTP draft accept/reject/commit counters
 module-library publication
@@ -67,16 +173,33 @@ Latest observed decode-stage timings:
 
 ```text
 backend validator:
-    fixture=remapped_nonzero_context4
-    average_us=5814.261
-    maximum_us=6452.608
+    fixture=remapped_nonzero_context4_h4_d8_r4
+    average_us=5861.643
+    maximum_us=6801.984
     limit_us=10000.000
 
 generated-driver/orchestrator validator:
-    fixture=remapped_nonzero_context4
-    elapsed_us=6288.512
+    fixture=remapped_nonzero_context4_h4_d8_r4
+    elapsed_us=6499.168
     limit_us=10000.000
 ```
+
+The latest decode-stage gate includes resident local MoE layer progression:
+
+```text
+post-attention RMSNorm
+preselected top8 local expert routes
+BF16 gate/up projections
+SiLU gate
+BF16 down projection
+top8 weighted combine into layer_output_hidden_bf16
+final norm/logits consume layer_output_hidden_bf16
+```
+
+This proves the resident driver can execute local expert math and continue the
+layer progression on device. It does not prove production NVFP4 expert
+throughput; the production next step is to replace the BF16 expert fixture with
+pre-bound NVFP4 expert weights and grouped/persistent expert GEMM.
 
 ## What this proves
 
@@ -100,9 +223,12 @@ The checked invariants are:
 ```text
 logical context tokens 61..64 resolve through physical block table [1,0]
 cache slot 0 receives the current KV latent value
-cache slot 0 receives the current key RoPE pair
-query latent is nonzero for two checked heads and two checked dimensions
+cache slot 0 receives non-identity-rotated current key RoPE values
+query latent is nonzero for four checked heads and eight checked dimensions
+rotated query RoPE is nonzero for four checked heads and four checked dimensions
 attention outputs match a host softmax reference over remapped slots 125,126,127,0
+restricted logits depend on attention output projection, not only input hidden
+local MoE route output and layer output become nonzero
 restricted argmax selects token 1009
 MTP drafts token 1011 twice
 MTP accepts the first draft and rejects the second against token 1003
@@ -145,15 +271,22 @@ Result:
 The B1 context-length-4 remapped fixture passed on GB10. KV write layout,
 two-block cached attention over slots 125,126,127,0, restricted argmax, and MTP
 accept/reject matched the host reference through both direct backend submit and
-generated-driver/orchestrator submit.
+generated-driver/orchestrator submit. The fixture was then broadened to four
+heads, eight latent dimensions, four RoPE dimensions, non-identity key/query
+RoPE, and attention-output-projection-fed restricted logits; that also passed
+on Spark1 / GB10 under the 10000 us package ceiling.
 ```
 
 Next hypothesis:
 
 ```text
-The next likely gap is not the driver boundary. It is richer GLM tensor
-semantics: larger nonzero attention coverage, varied sparse-token selection,
-and real checkpoint quantization layout.
+The next likely gap is not the driver boundary or the small remapped-cache
+layout. It is real GLM tensor semantics: varied positions, varied sparse-token
+selection, multi-block KV checksums, and checkpoint quantization layout.
+
+The raw tensor gate narrowed that: NVFP4/BF16 attention tensors match the first
+resident checkpoint contract, while FP8 needs a separate quantized-weight
+contract and lowering/module path.
 ```
 
 If it fails:

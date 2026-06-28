@@ -27,6 +27,7 @@
 - Fixed GLM 5.2 BF16 resident sparse-MLA boundary with adjacent-pair query/key RoPE, current-token placement into the final paged KV layout, sparse cached attention, and stream-ordered completion.
 - Correctness-first GLM 5.2 resident decode-stage CUDA firmware source under `modules/glm52_resident_decode_stage/`.
 - Decode-stage CUDA covers attention RMSNorm, BF16 Q/KV projection kernels, native DSA sparse-token selection, RoPE plus final-layout KV write, sparse MLA, attention output projection, residual, final RMSNorm, restricted-vocabulary logits, MXFP4 E2M1/E8M0 MTP draft logits, verify/commit/rollback counters, phase clock markers, and stream-ordered completion.
+- The GLM resident decode-stage module owns `artifact_check`, a module-local fail-closed gate for live GLM `config.json`, model-description JSON artifact geometry, raw safetensors tensor contract, resident decode-stage firmware constants, and model-description route agreement. This is intentionally outside the generic SparkPipe tool surface.
 - Driver ABI v3 adds optional direct module admission and runtime snapshot symbols, program scheduling profiles, opaque dispatch-slot validity, dispatch generations/cookies, residency tokens, CUDA graph replay counters, stale-admission counters, and no-host-staging/device-memcpy counters without exposing LLM internals to SparkPipe.
 - Model-specific node binding for caller-owned streams, resident device buffers, paged KV storage, RoPE tables, CUDA graph slots, and capacities; the sparse-MLA and decode-stage drivers choose opaque dispatch slots through admission functions and report zero memcpy/host-staging counters plus private queue pressure.
 - Cold-build module workflow with dependency files and self-contained archive creation.
@@ -61,10 +62,13 @@ docs/HANDOFF_RELEASE_079.md            release-specific handoff summary
 ## Current boundary
 
 - The sparse-MLA and decode-stage CUDA firmware archives have been compiled with CUDA 13.0 for `sm_121` on a GB10 Spark node, admitted by hardware validators, published into the module library, compiled into generated drivers, and loaded from packaged `model_driver.so` outputs.
+- The live GLM 5.2 NVFP4/FP8 artifacts on Spark report `hidden_size=6144`, `num_attention_heads=64`, `kv_lora_rank=512`, `qk_rope_head_dim=64`, and `index_topk=2048`; the active decode-stage firmware identity is therefore `h6144.h64.d512.r64.k2048`, not the earlier incorrect `h8192` shape.
+- Live GLM run setup should call `make -C modules/glm52_resident_decode_stage artifact_check GLM52_MODEL_DIR=<GLM-5.2 model dir>` before compiling or launching a resident decode-stage package. The model-description JSON owns the expected HF artifact geometry and first raw tensor contract; the firmware header owns the compiled CUDA module geometry. A stale model description, wrong checkpoint family, wrong raw tensor layout, or wrong compiled firmware geometry is a hard failure.
 - The decode-stage package target additionally runs a generated-driver/orchestrator submit smoke test after package compilation. This proves driver load, route resolution, admission, CUDA backend submit, stream-ordered completion, runtime snapshot counters, and zero host-staging/device-memcpy accounting through the LLM driver boundary while checking deterministic nonzero tensor outputs over a remapped two-block KV layout.
 - The sparse-MLA module covers resident sparse MLA plus fused RoPE/current-token KV placement.
-- The decode-stage module fills the first CUDA gaps around projections, native DSA selection, restricted logits, and MTP draft/verify, but it is still correctness-first code. The current validator proves one deterministic nonzero remapped cached-attention/restricted-logit/MTP path, not full GLM logits equivalence against checkpoint artifacts.
-- MoE expert execution, resident transport handoff, and tensor-core/persistent-kernel optimization remain outside the new decode-stage archive. CUDA graph state and replay hooks are present, but target execution and graph-update debugging remain to be done on hardware.
+- The decode-stage module fills the first CUDA gaps around raw BF16/FP8 projections, native DSA selection, explicit key-nope/value cache writes from `kv_b_proj`, value-head cached attention, real `[6144,16384]` `o_proj`, restricted logits, local MoE progression, and MTP draft/verify, but it is still correctness-first code. The current validator proves one deterministic nonzero remapped cached-attention/restricted-logit/MTP path with four checked heads, eight checked key/value dimensions, four checked RoPE dimensions, non-identity RoPE, value-cache-fed attention-output projection, local MoE route output, and the MTP accept/reject contract. It is not full GLM logits equivalence against checkpoint artifacts.
+- The first raw tensor contract passes on the NVFP4 artifacts whose attention and lm_head tensors are BF16. The model description also carries an FP8 E4M3 q/kv/o projection contract for the zAI FP8 artifact; artifact acceptance proves shape/dtype presence only, not full decode correctness.
+- Resident transport handoff and tensor-core/persistent-kernel optimization remain outside the new decode-stage archive. CUDA graph state and replay hooks are present, but target execution and graph-update debugging remain to be done on hardware.
 - Publication is intentionally impossible without a user-supplied maximum full-stage latency and a target-hardware pass; a slow implementation must be optimized, not accepted because it is numerically correct.
 - The orchestrator currently manages local driver instances. Remote node agents and wire transport are unfinished.
 - The JSON selects exact prebuilt modules. A checkpoint plus deployment-profile importer that emits this low-level language is not implemented.
@@ -74,10 +78,28 @@ docs/HANDOFF_RELEASE_079.md            release-specific handoff summary
 
 ## Next engineering sequence
 
-1. Extend the nonzero fixture from two checked attention dimensions/heads to broader head and latent coverage.
-2. Add varied sparse-token selection and multi-position KV read/write checksums across several remapped blocks.
+1. Add varied sparse-token selection and multi-position KV read/write checksums across several remapped blocks.
+2. Replace smoke tensors with checkpoint-derived deterministic GLM tensor fixtures for cached attention, restricted logits, and MTP verify/commit.
 3. If the latency ceiling fails with real tensor fixtures, replace the correctness-first projection, DSA, attention, logits, and MTP kernels with measured tiled, tensor-core, persistent, or graph-captured implementations; do not publish the slow artifact.
-4. Add resident MoE expert execution, graph capture, and transport handoff inside one or a few model-specific GLM firmware archives.
+4. Add graph capture, transport handoff, and checkpoint-derived multi-layer fixtures inside one or a few model-specific GLM firmware archives.
 5. Publish only exact archives that pass numerical and model-stage performance qualification, then compile the GLM model JSON into direct-call drivers.
 6. Measure end-to-end stage latency and throughput before deciding whether another module split or fusion is profitable.
 7. Add the remote node agent and fixed submission/completion wire path without changing the driver ABI.
+
+## Deferred research backlog
+
+- Track DeepSeek DeepSpec/DSpark as a post-basics speculative-decoding item.
+  The public drop is a Python/PyTorch training and evaluation framework, not a
+  C/CUDA kernel library. It is still useful as an algorithmic reference for a
+  future GLM 5.2 block-draft path: selected target-layer hidden-state taps,
+  block proposals, Markov bias correction, confidence-gated proposal length,
+  and target verification.
+- Do not put DSpark adoption on the critical path for first working GLM 5.2
+  inference. The current priority remains deterministic nonzero GLM fixtures,
+  real checkpoint tensor loading, cached attention/KV correctness, restricted
+  logits, MTP verify/commit checks, and a live smoke test.
+- Revisit DSpark only after the baseline GLM resident decode stage produces
+  checkpoint-backed logits through the driver boundary. At that point, define a
+  GLM-specific DSpark-style drafter contract before writing CUDA: target layer
+  IDs, hidden-state export layout, per-slot context cache, block size, Markov
+  rank, confidence threshold, verification counters, and performance gates.
