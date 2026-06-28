@@ -299,6 +299,12 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageProjectionPointers(
                 1u) ||
             !SparkGlm52ResidentDecodeStagePointerIsAligned(
                 node_context->raw_kv_b_weight_scale_inv_f32,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->attention_output_weight_fp8_e4m3,
+                1u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->attention_output_weight_scale_inv_f32,
                 4u))
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -400,10 +406,13 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
             node_context->mla_cache_bf16,
             4u) ||
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->attention_norm_weight_bf16,
-            2u) ||
+            node_context->key_nope_cache_bf16,
+            4u) ||
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->attention_output_weight_bf16,
+            node_context->value_cache_bf16,
+            4u) ||
+        !SparkGlm52ResidentDecodeStagePointerIsAligned(
+            node_context->attention_norm_weight_bf16,
             2u) ||
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
             node_context->final_norm_weight_bf16,

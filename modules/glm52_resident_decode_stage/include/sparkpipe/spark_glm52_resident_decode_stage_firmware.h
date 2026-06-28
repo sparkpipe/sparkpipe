@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 4u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 5u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION 6144u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT 64u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION 512u
@@ -26,7 +26,12 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION 2048u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK 128u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS 576u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION 32768u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_LATENT_PROJECTION_DIMENSION \
+    (SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION \
+    (SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION 4096u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS 64u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT 2048u
@@ -178,6 +183,8 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     const float *cos_table;
     const float *sin_table;
     void *mla_cache_bf16;
+    void *key_nope_cache_bf16;
+    void *value_cache_bf16;
     const void *attention_norm_weight_bf16;
     const void *query_latent_weight_bf16;
     const void *query_rope_weight_bf16;
@@ -198,6 +205,8 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     const uint8_t *raw_kv_b_weight_fp8_e4m3;
     const float *raw_kv_b_weight_scale_inv_f32;
     const void *attention_output_weight_bf16;
+    const uint8_t *attention_output_weight_fp8_e4m3;
+    const float *attention_output_weight_scale_inv_f32;
     const void *post_attention_norm_weight_bf16;
     const void *moe_gate_weight_bf16;
     const void *moe_up_weight_bf16;

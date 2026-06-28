@@ -68,9 +68,8 @@ tensor_bytes=2233222144
 ```
 
 The same geometry check against `/home/spark1/models/hf/zai-org/GLM-5.2-FP8`
-passes through the config fields, but the full artifact contract correctly
-fails closed today. The resident CUDA path now has raw FP8 q/kv projection
-support for:
+uses the `hf_tensor_contract_fp8_e4m3` model-description contract. The resident
+CUDA path now has raw FP8 q/kv/o projection support for:
 
 ```text
 q_a_proj.weight F8_E4M3 [2048,6144]
@@ -81,13 +80,16 @@ kv_a_proj_with_mqa.weight F8_E4M3 [576,6144]
 kv_a_proj_with_mqa.weight_scale_inv F32 [5,48]
 kv_b_proj.weight F8_E4M3 [28672,512]
 kv_b_proj.weight_scale_inv F32 [224,4]
+o_proj.weight F8_E4M3 [6144,16384]
+o_proj.weight_scale_inv F32 [48,128]
 ```
 
-Do not claim full FP8 resident decode-stage readiness yet. The live FP8
-`o_proj` is `F8_E4M3 [6144,16384]`, while the current resident smoke attention
-path still projects from the legacy latent attention output layout. Accepting
-the full FP8 artifact before the real value-cache/output-projection path lands
-would be a false readiness signal.
+Do not claim full FP8 resident decode-stage readiness from the artifact check
+alone. The resident CUDA path now writes explicit key-nope and value caches from
+`kv_b_proj`, emits value-head attention output with shape `64 x 256`, and feeds
+the real `[6144,16384]` `o_proj` path. Full readiness still requires hardware
+validator success and checkpoint-derived logits equivalence across layer
+progression.
 
 The sparse-MLA package gate verifies:
 

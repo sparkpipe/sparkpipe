@@ -967,15 +967,6 @@ static SparkStatus SparkCheckTensorContract(
     {
         return SPARK_STATUS_OK;
     }
-    if (strstr(second_error_buffer, "hf_tensor_contract_fp8_e4m3 is missing") != 0)
-    {
-        snprintf(
-            error_buffer,
-            (size_t)error_buffer_bytes,
-            "no tensor contract matched: bf16=%s; fp8=full FP8 contract intentionally absent until real value-cache/o_proj path is implemented",
-            first_error_buffer);
-        return second_status;
-    }
     snprintf(
         error_buffer,
         (size_t)error_buffer_bytes,

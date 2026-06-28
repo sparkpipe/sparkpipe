@@ -81,6 +81,78 @@
         "dtype": "BF16",
         "shape": [154880, 6144]
       }
+    ],
+    "hf_tensor_contract_fp8_e4m3": [
+      {
+        "name": "model.layers.0.input_layernorm.weight",
+        "dtype": "BF16",
+        "shape": [6144]
+      },
+      {
+        "name": "model.layers.0.self_attn.q_a_proj.weight",
+        "dtype": "F8_E4M3",
+        "shape": [2048, 6144]
+      },
+      {
+        "name": "model.layers.0.self_attn.q_a_proj.weight_scale_inv",
+        "dtype": "F32",
+        "shape": [16, 48]
+      },
+      {
+        "name": "model.layers.0.self_attn.q_a_layernorm.weight",
+        "dtype": "BF16",
+        "shape": [2048]
+      },
+      {
+        "name": "model.layers.0.self_attn.q_b_proj.weight",
+        "dtype": "F8_E4M3",
+        "shape": [16384, 2048]
+      },
+      {
+        "name": "model.layers.0.self_attn.q_b_proj.weight_scale_inv",
+        "dtype": "F32",
+        "shape": [128, 16]
+      },
+      {
+        "name": "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
+        "dtype": "F8_E4M3",
+        "shape": [576, 6144]
+      },
+      {
+        "name": "model.layers.0.self_attn.kv_a_proj_with_mqa.weight_scale_inv",
+        "dtype": "F32",
+        "shape": [5, 48]
+      },
+      {
+        "name": "model.layers.0.self_attn.kv_a_layernorm.weight",
+        "dtype": "BF16",
+        "shape": [512]
+      },
+      {
+        "name": "model.layers.0.self_attn.kv_b_proj.weight",
+        "dtype": "F8_E4M3",
+        "shape": [28672, 512]
+      },
+      {
+        "name": "model.layers.0.self_attn.kv_b_proj.weight_scale_inv",
+        "dtype": "F32",
+        "shape": [224, 4]
+      },
+      {
+        "name": "model.layers.0.self_attn.o_proj.weight",
+        "dtype": "F8_E4M3",
+        "shape": [6144, 16384]
+      },
+      {
+        "name": "model.layers.0.self_attn.o_proj.weight_scale_inv",
+        "dtype": "F32",
+        "shape": [48, 128]
+      },
+      {
+        "name": "lm_head.weight",
+        "dtype": "BF16",
+        "shape": [154880, 6144]
+      }
     ]
   },
   "stages": [

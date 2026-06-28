@@ -127,7 +127,7 @@ cuda.sm121.glm52.resident_decode_stage.bf16
 2 MXFP4 MTP draft tokens
 ```
 
-The decode-stage source launches attention RMSNorm, BF16 projection kernels, native sparse-token handling, RoPE plus final-layout KV write, sparse MLA, attention output projection and residual, final RMSNorm, restricted-vocabulary logits and argmax, MXFP4 E2M1/E8M0 MTP draft logits, verify/commit/rollback counters, optional phase clock markers, and one stream-ordered external completion. The intended production sparse-index mode is preselected driver-owned DSA; the serial top-k mode is debug-only.
+The decode-stage source launches attention RMSNorm, raw BF16/FP8 q/kv projections, native sparse-token handling, RoPE plus latent/key-nope/value cache writes, value-head cached attention, real `[6144,16384]` `o_proj`, residual, local MoE progression, final RMSNorm, restricted-vocabulary logits and argmax, MXFP4 E2M1/E8M0 MTP draft logits, verify/commit/rollback counters, optional phase clock markers, and one stream-ordered external completion. The intended production sparse-index mode is preselected driver-owned DSA; the serial top-k mode is debug-only.
 
 Build exact archives from empty module build directories:
 
