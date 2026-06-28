@@ -21,6 +21,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION 192u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION 256u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION 256u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK 128u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS 576u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION 32768u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION 4096u
@@ -89,7 +90,8 @@ typedef enum SparkGlm52ResidentDecodeStagePhaseClockMode
 typedef enum SparkGlm52ResidentDecodeStageProjectionMode
 {
     SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_LOWERED_BF16 = 0,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16 = 1
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16 = 1,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3 = 2
 } SparkGlm52ResidentDecodeStageProjectionMode;
 
 typedef struct SparkGlm52ResidentDecodeStageCudaPipelineSlotState
@@ -168,6 +170,14 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     const void *raw_kv_a_weight_bf16;
     const void *raw_kv_a_norm_weight_bf16;
     const void *raw_kv_b_weight_bf16;
+    const uint8_t *raw_query_a_weight_fp8_e4m3;
+    const float *raw_query_a_weight_scale_inv_f32;
+    const uint8_t *raw_query_b_weight_fp8_e4m3;
+    const float *raw_query_b_weight_scale_inv_f32;
+    const uint8_t *raw_kv_a_weight_fp8_e4m3;
+    const float *raw_kv_a_weight_scale_inv_f32;
+    const uint8_t *raw_kv_b_weight_fp8_e4m3;
+    const float *raw_kv_b_weight_scale_inv_f32;
     const void *attention_output_weight_bf16;
     const void *final_norm_weight_bf16;
     const void *restricted_lm_head_weight_bf16;

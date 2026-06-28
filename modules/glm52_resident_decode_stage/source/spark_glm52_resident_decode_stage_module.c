@@ -196,6 +196,9 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageProjectionPointers(
                 2u) ||
             !SparkGlm52ResidentDecodeStagePointerIsAligned(
                 node_context->kv_latent_weight_bf16,
+                2u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->attention_output_weight_bf16,
                 2u))
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -222,7 +225,48 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageProjectionPointers(
                 2u) ||
             !SparkGlm52ResidentDecodeStagePointerIsAligned(
                 node_context->raw_kv_b_weight_bf16,
+                2u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->attention_output_weight_bf16,
                 2u))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        return SPARK_STATUS_OK;
+    }
+    if (node_context->projection_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3)
+    {
+        if (!SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->raw_query_a_weight_fp8_e4m3,
+                1u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->raw_query_a_weight_scale_inv_f32,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->raw_query_a_norm_weight_bf16,
+                2u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->raw_query_b_weight_fp8_e4m3,
+                1u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->raw_query_b_weight_scale_inv_f32,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->raw_kv_a_weight_fp8_e4m3,
+                1u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->raw_kv_a_weight_scale_inv_f32,
+                4u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->raw_kv_a_norm_weight_bf16,
+                2u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->raw_kv_b_weight_fp8_e4m3,
+                1u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->raw_kv_b_weight_scale_inv_f32,
+                4u))
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -253,7 +297,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->position_count == 0u ||
         node_context->dsa_candidate_count == 0u ||
         node_context->projection_mode >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16 ||
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3 ||
         node_context->sparse_index_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DEBUG_SERIAL_TOPK ||
         node_context->launch_check_mode >
@@ -335,8 +379,8 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         {
             return status;
         }
-        if (node_context->projection_mode ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16 &&
+        if (node_context->projection_mode !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_LOWERED_BF16 &&
             SparkValidateGlm52ResidentDecodeStageRawPipelineSlot(
                 &node_context->pipeline_slots[pipeline_slot_index]) !=
                 SPARK_STATUS_OK)

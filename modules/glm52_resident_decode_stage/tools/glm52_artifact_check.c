@@ -267,6 +267,10 @@ static uint64_t SparkDtypeElementBytes(const char *dtype)
     {
         return 2u;
     }
+    if (dtype != 0 && strcmp(dtype, "F8_E4M3") == 0)
+    {
+        return 1u;
+    }
     if (dtype != 0 && strcmp(dtype, "F32") == 0)
     {
         return 4u;
@@ -362,6 +366,7 @@ static SparkStatus SparkReadTensorContractShape(
 
 static SparkStatus SparkReadTensorContractsFromMetadata(
     const SparkModelDescription *description,
+    const char *contract_member_name,
     SparkGlm52TensorContract *contracts,
     uint32_t *contract_count,
     char *error_buffer,
@@ -381,11 +386,11 @@ static SparkStatus SparkReadTensorContractsFromMetadata(
         return SparkSetToolError(status, error_buffer, error_buffer_bytes, "could not parse model description metadata");
     }
     root_token_index = SparkJsonGetRootToken(&document);
-    contracts_token_index = SparkJsonFindObjectMember(&document, root_token_index, "hf_tensor_contract");
+    contracts_token_index = SparkJsonFindObjectMember(&document, root_token_index, contract_member_name);
     if (contracts_token_index < 0 || !SparkJsonTokenIsType(&document, contracts_token_index, SPARK_JSON_TOKEN_ARRAY))
     {
         SparkJsonDocumentDestroy(&document);
-        return SparkSetToolError(SPARK_STATUS_NOT_FOUND, error_buffer, error_buffer_bytes, "model description metadata.hf_tensor_contract is missing");
+        return SparkSetToolError(SPARK_STATUS_NOT_FOUND, error_buffer, error_buffer_bytes, "model description metadata.%s is missing", contract_member_name);
     }
     *contract_count = SparkJsonGetArrayElementCount(&document, contracts_token_index);
     if (*contract_count == 0u || *contract_count > SPARK_GLM52_TENSOR_CONTRACT_MAX_TENSORS)
@@ -833,9 +838,10 @@ static SparkStatus SparkCheckSafetensorsTensor(
     return status;
 }
 
-static SparkStatus SparkCheckTensorContract(
+static SparkStatus SparkCheckTensorContractMember(
     const char *model_directory,
     const SparkModelDescription *description,
+    const char *contract_member_name,
     uint32_t *checked_tensor_count,
     uint64_t *checked_tensor_bytes,
     char *error_buffer,
@@ -853,7 +859,7 @@ static SparkStatus SparkCheckTensorContract(
     memset(contracts, 0, sizeof(contracts));
     *checked_tensor_count = 0u;
     *checked_tensor_bytes = 0u;
-    status = SparkReadTensorContractsFromMetadata(description, contracts, &contract_count, error_buffer, error_buffer_bytes);
+    status = SparkReadTensorContractsFromMetadata(description, contract_member_name, contracts, &contract_count, error_buffer, error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -917,6 +923,54 @@ static SparkStatus SparkCheckTensorContract(
     SparkJsonDocumentDestroy(&index_document);
     SparkDestroyTensorContracts(contracts, contract_count);
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkCheckTensorContract(
+    const char *model_directory,
+    const SparkModelDescription *description,
+    uint32_t *checked_tensor_count,
+    uint64_t *checked_tensor_bytes,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    char first_error_buffer[1024];
+    char second_error_buffer[1024];
+    SparkStatus first_status;
+    SparkStatus second_status;
+
+    memset(first_error_buffer, 0, sizeof(first_error_buffer));
+    memset(second_error_buffer, 0, sizeof(second_error_buffer));
+    first_status = SparkCheckTensorContractMember(
+        model_directory,
+        description,
+        "hf_tensor_contract",
+        checked_tensor_count,
+        checked_tensor_bytes,
+        first_error_buffer,
+        sizeof(first_error_buffer));
+    if (first_status == SPARK_STATUS_OK)
+    {
+        return SPARK_STATUS_OK;
+    }
+    second_status = SparkCheckTensorContractMember(
+        model_directory,
+        description,
+        "hf_tensor_contract_fp8_e4m3",
+        checked_tensor_count,
+        checked_tensor_bytes,
+        second_error_buffer,
+        sizeof(second_error_buffer));
+    if (second_status == SPARK_STATUS_OK)
+    {
+        return SPARK_STATUS_OK;
+    }
+    snprintf(
+        error_buffer,
+        (size_t)error_buffer_bytes,
+        "no tensor contract matched: bf16=%s; fp8=%s",
+        first_error_buffer,
+        second_error_buffer);
+    return second_status;
 }
 
 int main(int argument_count, char **arguments)
