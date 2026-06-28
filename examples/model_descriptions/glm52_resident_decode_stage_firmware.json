@@ -37,6 +37,11 @@
     },
     "hf_tensor_contract": [
       {
+        "name": "model.embed_tokens.weight",
+        "dtype": "BF16",
+        "shape": [154880, 6144]
+      },
+      {
         "name": "model.layers.0.input_layernorm.weight",
         "dtype": "BF16",
         "shape": [6144]
@@ -103,6 +108,11 @@
       }
     ],
     "hf_tensor_contract_fp8_e4m3": [
+      {
+        "name": "model.embed_tokens.weight",
+        "dtype": "BF16",
+        "shape": [154880, 6144]
+      },
       {
         "name": "model.layers.0.input_layernorm.weight",
         "dtype": "BF16",

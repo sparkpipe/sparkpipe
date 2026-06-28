@@ -376,6 +376,45 @@ full token equivalence because the input hidden state and previous KV blocks are
 synthetic, and the real q/kv/o + dense path is not yet compared to a full CPU or
 external reference activation.
 
+Latest input-embedding-backed layer-0 BF16 evidence from `spark1` at commit
+`28ab1b46d65d27cf2bcb0ef8c7bd071a1203abce`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer0_embedding_bf16 MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.layer0_embedding_bf16.max_us_10000.v1
+input_embedding_bf16_fixture_ready=1
+input_embedding_token=1000
+input_embedding_bf16_bytes=12288
+layer0_attention_bf16_fixture_ready=1
+layer0_attention_bf16_bytes=330056704
+layer0_dense_bf16_fixture_ready=1
+layer0_dense_bf16_bytes=452997120
+real_lm_head_fixture_ready=1
+real_lm_head_bytes=3145728
+backend_average_us=3936.533
+backend_maximum_us=3944.416
+orchestrator_elapsed_us=4832.448
+limit_us=10000.000
+restricted_token=1021
+real_lm_head=1
+real_lm_head_max_logit_error=0.00000000
+backend_launch_chains=4
+orchestrator_launch_chains=1
+module_artifact=5d6eb4a2cc970c7672d7a04d296d207772fd6cd9427100ba4392006b1bbc1f78
+package_manifest_sha256=1ece14934fd647389b59fa16850879e4696edd10e194c1c6eeee62fed0622f63
+```
+
+This removes the synthetic input-hidden gap for the current B1 layer-0 gate:
+the submitted hidden state can now be copied from a real checkpoint
+`embed_tokens.weight` row. The previous KV cache is still seeded by the
+validator, so the next inference-correctness gap is checkpoint-derived
+prefill/KV plus an external reference activation comparison.
+
 ## What this proves
 
 The generated GLM 5.2 decode-stage `model_driver.so` can be loaded by the
