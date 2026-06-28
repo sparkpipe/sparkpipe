@@ -6152,6 +6152,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
         uint8_t *hidden_scale_e4m3;
         uint8_t *intermediate_payload_u8;
         uint8_t *intermediate_scale_e4m3;
+        int32_t *route_bound_expert_slots;
         dim3 hidden_quant_grid;
         dim3 gate_up_nvfp4_grid;
         dim3 intermediate_quant_grid;
@@ -6159,6 +6160,11 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
 
         nvfp4_route_count =
             active_sequence_count * node_context->moe_top_k;
+        route_bound_expert_slots =
+            (node_context->reserved_execution_flags &
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_NVFP4_ROUTE_SLOT_CACHE) != 0u
+                ? pipeline_slot->moe_bound_expert_slots
+                : 0;
         SparkGlm52ResidentDecodeStageMoeRouterTopKKernel<<<
             active_sequence_count,
             SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
@@ -6174,12 +6180,16 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
             node_context->moe_top_k,
             node_context->moe_norm_topk_prob,
             node_context->moe_routed_scaling_factor);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (pipeline_slot->moe_bound_expert_slots != 0)
-        {
+	        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+	            node_context,
+	            cuda_slot_state,
+	            cuda_stream);
+	        if (status != SPARK_STATUS_OK)
+	        {
+	            return status;
+	        }
+	        if (route_bound_expert_slots != 0)
+	        {
             SparkGlm52ResidentDecodeStageResolveBoundExpertSlotsKernel<<<
                 SparkGlm52ResidentDecodeStageElementBlockCount(
                     nvfp4_route_count),
@@ -6189,7 +6199,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
                 pipeline_slot->moe_topk_expert_ids,
                 node_context->moe_nvfp4_bound_expert_ids,
                 node_context->moe_nvfp4_expert_id_to_bound_slot,
-                pipeline_slot->moe_bound_expert_slots,
+                route_bound_expert_slots,
                 nvfp4_route_count,
                 node_context->moe_nvfp4_bound_expert_count);
             status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
@@ -6219,7 +6229,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
             pipeline_slot->moe_topk_expert_ids,
             node_context->moe_nvfp4_bound_expert_ids,
             node_context->moe_nvfp4_expert_id_to_bound_slot,
-            pipeline_slot->moe_bound_expert_slots,
+            route_bound_expert_slots,
             node_context->moe_nvfp4_gate_input_scale_f32,
             hidden_payload_u8,
             hidden_scale_e4m3,
@@ -6246,7 +6256,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
             pipeline_slot->moe_topk_expert_ids,
             node_context->moe_nvfp4_bound_expert_ids,
             node_context->moe_nvfp4_expert_id_to_bound_slot,
-            pipeline_slot->moe_bound_expert_slots,
+            route_bound_expert_slots,
             node_context->moe_nvfp4_gate_weight_u8,
             node_context->moe_nvfp4_gate_weight_scale_e4m3,
             node_context->moe_nvfp4_up_weight_u8,
@@ -6287,7 +6297,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
             pipeline_slot->moe_topk_expert_ids,
             node_context->moe_nvfp4_bound_expert_ids,
             node_context->moe_nvfp4_expert_id_to_bound_slot,
-            pipeline_slot->moe_bound_expert_slots,
+            route_bound_expert_slots,
             node_context->moe_nvfp4_down_input_scale_f32,
             (uint16_t *)pipeline_slot->moe_intermediate_bf16,
             intermediate_payload_u8,
@@ -6315,7 +6325,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
             pipeline_slot->moe_topk_expert_ids,
             node_context->moe_nvfp4_bound_expert_ids,
             node_context->moe_nvfp4_expert_id_to_bound_slot,
-            pipeline_slot->moe_bound_expert_slots,
+            route_bound_expert_slots,
             node_context->moe_nvfp4_down_weight_u8,
             node_context->moe_nvfp4_down_weight_scale_e4m3,
             node_context->moe_nvfp4_down_input_scale_f32,
