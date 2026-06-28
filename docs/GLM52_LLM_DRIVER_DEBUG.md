@@ -564,6 +564,58 @@ BF16 reference check for `o_proj`, attention residual, post-attention RMSNorm,
 SwiGLU activation, and dense-down residual. It still deliberately does not
 teach the generic SparkPipe runtime about GLM tensor names or reference math.
 
+Dense-layer index generalization evidence from `spark1` at commit
+`f73c10057759e77a40968fd3dc541b9ca95b810e`:
+
+```text
+live_config_first_k_dense_replace=3
+
+layer1 command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer1_full_reference_bf16 MAX_STAGE_MICROSECONDS=10000
+
+layer1 result:
+dense_layer_index=1
+layer0_reference_sampled=1
+layer0_reference_full=1
+layer0_reference_full_max_error=0.00024414
+backend_average_us=4895.019
+backend_maximum_us=5035.744
+orchestrator_elapsed_us=4892.928
+limit_us=10000.000
+layer_attention_bf16_bytes=330056704
+layer_dense_bf16_bytes=452997120
+real_lm_head_max_logit_error=0.00000000
+
+layer2 command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer2_full_reference_bf16 MAX_STAGE_MICROSECONDS=10000
+
+layer2 result:
+dense_layer_index=2
+layer0_reference_sampled=1
+layer0_reference_full=1
+layer0_reference_full_max_error=0.00012207
+backend_average_us=4653.323
+backend_maximum_us=4655.616
+orchestrator_elapsed_us=5112.896
+limit_us=10000.000
+layer_attention_bf16_bytes=330056704
+layer_dense_bf16_bytes=452997120
+real_lm_head_max_logit_error=0.00000000
+```
+
+This proves the layer tensor loader no longer assumes
+`model.layers.0.*`: the same resident CUDA path and generated-driver package
+gate now accept live BF16 checkpoint tensors for layers 0, 1, and 2. It is
+still a per-layer fixture. The next hypothesis is that chained dense
+progression will expose ownership/layout gaps around per-layer KV cache and
+hidden-state handoff, not arithmetic gaps in the dense-layer body kernels.
+
 ## What this proves
 
 The generated GLM 5.2 decode-stage `model_driver.so` can be loaded by the

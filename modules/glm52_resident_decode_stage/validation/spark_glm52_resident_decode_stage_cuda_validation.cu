@@ -22,6 +22,7 @@
 #define SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE 2u
 #define SPARK_VALIDATION_POSITION_COUNT 128u
 #define SPARK_VALIDATION_CONTEXT_LENGTH 4u
+#define SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT 3u
 #define SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET 61u
 #define SPARK_VALIDATION_CURRENT_POSITION 64u
 #define SPARK_VALIDATION_CURRENT_CACHE_SLOT 0u
@@ -48,6 +49,7 @@
 #define SPARK_VALIDATION_RESTRICTED_LM_HEAD_FIRST_TOKEN 1000u
 #define SPARK_VALIDATION_LOGIT_REDUCTION_THREADS 256u
 #define SPARK_VALIDATION_SAFETENSORS_HEADER_MAX_BYTES (128ull * 1024ull * 1024ull)
+#define SPARK_VALIDATION_TENSOR_NAME_BYTES 256u
 
 typedef struct SparkValidationCompletionState
 {
@@ -262,6 +264,23 @@ static bool SparkValidationBuildModelPath(
 
     written_bytes = snprintf(path, (size_t)path_bytes, "%s/%s", model_directory, leaf_name);
     return written_bytes >= 0 && (uint32_t)written_bytes < path_bytes;
+}
+
+static bool SparkValidationBuildLayerTensorName(
+    char *tensor_name,
+    uint32_t tensor_name_bytes,
+    uint32_t layer_index,
+    const char *suffix)
+{
+    int written_bytes;
+
+    written_bytes = snprintf(
+        tensor_name,
+        (size_t)tensor_name_bytes,
+        "model.layers.%u.%s",
+        layer_index,
+        suffix);
+    return written_bytes >= 0 && (uint32_t)written_bytes < tensor_name_bytes;
 }
 
 static bool SparkValidationReadSafetensorsHeader(
@@ -728,6 +747,7 @@ static bool SparkValidationLoadInputEmbeddingBf16Fixture(
 static bool SparkValidationLoadLayer0DenseBf16Fixture(
     SparkValidationDeviceBuffers *buffers,
     const char *model_directory,
+    uint32_t layer_index,
     SparkValidationLayer0DenseBf16Fixture *fixture)
 {
     const uint64_t norm_shape[1] = {
@@ -738,32 +758,49 @@ static bool SparkValidationLoadLayer0DenseBf16Fixture(
     const uint64_t down_shape[2] = {
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION};
+    char norm_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char gate_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char up_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char down_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
 
     memset(fixture, 0, sizeof(*fixture));
+    if (layer_index >= SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT)
+    {
+        fprintf(stderr, "GLM52_DENSE_LAYER_INDEX must be 0..%u\n", SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT - 1u);
+        return false;
+    }
+    if (!SparkValidationBuildLayerTensorName(norm_name, sizeof(norm_name), layer_index, "post_attention_layernorm.weight") ||
+        !SparkValidationBuildLayerTensorName(gate_name, sizeof(gate_name), layer_index, "mlp.gate_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(up_name, sizeof(up_name), layer_index, "mlp.up_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(down_name, sizeof(down_name), layer_index, "mlp.down_proj.weight"))
+    {
+        fprintf(stderr, "dense layer tensor name is too long\n");
+        return false;
+    }
     if (!SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.post_attention_layernorm.weight",
+            norm_name,
             norm_shape,
             1u,
             buffers->post_attention_norm_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.mlp.gate_proj.weight",
+            gate_name,
             gate_up_shape,
             2u,
             buffers->moe_gate_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.mlp.up_proj.weight",
+            up_name,
             gate_up_shape,
             2u,
             buffers->moe_up_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.mlp.down_proj.weight",
+            down_name,
             down_shape,
             2u,
             buffers->moe_down_weight_bf16,
@@ -772,13 +809,14 @@ static bool SparkValidationLoadLayer0DenseBf16Fixture(
         return false;
     }
     fixture->ready = 1u;
-    fprintf(stderr, "layer0_dense_bf16_fixture_ready=1 model_dir=%s bytes=%llu\n", model_directory, (unsigned long long)fixture->copied_bytes);
+    fprintf(stderr, "layer0_dense_bf16_fixture_ready=1 model_dir=%s dense_layer_index=%u bytes=%llu\n", model_directory, layer_index, (unsigned long long)fixture->copied_bytes);
     return true;
 }
 
 static bool SparkValidationLoadLayer0AttentionBf16Fixture(
     SparkValidationDeviceBuffers *buffers,
     const char *model_directory,
+    uint32_t layer_index,
     SparkValidationLayer0AttentionBf16Fixture *fixture)
 {
     const uint64_t hidden_shape[1] = {
@@ -802,60 +840,85 @@ static bool SparkValidationLoadLayer0AttentionBf16Fixture(
     const uint64_t output_shape[2] = {
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION};
+    char input_norm_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char q_a_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char q_a_norm_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char q_b_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char kv_a_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char kv_a_norm_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char kv_b_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char output_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
 
     memset(fixture, 0, sizeof(*fixture));
+    if (layer_index >= SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT)
+    {
+        fprintf(stderr, "GLM52_DENSE_LAYER_INDEX must be 0..%u\n", SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT - 1u);
+        return false;
+    }
+    if (!SparkValidationBuildLayerTensorName(input_norm_name, sizeof(input_norm_name), layer_index, "input_layernorm.weight") ||
+        !SparkValidationBuildLayerTensorName(q_a_name, sizeof(q_a_name), layer_index, "self_attn.q_a_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(q_a_norm_name, sizeof(q_a_norm_name), layer_index, "self_attn.q_a_layernorm.weight") ||
+        !SparkValidationBuildLayerTensorName(q_b_name, sizeof(q_b_name), layer_index, "self_attn.q_b_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(kv_a_name, sizeof(kv_a_name), layer_index, "self_attn.kv_a_proj_with_mqa.weight") ||
+        !SparkValidationBuildLayerTensorName(kv_a_norm_name, sizeof(kv_a_norm_name), layer_index, "self_attn.kv_a_layernorm.weight") ||
+        !SparkValidationBuildLayerTensorName(kv_b_name, sizeof(kv_b_name), layer_index, "self_attn.kv_b_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(output_name, sizeof(output_name), layer_index, "self_attn.o_proj.weight"))
+    {
+        fprintf(stderr, "attention layer tensor name is too long\n");
+        return false;
+    }
     if (!SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.input_layernorm.weight",
+            input_norm_name,
             hidden_shape,
             1u,
             buffers->attention_norm_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.self_attn.q_a_proj.weight",
+            q_a_name,
             query_a_shape,
             2u,
             buffers->raw_query_a_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.self_attn.q_a_layernorm.weight",
+            q_a_norm_name,
             query_a_norm_shape,
             1u,
             buffers->raw_query_a_norm_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.self_attn.q_b_proj.weight",
+            q_b_name,
             query_b_shape,
             2u,
             buffers->raw_query_b_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
+            kv_a_name,
             kv_a_shape,
             2u,
             buffers->raw_kv_a_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.self_attn.kv_a_layernorm.weight",
+            kv_a_norm_name,
             kv_a_norm_shape,
             1u,
             buffers->raw_kv_a_norm_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.self_attn.kv_b_proj.weight",
+            kv_b_name,
             kv_b_shape,
             2u,
             buffers->raw_kv_b_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.0.self_attn.o_proj.weight",
+            output_name,
             output_shape,
             2u,
             buffers->attention_output_weight_bf16,
@@ -864,7 +927,7 @@ static bool SparkValidationLoadLayer0AttentionBf16Fixture(
         return false;
     }
     fixture->ready = 1u;
-    fprintf(stderr, "layer0_attention_bf16_fixture_ready=1 model_dir=%s bytes=%llu\n", model_directory, (unsigned long long)fixture->copied_bytes);
+    fprintf(stderr, "layer0_attention_bf16_fixture_ready=1 model_dir=%s dense_layer_index=%u bytes=%llu\n", model_directory, layer_index, (unsigned long long)fixture->copied_bytes);
     return true;
 }
 
@@ -3893,6 +3956,7 @@ int main(int argc, char **argv)
     const char *load_layer0_dense;
     const char *load_layer0_attention;
     const char *input_token_text;
+    const char *dense_layer_index_text;
     const char *prefill_kv_text;
     const char *check_layer0_reference_text;
     const char *check_layer0_full_reference_text;
@@ -3908,6 +3972,7 @@ int main(int argc, char **argv)
     uint32_t check_layer0_reference;
     uint32_t check_layer0_full_reference;
     uint32_t input_token_id;
+    uint32_t dense_layer_index;
 
     if (argc != 2 && argc != 3)
     {
@@ -3929,6 +3994,7 @@ int main(int argc, char **argv)
     load_layer0_dense = getenv("GLM52_LOAD_LAYER0_DENSE_BF16");
     load_layer0_attention = getenv("GLM52_LOAD_LAYER0_ATTENTION_BF16");
     input_token_text = getenv("GLM52_INPUT_TOKEN_ID");
+    dense_layer_index_text = getenv("GLM52_DENSE_LAYER_INDEX");
     prefill_kv_text = getenv("GLM52_PREFILL_KV_FROM_EMBEDDINGS");
     check_layer0_reference_text = getenv("GLM52_CHECK_LAYER0_REFERENCE");
     check_layer0_full_reference_text =
@@ -3951,6 +4017,7 @@ int main(int argc, char **argv)
         strcmp(check_layer0_full_reference_text, "0") != 0;
     layer0_full_reference_max_error = 0.0f;
     input_token_id = 0u;
+    dense_layer_index = 0u;
     if (use_input_embedding != 0u)
     {
         char *end_pointer;
@@ -3966,6 +4033,22 @@ int main(int argc, char **argv)
             return 2;
         }
         input_token_id = (uint32_t)parsed_token_id;
+    }
+    if (dense_layer_index_text != 0 && dense_layer_index_text[0] != '\0')
+    {
+        char *end_pointer;
+        unsigned long parsed_layer_index;
+
+        end_pointer = 0;
+        parsed_layer_index = strtoul(dense_layer_index_text, &end_pointer, 10);
+        if (end_pointer == dense_layer_index_text ||
+            *end_pointer != '\0' ||
+            parsed_layer_index >= SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT)
+        {
+            fprintf(stderr, "GLM52_DENSE_LAYER_INDEX is invalid; expected 0..%u\n", SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT - 1u);
+            return 2;
+        }
+        dense_layer_index = (uint32_t)parsed_layer_index;
     }
     if (use_prefill_kv != 0u &&
         (use_input_embedding == 0u ||
@@ -4030,6 +4113,7 @@ int main(int argc, char **argv)
         !SparkValidationLoadLayer0AttentionBf16Fixture(
             &buffers,
             model_directory,
+            dense_layer_index,
             &layer0_attention))
     {
         return 2;
@@ -4038,6 +4122,7 @@ int main(int argc, char **argv)
         !SparkValidationLoadLayer0DenseBf16Fixture(
             &buffers,
             model_directory,
+            dense_layer_index,
             &layer0_dense))
     {
         return 2;
@@ -4099,7 +4184,7 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu prefill_kv_bf16=%u prefill_kv_tokens=%u prefill_kv_bytes=%llu layer0_reference_sampled=%u layer0_reference_full=%u layer0_reference_full_max_error=%.8f real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u dense_layer_index=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu prefill_kv_bf16=%u prefill_kv_tokens=%u prefill_kv_bytes=%llu layer0_reference_sampled=%u layer0_reference_full=%u layer0_reference_full_max_error=%.8f real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             (double)elapsed_microseconds,
             maximum_stage_microseconds,
             real_lm_head.ready != 0u
@@ -4107,6 +4192,7 @@ int main(int argc, char **argv)
                 : SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN,
             SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
             SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
+            dense_layer_index,
             input_embedding.ready,
             input_embedding.token_id,
             (unsigned long long)input_embedding.copied_bytes,
@@ -4174,7 +4260,7 @@ int main(int argc, char **argv)
         return 1;
     }
     printf(
-        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu prefill_kv_bf16=%u prefill_kv_tokens=%u prefill_kv_bytes=%llu layer0_reference_sampled=%u layer0_reference_full=%u layer0_reference_full_max_error=%.8f real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u dense_layer_index=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu prefill_kv_bf16=%u prefill_kv_tokens=%u prefill_kv_bytes=%llu layer0_reference_sampled=%u layer0_reference_full=%u layer0_reference_full_max_error=%.8f real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
         total_microseconds / SPARK_VALIDATION_MEASUREMENT_COUNT,
         maximum_observed_microseconds,
         maximum_stage_microseconds,
@@ -4183,6 +4269,7 @@ int main(int argc, char **argv)
             : SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN,
         SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
         SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
+        dense_layer_index,
         input_embedding.ready,
         input_embedding.token_id,
         (unsigned long long)input_embedding.copied_bytes,
