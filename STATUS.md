@@ -48,6 +48,7 @@ STATUS.md                              current implementation boundary
 docs/LLM_DEVICE_DRIVER_INTERFACE.md    scheduler/driver handoff contract
 docs/CUDA_FIRMWARE_SOTA_METHODS.md     CUDA firmware handoff methods
 docs/GLM52_CUDA_PERFORMANCE_SPARK1_ITER080.md measured Spark CUDA baseline
+docs/GLM52_CUDA_PERFORMANCE_SPARK1_ITER083.md persistent grouped-MoE measurement
 docs/HANDOFF_RELEASE_079.md            release-specific handoff summary
 ```
 
@@ -149,4 +150,5 @@ docs/HANDOFF_RELEASE_079.md            release-specific handoff summary
 - The persistent MoE workers consume compact device work items instead of launching a huge `row × bound_expert × max_route_tiles` grid full of empty experts. This is the intended shape for target debugging before replacing the local decode/dequant loops with SM121-tuned FP4/Tensor Core kernels.
 - Added `SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ROUTER_LOGITS` and `SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MOE_ROUTER`. SOTA routed-MoE profiles can now compute router logits through a prebound linear plan and run only the 256-way top-k on the small logits buffer, rather than doing scalar per-expert hidden dot products inside the router kernel.
 - Removed the bring-up assumption that routed NVFP4 top-k binds exactly `top_k` experts. A production profile may bind a larger resident expert set and use `expert_id -> bound_slot` mapping plus per-route slot cache.
+- Spark-side measurement is recorded in `docs/GLM52_CUDA_PERFORMANCE_SPARK1_ITER083.md`. The first pass compiled after one call-order fix but mostly regressed the measured MoE/router gates. The route-slot cache is now gated behind `SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_NVFP4_ROUTE_SLOT_CACHE`; after that correction, top-8 routed NVFP4 direct recovered to `7699.616 us`, while top-1 routed NVFP4 remained slower than iteration 080 and top-8 orchestrated was noisy/worse. Treat iteration 083 as an opt-in firmware-shape pass and negative-result record, not a measured SOTA win.
 - CUDA remains uncompiled in this environment because `nvcc` is unavailable. This is a code-only performance-shape pass; target Spark/Codex must compile, profile, replace the local FP4 decode loops with tuned kernels where needed, and publish only measured artifacts.

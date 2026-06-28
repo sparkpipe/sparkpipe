@@ -60,6 +60,24 @@ SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MOE_ROUTER
 
 Routed NVFP4 top-k no longer requires `moe_nvfp4_bound_expert_count == top_k`. That was a bring-up assumption and a performance/placement footgun. Production may bind a larger resident expert set and use `expert_id -> bound_slot` mapping plus per-route slot cache.
 
+Spark-side measurement corrected one important assumption: building that
+per-route slot cache is not free and should not run just because the buffer is
+available. The cache is now opt-in through
+`SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_NVFP4_ROUTE_SLOT_CACHE`.
+Ordinary routed NVFP4 gates keep the previous in-kernel lookup path; SOTA
+grouped-MoE profiles can still require the cache explicitly.
+
+Measured result after that correction is recorded in:
+
+```text
+docs/GLM52_CUDA_PERFORMANCE_SPARK1_ITER083.md
+```
+
+The short version: persistent/grouped scaffolding compiles and passes
+correctness, but scaffolding alone is not the SOTA win. It must be paired with
+tuned SM121 FP4/Tensor Core expert math before it should become a production
+fast path.
+
 ### SOTA grouped MoE contract
 
 The grouped-MoE plan ABI now records:
