@@ -91,6 +91,37 @@ the real `[6144,16384]` `o_proj` path. Full readiness still requires hardware
 validator success and checkpoint-derived logits equivalence across layer
 progression.
 
+Latest value-cache / `o_proj` evidence from `spark1` at commit `d9ee92a`:
+
+```text
+NVFP4 artifact gate:
+ready=1
+tensor_contract_ready=1
+tensor_count=9
+tensor_bytes=2233222144
+
+FP8 artifact gate:
+ready=1
+tensor_contract_ready=1
+tensor_count=14
+tensor_bytes=2068242880
+
+CUDA package gate:
+average_us=5151.669
+maximum_us=5480.000
+limit_us=10000.000
+restricted_token=1009
+mtp_draft=1011
+mtp_reject=1003
+
+Generated-driver/orchestrator gate:
+elapsed_us=5251.264
+limit_us=10000.000
+restricted_token=1009
+mtp_draft=1011
+mtp_reject=1003
+```
+
 The sparse-MLA package gate verifies:
 
 ```text
