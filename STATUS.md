@@ -47,6 +47,7 @@ SPEC.md                                production architecture contract
 STATUS.md                              current implementation boundary
 docs/LLM_DEVICE_DRIVER_INTERFACE.md    scheduler/driver handoff contract
 docs/CUDA_FIRMWARE_SOTA_METHODS.md     CUDA firmware handoff methods
+docs/GLM52_CUDA_PERFORMANCE_SPARK1_ITER080.md measured Spark CUDA baseline
 docs/HANDOFF_RELEASE_079.md            release-specific handoff summary
 ```
 
@@ -117,4 +118,5 @@ docs/HANDOFF_RELEASE_079.md            release-specific handoff summary
 - GLM 5.2 decode-stage firmware now exposes prebound cublasLt linear-plan slots, grouped-MoE driver hooks, restricted-logits hooks, a tiled online sparse-attention kernel option, vectorized MXFP4 MTP draft logits, and validated service-time fields.
 - The module archive can now include a cublasLt plan-construction helper translation unit; plan creation is a resident setup step, not a submit-path action.
 - CUDA remains uncompiled in this environment because `nvcc` is unavailable. The release is a SOTA-shaped CUDA handoff for target Spark debugging, not a hardware performance claim.
+- The first Spark-side iteration-080 CUDA baseline is recorded in `docs/GLM52_CUDA_PERFORMANCE_SPARK1_ITER080.md`. On spark1 at commit `34427b3`, the measured gates were: router BF16 `3909.536 us` direct / `4306.304 us` orchestrated, shared expert BF16 `3822.432 us` / `4001.376 us`, routed NVFP4 top-1 `4345.280 us` / `4485.984 us`, routed NVFP4 top-8 `7723.360 us` / `7557.408 us`, layer-0 full BF16 `4086.667 us` average / `5285.440 us` orchestrated, and dense-chain BF16 `58469.471 us` total / `63849.632 us` orchestrated. The worst single-module baseline is the top-8 routed NVFP4 MoE path.
 - A 12-node performance model is recorded in `docs/GLM52_12X_SPARK_PERFORMANCE_MODEL.md`; current correctness kernels project to roughly 2 tok/s single-stream and 20-30 aggregate tok/s in a filled 12-stage pipeline, while the intended optimized firmware target is roughly 80-130 aggregate tok/s before favorable MTP/restricted-output gains.
