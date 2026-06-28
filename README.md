@@ -181,6 +181,24 @@ against the GLM module's CPU reference through both direct backend and generated
 `model_driver.so` submission. It does not yet execute the sparse expert GEMMs or
 shared-expert combine path.
 
+For the current sparse layer-3 shared-expert gate, run:
+
+```sh
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer3_shared_expert_bf16 \
+    MAX_STAGE_MICROSECONDS=10000
+```
+
+That gate loads layer-3 BF16 attention weights and
+`mlp.shared_experts.{gate_proj,up_proj,down_proj}.weight`, runs the resident
+BF16 SwiGLU/down path at the GLM shared-expert dimension of 2048, and checks
+sampled post-attention RMSNorm, gate/up projection, SiLU product, and
+down+residual outputs against the GLM module's CPU reference through both direct
+backend and generated `model_driver.so` submission. It does not yet execute
+NVFP4 routed expert projection or routed/shared combine.
+
 ## Compile a complete model package
 
 ```sh

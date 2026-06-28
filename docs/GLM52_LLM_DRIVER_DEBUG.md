@@ -709,6 +709,45 @@ weights. This is router/top-k evidence only; it does not yet execute NVFP4
 expert gate/up/down projection, shared expert projection, or combined sparse
 MoE output.
 
+Latest sparse layer-3 shared-expert evidence from `spark1` at commit `2595612`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer3_shared_expert_bf16 MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.layer3_shared_expert_bf16.max_us_10000.v1
+input_embedding_token=1000
+layer_attention_bf16_bytes=330056704
+layer3_shared_expert_bf16_bytes=75509760
+real_lm_head=1
+
+direct backend result:
+layer3_shared_expert_reference_ready=1
+layer3_shared_expert_max_error=0.00000000
+elapsed_us=3261.248
+limit_us=10000.000
+launch_chains=1
+
+generated-driver/orchestrator result:
+layer3_shared_expert_reference_ready=1
+layer3_shared_expert_max_error=0.00000000
+elapsed_us=3368.928
+limit_us=10000.000
+launch_chains=1
+```
+
+This gate reuses the resident BF16 dense/SwiGLU/down CUDA path with
+`dense_intermediate_dimension=2048`, but the GLM validator loads
+`model.layers.3.mlp.shared_experts.{gate_proj,up_proj,down_proj}.weight`.
+That keeps GLM safetensors names in the GLM validation layer while the
+device-driver ABI still sees only resident weight pointers and exact shape
+metadata. The reference checks post-attention RMSNorm, shared gate/up
+projection, SiLU product, and shared down+residual. This still does not execute
+the NVFP4 routed expert tensors or the final routed-plus-shared MoE combine.
+
 ## What this proves
 
 The generated GLM 5.2 decode-stage `model_driver.so` can be loaded by the
@@ -728,6 +767,11 @@ The sparse layer-3 router gate proves that the first sparse layer can produce
 checkpoint-backed top-8 routing decisions through the same driver boundary. The
 remaining sparse-layer gap is expert execution and combine, not router
 selection.
+
+The sparse layer-3 shared-expert gate proves the BF16 shared expert subpath can
+consume real checkpoint tensors and pass sampled CPU reference checks through
+that same driver boundary. The remaining sparse-layer gap is now routed NVFP4
+expert execution plus routed/shared combine.
 
 ## New nonzero fixture
 
@@ -759,9 +803,10 @@ driver/orchestrator counters remain clean
 
 This is not a full GLM 5.2 inference pass. The decode-stage validator now uses
 real checkpoint `embed_tokens.weight`, dense-prefix attention/dense weights,
-sparse layer-3 router weights/bias, and restricted `lm_head.weight` rows when
-`GLM52_MODEL_DIR` is set. It does not yet load sparse-layer expert tensors,
-all 78 layers, or compare final logits against an external GLM artifact.
+sparse layer-3 router weights/bias, sparse layer-3 BF16 shared-expert weights,
+and restricted `lm_head.weight` rows when `GLM52_MODEL_DIR` is set. It does not
+yet load sparse-layer routed NVFP4 expert tensors, all 78 layers, or compare
+final logits against an external GLM artifact.
 
 The next correctness gate must replace smoke tensors with deterministic
 nonzero GLM fixtures and check:
@@ -771,7 +816,7 @@ multiple positions
 larger nonzero attention dimension/head coverage
 checkpoint-derived cached attention and MoE references
 external checkpoint-derived activation comparison for the dense-prefix chain
-checkpoint-derived expert references for sparse layer 3
+checkpoint-derived routed expert references for sparse layer 3
 MTP draft and verify/commit behavior with varied target patterns
 runtime snapshot counters after real tensor work
 ```
