@@ -58,12 +58,15 @@ TEST_MODULE_OBJECTS := \
 TEST_MODULE_ARCHIVES := \
     build/test_modules/module_affine.a
 TEST_MODULE_LINK_UNITS := $(TEST_MODULE_OBJECTS) $(TEST_MODULE_ARCHIVES)
+TEST_MODULE_DEPENDENCIES := $(TEST_MODULE_OBJECTS:.o=.d)
 TEST_VALIDATOR := build/test_module_validator
 GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY := \
     build/glm52_resident_sparse_mla_test
 GLM52_RESIDENT_SPARSE_MLA_TEST_OBJECTS := \
     $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/spark_glm52_resident_sparse_mla_module.o \
     $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/glm52_resident_sparse_mla_fake_backend.o
+GLM52_RESIDENT_SPARSE_MLA_TEST_DEPENDENCIES := \
+    $(GLM52_RESIDENT_SPARSE_MLA_TEST_OBJECTS:.o=.d)
 GLM52_RESIDENT_SPARSE_MLA_TEST_ARCHIVE := \
     $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/libglm52_resident_sparse_mla_test.a
 GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY := \
@@ -71,6 +74,8 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY := \
 GLM52_RESIDENT_DECODE_STAGE_TEST_OBJECTS := \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_resident_decode_stage_module.o \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/glm52_resident_decode_stage_fake_backend.o
+GLM52_RESIDENT_DECODE_STAGE_TEST_DEPENDENCIES := \
+    $(GLM52_RESIDENT_DECODE_STAGE_TEST_OBJECTS:.o=.d)
 GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/libglm52_resident_decode_stage_test.a
 
@@ -121,22 +126,22 @@ build/sparkpipe_driver_inspect: tools/sparkpipe_driver_inspect.c $(RUNTIME_LIBRA
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 $(TEST_SUPPORT_OBJECT): tests/test_support.c tests/test_support.h $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) -c tests/test_support.c -o $@
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) -MMD -MP -c tests/test_support.c -o $@
 
 build/test_modules/module_add_one.o: tests/fixtures/module_add_one.c | build/test_modules
-	$(CC) -Iinclude $(CFLAGS) -fPIC -c $< -o $@
+	$(CC) -Iinclude $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
 build/test_modules/module_add_two.o: tests/fixtures/module_add_two.c | build/test_modules
-	$(CC) -Iinclude $(CFLAGS) -fPIC -c $< -o $@
+	$(CC) -Iinclude $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
 build/test_modules/module_double.o: tests/fixtures/module_double.c | build/test_modules
-	$(CC) -Iinclude $(CFLAGS) -fPIC -c $< -o $@
+	$(CC) -Iinclude $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
 build/test_modules/module_affine_entry.o: tests/fixtures/module_affine_entry.c | build/test_modules
-	$(CC) -Iinclude $(CFLAGS) -fPIC -c $< -o $@
+	$(CC) -Iinclude $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
 build/test_modules/module_affine_helper.o: tests/fixtures/module_affine_helper.c | build/test_modules
-	$(CC) -Iinclude $(CFLAGS) -fPIC -fvisibility=hidden -c $< -o $@
+	$(CC) -Iinclude $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 build/test_modules/module_affine.a: build/test_modules/module_affine_entry.o build/test_modules/module_affine_helper.o
 	$(AR) rcs $@ $^
@@ -145,21 +150,21 @@ $(TEST_VALIDATOR): tests/fixtures/module_validator.c | build
 	$(CC) $(CFLAGS) $< -o $@
 
 
-$(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/spark_glm52_resident_sparse_mla_module.o: modules/glm52_resident_sparse_mla/source/spark_glm52_resident_sparse_mla_module.c | $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)
-	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_sparse_mla/include -Imodules/glm52_resident_sparse_mla/source $(CFLAGS) -fPIC -fvisibility=hidden -c $< -o $@
+$(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/spark_glm52_resident_sparse_mla_module.o: modules/glm52_resident_sparse_mla/source/spark_glm52_resident_sparse_mla_module.c modules/glm52_resident_sparse_mla/include/sparkpipe/spark_glm52_resident_sparse_mla_firmware.h modules/glm52_resident_sparse_mla/source/spark_glm52_resident_sparse_mla_backend.h | $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)
+	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_sparse_mla/include -Imodules/glm52_resident_sparse_mla/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
-$(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/glm52_resident_sparse_mla_fake_backend.o: tests/fixtures/glm52_resident_sparse_mla_fake_backend.c | $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)
-	$(CC) $(CPPFLAGS) -Itests/fixtures -Imodules/glm52_resident_sparse_mla/include -Imodules/glm52_resident_sparse_mla/source $(CFLAGS) -fPIC -fvisibility=hidden -c $< -o $@
+$(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/glm52_resident_sparse_mla_fake_backend.o: tests/fixtures/glm52_resident_sparse_mla_fake_backend.c tests/fixtures/glm52_resident_sparse_mla_fake_backend.h modules/glm52_resident_sparse_mla/include/sparkpipe/spark_glm52_resident_sparse_mla_firmware.h modules/glm52_resident_sparse_mla/source/spark_glm52_resident_sparse_mla_backend.h | $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)
+	$(CC) $(CPPFLAGS) -Itests/fixtures -Imodules/glm52_resident_sparse_mla/include -Imodules/glm52_resident_sparse_mla/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(GLM52_RESIDENT_SPARSE_MLA_TEST_ARCHIVE): $(GLM52_RESIDENT_SPARSE_MLA_TEST_OBJECTS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
-$(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_resident_decode_stage_module.o: modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
-	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source $(CFLAGS) -fPIC -fvisibility=hidden -c $< -o $@
+$(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_resident_decode_stage_module.o: modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_backend.h | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
+	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
-$(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/glm52_resident_decode_stage_fake_backend.o: tests/fixtures/glm52_resident_decode_stage_fake_backend.c | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
-	$(CC) $(CPPFLAGS) -Itests/fixtures -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source $(CFLAGS) -fPIC -fvisibility=hidden -c $< -o $@
+$(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/glm52_resident_decode_stage_fake_backend.o: tests/fixtures/glm52_resident_decode_stage_fake_backend.c tests/fixtures/glm52_resident_decode_stage_fake_backend.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_backend.h | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
+	$(CC) $(CPPFLAGS) -Itests/fixtures -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE): $(GLM52_RESIDENT_DECODE_STAGE_TEST_OBJECTS)
 	rm -f $@
@@ -180,10 +185,10 @@ build/test_driver_compiler: tests/test_driver_compiler.c $(TEST_SUPPORT_OBJECT) 
 build/test_orchestrator: tests/test_orchestrator.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_resident_sparse_mla_firmware: tests/test_glm52_resident_sparse_mla_firmware.c $(GLM52_RESIDENT_SPARSE_MLA_TEST_ARCHIVE) $(TEST_SUPPORT_OBJECT) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+build/test_glm52_resident_sparse_mla_firmware: tests/test_glm52_resident_sparse_mla_firmware.c modules/glm52_resident_sparse_mla/include/sparkpipe/spark_glm52_resident_sparse_mla_firmware.h tests/fixtures/glm52_resident_sparse_mla_fake_backend.h $(GLM52_RESIDENT_SPARSE_MLA_TEST_ARCHIVE) $(TEST_SUPPORT_OBJECT) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Itests/fixtures -Imodules/glm52_resident_sparse_mla/include $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_resident_decode_stage_firmware: tests/test_glm52_resident_decode_stage_firmware.c $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE) $(TEST_SUPPORT_OBJECT) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+build/test_glm52_resident_decode_stage_firmware: tests/test_glm52_resident_decode_stage_firmware.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h tests/fixtures/glm52_resident_decode_stage_fake_backend.h $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE) $(TEST_SUPPORT_OBJECT) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Itests/fixtures -Imodules/glm52_resident_decode_stage/include $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 test: $(TEST_BINARIES)
@@ -267,4 +272,8 @@ tree_summary:
 clean:
 	rm -rf build
 
--include $(COMMON_OBJECTS:.o=.d) $(COMPILER_OBJECTS:.o=.d) $(RUNTIME_OBJECTS:.o=.d)
+-include $(COMMON_OBJECTS:.o=.d) $(COMPILER_OBJECTS:.o=.d) \
+    $(RUNTIME_OBJECTS:.o=.d) $(TEST_SUPPORT_OBJECT:.o=.d) \
+    $(TEST_MODULE_DEPENDENCIES) \
+    $(GLM52_RESIDENT_SPARSE_MLA_TEST_DEPENDENCIES) \
+    $(GLM52_RESIDENT_DECODE_STAGE_TEST_DEPENDENCIES)
