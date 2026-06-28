@@ -20,7 +20,7 @@ CUDA_HOME ?= $(abspath $(dir $(shell command -v $(NVCC)))/..)
 VALIDATION_RECIPE_VARIANT ?= default
 VALIDATION_RECIPE := glm52.resident_decode_stage.$(CUDA_ARCH).$(VALIDATION_RECIPE_VARIANT).max_us_$(MAX_STAGE_MICROSECONDS).v1
 
-.PHONY: archive cold_archive artifact_check validate validate_layer0_attention_bf16 validate_layer0_dense_bf16 validate_layer0_bf16 validate_layer0_embedding_bf16 validate_layer0_prefill_bf16 publish package package_layer0_attention_bf16 package_layer0_dense_bf16 package_layer0_bf16 package_layer0_embedding_bf16 package_layer0_prefill_bf16 clean require_sm121 require_latency_limit require_model_dir require_input_token
+.PHONY: archive cold_archive artifact_check validate validate_layer0_attention_bf16 validate_layer0_dense_bf16 validate_layer0_bf16 validate_layer0_embedding_bf16 validate_layer0_prefill_bf16 validate_layer0_reference_bf16 publish package package_layer0_attention_bf16 package_layer0_dense_bf16 package_layer0_bf16 package_layer0_embedding_bf16 package_layer0_prefill_bf16 package_layer0_reference_bf16 clean require_sm121 require_latency_limit require_model_dir require_input_token
 
 archive: require_sm121 $(MODULE_ARCHIVE)
 
@@ -91,6 +91,9 @@ validate_layer0_embedding_bf16: require_model_dir require_input_token
 validate_layer0_prefill_bf16: require_model_dir require_input_token
 	GLM52_LOAD_LAYER0_ATTENTION_BF16=1 GLM52_LOAD_LAYER0_DENSE_BF16=1 GLM52_PREFILL_KV_FROM_EMBEDDINGS=1 $(MAKE) validate
 
+validate_layer0_reference_bf16: require_model_dir require_input_token
+	GLM52_LOAD_LAYER0_ATTENTION_BF16=1 GLM52_LOAD_LAYER0_DENSE_BF16=1 GLM52_PREFILL_KV_FROM_EMBEDDINGS=1 GLM52_CHECK_LAYER0_REFERENCE=1 $(MAKE) validate
+
 package_layer0_attention_bf16: require_model_dir
 	GLM52_LOAD_LAYER0_ATTENTION_BF16=1 VALIDATION_RECIPE_VARIANT=layer0_attention_bf16 $(MAKE) package
 
@@ -105,6 +108,9 @@ package_layer0_embedding_bf16: require_model_dir require_input_token
 
 package_layer0_prefill_bf16: require_model_dir require_input_token
 	GLM52_LOAD_LAYER0_ATTENTION_BF16=1 GLM52_LOAD_LAYER0_DENSE_BF16=1 GLM52_PREFILL_KV_FROM_EMBEDDINGS=1 VALIDATION_RECIPE_VARIANT=layer0_prefill_bf16 $(MAKE) package
+
+package_layer0_reference_bf16: require_model_dir require_input_token
+	GLM52_LOAD_LAYER0_ATTENTION_BF16=1 GLM52_LOAD_LAYER0_DENSE_BF16=1 GLM52_PREFILL_KV_FROM_EMBEDDINGS=1 GLM52_CHECK_LAYER0_REFERENCE=1 VALIDATION_RECIPE_VARIANT=layer0_reference_bf16 $(MAKE) package
 
 publish: require_sm121 require_latency_limit cold_archive
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
