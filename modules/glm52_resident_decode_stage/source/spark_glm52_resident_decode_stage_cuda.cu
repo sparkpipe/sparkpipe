@@ -1,7 +1,14 @@
 #include "spark_glm52_resident_decode_stage_backend.h"
 
-#include <cuda_fp8.h>
 #include <cuda_runtime.h>
+
+#ifndef SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_CUBLASLT
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_CUBLASLT 1
+#endif
+
+#if SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_CUBLASLT
+#include <cublasLt.h>
+#endif
 
 #include <float.h>
 #include <stdint.h>
@@ -64,20 +71,6 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageFp8E4m3ToFl
     return sign != 0u ? -result : result;
 }
 
-static __device__ __forceinline__ uint8_t SparkGlm52ResidentDecodeStageEncodePositiveE4m3Scale(
-    float value)
-{
-    uint8_t encoded_value;
-
-    if (!isfinite(value) || value <= 0.0f)
-    {
-        return 0u;
-    }
-    encoded_value =
-        (uint8_t)__nv_cvt_float_to_fp8(value, __NV_SATFINITE, __NV_E4M3);
-    return encoded_value == 0u ? 1u : encoded_value;
-}
-
 static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageWarpReduceSum(
     float value)
 {
@@ -86,17 +79,6 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageWarpReduceS
     value += __shfl_down_sync(0xffffffffu, value, 4);
     value += __shfl_down_sync(0xffffffffu, value, 2);
     value += __shfl_down_sync(0xffffffffu, value, 1);
-    return value;
-}
-
-static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageWarpReduceMax(
-    float value)
-{
-    value = fmaxf(value, __shfl_down_sync(0xffffffffu, value, 16));
-    value = fmaxf(value, __shfl_down_sync(0xffffffffu, value, 8));
-    value = fmaxf(value, __shfl_down_sync(0xffffffffu, value, 4));
-    value = fmaxf(value, __shfl_down_sync(0xffffffffu, value, 2));
-    value = fmaxf(value, __shfl_down_sync(0xffffffffu, value, 1));
     return value;
 }
 
@@ -219,39 +201,6 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageDecodeE2m1(
     return (nibble & 8u) != 0u ? -value : value;
 }
 
-static __device__ __forceinline__ uint8_t SparkGlm52ResidentDecodeStageEncodeE2m1(
-    float value)
-{
-    const float values[8] = {
-        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
-    float absolute_value;
-    float best_delta;
-    uint8_t best_index;
-    uint8_t value_index;
-    uint8_t sign_bit;
-
-    if (!isfinite(value))
-    {
-        return 0u;
-    }
-    sign_bit = value < 0.0f ? 8u : 0u;
-    absolute_value = fabsf(value);
-    best_index = 0u;
-    best_delta = fabsf(absolute_value - values[0]);
-    for (value_index = 1u; value_index < 8u; ++value_index)
-    {
-        float delta;
-
-        delta = fabsf(absolute_value - values[value_index]);
-        if (delta < best_delta)
-        {
-            best_delta = delta;
-            best_index = value_index;
-        }
-    }
-    return (uint8_t)(sign_bit | best_index);
-}
-
 static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageDecodeE8m0(
     uint8_t value)
 {
@@ -294,36 +243,6 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageDecodeMxfp4
         : (uint8_t)(packed_value >> 4u);
     scale_value = SparkGlm52ResidentDecodeStageDecodeE8m0(
         scale_e8m0_u8[scale_index]);
-    return SparkGlm52ResidentDecodeStageDecodeE2m1(nibble) * scale_value;
-}
-
-static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
-    const uint8_t *payload_u8,
-    const uint8_t *scale_e4m3_u8,
-    uint32_t packed_row_stride,
-    uint32_t scale_row_stride,
-    uint32_t row_index,
-    uint32_t column_index)
-{
-    uint64_t packed_index;
-    uint64_t scale_index;
-    uint8_t packed_value;
-    uint8_t nibble;
-    float scale_value;
-
-    packed_index =
-        ((uint64_t)row_index * (uint64_t)packed_row_stride) +
-        ((uint64_t)column_index >> 1u);
-    scale_index =
-        ((uint64_t)row_index * (uint64_t)scale_row_stride) +
-        ((uint64_t)column_index /
-         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE);
-    packed_value = payload_u8[packed_index];
-    nibble = (column_index & 1u) == 0u
-        ? (uint8_t)(packed_value & 0x0fu)
-        : (uint8_t)(packed_value >> 4u);
-    scale_value = SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
-        scale_e4m3_u8[scale_index]);
     return SparkGlm52ResidentDecodeStageDecodeE2m1(nibble) * scale_value;
 }
 
@@ -804,7 +723,10 @@ static __global__ void SparkGlm52ResidentDecodeStagePrepareKernel(
             cache_work_index = work_index - query_rope_work_count;
             sequence_index = (uint32_t)(
                 cache_work_index /
-                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION);
+                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_KV_LATENT,
+        node_context->projection_backend_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT);
             latent_dimension_index = (uint32_t)(
                 cache_work_index %
                 (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION);
@@ -1049,7 +971,8 @@ static __global__ void SparkGlm52ResidentDecodeStageSplitRawKvAKernel(
 
         kv_dimension_index = (uint32_t)(
             work_index %
-            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION);
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_A);
         sequence_index = (uint32_t)(
             work_index /
             (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION);
@@ -1416,6 +1339,203 @@ void SparkGlm52ResidentDecodeStageAttentionKernel(
     }
 }
 
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
+void SparkGlm52ResidentDecodeStageAttentionOnlineKernel(
+    const uint16_t *__restrict__ query_latent_bf16,
+    const uint16_t *__restrict__ rotated_query_rope_bf16,
+    const uint16_t *__restrict__ mla_cache_bf16,
+    const uint16_t *__restrict__ key_nope_cache_bf16,
+    const uint16_t *__restrict__ value_cache_bf16,
+    const uint32_t *__restrict__ block_table,
+    const uint32_t *__restrict__ context_lengths,
+    const uint32_t *__restrict__ first_block_token_offsets,
+    const uint32_t *__restrict__ sparse_token_indices,
+    uint16_t *__restrict__ output_value_bf16,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    uint32_t cache_token_capacity,
+    float qk_scale)
+{
+    __shared__ float shared_query[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION];
+    __shared__ float shared_tile_scores[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS /
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES];
+    __shared__ uint32_t shared_tile_cache_slots[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS /
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES];
+    uint32_t sequence_index;
+    uint32_t head_index;
+    uint32_t lane_index;
+    uint32_t warp_index;
+    uint32_t warp_count;
+    uint32_t context_length;
+    uint32_t first_block_token_offset;
+    uint64_t query_row_index;
+    uint64_t sparse_row_offset;
+    uint64_t output_row_offset;
+    uint32_t dimension_index;
+    uint32_t candidate_base;
+    float online_maximum;
+    float online_denominator;
+    float accumulated_value;
+
+    sequence_index = blockIdx.x;
+    head_index = blockIdx.y;
+    lane_index =
+        threadIdx.x &
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES - 1u);
+    warp_index =
+        threadIdx.x / SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES;
+    warp_count =
+        blockDim.x / SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES;
+    context_length = context_lengths[sequence_index];
+    first_block_token_offset = first_block_token_offsets[sequence_index];
+    query_row_index =
+        ((uint64_t)sequence_index *
+         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT) +
+        (uint64_t)head_index;
+    sparse_row_offset =
+        (uint64_t)sequence_index *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
+    output_row_offset =
+        query_row_index *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+
+    for (dimension_index = threadIdx.x;
+         dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION;
+         dimension_index += blockDim.x)
+    {
+        shared_query[dimension_index] =
+            SparkGlm52ResidentDecodeStageBf16ToFloat(
+                query_latent_bf16[
+                    (query_row_index *
+                     (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION) +
+                    (uint64_t)dimension_index]);
+    }
+    for (dimension_index = threadIdx.x;
+         dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION;
+         dimension_index += blockDim.x)
+    {
+        shared_query[
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION +
+            dimension_index] = SparkGlm52ResidentDecodeStageBf16ToFloat(
+                rotated_query_rope_bf16[
+                    (query_row_index *
+                     (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION) +
+                    (uint64_t)dimension_index]);
+    }
+    __syncthreads();
+
+    dimension_index = threadIdx.x;
+    online_maximum = -FLT_MAX;
+    online_denominator = 0.0f;
+    accumulated_value = 0.0f;
+
+    for (candidate_base = 0u;
+         candidate_base < SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
+         candidate_base += warp_count)
+    {
+        uint32_t candidate_index;
+        uint32_t token_index;
+        uint32_t cache_slot_index;
+        float attention_score;
+        uint32_t tile_index;
+
+        candidate_index = candidate_base + warp_index;
+        cache_slot_index = SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT;
+        attention_score = -FLT_MAX;
+        if (candidate_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT)
+        {
+            token_index = sparse_token_indices[
+                sparse_row_offset + (uint64_t)candidate_index];
+            if (token_index < context_length)
+            {
+                cache_slot_index = SparkGlm52ResidentDecodeStageWarpResolveCacheSlot(
+                    block_table,
+                    sequence_index,
+                    token_index,
+                    first_block_token_offset,
+                    max_blocks_per_sequence,
+                    kv_block_count,
+                    cache_token_capacity,
+                    lane_index);
+            }
+            if (cache_slot_index != SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT)
+            {
+                attention_score = SparkGlm52ResidentDecodeStageWarpDotProduct(
+                    shared_query,
+                    key_nope_cache_bf16,
+                    mla_cache_bf16,
+                    cache_slot_index,
+                    head_index,
+                    lane_index,
+                    qk_scale);
+            }
+        }
+        if (lane_index == 0u)
+        {
+            shared_tile_scores[warp_index] = attention_score;
+            shared_tile_cache_slots[warp_index] = cache_slot_index;
+        }
+        __syncthreads();
+
+        if (dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION)
+        {
+            for (tile_index = 0u; tile_index < warp_count; ++tile_index)
+            {
+                float tile_score;
+                uint32_t tile_cache_slot;
+
+                tile_score = shared_tile_scores[tile_index];
+                tile_cache_slot = shared_tile_cache_slots[tile_index];
+                if (tile_cache_slot !=
+                        SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT &&
+                    tile_score > (-FLT_MAX * 0.5f))
+                {
+                    float next_maximum;
+                    float old_scale;
+                    float tile_scale;
+                    float value;
+                    uint64_t cache_element_offset;
+
+                    next_maximum = tile_score > online_maximum
+                        ? tile_score
+                        : online_maximum;
+                    old_scale = online_denominator > 0.0f
+                        ? __expf(online_maximum - next_maximum)
+                        : 0.0f;
+                    tile_scale = __expf(tile_score - next_maximum);
+                    cache_element_offset =
+                        (((uint64_t)tile_cache_slot *
+                          (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT +
+                          (uint64_t)head_index) *
+                         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) +
+                        (uint64_t)dimension_index;
+                    value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+                        value_cache_bf16[cache_element_offset]);
+                    accumulated_value =
+                        (accumulated_value * old_scale) + (value * tile_scale);
+                    online_denominator =
+                        (online_denominator * old_scale) + tile_scale;
+                    online_maximum = next_maximum;
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    if (dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION)
+    {
+        output_value_bf16[output_row_offset + (uint64_t)dimension_index] =
+            SparkGlm52ResidentDecodeStageFloatToBf16(
+                online_denominator > 0.0f
+                    ? accumulated_value / online_denominator
+                    : 0.0f);
+    }
+}
+
 static __global__ void SparkGlm52ResidentDecodeStageResidualKernel(
     const uint16_t *__restrict__ input_hidden_bf16,
     const uint16_t *__restrict__ projected_hidden_bf16,
@@ -1443,954 +1563,6 @@ static __global__ void SparkGlm52ResidentDecodeStageResidualKernel(
         post_attention_hidden_bf16[element_index] =
             SparkGlm52ResidentDecodeStageFloatToBf16(input_value + projected_value);
         element_index += (uint64_t)gridDim.x * (uint64_t)blockDim.x;
-    }
-}
-
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
-void SparkGlm52ResidentDecodeStageMoeRouterTopKKernel(
-    const uint16_t *__restrict__ input_hidden_bf16,
-    const uint16_t *__restrict__ router_weight_bf16,
-    const float *__restrict__ router_score_bias_f32,
-    uint32_t *__restrict__ topk_expert_ids,
-    float *__restrict__ topk_weights,
-    uint32_t active_sequence_count,
-    uint32_t expert_count,
-    uint32_t top_k,
-    uint32_t norm_topk_prob,
-    float routed_scaling_factor)
-{
-    __shared__ float shared_choice_scores[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT];
-    __shared__ float shared_route_weights[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT];
-    __shared__ uint32_t shared_selected_ids[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
-    __shared__ float shared_selected_weights[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
-    uint32_t sequence_index;
-    uint32_t expert_index;
-    uint32_t hidden_index;
-    float router_logit;
-    float router_score;
-
-    sequence_index = blockIdx.x;
-    expert_index = threadIdx.x;
-    if (sequence_index >= active_sequence_count ||
-        expert_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT)
-    {
-        return;
-    }
-    router_logit = 0.0f;
-    if (expert_index < expert_count)
-    {
-        for (hidden_index = 0u;
-             hidden_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
-             ++hidden_index)
-        {
-            router_logit +=
-                SparkGlm52ResidentDecodeStageBf16ToFloat(
-                    input_hidden_bf16[
-                        ((uint64_t)sequence_index *
-                         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) +
-                        (uint64_t)hidden_index]) *
-                SparkGlm52ResidentDecodeStageBf16ToFloat(
-                    router_weight_bf16[
-                        ((uint64_t)expert_index *
-                         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) +
-                        (uint64_t)hidden_index]);
-        }
-        router_score = 1.0f / (1.0f + __expf(-router_logit));
-        shared_route_weights[expert_index] = router_score;
-        shared_choice_scores[expert_index] =
-            router_score + router_score_bias_f32[expert_index];
-    }
-    else
-    {
-        shared_route_weights[expert_index] = 0.0f;
-        shared_choice_scores[expert_index] = -FLT_MAX;
-    }
-    __syncthreads();
-    if (threadIdx.x == 0u)
-    {
-        float selected_weight_sum;
-        uint32_t selected_index;
-
-        selected_weight_sum = 0.0f;
-        for (selected_index = 0u; selected_index < top_k; ++selected_index)
-        {
-            float best_score;
-            uint32_t best_expert;
-            uint32_t candidate_expert;
-
-            best_score = -FLT_MAX;
-            best_expert = 0u;
-            for (candidate_expert = 0u;
-                 candidate_expert < expert_count;
-                 ++candidate_expert)
-            {
-                float candidate_score;
-
-                candidate_score = shared_choice_scores[candidate_expert];
-                if (candidate_score > best_score ||
-                    (candidate_score == best_score &&
-                     candidate_expert < best_expert))
-                {
-                    best_score = candidate_score;
-                    best_expert = candidate_expert;
-                }
-            }
-            shared_selected_ids[selected_index] = best_expert;
-            shared_selected_weights[selected_index] =
-                shared_route_weights[best_expert];
-            selected_weight_sum += shared_selected_weights[selected_index];
-            shared_choice_scores[best_expert] = -FLT_MAX;
-        }
-        for (selected_index = 0u; selected_index < top_k; ++selected_index)
-        {
-            float selected_weight;
-            uint64_t route_index;
-
-            selected_weight = shared_selected_weights[selected_index];
-            if (norm_topk_prob != 0u && selected_weight_sum > 0.0f)
-            {
-                selected_weight /= selected_weight_sum;
-            }
-            selected_weight *= routed_scaling_factor;
-            route_index =
-                ((uint64_t)sequence_index * (uint64_t)top_k) +
-                (uint64_t)selected_index;
-            topk_expert_ids[route_index] = shared_selected_ids[selected_index];
-            topk_weights[route_index] = selected_weight;
-        }
-    }
-}
-
-static __global__ __launch_bounds__(32, 4)
-void SparkGlm52ResidentDecodeStageBf16ToNvfp4Kernel(
-    const uint16_t *__restrict__ input_bf16,
-    uint8_t *__restrict__ output_payload_u8,
-    uint8_t *__restrict__ output_scale_e4m3,
-    uint32_t element_count,
-    float global_scale)
-{
-    __shared__ float shared_scale_value;
-    __shared__ uint8_t shared_scale_byte;
-    uint32_t block_offset;
-    float local_maximum;
-    float maximum_value;
-
-    block_offset =
-        blockIdx.x * SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE;
-    if (block_offset >= element_count)
-    {
-        return;
-    }
-    local_maximum = 0.0f;
-    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE &&
-        block_offset + threadIdx.x < element_count)
-    {
-        local_maximum = fabsf(
-            SparkGlm52ResidentDecodeStageBf16ToFloat(
-                input_bf16[block_offset + threadIdx.x]));
-    }
-    maximum_value = SparkGlm52ResidentDecodeStageWarpReduceMax(local_maximum);
-    if (threadIdx.x == 0u)
-    {
-        float scale_value;
-
-        scale_value = maximum_value == 0.0f
-            ? 0.0f
-            : ((maximum_value * global_scale) / 6.0f);
-        shared_scale_byte =
-            SparkGlm52ResidentDecodeStageEncodePositiveE4m3Scale(
-                scale_value);
-        shared_scale_value = SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
-            shared_scale_byte);
-        output_scale_e4m3[blockIdx.x] = shared_scale_byte;
-    }
-    __syncthreads();
-    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE / 2u)
-    {
-        uint32_t low_index;
-        uint32_t high_index;
-        float low_value;
-        float high_value;
-        uint8_t low_nibble;
-        uint8_t high_nibble;
-
-        low_index = block_offset + (threadIdx.x * 2u);
-        high_index = low_index + 1u;
-        low_value = 0.0f;
-        high_value = 0.0f;
-        if (low_index < element_count)
-        {
-            low_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-                input_bf16[low_index]);
-        }
-        if (high_index < element_count)
-        {
-            high_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-                input_bf16[high_index]);
-        }
-        low_nibble = shared_scale_value == 0.0f
-            ? 0u
-            : SparkGlm52ResidentDecodeStageEncodeE2m1(
-                (low_value * global_scale) / shared_scale_value);
-        high_nibble = shared_scale_value == 0.0f
-            ? 0u
-            : SparkGlm52ResidentDecodeStageEncodeE2m1(
-                (high_value * global_scale) / shared_scale_value);
-        output_payload_u8[low_index >> 1u] =
-            (uint8_t)(low_nibble | (high_nibble << 4u));
-    }
-}
-
-static __device__ __forceinline__ int32_t SparkGlm52ResidentDecodeStageFindBoundExpertSlot(
-    const uint32_t *__restrict__ bound_expert_ids,
-    uint32_t bound_expert_count,
-    uint32_t expert_id)
-{
-    uint32_t expert_index;
-
-    for (expert_index = 0u; expert_index < bound_expert_count; ++expert_index)
-    {
-        if (bound_expert_ids[expert_index] == expert_id)
-        {
-            return (int32_t)expert_index;
-        }
-    }
-    return -1;
-}
-
-static __global__ __launch_bounds__(32, 4)
-void SparkGlm52ResidentDecodeStageBf16ToNvfp4RoutesKernel(
-    const uint16_t *__restrict__ input_bf16,
-    const uint32_t *__restrict__ topk_expert_ids,
-    const uint32_t *__restrict__ bound_expert_ids,
-    const float *__restrict__ input_scale_f32,
-    uint8_t *__restrict__ output_payload_u8,
-    uint8_t *__restrict__ output_scale_e4m3,
-    uint32_t route_count,
-    uint32_t bound_expert_count)
-{
-    __shared__ float shared_scale_value;
-    __shared__ uint8_t shared_scale_byte;
-    uint32_t route_index;
-    uint32_t block_offset;
-    uint32_t token_index;
-    int32_t bound_expert_slot;
-    float local_maximum;
-    float maximum_value;
-    float global_scale;
-
-    route_index = blockIdx.y;
-    block_offset =
-        blockIdx.x * SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE;
-    if (route_index >= route_count ||
-        block_offset >= SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)
-    {
-        return;
-    }
-    bound_expert_slot =
-        SparkGlm52ResidentDecodeStageFindBoundExpertSlot(
-            bound_expert_ids,
-            bound_expert_count,
-            topk_expert_ids[route_index]);
-    global_scale = bound_expert_slot < 0 ||
-        input_scale_f32[bound_expert_slot] <= 0.0f
-            ? 0.0f
-            : 1.0f / input_scale_f32[bound_expert_slot];
-    token_index = route_index / SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
-    local_maximum = 0.0f;
-    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE &&
-        block_offset + threadIdx.x <
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION &&
-        global_scale > 0.0f)
-    {
-        local_maximum = fabsf(
-            SparkGlm52ResidentDecodeStageBf16ToFloat(
-                input_bf16[
-                    ((uint64_t)token_index *
-                     SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) +
-                    (uint64_t)block_offset +
-                    (uint64_t)threadIdx.x]));
-    }
-    maximum_value = SparkGlm52ResidentDecodeStageWarpReduceMax(local_maximum);
-    if (threadIdx.x == 0u)
-    {
-        float scale_value;
-
-        scale_value = maximum_value == 0.0f
-            ? 0.0f
-            : ((maximum_value * global_scale) / 6.0f);
-        shared_scale_byte =
-            SparkGlm52ResidentDecodeStageEncodePositiveE4m3Scale(
-                scale_value);
-        shared_scale_value = SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
-            shared_scale_byte);
-        output_scale_e4m3[
-            ((uint64_t)route_index *
-             (SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
-              SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE)) +
-            (uint64_t)blockIdx.x] = shared_scale_byte;
-    }
-    __syncthreads();
-    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE / 2u)
-    {
-        uint32_t low_index;
-        uint32_t high_index;
-        float low_value;
-        float high_value;
-        uint8_t low_nibble;
-        uint8_t high_nibble;
-
-        low_index = block_offset + (threadIdx.x * 2u);
-        high_index = low_index + 1u;
-        low_value = 0.0f;
-        high_value = 0.0f;
-        if (low_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION &&
-            shared_scale_value > 0.0f)
-        {
-            low_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-                input_bf16[
-                    ((uint64_t)token_index *
-                     SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) +
-                    (uint64_t)low_index]);
-        }
-        if (high_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION &&
-            shared_scale_value > 0.0f)
-        {
-            high_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-                input_bf16[
-                    ((uint64_t)token_index *
-                     SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) +
-                    (uint64_t)high_index]);
-        }
-        low_nibble = shared_scale_value == 0.0f
-            ? 0u
-            : SparkGlm52ResidentDecodeStageEncodeE2m1(
-                (low_value * global_scale) / shared_scale_value);
-        high_nibble = shared_scale_value == 0.0f
-            ? 0u
-            : SparkGlm52ResidentDecodeStageEncodeE2m1(
-                (high_value * global_scale) / shared_scale_value);
-        output_payload_u8[
-            ((uint64_t)route_index *
-             (SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u)) +
-            ((uint64_t)low_index >> 1u)] =
-            (uint8_t)(low_nibble | (high_nibble << 4u));
-    }
-}
-
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
-void SparkGlm52ResidentDecodeStageMoeNvfp4GateUpTop1Kernel(
-    const uint8_t *__restrict__ input_payload_u8,
-    const uint8_t *__restrict__ input_scale_e4m3,
-    const uint32_t *__restrict__ topk_expert_ids,
-    const uint8_t *__restrict__ gate_weight_u8,
-    const uint8_t *__restrict__ gate_weight_scale_e4m3,
-    const uint8_t *__restrict__ up_weight_u8,
-    const uint8_t *__restrict__ up_weight_scale_e4m3,
-    uint16_t *__restrict__ gate_bf16,
-    uint16_t *__restrict__ up_bf16,
-    uint32_t selected_expert_id,
-    float gate_alpha,
-    float up_alpha)
-{
-    __shared__ float shared_gate[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    __shared__ float shared_up[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    uint32_t intermediate_index;
-    uint32_t hidden_index;
-    float local_gate;
-    float local_up;
-
-    intermediate_index = blockIdx.x;
-    if (intermediate_index >=
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION)
-    {
-        return;
-    }
-    if (topk_expert_ids[0] != selected_expert_id)
-    {
-        if (threadIdx.x == 0u)
-        {
-            gate_bf16[intermediate_index] = 0u;
-            up_bf16[intermediate_index] = 0u;
-        }
-        return;
-    }
-    local_gate = 0.0f;
-    local_up = 0.0f;
-    for (hidden_index = threadIdx.x;
-         hidden_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
-         hidden_index += blockDim.x)
-    {
-        float input_value;
-
-        input_value = SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
-            input_payload_u8,
-            input_scale_e4m3,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-            0u,
-            hidden_index);
-        local_gate += input_value *
-            SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
-                gate_weight_u8,
-                gate_weight_scale_e4m3,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-                intermediate_index,
-                hidden_index);
-        local_up += input_value *
-            SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
-                up_weight_u8,
-                up_weight_scale_e4m3,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-                intermediate_index,
-                hidden_index);
-    }
-    shared_gate[threadIdx.x] = local_gate;
-    shared_up[threadIdx.x] = local_up;
-    __syncthreads();
-    for (hidden_index = blockDim.x >> 1u;
-         hidden_index != 0u;
-         hidden_index >>= 1u)
-    {
-        if (threadIdx.x < hidden_index)
-        {
-            shared_gate[threadIdx.x] += shared_gate[threadIdx.x + hidden_index];
-            shared_up[threadIdx.x] += shared_up[threadIdx.x + hidden_index];
-        }
-        __syncthreads();
-    }
-    if (threadIdx.x == 0u)
-    {
-        gate_bf16[intermediate_index] =
-            SparkGlm52ResidentDecodeStageFloatToBf16(
-                shared_gate[0] * gate_alpha);
-        up_bf16[intermediate_index] =
-            SparkGlm52ResidentDecodeStageFloatToBf16(shared_up[0] * up_alpha);
-    }
-}
-
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
-void SparkGlm52ResidentDecodeStageMoeNvfp4GateUpTopKKernel(
-    const uint8_t *__restrict__ input_payload_u8,
-    const uint8_t *__restrict__ input_scale_e4m3,
-    const uint32_t *__restrict__ topk_expert_ids,
-    const uint32_t *__restrict__ bound_expert_ids,
-    const uint8_t *__restrict__ gate_weight_u8,
-    const uint8_t *__restrict__ gate_weight_scale_e4m3,
-    const uint8_t *__restrict__ up_weight_u8,
-    const uint8_t *__restrict__ up_weight_scale_e4m3,
-    const float *__restrict__ gate_input_scale_f32,
-    const float *__restrict__ gate_weight_scale_2_f32,
-    const float *__restrict__ up_input_scale_f32,
-    const float *__restrict__ up_weight_scale_2_f32,
-    uint16_t *__restrict__ gate_bf16,
-    uint16_t *__restrict__ up_bf16,
-    uint32_t route_count,
-    uint32_t bound_expert_count)
-{
-    __shared__ float shared_gate[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    __shared__ float shared_up[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    uint32_t intermediate_index;
-    uint32_t route_index;
-    uint32_t hidden_index;
-    uint32_t bound_row_index;
-    int32_t bound_expert_slot;
-    float local_gate;
-    float local_up;
-
-    intermediate_index = blockIdx.x;
-    route_index = blockIdx.y;
-    if (route_index >= route_count ||
-        intermediate_index >=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION)
-    {
-        return;
-    }
-    bound_expert_slot =
-        SparkGlm52ResidentDecodeStageFindBoundExpertSlot(
-            bound_expert_ids,
-            bound_expert_count,
-            topk_expert_ids[route_index]);
-    if (bound_expert_slot < 0)
-    {
-        if (threadIdx.x == 0u)
-        {
-            gate_bf16[
-                ((uint64_t)route_index *
-                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION) +
-                intermediate_index] = 0u;
-            up_bf16[
-                ((uint64_t)route_index *
-                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION) +
-                intermediate_index] = 0u;
-        }
-        return;
-    }
-    bound_row_index =
-        ((uint32_t)bound_expert_slot *
-         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION) +
-        intermediate_index;
-    local_gate = 0.0f;
-    local_up = 0.0f;
-    for (hidden_index = threadIdx.x;
-         hidden_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
-         hidden_index += blockDim.x)
-    {
-        float input_value;
-
-        input_value = SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
-            input_payload_u8,
-            input_scale_e4m3,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-            route_index,
-            hidden_index);
-        local_gate += input_value *
-            SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
-                gate_weight_u8,
-                gate_weight_scale_e4m3,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-                bound_row_index,
-                hidden_index);
-        local_up += input_value *
-            SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
-                up_weight_u8,
-                up_weight_scale_e4m3,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-                bound_row_index,
-                hidden_index);
-    }
-    shared_gate[threadIdx.x] = local_gate;
-    shared_up[threadIdx.x] = local_up;
-    __syncthreads();
-    for (hidden_index = blockDim.x >> 1u;
-         hidden_index != 0u;
-         hidden_index >>= 1u)
-    {
-        if (threadIdx.x < hidden_index)
-        {
-            shared_gate[threadIdx.x] += shared_gate[threadIdx.x + hidden_index];
-            shared_up[threadIdx.x] += shared_up[threadIdx.x + hidden_index];
-        }
-        __syncthreads();
-    }
-    if (threadIdx.x == 0u)
-    {
-        uint64_t output_index;
-
-        output_index =
-            ((uint64_t)route_index *
-             SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION) +
-            intermediate_index;
-        gate_bf16[output_index] =
-            SparkGlm52ResidentDecodeStageFloatToBf16(
-                shared_gate[0] *
-                gate_input_scale_f32[bound_expert_slot] *
-                gate_weight_scale_2_f32[bound_expert_slot]);
-        up_bf16[output_index] =
-            SparkGlm52ResidentDecodeStageFloatToBf16(
-                shared_up[0] *
-                up_input_scale_f32[bound_expert_slot] *
-                up_weight_scale_2_f32[bound_expert_slot]);
-    }
-}
-
-static __global__ __launch_bounds__(32, 4)
-void SparkGlm52ResidentDecodeStageMoeNvfp4SiluAndQuantTop1Kernel(
-    const uint16_t *__restrict__ gate_bf16,
-    const uint16_t *__restrict__ up_bf16,
-    const uint32_t *__restrict__ topk_expert_ids,
-    uint16_t *__restrict__ intermediate_bf16,
-    uint8_t *__restrict__ output_payload_u8,
-    uint8_t *__restrict__ output_scale_e4m3,
-    uint32_t selected_expert_id,
-    float global_scale)
-{
-    __shared__ float shared_values[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE];
-    __shared__ float shared_scale_value;
-    __shared__ uint8_t shared_scale_byte;
-    uint32_t block_offset;
-    uint32_t value_index;
-    float local_value;
-    float local_maximum;
-    float maximum_value;
-
-    block_offset =
-        blockIdx.x * SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE;
-    if (block_offset >=
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION)
-    {
-        return;
-    }
-    value_index = block_offset + threadIdx.x;
-    local_value = 0.0f;
-    local_maximum = 0.0f;
-    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE &&
-        value_index <
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION &&
-        topk_expert_ids[0] == selected_expert_id)
-    {
-        float gate_value;
-        float up_value;
-
-        gate_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-            gate_bf16[value_index]);
-        up_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-            up_bf16[value_index]);
-        local_value =
-            (gate_value / (1.0f + expf(-gate_value))) * up_value;
-        local_maximum = fabsf(local_value);
-        intermediate_bf16[value_index] =
-            SparkGlm52ResidentDecodeStageFloatToBf16(local_value);
-    }
-    maximum_value = SparkGlm52ResidentDecodeStageWarpReduceMax(local_maximum);
-    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE)
-    {
-        shared_values[threadIdx.x] = local_value;
-    }
-    if (threadIdx.x == 0u)
-    {
-        float scale_value;
-
-        scale_value = maximum_value == 0.0f
-            ? 0.0f
-            : ((maximum_value * global_scale) / 6.0f);
-        shared_scale_byte =
-            SparkGlm52ResidentDecodeStageEncodePositiveE4m3Scale(
-                scale_value);
-        shared_scale_value = SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
-            shared_scale_byte);
-        output_scale_e4m3[blockIdx.x] = shared_scale_byte;
-    }
-    __syncthreads();
-    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE / 2u)
-    {
-        uint32_t low_index;
-        float low_value;
-        float high_value;
-        uint8_t low_nibble;
-        uint8_t high_nibble;
-
-        low_index = block_offset + (threadIdx.x * 2u);
-        low_value = shared_values[threadIdx.x * 2u];
-        high_value = shared_values[(threadIdx.x * 2u) + 1u];
-        low_nibble = shared_scale_value == 0.0f
-            ? 0u
-            : SparkGlm52ResidentDecodeStageEncodeE2m1(
-                (low_value * global_scale) / shared_scale_value);
-        high_nibble = shared_scale_value == 0.0f
-            ? 0u
-            : SparkGlm52ResidentDecodeStageEncodeE2m1(
-                (high_value * global_scale) / shared_scale_value);
-        if (low_index <
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION)
-        {
-            output_payload_u8[low_index >> 1u] =
-                (uint8_t)(low_nibble | (high_nibble << 4u));
-        }
-    }
-}
-
-static __global__ __launch_bounds__(32, 4)
-void SparkGlm52ResidentDecodeStageMoeNvfp4SiluAndQuantTopKKernel(
-    const uint16_t *__restrict__ gate_bf16,
-    const uint16_t *__restrict__ up_bf16,
-    const uint32_t *__restrict__ topk_expert_ids,
-    const uint32_t *__restrict__ bound_expert_ids,
-    const float *__restrict__ down_input_scale_f32,
-    uint16_t *__restrict__ intermediate_bf16,
-    uint8_t *__restrict__ output_payload_u8,
-    uint8_t *__restrict__ output_scale_e4m3,
-    uint32_t route_count,
-    uint32_t bound_expert_count)
-{
-    __shared__ float shared_values[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE];
-    __shared__ float shared_scale_value;
-    __shared__ uint8_t shared_scale_byte;
-    uint32_t route_index;
-    uint32_t block_offset;
-    uint32_t value_index;
-    int32_t bound_expert_slot;
-    float local_value;
-    float local_maximum;
-    float maximum_value;
-    float global_scale;
-
-    route_index = blockIdx.y;
-    block_offset =
-        blockIdx.x * SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE;
-    if (route_index >= route_count ||
-        block_offset >=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION)
-    {
-        return;
-    }
-    bound_expert_slot =
-        SparkGlm52ResidentDecodeStageFindBoundExpertSlot(
-            bound_expert_ids,
-            bound_expert_count,
-            topk_expert_ids[route_index]);
-    global_scale = bound_expert_slot < 0 ||
-        down_input_scale_f32[bound_expert_slot] <= 0.0f
-            ? 0.0f
-            : 1.0f / down_input_scale_f32[bound_expert_slot];
-    value_index = block_offset + threadIdx.x;
-    local_value = 0.0f;
-    local_maximum = 0.0f;
-    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE &&
-        value_index <
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION &&
-        global_scale > 0.0f)
-    {
-        uint64_t route_value_index;
-        float gate_value;
-        float up_value;
-
-        route_value_index =
-            ((uint64_t)route_index *
-             SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION) +
-            value_index;
-        gate_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-            gate_bf16[route_value_index]);
-        up_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-            up_bf16[route_value_index]);
-        local_value =
-            (gate_value / (1.0f + expf(-gate_value))) * up_value;
-        local_maximum = fabsf(local_value);
-        intermediate_bf16[route_value_index] =
-            SparkGlm52ResidentDecodeStageFloatToBf16(local_value);
-    }
-    maximum_value = SparkGlm52ResidentDecodeStageWarpReduceMax(local_maximum);
-    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE)
-    {
-        shared_values[threadIdx.x] = local_value;
-    }
-    if (threadIdx.x == 0u)
-    {
-        float scale_value;
-
-        scale_value = maximum_value == 0.0f
-            ? 0.0f
-            : ((maximum_value * global_scale) / 6.0f);
-        shared_scale_byte =
-            SparkGlm52ResidentDecodeStageEncodePositiveE4m3Scale(
-                scale_value);
-        shared_scale_value = SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
-            shared_scale_byte);
-        output_scale_e4m3[
-            ((uint64_t)route_index *
-             (SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-              SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE)) +
-            (uint64_t)blockIdx.x] = shared_scale_byte;
-    }
-    __syncthreads();
-    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE / 2u)
-    {
-        uint32_t low_index;
-        float low_value;
-        float high_value;
-        uint8_t low_nibble;
-        uint8_t high_nibble;
-
-        low_index = block_offset + (threadIdx.x * 2u);
-        low_value = shared_values[threadIdx.x * 2u];
-        high_value = shared_values[(threadIdx.x * 2u) + 1u];
-        low_nibble = shared_scale_value == 0.0f
-            ? 0u
-            : SparkGlm52ResidentDecodeStageEncodeE2m1(
-                (low_value * global_scale) / shared_scale_value);
-        high_nibble = shared_scale_value == 0.0f
-            ? 0u
-            : SparkGlm52ResidentDecodeStageEncodeE2m1(
-                (high_value * global_scale) / shared_scale_value);
-        output_payload_u8[
-            ((uint64_t)route_index *
-             (SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-              2u)) +
-            ((uint64_t)low_index >> 1u)] =
-            (uint8_t)(low_nibble | (high_nibble << 4u));
-    }
-}
-
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
-void SparkGlm52ResidentDecodeStageMoeNvfp4DownTop1Kernel(
-    const uint8_t *__restrict__ intermediate_payload_u8,
-    const uint8_t *__restrict__ intermediate_scale_e4m3,
-    const uint32_t *__restrict__ topk_expert_ids,
-    const uint8_t *__restrict__ down_weight_u8,
-    const uint8_t *__restrict__ down_weight_scale_e4m3,
-    uint16_t *__restrict__ route_output_bf16,
-    uint32_t selected_expert_id,
-    float down_alpha)
-{
-    __shared__ float shared_reduction[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    uint32_t hidden_index;
-    uint32_t intermediate_index;
-    float local_sum;
-    float output_sum;
-
-    hidden_index = blockIdx.x;
-    if (hidden_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)
-    {
-        return;
-    }
-    if (topk_expert_ids[0] != selected_expert_id)
-    {
-        if (threadIdx.x == 0u)
-        {
-            route_output_bf16[hidden_index] = 0u;
-        }
-        return;
-    }
-    local_sum = 0.0f;
-    for (intermediate_index = threadIdx.x;
-         intermediate_index <
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
-         intermediate_index += blockDim.x)
-    {
-        float input_value;
-
-        input_value = SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
-            intermediate_payload_u8,
-            intermediate_scale_e4m3,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION / 2u,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-            0u,
-            intermediate_index);
-        local_sum += input_value *
-            SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
-                down_weight_u8,
-                down_weight_scale_e4m3,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-                    2u,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-                hidden_index,
-                intermediate_index);
-    }
-    output_sum = SparkGlm52ResidentDecodeStageBlockReduceSum(
-        local_sum,
-        shared_reduction);
-    if (threadIdx.x == 0u)
-    {
-        route_output_bf16[hidden_index] =
-            SparkGlm52ResidentDecodeStageFloatToBf16(output_sum * down_alpha);
-    }
-}
-
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
-void SparkGlm52ResidentDecodeStageMoeNvfp4DownTopKKernel(
-    const uint8_t *__restrict__ intermediate_payload_u8,
-    const uint8_t *__restrict__ intermediate_scale_e4m3,
-    const uint32_t *__restrict__ topk_expert_ids,
-    const uint32_t *__restrict__ bound_expert_ids,
-    const uint8_t *__restrict__ down_weight_u8,
-    const uint8_t *__restrict__ down_weight_scale_e4m3,
-    const float *__restrict__ down_input_scale_f32,
-    const float *__restrict__ down_weight_scale_2_f32,
-    uint16_t *__restrict__ route_output_bf16,
-    uint32_t route_count,
-    uint32_t bound_expert_count)
-{
-    __shared__ float shared_reduction[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    uint32_t hidden_index;
-    uint32_t route_index;
-    uint32_t intermediate_index;
-    uint32_t bound_row_index;
-    int32_t bound_expert_slot;
-    float local_sum;
-    float output_sum;
-
-    hidden_index = blockIdx.x;
-    route_index = blockIdx.y;
-    if (route_index >= route_count ||
-        hidden_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)
-    {
-        return;
-    }
-    bound_expert_slot =
-        SparkGlm52ResidentDecodeStageFindBoundExpertSlot(
-            bound_expert_ids,
-            bound_expert_count,
-            topk_expert_ids[route_index]);
-    if (bound_expert_slot < 0)
-    {
-        if (threadIdx.x == 0u)
-        {
-            route_output_bf16[
-                ((uint64_t)route_index *
-                 SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) +
-                hidden_index] = 0u;
-        }
-        return;
-    }
-    bound_row_index =
-        ((uint32_t)bound_expert_slot *
-         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) +
-        hidden_index;
-    local_sum = 0.0f;
-    for (intermediate_index = threadIdx.x;
-         intermediate_index <
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
-         intermediate_index += blockDim.x)
-    {
-        float input_value;
-
-        input_value = SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
-            intermediate_payload_u8,
-            intermediate_scale_e4m3,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION / 2u,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-            route_index,
-            intermediate_index);
-        local_sum += input_value *
-            SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
-                down_weight_u8,
-                down_weight_scale_e4m3,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-                    2u,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-                bound_row_index,
-                intermediate_index);
-    }
-    output_sum = SparkGlm52ResidentDecodeStageBlockReduceSum(
-        local_sum,
-        shared_reduction);
-    if (threadIdx.x == 0u)
-    {
-        route_output_bf16[
-            ((uint64_t)route_index *
-             SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) +
-            hidden_index] =
-            SparkGlm52ResidentDecodeStageFloatToBf16(
-                output_sum *
-                down_input_scale_f32[bound_expert_slot] *
-                down_weight_scale_2_f32[bound_expert_slot]);
     }
 }
 
@@ -2973,6 +2145,101 @@ void SparkGlm52ResidentDecodeStageMtpDraftLogitsKernel(
     }
 }
 
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
+void SparkGlm52ResidentDecodeStageMtpDraftLogitsVectorizedKernel(
+    const uint16_t *__restrict__ mtp_draft_hidden_bf16,
+    const uint8_t *__restrict__ mtp_weight_payload_u8,
+    const uint8_t *__restrict__ mtp_weight_scale_e8m0_u8,
+    float *__restrict__ mtp_draft_logits,
+    uint32_t active_sequence_count)
+{
+    __shared__ float shared_reduction[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    uint32_t restricted_index;
+    uint32_t row_index;
+    uint32_t sequence_index;
+    uint32_t draft_index;
+    uint32_t packed_hidden_index;
+    uint64_t activation_row_offset;
+    uint64_t packed_row_offset;
+    uint64_t scale_row_offset;
+    float local_sum;
+    float logit_sum;
+
+    restricted_index = blockIdx.x;
+    row_index = blockIdx.y;
+    sequence_index =
+        row_index / SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
+    draft_index =
+        row_index % SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
+    if (restricted_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT ||
+        sequence_index >= active_sequence_count)
+    {
+        return;
+    }
+
+    activation_row_offset =
+        ((((uint64_t)sequence_index *
+           (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT) +
+          (uint64_t)draft_index) *
+         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION);
+    packed_row_offset =
+        (uint64_t)restricted_index *
+        ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u);
+    scale_row_offset =
+        (uint64_t)restricted_index *
+        ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
+         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MXFP4_GROUP_SIZE);
+
+    local_sum = 0.0f;
+    for (packed_hidden_index = threadIdx.x;
+         packed_hidden_index <
+             (SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u);
+         packed_hidden_index += blockDim.x)
+    {
+        uint32_t hidden_index;
+        uint8_t packed_weight;
+        float scale_value;
+        float first_activation;
+        float second_activation;
+        float first_weight;
+        float second_weight;
+
+        hidden_index = packed_hidden_index << 1u;
+        packed_weight = mtp_weight_payload_u8[packed_row_offset +
+            (uint64_t)packed_hidden_index];
+        scale_value = SparkGlm52ResidentDecodeStageDecodeE8m0(
+            mtp_weight_scale_e8m0_u8[
+                scale_row_offset +
+                ((uint64_t)hidden_index /
+                 (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MXFP4_GROUP_SIZE)]);
+        first_activation = SparkGlm52ResidentDecodeStageBf16ToFloat(
+            mtp_draft_hidden_bf16[activation_row_offset +
+                (uint64_t)hidden_index]);
+        second_activation = SparkGlm52ResidentDecodeStageBf16ToFloat(
+            mtp_draft_hidden_bf16[activation_row_offset +
+                (uint64_t)hidden_index + 1u]);
+        first_weight = SparkGlm52ResidentDecodeStageDecodeE2m1(
+            packed_weight & 0x0fu) * scale_value;
+        second_weight = SparkGlm52ResidentDecodeStageDecodeE2m1(
+            packed_weight >> 4u) * scale_value;
+        local_sum += (first_activation * first_weight) +
+            (second_activation * second_weight);
+    }
+
+    logit_sum = SparkGlm52ResidentDecodeStageBlockReduceSum(
+        local_sum,
+        shared_reduction);
+    if (threadIdx.x == 0u)
+    {
+        mtp_draft_logits[
+            ((uint64_t)row_index *
+             (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT) +
+            (uint64_t)restricted_index] = logit_sum;
+    }
+}
+
 static __global__ void SparkGlm52ResidentDecodeStageMtpArgmaxKernel(
     const float *__restrict__ mtp_draft_logits,
     const uint32_t *__restrict__ restricted_token_ids,
@@ -3222,6 +2489,177 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeMarkPhase(
         cuda_stream);
 }
 
+
+typedef SparkStatus (*SparkGlm52ResidentDecodeStageCustomLinearLaunchFunction)(
+    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
+    const void *input,
+    const void *weight,
+    void *output,
+    uint32_t active_sequence_count,
+    void *cuda_stream);
+
+typedef SparkStatus (*SparkGlm52ResidentDecodeStageGroupedMoeLaunchFunction)(
+    const SparkGlm52ResidentDecodeStageGroupedMoePlan *grouped_moe_plan,
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t active_sequence_count,
+    void *cuda_stream);
+
+typedef SparkStatus (*SparkGlm52ResidentDecodeStageRestrictedLogitsLaunchFunction)(
+    const SparkGlm52ResidentDecodeStageRestrictedLogitsPlan *restricted_logits_plan,
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t active_sequence_count,
+    void *cuda_stream);
+
+static const SparkGlm52ResidentDecodeStageLinearPlan *SparkGlm52ResidentDecodeStageGetLinearPlan(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t plan_index,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t active_sequence_count)
+{
+    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan;
+
+    if (node_context->linear_plans == 0 ||
+        plan_index >= node_context->linear_plan_count)
+    {
+        return 0;
+    }
+    linear_plan = &node_context->linear_plans[plan_index];
+    if (linear_plan->abi_version !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ABI_VERSION ||
+        linear_plan->plan_kind ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_UNUSED ||
+        linear_plan->input_dimension != input_dimension ||
+        linear_plan->output_dimension != output_dimension ||
+        active_sequence_count > linear_plan->maximum_active_sequence_count)
+    {
+        return 0;
+    }
+    return linear_plan;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
+    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
+    const void *input,
+    const void *weight,
+    void *output,
+    uint32_t active_sequence_count,
+    cudaStream_t cuda_stream)
+{
+    if (linear_plan == 0 || input == 0 || weight == 0 || output == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (linear_plan->plan_kind ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DRIVER_CUSTOM)
+    {
+        SparkGlm52ResidentDecodeStageCustomLinearLaunchFunction launch_function;
+
+        launch_function =
+            (SparkGlm52ResidentDecodeStageCustomLinearLaunchFunction)
+                linear_plan->custom_launch_function;
+        if (launch_function == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        return launch_function(
+            linear_plan,
+            input,
+            weight,
+            output,
+            active_sequence_count,
+            (void *)cuda_stream);
+    }
+#if SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_CUBLASLT
+    if (linear_plan->plan_kind ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR ||
+        linear_plan->plan_kind ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_FP8_E4M3_ROW_MAJOR)
+    {
+        cublasStatus_t cublas_status;
+        float alpha;
+        float beta;
+
+        if (linear_plan->cublaslt_handle == 0 ||
+            linear_plan->matmul_descriptor == 0 ||
+            linear_plan->input_layout == 0 ||
+            linear_plan->weight_layout == 0 ||
+            linear_plan->output_layout == 0 ||
+            linear_plan->algorithm == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        alpha = linear_plan->alpha != 0.0f ? linear_plan->alpha : 1.0f;
+        beta = linear_plan->beta;
+        cublas_status = cublasLtMatmul(
+            (cublasLtHandle_t)linear_plan->cublaslt_handle,
+            (cublasLtMatmulDesc_t)linear_plan->matmul_descriptor,
+            &alpha,
+            input,
+            (cublasLtMatrixLayout_t)linear_plan->input_layout,
+            weight,
+            (cublasLtMatrixLayout_t)linear_plan->weight_layout,
+            &beta,
+            output,
+            (cublasLtMatrixLayout_t)linear_plan->output_layout,
+            output,
+            (cublasLtMatrixLayout_t)linear_plan->output_layout,
+            (const cublasLtMatmulAlgo_t *)linear_plan->algorithm,
+            linear_plan->workspace,
+            (size_t)linear_plan->workspace_bytes,
+            cuda_stream);
+        return cublas_status == CUBLAS_STATUS_SUCCESS
+            ? SPARK_STATUS_OK
+            : SPARK_STATUS_INTERNAL_ERROR;
+    }
+#endif
+    return SPARK_STATUS_INVALID_ARGUMENT;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t plan_index,
+    const void *input,
+    const void *weight,
+    void *output,
+    uint32_t active_sequence_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    cudaStream_t cuda_stream,
+    bool plan_is_required,
+    bool *plan_was_launched)
+{
+    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan;
+
+    if (plan_was_launched != 0)
+    {
+        *plan_was_launched = false;
+    }
+    linear_plan = SparkGlm52ResidentDecodeStageGetLinearPlan(
+        node_context,
+        plan_index,
+        input_dimension,
+        output_dimension,
+        active_sequence_count);
+    if (linear_plan == 0)
+    {
+        return plan_is_required ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK;
+    }
+    if (plan_was_launched != 0)
+    {
+        *plan_was_launched = true;
+    }
+    return SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
+        linear_plan,
+        input,
+        weight,
+        output,
+        active_sequence_count,
+        cuda_stream);
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinear(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
@@ -3231,9 +2669,30 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinear(
     uint16_t *output_bf16,
     uint32_t active_sequence_count,
     uint32_t input_dimension,
-    uint32_t output_dimension)
+    uint32_t output_dimension,
+    uint32_t plan_index,
+    bool plan_is_required)
 {
     dim3 grid;
+    bool plan_was_launched;
+    SparkStatus status;
+
+    status = SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(
+        node_context,
+        plan_index,
+        input_bf16,
+        weight_bf16,
+        output_bf16,
+        active_sequence_count,
+        input_dimension,
+        output_dimension,
+        cuda_stream,
+        plan_is_required,
+        &plan_was_launched);
+    if (status != SPARK_STATUS_OK || plan_was_launched)
+    {
+        return status;
+    }
 
     grid = dim3(output_dimension, active_sequence_count, 1u);
     SparkGlm52ResidentDecodeStageBf16LinearKernel<<<
@@ -3263,9 +2722,30 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinearFp8(
     uint16_t *output_bf16,
     uint32_t active_sequence_count,
     uint32_t input_dimension,
-    uint32_t output_dimension)
+    uint32_t output_dimension,
+    uint32_t plan_index,
+    bool plan_is_required)
 {
     dim3 grid;
+    bool plan_was_launched;
+    SparkStatus status;
+
+    status = SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(
+        node_context,
+        plan_index,
+        input_bf16,
+        weight_fp8_e4m3,
+        output_bf16,
+        active_sequence_count,
+        input_dimension,
+        output_dimension,
+        cuda_stream,
+        plan_is_required,
+        &plan_was_launched);
+    if (status != SPARK_STATUS_OK || plan_was_launched)
+    {
+        return status;
+    }
 
     grid = dim3(output_dimension, active_sequence_count, 1u);
     SparkGlm52ResidentDecodeStageFp8LinearKernel<<<
@@ -3297,8 +2777,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawLinear(
     uint16_t *output_bf16,
     uint32_t active_sequence_count,
     uint32_t input_dimension,
-    uint32_t output_dimension)
+    uint32_t output_dimension,
+    uint32_t plan_index)
 {
+    bool plan_is_required;
+
+    plan_is_required = node_context->projection_backend_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
     if (node_context->projection_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3)
     {
@@ -3312,7 +2797,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawLinear(
             output_bf16,
             active_sequence_count,
             input_dimension,
-            output_dimension);
+            output_dimension,
+            plan_index,
+            plan_is_required);
     }
     return SparkGlm52ResidentDecodeStageLaunchLinear(
         node_context,
@@ -3323,7 +2810,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawLinear(
         output_bf16,
         active_sequence_count,
         input_dimension,
-        output_dimension);
+        output_dimension,
+        plan_index,
+        plan_is_required);
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchRmsNormDimension(
@@ -3374,7 +2863,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         (uint16_t *)pipeline_slot->raw_query_a_bf16,
         active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -3403,7 +2893,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         (uint16_t *)pipeline_slot->raw_query_b_bf16,
         active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_B);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -3440,7 +2931,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         (uint16_t *)pipeline_slot->raw_kv_a_bf16,
         active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_A);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -3488,7 +2980,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         (uint16_t *)pipeline_slot->raw_kv_b_bf16,
         active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_B);
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchLoweredProjection(
@@ -3509,7 +3002,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLoweredProjection(
         (uint16_t *)pipeline_slot->query_latent_bf16,
         active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_LATENT_PROJECTION_DIMENSION);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_LATENT_PROJECTION_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_QUERY_LATENT,
+        node_context->projection_backend_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -3523,7 +3019,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLoweredProjection(
         (uint16_t *)pipeline_slot->query_rope_input_bf16,
         active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_QUERY_ROPE,
+        node_context->projection_backend_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -3537,7 +3036,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLoweredProjection(
         (uint16_t *)pipeline_slot->key_rope_input_bf16,
         active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_KEY_ROPE,
+        node_context->projection_backend_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -3551,7 +3053,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLoweredProjection(
         (uint16_t *)pipeline_slot->current_kv_latent_bf16,
         active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_KV_LATENT,
+        node_context->projection_backend_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT);
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
@@ -3597,6 +3102,160 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
         node_context,
         cuda_slot_state,
         cuda_stream);
+}
+
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count)
+{
+    uint64_t intermediate_value_count;
+    uint64_t hidden_element_count;
+    SparkStatus status;
+
+    status = SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->post_attention_normalized_hidden_bf16,
+        (const uint16_t *)node_context->dense_gate_weight_bf16,
+        (uint16_t *)pipeline_slot->moe_gate_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        node_context->dense_intermediate_dimension,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_GATE,
+        true);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->post_attention_normalized_hidden_bf16,
+        (const uint16_t *)node_context->dense_up_weight_bf16,
+        (uint16_t *)pipeline_slot->moe_up_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        node_context->dense_intermediate_dimension,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_UP,
+        true);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    intermediate_value_count =
+        (uint64_t)active_sequence_count *
+        (uint64_t)node_context->dense_intermediate_dimension;
+    SparkGlm52ResidentDecodeStageMoeSiluKernel<<<
+        SparkGlm52ResidentDecodeStageElementBlockCount(intermediate_value_count),
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)pipeline_slot->moe_gate_bf16,
+        (const uint16_t *)pipeline_slot->moe_up_bf16,
+        (uint16_t *)pipeline_slot->moe_intermediate_bf16,
+        intermediate_value_count);
+    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->moe_intermediate_bf16,
+        (const uint16_t *)node_context->dense_down_weight_bf16,
+        (uint16_t *)pipeline_slot->layer_output_hidden_bf16,
+        active_sequence_count,
+        node_context->dense_intermediate_dimension,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_DOWN,
+        true);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    hidden_element_count =
+        (uint64_t)active_sequence_count *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    SparkGlm52ResidentDecodeStageResidualKernel<<<
+        SparkGlm52ResidentDecodeStageElementBlockCount(hidden_element_count),
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)pipeline_slot->post_attention_hidden_bf16,
+        (const uint16_t *)pipeline_slot->layer_output_hidden_bf16,
+        (uint16_t *)pipeline_slot->layer_output_hidden_bf16,
+        active_sequence_count);
+    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
+        node_context,
+        pipeline_slot,
+        cuda_slot_state,
+        cuda_stream,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE);
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchDriverGroupedMoe(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count)
+{
+    SparkGlm52ResidentDecodeStageGroupedMoeLaunchFunction launch_function;
+    SparkStatus status;
+
+    if (node_context->grouped_moe_plan == 0 ||
+        node_context->grouped_moe_plan->abi_version !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_GROUPED_MOE_PLAN_ABI_VERSION ||
+        node_context->grouped_moe_plan->launch_function == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    launch_function =
+        (SparkGlm52ResidentDecodeStageGroupedMoeLaunchFunction)
+            node_context->grouped_moe_plan->launch_function;
+    status = launch_function(
+        node_context->grouped_moe_plan,
+        node_context,
+        pipeline_slot,
+        active_sequence_count,
+        (void *)cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
+        node_context,
+        pipeline_slot,
+        cuda_slot_state,
+        cuda_stream,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE);
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
@@ -3645,6 +3304,30 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
     if (status != SPARK_STATUS_OK)
     {
         return status;
+    }
+    if (node_context->layer_progression_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP &&
+        node_context->mlp_execution_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE)
+    {
+        return SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count);
+    }
+    if (node_context->layer_progression_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE &&
+        node_context->mlp_execution_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_DRIVER_GROUPED_MOE)
+    {
+        return SparkGlm52ResidentDecodeStageTryLaunchDriverGroupedMoe(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count);
     }
     if (node_context->layer_progression_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP)
@@ -3711,389 +3394,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
             active_sequence_count,
             SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
             node_context->dense_intermediate_dimension);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
-            node_context,
-            pipeline_slot,
-            cuda_slot_state,
-            cuda_stream,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE);
-    }
-    if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY)
-    {
-        SparkGlm52ResidentDecodeStageMoeRouterTopKKernel<<<
-            active_sequence_count,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)pipeline_slot->post_attention_normalized_hidden_bf16,
-            (const uint16_t *)node_context->moe_router_weight_bf16,
-            node_context->moe_router_score_bias_f32,
-            pipeline_slot->moe_topk_expert_ids,
-            pipeline_slot->moe_topk_weights,
-            active_sequence_count,
-            node_context->moe_expert_count,
-            node_context->moe_top_k,
-            node_context->moe_norm_topk_prob,
-            node_context->moe_routed_scaling_factor);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
-            node_context,
-            pipeline_slot,
-            cuda_slot_state,
-            cuda_stream,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE);
-    }
-    if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOP1)
-    {
-        uint8_t *hidden_payload_u8;
-        uint8_t *hidden_scale_e4m3;
-        uint8_t *intermediate_payload_u8;
-        uint8_t *intermediate_scale_e4m3;
-
-        SparkGlm52ResidentDecodeStageMoeRouterTopKKernel<<<
-            active_sequence_count,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)pipeline_slot->post_attention_normalized_hidden_bf16,
-            (const uint16_t *)node_context->moe_router_weight_bf16,
-            node_context->moe_router_score_bias_f32,
-            pipeline_slot->moe_topk_expert_ids,
-            pipeline_slot->moe_topk_weights,
-            active_sequence_count,
-            node_context->moe_expert_count,
-            node_context->moe_top_k,
-            node_context->moe_norm_topk_prob,
-            node_context->moe_routed_scaling_factor);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        hidden_payload_u8 = (uint8_t *)pipeline_slot->moe_route_output_bf16;
-        hidden_scale_e4m3 =
-            hidden_payload_u8 +
-            (SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u);
-        SparkGlm52ResidentDecodeStageBf16ToNvfp4Kernel<<<
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-            32u,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)pipeline_slot->post_attention_normalized_hidden_bf16,
-            hidden_payload_u8,
-            hidden_scale_e4m3,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-            1.0f / node_context->moe_nvfp4_gate_input_scale);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        SparkGlm52ResidentDecodeStageMoeNvfp4GateUpTop1Kernel<<<
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            hidden_payload_u8,
-            hidden_scale_e4m3,
-            pipeline_slot->moe_topk_expert_ids,
-            node_context->moe_nvfp4_gate_weight_u8,
-            node_context->moe_nvfp4_gate_weight_scale_e4m3,
-            node_context->moe_nvfp4_up_weight_u8,
-            node_context->moe_nvfp4_up_weight_scale_e4m3,
-            (uint16_t *)pipeline_slot->moe_gate_bf16,
-            (uint16_t *)pipeline_slot->moe_up_bf16,
-            node_context->moe_nvfp4_selected_expert_id,
-            node_context->moe_nvfp4_gate_input_scale *
-                node_context->moe_nvfp4_gate_weight_scale_2,
-            node_context->moe_nvfp4_up_input_scale *
-                node_context->moe_nvfp4_up_weight_scale_2);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        intermediate_payload_u8 = (uint8_t *)pipeline_slot->moe_gate_bf16;
-        intermediate_scale_e4m3 =
-            intermediate_payload_u8 +
-            (SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-             2u);
-        SparkGlm52ResidentDecodeStageMoeNvfp4SiluAndQuantTop1Kernel<<<
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-            32u,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)pipeline_slot->moe_gate_bf16,
-            (const uint16_t *)pipeline_slot->moe_up_bf16,
-            pipeline_slot->moe_topk_expert_ids,
-            (uint16_t *)pipeline_slot->moe_intermediate_bf16,
-            intermediate_payload_u8,
-            intermediate_scale_e4m3,
-            node_context->moe_nvfp4_selected_expert_id,
-            1.0f / node_context->moe_nvfp4_down_input_scale);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        SparkGlm52ResidentDecodeStageMoeNvfp4DownTop1Kernel<<<
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            intermediate_payload_u8,
-            intermediate_scale_e4m3,
-            pipeline_slot->moe_topk_expert_ids,
-            node_context->moe_nvfp4_down_weight_u8,
-            node_context->moe_nvfp4_down_weight_scale_e4m3,
-            (uint16_t *)pipeline_slot->moe_route_output_bf16,
-            node_context->moe_nvfp4_selected_expert_id,
-            node_context->moe_nvfp4_down_input_scale *
-                node_context->moe_nvfp4_down_weight_scale_2);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        hidden_element_count =
-            (uint64_t)active_sequence_count *
-            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
-        SparkGlm52ResidentDecodeStageMoeCombineKernel<<<
-            SparkGlm52ResidentDecodeStageElementBlockCount(hidden_element_count),
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)pipeline_slot->post_attention_hidden_bf16,
-            (const uint16_t *)pipeline_slot->moe_route_output_bf16,
-            pipeline_slot->moe_topk_weights,
-            (uint16_t *)pipeline_slot->layer_output_hidden_bf16,
-            active_sequence_count,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-            1u);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
-            node_context,
-            pipeline_slot,
-            cuda_slot_state,
-            cuda_stream,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE);
-    }
-    if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK)
-    {
-        uint32_t nvfp4_route_count;
-        uint8_t *hidden_payload_u8;
-        uint8_t *hidden_scale_e4m3;
-        uint8_t *intermediate_payload_u8;
-        uint8_t *intermediate_scale_e4m3;
-        dim3 hidden_quant_grid;
-        dim3 gate_up_nvfp4_grid;
-        dim3 intermediate_quant_grid;
-        dim3 down_nvfp4_grid;
-
-        nvfp4_route_count =
-            active_sequence_count * node_context->moe_top_k;
-        SparkGlm52ResidentDecodeStageMoeRouterTopKKernel<<<
-            active_sequence_count,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)pipeline_slot->post_attention_normalized_hidden_bf16,
-            (const uint16_t *)node_context->moe_router_weight_bf16,
-            node_context->moe_router_score_bias_f32,
-            pipeline_slot->moe_topk_expert_ids,
-            pipeline_slot->moe_topk_weights,
-            active_sequence_count,
-            node_context->moe_expert_count,
-            node_context->moe_top_k,
-            node_context->moe_norm_topk_prob,
-            node_context->moe_routed_scaling_factor);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        hidden_payload_u8 = (uint8_t *)pipeline_slot->moe_route_output_bf16;
-        hidden_scale_e4m3 =
-            hidden_payload_u8 +
-            ((uint64_t)nvfp4_route_count *
-             (SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u));
-        hidden_quant_grid = dim3(
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-            nvfp4_route_count);
-        SparkGlm52ResidentDecodeStageBf16ToNvfp4RoutesKernel<<<
-            hidden_quant_grid,
-            32u,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)pipeline_slot->post_attention_normalized_hidden_bf16,
-            pipeline_slot->moe_topk_expert_ids,
-            node_context->moe_nvfp4_bound_expert_ids,
-            node_context->moe_nvfp4_gate_input_scale_f32,
-            hidden_payload_u8,
-            hidden_scale_e4m3,
-            nvfp4_route_count,
-            node_context->moe_nvfp4_bound_expert_count);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        gate_up_nvfp4_grid = dim3(
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,
-            nvfp4_route_count);
-        SparkGlm52ResidentDecodeStageMoeNvfp4GateUpTopKKernel<<<
-            gate_up_nvfp4_grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            hidden_payload_u8,
-            hidden_scale_e4m3,
-            pipeline_slot->moe_topk_expert_ids,
-            node_context->moe_nvfp4_bound_expert_ids,
-            node_context->moe_nvfp4_gate_weight_u8,
-            node_context->moe_nvfp4_gate_weight_scale_e4m3,
-            node_context->moe_nvfp4_up_weight_u8,
-            node_context->moe_nvfp4_up_weight_scale_e4m3,
-            node_context->moe_nvfp4_gate_input_scale_f32,
-            node_context->moe_nvfp4_gate_weight_scale_2_f32,
-            node_context->moe_nvfp4_up_input_scale_f32,
-            node_context->moe_nvfp4_up_weight_scale_2_f32,
-            (uint16_t *)pipeline_slot->moe_gate_bf16,
-            (uint16_t *)pipeline_slot->moe_up_bf16,
-            nvfp4_route_count,
-            node_context->moe_nvfp4_bound_expert_count);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        intermediate_payload_u8 = (uint8_t *)pipeline_slot->moe_gate_bf16;
-        intermediate_scale_e4m3 =
-            intermediate_payload_u8 +
-            ((uint64_t)nvfp4_route_count *
-             (SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-              2u));
-        intermediate_quant_grid = dim3(
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
-            nvfp4_route_count);
-        SparkGlm52ResidentDecodeStageMoeNvfp4SiluAndQuantTopKKernel<<<
-            intermediate_quant_grid,
-            32u,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)pipeline_slot->moe_gate_bf16,
-            (const uint16_t *)pipeline_slot->moe_up_bf16,
-            pipeline_slot->moe_topk_expert_ids,
-            node_context->moe_nvfp4_bound_expert_ids,
-            node_context->moe_nvfp4_down_input_scale_f32,
-            (uint16_t *)pipeline_slot->moe_intermediate_bf16,
-            intermediate_payload_u8,
-            intermediate_scale_e4m3,
-            nvfp4_route_count,
-            node_context->moe_nvfp4_bound_expert_count);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        down_nvfp4_grid = dim3(
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-            nvfp4_route_count);
-        SparkGlm52ResidentDecodeStageMoeNvfp4DownTopKKernel<<<
-            down_nvfp4_grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            intermediate_payload_u8,
-            intermediate_scale_e4m3,
-            pipeline_slot->moe_topk_expert_ids,
-            node_context->moe_nvfp4_bound_expert_ids,
-            node_context->moe_nvfp4_down_weight_u8,
-            node_context->moe_nvfp4_down_weight_scale_e4m3,
-            node_context->moe_nvfp4_down_input_scale_f32,
-            node_context->moe_nvfp4_down_weight_scale_2_f32,
-            (uint16_t *)pipeline_slot->moe_route_output_bf16,
-            nvfp4_route_count,
-            node_context->moe_nvfp4_bound_expert_count);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-            node_context,
-            cuda_slot_state,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        hidden_element_count =
-            (uint64_t)active_sequence_count *
-            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
-        SparkGlm52ResidentDecodeStageMoeCombineKernel<<<
-            SparkGlm52ResidentDecodeStageElementBlockCount(hidden_element_count),
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)pipeline_slot->post_attention_hidden_bf16,
-            (const uint16_t *)pipeline_slot->moe_route_output_bf16,
-            pipeline_slot->moe_topk_weights,
-            (uint16_t *)pipeline_slot->layer_output_hidden_bf16,
-            active_sequence_count,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-            node_context->moe_top_k);
         status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
             node_context,
             cuda_slot_state,
@@ -4215,6 +3515,79 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
         cuda_slot_state,
         cuda_stream,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE);
+}
+
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchRestrictedLogits(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count)
+{
+    SparkGlm52ResidentDecodeStageRestrictedLogitsLaunchFunction launch_function;
+    bool plan_was_launched;
+    SparkStatus status;
+    dim3 restricted_grid;
+
+    status = SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(
+        node_context,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RESTRICTED_LOGITS,
+        pipeline_slot->normalized_hidden_bf16,
+        node_context->restricted_lm_head_weight_bf16,
+        pipeline_slot->restricted_logits,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT,
+        cuda_stream,
+        false,
+        &plan_was_launched);
+    if (status != SPARK_STATUS_OK || plan_was_launched)
+    {
+        return status;
+    }
+
+    if (node_context->restricted_logits_plan != 0 &&
+        node_context->restricted_logits_plan->abi_version ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_LOGITS_PLAN_ABI_VERSION &&
+        node_context->restricted_logits_plan->launch_function != 0)
+    {
+        launch_function =
+            (SparkGlm52ResidentDecodeStageRestrictedLogitsLaunchFunction)
+                node_context->restricted_logits_plan->launch_function;
+        status = launch_function(
+            node_context->restricted_logits_plan,
+            node_context,
+            pipeline_slot,
+            active_sequence_count,
+            (void *)cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+    }
+
+    restricted_grid = dim3(
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT,
+        active_sequence_count,
+        1u);
+    SparkGlm52ResidentDecodeStageRestrictedLogitsKernel<<<
+        restricted_grid,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
+        (const uint16_t *)node_context->restricted_lm_head_weight_bf16,
+        pipeline_slot->restricted_logits,
+        active_sequence_count);
+    return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
 }
 
 static void CUDART_CB SparkGlm52ResidentDecodeStageCudaCompletion(
@@ -4494,25 +3867,51 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
         active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT,
         1u);
-    SparkGlm52ResidentDecodeStageAttentionKernel<<<
-        attention_grid,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-        0u,
-        cuda_stream>>>(
-        (const uint16_t *)pipeline_slot->query_latent_bf16,
-        (const uint16_t *)pipeline_slot->rotated_query_rope_bf16,
-        (const uint16_t *)node_context->mla_cache_bf16,
-        (const uint16_t *)node_context->key_nope_cache_bf16,
-        (const uint16_t *)node_context->value_cache_bf16,
-        pipeline_slot->block_table,
-        pipeline_slot->context_lengths,
-        pipeline_slot->first_block_token_offsets,
-        pipeline_slot->sparse_token_indices,
-        (uint16_t *)pipeline_slot->attention_output_latent_bf16,
-        node_context->max_blocks_per_sequence,
-        node_context->kv_block_count,
-        node_context->cache_token_capacity,
-        node_context->qk_scale);
+    if (node_context->attention_execution_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX)
+    {
+        SparkGlm52ResidentDecodeStageAttentionOnlineKernel<<<
+            attention_grid,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            (const uint16_t *)pipeline_slot->query_latent_bf16,
+            (const uint16_t *)pipeline_slot->rotated_query_rope_bf16,
+            (const uint16_t *)node_context->mla_cache_bf16,
+            (const uint16_t *)node_context->key_nope_cache_bf16,
+            (const uint16_t *)node_context->value_cache_bf16,
+            pipeline_slot->block_table,
+            pipeline_slot->context_lengths,
+            pipeline_slot->first_block_token_offsets,
+            pipeline_slot->sparse_token_indices,
+            (uint16_t *)pipeline_slot->attention_output_latent_bf16,
+            node_context->max_blocks_per_sequence,
+            node_context->kv_block_count,
+            node_context->cache_token_capacity,
+            node_context->qk_scale);
+    }
+    else
+    {
+        SparkGlm52ResidentDecodeStageAttentionKernel<<<
+            attention_grid,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            (const uint16_t *)pipeline_slot->query_latent_bf16,
+            (const uint16_t *)pipeline_slot->rotated_query_rope_bf16,
+            (const uint16_t *)node_context->mla_cache_bf16,
+            (const uint16_t *)node_context->key_nope_cache_bf16,
+            (const uint16_t *)node_context->value_cache_bf16,
+            pipeline_slot->block_table,
+            pipeline_slot->context_lengths,
+            pipeline_slot->first_block_token_offsets,
+            pipeline_slot->sparse_token_indices,
+            (uint16_t *)pipeline_slot->attention_output_latent_bf16,
+            node_context->max_blocks_per_sequence,
+            node_context->kv_block_count,
+            node_context->cache_token_capacity,
+            node_context->qk_scale);
+    }
     status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
         node_context,
         cuda_slot_state,
@@ -4543,7 +3942,8 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
         (uint16_t *)pipeline_slot->attention_projected_hidden_bf16,
         active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ATTENTION_OUTPUT);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -4590,11 +3990,8 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
         return status;
     }
 
-    final_norm_input_bf16 =
-        (node_context->layer_progression_mode ==
-         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ATTENTION_ONLY ||
-         node_context->layer_progression_mode ==
-         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY)
+    final_norm_input_bf16 = node_context->layer_progression_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ATTENTION_ONLY
         ? (const uint16_t *)pipeline_slot->post_attention_hidden_bf16
         : (const uint16_t *)pipeline_slot->layer_output_hidden_bf16;
     SparkGlm52ResidentDecodeStageRmsNormKernel<<<
@@ -4615,23 +4012,12 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
     {
         return status;
     }
-    restricted_grid = dim3(
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT,
-        active_sequence_count,
-        1u);
-    SparkGlm52ResidentDecodeStageRestrictedLogitsKernel<<<
-        restricted_grid,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-        0u,
-        cuda_stream>>>(
-        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
-        (const uint16_t *)node_context->restricted_lm_head_weight_bf16,
-        pipeline_slot->restricted_logits,
-        active_sequence_count);
-    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+    status = SparkGlm52ResidentDecodeStageLaunchRestrictedLogits(
         node_context,
+        pipeline_slot,
         cuda_slot_state,
-        cuda_stream);
+        cuda_stream,
+        active_sequence_count);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -4670,7 +4056,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
         active_sequence_count *
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,
         1u);
-    SparkGlm52ResidentDecodeStageMtpDraftLogitsKernel<<<
+    SparkGlm52ResidentDecodeStageMtpDraftLogitsVectorizedKernel<<<
         mtp_logits_grid,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
         0u,

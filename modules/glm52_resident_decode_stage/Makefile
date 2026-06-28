@@ -11,8 +11,10 @@ ARTIFACT_CHECK_ARGS ?=
 BUILD_DIRECTORY := $(REPOSITORY_ROOT)/build/modules/glm52_resident_decode_stage
 HOST_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module.o
 CUDA_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda.o
+CUBLASLT_PLAN_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cublaslt_plans.o
 HOST_DEPENDENCY := $(HOST_OBJECT:.o=.d)
 CUDA_DEPENDENCY := $(CUDA_OBJECT:.o=.d)
+CUBLASLT_PLAN_DEPENDENCY := $(CUBLASLT_PLAN_OBJECT:.o=.d)
 MODULE_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_resident_decode_stage.a
 ARTIFACT_CHECK_TOOL := $(BUILD_DIRECTORY)/glm52_artifact_check
 PACKAGE_DIRECTORY ?= $(REPOSITORY_ROOT)/build/packages/glm52_resident_decode_stage
@@ -20,7 +22,7 @@ CUDA_HOME ?= $(abspath $(dir $(shell command -v $(NVCC)))/..)
 VALIDATION_RECIPE_VARIANT ?= default
 VALIDATION_RECIPE := glm52.resident_decode_stage.$(CUDA_ARCH).$(VALIDATION_RECIPE_VARIANT).max_us_$(MAX_STAGE_MICROSECONDS).v1
 
-.PHONY: archive cold_archive artifact_check validate validate_layer0_attention_bf16 validate_layer0_dense_bf16 validate_layer0_bf16 validate_layer0_embedding_bf16 validate_layer0_prefill_bf16 validate_layer0_reference_bf16 validate_layer0_full_reference_bf16 validate_layer1_full_reference_bf16 validate_layer2_full_reference_bf16 validate_dense_chain_bf16 validate_layer3_router_bf16 validate_layer3_shared_expert_bf16 validate_layer3_routed_expert_nvfp4 validate_layer3_routed_expert_nvfp4_topk publish package package_layer0_attention_bf16 package_layer0_dense_bf16 package_layer0_bf16 package_layer0_embedding_bf16 package_layer0_prefill_bf16 package_layer0_reference_bf16 package_layer0_full_reference_bf16 package_layer1_full_reference_bf16 package_layer2_full_reference_bf16 package_dense_chain_bf16 package_layer3_router_bf16 package_layer3_shared_expert_bf16 package_layer3_routed_expert_nvfp4 package_layer3_routed_expert_nvfp4_topk clean require_sm121 require_latency_limit require_model_dir require_input_token
+.PHONY: archive cold_archive artifact_check validate validate_layer0_attention_bf16 validate_layer0_dense_bf16 validate_layer0_bf16 validate_layer0_embedding_bf16 validate_layer0_prefill_bf16 validate_layer0_reference_bf16 validate_layer0_full_reference_bf16 publish package package_layer0_attention_bf16 package_layer0_dense_bf16 package_layer0_bf16 package_layer0_embedding_bf16 package_layer0_prefill_bf16 package_layer0_reference_bf16 package_layer0_full_reference_bf16 clean require_sm121 require_latency_limit require_model_dir require_input_token
 
 archive: require_sm121 $(MODULE_ARCHIVE)
 
@@ -51,7 +53,11 @@ $(CUDA_OBJECT): source/spark_glm52_resident_decode_stage_cuda.cu | $(BUILD_DIREC
 	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
-$(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT)
+$(CUBLASLT_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_cublaslt_plans.cu | $(BUILD_DIRECTORY)
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
+		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
+
+$(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT) $(CUBLASLT_PLAN_OBJECT)
 	rm -f $@
 	$(AR) rcs $@ $^
 
@@ -97,27 +103,6 @@ validate_layer0_reference_bf16: require_model_dir require_input_token
 validate_layer0_full_reference_bf16: require_model_dir require_input_token
 	GLM52_LOAD_LAYER0_ATTENTION_BF16=1 GLM52_LOAD_LAYER0_DENSE_BF16=1 GLM52_PREFILL_KV_FROM_EMBEDDINGS=1 GLM52_CHECK_LAYER0_REFERENCE=1 GLM52_CHECK_LAYER0_FULL_REFERENCE=1 $(MAKE) validate
 
-validate_layer1_full_reference_bf16: require_model_dir require_input_token
-	GLM52_DENSE_LAYER_INDEX=1 GLM52_LOAD_LAYER0_ATTENTION_BF16=1 GLM52_LOAD_LAYER0_DENSE_BF16=1 GLM52_PREFILL_KV_FROM_EMBEDDINGS=1 GLM52_CHECK_LAYER0_REFERENCE=1 GLM52_CHECK_LAYER0_FULL_REFERENCE=1 $(MAKE) validate
-
-validate_layer2_full_reference_bf16: require_model_dir require_input_token
-	GLM52_DENSE_LAYER_INDEX=2 GLM52_LOAD_LAYER0_ATTENTION_BF16=1 GLM52_LOAD_LAYER0_DENSE_BF16=1 GLM52_PREFILL_KV_FROM_EMBEDDINGS=1 GLM52_CHECK_LAYER0_REFERENCE=1 GLM52_CHECK_LAYER0_FULL_REFERENCE=1 $(MAKE) validate
-
-validate_dense_chain_bf16: require_model_dir require_input_token
-	GLM52_CHAIN_DENSE_LAYERS=1 VALIDATION_RECIPE_VARIANT=dense_chain_bf16 $(MAKE) validate
-
-validate_layer3_router_bf16: require_model_dir require_input_token
-	GLM52_LOAD_LAYER3_ROUTER_BF16=1 VALIDATION_RECIPE_VARIANT=layer3_router_bf16 $(MAKE) validate
-
-validate_layer3_shared_expert_bf16: require_model_dir require_input_token
-	GLM52_LOAD_LAYER3_SHARED_EXPERT_BF16=1 VALIDATION_RECIPE_VARIANT=layer3_shared_expert_bf16 $(MAKE) validate
-
-validate_layer3_routed_expert_nvfp4: require_model_dir require_input_token
-	GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4=1 VALIDATION_RECIPE_VARIANT=layer3_routed_expert_nvfp4 $(MAKE) validate
-
-validate_layer3_routed_expert_nvfp4_topk: require_model_dir require_input_token
-	GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4=1 GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4_TOPK=1 VALIDATION_RECIPE_VARIANT=layer3_routed_expert_nvfp4_topk $(MAKE) validate
-
 package_layer0_attention_bf16: require_model_dir
 	GLM52_LOAD_LAYER0_ATTENTION_BF16=1 VALIDATION_RECIPE_VARIANT=layer0_attention_bf16 $(MAKE) package
 
@@ -138,27 +123,6 @@ package_layer0_reference_bf16: require_model_dir require_input_token
 
 package_layer0_full_reference_bf16: require_model_dir require_input_token
 	GLM52_LOAD_LAYER0_ATTENTION_BF16=1 GLM52_LOAD_LAYER0_DENSE_BF16=1 GLM52_PREFILL_KV_FROM_EMBEDDINGS=1 GLM52_CHECK_LAYER0_REFERENCE=1 GLM52_CHECK_LAYER0_FULL_REFERENCE=1 VALIDATION_RECIPE_VARIANT=layer0_full_reference_bf16 $(MAKE) package
-
-package_layer1_full_reference_bf16: require_model_dir require_input_token
-	GLM52_DENSE_LAYER_INDEX=1 GLM52_LOAD_LAYER0_ATTENTION_BF16=1 GLM52_LOAD_LAYER0_DENSE_BF16=1 GLM52_PREFILL_KV_FROM_EMBEDDINGS=1 GLM52_CHECK_LAYER0_REFERENCE=1 GLM52_CHECK_LAYER0_FULL_REFERENCE=1 VALIDATION_RECIPE_VARIANT=layer1_full_reference_bf16 $(MAKE) package
-
-package_layer2_full_reference_bf16: require_model_dir require_input_token
-	GLM52_DENSE_LAYER_INDEX=2 GLM52_LOAD_LAYER0_ATTENTION_BF16=1 GLM52_LOAD_LAYER0_DENSE_BF16=1 GLM52_PREFILL_KV_FROM_EMBEDDINGS=1 GLM52_CHECK_LAYER0_REFERENCE=1 GLM52_CHECK_LAYER0_FULL_REFERENCE=1 VALIDATION_RECIPE_VARIANT=layer2_full_reference_bf16 $(MAKE) package
-
-package_dense_chain_bf16: require_model_dir require_input_token
-	GLM52_CHAIN_DENSE_LAYERS=1 VALIDATION_RECIPE_VARIANT=dense_chain_bf16 $(MAKE) package
-
-package_layer3_router_bf16: require_model_dir require_input_token
-	GLM52_LOAD_LAYER3_ROUTER_BF16=1 VALIDATION_RECIPE_VARIANT=layer3_router_bf16 $(MAKE) package
-
-package_layer3_shared_expert_bf16: require_model_dir require_input_token
-	GLM52_LOAD_LAYER3_SHARED_EXPERT_BF16=1 VALIDATION_RECIPE_VARIANT=layer3_shared_expert_bf16 $(MAKE) package
-
-package_layer3_routed_expert_nvfp4: require_model_dir require_input_token
-	GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4=1 VALIDATION_RECIPE_VARIANT=layer3_routed_expert_nvfp4 $(MAKE) package
-
-package_layer3_routed_expert_nvfp4_topk: require_model_dir require_input_token
-	GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4=1 GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4_TOPK=1 VALIDATION_RECIPE_VARIANT=layer3_routed_expert_nvfp4_topk $(MAKE) package
 
 publish: require_sm121 require_latency_limit cold_archive
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
@@ -188,6 +152,8 @@ package: publish
 		--cc cc \
 		--cc-arg -L$(CUDA_HOME)/lib64 \
 		--cc-arg -lcudart \
+		--cc-arg -lcublasLt \
+		--cc-arg -lcublas \
 		--cc-arg -lstdc++
 	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
@@ -197,4 +163,4 @@ package: publish
 clean:
 	rm -rf $(BUILD_DIRECTORY)
 
--include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY)
+-include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(CUBLASLT_PLAN_DEPENDENCY)

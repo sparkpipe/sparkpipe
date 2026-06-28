@@ -583,6 +583,238 @@ void SparkGlm52ResidentSparseMlaAttentionKernel(
     }
 }
 
+
+static __device__ __forceinline__ void SparkGlm52ResidentSparseMlaOnlineAccumulate(
+    float attention_score,
+    float value,
+    float *online_maximum,
+    float *online_denominator,
+    float *accumulated_value)
+{
+    float next_maximum;
+    float old_scale;
+    float score_scale;
+
+    next_maximum = attention_score > *online_maximum
+        ? attention_score
+        : *online_maximum;
+    old_scale = *online_denominator > 0.0f
+        ? __expf(*online_maximum - next_maximum)
+        : 0.0f;
+    score_scale = __expf(attention_score - next_maximum);
+    *accumulated_value = (*accumulated_value * old_scale) +
+        (value * score_scale);
+    *online_denominator = (*online_denominator * old_scale) + score_scale;
+    *online_maximum = next_maximum;
+}
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_SPARSE_MLA_CUDA_THREADS, 2)
+void SparkGlm52ResidentSparseMlaAttentionOnlineKernel(
+    const uint16_t *__restrict__ query_latent_bf16,
+    const uint16_t *__restrict__ rotated_query_rope_bf16,
+    const uint16_t *__restrict__ mla_cache_bf16,
+    const uint32_t *__restrict__ block_table,
+    const uint32_t *__restrict__ context_lengths,
+    const uint32_t *__restrict__ first_block_token_offsets,
+    const uint32_t *__restrict__ sparse_token_indices,
+    uint16_t *__restrict__ output_latent_bf16,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    uint32_t cache_token_capacity,
+    float qk_scale)
+{
+    __shared__ float shared_query[
+        SPARK_GLM52_RESIDENT_SPARSE_MLA_CACHE_TOKEN_ELEMENTS];
+    __shared__ float shared_tile_scores[
+        SPARK_GLM52_RESIDENT_SPARSE_MLA_CUDA_THREADS /
+        SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES];
+    __shared__ uint32_t shared_tile_cache_slots[
+        SPARK_GLM52_RESIDENT_SPARSE_MLA_CUDA_THREADS /
+        SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES];
+    uint32_t sequence_index;
+    uint32_t head_index;
+    uint32_t lane_index;
+    uint32_t warp_index;
+    uint32_t warp_count;
+    uint32_t context_length;
+    uint32_t first_block_token_offset;
+    uint64_t query_row_index;
+    uint64_t sparse_row_offset;
+    uint64_t output_row_offset;
+    uint32_t dimension_index;
+    uint32_t candidate_base;
+    uint32_t first_output_dimension;
+    uint32_t second_output_dimension;
+    float first_maximum;
+    float first_denominator;
+    float first_accumulated_value;
+    float second_maximum;
+    float second_denominator;
+    float second_accumulated_value;
+
+    sequence_index = blockIdx.x;
+    head_index = blockIdx.y;
+    lane_index = threadIdx.x &
+        (SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES - 1u);
+    warp_index = threadIdx.x / SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES;
+    warp_count = blockDim.x / SPARK_GLM52_RESIDENT_SPARSE_MLA_WARP_LANES;
+    context_length = context_lengths[sequence_index];
+    first_block_token_offset = first_block_token_offsets[sequence_index];
+    query_row_index =
+        ((uint64_t)sequence_index *
+         (uint64_t)SPARK_GLM52_RESIDENT_SPARSE_MLA_HEAD_COUNT) +
+        (uint64_t)head_index;
+    sparse_row_offset =
+        (uint64_t)sequence_index *
+        (uint64_t)SPARK_GLM52_RESIDENT_SPARSE_MLA_SELECTED_TOKEN_COUNT;
+    output_row_offset =
+        query_row_index *
+        (uint64_t)SPARK_GLM52_RESIDENT_SPARSE_MLA_LATENT_DIMENSION;
+
+    for (dimension_index = threadIdx.x;
+         dimension_index < SPARK_GLM52_RESIDENT_SPARSE_MLA_LATENT_DIMENSION;
+         dimension_index += blockDim.x)
+    {
+        shared_query[dimension_index] = SparkGlm52ResidentSparseMlaBf16ToFloat(
+            query_latent_bf16[
+                (query_row_index *
+                 (uint64_t)SPARK_GLM52_RESIDENT_SPARSE_MLA_LATENT_DIMENSION) +
+                (uint64_t)dimension_index]);
+    }
+    for (dimension_index = threadIdx.x;
+         dimension_index < SPARK_GLM52_RESIDENT_SPARSE_MLA_ROPE_DIMENSION;
+         dimension_index += blockDim.x)
+    {
+        shared_query[
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_LATENT_DIMENSION +
+            dimension_index] = SparkGlm52ResidentSparseMlaBf16ToFloat(
+                rotated_query_rope_bf16[
+                    (query_row_index *
+                     (uint64_t)SPARK_GLM52_RESIDENT_SPARSE_MLA_ROPE_DIMENSION) +
+                    (uint64_t)dimension_index]);
+    }
+    __syncthreads();
+
+    first_output_dimension = threadIdx.x;
+    second_output_dimension = threadIdx.x + blockDim.x;
+    first_maximum = -FLT_MAX;
+    first_denominator = 0.0f;
+    first_accumulated_value = 0.0f;
+    second_maximum = -FLT_MAX;
+    second_denominator = 0.0f;
+    second_accumulated_value = 0.0f;
+
+    for (candidate_base = 0u;
+         candidate_base < SPARK_GLM52_RESIDENT_SPARSE_MLA_SELECTED_TOKEN_COUNT;
+         candidate_base += warp_count)
+    {
+        uint32_t candidate_index;
+        uint32_t token_index;
+        uint32_t cache_slot_index;
+        float attention_score;
+        uint32_t tile_index;
+
+        candidate_index = candidate_base + warp_index;
+        cache_slot_index = SPARK_GLM52_RESIDENT_SPARSE_MLA_INVALID_CACHE_SLOT;
+        attention_score = -FLT_MAX;
+        if (candidate_index < SPARK_GLM52_RESIDENT_SPARSE_MLA_SELECTED_TOKEN_COUNT)
+        {
+            token_index = sparse_token_indices[
+                sparse_row_offset + (uint64_t)candidate_index];
+            if (token_index < context_length)
+            {
+                cache_slot_index = SparkGlm52ResidentSparseMlaWarpResolveCacheSlot(
+                    block_table,
+                    sequence_index,
+                    token_index,
+                    first_block_token_offset,
+                    max_blocks_per_sequence,
+                    kv_block_count,
+                    cache_token_capacity,
+                    lane_index);
+            }
+            if (cache_slot_index != SPARK_GLM52_RESIDENT_SPARSE_MLA_INVALID_CACHE_SLOT)
+            {
+                attention_score = SparkGlm52ResidentSparseMlaWarpDotProduct(
+                    shared_query,
+                    mla_cache_bf16,
+                    cache_slot_index,
+                    lane_index,
+                    qk_scale);
+            }
+        }
+        if (lane_index == 0u)
+        {
+            shared_tile_scores[warp_index] = attention_score;
+            shared_tile_cache_slots[warp_index] = cache_slot_index;
+        }
+        __syncthreads();
+
+        for (tile_index = 0u; tile_index < warp_count; ++tile_index)
+        {
+            float tile_score;
+            uint32_t tile_cache_slot;
+
+            tile_score = shared_tile_scores[tile_index];
+            tile_cache_slot = shared_tile_cache_slots[tile_index];
+            if (tile_cache_slot != SPARK_GLM52_RESIDENT_SPARSE_MLA_INVALID_CACHE_SLOT &&
+                tile_score > (-FLT_MAX * 0.5f))
+            {
+                uint64_t cache_element_offset;
+
+                if (first_output_dimension <
+                    SPARK_GLM52_RESIDENT_SPARSE_MLA_LATENT_DIMENSION)
+                {
+                    cache_element_offset =
+                        ((uint64_t)tile_cache_slot *
+                         (uint64_t)SPARK_GLM52_RESIDENT_SPARSE_MLA_CACHE_TOKEN_ELEMENTS) +
+                        (uint64_t)first_output_dimension;
+                    SparkGlm52ResidentSparseMlaOnlineAccumulate(
+                        tile_score,
+                        SparkGlm52ResidentSparseMlaBf16ToFloat(
+                            mla_cache_bf16[cache_element_offset]),
+                        &first_maximum,
+                        &first_denominator,
+                        &first_accumulated_value);
+                }
+                if (second_output_dimension <
+                    SPARK_GLM52_RESIDENT_SPARSE_MLA_LATENT_DIMENSION)
+                {
+                    cache_element_offset =
+                        ((uint64_t)tile_cache_slot *
+                         (uint64_t)SPARK_GLM52_RESIDENT_SPARSE_MLA_CACHE_TOKEN_ELEMENTS) +
+                        (uint64_t)second_output_dimension;
+                    SparkGlm52ResidentSparseMlaOnlineAccumulate(
+                        tile_score,
+                        SparkGlm52ResidentSparseMlaBf16ToFloat(
+                            mla_cache_bf16[cache_element_offset]),
+                        &second_maximum,
+                        &second_denominator,
+                        &second_accumulated_value);
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    if (first_output_dimension < SPARK_GLM52_RESIDENT_SPARSE_MLA_LATENT_DIMENSION)
+    {
+        output_latent_bf16[output_row_offset + (uint64_t)first_output_dimension] =
+            SparkGlm52ResidentSparseMlaFloatToBf16(
+                first_denominator > 0.0f
+                    ? first_accumulated_value / first_denominator
+                    : 0.0f);
+    }
+    if (second_output_dimension < SPARK_GLM52_RESIDENT_SPARSE_MLA_LATENT_DIMENSION)
+    {
+        output_latent_bf16[output_row_offset + (uint64_t)second_output_dimension] =
+            SparkGlm52ResidentSparseMlaFloatToBf16(
+                second_denominator > 0.0f
+                    ? second_accumulated_value / second_denominator
+                    : 0.0f);
+    }
+}
+
 static uint32_t SparkGlm52ResidentSparseMlaPrepareBlockCount(
     uint32_t active_sequence_count)
 {
@@ -795,23 +1027,47 @@ extern "C" SparkStatus SparkGlm52ResidentSparseMlaBackendSubmit(
         active_sequence_count,
         SPARK_GLM52_RESIDENT_SPARSE_MLA_HEAD_COUNT,
         1u);
-    SparkGlm52ResidentSparseMlaAttentionKernel<<<
-        attention_grid,
-        SPARK_GLM52_RESIDENT_SPARSE_MLA_CUDA_THREADS,
-        0u,
-        cuda_stream>>>(
-        (const uint16_t *)pipeline_slot->query_latent_bf16,
-        (const uint16_t *)pipeline_slot->rotated_query_rope_bf16,
-        (const uint16_t *)node_context->mla_cache_bf16,
-        pipeline_slot->block_table,
-        pipeline_slot->context_lengths,
-        pipeline_slot->first_block_token_offsets,
-        pipeline_slot->sparse_token_indices,
-        (uint16_t *)pipeline_slot->output_latent_bf16,
-        node_context->max_blocks_per_sequence,
-        node_context->kv_block_count,
-        node_context->cache_token_capacity,
-        node_context->qk_scale);
+    if (node_context->attention_execution_mode ==
+        SPARK_GLM52_RESIDENT_SPARSE_MLA_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX)
+    {
+        SparkGlm52ResidentSparseMlaAttentionOnlineKernel<<<
+            attention_grid,
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            (const uint16_t *)pipeline_slot->query_latent_bf16,
+            (const uint16_t *)pipeline_slot->rotated_query_rope_bf16,
+            (const uint16_t *)node_context->mla_cache_bf16,
+            pipeline_slot->block_table,
+            pipeline_slot->context_lengths,
+            pipeline_slot->first_block_token_offsets,
+            pipeline_slot->sparse_token_indices,
+            (uint16_t *)pipeline_slot->output_latent_bf16,
+            node_context->max_blocks_per_sequence,
+            node_context->kv_block_count,
+            node_context->cache_token_capacity,
+            node_context->qk_scale);
+    }
+    else
+    {
+        SparkGlm52ResidentSparseMlaAttentionKernel<<<
+            attention_grid,
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            (const uint16_t *)pipeline_slot->query_latent_bf16,
+            (const uint16_t *)pipeline_slot->rotated_query_rope_bf16,
+            (const uint16_t *)node_context->mla_cache_bf16,
+            pipeline_slot->block_table,
+            pipeline_slot->context_lengths,
+            pipeline_slot->first_block_token_offsets,
+            pipeline_slot->sparse_token_indices,
+            (uint16_t *)pipeline_slot->output_latent_bf16,
+            node_context->max_blocks_per_sequence,
+            node_context->kv_block_count,
+            node_context->cache_token_capacity,
+            node_context->qk_scale);
+    }
     status = SparkGlm52ResidentSparseMlaCheckCudaLaunch(
         node_context,
         cuda_slot_state,

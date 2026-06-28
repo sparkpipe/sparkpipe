@@ -147,58 +147,6 @@ make cuda_glm52_resident_decode_stage_publish \
 
 A new archive contract is admitted only if its target-hardware validator passes numerical comparison and every measured submission-to-completion run is within that ceiling. This repository environment has no `nvcc` or compatible GPU, so the CUDA source is not claimed as validated or performant here. If it misses the threshold, it must be optimized rather than published.
 
-The GLM 5.2 decode-stage module also owns module-local live checkpoint gates.
-For the current dense-prefix chain, run this on a Spark GB10 node with the live
-artifact mounted:
-
-```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_dense_chain_bf16 \
-    MAX_STAGE_MICROSECONDS=10000
-```
-
-That gate keeps GLM tensor loading and reference math inside the GLM module. It
-checks dense layers 0->1->2 with separate per-layer KV caches, device-side
-hidden-state handoff between layers, full output-side BF16 references, and the
-generated `model_driver.so` path.
-
-For the current sparse layer-3 router/top-k gate, run:
-
-```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer3_router_bf16 \
-    MAX_STAGE_MICROSECONDS=10000
-```
-
-That gate loads layer-3 BF16 attention weights, `mlp.gate.weight`, and
-`mlp.gate.e_score_correction_bias` from the live checkpoint, runs the CUDA
-router/top-k path, and checks top-8 expert IDs plus normalized route weights
-against the GLM module's CPU reference through both direct backend and generated
-`model_driver.so` submission. It does not yet execute the sparse expert GEMMs or
-shared-expert combine path.
-
-For the current sparse layer-3 shared-expert gate, run:
-
-```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer3_shared_expert_bf16 \
-    MAX_STAGE_MICROSECONDS=10000
-```
-
-That gate loads layer-3 BF16 attention weights and
-`mlp.shared_experts.{gate_proj,up_proj,down_proj}.weight`, runs the resident
-BF16 SwiGLU/down path at the GLM shared-expert dimension of 2048, and checks
-sampled post-attention RMSNorm, gate/up projection, SiLU product, and
-down+residual outputs against the GLM module's CPU reference through both direct
-backend and generated `model_driver.so` submission. It does not yet execute
-NVFP4 routed expert projection or routed/shared combine.
-
 ## Compile a complete model package
 
 ```sh

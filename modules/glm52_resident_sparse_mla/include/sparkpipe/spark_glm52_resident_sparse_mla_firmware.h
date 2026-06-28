@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_SPARSE_MLA_NODE_CONTEXT_ABI_VERSION 2u
+#define SPARK_GLM52_RESIDENT_SPARSE_MLA_NODE_CONTEXT_ABI_VERSION 3u
 #define SPARK_GLM52_RESIDENT_SPARSE_MLA_HEAD_COUNT 64u
 #define SPARK_GLM52_RESIDENT_SPARSE_MLA_LATENT_DIMENSION 512u
 #define SPARK_GLM52_RESIDENT_SPARSE_MLA_ROPE_DIMENSION 64u
@@ -32,6 +32,13 @@ typedef enum SparkGlm52ResidentSparseMlaLaunchCheckMode
     SPARK_GLM52_RESIDENT_SPARSE_MLA_LAUNCH_CHECK_PEEK = 1,
     SPARK_GLM52_RESIDENT_SPARSE_MLA_LAUNCH_CHECK_SYNC_ON_ERROR = 2
 } SparkGlm52ResidentSparseMlaLaunchCheckMode;
+
+
+typedef enum SparkGlm52ResidentSparseMlaAttentionExecutionMode
+{
+    SPARK_GLM52_RESIDENT_SPARSE_MLA_ATTENTION_EXECUTION_SCORE_CACHE_REFERENCE = 0,
+    SPARK_GLM52_RESIDENT_SPARSE_MLA_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX = 1
+} SparkGlm52ResidentSparseMlaAttentionExecutionMode;
 
 typedef struct SparkGlm52ResidentSparseMlaCudaPipelineSlotState
 {
@@ -80,8 +87,10 @@ typedef struct SparkGlm52ResidentSparseMlaNodeContext
     SparkGlm52ResidentSparseMlaCudaPipelineSlotState *cuda_pipeline_slot_states;
     uint32_t launch_check_mode;
     uint32_t enable_cuda_graph_replay;
-    uint32_t reserved_2;
+    uint32_t attention_execution_mode;
     uint32_t reserved_3;
+    uint64_t validated_stage_latency_ns;
+    uint64_t estimated_service_time_ns;
 } SparkGlm52ResidentSparseMlaNodeContext;
 
 SparkStatus SparkGlm52ResidentSparseMlaInitialize(
