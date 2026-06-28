@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sparkpipe.local/schema/model-description-v1.json",
+  "title": "SparkPipe firmware model description",
+  "type": "object",
+  "required": ["schema_version", "model", "stages"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "model": {
+      "type": "object",
+      "required": ["id", "revision"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "metadata": {
+      "type": "object"
+    },
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "required": ["name", "target", "programs"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "target": { "type": "string", "minLength": 1 },
+          "programs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "required": ["name", "id", "operations"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "id": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+                "max_inflight": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+                "completion": {
+                  "type": "string",
+                  "enum": ["submit_return", "external"]
+                },
+                "scheduling": {
+                  "type": "object",
+                  "properties": {
+                    "flags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "stream_ordered",
+                          "driver_owns_resident_state",
+                          "driver_owns_kv_cache",
+                          "jit_kv_cache",
+                          "zero_copy_node_context",
+                          "private_queue_pressure",
+                          "no_host_staging",
+                          "fixed_firmware",
+                          "validated_latency",
+                          "captured_cuda_graph",
+                          "no_device_memcpy",
+                          "driver_private_expert_queues",
+                          "stream_event_dependencies",
+                          "residency_affinity_required",
+                          "batch_shape_fixed"
+                        ]
+                      },
+                      "uniqueItems": true
+                    },
+                    "max_active_slots": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+                    "max_new_tokens": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+                    "max_resident_sequences": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+                    "max_sequence_tokens": { "type": "integer", "minimum": 0 },
+                    "target_latency_ns": { "type": "integer", "minimum": 0 },
+                    "validated_latency_ns": { "type": "integer", "minimum": 0 },
+                    "resident_weight_bytes": { "type": "integer", "minimum": 0 },
+                    "resident_kv_bytes": { "type": "integer", "minimum": 0 },
+                    "static_workspace_bytes": { "type": "integer", "minimum": 0 },
+                    "device_memcpy_bytes_per_submit_ceiling": { "type": "integer", "minimum": 0 },
+                    "host_staging_bytes_per_submit_ceiling": { "type": "integer", "minimum": 0 },
+                    "private_queue_count": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+                  },
+                  "additionalProperties": true
+                },
+                "operations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4096,
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "module"],
+                    "properties": {
+                      "name": { "type": "string", "minLength": 1 },
+                      "module": { "type": "string", "minLength": 1 },
+                      "configuration": { "type": "object" }
+                    },
+                    "additionalProperties": true
+                  }
+                }
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

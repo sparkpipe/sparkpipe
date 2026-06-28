@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "sparkpipe.firmware.multi_program",
+    "revision": "1"
+  },
+  "stages": [
+    {
+      "name": "cpu_stage",
+      "target": "host.cpu",
+      "programs": [
+        {
+          "name": "alpha",
+          "id": 11,
+          "max_inflight": 1,
+          "completion": "external",
+          "operations": [
+            {
+              "name": "double_alpha",
+              "module": "spark.test.double.v1",
+              "configuration": {}
+            }
+          ]
+        },
+        {
+          "name": "beta",
+          "id": 12,
+          "max_inflight": 1,
+          "completion": "external",
+          "operations": [
+            {
+              "name": "double_beta",
+              "module": "spark.test.double.v1",
+              "configuration": {}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
