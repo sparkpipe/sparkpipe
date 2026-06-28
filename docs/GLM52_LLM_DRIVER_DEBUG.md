@@ -415,6 +415,50 @@ the submitted hidden state can now be copied from a real checkpoint
 validator, so the next inference-correctness gap is checkpoint-derived
 prefill/KV plus an external reference activation comparison.
 
+Latest checkpoint-prefilled layer-0 BF16 evidence from `spark1` at commit
+`58e703e188f5adbedb265d24d03290ec16e64d60`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer0_prefill_bf16 MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.layer0_prefill_bf16.max_us_10000.v1
+input_embedding_bf16_fixture_ready=1
+input_embedding_token=1000
+input_embedding_bf16_bytes=12288
+prefill_kv_bf16_fixture_ready=1
+prefill_first_token=997
+prefill_token_count=3
+prefill_kv_bf16_bytes=49152
+layer0_attention_bf16_fixture_ready=1
+layer0_attention_bf16_bytes=330056704
+layer0_dense_bf16_fixture_ready=1
+layer0_dense_bf16_bytes=452997120
+real_lm_head_fixture_ready=1
+real_lm_head_bytes=3145728
+backend_average_us=4486.293
+backend_maximum_us=4591.136
+orchestrator_elapsed_us=5371.968
+limit_us=10000.000
+restricted_token=1021
+real_lm_head=1
+real_lm_head_max_logit_error=0.00000000
+backend_launch_chains=7
+orchestrator_launch_chains=4
+module_artifact=2f1a1728352f95d6221e87ca238ea2b16426cda8a31b590e262fe7cff7307669
+package_manifest_sha256=5b1df9c60fb66e55877021d556a3b44df93b63338b55bb5e269f17cdae08cbbf
+```
+
+This removes the seeded prior-KV assumption for the checked B1 context-4
+window. The validator now writes prior cache rows by running token IDs
+997-999 through the resident CUDA stage, then the final token 1000 attends over
+those actual cache rows. This is still not a full GLM inference pass because
+the final post-attention and dense layer outputs are not yet compared against
+an external checkpoint-derived reference activation.
+
 ## What this proves
 
 The generated GLM 5.2 decode-stage `model_driver.so` can be loaded by the

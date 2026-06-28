@@ -66,6 +66,22 @@ runs the package/generated-driver path. It still seeds the previous KV cache;
 the next correctness gate is checkpoint-derived prefill/KV and reference
 activation comparison.
 
+The current strongest B1 layer-0 gate removes that seeded prior-KV assumption
+for the checked context window:
+
+```sh
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer0_prefill_bf16 MAX_STAGE_MICROSECONDS=10000
+```
+
+That gate runs prior embedding rows through the same resident CUDA stage to
+populate remapped KV cache slots, restores the final input embedding row, and
+then checks the final attention result against the actual cache rows written by
+prefill. It still is not full GLM token equivalence; the next gate needs
+external reference activation comparison for the checkpoint-backed layer body.
+
 The node context binds resident weight pointers, paged KV cache, streams, workspaces, RoPE tables, token maps, and output buffers once when the driver instance is created. Per-submission inputs are only dynamic decode facts such as active sequence count, requested token count, sequence identity, deadline, priority, and residency token. The firmware admission function chooses the opaque pipeline slot; SparkPipe does not assign or interpret CUDA stream/KV ownership.
 
 The module also publishes direct admission and snapshot symbols. They expose only neutral scheduling data: accepted/rejected, dispatch slot, dispatch generation/cookies, private queue pressure, resident token capacity, active submissions, CUDA graph capture/replay counts, stale-admission count, and zero memcpy/host-staging counters.

@@ -87,6 +87,14 @@ typedef struct SparkValidationInputEmbeddingBf16Fixture
     uint32_t ready;
 } SparkValidationInputEmbeddingBf16Fixture;
 
+typedef struct SparkValidationPrefillKvBf16Fixture
+{
+    uint64_t copied_bytes;
+    uint32_t first_token_id;
+    uint32_t token_count;
+    uint32_t ready;
+} SparkValidationPrefillKvBf16Fixture;
+
 typedef struct SparkValidationDeviceBuffers
 {
     uint16_t *input_hidden_bf16;
@@ -676,28 +684,39 @@ static bool SparkValidationCopyBf16TensorRowToDevice(
     return true;
 }
 
+static bool SparkValidationCopyInputEmbeddingBf16Row(
+    const char *model_directory,
+    uint32_t token_id,
+    void *device_pointer,
+    uint64_t *copied_bytes)
+{
+    const uint64_t embedding_shape[2] = {
+        154880u,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+
+    return SparkValidationCopyBf16TensorRowToDevice(
+        model_directory,
+        "model.embed_tokens.weight",
+        embedding_shape,
+        2u,
+        token_id,
+        device_pointer,
+        copied_bytes);
+}
+
 static bool SparkValidationLoadInputEmbeddingBf16Fixture(
     SparkValidationDeviceBuffers *buffers,
     const char *model_directory,
     uint32_t token_id,
     SparkValidationInputEmbeddingBf16Fixture *fixture)
 {
-    const uint64_t embedding_shape[2] = {
-        154880u,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
-
     memset(fixture, 0, sizeof(*fixture));
-    if (!SparkValidationCopyBf16TensorRowToDevice(
+    if (!SparkValidationCopyInputEmbeddingBf16Row(
             model_directory,
-            "model.embed_tokens.weight",
-            embedding_shape,
-            2u,
             token_id,
             buffers->input_hidden_bf16,
             &fixture->copied_bytes))
-    {
         return false;
-    }
     fixture->token_id = token_id;
     fixture->ready = 1u;
     fprintf(stderr, "input_embedding_bf16_fixture_ready=1 model_dir=%s token=%u bytes=%llu\n", model_directory, token_id, (unsigned long long)fixture->copied_bytes);
@@ -2037,6 +2056,17 @@ static bool SparkValidationInitializeDeviceInputs(
         SparkValidationSeedProjectionFixtureWeights(buffers);
 }
 
+static bool SparkValidationSetDecodeScalars(
+    SparkValidationDeviceBuffers *buffers,
+    uint32_t position,
+    uint32_t slot_mapping,
+    uint32_t context_length)
+{
+    return SparkValidationCopyToDevice(buffers->positions, &position, sizeof(position), "copy position") &&
+        SparkValidationCopyToDevice(buffers->slot_mapping, &slot_mapping, sizeof(slot_mapping), "copy slot_mapping") &&
+        SparkValidationCopyToDevice(buffers->context_lengths, &context_length, sizeof(context_length), "copy context_length");
+}
+
 static void SparkValidationConfigureNode(
     SparkValidationDeviceBuffers *buffers,
     cudaStream_t cuda_stream,
@@ -2253,6 +2283,65 @@ static bool SparkValidationRunOnce(
     return true;
 }
 
+static bool SparkValidationRunPrefillKvBf16Fixture(
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    cudaStream_t cuda_stream,
+    const char *model_directory,
+    uint32_t input_token_id,
+    SparkValidationPrefillKvBf16Fixture *fixture)
+{
+    uint32_t prefill_index;
+
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->first_token_id =
+        input_token_id - (SPARK_VALIDATION_CONTEXT_LENGTH - 1u);
+    fixture->token_count = SPARK_VALIDATION_CONTEXT_LENGTH - 1u;
+    for (prefill_index = 0u; prefill_index < fixture->token_count; ++prefill_index)
+    {
+        float elapsed_microseconds;
+        uint32_t token_id;
+        uint32_t position;
+        uint32_t slot_mapping;
+        uint32_t context_length;
+
+        token_id = fixture->first_token_id + prefill_index;
+        position = SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET + prefill_index;
+        slot_mapping = SPARK_VALIDATION_REMAP_CACHE_SLOT0 + prefill_index;
+        context_length = prefill_index + 1u;
+        if (!SparkValidationCopyInputEmbeddingBf16Row(
+                model_directory,
+                token_id,
+                buffers->input_hidden_bf16,
+                &fixture->copied_bytes) ||
+            !SparkValidationSetDecodeScalars(
+                buffers,
+                position,
+                slot_mapping,
+                context_length) ||
+            !SparkValidationRunOnce(
+                node_context,
+                cuda_stream,
+                &elapsed_microseconds) ||
+            !SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize prefill"))
+            return false;
+    }
+    if (!SparkValidationCopyInputEmbeddingBf16Row(
+            model_directory,
+            input_token_id,
+            buffers->input_hidden_bf16,
+            &fixture->copied_bytes) ||
+        !SparkValidationSetDecodeScalars(
+            buffers,
+            SPARK_VALIDATION_CURRENT_POSITION,
+            SPARK_VALIDATION_CURRENT_CACHE_SLOT,
+            SPARK_VALIDATION_CONTEXT_LENGTH))
+        return false;
+    fixture->ready = 1u;
+    fprintf(stderr, "prefill_kv_bf16_fixture_ready=1 model_dir=%s first_token=%u token_count=%u bytes=%llu\n", model_directory, fixture->first_token_id, fixture->token_count, (unsigned long long)fixture->copied_bytes);
+    return true;
+}
+
 static float SparkValidationReferenceAttentionValue(
     const float *query_latent_values,
     const float *query_rope_values,
@@ -2449,10 +2538,97 @@ static bool SparkValidationCheckRealRestrictedLogits(
     return true;
 }
 
+static bool SparkValidationReadReferenceCacheFromDevice(
+    SparkValidationDeviceBuffers *buffers,
+    float cache_key_nope_values[
+        SPARK_VALIDATION_CHECKED_HEAD_COUNT]
+        [SPARK_VALIDATION_CONTEXT_LENGTH]
+        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT],
+    float cache_rope_values[
+        SPARK_VALIDATION_CONTEXT_LENGTH]
+        [SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT],
+    float cache_value_values[
+        SPARK_VALIDATION_CHECKED_HEAD_COUNT]
+        [SPARK_VALIDATION_CONTEXT_LENGTH]
+        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT])
+{
+    uint16_t key_value[
+        SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
+    uint16_t value_value[
+        SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
+    uint16_t rope_value[SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT];
+    uint32_t token_index;
+    uint32_t head_index;
+    uint32_t dimension_index;
+
+    for (token_index = 0u; token_index < SPARK_VALIDATION_CONTEXT_LENGTH; ++token_index)
+    {
+        uint32_t cache_slot_index;
+
+        cache_slot_index = token_index == SPARK_VALIDATION_CONTEXT_LENGTH - 1u
+            ? SPARK_VALIDATION_CURRENT_CACHE_SLOT
+            : SPARK_VALIDATION_REMAP_CACHE_SLOT0 + token_index;
+        if (!SparkValidationCudaSucceeded(
+                cudaMemcpy(
+                    rope_value,
+                    &buffers->mla_cache_bf16[
+                        ((uint64_t)cache_slot_index *
+                         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) +
+                        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION],
+                    sizeof(rope_value),
+                    cudaMemcpyDeviceToHost),
+                "copy reference rope cache"))
+            return false;
+        for (dimension_index = 0u; dimension_index < SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT; ++dimension_index)
+            cache_rope_values[token_index][dimension_index] =
+                SparkValidationBf16ToFloat(rope_value[dimension_index]);
+        for (head_index = 0u; head_index < SPARK_VALIDATION_CHECKED_HEAD_COUNT; ++head_index)
+        {
+            if (!SparkValidationCudaSucceeded(
+                    cudaMemcpy(
+                        key_value,
+                        &buffers->key_nope_cache_bf16[
+                            (((uint64_t)cache_slot_index *
+                              (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT +
+                              (uint64_t)head_index) *
+                             (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION)],
+                        sizeof(key_value),
+                        cudaMemcpyDeviceToHost),
+                    "copy reference key cache") ||
+                !SparkValidationCudaSucceeded(
+                    cudaMemcpy(
+                        value_value,
+                        &buffers->value_cache_bf16[
+                            (((uint64_t)cache_slot_index *
+                              (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT +
+                              (uint64_t)head_index) *
+                             (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION)],
+                        sizeof(value_value),
+                        cudaMemcpyDeviceToHost),
+                    "copy reference value cache"))
+                return false;
+            for (dimension_index = 0u; dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT; ++dimension_index)
+            {
+                if (key_value[dimension_index] == 0u || value_value[dimension_index] == 0u)
+                {
+                    fprintf(stderr, "prefill reference cache stayed zero token=%u head=%u dim=%u\n", token_index, head_index, dimension_index);
+                    return false;
+                }
+                cache_key_nope_values[head_index][token_index][dimension_index] =
+                    SparkValidationBf16ToFloat(key_value[dimension_index]);
+                cache_value_values[head_index][token_index][dimension_index] =
+                    SparkValidationBf16ToFloat(value_value[dimension_index]);
+            }
+        }
+    }
+    return true;
+}
+
 static bool SparkValidationCheckOutputs(
     SparkValidationDeviceBuffers *buffers,
     SparkValidationRealLmHeadFixture *real_lm_head,
-    uint32_t use_dense_mlp)
+    uint32_t use_dense_mlp,
+    uint32_t use_prefill_kv)
 {
     uint16_t current_kv_value[
         SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
@@ -2770,10 +2946,57 @@ static bool SparkValidationCheckOutputs(
                     query_rope_value[head_index][dimension_index]);
         }
     }
-    for (token_index = 0u;
-         token_index < SPARK_VALIDATION_CONTEXT_LENGTH - 1u;
-         ++token_index)
+    if (use_prefill_kv != 0u)
     {
+        if (!SparkValidationReadReferenceCacheFromDevice(
+                buffers,
+                cache_key_nope_values,
+                cache_rope_values,
+                cache_value_values))
+            return false;
+    }
+    else
+    {
+        for (token_index = 0u;
+             token_index < SPARK_VALIDATION_CONTEXT_LENGTH - 1u;
+             ++token_index)
+        {
+            for (head_index = 0u;
+                 head_index < SPARK_VALIDATION_CHECKED_HEAD_COUNT;
+                 ++head_index)
+            {
+                for (dimension_index = 0u;
+                     dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
+                     ++dimension_index)
+                {
+                    cache_key_nope_values[head_index][token_index][dimension_index] =
+                        SparkValidationBf16ToFloat(
+                            SparkValidationFloatToBf16(
+                                SparkValidationSeedKeyNopeValue(
+                                    token_index,
+                                    head_index,
+                                    dimension_index)));
+                    cache_value_values[head_index][token_index][dimension_index] =
+                        SparkValidationBf16ToFloat(
+                            SparkValidationFloatToBf16(
+                                SparkValidationSeedValueCacheValue(
+                                    token_index,
+                                    head_index,
+                                    dimension_index)));
+                }
+            }
+            for (dimension_index = 0u;
+                 dimension_index < SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT;
+                 ++dimension_index)
+            {
+                cache_rope_values[token_index][dimension_index] =
+                    SparkValidationBf16ToFloat(
+                        SparkValidationFloatToBf16(
+                            SparkValidationSeedRopeValue(
+                                token_index,
+                                dimension_index)));
+            }
+        }
         for (head_index = 0u;
              head_index < SPARK_VALIDATION_CHECKED_HEAD_COUNT;
              ++head_index)
@@ -2782,63 +3005,28 @@ static bool SparkValidationCheckOutputs(
                  dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
                  ++dimension_index)
             {
-                cache_key_nope_values[head_index][token_index][dimension_index] =
+                cache_key_nope_values[
+                    head_index]
+                    [SPARK_VALIDATION_CONTEXT_LENGTH - 1u]
+                    [dimension_index] =
                     SparkValidationBf16ToFloat(
-                        SparkValidationFloatToBf16(
-                            SparkValidationSeedKeyNopeValue(
-                                token_index,
-                                head_index,
-                                dimension_index)));
-                cache_value_values[head_index][token_index][dimension_index] =
+                        cached_key_nope_value[head_index][dimension_index]);
+                cache_value_values[
+                    head_index]
+                    [SPARK_VALIDATION_CONTEXT_LENGTH - 1u]
+                    [dimension_index] =
                     SparkValidationBf16ToFloat(
-                        SparkValidationFloatToBf16(
-                            SparkValidationSeedValueCacheValue(
-                                token_index,
-                                head_index,
-                                dimension_index)));
+                        cached_value_value[head_index][dimension_index]);
             }
         }
         for (dimension_index = 0u;
              dimension_index < SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT;
              ++dimension_index)
         {
-            cache_rope_values[token_index][dimension_index] =
-                SparkValidationBf16ToFloat(
-                    SparkValidationFloatToBf16(
-                        SparkValidationSeedRopeValue(
-                            token_index,
-                            dimension_index)));
-            }
-    }
-    for (head_index = 0u;
-         head_index < SPARK_VALIDATION_CHECKED_HEAD_COUNT;
-         ++head_index)
-    {
-        for (dimension_index = 0u;
-             dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
-             ++dimension_index)
-        {
-            cache_key_nope_values[
-                head_index]
-                [SPARK_VALIDATION_CONTEXT_LENGTH - 1u]
-                [dimension_index] =
-                SparkValidationBf16ToFloat(
-                    cached_key_nope_value[head_index][dimension_index]);
-            cache_value_values[
-                head_index]
-                [SPARK_VALIDATION_CONTEXT_LENGTH - 1u]
-                [dimension_index] =
-                SparkValidationBf16ToFloat(
-                    cached_value_value[head_index][dimension_index]);
+            cache_rope_values[
+                SPARK_VALIDATION_CONTEXT_LENGTH - 1u][dimension_index] =
+                SparkValidationBf16ToFloat(cached_rope_value[dimension_index]);
         }
-    }
-    for (dimension_index = 0u;
-         dimension_index < SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT;
-         ++dimension_index)
-    {
-        cache_rope_values[
-            SPARK_VALIDATION_CONTEXT_LENGTH - 1u][dimension_index] =
-            SparkValidationBf16ToFloat(cached_rope_value[dimension_index]);
     }
     for (head_index = 0u;
          head_index < SPARK_VALIDATION_CHECKED_HEAD_COUNT;
@@ -3108,11 +3296,13 @@ int main(int argc, char **argv)
     SparkValidationLayer0DenseBf16Fixture layer0_dense;
     SparkValidationLayer0AttentionBf16Fixture layer0_attention;
     SparkValidationInputEmbeddingBf16Fixture input_embedding;
+    SparkValidationPrefillKvBf16Fixture prefill_kv;
     cudaStream_t cuda_stream;
     const char *model_directory;
     const char *load_layer0_dense;
     const char *load_layer0_attention;
     const char *input_token_text;
+    const char *prefill_kv_text;
     double maximum_stage_microseconds;
     double total_microseconds;
     double maximum_observed_microseconds;
@@ -3120,6 +3310,7 @@ int main(int argc, char **argv)
     uint32_t use_dense_mlp;
     uint32_t use_attention_bf16;
     uint32_t use_input_embedding;
+    uint32_t use_prefill_kv;
     uint32_t input_token_id;
 
     if (argc != 2 && argc != 3)
@@ -3137,16 +3328,20 @@ int main(int argc, char **argv)
     memset(&layer0_dense, 0, sizeof(layer0_dense));
     memset(&layer0_attention, 0, sizeof(layer0_attention));
     memset(&input_embedding, 0, sizeof(input_embedding));
+    memset(&prefill_kv, 0, sizeof(prefill_kv));
     model_directory = getenv("GLM52_MODEL_DIR");
     load_layer0_dense = getenv("GLM52_LOAD_LAYER0_DENSE_BF16");
     load_layer0_attention = getenv("GLM52_LOAD_LAYER0_ATTENTION_BF16");
     input_token_text = getenv("GLM52_INPUT_TOKEN_ID");
+    prefill_kv_text = getenv("GLM52_PREFILL_KV_FROM_EMBEDDINGS");
     use_dense_mlp = load_layer0_dense != 0 && load_layer0_dense[0] != '\0' &&
         strcmp(load_layer0_dense, "0") != 0;
     use_attention_bf16 =
         load_layer0_attention != 0 && load_layer0_attention[0] != '\0' &&
         strcmp(load_layer0_attention, "0") != 0;
     use_input_embedding = input_token_text != 0 && input_token_text[0] != '\0';
+    use_prefill_kv = prefill_kv_text != 0 && prefill_kv_text[0] != '\0' &&
+        strcmp(prefill_kv_text, "0") != 0;
     input_token_id = 0u;
     if (use_input_embedding != 0u)
     {
@@ -3163,6 +3358,20 @@ int main(int argc, char **argv)
             return 2;
         }
         input_token_id = (uint32_t)parsed_token_id;
+    }
+    if (use_prefill_kv != 0u &&
+        (use_input_embedding == 0u ||
+         use_attention_bf16 == 0u ||
+         use_dense_mlp == 0u))
+    {
+        fprintf(stderr, "GLM52_PREFILL_KV_FROM_EMBEDDINGS requires input embedding, layer0 attention, and layer0 dense fixtures\n");
+        return 2;
+    }
+    if (use_prefill_kv != 0u &&
+        input_token_id < SPARK_VALIDATION_CONTEXT_LENGTH - 1u)
+    {
+        fprintf(stderr, "GLM52_INPUT_TOKEN_ID is too small for prefill fixture\n");
+        return 2;
     }
     cuda_stream = 0;
     if (!SparkValidationCudaSucceeded(cudaSetDevice(0), "cudaSetDevice") ||
@@ -3223,6 +3432,17 @@ int main(int argc, char **argv)
         &node_context,
         use_dense_mlp,
         use_attention_bf16);
+    if (use_prefill_kv != 0u &&
+        !SparkValidationRunPrefillKvBf16Fixture(
+            &buffers,
+            &node_context,
+            cuda_stream,
+            model_directory,
+            input_token_id,
+            &prefill_kv))
+    {
+        return 2;
+    }
     if (argc == 3)
     {
         float elapsed_microseconds;
@@ -3233,7 +3453,7 @@ int main(int argc, char **argv)
                 argv[2],
                 &elapsed_microseconds) ||
             !SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
-            !SparkValidationCheckOutputs(&buffers, &real_lm_head, use_dense_mlp))
+            !SparkValidationCheckOutputs(&buffers, &real_lm_head, use_dense_mlp, use_prefill_kv))
         {
             return 2;
         }
@@ -3247,7 +3467,7 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu prefill_kv_bf16=%u prefill_kv_tokens=%u prefill_kv_bytes=%llu real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             (double)elapsed_microseconds,
             maximum_stage_microseconds,
             real_lm_head.ready != 0u
@@ -3258,6 +3478,9 @@ int main(int argc, char **argv)
             input_embedding.ready,
             input_embedding.token_id,
             (unsigned long long)input_embedding.copied_bytes,
+            prefill_kv.ready,
+            prefill_kv.token_count,
+            (unsigned long long)prefill_kv.copied_bytes,
             real_lm_head.ready,
             layer0_attention.ready,
             (unsigned long long)layer0_attention.copied_bytes,
@@ -3294,7 +3517,7 @@ int main(int argc, char **argv)
         }
     }
     if (!SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
-        !SparkValidationCheckOutputs(&buffers, &real_lm_head, use_dense_mlp))
+        !SparkValidationCheckOutputs(&buffers, &real_lm_head, use_dense_mlp, use_prefill_kv))
     {
         return 2;
     }
@@ -3310,7 +3533,7 @@ int main(int argc, char **argv)
         return 1;
     }
     printf(
-        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_bf16=%u input_embedding_token=%u input_embedding_bf16_bytes=%llu prefill_kv_bf16=%u prefill_kv_tokens=%u prefill_kv_bytes=%llu real_lm_head=%u layer0_attention_bf16=%u layer0_attention_bf16_bytes=%llu layer0_dense_bf16=%u layer0_dense_bf16_bytes=%llu real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
         total_microseconds / SPARK_VALIDATION_MEASUREMENT_COUNT,
         maximum_observed_microseconds,
         maximum_stage_microseconds,
@@ -3322,6 +3545,9 @@ int main(int argc, char **argv)
         input_embedding.ready,
         input_embedding.token_id,
         (unsigned long long)input_embedding.copied_bytes,
+        prefill_kv.ready,
+        prefill_kv.token_count,
+        (unsigned long long)prefill_kv.copied_bytes,
         real_lm_head.ready,
         layer0_attention.ready,
         (unsigned long long)layer0_attention.copied_bytes,
