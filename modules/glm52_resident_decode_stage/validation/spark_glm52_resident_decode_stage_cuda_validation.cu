@@ -54,6 +54,12 @@ typedef struct SparkValidationDeviceBuffers
     uint16_t *query_rope_input_bf16;
     uint16_t *key_rope_input_bf16;
     uint16_t *current_kv_latent_bf16;
+    uint16_t *raw_query_a_bf16;
+    uint16_t *raw_query_a_normalized_bf16;
+    uint16_t *raw_query_b_bf16;
+    uint16_t *raw_kv_a_bf16;
+    uint16_t *raw_kv_a_normalized_bf16;
+    uint16_t *raw_kv_b_bf16;
     uint16_t *mla_cache_bf16;
     uint16_t *rotated_query_rope_bf16;
     uint16_t *attention_output_latent_bf16;
@@ -65,6 +71,12 @@ typedef struct SparkValidationDeviceBuffers
     uint16_t *query_rope_weight_bf16;
     uint16_t *key_rope_weight_bf16;
     uint16_t *kv_latent_weight_bf16;
+    uint16_t *raw_query_a_weight_bf16;
+    uint16_t *raw_query_a_norm_weight_bf16;
+    uint16_t *raw_query_b_weight_bf16;
+    uint16_t *raw_kv_a_weight_bf16;
+    uint16_t *raw_kv_a_norm_weight_bf16;
+    uint16_t *raw_kv_b_weight_bf16;
     uint16_t *attention_output_weight_bf16;
     uint16_t *final_norm_weight_bf16;
     uint16_t *restricted_lm_head_weight_bf16;
@@ -328,6 +340,104 @@ static bool SparkValidationSeedProjectionFixtureWeights(
             return false;
         }
     }
+    if (!SparkValidationCopyU16Value(
+            buffers->raw_query_a_weight_bf16,
+            0u,
+            SparkValidationFloatToBf16(0.0010f),
+            "copy raw q_a fixture") ||
+        !SparkValidationCopyU16Value(
+            buffers->raw_kv_b_weight_bf16,
+            0u,
+            SparkValidationFloatToBf16(0.0010f),
+            "copy raw kv_b fixture"))
+    {
+        return false;
+    }
+    for (head_index = 0u;
+         head_index < SPARK_VALIDATION_CHECKED_HEAD_COUNT;
+         ++head_index)
+    {
+        for (dimension_index = 0u;
+             dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
+             ++dimension_index)
+        {
+            uint64_t row_index;
+            float weight_value;
+
+            row_index =
+                ((uint64_t)head_index *
+                 (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION) +
+                (uint64_t)dimension_index;
+            weight_value =
+                (0.0030f * (float)(head_index + 1u)) +
+                (0.0005f * (float)(dimension_index + 1u));
+            if (!SparkValidationCopyU16Value(
+                    buffers->raw_query_b_weight_bf16,
+                    row_index *
+                        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+                    SparkValidationFloatToBf16(weight_value),
+                    "copy raw q_b latent fixture"))
+            {
+                return false;
+            }
+        }
+        for (dimension_index = 0u;
+             dimension_index < SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT;
+             ++dimension_index)
+        {
+            uint64_t row_index;
+            float weight_value;
+
+            row_index =
+                ((uint64_t)head_index *
+                 (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION) +
+                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION +
+                (uint64_t)dimension_index;
+            weight_value =
+                (0.0020f * (float)(head_index + 1u)) +
+                (0.00025f * (float)(dimension_index + 1u));
+            if (!SparkValidationCopyU16Value(
+                    buffers->raw_query_b_weight_bf16,
+                    row_index *
+                        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+                    SparkValidationFloatToBf16(weight_value),
+                    "copy raw q_b rope fixture"))
+            {
+                return false;
+            }
+        }
+    }
+    for (dimension_index = 0u;
+         dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
+         ++dimension_index)
+    {
+        if (!SparkValidationCopyU16Value(
+                buffers->raw_kv_a_weight_bf16,
+                (uint64_t)dimension_index *
+                    (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                SparkValidationFloatToBf16(
+                    0.0040f + (0.0005f * (float)dimension_index)),
+                "copy raw kv_a latent fixture"))
+        {
+            return false;
+        }
+    }
+    for (dimension_index = 0u;
+         dimension_index < SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT;
+         ++dimension_index)
+    {
+        if (!SparkValidationCopyU16Value(
+                buffers->raw_kv_a_weight_bf16,
+                ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION +
+                 (uint64_t)dimension_index) *
+                    (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                SparkValidationFloatToBf16(
+                    0.0050f + (0.00075f * (float)dimension_index)),
+                "copy raw kv_a rope fixture"))
+        {
+            return false;
+        }
+    }
     for (dimension_index = 0u;
          dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
          ++dimension_index)
@@ -410,8 +520,16 @@ static bool SparkValidationAllocateDeviceBuffers(
     uint64_t hidden_count;
     uint64_t query_latent_count;
     uint64_t query_rope_count;
+    uint64_t raw_query_a_count;
+    uint64_t raw_query_b_count;
+    uint64_t raw_kv_a_count;
+    uint64_t raw_kv_b_count;
     uint64_t cache_count;
     uint64_t big_projection_weight_count;
+    uint64_t raw_query_a_weight_count;
+    uint64_t raw_query_b_weight_count;
+    uint64_t raw_kv_a_weight_count;
+    uint64_t raw_kv_b_weight_count;
     uint64_t restricted_weight_count;
     uint64_t mtp_payload_count;
     uint64_t mtp_scale_count;
@@ -423,12 +541,28 @@ static bool SparkValidationAllocateDeviceBuffers(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION;
     query_rope_count =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION;
+    raw_query_a_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION;
+    raw_query_b_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION;
+    raw_kv_a_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION;
+    raw_kv_b_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION;
     cache_count =
         SPARK_VALIDATION_CACHE_TOKEN_CAPACITY *
         SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
     big_projection_weight_count =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    raw_query_a_weight_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    raw_query_b_weight_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION;
+    raw_kv_a_weight_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    raw_kv_b_weight_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION;
     restricted_weight_count =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
@@ -446,6 +580,12 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->query_rope_input_bf16, query_rope_count * 2u, "cudaMalloc query_rope") &&
         SparkValidationAllocateZeroed((void **)&buffers->key_rope_input_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION * 2u, "cudaMalloc key_rope") &&
         SparkValidationAllocateZeroed((void **)&buffers->current_kv_latent_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u, "cudaMalloc current_kv") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_bf16, raw_query_a_count * 2u, "cudaMalloc raw_query_a") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_normalized_bf16, raw_query_a_count * 2u, "cudaMalloc raw_query_a_normalized") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_query_b_bf16, raw_query_b_count * 2u, "cudaMalloc raw_query_b") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_a_bf16, raw_kv_a_count * 2u, "cudaMalloc raw_kv_a") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_a_normalized_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u, "cudaMalloc raw_kv_a_normalized") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_b_bf16, raw_kv_b_count * 2u, "cudaMalloc raw_kv_b") &&
         SparkValidationAllocateZeroed((void **)&buffers->mla_cache_bf16, cache_count * 2u, "cudaMalloc mla_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->rotated_query_rope_bf16, query_rope_count * 2u, "cudaMalloc rotated_query_rope") &&
         SparkValidationAllocateZeroed((void **)&buffers->attention_output_latent_bf16, query_latent_count * 2u, "cudaMalloc attention_output_latent") &&
@@ -457,6 +597,12 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->query_rope_weight_bf16, query_rope_count * hidden_count * 2u, "cudaMalloc query_rope_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->key_rope_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION * hidden_count * 2u, "cudaMalloc key_rope_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->kv_latent_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * hidden_count * 2u, "cudaMalloc kv_latent_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_weight_bf16, raw_query_a_weight_count * 2u, "cudaMalloc raw_query_a_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_norm_weight_bf16, raw_query_a_count * 2u, "cudaMalloc raw_query_a_norm_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_query_b_weight_bf16, raw_query_b_weight_count * 2u, "cudaMalloc raw_query_b_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_a_weight_bf16, raw_kv_a_weight_count * 2u, "cudaMalloc raw_kv_a_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_a_norm_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u, "cudaMalloc raw_kv_a_norm_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_b_weight_bf16, raw_kv_b_weight_count * 2u, "cudaMalloc raw_kv_b_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->attention_output_weight_bf16, big_projection_weight_count * 2u, "cudaMalloc attention_output_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->final_norm_weight_bf16, hidden_count * 2u, "cudaMalloc final_norm_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_lm_head_weight_bf16, restricted_weight_count * 2u, "cudaMalloc restricted_lm_head_weight") &&
@@ -595,6 +741,8 @@ static bool SparkValidationInitializeDeviceInputs(
         SparkValidationCopyToDevice(buffers->cos_table, cos_table, sizeof(cos_table), "copy cos_table") &&
         SparkValidationCopyToDevice(buffers->sin_table, sin_table, sizeof(sin_table), "copy sin_table") &&
         SparkValidationCopyToDevice(buffers->attention_norm_weight_bf16, one_bf16, sizeof(one_bf16), "copy attention_norm_weight") &&
+        SparkValidationCopyToDevice(buffers->raw_query_a_norm_weight_bf16, one_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION * 2u, "copy raw_query_a_norm_weight") &&
+        SparkValidationCopyToDevice(buffers->raw_kv_a_norm_weight_bf16, one_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u, "copy raw_kv_a_norm_weight") &&
         SparkValidationCopyToDevice(buffers->final_norm_weight_bf16, one_bf16, sizeof(one_bf16), "copy final_norm_weight") &&
         SparkValidationCopyToDevice(buffers->restricted_token_ids, restricted_token_ids, sizeof(restricted_token_ids), "copy restricted_token_ids") &&
         SparkValidationCopyToDevice(buffers->sparse_token_indices, sparse_token_indices, sizeof(sparse_token_indices), "copy sparse indices") &&
@@ -624,6 +772,14 @@ static void SparkValidationConfigureNode(
     pipeline_slot->query_rope_input_bf16 = buffers->query_rope_input_bf16;
     pipeline_slot->key_rope_input_bf16 = buffers->key_rope_input_bf16;
     pipeline_slot->current_kv_latent_bf16 = buffers->current_kv_latent_bf16;
+    pipeline_slot->raw_query_a_bf16 = buffers->raw_query_a_bf16;
+    pipeline_slot->raw_query_a_normalized_bf16 =
+        buffers->raw_query_a_normalized_bf16;
+    pipeline_slot->raw_query_b_bf16 = buffers->raw_query_b_bf16;
+    pipeline_slot->raw_kv_a_bf16 = buffers->raw_kv_a_bf16;
+    pipeline_slot->raw_kv_a_normalized_bf16 =
+        buffers->raw_kv_a_normalized_bf16;
+    pipeline_slot->raw_kv_b_bf16 = buffers->raw_kv_b_bf16;
     pipeline_slot->positions = buffers->positions;
     pipeline_slot->slot_mapping = buffers->slot_mapping;
     pipeline_slot->block_table = buffers->block_table;
@@ -671,6 +827,16 @@ static void SparkValidationConfigureNode(
     node_context->query_rope_weight_bf16 = buffers->query_rope_weight_bf16;
     node_context->key_rope_weight_bf16 = buffers->key_rope_weight_bf16;
     node_context->kv_latent_weight_bf16 = buffers->kv_latent_weight_bf16;
+    node_context->raw_query_a_weight_bf16 =
+        buffers->raw_query_a_weight_bf16;
+    node_context->raw_query_a_norm_weight_bf16 =
+        buffers->raw_query_a_norm_weight_bf16;
+    node_context->raw_query_b_weight_bf16 =
+        buffers->raw_query_b_weight_bf16;
+    node_context->raw_kv_a_weight_bf16 = buffers->raw_kv_a_weight_bf16;
+    node_context->raw_kv_a_norm_weight_bf16 =
+        buffers->raw_kv_a_norm_weight_bf16;
+    node_context->raw_kv_b_weight_bf16 = buffers->raw_kv_b_weight_bf16;
     node_context->attention_output_weight_bf16 =
         buffers->attention_output_weight_bf16;
     node_context->final_norm_weight_bf16 = buffers->final_norm_weight_bf16;
@@ -683,6 +849,8 @@ static void SparkValidationConfigureNode(
     node_context->restricted_token_ids = buffers->restricted_token_ids;
     node_context->pipeline_slots = pipeline_slot;
     node_context->cuda_pipeline_slot_states = cuda_slot_state;
+    node_context->projection_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16;
     node_context->sparse_index_mode =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_PRESELECTED;
     node_context->launch_check_mode =

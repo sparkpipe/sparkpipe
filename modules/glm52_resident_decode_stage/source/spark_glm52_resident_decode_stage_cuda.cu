@@ -302,6 +302,65 @@ void SparkGlm52ResidentDecodeStageRmsNormKernel(
 }
 
 static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
+void SparkGlm52ResidentDecodeStageRmsNormDimensionKernel(
+    const uint16_t *__restrict__ input_bf16,
+    const uint16_t *__restrict__ weight_bf16,
+    uint16_t *__restrict__ output_bf16,
+    uint32_t active_sequence_count,
+    uint32_t dimension,
+    float epsilon)
+{
+    __shared__ float shared_reduction[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    uint32_t sequence_index;
+    uint32_t dimension_index;
+    float local_square_sum;
+    float row_square_sum;
+    float inverse_rms;
+
+    sequence_index = blockIdx.x;
+    if (sequence_index >= active_sequence_count)
+    {
+        return;
+    }
+    local_square_sum = 0.0f;
+    for (dimension_index = threadIdx.x;
+         dimension_index < dimension;
+         dimension_index += blockDim.x)
+    {
+        float value;
+
+        value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+            input_bf16[
+                ((uint64_t)sequence_index * (uint64_t)dimension) +
+                (uint64_t)dimension_index]);
+        local_square_sum += value * value;
+    }
+    row_square_sum = SparkGlm52ResidentDecodeStageBlockReduceSum(
+        local_square_sum,
+        shared_reduction);
+    inverse_rms = rsqrtf((row_square_sum / (float)dimension) + epsilon);
+    for (dimension_index = threadIdx.x;
+         dimension_index < dimension;
+         dimension_index += blockDim.x)
+    {
+        float value;
+        float weight;
+
+        value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+            input_bf16[
+                ((uint64_t)sequence_index * (uint64_t)dimension) +
+                (uint64_t)dimension_index]);
+        weight = SparkGlm52ResidentDecodeStageBf16ToFloat(
+            weight_bf16[dimension_index]);
+        output_bf16[
+            ((uint64_t)sequence_index * (uint64_t)dimension) +
+            (uint64_t)dimension_index] =
+            SparkGlm52ResidentDecodeStageFloatToBf16(value * inverse_rms * weight);
+    }
+}
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
 void SparkGlm52ResidentDecodeStageBf16LinearKernel(
     const uint16_t *__restrict__ input_bf16,
     const uint16_t *__restrict__ weight_bf16,
@@ -604,6 +663,115 @@ static __global__ void SparkGlm52ResidentDecodeStagePrepareKernel(
                     &mla_cache_bf16[cache_offset],
                     &mla_cache_bf16[cache_offset + 1u]);
             }
+        }
+        work_index += work_stride;
+    }
+}
+
+static __global__ void SparkGlm52ResidentDecodeStageMapRawQueryKernel(
+    const uint16_t *__restrict__ raw_query_b_bf16,
+    uint16_t *__restrict__ query_latent_bf16,
+    uint16_t *__restrict__ query_rope_input_bf16,
+    uint32_t active_sequence_count)
+{
+    uint64_t total_work_count;
+    uint64_t work_index;
+    uint64_t work_stride;
+
+    total_work_count =
+        (uint64_t)active_sequence_count *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION;
+    work_index =
+        ((uint64_t)blockIdx.x * (uint64_t)blockDim.x) +
+        (uint64_t)threadIdx.x;
+    work_stride = (uint64_t)gridDim.x * (uint64_t)blockDim.x;
+    while (work_index < total_work_count)
+    {
+        uint32_t latent_dimension_index;
+        uint64_t row_index;
+        uint64_t raw_offset;
+        uint16_t value_bf16;
+
+        latent_dimension_index = (uint32_t)(
+            work_index %
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION);
+        row_index =
+            work_index /
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION;
+        value_bf16 = 0u;
+        if (latent_dimension_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION)
+        {
+            raw_offset =
+                (row_index *
+                 (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION) +
+                (uint64_t)latent_dimension_index;
+            value_bf16 = raw_query_b_bf16[raw_offset];
+        }
+        query_latent_bf16[work_index] = value_bf16;
+        if (latent_dimension_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION)
+        {
+            raw_offset =
+                (row_index *
+                 (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION) +
+                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION +
+                (uint64_t)latent_dimension_index;
+            query_rope_input_bf16[
+                (row_index *
+                 (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION) +
+                (uint64_t)latent_dimension_index] =
+                raw_query_b_bf16[raw_offset];
+        }
+        work_index += work_stride;
+    }
+}
+
+static __global__ void SparkGlm52ResidentDecodeStageSplitRawKvAKernel(
+    const uint16_t *__restrict__ raw_kv_a_bf16,
+    uint16_t *__restrict__ current_kv_latent_bf16,
+    uint16_t *__restrict__ key_rope_input_bf16,
+    uint32_t active_sequence_count)
+{
+    uint64_t total_work_count;
+    uint64_t work_index;
+    uint64_t work_stride;
+
+    total_work_count =
+        (uint64_t)active_sequence_count *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION;
+    work_index =
+        ((uint64_t)blockIdx.x * (uint64_t)blockDim.x) +
+        (uint64_t)threadIdx.x;
+    work_stride = (uint64_t)gridDim.x * (uint64_t)blockDim.x;
+    while (work_index < total_work_count)
+    {
+        uint32_t kv_dimension_index;
+        uint32_t sequence_index;
+
+        kv_dimension_index = (uint32_t)(
+            work_index %
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION);
+        sequence_index = (uint32_t)(
+            work_index /
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION);
+        if (kv_dimension_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION)
+        {
+            current_kv_latent_bf16[
+                ((uint64_t)sequence_index *
+                 (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION) +
+                (uint64_t)kv_dimension_index] = raw_kv_a_bf16[work_index];
+        }
+        else
+        {
+            key_rope_input_bf16[
+                ((uint64_t)sequence_index *
+                 (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION) +
+                (uint64_t)(kv_dimension_index -
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION)] =
+                raw_kv_a_bf16[work_index];
         }
         work_index += work_stride;
     }
@@ -1394,6 +1562,226 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinear(
         cuda_stream);
 }
 
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchRmsNormDimension(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    const uint16_t *input_bf16,
+    const uint16_t *weight_bf16,
+    uint16_t *output_bf16,
+    uint32_t active_sequence_count,
+    uint32_t dimension)
+{
+    SparkGlm52ResidentDecodeStageRmsNormDimensionKernel<<<
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        input_bf16,
+        weight_bf16,
+        output_bf16,
+        active_sequence_count,
+        dimension,
+        node_context->rms_norm_epsilon);
+    return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count)
+{
+    uint64_t raw_query_map_count;
+    SparkStatus status;
+
+    status = SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
+        (const uint16_t *)node_context->raw_query_a_weight_bf16,
+        (uint16_t *)pipeline_slot->raw_query_a_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchRmsNormDimension(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->raw_query_a_bf16,
+        (const uint16_t *)node_context->raw_query_a_norm_weight_bf16,
+        (uint16_t *)pipeline_slot->raw_query_a_normalized_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->raw_query_a_normalized_bf16,
+        (const uint16_t *)node_context->raw_query_b_weight_bf16,
+        (uint16_t *)pipeline_slot->raw_query_b_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    raw_query_map_count =
+        (uint64_t)active_sequence_count *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION;
+    SparkGlm52ResidentDecodeStageMapRawQueryKernel<<<
+        SparkGlm52ResidentDecodeStageElementBlockCount(raw_query_map_count),
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)pipeline_slot->raw_query_b_bf16,
+        (uint16_t *)pipeline_slot->query_latent_bf16,
+        (uint16_t *)pipeline_slot->query_rope_input_bf16,
+        active_sequence_count);
+    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
+        (const uint16_t *)node_context->raw_kv_a_weight_bf16,
+        (uint16_t *)pipeline_slot->raw_kv_a_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    SparkGlm52ResidentDecodeStageSplitRawKvAKernel<<<
+        SparkGlm52ResidentDecodeStageElementBlockCount(
+            (uint64_t)active_sequence_count *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION),
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)pipeline_slot->raw_kv_a_bf16,
+        (uint16_t *)pipeline_slot->current_kv_latent_bf16,
+        (uint16_t *)pipeline_slot->key_rope_input_bf16,
+        active_sequence_count);
+    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchRmsNormDimension(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->current_kv_latent_bf16,
+        (const uint16_t *)node_context->raw_kv_a_norm_weight_bf16,
+        (uint16_t *)pipeline_slot->raw_kv_a_normalized_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->raw_kv_a_normalized_bf16,
+        (const uint16_t *)node_context->raw_kv_b_weight_bf16,
+        (uint16_t *)pipeline_slot->raw_kv_b_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION);
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchLoweredProjection(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count)
+{
+    SparkStatus status;
+
+    status = SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
+        (const uint16_t *)node_context->query_latent_weight_bf16,
+        (uint16_t *)pipeline_slot->query_latent_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
+        (const uint16_t *)node_context->query_rope_weight_bf16,
+        (uint16_t *)pipeline_slot->query_rope_input_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
+        (const uint16_t *)node_context->key_rope_weight_bf16,
+        (uint16_t *)pipeline_slot->key_rope_input_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
+        (const uint16_t *)node_context->kv_latent_weight_bf16,
+        (uint16_t *)pipeline_slot->current_kv_latent_bf16,
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION);
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
@@ -1622,58 +2010,20 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
         return status;
     }
 
-    status = SparkGlm52ResidentDecodeStageLaunchLinear(
-        node_context,
-        cuda_slot_state,
-        cuda_stream,
-        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
-        (const uint16_t *)node_context->query_latent_weight_bf16,
-        (uint16_t *)pipeline_slot->query_latent_bf16,
-        active_sequence_count,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkGlm52ResidentDecodeStageLaunchLinear(
-        node_context,
-        cuda_slot_state,
-        cuda_stream,
-        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
-        (const uint16_t *)node_context->query_rope_weight_bf16,
-        (uint16_t *)pipeline_slot->query_rope_input_bf16,
-        active_sequence_count,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkGlm52ResidentDecodeStageLaunchLinear(
-        node_context,
-        cuda_slot_state,
-        cuda_stream,
-        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
-        (const uint16_t *)node_context->key_rope_weight_bf16,
-        (uint16_t *)pipeline_slot->key_rope_input_bf16,
-        active_sequence_count,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkGlm52ResidentDecodeStageLaunchLinear(
-        node_context,
-        cuda_slot_state,
-        cuda_stream,
-        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
-        (const uint16_t *)node_context->kv_latent_weight_bf16,
-        (uint16_t *)pipeline_slot->current_kv_latent_bf16,
-        active_sequence_count,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION);
+    status = node_context->projection_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16
+        ? SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count)
+        : SparkGlm52ResidentDecodeStageLaunchLoweredProjection(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count);
     if (status != SPARK_STATUS_OK)
     {
         return status;
