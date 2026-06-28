@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 6u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 7u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION 6144u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT 64u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION 512u
@@ -109,7 +109,8 @@ typedef enum SparkGlm52ResidentDecodeStageLayerProgressionMode
 {
     SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ATTENTION_ONLY = 0,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE = 1,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP = 2
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP = 2,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY = 3
 } SparkGlm52ResidentDecodeStageLayerProgressionMode;
 
 typedef struct SparkGlm52ResidentDecodeStageCudaPipelineSlotState
@@ -150,8 +151,8 @@ typedef struct SparkGlm52ResidentDecodeStagePipelineSlot
     void *attention_projected_hidden_bf16;
     void *post_attention_hidden_bf16;
     void *post_attention_normalized_hidden_bf16;
-    const uint32_t *moe_topk_expert_ids;
-    const float *moe_topk_weights;
+    uint32_t *moe_topk_expert_ids;
+    float *moe_topk_weights;
     void *moe_gate_bf16;
     void *moe_up_bf16;
     void *moe_intermediate_bf16;
@@ -235,6 +236,10 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     uint32_t launch_check_mode;
     uint32_t phase_clock_mode;
     uint32_t enable_cuda_graph_replay;
+    const void *moe_router_weight_bf16;
+    const float *moe_router_score_bias_f32;
+    float moe_routed_scaling_factor;
+    uint32_t moe_norm_topk_prob;
 } SparkGlm52ResidentDecodeStageNodeContext;
 
 SparkStatus SparkGlm52ResidentDecodeStageInitialize(

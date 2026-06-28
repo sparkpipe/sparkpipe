@@ -1358,6 +1358,125 @@ static __global__ void SparkGlm52ResidentDecodeStageResidualKernel(
 }
 
 static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
+void SparkGlm52ResidentDecodeStageMoeRouterTopKKernel(
+    const uint16_t *__restrict__ input_hidden_bf16,
+    const uint16_t *__restrict__ router_weight_bf16,
+    const float *__restrict__ router_score_bias_f32,
+    uint32_t *__restrict__ topk_expert_ids,
+    float *__restrict__ topk_weights,
+    uint32_t active_sequence_count,
+    uint32_t expert_count,
+    uint32_t top_k,
+    uint32_t norm_topk_prob,
+    float routed_scaling_factor)
+{
+    __shared__ float shared_choice_scores[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT];
+    __shared__ float shared_route_weights[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT];
+    __shared__ uint32_t shared_selected_ids[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
+    __shared__ float shared_selected_weights[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
+    uint32_t sequence_index;
+    uint32_t expert_index;
+    uint32_t hidden_index;
+    float router_logit;
+    float router_score;
+
+    sequence_index = blockIdx.x;
+    expert_index = threadIdx.x;
+    if (sequence_index >= active_sequence_count ||
+        expert_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT)
+    {
+        return;
+    }
+    router_logit = 0.0f;
+    if (expert_index < expert_count)
+    {
+        for (hidden_index = 0u;
+             hidden_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+             ++hidden_index)
+        {
+            router_logit +=
+                SparkGlm52ResidentDecodeStageBf16ToFloat(
+                    input_hidden_bf16[
+                        ((uint64_t)sequence_index *
+                         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) +
+                        (uint64_t)hidden_index]) *
+                SparkGlm52ResidentDecodeStageBf16ToFloat(
+                    router_weight_bf16[
+                        ((uint64_t)expert_index *
+                         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) +
+                        (uint64_t)hidden_index]);
+        }
+        router_score = 1.0f / (1.0f + __expf(-router_logit));
+        shared_route_weights[expert_index] = router_score;
+        shared_choice_scores[expert_index] =
+            router_score + router_score_bias_f32[expert_index];
+    }
+    else
+    {
+        shared_route_weights[expert_index] = 0.0f;
+        shared_choice_scores[expert_index] = -FLT_MAX;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0u)
+    {
+        float selected_weight_sum;
+        uint32_t selected_index;
+
+        selected_weight_sum = 0.0f;
+        for (selected_index = 0u; selected_index < top_k; ++selected_index)
+        {
+            float best_score;
+            uint32_t best_expert;
+            uint32_t candidate_expert;
+
+            best_score = -FLT_MAX;
+            best_expert = 0u;
+            for (candidate_expert = 0u;
+                 candidate_expert < expert_count;
+                 ++candidate_expert)
+            {
+                float candidate_score;
+
+                candidate_score = shared_choice_scores[candidate_expert];
+                if (candidate_score > best_score ||
+                    (candidate_score == best_score &&
+                     candidate_expert < best_expert))
+                {
+                    best_score = candidate_score;
+                    best_expert = candidate_expert;
+                }
+            }
+            shared_selected_ids[selected_index] = best_expert;
+            shared_selected_weights[selected_index] =
+                shared_route_weights[best_expert];
+            selected_weight_sum += shared_selected_weights[selected_index];
+            shared_choice_scores[best_expert] = -FLT_MAX;
+        }
+        for (selected_index = 0u; selected_index < top_k; ++selected_index)
+        {
+            float selected_weight;
+            uint64_t route_index;
+
+            selected_weight = shared_selected_weights[selected_index];
+            if (norm_topk_prob != 0u && selected_weight_sum > 0.0f)
+            {
+                selected_weight /= selected_weight_sum;
+            }
+            selected_weight *= routed_scaling_factor;
+            route_index =
+                ((uint64_t)sequence_index * (uint64_t)top_k) +
+                (uint64_t)selected_index;
+            topk_expert_ids[route_index] = shared_selected_ids[selected_index];
+            topk_weights[route_index] = selected_weight;
+        }
+    }
+}
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
 void SparkGlm52ResidentDecodeStageMoeGateUpKernel(
     const uint16_t *__restrict__ input_hidden_bf16,
     const uint32_t *__restrict__ topk_expert_ids,
@@ -2689,6 +2808,39 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
             cuda_stream,
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE);
     }
+    if (node_context->layer_progression_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY)
+    {
+        SparkGlm52ResidentDecodeStageMoeRouterTopKKernel<<<
+            active_sequence_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            (const uint16_t *)pipeline_slot->post_attention_normalized_hidden_bf16,
+            (const uint16_t *)node_context->moe_router_weight_bf16,
+            node_context->moe_router_score_bias_f32,
+            pipeline_slot->moe_topk_expert_ids,
+            pipeline_slot->moe_topk_weights,
+            active_sequence_count,
+            node_context->moe_expert_count,
+            node_context->moe_top_k,
+            node_context->moe_norm_topk_prob,
+            node_context->moe_routed_scaling_factor);
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE);
+    }
     route_count = active_sequence_count *
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
     gate_up_grid = dim3(
@@ -3170,8 +3322,11 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
         return status;
     }
 
-    final_norm_input_bf16 = node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ATTENTION_ONLY
+    final_norm_input_bf16 =
+        (node_context->layer_progression_mode ==
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ATTENTION_ONLY ||
+         node_context->layer_progression_mode ==
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY)
         ? (const uint16_t *)pipeline_slot->post_attention_hidden_bf16
         : (const uint16_t *)pipeline_slot->layer_output_hidden_bf16;
     SparkGlm52ResidentDecodeStageRmsNormKernel<<<
