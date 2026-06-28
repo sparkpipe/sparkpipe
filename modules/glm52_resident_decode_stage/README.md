@@ -35,7 +35,15 @@ PATH=/usr/local/cuda-13.0/bin:$PATH \
 make -C modules/glm52_resident_decode_stage package_layer0_dense_bf16 MAX_STAGE_MICROSECONDS=10000
 ```
 
-That gate loads the real BF16 `post_attention_layernorm`, `gate_proj`,
+The stronger combined layer-0 BF16 gate is:
+
+```sh
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer0_bf16 MAX_STAGE_MICROSECONDS=10000
+```
+
+That gate loads the real BF16 attention tensors, `post_attention_layernorm`, `gate_proj`,
 `up_proj`, and `down_proj` tensors for layer 0, runs the dense layer body on
 device, and then checks restricted logits against real checkpoint
 `lm_head.weight` rows.

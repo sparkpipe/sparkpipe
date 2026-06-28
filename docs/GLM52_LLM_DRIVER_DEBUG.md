@@ -340,6 +340,42 @@ stage now has a distinct dense BF16 MLP progression mode. This is still not a
 full token-equivalence pass because q/kv/o projection fixtures and attention
 references are not yet loaded from the checkpoint in the same run.
 
+Latest combined layer-0 BF16 attention+dense evidence from `spark1` at commit
+`4ce5b4c`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer0_bf16 MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.layer0_bf16.max_us_10000.v1
+layer0_attention_bf16_fixture_ready=1
+layer0_attention_bf16_bytes=330056704
+layer0_dense_bf16_fixture_ready=1
+layer0_dense_bf16_bytes=452997120
+real_lm_head_fixture_ready=1
+real_lm_head_bytes=3145728
+backend_average_us=3910.037
+backend_maximum_us=3919.136
+orchestrator_elapsed_us=5336.672
+limit_us=10000.000
+restricted_token=1104
+mtp_draft=1011
+mtp_reject=1003
+real_lm_head=1
+real_lm_head_max_logit_error=0.00000000
+module_artifact=7ca69b58e49fb20e4929cffb30555d57cdac6b7d204230215664292f28628db5
+package_manifest_sha256=af75ba5fcacea09358d580cf32d0ce274707a0ab3171afffa16b35c42eb68551
+```
+
+This removes another synthetic-weight gap: the resident validator can now run
+real layer-0 BF16 attention projection weights and real layer-0 dense MLP
+weights in the same package/generated-driver path. It still does not prove
+full token equivalence because the input hidden state and previous KV blocks are
+synthetic, and the real q/kv/o + dense path is not yet compared to a full CPU or
+external reference activation.
+
 ## What this proves
 
 The generated GLM 5.2 decode-stage `model_driver.so` can be loaded by the
@@ -393,6 +429,7 @@ multiple positions
 larger nonzero attention dimension/head coverage
 checkpoint-derived cached attention and MoE references
 checkpoint-derived dense MLP references for the first dense layers
+checkpoint-derived attention q/kv/o references for layer 0
 MTP draft and verify/commit behavior with varied target patterns
 runtime snapshot counters after real tensor work
 ```
