@@ -286,6 +286,60 @@ layer progression on device. It does not prove production NVFP4 expert
 throughput; the production next step is to replace the BF16 expert fixture with
 pre-bound NVFP4 expert weights and grouped/persistent expert GEMM.
 
+Latest layer-0 dense BF16 MLP evidence from `spark1` at commit `78a29ae`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_LOAD_LAYER0_DENSE_BF16=1 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage validate MAX_STAGE_MICROSECONDS=10000
+
+layer0_dense_bf16_fixture_ready=1
+layer0_dense_bf16_bytes=452997120
+real_lm_head_fixture_ready=1
+real_lm_head_bytes=3145728
+average_us=4029.398
+maximum_us=4216.256
+limit_us=10000.000
+restricted_token=1104
+mtp_draft=1011
+mtp_reject=1003
+real_lm_head=1
+real_lm_head_max_logit_error=0.00000000
+launch_chains=4
+```
+
+Package/generated-driver gate from the same branch:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_LOAD_LAYER0_DENSE_BF16=1 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.layer0_dense_bf16.max_us_10000.v1
+module_artifact=53677f6c3a80e8ed8be7f40563d2038394156090241832916fc2f9f0a94133f4
+package_manifest_sha256=99aa2d3664af1b6720b06f94388aa4ffc8469b5f72e9218081f2756ec263749c
+backend_average_us=3660.939
+backend_maximum_us=3675.392
+orchestrator_elapsed_us=4810.208
+limit_us=10000.000
+restricted_token=1104
+real_lm_head=1
+layer0_dense_bf16=1
+layer0_dense_bf16_bytes=452997120
+real_lm_head_max_logit_error=0.00000000
+launch_chains=1
+```
+
+This removes the false assumption that GLM layer 0 can be represented by the
+local-MoE path. GLM 5.2 has dense MLP in the first layers, and the resident
+stage now has a distinct dense BF16 MLP progression mode. This is still not a
+full token-equivalence pass because q/kv/o projection fixtures and attention
+references are not yet loaded from the checkpoint in the same run.
+
 ## What this proves
 
 The generated GLM 5.2 decode-stage `model_driver.so` can be loaded by the
@@ -338,6 +392,7 @@ nonzero GLM fixtures and check:
 multiple positions
 larger nonzero attention dimension/head coverage
 checkpoint-derived cached attention and MoE references
+checkpoint-derived dense MLP references for the first dense layers
 MTP draft and verify/commit behavior with varied target patterns
 runtime snapshot counters after real tensor work
 ```

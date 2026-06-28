@@ -17,9 +17,10 @@ MODULE_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_resident_decode_stage.a
 ARTIFACT_CHECK_TOOL := $(BUILD_DIRECTORY)/glm52_artifact_check
 PACKAGE_DIRECTORY ?= $(REPOSITORY_ROOT)/build/packages/glm52_resident_decode_stage
 CUDA_HOME ?= $(abspath $(dir $(shell command -v $(NVCC)))/..)
-VALIDATION_RECIPE := glm52.resident_decode_stage.$(CUDA_ARCH).max_us_$(MAX_STAGE_MICROSECONDS).v1
+VALIDATION_RECIPE_VARIANT ?= default
+VALIDATION_RECIPE := glm52.resident_decode_stage.$(CUDA_ARCH).$(VALIDATION_RECIPE_VARIANT).max_us_$(MAX_STAGE_MICROSECONDS).v1
 
-.PHONY: archive cold_archive artifact_check validate publish package clean require_sm121 require_latency_limit require_model_dir
+.PHONY: archive cold_archive artifact_check validate validate_layer0_dense_bf16 publish package package_layer0_dense_bf16 clean require_sm121 require_latency_limit require_model_dir
 
 archive: require_sm121 $(MODULE_ARCHIVE)
 
@@ -70,6 +71,12 @@ validate: require_sm121 require_latency_limit cold_archive
 	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
 		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE)
+
+validate_layer0_dense_bf16: require_model_dir
+	GLM52_LOAD_LAYER0_DENSE_BF16=1 $(MAKE) validate
+
+package_layer0_dense_bf16: require_model_dir
+	GLM52_LOAD_LAYER0_DENSE_BF16=1 VALIDATION_RECIPE_VARIANT=layer0_dense_bf16 $(MAKE) package
 
 publish: require_sm121 require_latency_limit cold_archive
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish

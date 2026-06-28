@@ -322,6 +322,29 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageLayerPointers(
     {
         return SPARK_STATUS_OK;
     }
+    if (node_context->layer_progression_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP)
+    {
+        if (node_context->dense_intermediate_dimension == 0u ||
+            node_context->dense_intermediate_dimension >
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->post_attention_norm_weight_bf16,
+                2u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->dense_gate_weight_bf16,
+                2u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->dense_up_weight_bf16,
+                2u) ||
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->dense_down_weight_bf16,
+                2u))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        return SPARK_STATUS_OK;
+    }
     if (node_context->layer_progression_mode !=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE)
     {
@@ -385,7 +408,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->projection_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3 ||
         node_context->layer_progression_mode >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE ||
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP ||
         node_context->sparse_index_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DEBUG_SERIAL_TOPK ||
         node_context->launch_check_mode >
@@ -483,8 +506,8 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        if (node_context->layer_progression_mode ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE &&
+        if (node_context->layer_progression_mode !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ATTENTION_ONLY &&
             SparkValidateGlm52ResidentDecodeStageMoePipelineSlot(
                 &node_context->pipeline_slots[pipeline_slot_index]) !=
                 SPARK_STATUS_OK)
