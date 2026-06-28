@@ -2,6 +2,48 @@
 
 This document describes the target CUDA shape for the current GLM 5.2 firmware modules. The code in this release is intended to be within debug distance for a CUDA/Codex pass: the firmware boundaries, resource ownership, scheduling ABI, graph slots, and counters are in place, while several arithmetic kernels are still correctness-first and should be replaced after target profiling.
 
+## Iteration 080 CUDA fast-path additions
+
+The decode-stage firmware now has a concrete fast-path ABI for replacing correctness-first kernels without changing SparkPipe:
+
+```text
+prebound cublasLt row-major BF16/FP8 linear plans
+prebound dense-MLP tensor-core path
+driver-owned grouped-MoE launch hook
+restricted-logits custom launch hook
+tiled online sparse-MLA attention kernel
+vectorized MXFP4 MTP draft-logit kernel
+validated service-time fields in node_context/admission
+```
+
+The important shape is that these are module-local resources. The node context owns cublasLt descriptors, algorithms, workspaces, grouped-MoE state, and restricted-logits plans. SparkPipe only sees neutral admission and snapshot values.
+
+For production profiles, the scalar kernels should remain only as validator/debug fallbacks. A SOTA-qualified GLM 5.2 decode package should set:
+
+```text
+projection_backend_mode = PREBOUND_CUBLASLT
+mlp_execution_mode      = PREBOUND_TENSOR_CORE or DRIVER_GROUPED_MOE
+attention_execution     = TILED_ONLINE_SOFTMAX after numerical validation
+launch_check_mode       = NONE
+phase_clock_mode        = DISABLED
+enable_cuda_graph_replay= 1
+```
+
+Required target-hardware proof before admitting such a package:
+
+```text
+all cublasLt plans are created before submit
+no cublasLt descriptor creation on the hot path
+all required linear plans are present by exact plan index
+MoE grouped launch owns expert queues privately
+restricted logits do not materialize full vocab
+MTP vectorized kernel matches scalar MXFP4 reference
+graph replay dominates after warmup
+zero host staging and zero avoidable device memcpy are trace-proven
+estimated_service_time_ns is populated from the validated artifact
+```
+
+
 ## Global rules for every CUDA firmware module
 
 A CUDA firmware module is a self-contained static archive selected by exact model JSON. It should own all model-specific implementation detail below the SparkPipe driver ABI.

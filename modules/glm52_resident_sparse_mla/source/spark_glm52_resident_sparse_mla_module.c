@@ -115,7 +115,6 @@ static SparkStatus SparkValidateGlm52ResidentSparseMlaNodeContext(
             SPARK_GLM52_RESIDENT_SPARSE_MLA_NODE_CONTEXT_ABI_VERSION ||
         node_context->reserved != 0u ||
         node_context->reserved_1 != 0u ||
-        node_context->reserved_2 != 0u ||
         node_context->reserved_3 != 0u)
     {
         return SPARK_STATUS_ABI_MISMATCH;
@@ -130,6 +129,8 @@ static SparkStatus SparkValidateGlm52ResidentSparseMlaNodeContext(
         node_context->position_count == 0u ||
         node_context->launch_check_mode >
             SPARK_GLM52_RESIDENT_SPARSE_MLA_LAUNCH_CHECK_SYNC_ON_ERROR ||
+        node_context->attention_execution_mode >
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX ||
         !isfinite(node_context->qk_scale) ||
         node_context->qk_scale <= 0.0f ||
         !SparkGlm52ResidentSparseMlaPointerIsAligned(
@@ -539,6 +540,13 @@ SparkStatus SparkGlm52ResidentSparseMlaAdmit(
         (uint64_t)active_submission_count;
     decision->device_memcpy_bytes = 0u;
     decision->host_staging_bytes = 0u;
+    decision->estimated_service_time_ns = state->node_context->estimated_service_time_ns != 0u
+        ? state->node_context->estimated_service_time_ns
+        : state->node_context->validated_stage_latency_ns;
+    decision->estimated_queue_delay_ns = state->pipeline_slot_count != 0u
+        ? (decision->estimated_service_time_ns * (uint64_t)active_submission_count) /
+            (uint64_t)state->pipeline_slot_count
+        : decision->estimated_service_time_ns;
 
     if (selected_slot == SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT)
     {

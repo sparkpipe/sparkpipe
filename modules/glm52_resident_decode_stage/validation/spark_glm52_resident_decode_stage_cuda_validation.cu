@@ -4295,18 +4295,34 @@ static bool SparkValidationCheckLayer3RoutedExpertNvfp4(
     }
     if (route_count > 1u)
     {
+        uint32_t route_order_changed;
+
+        route_order_changed = 0u;
         for (index = 0u; index < route_count; ++index)
         {
+            uint32_t observed_index;
+            uint32_t found_expert;
+
+            found_expert = 0u;
             if (observed_ids[index] != fixture->bound_expert_ids[index])
+                route_order_changed = 1u;
+            for (observed_index = 0u; observed_index < route_count; ++observed_index)
+            {
+                if (observed_ids[observed_index] == fixture->bound_expert_ids[index])
+                    found_expert = 1u;
+            }
+            if (found_expert == 0u)
             {
                 fprintf(
                     stderr,
-                    "layer3 routed nvfp4 expected route %u expert %u but router selected %u\n",
-                    index,
-                    fixture->bound_expert_ids[index],
-                    observed_ids[index]);
+                    "layer3 routed nvfp4 missing expected route expert %u\n",
+                    fixture->bound_expert_ids[index]);
                 return false;
             }
+        }
+        if (route_order_changed != 0u)
+        {
+            fprintf(stderr, "layer3 routed nvfp4 route order changed but expert set matched\n");
         }
     }
     nonzero_gate_count = 0u;

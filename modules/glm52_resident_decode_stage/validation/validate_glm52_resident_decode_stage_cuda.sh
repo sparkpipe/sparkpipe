@@ -58,6 +58,8 @@ make -C "${repository_root}" "${common_archive}" "${runtime_archive}" "${compile
     "${runtime_archive}" \
     "${compiler_archive}" \
     "${common_archive}" \
+    -lcublasLt \
+    -lcublas \
     -ldl \
     -o "${validation_directory}/glm52_resident_decode_stage_validator"
 
