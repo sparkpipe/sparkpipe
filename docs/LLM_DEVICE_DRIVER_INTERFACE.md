@@ -81,6 +81,47 @@ validated_latency
 
 These flags are not a generic LLM plan. They are promises about the compiled driver. If a driver declares `no_host_staging`, its completions and snapshots must keep host-staging bytes at zero. If it declares `jit_kv_cache`, SparkPipe may schedule by residency token and pressure, but it still may not inspect the page allocator. If it declares `driver_private_expert_queues`, SparkPipe may use private queue pressure, but it must not see individual expert queues.
 
+## Token-selection programs
+
+Token selection is owned by the model-specific driver. SparkPipe must not provide a generic restricted-vocabulary mask, token list, grammar state, sampler, or output-head layout. The model description should select exact externally callable programs such as:
+
+```text
+full_decode
+final_restricted_decode_k256
+final_restricted_decode_k64
+binary_choice_decode
+json_schema_profile_decode
+classifier_decode
+```
+
+Restricted-token programs are final-head optimizations. They begin after the driver has produced the hidden state for the next token through the normal transformer body:
+
+```text
+attention
+KV reads and writes
+MoE / MLP
+residuals
+norms
+routing
+MTP verify state
+```
+
+The allowed output-token set may reduce final RMSNorm, LM-head projection, logits processing, and sampling. It must not change the exact transformer-body semantics unless the model package explicitly publishes a separate approximate firmware program with its own quality and performance validation.
+
+For thinking-capable models, a tiny restricted vocabulary is only valid for the final answer phase. The broad reasoning phase should use `full_decode` or another broad-vocabulary program, then switch to a final restricted or classifier program when the model-driver policy says answer emission has begun.
+
+SparkPipe may see only neutral scheduling facts for these programs:
+
+```text
+restricted_vocab_token_count
+expected_service_time
+expected_host_staging_bytes
+expected_device_memcpy_bytes
+completion mode
+```
+
+It must not see token IDs, packed output-head rows, trie state, grammar stacks, logits buffers, sampler internals, or MTP accept/reject policy. Dynamic reused token subsets belong inside a driver-owned resident cache, typically keyed by an opaque subset hash.
+
 ## Admission
 
 Admission answers one question: can this exact driver instance take this frame now, and at what neutral scheduling cost?
