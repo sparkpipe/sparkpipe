@@ -377,7 +377,7 @@ synthetic, and the real q/kv/o + dense path is not yet compared to a full CPU or
 external reference activation.
 
 Latest input-embedding-backed layer-0 BF16 evidence from `spark1` at commit
-`28ab1b46d65d27cf2bcb0ef8c7bd071a1203abce`:
+`99a8908328327cbf5c1fa964fb9963f0dc0b47fb`:
 
 ```text
 command:
@@ -396,17 +396,17 @@ layer0_dense_bf16_fixture_ready=1
 layer0_dense_bf16_bytes=452997120
 real_lm_head_fixture_ready=1
 real_lm_head_bytes=3145728
-backend_average_us=3936.533
-backend_maximum_us=3944.416
-orchestrator_elapsed_us=4832.448
+backend_average_us=4168.555
+backend_maximum_us=4187.136
+orchestrator_elapsed_us=4954.816
 limit_us=10000.000
 restricted_token=1021
 real_lm_head=1
 real_lm_head_max_logit_error=0.00000000
 backend_launch_chains=4
 orchestrator_launch_chains=1
-module_artifact=5d6eb4a2cc970c7672d7a04d296d207772fd6cd9427100ba4392006b1bbc1f78
-package_manifest_sha256=1ece14934fd647389b59fa16850879e4696edd10e194c1c6eeee62fed0622f63
+module_artifact=055c65a895624801cf591484c838a6c1e75a9be90a44077ee85af1b8dbef28db
+package_manifest_sha256=a5eb3b5d56a82f2fe06c29f60762fea5b736a81acf3591a5a369d3b879861b65
 ```
 
 This removes the synthetic input-hidden gap for the current B1 layer-0 gate:
