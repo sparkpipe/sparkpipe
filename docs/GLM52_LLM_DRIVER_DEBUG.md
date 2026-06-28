@@ -520,7 +520,7 @@ correctness step is full-vector checksum comparison or an external reference
 activation for the same layer, then multi-layer progression.
 
 Latest full-reference layer-0 BF16 evidence from `spark1` at commit
-`722dd307fc0f88ab9d7921b72203e7ed8ffc2b05`:
+`f19b8001d191e7e76294a4c1b5b5db801e909878`:
 
 ```text
 command:
@@ -546,17 +546,17 @@ layer0_dense_bf16_fixture_ready=1
 layer0_dense_bf16_bytes=452997120
 real_lm_head_fixture_ready=1
 real_lm_head_bytes=3145728
-backend_average_us=5087.840
-backend_maximum_us=5274.624
-orchestrator_elapsed_us=5368.064
+backend_average_us=4626.837
+backend_maximum_us=4672.160
+orchestrator_elapsed_us=5818.752
 limit_us=10000.000
 restricted_token=1021
 real_lm_head=1
 real_lm_head_max_logit_error=0.00000000
 backend_launch_chains=7
 orchestrator_launch_chains=4
-module_artifact=762b7d2125110a690a77168be8bcb2fd2aa784abb8d4b5a003b74db716c79ef3
-package_manifest_sha256=6c5aeae90d675f5fbafe53d75be31bb2711236f514923ceee3c35b8de781d173
+module_artifact=d97007331e930f8d0535ec1581ce1710d2f2e57615a2ad5211f002dde79df1de
+package_manifest_sha256=3f2794b694690ce5dc8295106a032d085a0a7a6fc9d9c7886c8be78b069d5108
 ```
 
 This converts the prior "sampled only" layer-0 gate into a full output-side
