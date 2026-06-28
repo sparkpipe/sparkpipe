@@ -1,5 +1,6 @@
 #include "spark_glm52_resident_decode_stage_backend.h"
 
+#include <cuda_fp8.h>
 #include <cuda_runtime.h>
 
 #include <float.h>
@@ -63,6 +64,20 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageFp8E4m3ToFl
     return sign != 0u ? -result : result;
 }
 
+static __device__ __forceinline__ uint8_t SparkGlm52ResidentDecodeStageEncodePositiveE4m3Scale(
+    float value)
+{
+    uint8_t encoded_value;
+
+    if (!isfinite(value) || value <= 0.0f)
+    {
+        return 0u;
+    }
+    encoded_value =
+        (uint8_t)__nv_cvt_float_to_fp8(value, __NV_SATFINITE, __NV_E4M3);
+    return encoded_value == 0u ? 1u : encoded_value;
+}
+
 static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageWarpReduceSum(
     float value)
 {
@@ -71,6 +86,17 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageWarpReduceS
     value += __shfl_down_sync(0xffffffffu, value, 4);
     value += __shfl_down_sync(0xffffffffu, value, 2);
     value += __shfl_down_sync(0xffffffffu, value, 1);
+    return value;
+}
+
+static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageWarpReduceMax(
+    float value)
+{
+    value = fmaxf(value, __shfl_down_sync(0xffffffffu, value, 16));
+    value = fmaxf(value, __shfl_down_sync(0xffffffffu, value, 8));
+    value = fmaxf(value, __shfl_down_sync(0xffffffffu, value, 4));
+    value = fmaxf(value, __shfl_down_sync(0xffffffffu, value, 2));
+    value = fmaxf(value, __shfl_down_sync(0xffffffffu, value, 1));
     return value;
 }
 
@@ -193,6 +219,39 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageDecodeE2m1(
     return (nibble & 8u) != 0u ? -value : value;
 }
 
+static __device__ __forceinline__ uint8_t SparkGlm52ResidentDecodeStageEncodeE2m1(
+    float value)
+{
+    const float values[8] = {
+        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+    float absolute_value;
+    float best_delta;
+    uint8_t best_index;
+    uint8_t value_index;
+    uint8_t sign_bit;
+
+    if (!isfinite(value))
+    {
+        return 0u;
+    }
+    sign_bit = value < 0.0f ? 8u : 0u;
+    absolute_value = fabsf(value);
+    best_index = 0u;
+    best_delta = fabsf(absolute_value - values[0]);
+    for (value_index = 1u; value_index < 8u; ++value_index)
+    {
+        float delta;
+
+        delta = fabsf(absolute_value - values[value_index]);
+        if (delta < best_delta)
+        {
+            best_delta = delta;
+            best_index = value_index;
+        }
+    }
+    return (uint8_t)(sign_bit | best_index);
+}
+
 static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageDecodeE8m0(
     uint8_t value)
 {
@@ -235,6 +294,36 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageDecodeMxfp4
         : (uint8_t)(packed_value >> 4u);
     scale_value = SparkGlm52ResidentDecodeStageDecodeE8m0(
         scale_e8m0_u8[scale_index]);
+    return SparkGlm52ResidentDecodeStageDecodeE2m1(nibble) * scale_value;
+}
+
+static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
+    const uint8_t *payload_u8,
+    const uint8_t *scale_e4m3_u8,
+    uint32_t packed_row_stride,
+    uint32_t scale_row_stride,
+    uint32_t row_index,
+    uint32_t column_index)
+{
+    uint64_t packed_index;
+    uint64_t scale_index;
+    uint8_t packed_value;
+    uint8_t nibble;
+    float scale_value;
+
+    packed_index =
+        ((uint64_t)row_index * (uint64_t)packed_row_stride) +
+        ((uint64_t)column_index >> 1u);
+    scale_index =
+        ((uint64_t)row_index * (uint64_t)scale_row_stride) +
+        ((uint64_t)column_index /
+         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE);
+    packed_value = payload_u8[packed_index];
+    nibble = (column_index & 1u) == 0u
+        ? (uint8_t)(packed_value & 0x0fu)
+        : (uint8_t)(packed_value >> 4u);
+    scale_value = SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
+        scale_e4m3_u8[scale_index]);
     return SparkGlm52ResidentDecodeStageDecodeE2m1(nibble) * scale_value;
 }
 
@@ -1473,6 +1562,349 @@ void SparkGlm52ResidentDecodeStageMoeRouterTopKKernel(
             topk_expert_ids[route_index] = shared_selected_ids[selected_index];
             topk_weights[route_index] = selected_weight;
         }
+    }
+}
+
+static __global__ __launch_bounds__(32, 4)
+void SparkGlm52ResidentDecodeStageBf16ToNvfp4Kernel(
+    const uint16_t *__restrict__ input_bf16,
+    uint8_t *__restrict__ output_payload_u8,
+    uint8_t *__restrict__ output_scale_e4m3,
+    uint32_t element_count,
+    float global_scale)
+{
+    __shared__ float shared_scale_value;
+    __shared__ uint8_t shared_scale_byte;
+    uint32_t block_offset;
+    float local_maximum;
+    float maximum_value;
+
+    block_offset =
+        blockIdx.x * SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE;
+    if (block_offset >= element_count)
+    {
+        return;
+    }
+    local_maximum = 0.0f;
+    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE &&
+        block_offset + threadIdx.x < element_count)
+    {
+        local_maximum = fabsf(
+            SparkGlm52ResidentDecodeStageBf16ToFloat(
+                input_bf16[block_offset + threadIdx.x]));
+    }
+    maximum_value = SparkGlm52ResidentDecodeStageWarpReduceMax(local_maximum);
+    if (threadIdx.x == 0u)
+    {
+        float scale_value;
+
+        scale_value = maximum_value == 0.0f
+            ? 0.0f
+            : ((maximum_value * global_scale) / 6.0f);
+        shared_scale_byte =
+            SparkGlm52ResidentDecodeStageEncodePositiveE4m3Scale(
+                scale_value);
+        shared_scale_value = SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
+            shared_scale_byte);
+        output_scale_e4m3[blockIdx.x] = shared_scale_byte;
+    }
+    __syncthreads();
+    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE / 2u)
+    {
+        uint32_t low_index;
+        uint32_t high_index;
+        float low_value;
+        float high_value;
+        uint8_t low_nibble;
+        uint8_t high_nibble;
+
+        low_index = block_offset + (threadIdx.x * 2u);
+        high_index = low_index + 1u;
+        low_value = 0.0f;
+        high_value = 0.0f;
+        if (low_index < element_count)
+        {
+            low_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+                input_bf16[low_index]);
+        }
+        if (high_index < element_count)
+        {
+            high_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+                input_bf16[high_index]);
+        }
+        low_nibble = shared_scale_value == 0.0f
+            ? 0u
+            : SparkGlm52ResidentDecodeStageEncodeE2m1(
+                (low_value * global_scale) / shared_scale_value);
+        high_nibble = shared_scale_value == 0.0f
+            ? 0u
+            : SparkGlm52ResidentDecodeStageEncodeE2m1(
+                (high_value * global_scale) / shared_scale_value);
+        output_payload_u8[low_index >> 1u] =
+            (uint8_t)(low_nibble | (high_nibble << 4u));
+    }
+}
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
+void SparkGlm52ResidentDecodeStageMoeNvfp4GateUpTop1Kernel(
+    const uint8_t *__restrict__ input_payload_u8,
+    const uint8_t *__restrict__ input_scale_e4m3,
+    const uint32_t *__restrict__ topk_expert_ids,
+    const uint8_t *__restrict__ gate_weight_u8,
+    const uint8_t *__restrict__ gate_weight_scale_e4m3,
+    const uint8_t *__restrict__ up_weight_u8,
+    const uint8_t *__restrict__ up_weight_scale_e4m3,
+    uint16_t *__restrict__ gate_bf16,
+    uint16_t *__restrict__ up_bf16,
+    uint32_t selected_expert_id,
+    float gate_alpha,
+    float up_alpha)
+{
+    __shared__ float shared_gate[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    __shared__ float shared_up[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    uint32_t intermediate_index;
+    uint32_t hidden_index;
+    float local_gate;
+    float local_up;
+
+    intermediate_index = blockIdx.x;
+    if (intermediate_index >=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION)
+    {
+        return;
+    }
+    if (topk_expert_ids[0] != selected_expert_id)
+    {
+        if (threadIdx.x == 0u)
+        {
+            gate_bf16[intermediate_index] = 0u;
+            up_bf16[intermediate_index] = 0u;
+        }
+        return;
+    }
+    local_gate = 0.0f;
+    local_up = 0.0f;
+    for (hidden_index = threadIdx.x;
+         hidden_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+         hidden_index += blockDim.x)
+    {
+        float input_value;
+
+        input_value = SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
+            input_payload_u8,
+            input_scale_e4m3,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
+            0u,
+            hidden_index);
+        local_gate += input_value *
+            SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
+                gate_weight_u8,
+                gate_weight_scale_e4m3,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
+                intermediate_index,
+                hidden_index);
+        local_up += input_value *
+            SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
+                up_weight_u8,
+                up_weight_scale_e4m3,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
+                intermediate_index,
+                hidden_index);
+    }
+    shared_gate[threadIdx.x] = local_gate;
+    shared_up[threadIdx.x] = local_up;
+    __syncthreads();
+    for (hidden_index = blockDim.x >> 1u;
+         hidden_index != 0u;
+         hidden_index >>= 1u)
+    {
+        if (threadIdx.x < hidden_index)
+        {
+            shared_gate[threadIdx.x] += shared_gate[threadIdx.x + hidden_index];
+            shared_up[threadIdx.x] += shared_up[threadIdx.x + hidden_index];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0u)
+    {
+        gate_bf16[intermediate_index] =
+            SparkGlm52ResidentDecodeStageFloatToBf16(
+                shared_gate[0] * gate_alpha);
+        up_bf16[intermediate_index] =
+            SparkGlm52ResidentDecodeStageFloatToBf16(shared_up[0] * up_alpha);
+    }
+}
+
+static __global__ __launch_bounds__(32, 4)
+void SparkGlm52ResidentDecodeStageMoeNvfp4SiluAndQuantTop1Kernel(
+    const uint16_t *__restrict__ gate_bf16,
+    const uint16_t *__restrict__ up_bf16,
+    const uint32_t *__restrict__ topk_expert_ids,
+    uint16_t *__restrict__ intermediate_bf16,
+    uint8_t *__restrict__ output_payload_u8,
+    uint8_t *__restrict__ output_scale_e4m3,
+    uint32_t selected_expert_id,
+    float global_scale)
+{
+    __shared__ float shared_values[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE];
+    __shared__ float shared_scale_value;
+    __shared__ uint8_t shared_scale_byte;
+    uint32_t block_offset;
+    uint32_t value_index;
+    float local_value;
+    float local_maximum;
+    float maximum_value;
+
+    block_offset =
+        blockIdx.x * SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE;
+    if (block_offset >=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION)
+    {
+        return;
+    }
+    value_index = block_offset + threadIdx.x;
+    local_value = 0.0f;
+    local_maximum = 0.0f;
+    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE &&
+        value_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION &&
+        topk_expert_ids[0] == selected_expert_id)
+    {
+        float gate_value;
+        float up_value;
+
+        gate_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+            gate_bf16[value_index]);
+        up_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+            up_bf16[value_index]);
+        local_value =
+            (gate_value / (1.0f + expf(-gate_value))) * up_value;
+        local_maximum = fabsf(local_value);
+        intermediate_bf16[value_index] =
+            SparkGlm52ResidentDecodeStageFloatToBf16(local_value);
+    }
+    maximum_value = SparkGlm52ResidentDecodeStageWarpReduceMax(local_maximum);
+    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE)
+    {
+        shared_values[threadIdx.x] = local_value;
+    }
+    if (threadIdx.x == 0u)
+    {
+        float scale_value;
+
+        scale_value = maximum_value == 0.0f
+            ? 0.0f
+            : ((maximum_value * global_scale) / 6.0f);
+        shared_scale_byte =
+            SparkGlm52ResidentDecodeStageEncodePositiveE4m3Scale(
+                scale_value);
+        shared_scale_value = SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
+            shared_scale_byte);
+        output_scale_e4m3[blockIdx.x] = shared_scale_byte;
+    }
+    __syncthreads();
+    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE / 2u)
+    {
+        uint32_t low_index;
+        float low_value;
+        float high_value;
+        uint8_t low_nibble;
+        uint8_t high_nibble;
+
+        low_index = block_offset + (threadIdx.x * 2u);
+        low_value = shared_values[threadIdx.x * 2u];
+        high_value = shared_values[(threadIdx.x * 2u) + 1u];
+        low_nibble = shared_scale_value == 0.0f
+            ? 0u
+            : SparkGlm52ResidentDecodeStageEncodeE2m1(
+                (low_value * global_scale) / shared_scale_value);
+        high_nibble = shared_scale_value == 0.0f
+            ? 0u
+            : SparkGlm52ResidentDecodeStageEncodeE2m1(
+                (high_value * global_scale) / shared_scale_value);
+        if (low_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION)
+        {
+            output_payload_u8[low_index >> 1u] =
+                (uint8_t)(low_nibble | (high_nibble << 4u));
+        }
+    }
+}
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
+void SparkGlm52ResidentDecodeStageMoeNvfp4DownTop1Kernel(
+    const uint8_t *__restrict__ intermediate_payload_u8,
+    const uint8_t *__restrict__ intermediate_scale_e4m3,
+    const uint32_t *__restrict__ topk_expert_ids,
+    const uint8_t *__restrict__ down_weight_u8,
+    const uint8_t *__restrict__ down_weight_scale_e4m3,
+    uint16_t *__restrict__ route_output_bf16,
+    uint32_t selected_expert_id,
+    float down_alpha)
+{
+    __shared__ float shared_reduction[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    uint32_t hidden_index;
+    uint32_t intermediate_index;
+    float local_sum;
+    float output_sum;
+
+    hidden_index = blockIdx.x;
+    if (hidden_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)
+    {
+        return;
+    }
+    if (topk_expert_ids[0] != selected_expert_id)
+    {
+        if (threadIdx.x == 0u)
+        {
+            route_output_bf16[hidden_index] = 0u;
+        }
+        return;
+    }
+    local_sum = 0.0f;
+    for (intermediate_index = threadIdx.x;
+         intermediate_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+         intermediate_index += blockDim.x)
+    {
+        float input_value;
+
+        input_value = SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
+            intermediate_payload_u8,
+            intermediate_scale_e4m3,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION / 2u,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
+            0u,
+            intermediate_index);
+        local_sum += input_value *
+            SparkGlm52ResidentDecodeStageDecodeNvfp4Value(
+                down_weight_u8,
+                down_weight_scale_e4m3,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
+                    2u,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
+                hidden_index,
+                intermediate_index);
+    }
+    output_sum = SparkGlm52ResidentDecodeStageBlockReduceSum(
+        local_sum,
+        shared_reduction);
+    if (threadIdx.x == 0u)
+    {
+        route_output_bf16[hidden_index] =
+            SparkGlm52ResidentDecodeStageFloatToBf16(output_sum * down_alpha);
     }
 }
 
@@ -2826,6 +3258,166 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLocalMoe(
             node_context->moe_top_k,
             node_context->moe_norm_topk_prob,
             node_context->moe_routed_scaling_factor);
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE);
+    }
+    if (node_context->layer_progression_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOP1)
+    {
+        uint8_t *hidden_payload_u8;
+        uint8_t *hidden_scale_e4m3;
+        uint8_t *intermediate_payload_u8;
+        uint8_t *intermediate_scale_e4m3;
+
+        SparkGlm52ResidentDecodeStageMoeRouterTopKKernel<<<
+            active_sequence_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            (const uint16_t *)pipeline_slot->post_attention_normalized_hidden_bf16,
+            (const uint16_t *)node_context->moe_router_weight_bf16,
+            node_context->moe_router_score_bias_f32,
+            pipeline_slot->moe_topk_expert_ids,
+            pipeline_slot->moe_topk_weights,
+            active_sequence_count,
+            node_context->moe_expert_count,
+            node_context->moe_top_k,
+            node_context->moe_norm_topk_prob,
+            node_context->moe_routed_scaling_factor);
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        hidden_payload_u8 = (uint8_t *)pipeline_slot->moe_route_output_bf16;
+        hidden_scale_e4m3 =
+            hidden_payload_u8 +
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u);
+        SparkGlm52ResidentDecodeStageBf16ToNvfp4Kernel<<<
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
+            32u,
+            0u,
+            cuda_stream>>>(
+            (const uint16_t *)pipeline_slot->post_attention_normalized_hidden_bf16,
+            hidden_payload_u8,
+            hidden_scale_e4m3,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            1.0f / node_context->moe_nvfp4_gate_input_scale);
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        SparkGlm52ResidentDecodeStageMoeNvfp4GateUpTop1Kernel<<<
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            hidden_payload_u8,
+            hidden_scale_e4m3,
+            pipeline_slot->moe_topk_expert_ids,
+            node_context->moe_nvfp4_gate_weight_u8,
+            node_context->moe_nvfp4_gate_weight_scale_e4m3,
+            node_context->moe_nvfp4_up_weight_u8,
+            node_context->moe_nvfp4_up_weight_scale_e4m3,
+            (uint16_t *)pipeline_slot->moe_gate_bf16,
+            (uint16_t *)pipeline_slot->moe_up_bf16,
+            node_context->moe_nvfp4_selected_expert_id,
+            node_context->moe_nvfp4_gate_input_scale *
+                node_context->moe_nvfp4_gate_weight_scale_2,
+            node_context->moe_nvfp4_up_input_scale *
+                node_context->moe_nvfp4_up_weight_scale_2);
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        intermediate_payload_u8 = (uint8_t *)pipeline_slot->moe_gate_bf16;
+        intermediate_scale_e4m3 =
+            intermediate_payload_u8 +
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
+             2u);
+        SparkGlm52ResidentDecodeStageMoeNvfp4SiluAndQuantTop1Kernel<<<
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE,
+            32u,
+            0u,
+            cuda_stream>>>(
+            (const uint16_t *)pipeline_slot->moe_gate_bf16,
+            (const uint16_t *)pipeline_slot->moe_up_bf16,
+            pipeline_slot->moe_topk_expert_ids,
+            (uint16_t *)pipeline_slot->moe_intermediate_bf16,
+            intermediate_payload_u8,
+            intermediate_scale_e4m3,
+            node_context->moe_nvfp4_selected_expert_id,
+            1.0f / node_context->moe_nvfp4_down_input_scale);
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        SparkGlm52ResidentDecodeStageMoeNvfp4DownTop1Kernel<<<
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            intermediate_payload_u8,
+            intermediate_scale_e4m3,
+            pipeline_slot->moe_topk_expert_ids,
+            node_context->moe_nvfp4_down_weight_u8,
+            node_context->moe_nvfp4_down_weight_scale_e4m3,
+            (uint16_t *)pipeline_slot->moe_route_output_bf16,
+            node_context->moe_nvfp4_selected_expert_id,
+            node_context->moe_nvfp4_down_input_scale *
+                node_context->moe_nvfp4_down_weight_scale_2);
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        hidden_element_count =
+            (uint64_t)active_sequence_count *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+        SparkGlm52ResidentDecodeStageMoeCombineKernel<<<
+            SparkGlm52ResidentDecodeStageElementBlockCount(hidden_element_count),
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            (const uint16_t *)pipeline_slot->post_attention_hidden_bf16,
+            (const uint16_t *)pipeline_slot->moe_route_output_bf16,
+            pipeline_slot->moe_topk_weights,
+            (uint16_t *)pipeline_slot->layer_output_hidden_bf16,
+            active_sequence_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            1u);
         status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
             node_context,
             cuda_slot_state,

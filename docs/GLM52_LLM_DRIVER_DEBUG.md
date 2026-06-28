@@ -863,3 +863,101 @@ Do not tune constants.
 Classify the failure as a layout, arithmetic, scheduling, or ownership bug.
 Update this log with the failed assumption, then fix the model before rerunning.
 ```
+
+## Layer-3 routed NVFP4 expert gate
+
+Hypothesis:
+
+```text
+For GLM52 token 1000, the layer-3 router should select routed expert 233.
+Using the official NVFP4 expert tensors from the checkpoint, the resident
+driver should execute the top-1 routed expert path and produce nonzero FC2
+output without host-side tensor bounces.
+```
+
+Important boundary:
+
+```text
+The driver does not quantize checkpoint weights. It loads the official NVFP4
+weight payloads, E4M3 block scales, and scalar weight_scale_2 tensors from the
+checkpoint. Runtime activations must still be quantized because they are
+produced per token; that activation quantization is part of the CUDA execution
+path, not a replacement checkpoint.
+```
+
+Negative result:
+
+```text
+commit=e7e5faf
+host=spark1
+model_dir=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4
+token=1000
+router_first_expert=233
+expert_weights_loaded=1
+gate_up_nonzero=1
+intermediate_nonzero=1
+intermediate_fp4_payload_nonzero=0
+intermediate_fp4_scale_nonzero=0
+route_nonzero=0
+```
+
+Corrected model:
+
+```text
+The official expert weights were not the problem. The broken assumption was
+that a separate generic BF16-to-NVFP4 activation quantizer was sufficient for
+the FC2 input. The live intermediate was small enough that the encoded E4M3
+block scale underflowed to zero, collapsing every nonzero block to zero. A
+valid dynamic activation quantizer must never encode a zero scale for a
+nonzero block, and the GLM MoE hot path should fuse SiLU*up with FC2 input
+quantization instead of materializing a stale intermediate boundary.
+```
+
+Fix:
+
+```text
+commit=d057683
+change=add fused SiLU*up-to-NVFP4 top-1 activation quantization
+change=clamp nonzero dynamic activation block scales to min-positive E4M3
+change=record max/value evidence for gate, up, intermediate, and route output
+```
+
+Validation:
+
+```text
+cd /home/spark1/src/sparkpipe-551c3ea
+git reset --hard origin/codex/glm52-layer3-routed-expert-nvfp4
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+MAX_STAGE_MICROSECONDS=10000000 \
+NVCC=/usr/local/cuda-13.0/bin/nvcc \
+make -C modules/glm52_resident_decode_stage validate_layer3_routed_expert_nvfp4
+```
+
+Result:
+
+```text
+layer3_router_topk_reference_ready=1 first_expert=233 first_weight=0.31670687
+layer3_routed_expert_nvfp4_reference_ready=1
+expert=233
+gate_scratch_nonzero=2019
+up_nonzero=2048
+intermediate_nonzero=2048
+intermediate_fp4_payload_nonzero=823
+intermediate_fp4_scale_nonzero=128
+route_nonzero=6143
+gate_scratch_max=0.076171875
+up_max=0.073730469
+intermediate_max=0.0032806396
+route_max=0.00098419189
+elapsed_us=4402.272
+```
+
+Remaining gap:
+
+```text
+This proves the checkpoint-backed layer-3 router plus one selected official
+NVFP4 routed expert can execute on GB10. It is still top-1 diagnostic execution
+for expert 233, not production top-8 grouped MoE, not all sparse layers, and
+not a final-logit comparison against the external GLM reference.
+```

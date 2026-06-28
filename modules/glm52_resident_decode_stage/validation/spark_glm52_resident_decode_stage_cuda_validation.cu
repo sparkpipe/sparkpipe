@@ -34,6 +34,7 @@
 #define SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT 4u
 #define SPARK_VALIDATION_MOE_BOUND_EXPERT_COUNT 8u
 #define SPARK_VALIDATION_MOE_CHECKED_INTERMEDIATE 4u
+#define SPARK_VALIDATION_LAYER3_ROUTED_EXPERT_ID 233u
 #define SPARK_VALIDATION_MOE_ROUTE_COUNT \
     (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K)
@@ -111,6 +112,19 @@ typedef struct SparkValidationLayer3SharedExpertBf16Fixture
     uint32_t ready;
 } SparkValidationLayer3SharedExpertBf16Fixture;
 
+typedef struct SparkValidationLayer3RoutedExpertNvfp4Fixture
+{
+    float gate_input_scale;
+    float gate_weight_scale_2;
+    float up_input_scale;
+    float up_weight_scale_2;
+    float down_input_scale;
+    float down_weight_scale_2;
+    uint64_t copied_bytes;
+    uint32_t selected_expert_id;
+    uint32_t ready;
+} SparkValidationLayer3RoutedExpertNvfp4Fixture;
+
 typedef struct SparkValidationDeviceBuffers
 {
     uint16_t *input_hidden_bf16;
@@ -169,6 +183,12 @@ typedef struct SparkValidationDeviceBuffers
     uint16_t *moe_up_weight_bf16;
     uint16_t *moe_down_weight_bf16;
     uint16_t *moe_router_weight_bf16;
+    uint8_t *moe_nvfp4_gate_weight_u8;
+    uint8_t *moe_nvfp4_up_weight_u8;
+    uint8_t *moe_nvfp4_down_weight_u8;
+    uint8_t *moe_nvfp4_gate_weight_scale_e4m3;
+    uint8_t *moe_nvfp4_up_weight_scale_e4m3;
+    uint8_t *moe_nvfp4_down_weight_scale_e4m3;
     uint16_t *final_norm_weight_bf16;
     uint16_t *restricted_lm_head_weight_bf16;
     uint8_t *mtp_mxfp4_weight_payload_u8;
@@ -578,6 +598,44 @@ static bool SparkValidationReadF32TensorOffsets(
         tensor_bytes);
 }
 
+static bool SparkValidationReadU8TensorOffsets(
+    const char *tensor_path,
+    const char *tensor_name,
+    const uint64_t *expected_shape,
+    uint32_t expected_rank,
+    uint64_t *payload_file_offset,
+    uint64_t *tensor_bytes)
+{
+    return SparkValidationReadTypedTensorOffsets(
+        tensor_path,
+        tensor_name,
+        "U8",
+        1u,
+        expected_shape,
+        expected_rank,
+        payload_file_offset,
+        tensor_bytes);
+}
+
+static bool SparkValidationReadF8E4m3TensorOffsets(
+    const char *tensor_path,
+    const char *tensor_name,
+    const uint64_t *expected_shape,
+    uint32_t expected_rank,
+    uint64_t *payload_file_offset,
+    uint64_t *tensor_bytes)
+{
+    return SparkValidationReadTypedTensorOffsets(
+        tensor_path,
+        tensor_name,
+        "F8_E4M3",
+        1u,
+        expected_shape,
+        expected_rank,
+        payload_file_offset,
+        tensor_bytes);
+}
+
 static bool SparkValidationCopyTypedTensorToDevice(
     const char *model_directory,
     const char *tensor_name,
@@ -710,6 +768,92 @@ static bool SparkValidationCopyF32TensorToDevice(
         device_pointer,
         copied_bytes,
         SparkValidationReadF32TensorOffsets);
+}
+
+static bool SparkValidationCopyU8TensorToDevice(
+    const char *model_directory,
+    const char *tensor_name,
+    const uint64_t *expected_shape,
+    uint32_t expected_rank,
+    void *device_pointer,
+    uint64_t *copied_bytes)
+{
+    return SparkValidationCopyTypedTensorToDevice(
+        model_directory,
+        tensor_name,
+        expected_shape,
+        expected_rank,
+        device_pointer,
+        copied_bytes,
+        SparkValidationReadU8TensorOffsets);
+}
+
+static bool SparkValidationCopyF8E4m3TensorToDevice(
+    const char *model_directory,
+    const char *tensor_name,
+    const uint64_t *expected_shape,
+    uint32_t expected_rank,
+    void *device_pointer,
+    uint64_t *copied_bytes)
+{
+    return SparkValidationCopyTypedTensorToDevice(
+        model_directory,
+        tensor_name,
+        expected_shape,
+        expected_rank,
+        device_pointer,
+        copied_bytes,
+        SparkValidationReadF8E4m3TensorOffsets);
+}
+
+static bool SparkValidationReadScalarF32Tensor(
+    const char *model_directory,
+    const char *tensor_name,
+    float *value)
+{
+    const uint64_t scalar_shape[1] = {1u};
+    char *shard_name;
+    char tensor_path[4096];
+    uint64_t payload_file_offset;
+    uint64_t tensor_bytes;
+    FILE *file;
+    float scalar_value;
+    bool succeeded;
+
+    shard_name = 0;
+    file = 0;
+    succeeded =
+        SparkValidationReadTensorShardName(model_directory, tensor_name, &shard_name) &&
+        SparkValidationBuildModelPath(model_directory, shard_name, tensor_path, sizeof(tensor_path)) &&
+        SparkValidationReadF32TensorOffsets(tensor_path, tensor_name, scalar_shape, 0u, &payload_file_offset, &tensor_bytes);
+    free(shard_name);
+    if (!succeeded || tensor_bytes != sizeof(float))
+    {
+        fprintf(stderr, "%s scalar metadata is not F32\n", tensor_name);
+        return false;
+    }
+    if (payload_file_offset > (uint64_t)LONG_MAX)
+    {
+        fprintf(stderr, "%s scalar offset is unsupported\n", tensor_name);
+        return false;
+    }
+    file = fopen(tensor_path, "rb");
+    if (file == 0)
+    {
+        fprintf(stderr, "could not open scalar shard %s\n", tensor_path);
+        return false;
+    }
+    if (fseek(file, (long)payload_file_offset, SEEK_SET) != 0 ||
+        fread(&scalar_value, 1u, sizeof(scalar_value), file) !=
+            sizeof(scalar_value))
+    {
+        fprintf(stderr, "could not read scalar tensor %s\n", tensor_name);
+        fclose(file);
+        return false;
+    }
+    fclose(file);
+    *value = scalar_value;
+    return true;
 }
 
 static bool SparkValidationCopyBf16TensorRowToDevice(
@@ -1149,6 +1293,95 @@ static bool SparkValidationLoadLayer3RouterBf16Fixture(
     }
     fixture->ready = 1u;
     fprintf(stderr, "layer3_router_bf16_fixture_ready=1 model_dir=%s bytes=%llu\n", model_directory, (unsigned long long)fixture->copied_bytes);
+    return true;
+}
+
+static bool SparkValidationBuildLayer3ExpertTensorName(
+    char *tensor_name,
+    uint32_t tensor_name_bytes,
+    uint32_t expert_id,
+    const char *projection,
+    const char *suffix)
+{
+    int written_bytes;
+
+    written_bytes = snprintf(
+        tensor_name,
+        (size_t)tensor_name_bytes,
+        "model.layers.3.mlp.experts.%u.%s.%s",
+        expert_id,
+        projection,
+        suffix);
+    return written_bytes >= 0 && (uint32_t)written_bytes < tensor_name_bytes;
+}
+
+static bool SparkValidationLoadLayer3RoutedExpertNvfp4Fixture(
+    SparkValidationDeviceBuffers *buffers,
+    const char *model_directory,
+    SparkValidationLayer3RoutedExpertNvfp4Fixture *fixture)
+{
+    const uint64_t gate_up_weight_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u};
+    const uint64_t gate_up_scale_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE};
+    const uint64_t down_weight_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION / 2u};
+    const uint64_t down_scale_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE};
+    char gate_weight_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char gate_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char gate_scale2_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char gate_input_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char up_weight_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char up_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char up_scale2_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char up_input_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char down_weight_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char down_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char down_scale2_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char down_input_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->selected_expert_id = SPARK_VALIDATION_LAYER3_ROUTED_EXPERT_ID;
+    if (!SparkValidationBuildLayer3ExpertTensorName(gate_weight_name, sizeof(gate_weight_name), fixture->selected_expert_id, "gate_proj", "weight") ||
+        !SparkValidationBuildLayer3ExpertTensorName(gate_scale_name, sizeof(gate_scale_name), fixture->selected_expert_id, "gate_proj", "weight_scale") ||
+        !SparkValidationBuildLayer3ExpertTensorName(gate_scale2_name, sizeof(gate_scale2_name), fixture->selected_expert_id, "gate_proj", "weight_scale_2") ||
+        !SparkValidationBuildLayer3ExpertTensorName(gate_input_scale_name, sizeof(gate_input_scale_name), fixture->selected_expert_id, "gate_proj", "input_scale") ||
+        !SparkValidationBuildLayer3ExpertTensorName(up_weight_name, sizeof(up_weight_name), fixture->selected_expert_id, "up_proj", "weight") ||
+        !SparkValidationBuildLayer3ExpertTensorName(up_scale_name, sizeof(up_scale_name), fixture->selected_expert_id, "up_proj", "weight_scale") ||
+        !SparkValidationBuildLayer3ExpertTensorName(up_scale2_name, sizeof(up_scale2_name), fixture->selected_expert_id, "up_proj", "weight_scale_2") ||
+        !SparkValidationBuildLayer3ExpertTensorName(up_input_scale_name, sizeof(up_input_scale_name), fixture->selected_expert_id, "up_proj", "input_scale") ||
+        !SparkValidationBuildLayer3ExpertTensorName(down_weight_name, sizeof(down_weight_name), fixture->selected_expert_id, "down_proj", "weight") ||
+        !SparkValidationBuildLayer3ExpertTensorName(down_scale_name, sizeof(down_scale_name), fixture->selected_expert_id, "down_proj", "weight_scale") ||
+        !SparkValidationBuildLayer3ExpertTensorName(down_scale2_name, sizeof(down_scale2_name), fixture->selected_expert_id, "down_proj", "weight_scale_2") ||
+        !SparkValidationBuildLayer3ExpertTensorName(down_input_scale_name, sizeof(down_input_scale_name), fixture->selected_expert_id, "down_proj", "input_scale"))
+    {
+        fprintf(stderr, "layer3 routed expert tensor name is too long\n");
+        return false;
+    }
+    if (!SparkValidationCopyU8TensorToDevice(model_directory, gate_weight_name, gate_up_weight_shape, 2u, buffers->moe_nvfp4_gate_weight_u8, &fixture->copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, gate_scale_name, gate_up_scale_shape, 2u, buffers->moe_nvfp4_gate_weight_scale_e4m3, &fixture->copied_bytes) ||
+        !SparkValidationReadScalarF32Tensor(model_directory, gate_scale2_name, &fixture->gate_weight_scale_2) ||
+        !SparkValidationReadScalarF32Tensor(model_directory, gate_input_scale_name, &fixture->gate_input_scale) ||
+        !SparkValidationCopyU8TensorToDevice(model_directory, up_weight_name, gate_up_weight_shape, 2u, buffers->moe_nvfp4_up_weight_u8, &fixture->copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, up_scale_name, gate_up_scale_shape, 2u, buffers->moe_nvfp4_up_weight_scale_e4m3, &fixture->copied_bytes) ||
+        !SparkValidationReadScalarF32Tensor(model_directory, up_scale2_name, &fixture->up_weight_scale_2) ||
+        !SparkValidationReadScalarF32Tensor(model_directory, up_input_scale_name, &fixture->up_input_scale) ||
+        !SparkValidationCopyU8TensorToDevice(model_directory, down_weight_name, down_weight_shape, 2u, buffers->moe_nvfp4_down_weight_u8, &fixture->copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, down_scale_name, down_scale_shape, 2u, buffers->moe_nvfp4_down_weight_scale_e4m3, &fixture->copied_bytes) ||
+        !SparkValidationReadScalarF32Tensor(model_directory, down_scale2_name, &fixture->down_weight_scale_2) ||
+        !SparkValidationReadScalarF32Tensor(model_directory, down_input_scale_name, &fixture->down_input_scale))
+    {
+        return false;
+    }
+    fixture->ready = 1u;
+    fprintf(stderr, "layer3_routed_expert_nvfp4_fixture_ready=1 model_dir=%s expert=%u bytes=%llu gate_scale2=%.9g up_scale2=%.9g down_scale2=%.9g\n", model_directory, fixture->selected_expert_id, (unsigned long long)fixture->copied_bytes, (double)fixture->gate_weight_scale_2, (double)fixture->up_weight_scale_2, (double)fixture->down_weight_scale_2);
     return true;
 }
 
@@ -2001,6 +2234,10 @@ static bool SparkValidationAllocateDeviceBuffers(
     uint64_t moe_gate_weight_count;
     uint64_t moe_down_weight_count;
     uint64_t moe_router_weight_count;
+    uint64_t moe_nvfp4_gate_up_payload_count;
+    uint64_t moe_nvfp4_gate_up_scale_count;
+    uint64_t moe_nvfp4_down_payload_count;
+    uint64_t moe_nvfp4_down_scale_count;
     uint64_t restricted_weight_count;
     uint64_t mtp_payload_count;
     uint64_t mtp_scale_count;
@@ -2099,6 +2336,21 @@ static bool SparkValidationAllocateDeviceBuffers(
     moe_router_weight_count =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    moe_nvfp4_gate_up_payload_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION *
+        ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u);
+    moe_nvfp4_gate_up_scale_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION *
+        ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE);
+    moe_nvfp4_down_payload_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+        ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
+         2u);
+    moe_nvfp4_down_scale_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+        ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE);
     restricted_weight_count =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
@@ -2169,6 +2421,12 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->moe_up_weight_bf16, moe_gate_weight_count * 2u, "cudaMalloc moe_up_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->moe_down_weight_bf16, moe_down_weight_count * 2u, "cudaMalloc moe_down_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->moe_router_weight_bf16, moe_router_weight_count * 2u, "cudaMalloc moe_router_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->moe_nvfp4_gate_weight_u8, moe_nvfp4_gate_up_payload_count, "cudaMalloc moe_nvfp4_gate_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->moe_nvfp4_up_weight_u8, moe_nvfp4_gate_up_payload_count, "cudaMalloc moe_nvfp4_up_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->moe_nvfp4_down_weight_u8, moe_nvfp4_down_payload_count, "cudaMalloc moe_nvfp4_down_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->moe_nvfp4_gate_weight_scale_e4m3, moe_nvfp4_gate_up_scale_count, "cudaMalloc moe_nvfp4_gate_scale") &&
+        SparkValidationAllocateZeroed((void **)&buffers->moe_nvfp4_up_weight_scale_e4m3, moe_nvfp4_gate_up_scale_count, "cudaMalloc moe_nvfp4_up_scale") &&
+        SparkValidationAllocateZeroed((void **)&buffers->moe_nvfp4_down_weight_scale_e4m3, moe_nvfp4_down_scale_count, "cudaMalloc moe_nvfp4_down_scale") &&
         SparkValidationAllocateZeroed((void **)&buffers->final_norm_weight_bf16, hidden_count * 2u, "cudaMalloc final_norm_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_lm_head_weight_bf16, restricted_weight_count * 2u, "cudaMalloc restricted_lm_head_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->mtp_mxfp4_weight_payload_u8, mtp_payload_count, "cudaMalloc mtp_payload") &&
@@ -2487,6 +2745,17 @@ static void SparkValidationConfigureNode(
     node_context->moe_gate_weight_bf16 = buffers->moe_gate_weight_bf16;
     node_context->moe_up_weight_bf16 = buffers->moe_up_weight_bf16;
     node_context->moe_down_weight_bf16 = buffers->moe_down_weight_bf16;
+    node_context->moe_nvfp4_gate_weight_u8 =
+        buffers->moe_nvfp4_gate_weight_u8;
+    node_context->moe_nvfp4_up_weight_u8 = buffers->moe_nvfp4_up_weight_u8;
+    node_context->moe_nvfp4_down_weight_u8 =
+        buffers->moe_nvfp4_down_weight_u8;
+    node_context->moe_nvfp4_gate_weight_scale_e4m3 =
+        buffers->moe_nvfp4_gate_weight_scale_e4m3;
+    node_context->moe_nvfp4_up_weight_scale_e4m3 =
+        buffers->moe_nvfp4_up_weight_scale_e4m3;
+    node_context->moe_nvfp4_down_weight_scale_e4m3 =
+        buffers->moe_nvfp4_down_weight_scale_e4m3;
     node_context->dense_gate_weight_bf16 = buffers->moe_gate_weight_bf16;
     node_context->dense_up_weight_bf16 = buffers->moe_up_weight_bf16;
     node_context->dense_down_weight_bf16 = buffers->moe_down_weight_bf16;
@@ -2548,6 +2817,27 @@ static void SparkValidationEnableLayer3SharedExpertBf16(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP;
     node_context->dense_intermediate_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+}
+
+static void SparkValidationEnableLayer3RoutedExpertNvfp4(
+    const SparkValidationLayer3RoutedExpertNvfp4Fixture *fixture,
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    SparkValidationEnableLayer3RouterTopK(buffers, node_context);
+    node_context->layer_progression_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOP1;
+    node_context->moe_intermediate_dimension =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+    node_context->moe_nvfp4_gate_input_scale = fixture->gate_input_scale;
+    node_context->moe_nvfp4_gate_weight_scale_2 =
+        fixture->gate_weight_scale_2;
+    node_context->moe_nvfp4_up_input_scale = fixture->up_input_scale;
+    node_context->moe_nvfp4_up_weight_scale_2 = fixture->up_weight_scale_2;
+    node_context->moe_nvfp4_down_input_scale = fixture->down_input_scale;
+    node_context->moe_nvfp4_down_weight_scale_2 =
+        fixture->down_weight_scale_2;
+    node_context->moe_nvfp4_selected_expert_id = fixture->selected_expert_id;
 }
 
 static bool SparkValidationInitializeDenseLayerCacheAliases(
@@ -3777,6 +4067,204 @@ static bool SparkValidationCheckLayer3RouterTopK(
     return true;
 }
 
+static bool SparkValidationCheckLayer3RoutedExpertNvfp4(
+    SparkValidationDeviceBuffers *buffers,
+    const SparkValidationLayer3RoutedExpertNvfp4Fixture *fixture)
+{
+    uint16_t gate_output[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION];
+    uint16_t up_output[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION];
+    uint16_t intermediate_output[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION];
+    uint16_t route_output[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t layer_output[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint8_t intermediate_fp4_scratch[
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION / 2u) +
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE)];
+    uint32_t observed_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
+    uint32_t index;
+    uint32_t nonzero_intermediate_payload_count;
+    uint32_t nonzero_intermediate_scale_count;
+    uint32_t nonzero_gate_count;
+    uint32_t nonzero_up_count;
+    uint32_t nonzero_intermediate_count;
+    uint32_t nonzero_route_count;
+    float gate_checksum;
+    float up_checksum;
+    float intermediate_checksum;
+    float route_checksum;
+    float layer_checksum;
+    float gate_maximum;
+    float up_maximum;
+    float intermediate_maximum;
+    float route_maximum;
+
+    if (!SparkValidationCudaSucceeded(
+            cudaMemcpy(
+                observed_ids,
+                buffers->moe_topk_expert_ids,
+                sizeof(observed_ids),
+                cudaMemcpyDeviceToHost),
+            "copy routed nvfp4 topk ids") ||
+        !SparkValidationCopyDeviceBf16Vector(
+            gate_output,
+            buffers->moe_gate_bf16,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,
+            "copy routed nvfp4 gate output") ||
+        !SparkValidationCopyDeviceBf16Vector(
+            up_output,
+            buffers->moe_up_bf16,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,
+            "copy routed nvfp4 up output") ||
+        !SparkValidationCopyDeviceBf16Vector(
+            intermediate_output,
+            buffers->moe_intermediate_bf16,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,
+            "copy routed nvfp4 intermediate output") ||
+        !SparkValidationCudaSucceeded(
+            cudaMemcpy(
+                intermediate_fp4_scratch,
+                buffers->moe_gate_bf16,
+                sizeof(intermediate_fp4_scratch),
+                cudaMemcpyDeviceToHost),
+            "copy routed nvfp4 intermediate fp4 scratch") ||
+        !SparkValidationCopyDeviceBf16Vector(
+            route_output,
+            buffers->moe_route_output_bf16,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            "copy routed nvfp4 route output") ||
+        !SparkValidationCopyDeviceBf16Vector(
+            layer_output,
+            buffers->layer_output_hidden_bf16,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            "copy routed nvfp4 layer output"))
+    {
+        return false;
+    }
+    if (observed_ids[0] != fixture->selected_expert_id)
+    {
+        fprintf(
+            stderr,
+            "layer3 routed nvfp4 expected expert %u but router selected %u\n",
+            fixture->selected_expert_id,
+            observed_ids[0]);
+        return false;
+    }
+    nonzero_gate_count = 0u;
+    nonzero_up_count = 0u;
+    nonzero_intermediate_count = 0u;
+    nonzero_intermediate_payload_count = 0u;
+    nonzero_intermediate_scale_count = 0u;
+    gate_checksum = 0.0f;
+    up_checksum = 0.0f;
+    intermediate_checksum = 0.0f;
+    gate_maximum = 0.0f;
+    up_maximum = 0.0f;
+    intermediate_maximum = 0.0f;
+    for (index = 0u;
+         index < SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+         ++index)
+    {
+        float gate_value;
+        float up_value;
+        float intermediate_value;
+
+        gate_value = SparkValidationBf16ToFloat(gate_output[index]);
+        up_value = SparkValidationBf16ToFloat(up_output[index]);
+        intermediate_value =
+            SparkValidationBf16ToFloat(intermediate_output[index]);
+        if (!isfinite(gate_value) ||
+            !isfinite(up_value) ||
+            !isfinite(intermediate_value))
+        {
+            fprintf(stderr, "layer3 routed nvfp4 produced nonfinite expert activation at intermediate=%u\n", index);
+            return false;
+        }
+        if (gate_output[index] != 0u)
+        {
+            nonzero_gate_count += 1u;
+        }
+        if (up_output[index] != 0u)
+        {
+            nonzero_up_count += 1u;
+        }
+        if (intermediate_output[index] != 0u)
+        {
+            nonzero_intermediate_count += 1u;
+        }
+        gate_maximum = fmaxf(gate_maximum, fabsf(gate_value));
+        up_maximum = fmaxf(up_maximum, fabsf(up_value));
+        intermediate_maximum =
+            fmaxf(intermediate_maximum, fabsf(intermediate_value));
+        if (index < 64u)
+        {
+            gate_checksum += gate_value * (float)(index + 1u);
+            up_checksum += up_value * (float)(index + 1u);
+            intermediate_checksum += intermediate_value * (float)(index + 1u);
+        }
+    }
+    for (index = 0u;
+         index < sizeof(intermediate_fp4_scratch);
+         ++index)
+    {
+        if (intermediate_fp4_scratch[index] != 0u)
+        {
+            if (index <
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION /
+                    2u)
+            {
+                nonzero_intermediate_payload_count += 1u;
+            }
+            else
+            {
+                nonzero_intermediate_scale_count += 1u;
+            }
+        }
+    }
+    nonzero_route_count = 0u;
+    route_checksum = 0.0f;
+    layer_checksum = 0.0f;
+    route_maximum = 0.0f;
+    for (index = 0u;
+         index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+         ++index)
+    {
+        float route_value;
+        float layer_value;
+
+        route_value = SparkValidationBf16ToFloat(route_output[index]);
+        layer_value = SparkValidationBf16ToFloat(layer_output[index]);
+        if (!isfinite(route_value) || !isfinite(layer_value))
+        {
+            fprintf(stderr, "layer3 routed nvfp4 produced nonfinite output at hidden=%u\n", index);
+            return false;
+        }
+        if (route_output[index] != 0u)
+        {
+            nonzero_route_count += 1u;
+        }
+        route_maximum = fmaxf(route_maximum, fabsf(route_value));
+        if (index < 64u)
+        {
+            route_checksum += route_value * (float)(index + 1u);
+            layer_checksum += layer_value * (float)(index + 1u);
+        }
+    }
+    if (nonzero_route_count == 0u ||
+        fabsf(route_checksum) < 0.000001f ||
+        fabsf(layer_checksum) < 0.000001f)
+    {
+        fprintf(stderr, "layer3 routed nvfp4 output was degenerate gate_scratch_nonzero=%u up_nonzero=%u intermediate_nonzero=%u intermediate_fp4_payload_nonzero=%u intermediate_fp4_scale_nonzero=%u route_nonzero=%u gate_scratch_max=%.8g up_max=%.8g intermediate_max=%.8g route_max=%.8g gate_scratch_checksum64=%.8f up_checksum64=%.8f intermediate_checksum64=%.8f route_checksum64=%.8f layer_checksum64=%.8f\n", nonzero_gate_count, nonzero_up_count, nonzero_intermediate_count, nonzero_intermediate_payload_count, nonzero_intermediate_scale_count, nonzero_route_count, (double)gate_maximum, (double)up_maximum, (double)intermediate_maximum, (double)route_maximum, gate_checksum, up_checksum, intermediate_checksum, route_checksum, layer_checksum);
+        return false;
+    }
+    fprintf(stderr, "layer3_routed_expert_nvfp4_reference_ready=1 expert=%u gate_scratch_nonzero=%u up_nonzero=%u intermediate_nonzero=%u intermediate_fp4_payload_nonzero=%u intermediate_fp4_scale_nonzero=%u route_nonzero=%u gate_scratch_max=%.8g up_max=%.8g intermediate_max=%.8g route_max=%.8g gate_scratch_checksum64=%.8f up_checksum64=%.8f intermediate_checksum64=%.8f route_checksum64=%.8f layer_checksum64=%.8f\n", fixture->selected_expert_id, nonzero_gate_count, nonzero_up_count, nonzero_intermediate_count, nonzero_intermediate_payload_count, nonzero_intermediate_scale_count, nonzero_route_count, (double)gate_maximum, (double)up_maximum, (double)intermediate_maximum, (double)route_maximum, (double)gate_checksum, (double)up_checksum, (double)intermediate_checksum, (double)route_checksum, (double)layer_checksum);
+    return true;
+}
+
 static bool SparkValidationReadReferenceCacheFromDevice(
     SparkValidationDeviceBuffers *buffers,
     float cache_key_nope_values[
@@ -4756,6 +5244,7 @@ int main(int argc, char **argv)
     SparkValidationPrefillKvBf16Fixture prefill_kv;
     SparkValidationLayer3RouterBf16Fixture layer3_router;
     SparkValidationLayer3SharedExpertBf16Fixture layer3_shared_expert;
+    SparkValidationLayer3RoutedExpertNvfp4Fixture layer3_routed_expert;
     cudaStream_t cuda_stream;
     const char *model_directory;
     const char *load_layer0_dense;
@@ -4768,6 +5257,7 @@ int main(int argc, char **argv)
     const char *chain_dense_layers_text;
     const char *load_layer3_router_text;
     const char *load_layer3_shared_expert_text;
+    const char *load_layer3_routed_expert_text;
     double maximum_stage_microseconds;
     double total_microseconds;
     double maximum_observed_microseconds;
@@ -4782,6 +5272,7 @@ int main(int argc, char **argv)
     uint32_t use_dense_chain;
     uint32_t use_layer3_router;
     uint32_t use_layer3_shared_expert;
+    uint32_t use_layer3_routed_expert;
     uint32_t input_token_id;
     uint32_t dense_layer_index;
 
@@ -4803,6 +5294,7 @@ int main(int argc, char **argv)
     memset(&prefill_kv, 0, sizeof(prefill_kv));
     memset(&layer3_router, 0, sizeof(layer3_router));
     memset(&layer3_shared_expert, 0, sizeof(layer3_shared_expert));
+    memset(&layer3_routed_expert, 0, sizeof(layer3_routed_expert));
     model_directory = getenv("GLM52_MODEL_DIR");
     load_layer0_dense = getenv("GLM52_LOAD_LAYER0_DENSE_BF16");
     load_layer0_attention = getenv("GLM52_LOAD_LAYER0_ATTENTION_BF16");
@@ -4816,6 +5308,8 @@ int main(int argc, char **argv)
     load_layer3_router_text = getenv("GLM52_LOAD_LAYER3_ROUTER_BF16");
     load_layer3_shared_expert_text =
         getenv("GLM52_LOAD_LAYER3_SHARED_EXPERT_BF16");
+    load_layer3_routed_expert_text =
+        getenv("GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4");
     use_dense_mlp = load_layer0_dense != 0 && load_layer0_dense[0] != '\0' &&
         strcmp(load_layer0_dense, "0") != 0;
     use_attention_bf16 =
@@ -4844,6 +5338,10 @@ int main(int argc, char **argv)
         load_layer3_shared_expert_text != 0 &&
         load_layer3_shared_expert_text[0] != '\0' &&
         strcmp(load_layer3_shared_expert_text, "0") != 0;
+    use_layer3_routed_expert =
+        load_layer3_routed_expert_text != 0 &&
+        load_layer3_routed_expert_text[0] != '\0' &&
+        strcmp(load_layer3_routed_expert_text, "0") != 0;
     if (use_dense_chain != 0u)
     {
         use_dense_mlp = 1u;
@@ -4857,6 +5355,11 @@ int main(int argc, char **argv)
     if (use_layer3_shared_expert != 0u)
     {
         use_dense_mlp = 1u;
+        use_attention_bf16 = 1u;
+    }
+    if (use_layer3_routed_expert != 0u)
+    {
+        use_dense_mlp = 0u;
         use_attention_bf16 = 1u;
     }
     layer0_full_reference_max_error = 0.0f;
@@ -4934,6 +5437,7 @@ int main(int argc, char **argv)
          use_prefill_kv != 0u ||
          use_dense_chain != 0u ||
          use_layer3_shared_expert != 0u ||
+         use_layer3_routed_expert != 0u ||
          check_layer0_reference != 0u ||
          check_layer0_full_reference != 0u))
     {
@@ -4945,10 +5449,23 @@ int main(int argc, char **argv)
          use_prefill_kv != 0u ||
          use_dense_chain != 0u ||
          use_layer3_router != 0u ||
+         use_layer3_routed_expert != 0u ||
          check_layer0_reference != 0u ||
          check_layer0_full_reference != 0u))
     {
         fprintf(stderr, "GLM52_LOAD_LAYER3_SHARED_EXPERT_BF16 requires GLM52_INPUT_TOKEN_ID and owns its shared expert checks\n");
+        return 2;
+    }
+    if (use_layer3_routed_expert != 0u &&
+        (use_input_embedding == 0u ||
+         use_prefill_kv != 0u ||
+         use_dense_chain != 0u ||
+         use_layer3_router != 0u ||
+         use_layer3_shared_expert != 0u ||
+         check_layer0_reference != 0u ||
+         check_layer0_full_reference != 0u))
+    {
+        fprintf(stderr, "GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4 requires GLM52_INPUT_TOKEN_ID and owns its routed expert checks\n");
         return 2;
     }
     if (use_prefill_kv != 0u &&
@@ -4996,7 +5513,8 @@ int main(int argc, char **argv)
             &buffers,
             model_directory,
             (use_layer3_router != 0u ||
-             use_layer3_shared_expert != 0u) ? 3u : dense_layer_index,
+             use_layer3_shared_expert != 0u ||
+             use_layer3_routed_expert != 0u) ? 3u : dense_layer_index,
             &layer0_attention))
     {
         return 2;
@@ -5019,11 +5537,20 @@ int main(int argc, char **argv)
     {
         return 2;
     }
-    if (use_layer3_router != 0u &&
+    if ((use_layer3_router != 0u ||
+         use_layer3_routed_expert != 0u) &&
         !SparkValidationLoadLayer3RouterBf16Fixture(
             &buffers,
             model_directory,
             &layer3_router))
+    {
+        return 2;
+    }
+    if (use_layer3_routed_expert != 0u &&
+        !SparkValidationLoadLayer3RoutedExpertNvfp4Fixture(
+            &buffers,
+            model_directory,
+            &layer3_routed_expert))
     {
         return 2;
     }
@@ -5050,6 +5577,13 @@ int main(int argc, char **argv)
     if (use_layer3_shared_expert != 0u)
     {
         SparkValidationEnableLayer3SharedExpertBf16(&node_context);
+    }
+    if (use_layer3_routed_expert != 0u)
+    {
+        SparkValidationEnableLayer3RoutedExpertNvfp4(
+            &layer3_routed_expert,
+            &buffers,
+            &node_context);
     }
     if (use_prefill_kv != 0u &&
         !SparkValidationRunPrefillKvBf16Fixture(
@@ -5185,6 +5719,45 @@ int main(int argc, char **argv)
                 input_embedding.token_id,
                 (unsigned long long)layer3_shared_expert.copied_bytes,
                 (double)layer0_full_reference_max_error,
+                (unsigned long long)cuda_slot_state.launch_chain_count,
+                (unsigned long long)cuda_slot_state.graph_capture_count,
+                (unsigned long long)cuda_slot_state.graph_replay_count);
+            return 0;
+        }
+        if (use_layer3_routed_expert != 0u)
+        {
+            if (!SparkValidationRunDriverOnce(
+                    &node_context,
+                    cuda_stream,
+                    argv[2],
+                    &elapsed_microseconds) ||
+                !SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize routed nvfp4") ||
+                !SparkValidationCheckLayer3RouterTopK(&buffers) ||
+                !SparkValidationCheckLayer3RoutedExpertNvfp4(
+                    &buffers,
+                    &layer3_routed_expert))
+            {
+                return 2;
+            }
+            SparkGlm52ResidentDecodeStageBackendQuiesce(&node_context);
+            if ((double)elapsed_microseconds > maximum_stage_microseconds)
+            {
+                fprintf(
+                    stderr,
+                    "glm52_resident_decode_stage layer3 routed nvfp4 orchestrator validation failed elapsed_us=%.3f limit_us=%.3f\n",
+                    (double)elapsed_microseconds,
+                    maximum_stage_microseconds);
+                return 1;
+            }
+            printf(
+                "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 layer3_routed_expert_nvfp4=1 elapsed_us=%.3f limit_us=%.3f input_embedding_bf16=%u input_embedding_token=%u layer3_router_bf16_bytes=%llu layer3_routed_expert_nvfp4_bytes=%llu selected_expert=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+                (double)elapsed_microseconds,
+                maximum_stage_microseconds,
+                input_embedding.ready,
+                input_embedding.token_id,
+                (unsigned long long)layer3_router.copied_bytes,
+                (unsigned long long)layer3_routed_expert.copied_bytes,
+                layer3_routed_expert.selected_expert_id,
                 (unsigned long long)cuda_slot_state.launch_chain_count,
                 (unsigned long long)cuda_slot_state.graph_capture_count,
                 (unsigned long long)cuda_slot_state.graph_replay_count);
@@ -5372,6 +5945,48 @@ int main(int argc, char **argv)
             input_embedding.token_id,
             (unsigned long long)layer3_shared_expert.copied_bytes,
             (double)layer0_full_reference_max_error,
+            (unsigned long long)cuda_slot_state.launch_chain_count,
+            (unsigned long long)cuda_slot_state.graph_capture_count,
+            (unsigned long long)cuda_slot_state.graph_replay_count);
+        return 0;
+    }
+    if (use_layer3_routed_expert != 0u)
+    {
+        float elapsed_microseconds;
+
+        if (!SparkValidationRunOnce(
+                &node_context,
+                cuda_stream,
+                &elapsed_microseconds) ||
+            !SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize routed nvfp4") ||
+            !SparkValidationCheckLayer3RouterTopK(&buffers) ||
+            !SparkValidationCheckLayer3RoutedExpertNvfp4(
+                &buffers,
+                &layer3_routed_expert))
+        {
+            return 2;
+        }
+        SparkGlm52ResidentDecodeStageBackendQuiesce(&node_context);
+        maximum_observed_microseconds = (double)elapsed_microseconds;
+        total_microseconds = (double)elapsed_microseconds;
+        if (maximum_observed_microseconds > maximum_stage_microseconds)
+        {
+            fprintf(
+                stderr,
+                "glm52_resident_decode_stage layer3 routed nvfp4 validation failed elapsed_us=%.3f limit_us=%.3f\n",
+                maximum_observed_microseconds,
+                maximum_stage_microseconds);
+            return 1;
+        }
+        printf(
+            "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 layer3_routed_expert_nvfp4=1 elapsed_us=%.3f limit_us=%.3f input_embedding_bf16=%u input_embedding_token=%u layer3_router_bf16_bytes=%llu layer3_routed_expert_nvfp4_bytes=%llu selected_expert=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            total_microseconds,
+            maximum_stage_microseconds,
+            input_embedding.ready,
+            input_embedding.token_id,
+            (unsigned long long)layer3_router.copied_bytes,
+            (unsigned long long)layer3_routed_expert.copied_bytes,
+            layer3_routed_expert.selected_expert_id,
             (unsigned long long)cuda_slot_state.launch_chain_count,
             (unsigned long long)cuda_slot_state.graph_capture_count,
             (unsigned long long)cuda_slot_state.graph_replay_count);
