@@ -4922,12 +4922,12 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageLaunchPersistentGroupedNvfp4
         cuda_stream>>>(
         (const uint16_t *)pipeline_slot->moe_gate_bf16,
         (const uint16_t *)pipeline_slot->moe_up_bf16,
-        (uint16_t *)pipeline_slot->moe_intermediate_bf16,
         pipeline_slot->moe_topk_expert_ids,
         node_context->moe_nvfp4_bound_expert_ids,
         node_context->moe_nvfp4_expert_id_to_bound_slot,
         pipeline_slot->moe_bound_expert_slots,
         node_context->moe_nvfp4_down_input_scale_f32,
+        (uint16_t *)pipeline_slot->moe_intermediate_bf16,
         intermediate_payload_u8,
         intermediate_scale_e4m3,
         route_count,
