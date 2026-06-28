@@ -3,6 +3,8 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -10,6 +12,7 @@
 #include <string.h>
 
 #include "spark_glm52_resident_decode_stage_backend.h"
+#include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_orchestrator.h"
 #include "sparkpipe/spark_status.h"
 
@@ -39,6 +42,10 @@
 #define SPARK_VALIDATION_MEASUREMENT_COUNT 3u
 #define SPARK_VALIDATION_WARMUP_COUNT 1u
 #define SPARK_VALIDATION_ATTENTION_TOLERANCE 0.030f
+#define SPARK_VALIDATION_LOGIT_TOLERANCE 0.010f
+#define SPARK_VALIDATION_RESTRICTED_LM_HEAD_FIRST_TOKEN 1000u
+#define SPARK_VALIDATION_LOGIT_REDUCTION_THREADS 256u
+#define SPARK_VALIDATION_SAFETENSORS_HEADER_MAX_BYTES (128ull * 1024ull * 1024ull)
 
 typedef struct SparkValidationCompletionState
 {
@@ -50,6 +57,16 @@ typedef struct SparkValidationDriverCompletionState
     std::atomic<uint32_t> completion_count;
     SparkModelDriverCompletion completion;
 } SparkValidationDriverCompletionState;
+
+typedef struct SparkValidationRealLmHeadFixture
+{
+    uint16_t *restricted_rows_bf16;
+    uint64_t restricted_row_bytes;
+    uint32_t ready;
+    uint32_t expected_selected_token;
+    float expected_selected_score;
+    float maximum_logit_error;
+} SparkValidationRealLmHeadFixture;
 
 typedef struct SparkValidationDeviceBuffers
 {
@@ -204,6 +221,305 @@ static float SparkValidationBf16ToFloat(uint16_t value)
 
     conversion.bits = ((uint32_t)value) << 16u;
     return conversion.value;
+}
+
+static bool SparkValidationBuildModelPath(
+    const char *model_directory,
+    const char *leaf_name,
+    char *path,
+    uint32_t path_bytes)
+{
+    int written_bytes;
+
+    written_bytes = snprintf(path, (size_t)path_bytes, "%s/%s", model_directory, leaf_name);
+    return written_bytes >= 0 && (uint32_t)written_bytes < path_bytes;
+}
+
+static bool SparkValidationReadSafetensorsHeader(
+    const char *path,
+    char **header_text,
+    uint64_t *header_bytes)
+{
+    FILE *file;
+    uint8_t header_length_bytes[8];
+    uint64_t header_length;
+    uint32_t byte_index;
+
+    *header_text = 0;
+    *header_bytes = 0u;
+    file = fopen(path, "rb");
+    if (file == 0)
+    {
+        fprintf(stderr, "could not open safetensors file %s\n", path);
+        return false;
+    }
+    if (fread(header_length_bytes, 1u, sizeof(header_length_bytes), file) != sizeof(header_length_bytes))
+    {
+        fprintf(stderr, "could not read safetensors header length from %s\n", path);
+        fclose(file);
+        return false;
+    }
+    header_length = 0u;
+    for (byte_index = 0u; byte_index < 8u; ++byte_index)
+    {
+        header_length |= ((uint64_t)header_length_bytes[byte_index]) << (8u * byte_index);
+    }
+    if (header_length == 0u || header_length > SPARK_VALIDATION_SAFETENSORS_HEADER_MAX_BYTES)
+    {
+        fprintf(stderr, "safetensors header length is unsupported for %s\n", path);
+        fclose(file);
+        return false;
+    }
+    *header_text = (char *)malloc((size_t)header_length + 1u);
+    if (*header_text == 0)
+    {
+        fprintf(stderr, "could not allocate safetensors header buffer\n");
+        fclose(file);
+        return false;
+    }
+    if (fread(*header_text, 1u, (size_t)header_length, file) != (size_t)header_length)
+    {
+        fprintf(stderr, "could not read safetensors header from %s\n", path);
+        free(*header_text);
+        *header_text = 0;
+        fclose(file);
+        return false;
+    }
+    fclose(file);
+    (*header_text)[header_length] = '\0';
+    *header_bytes = header_length;
+    return true;
+}
+
+static bool SparkValidationReadLmHeadShardName(
+    const char *model_directory,
+    char **file_name)
+{
+    SparkJsonDocument document;
+    char index_path[4096];
+    int32_t root_token_index;
+    int32_t weight_map_token_index;
+    int32_t file_token_index;
+    SparkStatus status;
+    bool succeeded;
+
+    *file_name = 0;
+    if (!SparkValidationBuildModelPath(model_directory, "model.safetensors.index.json", index_path, sizeof(index_path)))
+    {
+        fprintf(stderr, "safetensors index path is too long\n");
+        return false;
+    }
+    SparkJsonDocumentReset(&document);
+    status = SparkJsonLoadFile(index_path, &document);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "could not load safetensors index %s: %s\n", index_path, SparkStatusToString(status));
+        return false;
+    }
+    root_token_index = SparkJsonGetRootToken(&document);
+    weight_map_token_index = SparkJsonFindObjectMember(&document, root_token_index, "weight_map");
+    file_token_index = weight_map_token_index >= 0
+        ? SparkJsonFindObjectMember(&document, weight_map_token_index, "lm_head.weight")
+        : -1;
+    succeeded = file_token_index >= 0 &&
+        SparkJsonCopyString(&document, file_token_index, file_name) == SPARK_STATUS_OK;
+    if (!succeeded)
+    {
+        fprintf(stderr, "lm_head.weight is missing from safetensors index\n");
+    }
+    SparkJsonDocumentDestroy(&document);
+    return succeeded;
+}
+
+static bool SparkValidationReadLmHeadOffsets(
+    const char *tensor_path,
+    uint64_t *payload_file_offset,
+    uint64_t *tensor_bytes)
+{
+    SparkJsonDocument document;
+    char *header_text;
+    uint64_t header_bytes;
+    uint64_t start_offset;
+    uint64_t end_offset;
+    int32_t root_token_index;
+    int32_t tensor_token_index;
+    int32_t dtype_token_index;
+    int32_t shape_token_index;
+    int32_t offsets_token_index;
+    SparkStatus status;
+    bool succeeded;
+
+    header_text = 0;
+    if (!SparkValidationReadSafetensorsHeader(tensor_path, &header_text, &header_bytes))
+    {
+        return false;
+    }
+    SparkJsonDocumentReset(&document);
+    status = SparkJsonParseText(header_text, (size_t)header_bytes, &document);
+    free(header_text);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "could not parse safetensors header %s: %s\n", tensor_path, SparkStatusToString(status));
+        return false;
+    }
+    root_token_index = SparkJsonGetRootToken(&document);
+    tensor_token_index = SparkJsonFindObjectMember(&document, root_token_index, "lm_head.weight");
+    dtype_token_index = tensor_token_index >= 0 ? SparkJsonFindObjectMember(&document, tensor_token_index, "dtype") : -1;
+    shape_token_index = tensor_token_index >= 0 ? SparkJsonFindObjectMember(&document, tensor_token_index, "shape") : -1;
+    offsets_token_index = tensor_token_index >= 0 ? SparkJsonFindObjectMember(&document, tensor_token_index, "data_offsets") : -1;
+    succeeded = tensor_token_index >= 0 &&
+        dtype_token_index >= 0 &&
+        SparkJsonStringEquals(&document, dtype_token_index, "BF16") &&
+        shape_token_index >= 0 &&
+        SparkJsonGetArrayElementCount(&document, shape_token_index) == 2u &&
+        offsets_token_index >= 0 &&
+        SparkJsonGetArrayElementCount(&document, offsets_token_index) == 2u;
+    if (succeeded)
+    {
+        uint64_t row_count;
+        uint64_t hidden_count;
+
+        succeeded =
+            SparkJsonGetUInt64(&document, SparkJsonGetArrayElement(&document, shape_token_index, 0u), &row_count) == SPARK_STATUS_OK &&
+            SparkJsonGetUInt64(&document, SparkJsonGetArrayElement(&document, shape_token_index, 1u), &hidden_count) == SPARK_STATUS_OK &&
+            row_count == 154880u &&
+            hidden_count == SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION &&
+            SparkJsonGetUInt64(&document, SparkJsonGetArrayElement(&document, offsets_token_index, 0u), &start_offset) == SPARK_STATUS_OK &&
+            SparkJsonGetUInt64(&document, SparkJsonGetArrayElement(&document, offsets_token_index, 1u), &end_offset) == SPARK_STATUS_OK &&
+            end_offset >= start_offset;
+    }
+    if (!succeeded)
+    {
+        fprintf(stderr, "lm_head.weight metadata is not the expected BF16 GLM shape\n");
+        SparkJsonDocumentDestroy(&document);
+        return false;
+    }
+    *payload_file_offset = 8u + header_bytes + start_offset;
+    *tensor_bytes = end_offset - start_offset;
+    SparkJsonDocumentDestroy(&document);
+    return true;
+}
+
+static bool SparkValidationReadLmHeadRows(
+    const char *tensor_path,
+    uint64_t payload_file_offset,
+    uint64_t tensor_bytes,
+    SparkValidationRealLmHeadFixture *fixture)
+{
+    FILE *file;
+    uint64_t sample_offset;
+    uint64_t sample_bytes;
+    uint64_t absolute_offset;
+    uint64_t nonzero_bytes;
+    size_t read_bytes;
+
+    fixture->restricted_row_bytes =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u;
+    sample_offset =
+        (uint64_t)SPARK_VALIDATION_RESTRICTED_LM_HEAD_FIRST_TOKEN *
+        fixture->restricted_row_bytes;
+    sample_bytes =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT *
+        fixture->restricted_row_bytes;
+    if (sample_offset > tensor_bytes || sample_bytes > tensor_bytes - sample_offset)
+    {
+        fprintf(stderr, "restricted lm_head rows are outside tensor body\n");
+        return false;
+    }
+    absolute_offset = payload_file_offset + sample_offset;
+    if (absolute_offset > (uint64_t)LONG_MAX || sample_bytes > (uint64_t)SIZE_MAX)
+    {
+        fprintf(stderr, "restricted lm_head row span is unsupported by validator host\n");
+        return false;
+    }
+    fixture->restricted_rows_bf16 = (uint16_t *)malloc((size_t)sample_bytes);
+    if (fixture->restricted_rows_bf16 == 0)
+    {
+        fprintf(stderr, "could not allocate restricted lm_head rows\n");
+        return false;
+    }
+    file = fopen(tensor_path, "rb");
+    if (file == 0)
+    {
+        fprintf(stderr, "could not open lm_head shard %s\n", tensor_path);
+        return false;
+    }
+    if (fseek(file, (long)absolute_offset, SEEK_SET) != 0)
+    {
+        fprintf(stderr, "could not seek restricted lm_head rows\n");
+        fclose(file);
+        return false;
+    }
+    read_bytes = fread(fixture->restricted_rows_bf16, 1u, (size_t)sample_bytes, file);
+    fclose(file);
+    if (read_bytes != (size_t)sample_bytes)
+    {
+        fprintf(stderr, "could not read restricted lm_head rows\n");
+        return false;
+    }
+    nonzero_bytes = 0u;
+    for (uint64_t byte_index = 0u; byte_index < sample_bytes; ++byte_index)
+    {
+        if (((const uint8_t *)fixture->restricted_rows_bf16)[byte_index] != 0u)
+        {
+            nonzero_bytes += 1u;
+        }
+    }
+    if (nonzero_bytes == 0u)
+    {
+        fprintf(stderr, "restricted lm_head rows are all zero\n");
+        return false;
+    }
+    return true;
+}
+
+static void SparkValidationDestroyRealLmHeadFixture(
+    SparkValidationRealLmHeadFixture *fixture)
+{
+    free(fixture->restricted_rows_bf16);
+    memset(fixture, 0, sizeof(*fixture));
+}
+
+static bool SparkValidationLoadRealLmHeadFixture(
+    SparkValidationDeviceBuffers *buffers,
+    const char *model_directory,
+    SparkValidationRealLmHeadFixture *fixture)
+{
+    char *shard_name;
+    char tensor_path[4096];
+    uint64_t payload_file_offset;
+    uint64_t tensor_bytes;
+    uint64_t copy_bytes;
+    bool succeeded;
+
+    memset(fixture, 0, sizeof(*fixture));
+    shard_name = 0;
+    succeeded =
+        SparkValidationReadLmHeadShardName(model_directory, &shard_name) &&
+        SparkValidationBuildModelPath(model_directory, shard_name, tensor_path, sizeof(tensor_path)) &&
+        SparkValidationReadLmHeadOffsets(tensor_path, &payload_file_offset, &tensor_bytes) &&
+        SparkValidationReadLmHeadRows(tensor_path, payload_file_offset, tensor_bytes, fixture);
+    free(shard_name);
+    if (!succeeded)
+    {
+        SparkValidationDestroyRealLmHeadFixture(fixture);
+        return false;
+    }
+    copy_bytes =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT *
+        fixture->restricted_row_bytes;
+    if (!SparkValidationCopyToDevice(
+            buffers->restricted_lm_head_weight_bf16,
+            fixture->restricted_rows_bf16,
+            copy_bytes,
+            "copy real restricted lm_head rows"))
+    {
+        SparkValidationDestroyRealLmHeadFixture(fixture);
+        return false;
+    }
+    fixture->ready = 1u;
+    fprintf(stderr, "real_lm_head_fixture_ready=1 model_dir=%s bytes=%llu\n", model_directory, (unsigned long long)copy_bytes);
+    return true;
 }
 
 static float SparkValidationFp8E4m3ToFloat(uint8_t value)
@@ -1478,8 +1794,139 @@ static float SparkValidationReferenceAttentionValue(
     return expected_value / exponential_sum;
 }
 
+static float SparkValidationReferenceRestrictedLogit(
+    const uint16_t *normalized_hidden_bf16,
+    const uint16_t *lm_head_row_bf16)
+{
+    float partial_sums[SPARK_VALIDATION_LOGIT_REDUCTION_THREADS];
+    uint32_t thread_index;
+    uint32_t stride;
+
+    memset(partial_sums, 0, sizeof(partial_sums));
+    for (thread_index = 0u;
+         thread_index < SPARK_VALIDATION_LOGIT_REDUCTION_THREADS;
+         ++thread_index)
+    {
+        uint32_t hidden_index;
+
+        for (hidden_index = thread_index;
+             hidden_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+             hidden_index += SPARK_VALIDATION_LOGIT_REDUCTION_THREADS)
+        {
+            partial_sums[thread_index] +=
+                SparkValidationBf16ToFloat(normalized_hidden_bf16[hidden_index]) *
+                SparkValidationBf16ToFloat(lm_head_row_bf16[hidden_index]);
+        }
+    }
+    for (stride = SPARK_VALIDATION_LOGIT_REDUCTION_THREADS >> 1u;
+         stride != 0u;
+         stride >>= 1u)
+    {
+        for (thread_index = 0u; thread_index < stride; ++thread_index)
+        {
+            partial_sums[thread_index] += partial_sums[thread_index + stride];
+        }
+    }
+    return partial_sums[0];
+}
+
+static bool SparkValidationCheckRealRestrictedLogits(
+    SparkValidationDeviceBuffers *buffers,
+    SparkValidationRealLmHeadFixture *fixture,
+    uint32_t selected_token_id)
+{
+    uint16_t normalized_hidden[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    float restricted_logits[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT];
+    uint32_t token_index;
+    uint32_t expected_token_id;
+    float expected_score;
+    float maximum_error;
+
+    if (!SparkValidationCudaSucceeded(
+            cudaMemcpy(
+                normalized_hidden,
+                buffers->normalized_hidden_bf16,
+                sizeof(normalized_hidden),
+                cudaMemcpyDeviceToHost),
+            "copy normalized_hidden real lm_head") ||
+        !SparkValidationCudaSucceeded(
+            cudaMemcpy(
+                restricted_logits,
+                buffers->restricted_logits,
+                sizeof(restricted_logits),
+                cudaMemcpyDeviceToHost),
+            "copy restricted_logits real lm_head"))
+    {
+        return false;
+    }
+    expected_token_id = SPARK_VALIDATION_RESTRICTED_LM_HEAD_FIRST_TOKEN;
+    expected_score = -FLT_MAX;
+    maximum_error = 0.0f;
+    for (token_index = 0u;
+         token_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT;
+         ++token_index)
+    {
+        const uint16_t *row_bf16;
+        uint32_t candidate_token_id;
+        float expected_logit;
+        float observed_logit;
+        float logit_error;
+
+        row_bf16 = &fixture->restricted_rows_bf16[
+            (uint64_t)token_index *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+        expected_logit = SparkValidationReferenceRestrictedLogit(
+            normalized_hidden,
+            row_bf16);
+        observed_logit = restricted_logits[token_index];
+        logit_error = fabsf(observed_logit - expected_logit);
+        if (logit_error > maximum_error)
+        {
+            maximum_error = logit_error;
+        }
+        if (logit_error > SPARK_VALIDATION_LOGIT_TOLERANCE)
+        {
+            fprintf(
+                stderr,
+                "real lm_head logit mismatch token=%u observed=%.8f expected=%.8f error=%.8f\n",
+                SPARK_VALIDATION_RESTRICTED_LM_HEAD_FIRST_TOKEN + token_index,
+                observed_logit,
+                expected_logit,
+                logit_error);
+            return false;
+        }
+        candidate_token_id =
+            SPARK_VALIDATION_RESTRICTED_LM_HEAD_FIRST_TOKEN + token_index;
+        if (expected_logit > expected_score ||
+            (expected_logit == expected_score &&
+             candidate_token_id < expected_token_id))
+        {
+            expected_score = expected_logit;
+            expected_token_id = candidate_token_id;
+        }
+    }
+    fixture->expected_selected_token = expected_token_id;
+    fixture->expected_selected_score = expected_score;
+    fixture->maximum_logit_error = maximum_error;
+    if (selected_token_id != expected_token_id)
+    {
+        fprintf(
+            stderr,
+            "real lm_head argmax mismatch observed=%u expected=%u score=%.8f max_logit_error=%.8f\n",
+            selected_token_id,
+            expected_token_id,
+            expected_score,
+            maximum_error);
+        return false;
+    }
+    return true;
+}
+
 static bool SparkValidationCheckOutputs(
-    SparkValidationDeviceBuffers *buffers)
+    SparkValidationDeviceBuffers *buffers,
+    SparkValidationRealLmHeadFixture *real_lm_head)
 {
     uint16_t current_kv_value[
         SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
@@ -1912,7 +2359,17 @@ static bool SparkValidationCheckOutputs(
             return false;
         }
     }
-    if (selected_token_id != SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN)
+    if (real_lm_head != 0 && real_lm_head->ready != 0u)
+    {
+        if (!SparkValidationCheckRealRestrictedLogits(
+                buffers,
+                real_lm_head,
+                selected_token_id))
+        {
+            return false;
+        }
+    }
+    else if (selected_token_id != SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN)
     {
         fprintf(
             stderr,
@@ -2116,7 +2573,9 @@ int main(int argc, char **argv)
     SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slot;
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState cuda_slot_state;
     SparkGlm52ResidentDecodeStageNodeContext node_context;
+    SparkValidationRealLmHeadFixture real_lm_head;
     cudaStream_t cuda_stream;
+    const char *model_directory;
     double maximum_stage_microseconds;
     double total_microseconds;
     double maximum_observed_microseconds;
@@ -2133,6 +2592,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "MAX_STAGE_MICROSECONDS must be positive\n");
         return 2;
     }
+    memset(&real_lm_head, 0, sizeof(real_lm_head));
+    model_directory = getenv("GLM52_MODEL_DIR");
     cuda_stream = 0;
     if (!SparkValidationCudaSucceeded(cudaSetDevice(0), "cudaSetDevice") ||
         !SparkValidationCudaSucceeded(
@@ -2149,6 +2610,14 @@ int main(int argc, char **argv)
         &pipeline_slot,
         &cuda_slot_state,
         &node_context);
+    if (model_directory != 0 && model_directory[0] != '\0' &&
+        !SparkValidationLoadRealLmHeadFixture(
+            &buffers,
+            model_directory,
+            &real_lm_head))
+    {
+        return 2;
+    }
     if (argc == 3)
     {
         float elapsed_microseconds;
@@ -2159,7 +2628,7 @@ int main(int argc, char **argv)
                 argv[2],
                 &elapsed_microseconds) ||
             !SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
-            !SparkValidationCheckOutputs(&buffers))
+            !SparkValidationCheckOutputs(&buffers, &real_lm_head))
         {
             return 2;
         }
@@ -2173,12 +2642,16 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 elapsed_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             (double)elapsed_microseconds,
             maximum_stage_microseconds,
-            SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN,
+            real_lm_head.ready != 0u
+                ? real_lm_head.expected_selected_token
+                : SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN,
             SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
             SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
+            real_lm_head.ready,
+            real_lm_head.maximum_logit_error,
             (unsigned long long)cuda_slot_state.launch_chain_count,
             (unsigned long long)cuda_slot_state.graph_capture_count,
             (unsigned long long)cuda_slot_state.graph_replay_count);
@@ -2209,7 +2682,7 @@ int main(int argc, char **argv)
         }
     }
     if (!SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
-        !SparkValidationCheckOutputs(&buffers))
+        !SparkValidationCheckOutputs(&buffers, &real_lm_head))
     {
         return 2;
     }
@@ -2225,13 +2698,17 @@ int main(int argc, char **argv)
         return 1;
     }
     printf(
-        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 average_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
         total_microseconds / SPARK_VALIDATION_MEASUREMENT_COUNT,
         maximum_observed_microseconds,
         maximum_stage_microseconds,
-        SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN,
+        real_lm_head.ready != 0u
+            ? real_lm_head.expected_selected_token
+            : SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN,
         SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
         SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
+        real_lm_head.ready,
+        real_lm_head.maximum_logit_error,
         (unsigned long long)cuda_slot_state.launch_chain_count,
         (unsigned long long)cuda_slot_state.graph_capture_count,
         (unsigned long long)cuda_slot_state.graph_replay_count);

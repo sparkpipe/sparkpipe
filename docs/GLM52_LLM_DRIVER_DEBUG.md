@@ -31,9 +31,13 @@ Commands:
 ```sh
 make -C modules/glm52_resident_decode_stage artifact_check GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4
 make -C modules/glm52_resident_decode_stage artifact_check GLM52_MODEL_DIR=/home/spark1/models/hf/lukealonso/GLM-5.2-NVFP4
+make -C modules/glm52_resident_decode_stage artifact_check GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 ARTIFACT_CHECK_ARGS=--check-body-samples
+make -C modules/glm52_resident_decode_stage artifact_check GLM52_MODEL_DIR=/home/spark1/models/hf/lukealonso/GLM-5.2-NVFP4 ARTIFACT_CHECK_ARGS=--check-body-samples
+make -C modules/glm52_resident_decode_stage artifact_check GLM52_MODEL_DIR=/home/spark1/models/hf/zai-org/GLM-5.2-FP8 ARTIFACT_CHECK_ARGS=--check-body-samples
 PATH=/usr/local/cuda-13.0/bin:$PATH make -j1 test
 PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_sparse_mla_firmware_package MAX_STAGE_MICROSECONDS=1500
 PATH=/usr/local/cuda-13.0/bin:$PATH make glm52_resident_decode_stage_firmware_package MAX_STAGE_MICROSECONDS=10000
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 PATH=/usr/local/cuda-13.0/bin:$PATH make -C modules/glm52_resident_decode_stage validate MAX_STAGE_MICROSECONDS=10000
 ```
 
 The artifact gate verifies the live `config.json` against
@@ -41,7 +45,9 @@ The artifact gate verifies the live `config.json` against
 compiled resident decode-stage constants, and verifies the route selects the
 same module before any launch claim. With `--model-dir`, it also validates the
 first raw checkpoint tensor contract through `model.safetensors.index.json` and
-the safetensors shard headers without reading full tensor bodies:
+the safetensors shard headers. With `ARTIFACT_CHECK_ARGS=--check-body-samples`,
+it also seeks into tensor bodies and hashes deterministic edge samples plus the
+restricted-vocabulary `lm_head.weight` rows:
 
 This gate is deliberately module-local. Generic SparkPipe compiler/runtime code
 does not parse GLM tensor names, dtypes, or safetensors layouts.
@@ -65,6 +71,11 @@ module=spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256
 tensor_contract_ready=1
 tensor_count=9
 tensor_bytes=2233222144
+tensor_body_sample_ready=1
+tensor_body_sample_count=22
+tensor_body_sample_bytes=3236864
+tensor_body_nonzero_bytes=3229801
+tensor_body_sha256=edd995fc32fbe0ac33241a1ff7c17f2549ea71ca5f3ba0911821b91a2972f480
 ```
 
 The same geometry check against `/home/spark1/models/hf/zai-org/GLM-5.2-FP8`
@@ -89,7 +100,81 @@ alone. The resident CUDA path now writes explicit key-nope and value caches from
 `kv_b_proj`, emits value-head attention output with shape `64 x 256`, and feeds
 the real `[6144,16384]` `o_proj` path. Full readiness still requires hardware
 validator success and checkpoint-derived logits equivalence across layer
-progression.
+progression. Restricted-vocabulary logits now have a narrower checkpoint-backed
+CUDA validator: it loads real BF16 `lm_head.weight` restricted rows and checks
+the resident CUDA logits against a CPU reference reduction.
+
+Latest checkpoint-backed artifact/body and restricted-logits evidence from
+`spark1` at commit `a5809ed`:
+
+```text
+NVIDIA NVFP4 artifact body gate:
+tensor_contract_ready=1
+tensor_count=9
+tensor_bytes=2233222144
+tensor_body_sample_ready=1
+tensor_body_sample_count=22
+tensor_body_sample_bytes=3236864
+tensor_body_nonzero_bytes=3229801
+tensor_body_sha256=edd995fc32fbe0ac33241a1ff7c17f2549ea71ca5f3ba0911821b91a2972f480
+
+Luke NVFP4 artifact body gate:
+tensor_contract_ready=1
+tensor_count=9
+tensor_bytes=2233222144
+tensor_body_sample_ready=1
+tensor_body_sample_count=22
+tensor_body_sample_bytes=3236864
+tensor_body_nonzero_bytes=3229801
+tensor_body_sha256=edd995fc32fbe0ac33241a1ff7c17f2549ea71ca5f3ba0911821b91a2972f480
+
+ZAI FP8 artifact body gate:
+tensor_contract_ready=1
+tensor_count=14
+tensor_bytes=2068242880
+tensor_body_sample_ready=1
+tensor_body_sample_count=29
+tensor_body_sample_bytes=3264960
+tensor_body_nonzero_bytes=3256531
+tensor_body_sha256=9e58397cf3e1785ce7a4b22616d1f0d9e730fed6c4e1059dbf9b972d5e21ce62
+
+Synthetic CUDA decode-stage gate:
+average_us=4523.755
+maximum_us=4529.280
+limit_us=10000.000
+restricted_token=1009
+real_lm_head=0
+
+NVIDIA NVFP4 real-lm-head CUDA gate:
+real_lm_head_fixture_ready=1
+bytes=3145728
+average_us=5301.888
+maximum_us=5477.664
+limit_us=10000.000
+restricted_token=1028
+real_lm_head=1
+real_lm_head_max_logit_error=0.00000000
+
+Luke NVFP4 real-lm-head CUDA gate:
+real_lm_head_fixture_ready=1
+bytes=3145728
+average_us=4677.696
+maximum_us=4953.600
+limit_us=10000.000
+restricted_token=1028
+real_lm_head=1
+real_lm_head_max_logit_error=0.00000000
+
+ZAI FP8 real-lm-head CUDA gate:
+real_lm_head_fixture_ready=1
+bytes=3145728
+average_us=4682.368
+maximum_us=5482.176
+limit_us=10000.000
+restricted_token=1028
+real_lm_head=1
+real_lm_head_max_logit_error=0.00000000
+```
 
 Latest value-cache / `o_proj` evidence from `spark1` at commit `d9ee92a`:
 
@@ -240,8 +325,11 @@ driver/orchestrator counters remain clean
 ## What this does not prove yet
 
 This is not a full GLM 5.2 inference pass. The decode-stage validator now uses
-deterministic nonzero smoke tensors, but it still does not load real checkpoint
-weights or compare final logits against a known GLM artifact.
+real checkpoint `lm_head.weight` rows for restricted logits when
+`GLM52_MODEL_DIR` is set, but the rest of the layer path still uses
+deterministic nonzero smoke tensors. It does not yet load all checkpoint
+projection, attention, MoE, MTP, and norm weights or compare final logits
+against a known GLM artifact.
 
 The next correctness gate must replace smoke tensors with deterministic
 nonzero GLM fixtures and check:
@@ -249,7 +337,7 @@ nonzero GLM fixtures and check:
 ```text
 multiple positions
 larger nonzero attention dimension/head coverage
-restricted-vocabulary logits against a richer host reference
+checkpoint-derived cached attention and MoE references
 MTP draft and verify/commit behavior with varied target patterns
 runtime snapshot counters after real tensor work
 ```

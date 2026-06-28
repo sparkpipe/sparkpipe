@@ -1,15 +1,24 @@
+#define _FILE_OFFSET_BITS 64
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_description.h"
+#include "sparkpipe/spark_sha256.h"
 
 #define SPARK_GLM52_TENSOR_CONTRACT_MAX_TENSORS 32u
 #define SPARK_GLM52_TENSOR_CONTRACT_MAX_RANK 4u
 #define SPARK_GLM52_SAFETENSORS_HEADER_MAX_BYTES (128ull * 1024ull * 1024ull)
+#define SPARK_GLM52_TENSOR_BODY_SAMPLE_CHUNK_BYTES 65536u
+#define SPARK_GLM52_TENSOR_BODY_EDGE_SAMPLE_BYTES 4096ull
+#define SPARK_GLM52_RESTRICTED_LM_HEAD_FIRST_TOKEN 1000ull
+#define SPARK_GLM52_RESTRICTED_LM_HEAD_TOKEN_COUNT \
+    ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT)
 
 typedef struct SparkGlm52ArtifactGeometry
 {
@@ -36,6 +45,14 @@ typedef struct SparkGlm52TensorContract
     uint32_t rank;
 } SparkGlm52TensorContract;
 
+typedef struct SparkGlm52TensorBodySamples
+{
+    SparkSha256Context hash_context;
+    uint64_t sample_bytes;
+    uint64_t nonzero_bytes;
+    uint32_t sample_count;
+} SparkGlm52TensorBodySamples;
+
 static SparkStatus SparkSetToolError(
     SparkStatus status,
     char *error_buffer,
@@ -58,7 +75,7 @@ static void SparkPrintUsage(const char *program_name)
 {
     fprintf(
         stderr,
-        "usage: %s (--config FILE | --model-dir DIR) [--model FILE]\n",
+        "usage: %s (--config FILE | --model-dir DIR) [--model FILE] [--check-body-samples]\n",
         program_name);
 }
 
@@ -709,6 +726,198 @@ static SparkStatus SparkExpectedTensorBytes(
     return SPARK_STATUS_OK;
 }
 
+static void SparkGlm52UpdateSha256U64(
+    SparkSha256Context *context,
+    uint64_t value)
+{
+    uint8_t bytes[8];
+    uint32_t byte_index;
+
+    for (byte_index = 0u; byte_index < 8u; ++byte_index)
+    {
+        bytes[byte_index] = (uint8_t)(value & 0xffu);
+        value >>= 8u;
+    }
+    SparkSha256Update(context, bytes, sizeof(bytes));
+}
+
+static void SparkGlm52TensorBodySamplesReset(
+    SparkGlm52TensorBodySamples *samples)
+{
+    memset(samples, 0, sizeof(*samples));
+    SparkSha256Initialize(&samples->hash_context);
+}
+
+static void SparkGlm52TensorBodySamplesFinalize(
+    SparkGlm52TensorBodySamples *samples,
+    char body_sha256[SPARK_SHA256_HEX_BYTES])
+{
+    uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+
+    SparkSha256Finalize(&samples->hash_context, digest);
+    SparkSha256DigestToHex(digest, body_sha256);
+}
+
+static SparkStatus SparkSampleTensorBodySegment(
+    const char *path,
+    const char *tensor_name,
+    uint64_t tensor_file_offset,
+    uint64_t segment_offset,
+    uint64_t segment_bytes,
+    SparkGlm52TensorBodySamples *samples,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    FILE *file;
+    uint8_t buffer[SPARK_GLM52_TENSOR_BODY_SAMPLE_CHUNK_BYTES];
+    uint64_t absolute_offset;
+    uint64_t remaining_bytes;
+    uint64_t segment_nonzero_bytes;
+    long seek_offset;
+
+    if (segment_bytes == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (UINT64_MAX - tensor_file_offset < segment_offset)
+    {
+        return SparkSetToolError(SPARK_STATUS_CAPACITY_EXCEEDED, error_buffer, error_buffer_bytes, "tensor sample offset overflow for %s", tensor_name);
+    }
+    absolute_offset = tensor_file_offset + segment_offset;
+    if (absolute_offset > (uint64_t)LONG_MAX)
+    {
+        return SparkSetToolError(SPARK_STATUS_CAPACITY_EXCEEDED, error_buffer, error_buffer_bytes, "tensor sample offset is unsupported for %s", tensor_name);
+    }
+    seek_offset = (long)absolute_offset;
+    file = fopen(path, "rb");
+    if (file == 0)
+    {
+        return SparkSetToolError(SPARK_STATUS_IO_ERROR, error_buffer, error_buffer_bytes, "could not open tensor body %s", path);
+    }
+    if (fseek(file, seek_offset, SEEK_SET) != 0)
+    {
+        fclose(file);
+        return SparkSetToolError(SPARK_STATUS_IO_ERROR, error_buffer, error_buffer_bytes, "could not seek tensor body %s", path);
+    }
+    SparkSha256Update(&samples->hash_context, tensor_name, strlen(tensor_name) + 1u);
+    SparkGlm52UpdateSha256U64(&samples->hash_context, segment_offset);
+    SparkGlm52UpdateSha256U64(&samples->hash_context, segment_bytes);
+    remaining_bytes = segment_bytes;
+    segment_nonzero_bytes = 0u;
+    while (remaining_bytes != 0u)
+    {
+        size_t requested_bytes;
+        size_t read_bytes;
+        uint32_t byte_index;
+
+        requested_bytes = remaining_bytes > sizeof(buffer) ? sizeof(buffer) : (size_t)remaining_bytes;
+        read_bytes = fread(buffer, 1u, requested_bytes, file);
+        if (read_bytes != requested_bytes)
+        {
+            fclose(file);
+            return SparkSetToolError(SPARK_STATUS_IO_ERROR, error_buffer, error_buffer_bytes, "could not read tensor body sample for %s", tensor_name);
+        }
+        SparkSha256Update(&samples->hash_context, buffer, read_bytes);
+        for (byte_index = 0u; byte_index < read_bytes; ++byte_index)
+        {
+            if (buffer[byte_index] != 0u)
+            {
+                segment_nonzero_bytes += 1u;
+            }
+        }
+        remaining_bytes -= (uint64_t)read_bytes;
+    }
+    fclose(file);
+    samples->sample_count += 1u;
+    samples->sample_bytes += segment_bytes;
+    samples->nonzero_bytes += segment_nonzero_bytes;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkSampleTensorBodyEdges(
+    const char *path,
+    const SparkGlm52TensorContract *contract,
+    uint64_t tensor_file_offset,
+    uint64_t tensor_bytes,
+    SparkGlm52TensorBodySamples *samples,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    uint64_t edge_bytes;
+    uint64_t middle_offset;
+    SparkStatus status;
+
+    edge_bytes = SPARK_GLM52_TENSOR_BODY_EDGE_SAMPLE_BYTES;
+    if (tensor_bytes <= edge_bytes * 3u)
+    {
+        return SparkSampleTensorBodySegment(path, contract->name, tensor_file_offset, 0u, tensor_bytes, samples, error_buffer, error_buffer_bytes);
+    }
+    status = SparkSampleTensorBodySegment(path, contract->name, tensor_file_offset, 0u, edge_bytes, samples, error_buffer, error_buffer_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    middle_offset = (tensor_bytes - edge_bytes) / 2u;
+    status = SparkSampleTensorBodySegment(path, contract->name, tensor_file_offset, middle_offset, edge_bytes, samples, error_buffer, error_buffer_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkSampleTensorBodySegment(path, contract->name, tensor_file_offset, tensor_bytes - edge_bytes, edge_bytes, samples, error_buffer, error_buffer_bytes);
+}
+
+static SparkStatus SparkSampleRestrictedLmHeadRows(
+    const char *path,
+    const SparkGlm52TensorContract *contract,
+    uint64_t tensor_file_offset,
+    uint64_t tensor_bytes,
+    SparkGlm52TensorBodySamples *samples,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    uint64_t row_bytes;
+    uint64_t sample_offset;
+    uint64_t sample_bytes;
+    uint64_t element_bytes;
+
+    if (strcmp(contract->name, "lm_head.weight") != 0)
+    {
+        return SPARK_STATUS_OK;
+    }
+    element_bytes = SparkDtypeElementBytes(contract->dtype);
+    if (contract->rank != 2u || element_bytes == 0u)
+    {
+        return SparkSetToolError(SPARK_STATUS_SCHEMA_ERROR, error_buffer, error_buffer_bytes, "lm_head contract is unsupported");
+    }
+    row_bytes = contract->shape[1] * element_bytes;
+    sample_offset = SPARK_GLM52_RESTRICTED_LM_HEAD_FIRST_TOKEN * row_bytes;
+    sample_bytes = SPARK_GLM52_RESTRICTED_LM_HEAD_TOKEN_COUNT * row_bytes;
+    if (row_bytes == 0u || sample_offset > tensor_bytes || sample_bytes > tensor_bytes - sample_offset)
+    {
+        return SparkSetToolError(SPARK_STATUS_CAPACITY_EXCEEDED, error_buffer, error_buffer_bytes, "restricted lm_head sample is outside tensor body");
+    }
+    return SparkSampleTensorBodySegment(path, contract->name, tensor_file_offset, sample_offset, sample_bytes, samples, error_buffer, error_buffer_bytes);
+}
+
+static SparkStatus SparkSampleTensorBody(
+    const char *path,
+    const SparkGlm52TensorContract *contract,
+    uint64_t tensor_file_offset,
+    uint64_t tensor_bytes,
+    SparkGlm52TensorBodySamples *samples,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    SparkStatus status;
+
+    status = SparkSampleTensorBodyEdges(path, contract, tensor_file_offset, tensor_bytes, samples, error_buffer, error_buffer_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkSampleRestrictedLmHeadRows(path, contract, tensor_file_offset, tensor_bytes, samples, error_buffer, error_buffer_bytes);
+}
+
 static SparkStatus SparkCheckSafetensorsShape(
     const SparkJsonDocument *document,
     int32_t tensor_token_index,
@@ -751,6 +960,7 @@ static SparkStatus SparkCheckSafetensorsOffsets(
     int32_t tensor_token_index,
     const SparkGlm52TensorContract *contract,
     uint64_t *actual_bytes,
+    uint64_t *data_start_offset,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
@@ -785,6 +995,7 @@ static SparkStatus SparkCheckSafetensorsOffsets(
         return status;
     }
     *actual_bytes = end_offset - start_offset;
+    *data_start_offset = start_offset;
     if (*actual_bytes != expected_bytes)
     {
         return SparkSetToolError(SPARK_STATUS_SCHEMA_ERROR, error_buffer, error_buffer_bytes, "safetensors byte span mismatch for %s", contract->name);
@@ -796,6 +1007,7 @@ static SparkStatus SparkCheckSafetensorsTensor(
     const char *path,
     const SparkGlm52TensorContract *contract,
     uint64_t *tensor_bytes,
+    uint64_t *tensor_file_offset,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
@@ -805,8 +1017,10 @@ static SparkStatus SparkCheckSafetensorsTensor(
     int32_t root_token_index;
     int32_t tensor_token_index;
     int32_t dtype_token_index;
+    uint64_t data_start_offset;
     SparkStatus status;
 
+    data_start_offset = 0u;
     status = SparkReadSafetensorsHeader(path, &header_text, &header_bytes, error_buffer, error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
     {
@@ -835,7 +1049,11 @@ static SparkStatus SparkCheckSafetensorsTensor(
     status = SparkCheckSafetensorsShape(&document, tensor_token_index, contract, error_buffer, error_buffer_bytes);
     if (status == SPARK_STATUS_OK)
     {
-        status = SparkCheckSafetensorsOffsets(&document, tensor_token_index, contract, tensor_bytes, error_buffer, error_buffer_bytes);
+        status = SparkCheckSafetensorsOffsets(&document, tensor_token_index, contract, tensor_bytes, &data_start_offset, error_buffer, error_buffer_bytes);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        *tensor_file_offset = 8u + (uint64_t)header_bytes + data_start_offset;
     }
     SparkJsonDocumentDestroy(&document);
     return status;
@@ -845,6 +1063,8 @@ static SparkStatus SparkCheckTensorContractMember(
     const char *model_directory,
     const SparkModelDescription *description,
     const char *contract_member_name,
+    uint32_t check_body_samples,
+    SparkGlm52TensorBodySamples *body_samples,
     uint32_t *checked_tensor_count,
     uint64_t *checked_tensor_bytes,
     char *error_buffer,
@@ -892,10 +1112,12 @@ static SparkStatus SparkCheckTensorContractMember(
         char *file_name;
         char tensor_path[4096];
         uint64_t tensor_bytes;
+        uint64_t tensor_file_offset;
         int32_t file_token_index;
 
         file_name = 0;
         tensor_bytes = 0u;
+        tensor_file_offset = 0u;
         file_token_index = SparkJsonFindObjectMember(&index_document, weight_map_token_index, contracts[contract_index].name);
         if (file_token_index < 0)
         {
@@ -911,7 +1133,11 @@ static SparkStatus SparkCheckTensorContractMember(
         }
         if (status == SPARK_STATUS_OK)
         {
-            status = SparkCheckSafetensorsTensor(tensor_path, &contracts[contract_index], &tensor_bytes, error_buffer, error_buffer_bytes);
+            status = SparkCheckSafetensorsTensor(tensor_path, &contracts[contract_index], &tensor_bytes, &tensor_file_offset, error_buffer, error_buffer_bytes);
+        }
+        if (status == SPARK_STATUS_OK && check_body_samples != 0u)
+        {
+            status = SparkSampleTensorBody(tensor_path, &contracts[contract_index], tensor_file_offset, tensor_bytes, body_samples, error_buffer, error_buffer_bytes);
         }
         free(file_name);
         if (status != SPARK_STATUS_OK)
@@ -931,40 +1157,66 @@ static SparkStatus SparkCheckTensorContractMember(
 static SparkStatus SparkCheckTensorContract(
     const char *model_directory,
     const SparkModelDescription *description,
+    uint32_t check_body_samples,
     uint32_t *checked_tensor_count,
     uint64_t *checked_tensor_bytes,
+    SparkGlm52TensorBodySamples *body_samples,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
     char first_error_buffer[1024];
     char second_error_buffer[1024];
+    SparkGlm52TensorBodySamples first_body_samples;
+    SparkGlm52TensorBodySamples second_body_samples;
     SparkStatus first_status;
     SparkStatus second_status;
 
     memset(first_error_buffer, 0, sizeof(first_error_buffer));
     memset(second_error_buffer, 0, sizeof(second_error_buffer));
+    SparkGlm52TensorBodySamplesReset(&first_body_samples);
     first_status = SparkCheckTensorContractMember(
         model_directory,
         description,
         "hf_tensor_contract",
+        check_body_samples,
+        &first_body_samples,
         checked_tensor_count,
         checked_tensor_bytes,
         first_error_buffer,
         sizeof(first_error_buffer));
     if (first_status == SPARK_STATUS_OK)
     {
+        if (check_body_samples != 0u && first_body_samples.nonzero_bytes == 0u)
+        {
+            return SparkSetToolError(SPARK_STATUS_SCHEMA_ERROR, error_buffer, error_buffer_bytes, "tensor body samples are all zero");
+        }
+        if (body_samples != 0)
+        {
+            *body_samples = first_body_samples;
+        }
         return SPARK_STATUS_OK;
     }
+    SparkGlm52TensorBodySamplesReset(&second_body_samples);
     second_status = SparkCheckTensorContractMember(
         model_directory,
         description,
         "hf_tensor_contract_fp8_e4m3",
+        check_body_samples,
+        &second_body_samples,
         checked_tensor_count,
         checked_tensor_bytes,
         second_error_buffer,
         sizeof(second_error_buffer));
     if (second_status == SPARK_STATUS_OK)
     {
+        if (check_body_samples != 0u && second_body_samples.nonzero_bytes == 0u)
+        {
+            return SparkSetToolError(SPARK_STATUS_SCHEMA_ERROR, error_buffer, error_buffer_bytes, "tensor body samples are all zero");
+        }
+        if (body_samples != 0)
+        {
+            *body_samples = second_body_samples;
+        }
         return SPARK_STATUS_OK;
     }
     snprintf(
@@ -983,18 +1235,26 @@ int main(int argument_count, char **arguments)
     const char *config_path;
     const char *model_directory;
     const char *model_description_path;
+    SparkGlm52TensorBodySamples body_samples;
     char config_path_buffer[4096];
     char revision_buffer[256];
+    char body_sha256[SPARK_SHA256_HEX_BYTES];
     char error_buffer[1024];
     uint32_t checked_tensor_count;
+    uint32_t check_body_samples;
+    uint32_t tensor_body_sample_ready;
     uint64_t checked_tensor_bytes;
     int argument_index;
     SparkStatus status;
 
     memset(&expected_geometry, 0, sizeof(expected_geometry));
     memset(&actual_geometry, 0, sizeof(actual_geometry));
+    memset(&body_samples, 0, sizeof(body_samples));
     memset(revision_buffer, 0, sizeof(revision_buffer));
+    snprintf(body_sha256, sizeof(body_sha256), "none");
     checked_tensor_count = 0u;
+    check_body_samples = 0u;
+    tensor_body_sample_ready = 0u;
     checked_tensor_bytes = 0u;
     config_path = 0;
     model_directory = 0;
@@ -1019,12 +1279,22 @@ int main(int argument_count, char **arguments)
             model_description_path = arguments[++argument_index];
             continue;
         }
+        if (strcmp(argument, "--check-body-samples") == 0)
+        {
+            check_body_samples = 1u;
+            continue;
+        }
         SparkPrintUsage(arguments[0]);
         return 2;
     }
     if ((config_path == 0 && model_directory == 0) || (config_path != 0 && model_directory != 0))
     {
         SparkPrintUsage(arguments[0]);
+        return 2;
+    }
+    if (check_body_samples != 0u && model_directory == 0)
+    {
+        fprintf(stderr, "--check-body-samples requires --model-dir\n");
         return 2;
     }
     if (model_directory != 0)
@@ -1058,12 +1328,19 @@ int main(int argument_count, char **arguments)
             status = SparkCheckTensorContract(
                 model_directory,
                 &description,
+                check_body_samples,
                 &checked_tensor_count,
                 &checked_tensor_bytes,
+                &body_samples,
                 error_buffer,
                 sizeof(error_buffer));
         }
         SparkModelDescriptionDestroy(&description);
+    }
+    if (status == SPARK_STATUS_OK && check_body_samples != 0u)
+    {
+        SparkGlm52TensorBodySamplesFinalize(&body_samples, body_sha256);
+        tensor_body_sample_ready = 1u;
     }
     if (status != SPARK_STATUS_OK)
     {
@@ -1071,7 +1348,7 @@ int main(int argument_count, char **arguments)
         return 1;
     }
     printf(
-        "ready=1 config=%s model=%s revision=%s module=%s hidden_size=%u heads=%u kv_lora_rank=%u qk_rope_head_dim=%u index_topk=%u layers=%u vocab_size=%u n_routed_experts=%u n_shared_experts=%u experts_per_tok=%u qk_nope_head_dim=%u qk_head_dim=%u v_head_dim=%u tensor_contract_ready=%u tensor_count=%u tensor_bytes=%llu\n",
+        "ready=1 config=%s model=%s revision=%s module=%s hidden_size=%u heads=%u kv_lora_rank=%u qk_rope_head_dim=%u index_topk=%u layers=%u vocab_size=%u n_routed_experts=%u n_shared_experts=%u experts_per_tok=%u qk_nope_head_dim=%u qk_head_dim=%u v_head_dim=%u tensor_contract_ready=%u tensor_count=%u tensor_bytes=%llu tensor_body_sample_ready=%u tensor_body_sample_count=%u tensor_body_sample_bytes=%llu tensor_body_nonzero_bytes=%llu tensor_body_sha256=%s\n",
         config_path,
         model_description_path,
         revision_buffer,
@@ -1091,6 +1368,11 @@ int main(int argument_count, char **arguments)
         actual_geometry.value_head_dimension,
         model_directory != 0 ? 1u : 0u,
         checked_tensor_count,
-        (unsigned long long)checked_tensor_bytes);
+        (unsigned long long)checked_tensor_bytes,
+        tensor_body_sample_ready,
+        body_samples.sample_count,
+        (unsigned long long)body_samples.sample_bytes,
+        (unsigned long long)body_samples.nonzero_bytes,
+        body_sha256);
     return 0;
 }

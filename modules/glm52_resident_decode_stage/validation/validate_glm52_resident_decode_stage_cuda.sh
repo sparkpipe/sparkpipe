@@ -16,6 +16,7 @@ validation_directory="$(mktemp -d)"
 trap 'rm -rf "${validation_directory}"' EXIT
 common_archive="${repository_root}/build/libsparkpipe_common.a"
 runtime_archive="${repository_root}/build/libsparkpipe_runtime.a"
+compiler_archive="${repository_root}/build/libsparkpipe_compiler.a"
 
 if [[ "${maximum_stage_microseconds}" == "0" ]]; then
     echo "MAX_STAGE_MICROSECONDS must be nonzero" >&2
@@ -42,7 +43,7 @@ if [[ "${cuda_architecture}" != "sm_121" ]]; then
     exit 2
 fi
 
-make -C "${repository_root}" "${common_archive}" "${runtime_archive}"
+make -C "${repository_root}" "${common_archive}" "${runtime_archive}" "${compiler_archive}"
 
 "${nvcc_path}" \
     -std=c++17 \
@@ -55,6 +56,7 @@ make -C "${repository_root}" "${common_archive}" "${runtime_archive}"
     "${script_directory}/spark_glm52_resident_decode_stage_cuda_validation.cu" \
     "${module_archive}" \
     "${runtime_archive}" \
+    "${compiler_archive}" \
     "${common_archive}" \
     -ldl \
     -o "${validation_directory}/glm52_resident_decode_stage_validator"

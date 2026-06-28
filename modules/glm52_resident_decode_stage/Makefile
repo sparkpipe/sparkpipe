@@ -7,6 +7,7 @@ CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3
 NVCCFLAGS ?= -std=c++17 -O3 --use_fast_math -lineinfo -arch=$(CUDA_ARCH)
 MODULE_LIBRARY_ROOT ?= $(REPOSITORY_ROOT)/build/module_library
 MAX_STAGE_MICROSECONDS ?= 0
+ARTIFACT_CHECK_ARGS ?=
 BUILD_DIRECTORY := $(REPOSITORY_ROOT)/build/modules/glm52_resident_decode_stage
 HOST_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module.o
 CUDA_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda.o
@@ -62,7 +63,8 @@ cold_archive: require_sm121
 artifact_check: require_model_dir $(ARTIFACT_CHECK_TOOL)
 	$(ARTIFACT_CHECK_TOOL) \
 		--model-dir "$(GLM52_MODEL_DIR)" \
-		--model "$(REPOSITORY_ROOT)/examples/model_descriptions/glm52_resident_decode_stage_firmware.json"
+		--model "$(REPOSITORY_ROOT)/examples/model_descriptions/glm52_resident_decode_stage_firmware.json" \
+		$(ARTIFACT_CHECK_ARGS)
 
 validate: require_sm121 require_latency_limit cold_archive
 	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) \
