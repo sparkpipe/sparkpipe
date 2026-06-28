@@ -616,6 +616,49 @@ still a per-layer fixture. The next hypothesis is that chained dense
 progression will expose ownership/layout gaps around per-layer KV cache and
 hidden-state handoff, not arithmetic gaps in the dense-layer body kernels.
 
+Latest chained dense-prefix evidence from `spark1` at commit `5640d5a`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_dense_chain_bf16 MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.dense_chain_bf16.max_us_10000.v1
+dense_chain_layers=3
+dense_chain_submissions=12
+dense_chain_embedding_bf16_bytes=49152
+input_embedding_token=1000
+layer0_reference_full=1
+layer0_reference_full_max_error=0.00195312
+real_lm_head=1
+real_lm_head_max_logit_error=0.00000000
+
+direct backend result:
+dense_chain_total_us=57009.440
+maximum_us=4908.256
+limit_us=10000.000
+restricted_token=1228
+launch_chains=12
+
+generated-driver/orchestrator result:
+dense_chain_total_us=61109.407
+maximum_us=5734.016
+limit_us=10000.000
+restricted_token=1228
+launch_chains=12
+```
+
+This is the first package gate that progresses hidden state through dense
+layers 0->1->2 instead of treating each dense layer as an isolated fixture. The
+validator gives each dense layer its own KV cache, fills each cache by running
+the prior context tokens through that exact layer, copies each layer output
+directly into the next layer input on device, and checks the current-token
+output-side BF16 reference at every layer. The failed-assumption risk has moved
+from "per-layer KV ownership is probably wrong" to "the first sparse/MoE layer
+and external activation equivalence are not yet proven."
+
 ## What this proves
 
 The generated GLM 5.2 decode-stage `model_driver.so` can be loaded by the
@@ -625,6 +668,11 @@ driver scheduler, and submitted into the real CUDA backend on SM121 hardware.
 It also proves the current resident decode-stage control path does not use
 host-staged frame buffers or serving-path device copies for the submitted
 frame. The counters are checked by the validator, not just printed.
+
+The dense-prefix chain additionally proves that layers 0, 1, and 2 can be
+loaded from the live checkpoint, executed in order through the resident CUDA
+stage, and kept in separate layer-local KV caches while passing hidden state to
+the next layer without a host bounce.
 
 ## New nonzero fixture
 
@@ -655,11 +703,10 @@ driver/orchestrator counters remain clean
 ## What this does not prove yet
 
 This is not a full GLM 5.2 inference pass. The decode-stage validator now uses
-real checkpoint `lm_head.weight` rows for restricted logits when
-`GLM52_MODEL_DIR` is set, but the rest of the layer path still uses
-deterministic nonzero smoke tensors. It does not yet load all checkpoint
-projection, attention, MoE, MTP, and norm weights or compare final logits
-against a known GLM artifact.
+real checkpoint `embed_tokens.weight`, dense-prefix attention/dense weights,
+and restricted `lm_head.weight` rows when `GLM52_MODEL_DIR` is set. It does not
+yet load sparse-layer router/expert tensors, all 78 layers, or compare final
+logits against an external GLM artifact.
 
 The next correctness gate must replace smoke tensors with deterministic
 nonzero GLM fixtures and check:
@@ -668,8 +715,8 @@ nonzero GLM fixtures and check:
 multiple positions
 larger nonzero attention dimension/head coverage
 checkpoint-derived cached attention and MoE references
-checkpoint-derived dense MLP references for the first dense layers
-checkpoint-derived attention q/kv/o references for layer 0
+external checkpoint-derived activation comparison for the dense-prefix chain
+checkpoint-derived router/top-k/expert references for sparse layer 3
 MTP draft and verify/commit behavior with varied target patterns
 runtime snapshot counters after real tensor work
 ```

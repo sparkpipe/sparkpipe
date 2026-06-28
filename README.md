@@ -147,6 +147,23 @@ make cuda_glm52_resident_decode_stage_publish \
 
 A new archive contract is admitted only if its target-hardware validator passes numerical comparison and every measured submission-to-completion run is within that ceiling. This repository environment has no `nvcc` or compatible GPU, so the CUDA source is not claimed as validated or performant here. If it misses the threshold, it must be optimized rather than published.
 
+The GLM 5.2 decode-stage module also owns module-local live checkpoint gates.
+For the current dense-prefix chain, run this on a Spark GB10 node with the live
+artifact mounted:
+
+```sh
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_dense_chain_bf16 \
+    MAX_STAGE_MICROSECONDS=10000
+```
+
+That gate keeps GLM tensor loading and reference math inside the GLM module. It
+checks dense layers 0->1->2 with separate per-layer KV caches, device-side
+hidden-state handoff between layers, full output-side BF16 references, and the
+generated `model_driver.so` path.
+
 ## Compile a complete model package
 
 ```sh
