@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 8u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 9u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION 6144u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT 64u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION 512u
@@ -112,7 +112,8 @@ typedef enum SparkGlm52ResidentDecodeStageLayerProgressionMode
     SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE = 1,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP = 2,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY = 3,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOP1 = 4
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOP1 = 4,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK = 5
 } SparkGlm52ResidentDecodeStageLayerProgressionMode;
 
 typedef struct SparkGlm52ResidentDecodeStageCudaPipelineSlotState
@@ -255,6 +256,14 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     float moe_nvfp4_down_input_scale;
     float moe_nvfp4_down_weight_scale_2;
     uint32_t moe_nvfp4_selected_expert_id;
+    uint32_t moe_nvfp4_bound_expert_count;
+    const uint32_t *moe_nvfp4_bound_expert_ids;
+    const float *moe_nvfp4_gate_input_scale_f32;
+    const float *moe_nvfp4_gate_weight_scale_2_f32;
+    const float *moe_nvfp4_up_input_scale_f32;
+    const float *moe_nvfp4_up_weight_scale_2_f32;
+    const float *moe_nvfp4_down_input_scale_f32;
+    const float *moe_nvfp4_down_weight_scale_2_f32;
 } SparkGlm52ResidentDecodeStageNodeContext;
 
 SparkStatus SparkGlm52ResidentDecodeStageInitialize(
