@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 7u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 10u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION 6144u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT 64u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION 512u
@@ -39,6 +39,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT 256u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT 2u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MXFP4_GROUP_SIZE 32u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT 18u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ABI_VERSION 1u
@@ -113,7 +114,10 @@ typedef enum SparkGlm52ResidentDecodeStageLayerProgressionMode
 {
     SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ATTENTION_ONLY = 0,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_PRESELECTED_BF16_LOCAL_MOE = 1,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP = 2
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP = 2,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY = 3,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOP1 = 4,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK = 5
 } SparkGlm52ResidentDecodeStageLayerProgressionMode;
 
 
@@ -255,8 +259,8 @@ typedef struct SparkGlm52ResidentDecodeStagePipelineSlot
     void *attention_projected_hidden_bf16;
     void *post_attention_hidden_bf16;
     void *post_attention_normalized_hidden_bf16;
-    const uint32_t *moe_topk_expert_ids;
-    const float *moe_topk_weights;
+    uint32_t *moe_topk_expert_ids;
+    float *moe_topk_weights;
     void *moe_gate_bf16;
     void *moe_up_bf16;
     void *moe_intermediate_bf16;
@@ -350,6 +354,32 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     const SparkGlm52ResidentDecodeStageRestrictedLogitsPlan *restricted_logits_plan;
     uint64_t validated_stage_latency_ns;
     uint64_t estimated_service_time_ns;
+    const void *moe_router_weight_bf16;
+    const float *moe_router_score_bias_f32;
+    float moe_routed_scaling_factor;
+    uint32_t moe_norm_topk_prob;
+    const uint8_t *moe_nvfp4_gate_weight_u8;
+    const uint8_t *moe_nvfp4_up_weight_u8;
+    const uint8_t *moe_nvfp4_down_weight_u8;
+    const uint8_t *moe_nvfp4_gate_weight_scale_e4m3;
+    const uint8_t *moe_nvfp4_up_weight_scale_e4m3;
+    const uint8_t *moe_nvfp4_down_weight_scale_e4m3;
+    float moe_nvfp4_gate_input_scale;
+    float moe_nvfp4_gate_weight_scale_2;
+    float moe_nvfp4_up_input_scale;
+    float moe_nvfp4_up_weight_scale_2;
+    float moe_nvfp4_down_input_scale;
+    float moe_nvfp4_down_weight_scale_2;
+    uint32_t moe_nvfp4_selected_expert_id;
+    uint32_t moe_nvfp4_bound_expert_count;
+    const uint32_t *moe_nvfp4_bound_expert_ids;
+    const float *moe_nvfp4_gate_input_scale_f32;
+    const float *moe_nvfp4_gate_weight_scale_2_f32;
+    const float *moe_nvfp4_up_input_scale_f32;
+    const float *moe_nvfp4_up_weight_scale_2_f32;
+    const float *moe_nvfp4_down_input_scale_f32;
+    const float *moe_nvfp4_down_weight_scale_2_f32;
+
 } SparkGlm52ResidentDecodeStageNodeContext;
 
 SparkStatus SparkGlm52ResidentDecodeStageInitialize(

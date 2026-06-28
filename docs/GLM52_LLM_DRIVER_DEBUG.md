@@ -564,6 +564,190 @@ BF16 reference check for `o_proj`, attention residual, post-attention RMSNorm,
 SwiGLU activation, and dense-down residual. It still deliberately does not
 teach the generic SparkPipe runtime about GLM tensor names or reference math.
 
+Dense-layer index generalization evidence from `spark1` at commit
+`f73c10057759e77a40968fd3dc541b9ca95b810e`:
+
+```text
+live_config_first_k_dense_replace=3
+
+layer1 command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer1_full_reference_bf16 MAX_STAGE_MICROSECONDS=10000
+
+layer1 result:
+dense_layer_index=1
+layer0_reference_sampled=1
+layer0_reference_full=1
+layer0_reference_full_max_error=0.00024414
+backend_average_us=4895.019
+backend_maximum_us=5035.744
+orchestrator_elapsed_us=4892.928
+limit_us=10000.000
+layer_attention_bf16_bytes=330056704
+layer_dense_bf16_bytes=452997120
+real_lm_head_max_logit_error=0.00000000
+
+layer2 command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer2_full_reference_bf16 MAX_STAGE_MICROSECONDS=10000
+
+layer2 result:
+dense_layer_index=2
+layer0_reference_sampled=1
+layer0_reference_full=1
+layer0_reference_full_max_error=0.00012207
+backend_average_us=4653.323
+backend_maximum_us=4655.616
+orchestrator_elapsed_us=5112.896
+limit_us=10000.000
+layer_attention_bf16_bytes=330056704
+layer_dense_bf16_bytes=452997120
+real_lm_head_max_logit_error=0.00000000
+```
+
+This proves the layer tensor loader no longer assumes
+`model.layers.0.*`: the same resident CUDA path and generated-driver package
+gate now accept live BF16 checkpoint tensors for layers 0, 1, and 2. It is
+still a per-layer fixture. The next hypothesis is that chained dense
+progression will expose ownership/layout gaps around per-layer KV cache and
+hidden-state handoff, not arithmetic gaps in the dense-layer body kernels.
+
+Latest chained dense-prefix evidence from `spark1` at commit `5640d5a`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_dense_chain_bf16 MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.dense_chain_bf16.max_us_10000.v1
+dense_chain_layers=3
+dense_chain_submissions=12
+dense_chain_embedding_bf16_bytes=49152
+input_embedding_token=1000
+layer0_reference_full=1
+layer0_reference_full_max_error=0.00195312
+real_lm_head=1
+real_lm_head_max_logit_error=0.00000000
+
+direct backend result:
+dense_chain_total_us=57009.440
+maximum_us=4908.256
+limit_us=10000.000
+restricted_token=1228
+launch_chains=12
+
+generated-driver/orchestrator result:
+dense_chain_total_us=61109.407
+maximum_us=5734.016
+limit_us=10000.000
+restricted_token=1228
+launch_chains=12
+```
+
+This is the first package gate that progresses hidden state through dense
+layers 0->1->2 instead of treating each dense layer as an isolated fixture. The
+validator gives each dense layer its own KV cache, fills each cache by running
+the prior context tokens through that exact layer, copies each layer output
+directly into the next layer input on device, and checks the current-token
+output-side BF16 reference at every layer. The failed-assumption risk has moved
+from "per-layer KV ownership is probably wrong" to "the first sparse/MoE layer
+and external activation equivalence are not yet proven."
+
+Latest sparse layer-3 router/top-k evidence from `spark1` at commit `01a6b6a`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer3_router_bf16 MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.layer3_router_bf16.max_us_10000.v1
+input_embedding_token=1000
+layer_attention_bf16_bytes=330056704
+layer3_router_bf16_bytes=3159040
+real_lm_head=1
+
+direct backend result:
+layer3_router_topk_reference_ready=1
+first_expert=233
+first_weight=0.31670687
+elapsed_us=3574.720
+limit_us=10000.000
+launch_chains=1
+
+generated-driver/orchestrator result:
+layer3_router_topk_reference_ready=1
+first_expert=233
+first_weight=0.31670687
+elapsed_us=3662.816
+limit_us=10000.000
+launch_chains=1
+```
+
+The first attempt passed direct backend validation but failed package attach
+with `driver instance creation failed with invalid_argument`. The cause was a
+host-side module validator that still capped `layer_progression_mode` at
+`SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP`; the new
+`SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY` mode never
+reached CUDA through the generated driver. The fix widens that generated-driver
+initialization gate and keeps the direct backend and packaged path equivalent.
+
+This router gate loads live layer-3 `mlp.gate.weight` BF16 and
+`mlp.gate.e_score_correction_bias` F32 tensors, computes sigmoid router scores,
+selects top-8 experts using the corrected scores, then normalizes the original
+selected sigmoid scores with the live `routed_scaling_factor=2.5`. The validator
+CPU reference recomputes the same GLM router math from CUDA's
+`post_attention_normalized_hidden_bf16` and checks expert IDs plus route
+weights. This is router/top-k evidence only; it does not yet execute NVFP4
+expert gate/up/down projection, shared expert projection, or combined sparse
+MoE output.
+
+Latest sparse layer-3 shared-expert evidence from `spark1` at commit `2595612`:
+
+```text
+command:
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer3_shared_expert_bf16 MAX_STAGE_MICROSECONDS=10000
+
+validation_recipe=glm52.resident_decode_stage.sm_121.layer3_shared_expert_bf16.max_us_10000.v1
+input_embedding_token=1000
+layer_attention_bf16_bytes=330056704
+layer3_shared_expert_bf16_bytes=75509760
+real_lm_head=1
+
+direct backend result:
+layer3_shared_expert_reference_ready=1
+layer3_shared_expert_max_error=0.00000000
+elapsed_us=3261.248
+limit_us=10000.000
+launch_chains=1
+
+generated-driver/orchestrator result:
+layer3_shared_expert_reference_ready=1
+layer3_shared_expert_max_error=0.00000000
+elapsed_us=3368.928
+limit_us=10000.000
+launch_chains=1
+```
+
+This gate reuses the resident BF16 dense/SwiGLU/down CUDA path with
+`dense_intermediate_dimension=2048`, but the GLM validator loads
+`model.layers.3.mlp.shared_experts.{gate_proj,up_proj,down_proj}.weight`.
+That keeps GLM safetensors names in the GLM validation layer while the
+device-driver ABI still sees only resident weight pointers and exact shape
+metadata. The reference checks post-attention RMSNorm, shared gate/up
+projection, SiLU product, and shared down+residual. This still does not execute
+the NVFP4 routed expert tensors or the final routed-plus-shared MoE combine.
+
 ## What this proves
 
 The generated GLM 5.2 decode-stage `model_driver.so` can be loaded by the
@@ -573,6 +757,21 @@ driver scheduler, and submitted into the real CUDA backend on SM121 hardware.
 It also proves the current resident decode-stage control path does not use
 host-staged frame buffers or serving-path device copies for the submitted
 frame. The counters are checked by the validator, not just printed.
+
+The dense-prefix chain additionally proves that layers 0, 1, and 2 can be
+loaded from the live checkpoint, executed in order through the resident CUDA
+stage, and kept in separate layer-local KV caches while passing hidden state to
+the next layer without a host bounce.
+
+The sparse layer-3 router gate proves that the first sparse layer can produce
+checkpoint-backed top-8 routing decisions through the same driver boundary. The
+remaining sparse-layer gap is expert execution and combine, not router
+selection.
+
+The sparse layer-3 shared-expert gate proves the BF16 shared expert subpath can
+consume real checkpoint tensors and pass sampled CPU reference checks through
+that same driver boundary. The remaining sparse-layer gap is now routed NVFP4
+expert execution plus routed/shared combine.
 
 ## New nonzero fixture
 
@@ -603,11 +802,11 @@ driver/orchestrator counters remain clean
 ## What this does not prove yet
 
 This is not a full GLM 5.2 inference pass. The decode-stage validator now uses
-real checkpoint `lm_head.weight` rows for restricted logits when
-`GLM52_MODEL_DIR` is set, but the rest of the layer path still uses
-deterministic nonzero smoke tensors. It does not yet load all checkpoint
-projection, attention, MoE, MTP, and norm weights or compare final logits
-against a known GLM artifact.
+real checkpoint `embed_tokens.weight`, dense-prefix attention/dense weights,
+sparse layer-3 router weights/bias, sparse layer-3 BF16 shared-expert weights,
+and restricted `lm_head.weight` rows when `GLM52_MODEL_DIR` is set. It does not
+yet load sparse-layer routed NVFP4 expert tensors, all 78 layers, or compare
+final logits against an external GLM artifact.
 
 The next correctness gate must replace smoke tensors with deterministic
 nonzero GLM fixtures and check:
@@ -616,8 +815,8 @@ nonzero GLM fixtures and check:
 multiple positions
 larger nonzero attention dimension/head coverage
 checkpoint-derived cached attention and MoE references
-checkpoint-derived dense MLP references for the first dense layers
-checkpoint-derived attention q/kv/o references for layer 0
+external checkpoint-derived activation comparison for the dense-prefix chain
+checkpoint-derived routed expert references for sparse layer 3
 MTP draft and verify/commit behavior with varied target patterns
 runtime snapshot counters after real tensor work
 ```
@@ -663,4 +862,175 @@ If it fails:
 Do not tune constants.
 Classify the failure as a layout, arithmetic, scheduling, or ownership bug.
 Update this log with the failed assumption, then fix the model before rerunning.
+```
+
+## Layer-3 routed NVFP4 expert gate
+
+Hypothesis:
+
+```text
+For GLM52 token 1000, the layer-3 router should select routed expert 233.
+Using the official NVFP4 expert tensors from the checkpoint, the resident
+driver should execute the top-1 routed expert path and produce nonzero FC2
+output without host-side tensor bounces.
+```
+
+Important boundary:
+
+```text
+The driver does not quantize checkpoint weights. It loads the official NVFP4
+weight payloads, E4M3 block scales, and scalar weight_scale_2 tensors from the
+checkpoint. Runtime activations must still be quantized because they are
+produced per token; that activation quantization is part of the CUDA execution
+path, not a replacement checkpoint.
+```
+
+Negative result:
+
+```text
+commit=e7e5faf
+host=spark1
+model_dir=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4
+token=1000
+router_first_expert=233
+expert_weights_loaded=1
+gate_up_nonzero=1
+intermediate_nonzero=1
+intermediate_fp4_payload_nonzero=0
+intermediate_fp4_scale_nonzero=0
+route_nonzero=0
+```
+
+Corrected model:
+
+```text
+The official expert weights were not the problem. The broken assumption was
+that a separate generic BF16-to-NVFP4 activation quantizer was sufficient for
+the FC2 input. The live intermediate was small enough that the encoded E4M3
+block scale underflowed to zero, collapsing every nonzero block to zero. A
+valid dynamic activation quantizer must never encode a zero scale for a
+nonzero block, and the GLM MoE hot path should fuse SiLU*up with FC2 input
+quantization instead of materializing a stale intermediate boundary.
+```
+
+Fix:
+
+```text
+commit=d057683
+change=add fused SiLU*up-to-NVFP4 top-1 activation quantization
+change=clamp nonzero dynamic activation block scales to min-positive E4M3
+change=record max/value evidence for gate, up, intermediate, and route output
+```
+
+Validation:
+
+```text
+cd /home/spark1/src/sparkpipe-551c3ea
+git reset --hard origin/codex/glm52-layer3-routed-expert-nvfp4
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+MAX_STAGE_MICROSECONDS=10000000 \
+NVCC=/usr/local/cuda-13.0/bin/nvcc \
+make -C modules/glm52_resident_decode_stage validate_layer3_routed_expert_nvfp4
+```
+
+Result:
+
+```text
+layer3_router_topk_reference_ready=1 first_expert=233 first_weight=0.31670687
+layer3_routed_expert_nvfp4_reference_ready=1
+expert=233
+gate_scratch_nonzero=2019
+up_nonzero=2048
+intermediate_nonzero=2048
+intermediate_fp4_payload_nonzero=823
+intermediate_fp4_scale_nonzero=128
+route_nonzero=6143
+gate_scratch_max=0.076171875
+up_max=0.073730469
+intermediate_max=0.0032806396
+route_max=0.00098419189
+elapsed_us=4402.272
+```
+
+Remaining gap:
+
+```text
+This proves the checkpoint-backed layer-3 router plus one selected official
+NVFP4 routed expert can execute on GB10. It is still top-1 diagnostic execution
+for expert 233, not production top-8 grouped MoE, not all sparse layers, and
+not a final-logit comparison against the external GLM reference.
+```
+
+## Layer-3 top-k routed NVFP4 expert gate
+
+Hypothesis:
+
+```text
+The same checkpoint-backed sparse layer-3 path should execute all eight routed
+experts selected by the GLM router for token 1000, keep the official NVFP4
+weights resident in device memory, and use the existing weighted top-k combine
+instead of the diagnostic top-1 combine.
+```
+
+Live route set:
+
+```text
+ids=233,41,166,174,186,37,117,223
+weights=0.31670687,0.31149870,0.31321883,0.31138751,0.31398267,0.31224731,0.31077883,0.31017926
+```
+
+Fix:
+
+```text
+commit=c0001ec
+change=add SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK
+change=add resident bound-expert ID and per-expert scale arrays
+change=load eight official NVFP4 expert tensor sets from the checkpoint
+change=run route-indexed hidden quant, gate/up, fused SiLU quant, down, combine
+```
+
+Validation:
+
+```text
+cd /home/spark1/src/sparkpipe-551c3ea
+git reset --hard origin/codex/glm52-layer3-top8-routed-nvfp4
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+MAX_STAGE_MICROSECONDS=10000000 \
+NVCC=/usr/local/cuda-13.0/bin/nvcc \
+make -C modules/glm52_resident_decode_stage package_layer3_routed_expert_nvfp4_topk
+```
+
+Result:
+
+```text
+layer3_routed_expert_nvfp4_fixture_ready=1
+bound_count=8
+bytes=169869312
+layer3_router_topk_reference_ready=1
+ids=233,41,166,174,186,37,117,223
+layer3_routed_expert_nvfp4_reference_ready=1
+route_count=8
+gate_scratch_nonzero=16160
+up_nonzero=16384
+intermediate_nonzero=16384
+intermediate_fp4_payload_nonzero=6423
+intermediate_fp4_scale_nonzero=1024
+route_nonzero=49143
+up_max=0.17578125
+intermediate_max=0.017089844
+route_max=0.0013427734
+layer_checksum64=1.73610687
+orchestrator_validation=passed
+elapsed_us=7662.272
+```
+
+Remaining gap:
+
+```text
+This now proves a checkpoint-backed top-8 sparse MoE layer-3 diagnostic path.
+It is still B1/token-1000/layer-3 evidence with scalar diagnostic dot-product
+kernels, not a production grouped GEMM implementation, all-layer sparse MoE
+loop, external reference-logit comparison, or end-to-end GLM decode.
 ```

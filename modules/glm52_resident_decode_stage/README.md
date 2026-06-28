@@ -111,6 +111,24 @@ SwiGLU activation, and dense-down residual against validator CPU reference
 math. It still does not replace an external activation artifact for full-model
 equivalence.
 
+The same full-reference gate can be run over the other dense pre-MoE layers:
+
+```sh
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer1_full_reference_bf16 MAX_STAGE_MICROSECONDS=10000
+
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer2_full_reference_bf16 MAX_STAGE_MICROSECONDS=10000
+```
+
+These targets load `model.layers.1.*` and `model.layers.2.*` respectively,
+matching the live GLM config's `first_k_dense_replace=3`. They are per-layer
+checks; they do not yet chain hidden activations through layers 0, 1, and 2.
+
 The node context binds resident weight pointers, paged KV cache, streams, workspaces, RoPE tables, token maps, and output buffers once when the driver instance is created. Per-submission inputs are only dynamic decode facts such as active sequence count, requested token count, sequence identity, deadline, priority, and residency token. The firmware admission function chooses the opaque pipeline slot; SparkPipe does not assign or interpret CUDA stream/KV ownership.
 
 The module also publishes direct admission and snapshot symbols. They expose only neutral scheduling data: accepted/rejected, dispatch slot, dispatch generation/cookies, private queue pressure, resident token capacity, active submissions, CUDA graph capture/replay counts, stale-admission count, and zero memcpy/host-staging counters.
