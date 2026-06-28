@@ -45,6 +45,7 @@ The SparkPipe orchestrator performs route admission through the version-3 driver
 7. The runtime loads drivers once, resolves routes once, and submits through numeric handles.
 8. Missing support is a build failure. Production execution has no generic or host fallback.
 9. Model-specific CUDA programs and aggressive fusion are expected when they improve the complete model stage.
+10. Restricted-token output is a model-driver program choice, not a generic SparkPipe mask, and it must not be used to prune attention, MoE, KV, residual, norm, routing, or other transformer-body work.
 
 ## Build and test
 

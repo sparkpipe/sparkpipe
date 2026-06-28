@@ -173,16 +173,44 @@ The firmware ABI is ready for this: these replacements remain inside the module 
 
 The current restricted-vocabulary path computes logits for 256 selected token IDs and performs device argmax. This is the correct production direction: do not compute full vocabulary logits when the model/profile only needs a restricted set.
 
+Restricted logits do not remove the normal decode body. The hidden state still depends on attention, cached KV reads and writes, MoE or MLP execution, residuals, norms, routing, and MTP verify state. Restricted output is therefore a final-head optimization, not permission to skip transformer layers or experts.
+
 Target improvements:
 
 ```text
-pack restricted token IDs for coalesced LM-head access
-fuse selected-logit computation with argmax for small vocab sets
-support multiple restricted-vocab banks selected by driver-owned policy
-record accepted token count without host round trip
+store static banks as token_ids[K] plus lm_head_rows_packed[K][hidden]
+load only the selected packed LM-head rows
+compute selected logits only, with no full-vocabulary materialization
+fuse selected-logit computation with argmax/top-k/sample for small K
+support multiple resident restricted-vocab banks selected by driver-owned policy
+cache dynamic repeated subsets inside the driver by opaque subset hash
+record accepted token count without a host round trip
 ```
 
-SparkPipe should only receive committed token count and completion status.
+The production path must not:
+
+```text
+compute full vocabulary logits and then mask
+allocate a full-vocabulary logits buffer
+copy selected logits to host for sampling
+expose token IDs or grammar state through SparkPipe
+reuse a generic SparkPipe vocabulary-mask abstraction
+```
+
+SparkPipe should only receive neutral scheduling facts, committed token count, and completion status. It may know that a program is `final_restricted_decode_k256` or `classifier_decode`, but the token IDs, packed rows, grammar/trie state, sampler policy, and MTP acceptance policy stay in the model driver.
+
+For thinking models, restricted-token acceleration is valid for the final answer phase, not the broad reasoning-token phase. A driver may run:
+
+```text
+full_decode
+full_decode
+full_decode
+final_restricted_decode_k256
+```
+
+but it must not force natural-language reasoning through a tiny final-answer vocabulary.
+
+Restricted-vocab MTP follows the same rule: useful for final answer emission or classifier-style programs, unsafe as a blanket replacement for broad-vocabulary reasoning. Pruning MoE experts because only a small set of output tokens is allowed is also unsafe unless published as a separate approximate firmware program with its own accuracy gate.
 
 ## MTP draft / verify / commit
 
