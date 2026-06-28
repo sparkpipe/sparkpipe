@@ -17,6 +17,8 @@ final RMSNorm + restricted-vocabulary logits + argmax
 MXFP4 E2M1/E8M0 MTP draft logits + argmax
 MTP verify / commit / rollback counters
 BF16 dense MLP layer progression for GLM 5.2's first dense layers
+external completion
+```
 
 The live layer-0 dense gate is:
 
@@ -47,8 +49,22 @@ That gate loads the real BF16 attention tensors, `post_attention_layernorm`, `ga
 `up_proj`, and `down_proj` tensors for layer 0, runs the dense layer body on
 device, and then checks restricted logits against real checkpoint
 `lm_head.weight` rows.
-external completion
+
+The strongest current B1 layer-0 gate also replaces the synthetic input hidden
+with one checkpoint embedding row:
+
+```sh
+GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
+GLM52_INPUT_TOKEN_ID=1000 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm52_resident_decode_stage package_layer0_embedding_bf16 MAX_STAGE_MICROSECONDS=10000
 ```
+
+That gate loads `model.embed_tokens.weight[token]`, the layer-0 attention
+tensors, the layer-0 dense tensors, and restricted `lm_head.weight` rows, then
+runs the package/generated-driver path. It still seeds the previous KV cache;
+the next correctness gate is checkpoint-derived prefill/KV and reference
+activation comparison.
 
 The node context binds resident weight pointers, paged KV cache, streams, workspaces, RoPE tables, token maps, and output buffers once when the driver instance is created. Per-submission inputs are only dynamic decode facts such as active sequence count, requested token count, sequence identity, deadline, priority, and residency token. The firmware admission function chooses the opaque pipeline slot; SparkPipe does not assign or interpret CUDA stream/KV ownership.
 
