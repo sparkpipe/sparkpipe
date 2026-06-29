@@ -24,7 +24,7 @@
 #define SPARK_VALIDATION_CONTEXT_LENGTH 4u
 #define SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT 3u
 #define SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX 3u
-#define SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT 4u
+#define SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT 8u
 #define SPARK_VALIDATION_LAYER_COUNT 78u
 #define SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET 61u
 #define SPARK_VALIDATION_CURRENT_POSITION 64u
@@ -2353,6 +2353,32 @@ static void SparkValidationDriverCompletion(
     }
 }
 
+static bool SparkValidationAllocateRoutedLayerCaches(
+    SparkValidationDeviceBuffers *buffers,
+    uint64_t cache_count,
+    uint64_t key_nope_cache_count,
+    uint64_t value_cache_count)
+{
+    char cache_name[96];
+    uint32_t routed_layer_offset;
+
+    for (routed_layer_offset = 0u;
+         routed_layer_offset < SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT;
+         ++routed_layer_offset)
+    {
+        snprintf(cache_name, sizeof(cache_name), "cudaMalloc routed_layer%u_mla_cache", routed_layer_offset);
+        if (!SparkValidationAllocateZeroed((void **)&buffers->routed_layer_mla_cache_bf16[routed_layer_offset], cache_count * 2u, cache_name))
+            return false;
+        snprintf(cache_name, sizeof(cache_name), "cudaMalloc routed_layer%u_key_nope_cache", routed_layer_offset);
+        if (!SparkValidationAllocateZeroed((void **)&buffers->routed_layer_key_nope_cache_bf16[routed_layer_offset], key_nope_cache_count * 2u, cache_name))
+            return false;
+        snprintf(cache_name, sizeof(cache_name), "cudaMalloc routed_layer%u_value_cache", routed_layer_offset);
+        if (!SparkValidationAllocateZeroed((void **)&buffers->routed_layer_value_cache_bf16[routed_layer_offset], value_cache_count * 2u, cache_name))
+            return false;
+    }
+    return true;
+}
+
 static bool SparkValidationAllocateDeviceBuffers(
     SparkValidationDeviceBuffers *buffers)
 {
@@ -2539,18 +2565,7 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->dense_layer_mla_cache_bf16[2], cache_count * 2u, "cudaMalloc dense_layer2_mla_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_layer_key_nope_cache_bf16[2], key_nope_cache_count * 2u, "cudaMalloc dense_layer2_key_nope_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_layer_value_cache_bf16[2], value_cache_count * 2u, "cudaMalloc dense_layer2_value_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_mla_cache_bf16[0], cache_count * 2u, "cudaMalloc routed_layer0_mla_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_key_nope_cache_bf16[0], key_nope_cache_count * 2u, "cudaMalloc routed_layer0_key_nope_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_value_cache_bf16[0], value_cache_count * 2u, "cudaMalloc routed_layer0_value_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_mla_cache_bf16[1], cache_count * 2u, "cudaMalloc routed_layer1_mla_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_key_nope_cache_bf16[1], key_nope_cache_count * 2u, "cudaMalloc routed_layer1_key_nope_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_value_cache_bf16[1], value_cache_count * 2u, "cudaMalloc routed_layer1_value_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_mla_cache_bf16[2], cache_count * 2u, "cudaMalloc routed_layer2_mla_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_key_nope_cache_bf16[2], key_nope_cache_count * 2u, "cudaMalloc routed_layer2_key_nope_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_value_cache_bf16[2], value_cache_count * 2u, "cudaMalloc routed_layer2_value_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_mla_cache_bf16[3], cache_count * 2u, "cudaMalloc routed_layer3_mla_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_key_nope_cache_bf16[3], key_nope_cache_count * 2u, "cudaMalloc routed_layer3_key_nope_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_value_cache_bf16[3], value_cache_count * 2u, "cudaMalloc routed_layer3_value_cache") &&
+        SparkValidationAllocateRoutedLayerCaches(buffers, cache_count, key_nope_cache_count, value_cache_count) &&
         SparkValidationAllocateZeroed((void **)&buffers->rotated_query_rope_bf16, query_rope_count * 2u, "cudaMalloc rotated_query_rope") &&
         SparkValidationAllocateZeroed((void **)&buffers->attention_output_latent_bf16, attention_output_count * 2u, "cudaMalloc attention_output_value") &&
         SparkValidationAllocateZeroed((void **)&buffers->attention_projected_hidden_bf16, hidden_count * 2u, "cudaMalloc attention_projected_hidden") &&
@@ -3241,10 +3256,10 @@ static float SparkValidationReferenceAttentionValue(
     const float *query_rope_values,
     const float cache_key_nope_values[
         SPARK_VALIDATION_CONTEXT_LENGTH]
-        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT],
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION],
     const float cache_rope_values[
         SPARK_VALIDATION_CONTEXT_LENGTH]
-        [SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT],
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION],
     const float cache_value_values[
         SPARK_VALIDATION_CONTEXT_LENGTH]
         [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT],
@@ -3265,7 +3280,7 @@ static float SparkValidationReferenceAttentionValue(
     {
         scores[token_index] = 0.0f;
         for (dimension_index = 0u;
-             dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
+             dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION;
              ++dimension_index)
         {
             scores[token_index] +=
@@ -3273,7 +3288,7 @@ static float SparkValidationReferenceAttentionValue(
                 cache_key_nope_values[token_index][dimension_index];
         }
         for (rope_dimension_index = 0u;
-             rope_dimension_index < SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT;
+             rope_dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION;
              ++rope_dimension_index)
         {
             scores[token_index] +=
@@ -4517,13 +4532,11 @@ static bool SparkValidationCheckLayer3RoutedExpertNvfp4(
          ++index)
     {
         float route_value;
-        float layer_value;
 
         route_value = SparkValidationBf16ToFloat(route_output[index]);
-        layer_value = SparkValidationBf16ToFloat(layer_output[index]);
-        if (!isfinite(route_value) || !isfinite(layer_value))
+        if (!isfinite(route_value))
         {
-            fprintf(stderr, "layer3 routed nvfp4 produced nonfinite output at hidden=%u\n", index);
+            fprintf(stderr, "layer3 routed nvfp4 produced nonfinite route output at hidden=%u\n", index);
             return false;
         }
         if (route_output[index] != 0u)
@@ -4534,6 +4547,22 @@ static bool SparkValidationCheckLayer3RoutedExpertNvfp4(
         if (index < 64u)
         {
             route_checksum += route_value * (float)(index + 1u);
+        }
+    }
+    for (index = 0u;
+         index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+         ++index)
+    {
+        float layer_value;
+
+        layer_value = SparkValidationBf16ToFloat(layer_output[index]);
+        if (!isfinite(layer_value))
+        {
+            fprintf(stderr, "layer3 routed nvfp4 produced nonfinite layer output at hidden=%u\n", index);
+            return false;
+        }
+        if (index < 64u)
+        {
             layer_checksum += layer_value * (float)(index + 1u);
         }
     }
@@ -4553,20 +4582,20 @@ static bool SparkValidationReadReferenceCacheFromDevice(
     float cache_key_nope_values[
         SPARK_VALIDATION_CHECKED_HEAD_COUNT]
         [SPARK_VALIDATION_CONTEXT_LENGTH]
-        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT],
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION],
     float cache_rope_values[
         SPARK_VALIDATION_CONTEXT_LENGTH]
-        [SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT],
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION],
     float cache_value_values[
         SPARK_VALIDATION_CHECKED_HEAD_COUNT]
         [SPARK_VALIDATION_CONTEXT_LENGTH]
         [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT])
 {
     uint16_t key_value[
-        SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION];
     uint16_t value_value[
         SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
-    uint16_t rope_value[SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT];
+    uint16_t rope_value[SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION];
     uint32_t token_index;
     uint32_t head_index;
     uint32_t dimension_index;
@@ -4589,11 +4618,16 @@ static bool SparkValidationReadReferenceCacheFromDevice(
                     cudaMemcpyDeviceToHost),
                 "copy reference rope cache"))
             return false;
-        for (dimension_index = 0u; dimension_index < SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT; ++dimension_index)
+        for (dimension_index = 0u; dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION; ++dimension_index)
             cache_rope_values[token_index][dimension_index] =
                 SparkValidationBf16ToFloat(rope_value[dimension_index]);
         for (head_index = 0u; head_index < SPARK_VALIDATION_CHECKED_HEAD_COUNT; ++head_index)
         {
+            uint32_t key_nonzero_count;
+            uint32_t value_nonzero_count;
+
+            key_nonzero_count = 0u;
+            value_nonzero_count = 0u;
             if (!SparkValidationCudaSucceeded(
                     cudaMemcpy(
                         key_value,
@@ -4617,17 +4651,24 @@ static bool SparkValidationReadReferenceCacheFromDevice(
                         cudaMemcpyDeviceToHost),
                     "copy reference value cache"))
                 return false;
-            for (dimension_index = 0u; dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT; ++dimension_index)
+            for (dimension_index = 0u; dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION; ++dimension_index)
             {
-                if (key_value[dimension_index] == 0u || value_value[dimension_index] == 0u)
-                {
-                    fprintf(stderr, "prefill reference cache stayed zero token=%u head=%u dim=%u\n", token_index, head_index, dimension_index);
-                    return false;
-                }
+                if (key_value[dimension_index] != 0u)
+                    key_nonzero_count += 1u;
                 cache_key_nope_values[head_index][token_index][dimension_index] =
                     SparkValidationBf16ToFloat(key_value[dimension_index]);
+            }
+            for (dimension_index = 0u; dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT; ++dimension_index)
+            {
+                if (value_value[dimension_index] != 0u)
+                    value_nonzero_count += 1u;
                 cache_value_values[head_index][token_index][dimension_index] =
                     SparkValidationBf16ToFloat(value_value[dimension_index]);
+            }
+            if (key_nonzero_count == 0u || value_nonzero_count == 0u)
+            {
+                fprintf(stderr, "prefill reference cache stayed zero token=%u head=%u key_nonzero=%u value_nonzero=%u\n", token_index, head_index, key_nonzero_count, value_nonzero_count);
+                return false;
             }
         }
     }
@@ -4646,18 +4687,18 @@ static bool SparkValidationCheckOutputs(
         SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
     uint16_t cached_key_nope_value[
         SPARK_VALIDATION_CHECKED_HEAD_COUNT]
-        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION];
     uint16_t cached_value_value[
         SPARK_VALIDATION_CHECKED_HEAD_COUNT]
         [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
-    uint16_t key_rope_value[SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT];
-    uint16_t cached_rope_value[SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT];
+    uint16_t key_rope_value[SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION];
+    uint16_t cached_rope_value[SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION];
     uint16_t query_latent_value[
         SPARK_VALIDATION_CHECKED_HEAD_COUNT]
-        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION];
     uint16_t query_rope_value[
         SPARK_VALIDATION_CHECKED_HEAD_COUNT]
-        [SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT];
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION];
     uint16_t attention_output_value[
         SPARK_VALIDATION_CHECKED_HEAD_COUNT]
         [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
@@ -4676,21 +4717,21 @@ static bool SparkValidationCheckOutputs(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT];
     float query_latent_values[
         SPARK_VALIDATION_CHECKED_HEAD_COUNT]
-        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION];
     float query_rope_values[
         SPARK_VALIDATION_CHECKED_HEAD_COUNT]
-        [SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT];
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION];
     float cache_key_nope_values[
         SPARK_VALIDATION_CHECKED_HEAD_COUNT]
         [SPARK_VALIDATION_CONTEXT_LENGTH]
-        [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION];
     float cache_value_values[
         SPARK_VALIDATION_CHECKED_HEAD_COUNT]
         [SPARK_VALIDATION_CONTEXT_LENGTH]
         [SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
     float cache_rope_values[
         SPARK_VALIDATION_CONTEXT_LENGTH]
-        [SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT];
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION];
     uint32_t head_index;
     uint32_t dimension_index;
     uint32_t token_index;
@@ -4923,37 +4964,51 @@ static bool SparkValidationCheckOutputs(
          head_index < SPARK_VALIDATION_CHECKED_HEAD_COUNT;
          ++head_index)
     {
+        uint32_t query_latent_nonzero_count;
+        uint32_t query_rope_nonzero_count;
+        uint32_t cached_key_nonzero_count;
+        uint32_t cached_value_nonzero_count;
+
+        query_latent_nonzero_count = 0u;
+        query_rope_nonzero_count = 0u;
+        cached_key_nonzero_count = 0u;
+        cached_value_nonzero_count = 0u;
+        for (dimension_index = 0u;
+             dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION;
+             ++dimension_index)
+        {
+            if (query_latent_value[head_index][dimension_index] != 0u)
+                query_latent_nonzero_count += 1u;
+            query_latent_values[head_index][dimension_index] =
+                SparkValidationBf16ToFloat(
+                    query_latent_value[head_index][dimension_index]);
+            if (cached_key_nope_value[head_index][dimension_index] != 0u)
+                cached_key_nonzero_count += 1u;
+        }
+        for (dimension_index = 0u;
+             dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION;
+             ++dimension_index)
+        {
+            if (query_rope_value[head_index][dimension_index] != 0u)
+                query_rope_nonzero_count += 1u;
+            query_rope_values[head_index][dimension_index] =
+                SparkValidationBf16ToFloat(
+                    query_rope_value[head_index][dimension_index]);
+        }
         for (dimension_index = 0u;
              dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
              ++dimension_index)
         {
-            if (query_latent_value[head_index][dimension_index] == 0u)
-            {
-                fprintf(stderr, "query latent fixture did not become nonzero\n");
-                return false;
-            }
-            query_latent_values[head_index][dimension_index] =
-                SparkValidationBf16ToFloat(
-                    query_latent_value[head_index][dimension_index]);
-            if (cached_key_nope_value[head_index][dimension_index] == 0u ||
-                cached_value_value[head_index][dimension_index] == 0u)
-            {
-                fprintf(stderr, "current key/value cache fixture did not become nonzero\n");
-                return false;
-            }
+            if (cached_value_value[head_index][dimension_index] != 0u)
+                cached_value_nonzero_count += 1u;
         }
-        for (dimension_index = 0u;
-             dimension_index < SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT;
-             ++dimension_index)
+        if (query_latent_nonzero_count == 0u ||
+            query_rope_nonzero_count == 0u ||
+            cached_key_nonzero_count == 0u ||
+            cached_value_nonzero_count == 0u)
         {
-            if (query_rope_value[head_index][dimension_index] == 0u)
-            {
-                fprintf(stderr, "query RoPE fixture did not become nonzero\n");
-                return false;
-            }
-            query_rope_values[head_index][dimension_index] =
-                SparkValidationBf16ToFloat(
-                    query_rope_value[head_index][dimension_index]);
+            fprintf(stderr, "attention fixture stayed zero head=%u query_latent=%u query_rope=%u key=%u value=%u\n", head_index, query_latent_nonzero_count, query_rope_nonzero_count, cached_key_nonzero_count, cached_value_nonzero_count);
+            return false;
         }
     }
     if (use_prefill_kv != 0u)
@@ -4976,7 +5031,7 @@ static bool SparkValidationCheckOutputs(
                  ++head_index)
             {
                 for (dimension_index = 0u;
-                     dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
+                     dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION;
                      ++dimension_index)
                 {
                     cache_key_nope_values[head_index][token_index][dimension_index] =
@@ -4986,6 +5041,11 @@ static bool SparkValidationCheckOutputs(
                                     token_index,
                                     head_index,
                                     dimension_index)));
+                }
+                for (dimension_index = 0u;
+                     dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
+                     ++dimension_index)
+                {
                     cache_value_values[head_index][token_index][dimension_index] =
                         SparkValidationBf16ToFloat(
                             SparkValidationFloatToBf16(
@@ -4996,7 +5056,7 @@ static bool SparkValidationCheckOutputs(
                 }
             }
             for (dimension_index = 0u;
-                 dimension_index < SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT;
+                 dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION;
                  ++dimension_index)
             {
                 cache_rope_values[token_index][dimension_index] =
@@ -5012,7 +5072,7 @@ static bool SparkValidationCheckOutputs(
              ++head_index)
         {
             for (dimension_index = 0u;
-                 dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
+                 dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION;
                  ++dimension_index)
             {
                 cache_key_nope_values[
@@ -5021,6 +5081,11 @@ static bool SparkValidationCheckOutputs(
                     [dimension_index] =
                     SparkValidationBf16ToFloat(
                         cached_key_nope_value[head_index][dimension_index]);
+            }
+            for (dimension_index = 0u;
+                 dimension_index < SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT;
+                 ++dimension_index)
+            {
                 cache_value_values[
                     head_index]
                     [SPARK_VALIDATION_CONTEXT_LENGTH - 1u]
@@ -5030,7 +5095,7 @@ static bool SparkValidationCheckOutputs(
             }
         }
         for (dimension_index = 0u;
-             dimension_index < SPARK_VALIDATION_CHECKED_ROPE_DIMENSION_COUNT;
+             dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION;
              ++dimension_index)
         {
             cache_rope_values[

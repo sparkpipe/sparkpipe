@@ -1,0 +1,196 @@
+GLM52 dense-prefix to eight routed-NVFP4 layers qualification
+=============================================================
+
+Date: 2026-06-29
+Host class: DGX Spark / GB10, CUDA 13.0, sm_121
+Model artifact: GLM-5.2-NVFP4 official checkpoint
+Target:
+  modules/glm52_resident_decode_stage
+  package_dense_chain_eight_routed_expert_nvfp4_topk
+
+Preconditions:
+  DSV4 Flash vLLM Docker container vllm-spark-head stopped on spark1 before
+  this run to free the GB10 GPU.
+  Missing checkpoint shards model-00004-of-00047.safetensors,
+  model-00005-of-00047.safetensors, and model-00006-of-00047.safetensors were
+  staged from spark0 external NVMe to spark1 and byte-size verified.
+
+Command shape:
+  GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4
+  GLM52_INPUT_TOKEN_ID=1000
+  MAX_STAGE_MICROSECONDS=10000000
+  PATH=/usr/local/cuda-13.0/bin:$PATH
+  make package_dense_chain_eight_routed_expert_nvfp4_topk CUDA_ARCH=sm_121 NVCC=/usr/local/cuda-13.0/bin/nvcc
+
+Result: PASS
+
+Raw backend pass:
+  dense_chain_layers=3
+  routed_chain_layers=8
+  routed_layers=3,4,5,6,7,8,9,10
+  total_submissions=76
+  total_us=388779.392
+  maximum_us=7278.112
+  restricted_token=1071
+  mtp_draft=1011
+  mtp_reject=1003
+  input_embedding_token=1000
+  final_checked_selected_expert=26
+  final_checked_bound_experts=8
+  real_lm_head=1
+  real_lm_head_max_logit_error=0.00000048
+
+Generated model-driver package pass:
+  dense_chain_layers=3
+  routed_chain_layers=8
+  routed_layers=3,4,5,6,7,8,9,10
+  total_submissions=76
+  total_us=433433.151
+  maximum_us=7609.312
+  restricted_token=1071
+  mtp_draft=1011
+  mtp_reject=1003
+  input_embedding_token=1000
+  final_checked_selected_expert=26
+  final_checked_bound_experts=8
+  real_lm_head=1
+  real_lm_head_max_logit_error=0.00000048
+
+Current-token checked routed layer 3:
+  ids=148,186,174,229,72,61,93,130
+  weights=0.54191142,0.21207391,0.20646937,0.57307100,0.22290768,0.22326396,0.22612713,0.29417551
+  route_count=8
+  gate_scratch_nonzero=16217
+  up_nonzero=16384
+  intermediate_nonzero=16384
+  intermediate_fp4_payload_nonzero=6483
+  intermediate_fp4_scale_nonzero=1024
+  route_nonzero=49143
+  up_checksum64=6.62191010
+  intermediate_checksum64=-0.29188293
+  route_checksum64=-0.06892185
+  layer_checksum64=-1.60612869
+
+Current-token checked routed layer 4:
+  ids=84,199,203,47,5,177,49,206
+  weights=0.31406090,0.27729136,0.45596755,0.49512649,0.18138967,0.20516402,0.17928141,0.39171860
+  route_count=8
+  gate_scratch_nonzero=16304
+  up_nonzero=16384
+  intermediate_nonzero=16384
+  intermediate_fp4_payload_nonzero=7057
+  intermediate_fp4_scale_nonzero=1024
+  route_nonzero=49147
+  up_checksum64=-3.45466900
+  intermediate_checksum64=-0.35047221
+  route_checksum64=-0.31488931
+  layer_checksum64=-0.93349648
+
+Current-token checked routed layer 5:
+  ids=184,26,128,32,252,102,199,125
+  weights=0.26200345,0.28768843,0.27643704,0.22399965,0.31632370,0.43586057,0.30955288,0.38813442
+  route_count=8
+  gate_scratch_nonzero=16332
+  up_nonzero=16384
+  intermediate_nonzero=16384
+  intermediate_fp4_payload_nonzero=7262
+  intermediate_fp4_scale_nonzero=1024
+  route_nonzero=49152
+  up_checksum64=6.97064209
+  intermediate_checksum64=0.18463734
+  route_checksum64=-0.13339877
+  layer_checksum64=-1.25858116
+
+Current-token checked routed layer 6:
+  ids=221,161,184,99,87,131,89,238
+  weights=0.67095006,0.37269458,0.35469013,0.26003933,0.21703315,0.22376055,0.18256050,0.21827179
+  route_count=8
+  gate_scratch_nonzero=16372
+  up_nonzero=16384
+  intermediate_nonzero=16384
+  intermediate_fp4_payload_nonzero=7678
+  intermediate_fp4_scale_nonzero=1024
+  route_nonzero=49149
+  up_checksum64=34.11393356
+  intermediate_checksum64=4.19562149
+  route_checksum64=-2.84279442
+  layer_checksum64=-3.60006523
+
+Current-token checked routed layer 7:
+  ids=62,4,123,203,44,6,116,87
+  weights=0.40617085,0.29452753,0.25007880,0.26923391,0.34121752,0.42944220,0.16876952,0.34055960
+  route_count=8
+  gate_scratch_nonzero=16378
+  up_nonzero=16384
+  intermediate_nonzero=16384
+  intermediate_fp4_payload_nonzero=7923
+  intermediate_fp4_scale_nonzero=1024
+  route_nonzero=49150
+  up_checksum64=-18.68235016
+  intermediate_checksum64=-1.07165956
+  route_checksum64=-0.07558203
+  layer_checksum64=-5.48530674
+
+Current-token checked routed layer 8:
+  ids=236,202,119,102,45,250,177,150
+  weights=0.53456622,0.43476555,0.21894568,0.05601110,0.25115153,0.31263995,0.28265324,0.40926671
+  route_count=8
+  gate_scratch_nonzero=16379
+  up_nonzero=16384
+  intermediate_nonzero=16384
+  intermediate_fp4_payload_nonzero=7982
+  intermediate_fp4_scale_nonzero=1024
+  route_nonzero=49152
+  up_checksum64=27.02444458
+  intermediate_checksum64=-0.60630345
+  route_checksum64=-0.01767159
+  layer_checksum64=-4.66739082
+
+Current-token checked routed layer 9:
+  ids=220,165,40,119,4,83,157,64
+  weights=0.44946089,0.36537123,0.28566104,0.33599344,0.24819539,0.34395820,0.28736550,0.18399446
+  route_count=8
+  gate_scratch_nonzero=16382
+  up_nonzero=16384
+  intermediate_nonzero=16384
+  intermediate_fp4_payload_nonzero=8041
+  intermediate_fp4_scale_nonzero=1024
+  route_nonzero=49150
+  up_checksum64=17.29961014
+  intermediate_checksum64=-0.65210795
+  route_checksum64=-0.85190582
+  layer_checksum64=-5.08667564
+
+Current-token checked routed layer 10:
+  ids=26,118,110,50,173,235,182,196
+  weights=0.32981947,0.41581261,0.33352369,0.35429540,0.21690799,0.26249492,0.33043760,0.25670823
+  route_count=8
+  gate_scratch_nonzero=16384
+  up_nonzero=16384
+  intermediate_nonzero=16384
+  intermediate_fp4_payload_nonzero=8007
+  intermediate_fp4_scale_nonzero=1024
+  route_nonzero=49151
+  up_checksum64=-5.97161865
+  intermediate_checksum64=-0.77075815
+  route_checksum64=-0.42162037
+  layer_checksum64=-8.47676468
+
+Validator fixes made for this gate:
+  The routed-expert checker no longer reads layer_output past its one-token
+  hidden-size buffer while validating route_count * hidden route outputs.
+  The sampled attention reference now computes scores with full qk-nope and
+  full RoPE dimensions, while still checking a sampled value/output subset.
+  Full-vector fixture checks now require nonzero rows instead of requiring every
+  individual component to be nonzero.
+
+Scope:
+  This qualifies checkpoint-backed progression through:
+    input embedding
+    dense layers 0,1,2
+    routed layers 3,4,5,6,7,8,9,10 attention/router/dynamic NVFP4 top-k experts
+    restricted LM-head check
+
+  This is still a validation-time path with per-layer/per-token checkpoint
+  tensor loading. It is not yet the resident full-model StagePack execution
+  path and it is not a SOTA MoE performance claim.
