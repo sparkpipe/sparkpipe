@@ -11,6 +11,7 @@ ARTIFACT_CHECK_ARGS ?=
 BUILD_DIRECTORY := $(REPOSITORY_ROOT)/build/modules/glm52_resident_decode_stage
 HOST_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module.o
 CUDA_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda.o
+REQUIRED_STAGE_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_sm121_required_decode_stage.o
 MODULE_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_resident_decode_stage.a
 ARTIFACT_CHECK_TOOL := $(BUILD_DIRECTORY)/glm52_artifact_check
 PACKAGE_DIRECTORY ?= $(REPOSITORY_ROOT)/build/packages/glm52_resident_decode_stage
@@ -21,6 +22,7 @@ REQUIRED_CUDA_CC_ARGS ?=
 GLM52_REQUIRED_CUDA_LINK_ARGS ?=
 HOST_DEPENDENCY := $(HOST_OBJECT:.o=.d)
 CUDA_DEPENDENCY := $(CUDA_OBJECT:.o=.d)
+REQUIRED_STAGE_DEPENDENCY := $(REQUIRED_STAGE_OBJECT:.o=.d)
 
 .PHONY: archive cold_archive artifact_check validate publish package clean require_sm121a require_latency_limit require_model_dir
 
@@ -52,7 +54,11 @@ $(CUDA_OBJECT): source/spark_glm52_resident_decode_stage_cuda.cu | $(BUILD_DIREC
 	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
-$(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT)
+$(REQUIRED_STAGE_OBJECT): source/spark_glm52_sm121_required_decode_stage.cu | $(BUILD_DIRECTORY)
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
+		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
+
+$(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT) $(REQUIRED_STAGE_OBJECT)
 	rm -f $@
 	$(AR) rcs $@ $^
 
@@ -100,6 +106,9 @@ package: publish
 		--cc cc \
 		--cc-arg -L$(CUDA_HOME)/lib64 \
 		--cc-arg -lcudart \
+		--cc-arg -lcublasLt \
+		--cc-arg -lcublas \
+		--cc-arg -lstdc++ \
 		$(REQUIRED_CUDA_CC_ARGS)
 	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
@@ -109,4 +118,4 @@ package: publish
 clean:
 	rm -rf $(BUILD_DIRECTORY)
 
--include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY)
+-include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(REQUIRED_STAGE_DEPENDENCY)

@@ -50,6 +50,20 @@ required_cuda_link_args=()
 if [[ -n "${GLM52_REQUIRED_CUDA_LINK_ARGS:-}" ]]; then
     read -r -a required_cuda_link_args <<< "${GLM52_REQUIRED_CUDA_LINK_ARGS}"
 fi
+required_cuda_library_path=""
+for required_cuda_link_arg in "${required_cuda_link_args[@]}"; do
+    if [[ "${required_cuda_link_arg}" == *.so ]]; then
+        required_cuda_library_directory="$(cd "$(dirname "${required_cuda_link_arg}")" && pwd)"
+        if [[ -z "${required_cuda_library_path}" ]]; then
+            required_cuda_library_path="${required_cuda_library_directory}"
+        else
+            required_cuda_library_path="${required_cuda_library_path}:${required_cuda_library_directory}"
+        fi
+    fi
+done
+if [[ -n "${required_cuda_library_path}" ]]; then
+    export LD_LIBRARY_PATH="${required_cuda_library_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
 
 make -C "${repository_root}" "${common_target}" "${runtime_target}" "${compiler_target}"
 
@@ -67,6 +81,8 @@ make -C "${repository_root}" "${common_target}" "${runtime_target}" "${compiler_
     "${compiler_archive}" \
     "${common_archive}" \
     "${required_cuda_link_args[@]}" \
+    -lcublasLt \
+    -lcublas \
     -ldl \
     -o "${validation_directory}/glm52_resident_decode_stage_validator"
 
