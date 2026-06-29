@@ -305,8 +305,17 @@ The next branch should implement and benchmark either:
 1. dense-alpha GLM52 MoE for `B64/B96/B128`, or
 2. compact active-expert tensor-core grouped MoE for `B1/B8/B32`.
 
-Given the current 10x complaint, the dense-alpha experiment is the cleanest way
-to test the public SOTA claim directly. If it loses on GB10, the negative result
-will still correct the model: GB10 memory bandwidth makes all-expert dense MoE
-too expensive, and the only viable path is compact active-expert tensor-core
-grouped MoE plus coalescing.
+The dense-alpha experiment was implemented and measured on `spark1` after this
+note was written. It compiled and ran, but lost to the fixed sparse CUTLASS
+uniform-route baseline:
+
+```text
+B64:  dense_alpha=29989.848 us  fixed_sparse=25700.727 us
+B96:  dense_alpha=34499.535 us  fixed_sparse=25664.520 us
+B128: dense_alpha=35979.039 us  fixed_sparse=25604.879 us
+```
+
+That corrects the model: the B200 DenseGEMM result does not transfer cleanly to
+GB10 for this 256-expert uniform shape. GB10 memory bandwidth makes all-expert
+dense MoE too expensive. The next viable path is compact active-expert
+tensor-core grouped MoE plus real router histograms and coalescing.

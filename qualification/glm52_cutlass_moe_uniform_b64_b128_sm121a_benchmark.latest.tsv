@@ -1,0 +1,4 @@
+date_utc	hardware	cuda_arch	kernel_path	tokens	active_routes	bound_experts	route_capacity_per_expert	fixed_capacity_routes	iterations	avg_us	estimated_tflops	overflow	result
+2026-06-29	DGX Spark GB10	sm_121a	glm52_fixed_slot_cutlass_grouped_nvfp4_bf16_moe_uniform_routes	64	512	256	2	512	10	25700.727	1.504	0	baseline beats dense-alpha for B64 uniform all-expert route coverage
+2026-06-29	DGX Spark GB10	sm_121a	glm52_fixed_slot_cutlass_grouped_nvfp4_bf16_moe_uniform_routes	96	768	256	3	768	10	25664.520	2.259	0	baseline beats dense-alpha for B96 uniform all-expert route coverage
+2026-06-29	DGX Spark GB10	sm_121a	glm52_fixed_slot_cutlass_grouped_nvfp4_bf16_moe_uniform_routes	128	1024	256	4	1024	10	25604.879	3.019	0	baseline beats dense-alpha for B128 uniform all-expert route coverage

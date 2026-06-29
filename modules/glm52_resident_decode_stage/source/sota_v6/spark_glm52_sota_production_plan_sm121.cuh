@@ -4,7 +4,7 @@
 #include "spark_glm52_sota_cuda_common.cuh"
 #include <cublasLt.h>
 
-#define SPARK_GLM52_SOTA_PRODUCTION_PLAN_ABI 6u
+#define SPARK_GLM52_SOTA_PRODUCTION_PLAN_ABI 7u
 
 #define SPARK_GLM52_SOTA_FAST_CAP_TOKEN_QUANT_ONCE         0x0000000000000001ull
 #define SPARK_GLM52_SOTA_FAST_CAP_FUSED_ROUTER_TOPK        0x0000000000000002ull
@@ -22,6 +22,9 @@
 #define SPARK_GLM52_SOTA_FAST_CAP_NO_DEVICE_MEMCPY         0x0000000000002000ull
 #define SPARK_GLM52_SOTA_FAST_CAP_SM121_NVFP4_SCALE_LAYOUT 0x0000000000004000ull
 #define SPARK_GLM52_SOTA_FAST_CAP_FIXED_GLM52_SHAPES       0x0000000000008000ull
+#define SPARK_GLM52_SOTA_FAST_CAP_DENSE_ALPHA_MOE          0x0000000000010000ull
+#define SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_B_BROADCAST      0x0000000000020000ull
+#define SPARK_GLM52_SOTA_FAST_CAP_DENSE_ALPHA_STRICT        0x0000000000040000ull
 
 #define SPARK_GLM52_SOTA_REQUIRED_FAST_CAPS \
     (SPARK_GLM52_SOTA_FAST_CAP_TOKEN_QUANT_ONCE | \
@@ -98,6 +101,10 @@ struct SparkGlm52SotaNvfp4GroupedGemmPlanSm121
     SparkGlm52SotaNvfp4GroupedGemmProblemSm121 *problems_device;
     SparkGlm52SotaNvfp4GroupedGemmProblemSm121 *problems_host_mapped;
     cudaError_t (*launch)(SparkGlm52SotaNvfp4GroupedGemmPlanSm121 *plan, cudaStream_t stream);
+    uint32_t cutlass_b_broadcast;
+    uint32_t cutlass_sfb_broadcast;
+    uint32_t reserved0;
+    uint32_t reserved1;
 };
 
 struct SparkGlm52SotaBf16LinearPlanSm121
@@ -154,6 +161,16 @@ struct SparkGlm52SotaProductionMoePlanSm121
     __nv_bfloat16 *gate_up_bf16_by_grouped_route;
     SparkGlm52SotaMutableNvfp4MatrixView intermediate_nvfp4_by_grouped_route;
     __nv_bfloat16 *down_bf16_by_grouped_route;
+    uint32_t dense_alpha_token_capacity;
+    uint32_t dense_alpha_minimum_tokens;
+    uint32_t dense_alpha_maximum_tokens;
+    uint32_t dense_alpha_require_exact_token_count;
+    SparkGlm52SotaNvfp4GroupedGemmPlanSm121 dense_gate_up_gemm;
+    SparkGlm52SotaNvfp4GroupedGemmPlanSm121 dense_down_gemm;
+    SparkGlm52SotaMutableNvfp4MatrixView dense_hidden_nvfp4_by_token_sm1xx;
+    __nv_bfloat16 *dense_gate_up_bf16_by_expert_token;
+    SparkGlm52SotaMutableNvfp4MatrixView dense_intermediate_nvfp4_by_expert_token;
+    __nv_bfloat16 *dense_down_bf16_by_expert_token;
 };
 
 struct SparkGlm52SotaProductionDecodePlanSm121
@@ -202,6 +219,11 @@ cudaError_t SparkGlm52SotaInitializeCutlassNvfp4GroupedGemmSm121(
     cudaStream_t stream);
 
 cudaError_t SparkGlm52SotaLaunchProductionGroupedMoeSm121(
+    SparkGlm52SotaProductionMoePlanSm121 *plan,
+    const SparkGlm52SotaMoeArguments *arguments,
+    cudaStream_t stream);
+
+cudaError_t SparkGlm52SotaLaunchDenseAlphaMoeSm121(
     SparkGlm52SotaProductionMoePlanSm121 *plan,
     const SparkGlm52SotaMoeArguments *arguments,
     cudaStream_t stream);

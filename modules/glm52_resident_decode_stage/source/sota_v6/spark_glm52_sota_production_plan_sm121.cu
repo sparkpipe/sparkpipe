@@ -72,18 +72,106 @@ static cudaError_t SparkGlm52SotaValidateNvfp4GemmPlan(const SparkGlm52SotaNvfp4
     return cudaSuccess;
 }
 
-static cudaError_t SparkGlm52SotaValidateProductionMoePlan(const SparkGlm52SotaProductionMoePlanSm121 *plan)
+static cudaError_t SparkGlm52SotaValidateDenseAlphaMoePlan(const SparkGlm52SotaProductionMoePlanSm121 *plan)
 {
-    uint64_t required_flags = SPARK_GLM52_SOTA_FAST_CAP_TOKEN_QUANT_ONCE | SPARK_GLM52_SOTA_FAST_CAP_FUSED_ROUTER_TOPK | SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_GATE_UP | SPARK_GLM52_SOTA_FAST_CAP_FUSED_SILU_REQUANT | SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_DOWN | SPARK_GLM52_SOTA_FAST_CAP_WEIGHTED_COMBINE | SPARK_GLM52_SOTA_FAST_CAP_NO_HOST_STAGING | SPARK_GLM52_SOTA_FAST_CAP_NO_DEVICE_MEMCPY | SPARK_GLM52_SOTA_FAST_CAP_FIXED_GLM52_SHAPES;
-    if (plan == 0 || plan->abi_version != SPARK_GLM52_SOTA_PRODUCTION_PLAN_ABI)
+    uint64_t required_flags;
+
+    required_flags = SPARK_GLM52_SOTA_FAST_CAP_TOKEN_QUANT_ONCE |
+        SPARK_GLM52_SOTA_FAST_CAP_FUSED_ROUTER_TOPK |
+        SPARK_GLM52_SOTA_FAST_CAP_DENSE_ALPHA_MOE |
+        SPARK_GLM52_SOTA_FAST_CAP_DENSE_ALPHA_STRICT |
+        SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_GATE_UP |
+        SPARK_GLM52_SOTA_FAST_CAP_FUSED_SILU_REQUANT |
+        SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_DOWN |
+        SPARK_GLM52_SOTA_FAST_CAP_WEIGHTED_COMBINE |
+        SPARK_GLM52_SOTA_FAST_CAP_NO_HOST_STAGING |
+        SPARK_GLM52_SOTA_FAST_CAP_NO_DEVICE_MEMCPY |
+        SPARK_GLM52_SOTA_FAST_CAP_SM121_NVFP4_SCALE_LAYOUT |
+        SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_B_BROADCAST |
+        SPARK_GLM52_SOTA_FAST_CAP_FIXED_GLM52_SHAPES;
+    if ((plan->capability_flags & required_flags) != required_flags)
     {
         return cudaErrorInvalidValue;
     }
-    if ((plan->capability_flags & required_flags) != required_flags || plan->maximum_tokens == 0u || plan->maximum_tokens > 128u || plan->maximum_routes < plan->maximum_tokens * SPARK_GLM52_SOTA_TOP_K || plan->maximum_bound_experts == 0u || plan->maximum_bound_experts > SPARK_GLM52_SOTA_EXPERT_COUNT || plan->validated_latency_ns == 0u)
+    if (plan->maximum_bound_experts != SPARK_GLM52_SOTA_EXPERT_COUNT ||
+        plan->dense_alpha_token_capacity == 0u ||
+        plan->dense_alpha_token_capacity > plan->maximum_tokens ||
+        plan->dense_alpha_minimum_tokens == 0u ||
+        plan->dense_alpha_maximum_tokens < plan->dense_alpha_minimum_tokens ||
+        plan->dense_alpha_maximum_tokens > plan->dense_alpha_token_capacity ||
+        plan->dense_alpha_require_exact_token_count == 0u)
     {
         return cudaErrorInvalidValue;
     }
-    if (plan->expert_id_to_bound_slot == 0 || plan->expert_route_counts == 0 || plan->expert_route_offsets == 0 || plan->expert_route_cursors == 0 || plan->route_indices_by_expert == 0 || plan->grouped_row_by_route == 0 || plan->overflow_flag == 0 || plan->grouped_hidden_nvfp4_by_route.payload_u8 == 0 || plan->grouped_hidden_nvfp4_by_route.scale_e4m3_u8 == 0 || plan->gate_up_bf16_by_grouped_route == 0 || plan->intermediate_nvfp4_by_grouped_route.payload_u8 == 0 || plan->intermediate_nvfp4_by_grouped_route.scale_e4m3_u8 == 0 || plan->down_bf16_by_grouped_route == 0)
+    if (plan->dense_hidden_nvfp4_by_token_sm1xx.payload_u8 == 0 ||
+        plan->dense_hidden_nvfp4_by_token_sm1xx.scale_e4m3_u8 == 0 ||
+        plan->dense_gate_up_bf16_by_expert_token == 0 ||
+        plan->dense_intermediate_nvfp4_by_expert_token.payload_u8 == 0 ||
+        plan->dense_intermediate_nvfp4_by_expert_token.scale_e4m3_u8 == 0 ||
+        plan->dense_down_bf16_by_expert_token == 0 ||
+        plan->overflow_flag == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (SparkGlm52SotaValidateNvfp4GemmPlan(&plan->dense_gate_up_gemm, SPARK_GLM52_SOTA_HIDDEN_DIMENSION, SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION * 2u, 0u) != cudaSuccess)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (SparkGlm52SotaValidateNvfp4GemmPlan(&plan->dense_down_gemm, SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION, SPARK_GLM52_SOTA_HIDDEN_DIMENSION, 0u) != cudaSuccess)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_gate_up_gemm.cutlass_b_broadcast == 0u ||
+        plan->dense_gate_up_gemm.cutlass_sfb_broadcast == 0u ||
+        (plan->dense_gate_up_gemm.capability_flags & SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_B_BROADCAST) == 0u)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_down_gemm.cutlass_b_broadcast != 0u ||
+        plan->dense_down_gemm.cutlass_sfb_broadcast != 0u)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_gate_up_gemm.cutlass_n_capacity != plan->dense_alpha_token_capacity ||
+        plan->dense_down_gemm.cutlass_n_capacity != plan->dense_alpha_token_capacity ||
+        plan->dense_gate_up_gemm.cutlass_group_count != plan->maximum_bound_experts ||
+        plan->dense_down_gemm.cutlass_group_count != plan->maximum_bound_experts)
+    {
+        return cudaErrorInvalidValue;
+    }
+    return cudaSuccess;
+}
+
+static cudaError_t SparkGlm52SotaValidateSparseGroupedMoePlan(const SparkGlm52SotaProductionMoePlanSm121 *plan)
+{
+    uint64_t required_flags;
+
+    required_flags = SPARK_GLM52_SOTA_FAST_CAP_TOKEN_QUANT_ONCE |
+        SPARK_GLM52_SOTA_FAST_CAP_FUSED_ROUTER_TOPK |
+        SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_GATE_UP |
+        SPARK_GLM52_SOTA_FAST_CAP_FUSED_SILU_REQUANT |
+        SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_DOWN |
+        SPARK_GLM52_SOTA_FAST_CAP_WEIGHTED_COMBINE |
+        SPARK_GLM52_SOTA_FAST_CAP_NO_HOST_STAGING |
+        SPARK_GLM52_SOTA_FAST_CAP_NO_DEVICE_MEMCPY |
+        SPARK_GLM52_SOTA_FAST_CAP_FIXED_GLM52_SHAPES;
+    if ((plan->capability_flags & required_flags) != required_flags)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->expert_id_to_bound_slot == 0 ||
+        plan->expert_route_counts == 0 ||
+        plan->expert_route_offsets == 0 ||
+        plan->expert_route_cursors == 0 ||
+        plan->route_indices_by_expert == 0 ||
+        plan->grouped_row_by_route == 0 ||
+        plan->overflow_flag == 0 ||
+        plan->grouped_hidden_nvfp4_by_route.payload_u8 == 0 ||
+        plan->grouped_hidden_nvfp4_by_route.scale_e4m3_u8 == 0 ||
+        plan->gate_up_bf16_by_grouped_route == 0 ||
+        plan->intermediate_nvfp4_by_grouped_route.payload_u8 == 0 ||
+        plan->intermediate_nvfp4_by_grouped_route.scale_e4m3_u8 == 0 ||
+        plan->down_bf16_by_grouped_route == 0)
     {
         return cudaErrorInvalidValue;
     }
@@ -97,6 +185,29 @@ static cudaError_t SparkGlm52SotaValidateProductionMoePlan(const SparkGlm52SotaP
     }
     return cudaSuccess;
 }
+
+static cudaError_t SparkGlm52SotaValidateProductionMoePlan(const SparkGlm52SotaProductionMoePlanSm121 *plan)
+{
+    if (plan == 0 || plan->abi_version != SPARK_GLM52_SOTA_PRODUCTION_PLAN_ABI)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->maximum_tokens == 0u ||
+        plan->maximum_tokens > 128u ||
+        plan->maximum_routes < plan->maximum_tokens * SPARK_GLM52_SOTA_TOP_K ||
+        plan->maximum_bound_experts == 0u ||
+        plan->maximum_bound_experts > SPARK_GLM52_SOTA_EXPERT_COUNT ||
+        plan->validated_latency_ns == 0u)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if ((plan->capability_flags & SPARK_GLM52_SOTA_FAST_CAP_DENSE_ALPHA_MOE) != 0u)
+    {
+        return SparkGlm52SotaValidateDenseAlphaMoePlan(plan);
+    }
+    return SparkGlm52SotaValidateSparseGroupedMoePlan(plan);
+}
+
 
 extern "C" cudaError_t SparkGlm52SotaValidateProductionDecodePlanSm121(const SparkGlm52SotaProductionDecodePlanSm121 *plan)
 {

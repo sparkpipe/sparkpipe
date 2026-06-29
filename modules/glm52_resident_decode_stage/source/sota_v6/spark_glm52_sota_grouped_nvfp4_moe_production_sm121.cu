@@ -454,8 +454,239 @@ void SparkGlm52SotaWeightedCombineGroupedKernel(SparkGlm52SotaProductionMoePlanS
     }
 }
 
+
+static __global__ __launch_bounds__(256, 2)
+void SparkGlm52SotaPackDenseHiddenScalesSm1xxKernel(const SparkGlm52SotaMoeArguments arguments, SparkGlm52SotaProductionMoePlanSm121 plan)
+{
+    uint32_t token_index = blockIdx.y;
+    uint32_t scale_index = threadIdx.x + (blockIdx.x * blockDim.x);
+    uint64_t scale_offset;
+
+    if (token_index >= arguments.active_token_count)
+    {
+        return;
+    }
+    while (scale_index < SPARK_GLM52_SOTA_NVFP4_SCALE_GROUPS_HIDDEN)
+    {
+        scale_offset = SparkGlm52SotaSm1xxBlockScaleOffset(0u, token_index, scale_index, plan.dense_alpha_token_capacity, SPARK_GLM52_SOTA_HIDDEN_DIMENSION);
+        plan.dense_hidden_nvfp4_by_token_sm1xx.scale_e4m3_u8[scale_offset] = arguments.hidden_nvfp4_by_token.scale_e4m3_u8[((uint64_t)token_index * arguments.hidden_nvfp4_by_token.scale_row_stride_bytes) + scale_index];
+        scale_index += blockDim.x * gridDim.x;
+    }
+}
+
+static __global__ __launch_bounds__(32, 8)
+void SparkGlm52SotaSiluMulRequantDenseAlphaKernel(SparkGlm52SotaProductionMoePlanSm121 plan, const SparkGlm52SotaMoeArguments arguments)
+{
+    uint32_t expert_slot = blockIdx.z;
+    uint32_t token_index = blockIdx.y;
+    uint32_t group_index = blockIdx.x;
+    uint32_t lane = threadIdx.x & 31u;
+    uint32_t column_base = group_index * SPARK_GLM52_SOTA_NVFP4_GROUP_SIZE;
+    uint32_t dense_token_capacity = plan.dense_alpha_token_capacity;
+    uint64_t dense_row = ((uint64_t)expert_slot * dense_token_capacity) + token_index;
+    uint64_t scale_offset;
+    float first = 0.0f;
+    float second = 0.0f;
+    float maximum_value;
+    float scale;
+    uint8_t scale_code;
+
+    if (expert_slot >= plan.maximum_bound_experts || token_index >= arguments.active_token_count || group_index >= SPARK_GLM52_SOTA_NVFP4_SCALE_GROUPS_MOE)
+    {
+        return;
+    }
+    if (lane < 8u)
+    {
+        uint32_t column = column_base + lane * 2u;
+        uint64_t base = (dense_row * SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION * 2u) + column;
+        float gate0 = SparkGlm52SotaBf16ToFloat(plan.dense_gate_up_bf16_by_expert_token[base]);
+        float gate1 = SparkGlm52SotaBf16ToFloat(plan.dense_gate_up_bf16_by_expert_token[base + 1u]);
+        float up0 = SparkGlm52SotaBf16ToFloat(plan.dense_gate_up_bf16_by_expert_token[base + SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION]);
+        float up1 = SparkGlm52SotaBf16ToFloat(plan.dense_gate_up_bf16_by_expert_token[base + SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION + 1u]);
+        first = SparkGlm52SotaSilu(gate0) * up0;
+        second = SparkGlm52SotaSilu(gate1) * up1;
+    }
+    maximum_value = lane < 8u ? fmaxf(fabsf(first), fabsf(second)) : 0.0f;
+    maximum_value = SparkGlm52SotaWarpReduceMax(maximum_value);
+    maximum_value = __shfl_sync(0xffffffffu, maximum_value, 0);
+    scale = fmaxf(maximum_value * 0.1666666667f, 1.0e-8f);
+    scale_code = SparkGlm52SotaEncodePositiveE4m3(scale);
+    scale = SparkGlm52SotaDecodeE4m3(scale_code);
+    if (lane == 0u)
+    {
+        scale_offset = SparkGlm52SotaSm1xxBlockScaleOffset(expert_slot, token_index, group_index, dense_token_capacity, SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION);
+        plan.dense_intermediate_nvfp4_by_expert_token.scale_e4m3_u8[scale_offset] = scale_code;
+    }
+    if (lane < 8u)
+    {
+        uint64_t packed_index = (dense_row * plan.dense_intermediate_nvfp4_by_expert_token.packed_row_stride_bytes) + ((uint64_t)(column_base + lane * 2u) >> 1u);
+        SparkGlm52SotaStoreNvfp4Pair(plan.dense_intermediate_nvfp4_by_expert_token.payload_u8, packed_index, SparkGlm52SotaEncodeE2m1(first / scale), SparkGlm52SotaEncodeE2m1(second / scale));
+    }
+}
+
+static __global__ __launch_bounds__(256, 2)
+void SparkGlm52SotaWeightedCombineDenseAlphaKernel(SparkGlm52SotaProductionMoePlanSm121 plan, const SparkGlm52SotaMoeArguments arguments)
+{
+    uint32_t token_index = blockIdx.y;
+    uint32_t hidden_index = blockIdx.x * 256u + threadIdx.x;
+    uint32_t dense_token_capacity = plan.dense_alpha_token_capacity;
+    float accumulator = 0.0f;
+
+    if (token_index >= arguments.active_token_count || hidden_index >= SPARK_GLM52_SOTA_HIDDEN_DIMENSION)
+    {
+        return;
+    }
+    #pragma unroll
+    for (uint32_t topk_index = 0u; topk_index < SPARK_GLM52_SOTA_TOP_K; ++topk_index)
+    {
+        uint32_t route_index = token_index * SPARK_GLM52_SOTA_TOP_K + topk_index;
+        int32_t expert_slot = arguments.route_workspace.topk_bound_slots[route_index];
+        if (expert_slot >= 0 && (uint32_t)expert_slot < plan.maximum_bound_experts)
+        {
+            uint64_t dense_row = ((uint64_t)(uint32_t)expert_slot * dense_token_capacity) + token_index;
+            float route_weight = arguments.route_workspace.topk_weights[route_index];
+            float value = SparkGlm52SotaBf16ToFloat(plan.dense_down_bf16_by_expert_token[(dense_row * SPARK_GLM52_SOTA_HIDDEN_DIMENSION) + hidden_index]);
+            accumulator = fmaf(value, route_weight, accumulator);
+        }
+        else
+        {
+            atomicExch(plan.overflow_flag, 1u);
+        }
+    }
+    if (arguments.combined_output_f32 != 0)
+    {
+        arguments.combined_output_f32[((uint64_t)token_index * SPARK_GLM52_SOTA_HIDDEN_DIMENSION) + hidden_index] = accumulator;
+    }
+    if (arguments.combined_output_bf16 != 0)
+    {
+        arguments.combined_output_bf16[((uint64_t)token_index * SPARK_GLM52_SOTA_HIDDEN_DIMENSION) + hidden_index] = SparkGlm52SotaFloatToBf16(accumulator);
+    }
+}
+
+static cudaError_t SparkGlm52SotaValidateCutlassDenseAlphaMoePlan(SparkGlm52SotaProductionMoePlanSm121 *plan, const SparkGlm52SotaMoeArguments *arguments)
+{
+    if (plan == 0 || arguments == 0 || plan->abi_version != SPARK_GLM52_SOTA_PRODUCTION_PLAN_ABI)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if ((plan->capability_flags & SPARK_GLM52_SOTA_FAST_CAP_DENSE_ALPHA_MOE) == 0u ||
+        (plan->capability_flags & SPARK_GLM52_SOTA_FAST_CAP_DENSE_ALPHA_STRICT) == 0u ||
+        (plan->capability_flags & SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_B_BROADCAST) == 0u)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (arguments->active_token_count == 0u ||
+        arguments->active_token_count > plan->maximum_tokens ||
+        arguments->active_route_count != arguments->active_token_count * SPARK_GLM52_SOTA_TOP_K ||
+        arguments->bound_expert_count != plan->maximum_bound_experts ||
+        plan->maximum_bound_experts != SPARK_GLM52_SOTA_EXPERT_COUNT)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (arguments->hidden_bf16 == 0 ||
+        arguments->hidden_nvfp4_by_token.payload_u8 == 0 ||
+        arguments->hidden_nvfp4_by_token.scale_e4m3_u8 == 0 ||
+        arguments->route_workspace.topk_bound_slots == 0 ||
+        arguments->route_workspace.topk_weights == 0 ||
+        arguments->gate_weight_nvfp4.payload_u8 == 0 ||
+        arguments->gate_weight_nvfp4.scale_e4m3_u8 == 0 ||
+        arguments->down_weight_nvfp4.payload_u8 == 0 ||
+        arguments->down_weight_nvfp4.scale_e4m3_u8 == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_alpha_token_capacity == 0u || plan->dense_alpha_token_capacity > plan->maximum_tokens)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_alpha_minimum_tokens == 0u || plan->dense_alpha_maximum_tokens < plan->dense_alpha_minimum_tokens || plan->dense_alpha_maximum_tokens > plan->dense_alpha_token_capacity)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (arguments->active_token_count < plan->dense_alpha_minimum_tokens || arguments->active_token_count > plan->dense_alpha_maximum_tokens)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_alpha_require_exact_token_count == 0u || arguments->active_token_count != plan->dense_alpha_token_capacity)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_gate_up_gemm.cutlass_or_cublas_state == 0 || plan->dense_down_gemm.cutlass_or_cublas_state == 0 || plan->dense_gate_up_gemm.launch == 0 || plan->dense_down_gemm.launch == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_gate_up_gemm.cutlass_m != SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION * 2u || plan->dense_gate_up_gemm.cutlass_k != SPARK_GLM52_SOTA_HIDDEN_DIMENSION || plan->dense_down_gemm.cutlass_m != SPARK_GLM52_SOTA_HIDDEN_DIMENSION || plan->dense_down_gemm.cutlass_k != SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_gate_up_gemm.cutlass_n_capacity != plan->dense_alpha_token_capacity || plan->dense_down_gemm.cutlass_n_capacity != plan->dense_alpha_token_capacity)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_gate_up_gemm.cutlass_group_count != plan->maximum_bound_experts || plan->dense_down_gemm.cutlass_group_count != plan->maximum_bound_experts)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_gate_up_gemm.cutlass_b_broadcast == 0u || plan->dense_gate_up_gemm.cutlass_sfb_broadcast == 0u || (plan->dense_gate_up_gemm.capability_flags & SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_B_BROADCAST) == 0u)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_down_gemm.cutlass_b_broadcast != 0u || plan->dense_down_gemm.cutlass_sfb_broadcast != 0u)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_gate_up_gemm.tokens_per_expert_device == 0 || plan->dense_down_gemm.tokens_per_expert_device == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_gate_up_gemm.cutlass_b_payload_u8 != arguments->hidden_nvfp4_by_token.payload_u8 || plan->dense_gate_up_gemm.cutlass_b_scale_ue4m3_u8 != plan->dense_hidden_nvfp4_by_token_sm1xx.scale_e4m3_u8)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_down_gemm.cutlass_b_payload_u8 != plan->dense_intermediate_nvfp4_by_expert_token.payload_u8 || plan->dense_down_gemm.cutlass_b_scale_ue4m3_u8 != plan->dense_intermediate_nvfp4_by_expert_token.scale_e4m3_u8)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->dense_gate_up_bf16_by_expert_token == 0 || plan->dense_intermediate_nvfp4_by_expert_token.payload_u8 == 0 || plan->dense_intermediate_nvfp4_by_expert_token.scale_e4m3_u8 == 0 || plan->dense_down_bf16_by_expert_token == 0 || plan->dense_hidden_nvfp4_by_token_sm1xx.payload_u8 == 0 || plan->dense_hidden_nvfp4_by_token_sm1xx.scale_e4m3_u8 == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    return cudaSuccess;
+}
+
+extern "C" cudaError_t SparkGlm52SotaLaunchDenseAlphaMoeSm121(SparkGlm52SotaProductionMoePlanSm121 *plan, const SparkGlm52SotaMoeArguments *arguments, cudaStream_t stream)
+{
+    cudaError_t error;
+    uint32_t group_grid;
+
+    error = SparkGlm52SotaValidateCutlassDenseAlphaMoePlan(plan, arguments);
+    if (error != cudaSuccess)
+    {
+        return error;
+    }
+    SparkGlm52SotaClearU32Kernel<<<1u, 256u, 0u, stream>>>(plan->overflow_flag, 1u);
+    group_grid = SparkGlm52SotaCeilDivU32(SPARK_GLM52_SOTA_NVFP4_SCALE_GROUPS_HIDDEN, 4u);
+    SparkGlm52SotaQuantizeHiddenOnceNvfp4Kernel<<<dim3(group_grid, arguments->active_token_count, 1u), 128u, 0u, stream>>>(*arguments);
+    SparkGlm52SotaPackDenseHiddenScalesSm1xxKernel<<<dim3(SparkGlm52SotaCeilDivU32(SPARK_GLM52_SOTA_NVFP4_SCALE_GROUPS_HIDDEN, 256u), arguments->active_token_count, 1u), 256u, 0u, stream>>>(*arguments, *plan);
+    error = plan->dense_gate_up_gemm.launch(&plan->dense_gate_up_gemm, stream);
+    if (error != cudaSuccess)
+    {
+        return error;
+    }
+    SparkGlm52SotaSiluMulRequantDenseAlphaKernel<<<dim3(SPARK_GLM52_SOTA_NVFP4_SCALE_GROUPS_MOE, arguments->active_token_count, plan->maximum_bound_experts), 32u, 0u, stream>>>(*plan, *arguments);
+    error = plan->dense_down_gemm.launch(&plan->dense_down_gemm, stream);
+    if (error != cudaSuccess)
+    {
+        return error;
+    }
+    SparkGlm52SotaWeightedCombineDenseAlphaKernel<<<dim3(SparkGlm52SotaCeilDivU32(SPARK_GLM52_SOTA_HIDDEN_DIMENSION, 256u), arguments->active_token_count, 1u), 256u, 0u, stream>>>(*plan, *arguments);
+    return cudaGetLastError();
+}
+
 static cudaError_t SparkGlm52SotaValidateProductionMoeLaunch(SparkGlm52SotaProductionMoePlanSm121 *plan, const SparkGlm52SotaMoeArguments *arguments)
 {
+    uint64_t required_flags;
+
     if (plan == 0 || arguments == 0 || plan->abi_version != SPARK_GLM52_SOTA_PRODUCTION_PLAN_ABI)
     {
         return cudaErrorInvalidValue;
@@ -464,16 +695,49 @@ static cudaError_t SparkGlm52SotaValidateProductionMoeLaunch(SparkGlm52SotaProdu
     {
         return cudaErrorInvalidValue;
     }
-    if ((plan->capability_flags & (SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_GATE_UP | SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_DOWN | SPARK_GLM52_SOTA_FAST_CAP_FUSED_SILU_REQUANT | SPARK_GLM52_SOTA_FAST_CAP_TOKEN_QUANT_ONCE)) == 0u)
+    if (arguments->hidden_bf16 == 0 ||
+        arguments->hidden_nvfp4_by_token.payload_u8 == 0 ||
+        arguments->hidden_nvfp4_by_token.scale_e4m3_u8 == 0 ||
+        arguments->route_workspace.topk_bound_slots == 0 ||
+        arguments->route_workspace.topk_weights == 0 ||
+        arguments->gate_weight_nvfp4.payload_u8 == 0 ||
+        arguments->gate_weight_nvfp4.scale_e4m3_u8 == 0 ||
+        arguments->down_weight_nvfp4.payload_u8 == 0 ||
+        arguments->down_weight_nvfp4.scale_e4m3_u8 == 0)
     {
         return cudaErrorInvalidValue;
     }
-    if (arguments->hidden_bf16 == 0 || arguments->hidden_nvfp4_by_token.payload_u8 == 0 || arguments->hidden_nvfp4_by_token.scale_e4m3_u8 == 0 || arguments->route_workspace.topk_bound_slots == 0 || arguments->route_workspace.topk_weights == 0 || arguments->gate_weight_nvfp4.payload_u8 == 0 || arguments->gate_weight_nvfp4.scale_e4m3_u8 == 0 || arguments->down_weight_nvfp4.payload_u8 == 0 || arguments->down_weight_nvfp4.scale_e4m3_u8 == 0)
+    if ((plan->capability_flags & SPARK_GLM52_SOTA_FAST_CAP_DENSE_ALPHA_MOE) != 0u)
+    {
+        required_flags = SPARK_GLM52_SOTA_FAST_CAP_TOKEN_QUANT_ONCE |
+            SPARK_GLM52_SOTA_FAST_CAP_DENSE_ALPHA_MOE |
+            SPARK_GLM52_SOTA_FAST_CAP_DENSE_ALPHA_STRICT |
+            SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_GATE_UP |
+            SPARK_GLM52_SOTA_FAST_CAP_FUSED_SILU_REQUANT |
+            SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_DOWN |
+            SPARK_GLM52_SOTA_FAST_CAP_WEIGHTED_COMBINE |
+            SPARK_GLM52_SOTA_FAST_CAP_NO_HOST_STAGING |
+            SPARK_GLM52_SOTA_FAST_CAP_NO_DEVICE_MEMCPY |
+            SPARK_GLM52_SOTA_FAST_CAP_SM121_NVFP4_SCALE_LAYOUT |
+            SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_B_BROADCAST |
+            SPARK_GLM52_SOTA_FAST_CAP_FIXED_GLM52_SHAPES;
+        if ((plan->capability_flags & required_flags) != required_flags)
+        {
+            return cudaErrorInvalidValue;
+        }
+        return SparkGlm52SotaValidateCutlassDenseAlphaMoePlan(plan, arguments);
+    }
+    required_flags = SPARK_GLM52_SOTA_FAST_CAP_TOKEN_QUANT_ONCE |
+        SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_GATE_UP |
+        SPARK_GLM52_SOTA_FAST_CAP_FUSED_SILU_REQUANT |
+        SPARK_GLM52_SOTA_FAST_CAP_CUTLASS_NVFP4_DOWN;
+    if ((plan->capability_flags & required_flags) != required_flags)
     {
         return cudaErrorInvalidValue;
     }
     return cudaSuccess;
 }
+
 
 static cudaError_t SparkGlm52SotaValidateCutlassFixedMoePlan(SparkGlm52SotaProductionMoePlanSm121 *plan)
 {
@@ -551,6 +815,10 @@ extern "C" cudaError_t SparkGlm52SotaLaunchProductionGroupedMoeSm121(SparkGlm52S
     if (error != cudaSuccess)
     {
         return error;
+    }
+    if ((plan->capability_flags & SPARK_GLM52_SOTA_FAST_CAP_DENSE_ALPHA_MOE) != 0u)
+    {
+        return SparkGlm52SotaLaunchDenseAlphaMoeSm121(plan, arguments, stream);
     }
     if (plan->gate_up_gemm.cutlass_or_cublas_state != 0 || plan->down_gemm.cutlass_or_cublas_state != 0)
     {

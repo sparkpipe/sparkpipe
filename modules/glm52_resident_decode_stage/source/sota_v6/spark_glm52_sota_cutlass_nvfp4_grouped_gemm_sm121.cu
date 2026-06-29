@@ -143,11 +143,14 @@ static cudaError_t SparkGlm52SotaBuildSm121GroupedState(SparkGlm52SotaNvfp4Group
     layout_sfb_host.resize(plan->cutlass_group_count);
     for (group_index = 0u; group_index < plan->cutlass_group_count; ++group_index)
     {
+        uint64_t b_payload_offset = plan->cutlass_b_broadcast != 0u ? 0u : ((uint64_t)group_index * b_payload_bytes);
+        uint64_t sfb_offset = plan->cutlass_sfb_broadcast != 0u ? 0u : ((uint64_t)group_index * sfb_bytes);
+
         cached_arguments->problem_sizes_host[group_index] = {static_cast<int>(m), static_cast<int>(n), static_cast<int>(k)};
         ptr_a_host[group_index] = reinterpret_cast<const GemmElementA *>(plan->cutlass_a_payload_u8 + ((uint64_t)group_index * a_payload_bytes));
-        ptr_b_host[group_index] = reinterpret_cast<const GemmElementB *>(plan->cutlass_b_payload_u8 + ((uint64_t)group_index * b_payload_bytes));
+        ptr_b_host[group_index] = reinterpret_cast<const GemmElementB *>(plan->cutlass_b_payload_u8 + b_payload_offset);
         ptr_sfa_host[group_index] = reinterpret_cast<const GemmElementSF *>(plan->cutlass_a_scale_ue4m3_u8 + ((uint64_t)group_index * sfa_bytes));
-        ptr_sfb_host[group_index] = reinterpret_cast<const GemmElementSF *>(plan->cutlass_b_scale_ue4m3_u8 + ((uint64_t)group_index * sfb_bytes));
+        ptr_sfb_host[group_index] = reinterpret_cast<const GemmElementSF *>(plan->cutlass_b_scale_ue4m3_u8 + sfb_offset);
         ptr_c_host[group_index] = reinterpret_cast<const ElementC *>(static_cast<const uint8_t *>(plan->cutlass_c_bf16) + ((uint64_t)group_index * c_elements * sizeof(ElementC)));
         ptr_d_host[group_index] = reinterpret_cast<ElementD *>(static_cast<uint8_t *>(plan->cutlass_d_bf16) + ((uint64_t)group_index * c_elements * sizeof(ElementD)));
         stride_a_host[group_index] = cutlass::make_cute_packed_stride(StrideA{}, {static_cast<int>(m), static_cast<int>(k), 1});

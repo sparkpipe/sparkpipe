@@ -32,6 +32,10 @@ CUTLASS_MOE_BENCHMARK_DEPENDENCIES := \
 	$(BUILD_DIRECTORY)/sota_v6/spark_glm52_sota_production_plan_sm121.o \
 	$(BUILD_DIRECTORY)/sota_v6/spark_glm52_sota_cutlass_nvfp4_grouped_gemm_sm121.o \
 	$(BUILD_DIRECTORY)/sota_v6/spark_glm52_sota_grouped_nvfp4_moe_production_sm121.o
+DENSE_ALPHA_MOE_BENCHMARK_DEPENDENCIES := \
+	$(BUILD_DIRECTORY)/sota_v6/spark_glm52_sota_production_plan_sm121.o \
+	$(BUILD_DIRECTORY)/sota_v6/spark_glm52_sota_cutlass_nvfp4_grouped_gemm_sm121.o \
+	$(BUILD_DIRECTORY)/sota_v6/spark_glm52_sota_grouped_nvfp4_moe_production_sm121.o
 HOST_DEPENDENCY := $(HOST_OBJECT:.o=.d)
 CUDA_DEPENDENCY := $(CUDA_OBJECT:.o=.d)
 CUBLASLT_PLAN_DEPENDENCY := $(CUBLASLT_PLAN_OBJECT:.o=.d)
@@ -40,6 +44,8 @@ MODULE_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_resident_decode_stage.a
 ARTIFACT_CHECK_TOOL := $(BUILD_DIRECTORY)/glm52_artifact_check
 CUTLASS_MOE_BENCHMARK := $(BUILD_DIRECTORY)/spark_glm52_sota_cutlass_moe_benchmark
 CUTLASS_MOE_BENCHMARK_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_sota_cutlass_moe_benchmark.o
+DENSE_ALPHA_MOE_BENCHMARK := $(BUILD_DIRECTORY)/spark_glm52_sota_dense_alpha_moe_benchmark
+DENSE_ALPHA_MOE_BENCHMARK_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_sota_dense_alpha_moe_benchmark.o
 PACKAGE_DIRECTORY ?= $(REPOSITORY_ROOT)/build/packages/glm52_resident_decode_stage
 CUDA_HOME ?= $(abspath $(dir $(shell command -v $(NVCC)))/..)
 VALIDATION_RECIPE_VARIANT ?= default
@@ -58,8 +64,9 @@ SOTA_V6_CUTLASS_FLAGS += -I$(SOTA_V6_CUTLASS_UTIL_INCLUDE)
 endif
 endif
 CUTLASS_MOE_BENCH_ARGS ?= --tokens 32 --groups 256 --capacity 8 --warmup 5 --iterations 20
+DENSE_ALPHA_MOE_BENCH_ARGS ?= --tokens 96 --groups 256 --capacity 96 --warmup 5 --iterations 20 --workspace-mb 1024
 
-.PHONY: archive sota_v6_archive cold_archive artifact_check validate validate_layer0_attention_bf16 validate_layer0_dense_bf16 validate_layer0_bf16 validate_layer0_embedding_bf16 validate_layer0_prefill_bf16 validate_layer0_reference_bf16 validate_layer0_full_reference_bf16 publish package package_layer0_attention_bf16 package_layer0_dense_bf16 package_layer0_bf16 package_layer0_embedding_bf16 package_layer0_prefill_bf16 package_layer0_reference_bf16 package_layer0_full_reference_bf16 clean require_sm121 require_cutlass require_cutlass_sm121a require_latency_limit require_model_dir require_input_token benchmark_cutlass_moe validate_layer1_full_reference_bf16 validate_layer2_full_reference_bf16 validate_dense_chain_bf16 validate_layer3_router_bf16 validate_layer3_shared_expert_bf16 validate_layer3_routed_expert_nvfp4 validate_layer3_routed_expert_nvfp4_topk package_layer1_full_reference_bf16 package_layer2_full_reference_bf16 package_dense_chain_bf16 package_layer3_router_bf16 package_layer3_shared_expert_bf16 package_layer3_routed_expert_nvfp4 package_layer3_routed_expert_nvfp4_topk
+.PHONY: archive sota_v6_archive cold_archive artifact_check validate validate_layer0_attention_bf16 validate_layer0_dense_bf16 validate_layer0_bf16 validate_layer0_embedding_bf16 validate_layer0_prefill_bf16 validate_layer0_reference_bf16 validate_layer0_full_reference_bf16 publish package package_layer0_attention_bf16 package_layer0_dense_bf16 package_layer0_bf16 package_layer0_embedding_bf16 package_layer0_prefill_bf16 package_layer0_reference_bf16 package_layer0_full_reference_bf16 clean require_sm121 require_cutlass require_cutlass_sm121a require_latency_limit require_model_dir require_input_token benchmark_cutlass_moe benchmark_dense_alpha_moe validate_layer1_full_reference_bf16 validate_layer2_full_reference_bf16 validate_dense_chain_bf16 validate_layer3_router_bf16 validate_layer3_shared_expert_bf16 validate_layer3_routed_expert_nvfp4 validate_layer3_routed_expert_nvfp4_topk package_layer1_full_reference_bf16 package_layer2_full_reference_bf16 package_dense_chain_bf16 package_layer3_router_bf16 package_layer3_shared_expert_bf16 package_layer3_routed_expert_nvfp4 package_layer3_routed_expert_nvfp4_topk
 
 archive: require_sm121 $(MODULE_ARCHIVE)
 
@@ -119,8 +126,19 @@ $(CUTLASS_MOE_BENCHMARK): $(CUTLASS_MOE_BENCHMARK_OBJECT) $(CUTLASS_MOE_BENCHMAR
 	$(NVCC) $(NVCCFLAGS) $(SOTA_V6_CUTLASS_FLAGS) $^ \
 		-L$(CUDA_HOME)/lib64 -lcublasLt -lcublas -lcudart -o $@
 
+$(DENSE_ALPHA_MOE_BENCHMARK_OBJECT): validation/spark_glm52_sota_dense_alpha_moe_benchmark.cu | $(BUILD_DIRECTORY)
+	$(NVCC) $(NVCCFLAGS) $(SOTA_V6_CUTLASS_FLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource -I$(SOTA_V6_SOURCE_DIRECTORY) \
+		-MMD -MP -c $< -o $@
+
+$(DENSE_ALPHA_MOE_BENCHMARK): $(DENSE_ALPHA_MOE_BENCHMARK_OBJECT) $(DENSE_ALPHA_MOE_BENCHMARK_DEPENDENCIES)
+	$(NVCC) $(NVCCFLAGS) $(SOTA_V6_CUTLASS_FLAGS) $^ \
+		-L$(CUDA_HOME)/lib64 -lcublasLt -lcublas -lcudart -o $@
+
 benchmark_cutlass_moe: require_sm121 require_cutlass require_cutlass_sm121a $(CUTLASS_MOE_BENCHMARK)
 	$(CUTLASS_MOE_BENCHMARK) $(CUTLASS_MOE_BENCH_ARGS)
+
+benchmark_dense_alpha_moe: require_sm121 require_cutlass require_cutlass_sm121a $(DENSE_ALPHA_MOE_BENCHMARK)
+	$(DENSE_ALPHA_MOE_BENCHMARK) $(DENSE_ALPHA_MOE_BENCH_ARGS)
 
 $(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT) $(CUBLASLT_PLAN_OBJECT) $(SOTA_V6_OBJECTS)
 	rm -f $@
@@ -270,4 +288,4 @@ package: publish
 clean:
 	rm -rf $(BUILD_DIRECTORY)
 
--include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(CUBLASLT_PLAN_DEPENDENCY) $(SOTA_V6_DEPENDENCIES) $(CUTLASS_MOE_BENCHMARK_OBJECT:.o=.d)
+-include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(CUBLASLT_PLAN_DEPENDENCY) $(SOTA_V6_DEPENDENCIES) $(CUTLASS_MOE_BENCHMARK_OBJECT:.o=.d) $(DENSE_ALPHA_MOE_BENCHMARK_OBJECT:.o=.d)
