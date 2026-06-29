@@ -83,6 +83,18 @@ struct SparkGlm52SotaNvfp4GroupedGemmPlanSm121
     uint64_t workspace_bytes;
     void *workspace;
     void *cutlass_or_cublas_state;
+    uint32_t cutlass_m;
+    uint32_t cutlass_n_capacity;
+    uint32_t cutlass_k;
+    uint32_t cutlass_group_count;
+    int32_t *tokens_per_expert_device;
+    int32_t *tokens_per_expert_host;
+    const uint8_t *cutlass_a_payload_u8;
+    const uint8_t *cutlass_a_scale_ue4m3_u8;
+    const uint8_t *cutlass_b_payload_u8;
+    const uint8_t *cutlass_b_scale_ue4m3_u8;
+    const void *cutlass_c_bf16;
+    void *cutlass_d_bf16;
     SparkGlm52SotaNvfp4GroupedGemmProblemSm121 *problems_device;
     SparkGlm52SotaNvfp4GroupedGemmProblemSm121 *problems_host_mapped;
     cudaError_t (*launch)(SparkGlm52SotaNvfp4GroupedGemmPlanSm121 *plan, cudaStream_t stream);
@@ -179,6 +191,14 @@ cudaError_t SparkGlm52SotaLaunchBf16CublasLtLinearSm121(
 
 cudaError_t SparkGlm52SotaLaunchCutlassNvfp4GroupedGemmSm121(
     SparkGlm52SotaNvfp4GroupedGemmPlanSm121 *plan,
+    cudaStream_t stream);
+
+uint64_t SparkGlm52SotaCutlassNvfp4GroupedGemmStateBytesSm121(void);
+
+cudaError_t SparkGlm52SotaInitializeCutlassNvfp4GroupedGemmSm121(
+    SparkGlm52SotaNvfp4GroupedGemmPlanSm121 *plan,
+    void *state_memory,
+    uint64_t state_memory_bytes,
     cudaStream_t stream);
 
 cudaError_t SparkGlm52SotaLaunchProductionGroupedMoeSm121(

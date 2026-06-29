@@ -49,7 +49,23 @@ static cudaError_t SparkGlm52SotaValidateNvfp4GemmPlan(const SparkGlm52SotaNvfp4
     {
         return cudaErrorInvalidValue;
     }
-    if ((plan->capability_flags & SPARK_GLM52_SOTA_FAST_CAP_SM121_NVFP4_SCALE_LAYOUT) == 0u || plan->launch == 0 || plan->problems_device == 0 || plan->workspace == 0 || plan->workspace_bytes == 0u)
+    if ((plan->capability_flags & SPARK_GLM52_SOTA_FAST_CAP_SM121_NVFP4_SCALE_LAYOUT) == 0u || plan->launch == 0 || plan->workspace == 0 || plan->workspace_bytes == 0u)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->cutlass_or_cublas_state != 0)
+    {
+        if (plan->cutlass_m != expected_n || plan->cutlass_k != expected_k || plan->cutlass_group_count != plan->problem_count || plan->cutlass_n_capacity == 0u)
+        {
+            return cudaErrorInvalidValue;
+        }
+        if (plan->tokens_per_expert_device == 0 || plan->cutlass_a_payload_u8 == 0 || plan->cutlass_a_scale_ue4m3_u8 == 0 || plan->cutlass_b_payload_u8 == 0 || plan->cutlass_b_scale_ue4m3_u8 == 0 || plan->cutlass_c_bf16 == 0 || plan->cutlass_d_bf16 == 0)
+        {
+            return cudaErrorInvalidValue;
+        }
+        return cudaSuccess;
+    }
+    if (plan->problems_device == 0)
     {
         return cudaErrorInvalidValue;
     }

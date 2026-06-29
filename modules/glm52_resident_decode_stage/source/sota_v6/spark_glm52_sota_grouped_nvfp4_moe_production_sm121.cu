@@ -12,6 +12,17 @@ void SparkGlm52SotaClearU32Kernel(uint32_t *values, uint32_t count)
 }
 
 static __global__ __launch_bounds__(256, 2)
+void SparkGlm52SotaClearI32Kernel(int32_t *values, uint32_t count)
+{
+    uint32_t index = threadIdx.x + (blockIdx.x * blockDim.x);
+    while (index < count)
+    {
+        values[index] = 0;
+        index += blockDim.x * gridDim.x;
+    }
+}
+
+static __global__ __launch_bounds__(256, 2)
 void SparkGlm52SotaCountRoutesByExpertKernel(const SparkGlm52SotaMoeArguments arguments, SparkGlm52SotaProductionMoePlanSm121 plan)
 {
     uint32_t route_index = threadIdx.x + (blockIdx.x * blockDim.x);
@@ -147,6 +158,78 @@ void SparkGlm52SotaPackGroupedHiddenRowsKernel(const SparkGlm52SotaMoeArguments 
 }
 
 static __global__ __launch_bounds__(256, 2)
+void SparkGlm52SotaPackFixedRouteSlotsKernel(const SparkGlm52SotaMoeArguments arguments, SparkGlm52SotaProductionMoePlanSm121 plan, int32_t *tokens_per_expert, uint32_t route_capacity_per_expert)
+{
+    uint32_t route_index = threadIdx.x + (blockIdx.x * blockDim.x);
+    while (route_index < arguments.active_route_count)
+    {
+        int32_t bound_slot = arguments.route_workspace.topk_bound_slots[route_index];
+        if (bound_slot >= 0 && (uint32_t)bound_slot < plan.maximum_bound_experts)
+        {
+            uint32_t expert_slot = (uint32_t)bound_slot;
+            uint32_t local_slot = (uint32_t)atomicAdd(&tokens_per_expert[expert_slot], 1);
+            if (local_slot < route_capacity_per_expert)
+            {
+                plan.grouped_row_by_route[route_index] = (expert_slot * route_capacity_per_expert) + local_slot;
+            }
+            else
+            {
+                atomicExch(plan.overflow_flag, 1u);
+                plan.grouped_row_by_route[route_index] = 0u;
+            }
+        }
+        else
+        {
+            atomicExch(plan.overflow_flag, 1u);
+            plan.grouped_row_by_route[route_index] = 0u;
+        }
+        route_index += blockDim.x * gridDim.x;
+    }
+}
+
+static __global__ __launch_bounds__(256, 2)
+void SparkGlm52SotaPackFixedHiddenRowsKernel(const SparkGlm52SotaMoeArguments arguments, SparkGlm52SotaProductionMoePlanSm121 plan)
+{
+    uint32_t route_index = blockIdx.y;
+    uint32_t byte_index = threadIdx.x + (blockIdx.x * blockDim.x);
+    uint32_t grouped_row;
+    uint32_t token_index;
+
+    if (route_index >= arguments.active_route_count)
+    {
+        return;
+    }
+    grouped_row = plan.grouped_row_by_route[route_index];
+    token_index = route_index / SPARK_GLM52_SOTA_TOP_K;
+    while (byte_index < arguments.hidden_nvfp4_by_token.packed_row_stride_bytes)
+    {
+        plan.grouped_hidden_nvfp4_by_route.payload_u8[((uint64_t)grouped_row * plan.grouped_hidden_nvfp4_by_route.packed_row_stride_bytes) + byte_index] = arguments.hidden_nvfp4_by_token.payload_u8[((uint64_t)token_index * arguments.hidden_nvfp4_by_token.packed_row_stride_bytes) + byte_index];
+        byte_index += blockDim.x * gridDim.x;
+    }
+}
+
+static __global__ __launch_bounds__(256, 2)
+void SparkGlm52SotaPackFixedHiddenScalesKernel(const SparkGlm52SotaMoeArguments arguments, SparkGlm52SotaProductionMoePlanSm121 plan)
+{
+    uint32_t route_index = blockIdx.y;
+    uint32_t scale_index = threadIdx.x + (blockIdx.x * blockDim.x);
+    uint32_t grouped_row;
+    uint32_t token_index;
+
+    if (route_index >= arguments.active_route_count)
+    {
+        return;
+    }
+    grouped_row = plan.grouped_row_by_route[route_index];
+    token_index = route_index / SPARK_GLM52_SOTA_TOP_K;
+    while (scale_index < SPARK_GLM52_SOTA_NVFP4_SCALE_GROUPS_HIDDEN)
+    {
+        plan.grouped_hidden_nvfp4_by_route.scale_e4m3_u8[((uint64_t)grouped_row * plan.grouped_hidden_nvfp4_by_route.scale_row_stride_bytes) + scale_index] = arguments.hidden_nvfp4_by_token.scale_e4m3_u8[((uint64_t)token_index * arguments.hidden_nvfp4_by_token.scale_row_stride_bytes) + scale_index];
+        scale_index += blockDim.x * gridDim.x;
+    }
+}
+
+static __global__ __launch_bounds__(256, 2)
 void SparkGlm52SotaPackGroupedHiddenScalesKernel(const SparkGlm52SotaMoeArguments arguments, SparkGlm52SotaProductionMoePlanSm121 plan)
 {
     uint32_t grouped_row = blockIdx.y;
@@ -265,6 +348,53 @@ void SparkGlm52SotaSiluMulRequantGroupedKernel(SparkGlm52SotaProductionMoePlanSm
     }
 }
 
+static __global__ __launch_bounds__(128, 4)
+void SparkGlm52SotaSiluMulRequantFixedSlotKernel(SparkGlm52SotaProductionMoePlanSm121 plan, const SparkGlm52SotaMoeArguments arguments)
+{
+    uint32_t route_index = blockIdx.y;
+    uint32_t group_index = blockIdx.x;
+    uint32_t lane = threadIdx.x & 31u;
+    uint32_t column_base = group_index * SPARK_GLM52_SOTA_NVFP4_GROUP_SIZE;
+    uint32_t grouped_row;
+    float first = 0.0f;
+    float second = 0.0f;
+    float maximum_value;
+    float scale;
+    uint8_t scale_code;
+
+    if (route_index >= arguments.active_route_count || group_index >= SPARK_GLM52_SOTA_NVFP4_SCALE_GROUPS_MOE)
+    {
+        return;
+    }
+    grouped_row = plan.grouped_row_by_route[route_index];
+    if (lane < 8u)
+    {
+        uint32_t column = column_base + lane * 2u;
+        uint64_t base = ((uint64_t)grouped_row * SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION * 2u) + column;
+        float gate0 = SparkGlm52SotaBf16ToFloat(plan.gate_up_bf16_by_grouped_route[base]);
+        float gate1 = SparkGlm52SotaBf16ToFloat(plan.gate_up_bf16_by_grouped_route[base + 1u]);
+        float up0 = SparkGlm52SotaBf16ToFloat(plan.gate_up_bf16_by_grouped_route[base + SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION]);
+        float up1 = SparkGlm52SotaBf16ToFloat(plan.gate_up_bf16_by_grouped_route[base + SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION + 1u]);
+        first = SparkGlm52SotaSilu(gate0) * up0;
+        second = SparkGlm52SotaSilu(gate1) * up1;
+    }
+    maximum_value = lane < 8u ? fmaxf(fabsf(first), fabsf(second)) : 0.0f;
+    maximum_value = SparkGlm52SotaWarpReduceMax(maximum_value);
+    maximum_value = __shfl_sync(0xffffffffu, maximum_value, 0);
+    scale = fmaxf(maximum_value * 0.1666666667f, 1.0e-8f);
+    scale_code = SparkGlm52SotaEncodePositiveE4m3(scale);
+    scale = SparkGlm52SotaDecodeE4m3(scale_code);
+    if (lane == 0u)
+    {
+        plan.intermediate_nvfp4_by_grouped_route.scale_e4m3_u8[((uint64_t)grouped_row * plan.intermediate_nvfp4_by_grouped_route.scale_row_stride_bytes) + group_index] = scale_code;
+    }
+    if (lane < 8u)
+    {
+        uint64_t packed_index = ((uint64_t)grouped_row * plan.intermediate_nvfp4_by_grouped_route.packed_row_stride_bytes) + ((uint64_t)(column_base + lane * 2u) >> 1u);
+        SparkGlm52SotaStoreNvfp4Pair(plan.intermediate_nvfp4_by_grouped_route.payload_u8, packed_index, SparkGlm52SotaEncodeE2m1(first / scale), SparkGlm52SotaEncodeE2m1(second / scale));
+    }
+}
+
 static __global__ __launch_bounds__(256, 2)
 void SparkGlm52SotaWeightedCombineGroupedKernel(SparkGlm52SotaProductionMoePlanSm121 plan, const SparkGlm52SotaMoeArguments arguments)
 {
@@ -316,6 +446,71 @@ static cudaError_t SparkGlm52SotaValidateProductionMoeLaunch(SparkGlm52SotaProdu
     return cudaSuccess;
 }
 
+static cudaError_t SparkGlm52SotaValidateCutlassFixedMoePlan(SparkGlm52SotaProductionMoePlanSm121 *plan)
+{
+    if (plan->gate_up_gemm.cutlass_or_cublas_state == 0 || plan->down_gemm.cutlass_or_cublas_state == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->gate_up_gemm.tokens_per_expert_device == 0 || plan->down_gemm.tokens_per_expert_device == 0 || plan->gate_up_gemm.tokens_per_expert_device != plan->down_gemm.tokens_per_expert_device)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->gate_up_gemm.cutlass_n_capacity == 0u || plan->down_gemm.cutlass_n_capacity != plan->gate_up_gemm.cutlass_n_capacity)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->gate_up_gemm.cutlass_m != SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION * 2u || plan->gate_up_gemm.cutlass_k != SPARK_GLM52_SOTA_HIDDEN_DIMENSION || plan->down_gemm.cutlass_m != SPARK_GLM52_SOTA_HIDDEN_DIMENSION || plan->down_gemm.cutlass_k != SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION)
+    {
+        return cudaErrorInvalidValue;
+    }
+    if (plan->gate_up_gemm.cutlass_group_count != plan->maximum_bound_experts || plan->down_gemm.cutlass_group_count != plan->maximum_bound_experts)
+    {
+        return cudaErrorInvalidValue;
+    }
+    return cudaSuccess;
+}
+
+static cudaError_t SparkGlm52SotaLaunchCutlassFixedMoeSm121(SparkGlm52SotaProductionMoePlanSm121 *plan, const SparkGlm52SotaMoeArguments *arguments, cudaStream_t stream)
+{
+    cudaError_t error;
+    uint32_t clear_grid;
+    uint32_t route_grid;
+    uint32_t group_grid;
+    uint32_t route_capacity_per_expert;
+    int32_t *tokens_per_expert;
+
+    error = SparkGlm52SotaValidateCutlassFixedMoePlan(plan);
+    if (error != cudaSuccess)
+    {
+        return error;
+    }
+    route_capacity_per_expert = plan->gate_up_gemm.cutlass_n_capacity;
+    tokens_per_expert = plan->gate_up_gemm.tokens_per_expert_device;
+    clear_grid = SparkGlm52SotaCeilDivU32(plan->maximum_bound_experts, 256u);
+    SparkGlm52SotaClearI32Kernel<<<clear_grid, 256u, 0u, stream>>>(tokens_per_expert, plan->maximum_bound_experts);
+    SparkGlm52SotaClearU32Kernel<<<1u, 256u, 0u, stream>>>(plan->overflow_flag, 1u);
+    route_grid = SparkGlm52SotaCeilDivU32(arguments->active_route_count, 256u);
+    group_grid = SparkGlm52SotaCeilDivU32(SPARK_GLM52_SOTA_NVFP4_SCALE_GROUPS_HIDDEN, 4u);
+    SparkGlm52SotaQuantizeHiddenOnceNvfp4Kernel<<<dim3(group_grid, arguments->active_token_count, 1u), 128u, 0u, stream>>>(*arguments);
+    SparkGlm52SotaPackFixedRouteSlotsKernel<<<route_grid, 256u, 0u, stream>>>(*arguments, *plan, tokens_per_expert, route_capacity_per_expert);
+    SparkGlm52SotaPackFixedHiddenRowsKernel<<<dim3(SparkGlm52SotaCeilDivU32(arguments->hidden_nvfp4_by_token.packed_row_stride_bytes, 256u), arguments->active_route_count, 1u), 256u, 0u, stream>>>(*arguments, *plan);
+    SparkGlm52SotaPackFixedHiddenScalesKernel<<<dim3(1u, arguments->active_route_count, 1u), 256u, 0u, stream>>>(*arguments, *plan);
+    error = plan->gate_up_gemm.launch(&plan->gate_up_gemm, stream);
+    if (error != cudaSuccess)
+    {
+        return error;
+    }
+    SparkGlm52SotaSiluMulRequantFixedSlotKernel<<<dim3(SPARK_GLM52_SOTA_NVFP4_SCALE_GROUPS_MOE, arguments->active_route_count, 1u), 128u, 0u, stream>>>(*plan, *arguments);
+    error = plan->down_gemm.launch(&plan->down_gemm, stream);
+    if (error != cudaSuccess)
+    {
+        return error;
+    }
+    SparkGlm52SotaWeightedCombineGroupedKernel<<<dim3(SparkGlm52SotaCeilDivU32(SPARK_GLM52_SOTA_HIDDEN_DIMENSION, 256u), arguments->active_token_count, 1u), 256u, 0u, stream>>>(*plan, *arguments);
+    return cudaGetLastError();
+}
+
 extern "C" cudaError_t SparkGlm52SotaLaunchProductionGroupedMoeSm121(SparkGlm52SotaProductionMoePlanSm121 *plan, const SparkGlm52SotaMoeArguments *arguments, cudaStream_t stream)
 {
     cudaError_t error;
@@ -327,6 +522,10 @@ extern "C" cudaError_t SparkGlm52SotaLaunchProductionGroupedMoeSm121(SparkGlm52S
     if (error != cudaSuccess)
     {
         return error;
+    }
+    if (plan->gate_up_gemm.cutlass_or_cublas_state != 0 || plan->down_gemm.cutlass_or_cublas_state != 0)
+    {
+        return SparkGlm52SotaLaunchCutlassFixedMoeSm121(plan, arguments, stream);
     }
 
     clear_grid = SparkGlm52SotaCeilDivU32(plan->maximum_bound_experts, 256u);
