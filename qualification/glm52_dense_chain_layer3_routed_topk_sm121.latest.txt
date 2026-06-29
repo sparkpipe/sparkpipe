@@ -1,0 +1,71 @@
+GLM52 dense-prefix to layer3 routed-NVFP4 qualification
+=========================================================
+
+Date: 2026-06-29
+Host class: DGX Spark / GB10, CUDA 13.0, sm_121
+Model artifact: GLM-5.2-NVFP4 official checkpoint
+Target:
+  modules/glm52_resident_decode_stage
+  package_dense_chain_layer3_routed_expert_nvfp4_topk
+
+Command shape:
+  GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4
+  GLM52_INPUT_TOKEN_ID=1000
+  MAX_STAGE_MICROSECONDS=10000000
+  make package_dense_chain_layer3_routed_expert_nvfp4_topk CUDA_ARCH=sm_121
+
+Result: PASS
+
+Raw backend pass:
+  total_submissions=17
+  total_us=71464.575
+  maximum_us=6634.976
+  restricted_token=1228
+  input_embedding_token=1000
+  layer3_selected_expert=148
+  layer3_bound_experts=8
+  real_lm_head=1
+  real_lm_head_max_logit_error=0.00000048
+
+Generated model-driver package pass:
+  total_submissions=17
+  total_us=80987.200
+  maximum_us=7225.504
+  restricted_token=1228
+  input_embedding_token=1000
+  layer3_selected_expert=148
+  layer3_bound_experts=8
+  real_lm_head=1
+  real_lm_head_max_logit_error=0.00000048
+
+Dynamic layer3 routed top-k after dense layers 0-2:
+  ids=148,229,60,48,230,31,84,234
+  weights=0.32971722,0.34557801,0.33554500,0.32443690,0.36170247,0.28394979,0.25427175,0.26479888
+
+Routed NVFP4 expert check:
+  route_count=8
+  gate_scratch_nonzero=16315
+  up_nonzero=16384
+  intermediate_nonzero=16384
+  intermediate_fp4_payload_nonzero=7147
+  intermediate_fp4_scale_nonzero=1024
+  route_nonzero=49152
+  up_max=0.27539062
+  intermediate_max=0.040283203
+  route_max=0.012023926
+  up_checksum64=10.12268448
+  intermediate_checksum64=-0.64009327
+  route_checksum64=-0.27399501
+  layer_checksum64=-1.83994246
+
+Scope:
+  This qualifies the checkpoint-backed chain:
+    input embedding
+    dense layers 0,1,2
+    layer3 attention/router top-k
+    dynamic binding of the actual selected official NVFP4 routed experts
+    layer3 routed NVFP4 top-k expert path
+    restricted LM-head check
+
+  This is not yet full GLM 5.2 inference. It is the current deepest
+  checkpoint-backed CUDA/model-driver gate.

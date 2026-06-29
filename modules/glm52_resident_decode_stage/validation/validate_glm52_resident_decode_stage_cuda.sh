@@ -14,6 +14,9 @@ module_directory="$(cd "${script_directory}/.." && pwd)"
 repository_root="$(cd "${module_directory}/../.." && pwd)"
 validation_directory="$(mktemp -d)"
 trap 'rm -rf "${validation_directory}"' EXIT
+common_target="build/libsparkpipe_common.a"
+runtime_target="build/libsparkpipe_runtime.a"
+compiler_target="build/libsparkpipe_compiler.a"
 common_archive="${repository_root}/build/libsparkpipe_common.a"
 runtime_archive="${repository_root}/build/libsparkpipe_runtime.a"
 compiler_archive="${repository_root}/build/libsparkpipe_compiler.a"
@@ -43,7 +46,7 @@ if [[ "${cuda_architecture}" != "sm_121" ]]; then
     exit 2
 fi
 
-make -C "${repository_root}" "${common_archive}" "${runtime_archive}" "${compiler_archive}"
+make -C "${repository_root}" "${common_target}" "${runtime_target}" "${compiler_target}"
 
 "${nvcc_path}" \
     -std=c++17 \
