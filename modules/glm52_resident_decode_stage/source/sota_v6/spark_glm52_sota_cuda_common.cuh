@@ -4,8 +4,13 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+#include <math_constants.h>
 #include <mma.h>
 #include <stdint.h>
+
+#ifndef CUDART_INF_F
+#define CUDART_INF_F __int_as_float(0x7f800000)
+#endif
 
 #define SPARK_GLM52_SOTA_HIDDEN_DIMENSION 6144u
 #define SPARK_GLM52_SOTA_DENSE_INTERMEDIATE_DIMENSION 12288u
