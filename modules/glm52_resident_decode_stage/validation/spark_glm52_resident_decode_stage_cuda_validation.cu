@@ -24,7 +24,7 @@
 #define SPARK_VALIDATION_CONTEXT_LENGTH 4u
 #define SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT 3u
 #define SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX 3u
-#define SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT 2u
+#define SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT 4u
 #define SPARK_VALIDATION_LAYER_COUNT 78u
 #define SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET 61u
 #define SPARK_VALIDATION_CURRENT_POSITION 64u
@@ -164,12 +164,9 @@ typedef struct SparkValidationDeviceBuffers
     uint16_t *dense_layer_mla_cache_bf16[SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT];
     uint16_t *dense_layer_key_nope_cache_bf16[SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT];
     uint16_t *dense_layer_value_cache_bf16[SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT];
-    uint16_t *layer3_mla_cache_bf16;
-    uint16_t *layer3_key_nope_cache_bf16;
-    uint16_t *layer3_value_cache_bf16;
-    uint16_t *layer4_mla_cache_bf16;
-    uint16_t *layer4_key_nope_cache_bf16;
-    uint16_t *layer4_value_cache_bf16;
+    uint16_t *routed_layer_mla_cache_bf16[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    uint16_t *routed_layer_key_nope_cache_bf16[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    uint16_t *routed_layer_value_cache_bf16[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
     uint16_t *rotated_query_rope_bf16;
     uint16_t *attention_output_latent_bf16;
     uint16_t *attention_projected_hidden_bf16;
@@ -2542,12 +2539,18 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->dense_layer_mla_cache_bf16[2], cache_count * 2u, "cudaMalloc dense_layer2_mla_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_layer_key_nope_cache_bf16[2], key_nope_cache_count * 2u, "cudaMalloc dense_layer2_key_nope_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_layer_value_cache_bf16[2], value_cache_count * 2u, "cudaMalloc dense_layer2_value_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->layer3_mla_cache_bf16, cache_count * 2u, "cudaMalloc layer3_mla_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->layer3_key_nope_cache_bf16, key_nope_cache_count * 2u, "cudaMalloc layer3_key_nope_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->layer3_value_cache_bf16, value_cache_count * 2u, "cudaMalloc layer3_value_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->layer4_mla_cache_bf16, cache_count * 2u, "cudaMalloc layer4_mla_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->layer4_key_nope_cache_bf16, key_nope_cache_count * 2u, "cudaMalloc layer4_key_nope_cache") &&
-        SparkValidationAllocateZeroed((void **)&buffers->layer4_value_cache_bf16, value_cache_count * 2u, "cudaMalloc layer4_value_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_mla_cache_bf16[0], cache_count * 2u, "cudaMalloc routed_layer0_mla_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_key_nope_cache_bf16[0], key_nope_cache_count * 2u, "cudaMalloc routed_layer0_key_nope_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_value_cache_bf16[0], value_cache_count * 2u, "cudaMalloc routed_layer0_value_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_mla_cache_bf16[1], cache_count * 2u, "cudaMalloc routed_layer1_mla_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_key_nope_cache_bf16[1], key_nope_cache_count * 2u, "cudaMalloc routed_layer1_key_nope_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_value_cache_bf16[1], value_cache_count * 2u, "cudaMalloc routed_layer1_value_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_mla_cache_bf16[2], cache_count * 2u, "cudaMalloc routed_layer2_mla_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_key_nope_cache_bf16[2], key_nope_cache_count * 2u, "cudaMalloc routed_layer2_key_nope_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_value_cache_bf16[2], value_cache_count * 2u, "cudaMalloc routed_layer2_value_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_mla_cache_bf16[3], cache_count * 2u, "cudaMalloc routed_layer3_mla_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_key_nope_cache_bf16[3], key_nope_cache_count * 2u, "cudaMalloc routed_layer3_key_nope_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->routed_layer_value_cache_bf16[3], value_cache_count * 2u, "cudaMalloc routed_layer3_value_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->rotated_query_rope_bf16, query_rope_count * 2u, "cudaMalloc rotated_query_rope") &&
         SparkValidationAllocateZeroed((void **)&buffers->attention_output_latent_bf16, attention_output_count * 2u, "cudaMalloc attention_output_value") &&
         SparkValidationAllocateZeroed((void **)&buffers->attention_projected_hidden_bf16, hidden_count * 2u, "cudaMalloc attention_projected_hidden") &&
@@ -3081,21 +3084,22 @@ static bool SparkValidationBindRoutedLayerCache(
     uint16_t *mla_cache;
     uint16_t *key_nope_cache;
     uint16_t *value_cache;
+    uint32_t routed_layer_offset;
 
     mla_cache = 0;
     key_nope_cache = 0;
     value_cache = 0;
-    if (layer_index == 3u)
+    routed_layer_offset = layer_index >= SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX
+        ? layer_index - SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX
+        : UINT32_MAX;
+    if (buffers != 0 &&
+        routed_layer_offset < SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT)
     {
-        mla_cache = buffers != 0 ? buffers->layer3_mla_cache_bf16 : 0;
-        key_nope_cache = buffers != 0 ? buffers->layer3_key_nope_cache_bf16 : 0;
-        value_cache = buffers != 0 ? buffers->layer3_value_cache_bf16 : 0;
-    }
-    else if (layer_index == 4u)
-    {
-        mla_cache = buffers != 0 ? buffers->layer4_mla_cache_bf16 : 0;
-        key_nope_cache = buffers != 0 ? buffers->layer4_key_nope_cache_bf16 : 0;
-        value_cache = buffers != 0 ? buffers->layer4_value_cache_bf16 : 0;
+        mla_cache = buffers->routed_layer_mla_cache_bf16[routed_layer_offset];
+        key_nope_cache =
+            buffers->routed_layer_key_nope_cache_bf16[routed_layer_offset];
+        value_cache =
+            buffers->routed_layer_value_cache_bf16[routed_layer_offset];
     }
     if (buffers == 0 ||
         node_context == 0 ||
