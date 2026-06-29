@@ -104,6 +104,30 @@ static SparkStatus SparkValidateGlm52ResidentSparseMlaPipelineSlot(
     return SPARK_STATUS_OK;
 }
 
+static bool SparkGlm52ResidentSparseMlaAttentionPlanIsUsable(
+    const SparkGlm52ResidentSparseMlaNodeContext *node_context)
+{
+    const SparkGlm52ResidentSparseMlaAttentionPlan *attention_plan;
+    uint32_t required_capabilities;
+
+    if (node_context == 0 || node_context->attention_plan == 0)
+    {
+        return false;
+    }
+    attention_plan = node_context->attention_plan;
+    required_capabilities =
+        SPARK_GLM52_RESIDENT_SPARSE_MLA_ATTENTION_SOTA_CAPABILITIES;
+    return attention_plan->abi_version ==
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_ATTENTION_PLAN_ABI_VERSION &&
+        attention_plan->reserved == 0u &&
+        attention_plan->maximum_active_sequence_count >=
+            node_context->max_active_sequence_count &&
+        attention_plan->launch_function != 0 &&
+        attention_plan->validated_maximum_latency_ns != 0u &&
+        (attention_plan->capability_flags & required_capabilities) ==
+            required_capabilities;
+}
+
 static SparkStatus SparkValidateGlm52ResidentSparseMlaNodeContext(
     const SparkGlm52ResidentSparseMlaNodeContext *node_context)
 {
@@ -115,7 +139,7 @@ static SparkStatus SparkValidateGlm52ResidentSparseMlaNodeContext(
             SPARK_GLM52_RESIDENT_SPARSE_MLA_NODE_CONTEXT_ABI_VERSION ||
         node_context->reserved != 0u ||
         node_context->reserved_1 != 0u ||
-        node_context->reserved_3 != 0u)
+        (node_context->execution_flags & ~SPARK_GLM52_RESIDENT_SPARSE_MLA_EXECUTION_KNOWN_FLAGS) != 0u)
     {
         return SPARK_STATUS_ABI_MISMATCH;
     }
@@ -158,7 +182,42 @@ static SparkStatus SparkValidateGlm52ResidentSparseMlaNodeContext(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    if (node_context->enable_cuda_graph_replay != 0u &&
+    if ((node_context->execution_flags &
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_EXECUTION_REQUIRE_TILED_ONLINE_ATTENTION) != 0u &&
+        node_context->attention_execution_mode !=
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((node_context->execution_flags &
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_EXECUTION_REQUIRE_GRAPH_REPLAY) != 0u &&
+        node_context->enable_cuda_graph_replay == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((node_context->execution_flags &
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_EXECUTION_FORBID_DEBUG_SYNCHRONIZATION) != 0u &&
+        node_context->launch_check_mode !=
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_LAUNCH_CHECK_NONE)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((node_context->execution_flags &
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_EXECUTION_REQUIRE_VALIDATED_LATENCY) != 0u &&
+        node_context->validated_stage_latency_ns == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((node_context->execution_flags &
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_EXECUTION_REQUIRE_CUSTOM_ATTENTION_PLAN) != 0u &&
+        !SparkGlm52ResidentSparseMlaAttentionPlanIsUsable(node_context))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    if ((node_context->execution_flags &
+            SPARK_GLM52_RESIDENT_SPARSE_MLA_EXECUTION_REQUIRE_CUSTOM_ATTENTION_PLAN) == 0u &&
+        node_context->enable_cuda_graph_replay != 0u &&
         node_context->cuda_pipeline_slot_states == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;

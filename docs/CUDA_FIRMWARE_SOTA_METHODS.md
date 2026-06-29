@@ -1,6 +1,25 @@
 # CUDA firmware methods for SOTA-level handoff
 
-This document describes the target CUDA shape for the current GLM 5.2 firmware modules. The code in this release is intended to be within debug distance for a CUDA/Codex pass: the firmware boundaries, resource ownership, scheduling ABI, graph slots, and counters are in place, while several arithmetic kernels are still correctness-first and should be replaced after target profiling.
+This document describes the target CUDA shape for the current GLM 5.2 firmware modules. The code in this release is intended to be within debug distance for a CUDA/Codex pass: the firmware boundaries, resource ownership, scheduling ABI, graph slots, counters, fast-path contracts, and target hooks are in place. Remaining performance proof must come from SM121 compilation, Nsight traces, and model-stage latency gates.
+
+## Iteration 081 CUDA fast-path tightening
+
+Iteration 081 turns the previous SOTA-shaped hooks into a stricter production contract and removes several obvious debug/reference bottlenecks from the CUDA sources:
+
+```text
+strict SOTA execution flag bundles for decode-stage and sparse-MLA firmware
+fail-closed validation for missing prebound projection/output/dense/logit plans
+fail-closed validation for non-tiled attention, graph replay misses, debug synchronization, and unvalidated latency
+fixed-active-batch checks before prebound plan dispatch
+custom MTP draft hook for replacing the local vectorized MXFP4 reference kernel
+warp-then-block reductions for sparse attention and decode reductions
+raw KV split indexing fix for the real GLM 5.2 FP8/BF16 path
+no SparkPipe runtime changes
+```
+
+The strict flags are designed for model JSON profiles that want to publish a SOTA artifact rather than a correctness artifact. If a profile sets the all-in fast-path flag, the module must have its exact resident fast resources prebound before submit. Otherwise validation fails before execution, instead of quietly falling back to scalar kernels.
+
+The local vectorized MXFP4 MTP draft kernel remains a usable bring-up path. A production MTP implementation should bind a `SparkGlm52ResidentDecodeStageMtpDraftPlan` with a target-specific launch hook and workspace so draft logits, argmax, and acceptance counters can be fused or specialized without changing SparkPipe.
 
 ## Iteration 080 CUDA fast-path additions
 
@@ -330,3 +349,90 @@ negative results for rejected MTP depth/profile choices
 ```
 
 If a kernel is numerically correct but misses the full-stage ceiling, it remains an unvalidated candidate.
+
+## Iteration 082 max-performance firmware shape
+
+The preferred SOTA path is now a full-stage plan, not a chain of reusable correctness kernels. The component kernels remain useful for validation and bring-up, but an optimized GLM 5.2 package should bind a `SparkGlm52ResidentDecodeStageFullStagePlan` whose launch function owns the complete stage sequence behind one module ABI:
+
+```text
+resident input hidden state
+        -> tensor-core q/kv/o projections
+        -> fused RoPE + final-layout KV write
+        -> tiled online MLA
+        -> grouped NVFP4 routed experts / dense tensor-core MLP
+        -> restricted logits or broad-head program variant
+        -> MXFP4 MTP draft/verify/commit when enabled
+        -> stream/event ordered completion
+```
+
+The full-stage plan must advertise all SOTA capabilities: stream ordering, CUDA graph replay, tensor-core projections, tiled online attention, fused RoPE/KV write, grouped MoE, fast restricted logits, fast MTP draft, zero host staging, and zero avoidable device memcpy. A profile that requires the full-stage plan must fail closed if the plan is missing or unvalidated.
+
+The routed NVFP4 top-k diagnostic path now has a route-slot cache:
+
+```text
+router top-k ids
+        -> resolve bound expert slot once per route
+        -> hidden BF16 -> NVFP4 route quantization
+        -> gate/up NVFP4 projections use cached bound slot
+        -> fused SiLU*up -> NVFP4 quant uses cached bound slot
+        -> down NVFP4 projection uses cached bound slot
+        -> weighted combine
+```
+
+This removes repeated bound-expert scans from every output row. It is still not a substitute for production grouped expert GEMM, but it narrows the debug distance to the intended grouped-MoE implementation and makes the measured top-8 NVFP4 path less artificially bad.
+
+For target CUDA/Codex work, the priority order is now:
+
+```text
+1. implement and bind full-stage plan for one GLM 5.2 layer/stage partition;
+2. use cublasLt/CUTLASS or custom tensor-core plans for q/kv/o and dense MLP;
+3. replace route-local scalar NVFP4 expert dots with grouped NVFP4 expert kernels;
+4. keep route-slot cache for diagnostic kernels and as validation data for grouped queues;
+5. capture/replay the full-stage graph per fixed slot/active-shape;
+6. prove zero host staging and zero avoidable device memcpy by trace;
+7. publish only if full submission-to-completion latency passes the stage ceiling.
+```
+
+## Iteration 083 grouped MoE fast path
+
+The routed sparse layers must not run eight independent expert paths with repeated expert-slot scans. The target shape is now:
+
+```text
+post-attention normalized hidden
+        ↓
+prebound router-logits linear plan
+        ↓
+256-way top-k over router logits
+        ↓
+route → bound expert slot cache
+        ↓
+expert-major route grouping
+        ↓
+persistent grouped NVFP4 gate/up workers
+        ↓
+fused SiLU + NVFP4 route quant
+        ↓
+persistent grouped NVFP4 down workers
+        ↓
+weighted combine
+```
+
+`SparkGlm52ResidentDecodeStageLaunchPersistentGroupedNvfp4Moe` is the firmware-provided implementation of that shape. It is still a target-debug implementation: the final SM121 pass should replace the local E2M1/E4M3 decode inner loops with tuned FP4/Tensor Core kernels or CUTLASS-style grouped GEMMs, but the route grouping, plan ABI, and SparkPipe boundary should not change.
+
+A SOTA sparse-layer package should set:
+
+```text
+SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_DRIVER_GROUPED_MOE
+SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MLP
+SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MOE_ROUTER
+SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_NVFP4_ROUTE_SLOT_CACHE
+```
+
+and bind:
+
+```text
+SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ROUTER_LOGITS
+SparkGlm52ResidentDecodeStageGroupedMoePlan(plan_kind=PERSISTENT_NVFP4_TOPK)
+```
+
+The route-grouping buffers and compact work-item queue are driver-owned device workspaces. SparkPipe never sees expert IDs, route queues, or expert placement.
