@@ -23,6 +23,9 @@
 #define SPARK_VALIDATION_POSITION_COUNT 128u
 #define SPARK_VALIDATION_CONTEXT_LENGTH 4u
 #define SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT 3u
+#define SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX 3u
+#define SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT 2u
+#define SPARK_VALIDATION_LAYER_COUNT 78u
 #define SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET 61u
 #define SPARK_VALIDATION_CURRENT_POSITION 64u
 #define SPARK_VALIDATION_CURRENT_CACHE_SLOT 0u
@@ -164,6 +167,9 @@ typedef struct SparkValidationDeviceBuffers
     uint16_t *layer3_mla_cache_bf16;
     uint16_t *layer3_key_nope_cache_bf16;
     uint16_t *layer3_value_cache_bf16;
+    uint16_t *layer4_mla_cache_bf16;
+    uint16_t *layer4_key_nope_cache_bf16;
+    uint16_t *layer4_value_cache_bf16;
     uint16_t *rotated_query_rope_bf16;
     uint16_t *attention_output_latent_bf16;
     uint16_t *attention_projected_hidden_bf16;
@@ -1198,9 +1204,9 @@ static bool SparkValidationLoadLayer0AttentionBf16Fixture(
     char output_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
 
     memset(fixture, 0, sizeof(*fixture));
-    if (layer_index > SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT)
+    if (layer_index >= SPARK_VALIDATION_LAYER_COUNT)
     {
-        fprintf(stderr, "GLM52 attention layer index must be 0..%u\n", SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT);
+        fprintf(stderr, "GLM52 attention layer index must be 0..%u\n", SPARK_VALIDATION_LAYER_COUNT - 1u);
         return false;
     }
     if (!SparkValidationBuildLayerTensorName(input_norm_name, sizeof(input_norm_name), layer_index, "input_layernorm.weight") ||
@@ -1279,9 +1285,10 @@ static bool SparkValidationLoadLayer0AttentionBf16Fixture(
     return true;
 }
 
-static bool SparkValidationLoadLayer3RouterBf16Fixture(
+static bool SparkValidationLoadRoutedLayerRouterBf16Fixture(
     SparkValidationDeviceBuffers *buffers,
     const char *model_directory,
+    uint32_t layer_index,
     SparkValidationLayer3RouterBf16Fixture *fixture)
 {
     const uint64_t hidden_shape[1] = {
@@ -1291,25 +1298,41 @@ static bool SparkValidationLoadLayer3RouterBf16Fixture(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
     const uint64_t bias_shape[1] = {
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT};
+    char norm_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char router_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char bias_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
 
     memset(fixture, 0, sizeof(*fixture));
+    if (layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX ||
+        layer_index >= SPARK_VALIDATION_LAYER_COUNT)
+    {
+        fprintf(stderr, "GLM52 routed layer index must be %u..%u\n", SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX, SPARK_VALIDATION_LAYER_COUNT - 1u);
+        return false;
+    }
+    if (!SparkValidationBuildLayerTensorName(norm_name, sizeof(norm_name), layer_index, "post_attention_layernorm.weight") ||
+        !SparkValidationBuildLayerTensorName(router_name, sizeof(router_name), layer_index, "mlp.gate.weight") ||
+        !SparkValidationBuildLayerTensorName(bias_name, sizeof(bias_name), layer_index, "mlp.gate.e_score_correction_bias"))
+    {
+        fprintf(stderr, "routed layer router tensor name is too long layer=%u\n", layer_index);
+        return false;
+    }
     if (!SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.3.post_attention_layernorm.weight",
+            norm_name,
             hidden_shape,
             1u,
             buffers->post_attention_norm_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyBf16TensorToDevice(
             model_directory,
-            "model.layers.3.mlp.gate.weight",
+            router_name,
             router_shape,
             2u,
             buffers->moe_router_weight_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationCopyF32TensorToDevice(
             model_directory,
-            "model.layers.3.mlp.gate.e_score_correction_bias",
+            bias_name,
             bias_shape,
             1u,
             buffers->moe_router_score_bias_f32,
@@ -1318,13 +1341,26 @@ static bool SparkValidationLoadLayer3RouterBf16Fixture(
         return false;
     }
     fixture->ready = 1u;
-    fprintf(stderr, "layer3_router_bf16_fixture_ready=1 model_dir=%s bytes=%llu\n", model_directory, (unsigned long long)fixture->copied_bytes);
+    fprintf(stderr, "routed_layer_router_bf16_fixture_ready=1 model_dir=%s layer=%u bytes=%llu\n", model_directory, layer_index, (unsigned long long)fixture->copied_bytes);
     return true;
 }
 
-static bool SparkValidationBuildLayer3ExpertTensorName(
+static bool SparkValidationLoadLayer3RouterBf16Fixture(
+    SparkValidationDeviceBuffers *buffers,
+    const char *model_directory,
+    SparkValidationLayer3RouterBf16Fixture *fixture)
+{
+    return SparkValidationLoadRoutedLayerRouterBf16Fixture(
+        buffers,
+        model_directory,
+        SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX,
+        fixture);
+}
+
+static bool SparkValidationBuildRoutedLayerExpertTensorName(
     char *tensor_name,
     uint32_t tensor_name_bytes,
+    uint32_t layer_index,
     uint32_t expert_id,
     const char *projection,
     const char *suffix)
@@ -1334,7 +1370,8 @@ static bool SparkValidationBuildLayer3ExpertTensorName(
     written_bytes = snprintf(
         tensor_name,
         (size_t)tensor_name_bytes,
-        "model.layers.3.mlp.experts.%u.%s.%s",
+        "model.layers.%u.mlp.experts.%u.%s.%s",
+        layer_index,
         expert_id,
         projection,
         suffix);
@@ -1344,6 +1381,7 @@ static bool SparkValidationBuildLayer3ExpertTensorName(
 static bool SparkValidationLoadLayer3RoutedExpertNvfp4FixtureForExperts(
     SparkValidationDeviceBuffers *buffers,
     const char *model_directory,
+    uint32_t layer_index,
     SparkValidationLayer3RoutedExpertNvfp4Fixture *fixture,
     const uint32_t *expert_ids,
     uint32_t expert_count)
@@ -1380,6 +1418,12 @@ static bool SparkValidationLoadLayer3RoutedExpertNvfp4FixtureForExperts(
     uint64_t down_scale_stride;
     uint32_t expert_slot;
 
+    if (layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX ||
+        layer_index >= SPARK_VALIDATION_LAYER_COUNT)
+    {
+        fprintf(stderr, "GLM52 routed expert layer index must be %u..%u\n", SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX, SPARK_VALIDATION_LAYER_COUNT - 1u);
+        return false;
+    }
     if (expert_ids == 0 ||
         expert_count == 0u ||
         expert_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K)
@@ -1413,18 +1457,18 @@ static bool SparkValidationLoadLayer3RoutedExpertNvfp4FixtureForExperts(
 
         expert_id = expert_ids[expert_slot];
         fixture->bound_expert_ids[expert_slot] = expert_id;
-        if (!SparkValidationBuildLayer3ExpertTensorName(gate_weight_name, sizeof(gate_weight_name), expert_id, "gate_proj", "weight") ||
-            !SparkValidationBuildLayer3ExpertTensorName(gate_scale_name, sizeof(gate_scale_name), expert_id, "gate_proj", "weight_scale") ||
-            !SparkValidationBuildLayer3ExpertTensorName(gate_scale2_name, sizeof(gate_scale2_name), expert_id, "gate_proj", "weight_scale_2") ||
-            !SparkValidationBuildLayer3ExpertTensorName(gate_input_scale_name, sizeof(gate_input_scale_name), expert_id, "gate_proj", "input_scale") ||
-            !SparkValidationBuildLayer3ExpertTensorName(up_weight_name, sizeof(up_weight_name), expert_id, "up_proj", "weight") ||
-            !SparkValidationBuildLayer3ExpertTensorName(up_scale_name, sizeof(up_scale_name), expert_id, "up_proj", "weight_scale") ||
-            !SparkValidationBuildLayer3ExpertTensorName(up_scale2_name, sizeof(up_scale2_name), expert_id, "up_proj", "weight_scale_2") ||
-            !SparkValidationBuildLayer3ExpertTensorName(up_input_scale_name, sizeof(up_input_scale_name), expert_id, "up_proj", "input_scale") ||
-            !SparkValidationBuildLayer3ExpertTensorName(down_weight_name, sizeof(down_weight_name), expert_id, "down_proj", "weight") ||
-            !SparkValidationBuildLayer3ExpertTensorName(down_scale_name, sizeof(down_scale_name), expert_id, "down_proj", "weight_scale") ||
-            !SparkValidationBuildLayer3ExpertTensorName(down_scale2_name, sizeof(down_scale2_name), expert_id, "down_proj", "weight_scale_2") ||
-            !SparkValidationBuildLayer3ExpertTensorName(down_input_scale_name, sizeof(down_input_scale_name), expert_id, "down_proj", "input_scale"))
+        if (!SparkValidationBuildRoutedLayerExpertTensorName(gate_weight_name, sizeof(gate_weight_name), layer_index, expert_id, "gate_proj", "weight") ||
+            !SparkValidationBuildRoutedLayerExpertTensorName(gate_scale_name, sizeof(gate_scale_name), layer_index, expert_id, "gate_proj", "weight_scale") ||
+            !SparkValidationBuildRoutedLayerExpertTensorName(gate_scale2_name, sizeof(gate_scale2_name), layer_index, expert_id, "gate_proj", "weight_scale_2") ||
+            !SparkValidationBuildRoutedLayerExpertTensorName(gate_input_scale_name, sizeof(gate_input_scale_name), layer_index, expert_id, "gate_proj", "input_scale") ||
+            !SparkValidationBuildRoutedLayerExpertTensorName(up_weight_name, sizeof(up_weight_name), layer_index, expert_id, "up_proj", "weight") ||
+            !SparkValidationBuildRoutedLayerExpertTensorName(up_scale_name, sizeof(up_scale_name), layer_index, expert_id, "up_proj", "weight_scale") ||
+            !SparkValidationBuildRoutedLayerExpertTensorName(up_scale2_name, sizeof(up_scale2_name), layer_index, expert_id, "up_proj", "weight_scale_2") ||
+            !SparkValidationBuildRoutedLayerExpertTensorName(up_input_scale_name, sizeof(up_input_scale_name), layer_index, expert_id, "up_proj", "input_scale") ||
+            !SparkValidationBuildRoutedLayerExpertTensorName(down_weight_name, sizeof(down_weight_name), layer_index, expert_id, "down_proj", "weight") ||
+            !SparkValidationBuildRoutedLayerExpertTensorName(down_scale_name, sizeof(down_scale_name), layer_index, expert_id, "down_proj", "weight_scale") ||
+            !SparkValidationBuildRoutedLayerExpertTensorName(down_scale2_name, sizeof(down_scale2_name), layer_index, expert_id, "down_proj", "weight_scale_2") ||
+            !SparkValidationBuildRoutedLayerExpertTensorName(down_input_scale_name, sizeof(down_input_scale_name), layer_index, expert_id, "down_proj", "input_scale"))
         {
             fprintf(stderr, "layer3 routed expert tensor name is too long\n");
             return false;
@@ -1462,7 +1506,7 @@ static bool SparkValidationLoadLayer3RoutedExpertNvfp4FixtureForExperts(
         return false;
     }
     fixture->ready = 1u;
-    fprintf(stderr, "layer3_routed_expert_nvfp4_fixture_ready=1 model_dir=%s expert=%u bound_count=%u ids=%u,%u,%u,%u,%u,%u,%u,%u bytes=%llu gate_scale2=%.9g up_scale2=%.9g down_scale2=%.9g\n", model_directory, fixture->selected_expert_id, fixture->bound_expert_count, fixture->bound_expert_ids[0], fixture->bound_expert_ids[1], fixture->bound_expert_ids[2], fixture->bound_expert_ids[3], fixture->bound_expert_ids[4], fixture->bound_expert_ids[5], fixture->bound_expert_ids[6], fixture->bound_expert_ids[7], (unsigned long long)fixture->copied_bytes, (double)fixture->gate_weight_scale_2, (double)fixture->up_weight_scale_2, (double)fixture->down_weight_scale_2);
+    fprintf(stderr, "routed_layer_expert_nvfp4_fixture_ready=1 model_dir=%s layer=%u expert=%u bound_count=%u ids=%u,%u,%u,%u,%u,%u,%u,%u bytes=%llu gate_scale2=%.9g up_scale2=%.9g down_scale2=%.9g\n", model_directory, layer_index, fixture->selected_expert_id, fixture->bound_expert_count, fixture->bound_expert_ids[0], fixture->bound_expert_ids[1], fixture->bound_expert_ids[2], fixture->bound_expert_ids[3], fixture->bound_expert_ids[4], fixture->bound_expert_ids[5], fixture->bound_expert_ids[6], fixture->bound_expert_ids[7], (unsigned long long)fixture->copied_bytes, (double)fixture->gate_weight_scale_2, (double)fixture->up_weight_scale_2, (double)fixture->down_weight_scale_2);
     return true;
 }
 
@@ -1485,6 +1529,7 @@ static bool SparkValidationLoadLayer3RoutedExpertNvfp4Fixture(
     return SparkValidationLoadLayer3RoutedExpertNvfp4FixtureForExperts(
         buffers,
         model_directory,
+        SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX,
         fixture,
         topk_expert_ids,
         load_topk != 0u
@@ -2500,6 +2545,9 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->layer3_mla_cache_bf16, cache_count * 2u, "cudaMalloc layer3_mla_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->layer3_key_nope_cache_bf16, key_nope_cache_count * 2u, "cudaMalloc layer3_key_nope_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->layer3_value_cache_bf16, value_cache_count * 2u, "cudaMalloc layer3_value_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->layer4_mla_cache_bf16, cache_count * 2u, "cudaMalloc layer4_mla_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->layer4_key_nope_cache_bf16, key_nope_cache_count * 2u, "cudaMalloc layer4_key_nope_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->layer4_value_cache_bf16, value_cache_count * 2u, "cudaMalloc layer4_value_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->rotated_query_rope_bf16, query_rope_count * 2u, "cudaMalloc rotated_query_rope") &&
         SparkValidationAllocateZeroed((void **)&buffers->attention_output_latent_bf16, attention_output_count * 2u, "cudaMalloc attention_output_value") &&
         SparkValidationAllocateZeroed((void **)&buffers->attention_projected_hidden_bf16, hidden_count * 2u, "cudaMalloc attention_projected_hidden") &&
@@ -3025,22 +3073,42 @@ static bool SparkValidationBindDenseLayerCache(
     return true;
 }
 
-static bool SparkValidationBindLayer3Cache(
+static bool SparkValidationBindRoutedLayerCache(
     SparkValidationDeviceBuffers *buffers,
-    SparkGlm52ResidentDecodeStageNodeContext *node_context)
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t layer_index)
 {
+    uint16_t *mla_cache;
+    uint16_t *key_nope_cache;
+    uint16_t *value_cache;
+
+    mla_cache = 0;
+    key_nope_cache = 0;
+    value_cache = 0;
+    if (layer_index == 3u)
+    {
+        mla_cache = buffers != 0 ? buffers->layer3_mla_cache_bf16 : 0;
+        key_nope_cache = buffers != 0 ? buffers->layer3_key_nope_cache_bf16 : 0;
+        value_cache = buffers != 0 ? buffers->layer3_value_cache_bf16 : 0;
+    }
+    else if (layer_index == 4u)
+    {
+        mla_cache = buffers != 0 ? buffers->layer4_mla_cache_bf16 : 0;
+        key_nope_cache = buffers != 0 ? buffers->layer4_key_nope_cache_bf16 : 0;
+        value_cache = buffers != 0 ? buffers->layer4_value_cache_bf16 : 0;
+    }
     if (buffers == 0 ||
         node_context == 0 ||
-        buffers->layer3_mla_cache_bf16 == 0 ||
-        buffers->layer3_key_nope_cache_bf16 == 0 ||
-        buffers->layer3_value_cache_bf16 == 0)
+        mla_cache == 0 ||
+        key_nope_cache == 0 ||
+        value_cache == 0)
     {
-        fprintf(stderr, "layer3 cache binding is invalid\n");
+        fprintf(stderr, "routed layer cache binding is invalid layer=%u\n", layer_index);
         return false;
     }
-    buffers->mla_cache_bf16 = buffers->layer3_mla_cache_bf16;
-    buffers->key_nope_cache_bf16 = buffers->layer3_key_nope_cache_bf16;
-    buffers->value_cache_bf16 = buffers->layer3_value_cache_bf16;
+    buffers->mla_cache_bf16 = mla_cache;
+    buffers->key_nope_cache_bf16 = key_nope_cache;
+    buffers->value_cache_bf16 = value_cache;
     node_context->mla_cache_bf16 = buffers->mla_cache_bf16;
     node_context->key_nope_cache_bf16 = buffers->key_nope_cache_bf16;
     node_context->value_cache_bf16 = buffers->value_cache_bf16;
@@ -5471,6 +5539,7 @@ static bool SparkValidationRunLayer3RouterTopKLayer(
     cudaStream_t cuda_stream,
     const char *driver_path,
     const char *model_directory,
+    uint32_t layer_index,
     uint32_t position,
     uint32_t slot_mapping,
     uint32_t context_length,
@@ -5480,14 +5549,23 @@ static bool SparkValidationRunLayer3RouterTopKLayer(
     uint32_t *submission_count)
 {
     SparkValidationLayer0AttentionBf16Fixture attention_fixture;
+    SparkValidationLayer3RouterBf16Fixture router_fixture;
     float elapsed_microseconds;
 
     if (!SparkValidationLoadLayer0AttentionBf16Fixture(
             buffers,
             model_directory,
-            3u,
+            layer_index,
             &attention_fixture) ||
-        !SparkValidationBindLayer3Cache(buffers, node_context) ||
+        !SparkValidationLoadRoutedLayerRouterBf16Fixture(
+            buffers,
+            model_directory,
+            layer_index,
+            &router_fixture) ||
+        !SparkValidationBindRoutedLayerCache(
+            buffers,
+            node_context,
+            layer_index) ||
         !SparkValidationSetDecodeScalars(
             buffers,
             position,
@@ -5504,7 +5582,7 @@ static bool SparkValidationRunLayer3RouterTopKLayer(
             &elapsed_microseconds) ||
         !SparkValidationCudaSucceeded(
             cudaStreamSynchronize(cuda_stream),
-            "cudaStreamSynchronize chained layer3 router"))
+            "cudaStreamSynchronize chained routed layer router"))
     {
         return false;
     }
@@ -5530,6 +5608,7 @@ static bool SparkValidationRunLayer3RoutedTopKLayer(
     const char *model_directory,
     SparkValidationRealLmHeadFixture *real_lm_head,
     const SparkValidationLayer3RoutedExpertNvfp4Fixture *layer3_routed_expert,
+    uint32_t layer_index,
     uint32_t position,
     uint32_t slot_mapping,
     uint32_t context_length,
@@ -5550,9 +5629,12 @@ static bool SparkValidationRunLayer3RoutedTopKLayer(
     if (!SparkValidationLoadLayer0AttentionBf16Fixture(
             buffers,
             model_directory,
-            3u,
+            layer_index,
             &attention_fixture) ||
-        !SparkValidationBindLayer3Cache(buffers, node_context) ||
+        !SparkValidationBindRoutedLayerCache(
+            buffers,
+            node_context,
+            layer_index) ||
         !SparkValidationSetDecodeScalars(
             buffers,
             position,
@@ -5572,7 +5654,7 @@ static bool SparkValidationRunLayer3RoutedTopKLayer(
             &elapsed_microseconds) ||
         !SparkValidationCudaSucceeded(
             cudaStreamSynchronize(cuda_stream),
-            "cudaStreamSynchronize chained layer3"))
+            "cudaStreamSynchronize chained routed layer"))
     {
         return false;
     }
@@ -5594,6 +5676,73 @@ static bool SparkValidationRunLayer3RoutedTopKLayer(
     return true;
 }
 
+static bool SparkValidationRunRoutedLayerDynamicTopK(
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    cudaStream_t cuda_stream,
+    const char *driver_path,
+    const char *model_directory,
+    SparkValidationRealLmHeadFixture *real_lm_head,
+    SparkValidationLayer3RoutedExpertNvfp4Fixture *layer3_routed_expert,
+    uint32_t layer_index,
+    uint32_t position,
+    uint32_t slot_mapping,
+    uint32_t context_length,
+    uint32_t check_outputs,
+    double *total_microseconds,
+    double *maximum_observed_microseconds,
+    uint32_t *submission_count)
+{
+    uint32_t topk_expert_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
+
+    if (!SparkValidationRunLayer3RouterTopKLayer(
+            buffers,
+            node_context,
+            cuda_stream,
+            driver_path,
+            model_directory,
+            layer_index,
+            position,
+            slot_mapping,
+            context_length,
+            check_outputs,
+            total_microseconds,
+            maximum_observed_microseconds,
+            submission_count) ||
+        !SparkValidationReadLayer3TopKExpertIds(buffers, topk_expert_ids))
+    {
+        return false;
+    }
+    fprintf(stderr, "routed_layer_dynamic_topk_ids layer=%u ids=%u,%u,%u,%u,%u,%u,%u,%u\n", layer_index, topk_expert_ids[0], topk_expert_ids[1], topk_expert_ids[2], topk_expert_ids[3], topk_expert_ids[4], topk_expert_ids[5], topk_expert_ids[6], topk_expert_ids[7]);
+    if (!SparkValidationLoadLayer3RoutedExpertNvfp4FixtureForExperts(
+            buffers,
+            model_directory,
+            layer_index,
+            layer3_routed_expert,
+            topk_expert_ids,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K) ||
+        !SparkValidationRunLayer3RoutedTopKLayer(
+            buffers,
+            node_context,
+            cuda_stream,
+            driver_path,
+            model_directory,
+            real_lm_head,
+            layer3_routed_expert,
+            layer_index,
+            position,
+            slot_mapping,
+            context_length,
+            check_outputs,
+            total_microseconds,
+            maximum_observed_microseconds,
+            submission_count))
+    {
+        return false;
+    }
+    return true;
+}
+
 static bool SparkValidationRunDenseChainLayer3RoutedTopK(
     SparkValidationDeviceBuffers *buffers,
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
@@ -5603,6 +5752,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
     uint32_t input_token_id,
     SparkValidationRealLmHeadFixture *real_lm_head,
     SparkValidationLayer3RoutedExpertNvfp4Fixture *layer3_routed_expert,
+    uint32_t routed_chain_layer_count,
     double *total_microseconds,
     double *maximum_observed_microseconds,
     uint32_t *submission_count,
@@ -5610,9 +5760,15 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
 {
     uint32_t prefill_index;
     uint32_t layer_index;
-    uint32_t topk_expert_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
+    uint32_t routed_layer_offset;
     uint64_t copied_bytes;
 
+    if (routed_chain_layer_count == 0u ||
+        routed_chain_layer_count > SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT)
+    {
+        fprintf(stderr, "routed chain layer count is invalid count=%u\n", routed_chain_layer_count);
+        return false;
+    }
     *total_microseconds = 0.0;
     *maximum_observed_microseconds = 0.0;
     *submission_count = 0u;
@@ -5661,21 +5817,33 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
                     maximum_reference_error))
                 return false;
         }
-        if (!SparkValidationCopyLayerOutputToInput(buffers) ||
-            !SparkValidationRunLayer3RouterTopKLayer(
-                buffers,
-                node_context,
-                cuda_stream,
-                driver_path,
-                model_directory,
-                position,
-                slot_mapping,
-                context_length,
-                0u,
-                total_microseconds,
-                maximum_observed_microseconds,
-                submission_count))
+        if (!SparkValidationCopyLayerOutputToInput(buffers))
             return false;
+        for (routed_layer_offset = 0u;
+             routed_layer_offset < routed_chain_layer_count;
+             ++routed_layer_offset)
+        {
+            if (!SparkValidationRunRoutedLayerDynamicTopK(
+                    buffers,
+                    node_context,
+                    cuda_stream,
+                    driver_path,
+                    model_directory,
+                    real_lm_head,
+                    layer3_routed_expert,
+                    SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX + routed_layer_offset,
+                    position,
+                    slot_mapping,
+                    context_length,
+                    0u,
+                    total_microseconds,
+                    maximum_observed_microseconds,
+                    submission_count))
+                return false;
+            if (routed_layer_offset + 1u < routed_chain_layer_count &&
+                !SparkValidationCopyLayerOutputToInput(buffers))
+                return false;
+        }
     }
     if (!SparkValidationCopyInputEmbeddingBf16Row(
             model_directory,
@@ -5705,47 +5873,32 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
                 maximum_reference_error))
             return false;
     }
-    if (!SparkValidationCopyLayerOutputToInput(buffers) ||
-        !SparkValidationRunLayer3RouterTopKLayer(
-            buffers,
-            node_context,
-            cuda_stream,
-            driver_path,
-            model_directory,
-            SPARK_VALIDATION_CURRENT_POSITION,
-            SPARK_VALIDATION_CURRENT_CACHE_SLOT,
-            SPARK_VALIDATION_CONTEXT_LENGTH,
-            1u,
-            total_microseconds,
-            maximum_observed_microseconds,
-            submission_count))
+    if (!SparkValidationCopyLayerOutputToInput(buffers))
         return false;
-    if (!SparkValidationReadLayer3TopKExpertIds(buffers, topk_expert_ids))
-        return false;
-    fprintf(stderr, "dense_chain_layer3_dynamic_topk_ids=%u,%u,%u,%u,%u,%u,%u,%u\n", topk_expert_ids[0], topk_expert_ids[1], topk_expert_ids[2], topk_expert_ids[3], topk_expert_ids[4], topk_expert_ids[5], topk_expert_ids[6], topk_expert_ids[7]);
-    if (!SparkValidationLoadLayer3RoutedExpertNvfp4FixtureForExperts(
-            buffers,
-            model_directory,
-            layer3_routed_expert,
-            topk_expert_ids,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K) ||
-        !SparkValidationRunLayer3RoutedTopKLayer(
-            buffers,
-            node_context,
-            cuda_stream,
-            driver_path,
-            model_directory,
-            real_lm_head,
-            layer3_routed_expert,
-            SPARK_VALIDATION_CURRENT_POSITION,
-            SPARK_VALIDATION_CURRENT_CACHE_SLOT,
-            SPARK_VALIDATION_CONTEXT_LENGTH,
-            1u,
-            total_microseconds,
-            maximum_observed_microseconds,
-            submission_count))
+    for (routed_layer_offset = 0u;
+         routed_layer_offset < routed_chain_layer_count;
+         ++routed_layer_offset)
     {
-        return false;
+        if (!SparkValidationRunRoutedLayerDynamicTopK(
+                buffers,
+                node_context,
+                cuda_stream,
+                driver_path,
+                model_directory,
+                real_lm_head,
+                layer3_routed_expert,
+                SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX + routed_layer_offset,
+                SPARK_VALIDATION_CURRENT_POSITION,
+                SPARK_VALIDATION_CURRENT_CACHE_SLOT,
+                SPARK_VALIDATION_CONTEXT_LENGTH,
+                1u,
+                total_microseconds,
+                maximum_observed_microseconds,
+                submission_count))
+            return false;
+        if (routed_layer_offset + 1u < routed_chain_layer_count &&
+            !SparkValidationCopyLayerOutputToInput(buffers))
+            return false;
     }
     fprintf(stderr, "dense_chain_layer3_embedding_bf16_bytes=%llu\n", (unsigned long long)copied_bytes);
     return true;
@@ -5780,6 +5933,7 @@ int main(int argc, char **argv)
     const char *load_layer3_routed_expert_text;
     const char *load_layer3_routed_expert_topk_text;
     const char *chain_dense_layer3_routed_expert_topk_text;
+    const char *routed_chain_layer_count_text;
     double maximum_stage_microseconds;
     double total_microseconds;
     double maximum_observed_microseconds;
@@ -5797,6 +5951,7 @@ int main(int argc, char **argv)
     uint32_t use_layer3_routed_expert;
     uint32_t use_layer3_routed_expert_topk;
     uint32_t use_dense_chain_layer3_routed_expert_topk;
+    uint32_t routed_chain_layer_count;
     uint32_t input_token_id;
     uint32_t dense_layer_index;
 
@@ -5838,6 +5993,8 @@ int main(int argc, char **argv)
         getenv("GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4_TOPK");
     chain_dense_layer3_routed_expert_topk_text =
         getenv("GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK");
+    routed_chain_layer_count_text =
+        getenv("GLM52_ROUTED_CHAIN_LAYER_COUNT");
     use_dense_mlp = load_layer0_dense != 0 && load_layer0_dense[0] != '\0' &&
         strcmp(load_layer0_dense, "0") != 0;
     use_attention_bf16 =
@@ -5913,6 +6070,7 @@ int main(int argc, char **argv)
     layer0_full_reference_max_error = 0.0f;
     input_token_id = 0u;
     dense_layer_index = 0u;
+    routed_chain_layer_count = 1u;
     if (use_input_embedding != 0u)
     {
         char *end_pointer;
@@ -5944,6 +6102,24 @@ int main(int argc, char **argv)
             return 2;
         }
         dense_layer_index = (uint32_t)parsed_layer_index;
+    }
+    if (routed_chain_layer_count_text != 0 &&
+        routed_chain_layer_count_text[0] != '\0')
+    {
+        char *end_pointer;
+        unsigned long parsed_layer_count;
+
+        end_pointer = 0;
+        parsed_layer_count = strtoul(routed_chain_layer_count_text, &end_pointer, 10);
+        if (end_pointer == routed_chain_layer_count_text ||
+            *end_pointer != '\0' ||
+            parsed_layer_count == 0ul ||
+            parsed_layer_count > (unsigned long)SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT)
+        {
+            fprintf(stderr, "GLM52_ROUTED_CHAIN_LAYER_COUNT is invalid; expected 1..%u\n", SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT);
+            return 2;
+        }
+        routed_chain_layer_count = (uint32_t)parsed_layer_count;
     }
     if (use_prefill_kv != 0u &&
         (use_input_embedding == 0u ||
@@ -6183,6 +6359,7 @@ int main(int argc, char **argv)
                     input_token_id,
                     &real_lm_head,
                     &layer3_routed_expert,
+                    routed_chain_layer_count,
                     &total_microseconds,
                     &maximum_observed_microseconds,
                     &submission_count,
@@ -6203,8 +6380,9 @@ int main(int argc, char **argv)
                 return 1;
             }
             printf(
-                "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_chain_layer3_routed_expert_nvfp4_topk=1 dense_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+                "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_chain_layer3_routed_expert_nvfp4_topk=1 dense_chain_layers=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
                 SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT,
+                routed_chain_layer_count,
                 submission_count,
                 total_microseconds,
                 maximum_observed_microseconds,
@@ -6457,6 +6635,7 @@ int main(int argc, char **argv)
                 input_token_id,
                 &real_lm_head,
                 &layer3_routed_expert,
+                routed_chain_layer_count,
                 &total_microseconds,
                 &maximum_observed_microseconds,
                 &submission_count,
@@ -6477,8 +6656,9 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_chain_layer3_routed_expert_nvfp4_topk=1 dense_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_chain_layer3_routed_expert_nvfp4_topk=1 dense_chain_layers=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT,
+            routed_chain_layer_count,
             submission_count,
             total_microseconds,
             maximum_observed_microseconds,
