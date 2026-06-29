@@ -22,6 +22,19 @@ void SparkGlm52SotaClearI32Kernel(int32_t *values, uint32_t count)
     }
 }
 
+static __device__ __forceinline__ uint64_t SparkGlm52SotaSm1xxBlockScaleOffset(uint32_t expert_slot, uint32_t row, uint32_t k_group, uint32_t row_extent, uint32_t k_extent)
+{
+    uint32_t row_block_count = SparkGlm52SotaCeilDivU32(row_extent, 128u);
+    uint32_t k_block_count = SparkGlm52SotaCeilDivU32(k_extent, 64u);
+    uint32_t row_block = row >> 7u;
+    uint32_t row_lane = row & 31u;
+    uint32_t row_quad = (row & 127u) >> 5u;
+    uint32_t k_block = k_group >> 2u;
+    uint32_t k_in_block = k_group & 3u;
+
+    return (((((uint64_t)expert_slot * k_block_count + k_block) * row_block_count + row_block) * 512u) + (row_lane * 16u) + (row_quad * 4u) + k_in_block);
+}
+
 static __global__ __launch_bounds__(256, 2)
 void SparkGlm52SotaCountRoutesByExpertKernel(const SparkGlm52SotaMoeArguments arguments, SparkGlm52SotaProductionMoePlanSm121 plan)
 {
@@ -214,17 +227,25 @@ void SparkGlm52SotaPackFixedHiddenScalesKernel(const SparkGlm52SotaMoeArguments 
     uint32_t route_index = blockIdx.y;
     uint32_t scale_index = threadIdx.x + (blockIdx.x * blockDim.x);
     uint32_t grouped_row;
+    uint32_t expert_slot;
+    uint32_t local_slot;
+    uint32_t route_capacity_per_expert;
     uint32_t token_index;
+    uint64_t scale_offset;
 
     if (route_index >= arguments.active_route_count)
     {
         return;
     }
     grouped_row = plan.grouped_row_by_route[route_index];
+    route_capacity_per_expert = plan.gate_up_gemm.cutlass_n_capacity;
+    expert_slot = grouped_row / route_capacity_per_expert;
+    local_slot = grouped_row - (expert_slot * route_capacity_per_expert);
     token_index = route_index / SPARK_GLM52_SOTA_TOP_K;
     while (scale_index < SPARK_GLM52_SOTA_NVFP4_SCALE_GROUPS_HIDDEN)
     {
-        plan.grouped_hidden_nvfp4_by_route.scale_e4m3_u8[((uint64_t)grouped_row * plan.grouped_hidden_nvfp4_by_route.scale_row_stride_bytes) + scale_index] = arguments.hidden_nvfp4_by_token.scale_e4m3_u8[((uint64_t)token_index * arguments.hidden_nvfp4_by_token.scale_row_stride_bytes) + scale_index];
+        scale_offset = SparkGlm52SotaSm1xxBlockScaleOffset(expert_slot, local_slot, scale_index, route_capacity_per_expert, SPARK_GLM52_SOTA_HIDDEN_DIMENSION);
+        plan.grouped_hidden_nvfp4_by_route.scale_e4m3_u8[scale_offset] = arguments.hidden_nvfp4_by_token.scale_e4m3_u8[((uint64_t)token_index * arguments.hidden_nvfp4_by_token.scale_row_stride_bytes) + scale_index];
         scale_index += blockDim.x * gridDim.x;
     }
 }
@@ -356,6 +377,10 @@ void SparkGlm52SotaSiluMulRequantFixedSlotKernel(SparkGlm52SotaProductionMoePlan
     uint32_t lane = threadIdx.x & 31u;
     uint32_t column_base = group_index * SPARK_GLM52_SOTA_NVFP4_GROUP_SIZE;
     uint32_t grouped_row;
+    uint32_t expert_slot;
+    uint32_t local_slot;
+    uint32_t route_capacity_per_expert;
+    uint64_t scale_offset;
     float first = 0.0f;
     float second = 0.0f;
     float maximum_value;
@@ -367,6 +392,9 @@ void SparkGlm52SotaSiluMulRequantFixedSlotKernel(SparkGlm52SotaProductionMoePlan
         return;
     }
     grouped_row = plan.grouped_row_by_route[route_index];
+    route_capacity_per_expert = plan.down_gemm.cutlass_n_capacity;
+    expert_slot = grouped_row / route_capacity_per_expert;
+    local_slot = grouped_row - (expert_slot * route_capacity_per_expert);
     if (lane < 8u)
     {
         uint32_t column = column_base + lane * 2u;
@@ -386,7 +414,8 @@ void SparkGlm52SotaSiluMulRequantFixedSlotKernel(SparkGlm52SotaProductionMoePlan
     scale = SparkGlm52SotaDecodeE4m3(scale_code);
     if (lane == 0u)
     {
-        plan.intermediate_nvfp4_by_grouped_route.scale_e4m3_u8[((uint64_t)grouped_row * plan.intermediate_nvfp4_by_grouped_route.scale_row_stride_bytes) + group_index] = scale_code;
+        scale_offset = SparkGlm52SotaSm1xxBlockScaleOffset(expert_slot, local_slot, group_index, route_capacity_per_expert, SPARK_GLM52_SOTA_MOE_INTERMEDIATE_DIMENSION);
+        plan.intermediate_nvfp4_by_grouped_route.scale_e4m3_u8[scale_offset] = scale_code;
     }
     if (lane < 8u)
     {
