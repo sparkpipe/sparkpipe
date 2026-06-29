@@ -1,154 +1,30 @@
-# SparkPipe status
+# Status
 
-## Implemented
+SparkPipe is a compile-time firmware packager and runtime dispatcher. It is not a CUDA fallback framework.
 
-- One low-level model-description JSON input contract.
-- One-shot compilation of every model stage from one JSON parse.
-- Exact stage-target and module-ID resolution.
-- Content-addressed validated firmware link-unit library.
-- Relocatable-object and normal-static-archive module artifacts.
-- Explicit rejection of thin archives because they are not self-contained.
-- Validator execution only for a new artifact contract; identical publication reuses the passing record.
-- Ordered validator contract arguments included in the validation identity, so a changed tolerance or latency ceiling causes one new validation.
-- Stored-byte and link-unit-kind verification before and after validation.
-- Read-only library artifacts and separate read-only package copies.
-- Direct collection of only selected link units.
-- Generated C with explicit operation calls and no hot-path operation loop.
-- Direct archive linking, including extraction of private helper members required by the firmware entry point.
-- One model-driver shared object per stage with one stable scheduler ABI.
-- Hidden module and archive-helper symbols; only `SparkModelDriverGetInterface` is public.
-- One package receipt embedding the source JSON and complete resolved artifact map.
-- Fail-closed package transaction that removes stale or partially rebuilt firmware.
-- Separate offline compiler and serving-runtime archives.
-- Driver loader with one-time ABI and target binding.
-- Heterogeneous-target orchestrator with pre-resolved numeric routes, firmware-identical replicas, driver admission decisions, opaque dispatch-slot handoff, per-program inflight accounting, runtime snapshots, and completion retirement.
-- Tests proving compilation, loading, routing, and execution do not rerun validators.
-- First exact CUDA firmware source under `modules/glm52_resident_sparse_mla/`.
-- Fixed GLM 5.2 BF16 resident sparse-MLA boundary with adjacent-pair query/key RoPE, current-token placement into the final paged KV layout, sparse cached attention, and stream-ordered completion.
-- Correctness-first GLM 5.2 resident decode-stage CUDA firmware source under `modules/glm52_resident_decode_stage/`.
-- Decode-stage CUDA covers attention RMSNorm, BF16 Q/KV projection kernels, native DSA sparse-token selection, RoPE plus final-layout KV write, sparse MLA, attention output projection, residual, final RMSNorm, restricted-vocabulary logits, MXFP4 E2M1/E8M0 MTP draft logits, verify/commit/rollback counters, phase clock markers, and stream-ordered completion.
-- Decode-stage CUDA also has explicit live BF16 layer-0 checkpoint fixture gates for GLM 5.2's first dense layer. The live validator can load layer-0 attention tensors, dense `post_attention_layernorm` / `gate_proj` / `up_proj` / `down_proj` tensors, and restricted `lm_head.weight` rows from the NVFP4 checkpoint, then run them through the resident CUDA stage before final restricted logits.
-- The GLM resident decode-stage module owns `artifact_check`, a module-local fail-closed gate for live GLM `config.json`, model-description JSON artifact geometry, raw safetensors tensor contract, resident decode-stage firmware constants, and model-description route agreement. This is intentionally outside the generic SparkPipe tool surface.
-- The GLM resident decode-stage `artifact_check --check-body-samples` mode seeks into live safetensors tensor bodies and hashes deterministic tensor samples plus the restricted-vocabulary `lm_head.weight` rows. This proves the accepted artifacts are not just shape/header matches.
-- The target-hardware decode-stage validator can run with `GLM52_MODEL_DIR=<artifact>` to load real BF16 restricted `lm_head.weight` rows into the resident CUDA buffer and check every CUDA restricted logit against a CPU reference using the same 256-lane reduction order as the kernel.
-- Driver ABI v3 adds optional direct module admission and runtime snapshot symbols, program scheduling profiles, opaque dispatch-slot validity, dispatch generations/cookies, residency tokens, CUDA graph replay counters, stale-admission counters, and no-host-staging/device-memcpy counters without exposing LLM internals to SparkPipe.
-- Model-specific node binding for caller-owned streams, resident device buffers, paged KV storage, RoPE tables, CUDA graph slots, and capacities; the sparse-MLA and decode-stage drivers choose opaque dispatch slots through admission functions and report zero memcpy/host-staging counters plus private queue pressure.
-- Cold-build module workflow with dependency files and self-contained archive creation.
-- Target-hardware sparse-MLA validator source covering nonzero first-block offset, block-table remapping, fused KV write, RoPE, full 64-head output comparison, completion semantics, and a mandatory maximum submission-to-completion wall-clock threshold.
-- Target-hardware decode-stage validator source covering full-shape resident device buffer allocation, deterministic nonzero context-length-4 fixture tensors, two-block KV remapping, two checked attention heads/dimensions, cached attention host reference, restricted argmax, MTP accept/reject counters, latency ceiling, and post-package generated-driver/orchestrator submit.
-- End-to-end host control-path test proving one-time publication, validation reuse, complete JSON-to-package compilation, hidden archive symbols, direct driver execution, slot ownership, asynchronous completion, and quiescent destruction.
-- Remaining iteration-073 CUDA implementation work preserved outside the active build as candidate source.
-
-The active documentation authorities are:
+Current GLM 5.2 SM121 policy:
 
 ```text
-README.md                              use and build flow
-SPEC.md                                production architecture contract
-STATUS.md                              current implementation boundary
-docs/LLM_DEVICE_DRIVER_INTERFACE.md    scheduler/driver handoff contract
-docs/CUDA_FIRMWARE_SOTA_METHODS.md     CUDA firmware handoff methods
-docs/GLM52_CUDA_PERFORMANCE_SPARK1_ITER080.md measured Spark CUDA baseline
-docs/GLM52_CUDA_PERFORMANCE_SPARK1_ITER083.md persistent grouped-MoE measurement
-docs/HANDOFF_RELEASE_079.md            release-specific handoff summary
+model description JSON
+    -> exact required module IDs
+    -> offline package link
+    -> required CUDA symbols must resolve
+    -> target validation runs once for the artifact contract
+    -> serving restores the validated package and submits direct calls
 ```
 
-## Removed
+The GLM 5.2 resident decode stage now depends on an externally supplied required CUDA implementation:
 
-- overlapping execution-plan types;
-- generic graph and adapter execution;
-- readiness bundles and inference gates;
-- live blocker registries;
-- runtime qualification-file scanning;
-- production fallback paths;
-- universal kernel registries;
-- monolithic linking of every implementation;
-- per-iteration architecture and remaining-items paperwork.
+```text
+spark.glm52.sm121.required_decode_stage.b12x_fused.v1
+```
 
-## Current boundary
+The required module must provide these symbols:
 
-- The sparse-MLA and decode-stage CUDA firmware archives have been compiled with CUDA 13.0 for `sm_121` on a GB10 Spark node, admitted by hardware validators, published into the module library, compiled into generated drivers, and loaded from packaged `model_driver.so` outputs.
-- The live GLM 5.2 NVFP4/FP8 artifacts on Spark report `hidden_size=6144`, `num_attention_heads=64`, `kv_lora_rank=512`, `qk_rope_head_dim=64`, and `index_topk=2048`; the active decode-stage firmware identity is therefore `h6144.h64.d512.r64.k2048`, not the earlier incorrect `h8192` shape.
-- Live GLM run setup should call `make -C modules/glm52_resident_decode_stage artifact_check GLM52_MODEL_DIR=<GLM-5.2 model dir> ARTIFACT_CHECK_ARGS=--check-body-samples` before compiling or launching a resident decode-stage package. The model-description JSON owns the expected HF artifact geometry and first raw tensor contract; the firmware header owns the compiled CUDA module geometry. A stale model description, wrong checkpoint family, wrong raw tensor layout, unreadable tensor body, or wrong compiled firmware geometry is a hard failure.
-- The decode-stage package target additionally runs a generated-driver/orchestrator submit smoke test after package compilation. This proves driver load, route resolution, admission, CUDA backend submit, stream-ordered completion, runtime snapshot counters, and zero host-staging/device-memcpy accounting through the LLM driver boundary while checking deterministic nonzero tensor outputs over a remapped two-block KV layout.
-- The sparse-MLA module covers resident sparse MLA plus fused RoPE/current-token KV placement.
-- The decode-stage module fills the first CUDA gaps around raw BF16/FP8 projections, native DSA selection, explicit key-nope/value cache writes from `kv_b_proj`, value-head cached attention, real `[6144,16384]` `o_proj`, restricted logits, dense layer-0 BF16 MLP progression, local MoE progression, and MTP draft/verify, but it is still correctness-first code. The current validator proves one deterministic nonzero remapped cached-attention/restricted-logit/MTP path with four checked heads, eight checked key/value dimensions, four checked RoPE dimensions, non-identity RoPE, value-cache-fed attention-output projection, a layer-body output, and the MTP accept/reject contract. With `GLM52_MODEL_DIR` set, it additionally proves the restricted logits CUDA kernel against live checkpoint `lm_head.weight` rows for the NVFP4 and FP8 artifacts. With `GLM52_INPUT_TOKEN_ID=<id>`, `GLM52_LOAD_LAYER0_ATTENTION_BF16=1`, and `GLM52_LOAD_LAYER0_DENSE_BF16=1`, it loads one real BF16 `embed_tokens.weight` input row, 330056704 bytes of real NVFP4 layer-0 BF16 attention weights, 452997120 bytes of real layer-0 BF16 dense MLP weights, and runs the layer-0 BF16 path before restricted logits. With `GLM52_PREFILL_KV_FROM_EMBEDDINGS=1`, it first runs three prior embedding rows through the same resident CUDA stage to fill the remapped KV cache slots consumed by the final decode token, then builds the attention reference from those actual cache rows instead of seed formulas. With `GLM52_CHECK_LAYER0_REFERENCE=1`, it also runs sampled CPU references for real layer-0 q/kv projections, q/kv RMSNorms, `o_proj`, residual, post-attention RMSNorm, dense gate/up/SwiGLU/down, and dense residual. With `GLM52_CHECK_LAYER0_FULL_REFERENCE=1`, it additionally full-vector checks all 6144 `o_proj`, attention-residual, post-attention RMSNorm, dense activation, and dense-down residual outputs against validator CPU reference math. This is still layer-0/body-only evidence, not full GLM logits equivalence across the complete checkpoint-backed layer stack.
-- Restricted logits are treated as an exact model-driver program and final-head optimization. They may avoid full-vocabulary projection, full-vocabulary logits buffers, host sampling, and generic masks, but they do not remove attention, KV, MoE, residual, norm, routing, or other transformer-body work. Thinking-capable generation should use broad-vocabulary programs for reasoning and switch to final restricted or classifier programs only for answer emission.
-- The first raw tensor contract passes on the NVFP4 artifacts whose attention and lm_head tensors are BF16. The model description also carries an FP8 E4M3 q/kv/o projection contract for the zAI FP8 artifact; artifact acceptance plus checkpoint-backed restricted-lm-head validation proves shape/dtype/body readability and one real-weight logits kernel, not full decode correctness.
-- Resident transport handoff and tensor-core/persistent-kernel optimization remain outside the new decode-stage archive. CUDA graph state and replay hooks are present, but target execution and graph-update debugging remain to be done on hardware.
-- Publication is intentionally impossible without a user-supplied maximum full-stage latency and a target-hardware pass; a slow implementation must be optimized, not accepted because it is numerically correct.
-- The orchestrator currently manages local driver instances. Remote node agents and wire transport are unfinished.
-- The JSON selects exact prebuilt modules. A checkpoint plus deployment-profile importer that emits this low-level language is not implemented.
-- Inter-stage deployment topology and fixed buffer contracts are not yet compiled automatically.
-- Package signing and immutable deployment activation are not implemented.
-- The Mac development environment has neither `nvcc` nor compatible CUDA hardware. CUDA claims must come from the Spark hardware validators.
+```text
+SparkGlm52Sm121RequiredDecodeStageInitialize
+SparkGlm52Sm121RequiredDecodeStageLaunch
+SparkGlm52Sm121RequiredDecodeStageQuiesce
+```
 
-## Next engineering sequence
-
-1. Add varied sparse-token selection and multi-position KV read/write checksums across several remapped blocks.
-2. Add an external checkpoint-derived layer-0 activation artifact and compare full post-attention and layer-output activations against that reference, not only validator-local CPU math.
-3. Extend the checkpoint-derived prefill/KV fixture beyond the checked B1 context-4 window.
-4. Add real router/top-k and checkpoint expert weights for sparse layers after dense layers 0-2.
-5. If the latency ceiling fails with real tensor fixtures, replace the correctness-first projection, DSA, attention, logits, and MTP kernels with measured tiled, tensor-core, persistent, or graph-captured implementations; do not publish the slow artifact.
-6. Split GLM driver programs explicitly into broad decode, final restricted decode, and classifier decode profiles so restricted logits stay in the model-driver final-head path rather than becoming a SparkPipe-wide mask.
-7. Add graph capture, transport handoff, and checkpoint-derived multi-layer fixtures inside one or a few model-specific GLM firmware archives.
-8. Publish only exact archives that pass numerical and model-stage performance qualification, then compile the GLM model JSON into direct-call drivers.
-9. Measure end-to-end stage latency and throughput before deciding whether another module split or fusion is profitable.
-10. Add the remote node agent and fixed submission/completion wire path without changing the driver ABI.
-
-## Deferred research backlog
-
-- Track DeepSeek DeepSpec/DSpark as a post-basics speculative-decoding item.
-  The public drop is a Python/PyTorch training and evaluation framework, not a
-  C/CUDA kernel library. It is still useful as an algorithmic reference for a
-  future GLM 5.2 block-draft path: selected target-layer hidden-state taps,
-  block proposals, Markov bias correction, confidence-gated proposal length,
-  and target verification.
-- Do not put DSpark adoption on the critical path for first working GLM 5.2
-  inference. The current priority remains deterministic nonzero GLM fixtures,
-  real checkpoint tensor loading, cached attention/KV correctness, restricted
-  logits, MTP verify/commit checks, and a live smoke test.
-- Revisit DSpark only after the baseline GLM resident decode stage produces
-  checkpoint-backed logits through the driver boundary. At that point, define a
-  GLM-specific DSpark-style drafter contract before writing CUDA: target layer
-  IDs, hidden-state export layout, per-slot context cache, block size, Markov
-  rank, confidence threshold, verification counters, and performance gates.
-
-## Iteration 080 handoff status
-
-- SparkPipe core remains unchanged as a loader/orchestrator boundary; no LLM graph interpreter, module registry, or fallback chain was reintroduced.
-- GLM 5.2 decode-stage firmware now exposes prebound cublasLt linear-plan slots, grouped-MoE driver hooks, restricted-logits hooks, a tiled online sparse-attention kernel option, vectorized MXFP4 MTP draft logits, and validated service-time fields.
-- The module archive can now include a cublasLt plan-construction helper translation unit; plan creation is a resident setup step, not a submit-path action.
-- CUDA remains uncompiled in this environment because `nvcc` is unavailable. The release is a SOTA-shaped CUDA handoff for target Spark debugging, not a hardware performance claim.
-- The first Spark-side iteration-080 CUDA baseline is recorded in `docs/GLM52_CUDA_PERFORMANCE_SPARK1_ITER080.md`. On spark1 at commit `34427b3`, the measured gates were: router BF16 `3909.536 us` direct / `4306.304 us` orchestrated, shared expert BF16 `3822.432 us` / `4001.376 us`, routed NVFP4 top-1 `4345.280 us` / `4485.984 us`, routed NVFP4 top-8 `7723.360 us` / `7557.408 us`, layer-0 full BF16 `4086.667 us` average / `5285.440 us` orchestrated, and dense-chain BF16 `58469.471 us` total / `63849.632 us` orchestrated. The worst single-module baseline is the top-8 routed NVFP4 MoE path.
-- A 12-node performance model is recorded in `docs/GLM52_12X_SPARK_PERFORMANCE_MODEL.md`; current correctness kernels project to roughly 2 tok/s single-stream and 20-30 aggregate tok/s in a filled 12-stage pipeline, while the intended optimized firmware target is roughly 80-130 aggregate tok/s before favorable MTP/restricted-output gains.
-
-## Iteration 081 CUDA fast-path status
-
-- SparkPipe core remains unchanged as a firmware loader/orchestrator boundary. The serving runtime still contains no GLM tensor logic, CUDA graph planner, fallback selector, module registry, or LLM compatibility layer.
-- GLM 5.2 decode-stage firmware now has strict SOTA execution flags. A profile can require prebound projection/output plans, tiled online attention, graph replay, preselected sparse indices, fast dense/MoE execution, fast restricted logits, fixed active batch shape, validated latency, and a custom fast MTP draft path. Missing fast resources fail validation instead of silently using scalar reference kernels.
-- GLM 5.2 sparse-MLA firmware now has the same production discipline for tiled attention, graph replay, debug-synchronization exclusion, fixed active batch shape, and validated latency.
-- The decode-stage CUDA raw-KV split path now uses the correct `KV_A_DIMENSION` modulo instead of a stray comma expression that collapsed the KV dimension index. This matters for the real GLM raw q/kv path.
-- Decode-stage and sparse-MLA CUDA reductions now use warp-then-block reductions instead of shared-memory staircase reductions, reducing synchronization overhead in the attention/logit bring-up kernels while preserving the same external ABI.
-- Prebound linear-plan dispatch now checks fixed active sequence count before launch. A cublasLt plan built for one batch shape cannot be accidentally used for another shape.
-- The MTP draft path now has a resident custom launch hook. The vectorized MXFP4 kernel remains a fallback for non-SOTA bring-up profiles; SOTA profiles can require the hook.
-- CUDA remains uncompiled in this environment because `nvcc` is unavailable. This release is a code-only SOTA tightening pass intended for target Spark/Codex debugging, not a measured hardware performance claim.
-
-## Iteration 082 theoretical CUDA fast-path status
-
-- Merged the iteration-081 fast-path contract into the newer Spark-side GLM 5.2 tree without deleting Codex's measured dense-chain, layer-3 router/shared-expert, and routed NVFP4 top-k evidence.
-- The decode-stage SOTA profile now has a full-stage firmware-plan boundary. A target module can bind one exact resident launch plan that owns tensor-core projections, fused RoPE/KV placement, tiled MLA, grouped MoE, restricted logits, MTP draft/verify, CUDA graph replay, and completion ordering. If the profile requires this plan and it is absent, validation fails closed before scalar component kernels can run.
-- The sparse-MLA module has the analogous custom attention-plan boundary. A publishable SOTA sparse-attention artifact should use the custom plan rather than the score-cache reference path.
-- The routed NVFP4 top-k path now supports a per-route bound-expert slot cache. The route-to-bound-expert lookup is resolved once after router top-k instead of being rescanned by every gate/up/down output row. This directly targets the measured top-8 routed NVFP4 gate as the worst current Spark-side module.
-- SOTA flags now separate component-fast bring-up from max-performance firmware. Component-fast mode can require prebound plans and custom hooks; max-performance mode should require the full-stage plan, fixed active shape, no debug synchronization, tensor-core alignment, and validated latency.
-- SparkPipe core remains unchanged. The serving runtime still contains only the driver loader and orchestrator; no GLM tensor names, expert IDs, KV layout logic, CUDA graph planner, or LLM compatibility layer was added to SparkPipe.
-
-## Iteration 083 persistent grouped-MoE CUDA status
-
-- SparkPipe core remains unchanged. The serving runtime still contains only the driver loader and orchestrator; no expert queues, token IDs, KV layout, CUDA graph internals, or GLM tensor names were moved into SparkPipe.
-- The GLM 5.2 decode-stage grouped-MoE plan is now a real ABI v2 contract rather than only a loose launch hook. It records plan kind, SOTA capability flags, maximum active sequence count, maximum route count, route tile count, persistent worker block count, route-grouping buffers, compact work-item queue buffers, and validated latency.
-- Added a firmware-provided persistent grouped NVFP4 top-k MoE launcher: `SparkGlm52ResidentDecodeStageLaunchPersistentGroupedNvfp4Moe`. It resolves top-k routed experts, builds an expert-major route grouping, quantizes route inputs, runs persistent grouped gate/up workers, runs fused SiLU plus NVFP4 quantization, runs persistent grouped down workers, and combines weighted route outputs.
-- The persistent MoE workers consume compact device work items instead of launching a huge `row × bound_expert × max_route_tiles` grid full of empty experts. This is the intended shape for target debugging before replacing the local decode/dequant loops with SM121-tuned FP4/Tensor Core kernels.
-- Added `SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ROUTER_LOGITS` and `SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MOE_ROUTER`. SOTA routed-MoE profiles can now compute router logits through a prebound linear plan and run only the 256-way top-k on the small logits buffer, rather than doing scalar per-expert hidden dot products inside the router kernel.
-- Removed the bring-up assumption that routed NVFP4 top-k binds exactly `top_k` experts. A production profile may bind a larger resident expert set and use `expert_id -> bound_slot` mapping plus per-route slot cache.
-- Spark-side measurement is recorded in `docs/GLM52_CUDA_PERFORMANCE_SPARK1_ITER083.md`. The first pass compiled after one call-order fix but mostly regressed the measured MoE/router gates. The route-slot cache is now gated behind `SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_NVFP4_ROUTE_SLOT_CACHE`; after that correction, top-8 routed NVFP4 direct recovered to `7699.616 us`, while top-1 routed NVFP4 remained slower than iteration 080 and top-8 orchestrated was noisy/worse. Treat iteration 083 as an opt-in firmware-shape pass and negative-result record, not a measured SOTA win.
-- CUDA remains uncompiled in this environment because `nvcc` is unavailable. This is a code-only performance-shape pass; target Spark/Codex must compile, profile, replace the local FP4 decode loops with tuned kernels where needed, and publish only measured artifacts.
+If the required CUDA module is absent, package linking or validation linking fails. There is no internal slow replacement path.

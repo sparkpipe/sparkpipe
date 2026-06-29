@@ -5,8 +5,14 @@ CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3 -g
 CPPFLAGS ?= -Iinclude -Isrc
 LDFLAGS ?=
 LDLIBS ?= -ldl
-CUDA_ARCH ?= sm_121
+CUDA_ARCH ?= sm_121a
 NVCCFLAGS ?= -O3 --use_fast_math -arch=$(CUDA_ARCH)
+SPARKPIPE_B12X_AOT_ENV ?= $(HOME)/.config/sparkpipe/glm52_b12x_aot_env.sh
+B12X_AOT_TOKENS ?= 1,2,4,8,16,32,64,96,128
+B12X_AOT_WARMUP ?= 5
+B12X_AOT_ITERATIONS ?= 20
+B12X_AOT_OUTPUT_DIR ?= build/glm52_b12x_aot
+B12X_AOT_BENCHMARK ?= --benchmark
 
 COMMON_SOURCES := \
     src/spark_status.c \
@@ -44,7 +50,6 @@ TEST_NAMES := \
     test_module_library \
     test_driver_compiler \
     test_orchestrator \
-    test_glm52_resident_sparse_mla_firmware \
     test_glm52_resident_decode_stage_firmware
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
@@ -60,15 +65,6 @@ TEST_MODULE_ARCHIVES := \
 TEST_MODULE_LINK_UNITS := $(TEST_MODULE_OBJECTS) $(TEST_MODULE_ARCHIVES)
 TEST_MODULE_DEPENDENCIES := $(TEST_MODULE_OBJECTS:.o=.d)
 TEST_VALIDATOR := build/test_module_validator
-GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY := \
-    build/glm52_resident_sparse_mla_test
-GLM52_RESIDENT_SPARSE_MLA_TEST_OBJECTS := \
-    $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/spark_glm52_resident_sparse_mla_module.o \
-    $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/glm52_resident_sparse_mla_fake_backend.o
-GLM52_RESIDENT_SPARSE_MLA_TEST_DEPENDENCIES := \
-    $(GLM52_RESIDENT_SPARSE_MLA_TEST_OBJECTS:.o=.d)
-GLM52_RESIDENT_SPARSE_MLA_TEST_ARCHIVE := \
-    $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/libglm52_resident_sparse_mla_test.a
 GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY := \
     build/glm52_resident_decode_stage_test
 GLM52_RESIDENT_DECODE_STAGE_TEST_OBJECTS := \
@@ -79,12 +75,13 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_DEPENDENCIES := \
 GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/libglm52_resident_decode_stage_test.a
 
-.PHONY: all clean test tools demo cuda_dummy \
-    cuda_glm52_resident_sparse_mla \
-    cuda_glm52_resident_sparse_mla_publish \
-    glm52_resident_sparse_mla_firmware_package \
+.PHONY: all clean test tools demo \
     cuda_glm52_resident_decode_stage \
     cuda_glm52_resident_decode_stage_publish \
+    glm52_flashinfer_b12x_moe_adapter \
+    glm52_b12x_prepare_spark_env \
+    glm52_b12x_aot_compile \
+    glm52_b12x_compiled_backend \
     glm52_resident_decode_stage_firmware_package \
     tree_summary
 
@@ -97,9 +94,6 @@ build:
 
 build/test_modules:
 	mkdir -p build/test_modules
-
-$(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY):
-	mkdir -p $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)
 
 $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY):
 	mkdir -p $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
@@ -150,16 +144,6 @@ $(TEST_VALIDATOR): tests/fixtures/module_validator.c | build
 	$(CC) $(CFLAGS) $< -o $@
 
 
-$(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/spark_glm52_resident_sparse_mla_module.o: modules/glm52_resident_sparse_mla/source/spark_glm52_resident_sparse_mla_module.c modules/glm52_resident_sparse_mla/include/sparkpipe/spark_glm52_resident_sparse_mla_firmware.h modules/glm52_resident_sparse_mla/source/spark_glm52_resident_sparse_mla_backend.h | $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)
-	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_sparse_mla/include -Imodules/glm52_resident_sparse_mla/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
-
-$(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)/glm52_resident_sparse_mla_fake_backend.o: tests/fixtures/glm52_resident_sparse_mla_fake_backend.c tests/fixtures/glm52_resident_sparse_mla_fake_backend.h modules/glm52_resident_sparse_mla/include/sparkpipe/spark_glm52_resident_sparse_mla_firmware.h modules/glm52_resident_sparse_mla/source/spark_glm52_resident_sparse_mla_backend.h | $(GLM52_RESIDENT_SPARSE_MLA_TEST_DIRECTORY)
-	$(CC) $(CPPFLAGS) -Itests/fixtures -Imodules/glm52_resident_sparse_mla/include -Imodules/glm52_resident_sparse_mla/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
-
-$(GLM52_RESIDENT_SPARSE_MLA_TEST_ARCHIVE): $(GLM52_RESIDENT_SPARSE_MLA_TEST_OBJECTS)
-	rm -f $@
-	$(AR) rcs $@ $^
-
 $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_resident_decode_stage_module.o: modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_backend.h | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
@@ -185,9 +169,6 @@ build/test_driver_compiler: tests/test_driver_compiler.c $(TEST_SUPPORT_OBJECT) 
 build/test_orchestrator: tests/test_orchestrator.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_resident_sparse_mla_firmware: tests/test_glm52_resident_sparse_mla_firmware.c modules/glm52_resident_sparse_mla/include/sparkpipe/spark_glm52_resident_sparse_mla_firmware.h tests/fixtures/glm52_resident_sparse_mla_fake_backend.h $(GLM52_RESIDENT_SPARSE_MLA_TEST_ARCHIVE) $(TEST_SUPPORT_OBJECT) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Itests -Itests/fixtures -Imodules/glm52_resident_sparse_mla/include $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
 build/test_glm52_resident_decode_stage_firmware: tests/test_glm52_resident_decode_stage_firmware.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h tests/fixtures/glm52_resident_decode_stage_fake_backend.h $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE) $(TEST_SUPPORT_OBJECT) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Itests/fixtures -Imodules/glm52_resident_decode_stage/include $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -210,56 +191,46 @@ demo: all $(TEST_MODULE_OBJECTS) $(TEST_VALIDATOR)
 	build/sparkpipe_driver_inspect build/demo/package/stages/stage_000/model_driver.so host.cpu
 	build/sparkpipe_driver_inspect build/demo/package/stages/stage_001/model_driver.so host.accelerator
 
-cuda_glm52_resident_sparse_mla:
-	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "cuda_glm52_resident_sparse_mla skipped: nvcc unavailable"; \
-	else \
-		$(MAKE) -C modules/glm52_resident_sparse_mla archive NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH); \
-	fi
-
-cuda_glm52_resident_sparse_mla_publish:
-	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "cuda_glm52_resident_sparse_mla_publish skipped: nvcc unavailable"; \
-	else \
-		$(MAKE) -C modules/glm52_resident_sparse_mla publish NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS); \
-	fi
-
-glm52_resident_sparse_mla_firmware_package:
-	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "glm52_resident_sparse_mla_firmware_package skipped: nvcc unavailable"; \
-	else \
-		$(MAKE) -C modules/glm52_resident_sparse_mla package NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS); \
-	fi
-
 cuda_glm52_resident_decode_stage:
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "cuda_glm52_resident_decode_stage skipped: nvcc unavailable"; \
 	else \
-		$(MAKE) -C modules/glm52_resident_decode_stage archive NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH); \
+		$(MAKE) -C modules/glm52_resident_decode_stage archive NVCC=$(NVCC) CUDA_ARCH=sm_121a; \
 	fi
 
 cuda_glm52_resident_decode_stage_publish:
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "cuda_glm52_resident_decode_stage_publish skipped: nvcc unavailable"; \
 	else \
-		$(MAKE) -C modules/glm52_resident_decode_stage publish NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS); \
+		$(MAKE) -C modules/glm52_resident_decode_stage publish NVCC=$(NVCC) CUDA_ARCH=sm_121a MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS) REQUIRED_CUDA_CC_ARGS='$(REQUIRED_CUDA_CC_ARGS)' GLM52_REQUIRED_CUDA_LINK_ARGS='$(GLM52_REQUIRED_CUDA_LINK_ARGS)'; \
 	fi
+
+glm52_flashinfer_b12x_moe_adapter:
+	$(MAKE) -C modules/glm52_sm121_flashinfer_b12x_moe archive
+
+glm52_b12x_prepare_spark_env:
+	tools/glm52_b12x_prepare_spark_env.sh
+
+glm52_b12x_aot_compile:
+	@test -f "$(SPARKPIPE_B12X_AOT_ENV)" || \
+		{ echo "missing $(SPARKPIPE_B12X_AOT_ENV); run make glm52_b12x_prepare_spark_env first" >&2; exit 2; }
+	. "$(SPARKPIPE_B12X_AOT_ENV)" && \
+		"$$SPARKPIPE_B12X_AOT_PYTHON" ./tools/glm52_b12x_aot_compile.py \
+		--tokens "$(B12X_AOT_TOKENS)" \
+		--warmup "$(B12X_AOT_WARMUP)" \
+		--iterations "$(B12X_AOT_ITERATIONS)" \
+		$(B12X_AOT_BENCHMARK) \
+		--output-dir "$(B12X_AOT_OUTPUT_DIR)"
+
+glm52_b12x_compiled_backend:
+	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend archive NVCC=$(NVCC) CUDA_ARCH=sm_121a
+	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend generated_archive NVCC=$(NVCC) CUDA_ARCH=sm_121a GENERATED_DIRECTORY=$(abspath build/glm52_b12x_aot/generated)
 
 glm52_resident_decode_stage_firmware_package:
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "glm52_resident_decode_stage_firmware_package skipped: nvcc unavailable"; \
 	else \
-		$(MAKE) -C modules/glm52_resident_decode_stage package NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS); \
-	fi
-
-cuda_dummy:
-	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "cuda_dummy skipped: nvcc unavailable"; \
-	elif [ ! -f modules/cuda_candidates/source/device/spark_cuda_dummy_kernel.cu ]; then \
-		echo "cuda_dummy skipped: preserved CUDA source library not present"; \
-	else \
-		mkdir -p build/cuda; \
-		$(NVCC) $(NVCCFLAGS) -Imodules/cuda_candidates/include -c modules/cuda_candidates/source/device/spark_cuda_dummy_kernel.cu -o build/cuda/spark_cuda_dummy_kernel.o; \
+		$(MAKE) -C modules/glm52_resident_decode_stage package NVCC=$(NVCC) CUDA_ARCH=sm_121a MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS) REQUIRED_CUDA_CC_ARGS='$(REQUIRED_CUDA_CC_ARGS)' GLM52_REQUIRED_CUDA_LINK_ARGS='$(GLM52_REQUIRED_CUDA_LINK_ARGS)'; \
 	fi
 
 tree_summary:
@@ -275,5 +246,4 @@ clean:
 -include $(COMMON_OBJECTS:.o=.d) $(COMPILER_OBJECTS:.o=.d) \
     $(RUNTIME_OBJECTS:.o=.d) $(TEST_SUPPORT_OBJECT:.o=.d) \
     $(TEST_MODULE_DEPENDENCIES) \
-    $(GLM52_RESIDENT_SPARSE_MLA_TEST_DEPENDENCIES) \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_DEPENDENCIES)

@@ -9,6 +9,11 @@
 
 #include "spark_glm52_resident_decode_stage_backend.h"
 
+#if defined(SPARK_GLM52_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES)
+extern SparkStatus SparkGlm52ResidentDecodeStageBackendVerifyRequiredCudaModules(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context);
+#endif
+
 typedef struct SparkGlm52ResidentDecodeStageState SparkGlm52ResidentDecodeStageState;
 
 typedef struct SparkGlm52ResidentDecodeStagePendingCompletion
@@ -1335,6 +1340,14 @@ SparkStatus SparkGlm52ResidentDecodeStageInitialize(
     {
         return status;
     }
+#if defined(SPARK_GLM52_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES)
+    status = SparkGlm52ResidentDecodeStageBackendVerifyRequiredCudaModules(
+        node_context);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+#endif
 
     allocation_bytes = sizeof(*state) +
         ((size_t)node_context->pipeline_slot_count *

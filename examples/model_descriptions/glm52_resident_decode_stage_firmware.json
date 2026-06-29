@@ -199,7 +199,46 @@
             {
               "name": "resident_decode_stage",
               "module": "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1",
-              "configuration": {}
+              "configuration": {
+                "required_cuda_module": "spark.glm52.sm121.required_decode_stage.b12x_fused.v1",
+                "required_arch": "sm_121a",
+                "fallback_allowed": false,
+                "restore_mode": "prequalified_once",
+                "runtime_backend_selection": "forbidden",
+                "required_symbols": [
+                  "SparkGlm52Sm121RequiredDecodeStageInitialize",
+                  "SparkGlm52Sm121RequiredDecodeStageLaunch",
+                  "SparkGlm52Sm121RequiredDecodeStageQuiesce"
+                ],
+                "required_primitive_modules": [
+                  {
+                    "module": "spark.glm52.sm121.flashinfer_b12x_fused_moe.nvfp4.bf16.v2",
+                    "source": "third_party/flashinfer",
+                    "abi": "include/sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h",
+                    "fallback_allowed": false,
+                    "required_symbols": [
+                      "SparkFlashInferB12xCompiledMoeCreate",
+                      "SparkFlashInferB12xCompiledMoeLaunch",
+                      "SparkFlashInferB12xCompiledMoeDestroy"
+                    ],
+                    "shape": {
+                      "hidden_dimension": 6144,
+                      "intermediate_dimension": 2048,
+                      "experts": 256,
+                      "top_k": 8,
+                      "quant_mode": "nvfp4",
+                      "output_dtype": "bf16",
+                      "weight_layout": "flashinfer_static_view",
+                      "scale_layout": "flashinfer_static_storage",
+                      "gate_up_order": "up_gate"
+                    }
+                  }
+                ],
+                "vendored_source_manifests": [
+                  "third_party/flashinfer/SPARKPIPE_UPSTREAM_MANIFEST.sha256"
+                ],
+                "aot_generation_tool": "tools/glm52_b12x_aot_compile.py"
+              }
             }
           ],
           "scheduling": {

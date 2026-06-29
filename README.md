@@ -1,252 +1,116 @@
 # SparkPipe firmware compiler
 
-SparkPipe compiles one model-description JSON into exact model-specific device drivers. The serving runtime receives completed firmware images; it does not interpret model graphs, choose kernels, validate modules, or search for fallbacks.
+SparkPipe compiles a model-description JSON into an exact model-specific firmware package. The runtime does not interpret model graphs, choose CUDA kernels, search for fallbacks, or substitute slow reference paths.
 
 ```text
 model-description JSON
         +
-validated firmware link-unit library
+validated module library
         |
         v
-offline model compiler
+offline compiler
         |
-        +-- one generated direct-call driver per stage
-        +-- only the exact selected link units
-        +-- one immutable package receipt
+        +-- generated direct-call stage driver
+        +-- exact selected link units only
+        +-- immutable package receipt
         v
 model firmware package
         |
         v
-small SparkPipe orchestrator
-        -> pre-resolved numeric route
-        -> compatible node/replica
-        -> exact model-specific program
+small runtime orchestrator
 ```
 
-A firmware module is one immutable **link unit**. It may be either:
+## Rules
 
-- one relocatable object (`.o`); or
-- one normal static archive (`.a`) containing the host ABI entry point, CUDA objects, device-link output, and private helpers.
-
-A thin archive is rejected because it points outside itself and therefore is not deployable firmware.
-
-The generated driver is the execution plan. The expected high-performance module is usually model-, shape-, layout-, quantization-, and GPU-specific and owns as much fusion, graph capture, stream scheduling, resident state, JIT KV-cache policy, private expert queues, and transport integration as measurement justifies.
-
-The SparkPipe orchestrator performs route admission through the version-3 driver ABI. It can see neutral pressure and cost data, no-host-staging/no-device-memcpy counters, opaque dispatch slots, dispatch generations/cookies, graph replay counters, stale-admission counters, and completions. It does not see KV page layout, CUDA graph topology, MoE queue structure, token-selection internals, or model-specific scheduling hacks.
-
-## Non-negotiable rules
-
-1. The JSON is the sole compile-time model authority.
-2. Every stage names one exact target; every operation names one exact module ID.
-3. A published module is an exact link unit plus its ABI, target, entry symbols, validation recipe, and ordered validator contract arguments.
-4. Validation runs once for a new artifact contract. Reusing it in another model, stage, or manifest does not run validation again.
-5. Model compilation fails if any required module artifact is absent, corrupted, or ABI-incompatible.
-6. Generated stage drivers contain explicit calls in JSON order and link only selected link units.
-7. The runtime loads drivers once, resolves routes once, and submits through numeric handles.
-8. Missing support is a build failure. Production execution has no generic or host fallback.
-9. Model-specific CUDA programs and aggressive fusion are expected when they improve the complete model stage.
-10. Restricted-token output is a model-driver program choice, not a generic SparkPipe mask, and it must not be used to prune attention, MoE, KV, residual, norm, routing, or other transformer-body work.
+1. The JSON is the compile-time model authority.
+2. Every stage names one target and every operation names one exact module ID.
+3. A published module is a real link unit with ABI, target, entry symbols, validation recipe, and validator arguments.
+4. Missing required CUDA is a link or validation error.
+5. Production execution has no generic CUDA, host, scalar, or library fallback.
+6. Warmup, autotune, layout conversion, tactic choice, and graph bucket choice are offline qualification work. Serving restores a qualified package and captures only process-local runtime objects.
 
 ## Build and test
 
 ```sh
 make -j4 all
 make -j4 test
-make demo
 ```
 
-The tests include a two-member static archive whose firmware entry point calls a private helper from another archive member. This proves that a published module is a real library unit rather than one source file disguised as an architecture.
-
-## Offline and runtime products
+## Offline products
 
 ```text
-build/libsparkpipe_common.a    status and filesystem support
-build/libsparkpipe_compiler.a  JSON, module publication, and driver generation
-build/libsparkpipe_runtime.a   driver loader and orchestrator only
+build/libsparkpipe_common.a
+build/libsparkpipe_compiler.a
+build/libsparkpipe_runtime.a
 build/sparkpipe_module_publish
 build/sparkpipe_model_compile
 build/sparkpipe_driver_inspect
 ```
 
-The serving process links only `libsparkpipe_runtime.a` and `libsparkpipe_common.a`. JSON parsing, SHA-256, validator launching, module publication, and C generation remain offline.
+The serving process links only the runtime/common libraries plus the compiled model driver. JSON parsing, validation, artifact publication, SHA-256, and C generation remain offline.
 
-## Publish a validated firmware module
+## GLM 5.2 SM121 decode stage
 
-A complete CUDA stage can be built as a normal static archive and published as one module:
+`modules/glm52_resident_decode_stage/` contains the SparkPipe ABI boundary for the GLM 5.2 resident decode stage. It does not contain a slow substitute for the required CUDA implementation.
 
-```sh
-build/sparkpipe_module_publish \
-    --library build/modules \
-    --module glm.decode.stage0.sm121.profile_a.v1 \
-    --target cuda.sm121.gb10 \
-    --link-unit build/libglm_decode_stage0_sm121.a \
-    --recipe glm.decode.stage0.hardware.v1 \
-    --initialize SparkGlmDecodeStage0Initialize \
-    --execute SparkGlmDecodeStage0Execute \
-    --destroy SparkGlmDecodeStage0Destroy \
-    --validator build/validate_glm_decode_stage0
-```
-
-Publication performs one content-addressed transaction:
+The required external CUDA module is:
 
 ```text
-copy exact link unit
-    -> hash stored bytes
-    -> reuse an existing passing record, or run the validator once
-    -> reject validator mutation
-    -> make the stored artifact read-only
-    -> atomically activate module ID + target
+spark.glm52.sm121.required_decode_stage.b12x_fused.v1
 ```
 
-Publishing the identical artifact contract again does not execute the validator. Ordered validator arguments are part of that identity, so changing a numerical tolerance, hardware condition, or stage-latency ceiling causes exactly one new validation.
-
-## Exact CUDA firmware sources
-
-`modules/glm52_resident_sparse_mla/` is the first preserved CUDA path converted to the firmware ABI. It is one fixed GLM 5.2 resident sparse-MLA program for the exact target and geometry encoded in its module ID:
+It must export:
 
 ```text
-cuda.sm121.glm52.resident_sparse_mla.bf16
-64 heads
-512 latent elements
-64 adjacent-pair RoPE elements
-2048 selected context tokens
-64 tokens per KV block
+SparkGlm52Sm121RequiredDecodeStageInitialize
+SparkGlm52Sm121RequiredDecodeStageLaunch
+SparkGlm52Sm121RequiredDecodeStageQuiesce
 ```
 
-One submission launches a fused RoPE/current-token-KV placement kernel followed on the same caller-owned stream by sparse cached MLA, then emits one external completion. Streams, device buffers, paged KV storage, lookup tables, graph slots, and capacity bounds are bound once through the model-specific node context. The submit path performs no allocation, registry lookup, fallback search, or device-wide synchronization. The module now exposes direct admission/snapshot symbols and optional per-slot CUDA graph replay state.
-
-`modules/glm52_resident_decode_stage/` expands that boundary into a correctness-first resident decode-stage firmware source:
-
-```text
-cuda.sm121.glm52.resident_decode_stage.bf16
-6144 hidden elements
-64 MLA heads
-512 latent elements
-64 adjacent-pair RoPE elements
-2048 native-selected sparse context tokens
-256 restricted-vocabulary logits
-2 MXFP4 MTP draft tokens
-```
-
-The decode-stage source launches attention RMSNorm, raw BF16/FP8 q/kv projections, native sparse-token handling, RoPE plus latent/key-nope/value cache writes, value-head cached attention, real `[6144,16384]` `o_proj`, residual, local MoE progression, final RMSNorm, restricted-vocabulary logits and argmax, MXFP4 E2M1/E8M0 MTP draft logits, verify/commit/rollback counters, optional phase clock markers, and one stream-ordered external completion. The intended production sparse-index mode is preselected driver-owned DSA; the serial top-k mode is debug-only.
-
-Build exact archives from empty module build directories:
+Build the archive:
 
 ```sh
-make cuda_glm52_resident_sparse_mla
-make cuda_glm52_resident_decode_stage
+make -C modules/glm52_resident_decode_stage archive CUDA_ARCH=sm_121a
 ```
 
-Publication requires an explicit full-stage wall-clock ceiling:
+Package with the required CUDA link unit:
 
 ```sh
-make cuda_glm52_resident_decode_stage_publish \
-    CUDA_ARCH=sm_121 \
-    MAX_STAGE_MICROSECONDS=<qualified-maximum>
+make -C modules/glm52_resident_decode_stage package \
+    CUDA_ARCH=sm_121a \
+    MAX_STAGE_MICROSECONDS=<qualified-limit> \
+    REQUIRED_CUDA_CC_ARGS="--cc-arg /path/to/libglm52_sm121_required_decode_stage.a" \
+    GLM52_REQUIRED_CUDA_LINK_ARGS="/path/to/libglm52_sm121_required_decode_stage.a"
 ```
 
-A new archive contract is admitted only if its target-hardware validator passes numerical comparison and every measured submission-to-completion run is within that ceiling. This repository environment has no `nvcc` or compatible GPU, so the CUDA source is not claimed as validated or performant here. If it misses the threshold, it must be optimized rather than published.
+If the required library is omitted or does not define the required symbols, the package or validator link fails.
 
-The GLM 5.2 decode-stage module also owns module-local live checkpoint gates.
-For the current dense-prefix chain, run this on a Spark GB10 node with the live
-artifact mounted:
+## GLM 5.2 SM121 B12x AOT primitive
+
+The FlashInfer B12x fused-MoE source is vendored only for offline generation. Build/qualification may use Python, Torch, and CuTe DSL; serving must not. The runtime links the generated C/CUDA artifacts and required symbols only.
+
+One-time AOT generation on `spark1`:
 
 ```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_dense_chain_bf16 \
-    MAX_STAGE_MICROSECONDS=10000
+tools/glm52_b12x_prepare_spark_env.sh
+. "$HOME/.config/sparkpipe/glm52_b12x_aot_env.sh"
+./tools/glm52_b12x_aot_compile.py \
+    --tokens 1,2,4,8,16,32,64,96,128 \
+    --warmup 5 \
+    --iterations 20 \
+    --benchmark \
+    --output-dir build/glm52_b12x_aot
 ```
 
-That gate keeps GLM tensor loading and reference math inside the GLM module. It
-checks dense layers 0->1->2 with separate per-layer KV caches, device-side
-hidden-state handoff between layers, full output-side BF16 references, and the
-generated `model_driver.so` path.
+The AOT tool defaults to static/micro SM121 buckets. Dynamic export is only
+enabled with `--allow-dynamic`; it is not part of the production recipe unless
+it has a passing target-hardware qualification.
 
-For the current sparse layer-3 router/top-k gate, run:
+Build the strict primitive adapter and compiled backend:
 
 ```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer3_router_bf16 \
-    MAX_STAGE_MICROSECONDS=10000
+make glm52_flashinfer_b12x_moe_adapter
+make glm52_b12x_compiled_backend NVCC=nvcc
 ```
 
-That gate loads layer-3 BF16 attention weights, `mlp.gate.weight`, and
-`mlp.gate.e_score_correction_bias` from the live checkpoint, runs the CUDA
-router/top-k path, and checks top-8 expert IDs plus normalized route weights
-against the GLM module's CPU reference through both direct backend and generated
-`model_driver.so` submission. It does not yet execute the sparse expert GEMMs or
-shared-expert combine path.
-
-For the current sparse layer-3 shared-expert gate, run:
-
-```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer3_shared_expert_bf16 \
-    MAX_STAGE_MICROSECONDS=10000
-```
-
-That gate loads layer-3 BF16 attention weights and
-`mlp.shared_experts.{gate_proj,up_proj,down_proj}.weight`, runs the resident
-BF16 SwiGLU/down path at the GLM shared-expert dimension of 2048, and checks
-sampled post-attention RMSNorm, gate/up projection, SiLU product, and
-down+residual outputs against the GLM module's CPU reference through both direct
-backend and generated `model_driver.so` submission. It does not yet execute
-NVFP4 routed expert projection or routed/shared combine.
-
-## Compile a complete model package
-
-```sh
-build/sparkpipe_model_compile \
-    --model model.json \
-    --library build/modules \
-    --output build/packages/glm-profile-a \
-    --include include \
-    --cc cc \
-    --cc-arg -lcudart
-```
-
-Omitting `--stage` is the deployment path. The compiler parses the JSON once and builds every stage as one fail-closed package transaction:
-
-```text
-build/packages/glm-profile-a/
-    model_package.json
-    stages/
-        stage_000/
-            model_driver.so
-            spark_model_driver_generated.c
-            link_units/<artifact-sha256>.a
-        stage_001/
-            model_driver.so
-            spark_model_driver_generated.c
-            link_units/<artifact-sha256>.o
-```
-
-`model_package.json` is a build receipt, not a runtime plan. It embeds the original JSON, exact selected artifact identities, generated-program hashes, and driver hashes. The orchestrator never parses it.
-
-For development inspection only, `--stage <name>` builds one stage and emits `compiled_manifest.json` beside it.
-
-The retained generated C is the direct audit of the hot path: explicit calls, no operation loop, no module registry, and no runtime capability negotiation.
-
-## Source layout
-
-```text
-include/sparkpipe/       compiler, module, driver, and orchestrator contracts
-src/                     active implementation
-tools/                   publication, package compilation, and inspection
-schema/                  model-description JSON schema
-examples/                model-description examples
-tests/                   focused contract and end-to-end tests
-modules/glm52_resident_sparse_mla/ first exact CUDA firmware source
-modules/glm52_resident_decode_stage/ resident decode-stage CUDA firmware source
-modules/cuda_candidates/ preserved CUDA source reservoir
-```
-
-The preserved CUDA sources are excluded from the active build. A candidate becomes selectable only after it is shaped into an exact firmware link unit, hardware-validated, and published.
-
-`SPEC.md` is the architecture contract. `STATUS.md` states the current implementation boundary. The handoff docs under `docs/` describe the LLM driver ABI and CUDA firmware methods for the next target-hardware optimization pass.
+If `build/glm52_b12x_aot/generated/spark_glm52_sm121_b12x_generated_kernel_table.cu`, `tvm_ffi_flags.mk`, or `objects/*.o` is missing, the generated backend target fails. The serving link must include the generated archive plus runtime libraries listed in `build/glm52_b12x_aot/generated/runtime_link_args.txt`.

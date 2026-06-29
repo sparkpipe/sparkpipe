@@ -35,15 +35,20 @@ if [[ -n "${driver_path}" && ! -s "${driver_path}" ]]; then
 fi
 
 nvcc_path="${NVCC:-nvcc}"
-cuda_architecture="${CUDA_ARCH:-sm_121}"
+cuda_architecture="${CUDA_ARCH:-sm_121a}"
 
 if ! command -v "${nvcc_path}" >/dev/null 2>&1; then
     echo "nvcc unavailable for hardware validation" >&2
     exit 2
 fi
-if [[ "${cuda_architecture}" != "sm_121" ]]; then
-    echo "this validator admits only sm_121 artifacts" >&2
+if [[ "${cuda_architecture}" != "sm_121a" ]]; then
+    echo "this validator admits only sm_121a required-CUDA artifacts" >&2
     exit 2
+fi
+
+required_cuda_link_args=()
+if [[ -n "${GLM52_REQUIRED_CUDA_LINK_ARGS:-}" ]]; then
+    read -r -a required_cuda_link_args <<< "${GLM52_REQUIRED_CUDA_LINK_ARGS}"
 fi
 
 make -C "${repository_root}" "${common_target}" "${runtime_target}" "${compiler_target}"
@@ -61,8 +66,7 @@ make -C "${repository_root}" "${common_target}" "${runtime_target}" "${compiler_
     "${runtime_archive}" \
     "${compiler_archive}" \
     "${common_archive}" \
-    -lcublasLt \
-    -lcublas \
+    "${required_cuda_link_args[@]}" \
     -ldl \
     -o "${validation_directory}/glm52_resident_decode_stage_validator"
 
