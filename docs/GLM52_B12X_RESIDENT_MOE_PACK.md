@@ -24,7 +24,9 @@ SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile(...)
 SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy(...)
 ```
 
-Each pack contains all 256 GLM52 experts for one routed layer:
+Each pack contains all 256 GLM52 experts for one routed layer.  Pack ABI v3 is
+the first ABI that stores B12x scale factors in the required FlashInfer static
+storage order; ABI v2 packs must be regenerated.
 
 ```text
 w1 FP4 static view storage:        expert-major [256, 4096, 3072] uint8
@@ -35,6 +37,32 @@ w2 FP4 static view storage:        expert-major [256, 6144, 1024] uint8
 w2 scale static storage:           expert-major [256, 6144, 128]  UE4M3 bytes
 w2 alpha:                          [256] fp32 ones
 ```
+
+The scale storage is not row-major `[expert][row][k_group]`.  For each expert,
+the byte order is:
+
+```text
+m_tile
+k_tile
+outer_m = row % 32
+inner_m = (row % 128) / 32
+inner_k = k_group % 4
+```
+
+Equivalently, for one expert:
+
+```text
+row = (m_tile * 128) + (inner_m * 32) + outer_m
+k_group = (k_tile * 4) + inner_k
+
+target =
+    (((m_tile * k_tiles + k_tile) * 32 + outer_m) * 4 + inner_m) * 4
+  + inner_k
+```
+
+This matches FlashInfer's `convert_sf_from_mma_layout(...).contiguous()`
+storage consumed by the generated SM121 native backend.  The packer remaps
+checkpoint row-major scale tensors into that storage before writing `.spb12x`.
 
 Gate/up order is fixed to the FlashInfer B12x contract:
 
