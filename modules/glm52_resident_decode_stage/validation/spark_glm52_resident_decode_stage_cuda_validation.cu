@@ -266,6 +266,7 @@ typedef struct SparkValidationDeviceBuffers
         b12x_moe_bindings[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
     uint32_t b12x_moe_binding_ready[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
     uint32_t b12x_moe_binding_layer_indices[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    uint32_t routed_layer_base_index;
     SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *linear_plan_binding;
 } SparkValidationDeviceBuffers;
 
@@ -3273,15 +3274,16 @@ static bool SparkValidationBindB12xMoePlanForLayer(
     uint32_t binding_index;
 
     if (buffers == 0 || node_context == 0 ||
-        layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX)
+        layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX ||
+        layer_index < buffers->routed_layer_base_index)
     {
         return false;
     }
 
-    binding_index = layer_index - SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX;
+    binding_index = layer_index - buffers->routed_layer_base_index;
     if (binding_index >= SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT)
     {
-        fprintf(stderr, "layer %u has no validation B12x binding slot\n", layer_index);
+        fprintf(stderr, "layer %u has no validation B12x binding slot base=%u\n", layer_index, buffers->routed_layer_base_index);
         return false;
     }
 
@@ -3526,8 +3528,9 @@ static bool SparkValidationBindRoutedLayerCache(
     mla_cache = 0;
     key_nope_cache = 0;
     value_cache = 0;
-    routed_layer_offset = layer_index >= SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX
-        ? layer_index - SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX
+    routed_layer_offset = (buffers != 0 &&
+        layer_index >= buffers->routed_layer_base_index)
+        ? layer_index - buffers->routed_layer_base_index
         : UINT32_MAX;
     if (buffers != 0 &&
         routed_layer_offset < SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT)
@@ -6361,6 +6364,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
     uint32_t input_token_id,
     SparkValidationRealLmHeadFixture *real_lm_head,
     SparkValidationLayer3RoutedExpertNvfp4Fixture *layer3_routed_expert,
+    uint32_t first_routed_layer_index,
     uint32_t routed_chain_layer_count,
     double *total_microseconds,
     double *maximum_observed_microseconds,
@@ -6372,8 +6376,16 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
     uint32_t routed_layer_offset;
     uint64_t copied_bytes;
 
+    if (first_routed_layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX ||
+        first_routed_layer_index >= SPARK_VALIDATION_LAYER_COUNT)
+    {
+        fprintf(stderr, "first routed chain layer is invalid layer=%u\n", first_routed_layer_index);
+        return false;
+    }
     if (routed_chain_layer_count == 0u ||
-        routed_chain_layer_count > SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT)
+        routed_chain_layer_count > SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT ||
+        routed_chain_layer_count >
+            (SPARK_VALIDATION_LAYER_COUNT - first_routed_layer_index))
     {
         fprintf(stderr, "routed chain layer count is invalid count=%u\n", routed_chain_layer_count);
         return false;
@@ -6440,7 +6452,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
                     model_directory,
                     real_lm_head,
                     layer3_routed_expert,
-                    SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX + routed_layer_offset,
+                    first_routed_layer_index + routed_layer_offset,
                     position,
                     slot_mapping,
                     context_length,
@@ -6496,7 +6508,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
                 model_directory,
                 real_lm_head,
                 layer3_routed_expert,
-                SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX + routed_layer_offset,
+                first_routed_layer_index + routed_layer_offset,
                 SPARK_VALIDATION_CURRENT_POSITION,
                 SPARK_VALIDATION_CURRENT_CACHE_SLOT,
                 SPARK_VALIDATION_CONTEXT_LENGTH,
@@ -6542,6 +6554,7 @@ int main(int argc, char **argv)
     const char *load_layer3_routed_expert_text;
     const char *load_layer3_routed_expert_topk_text;
     const char *chain_dense_layer3_routed_expert_topk_text;
+    const char *routed_chain_first_layer_text;
     const char *routed_chain_layer_count_text;
     double maximum_stage_microseconds;
     double total_microseconds;
@@ -6560,6 +6573,7 @@ int main(int argc, char **argv)
     uint32_t use_layer3_routed_expert;
     uint32_t use_layer3_routed_expert_topk;
     uint32_t use_dense_chain_layer3_routed_expert_topk;
+    uint32_t routed_chain_first_layer_index;
     uint32_t routed_chain_layer_count;
     uint32_t required_linear_plan_mask;
     uint32_t input_token_id;
@@ -6603,6 +6617,8 @@ int main(int argc, char **argv)
         getenv("GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4_TOPK");
     chain_dense_layer3_routed_expert_topk_text =
         getenv("GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK");
+    routed_chain_first_layer_text =
+        getenv("GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX");
     routed_chain_layer_count_text =
         getenv("GLM52_ROUTED_CHAIN_LAYER_COUNT");
     use_dense_mlp = load_layer0_dense != 0 && load_layer0_dense[0] != '\0' &&
@@ -6680,6 +6696,7 @@ int main(int argc, char **argv)
     layer0_full_reference_max_error = 0.0f;
     input_token_id = 0u;
     dense_layer_index = 0u;
+    routed_chain_first_layer_index = SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX;
     routed_chain_layer_count = 1u;
     if (use_input_embedding != 0u)
     {
@@ -6730,6 +6747,30 @@ int main(int argc, char **argv)
             return 2;
         }
         routed_chain_layer_count = (uint32_t)parsed_layer_count;
+    }
+    if (routed_chain_first_layer_text != 0 &&
+        routed_chain_first_layer_text[0] != '\0')
+    {
+        char *end_pointer;
+        unsigned long parsed_layer_index;
+
+        end_pointer = 0;
+        parsed_layer_index = strtoul(routed_chain_first_layer_text, &end_pointer, 10);
+        if (end_pointer == routed_chain_first_layer_text ||
+            *end_pointer != '\0' ||
+            parsed_layer_index < (unsigned long)SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX ||
+            parsed_layer_index >= (unsigned long)SPARK_VALIDATION_LAYER_COUNT)
+        {
+            fprintf(stderr, "GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX is invalid; expected %u..%u\n", SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX, SPARK_VALIDATION_LAYER_COUNT - 1u);
+            return 2;
+        }
+        routed_chain_first_layer_index = (uint32_t)parsed_layer_index;
+    }
+    if (routed_chain_layer_count >
+        (SPARK_VALIDATION_LAYER_COUNT - routed_chain_first_layer_index))
+    {
+        fprintf(stderr, "GLM52 routed chain slice exceeds final layer first=%u count=%u\n", routed_chain_first_layer_index, routed_chain_layer_count);
+        return 2;
     }
     if (use_prefill_kv != 0u &&
         (use_input_embedding == 0u ||
@@ -6844,6 +6885,7 @@ int main(int argc, char **argv)
     {
         return 2;
     }
+    buffers.routed_layer_base_index = routed_chain_first_layer_index;
     if ((use_dense_mlp != 0u ||
          use_attention_bf16 != 0u ||
          use_input_embedding != 0u) &&
@@ -7011,6 +7053,7 @@ int main(int argc, char **argv)
                     input_token_id,
                     &real_lm_head,
                     &layer3_routed_expert,
+                    routed_chain_first_layer_index,
                     routed_chain_layer_count,
                     &total_microseconds,
                     &maximum_observed_microseconds,
@@ -7035,8 +7078,9 @@ int main(int argc, char **argv)
                 return 1;
             }
             printf(
-                "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_chain_layer3_routed_expert_nvfp4_topk=1 dense_chain_layers=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+                "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_chain_layer3_routed_expert_nvfp4_topk=1 dense_chain_layers=%u first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
                 SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT,
+                routed_chain_first_layer_index,
                 routed_chain_layer_count,
                 submission_count,
                 total_microseconds,
@@ -7290,6 +7334,7 @@ int main(int argc, char **argv)
                 input_token_id,
                 &real_lm_head,
                 &layer3_routed_expert,
+                routed_chain_first_layer_index,
                 routed_chain_layer_count,
                 &total_microseconds,
                 &maximum_observed_microseconds,
@@ -7311,8 +7356,9 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_chain_layer3_routed_expert_nvfp4_topk=1 dense_chain_layers=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_chain_layer3_routed_expert_nvfp4_topk=1 dense_chain_layers=%u first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT,
+            routed_chain_first_layer_index,
             routed_chain_layer_count,
             submission_count,
             total_microseconds,
