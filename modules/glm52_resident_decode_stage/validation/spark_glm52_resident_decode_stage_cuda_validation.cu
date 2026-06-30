@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "spark_glm52_resident_decode_stage_backend.h"
+#include "sparkpipe/spark_glm52_resident_decode_stage_b12x_moe_plan.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_orchestrator.h"
 #include "sparkpipe/spark_status.h"
@@ -245,6 +246,10 @@ typedef struct SparkValidationDeviceBuffers
     uint32_t *mtp_committed_token_ids;
     uint32_t *mtp_event_counters;
     uint64_t *phase_clock_cycles;
+    SparkGlm52ResidentDecodeStageB12xMoeResidentBinding
+        b12x_moe_bindings[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    uint32_t b12x_moe_binding_ready[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    uint32_t b12x_moe_binding_layer_indices[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
 } SparkValidationDeviceBuffers;
 
 static bool SparkValidationCudaSucceeded(
@@ -3000,11 +3005,139 @@ static void SparkValidationEnableLayer3RoutedExpertNvfp4(
     SparkValidationDeviceBuffers *buffers,
     SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
+    (void)fixture;
     SparkValidationEnableLayer3RouterTopK(buffers, node_context);
     node_context->layer_progression_mode =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK;
+    node_context->mlp_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE;
+    node_context->moe_expert_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
+    node_context->moe_first_bound_expert_id = 0u;
+    node_context->moe_bound_expert_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
+    node_context->moe_top_k =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
     node_context->moe_intermediate_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+}
+
+static bool SparkValidationBuildB12xMoePackPath(
+    char *pack_path,
+    uint32_t pack_path_bytes,
+    uint32_t layer_index)
+{
+    const char *single_pack_path;
+    const char *pack_directory;
+    int written_bytes;
+
+    if (pack_path == 0 || pack_path_bytes == 0u)
+    {
+        return false;
+    }
+
+    single_pack_path = getenv("GLM52_B12X_MOE_PACK");
+    if (single_pack_path != 0 && single_pack_path[0] != '\0')
+    {
+        written_bytes = snprintf(
+            pack_path,
+            (size_t)pack_path_bytes,
+            "%s",
+            single_pack_path);
+        return written_bytes >= 0 && (uint32_t)written_bytes < pack_path_bytes;
+    }
+
+    pack_directory = getenv("GLM52_B12X_MOE_PACK_DIR");
+    if (pack_directory == 0 || pack_directory[0] == '\0')
+    {
+        fprintf(stderr, "set GLM52_B12X_MOE_PACK_DIR to the B12x resident MoE pack directory\n");
+        return false;
+    }
+
+    written_bytes = snprintf(
+        pack_path,
+        (size_t)pack_path_bytes,
+        "%s/glm52_layer_%04u_b12x_moe.spb12x",
+        pack_directory,
+        layer_index);
+    return written_bytes >= 0 && (uint32_t)written_bytes < pack_path_bytes;
+}
+
+static bool SparkValidationBindB12xMoePlanForLayer(
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t layer_index)
+{
+    SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateInfo create_info;
+    SparkStatus status;
+    char pack_path[PATH_MAX];
+    uint32_t binding_index;
+
+    if (buffers == 0 || node_context == 0 ||
+        layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX)
+    {
+        return false;
+    }
+
+    binding_index = layer_index - SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX;
+    if (binding_index >= SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT)
+    {
+        fprintf(stderr, "layer %u has no validation B12x binding slot\n", layer_index);
+        return false;
+    }
+
+    if (buffers->b12x_moe_binding_ready[binding_index] == 0u ||
+        buffers->b12x_moe_binding_layer_indices[binding_index] != layer_index)
+    {
+        if (!SparkValidationBuildB12xMoePackPath(
+                pack_path,
+                (uint32_t)sizeof(pack_path),
+                layer_index))
+        {
+            return false;
+        }
+
+        SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy(
+            &buffers->b12x_moe_bindings[binding_index]);
+        memset(&create_info, 0, sizeof(create_info));
+        create_info.abi_version =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PLAN_ABI_VERSION;
+        create_info.layer_index = layer_index;
+        create_info.maximum_active_sequence_count =
+            node_context->max_active_sequence_count;
+        create_info.pack_path = pack_path;
+
+        status = SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile(
+            &buffers->b12x_moe_bindings[binding_index],
+            &create_info);
+        if (status != SPARK_STATUS_OK)
+        {
+            fprintf(
+                stderr,
+                "failed to bind B12x resident MoE pack for layer %u path=%s status=%d\n",
+                layer_index,
+                pack_path,
+                (int)status);
+            return false;
+        }
+        buffers->b12x_moe_binding_ready[binding_index] = 1u;
+        buffers->b12x_moe_binding_layer_indices[binding_index] = layer_index;
+    }
+
+    node_context->b12x_moe_dispatch_plan =
+        &buffers->b12x_moe_bindings[binding_index].dispatch_plan;
+    node_context->mlp_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE;
+    node_context->moe_expert_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
+    node_context->moe_first_bound_expert_id = 0u;
+    node_context->moe_bound_expert_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
+    node_context->moe_top_k =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
+    node_context->moe_intermediate_dimension =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+    return true;
 }
 
 static bool SparkValidationInitializeDenseLayerCacheAliases(
@@ -3093,6 +3226,101 @@ static bool SparkValidationBindRoutedLayerCache(
     return true;
 }
 
+static bool SparkValidationLinearPlanIsReady(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t plan_index,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t output_is_f32)
+{
+    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan;
+
+    if (node_context == 0 ||
+        node_context->linear_plans == 0 ||
+        plan_index >= node_context->linear_plan_count)
+    {
+        return false;
+    }
+    linear_plan = &node_context->linear_plans[plan_index];
+    return linear_plan->abi_version ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ABI_VERSION &&
+        linear_plan->plan_kind !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_UNUSED &&
+        linear_plan->input_dimension == input_dimension &&
+        linear_plan->output_dimension == output_dimension &&
+        linear_plan->maximum_active_sequence_count >=
+            node_context->max_active_sequence_count &&
+        linear_plan->output_is_f32 == output_is_f32;
+}
+
+static bool SparkValidationPreflightRequiredFastPath(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    if (node_context == 0)
+    {
+        fprintf(stderr, "required fast-path preflight missing node context\n");
+        return false;
+    }
+    if (node_context->layer_progression_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP)
+    {
+        if (node_context->mlp_execution_mode !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE)
+        {
+            fprintf(stderr, "dense prefix requires prebound tensor-core MLP linear plans\n");
+            return false;
+        }
+        if (!SparkValidationLinearPlanIsReady(
+                node_context,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_GATE,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                node_context->dense_intermediate_dimension,
+                0u) ||
+            !SparkValidationLinearPlanIsReady(
+                node_context,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_UP,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                node_context->dense_intermediate_dimension,
+                0u) ||
+            !SparkValidationLinearPlanIsReady(
+                node_context,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_DOWN,
+                node_context->dense_intermediate_dimension,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                0u))
+        {
+            fprintf(stderr, "dense prefix missing resident prebound dense gate/up/down linear plans\n");
+            return false;
+        }
+    }
+    if (node_context->layer_progression_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY ||
+        node_context->layer_progression_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK)
+    {
+        if (!SparkValidationLinearPlanIsReady(
+                node_context,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ROUTER_LOGITS,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                node_context->moe_expert_count,
+                1u))
+        {
+            fprintf(stderr, "routed B12x path missing resident prebound router logits linear plan\n");
+            return false;
+        }
+    }
+    if (node_context->layer_progression_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK &&
+        (node_context->mlp_execution_mode !=
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE ||
+         node_context->b12x_moe_dispatch_plan == 0))
+    {
+        fprintf(stderr, "routed B12x path missing FlashInfer B12x MoE dispatch plan\n");
+        return false;
+    }
+    return true;
+}
+
 static bool SparkValidationRunOnce(
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
     cudaStream_t cuda_stream,
@@ -3116,6 +3344,10 @@ static bool SparkValidationRunOnce(
         SparkValidationCudaSucceeded(cudaEventCreate(&stop_event), "cudaEventCreate stop") &&
         SparkValidationCudaSucceeded(cudaEventRecord(start_event, cuda_stream), "cudaEventRecord start");
     if (!succeeded)
+    {
+        return false;
+    }
+    if (!SparkValidationPreflightRequiredFastPath(node_context))
     {
         return false;
     }
@@ -5256,6 +5488,11 @@ static bool SparkValidationRunDriverOnce(
     frame.active_slot_count = SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT;
     frame.new_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u;
     frame.residency.owner = 1u;
+    if (!SparkValidationPreflightRequiredFastPath(node_context))
+    {
+        SparkDestroyOrchestrator(orchestrator);
+        return false;
+    }
     status = SparkOrchestratorSubmit(orchestrator, route_handle, &frame);
     if (status != SPARK_STATUS_OK)
     {
@@ -5667,7 +5904,11 @@ static bool SparkValidationRunLayer3RoutedTopKLayer(
             buffers,
             position,
             slot_mapping,
-            context_length))
+            context_length) ||
+        !SparkValidationBindB12xMoePlanForLayer(
+            buffers,
+            node_context,
+            layer_index))
     {
         return false;
     }
@@ -6354,6 +6595,13 @@ int main(int argc, char **argv)
     if (use_layer3_routed_expert != 0u &&
         use_dense_chain_layer3_routed_expert_topk == 0u)
     {
+        if (!SparkValidationBindB12xMoePlanForLayer(
+                &buffers,
+                &node_context,
+                SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX))
+        {
+            return 2;
+        }
         SparkValidationEnableLayer3RoutedExpertNvfp4(
             &layer3_routed_expert,
             &buffers,

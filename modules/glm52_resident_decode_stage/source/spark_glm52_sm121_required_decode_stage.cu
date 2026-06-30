@@ -38,49 +38,6 @@ typedef SparkStatus (*SparkGlm52Sm121RequiredB12xLaunchFunction)(
 
 typedef void (*SparkGlm52Sm121RequiredB12xDestroyFunction)(void *state);
 
-typedef SparkStatus (*SparkGlm52ResidentDecodeStageCustomLinearLaunchFunction)(
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
-    const void *input,
-    const void *weight,
-    void *output,
-    uint32_t active_sequence_count,
-    void *cuda_stream);
-
-typedef SparkStatus (*SparkGlm52ResidentDecodeStageRestrictedLogitsLaunchFunction)(
-    const SparkGlm52ResidentDecodeStageRestrictedLogitsPlan *restricted_logits_plan,
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
-    uint32_t active_sequence_count,
-    void *cuda_stream);
-
-typedef SparkStatus (*SparkGlm52ResidentDecodeStageMtpDraftLaunchFunction)(
-    const SparkGlm52ResidentDecodeStageMtpDraftPlan *mtp_draft_plan,
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
-    uint32_t active_sequence_count,
-    void *cuda_stream);
-
-typedef SparkStatus (*SparkGlm52ResidentDecodeStageFullStageLaunchFunction)(
-    const SparkGlm52ResidentDecodeStageFullStagePlan *full_stage_plan,
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
-    uint32_t active_sequence_count,
-    void *cuda_stream);
-
-static bool SparkGlm52ResidentDecodeStageLinearPlanIsUsable(
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t active_sequence_count);
-
-static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
-    const void *input,
-    const void *weight,
-    void *output,
-    uint32_t active_sequence_count,
-    cudaStream_t cuda_stream);
-
 static SparkGlm52Sm121RequiredB12xCreateFunction
     SparkGlm52Sm121RequiredDecodeStageB12xCreateReference
     SPARK_GLM52_REQUIRED_SYMBOL_REFERENCE =
@@ -1751,6 +1708,7 @@ void SparkGlm52ResidentDecodeStageMoeRouterTopKFromLogitsKernel(
     }
 }
 
+
 static __global__ void SparkGlm52ResidentDecodeStageSiluMulKernel(
     const uint16_t *__restrict__ gate_bf16,
     const uint16_t *__restrict__ up_bf16,
@@ -2246,6 +2204,54 @@ typedef SparkStatus (*SparkGlm52ResidentDecodeStageCustomLinearLaunchFunction)(
     uint32_t active_sequence_count,
     void *cuda_stream);
 
+typedef SparkStatus (*SparkGlm52ResidentDecodeStageRestrictedLogitsLaunchFunction)(
+    const SparkGlm52ResidentDecodeStageRestrictedLogitsPlan *restricted_logits_plan,
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t active_sequence_count,
+    void *cuda_stream);
+
+typedef SparkStatus (*SparkGlm52ResidentDecodeStageMtpDraftLaunchFunction)(
+    const SparkGlm52ResidentDecodeStageMtpDraftPlan *mtp_draft_plan,
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t active_sequence_count,
+    void *cuda_stream);
+
+typedef SparkStatus (*SparkGlm52ResidentDecodeStageFullStageLaunchFunction)(
+    const SparkGlm52ResidentDecodeStageFullStagePlan *full_stage_plan,
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t active_sequence_count,
+    void *cuda_stream);
+
+static bool SparkGlm52ResidentDecodeStageLinearPlanIsUsable(
+    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t active_sequence_count)
+{
+    if (linear_plan == 0)
+    {
+        return false;
+    }
+    return linear_plan->abi_version ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ABI_VERSION &&
+        linear_plan->plan_kind !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_UNUSED &&
+        linear_plan->input_dimension == input_dimension &&
+        linear_plan->output_dimension == output_dimension &&
+        active_sequence_count <= linear_plan->maximum_active_sequence_count;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
+    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
+    const void *input,
+    const void *weight,
+    void *output,
+    uint32_t active_sequence_count,
+    cudaStream_t cuda_stream);
+
 
 
 static const SparkGlm52ResidentDecodeStageB12xMoePlan *SparkGlm52ResidentDecodeStageGetB12xMoePlan(
@@ -2375,22 +2381,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateB12xMoePlan(
 
     *b12x_plan_out = b12x_plan;
     return SPARK_STATUS_OK;
-}
-
-static bool SparkGlm52ResidentDecodeStageLinearPlanIsUsable(
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t active_sequence_count)
-{
-    return linear_plan != 0 &&
-        linear_plan->abi_version ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ABI_VERSION &&
-        linear_plan->plan_kind !=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_UNUSED &&
-        linear_plan->input_dimension == input_dimension &&
-        linear_plan->output_dimension == output_dimension &&
-        active_sequence_count <= linear_plan->maximum_active_sequence_count;
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchMoeRouterForB12x(

@@ -322,9 +322,31 @@
                   "plan_kind": "flashinfer_b12x",
                   "b12x_moe_dispatch_plan_kind_constant": "SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_DISPATCH_PLAN_KIND_FLASHINFER_B12X",
                   "opaque_state_type": "SparkGlm52ResidentDecodeStageB12xMoePlan",
-                  "state_lifecycle": "SparkGlm52Sm121RequiredDecodeStageInitialize creates; SparkGlm52Sm121RequiredDecodeStageQuiesce destroys",
+                  "state_lifecycle": "SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile creates resident buffers and B12x state; SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy tears them down",
                   "router": "stage computes top-k ids and weights, then B12x consumes them",
                   "output_contract": "B12x writes MoE output to moe_route_output_bf16; stage residual-adds post_attention_hidden_bf16 into layer_output_hidden_bf16",
+                  "fallback_allowed": false,
+                  "resident_pack_header": "SparkGlm52ResidentDecodeStageB12xMoePackHeader"
+                },
+                "resident_moe_pack_tool": "tools/glm52_b12x_resident_pack.py",
+                "required_resident_moe_packs": {
+                  "schema": "sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1",
+                  "directory": "build/glm52_b12x_resident_moe",
+                  "layers": [
+                    3,
+                    4,
+                    5,
+                    6,
+                    7,
+                    8,
+                    9,
+                    10
+                  ],
+                  "file_pattern": "glm52_layer_%04u_b12x_moe.spb12x",
+                  "contains_all_experts": true,
+                  "expert_count": 256,
+                  "gate_up_order": "up_gate",
+                  "scale2_baked_into_block_scales": true,
                   "fallback_allowed": false
                 }
               }

@@ -31,14 +31,17 @@ If the AOT-generated B12x backend, generated table, or adapter archive is missin
 
 ## Current hard blocker
 
-The release validator now fails production mode unless the tree has a resident B12x plan/StagePack binder. That component must:
+The resident B12x MoE pack binder now exists, but the strict dense-prefix routed validation fails before MoE because the required stage has no resident prebound linear-plan binder for:
 
 ```text
-1. load the official GLM-5.2 NVFP4 expert tensors, not runtime-quantized substitutes
-2. prepack all resident expert weights/scales into the FlashInfer B12x static view/storage layout
-3. bind a SparkGlm52ResidentDecodeStageB12xMoePlan with real device pointers, state_cell, recipe hashes, and validated latency
-4. bind a SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan for routed decode
-5. run routed GLM52 decode through SparkGlm52Sm121FlashInferB12xMoeLaunch in validation
+SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_GATE
+SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_UP
+SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_DOWN
+SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ROUTER_LOGITS
 ```
 
-Until that exists, `make validate`, `make publish`, and `make package` intentionally fail. Attention-only validation is not an accepted production PASS.
+The required component is a startup-only C/CUDA binder that creates real cuBLASLt or driver-custom plans for those entries and attaches `node_context->linear_plans` before validation. Without it, `make validate` fails with:
+
+```text
+dense prefix requires prebound tensor-core MLP linear plans
+```

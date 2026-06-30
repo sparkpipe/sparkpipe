@@ -45,11 +45,6 @@ if [[ "${cuda_architecture}" != "sm_121a" ]]; then
     echo "this validator admits only sm_121a required-CUDA artifacts" >&2
     exit 2
 fi
-if [[ "${GLM52_REQUIRE_PRODUCTION_B12X:-0}" != "0" ]]; then
-    echo "production B12x validation is still blocked: missing resident GLM52 B12x plan/StagePack binder and validator hook" >&2
-    echo "required component: bind official NVFP4 GLM52 expert weights/scales into SparkGlm52ResidentDecodeStageB12xMoePlan and validate routed decode through FlashInfer B12x" >&2
-    exit 2
-fi
 
 required_cuda_link_args=()
 if [[ -n "${GLM52_REQUIRED_CUDA_LINK_ARGS:-}" ]]; then
