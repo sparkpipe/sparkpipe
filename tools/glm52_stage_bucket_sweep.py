@@ -157,8 +157,14 @@ def run_one(
     first_layer: int,
     layer_count: int,
     input_hidden: Path,
+    attempt_index: int,
+    warmup: bool,
 ) -> Dict[str, Any]:
-    output_hidden = args.output_dir / f"output_hidden_f{first_layer}_c{layer_count}_b{batch}.bf16"
+    attempt_label = f"w{attempt_index}" if warmup else f"r{attempt_index}"
+    output_hidden = (
+        args.output_dir /
+        f"output_hidden_f{first_layer}_c{layer_count}_b{batch}_{attempt_label}.bf16"
+    )
     command = build_command(args, batch, first_layer, layer_count, input_hidden, output_hidden)
     env = os.environ.copy()
     completed = subprocess.run(
@@ -175,10 +181,15 @@ def run_one(
         "batch_size": batch,
         "first_layer": first_layer,
         "layer_count": layer_count,
+        "attempt_index": attempt_index,
+        "warmup": warmup,
         "graph_requested": bool(args.graph),
         "command": command,
         "returncode": completed.returncode,
-        "log_path": str(args.output_dir / f"log_f{first_layer}_c{layer_count}_b{batch}.txt"),
+        "log_path": str(
+            args.output_dir /
+            f"log_f{first_layer}_c{layer_count}_b{batch}_{attempt_label}.txt"
+        ),
     }
     Path(record["log_path"]).write_text(log_text, encoding="utf-8")
     if completed.returncode != 0:
@@ -199,10 +210,44 @@ def run_one(
     return record
 
 
-def write_reports(output_dir: Path, records: List[Dict[str, Any]]) -> None:
+def summarize_attempts(
+    args: argparse.Namespace,
+    attempts: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    measured = [
+        attempt for attempt in attempts
+        if attempt.get("status") == "pass" and not attempt.get("warmup", False)
+    ]
+    if not measured:
+        failed = attempts[-1].copy()
+        failed["attempt_count"] = len(attempts)
+        failed["warmup_runs"] = args.warmup_runs
+        failed["measure_runs"] = args.measure_runs
+        failed["best_attempt_index"] = ""
+        return failed
+    best = min(measured, key=lambda item: float(item["total_us"])).copy()
+    best["attempt_count"] = len(attempts)
+    best["warmup_runs"] = args.warmup_runs
+    best["measure_runs"] = args.measure_runs
+    best["best_attempt_index"] = best["attempt_index"]
+    return best
+
+
+def write_reports(
+    output_dir: Path,
+    records: List[Dict[str, Any]],
+    attempt_records: List[Dict[str, Any]],
+) -> None:
     json_path = output_dir / "glm52_stage_bucket_sweep.json"
     tsv_path = output_dir / "glm52_stage_bucket_sweep.tsv"
-    json_path.write_text(json.dumps({"records": records}, indent=2, sort_keys=True), encoding="utf-8")
+    json_path.write_text(
+        json.dumps(
+            {"records": records, "attempt_records": attempt_records},
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     columns = [
         "status",
         "batch_size",
@@ -216,6 +261,10 @@ def write_reports(output_dir: Path, records: List[Dict[str, Any]]) -> None:
         "submissions",
         "graph_captures",
         "graph_replays",
+        "attempt_count",
+        "warmup_runs",
+        "measure_runs",
+        "best_attempt_index",
         "error",
         "log_path",
     ]
@@ -243,6 +292,8 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--require-pack-reuse", action="store_true")
     parser.add_argument("--verify-reused-sha256", action="store_true")
     parser.add_argument("--graph", action="store_true")
+    parser.add_argument("--warmup-runs", default=0, type=int)
+    parser.add_argument("--measure-runs", default=1, type=int)
     parser.add_argument("--keep-going", action="store_true")
     args = parser.parse_args(argv)
     if args.allow_pack_build and args.require_pack_reuse:
@@ -253,13 +304,64 @@ def main(argv: Sequence[str]) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if not args.input_hidden.exists():
         raise SweepFailure(f"missing input hidden file: {args.input_hidden}")
+    if args.warmup_runs < 0 or args.measure_runs <= 0:
+        raise SweepFailure("--warmup-runs must be non-negative and --measure-runs must be positive")
     buckets = parse_csv_u32(args.buckets)
     stages = parse_stages(args.stage if args.stage is not None else DEFAULT_STAGES)
     records: List[Dict[str, Any]] = []
+    attempt_records: List[Dict[str, Any]] = []
     for batch in buckets:
         input_hidden = ensure_batch_hidden(args.input_hidden, args.output_dir, batch)
         for first_layer, layer_count in stages:
-            record = run_one(root, args, batch, first_layer, layer_count, input_hidden)
+            attempts: List[Dict[str, Any]] = []
+            for attempt_index in range(args.warmup_runs):
+                attempt = run_one(
+                    root,
+                    args,
+                    batch,
+                    first_layer,
+                    layer_count,
+                    input_hidden,
+                    attempt_index,
+                    True,
+                )
+                attempts.append(attempt)
+                attempt_records.append(attempt)
+                print(
+                    f"bucket={batch} stage={first_layer}:{layer_count} "
+                    f"warmup={attempt_index} status={attempt['status']} "
+                    f"tok_s={attempt.get('filled_pipeline_tok_s', '')} "
+                    f"log={attempt['log_path']}",
+                    flush=True,
+                )
+                if attempt["status"] != "pass" and not args.keep_going:
+                    record = summarize_attempts(args, attempts)
+                    records.append(record)
+                    write_reports(args.output_dir, records, attempt_records)
+                    return 1
+            for attempt_index in range(args.measure_runs):
+                attempt = run_one(
+                    root,
+                    args,
+                    batch,
+                    first_layer,
+                    layer_count,
+                    input_hidden,
+                    attempt_index,
+                    False,
+                )
+                attempts.append(attempt)
+                attempt_records.append(attempt)
+                print(
+                    f"bucket={batch} stage={first_layer}:{layer_count} "
+                    f"measure={attempt_index} status={attempt['status']} "
+                    f"tok_s={attempt.get('filled_pipeline_tok_s', '')} "
+                    f"log={attempt['log_path']}",
+                    flush=True,
+                )
+                if attempt["status"] != "pass" and not args.keep_going:
+                    break
+            record = summarize_attempts(args, attempts)
             records.append(record)
             print(
                 f"bucket={batch} stage={first_layer}:{layer_count} "
@@ -268,9 +370,9 @@ def main(argv: Sequence[str]) -> int:
                 flush=True,
             )
             if record["status"] != "pass" and not args.keep_going:
-                write_reports(args.output_dir, records)
+                write_reports(args.output_dir, records, attempt_records)
                 return 1
-    write_reports(args.output_dir, records)
+    write_reports(args.output_dir, records, attempt_records)
     return 0 if all(record["status"] == "pass" for record in records) else 1
 
 

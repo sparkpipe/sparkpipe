@@ -28,6 +28,8 @@ GLM52_STAGE_SWEEP_BUCKETS ?= 8,16,32,64
 GLM52_STAGE_SWEEP_STAGE_ARGS ?=
 GLM52_STAGE_SWEEP_MAX_STAGE_US ?= 1000000
 GLM52_STAGE_SWEEP_OUTPUT_DIR ?= build/glm52_stage_bucket_sweep
+GLM52_STAGE_SWEEP_WARMUP_RUNS ?= 0
+GLM52_STAGE_SWEEP_MEASURE_RUNS ?= 1
 B12X_ADAPTER_ARCHIVE := $(abspath build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a)
 B12X_COMPILED_BACKEND_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a)
 B12X_GENERATED_KERNEL_TABLE_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a)
@@ -292,6 +294,8 @@ glm52_stage_bucket_sweep:
 		--input-hidden "$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)" \
 		--output-dir "$(GLM52_STAGE_SWEEP_OUTPUT_DIR)" \
 		--max-stage-us "$(GLM52_STAGE_SWEEP_MAX_STAGE_US)" \
+		--warmup-runs "$(GLM52_STAGE_SWEEP_WARMUP_RUNS)" \
+		--measure-runs "$(GLM52_STAGE_SWEEP_MEASURE_RUNS)" \
 		--model-dir "$(GLM52_MODEL_DIR)" \
 		--nvcc "$(NVCC)" \
 		--aot-env "$(SPARKPIPE_B12X_AOT_ENV)" \

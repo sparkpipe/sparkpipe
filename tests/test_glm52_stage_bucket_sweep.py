@@ -52,6 +52,8 @@ def main() -> int:
         allow_pack_build=False,
         require_pack_reuse=False,
         verify_reused_sha256=False,
+        warmup_runs=1,
+        measure_runs=2,
     )
     command = module.build_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
     assert "B12X_MOE_PACK_REQUIRE_REUSE=1" in command
@@ -63,6 +65,15 @@ def main() -> int:
     args.verify_reused_sha256 = True
     command = module.build_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
     assert "B12X_MOE_PACK_VERIFY_REUSED_SHA256=1" in command
+    attempts = [
+        {"status": "pass", "warmup": True, "attempt_index": 0, "total_us": 60000.0},
+        {"status": "pass", "warmup": False, "attempt_index": 0, "total_us": 50000.0},
+        {"status": "pass", "warmup": False, "attempt_index": 1, "total_us": 40000.0},
+    ]
+    best = module.summarize_attempts(args, attempts)
+    assert best["total_us"] == 40000.0
+    assert best["best_attempt_index"] == 1
+    assert best["attempt_count"] == 3
     return 0
 
 
