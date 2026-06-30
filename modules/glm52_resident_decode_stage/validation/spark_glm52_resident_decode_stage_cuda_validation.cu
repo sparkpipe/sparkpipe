@@ -18,7 +18,12 @@
 #include "sparkpipe/spark_orchestrator.h"
 #include "sparkpipe/spark_status.h"
 
+#ifndef SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT
 #define SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT 1u
+#endif
+#if SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT == 0u
+#error "SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT must be positive"
+#endif
 #define SPARK_VALIDATION_CACHE_TOKEN_CAPACITY 128u
 #define SPARK_VALIDATION_KV_BLOCK_COUNT 2u
 #define SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE 2u
@@ -2422,8 +2427,11 @@ static bool SparkValidationAllocateRoutedLayerCaches(
 static bool SparkValidationAllocateDeviceBuffers(
     SparkValidationDeviceBuffers *buffers)
 {
+    uint64_t hidden_vector_count;
     uint64_t hidden_count;
+    uint64_t query_latent_vector_count;
     uint64_t query_latent_count;
+    uint64_t query_rope_vector_count;
     uint64_t query_rope_count;
     uint64_t raw_query_a_count;
     uint64_t raw_query_b_count;
@@ -2460,13 +2468,24 @@ static bool SparkValidationAllocateDeviceBuffers(
     uint64_t rope_table_count;
 
     memset(buffers, 0, sizeof(*buffers));
-    hidden_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    hidden_vector_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    query_latent_vector_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_LATENT_PROJECTION_DIMENSION;
+    query_rope_vector_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION;
+    hidden_count =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        hidden_vector_count;
     query_latent_count =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_LATENT_PROJECTION_DIMENSION;
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        query_latent_vector_count;
     attention_output_count =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION;
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION;
     query_rope_count =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION;
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        query_rope_vector_count;
     raw_query_a_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION;
     raw_query_b_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION;
     raw_kv_a_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION;
@@ -2483,11 +2502,11 @@ static bool SparkValidationAllocateDeviceBuffers(
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
     query_latent_weight_count =
-        query_latent_count *
-        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+        query_latent_vector_count *
+        hidden_vector_count;
     attention_output_weight_count =
-        attention_output_count *
-        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION *
+        hidden_vector_count;
     raw_query_a_weight_count =
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
@@ -2588,14 +2607,14 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->normalized_hidden_bf16, hidden_count * 2u, "cudaMalloc normalized_hidden") &&
         SparkValidationAllocateZeroed((void **)&buffers->query_latent_bf16, query_latent_count * 2u, "cudaMalloc query_latent") &&
         SparkValidationAllocateZeroed((void **)&buffers->query_rope_input_bf16, query_rope_count * 2u, "cudaMalloc query_rope") &&
-        SparkValidationAllocateZeroed((void **)&buffers->key_rope_input_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION * 2u, "cudaMalloc key_rope") &&
-        SparkValidationAllocateZeroed((void **)&buffers->current_kv_latent_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u, "cudaMalloc current_kv") &&
-        SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_bf16, raw_query_a_count * 2u, "cudaMalloc raw_query_a") &&
-        SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_normalized_bf16, raw_query_a_count * 2u, "cudaMalloc raw_query_a_normalized") &&
-        SparkValidationAllocateZeroed((void **)&buffers->raw_query_b_bf16, raw_query_b_count * 2u, "cudaMalloc raw_query_b") &&
-        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_a_bf16, raw_kv_a_count * 2u, "cudaMalloc raw_kv_a") &&
-        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_a_normalized_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u, "cudaMalloc raw_kv_a_normalized") &&
-        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_b_bf16, raw_kv_b_count * 2u, "cudaMalloc raw_kv_b") &&
+        SparkValidationAllocateZeroed((void **)&buffers->key_rope_input_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION * 2u, "cudaMalloc key_rope") &&
+        SparkValidationAllocateZeroed((void **)&buffers->current_kv_latent_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u, "cudaMalloc current_kv") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * raw_query_a_count * 2u, "cudaMalloc raw_query_a") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_normalized_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * raw_query_a_count * 2u, "cudaMalloc raw_query_a_normalized") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_query_b_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * raw_query_b_count * 2u, "cudaMalloc raw_query_b") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_a_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * raw_kv_a_count * 2u, "cudaMalloc raw_kv_a") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_a_normalized_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u, "cudaMalloc raw_kv_a_normalized") &&
+        SparkValidationAllocateZeroed((void **)&buffers->raw_kv_b_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * raw_kv_b_count * 2u, "cudaMalloc raw_kv_b") &&
         SparkValidationAllocateZeroed((void **)&buffers->mla_cache_bf16, cache_count * 2u, "cudaMalloc mla_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->key_nope_cache_bf16, key_nope_cache_count * 2u, "cudaMalloc key_nope_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->value_cache_bf16, value_cache_count * 2u, "cudaMalloc value_cache") &&
@@ -2617,11 +2636,11 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->moe_route_output_bf16, moe_route_hidden_count * 2u, "cudaMalloc moe_route_output") &&
         SparkValidationAllocateZeroed((void **)&buffers->layer_output_hidden_bf16, hidden_count * 2u, "cudaMalloc layer_output_hidden") &&
         SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_hidden_bf16, hidden_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 2u, "cudaMalloc mtp_draft_hidden") &&
-        SparkValidationAllocateZeroed((void **)&buffers->attention_norm_weight_bf16, hidden_count * 2u, "cudaMalloc attention_norm_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->attention_norm_weight_bf16, hidden_vector_count * 2u, "cudaMalloc attention_norm_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->query_latent_weight_bf16, query_latent_weight_count * 2u, "cudaMalloc query_latent_weight") &&
-        SparkValidationAllocateZeroed((void **)&buffers->query_rope_weight_bf16, query_rope_count * hidden_count * 2u, "cudaMalloc query_rope_weight") &&
-        SparkValidationAllocateZeroed((void **)&buffers->key_rope_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION * hidden_count * 2u, "cudaMalloc key_rope_weight") &&
-        SparkValidationAllocateZeroed((void **)&buffers->kv_latent_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * hidden_count * 2u, "cudaMalloc kv_latent_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->query_rope_weight_bf16, query_rope_vector_count * hidden_vector_count * 2u, "cudaMalloc query_rope_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->key_rope_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION * hidden_vector_count * 2u, "cudaMalloc key_rope_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->kv_latent_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * hidden_vector_count * 2u, "cudaMalloc kv_latent_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_weight_bf16, raw_query_a_weight_count * 2u, "cudaMalloc raw_query_a_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_norm_weight_bf16, raw_query_a_count * 2u, "cudaMalloc raw_query_a_norm_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->raw_query_b_weight_bf16, raw_query_b_weight_count * 2u, "cudaMalloc raw_query_b_weight") &&
@@ -2639,7 +2658,7 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->attention_output_weight_bf16, attention_output_weight_count * 2u, "cudaMalloc attention_output_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->attention_output_weight_fp8_e4m3, attention_output_weight_count, "cudaMalloc attention_output_weight_fp8") &&
         SparkValidationAllocateZeroed((void **)&buffers->attention_output_weight_scale_inv_f32, attention_output_scale_count * 4u, "cudaMalloc attention_output_scale") &&
-        SparkValidationAllocateZeroed((void **)&buffers->post_attention_norm_weight_bf16, hidden_count * 2u, "cudaMalloc post_attention_norm_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->post_attention_norm_weight_bf16, hidden_vector_count * 2u, "cudaMalloc post_attention_norm_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_gate_weight_bf16, moe_gate_weight_count * 2u, "cudaMalloc moe_gate_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_up_weight_bf16, moe_gate_weight_count * 2u, "cudaMalloc moe_up_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_down_weight_bf16, moe_down_weight_count * 2u, "cudaMalloc moe_down_weight") &&
@@ -2657,7 +2676,7 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->routed_up_weight_scale_2_f32, routed_bound_expert_capacity * 4u, "cudaMalloc routed_up_weight_payload_scale_2") &&
         SparkValidationAllocateZeroed((void **)&buffers->routed_down_input_scale_f32, routed_bound_expert_capacity * 4u, "cudaMalloc routed_down_input_scale") &&
         SparkValidationAllocateZeroed((void **)&buffers->routed_down_weight_scale_2_f32, routed_bound_expert_capacity * 4u, "cudaMalloc routed_down_weight_payload_scale_2") &&
-        SparkValidationAllocateZeroed((void **)&buffers->final_norm_weight_bf16, hidden_count * 2u, "cudaMalloc final_norm_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->final_norm_weight_bf16, hidden_vector_count * 2u, "cudaMalloc final_norm_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_lm_head_weight_bf16, restricted_weight_count * 2u, "cudaMalloc restricted_lm_head_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->mtp_mxfp4_weight_payload_u8, mtp_payload_count, "cudaMalloc mtp_payload") &&
         SparkValidationAllocateZeroed((void **)&buffers->mtp_mxfp4_scale_e8m0_u8, mtp_scale_count, "cudaMalloc mtp_scale") &&
@@ -2670,12 +2689,12 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->restricted_logits, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * 4u, "cudaMalloc restricted_logits") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_selected_token_scores, 4u, "cudaMalloc selected_scores") &&
         SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_logits, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_logits") &&
-        SparkValidationAllocateZeroed((void **)&buffers->positions, 4u, "cudaMalloc positions") &&
-        SparkValidationAllocateZeroed((void **)&buffers->slot_mapping, 4u, "cudaMalloc slot_mapping") &&
-        SparkValidationAllocateZeroed((void **)&buffers->block_table, SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE * 4u, "cudaMalloc block_table") &&
-        SparkValidationAllocateZeroed((void **)&buffers->context_lengths, 4u, "cudaMalloc context_lengths") &&
-        SparkValidationAllocateZeroed((void **)&buffers->first_block_token_offsets, 4u, "cudaMalloc first_block_token_offsets") &&
-        SparkValidationAllocateZeroed((void **)&buffers->sparse_token_indices, SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * 4u, "cudaMalloc sparse_indices") &&
+        SparkValidationAllocateZeroed((void **)&buffers->positions, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * 4u, "cudaMalloc positions") &&
+        SparkValidationAllocateZeroed((void **)&buffers->slot_mapping, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * 4u, "cudaMalloc slot_mapping") &&
+        SparkValidationAllocateZeroed((void **)&buffers->block_table, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE * 4u, "cudaMalloc block_table") &&
+        SparkValidationAllocateZeroed((void **)&buffers->context_lengths, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * 4u, "cudaMalloc context_lengths") &&
+        SparkValidationAllocateZeroed((void **)&buffers->first_block_token_offsets, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * 4u, "cudaMalloc first_block_token_offsets") &&
+        SparkValidationAllocateZeroed((void **)&buffers->sparse_token_indices, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * 4u, "cudaMalloc sparse_indices") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_token_ids, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * 4u, "cudaMalloc restricted_token_ids") &&
         SparkValidationAllocateZeroed((void **)&buffers->moe_topk_expert_ids, SPARK_VALIDATION_MOE_ROUTE_COUNT * 4u, "cudaMalloc moe_topk_expert_ids") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_selected_token_ids, 4u, "cudaMalloc selected_token_ids") &&
@@ -2849,9 +2868,55 @@ static bool SparkValidationSetDecodeScalars(
     uint32_t slot_mapping,
     uint32_t context_length)
 {
-    return SparkValidationCopyToDevice(buffers->positions, &position, sizeof(position), "copy position") &&
-        SparkValidationCopyToDevice(buffers->slot_mapping, &slot_mapping, sizeof(slot_mapping), "copy slot_mapping") &&
-        SparkValidationCopyToDevice(buffers->context_lengths, &context_length, sizeof(context_length), "copy context_length");
+    uint32_t positions[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
+    uint32_t slot_mappings[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
+    uint32_t context_lengths[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
+    uint32_t first_block_token_offsets[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
+    uint32_t block_table[
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE];
+    uint32_t sparse_token_indices[
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT];
+    uint32_t sequence_index;
+    uint32_t block_index;
+    uint32_t sparse_index;
+
+    for (sequence_index = 0u;
+         sequence_index < SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT;
+         ++sequence_index)
+    {
+        positions[sequence_index] = position;
+        slot_mappings[sequence_index] = slot_mapping + sequence_index;
+        context_lengths[sequence_index] = context_length;
+        first_block_token_offsets[sequence_index] =
+            SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET;
+        for (block_index = 0u;
+             block_index < SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE;
+             ++block_index)
+        {
+            block_table[
+                (sequence_index * SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE) +
+                block_index] = block_index == 0u ? 1u : 0u;
+        }
+        for (sparse_index = 0u;
+             sparse_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
+             ++sparse_index)
+        {
+            sparse_token_indices[
+                (sequence_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT) +
+                sparse_index] = sparse_index < context_length
+                    ? sparse_index
+                    : SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID;
+        }
+    }
+    return SparkValidationCopyToDevice(buffers->positions, positions, sizeof(positions), "copy positions") &&
+        SparkValidationCopyToDevice(buffers->slot_mapping, slot_mappings, sizeof(slot_mappings), "copy slot_mappings") &&
+        SparkValidationCopyToDevice(buffers->context_lengths, context_lengths, sizeof(context_lengths), "copy context_lengths") &&
+        SparkValidationCopyToDevice(buffers->first_block_token_offsets, first_block_token_offsets, sizeof(first_block_token_offsets), "copy first_block_token_offsets") &&
+        SparkValidationCopyToDevice(buffers->block_table, block_table, sizeof(block_table), "copy block_table") &&
+        SparkValidationCopyToDevice(buffers->sparse_token_indices, sparse_token_indices, sizeof(sparse_token_indices), "copy sparse_token_indices");
 }
 
 static void SparkValidationConfigureNode(
@@ -4014,7 +4079,9 @@ static bool SparkValidationReadHiddenBf16File(
     SparkValidationDeviceBuffers *buffers,
     const char *path)
 {
-    uint16_t host_hidden[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t host_hidden[
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
     FILE *file;
     size_t read_bytes;
     int extra_byte;
@@ -4035,7 +4102,7 @@ static bool SparkValidationReadHiddenBf16File(
     fclose(file);
     if (read_bytes != sizeof(host_hidden) || extra_byte != EOF)
     {
-        fprintf(stderr, "pipeline input hidden must be exactly %llu bytes: %s\n", (unsigned long long)sizeof(host_hidden), path);
+        fprintf(stderr, "pipeline input hidden must be exactly %llu bytes for active_sequences=%u: %s\n", (unsigned long long)sizeof(host_hidden), SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT, path);
         return false;
     }
     return SparkValidationCopyToDevice(
@@ -4049,7 +4116,9 @@ static bool SparkValidationWriteHiddenBf16File(
     const char *path,
     const uint16_t *device_hidden)
 {
-    uint16_t host_hidden[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t host_hidden[
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
     FILE *file;
     size_t written_bytes;
     uint64_t checksum;
@@ -4063,6 +4132,7 @@ static bool SparkValidationWriteHiddenBf16File(
     if (!SparkValidationCopyDeviceBf16Vector(
             host_hidden,
             device_hidden,
+            SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
             SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
             "copy pipeline output hidden"))
     {
@@ -4071,7 +4141,9 @@ static bool SparkValidationWriteHiddenBf16File(
     checksum = 1469598103934665603ull;
     nonzero_count = 0u;
     for (dimension_index = 0u;
-         dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+         dimension_index <
+            SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
          ++dimension_index)
     {
         if (host_hidden[dimension_index] != 0u)
@@ -4096,7 +4168,7 @@ static bool SparkValidationWriteHiddenBf16File(
         fprintf(stderr, "could not write pipeline output hidden %s\n", path);
         return false;
     }
-    fprintf(stderr, "pipeline_hidden_bf16_written=%s bytes=%llu nonzero=%u checksum64=%llu\n", path, (unsigned long long)sizeof(host_hidden), nonzero_count, (unsigned long long)checksum);
+    fprintf(stderr, "pipeline_hidden_bf16_written=%s active_sequences=%u bytes=%llu nonzero=%u checksum64=%llu\n", path, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT, (unsigned long long)sizeof(host_hidden), nonzero_count, (unsigned long long)checksum);
     return true;
 }
 
@@ -5960,6 +6032,7 @@ static bool SparkValidationCopyLayerOutputToInput(
     return SparkValidationCopyDeviceToDevice(
         buffers->input_hidden_bf16,
         buffers->layer_output_hidden_bf16,
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
         "copy chained layer output to input");
 }
