@@ -4698,41 +4698,6 @@ static bool SparkValidationCheckRealRestrictedLogits(
     return true;
 }
 
-static bool SparkValidationReadRestrictedSelection(
-    SparkValidationDeviceBuffers *buffers,
-    SparkValidationRealLmHeadFixture *real_lm_head,
-    uint32_t *selected_token_id,
-    float *selected_token_score)
-{
-    *selected_token_id = 0u;
-    *selected_token_score = 0.0f;
-    if (!SparkValidationCudaSucceeded(
-            cudaMemcpy(
-                selected_token_id,
-                buffers->restricted_selected_token_ids,
-                sizeof(*selected_token_id),
-                cudaMemcpyDeviceToHost),
-            "copy hidden handoff selected_token") ||
-        !SparkValidationCudaSucceeded(
-            cudaMemcpy(
-                selected_token_score,
-                buffers->restricted_selected_token_scores,
-                sizeof(*selected_token_score),
-                cudaMemcpyDeviceToHost),
-            "copy hidden handoff selected_score"))
-    {
-        return false;
-    }
-    if (real_lm_head != 0 &&
-        real_lm_head->ready != 0u &&
-        !SparkValidationCheckRealRestrictedLogits(
-            buffers,
-            real_lm_head,
-            *selected_token_id))
-        return false;
-    return true;
-}
-
 static bool SparkValidationCheckLayer3RouterTopK(
     SparkValidationDeviceBuffers *buffers)
 {
@@ -7191,7 +7156,8 @@ int main(int argc, char **argv)
     {
         return 2;
     }
-    if (model_directory != 0 && model_directory[0] != '\0' &&
+    if (use_routed_chain_from_hidden == 0u &&
+        model_directory != 0 && model_directory[0] != '\0' &&
         !SparkValidationLoadFinalNormBf16Fixture(
             &buffers,
             model_directory,
@@ -7199,7 +7165,8 @@ int main(int argc, char **argv)
     {
         return 2;
     }
-    if (model_directory != 0 && model_directory[0] != '\0' &&
+    if (use_routed_chain_from_hidden == 0u &&
+        model_directory != 0 && model_directory[0] != '\0' &&
         !SparkValidationLoadRealLmHeadFixture(
             &buffers,
             model_directory,
@@ -7215,6 +7182,11 @@ int main(int argc, char **argv)
         &node_context,
         use_dense_mlp,
         use_attention_bf16);
+    if (use_routed_chain_from_hidden != 0u)
+    {
+        node_context.reserved_execution_flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY;
+    }
     if (use_layer3_router != 0u)
     {
         SparkValidationEnableLayer3RouterTopK(&buffers, &node_context);
@@ -7263,7 +7235,8 @@ int main(int argc, char **argv)
         required_linear_plan_mask |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS;
     }
-    if (model_directory != 0 && model_directory[0] != '\0')
+    if (use_routed_chain_from_hidden == 0u &&
+        model_directory != 0 && model_directory[0] != '\0')
     {
         required_linear_plan_mask |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RESTRICTED_LOGITS;
@@ -7368,8 +7341,6 @@ int main(int argc, char **argv)
         if (use_routed_chain_from_hidden != 0u)
         {
             uint32_t submission_count;
-            uint32_t selected_token_id;
-            float selected_token_score;
 
             if (!SparkValidationRunRoutedChainFromHidden(
                     &buffers,
@@ -7384,11 +7355,6 @@ int main(int argc, char **argv)
                     &total_microseconds,
                     &maximum_observed_microseconds,
                     &submission_count) ||
-                !SparkValidationReadRestrictedSelection(
-                    &buffers,
-                    &real_lm_head,
-                    &selected_token_id,
-                    &selected_token_score) ||
                 !SparkValidationWriteHiddenBf16File(
                     pipeline_output_hidden_path,
                     buffers.layer_output_hidden_bf16))
@@ -7408,7 +7374,7 @@ int main(int argc, char **argv)
                 return 1;
             }
             printf(
-                "glm52_resident_decode_stage orchestrator validation passed fixture=local_hidden_handoff routed_pipeline_from_hidden=1 first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s restricted_token=%u restricted_score=%.8f layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+                "glm52_resident_decode_stage orchestrator validation passed fixture=local_hidden_handoff routed_pipeline_from_hidden=1 intermediate_stage=1 first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s layer3_selected_expert=%u layer3_bound_experts=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
                 routed_chain_first_layer_index,
                 routed_chain_layer_count,
                 submission_count,
@@ -7417,12 +7383,8 @@ int main(int argc, char **argv)
                 maximum_stage_microseconds,
                 pipeline_input_hidden_path,
                 pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
-                selected_token_id,
-                (double)selected_token_score,
                 layer3_routed_expert.selected_expert_id,
                 layer3_routed_expert.bound_expert_count,
-                real_lm_head.ready,
-                real_lm_head.maximum_logit_error,
                 (unsigned long long)cuda_slot_state.launch_chain_count,
                 (unsigned long long)cuda_slot_state.graph_capture_count,
                 (unsigned long long)cuda_slot_state.graph_replay_count);
@@ -7715,8 +7677,6 @@ int main(int argc, char **argv)
     if (use_routed_chain_from_hidden != 0u)
     {
         uint32_t submission_count;
-        uint32_t selected_token_id;
-        float selected_token_score;
 
         if (!SparkValidationRunRoutedChainFromHidden(
                 &buffers,
@@ -7731,11 +7691,6 @@ int main(int argc, char **argv)
                 &total_microseconds,
                 &maximum_observed_microseconds,
                 &submission_count) ||
-            !SparkValidationReadRestrictedSelection(
-                &buffers,
-                &real_lm_head,
-                &selected_token_id,
-                &selected_token_score) ||
             !SparkValidationWriteHiddenBf16File(
                 pipeline_output_hidden_path,
                 buffers.layer_output_hidden_bf16))
@@ -7755,7 +7710,7 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff routed_pipeline_from_hidden=1 first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s restricted_token=%u restricted_score=%.8f layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff routed_pipeline_from_hidden=1 intermediate_stage=1 first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s layer3_selected_expert=%u layer3_bound_experts=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             routed_chain_first_layer_index,
             routed_chain_layer_count,
             submission_count,
@@ -7764,12 +7719,8 @@ int main(int argc, char **argv)
             maximum_stage_microseconds,
             pipeline_input_hidden_path,
             pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
-            selected_token_id,
-            (double)selected_token_score,
             layer3_routed_expert.selected_expert_id,
             layer3_routed_expert.bound_expert_count,
-            real_lm_head.ready,
-            real_lm_head.maximum_logit_error,
             (unsigned long long)cuda_slot_state.launch_chain_count,
             (unsigned long long)cuda_slot_state.graph_capture_count,
             (unsigned long long)cuda_slot_state.graph_replay_count);

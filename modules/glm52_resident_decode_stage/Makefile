@@ -13,8 +13,11 @@ B12X_MOE_PACK_DIR ?= $(REPOSITORY_ROOT)/build/glm52_b12x_resident_moe
 B12X_MOE_PACK_LAYERS ?= 3,4,5,6,7,8,9,10
 B12X_PACK_PYTHON ?= python3
 GLM52_VALIDATION_INPUT_TOKEN_ID ?= 1000
+GLM52_VALIDATION_MODE ?= dense_to_layer3_routed
 GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX ?= 3
 GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT ?= 1
+GLM52_PIPELINE_INPUT_HIDDEN_BF16 ?=
+GLM52_PIPELINE_OUTPUT_HIDDEN_BF16 ?= $(BUILD_DIRECTORY)/pipeline_hidden_output.bf16
 BUILD_DIRECTORY := $(REPOSITORY_ROOT)/build/modules/glm52_resident_decode_stage
 HOST_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module.o
 CUDA_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda.o
@@ -25,7 +28,7 @@ MODULE_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_resident_decode_stage.a
 ARTIFACT_CHECK_TOOL := $(BUILD_DIRECTORY)/glm52_artifact_check
 PACKAGE_DIRECTORY ?= $(REPOSITORY_ROOT)/build/packages/glm52_resident_decode_stage
 CUDA_HOME ?= $(abspath $(dir $(shell command -v $(NVCC)))/..)
-VALIDATION_RECIPE_VARIANT ?= required_cuda
+VALIDATION_RECIPE_VARIANT ?= $(GLM52_VALIDATION_MODE)
 VALIDATION_RECIPE := glm52.resident_decode_stage.$(CUDA_ARCH).$(VALIDATION_RECIPE_VARIANT).max_us_$(MAX_STAGE_MICROSECONDS).v1
 REQUIRED_CUDA_CC_ARGS ?=
 GLM52_REQUIRED_CUDA_LINK_ARGS ?=
@@ -35,7 +38,17 @@ REQUIRED_STAGE_DEPENDENCY := $(REQUIRED_STAGE_OBJECT:.o=.d)
 B12X_MOE_PLAN_DEPENDENCY := $(B12X_MOE_PLAN_OBJECT:.o=.d)
 LINEAR_PLAN_DEPENDENCY := $(LINEAR_PLAN_OBJECT:.o=.d)
 
-.PHONY: archive cold_archive artifact_check b12x_resident_pack validate publish package clean require_sm121a require_latency_limit require_model_dir
+.PHONY: archive cold_archive artifact_check b12x_resident_pack validate publish package clean require_sm121a require_latency_limit require_model_dir require_validation_inputs
+
+GLM52_VALIDATION_BASE_ENV := NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" GLM52_B12X_MOE_PACK_DIR="$(B12X_MOE_PACK_DIR)" GLM52_MODEL_DIR="$(GLM52_MODEL_DIR)" GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX="$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)" GLM52_ROUTED_CHAIN_LAYER_COUNT="$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)"
+
+ifeq ($(GLM52_VALIDATION_MODE),dense_to_layer3_routed)
+GLM52_VALIDATION_ENV := $(GLM52_VALIDATION_BASE_ENV) GLM52_INPUT_TOKEN_ID="$(GLM52_VALIDATION_INPUT_TOKEN_ID)" GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK=1
+else ifeq ($(GLM52_VALIDATION_MODE),routed_from_hidden)
+GLM52_VALIDATION_ENV := $(GLM52_VALIDATION_BASE_ENV) GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16=1 GLM52_PIPELINE_INPUT_HIDDEN_BF16="$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)" GLM52_PIPELINE_OUTPUT_HIDDEN_BF16="$(GLM52_PIPELINE_OUTPUT_HIDDEN_BF16)"
+else
+$(error unsupported GLM52_VALIDATION_MODE '$(GLM52_VALIDATION_MODE)')
+endif
 
 archive: require_sm121a $(MODULE_ARCHIVE)
 
@@ -52,6 +65,14 @@ require_latency_limit:
 require_model_dir:
 	@test -n "$(GLM52_MODEL_DIR)" || \
 		{ echo "set GLM52_MODEL_DIR to the live GLM artifact directory" >&2; exit 2; }
+
+require_validation_inputs:
+ifeq ($(GLM52_VALIDATION_MODE),routed_from_hidden)
+	@test -n "$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)" || \
+		{ echo "set GLM52_PIPELINE_INPUT_HIDDEN_BF16 for routed_from_hidden validation" >&2; exit 2; }
+	@test -s "$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)" || \
+		{ echo "missing GLM52_PIPELINE_INPUT_HIDDEN_BF16: $(GLM52_PIPELINE_INPUT_HIDDEN_BF16)" >&2; exit 2; }
+endif
 
 $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
@@ -102,14 +123,14 @@ b12x_resident_pack: require_model_dir
 		--output-dir "$(B12X_MOE_PACK_DIR)" \
 		--reuse-valid
 
-validate: require_sm121a require_latency_limit b12x_resident_pack cold_archive
-	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" GLM52_B12X_MOE_PACK_DIR="$(B12X_MOE_PACK_DIR)" GLM52_MODEL_DIR="$(GLM52_MODEL_DIR)" GLM52_INPUT_TOKEN_ID="$(GLM52_VALIDATION_INPUT_TOKEN_ID)" GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK=1 GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX="$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)" GLM52_ROUTED_CHAIN_LAYER_COUNT="$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)" \
+validate: require_sm121a require_latency_limit require_validation_inputs b12x_resident_pack cold_archive
+	$(GLM52_VALIDATION_ENV) \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
 		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE)
 
-publish: require_sm121a require_latency_limit b12x_resident_pack cold_archive
+publish: require_sm121a require_latency_limit require_validation_inputs b12x_resident_pack cold_archive
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
-	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" GLM52_B12X_MOE_PACK_DIR="$(B12X_MOE_PACK_DIR)" GLM52_MODEL_DIR="$(GLM52_MODEL_DIR)" GLM52_INPUT_TOKEN_ID="$(GLM52_VALIDATION_INPUT_TOKEN_ID)" GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK=1 GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX="$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)" GLM52_ROUTED_CHAIN_LAYER_COUNT="$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)" \
+	$(GLM52_VALIDATION_ENV) \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 		--library $(MODULE_LIBRARY_ROOT) \
 		--module spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1 \
@@ -143,7 +164,7 @@ package: publish
 	mkdir -p $(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe
 	cp -f $(B12X_MOE_PACK_DIR)/*.spb12x $(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe/
 	cp -f $(B12X_MOE_PACK_DIR)/resident_moe_pack_manifest.json $(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe/
-	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" GLM52_B12X_MOE_PACK_DIR="$(B12X_MOE_PACK_DIR)" GLM52_MODEL_DIR="$(GLM52_MODEL_DIR)" GLM52_INPUT_TOKEN_ID="$(GLM52_VALIDATION_INPUT_TOKEN_ID)" GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK=1 GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX="$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)" GLM52_ROUTED_CHAIN_LAYER_COUNT="$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)" \
+	$(GLM52_VALIDATION_ENV) \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
 		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE) \
 		$(PACKAGE_DIRECTORY)/stages/stage_000/model_driver.so
