@@ -136,6 +136,7 @@ package: publish
 		--cc-arg -lcublasLt \
 		--cc-arg -lcublas \
 		--cc-arg -lstdc++ \
+		$(foreach arg,$(GLM52_REQUIRED_CUDA_LINK_ARGS),--cc-arg $(arg)) \
 		$(REQUIRED_CUDA_CC_ARGS)
 	mkdir -p $(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe
 	cp -f $(B12X_MOE_PACK_DIR)/*.spb12x $(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe/
