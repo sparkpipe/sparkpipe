@@ -348,6 +348,17 @@
                   "gate_up_order": "up_gate",
                   "scale2_baked_into_block_scales": true,
                   "fallback_allowed": false
+                },
+                "required_hidden_transport": {
+                  "module": "spark.glm52.hidden_stage_transport.100g.persistent.v1",
+                  "abi": "include/sparkpipe/spark_hidden_transport.h",
+                  "payload": "bf16_device_pointer",
+                  "hidden_dimension": 6144,
+                  "bytes_per_sequence": 12288,
+                  "granularity": "one_packet_per_stage_output",
+                  "fallback_allowed": false,
+                  "file_transport_allowed": false,
+                  "shell_transport_allowed": false
                 }
               }
             }
@@ -366,7 +377,10 @@
               "no_device_memcpy",
               "stream_event_dependencies",
               "batch_shape_fixed",
-              "driver_private_expert_queues"
+              "driver_private_expert_queues",
+              "requires_hidden_transport",
+              "no_file_transport",
+              "no_shell_transport"
             ],
             "max_active_slots": 64,
             "max_new_tokens": 3,
