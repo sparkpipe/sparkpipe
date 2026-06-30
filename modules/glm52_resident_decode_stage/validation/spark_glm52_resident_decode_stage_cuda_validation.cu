@@ -3894,6 +3894,77 @@ static bool SparkValidationCopyDeviceBf16Vector(
         name);
 }
 
+static bool SparkValidationReadHiddenBf16File(
+    SparkValidationDeviceBuffers *buffers,
+    const char *path)
+{
+    uint16_t host_hidden[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    FILE *file;
+    size_t read_bytes;
+    int extra_byte;
+
+    if (buffers == 0 || path == 0 || path[0] == '\0')
+    {
+        fprintf(stderr, "pipeline input hidden path is missing\n");
+        return false;
+    }
+    file = fopen(path, "rb");
+    if (file == 0)
+    {
+        fprintf(stderr, "could not open pipeline input hidden %s\n", path);
+        return false;
+    }
+    read_bytes = fread(host_hidden, 1u, sizeof(host_hidden), file);
+    extra_byte = fgetc(file);
+    fclose(file);
+    if (read_bytes != sizeof(host_hidden) || extra_byte != EOF)
+    {
+        fprintf(stderr, "pipeline input hidden must be exactly %llu bytes: %s\n", (unsigned long long)sizeof(host_hidden), path);
+        return false;
+    }
+    return SparkValidationCopyToDevice(
+        buffers->input_hidden_bf16,
+        host_hidden,
+        sizeof(host_hidden),
+        "copy pipeline input hidden");
+}
+
+static bool SparkValidationWriteHiddenBf16File(
+    const char *path,
+    const uint16_t *device_hidden)
+{
+    uint16_t host_hidden[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    FILE *file;
+    size_t written_bytes;
+
+    if (path == 0 || path[0] == '\0')
+    {
+        return true;
+    }
+    if (!SparkValidationCopyDeviceBf16Vector(
+            host_hidden,
+            device_hidden,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            "copy pipeline output hidden"))
+    {
+        return false;
+    }
+    file = fopen(path, "wb");
+    if (file == 0)
+    {
+        fprintf(stderr, "could not open pipeline output hidden %s\n", path);
+        return false;
+    }
+    written_bytes = fwrite(host_hidden, 1u, sizeof(host_hidden), file);
+    if (fclose(file) != 0 || written_bytes != sizeof(host_hidden))
+    {
+        fprintf(stderr, "could not write pipeline output hidden %s\n", path);
+        return false;
+    }
+    fprintf(stderr, "pipeline_hidden_bf16_written=%s bytes=%llu\n", path, (unsigned long long)sizeof(host_hidden));
+    return true;
+}
+
 static bool SparkValidationCopyDeviceBf16Row(
     uint16_t *host_row,
     const uint16_t *device_rows,
@@ -6335,6 +6406,67 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
     return true;
 }
 
+static bool SparkValidationRunRoutedChainFromHidden(
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    cudaStream_t cuda_stream,
+    const char *driver_path,
+    const char *model_directory,
+    SparkValidationRealLmHeadFixture *real_lm_head,
+    SparkValidationLayer3RoutedExpertNvfp4Fixture *layer3_routed_expert,
+    uint32_t first_routed_layer_index,
+    uint32_t routed_chain_layer_count,
+    double *total_microseconds,
+    double *maximum_observed_microseconds,
+    uint32_t *submission_count)
+{
+    uint32_t routed_layer_offset;
+
+    if (first_routed_layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX ||
+        first_routed_layer_index >= SPARK_VALIDATION_LAYER_COUNT)
+    {
+        fprintf(stderr, "first routed pipeline layer is invalid layer=%u\n", first_routed_layer_index);
+        return false;
+    }
+    if (routed_chain_layer_count == 0u ||
+        routed_chain_layer_count > SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT ||
+        routed_chain_layer_count >
+            (SPARK_VALIDATION_LAYER_COUNT - first_routed_layer_index))
+    {
+        fprintf(stderr, "routed pipeline layer count is invalid count=%u\n", routed_chain_layer_count);
+        return false;
+    }
+    *total_microseconds = 0.0;
+    *maximum_observed_microseconds = 0.0;
+    *submission_count = 0u;
+    for (routed_layer_offset = 0u;
+         routed_layer_offset < routed_chain_layer_count;
+         ++routed_layer_offset)
+    {
+        if (!SparkValidationRunRoutedLayerDynamicTopK(
+                buffers,
+                node_context,
+                cuda_stream,
+                driver_path,
+                model_directory,
+                real_lm_head,
+                layer3_routed_expert,
+                first_routed_layer_index + routed_layer_offset,
+                SPARK_VALIDATION_CURRENT_POSITION,
+                SPARK_VALIDATION_CURRENT_CACHE_SLOT,
+                SPARK_VALIDATION_CONTEXT_LENGTH,
+                1u,
+                total_microseconds,
+                maximum_observed_microseconds,
+                submission_count))
+            return false;
+        if (routed_layer_offset + 1u < routed_chain_layer_count &&
+            !SparkValidationCopyLayerOutputToInput(buffers))
+            return false;
+    }
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     SparkValidationDeviceBuffers buffers;
@@ -6364,6 +6496,9 @@ int main(int argc, char **argv)
     const char *load_layer3_routed_expert_text;
     const char *load_layer3_routed_expert_topk_text;
     const char *chain_dense_layer3_routed_expert_topk_text;
+    const char *chain_routed_from_hidden_text;
+    const char *pipeline_input_hidden_path;
+    const char *pipeline_output_hidden_path;
     const char *routed_chain_first_layer_text;
     const char *routed_chain_layer_count_text;
     double maximum_stage_microseconds;
@@ -6383,6 +6518,7 @@ int main(int argc, char **argv)
     uint32_t use_layer3_routed_expert;
     uint32_t use_layer3_routed_expert_topk;
     uint32_t use_dense_chain_layer3_routed_expert_topk;
+    uint32_t use_routed_chain_from_hidden;
     uint32_t routed_chain_first_layer_index;
     uint32_t routed_chain_layer_count;
     uint32_t required_linear_plan_mask;
@@ -6427,6 +6563,12 @@ int main(int argc, char **argv)
         getenv("GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4_TOPK");
     chain_dense_layer3_routed_expert_topk_text =
         getenv("GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK");
+    chain_routed_from_hidden_text =
+        getenv("GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16");
+    pipeline_input_hidden_path =
+        getenv("GLM52_PIPELINE_INPUT_HIDDEN_BF16");
+    pipeline_output_hidden_path =
+        getenv("GLM52_PIPELINE_OUTPUT_HIDDEN_BF16");
     routed_chain_first_layer_text =
         getenv("GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX");
     routed_chain_layer_count_text =
@@ -6471,6 +6613,10 @@ int main(int argc, char **argv)
         chain_dense_layer3_routed_expert_topk_text != 0 &&
         chain_dense_layer3_routed_expert_topk_text[0] != '\0' &&
         strcmp(chain_dense_layer3_routed_expert_topk_text, "0") != 0;
+    use_routed_chain_from_hidden =
+        chain_routed_from_hidden_text != 0 &&
+        chain_routed_from_hidden_text[0] != '\0' &&
+        strcmp(chain_routed_from_hidden_text, "0") != 0;
     if (use_layer3_routed_expert_topk != 0u)
     {
         use_layer3_routed_expert = 1u;
@@ -6478,6 +6624,12 @@ int main(int argc, char **argv)
     if (use_dense_chain_layer3_routed_expert_topk != 0u)
     {
         use_dense_mlp = 1u;
+        use_attention_bf16 = 1u;
+        use_layer3_routed_expert = 1u;
+        use_layer3_routed_expert_topk = 1u;
+    }
+    if (use_routed_chain_from_hidden != 0u)
+    {
         use_attention_bf16 = 1u;
         use_layer3_routed_expert = 1u;
         use_layer3_routed_expert_topk = 1u;
@@ -6621,12 +6773,28 @@ int main(int argc, char **argv)
         (use_input_embedding == 0u ||
          use_prefill_kv != 0u ||
          use_dense_chain != 0u ||
+         use_routed_chain_from_hidden != 0u ||
          use_layer3_router != 0u ||
          use_layer3_shared_expert != 0u ||
          check_layer0_reference != 0u ||
          check_layer0_full_reference != 0u))
     {
         fprintf(stderr, "GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK requires GLM52_INPUT_TOKEN_ID and owns dense-prefix plus layer3 top-k checks\n");
+        return 2;
+    }
+    if (use_routed_chain_from_hidden != 0u &&
+        (pipeline_input_hidden_path == 0 ||
+         pipeline_input_hidden_path[0] == '\0' ||
+         use_input_embedding != 0u ||
+         use_prefill_kv != 0u ||
+         use_dense_chain != 0u ||
+         use_dense_chain_layer3_routed_expert_topk != 0u ||
+         use_layer3_router != 0u ||
+         use_layer3_shared_expert != 0u ||
+         check_layer0_reference != 0u ||
+         check_layer0_full_reference != 0u))
+    {
+        fprintf(stderr, "GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16 requires GLM52_PIPELINE_INPUT_HIDDEN_BF16 and owns routed slice checks\n");
         return 2;
     }
     if (use_layer3_router != 0u &&
@@ -6655,6 +6823,7 @@ int main(int argc, char **argv)
     }
     if (use_layer3_routed_expert != 0u &&
         use_dense_chain_layer3_routed_expert_topk == 0u &&
+        use_routed_chain_from_hidden == 0u &&
         (use_input_embedding == 0u ||
          use_prefill_kv != 0u ||
          use_dense_chain != 0u ||
@@ -6753,6 +6922,7 @@ int main(int argc, char **argv)
     }
     if (use_layer3_routed_expert != 0u &&
         use_dense_chain_layer3_routed_expert_topk == 0u &&
+        use_routed_chain_from_hidden == 0u &&
         !SparkValidationLoadLayer3RoutedExpertNvfp4Fixture(
             &buffers,
             model_directory,
@@ -6786,7 +6956,8 @@ int main(int argc, char **argv)
         SparkValidationEnableLayer3SharedExpertBf16(&node_context);
     }
     if (use_layer3_routed_expert != 0u &&
-        use_dense_chain_layer3_routed_expert_topk == 0u)
+        use_dense_chain_layer3_routed_expert_topk == 0u &&
+        use_routed_chain_from_hidden == 0u)
     {
         if (!SparkValidationBindB12xMoePlanForLayer(
                 &buffers,
@@ -6813,7 +6984,8 @@ int main(int argc, char **argv)
     }
     if (use_layer3_router != 0u ||
         use_layer3_routed_expert != 0u ||
-        use_dense_chain_layer3_routed_expert_topk != 0u)
+        use_dense_chain_layer3_routed_expert_topk != 0u ||
+        use_routed_chain_from_hidden != 0u)
     {
         required_linear_plan_mask |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_ROUTER_LOGITS;
@@ -6824,6 +6996,13 @@ int main(int argc, char **argv)
             &node_context,
             cuda_stream,
             required_linear_plan_mask))
+    {
+        return 2;
+    }
+    if (use_routed_chain_from_hidden != 0u &&
+        !SparkValidationReadHiddenBf16File(
+            &buffers,
+            pipeline_input_hidden_path))
     {
         return 2;
     }
@@ -6866,6 +7045,12 @@ int main(int argc, char **argv)
             {
                 return 2;
             }
+            if (!SparkValidationWriteHiddenBf16File(
+                    pipeline_output_hidden_path,
+                    buffers.layer_output_hidden_bf16))
+            {
+                return 2;
+            }
             SparkGlm52ResidentDecodeStageBackendQuiesce(&node_context);
             if (maximum_observed_microseconds > maximum_stage_microseconds)
             {
@@ -6893,6 +7078,60 @@ int main(int argc, char **argv)
                 SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
                 SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
                 input_token_id,
+                layer3_routed_expert.selected_expert_id,
+                layer3_routed_expert.bound_expert_count,
+                real_lm_head.ready,
+                real_lm_head.maximum_logit_error,
+                (unsigned long long)cuda_slot_state.launch_chain_count,
+                (unsigned long long)cuda_slot_state.graph_capture_count,
+                (unsigned long long)cuda_slot_state.graph_replay_count);
+            return 0;
+        }
+        if (use_routed_chain_from_hidden != 0u)
+        {
+            uint32_t submission_count;
+
+            if (!SparkValidationRunRoutedChainFromHidden(
+                    &buffers,
+                    &node_context,
+                    cuda_stream,
+                    argv[2],
+                    model_directory,
+                    &real_lm_head,
+                    &layer3_routed_expert,
+                    routed_chain_first_layer_index,
+                    routed_chain_layer_count,
+                    &total_microseconds,
+                    &maximum_observed_microseconds,
+                    &submission_count) ||
+                !SparkValidationWriteHiddenBf16File(
+                    pipeline_output_hidden_path,
+                    buffers.layer_output_hidden_bf16))
+            {
+                return 2;
+            }
+            SparkGlm52ResidentDecodeStageBackendQuiesce(&node_context);
+            if (maximum_observed_microseconds > maximum_stage_microseconds)
+            {
+                fprintf(
+                    stderr,
+                    "glm52_resident_decode_stage routed pipeline orchestrator validation failed total_us=%.3f maximum_us=%.3f limit_us=%.3f submissions=%u\n",
+                    total_microseconds,
+                    maximum_observed_microseconds,
+                    maximum_stage_microseconds,
+                    submission_count);
+                return 1;
+            }
+            printf(
+                "glm52_resident_decode_stage orchestrator validation passed fixture=local_hidden_handoff routed_pipeline_from_hidden=1 first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+                routed_chain_first_layer_index,
+                routed_chain_layer_count,
+                submission_count,
+                total_microseconds,
+                maximum_observed_microseconds,
+                maximum_stage_microseconds,
+                pipeline_input_hidden_path,
+                pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
                 layer3_routed_expert.selected_expert_id,
                 layer3_routed_expert.bound_expert_count,
                 real_lm_head.ready,
@@ -7144,6 +7383,12 @@ int main(int argc, char **argv)
         {
             return 2;
         }
+        if (!SparkValidationWriteHiddenBf16File(
+                pipeline_output_hidden_path,
+                buffers.layer_output_hidden_bf16))
+        {
+            return 2;
+        }
         SparkGlm52ResidentDecodeStageBackendQuiesce(&node_context);
         if (maximum_observed_microseconds > maximum_stage_microseconds)
         {
@@ -7171,6 +7416,60 @@ int main(int argc, char **argv)
             SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
             SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
             input_token_id,
+            layer3_routed_expert.selected_expert_id,
+            layer3_routed_expert.bound_expert_count,
+            real_lm_head.ready,
+            real_lm_head.maximum_logit_error,
+            (unsigned long long)cuda_slot_state.launch_chain_count,
+            (unsigned long long)cuda_slot_state.graph_capture_count,
+            (unsigned long long)cuda_slot_state.graph_replay_count);
+        return 0;
+    }
+    if (use_routed_chain_from_hidden != 0u)
+    {
+        uint32_t submission_count;
+
+        if (!SparkValidationRunRoutedChainFromHidden(
+                &buffers,
+                &node_context,
+                cuda_stream,
+                0,
+                model_directory,
+                &real_lm_head,
+                &layer3_routed_expert,
+                routed_chain_first_layer_index,
+                routed_chain_layer_count,
+                &total_microseconds,
+                &maximum_observed_microseconds,
+                &submission_count) ||
+            !SparkValidationWriteHiddenBf16File(
+                pipeline_output_hidden_path,
+                buffers.layer_output_hidden_bf16))
+        {
+            return 2;
+        }
+        SparkGlm52ResidentDecodeStageBackendQuiesce(&node_context);
+        if (maximum_observed_microseconds > maximum_stage_microseconds)
+        {
+            fprintf(
+                stderr,
+                "glm52_resident_decode_stage routed pipeline validation failed total_us=%.3f maximum_us=%.3f limit_us=%.3f submissions=%u\n",
+                total_microseconds,
+                maximum_observed_microseconds,
+                maximum_stage_microseconds,
+                submission_count);
+            return 1;
+        }
+        printf(
+            "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff routed_pipeline_from_hidden=1 first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            routed_chain_first_layer_index,
+            routed_chain_layer_count,
+            submission_count,
+            total_microseconds,
+            maximum_observed_microseconds,
+            maximum_stage_microseconds,
+            pipeline_input_hidden_path,
+            pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
             layer3_routed_expert.selected_expert_id,
             layer3_routed_expert.bound_expert_count,
             real_lm_head.ready,
