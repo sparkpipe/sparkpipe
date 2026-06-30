@@ -36,6 +36,7 @@ fi
 
 nvcc_path="${NVCC:-nvcc}"
 cuda_architecture="${CUDA_ARCH:-sm_121a}"
+active_sequence_count="${GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT:-1}"
 
 if ! command -v "${nvcc_path}" >/dev/null 2>&1; then
     echo "nvcc unavailable for hardware validation" >&2
@@ -43,6 +44,10 @@ if ! command -v "${nvcc_path}" >/dev/null 2>&1; then
 fi
 if [[ "${cuda_architecture}" != "sm_121a" ]]; then
     echo "this validator admits only sm_121a required-CUDA artifacts" >&2
+    exit 2
+fi
+if ! [[ "${active_sequence_count}" =~ ^[0-9]+$ ]] || [[ "${active_sequence_count}" == "0" ]]; then
+    echo "GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT must be a positive integer" >&2
     exit 2
 fi
 
@@ -72,6 +77,7 @@ make -C "${repository_root}" "${common_target}" "${runtime_target}" "${compiler_
     -O3 \
     --use_fast_math \
     -arch="${cuda_architecture}" \
+    -DSPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT="${active_sequence_count}u" \
     -I"${repository_root}/include" \
     -I"${module_directory}/include" \
     -I"${module_directory}/source" \
