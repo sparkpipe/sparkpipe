@@ -63,6 +63,29 @@ def low64_from_hex(digest: str) -> int:
     return int(digest[:16], 16)
 
 
+def pack_metadata_hash_low64(
+    layer: int,
+    regions: List[Dict[str, int]],
+    maximum_token_count: int,
+    qualified_maximum_microseconds: int,
+    qualification_hash_low64: int,
+    kernel_manifest_hash_low64: int,
+) -> int:
+    metadata_digest = sha256_text(json.dumps({
+        "layer": layer,
+        "regions": regions,
+        "maximum_token_count": maximum_token_count,
+        "qualified_maximum_microseconds": qualified_maximum_microseconds,
+        "qualification_hash_low64": qualification_hash_low64,
+        "kernel_manifest_hash_low64": kernel_manifest_hash_low64,
+        "scale2_baked_into_block_scales": False,
+        "w1_alpha": "weight_scale_2_fp32_by_expert",
+        "w2_alpha": "weight_scale_2_fp32_by_expert",
+        "fc2_input_scale": "ones_fp32_by_expert",
+    }, sort_keys=True, separators=(",", ":")))
+    return low64_from_hex(metadata_digest)
+
+
 def align_up(value: int, alignment: int) -> int:
     return ((value + alignment - 1) // alignment) * alignment
 
@@ -254,6 +277,130 @@ def pack_header(
     return header + (b"\0" * (HEADER_BYTES - len(header)))
 
 
+def unpack_pack_header(path: Path) -> Tuple[Tuple[Any, ...], List[Dict[str, int]]]:
+    with path.open("rb") as file:
+        header = file.read(HEADER_BYTES)
+    if len(header) != HEADER_BYTES:
+        raise PackFailure(f"{path} has a truncated pack header")
+    prefix_size = struct.calcsize(HEADER_PREFIX_FORMAT)
+    prefix = struct.unpack(HEADER_PREFIX_FORMAT, header[:prefix_size])
+    regions: List[Dict[str, int]] = []
+    offset = prefix_size
+    for _ in range(REGION_COUNT):
+        region_offset, region_bytes = struct.unpack(REGION_FORMAT, header[offset:offset + struct.calcsize(REGION_FORMAT)])
+        regions.append({"offset": int(region_offset), "bytes": int(region_bytes)})
+        offset += struct.calcsize(REGION_FORMAT)
+    return prefix, regions
+
+
+def validate_pack_header(
+    path: Path,
+    layer: int,
+    maximum_token_count: int,
+    qualified_maximum_microseconds: int,
+    qualification_hash_low64: int,
+    kernel_manifest_hash_low64: int,
+    pack_hash_low64: int,
+    regions: List[Dict[str, int]],
+) -> None:
+    prefix, observed_regions = unpack_pack_header(path)
+    expected_prefix = (
+        MAGIC,
+        ABI_VERSION,
+        HEADER_BYTES,
+        layer,
+        maximum_token_count,
+        HIDDEN_DIMENSION,
+        INTERMEDIATE_DIMENSION,
+        EXPERT_COUNT,
+        TOP_K,
+        GATE_UP_ORDER_UP_GATE,
+        WEIGHT_LAYOUT_FLASHINFER_STATIC_VIEW,
+        SCALE_LAYOUT_FLASHINFER_STATIC_STORAGE,
+        QUANT_MODE_NVFP4,
+        OUTPUT_DTYPE_BF16,
+        CUDA_ARCHITECTURE_SM121,
+        0,
+        0,
+        qualified_maximum_microseconds,
+        qualification_hash_low64,
+        kernel_manifest_hash_low64,
+        pack_hash_low64,
+    )
+    if prefix != expected_prefix:
+        raise PackFailure(f"{path} pack header does not match the requested GLM52 B12x contract")
+    if observed_regions != regions:
+        raise PackFailure(f"{path} pack regions do not match the requested GLM52 B12x contract")
+
+
+def existing_manifest_record(manifest_path: Path, model_dir: Path, aot_manifest_path: Path, layer: int) -> Dict[str, Any] | None:
+    if not manifest_path.exists():
+        return None
+    manifest = load_json(manifest_path)
+    if manifest.get("model_dir") != str(model_dir):
+        return None
+    if manifest.get("aot_manifest") != str(aot_manifest_path):
+        return None
+    packs = manifest.get("packs")
+    if not isinstance(packs, list):
+        return None
+    for record in packs:
+        if isinstance(record, dict) and int(record.get("layer_index", -1)) == layer:
+            return record
+    return None
+
+
+def try_reuse_pack(
+    output_path: Path,
+    manifest_path: Path,
+    model_dir: Path,
+    aot_manifest_path: Path,
+    layer: int,
+    maximum_token_count: int,
+    qualified_maximum_microseconds: int,
+    qualification_hash_low64: int,
+    kernel_manifest_hash_low64: int,
+) -> Dict[str, Any] | None:
+    regions = reserve_regions()
+    record = existing_manifest_record(manifest_path, model_dir, aot_manifest_path, layer)
+    if record is None or not output_path.exists():
+        return None
+    pack_hash_low64 = pack_metadata_hash_low64(
+        layer,
+        regions,
+        maximum_token_count,
+        qualified_maximum_microseconds,
+        qualification_hash_low64,
+        kernel_manifest_hash_low64,
+    )
+    expected_bytes = regions[-1]["offset"] + regions[-1]["bytes"]
+    if int(record.get("bytes", -1)) != expected_bytes or output_path.stat().st_size != expected_bytes:
+        return None
+    if Path(str(record.get("path", ""))) != output_path:
+        return None
+    if int(record.get("pack_hash_low64", -1)) != pack_hash_low64:
+        return None
+    if int(record.get("kernel_manifest_hash_low64", -1)) != kernel_manifest_hash_low64:
+        return None
+    if int(record.get("qualification_record_hash_low64", -1)) != qualification_hash_low64:
+        return None
+    validate_pack_header(
+        output_path,
+        layer,
+        maximum_token_count,
+        qualified_maximum_microseconds,
+        qualification_hash_low64,
+        kernel_manifest_hash_low64,
+        pack_hash_low64,
+        regions,
+    )
+    if str(record.get("sha256", "")) != sha256_file(output_path):
+        return None
+    reused_record = dict(record)
+    reused_record["reused"] = True
+    return reused_record
+
+
 def write_w1_weight_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
     expected = (INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION // 2)
     for expert in range(EXPERT_COUNT):
@@ -346,19 +493,14 @@ def write_pack(
     kernel_manifest_hash_low64: int,
 ) -> Dict[str, Any]:
     regions = reserve_regions()
-    metadata_digest = sha256_text(json.dumps({
-        "layer": layer,
-        "regions": regions,
-        "maximum_token_count": maximum_token_count,
-        "qualified_maximum_microseconds": qualified_maximum_microseconds,
-        "qualification_hash_low64": qualification_hash_low64,
-        "kernel_manifest_hash_low64": kernel_manifest_hash_low64,
-        "scale2_baked_into_block_scales": False,
-        "w1_alpha": "weight_scale_2_fp32_by_expert",
-        "w2_alpha": "weight_scale_2_fp32_by_expert",
-        "fc2_input_scale": "ones_fp32_by_expert",
-    }, sort_keys=True, separators=(",", ":")))
-    pack_hash_low64 = low64_from_hex(metadata_digest)
+    pack_hash_low64 = pack_metadata_hash_low64(
+        layer,
+        regions,
+        maximum_token_count,
+        qualified_maximum_microseconds,
+        qualification_hash_low64,
+        kernel_manifest_hash_low64,
+    )
     header = pack_header(
         layer,
         maximum_token_count,
@@ -399,6 +541,7 @@ def write_pack(
         "qualification_record_hash_low64": qualification_hash_low64,
         "qualified_maximum_microseconds": qualified_maximum_microseconds,
         "regions": regions,
+        "reused": False,
     }
 
 
@@ -409,6 +552,7 @@ def main() -> int:
     parser.add_argument("--layers", default="3,4,5,6,7,8,9,10")
     parser.add_argument("--output-dir", default="build/glm52_b12x_resident_moe")
     parser.add_argument("--qualified-maximum-microseconds", type=int, default=0)
+    parser.add_argument("--reuse-valid", action="store_true")
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir).resolve()
@@ -426,20 +570,35 @@ def main() -> int:
     qualification_hash_low64 = low64_from_hex(sha256_file(aot_manifest_path))
     weight_map = read_weight_index(model_dir)
     layers = parse_layers(args.layers)
+    manifest_path = output_dir / "resident_moe_pack_manifest.json"
 
     records = []
     for layer in layers:
         output_path = output_dir / f"glm52_layer_{layer:04d}_b12x_moe.spb12x"
-        record = write_pack(
-            model_dir,
-            weight_map,
-            layer,
-            output_path,
-            maximum_token_count,
-            qualified_us,
-            qualification_hash_low64,
-            kernel_manifest_hash_low64,
-        )
+        record = None
+        if args.reuse_valid:
+            record = try_reuse_pack(
+                output_path,
+                manifest_path,
+                model_dir,
+                aot_manifest_path,
+                layer,
+                maximum_token_count,
+                qualified_us,
+                qualification_hash_low64,
+                kernel_manifest_hash_low64,
+            )
+        if record is None:
+            record = write_pack(
+                model_dir,
+                weight_map,
+                layer,
+                output_path,
+                maximum_token_count,
+                qualified_us,
+                qualification_hash_low64,
+                kernel_manifest_hash_low64,
+            )
         records.append(record)
         print(json.dumps(record, sort_keys=True), flush=True)
 
@@ -466,7 +625,6 @@ def main() -> int:
         },
         "packs": records,
     }
-    manifest_path = output_dir / "resident_moe_pack_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(f"wrote {manifest_path}")
     return 0
