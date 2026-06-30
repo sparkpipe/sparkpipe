@@ -244,7 +244,8 @@ glm52_b12x_resident_pack:
 			--model-dir "$(GLM52_MODEL_DIR)" \
 			--aot-manifest "$(B12X_AOT_OUTPUT_DIR)/generated/aot_manifest.json" \
 			--layers "$(B12X_MOE_PACK_LAYERS)" \
-			--output-dir "$(B12X_MOE_PACK_OUTPUT_DIR)"
+			--output-dir "$(B12X_MOE_PACK_OUTPUT_DIR)" \
+			--reuse-valid
 
 glm52_b12x_compiled_backend:
 	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend archive NVCC=$(NVCC) CUDA_ARCH=sm_121a
