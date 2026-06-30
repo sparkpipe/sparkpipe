@@ -3936,6 +3936,9 @@ static bool SparkValidationWriteHiddenBf16File(
     uint16_t host_hidden[SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
     FILE *file;
     size_t written_bytes;
+    uint64_t checksum;
+    uint32_t dimension_index;
+    uint32_t nonzero_count;
 
     if (path == 0 || path[0] == '\0')
     {
@@ -3947,6 +3950,22 @@ static bool SparkValidationWriteHiddenBf16File(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
             "copy pipeline output hidden"))
     {
+        return false;
+    }
+    checksum = 1469598103934665603ull;
+    nonzero_count = 0u;
+    for (dimension_index = 0u;
+         dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+         ++dimension_index)
+    {
+        if (host_hidden[dimension_index] != 0u)
+            nonzero_count += 1u;
+        checksum ^= (uint64_t)host_hidden[dimension_index];
+        checksum *= 1099511628211ull;
+    }
+    if (nonzero_count == 0u)
+    {
+        fprintf(stderr, "pipeline output hidden stayed zero path=%s\n", path);
         return false;
     }
     file = fopen(path, "wb");
@@ -3961,7 +3980,7 @@ static bool SparkValidationWriteHiddenBf16File(
         fprintf(stderr, "could not write pipeline output hidden %s\n", path);
         return false;
     }
-    fprintf(stderr, "pipeline_hidden_bf16_written=%s bytes=%llu\n", path, (unsigned long long)sizeof(host_hidden));
+    fprintf(stderr, "pipeline_hidden_bf16_written=%s bytes=%llu nonzero=%u checksum64=%llu\n", path, (unsigned long long)sizeof(host_hidden), nonzero_count, (unsigned long long)checksum);
     return true;
 }
 
@@ -6455,7 +6474,7 @@ static bool SparkValidationRunRoutedChainFromHidden(
                 SPARK_VALIDATION_CURRENT_POSITION,
                 SPARK_VALIDATION_CURRENT_CACHE_SLOT,
                 SPARK_VALIDATION_CONTEXT_LENGTH,
-                1u,
+                0u,
                 total_microseconds,
                 maximum_observed_microseconds,
                 submission_count))
