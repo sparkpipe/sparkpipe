@@ -3641,10 +3641,78 @@ static SparkStatus SparkGlm52ResidentDecodeStageEnqueueCompletion(
     return SPARK_STATUS_OK;
 }
 
+static uint64_t SparkGlm52ResidentDecodeStageMixGraphSignature(
+    uint64_t signature,
+    uint64_t value)
+{
+    signature ^= value;
+    signature *= 1099511628211ull;
+    return signature;
+}
+
+static uint64_t SparkGlm52ResidentDecodeStagePointerGraphSignature(
+    const void *pointer)
+{
+    return (uint64_t)(uintptr_t)pointer;
+}
+
+static uint64_t SparkGlm52ResidentDecodeStageComputeGraphSignature(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t hidden_output_only)
+{
+    uint64_t signature;
+
+    signature = 1469598103934665603ull;
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, hidden_output_only);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->projection_mode);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->layer_progression_mode);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->sparse_index_mode);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->projection_backend_mode);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->mlp_execution_mode);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->attention_execution_mode);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->reserved_execution_flags);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->linear_plan_count);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->linear_plans));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->b12x_moe_dispatch_plan));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->restricted_logits_plan));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->mtp_draft_plan));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->full_stage_plan));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->mla_cache_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->key_nope_cache_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->value_cache_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->attention_norm_weight_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->raw_query_a_weight_fp8_e4m3));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->raw_query_a_weight_scale_inv_f32));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->raw_query_a_norm_weight_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->raw_query_b_weight_fp8_e4m3));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->raw_query_b_weight_scale_inv_f32));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->raw_kv_a_weight_fp8_e4m3));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->raw_kv_a_weight_scale_inv_f32));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->raw_kv_a_norm_weight_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->raw_kv_b_weight_fp8_e4m3));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->raw_kv_b_weight_scale_inv_f32));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->attention_output_weight_fp8_e4m3));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->attention_output_weight_scale_inv_f32));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->post_attention_norm_weight_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->moe_router_weight_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->moe_router_score_bias_f32));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->final_norm_weight_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->restricted_lm_head_weight_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->mtp_mxfp4_weight_payload_u8));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->mtp_mxfp4_scale_e8m0_u8));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(pipeline_slot->input_hidden_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(pipeline_slot->layer_output_hidden_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(pipeline_slot->post_attention_hidden_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(pipeline_slot->restricted_logits));
+    return signature;
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageFinishSubmit(
     cudaStream_t cuda_stream,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
     uint32_t graph_capture_active,
+    uint64_t graph_specialization_signature,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     cudaGraph_t captured_graph;
@@ -3673,6 +3741,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageFinishSubmit(
             return SPARK_STATUS_INTERNAL_ERROR;
         }
         cuda_slot_state->cuda_graph_exec = (void *)captured_graph_exec;
+        cuda_slot_state->graph_specialization_signature =
+            graph_specialization_signature;
         cuda_status = cudaGraphLaunch(captured_graph_exec, cuda_stream);
         if (cuda_status != cudaSuccess)
         {
@@ -3698,6 +3768,7 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state;
     cudaStream_t cuda_stream;
     cudaError_t cuda_status;
+    uint64_t graph_specialization_signature;
     uint32_t graph_capture_active;
     uint32_t hidden_output_only;
     dim3 attention_grid;
@@ -3728,6 +3799,11 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(
     hidden_output_only =
         (node_context->reserved_execution_flags &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY) != 0u;
+    graph_specialization_signature =
+        SparkGlm52ResidentDecodeStageComputeGraphSignature(
+            node_context,
+            pipeline_slot,
+            hidden_output_only);
     full_stage_plan_was_launched = false;
 
     status = SparkGlm52ResidentDecodeStageTryLaunchFullStagePlan(
@@ -3752,7 +3828,9 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(
     if (node_context->enable_cuda_graph_replay != 0u &&
         cuda_slot_state != 0 &&
         cuda_slot_state->cuda_graph_exec != 0 &&
-        cuda_slot_state->graph_active_sequence_count == active_sequence_count)
+        cuda_slot_state->graph_active_sequence_count == active_sequence_count &&
+        cuda_slot_state->graph_specialization_signature ==
+            graph_specialization_signature)
     {
         cuda_status = cudaGraphLaunch(
             (cudaGraphExec_t)cuda_slot_state->cuda_graph_exec,
@@ -3772,11 +3850,15 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(
 
     if (node_context->enable_cuda_graph_replay != 0u && cuda_slot_state != 0)
     {
-        if (cuda_slot_state->cuda_graph_exec != 0)
+        if (cuda_slot_state->cuda_graph_exec != 0 &&
+            (cuda_slot_state->graph_active_sequence_count != active_sequence_count ||
+             cuda_slot_state->graph_specialization_signature !=
+                graph_specialization_signature))
         {
             cudaGraphExecDestroy((cudaGraphExec_t)cuda_slot_state->cuda_graph_exec);
             cuda_slot_state->cuda_graph_exec = 0;
             cuda_slot_state->graph_active_sequence_count = 0u;
+            cuda_slot_state->graph_specialization_signature = 0u;
         }
         cuda_status = cudaStreamBeginCapture(
             cuda_stream,
@@ -4101,6 +4183,7 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(
             cuda_stream,
             cuda_slot_state,
             graph_capture_active,
+            graph_specialization_signature,
             completion);
     }
 
@@ -4253,6 +4336,7 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(
         cuda_stream,
         cuda_slot_state,
         graph_capture_active,
+        graph_specialization_signature,
         completion);
 }
 
@@ -4281,6 +4365,8 @@ static void SparkGlm52Sm121RequiredDecodeStageQuiesceGraphs(
                 pipeline_slot_index].cuda_graph_exec = 0;
             node_context->cuda_pipeline_slot_states[
                 pipeline_slot_index].graph_active_sequence_count = 0u;
+            node_context->cuda_pipeline_slot_states[
+                pipeline_slot_index].graph_specialization_signature = 0u;
         }
     }
 }

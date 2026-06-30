@@ -50,7 +50,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FULL_STAGE_PLAN_ABI_VERSION 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_EVENT_COUNTER_COUNT 5u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 64u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_SLOT_STATE_ABI_VERSION 1u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_SLOT_STATE_ABI_VERSION 2u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_PIPELINE_SLOT_SCALAR_INDEX 0u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID UINT32_MAX
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_CANCELLED_TOKEN_ID UINT32_MAX
@@ -368,6 +368,7 @@ typedef struct SparkGlm52ResidentDecodeStageCudaPipelineSlotState
     uint32_t abi_version;
     uint32_t graph_active_sequence_count;
     void *cuda_graph_exec;
+    uint64_t graph_specialization_signature;
     uint64_t graph_capture_count;
     uint64_t graph_replay_count;
     uint64_t launch_chain_count;
