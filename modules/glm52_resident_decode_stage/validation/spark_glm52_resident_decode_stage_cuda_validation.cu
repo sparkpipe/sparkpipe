@@ -7034,33 +7034,25 @@ int main(int argc, char **argv)
 
         if (use_dense_chain_layer3_routed_expert_topk != 0u)
         {
-            SparkValidationDriverRunner driver_runner;
             uint32_t submission_count;
             bool chain_succeeded;
 
-            if (!SparkValidationCreateDriverRunner(
-                    &node_context,
-                    argv[2],
-                    &driver_runner))
-                return 2;
-            SparkValidationActiveDriverRunner = &driver_runner;
-            chain_succeeded = SparkValidationRunDenseChainLayer3RoutedTopK(
-                    &buffers,
-                    &node_context,
-                    cuda_stream,
-                    argv[2],
-                    model_directory,
-                    input_token_id,
-                    &real_lm_head,
-                    &layer3_routed_expert,
-                    routed_chain_first_layer_index,
-                    routed_chain_layer_count,
-                    &total_microseconds,
-                    &maximum_observed_microseconds,
-                    &submission_count,
-                    &layer0_full_reference_max_error);
             SparkValidationActiveDriverRunner = 0;
-            SparkValidationDestroyDriverRunner(&driver_runner);
+            chain_succeeded = SparkValidationRunDenseChainLayer3RoutedTopK(
+                &buffers,
+                &node_context,
+                cuda_stream,
+                argv[2],
+                model_directory,
+                input_token_id,
+                &real_lm_head,
+                &layer3_routed_expert,
+                routed_chain_first_layer_index,
+                routed_chain_layer_count,
+                &total_microseconds,
+                &maximum_observed_microseconds,
+                &submission_count,
+                &layer0_full_reference_max_error);
             if (!chain_succeeded)
             {
                 return 2;
