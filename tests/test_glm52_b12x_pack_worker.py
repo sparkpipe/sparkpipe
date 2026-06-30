@@ -36,7 +36,7 @@ def main() -> int:
             aot_manifest=str(aot_manifest),
             job_id="stage-11-18",
             layers="11,12,13",
-            local_jobs=16,
+            local_jobs=2,
             model_dir=str(model_dir),
             output_dir=str(output_dir),
             queue_dir=queue_dir,
@@ -44,10 +44,10 @@ def main() -> int:
         )
         with redirect_stdout(StringIO()):
             assert module.command_submit(submit_args) == 0
-        depth = module.queue_depth(queue_dir, 16)
+        depth = module.queue_depth(queue_dir, 2)
         assert depth["pending"] == 1
         assert depth["running"] == 0
-        assert depth["available"] == 16
+        assert depth["available"] == 2
         status_path = queue_dir / "status" / "stage-11-18.json"
         status = json.loads(status_path.read_text(encoding="utf-8"))
         assert status["state"] == "pending"
@@ -55,7 +55,7 @@ def main() -> int:
         job = json.loads((queue_dir / "pending" / "stage-11-18.json").read_text(encoding="utf-8"))
         command = module.pack_command(Path("packer.py"), job)
         assert "--jobs" in command
-        assert "16" in command
+        assert "2" in command
         assert "--model-dir" in command
         assert "--output-dir" in command
     return 0
