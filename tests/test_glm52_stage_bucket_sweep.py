@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def load_sweep_module():
@@ -38,6 +39,30 @@ def main() -> int:
     assert tok_s == 1000.0
     assert module.parse_csv_u32("8,16;32") == [8, 16, 32]
     assert module.parse_stage("75:3") == (75, 3)
+    args = SimpleNamespace(
+        max_stage_us="1000000",
+        graph=False,
+        model_dir="/models/glm52",
+        cuda_arch="sm_121a",
+        nvcc="/usr/local/cuda/bin/nvcc",
+        aot_env="/home/spark2/.config/sparkpipe/glm52_b12x_aot_env.sh",
+        aot_output_dir="build/glm52_b12x_aot",
+        b12x_moe_pack_dir="build/glm52_b12x_resident_moe_0075_0077_v3",
+        b12x_moe_pack_layers="75,76,77",
+        allow_pack_build=False,
+        require_pack_reuse=False,
+        verify_reused_sha256=False,
+    )
+    command = module.build_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
+    assert "B12X_MOE_PACK_REQUIRE_REUSE=1" in command
+    assert "B12X_MOE_PACK_VERIFY_REUSED_SHA256=1" not in command
+    args.allow_pack_build = True
+    command = module.build_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
+    assert "B12X_MOE_PACK_REQUIRE_REUSE=0" in command
+    args.allow_pack_build = False
+    args.verify_reused_sha256 = True
+    command = module.build_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
+    assert "B12X_MOE_PACK_VERIFY_REUSED_SHA256=1" in command
     return 0
 
 
