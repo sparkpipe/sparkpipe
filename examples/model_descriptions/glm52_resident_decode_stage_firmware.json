@@ -39,149 +39,229 @@
       {
         "name": "model.embed_tokens.weight",
         "dtype": "BF16",
-        "shape": [154880, 6144]
+        "shape": [
+          154880,
+          6144
+        ]
       },
       {
         "name": "model.layers.0.input_layernorm.weight",
         "dtype": "BF16",
-        "shape": [6144]
+        "shape": [
+          6144
+        ]
       },
       {
         "name": "model.layers.0.self_attn.q_a_proj.weight",
         "dtype": "BF16",
-        "shape": [2048, 6144]
+        "shape": [
+          2048,
+          6144
+        ]
       },
       {
         "name": "model.layers.0.self_attn.q_a_layernorm.weight",
         "dtype": "BF16",
-        "shape": [2048]
+        "shape": [
+          2048
+        ]
       },
       {
         "name": "model.layers.0.self_attn.q_b_proj.weight",
         "dtype": "BF16",
-        "shape": [16384, 2048]
+        "shape": [
+          16384,
+          2048
+        ]
       },
       {
         "name": "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
         "dtype": "BF16",
-        "shape": [576, 6144]
+        "shape": [
+          576,
+          6144
+        ]
       },
       {
         "name": "model.layers.0.self_attn.kv_a_layernorm.weight",
         "dtype": "BF16",
-        "shape": [512]
+        "shape": [
+          512
+        ]
       },
       {
         "name": "model.layers.0.self_attn.kv_b_proj.weight",
         "dtype": "BF16",
-        "shape": [28672, 512]
+        "shape": [
+          28672,
+          512
+        ]
       },
       {
         "name": "model.layers.0.self_attn.o_proj.weight",
         "dtype": "BF16",
-        "shape": [6144, 16384]
+        "shape": [
+          6144,
+          16384
+        ]
       },
       {
         "name": "model.layers.0.post_attention_layernorm.weight",
         "dtype": "BF16",
-        "shape": [6144]
+        "shape": [
+          6144
+        ]
       },
       {
         "name": "model.layers.0.mlp.gate_proj.weight",
         "dtype": "BF16",
-        "shape": [12288, 6144]
+        "shape": [
+          12288,
+          6144
+        ]
       },
       {
         "name": "model.layers.0.mlp.up_proj.weight",
         "dtype": "BF16",
-        "shape": [12288, 6144]
+        "shape": [
+          12288,
+          6144
+        ]
       },
       {
         "name": "model.layers.0.mlp.down_proj.weight",
         "dtype": "BF16",
-        "shape": [6144, 12288]
+        "shape": [
+          6144,
+          12288
+        ]
       },
       {
         "name": "lm_head.weight",
         "dtype": "BF16",
-        "shape": [154880, 6144]
+        "shape": [
+          154880,
+          6144
+        ]
       }
     ],
     "hf_tensor_contract_fp8_e4m3": [
       {
         "name": "model.embed_tokens.weight",
         "dtype": "BF16",
-        "shape": [154880, 6144]
+        "shape": [
+          154880,
+          6144
+        ]
       },
       {
         "name": "model.layers.0.input_layernorm.weight",
         "dtype": "BF16",
-        "shape": [6144]
+        "shape": [
+          6144
+        ]
       },
       {
         "name": "model.layers.0.self_attn.q_a_proj.weight",
         "dtype": "F8_E4M3",
-        "shape": [2048, 6144]
+        "shape": [
+          2048,
+          6144
+        ]
       },
       {
         "name": "model.layers.0.self_attn.q_a_proj.weight_scale_inv",
         "dtype": "F32",
-        "shape": [16, 48]
+        "shape": [
+          16,
+          48
+        ]
       },
       {
         "name": "model.layers.0.self_attn.q_a_layernorm.weight",
         "dtype": "BF16",
-        "shape": [2048]
+        "shape": [
+          2048
+        ]
       },
       {
         "name": "model.layers.0.self_attn.q_b_proj.weight",
         "dtype": "F8_E4M3",
-        "shape": [16384, 2048]
+        "shape": [
+          16384,
+          2048
+        ]
       },
       {
         "name": "model.layers.0.self_attn.q_b_proj.weight_scale_inv",
         "dtype": "F32",
-        "shape": [128, 16]
+        "shape": [
+          128,
+          16
+        ]
       },
       {
         "name": "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
         "dtype": "F8_E4M3",
-        "shape": [576, 6144]
+        "shape": [
+          576,
+          6144
+        ]
       },
       {
         "name": "model.layers.0.self_attn.kv_a_proj_with_mqa.weight_scale_inv",
         "dtype": "F32",
-        "shape": [5, 48]
+        "shape": [
+          5,
+          48
+        ]
       },
       {
         "name": "model.layers.0.self_attn.kv_a_layernorm.weight",
         "dtype": "BF16",
-        "shape": [512]
+        "shape": [
+          512
+        ]
       },
       {
         "name": "model.layers.0.self_attn.kv_b_proj.weight",
         "dtype": "F8_E4M3",
-        "shape": [28672, 512]
+        "shape": [
+          28672,
+          512
+        ]
       },
       {
         "name": "model.layers.0.self_attn.kv_b_proj.weight_scale_inv",
         "dtype": "F32",
-        "shape": [224, 4]
+        "shape": [
+          224,
+          4
+        ]
       },
       {
         "name": "model.layers.0.self_attn.o_proj.weight",
         "dtype": "F8_E4M3",
-        "shape": [6144, 16384]
+        "shape": [
+          6144,
+          16384
+        ]
       },
       {
         "name": "model.layers.0.self_attn.o_proj.weight_scale_inv",
         "dtype": "F32",
-        "shape": [48, 128]
+        "shape": [
+          48,
+          128
+        ]
       },
       {
         "name": "lm_head.weight",
         "dtype": "BF16",
-        "shape": [154880, 6144]
+        "shape": [
+          154880,
+          6144
+        ]
       }
     ]
   },
@@ -237,7 +317,16 @@
                 "vendored_source_manifests": [
                   "third_party/flashinfer/SPARKPIPE_UPSTREAM_MANIFEST.sha256"
                 ],
-                "aot_generation_tool": "tools/glm52_b12x_aot_compile.py"
+                "aot_generation_tool": "tools/glm52_b12x_aot_compile.py",
+                "required_stage_moe_plan": {
+                  "plan_kind": "flashinfer_b12x",
+                  "b12x_moe_dispatch_plan_kind_constant": "SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_DISPATCH_PLAN_KIND_FLASHINFER_B12X",
+                  "opaque_state_type": "SparkGlm52ResidentDecodeStageB12xMoePlan",
+                  "state_lifecycle": "SparkGlm52Sm121RequiredDecodeStageInitialize creates; SparkGlm52Sm121RequiredDecodeStageQuiesce destroys",
+                  "router": "stage computes top-k ids and weights, then B12x consumes them",
+                  "output_contract": "B12x writes MoE output to moe_route_output_bf16; stage residual-adds post_attention_hidden_bf16 into layer_output_hidden_bf16",
+                  "fallback_allowed": false
+                }
               }
             }
           ],

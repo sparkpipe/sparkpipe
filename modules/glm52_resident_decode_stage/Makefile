@@ -74,13 +74,13 @@ artifact_check: require_model_dir $(ARTIFACT_CHECK_TOOL)
 		$(ARTIFACT_CHECK_ARGS)
 
 validate: require_sm121a require_latency_limit cold_archive
-	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" \
+	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRE_PRODUCTION_B12X=1 GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
 		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE)
 
 publish: require_sm121a require_latency_limit cold_archive
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
-	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" \
+	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRE_PRODUCTION_B12X=1 GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 		--library $(MODULE_LIBRARY_ROOT) \
 		--module spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1 \
@@ -110,7 +110,7 @@ package: publish
 		--cc-arg -lcublas \
 		--cc-arg -lstdc++ \
 		$(REQUIRED_CUDA_CC_ARGS)
-	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" \
+	NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRE_PRODUCTION_B12X=1 GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
 		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE) \
 		$(PACKAGE_DIRECTORY)/stages/stage_000/model_driver.so

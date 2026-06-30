@@ -1,4 +1,0 @@
-date_utc	hardware	cuda_arch	kernel_path	tokens	active_routes	bound_experts	dense_token_capacity	iterations	avg_us	dense_estimated_tflops	expert_payload_scale_gbps	overflow	comparison_sparse_avg_us	result
-2026-06-29	DGX Spark GB10	sm_121a	glm52_dense_alpha_cutlass_broadcast_nvfp4_bf16_moe	64	512	256	64	10	29989.848	41.246	181.255	0	25700.727	rejected: dense-alpha all-expert path slower than fixed sparse CUTLASS uniform-route baseline
-2026-06-29	DGX Spark GB10	sm_121a	glm52_dense_alpha_cutlass_broadcast_nvfp4_bf16_moe	96	768	256	96	10	34499.535	53.781	157.562	0	25664.520	rejected: dense-alpha all-expert path slower than fixed sparse CUTLASS uniform-route baseline
-2026-06-29	DGX Spark GB10	sm_121a	glm52_dense_alpha_cutlass_broadcast_nvfp4_bf16_moe	128	1024	256	128	10	35979.039	68.760	151.083	0	25604.879	rejected: dense-alpha all-expert path slower than fixed sparse CUTLASS uniform-route baseline

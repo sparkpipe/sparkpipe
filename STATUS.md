@@ -1,30 +1,7 @@
 # Status
 
-SparkPipe is a compile-time firmware packager and runtime dispatcher. It is not a CUDA fallback framework.
+Current resident decode-stage policy: strict required CUDA.
 
-Current GLM 5.2 SM121 policy:
+Production MoE must route through the FlashInfer B12x AOT primitive. Rejected demo MoE paths have been removed from the production source and old benchmark/archeology artifacts have been deleted from the repo tree.
 
-```text
-model description JSON
-    -> exact required module IDs
-    -> offline package link
-    -> required CUDA symbols must resolve
-    -> target validation runs once for the artifact contract
-    -> serving restores the validated package and submits direct calls
-```
-
-The GLM 5.2 resident decode stage now depends on an externally supplied required CUDA implementation:
-
-```text
-spark.glm52.sm121.required_decode_stage.b12x_fused.v1
-```
-
-The required module must provide these symbols:
-
-```text
-SparkGlm52Sm121RequiredDecodeStageInitialize
-SparkGlm52Sm121RequiredDecodeStageLaunch
-SparkGlm52Sm121RequiredDecodeStageQuiesce
-```
-
-If the required CUDA module is absent, package linking or validation linking fails. There is no internal slow replacement path.
+A clean runtime requires the AOT generated B12x backend/table/adapter archives. Missing required modules must fail package/link or initialization.
