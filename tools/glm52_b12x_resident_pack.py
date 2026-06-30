@@ -375,6 +375,7 @@ def try_reuse_pack(
     qualified_maximum_microseconds: int,
     qualification_hash_low64: int,
     kernel_manifest_hash_low64: int,
+    verify_sha256: bool,
 ) -> Dict[str, Any] | None:
     regions = reserve_regions()
     record = existing_manifest_record(manifest_path, model_dir, aot_manifest_path, layer)
@@ -409,7 +410,7 @@ def try_reuse_pack(
         pack_hash_low64,
         regions,
     )
-    if str(record.get("sha256", "")) != sha256_file(output_path):
+    if verify_sha256 and str(record.get("sha256", "")) != sha256_file(output_path):
         return None
     reused_record = dict(record)
     reused_record["reused"] = True
@@ -572,6 +573,8 @@ def main() -> int:
     parser.add_argument("--output-dir", default="build/glm52_b12x_resident_moe")
     parser.add_argument("--qualified-maximum-microseconds", type=int, default=0)
     parser.add_argument("--reuse-valid", action="store_true")
+    parser.add_argument("--require-reuse", action="store_true")
+    parser.add_argument("--verify-reused-sha256", action="store_true")
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir).resolve()
@@ -606,6 +609,12 @@ def main() -> int:
                 qualified_us,
                 qualification_hash_low64,
                 kernel_manifest_hash_low64,
+                args.verify_reused_sha256,
+            )
+        if record is None and args.require_reuse:
+            raise PackFailure(
+                f"{output_path} is missing or stale for the requested resident B12x contract; "
+                "run the one-time glm52_b12x_resident_pack target before package validation"
             )
         if record is None:
             record = write_pack(

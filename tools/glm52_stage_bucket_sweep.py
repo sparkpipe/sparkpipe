@@ -106,15 +106,14 @@ def parse_result(log_text: str) -> Dict[str, Any]:
     }
 
 
-def run_one(
-    root: Path,
+def build_command(
     args: argparse.Namespace,
     batch: int,
     first_layer: int,
     layer_count: int,
     input_hidden: Path,
-) -> Dict[str, Any]:
-    output_hidden = args.output_dir / f"output_hidden_f{first_layer}_c{layer_count}_b{batch}.bf16"
+    output_hidden: Path,
+) -> List[str]:
     command = [
         "make",
         "glm52_resident_decode_stage_firmware_package",
@@ -141,6 +140,26 @@ def run_one(
         command.append(f"B12X_MOE_PACK_OUTPUT_DIR={args.b12x_moe_pack_dir}")
     if args.b12x_moe_pack_layers:
         command.append(f"B12X_MOE_PACK_LAYERS={args.b12x_moe_pack_layers}")
+    command.append(
+        "B12X_MOE_PACK_REQUIRE_REUSE=0"
+        if args.allow_pack_build
+        else "B12X_MOE_PACK_REQUIRE_REUSE=1"
+    )
+    if args.verify_reused_sha256:
+        command.append("B12X_MOE_PACK_VERIFY_REUSED_SHA256=1")
+    return command
+
+
+def run_one(
+    root: Path,
+    args: argparse.Namespace,
+    batch: int,
+    first_layer: int,
+    layer_count: int,
+    input_hidden: Path,
+) -> Dict[str, Any]:
+    output_hidden = args.output_dir / f"output_hidden_f{first_layer}_c{layer_count}_b{batch}.bf16"
+    command = build_command(args, batch, first_layer, layer_count, input_hidden, output_hidden)
     env = os.environ.copy()
     completed = subprocess.run(
         command,
@@ -220,9 +239,14 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--aot-output-dir", default=os.environ.get("B12X_AOT_OUTPUT_DIR", ""))
     parser.add_argument("--b12x-moe-pack-dir", default=os.environ.get("B12X_MOE_PACK_OUTPUT_DIR", ""))
     parser.add_argument("--b12x-moe-pack-layers", default=os.environ.get("B12X_MOE_PACK_LAYERS", ""))
+    parser.add_argument("--allow-pack-build", action="store_true")
+    parser.add_argument("--require-pack-reuse", action="store_true")
+    parser.add_argument("--verify-reused-sha256", action="store_true")
     parser.add_argument("--graph", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
     args = parser.parse_args(argv)
+    if args.allow_pack_build and args.require_pack_reuse:
+        raise SweepFailure("--allow-pack-build conflicts with --require-pack-reuse")
 
     root = repo_root()
     args.output_dir = args.output_dir.resolve()
