@@ -3199,6 +3199,31 @@ static void SparkValidationReleaseLinearPlanBinding(
     buffers->linear_plan_binding = 0;
 }
 
+static uint32_t SparkValidationCountInitializedLinearPlans(
+    const SparkGlm52ResidentDecodeStageLinearPlan *plans,
+    uint32_t plan_count)
+{
+    uint32_t plan_index;
+    uint32_t initialized_count;
+
+    initialized_count = 0u;
+    if (plans == 0)
+    {
+        return 0u;
+    }
+    for (plan_index = 0u; plan_index < plan_count; ++plan_index)
+    {
+        if (plans[plan_index].abi_version ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ABI_VERSION &&
+            plans[plan_index].plan_kind !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_UNUSED)
+        {
+            initialized_count += 1u;
+        }
+    }
+    return initialized_count;
+}
+
 static bool SparkValidationBindRequiredLinearPlans(
     SparkValidationDeviceBuffers *buffers,
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
@@ -3209,6 +3234,7 @@ static bool SparkValidationBindRequiredLinearPlans(
     SparkStatus status;
     const SparkGlm52ResidentDecodeStageLinearPlan *plans;
     uint32_t plan_count;
+    uint32_t initialized_plan_count;
     uint32_t dense_intermediate_dimension;
 
     if (buffers == 0 || node_context == 0)
@@ -3243,6 +3269,18 @@ static bool SparkValidationBindRequiredLinearPlans(
                 node_context->mlp_execution_mode =
                     SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE;
             }
+            if ((required_plan_mask &
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS) != 0u)
+            {
+                node_context->projection_backend_mode =
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
+            }
+            if ((required_plan_mask &
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RESTRICTED_LOGITS) != 0u)
+            {
+                node_context->reserved_execution_flags |=
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_RESTRICTED_LOGITS;
+            }
             return true;
         }
         SparkValidationReleaseLinearPlanBinding(buffers);
@@ -3276,6 +3314,40 @@ static bool SparkValidationBindRequiredLinearPlans(
         buffers->post_attention_normalized_hidden_bf16;
     create_info.router_weight_bf16 = buffers->moe_router_weight_bf16;
     create_info.router_logits_f32 = buffers->moe_router_logits;
+    create_info.raw_projection_input_bf16 =
+        buffers->normalized_hidden_bf16;
+    create_info.raw_query_a_weight_bf16 =
+        buffers->raw_query_a_weight_bf16;
+    create_info.raw_query_a_output_bf16 =
+        buffers->raw_query_a_bf16;
+    create_info.raw_query_b_input_bf16 =
+        buffers->raw_query_a_normalized_bf16;
+    create_info.raw_query_b_weight_bf16 =
+        buffers->raw_query_b_weight_bf16;
+    create_info.raw_query_b_output_bf16 =
+        buffers->raw_query_b_bf16;
+    create_info.raw_kv_a_weight_bf16 =
+        buffers->raw_kv_a_weight_bf16;
+    create_info.raw_kv_a_output_bf16 =
+        buffers->raw_kv_a_bf16;
+    create_info.raw_kv_b_input_bf16 =
+        buffers->raw_kv_a_normalized_bf16;
+    create_info.raw_kv_b_weight_bf16 =
+        buffers->raw_kv_b_weight_bf16;
+    create_info.raw_kv_b_output_bf16 =
+        buffers->raw_kv_b_bf16;
+    create_info.attention_output_input_bf16 =
+        buffers->attention_output_latent_bf16;
+    create_info.attention_output_weight_bf16 =
+        buffers->attention_output_weight_bf16;
+    create_info.attention_output_bf16 =
+        buffers->attention_projected_hidden_bf16;
+    create_info.restricted_logits_input_bf16 =
+        buffers->normalized_hidden_bf16;
+    create_info.restricted_lm_head_weight_bf16 =
+        buffers->restricted_lm_head_weight_bf16;
+    create_info.restricted_logits_f32 =
+        buffers->restricted_logits;
     status = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
         &buffers->linear_plan_binding,
         &create_info);
@@ -3301,6 +3373,9 @@ static bool SparkValidationBindRequiredLinearPlans(
     }
     node_context->linear_plans = plans;
     node_context->linear_plan_count = plan_count;
+    initialized_plan_count = SparkValidationCountInitializedLinearPlans(
+        plans,
+        plan_count);
     if ((required_plan_mask &
          (SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
           SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
@@ -3309,11 +3384,24 @@ static bool SparkValidationBindRequiredLinearPlans(
         node_context->mlp_execution_mode =
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE;
     }
+    if ((required_plan_mask &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS) != 0u)
+    {
+        node_context->projection_backend_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
+    }
+    if ((required_plan_mask &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RESTRICTED_LOGITS) != 0u)
+    {
+        node_context->reserved_execution_flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_RESTRICTED_LOGITS;
+    }
     fprintf(
         stderr,
-        "resident_linear_plans_ready=1 mask=0x%08x dense_intermediate=%u plan_count=%u\n",
+        "resident_linear_plans_ready=1 mask=0x%08x dense_intermediate=%u initialized_plan_count=%u plan_slot_count=%u\n",
         required_plan_mask,
         dense_intermediate_dimension,
+        initialized_plan_count,
         plan_count);
     return true;
 }
@@ -7169,6 +7257,16 @@ int main(int argc, char **argv)
     {
         required_linear_plan_mask |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_ROUTER_LOGITS;
+    }
+    if (use_attention_bf16 != 0u)
+    {
+        required_linear_plan_mask |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS;
+    }
+    if (model_directory != 0 && model_directory[0] != '\0')
+    {
+        required_linear_plan_mask |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RESTRICTED_LOGITS;
     }
     if (required_linear_plan_mask != 0u &&
         !SparkValidationBindRequiredLinearPlans(
