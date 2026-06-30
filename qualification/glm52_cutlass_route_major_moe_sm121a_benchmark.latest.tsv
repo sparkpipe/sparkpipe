@@ -1,5 +1,0 @@
-date_utc	hardware	cuda_arch	kernel_path	tokens	active_routes	bound_experts	route_capacity_per_expert	capacity_routes	iterations	avg_us	estimated_tflops	orientation	comparison_fixed_slot_avg_us	result
-2026-06-29	DGX Spark GB10	sm_121a	glm52_route_major_cutlass_grouped_nvfp4_bf16_moe	64	512	256	2	512	10	25272.449	1.530	activations_as_a_weights_as_b_row_major_output	25700.727	orientation_only_not_sota_slightly_better_than_fixed_slot
-2026-06-29	DGX Spark GB10	sm_121a	glm52_route_major_cutlass_grouped_nvfp4_bf16_moe	96	768	256	3	768	10	25318.830	2.290	activations_as_a_weights_as_b_row_major_output	25664.520	orientation_only_not_sota_slightly_better_than_fixed_slot
-2026-06-29	DGX Spark GB10	sm_121a	glm52_route_major_cutlass_grouped_nvfp4_bf16_moe	128	1024	256	4	1024	10	25687.586	3.010	activations_as_a_weights_as_b_row_major_output	25604.879	orientation_only_not_sota_slightly_worse_than_fixed_slot
-2026-06-29	DGX Spark GB10	sm_121a	glm52_route_major_cutlass_grouped_nvfp4_bf16_moe	32	256	8	32	256	10	900.656	21.459	activations_as_a_weights_as_b_row_major_output	955.482	orientation_only_not_sota_compact_active_expert_shape_usable

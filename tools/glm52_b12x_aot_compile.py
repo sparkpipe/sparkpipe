@@ -433,6 +433,7 @@ def generate_launch_table_source(manifest: Dict[str, Any], exported: Dict[str, D
     helper_source = f'''#include "sparkpipe/spark_glm52_sm121_b12x_generated_kernel_table.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <tvm/ffi/c_api.h>
@@ -519,8 +520,8 @@ static TVMFFIAny SparkGlm52B12xPointerArgument(const void *pointer)
     TVMFFIAny argument;
 
     memset(&argument, 0, sizeof(argument));
-    argument.type_index = kTVMFFIOpaquePtr;
-    argument.v_ptr = (void *)pointer;
+    argument.type_index = kTVMFFIInt;
+    argument.v_int64 = (int64_t)(uintptr_t)pointer;
     return argument;
 }}
 
@@ -536,6 +537,7 @@ static TVMFFIAny SparkGlm52B12xIntegerArgument(uint32_t value)
 
 static SparkStatus SparkGlm52B12xInvoke(
     SparkGlm52B12xTvmFunction function,
+    const char *function_name,
     const TVMFFIAny *arguments,
     int32_t argument_count)
 {{
@@ -547,6 +549,12 @@ static SparkStatus SparkGlm52B12xInvoke(
     status = function(0, arguments, argument_count, &result);
     if (status != 0)
     {{
+        fprintf(
+            stderr,
+            "b12x_tvm_ffi_launch_failed function=%s status=%d argument_count=%d\\n",
+            function_name != 0 ? function_name : "unknown",
+            status,
+            argument_count);
         return SPARK_STATUS_INTERNAL_ERROR;
     }}
     if (result.type_index >= kTVMFFIObject)
@@ -621,25 +629,25 @@ static SparkStatus {c_name}(
     int64_t hidden_strides[2] = {{{hidden}, 1}};
     int64_t routed_shape[1] = {{{routed_rows}}};
     int64_t routed_strides[1] = {{1}};
-    int64_t packed_a_shape[3] = {{{max_rows}, {hidden}, {experts}}};
-    int64_t packed_a_strides[3] = {{{hidden}, 1, {max_rows * hidden}}};
+    int64_t packed_a_shape[3] = {{{max_rows}, {hidden // 2}, {experts}}};
+    int64_t packed_a_strides[3] = {{{hidden // 2}, 1, {max_rows * (hidden // 2)}}};
     int64_t packed_a_flat_shape[1] = {{{experts * max_rows * (hidden // 2)}}};
     int64_t packed_a_flat_strides[1] = {{1}};
     int64_t scale_flat_shape[1] = {{{experts * rows_pad_k * cols_pad_k}}};
     int64_t scale_flat_strides[1] = {{1}};
     int64_t scalar_shape[1] = {{1}};
     int64_t scalar_strides[1] = {{1}};
-    int64_t w1_shape[3] = {{{w1_rows}, {hidden}, {experts}}};
-    int64_t w1_strides[3] = {{{hidden}, 1, {w1_rows * hidden}}};
-    int64_t w2_shape[3] = {{{hidden}, {intermediate}, {experts}}};
-    int64_t w2_strides[3] = {{{intermediate}, 1, {hidden * intermediate}}};
+    int64_t w1_shape[3] = {{{w1_rows}, {hidden // 2}, {experts}}};
+    int64_t w1_strides[3] = {{{hidden // 2}, 1, {w1_rows * (hidden // 2)}}};
+    int64_t w2_shape[3] = {{{hidden}, {intermediate // 2}, {experts}}};
+    int64_t w2_strides[3] = {{{intermediate // 2}, 1, {hidden * (intermediate // 2)}}};
     int64_t expert_shape[1] = {{{experts}}};
     int64_t expert_strides[1] = {{1}};
     int64_t token_map_shape[2] = {{{experts}, {max_rows}}};
     int64_t token_map_strides[2] = {{{max_rows}, 1}};
 
     bf16_type = SparkGlm52B12xDataType(kDLBfloat, 16, 1);
-    fp4_type = SparkGlm52B12xDataType(kDLFloat4_e2m1fn, 4, 1);
+    fp4_type = SparkGlm52B12xDataType(kDLFloat4_e2m1fn, 4, 2);
     uint8_type = SparkGlm52B12xDataType(kDLUInt, 8, 1);
     int32_type = SparkGlm52B12xDataType(kDLInt, 32, 1);
     float32_type = SparkGlm52B12xDataType(kDLFloat, 32, 1);
@@ -691,7 +699,7 @@ static SparkStatus {c_name}(
     call_arguments[23] = SparkGlm52B12xTensorArgument(&tensors[19]);
     call_arguments[24] = SparkGlm52B12xPointerArgument(arguments->cuda_stream);
 
-    return SparkGlm52B12xInvoke(__tvm_ffi_{function_name}, call_arguments, 25);
+    return SparkGlm52B12xInvoke(__tvm_ffi_{function_name}, "{function_name}", call_arguments, 25);
 }}
 '''
 
@@ -712,16 +720,16 @@ static SparkStatus {c_name}(
     TVMFFIAny call_arguments[41];
     int64_t scalar_shape[1] = {{1}};
     int64_t scalar_strides[1] = {{1}};
-    int64_t w1_shape[3] = {{{w1_rows}, {hidden}, {experts}}};
-    int64_t w1_strides[3] = {{{hidden}, 1, {w1_rows * hidden}}};
-    int64_t w2_shape[3] = {{{hidden}, {intermediate}, {experts}}};
-    int64_t w2_strides[3] = {{{intermediate}, 1, {hidden * intermediate}}};
+    int64_t w1_shape[3] = {{{w1_rows}, {hidden // 2}, {experts}}};
+    int64_t w1_strides[3] = {{{hidden // 2}, 1, {w1_rows * (hidden // 2)}}};
+    int64_t w2_shape[3] = {{{hidden}, {intermediate // 2}, {experts}}};
+    int64_t w2_strides[3] = {{{intermediate // 2}, 1, {hidden * (intermediate // 2)}}};
     int64_t expert_shape[1] = {{{experts}}};
     int64_t expert_strides[1] = {{1}};
     int64_t expert_plus_one_shape[1] = {{{experts + 1}}};
     int64_t expert_plus_one_strides[1] = {{1}};
 
-    fp4_type = SparkGlm52B12xDataType(kDLFloat4_e2m1fn, 4, 1);
+    fp4_type = SparkGlm52B12xDataType(kDLFloat4_e2m1fn, 4, 2);
     int32_type = SparkGlm52B12xDataType(kDLInt, 32, 1);
     float32_type = SparkGlm52B12xDataType(kDLFloat, 32, 1);
 
@@ -784,7 +792,7 @@ static SparkStatus {c_name}(
     call_arguments[39] = SparkGlm52B12xIntegerArgument({physical_tiles});
     call_arguments[40] = SparkGlm52B12xPointerArgument(arguments->cuda_stream);
 
-    return SparkGlm52B12xInvoke(__tvm_ffi_{function_name}, call_arguments, 41);
+    return SparkGlm52B12xInvoke(__tvm_ffi_{function_name}, "{function_name}", call_arguments, 41);
 }}
 '''
 

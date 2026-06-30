@@ -13,6 +13,8 @@ B12X_AOT_WARMUP ?= 5
 B12X_AOT_ITERATIONS ?= 20
 B12X_AOT_OUTPUT_DIR ?= build/glm52_b12x_aot
 B12X_AOT_BENCHMARK ?= --benchmark
+B12X_MOE_PACK_OUTPUT_DIR ?= build/glm52_b12x_resident_moe
+B12X_MOE_PACK_LAYERS ?= 3,4,5,6,7,8,9,10
 
 COMMON_SOURCES := \
     src/spark_status.c \
@@ -81,6 +83,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     glm52_flashinfer_b12x_moe_adapter \
     glm52_b12x_prepare_spark_env \
     glm52_b12x_aot_compile \
+    glm52_b12x_resident_pack \
     glm52_b12x_compiled_backend \
     glm52_resident_decode_stage_firmware_package \
     tree_summary
@@ -222,16 +225,31 @@ glm52_b12x_aot_compile:
 		$(B12X_AOT_BENCHMARK) \
 		--output-dir "$(B12X_AOT_OUTPUT_DIR)"
 
+glm52_b12x_resident_pack:
+	@test -n "$(GLM52_MODEL_DIR)" || \
+		{ echo "set GLM52_MODEL_DIR to the live GLM artifact directory" >&2; exit 2; }
+	@test -s "$(B12X_AOT_OUTPUT_DIR)/generated/aot_manifest.json" || \
+		{ echo "missing $(B12X_AOT_OUTPUT_DIR)/generated/aot_manifest.json; run make glm52_b12x_aot_compile first" >&2; exit 2; }
+	@test -f "$(SPARKPIPE_B12X_AOT_ENV)" || \
+		{ echo "missing $(SPARKPIPE_B12X_AOT_ENV); run make glm52_b12x_prepare_spark_env first" >&2; exit 2; }
+	. "$(SPARKPIPE_B12X_AOT_ENV)" && \
+		"$$SPARKPIPE_B12X_AOT_PYTHON" ./tools/glm52_b12x_resident_pack.py \
+			--model-dir "$(GLM52_MODEL_DIR)" \
+			--aot-manifest "$(B12X_AOT_OUTPUT_DIR)/generated/aot_manifest.json" \
+			--layers "$(B12X_MOE_PACK_LAYERS)" \
+			--output-dir "$(B12X_MOE_PACK_OUTPUT_DIR)"
+
 glm52_b12x_compiled_backend:
 	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend archive NVCC=$(NVCC) CUDA_ARCH=sm_121a
 	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend generated_archive NVCC=$(NVCC) CUDA_ARCH=sm_121a GENERATED_DIRECTORY=$(abspath build/glm52_b12x_aot/generated)
 
 glm52_resident_decode_stage_firmware_package:
-	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "glm52_resident_decode_stage_firmware_package skipped: nvcc unavailable"; \
-	else \
-		$(MAKE) -C modules/glm52_resident_decode_stage package NVCC=$(NVCC) CUDA_ARCH=sm_121a MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS) REQUIRED_CUDA_CC_ARGS='$(REQUIRED_CUDA_CC_ARGS)' GLM52_REQUIRED_CUDA_LINK_ARGS='$(GLM52_REQUIRED_CUDA_LINK_ARGS)'; \
-	fi
+	@command -v $(NVCC) >/dev/null 2>&1 || \
+		{ echo "missing nvcc for required GLM52 SM121 package build" >&2; exit 2; }
+	@test -f "$(SPARKPIPE_B12X_AOT_ENV)" || \
+		{ echo "missing $(SPARKPIPE_B12X_AOT_ENV); run make glm52_b12x_prepare_spark_env first" >&2; exit 2; }
+	. "$(SPARKPIPE_B12X_AOT_ENV)" && \
+		$(MAKE) -C modules/glm52_resident_decode_stage package NVCC=$(NVCC) CUDA_ARCH=sm_121a MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS) REQUIRED_CUDA_CC_ARGS='$(REQUIRED_CUDA_CC_ARGS)' GLM52_REQUIRED_CUDA_LINK_ARGS='$(GLM52_REQUIRED_CUDA_LINK_ARGS)' B12X_MOE_PACK_DIR='$(abspath $(B12X_MOE_PACK_OUTPUT_DIR))' B12X_PACK_PYTHON="$$SPARKPIPE_B12X_AOT_PYTHON" AOT_MANIFEST='$(abspath $(B12X_AOT_OUTPUT_DIR))/generated/aot_manifest.json'
 
 tree_summary:
 	@printf "public_headers="; find include/sparkpipe -type f | wc -l

@@ -1,6 +1,0 @@
-date_utc	hardware	cuda_arch	kernel_path	tokens	active_routes	bound_experts	route_capacity_per_expert	fixed_capacity_routes	iterations	avg_us	estimated_tflops	overflow	result
-2026-06-29	DGX Spark GB10	sm_121a	glm52_fixed_slot_cutlass_grouped_nvfp4_bf16_moe	32	256	8	32	256	5	955.482	20.228	0	usable compact-active-expert shape
-2026-06-29	DGX Spark GB10	sm_121a	glm52_fixed_slot_cutlass_grouped_nvfp4_bf16_moe	32	256	32	8	256	5	3334.458	5.796	0	too slow for production small-batch MoE
-2026-06-29	DGX Spark GB10	sm_121a	glm52_fixed_slot_cutlass_grouped_nvfp4_bf16_moe	32	256	64	4	256	5	6638.285	2.911	0	too slow for production small-batch MoE
-2026-06-29	DGX Spark GB10	sm_121a	glm52_fixed_slot_cutlass_grouped_nvfp4_bf16_moe	32	256	128	2	256	5	12868.603	1.502	0	reject as SOTA path
-2026-06-29	DGX Spark GB10	sm_121a	glm52_fixed_slot_cutlass_grouped_nvfp4_bf16_moe	32	256	256	1	256	5	25436.607	0.760	0	reject as SOTA path

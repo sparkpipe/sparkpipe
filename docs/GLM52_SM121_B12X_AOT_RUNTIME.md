@@ -106,3 +106,20 @@ w2_alpha_fp32_by_expert:          [256]
 ```
 
 The model loader must fail if it only has original checkpoint/modelopt/MMA layouts and no converted resident B12x layout.
+
+## Resident MoE pack handoff
+
+After AOT compilation, run the resident packer before package validation:
+
+```bash
+./tools/glm52_b12x_resident_pack.py \
+  --model-dir "$GLM52_MODEL_DIR" \
+  --aot-manifest build/glm52_b12x_aot/generated/aot_manifest.json \
+  --layers 3,4,5,6,7,8,9,10 \
+  --output-dir build/glm52_b12x_resident_moe
+```
+
+The runtime binder is native C/CUDA and lives in the resident decode-stage
+archive. It restores `.spb12x` packs, initializes the compiled B12x primitive,
+and provides `SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan` to the routed
+layer. See `docs/GLM52_B12X_RESIDENT_MOE_PACK.md` for the pack ABI.
