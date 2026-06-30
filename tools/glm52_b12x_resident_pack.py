@@ -365,6 +365,13 @@ def existing_manifest_record(manifest_path: Path, model_dir: Path, aot_manifest_
     return None
 
 
+def manifest_contract_matches(manifest_path: Path, model_dir: Path, aot_manifest_path: Path) -> bool:
+    if not manifest_path.exists():
+        return False
+    manifest = load_json(manifest_path)
+    return manifest.get("model_dir") == str(model_dir) and manifest.get("aot_manifest") == str(aot_manifest_path)
+
+
 def try_reuse_pack(
     output_path: Path,
     manifest_path: Path,
@@ -378,9 +385,9 @@ def try_reuse_pack(
     verify_sha256: bool,
 ) -> Dict[str, Any] | None:
     regions = reserve_regions()
-    record = existing_manifest_record(manifest_path, model_dir, aot_manifest_path, layer)
-    if record is None or not output_path.exists():
+    if not manifest_contract_matches(manifest_path, model_dir, aot_manifest_path) or not output_path.exists():
         return None
+    record = existing_manifest_record(manifest_path, model_dir, aot_manifest_path, layer)
     pack_hash_low64 = pack_metadata_hash_low64(
         layer,
         regions,
@@ -390,30 +397,47 @@ def try_reuse_pack(
         kernel_manifest_hash_low64,
     )
     expected_bytes = regions[-1]["offset"] + regions[-1]["bytes"]
-    if int(record.get("bytes", -1)) != expected_bytes or output_path.stat().st_size != expected_bytes:
+    if output_path.stat().st_size != expected_bytes:
         return None
-    if Path(str(record.get("path", ""))) != output_path:
+    try:
+        validate_pack_header(
+            output_path,
+            layer,
+            maximum_token_count,
+            qualified_maximum_microseconds,
+            qualification_hash_low64,
+            kernel_manifest_hash_low64,
+            pack_hash_low64,
+            regions,
+        )
+    except PackFailure:
         return None
-    if int(record.get("pack_hash_low64", -1)) != pack_hash_low64:
-        return None
-    if int(record.get("kernel_manifest_hash_low64", -1)) != kernel_manifest_hash_low64:
-        return None
-    if int(record.get("qualification_record_hash_low64", -1)) != qualification_hash_low64:
-        return None
-    validate_pack_header(
-        output_path,
-        layer,
-        maximum_token_count,
-        qualified_maximum_microseconds,
-        qualification_hash_low64,
-        kernel_manifest_hash_low64,
-        pack_hash_low64,
-        regions,
+    reused_record = dict(record) if record is not None else {}
+    record_matches_metadata = (
+        record is not None and
+        int(record.get("bytes", -1)) == expected_bytes and
+        Path(str(record.get("path", ""))) == output_path and
+        int(record.get("pack_hash_low64", -1)) == pack_hash_low64 and
+        int(record.get("kernel_manifest_hash_low64", -1)) == kernel_manifest_hash_low64 and
+        int(record.get("qualification_record_hash_low64", -1)) == qualification_hash_low64
     )
-    if verify_sha256 and str(record.get("sha256", "")) != sha256_file(output_path):
+    observed_sha256 = sha256_file(output_path) if verify_sha256 else (
+        str(reused_record.get("sha256", "")) if record_matches_metadata else ""
+    )
+    if verify_sha256 and str(reused_record.get("sha256", observed_sha256)) not in ("", observed_sha256):
         return None
-    reused_record = dict(record)
-    reused_record["reused"] = True
+    reused_record.update({
+        "bytes": expected_bytes,
+        "kernel_manifest_hash_low64": kernel_manifest_hash_low64,
+        "layer_index": layer,
+        "pack_hash_low64": pack_hash_low64,
+        "path": str(output_path),
+        "qualification_record_hash_low64": qualification_hash_low64,
+        "qualified_maximum_microseconds": qualified_maximum_microseconds,
+        "regions": regions,
+        "reused": True,
+        "sha256": observed_sha256,
+    })
     return reused_record
 
 
