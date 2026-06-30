@@ -13,7 +13,7 @@ from typing import Any, BinaryIO, Dict, Iterable, List, Tuple
 
 
 MAGIC = b"SPARKGLM52B12X\0\0"
-ABI_VERSION = 2
+ABI_VERSION = 3
 HEADER_BYTES = 512
 REGION_ALIGNMENT = 4096
 REGION_COUNT = 7
@@ -79,6 +79,7 @@ def pack_metadata_hash_low64(
         "qualification_hash_low64": qualification_hash_low64,
         "kernel_manifest_hash_low64": kernel_manifest_hash_low64,
         "scale2_baked_into_block_scales": True,
+        "scale_storage_layout": "flashinfer_static_storage_mtile_ktile_outerm_innerm_innerk_v1",
         "w1_alpha": "ones_fp32_by_expert",
         "w2_alpha": "ones_fp32_by_expert",
         "fc2_input_scale": "ones_fp32_by_expert",
@@ -191,6 +192,29 @@ def tensor_bytes_f8_scaled(name: str, tensor: Any, scale: float, expected_shape:
         raise PackFailure(f"{name} scale2 must be positive")
     scaled = (tensor.float() * float(scale)).to(torch.float8_e4m3fn).contiguous()
     return scaled.view(torch.uint8).numpy().tobytes()
+
+
+def scale_bytes_to_flashinfer_static_storage(name: str, row_major: bytes, rows: int, k_groups: int) -> bytes:
+    if rows <= 0 or k_groups <= 0:
+        raise PackFailure(f"{name} has invalid scale shape")
+    if rows % 128 != 0 or k_groups % 4 != 0:
+        raise PackFailure(f"{name} is not aligned to FlashInfer B12x scale tiles")
+    if len(row_major) != rows * k_groups:
+        raise PackFailure(f"{name} has {len(row_major)} scale bytes, expected {rows * k_groups}")
+    m_tiles = rows // 128
+    k_tiles = k_groups // 4
+    output = bytearray(len(row_major))
+    for m_tile in range(m_tiles):
+        for k_tile in range(k_tiles):
+            for outer_m in range(32):
+                for inner_m in range(4):
+                    row = (m_tile * 128) + (inner_m * 32) + outer_m
+                    for inner_k in range(4):
+                        k_group = (k_tile * 4) + inner_k
+                        source = (row * k_groups) + k_group
+                        target = (((((m_tile * k_tiles) + k_tile) * 32 + outer_m) * 4 + inner_m) * 4 + inner_k)
+                        output[target] = row_major[source]
+    return bytes(output)
 
 
 def write_padding(file: BinaryIO, target_offset: int) -> None:
@@ -412,8 +436,15 @@ def write_w1_scale_region(reader: SafetensorReader, file: BinaryIO, layer: int) 
         gate_scale2 = tensor_scalar_f32(gate_scale2_name, reader.tensor(gate_scale2_name))
         if abs(up_scale2 - gate_scale2) > 0.0:
             raise PackFailure(f"expert {expert} has mismatched up/gate weight_scale_2")
-        file.write(tensor_bytes_f8_scaled(up_name, reader.tensor(up_name), up_scale2, expected))
-        file.write(tensor_bytes_f8_scaled(gate_name, reader.tensor(gate_name), gate_scale2, expected))
+        row_major = (
+            tensor_bytes_f8_scaled(up_name, reader.tensor(up_name), up_scale2, expected) +
+            tensor_bytes_f8_scaled(gate_name, reader.tensor(gate_name), gate_scale2, expected)
+        )
+        file.write(scale_bytes_to_flashinfer_static_storage(
+            f"layer {layer} expert {expert} w1 scale",
+            row_major,
+            2 * INTERMEDIATE_DIMENSION,
+            HIDDEN_DIMENSION // NVFP4_GROUP_SIZE))
 
 
 def write_w2_weight_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
@@ -431,7 +462,16 @@ def write_w2_scale_region(reader: SafetensorReader, file: BinaryIO, layer: int) 
         down_scale2 = tensor_scalar_f32(
             down_scale2_name,
             reader.tensor(down_scale2_name))
-        file.write(tensor_bytes_f8_scaled(down_name, reader.tensor(down_name), down_scale2, expected))
+        row_major = tensor_bytes_f8_scaled(
+            down_name,
+            reader.tensor(down_name),
+            down_scale2,
+            expected)
+        file.write(scale_bytes_to_flashinfer_static_storage(
+            f"layer {layer} expert {expert} w2 scale",
+            row_major,
+            HIDDEN_DIMENSION,
+            INTERMEDIATE_DIMENSION // NVFP4_GROUP_SIZE))
 
 
 def write_alpha_region(file: BinaryIO) -> None:

@@ -67,6 +67,8 @@ TEST_NAMES := \
     test_glm52_resident_decode_stage_firmware
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
+PYTHON_TESTS := \
+    tests/test_b12x_scale_layout.py
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \
     build/test_modules/module_add_one.o \
@@ -196,6 +198,10 @@ test: $(TEST_BINARIES)
 	for test_binary in $(TEST_BINARIES); do \
 		echo "RUN $$test_binary"; \
 		./$$test_binary; \
+	done; \
+	for python_test in $(PYTHON_TESTS); do \
+		echo "RUN $$python_test"; \
+		python3 $$python_test; \
 	done
 
 demo: all $(TEST_MODULE_OBJECTS) $(TEST_VALIDATOR)
