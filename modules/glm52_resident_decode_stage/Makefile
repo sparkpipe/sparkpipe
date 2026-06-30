@@ -13,6 +13,7 @@ B12X_MOE_PACK_DIR ?= $(REPOSITORY_ROOT)/build/glm52_b12x_resident_moe
 B12X_MOE_PACK_LAYERS ?= 3,4,5,6,7,8,9,10
 B12X_MOE_PACK_REQUIRE_REUSE ?= 1
 B12X_MOE_PACK_VERIFY_REUSED_SHA256 ?= 0
+B12X_MOE_PACK_JOBS ?= 1
 B12X_PACK_PYTHON ?= python3
 GLM52_VALIDATION_INPUT_TOKEN_ID ?= 1000
 GLM52_VALIDATION_MODE ?= dense_to_layer3_routed
@@ -125,6 +126,7 @@ b12x_resident_pack: require_model_dir
 		--aot-manifest "$(AOT_MANIFEST)" \
 		--layers "$(B12X_MOE_PACK_LAYERS)" \
 		--output-dir "$(B12X_MOE_PACK_DIR)" \
+		--jobs "$(B12X_MOE_PACK_JOBS)" \
 		--reuse-valid \
 		$(if $(filter 1,$(B12X_MOE_PACK_REQUIRE_REUSE)),--require-reuse,) \
 		$(if $(filter 1,$(B12X_MOE_PACK_VERIFY_REUSED_SHA256)),--verify-reused-sha256,)
