@@ -4272,42 +4272,11 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageInitializeB12xMoe(
     {
         return status;
     }
-    if (*(b12x_plan->state_cell) != 0)
+    if (*(b12x_plan->state_cell) == 0)
     {
-        return SPARK_STATUS_OK;
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    return SparkGlm52Sm121FlashInferB12xMoeCreate(
-        &b12x_plan->recipe,
-        b12x_plan->state_cell);
-}
-
-static void SparkGlm52Sm121RequiredDecodeStageDestroyB12xMoe(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
-{
-    const SparkGlm52ResidentDecodeStageB12xMoePlan *b12x_plan;
-    SparkStatus status;
-
-    if (node_context == 0 ||
-        node_context->layer_progression_mode !=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK ||
-        node_context->b12x_moe_dispatch_plan == 0 ||
-        node_context->b12x_moe_dispatch_plan->plan_kind !=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_DISPATCH_PLAN_KIND_FLASHINFER_B12X)
-    {
-        return;
-    }
-
-    status = SparkGlm52ResidentDecodeStageValidateB12xMoePlan(
-        node_context,
-        node_context->b12x_moe_dispatch_plan,
-        &b12x_plan);
-    if (status != SPARK_STATUS_OK || b12x_plan->state_cell == 0 ||
-        *(b12x_plan->state_cell) == 0)
-    {
-        return;
-    }
-    SparkGlm52Sm121FlashInferB12xMoeDestroy(*(b12x_plan->state_cell));
-    *(b12x_plan->state_cell) = 0;
+    return SPARK_STATUS_OK;
 }
 
 extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageInitialize(
@@ -4358,5 +4327,4 @@ extern "C" void SparkGlm52Sm121RequiredDecodeStageQuiesce(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
     SparkGlm52Sm121RequiredDecodeStageQuiesceGraphs(node_context);
-    SparkGlm52Sm121RequiredDecodeStageDestroyB12xMoe(node_context);
 }
