@@ -204,6 +204,21 @@ static SparkStatus SparkParseModelProgramSchedulingFlag(
         *flag = SPARK_MODEL_DRIVER_PROGRAM_FLAG_BATCH_SHAPE_FIXED;
         return SPARK_STATUS_OK;
     }
+    if (strcmp(flag_name, "requires_hidden_transport") == 0)
+    {
+        *flag = SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT;
+        return SPARK_STATUS_OK;
+    }
+    if (strcmp(flag_name, "no_file_transport") == 0)
+    {
+        *flag = SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT;
+        return SPARK_STATUS_OK;
+    }
+    if (strcmp(flag_name, "no_shell_transport") == 0)
+    {
+        *flag = SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT;
+        return SPARK_STATUS_OK;
+    }
     return SPARK_STATUS_SCHEMA_ERROR;
 }
 

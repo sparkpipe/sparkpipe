@@ -52,6 +52,12 @@ int main(void)
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_JIT_KV_CACHE) != 0u);
     assert((decode_program->scheduling.flags &
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_HOST_STAGING) != 0u);
+    assert((decode_program->scheduling.flags &
+        SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT) != 0u);
+    assert((decode_program->scheduling.flags &
+        SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT) != 0u);
+    assert((decode_program->scheduling.flags &
+        SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT) != 0u);
     assert(decode_program->scheduling.max_active_slots == 64u);
     assert(decode_program->scheduling.max_new_tokens == 3u);
     assert(decode_program->scheduling.host_staging_bytes_per_submit_ceiling == 0u);

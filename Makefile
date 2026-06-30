@@ -28,7 +28,8 @@ B12X_RUNTIME_LINK_ARGS_FILE := $(abspath $(B12X_AOT_OUTPUT_DIR))/generated/runti
 
 COMMON_SOURCES := \
     src/spark_status.c \
-    src/spark_filesystem.c
+    src/spark_filesystem.c \
+    src/spark_hidden_transport.c
 
 COMPILER_SOURCES := \
     src/spark_sha256.c \
@@ -58,6 +59,7 @@ TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
 TEST_NAMES := \
     test_json \
+    test_hidden_transport \
     test_model_description \
     test_module_library \
     test_driver_compiler \
@@ -170,6 +172,9 @@ $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE): $(GLM52_RESIDENT_DECODE_STAGE_TEST_
 
 build/test_json: tests/test_json.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_hidden_transport: tests/test_hidden_transport.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
