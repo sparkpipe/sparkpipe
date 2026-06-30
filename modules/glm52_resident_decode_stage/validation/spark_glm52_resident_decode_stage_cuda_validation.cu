@@ -6318,6 +6318,94 @@ static bool SparkValidationRunRoutedLayerDynamicTopK(
     return true;
 }
 
+static bool SparkValidationRunRoutedLayerProductionB12x(
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    cudaStream_t cuda_stream,
+    const char *driver_path,
+    const char *model_directory,
+    SparkValidationRealLmHeadFixture *real_lm_head,
+    SparkValidationLayer3RoutedExpertNvfp4Fixture *layer3_routed_expert,
+    uint32_t layer_index,
+    uint32_t position,
+    uint32_t slot_mapping,
+    uint32_t context_length,
+    uint32_t check_outputs,
+    double *total_microseconds,
+    double *maximum_observed_microseconds,
+    uint32_t *submission_count)
+{
+    SparkValidationLayer0AttentionBf16Fixture attention_fixture;
+    SparkValidationLayer3RouterBf16Fixture router_fixture;
+    uint32_t topk_expert_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
+    float elapsed_microseconds;
+
+    if (!SparkValidationLoadLayer0AttentionBf16Fixture(
+            buffers,
+            model_directory,
+            layer_index,
+            &attention_fixture) ||
+        !SparkValidationLoadRoutedLayerRouterBf16Fixture(
+            buffers,
+            model_directory,
+            layer_index,
+            &router_fixture) ||
+        !SparkValidationBindRoutedLayerCache(
+            buffers,
+            node_context,
+            layer_index) ||
+        !SparkValidationSetDecodeScalars(
+            buffers,
+            position,
+            slot_mapping,
+            context_length) ||
+        !SparkValidationBindB12xMoePlanForLayer(
+            buffers,
+            node_context,
+            layer_index))
+    {
+        return false;
+    }
+    SparkValidationEnableLayer3RoutedExpertNvfp4(
+        0,
+        buffers,
+        node_context);
+    if (!SparkValidationRunSubmitOnce(
+            node_context,
+            cuda_stream,
+            driver_path,
+            &elapsed_microseconds) ||
+        !SparkValidationCudaSucceeded(
+            cudaStreamSynchronize(cuda_stream),
+            "cudaStreamSynchronize production routed B12x layer") ||
+        !SparkValidationReadLayer3TopKExpertIds(buffers, topk_expert_ids))
+    {
+        return false;
+    }
+    *total_microseconds += (double)elapsed_microseconds;
+    if ((double)elapsed_microseconds > *maximum_observed_microseconds)
+    {
+        *maximum_observed_microseconds = (double)elapsed_microseconds;
+    }
+    *submission_count += 1u;
+    fprintf(stderr, "routed_layer_production_topk_ids layer=%u ids=%u,%u,%u,%u,%u,%u,%u,%u\n", layer_index, topk_expert_ids[0], topk_expert_ids[1], topk_expert_ids[2], topk_expert_ids[3], topk_expert_ids[4], topk_expert_ids[5], topk_expert_ids[6], topk_expert_ids[7]);
+    if (layer3_routed_expert != 0)
+    {
+        memset(layer3_routed_expert, 0, sizeof(*layer3_routed_expert));
+        layer3_routed_expert->ready = 1u;
+        layer3_routed_expert->selected_expert_id = topk_expert_ids[0];
+        layer3_routed_expert->bound_expert_count =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
+    }
+    if (check_outputs != 0u &&
+        (!SparkValidationCheckLayer3RouterTopK(buffers) ||
+         !SparkValidationCheckOutputs(buffers, real_lm_head, 1u, 1u)))
+    {
+        return false;
+    }
+    return true;
+}
+
 static bool SparkValidationRunDenseChainLayer3RoutedTopK(
     SparkValidationDeviceBuffers *buffers,
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
@@ -6525,7 +6613,7 @@ static bool SparkValidationRunRoutedChainFromHidden(
          routed_layer_offset < routed_chain_layer_count;
          ++routed_layer_offset)
     {
-        if (!SparkValidationRunRoutedLayerDynamicTopK(
+        if (!SparkValidationRunRoutedLayerProductionB12x(
                 buffers,
                 node_context,
                 cuda_stream,
