@@ -6441,7 +6441,7 @@ static bool SparkValidationRunRoutedLayerProductionB12x(
         *maximum_observed_microseconds = (double)elapsed_microseconds;
     }
     *submission_count += 1u;
-    fprintf(stderr, "routed_layer_production_topk_ids layer=%u ids=%u,%u,%u,%u,%u,%u,%u,%u\n", layer_index, topk_expert_ids[0], topk_expert_ids[1], topk_expert_ids[2], topk_expert_ids[3], topk_expert_ids[4], topk_expert_ids[5], topk_expert_ids[6], topk_expert_ids[7]);
+    fprintf(stderr, "routed_layer_production_topk_ids layer=%u elapsed_us=%.3f ids=%u,%u,%u,%u,%u,%u,%u,%u\n", layer_index, (double)elapsed_microseconds, topk_expert_ids[0], topk_expert_ids[1], topk_expert_ids[2], topk_expert_ids[3], topk_expert_ids[4], topk_expert_ids[5], topk_expert_ids[6], topk_expert_ids[7]);
     if (layer3_routed_expert != 0)
     {
         memset(layer3_routed_expert, 0, sizeof(*layer3_routed_expert));
@@ -6725,6 +6725,7 @@ int main(int argc, char **argv)
     const char *pipeline_output_hidden_path;
     const char *routed_chain_first_layer_text;
     const char *routed_chain_layer_count_text;
+    const char *enable_graph_replay_text;
     double maximum_stage_microseconds;
     double total_microseconds;
     double maximum_observed_microseconds;
@@ -6745,6 +6746,7 @@ int main(int argc, char **argv)
     uint32_t use_routed_chain_from_hidden;
     uint32_t routed_chain_first_layer_index;
     uint32_t routed_chain_layer_count;
+    uint32_t enable_graph_replay;
     uint32_t required_linear_plan_mask;
     uint32_t input_token_id;
     uint32_t dense_layer_index;
@@ -6798,6 +6800,8 @@ int main(int argc, char **argv)
         getenv("GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX");
     routed_chain_layer_count_text =
         getenv("GLM52_ROUTED_CHAIN_LAYER_COUNT");
+    enable_graph_replay_text =
+        getenv("GLM52_ENABLE_CUDA_GRAPH_REPLAY");
     use_dense_mlp = load_layer0_dense != 0 && load_layer0_dense[0] != '\0' &&
         strcmp(load_layer0_dense, "0") != 0;
     use_attention_bf16 =
@@ -6842,6 +6846,10 @@ int main(int argc, char **argv)
         chain_routed_from_hidden_text != 0 &&
         chain_routed_from_hidden_text[0] != '\0' &&
         strcmp(chain_routed_from_hidden_text, "0") != 0;
+    enable_graph_replay =
+        enable_graph_replay_text != 0 &&
+        enable_graph_replay_text[0] != '\0' &&
+        strcmp(enable_graph_replay_text, "0") != 0;
     if (use_layer3_routed_expert_topk != 0u)
     {
         use_layer3_routed_expert = 1u;
@@ -7187,6 +7195,12 @@ int main(int argc, char **argv)
         node_context.reserved_execution_flags |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY;
     }
+    if (enable_graph_replay != 0u)
+    {
+        node_context.enable_cuda_graph_replay = 1u;
+        node_context.reserved_execution_flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_GRAPH_REPLAY;
+    }
     if (use_layer3_router != 0u)
     {
         SparkValidationEnableLayer3RouterTopK(&buffers, &node_context);
@@ -7300,6 +7314,13 @@ int main(int argc, char **argv)
                     pipeline_output_hidden_path,
                     buffers.layer_output_hidden_bf16))
             {
+                return 2;
+            }
+            if (enable_graph_replay != 0u &&
+                cuda_slot_state.graph_capture_count == 0u &&
+                cuda_slot_state.graph_replay_count == 0u)
+            {
+                fprintf(stderr, "GLM52_ENABLE_CUDA_GRAPH_REPLAY requested but no graph capture/replay was observed\n");
                 return 2;
             }
             SparkGlm52ResidentDecodeStageBackendQuiesce(&node_context);
@@ -7636,6 +7657,13 @@ int main(int argc, char **argv)
                 pipeline_output_hidden_path,
                 buffers.layer_output_hidden_bf16))
         {
+            return 2;
+        }
+        if (enable_graph_replay != 0u &&
+            cuda_slot_state.graph_capture_count == 0u &&
+            cuda_slot_state.graph_replay_count == 0u)
+        {
+            fprintf(stderr, "GLM52_ENABLE_CUDA_GRAPH_REPLAY requested but no graph capture/replay was observed\n");
             return 2;
         }
         SparkGlm52ResidentDecodeStageBackendQuiesce(&node_context);
