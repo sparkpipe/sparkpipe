@@ -19,6 +19,7 @@ HOST_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module.o
 CUDA_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda.o
 REQUIRED_STAGE_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_sm121_required_decode_stage.o
 B12X_MOE_PLAN_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_b12x_moe_plan.o
+LINEAR_PLAN_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_linear_plan.o
 MODULE_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_resident_decode_stage.a
 ARTIFACT_CHECK_TOOL := $(BUILD_DIRECTORY)/glm52_artifact_check
 PACKAGE_DIRECTORY ?= $(REPOSITORY_ROOT)/build/packages/glm52_resident_decode_stage
@@ -31,6 +32,7 @@ HOST_DEPENDENCY := $(HOST_OBJECT:.o=.d)
 CUDA_DEPENDENCY := $(CUDA_OBJECT:.o=.d)
 REQUIRED_STAGE_DEPENDENCY := $(REQUIRED_STAGE_OBJECT:.o=.d)
 B12X_MOE_PLAN_DEPENDENCY := $(B12X_MOE_PLAN_OBJECT:.o=.d)
+LINEAR_PLAN_DEPENDENCY := $(LINEAR_PLAN_OBJECT:.o=.d)
 
 .PHONY: archive cold_archive artifact_check b12x_resident_pack validate publish package clean require_sm121a require_latency_limit require_model_dir
 
@@ -70,7 +72,11 @@ $(B12X_MOE_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_b12x_moe_plan.
 	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
-$(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT) $(REQUIRED_STAGE_OBJECT) $(B12X_MOE_PLAN_OBJECT)
+$(LINEAR_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_linear_plan.cu | $(BUILD_DIRECTORY)
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
+		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
+
+$(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT) $(REQUIRED_STAGE_OBJECT) $(B12X_MOE_PLAN_OBJECT) $(LINEAR_PLAN_OBJECT)
 	rm -f $@
 	$(AR) rcs $@ $^
 
@@ -142,4 +148,4 @@ package: publish
 clean:
 	rm -rf $(BUILD_DIRECTORY)
 
--include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(REQUIRED_STAGE_DEPENDENCY) $(B12X_MOE_PLAN_DEPENDENCY)
+-include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(REQUIRED_STAGE_DEPENDENCY) $(B12X_MOE_PLAN_DEPENDENCY) $(LINEAR_PLAN_DEPENDENCY)

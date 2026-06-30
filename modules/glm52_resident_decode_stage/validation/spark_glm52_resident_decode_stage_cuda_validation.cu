@@ -13,6 +13,7 @@
 
 #include "spark_glm52_resident_decode_stage_backend.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_b12x_moe_plan.h"
+#include "sparkpipe/spark_glm52_resident_decode_stage_linear_plan.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_orchestrator.h"
 #include "sparkpipe/spark_status.h"
@@ -227,6 +228,7 @@ typedef struct SparkValidationDeviceBuffers
     float *sin_table;
     float *dsa_token_scores;
     float *moe_router_score_bias_f32;
+    float *moe_router_logits;
     float *moe_topk_weights;
     float *restricted_logits;
     float *restricted_selected_token_scores;
@@ -250,6 +252,7 @@ typedef struct SparkValidationDeviceBuffers
         b12x_moe_bindings[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
     uint32_t b12x_moe_binding_ready[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
     uint32_t b12x_moe_binding_layer_indices[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *linear_plan_binding;
 } SparkValidationDeviceBuffers;
 
 static bool SparkValidationCudaSucceeded(
@@ -2630,6 +2633,7 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->sin_table, rope_table_count * 4u, "cudaMalloc sin_table") &&
         SparkValidationAllocateZeroed((void **)&buffers->dsa_token_scores, 64u * 4u, "cudaMalloc dsa_scores") &&
         SparkValidationAllocateZeroed((void **)&buffers->moe_router_score_bias_f32, SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT * 4u, "cudaMalloc moe_router_bias") &&
+        SparkValidationAllocateZeroed((void **)&buffers->moe_router_logits, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT * 4u, "cudaMalloc moe_router_logits") &&
         SparkValidationAllocateZeroed((void **)&buffers->moe_topk_weights, SPARK_VALIDATION_MOE_ROUTE_COUNT * 4u, "cudaMalloc moe_topk_weights") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_logits, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * 4u, "cudaMalloc restricted_logits") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_selected_token_scores, 4u, "cudaMalloc selected_scores") &&
@@ -2858,6 +2862,7 @@ static void SparkValidationConfigureNode(
     pipeline_slot->post_attention_hidden_bf16 = buffers->post_attention_hidden_bf16;
     pipeline_slot->post_attention_normalized_hidden_bf16 =
         buffers->post_attention_normalized_hidden_bf16;
+    pipeline_slot->moe_router_logits = buffers->moe_router_logits;
     pipeline_slot->moe_topk_expert_ids = buffers->moe_topk_expert_ids;
     pipeline_slot->moe_topk_weights = buffers->moe_topk_weights;
     pipeline_slot->moe_gate_bf16 = buffers->moe_gate_bf16;
@@ -2950,6 +2955,8 @@ static void SparkValidationConfigureNode(
     node_context->restricted_token_ids = buffers->restricted_token_ids;
     node_context->pipeline_slots = pipeline_slot;
     node_context->cuda_pipeline_slot_states = cuda_slot_state;
+    node_context->linear_plans = 0;
+    node_context->linear_plan_count = 0u;
     node_context->projection_mode = use_attention_bf16 != 0u
         ? SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16
         : SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
@@ -2965,6 +2972,11 @@ static void SparkValidationConfigureNode(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
     node_context->dense_intermediate_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION;
+    if (use_dense_mlp != 0u)
+    {
+        node_context->mlp_execution_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE;
+    }
     node_context->sparse_index_mode =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_PRESELECTED;
     node_context->launch_check_mode =
@@ -2998,6 +3010,8 @@ static void SparkValidationEnableLayer3SharedExpertBf16(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP;
     node_context->dense_intermediate_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+    node_context->mlp_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE;
 }
 
 static void SparkValidationEnableLayer3RoutedExpertNvfp4(
@@ -3137,6 +3151,137 @@ static bool SparkValidationBindB12xMoePlanForLayer(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
     node_context->moe_intermediate_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+    return true;
+}
+
+static void SparkValidationReleaseLinearPlanBinding(
+    SparkValidationDeviceBuffers *buffers)
+{
+    if (buffers == 0 || buffers->linear_plan_binding == 0)
+    {
+        return;
+    }
+    SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(
+        buffers->linear_plan_binding);
+    buffers->linear_plan_binding = 0;
+}
+
+static bool SparkValidationBindRequiredLinearPlans(
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    cudaStream_t cuda_stream,
+    uint32_t required_plan_mask)
+{
+    SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo create_info;
+    SparkStatus status;
+    const SparkGlm52ResidentDecodeStageLinearPlan *plans;
+    uint32_t plan_count;
+    uint32_t dense_intermediate_dimension;
+
+    if (buffers == 0 || node_context == 0)
+    {
+        return false;
+    }
+    if (required_plan_mask == 0u)
+    {
+        return true;
+    }
+    if ((required_plan_mask &
+         ~SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_REQUIRED_GLM52_PREFIX) != 0u)
+    {
+        fprintf(stderr, "invalid required linear plan mask=0x%08x\n", required_plan_mask);
+        return false;
+    }
+    if (buffers->linear_plan_binding != 0)
+    {
+        plans = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPlans(
+            buffers->linear_plan_binding,
+            &plan_count);
+        if (plans != 0 &&
+            plan_count >= SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT)
+        {
+            node_context->linear_plans = plans;
+            node_context->linear_plan_count = plan_count;
+            if ((required_plan_mask &
+                 (SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
+                  SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
+                  SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN)) != 0u)
+            {
+                node_context->mlp_execution_mode =
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE;
+            }
+            return true;
+        }
+        SparkValidationReleaseLinearPlanBinding(buffers);
+    }
+    dense_intermediate_dimension = node_context->dense_intermediate_dimension != 0u
+        ? node_context->dense_intermediate_dimension
+        : SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION;
+    memset(&create_info, 0, sizeof(create_info));
+    create_info.abi_version =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BINDING_ABI_VERSION;
+    create_info.maximum_active_sequence_count =
+        node_context->max_active_sequence_count;
+    create_info.dense_intermediate_dimension = dense_intermediate_dimension;
+    create_info.expert_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
+    create_info.required_plan_mask = required_plan_mask;
+    create_info.autotune_warmup_iterations = 2u;
+    create_info.autotune_measurement_iterations = 5u;
+    create_info.workspace_limit_bytes =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BINDING_DEFAULT_WORKSPACE_BYTES;
+    create_info.cuda_stream = (void *)cuda_stream;
+    create_info.dense_input_bf16 =
+        buffers->post_attention_normalized_hidden_bf16;
+    create_info.dense_gate_weight_bf16 = buffers->dense_gate_weight_bf16;
+    create_info.dense_up_weight_bf16 = buffers->dense_up_weight_bf16;
+    create_info.dense_down_weight_bf16 = buffers->dense_down_weight_bf16;
+    create_info.dense_gate_output_bf16 = buffers->moe_gate_bf16;
+    create_info.dense_up_output_bf16 = buffers->moe_up_bf16;
+    create_info.dense_intermediate_bf16 = buffers->moe_intermediate_bf16;
+    create_info.dense_down_output_bf16 = buffers->layer_output_hidden_bf16;
+    create_info.router_input_bf16 =
+        buffers->post_attention_normalized_hidden_bf16;
+    create_info.router_weight_bf16 = buffers->moe_router_weight_bf16;
+    create_info.router_logits_f32 = buffers->moe_router_logits;
+    status = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
+        &buffers->linear_plan_binding,
+        &create_info);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(
+            stderr,
+            "failed to bind resident tensor-core linear plans mask=0x%08x dense_intermediate=%u status=%d\n",
+            required_plan_mask,
+            dense_intermediate_dimension,
+            (int)status);
+        return false;
+    }
+    plans = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPlans(
+        buffers->linear_plan_binding,
+        &plan_count);
+    if (plans == 0 ||
+        plan_count < SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT)
+    {
+        fprintf(stderr, "resident tensor-core linear binder returned no plans\n");
+        SparkValidationReleaseLinearPlanBinding(buffers);
+        return false;
+    }
+    node_context->linear_plans = plans;
+    node_context->linear_plan_count = plan_count;
+    if ((required_plan_mask &
+         (SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN)) != 0u)
+    {
+        node_context->mlp_execution_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE;
+    }
+    fprintf(
+        stderr,
+        "resident_linear_plans_ready=1 mask=0x%08x dense_intermediate=%u plan_count=%u\n",
+        required_plan_mask,
+        dense_intermediate_dimension,
+        plan_count);
     return true;
 }
 
@@ -5632,6 +5777,8 @@ static bool SparkValidationRunChainedDenseLayer(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP;
     node_context->dense_intermediate_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION;
+    node_context->mlp_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE;
     if (!SparkValidationLoadDenseLayerBf16Fixtures(
             buffers,
             model_directory,
@@ -6221,6 +6368,7 @@ int main(int argc, char **argv)
     uint32_t use_layer3_routed_expert_topk;
     uint32_t use_dense_chain_layer3_routed_expert_topk;
     uint32_t routed_chain_layer_count;
+    uint32_t required_linear_plan_mask;
     uint32_t input_token_id;
     uint32_t dense_layer_index;
 
@@ -6606,6 +6754,33 @@ int main(int argc, char **argv)
             &layer3_routed_expert,
             &buffers,
             &node_context);
+    }
+    required_linear_plan_mask = 0u;
+    if (use_dense_mlp != 0u ||
+        use_dense_chain != 0u ||
+        use_layer3_shared_expert != 0u ||
+        use_dense_chain_layer3_routed_expert_topk != 0u)
+    {
+        required_linear_plan_mask |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN;
+    }
+    if (use_layer3_router != 0u ||
+        use_layer3_routed_expert != 0u ||
+        use_dense_chain_layer3_routed_expert_topk != 0u)
+    {
+        required_linear_plan_mask |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_ROUTER_LOGITS;
+    }
+    if (required_linear_plan_mask != 0u &&
+        !SparkValidationBindRequiredLinearPlans(
+            &buffers,
+            &node_context,
+            cuda_stream,
+            required_linear_plan_mask))
+    {
+        return 2;
     }
     if (use_prefill_kv != 0u &&
         !SparkValidationRunPrefillKvBf16Fixture(

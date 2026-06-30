@@ -174,6 +174,83 @@ static SparkStatus SparkGlm52B12xInitializeIdentityMap(
     return SparkGlm52B12xCudaToSparkStatus(cuda_status);
 }
 
+__global__ void SparkGlm52B12xPrepareMicroTopKKernel(
+    const int32_t *topk_ids,
+    int32_t *compact_topk_ids,
+    int32_t *weight_expert_ids,
+    int32_t *active_expert_count,
+    uint32_t route_count)
+{
+    uint32_t route_index;
+    uint32_t active_count;
+
+    if (threadIdx.x != 0u || blockIdx.x != 0u)
+    {
+        return;
+    }
+    active_count = 0u;
+    for (route_index = 0u; route_index < route_count; ++route_index)
+    {
+        int32_t expert_id;
+        uint32_t compact_index;
+        uint32_t found;
+
+        expert_id = topk_ids[route_index];
+        found = 0u;
+        compact_index = 0u;
+        while (compact_index < active_count)
+        {
+            if (weight_expert_ids[compact_index] == expert_id)
+            {
+                found = 1u;
+                break;
+            }
+            ++compact_index;
+        }
+        if (found == 0u)
+        {
+            compact_index = active_count;
+            weight_expert_ids[active_count] = expert_id;
+            ++active_count;
+        }
+        compact_topk_ids[route_index] = (int32_t)compact_index;
+    }
+    active_expert_count[0] = (int32_t)active_count;
+}
+
+static SparkStatus SparkGlm52B12xPrepareMicroTopK(
+    const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket,
+    SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
+    const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments)
+{
+    uint32_t route_count;
+    cudaStream_t cuda_stream;
+
+    if (bucket == 0 || workspace == 0 || arguments == 0 ||
+        arguments->topk_ids_i32 == 0 ||
+        workspace->compact_topk_ids_i32 == 0 ||
+        workspace->weight_expert_ids_i32 == 0 ||
+        workspace->active_expert_count_i32 == 0 ||
+        arguments->top_k == 0u ||
+        arguments->token_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    route_count = arguments->token_count * arguments->top_k;
+    if (route_count > bucket->max_rows)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    cuda_stream = (cudaStream_t)arguments->cuda_stream;
+    SparkGlm52B12xPrepareMicroTopKKernel<<<1u, 1u, 0u, cuda_stream>>>(
+        arguments->topk_ids_i32,
+        (int32_t *)workspace->compact_topk_ids_i32,
+        (int32_t *)workspace->weight_expert_ids_i32,
+        (int32_t *)workspace->active_expert_count_i32,
+        route_count);
+    return SparkGlm52B12xCudaToSparkStatus(cudaGetLastError());
+}
+
 static SparkStatus SparkGlm52B12xAllocateCommonControlWorkspace(
     SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
     uint32_t expert_count)
@@ -692,6 +769,8 @@ extern "C" SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
     SparkFlashInferB12xCompiledMoeState *state;
     SparkGlm52Sm121B12xGeneratedLaunchArguments generated_arguments;
     const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket;
+    const int32_t *launch_topk_ids;
+    SparkStatus status;
     uint32_t bucket_index;
 
     if (state_pointer == 0 || arguments == 0)
@@ -713,6 +792,20 @@ extern "C" SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
+    launch_topk_ids = arguments->topk_ids_i32;
+    if (bucket->backend_kind == SPARK_GLM52_SM121_B12X_BACKEND_KIND_MICRO)
+    {
+        status = SparkGlm52B12xPrepareMicroTopK(
+            bucket,
+            &state->workspaces[bucket_index],
+            arguments);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        launch_topk_ids =
+            (const int32_t *)state->workspaces[bucket_index].compact_topk_ids_i32;
+    }
 
     memset(&generated_arguments, 0, sizeof(generated_arguments));
     generated_arguments.abi_version =
@@ -724,7 +817,7 @@ extern "C" SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
     generated_arguments.hidden_dimension = arguments->hidden_dimension;
     generated_arguments.intermediate_dimension = arguments->intermediate_dimension;
     generated_arguments.hidden_bf16 = arguments->hidden_bf16;
-    generated_arguments.topk_ids_i32 = arguments->topk_ids_i32;
+    generated_arguments.topk_ids_i32 = launch_topk_ids;
     generated_arguments.topk_weights_fp32 = arguments->topk_weights_fp32;
     generated_arguments.w1_weight_fp4_static_view = arguments->w1_weight_fp4_static_view;
     generated_arguments.w1_scale_static_storage_ue4m3 = arguments->w1_scale_static_storage_ue4m3;

@@ -170,6 +170,15 @@ def tensor_bytes_f8_scaled(name: str, tensor: Any, scale: float, expected_shape:
     return scaled.view(torch.uint8).numpy().tobytes()
 
 
+def tensor_bytes_f8_raw(name: str, tensor: Any, expected_shape: Tuple[int, ...]) -> bytes:
+    import torch
+
+    require_shape(name, tensor, expected_shape)
+    if "float8_e4m3" not in str(tensor.dtype):
+        raise PackFailure(f"{name} has dtype {tensor.dtype}, expected torch.float8_e4m3fn")
+    return tensor.contiguous().view(torch.uint8).numpy().tobytes()
+
+
 def write_padding(file: BinaryIO, target_offset: int) -> None:
     current_offset = file.tell()
     if current_offset > target_offset:
@@ -258,13 +267,9 @@ def write_w1_scale_region(reader: SafetensorReader, file: BinaryIO, layer: int) 
     expected = (INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION // NVFP4_GROUP_SIZE)
     for expert in range(EXPERT_COUNT):
         up_name = tensor_name(layer, expert, "up_proj", "weight_scale")
-        up_scale2_name = tensor_name(layer, expert, "up_proj", "weight_scale_2")
         gate_name = tensor_name(layer, expert, "gate_proj", "weight_scale")
-        gate_scale2_name = tensor_name(layer, expert, "gate_proj", "weight_scale_2")
-        up_scale2 = tensor_scalar_f32(up_scale2_name, reader.tensor(up_scale2_name))
-        gate_scale2 = tensor_scalar_f32(gate_scale2_name, reader.tensor(gate_scale2_name))
-        file.write(tensor_bytes_f8_scaled(up_name, reader.tensor(up_name), up_scale2, expected))
-        file.write(tensor_bytes_f8_scaled(gate_name, reader.tensor(gate_name), gate_scale2, expected))
+        file.write(tensor_bytes_f8_raw(up_name, reader.tensor(up_name), expected))
+        file.write(tensor_bytes_f8_raw(gate_name, reader.tensor(gate_name), expected))
 
 
 def write_w2_weight_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
@@ -278,13 +283,33 @@ def write_w2_scale_region(reader: SafetensorReader, file: BinaryIO, layer: int) 
     expected = (HIDDEN_DIMENSION, INTERMEDIATE_DIMENSION // NVFP4_GROUP_SIZE)
     for expert in range(EXPERT_COUNT):
         down_name = tensor_name(layer, expert, "down_proj", "weight_scale")
-        down_scale2_name = tensor_name(layer, expert, "down_proj", "weight_scale_2")
-        down_scale2 = tensor_scalar_f32(down_scale2_name, reader.tensor(down_scale2_name))
-        file.write(tensor_bytes_f8_scaled(down_name, reader.tensor(down_name), down_scale2, expected))
+        file.write(tensor_bytes_f8_raw(down_name, reader.tensor(down_name), expected))
 
 
 def write_alpha_region(file: BinaryIO) -> None:
     file.write(struct.pack("<" + ("f" * EXPERT_COUNT), *([1.0] * EXPERT_COUNT)))
+
+
+def write_w1_alpha_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
+    alpha_values = []
+    for expert in range(EXPERT_COUNT):
+        up_scale2_name = tensor_name(layer, expert, "up_proj", "weight_scale_2")
+        gate_scale2_name = tensor_name(layer, expert, "gate_proj", "weight_scale_2")
+        up_scale2 = tensor_scalar_f32(up_scale2_name, reader.tensor(up_scale2_name))
+        gate_scale2 = tensor_scalar_f32(gate_scale2_name, reader.tensor(gate_scale2_name))
+        if abs(up_scale2 - gate_scale2) > 0.0:
+            raise PackFailure(f"expert {expert} has mismatched up/gate weight_scale_2")
+        alpha_values.append(up_scale2)
+    file.write(struct.pack("<" + ("f" * EXPERT_COUNT), *alpha_values))
+
+
+def write_w2_alpha_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
+    alpha_values = []
+    for expert in range(EXPERT_COUNT):
+        down_scale2_name = tensor_name(layer, expert, "down_proj", "weight_scale_2")
+        alpha_values.append(
+            tensor_scalar_f32(down_scale2_name, reader.tensor(down_scale2_name)))
+    file.write(struct.pack("<" + ("f" * EXPERT_COUNT), *alpha_values))
 
 
 def read_aot_manifest(path: Path) -> Tuple[int, int, int]:
@@ -328,6 +353,10 @@ def write_pack(
         "qualified_maximum_microseconds": qualified_maximum_microseconds,
         "qualification_hash_low64": qualification_hash_low64,
         "kernel_manifest_hash_low64": kernel_manifest_hash_low64,
+        "scale2_baked_into_block_scales": False,
+        "w1_alpha": "weight_scale_2_fp32_by_expert",
+        "w2_alpha": "weight_scale_2_fp32_by_expert",
+        "fc2_input_scale": "ones_fp32_by_expert",
     }, sort_keys=True, separators=(",", ":")))
     pack_hash_low64 = low64_from_hex(metadata_digest)
     header = pack_header(
@@ -349,7 +378,7 @@ def write_pack(
             write_padding(file, regions[REGION_W1_SCALE]["offset"])
             write_w1_scale_region(reader, file, layer)
             write_padding(file, regions[REGION_W1_ALPHA]["offset"])
-            write_alpha_region(file)
+            write_w1_alpha_region(reader, file, layer)
             write_padding(file, regions[REGION_FC2_INPUT_SCALE]["offset"])
             write_alpha_region(file)
             write_padding(file, regions[REGION_W2_WEIGHT]["offset"])
@@ -357,7 +386,7 @@ def write_pack(
             write_padding(file, regions[REGION_W2_SCALE]["offset"])
             write_w2_scale_region(reader, file, layer)
             write_padding(file, regions[REGION_W2_ALPHA]["offset"])
-            write_alpha_region(file)
+            write_w2_alpha_region(reader, file, layer)
     finally:
         reader.close()
     return {
@@ -425,9 +454,9 @@ def main() -> int:
         "fallback_allowed": False,
         "runtime_backend_selection": "forbidden",
         "gate_up_order": "up_gate",
-        "scale2_baked_into_block_scales": True,
-        "w1_alpha": "ones_fp32_by_expert",
-        "w2_alpha": "ones_fp32_by_expert",
+        "scale2_baked_into_block_scales": False,
+        "w1_alpha": "weight_scale_2_fp32_by_expert",
+        "w2_alpha": "weight_scale_2_fp32_by_expert",
         "fc2_input_scale": "ones_fp32_by_expert",
         "shape": {
             "hidden_dimension": HIDDEN_DIMENSION,
