@@ -374,19 +374,27 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageTensorCoreAlignment(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
     uint32_t pipeline_slot_index;
+    uint32_t hidden_output_only;
 
     if (node_context == 0 || node_context->pipeline_slots == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    hidden_output_only =
+        (node_context->reserved_execution_flags &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY) != 0u;
     if (!SparkGlm52ResidentDecodeStagePointerHasTensorCoreAlignment(
             node_context->mla_cache_bf16) ||
         !SparkGlm52ResidentDecodeStagePointerHasTensorCoreAlignment(
-            node_context->attention_norm_weight_bf16) ||
-        !SparkGlm52ResidentDecodeStagePointerHasTensorCoreAlignment(
-            node_context->final_norm_weight_bf16) ||
-        !SparkGlm52ResidentDecodeStagePointerHasTensorCoreAlignment(
-            node_context->restricted_lm_head_weight_bf16))
+            node_context->attention_norm_weight_bf16))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (hidden_output_only == 0u &&
+        (!SparkGlm52ResidentDecodeStagePointerHasTensorCoreAlignment(
+             node_context->final_norm_weight_bf16) ||
+         !SparkGlm52ResidentDecodeStagePointerHasTensorCoreAlignment(
+             node_context->restricted_lm_head_weight_bf16)))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -966,6 +974,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
 {
     uint64_t represented_token_capacity;
     uint32_t pipeline_slot_index;
+    uint32_t hidden_output_only;
 
     if (node_context == 0 ||
         node_context->abi_version !=
@@ -973,6 +982,9 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
     {
         return SPARK_STATUS_ABI_MISMATCH;
     }
+    hidden_output_only =
+        (node_context->reserved_execution_flags &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY) != 0u;
     if (node_context->pipeline_slot_count == 0u ||
         node_context->pipeline_slot_count >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT ||
@@ -1020,22 +1032,26 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
             node_context->attention_norm_weight_bf16,
             2u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->final_norm_weight_bf16,
-            2u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->restricted_lm_head_weight_bf16,
-            2u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->mtp_mxfp4_weight_payload_u8,
-            1u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->mtp_mxfp4_scale_e8m0_u8,
-            1u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->restricted_token_ids,
-            4u) ||
         node_context->pipeline_slots == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (hidden_output_only == 0u &&
+        (!SparkGlm52ResidentDecodeStagePointerIsAligned(
+             node_context->final_norm_weight_bf16,
+             2u) ||
+         !SparkGlm52ResidentDecodeStagePointerIsAligned(
+             node_context->restricted_lm_head_weight_bf16,
+             2u) ||
+         !SparkGlm52ResidentDecodeStagePointerIsAligned(
+             node_context->mtp_mxfp4_weight_payload_u8,
+             1u) ||
+         !SparkGlm52ResidentDecodeStagePointerIsAligned(
+             node_context->mtp_mxfp4_scale_e8m0_u8,
+             1u) ||
+         !SparkGlm52ResidentDecodeStagePointerIsAligned(
+             node_context->restricted_token_ids,
+             4u)))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
