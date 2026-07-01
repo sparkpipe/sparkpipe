@@ -732,7 +732,15 @@ static void SparkWriteGeneratedAdmitFunction(
         }
         if (program->scheduling.max_new_tokens != 0u)
         {
-            fprintf(file, "            if (request->new_token_count > %uu)\n            {\n", program->scheduling.max_new_tokens);
+            if ((program->scheduling.flags &
+                 SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL) != 0u)
+            {
+                fprintf(file, "            if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u && request->new_token_count > %uu)\n            {\n", program->scheduling.max_new_tokens);
+            }
+            else
+            {
+                fprintf(file, "            if (request->new_token_count > %uu)\n            {\n", program->scheduling.max_new_tokens);
+            }
             fputs("                return SparkGeneratedRejectAdmission(decision, SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);\n            }\n", file);
         }
         fprintf(file, "            decision->estimated_service_time_ns = %lluull;\n", (unsigned long long)program->scheduling.target_latency_ns);

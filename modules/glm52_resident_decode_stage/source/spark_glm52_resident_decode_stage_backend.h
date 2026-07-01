@@ -24,6 +24,30 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
     uint32_t active_sequence_count,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion);
 
+SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
+    const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan,
+    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    uint32_t layer_count,
+    uint32_t pipeline_slot_index,
+    uint32_t active_sequence_count,
+    uint32_t final_token_stage,
+    SparkGlm52ResidentDecodeStageBackendCompletion *completion);
+
+SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t pipeline_slot_index,
+    uint32_t active_sequence_count,
+    uint32_t prompt_token_count,
+    SparkGlm52ResidentDecodeStageBackendCompletion *completion);
+
+SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
+    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    uint32_t layer_count,
+    uint32_t pipeline_slot_index,
+    uint32_t active_sequence_count,
+    uint32_t prompt_token_count,
+    SparkGlm52ResidentDecodeStageBackendCompletion *completion);
+
 void SparkGlm52ResidentDecodeStageBackendQuiesce(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context);
 

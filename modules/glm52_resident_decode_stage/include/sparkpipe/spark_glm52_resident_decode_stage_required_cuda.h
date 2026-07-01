@@ -21,6 +21,31 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunch(
     uint32_t active_sequence_count,
     void *cuda_stream);
 
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
+    const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan,
+    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    uint32_t layer_count,
+    uint32_t pipeline_slot_index,
+    uint32_t active_sequence_count,
+    uint32_t final_token_stage,
+    void *cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t pipeline_slot_index,
+    uint32_t active_sequence_count,
+    uint32_t prompt_token_count,
+    void *cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPrefill(
+    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    uint32_t layer_count,
+    uint32_t pipeline_slot_index,
+    uint32_t active_sequence_count,
+    uint32_t prompt_token_count,
+    void *cuda_stream);
+
 void SparkGlm52Sm121RequiredDecodeStageQuiesce(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context);
 
