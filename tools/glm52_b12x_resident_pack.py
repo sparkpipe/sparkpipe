@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import hashlib
 import json
 import os
@@ -365,6 +366,13 @@ def existing_manifest_record(manifest_path: Path, model_dir: Path, aot_manifest_
     return None
 
 
+def manifest_contract_matches(manifest_path: Path, model_dir: Path, aot_manifest_path: Path) -> bool:
+    if not manifest_path.exists():
+        return False
+    manifest = load_json(manifest_path)
+    return manifest.get("model_dir") == str(model_dir) and manifest.get("aot_manifest") == str(aot_manifest_path)
+
+
 def try_reuse_pack(
     output_path: Path,
     manifest_path: Path,
@@ -378,9 +386,9 @@ def try_reuse_pack(
     verify_sha256: bool,
 ) -> Dict[str, Any] | None:
     regions = reserve_regions()
-    record = existing_manifest_record(manifest_path, model_dir, aot_manifest_path, layer)
-    if record is None or not output_path.exists():
+    if not manifest_contract_matches(manifest_path, model_dir, aot_manifest_path) or not output_path.exists():
         return None
+    record = existing_manifest_record(manifest_path, model_dir, aot_manifest_path, layer)
     pack_hash_low64 = pack_metadata_hash_low64(
         layer,
         regions,
@@ -390,31 +398,107 @@ def try_reuse_pack(
         kernel_manifest_hash_low64,
     )
     expected_bytes = regions[-1]["offset"] + regions[-1]["bytes"]
-    if int(record.get("bytes", -1)) != expected_bytes or output_path.stat().st_size != expected_bytes:
+    if output_path.stat().st_size != expected_bytes:
         return None
-    if Path(str(record.get("path", ""))) != output_path:
+    try:
+        validate_pack_header(
+            output_path,
+            layer,
+            maximum_token_count,
+            qualified_maximum_microseconds,
+            qualification_hash_low64,
+            kernel_manifest_hash_low64,
+            pack_hash_low64,
+            regions,
+        )
+    except PackFailure:
         return None
-    if int(record.get("pack_hash_low64", -1)) != pack_hash_low64:
+    reused_record = dict(record) if record is not None else {}
+    record_matches_metadata = (
+        record is not None and
+        int(record.get("bytes", -1)) == expected_bytes and
+        Path(str(record.get("path", ""))) == output_path and
+        int(record.get("pack_hash_low64", -1)) == pack_hash_low64 and
+        int(record.get("kernel_manifest_hash_low64", -1)) == kernel_manifest_hash_low64 and
+        int(record.get("qualification_record_hash_low64", -1)) == qualification_hash_low64
+    )
+    observed_sha256 = sha256_file(output_path) if verify_sha256 else (
+        str(reused_record.get("sha256", "")) if record_matches_metadata else ""
+    )
+    if verify_sha256 and str(reused_record.get("sha256", observed_sha256)) not in ("", observed_sha256):
         return None
-    if int(record.get("kernel_manifest_hash_low64", -1)) != kernel_manifest_hash_low64:
-        return None
-    if int(record.get("qualification_record_hash_low64", -1)) != qualification_hash_low64:
-        return None
-    validate_pack_header(
-        output_path,
+    reused_record.update({
+        "bytes": expected_bytes,
+        "kernel_manifest_hash_low64": kernel_manifest_hash_low64,
+        "layer_index": layer,
+        "pack_hash_low64": pack_hash_low64,
+        "path": str(output_path),
+        "qualification_record_hash_low64": qualification_hash_low64,
+        "qualified_maximum_microseconds": qualified_maximum_microseconds,
+        "regions": regions,
+        "reused": True,
+        "sha256": observed_sha256,
+    })
+    return reused_record
+
+
+def explain_pack_reuse_failure(
+    output_path: Path,
+    manifest_path: Path,
+    model_dir: Path,
+    aot_manifest_path: Path,
+    layer: int,
+    maximum_token_count: int,
+    qualified_maximum_microseconds: int,
+    qualification_hash_low64: int,
+    kernel_manifest_hash_low64: int,
+    verify_sha256: bool,
+) -> str:
+    regions = reserve_regions()
+    if not manifest_path.exists():
+        return f"manifest missing: {manifest_path}"
+    try:
+        manifest = load_json(manifest_path)
+    except Exception as exc:
+        return f"manifest unreadable: {exc}"
+    if manifest.get("model_dir") != str(model_dir):
+        return f"manifest model_dir mismatch: observed={manifest.get('model_dir')} expected={model_dir}"
+    if manifest.get("aot_manifest") != str(aot_manifest_path):
+        return f"manifest aot_manifest mismatch: observed={manifest.get('aot_manifest')} expected={aot_manifest_path}"
+    if not output_path.exists():
+        return f"pack file missing: {output_path}"
+    expected_bytes = regions[-1]["offset"] + regions[-1]["bytes"]
+    observed_bytes = output_path.stat().st_size
+    if observed_bytes != expected_bytes:
+        return f"pack size mismatch: observed={observed_bytes} expected={expected_bytes}"
+    pack_hash_low64 = pack_metadata_hash_low64(
         layer,
+        regions,
         maximum_token_count,
         qualified_maximum_microseconds,
         qualification_hash_low64,
         kernel_manifest_hash_low64,
-        pack_hash_low64,
-        regions,
     )
-    if verify_sha256 and str(record.get("sha256", "")) != sha256_file(output_path):
-        return None
-    reused_record = dict(record)
-    reused_record["reused"] = True
-    return reused_record
+    try:
+        validate_pack_header(
+            output_path,
+            layer,
+            maximum_token_count,
+            qualified_maximum_microseconds,
+            qualification_hash_low64,
+            kernel_manifest_hash_low64,
+            pack_hash_low64,
+            regions,
+        )
+    except PackFailure as exc:
+        return str(exc)
+    if verify_sha256:
+        record = existing_manifest_record(manifest_path, model_dir, aot_manifest_path, layer)
+        observed_sha256 = sha256_file(output_path)
+        recorded_sha256 = "" if record is None else str(record.get("sha256", ""))
+        if recorded_sha256 not in ("", observed_sha256):
+            return f"pack sha256 mismatch: observed={observed_sha256} recorded={recorded_sha256}"
+    return "pack reuse rejected for an unknown reason"
 
 
 def write_w1_weight_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
@@ -513,6 +597,7 @@ def write_pack(
     kernel_manifest_hash_low64: int,
 ) -> Dict[str, Any]:
     regions = reserve_regions()
+    temporary_path = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
     pack_hash_low64 = pack_metadata_hash_low64(
         layer,
         regions,
@@ -533,7 +618,7 @@ def write_pack(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     reader = SafetensorReader(model_dir, weight_map)
     try:
-        with output_path.open("wb") as file:
+        with temporary_path.open("wb") as file:
             file.write(header)
             write_padding(file, regions[REGION_W1_WEIGHT]["offset"])
             write_w1_weight_region(reader, file, layer)
@@ -549,8 +634,14 @@ def write_pack(
             write_w2_scale_region(reader, file, layer)
             write_padding(file, regions[REGION_W2_ALPHA]["offset"])
             write_alpha_region(file)
+        os.replace(temporary_path, output_path)
     finally:
         reader.close()
+        if temporary_path.exists():
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
     return {
         "path": str(output_path),
         "layer_index": layer,
@@ -565,6 +656,100 @@ def write_pack(
     }
 
 
+def write_pack_worker(arguments: Tuple[str, Dict[str, str], int, str, int, int, int, int]) -> Dict[str, Any]:
+    model_dir_text, weight_map, layer, output_path_text, maximum_token_count, qualified_us, qualification_hash_low64, kernel_manifest_hash_low64 = arguments
+    return write_pack(
+        Path(model_dir_text),
+        weight_map,
+        layer,
+        Path(output_path_text),
+        maximum_token_count,
+        qualified_us,
+        qualification_hash_low64,
+        kernel_manifest_hash_low64,
+    )
+
+
+def process_layer(
+    model_dir: Path,
+    weight_map: Dict[str, str],
+    manifest_path: Path,
+    aot_manifest_path: Path,
+    output_dir: Path,
+    layer: int,
+    maximum_token_count: int,
+    qualified_us: int,
+    qualification_hash_low64: int,
+    kernel_manifest_hash_low64: int,
+    reuse_valid: bool,
+    require_reuse: bool,
+    verify_reused_sha256: bool,
+) -> Dict[str, Any]:
+    output_path = output_dir / f"glm52_layer_{layer:04d}_b12x_moe.spb12x"
+    record = None
+    if reuse_valid:
+        record = try_reuse_pack(
+            output_path,
+            manifest_path,
+            model_dir,
+            aot_manifest_path,
+            layer,
+            maximum_token_count,
+            qualified_us,
+            qualification_hash_low64,
+            kernel_manifest_hash_low64,
+            verify_reused_sha256,
+        )
+    if record is None and require_reuse:
+        reason = explain_pack_reuse_failure(
+            output_path,
+            manifest_path,
+            model_dir,
+            aot_manifest_path,
+            layer,
+            maximum_token_count,
+            qualified_us,
+            qualification_hash_low64,
+            kernel_manifest_hash_low64,
+            verify_reused_sha256,
+        )
+        raise PackFailure(
+            f"{output_path} is missing or stale for the requested resident B12x contract: {reason}; "
+            "run the one-time glm52_b12x_resident_pack target before package validation"
+        )
+    if record is None:
+        record = write_pack(
+            model_dir,
+            weight_map,
+            layer,
+            output_path,
+            maximum_token_count,
+            qualified_us,
+            qualification_hash_low64,
+            kernel_manifest_hash_low64,
+        )
+    return record
+
+
+def process_layer_worker(arguments: Tuple[str, Dict[str, str], str, str, str, int, int, int, int, int, bool, bool, bool]) -> Dict[str, Any]:
+    model_dir, weight_map, manifest_path, aot_manifest_path, output_dir, layer, maximum_token_count, qualified_us, qualification_hash_low64, kernel_manifest_hash_low64, reuse_valid, require_reuse, verify_reused_sha256 = arguments
+    return process_layer(
+        Path(model_dir),
+        weight_map,
+        Path(manifest_path),
+        Path(aot_manifest_path),
+        Path(output_dir),
+        layer,
+        maximum_token_count,
+        qualified_us,
+        qualification_hash_low64,
+        kernel_manifest_hash_low64,
+        reuse_valid,
+        require_reuse,
+        verify_reused_sha256,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-dir", required=True)
@@ -575,6 +760,7 @@ def main() -> int:
     parser.add_argument("--reuse-valid", action="store_true")
     parser.add_argument("--require-reuse", action="store_true")
     parser.add_argument("--verify-reused-sha256", action="store_true")
+    parser.add_argument("--jobs", default=1, type=int)
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir).resolve()
@@ -593,42 +779,55 @@ def main() -> int:
     weight_map = read_weight_index(model_dir)
     layers = parse_layers(args.layers)
     manifest_path = output_dir / "resident_moe_pack_manifest.json"
+    if args.jobs <= 0:
+        raise PackFailure("--jobs must be positive")
 
-    records = []
-    for layer in layers:
-        output_path = output_dir / f"glm52_layer_{layer:04d}_b12x_moe.spb12x"
-        record = None
-        if args.reuse_valid:
-            record = try_reuse_pack(
-                output_path,
-                manifest_path,
-                model_dir,
-                aot_manifest_path,
-                layer,
-                maximum_token_count,
-                qualified_us,
-                qualification_hash_low64,
-                kernel_manifest_hash_low64,
-                args.verify_reused_sha256,
-            )
-        if record is None and args.require_reuse:
-            raise PackFailure(
-                f"{output_path} is missing or stale for the requested resident B12x contract; "
-                "run the one-time glm52_b12x_resident_pack target before package validation"
-            )
-        if record is None:
-            record = write_pack(
+    records_by_layer: Dict[int, Dict[str, Any]] = {}
+    if args.jobs == 1 or len(layers) == 1:
+        for layer in layers:
+            record = process_layer(
                 model_dir,
                 weight_map,
+                manifest_path,
+                aot_manifest_path,
+                output_dir,
                 layer,
-                output_path,
                 maximum_token_count,
                 qualified_us,
                 qualification_hash_low64,
                 kernel_manifest_hash_low64,
+                args.reuse_valid,
+                args.require_reuse,
+                args.verify_reused_sha256,
             )
-        records.append(record)
-        print(json.dumps(record, sort_keys=True), flush=True)
+            records_by_layer[layer] = record
+            print(json.dumps(record, sort_keys=True), flush=True)
+    else:
+        worker_arguments = [
+            (
+                str(model_dir),
+                weight_map,
+                str(manifest_path),
+                str(aot_manifest_path),
+                str(output_dir),
+                layer,
+                maximum_token_count,
+                qualified_us,
+                qualification_hash_low64,
+                kernel_manifest_hash_low64,
+                args.reuse_valid,
+                args.require_reuse,
+                args.verify_reused_sha256,
+            )
+            for layer in layers
+        ]
+        with ProcessPoolExecutor(max_workers=min(args.jobs, len(layers))) as executor:
+            futures = [executor.submit(process_layer_worker, item) for item in worker_arguments]
+            for future in as_completed(futures):
+                record = future.result()
+                records_by_layer[int(record["layer_index"])] = record
+                print(json.dumps(record, sort_keys=True), flush=True)
+    records = [records_by_layer[layer] for layer in layers]
 
     manifest = {
         "record_schema": "sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1",
