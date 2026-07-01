@@ -15,6 +15,9 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 HIDDEN_DIMENSION = 6144
 BF16_BYTES = 2
+LAYER_COUNT = 78
+FIRST_ROUTED_LAYER = 3
+MAX_ROUTED_LAYERS_PER_STAGE = 8
 DEFAULT_BUCKETS = (8, 16, 32, 64)
 DEFAULT_STAGES = ("11:8", "19:8", "27:8", "35:8", "43:8", "51:8", "59:8", "67:8", "75:3")
 DEFAULT_AOT_OUTPUT_DIR = Path("build/glm52_b12x_aot")
@@ -23,12 +26,19 @@ DEFAULT_DRIVER_SO = Path("build/packages/glm52_resident_decode_stage/stages/stag
 DEFAULT_B12X_ADAPTER_ARCHIVE = Path("build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a")
 DEFAULT_B12X_BACKEND_ARCHIVE = Path("build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a")
 DEFAULT_B12X_KERNEL_TABLE_ARCHIVE = Path("build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a")
-PASS_RE = re.compile(
+ROUTED_PASS_RE = re.compile(
     r"routed_pipeline_from_hidden=1.*?first_routed_layer=(?P<first>\d+).*?"
     r"routed_chain_layers=(?P<count>\d+).*?total_submissions=(?P<submissions>\d+).*?"
     r"total_us=(?P<total>[0-9.]+).*?maximum_us=(?P<maximum>[0-9.]+).*?"
     r"limit_us=(?P<limit>[0-9.]+).*?graph_captures=(?P<captures>\d+).*?"
     r"graph_replays=(?P<replays>\d+)"
+)
+DENSE_PREFIX_PASS_RE = re.compile(
+    r"dense_prefix_routed_pipeline=1.*?dense_chain_layers=(?P<dense>\d+).*?"
+    r"first_routed_layer=(?P<first>\d+).*?routed_chain_layers=(?P<count>\d+).*?"
+    r"total_submissions=(?P<submissions>\d+).*?total_us=(?P<total>[0-9.]+).*?"
+    r"maximum_us=(?P<maximum>[0-9.]+).*?limit_us=(?P<limit>[0-9.]+).*?"
+    r"graph_captures=(?P<captures>\d+).*?graph_replays=(?P<replays>\d+)"
 )
 
 
@@ -61,9 +71,25 @@ def parse_stage(text: str) -> Tuple[int, int]:
         raise SweepFailure(f"stage must be FIRST:COUNT, got {text}")
     first = int(parts[0])
     count = int(parts[1])
-    if first < 3 or count <= 0 or count > 8:
-        raise SweepFailure(f"invalid routed stage {text}")
+    stage_validator_parameters(first, count)
     return first, count
+
+
+def stage_validator_parameters(first_layer: int, layer_count: int) -> Tuple[int, int, bool]:
+    if layer_count <= 0:
+        raise SweepFailure(f"invalid stage {first_layer}:{layer_count}")
+    if first_layer < 0 or first_layer >= LAYER_COUNT:
+        raise SweepFailure(f"invalid stage {first_layer}:{layer_count}")
+    if layer_count > LAYER_COUNT - first_layer:
+        raise SweepFailure(f"stage exceeds GLM52 layer count {first_layer}:{layer_count}")
+    if first_layer == 0:
+        routed_count = layer_count - FIRST_ROUTED_LAYER
+        if routed_count <= 0 or routed_count > MAX_ROUTED_LAYERS_PER_STAGE:
+            raise SweepFailure(f"invalid dense-prefix stage {first_layer}:{layer_count}")
+        return FIRST_ROUTED_LAYER, routed_count, True
+    if first_layer < FIRST_ROUTED_LAYER or layer_count > MAX_ROUTED_LAYERS_PER_STAGE:
+        raise SweepFailure(f"invalid routed stage {first_layer}:{layer_count}")
+    return first_layer, layer_count, False
 
 
 def parse_stages(values: Sequence[str]) -> List[Tuple[int, int]]:
@@ -294,6 +320,10 @@ def direct_validator_environment(
     output_hidden: Path,
 ) -> Dict[str, str]:
     env = os.environ.copy()
+    routed_first_layer, routed_layer_count, dense_prefix = stage_validator_parameters(
+        first_layer,
+        layer_count,
+    )
     library_path = library_path_from_link_args(root, args.required_cuda_link_args_list)
     if library_path:
         env["LD_LIBRARY_PATH"] = (
@@ -304,12 +334,16 @@ def direct_validator_environment(
     env["GLM52_MODEL_DIR"] = args.model_dir
     env["GLM52_ALLOW_REMOTE_MODEL_DIR"] = os.environ.get("GLM52_ALLOW_REMOTE_MODEL_DIR", "0")
     env["GLM52_B12X_MOE_PACK_DIR"] = str(args.b12x_moe_pack_dir)
-    env["GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX"] = str(first_layer)
-    env["GLM52_ROUTED_CHAIN_LAYER_COUNT"] = str(layer_count)
+    env["GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX"] = str(routed_first_layer)
+    env["GLM52_ROUTED_CHAIN_LAYER_COUNT"] = str(routed_layer_count)
     env["GLM52_ENABLE_CUDA_GRAPH_REPLAY"] = "1" if args.graph else "0"
     env["GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT"] = str(batch)
-    env["GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16"] = "1"
-    env["GLM52_PIPELINE_INPUT_HIDDEN_BF16"] = str(input_hidden)
+    if dense_prefix:
+        env["GLM52_INPUT_TOKEN_ID"] = os.environ.get("GLM52_INPUT_TOKEN_ID", "1000")
+        env["GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK"] = "1"
+    else:
+        env["GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16"] = "1"
+        env["GLM52_PIPELINE_INPUT_HIDDEN_BF16"] = str(input_hidden)
     env["GLM52_PIPELINE_OUTPUT_HIDDEN_BF16"] = str(output_hidden)
     env["GLM52_REQUIRED_CUDA_LINK_ARGS"] = " ".join(args.required_cuda_link_args_list)
     return env
@@ -317,18 +351,29 @@ def direct_validator_environment(
 
 def parse_result(log_text: str) -> Dict[str, Any]:
     match = None
-    for candidate in PASS_RE.finditer(log_text):
+    dense_prefix = False
+    for candidate in ROUTED_PASS_RE.finditer(log_text):
         match = candidate
+    for candidate in DENSE_PREFIX_PASS_RE.finditer(log_text):
+        match = candidate
+        dense_prefix = True
     if match is None:
-        raise SweepFailure("validator did not emit routed_pipeline_from_hidden timing")
+        raise SweepFailure("validator did not emit stage timing")
     total_us = float(match.group("total"))
     maximum_us = float(match.group("maximum"))
     submissions = int(match.group("submissions"))
     if total_us <= 0.0 or maximum_us <= 0.0 or submissions <= 0:
         raise SweepFailure("validator timing output was invalid")
+    if dense_prefix:
+        dense_count = int(match.group("dense"))
+        first_layer = 0
+        layer_count = dense_count + int(match.group("count"))
+    else:
+        first_layer = int(match.group("first"))
+        layer_count = int(match.group("count"))
     return {
-        "first_layer": int(match.group("first")),
-        "layer_count": int(match.group("count")),
+        "first_layer": first_layer,
+        "layer_count": layer_count,
         "submissions": submissions,
         "total_us": total_us,
         "maximum_us": maximum_us,
@@ -346,18 +391,29 @@ def build_package_command(
     input_hidden: Path,
     output_hidden: Path,
 ) -> List[str]:
+    routed_first_layer, routed_layer_count, dense_prefix = stage_validator_parameters(
+        first_layer,
+        layer_count,
+    )
     command = [
         "make",
         "glm52_resident_decode_stage_firmware_package",
         f"MAX_STAGE_MICROSECONDS={args.max_stage_us}",
-        "GLM52_VALIDATION_MODE=routed_from_hidden",
+        (
+            "GLM52_VALIDATION_MODE=dense_to_layer3_routed"
+            if dense_prefix
+            else "GLM52_VALIDATION_MODE=routed_from_hidden"
+        ),
         f"GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT={batch}",
-        f"GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX={first_layer}",
-        f"GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT={layer_count}",
-        f"GLM52_PIPELINE_INPUT_HIDDEN_BF16={input_hidden}",
+        f"GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX={routed_first_layer}",
+        f"GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT={routed_layer_count}",
         f"GLM52_PIPELINE_OUTPUT_HIDDEN_BF16={output_hidden}",
         f"GLM52_ENABLE_CUDA_GRAPH_REPLAY={1 if args.graph else 0}",
     ]
+    if dense_prefix:
+        command.append(f"GLM52_VALIDATION_INPUT_TOKEN_ID={os.environ.get('GLM52_INPUT_TOKEN_ID', '1000')}")
+    else:
+        command.append(f"GLM52_PIPELINE_INPUT_HIDDEN_BF16={input_hidden}")
     if args.model_dir:
         command.append(f"GLM52_MODEL_DIR={args.model_dir}")
     if args.cuda_arch:
