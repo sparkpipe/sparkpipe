@@ -115,6 +115,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     glm52_b12x_compiled_backend \
     glm52_required_cuda_link_args \
     glm52_stage_bucket_sweep \
+    glm52_spark2_accuracy_gate \
     glm52_resident_decode_stage_firmware_package \
     tree_summary
 
@@ -311,6 +312,9 @@ glm52_stage_bucket_sweep:
 		$(if $(filter 1,$(B12X_MOE_PACK_VERIFY_REUSED_SHA256)),--verify-reused-sha256,) \
 		$(GLM52_STAGE_SWEEP_STAGE_ARGS) \
 		$(if $(filter 1,$(GLM52_ENABLE_CUDA_GRAPH_REPLAY)),--graph,)
+
+glm52_spark2_accuracy_gate:
+	bash tools/glm52_spark2_accuracy_gate.sh
 
 glm52_resident_decode_stage_firmware_package: glm52_flashinfer_b12x_moe_adapter glm52_b12x_compiled_backend
 	@command -v $(NVCC) >/dev/null 2>&1 || \
