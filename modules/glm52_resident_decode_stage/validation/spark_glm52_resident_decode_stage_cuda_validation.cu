@@ -6828,6 +6828,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
     SparkValidationLayer3RoutedExpertNvfp4Fixture *layer3_routed_expert,
     uint32_t first_routed_layer_index,
     uint32_t routed_chain_layer_count,
+    uint32_t current_token_only,
     double *total_microseconds,
     double *maximum_observed_microseconds,
     uint32_t *submission_count,
@@ -6857,75 +6858,78 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
     *submission_count = 0u;
     *maximum_reference_error = 0.0f;
     copied_bytes = 0u;
-    for (prefill_index = 0u;
-         prefill_index < SPARK_VALIDATION_CONTEXT_LENGTH - 1u;
-         ++prefill_index)
+    if (current_token_only == 0u)
     {
-        uint32_t token_id;
-        uint32_t position;
-        uint32_t slot_mapping;
-        uint32_t context_length;
+        for (prefill_index = 0u;
+             prefill_index < SPARK_VALIDATION_CONTEXT_LENGTH - 1u;
+             ++prefill_index)
+        {
+            uint32_t token_id;
+            uint32_t position;
+            uint32_t slot_mapping;
+            uint32_t context_length;
 
-        token_id = input_token_id -
-            (SPARK_VALIDATION_CONTEXT_LENGTH - 1u) +
-            prefill_index;
-        position = SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET + prefill_index;
-        slot_mapping = SPARK_VALIDATION_REMAP_CACHE_SLOT0 + prefill_index;
-        context_length = prefill_index + 1u;
-        if (!SparkValidationCopyInputEmbeddingBf16Row(
-                model_directory,
-                token_id,
-                buffers->input_hidden_bf16,
-                &copied_bytes))
-            return false;
-        for (layer_index = 0u;
-             layer_index < SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT;
-             ++layer_index)
-        {
-            if (!SparkValidationRunChainedDenseLayer(
-                    buffers,
-                    node_context,
-                    cuda_stream,
-                    driver_path,
+            token_id = input_token_id -
+                (SPARK_VALIDATION_CONTEXT_LENGTH - 1u) +
+                prefill_index;
+            position = SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET + prefill_index;
+            slot_mapping = SPARK_VALIDATION_REMAP_CACHE_SLOT0 + prefill_index;
+            context_length = prefill_index + 1u;
+            if (!SparkValidationCopyInputEmbeddingBf16Row(
                     model_directory,
-                    real_lm_head,
-                    layer_index,
-                    position,
-                    slot_mapping,
-                    context_length,
-                    0u,
-                    total_microseconds,
-                    maximum_observed_microseconds,
-                    submission_count,
-                    maximum_reference_error))
+                    token_id,
+                    buffers->input_hidden_bf16,
+                    &copied_bytes))
                 return false;
-        }
-        if (!SparkValidationCopyLayerOutputToInput(buffers))
-            return false;
-        for (routed_layer_offset = 0u;
-             routed_layer_offset < routed_chain_layer_count;
-             ++routed_layer_offset)
-        {
-            if (!SparkValidationRunRoutedLayerProductionB12x(
-                    buffers,
-                    node_context,
-                    cuda_stream,
-                    driver_path,
-                    model_directory,
-                    real_lm_head,
-                    layer3_routed_expert,
-                    first_routed_layer_index + routed_layer_offset,
-                    position,
-                    slot_mapping,
-                    context_length,
-                    0u,
-                    total_microseconds,
-                    maximum_observed_microseconds,
-                    submission_count))
+            for (layer_index = 0u;
+                 layer_index < SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT;
+                 ++layer_index)
+            {
+                if (!SparkValidationRunChainedDenseLayer(
+                        buffers,
+                        node_context,
+                        cuda_stream,
+                        driver_path,
+                        model_directory,
+                        real_lm_head,
+                        layer_index,
+                        position,
+                        slot_mapping,
+                        context_length,
+                        0u,
+                        total_microseconds,
+                        maximum_observed_microseconds,
+                        submission_count,
+                        maximum_reference_error))
+                    return false;
+            }
+            if (!SparkValidationCopyLayerOutputToInput(buffers))
                 return false;
-            if (routed_layer_offset + 1u < routed_chain_layer_count &&
-                !SparkValidationCopyLayerOutputToInput(buffers))
-                return false;
+            for (routed_layer_offset = 0u;
+                 routed_layer_offset < routed_chain_layer_count;
+                 ++routed_layer_offset)
+            {
+                if (!SparkValidationRunRoutedLayerProductionB12x(
+                        buffers,
+                        node_context,
+                        cuda_stream,
+                        driver_path,
+                        model_directory,
+                        real_lm_head,
+                        layer3_routed_expert,
+                        first_routed_layer_index + routed_layer_offset,
+                        position,
+                        slot_mapping,
+                        context_length,
+                        0u,
+                        total_microseconds,
+                        maximum_observed_microseconds,
+                        submission_count))
+                    return false;
+                if (routed_layer_offset + 1u < routed_chain_layer_count &&
+                    !SparkValidationCopyLayerOutputToInput(buffers))
+                    return false;
+            }
         }
     }
     if (!SparkValidationCopyInputEmbeddingBf16Row(
@@ -7099,6 +7103,7 @@ int main(int argc, char **argv)
     const char *load_layer3_routed_expert_text;
     const char *load_layer3_routed_expert_topk_text;
     const char *chain_dense_layer3_routed_expert_topk_text;
+    const char *dense_prefix_current_token_only_text;
     const char *chain_routed_from_hidden_text;
     const char *chain_routed_from_hidden_final_text;
     const char *pipeline_input_hidden_path;
@@ -7123,6 +7128,7 @@ int main(int argc, char **argv)
     uint32_t use_layer3_routed_expert;
     uint32_t use_layer3_routed_expert_topk;
     uint32_t use_dense_chain_layer3_routed_expert_topk;
+    uint32_t dense_prefix_current_token_only;
     uint32_t use_routed_chain_from_hidden;
     uint32_t use_routed_chain_from_hidden_final;
     uint32_t routed_chain_first_layer_index;
@@ -7171,6 +7177,8 @@ int main(int argc, char **argv)
         getenv("GLM52_LOAD_LAYER3_ROUTED_EXPERT_NVFP4_TOPK");
     chain_dense_layer3_routed_expert_topk_text =
         getenv("GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK");
+    dense_prefix_current_token_only_text =
+        getenv("GLM52_DENSE_PREFIX_CURRENT_TOKEN_ONLY");
     chain_routed_from_hidden_text =
         getenv("GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16");
     chain_routed_from_hidden_final_text =
@@ -7225,6 +7233,10 @@ int main(int argc, char **argv)
         chain_dense_layer3_routed_expert_topk_text != 0 &&
         chain_dense_layer3_routed_expert_topk_text[0] != '\0' &&
         strcmp(chain_dense_layer3_routed_expert_topk_text, "0") != 0;
+    dense_prefix_current_token_only =
+        dense_prefix_current_token_only_text != 0 &&
+        dense_prefix_current_token_only_text[0] != '\0' &&
+        strcmp(dense_prefix_current_token_only_text, "0") != 0;
     use_routed_chain_from_hidden =
         chain_routed_from_hidden_text != 0 &&
         chain_routed_from_hidden_text[0] != '\0' &&
@@ -7721,6 +7733,7 @@ int main(int argc, char **argv)
                 &layer3_routed_expert,
                 routed_chain_first_layer_index,
                 routed_chain_layer_count,
+                dense_prefix_current_token_only,
                 &total_microseconds,
                 &maximum_observed_microseconds,
                 &submission_count,
@@ -8133,6 +8146,7 @@ int main(int argc, char **argv)
                 &layer3_routed_expert,
                 routed_chain_first_layer_index,
                 routed_chain_layer_count,
+                dense_prefix_current_token_only,
                 &total_microseconds,
                 &maximum_observed_microseconds,
                 &submission_count,
