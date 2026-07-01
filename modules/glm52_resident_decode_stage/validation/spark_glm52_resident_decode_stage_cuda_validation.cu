@@ -6433,6 +6433,8 @@ static bool SparkValidationRunChainedDenseLayers(
     const char *model_directory,
     uint32_t input_token_id,
     SparkValidationRealLmHeadFixture *real_lm_head,
+    uint32_t current_token_only,
+    uint32_t check_current_outputs,
     double *total_microseconds,
     double *maximum_observed_microseconds,
     uint32_t *submission_count,
@@ -6447,48 +6449,51 @@ static bool SparkValidationRunChainedDenseLayers(
     *submission_count = 0u;
     *maximum_reference_error = 0.0f;
     copied_bytes = 0u;
-    for (prefill_index = 0u;
-         prefill_index < SPARK_VALIDATION_CONTEXT_LENGTH - 1u;
-         ++prefill_index)
+    if (current_token_only == 0u)
     {
-        uint32_t token_id;
-        uint32_t position;
-        uint32_t slot_mapping;
-        uint32_t context_length;
-
-        token_id = input_token_id -
-            (SPARK_VALIDATION_CONTEXT_LENGTH - 1u) +
-            prefill_index;
-        position = SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET + prefill_index;
-        slot_mapping = SPARK_VALIDATION_REMAP_CACHE_SLOT0 + prefill_index;
-        context_length = prefill_index + 1u;
-        if (!SparkValidationCopyInputEmbeddingBf16Row(
-                model_directory,
-                token_id,
-                buffers->input_hidden_bf16,
-                &copied_bytes))
-            return false;
-        for (layer_index = 0u;
-             layer_index < SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT;
-             ++layer_index)
+        for (prefill_index = 0u;
+             prefill_index < SPARK_VALIDATION_CONTEXT_LENGTH - 1u;
+             ++prefill_index)
         {
-            if (!SparkValidationRunChainedDenseLayer(
-                    buffers,
-                    node_context,
-                    cuda_stream,
-                    driver_path,
+            uint32_t token_id;
+            uint32_t position;
+            uint32_t slot_mapping;
+            uint32_t context_length;
+
+            token_id = input_token_id -
+                (SPARK_VALIDATION_CONTEXT_LENGTH - 1u) +
+                prefill_index;
+            position = SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET + prefill_index;
+            slot_mapping = SPARK_VALIDATION_REMAP_CACHE_SLOT0 + prefill_index;
+            context_length = prefill_index + 1u;
+            if (!SparkValidationCopyInputEmbeddingBf16Row(
                     model_directory,
-                    real_lm_head,
-                    layer_index,
-                    position,
-                    slot_mapping,
-                    context_length,
-                    0u,
-                    total_microseconds,
-                    maximum_observed_microseconds,
-                    submission_count,
-                    maximum_reference_error))
+                    token_id,
+                    buffers->input_hidden_bf16,
+                    &copied_bytes))
                 return false;
+            for (layer_index = 0u;
+                 layer_index < SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT;
+                 ++layer_index)
+            {
+                if (!SparkValidationRunChainedDenseLayer(
+                        buffers,
+                        node_context,
+                        cuda_stream,
+                        driver_path,
+                        model_directory,
+                        real_lm_head,
+                        layer_index,
+                        position,
+                        slot_mapping,
+                        context_length,
+                        0u,
+                        total_microseconds,
+                        maximum_observed_microseconds,
+                        submission_count,
+                        maximum_reference_error))
+                    return false;
+            }
         }
     }
     if (!SparkValidationCopyInputEmbeddingBf16Row(
@@ -6512,7 +6517,7 @@ static bool SparkValidationRunChainedDenseLayers(
                 SPARK_VALIDATION_CURRENT_POSITION,
                 SPARK_VALIDATION_CURRENT_CACHE_SLOT,
                 SPARK_VALIDATION_CONTEXT_LENGTH,
-                1u,
+                check_current_outputs,
                 total_microseconds,
                 maximum_observed_microseconds,
                 submission_count,
@@ -7139,6 +7144,8 @@ int main(int argc, char **argv)
     const char *routed_chain_first_layer_text;
     const char *routed_chain_layer_count_text;
     const char *enable_graph_replay_text;
+    const char *production_timing_text;
+    const char *dense_chain_current_token_only_text;
     double maximum_stage_microseconds;
     double total_microseconds;
     double maximum_observed_microseconds;
@@ -7162,6 +7169,8 @@ int main(int argc, char **argv)
     uint32_t routed_chain_first_layer_index;
     uint32_t routed_chain_layer_count;
     uint32_t enable_graph_replay;
+    uint32_t production_timing;
+    uint32_t dense_chain_current_token_only;
     uint32_t required_linear_plan_mask;
     uint32_t input_token_id;
     uint32_t dense_layer_index;
@@ -7221,6 +7230,10 @@ int main(int argc, char **argv)
         getenv("GLM52_ROUTED_CHAIN_LAYER_COUNT");
     enable_graph_replay_text =
         getenv("GLM52_ENABLE_CUDA_GRAPH_REPLAY");
+    production_timing_text =
+        getenv("GLM52_PRODUCTION_TIMING");
+    dense_chain_current_token_only_text =
+        getenv("GLM52_DENSE_CHAIN_CURRENT_TOKEN_ONLY");
     use_dense_mlp = load_layer0_dense != 0 && load_layer0_dense[0] != '\0' &&
         strcmp(load_layer0_dense, "0") != 0;
     use_attention_bf16 =
@@ -7277,6 +7290,14 @@ int main(int argc, char **argv)
         enable_graph_replay_text != 0 &&
         enable_graph_replay_text[0] != '\0' &&
         strcmp(enable_graph_replay_text, "0") != 0;
+    production_timing =
+        production_timing_text != 0 &&
+        production_timing_text[0] != '\0' &&
+        strcmp(production_timing_text, "0") != 0;
+    dense_chain_current_token_only =
+        dense_chain_current_token_only_text != 0 &&
+        dense_chain_current_token_only_text[0] != '\0' &&
+        strcmp(dense_chain_current_token_only_text, "0") != 0;
     if (use_layer3_routed_expert_topk != 0u)
     {
         use_layer3_routed_expert = 1u;
@@ -7645,10 +7666,20 @@ int main(int argc, char **argv)
         use_dense_mlp,
         use_attention_bf16);
     if (use_routed_chain_from_hidden != 0u ||
-        use_dense_chain_layer3_routed_expert_topk != 0u)
+        use_dense_chain_layer3_routed_expert_topk != 0u ||
+        (use_dense_chain != 0u && production_timing != 0u))
     {
         node_context.reserved_execution_flags |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY;
+    }
+    if (production_timing != 0u)
+    {
+        node_context.launch_check_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAUNCH_CHECK_NONE;
+        node_context.phase_clock_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_DISABLED;
+        node_context.reserved_execution_flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_FORBID_DEBUG_SYNCHRONIZATION;
     }
     if (enable_graph_replay != 0u)
     {
@@ -7951,6 +7982,8 @@ int main(int argc, char **argv)
                     model_directory,
                     input_token_id,
                     &real_lm_head,
+                    dense_chain_current_token_only,
+                    production_timing == 0u,
                     &total_microseconds,
                     &maximum_observed_microseconds,
                     &submission_count,
@@ -8363,6 +8396,8 @@ int main(int argc, char **argv)
                 model_directory,
                 input_token_id,
                 &real_lm_head,
+                dense_chain_current_token_only,
+                production_timing == 0u,
                 &total_microseconds,
                 &maximum_observed_microseconds,
                 &submission_count,

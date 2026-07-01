@@ -346,12 +346,17 @@ def direct_validator_environment(
         env["GLM52_ROUTED_CHAIN_LAYER_COUNT"] = str(routed_layer_count)
     env["GLM52_ENABLE_CUDA_GRAPH_REPLAY"] = "1" if args.graph else "0"
     env["GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT"] = str(batch)
+    env["GLM52_PRODUCTION_TIMING"] = "0" if args.validation_timing else "1"
     if dense_prefix:
         env["GLM52_INPUT_TOKEN_ID"] = os.environ.get("GLM52_INPUT_TOKEN_ID", "1000")
         if routed_layer_count == 0:
             env["GLM52_CHAIN_DENSE_LAYERS"] = "1"
+            if not args.validation_timing:
+                env["GLM52_DENSE_CHAIN_CURRENT_TOKEN_ONLY"] = "1"
         else:
             env["GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK"] = "1"
+            if not args.validation_timing:
+                env["GLM52_DENSE_PREFIX_CURRENT_TOKEN_ONLY"] = "1"
     else:
         env["GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16"] = "1"
         env["GLM52_PIPELINE_INPUT_HIDDEN_BF16"] = str(input_hidden)
@@ -635,6 +640,11 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--require-pack-reuse", action="store_true")
     parser.add_argument("--verify-reused-sha256", action="store_true")
     parser.add_argument("--graph", action="store_true")
+    parser.add_argument(
+        "--validation-timing",
+        action="store_true",
+        help="Measure legacy validation/reference timing instead of production decode timing",
+    )
     parser.add_argument("--warmup-runs", default=0, type=int)
     parser.add_argument("--measure-runs", default=1, type=int)
     parser.add_argument("--keep-going", action="store_true")
