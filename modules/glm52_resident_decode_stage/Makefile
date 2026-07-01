@@ -128,6 +128,20 @@ artifact_check: require_model_dir $(ARTIFACT_CHECK_TOOL)
 b12x_resident_pack: require_model_dir
 	@test -s "$(AOT_MANIFEST)" || \
 		{ echo "missing B12x AOT manifest: $(AOT_MANIFEST)" >&2; exit 2; }
+ifeq ($(B12X_MOE_PACK_REQUIRE_REUSE),1)
+	@test -s "$(B12X_MOE_PACK_DIR)/resident_moe_pack_manifest.json" || \
+		{ echo "missing B12x resident pack manifest: $(B12X_MOE_PACK_DIR)/resident_moe_pack_manifest.json; run setup pack generation first" >&2; exit 2; }
+	@set -e; \
+		old_ifs="$$IFS"; \
+		IFS=,; \
+		layers="$(B12X_MOE_PACK_LAYERS)"; \
+		for layer_index in $$layers; do \
+			pack_path=$$(printf "%s/glm52_layer_%04u_b12x_moe.spb12x" "$(B12X_MOE_PACK_DIR)" "$$layer_index"); \
+			test -s "$$pack_path" || \
+				{ echo "missing B12x resident pack: $$pack_path; run setup pack generation first" >&2; exit 2; }; \
+		done; \
+		IFS="$$old_ifs"
+else
 	$(B12X_PACK_PYTHON) $(REPOSITORY_ROOT)/tools/glm52_b12x_resident_pack.py \
 		--model-dir "$(GLM52_MODEL_DIR)" \
 		--aot-manifest "$(AOT_MANIFEST)" \
@@ -135,8 +149,8 @@ b12x_resident_pack: require_model_dir
 		--output-dir "$(B12X_MOE_PACK_DIR)" \
 		--jobs "$(B12X_MOE_PACK_JOBS)" \
 		--reuse-valid \
-		$(if $(filter 1,$(B12X_MOE_PACK_REQUIRE_REUSE)),--require-reuse,) \
 		$(if $(filter 1,$(B12X_MOE_PACK_VERIFY_REUSED_SHA256)),--verify-reused-sha256,)
+endif
 
 validate: require_sm121a require_latency_limit require_validation_inputs prepare_validation_output b12x_resident_pack cold_archive
 	$(GLM52_VALIDATION_ENV) \
