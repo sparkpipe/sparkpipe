@@ -68,23 +68,6 @@ static SparkStatus SparkGlm52LinearPlanCublasToSparkStatus(
     return SPARK_STATUS_INTERNAL_ERROR;
 }
 
-static SparkStatus SparkGlm52LinearPlanCheckedMultiplyU64(
-    uint64_t left,
-    uint64_t right,
-    uint64_t *product_out)
-{
-    if (product_out == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    if (left != 0u && right > UINT64_MAX / left)
-    {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
-    }
-    *product_out = left * right;
-    return SPARK_STATUS_OK;
-}
-
 static void SparkGlm52LinearPlanDestroyStorage(
     SparkGlm52ResidentDecodeStageLinearPlanStorage *storage)
 {
@@ -230,159 +213,44 @@ static SparkStatus SparkGlm52LinearPlanCreateDescriptors(
     return SparkGlm52LinearPlanSetRowMajorLayout(storage->output_layout);
 }
 
-static SparkStatus SparkGlm52LinearPlanLaunchCandidate(
-    const SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
-    const SparkGlm52ResidentDecodeStageLinearPlanStorage *storage,
-    const cublasLtMatmulAlgo_t *algorithm,
-    const void *input,
-    const void *weight,
-    void *output,
-    void *workspace,
-    uint64_t workspace_bytes,
-    cudaStream_t cuda_stream)
+static bool SparkGlm52LinearPlanAlgorithmIsDeterministic(
+    const cublasLtMatmulAlgo_t *algorithm)
 {
     cublasStatus_t cublas_status;
-    float alpha;
-    float beta;
+    uint32_t reduction_scheme;
+    uint32_t splitk_count;
+    size_t written_size;
 
-    if (binding == 0 || storage == 0 || algorithm == 0 ||
-        input == 0 || weight == 0 || output == 0)
+    if (algorithm == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        return false;
     }
-
-    alpha = 1.0f;
-    beta = 0.0f;
-    cublas_status = cublasLtMatmul(
-        binding->cublaslt_handle,
-        storage->matmul_descriptor,
-        &alpha,
-        input,
-        storage->input_layout,
-        weight,
-        storage->weight_layout,
-        &beta,
-        output,
-        storage->output_layout,
-        output,
-        storage->output_layout,
+    reduction_scheme = CUBLASLT_REDUCTION_SCHEME_NONE;
+    splitk_count = 0u;
+    written_size = 0u;
+    cublas_status = cublasLtMatmulAlgoConfigGetAttribute(
         algorithm,
-        workspace,
-        (size_t)workspace_bytes,
-        cuda_stream);
-    return SparkGlm52LinearPlanCublasToSparkStatus(cublas_status);
-}
-
-static SparkStatus SparkGlm52LinearPlanMeasureCandidate(
-    const SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
-    const SparkGlm52ResidentDecodeStageLinearPlanStorage *storage,
-    const cublasLtMatmulAlgo_t *algorithm,
-    const void *input,
-    const void *weight,
-    void *output,
-    void *workspace,
-    uint64_t workspace_bytes,
-    cudaStream_t cuda_stream,
-    uint32_t warmup_iterations,
-    uint32_t measurement_iterations,
-    float *average_milliseconds_out)
-{
-    cudaEvent_t start_event;
-    cudaEvent_t stop_event;
-    SparkStatus status;
-    cudaError_t cuda_status;
-    float elapsed_milliseconds;
-    uint32_t iteration;
-
-    if (average_milliseconds_out == 0 || measurement_iterations == 0u)
+        CUBLASLT_ALGO_CONFIG_REDUCTION_SCHEME,
+        &reduction_scheme,
+        sizeof(reduction_scheme),
+        &written_size);
+    if (cublas_status != CUBLAS_STATUS_SUCCESS ||
+        reduction_scheme != CUBLASLT_REDUCTION_SCHEME_NONE)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        return false;
     }
-    *average_milliseconds_out = FLT_MAX;
-
-    for (iteration = 0u; iteration < warmup_iterations; ++iteration)
+    written_size = 0u;
+    cublas_status = cublasLtMatmulAlgoConfigGetAttribute(
+        algorithm,
+        CUBLASLT_ALGO_CONFIG_SPLITK_NUM,
+        &splitk_count,
+        sizeof(splitk_count),
+        &written_size);
+    if (cublas_status != CUBLAS_STATUS_SUCCESS)
     {
-        status = SparkGlm52LinearPlanLaunchCandidate(
-            binding,
-            storage,
-            algorithm,
-            input,
-            weight,
-            output,
-            workspace,
-            workspace_bytes,
-            cuda_stream);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
+        return false;
     }
-    cuda_status = cudaStreamSynchronize(cuda_stream);
-    if (cuda_status != cudaSuccess)
-    {
-        return SparkGlm52LinearPlanCudaToSparkStatus(cuda_status);
-    }
-
-    start_event = 0;
-    stop_event = 0;
-    cuda_status = cudaEventCreate(&start_event);
-    if (cuda_status != cudaSuccess)
-    {
-        return SparkGlm52LinearPlanCudaToSparkStatus(cuda_status);
-    }
-    cuda_status = cudaEventCreate(&stop_event);
-    if (cuda_status != cudaSuccess)
-    {
-        cudaEventDestroy(start_event);
-        return SparkGlm52LinearPlanCudaToSparkStatus(cuda_status);
-    }
-
-    cuda_status = cudaEventRecord(start_event, cuda_stream);
-    if (cuda_status == cudaSuccess)
-    {
-        for (iteration = 0u; iteration < measurement_iterations; ++iteration)
-        {
-            status = SparkGlm52LinearPlanLaunchCandidate(
-                binding,
-                storage,
-                algorithm,
-                input,
-                weight,
-                output,
-                workspace,
-                workspace_bytes,
-                cuda_stream);
-            if (status != SPARK_STATUS_OK)
-            {
-                cudaEventDestroy(stop_event);
-                cudaEventDestroy(start_event);
-                return status;
-            }
-        }
-        cuda_status = cudaEventRecord(stop_event, cuda_stream);
-    }
-    if (cuda_status == cudaSuccess)
-    {
-        cuda_status = cudaEventSynchronize(stop_event);
-    }
-    if (cuda_status == cudaSuccess)
-    {
-        cuda_status = cudaEventElapsedTime(
-            &elapsed_milliseconds,
-            start_event,
-            stop_event);
-    }
-
-    cudaEventDestroy(stop_event);
-    cudaEventDestroy(start_event);
-    if (cuda_status != cudaSuccess)
-    {
-        return SparkGlm52LinearPlanCudaToSparkStatus(cuda_status);
-    }
-
-    *average_milliseconds_out = elapsed_milliseconds /
-        (float)measurement_iterations;
-    return SPARK_STATUS_OK;
+    return splitk_count <= 1u;
 }
 
 static SparkStatus SparkGlm52LinearPlanSelectAlgorithm(
@@ -401,12 +269,9 @@ static SparkStatus SparkGlm52LinearPlanSelectAlgorithm(
     cublasLtMatmulHeuristicResult_t heuristic_results[
         SPARK_GLM52_LINEAR_PLAN_MAX_HEURISTIC_RESULTS];
     cublasStatus_t cublas_status;
-    SparkStatus status;
-    void *tuning_workspace;
+    uint32_t reduction_scheme_mask;
     int returned_results;
     int result_index;
-    int best_result_index;
-    float best_average_milliseconds;
 
     if (binding == 0 || storage == 0 || selected_workspace_bytes_out == 0 ||
         input == 0 || weight == 0 || output == 0 ||
@@ -416,10 +281,7 @@ static SparkStatus SparkGlm52LinearPlanSelectAlgorithm(
     }
     *selected_workspace_bytes_out = 0u;
     preference = 0;
-    tuning_workspace = 0;
     returned_results = 0;
-    best_result_index = -1;
-    best_average_milliseconds = FLT_MAX;
 
     cublas_status = cublasLtMatmulPreferenceCreate(&preference);
     if (cublas_status != CUBLAS_STATUS_SUCCESS)
@@ -431,6 +293,17 @@ static SparkStatus SparkGlm52LinearPlanSelectAlgorithm(
         CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
         &workspace_limit_bytes,
         sizeof(workspace_limit_bytes));
+    if (cublas_status != CUBLAS_STATUS_SUCCESS)
+    {
+        cublasLtMatmulPreferenceDestroy(preference);
+        return SparkGlm52LinearPlanCublasToSparkStatus(cublas_status);
+    }
+    reduction_scheme_mask = CUBLASLT_REDUCTION_SCHEME_NONE;
+    cublas_status = cublasLtMatmulPreferenceSetAttribute(
+        preference,
+        CUBLASLT_MATMUL_PREF_REDUCTION_SCHEME_MASK,
+        &reduction_scheme_mask,
+        sizeof(reduction_scheme_mask));
     if (cublas_status != CUBLAS_STATUS_SUCCESS)
     {
         cublasLtMatmulPreferenceDestroy(preference);
@@ -456,61 +329,24 @@ static SparkStatus SparkGlm52LinearPlanSelectAlgorithm(
             : SparkGlm52LinearPlanCublasToSparkStatus(cublas_status);
     }
 
-    if (workspace_limit_bytes != 0u)
-    {
-        status = SparkGlm52LinearPlanCudaToSparkStatus(
-            cudaMalloc(&tuning_workspace, (size_t)workspace_limit_bytes));
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-    }
-
     for (result_index = 0; result_index < returned_results; ++result_index)
     {
-        float average_milliseconds;
-
         if (heuristic_results[result_index].state != CUBLAS_STATUS_SUCCESS ||
             (uint64_t)heuristic_results[result_index].workspaceSize >
-                workspace_limit_bytes)
+                workspace_limit_bytes ||
+            !SparkGlm52LinearPlanAlgorithmIsDeterministic(
+                &heuristic_results[result_index].algo))
         {
             continue;
         }
 
-        status = SparkGlm52LinearPlanMeasureCandidate(
-            binding,
-            storage,
-            &heuristic_results[result_index].algo,
-            input,
-            weight,
-            output,
-            tuning_workspace,
-            (uint64_t)heuristic_results[result_index].workspaceSize,
-            cuda_stream,
-            warmup_iterations,
-            measurement_iterations,
-            &average_milliseconds);
-        if (status == SPARK_STATUS_OK &&
-            average_milliseconds < best_average_milliseconds)
-        {
-            best_average_milliseconds = average_milliseconds;
-            best_result_index = result_index;
-        }
+        storage->algorithm = heuristic_results[result_index].algo;
+        *selected_workspace_bytes_out =
+            (uint64_t)heuristic_results[result_index].workspaceSize;
+        return SPARK_STATUS_OK;
     }
 
-    if (tuning_workspace != 0)
-    {
-        cudaFree(tuning_workspace);
-    }
-    if (best_result_index < 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    storage->algorithm = heuristic_results[best_result_index].algo;
-    *selected_workspace_bytes_out =
-        (uint64_t)heuristic_results[best_result_index].workspaceSize;
-    return SPARK_STATUS_OK;
+    return SPARK_STATUS_INVALID_ARGUMENT;
 }
 
 static SparkStatus SparkGlm52LinearPlanCreateOne(

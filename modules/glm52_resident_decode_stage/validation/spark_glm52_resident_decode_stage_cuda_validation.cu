@@ -4218,6 +4218,179 @@ static bool SparkValidationWriteHiddenBf16File(
     return true;
 }
 
+static bool SparkValidationHashDeviceBytes(
+    const void *device_pointer,
+    uint64_t byte_count,
+    const char *label,
+    uint64_t *hash_out,
+    uint64_t *nonzero_out)
+{
+    uint8_t host_chunk[65536u];
+    const uint8_t *device_bytes;
+    uint64_t offset;
+    uint64_t hash;
+    uint64_t nonzero_count;
+    uint64_t copy_bytes;
+    uint64_t byte_index;
+
+    if (device_pointer == 0 || label == 0 || hash_out == 0 ||
+        nonzero_out == 0 || byte_count == 0u)
+    {
+        fprintf(stderr, "invalid device hash request label=%s bytes=%llu\n", label != 0 ? label : "(null)", (unsigned long long)byte_count);
+        return false;
+    }
+    device_bytes = (const uint8_t *)device_pointer;
+    hash = 1469598103934665603ull;
+    nonzero_count = 0u;
+    offset = 0u;
+    while (offset < byte_count)
+    {
+        copy_bytes = byte_count - offset;
+        if (copy_bytes > sizeof(host_chunk))
+            copy_bytes = sizeof(host_chunk);
+        if (!SparkValidationCudaSucceeded(
+                cudaMemcpy(
+                    host_chunk,
+                    device_bytes + offset,
+                    (size_t)copy_bytes,
+                    cudaMemcpyDeviceToHost),
+                label))
+        {
+            return false;
+        }
+        for (byte_index = 0u; byte_index < copy_bytes; ++byte_index)
+        {
+            if (host_chunk[byte_index] != 0u)
+                nonzero_count += 1u;
+            hash ^= (uint64_t)host_chunk[byte_index];
+            hash *= 1099511628211ull;
+        }
+        offset += copy_bytes;
+    }
+    *hash_out = hash;
+    *nonzero_out = nonzero_count;
+    return true;
+}
+
+static bool SparkValidationTraceBuffer(
+    const SparkValidationDeviceBuffers *buffers,
+    uint32_t layer_index,
+    const char *name,
+    const void *device_pointer,
+    uint64_t byte_count)
+{
+    uint64_t hash;
+    uint64_t nonzero_count;
+
+    (void)buffers;
+    if (!SparkValidationHashDeviceBytes(
+            device_pointer,
+            byte_count,
+            name,
+            &hash,
+            &nonzero_count))
+    {
+        return false;
+    }
+    fprintf(stderr, "accuracy_trace_buffer layer=%u name=%s bytes=%llu nonzero=%llu hash64=%llu\n", layer_index, name, (unsigned long long)byte_count, (unsigned long long)nonzero_count, (unsigned long long)hash);
+    return true;
+}
+
+static bool SparkValidationMaybeTraceRoutedBuffers(
+    const SparkValidationDeviceBuffers *buffers,
+    uint32_t layer_index)
+{
+    const char *trace_text;
+    uint64_t active_hidden_bytes;
+    uint64_t active_query_latent_bytes;
+    uint64_t active_query_rope_bytes;
+    uint64_t active_key_rope_bytes;
+    uint64_t active_kv_latent_bytes;
+    uint64_t active_raw_query_a_bytes;
+    uint64_t active_raw_query_b_bytes;
+    uint64_t active_raw_kv_a_bytes;
+    uint64_t active_raw_kv_b_bytes;
+    uint64_t active_attention_output_bytes;
+    uint64_t active_route_hidden_bytes;
+    uint64_t active_router_logits_bytes;
+    uint64_t active_route_count;
+
+    trace_text = getenv("GLM52_ACCURACY_TRACE_BUFFERS");
+    if (trace_text == 0 || trace_text[0] == '\0' ||
+        strcmp(trace_text, "0") == 0)
+    {
+        return true;
+    }
+    if (buffers == 0)
+    {
+        fprintf(stderr, "accuracy trace has no buffers\n");
+        return false;
+    }
+    active_route_count =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
+    active_hidden_bytes =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u;
+    active_query_latent_bytes =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_LATENT_PROJECTION_DIMENSION * 2u;
+    active_query_rope_bytes =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION * 2u;
+    active_key_rope_bytes =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION * 2u;
+    active_kv_latent_bytes =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u;
+    active_raw_query_a_bytes =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION * 2u;
+    active_raw_query_b_bytes =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION * 2u;
+    active_raw_kv_a_bytes =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION * 2u;
+    active_raw_kv_b_bytes =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION * 2u;
+    active_attention_output_bytes =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION * 2u;
+    active_route_hidden_bytes =
+        active_route_count *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u;
+    active_router_logits_bytes =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT * 4u;
+    fprintf(stderr, "accuracy_trace_begin layer=%u active_sequences=%u\n", layer_index, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT);
+    return
+        SparkValidationTraceBuffer(buffers, layer_index, "input_hidden_bf16", buffers->input_hidden_bf16, active_hidden_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "normalized_hidden_bf16", buffers->normalized_hidden_bf16, active_hidden_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "raw_query_a_bf16", buffers->raw_query_a_bf16, active_raw_query_a_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "raw_query_a_normalized_bf16", buffers->raw_query_a_normalized_bf16, active_raw_query_a_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "raw_query_b_bf16", buffers->raw_query_b_bf16, active_raw_query_b_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "raw_kv_a_bf16", buffers->raw_kv_a_bf16, active_raw_kv_a_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "raw_kv_a_normalized_bf16", buffers->raw_kv_a_normalized_bf16, active_kv_latent_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "raw_kv_b_bf16", buffers->raw_kv_b_bf16, active_raw_kv_b_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "query_latent_bf16", buffers->query_latent_bf16, active_query_latent_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "query_rope_input_bf16", buffers->query_rope_input_bf16, active_query_rope_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "key_rope_input_bf16", buffers->key_rope_input_bf16, active_key_rope_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "current_kv_latent_bf16", buffers->current_kv_latent_bf16, active_kv_latent_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "rotated_query_rope_bf16", buffers->rotated_query_rope_bf16, active_query_rope_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "attention_output_latent_bf16", buffers->attention_output_latent_bf16, active_attention_output_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "attention_projected_hidden_bf16", buffers->attention_projected_hidden_bf16, active_hidden_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "post_attention_hidden_bf16", buffers->post_attention_hidden_bf16, active_hidden_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "post_attention_normalized_hidden_bf16", buffers->post_attention_normalized_hidden_bf16, active_hidden_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "moe_router_logits_f32", buffers->moe_router_logits, active_router_logits_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "moe_topk_expert_ids_u32", buffers->moe_topk_expert_ids, active_route_count * 4u) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "moe_topk_weights_f32", buffers->moe_topk_weights, active_route_count * 4u) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "moe_route_output_bf16", buffers->moe_route_output_bf16, active_route_hidden_bytes) &&
+        SparkValidationTraceBuffer(buffers, layer_index, "layer_output_hidden_bf16", buffers->layer_output_hidden_bf16, active_hidden_bytes);
+}
+
 static void SparkValidationSetOutputHiddenOnly(
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
     uint32_t enabled)
@@ -6615,6 +6788,7 @@ static bool SparkValidationRunRoutedLayerProductionB12x(
         !SparkValidationCudaSucceeded(
             cudaStreamSynchronize(cuda_stream),
             "cudaStreamSynchronize production routed B12x layer") ||
+        !SparkValidationMaybeTraceRoutedBuffers(buffers, layer_index) ||
         !SparkValidationReadLayer3TopKExpertIds(buffers, topk_expert_ids))
     {
         return false;

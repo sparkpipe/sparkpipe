@@ -650,6 +650,161 @@ static SparkStatus SparkGlm52B12xAllocateGeneratedWorkspace(
     return status;
 }
 
+static SparkStatus SparkGlm52B12xMemsetAsyncIfPresent(
+    void *device_pointer,
+    size_t byte_count,
+    cudaStream_t cuda_stream)
+{
+    cudaError_t cuda_status;
+
+    if (device_pointer == 0 || byte_count == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    cuda_status = cudaMemsetAsync(device_pointer, 0, byte_count, cuda_stream);
+    return SparkGlm52B12xCudaToSparkStatus(cuda_status);
+}
+
+static SparkStatus SparkGlm52B12xResetLaunchState(
+    SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
+    const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket,
+    const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments)
+{
+    cudaStream_t cuda_stream;
+    size_t expert_count;
+    size_t task_count;
+    size_t output_element_count;
+    SparkStatus status;
+
+    if (workspace == 0 || bucket == 0 || arguments == 0 ||
+        arguments->output_bf16 == 0 || arguments->cuda_stream == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    cuda_stream = (cudaStream_t)arguments->cuda_stream;
+    expert_count = (size_t)arguments->expert_count;
+    task_count = (size_t)bucket->task_capacity;
+
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->row_counts_i32,
+        expert_count * sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->barrier_count_i32,
+        sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->barrier_epoch_i32,
+        sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->active_expert_count_i32,
+        sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->expert_write_rows_i32,
+        expert_count * sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->expert_tile_base_i32,
+        (expert_count + 1u) * sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->pair_head_i32,
+        sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->producers_done_count_i32,
+        sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->all_work_published_i32,
+        sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->task_head_i32,
+        sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->task_tail_i32,
+        sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->task_ready_i32,
+        task_count * sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->task_expert_i32,
+        task_count * sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->task_m_tile_i32,
+        task_count * sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->task_slice_begin_i32,
+        task_count * sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->task_slice_count_i32,
+        task_count * sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->task_valid_rows_i32,
+        task_count * sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xMemsetAsyncIfPresent(
+        workspace->tile_write_count_i32,
+        (size_t)bucket->physical_tile_capacity * sizeof(int32_t),
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xCheckedMultiplySize(
+        (size_t)arguments->token_count,
+        (size_t)arguments->hidden_dimension,
+        &output_element_count);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    return SparkGlm52B12xMemsetAsyncIfPresent(
+        arguments->output_bf16,
+        output_element_count * sizeof(uint16_t),
+        cuda_stream);
+}
+
 static SparkStatus SparkGlm52B12xValidateRecipeAgainstGeneratedManifest(
     const SparkGlm52Sm121FlashInferB12xMoeRecipe *recipe)
 {
@@ -791,6 +946,14 @@ extern "C" SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
     if (bucket == 0 || bucket_index >= state->bucket_count)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    status = SparkGlm52B12xResetLaunchState(
+        &state->workspaces[bucket_index],
+        bucket,
+        arguments);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
     }
     launch_topk_ids = arguments->topk_ids_i32;
     if (bucket->backend_kind == SPARK_GLM52_SM121_B12X_BACKEND_KIND_MICRO)
