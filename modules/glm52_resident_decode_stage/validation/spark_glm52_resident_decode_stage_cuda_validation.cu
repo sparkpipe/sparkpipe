@@ -1984,6 +1984,52 @@ static bool SparkValidationSeedKeyValueCache(
     return true;
 }
 
+static bool SparkValidationSeedBoundReferenceCache(
+    SparkValidationDeviceBuffers *buffers)
+{
+    uint16_t cache_seed[
+        SPARK_VALIDATION_CACHE_TOKEN_CAPACITY *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS];
+
+    if (buffers == 0 ||
+        buffers->mla_cache_bf16 == 0 ||
+        buffers->key_nope_cache_bf16 == 0 ||
+        buffers->value_cache_bf16 == 0)
+    {
+        return false;
+    }
+    memset(cache_seed, 0, sizeof(cache_seed));
+    SparkValidationSeedCacheSlot(
+        cache_seed,
+        SPARK_VALIDATION_REMAP_CACHE_SLOT0,
+        0u);
+    SparkValidationSeedCacheSlot(
+        cache_seed,
+        SPARK_VALIDATION_REMAP_CACHE_SLOT1,
+        1u);
+    SparkValidationSeedCacheSlot(
+        cache_seed,
+        SPARK_VALIDATION_REMAP_CACHE_SLOT2,
+        2u);
+    return SparkValidationCopyToDevice(
+            buffers->mla_cache_bf16,
+            cache_seed,
+            sizeof(cache_seed),
+            "copy routed reference mla cache") &&
+        SparkValidationSeedKeyValueCache(
+            buffers,
+            SPARK_VALIDATION_REMAP_CACHE_SLOT0,
+            0u) &&
+        SparkValidationSeedKeyValueCache(
+            buffers,
+            SPARK_VALIDATION_REMAP_CACHE_SLOT1,
+            1u) &&
+        SparkValidationSeedKeyValueCache(
+            buffers,
+            SPARK_VALIDATION_REMAP_CACHE_SLOT2,
+            2u);
+}
+
 static bool SparkValidationSeedProjectionFixtureWeights(
     SparkValidationDeviceBuffers *buffers)
 {
@@ -3555,7 +3601,7 @@ static bool SparkValidationBindRoutedLayerCache(
     node_context->mla_cache_bf16 = buffers->mla_cache_bf16;
     node_context->key_nope_cache_bf16 = buffers->key_nope_cache_bf16;
     node_context->value_cache_bf16 = buffers->value_cache_bf16;
-    return true;
+    return SparkValidationSeedBoundReferenceCache(buffers);
 }
 
 static bool SparkValidationLinearPlanIsReady(
