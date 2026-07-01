@@ -19,7 +19,21 @@ LAYER_COUNT = 78
 FIRST_ROUTED_LAYER = 3
 MAX_ROUTED_LAYERS_PER_STAGE = 8
 DEFAULT_BUCKETS = (8, 16, 32, 64)
-DEFAULT_STAGES = ("11:8", "19:8", "27:8", "35:8", "43:8", "51:8", "59:8", "67:8", "75:3")
+DEFAULT_STAGES = (
+    "0:6",
+    "6:6",
+    "12:6",
+    "18:6",
+    "24:6",
+    "30:6",
+    "36:6",
+    "42:6",
+    "48:6",
+    "54:6",
+    "60:6",
+    "66:6",
+    "72:6",
+)
 DEFAULT_AOT_OUTPUT_DIR = Path("build/glm52_b12x_aot")
 DEFAULT_MODULE_ARCHIVE = Path("build/modules/glm52_resident_decode_stage/libglm52_resident_decode_stage.a")
 DEFAULT_DRIVER_SO = ""

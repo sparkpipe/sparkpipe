@@ -5600,7 +5600,8 @@ static bool SparkValidationCheckOutputs(
     SparkValidationDeviceBuffers *buffers,
     SparkValidationRealLmHeadFixture *real_lm_head,
     uint32_t require_moe_route_output,
-    uint32_t use_prefill_kv)
+    uint32_t use_prefill_kv,
+    uint32_t require_phase_clock)
 {
     uint16_t current_kv_value[
         SPARK_VALIDATION_CHECKED_LATENT_DIMENSION_COUNT];
@@ -6107,7 +6108,8 @@ static bool SparkValidationCheckOutputs(
         fprintf(stderr, "MTP draft/verify fixture did not produce expected tokens\n");
         return false;
     }
-    if (phase_clocks[
+    if (require_phase_clock != 0u &&
+        phase_clocks[
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_COMPLETION_READY] == 0u)
     {
         fprintf(stderr, "phase clock completion marker was not written\n");
@@ -6407,7 +6409,7 @@ static bool SparkValidationRunChainedDenseLayer(
     }
     *submission_count += 1u;
     if (check_outputs != 0u &&
-        (!SparkValidationCheckOutputs(buffers, real_lm_head, 0u, 1u) ||
+        (!SparkValidationCheckOutputs(buffers, real_lm_head, 0u, 1u, 1u) ||
          !SparkValidationCheckLayer0References(
             buffers,
             1u,
@@ -6687,7 +6689,7 @@ static bool SparkValidationRunLayer3RoutedTopKLayer(
          !SparkValidationCheckLayer3RoutedExpertNvfp4(
             buffers,
             layer3_routed_expert) ||
-         !SparkValidationCheckOutputs(buffers, real_lm_head, 1u, 1u)))
+         !SparkValidationCheckOutputs(buffers, real_lm_head, 1u, 1u, 1u)))
     {
         return false;
     }
@@ -6774,6 +6776,7 @@ static bool SparkValidationRunRoutedLayerProductionB12x(
     uint32_t slot_mapping,
     uint32_t context_length,
     uint32_t check_outputs,
+    uint32_t require_phase_clock,
     double *total_microseconds,
     double *maximum_observed_microseconds,
     uint32_t *submission_count)
@@ -6843,7 +6846,12 @@ static bool SparkValidationRunRoutedLayerProductionB12x(
     }
     if (check_outputs != 0u &&
         (!SparkValidationCheckLayer3RouterTopK(buffers) ||
-         !SparkValidationCheckOutputs(buffers, real_lm_head, 1u, 1u)))
+         !SparkValidationCheckOutputs(
+            buffers,
+            real_lm_head,
+            1u,
+            1u,
+            require_phase_clock)))
     {
         return false;
     }
@@ -6955,6 +6963,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
                         slot_mapping,
                         context_length,
                         0u,
+                        1u,
                         total_microseconds,
                         maximum_observed_microseconds,
                         submission_count))
@@ -7012,6 +7021,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
                 SPARK_VALIDATION_CURRENT_CACHE_SLOT,
                 SPARK_VALIDATION_CONTEXT_LENGTH,
                 0u,
+                1u,
                 total_microseconds,
                 maximum_observed_microseconds,
                 submission_count))
@@ -7035,6 +7045,7 @@ static bool SparkValidationRunRoutedChainFromHidden(
     uint32_t first_routed_layer_index,
     uint32_t routed_chain_layer_count,
     uint32_t final_token_stage,
+    uint32_t require_phase_clock,
     double *total_microseconds,
     double *maximum_observed_microseconds,
     uint32_t *submission_count)
@@ -7082,6 +7093,7 @@ static bool SparkValidationRunRoutedChainFromHidden(
                 SPARK_VALIDATION_CURRENT_CACHE_SLOT,
                 SPARK_VALIDATION_CONTEXT_LENGTH,
                 run_final_outputs,
+                require_phase_clock,
                 total_microseconds,
                 maximum_observed_microseconds,
                 submission_count))
@@ -7859,6 +7871,7 @@ int main(int argc, char **argv)
                     routed_chain_first_layer_index,
                     routed_chain_layer_count,
                     0u,
+                    1u,
                     &total_microseconds,
                     &maximum_observed_microseconds,
                     &submission_count) ||
@@ -7915,6 +7928,7 @@ int main(int argc, char **argv)
                     routed_chain_first_layer_index,
                     routed_chain_layer_count,
                     1u,
+                    production_timing == 0u,
                     &total_microseconds,
                     &maximum_observed_microseconds,
                     &submission_count) ||
@@ -8141,7 +8155,7 @@ int main(int argc, char **argv)
                 argv[2],
                 &elapsed_microseconds) ||
             !SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
-            !SparkValidationCheckOutputs(&buffers, &real_lm_head, 0u, use_prefill_kv) ||
+            !SparkValidationCheckOutputs(&buffers, &real_lm_head, 0u, use_prefill_kv, 1u) ||
             !SparkValidationCheckLayer0References(
                 &buffers,
                 use_dense_mlp,
@@ -8273,6 +8287,7 @@ int main(int argc, char **argv)
                 routed_chain_first_layer_index,
                 routed_chain_layer_count,
                 0u,
+                1u,
                 &total_microseconds,
                 &maximum_observed_microseconds,
                 &submission_count) ||
@@ -8329,6 +8344,7 @@ int main(int argc, char **argv)
                 routed_chain_first_layer_index,
                 routed_chain_layer_count,
                 1u,
+                production_timing == 0u,
                 &total_microseconds,
                 &maximum_observed_microseconds,
                 &submission_count) ||
@@ -8581,7 +8597,7 @@ int main(int argc, char **argv)
         }
     }
     if (!SparkValidationCudaSucceeded(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize") ||
-        !SparkValidationCheckOutputs(&buffers, &real_lm_head, 0u, use_prefill_kv) ||
+        !SparkValidationCheckOutputs(&buffers, &real_lm_head, 0u, use_prefill_kv, 1u) ||
         !SparkValidationCheckLayer0References(
             &buffers,
             use_dense_mlp,
