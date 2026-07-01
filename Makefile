@@ -116,6 +116,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     glm52_required_cuda_link_args \
     glm52_stage_bucket_sweep \
     glm52_spark2_accuracy_gate \
+    glm52_spark2_local_pipeline_gate \
     glm52_resident_decode_stage_firmware_package \
     tree_summary
 
@@ -315,6 +316,9 @@ glm52_stage_bucket_sweep:
 
 glm52_spark2_accuracy_gate:
 	bash tools/glm52_spark2_accuracy_gate.sh
+
+glm52_spark2_local_pipeline_gate:
+	bash tools/glm52_spark2_local_pipeline_gate.sh
 
 glm52_resident_decode_stage_firmware_package: glm52_flashinfer_b12x_moe_adapter glm52_b12x_compiled_backend
 	@command -v $(NVCC) >/dev/null 2>&1 || \
