@@ -146,7 +146,7 @@ High-impact items still open:
 1. True stage-slice execution: one submit for a layer group, not one submit per layer.
 2. Stage-slice CUDA graph capture/replay: one graph for layers first..first+count-1.
 3. FP8/tensor-core projection plans for Q/KV/O instead of BF16 cuBLASLt plans.
-4. Measured PP12/PP13/PP14 balancing from chained hidden timings, not equal layer counts.
+4. Measured PP13 balancing from chained hidden timings, not equal layer counts; the current deployment has 13 sparks, so PP14 is not a valid target.
 5. Persistent hidden transport ABI for real ring execution.
 6. Production bucket scheduler for B16/B32/B64.
 7. Production stage-plan checker that encodes GLM config and firmware cut rules.

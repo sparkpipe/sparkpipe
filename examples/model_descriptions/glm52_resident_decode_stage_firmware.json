@@ -263,7 +263,34 @@
           6144
         ]
       }
-    ]
+    ],
+    "supported_quantization_variants": [
+      {
+        "name": "glm52_nvfp4_4bit",
+        "stage_plan_quantization_constant": "SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT",
+        "resident_layer_progression": "SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK",
+        "moe_execution": "FlashInfer B12x fused NVFP4 MoE",
+        "projection_contract": "BF16/FP8/NVFP4/MXFP4 projections selected by node context and linear plans"
+      },
+      {
+        "name": "glm52_fp8_e4m3_8bit",
+        "stage_plan_quantization_constant": "SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT",
+        "resident_layer_progression": "SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK",
+        "moe_execution": "FP8 E4M3 tensor-core MoE plan through SparkGlm52ResidentDecodeStageFp8MoePlan",
+        "projection_contract": "RAW_GLM_FP8_E4M3 Q/KV/O projections with FP32 inverse scales"
+      }
+    ],
+    "current_spark_topology": {
+      "spark_count": 13,
+      "stage_count": 13,
+      "planner": "SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization",
+      "scheduler": "SparkGlm52SchedulerAdmit",
+      "batch_buckets": [
+        16,
+        32,
+        64
+      ]
+    }
   },
   "stages": [
     {
@@ -288,7 +315,10 @@
                 "required_symbols": [
                   "SparkGlm52Sm121RequiredDecodeStageInitialize",
                   "SparkGlm52Sm121RequiredDecodeStageLaunch",
-                  "SparkGlm52Sm121RequiredDecodeStageQuiesce"
+                  "SparkGlm52Sm121RequiredDecodeStageQuiesce",
+                  "SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice",
+                  "SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill",
+                  "SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPrefill"
                 ],
                 "required_primitive_modules": [
                   {
@@ -380,7 +410,8 @@
               "driver_private_expert_queues",
               "requires_hidden_transport",
               "no_file_transport",
-              "no_shell_transport"
+              "no_shell_transport",
+              "bulk_prefill"
             ],
             "max_active_slots": 64,
             "max_new_tokens": 3,

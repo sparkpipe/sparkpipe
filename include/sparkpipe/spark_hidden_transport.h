@@ -15,6 +15,8 @@ extern "C" {
     ((uint32_t)sizeof(SparkHiddenTransportEndpoint))
 #define SPARK_HIDDEN_TRANSPORT_PACKET_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportPacket))
+#define SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES \
+    ((uint32_t)sizeof(SparkHiddenTransportCompletion))
 #define SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT 2u
 
 #define SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_CONNECTION 0x00000001u
@@ -36,6 +38,8 @@ extern "C" {
 #define SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 0x00000001u
 #define SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER 0x00000002u
 #define SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_END_OF_SEQUENCE 0x00000004u
+
+typedef struct SparkHiddenTransportSession SparkHiddenTransportSession;
 
 typedef struct SparkHiddenTransportEndpoint
 {
@@ -106,9 +110,28 @@ typedef struct SparkHiddenTransportInterface
 
 SparkStatus SparkHiddenTransportValidateEndpoint(
     const SparkHiddenTransportEndpoint *endpoint);
+SparkStatus SparkHiddenTransportValidatePacket(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const SparkHiddenTransportPacket *packet);
 SparkStatus SparkHiddenTransportValidateInterface(
     const SparkHiddenTransportInterface *transport_interface,
     uint32_t required_capability_flags);
+
+SparkStatus SparkHiddenTransportOpen(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const SparkHiddenTransportInterface *transport_interface,
+    uint32_t required_capability_flags,
+    SparkHiddenTransportSession **session_out);
+void SparkHiddenTransportClose(SparkHiddenTransportSession *session);
+SparkStatus SparkHiddenTransportPostReceive(
+    SparkHiddenTransportSession *session,
+    SparkHiddenTransportPacket *packet);
+SparkStatus SparkHiddenTransportSend(
+    SparkHiddenTransportSession *session,
+    const SparkHiddenTransportPacket *packet);
+SparkStatus SparkHiddenTransportPoll(
+    SparkHiddenTransportSession *session,
+    SparkHiddenTransportCompletion *completion);
 
 #ifdef __cplusplus
 }

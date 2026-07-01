@@ -219,6 +219,11 @@ static SparkStatus SparkParseModelProgramSchedulingFlag(
         *flag = SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT;
         return SPARK_STATUS_OK;
     }
+    if (strcmp(flag_name, "bulk_prefill") == 0)
+    {
+        *flag = SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL;
+        return SPARK_STATUS_OK;
+    }
     return SPARK_STATUS_SCHEMA_ERROR;
 }
 
