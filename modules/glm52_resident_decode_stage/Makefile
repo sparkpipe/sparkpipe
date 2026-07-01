@@ -14,6 +14,7 @@ B12X_MOE_PACK_LAYERS ?= 3,4,5,6,7,8,9,10
 B12X_MOE_PACK_REQUIRE_REUSE ?= 1
 B12X_MOE_PACK_VERIFY_REUSED_SHA256 ?= 0
 B12X_MOE_PACK_JOBS ?= 1
+B12X_MOE_PACK_PACKAGE_MODE ?= hardlink
 B12X_PACK_PYTHON ?= python3
 GLM52_VALIDATION_INPUT_TOKEN_ID ?= 1000
 GLM52_VALIDATION_MODE ?= dense_to_layer3_routed
@@ -203,8 +204,23 @@ package: publish
 		$(foreach arg,$(GLM52_REQUIRED_CUDA_LINK_ARGS),--cc-arg $(arg)) \
 		$(REQUIRED_CUDA_CC_ARGS)
 	mkdir -p $(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe
-	cp -f $(B12X_MOE_PACK_DIR)/*.spb12x $(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe/
-	cp -f $(B12X_MOE_PACK_DIR)/resident_moe_pack_manifest.json $(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe/
+	@set -e; \
+		case "$(B12X_MOE_PACK_PACKAGE_MODE)" in \
+			hardlink) \
+				for pack_path in $(B12X_MOE_PACK_DIR)/*.spb12x $(B12X_MOE_PACK_DIR)/resident_moe_pack_manifest.json; do \
+					target_path="$(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe/$$(basename "$$pack_path")"; \
+					ln -f "$$pack_path" "$$target_path"; \
+				done; \
+				;; \
+			copy) \
+				cp --sparse=always -f $(B12X_MOE_PACK_DIR)/*.spb12x $(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe/; \
+				cp --sparse=always -f $(B12X_MOE_PACK_DIR)/resident_moe_pack_manifest.json $(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe/; \
+				;; \
+			*) \
+				echo "unsupported B12X_MOE_PACK_PACKAGE_MODE: $(B12X_MOE_PACK_PACKAGE_MODE)" >&2; \
+				exit 2; \
+				;; \
+		esac
 	$(GLM52_VALIDATION_ENV) \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
 		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE) \

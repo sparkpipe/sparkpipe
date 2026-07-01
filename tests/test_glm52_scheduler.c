@@ -69,7 +69,9 @@ static void SparkTestGlm52SchedulerAdmitsCurrentSparkPp13Decode(void)
     assert(decision.stage_count == SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT);
     assert(decision.estimated_critical_path_ns != 0u);
     assert(decision.stage_plan.stages[0].first_layer_index == 0u);
-    assert(decision.stage_plan.stages[0].layer_count == 9u);
+    assert(decision.stage_plan.stages[0].layer_count == 3u);
+    assert(decision.stage_plan.stages[1].first_layer_index == 3u);
+    assert(decision.stage_plan.stages[1].layer_count == 1u);
     for (stage_index = 0u; stage_index < decision.stage_count; ++stage_index)
     {
         assert(decision.dispatch_stages[stage_index].spark_index == stage_index);

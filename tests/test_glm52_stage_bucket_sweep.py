@@ -39,7 +39,9 @@ def main() -> int:
     assert tok_s == 1000.0
     assert module.parse_csv_u32("8,16;32") == [8, 16, 32]
     assert module.parse_stage("75:3") == (75, 3)
+    assert module.parse_stage("0:3") == (0, 3)
     assert module.parse_stage("0:9") == (0, 9)
+    assert module.stage_validator_parameters(0, 3) == (3, 0, True)
     assert module.stage_validator_parameters(0, 9) == (3, 6, True)
     assert module.stage_validator_parameters(75, 3) == (75, 3, False)
     dense_prefix_sample = (
@@ -54,6 +56,18 @@ def main() -> int:
     assert dense_parsed["first_layer"] == 0
     assert dense_parsed["layer_count"] == 9
     assert dense_parsed["submissions"] == 9
+    dense_chain_sample = (
+        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 "
+        "dense_chain_layers=3 dense_chain_submissions=12 dense_chain_total_us=96000.000 "
+        "maximum_us=12000.000 limit_us=1000000.000 restricted_token=1 mtp_draft=2 "
+        "mtp_reject=3 input_embedding_bf16=1 input_embedding_token=1000 layer0_reference_full=1 "
+        "layer0_reference_full_max_error=0.00000000 real_lm_head=1 real_lm_head_max_logit_error=0.00000000 "
+        "launch_chains=12 graph_captures=12 graph_replays=12"
+    )
+    dense_chain_parsed = module.parse_result(dense_chain_sample)
+    assert dense_chain_parsed["first_layer"] == 0
+    assert dense_chain_parsed["layer_count"] == 3
+    assert dense_chain_parsed["submissions"] == 12
     args = SimpleNamespace(
         max_stage_us="1000000",
         graph=False,
@@ -88,6 +102,9 @@ def main() -> int:
     args.driver_so = Path("model_driver.so")
     command = module.build_direct_command(Path("validator_b8"), args)
     assert command == ["validator_b8", "1000000", "model_driver.so"]
+    args.driver_so = None
+    command = module.build_direct_command(Path("validator_b8"), args)
+    assert command == ["validator_b8", "1000000"]
     attempts = [
         {"status": "pass", "warmup": True, "attempt_index": 0, "total_us": 60000.0},
         {"status": "pass", "warmup": False, "attempt_index": 0, "total_us": 50000.0},

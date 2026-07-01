@@ -134,15 +134,23 @@ static void SparkTestGlm52StagePlanMeasuredBalanced(void)
         sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(stage_plan.stage_count == 13u);
     assert(stage_plan.stages[0].first_layer_index == 0u);
-    assert(stage_plan.stages[0].layer_count == 9u);
-    assert(stage_plan.stages[12].first_layer_index == 75u);
-    assert(stage_plan.stages[12].layer_count == 3u);
+    assert(stage_plan.stages[0].layer_count == 3u);
+    assert(stage_plan.stages[1].first_layer_index == 3u);
+    assert(stage_plan.stages[1].layer_count == 1u);
+    assert(stage_plan.stages[2].first_layer_index == 4u);
+    assert(stage_plan.stages[2].layer_count == 1u);
+    assert(stage_plan.stages[3].first_layer_index == 5u);
+    assert(stage_plan.stages[3].layer_count == 1u);
+    assert(stage_plan.stages[4].first_layer_index == 6u);
+    assert(stage_plan.stages[4].layer_count == 8u);
+    assert(stage_plan.stages[12].first_layer_index == 70u);
+    assert(stage_plan.stages[12].layer_count == 8u);
     assert((stage_plan.stages[12].flags &
         SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN) != 0u);
     assert(SparkTestGlm52StagePlanMaximumStageCostNs(
         &stage_plan,
         layer_cost_ns,
-        final_stage_extra_cost_ns) == 78741333u);
+        final_stage_extra_cost_ns) == 109282561u);
 
     assert(SparkGlm52StagePlanLoadMeasuredCostProfile(
         SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701,
