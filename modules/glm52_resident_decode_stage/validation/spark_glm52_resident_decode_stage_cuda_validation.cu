@@ -6732,7 +6732,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
              routed_layer_offset < routed_chain_layer_count;
              ++routed_layer_offset)
         {
-            if (!SparkValidationRunRoutedLayerDynamicTopK(
+            if (!SparkValidationRunRoutedLayerProductionB12x(
                     buffers,
                     node_context,
                     cuda_stream,
@@ -6788,7 +6788,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
          routed_layer_offset < routed_chain_layer_count;
          ++routed_layer_offset)
     {
-        if (!SparkValidationRunRoutedLayerDynamicTopK(
+        if (!SparkValidationRunRoutedLayerProductionB12x(
                 buffers,
                 node_context,
                 cuda_stream,
@@ -6800,7 +6800,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
                 SPARK_VALIDATION_CURRENT_POSITION,
                 SPARK_VALIDATION_CURRENT_CACHE_SLOT,
                 SPARK_VALIDATION_CONTEXT_LENGTH,
-                1u,
+                0u,
                 total_microseconds,
                 maximum_observed_microseconds,
                 submission_count))
@@ -7403,6 +7403,7 @@ int main(int argc, char **argv)
         return 2;
     }
     if (use_routed_chain_from_hidden == 0u &&
+        use_dense_chain_layer3_routed_expert_topk == 0u &&
         model_directory != 0 && model_directory[0] != '\0' &&
         !SparkValidationLoadFinalNormBf16Fixture(
             &buffers,
@@ -7412,6 +7413,7 @@ int main(int argc, char **argv)
         return 2;
     }
     if (use_routed_chain_from_hidden == 0u &&
+        use_dense_chain_layer3_routed_expert_topk == 0u &&
         model_directory != 0 && model_directory[0] != '\0' &&
         !SparkValidationLoadRealLmHeadFixture(
             &buffers,
@@ -7428,7 +7430,8 @@ int main(int argc, char **argv)
         &node_context,
         use_dense_mlp,
         use_attention_bf16);
-    if (use_routed_chain_from_hidden != 0u)
+    if (use_routed_chain_from_hidden != 0u ||
+        use_dense_chain_layer3_routed_expert_topk != 0u)
     {
         node_context.reserved_execution_flags |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY;
@@ -7490,6 +7493,7 @@ int main(int argc, char **argv)
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS;
     }
     if (use_routed_chain_from_hidden == 0u &&
+        use_dense_chain_layer3_routed_expert_topk == 0u &&
         model_directory != 0 && model_directory[0] != '\0')
     {
         required_linear_plan_mask |=
@@ -7577,7 +7581,7 @@ int main(int argc, char **argv)
                 return 1;
             }
             printf(
-                "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_chain_layer3_routed_expert_nvfp4_topk=1 dense_chain_layers=%u first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+                "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_prefix_routed_pipeline=1 intermediate_stage=1 production_b12x=1 dense_chain_layers=%u first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_output_hidden=%s input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
                 SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT,
                 routed_chain_first_layer_index,
                 routed_chain_layer_count,
@@ -7585,16 +7589,10 @@ int main(int argc, char **argv)
                 total_microseconds,
                 maximum_observed_microseconds,
                 maximum_stage_microseconds,
-                real_lm_head.ready != 0u
-                    ? real_lm_head.expected_selected_token
-                    : SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN,
-                SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
-                SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
+                pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
                 input_token_id,
                 layer3_routed_expert.selected_expert_id,
                 layer3_routed_expert.bound_expert_count,
-                real_lm_head.ready,
-                real_lm_head.maximum_logit_error,
                 (unsigned long long)cuda_slot_state.launch_chain_count,
                 (unsigned long long)cuda_slot_state.graph_capture_count,
                 (unsigned long long)cuda_slot_state.graph_replay_count);
@@ -7994,7 +7992,7 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_chain_layer3_routed_expert_nvfp4_topk=1 dense_chain_layers=%u first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u mtp_draft=%u mtp_reject=%u input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_prefix_routed_pipeline=1 intermediate_stage=1 production_b12x=1 dense_chain_layers=%u first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_output_hidden=%s input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT,
             routed_chain_first_layer_index,
             routed_chain_layer_count,
@@ -8002,16 +8000,10 @@ int main(int argc, char **argv)
             total_microseconds,
             maximum_observed_microseconds,
             maximum_stage_microseconds,
-            real_lm_head.ready != 0u
-                ? real_lm_head.expected_selected_token
-                : SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN,
-            SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN,
-            SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN,
+            pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
             input_token_id,
             layer3_routed_expert.selected_expert_id,
             layer3_routed_expert.bound_expert_count,
-            real_lm_head.ready,
-            real_lm_head.maximum_logit_error,
             (unsigned long long)cuda_slot_state.launch_chain_count,
             (unsigned long long)cuda_slot_state.graph_capture_count,
             (unsigned long long)cuda_slot_state.graph_replay_count);
