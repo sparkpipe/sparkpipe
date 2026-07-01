@@ -23,6 +23,7 @@ GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT ?= 1
 GLM52_PIPELINE_INPUT_HIDDEN_BF16 ?=
 GLM52_PIPELINE_OUTPUT_HIDDEN_BF16 ?= $(BUILD_DIRECTORY)/pipeline_hidden_output.bf16
 GLM52_ENABLE_CUDA_GRAPH_REPLAY ?= 0
+GLM52_ALLOW_REMOTE_MODEL_DIR ?= 0
 BUILD_DIRECTORY := $(REPOSITORY_ROOT)/build/modules/glm52_resident_decode_stage
 HOST_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module.o
 CUDA_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda.o
@@ -43,9 +44,9 @@ REQUIRED_STAGE_DEPENDENCY := $(REQUIRED_STAGE_OBJECT:.o=.d)
 B12X_MOE_PLAN_DEPENDENCY := $(B12X_MOE_PLAN_OBJECT:.o=.d)
 LINEAR_PLAN_DEPENDENCY := $(LINEAR_PLAN_OBJECT:.o=.d)
 
-.PHONY: archive cold_archive artifact_check b12x_resident_pack validate publish package clean require_sm121a require_latency_limit require_model_dir require_validation_inputs prepare_validation_output
+.PHONY: archive cold_archive artifact_check b12x_resident_pack validate publish package clean require_sm121a require_latency_limit require_model_dir require_fast_model_dir require_validation_inputs prepare_validation_output
 
-GLM52_VALIDATION_BASE_ENV := NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" GLM52_B12X_MOE_PACK_DIR="$(B12X_MOE_PACK_DIR)" GLM52_MODEL_DIR="$(GLM52_MODEL_DIR)" GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX="$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)" GLM52_ROUTED_CHAIN_LAYER_COUNT="$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)" GLM52_ENABLE_CUDA_GRAPH_REPLAY="$(GLM52_ENABLE_CUDA_GRAPH_REPLAY)" GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT="$(GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT)"
+GLM52_VALIDATION_BASE_ENV := NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" GLM52_B12X_MOE_PACK_DIR="$(B12X_MOE_PACK_DIR)" GLM52_MODEL_DIR="$(GLM52_MODEL_DIR)" GLM52_ALLOW_REMOTE_MODEL_DIR="$(GLM52_ALLOW_REMOTE_MODEL_DIR)" GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX="$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)" GLM52_ROUTED_CHAIN_LAYER_COUNT="$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)" GLM52_ENABLE_CUDA_GRAPH_REPLAY="$(GLM52_ENABLE_CUDA_GRAPH_REPLAY)" GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT="$(GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT)"
 
 ifeq ($(GLM52_VALIDATION_MODE),dense_to_layer3_routed)
 GLM52_VALIDATION_ENV := $(GLM52_VALIDATION_BASE_ENV) GLM52_INPUT_TOKEN_ID="$(GLM52_VALIDATION_INPUT_TOKEN_ID)" GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK=1 GLM52_PIPELINE_OUTPUT_HIDDEN_BF16="$(GLM52_PIPELINE_OUTPUT_HIDDEN_BF16)"
@@ -72,6 +73,17 @@ require_latency_limit:
 require_model_dir:
 	@test -n "$(GLM52_MODEL_DIR)" || \
 		{ echo "set GLM52_MODEL_DIR to the live GLM artifact directory" >&2; exit 2; }
+
+require_fast_model_dir: require_model_dir
+	@if test "$(GLM52_ALLOW_REMOTE_MODEL_DIR)" != "1"; then \
+		case "$(GLM52_MODEL_DIR)" in \
+			/mnt/mac/*|/Volumes/*) \
+				echo "GLM52 hardware validation requires local Spark NVMe artifacts, not remote model source: $(GLM52_MODEL_DIR)" >&2; \
+				echo "set GLM52_ALLOW_REMOTE_MODEL_DIR=1 only for non-performance debugging" >&2; \
+				exit 2; \
+				;; \
+		esac; \
+	fi
 
 require_validation_inputs:
 ifneq (,$(filter routed_from_hidden routed_from_hidden_final,$(GLM52_VALIDATION_MODE)))
@@ -152,12 +164,12 @@ else
 		$(if $(filter 1,$(B12X_MOE_PACK_VERIFY_REUSED_SHA256)),--verify-reused-sha256,)
 endif
 
-validate: require_sm121a require_latency_limit require_validation_inputs prepare_validation_output b12x_resident_pack cold_archive
+validate: require_sm121a require_latency_limit require_fast_model_dir require_validation_inputs prepare_validation_output b12x_resident_pack cold_archive
 	$(GLM52_VALIDATION_ENV) \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
 		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE)
 
-publish: require_sm121a require_latency_limit require_validation_inputs prepare_validation_output b12x_resident_pack cold_archive
+publish: require_sm121a require_latency_limit require_fast_model_dir require_validation_inputs prepare_validation_output b12x_resident_pack cold_archive
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
 	$(GLM52_VALIDATION_ENV) \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \

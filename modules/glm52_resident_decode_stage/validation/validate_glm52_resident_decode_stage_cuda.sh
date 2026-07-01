@@ -9,6 +9,8 @@ fi
 maximum_stage_microseconds="$1"
 module_archive="$2"
 driver_path="${3:-}"
+model_directory="${GLM52_MODEL_DIR:-}"
+allow_remote_model_directory="${GLM52_ALLOW_REMOTE_MODEL_DIR:-0}"
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 module_directory="$(cd "${script_directory}/.." && pwd)"
 repository_root="$(cd "${module_directory}/../.." && pwd)"
@@ -24,6 +26,19 @@ compiler_archive="${repository_root}/build/libsparkpipe_compiler.a"
 if [[ "${maximum_stage_microseconds}" == "0" ]]; then
     echo "MAX_STAGE_MICROSECONDS must be nonzero" >&2
     exit 2
+fi
+if [[ -z "${model_directory}" ]]; then
+    echo "set GLM52_MODEL_DIR to the local Spark NVMe GLM artifact directory" >&2
+    exit 2
+fi
+if [[ "${allow_remote_model_directory}" != "1" ]]; then
+    case "${model_directory}" in
+        /mnt/mac/*|/Volumes/*)
+            echo "GLM52 hardware validation requires local Spark NVMe artifacts, not remote model source: ${model_directory}" >&2
+            echo "set GLM52_ALLOW_REMOTE_MODEL_DIR=1 only for non-performance debugging" >&2
+            exit 2
+            ;;
+    esac
 fi
 if [[ ! -s "${module_archive}" ]]; then
     echo "module archive is missing or empty" >&2
@@ -50,7 +65,6 @@ if ! [[ "${active_sequence_count}" =~ ^[0-9]+$ ]] || [[ "${active_sequence_count
     echo "GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT must be a positive integer" >&2
     exit 2
 fi
-
 required_cuda_link_args=()
 if [[ -n "${GLM52_REQUIRED_CUDA_LINK_ARGS:-}" ]]; then
     read -r -a required_cuda_link_args <<< "${GLM52_REQUIRED_CUDA_LINK_ARGS}"
