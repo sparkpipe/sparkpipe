@@ -22,7 +22,7 @@ DEFAULT_BUCKETS = (8, 16, 32, 64)
 DEFAULT_STAGES = ("11:8", "19:8", "27:8", "35:8", "43:8", "51:8", "59:8", "67:8", "75:3")
 DEFAULT_AOT_OUTPUT_DIR = Path("build/glm52_b12x_aot")
 DEFAULT_MODULE_ARCHIVE = Path("build/modules/glm52_resident_decode_stage/libglm52_resident_decode_stage.a")
-DEFAULT_DRIVER_SO = Path("build/packages/glm52_resident_decode_stage/stages/stage_000/model_driver.so")
+DEFAULT_DRIVER_SO = ""
 DEFAULT_B12X_ADAPTER_ARCHIVE = Path("build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a")
 DEFAULT_B12X_BACKEND_ARCHIVE = Path("build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a")
 DEFAULT_B12X_KERNEL_TABLE_ARCHIVE = Path("build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a")
@@ -37,6 +37,13 @@ DENSE_PREFIX_PASS_RE = re.compile(
     r"dense_prefix_routed_pipeline=1.*?dense_chain_layers=(?P<dense>\d+).*?"
     r"first_routed_layer=(?P<first>\d+).*?routed_chain_layers=(?P<count>\d+).*?"
     r"total_submissions=(?P<submissions>\d+).*?total_us=(?P<total>[0-9.]+).*?"
+    r"maximum_us=(?P<maximum>[0-9.]+).*?limit_us=(?P<limit>[0-9.]+).*?"
+    r"graph_captures=(?P<captures>\d+).*?graph_replays=(?P<replays>\d+)"
+)
+DENSE_CHAIN_PASS_RE = re.compile(
+    r"dense_chain_layers=(?P<dense>\d+).*?"
+    r"dense_chain_submissions=(?P<submissions>\d+).*?"
+    r"dense_chain_total_us=(?P<total>[0-9.]+).*?"
     r"maximum_us=(?P<maximum>[0-9.]+).*?limit_us=(?P<limit>[0-9.]+).*?"
     r"graph_captures=(?P<captures>\d+).*?graph_replays=(?P<replays>\d+)"
 )
@@ -84,7 +91,7 @@ def stage_validator_parameters(first_layer: int, layer_count: int) -> Tuple[int,
         raise SweepFailure(f"stage exceeds GLM52 layer count {first_layer}:{layer_count}")
     if first_layer == 0:
         routed_count = layer_count - FIRST_ROUTED_LAYER
-        if routed_count <= 0 or routed_count > MAX_ROUTED_LAYERS_PER_STAGE:
+        if routed_count < 0 or routed_count > MAX_ROUTED_LAYERS_PER_STAGE:
             raise SweepFailure(f"invalid dense-prefix stage {first_layer}:{layer_count}")
         return FIRST_ROUTED_LAYER, routed_count, True
     if first_layer < FIRST_ROUTED_LAYER or layer_count > MAX_ROUTED_LAYERS_PER_STAGE:
@@ -334,13 +341,17 @@ def direct_validator_environment(
     env["GLM52_MODEL_DIR"] = args.model_dir
     env["GLM52_ALLOW_REMOTE_MODEL_DIR"] = os.environ.get("GLM52_ALLOW_REMOTE_MODEL_DIR", "0")
     env["GLM52_B12X_MOE_PACK_DIR"] = str(args.b12x_moe_pack_dir)
-    env["GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX"] = str(routed_first_layer)
-    env["GLM52_ROUTED_CHAIN_LAYER_COUNT"] = str(routed_layer_count)
+    if not (dense_prefix and routed_layer_count == 0):
+        env["GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX"] = str(routed_first_layer)
+        env["GLM52_ROUTED_CHAIN_LAYER_COUNT"] = str(routed_layer_count)
     env["GLM52_ENABLE_CUDA_GRAPH_REPLAY"] = "1" if args.graph else "0"
     env["GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT"] = str(batch)
     if dense_prefix:
         env["GLM52_INPUT_TOKEN_ID"] = os.environ.get("GLM52_INPUT_TOKEN_ID", "1000")
-        env["GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK"] = "1"
+        if routed_layer_count == 0:
+            env["GLM52_CHAIN_DENSE_LAYERS"] = "1"
+        else:
+            env["GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK"] = "1"
     else:
         env["GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16"] = "1"
         env["GLM52_PIPELINE_INPUT_HIDDEN_BF16"] = str(input_hidden)
@@ -357,6 +368,9 @@ def parse_result(log_text: str) -> Dict[str, Any]:
     for candidate in DENSE_PREFIX_PASS_RE.finditer(log_text):
         match = candidate
         dense_prefix = True
+    for candidate in DENSE_CHAIN_PASS_RE.finditer(log_text):
+        match = candidate
+        dense_prefix = True
     if match is None:
         raise SweepFailure("validator did not emit stage timing")
     total_us = float(match.group("total"))
@@ -367,7 +381,8 @@ def parse_result(log_text: str) -> Dict[str, Any]:
     if dense_prefix:
         dense_count = int(match.group("dense"))
         first_layer = 0
-        layer_count = dense_count + int(match.group("count"))
+        routed_count = int(match.groupdict().get("count", 0) or 0)
+        layer_count = dense_count + routed_count
     else:
         first_layer = int(match.group("first"))
         layer_count = int(match.group("count"))
@@ -611,7 +626,7 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--b12x-moe-pack-dir", default=os.environ.get("B12X_MOE_PACK_OUTPUT_DIR", ""))
     parser.add_argument("--b12x-moe-pack-layers", default=os.environ.get("B12X_MOE_PACK_LAYERS", ""))
     parser.add_argument("--module-archive", default=DEFAULT_MODULE_ARCHIVE, type=Path)
-    parser.add_argument("--driver-so", default=DEFAULT_DRIVER_SO, type=Path)
+    parser.add_argument("--driver-so", default=os.environ.get("GLM52_STAGE_SWEEP_DRIVER_SO", DEFAULT_DRIVER_SO))
     parser.add_argument("--validator-cache-dir", default=None, type=Path)
     parser.add_argument("--required-cuda-link-args", default=os.environ.get("GLM52_REQUIRED_CUDA_LINK_ARGS", ""))
     parser.add_argument("--force-validator-rebuild", action="store_true")
@@ -633,13 +648,17 @@ def main(argv: Sequence[str]) -> int:
     if args.validator_cache_dir is None:
         args.validator_cache_dir = args.output_dir / "validators"
     args.module_archive = resolve_path(root, args.module_archive)
-    args.driver_so = resolve_path(root, args.driver_so)
+    if args.driver_so:
+        args.driver_so = resolve_path(root, Path(args.driver_so))
+    else:
+        args.driver_so = None
     args.input_hidden = resolve_path(root, args.input_hidden)
     if args.b12x_moe_pack_dir:
         args.b12x_moe_pack_dir = resolve_path(root, Path(args.b12x_moe_pack_dir))
     if not args.package_each_run:
         require_nonempty_file(args.module_archive, "resident decode-stage module archive")
-        require_nonempty_file(args.driver_so, "resident decode-stage driver shared object")
+        if args.driver_so is not None:
+            require_nonempty_file(args.driver_so, "resident decode-stage driver shared object")
         if not args.model_dir:
             raise SweepFailure("set --model-dir or GLM52_MODEL_DIR for direct cached validation")
         if not args.b12x_moe_pack_dir:

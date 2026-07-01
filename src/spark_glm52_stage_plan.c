@@ -479,20 +479,26 @@ static SparkStatus SparkGlm52StagePlanLoadMeasuredB64CostProfile(
     uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
+    static const uint32_t first_layer_index[13] = {
+        0u, 3u, 10u, 17u, 24u, 30u, 36u, 42u, 48u, 54u, 60u, 66u, 72u
+    };
+    static const uint32_t layer_count[13] = {
+        3u, 7u, 7u, 7u, 6u, 6u, 6u, 6u, 6u, 6u, 6u, 6u, 6u
+    };
     static const uint64_t stage_cost_ns[13] = {
-        50471000u,
-        46947000u,
-        45002000u,
-        48055000u,
-        49294000u,
-        53859000u,
-        59106000u,
-        72135000u,
-        84188000u,
-        96356000u,
-        91690000u,
-        95458000u,
-        96159000u
+        109282561u,
+        53329600u,
+        53304160u,
+        53497633u,
+        45740192u,
+        46787521u,
+        43794208u,
+        45640128u,
+        46685888u,
+        44448416u,
+        45181631u,
+        45586912u,
+        45202016u
     };
     uint32_t stage_index;
 
@@ -500,8 +506,8 @@ static SparkStatus SparkGlm52StagePlanLoadMeasuredB64CostProfile(
     {
         SparkGlm52StagePlanStoreUniformSegmentCost(
             stage_cost_ns[stage_index],
-            stage_index * 6u,
-            6u,
+            first_layer_index[stage_index],
+            layer_count[stage_index],
             layer_cost_ns);
     }
     *final_stage_extra_cost_ns_out = 16000000u;
