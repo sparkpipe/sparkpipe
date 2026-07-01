@@ -31,6 +31,12 @@ GLM52_STAGE_SWEEP_MAX_STAGE_US ?= 1000000
 GLM52_STAGE_SWEEP_OUTPUT_DIR ?= build/glm52_stage_bucket_sweep
 GLM52_STAGE_SWEEP_WARMUP_RUNS ?= 0
 GLM52_STAGE_SWEEP_MEASURE_RUNS ?= 1
+GLM52_STAGE_SWEEP_PACKAGE_EACH_RUN ?= 0
+GLM52_STAGE_SWEEP_MODULE_ARCHIVE ?= build/modules/glm52_resident_decode_stage/libglm52_resident_decode_stage.a
+GLM52_STAGE_SWEEP_DRIVER_SO ?= build/packages/glm52_resident_decode_stage/stages/stage_000/model_driver.so
+GLM52_STAGE_SWEEP_VALIDATOR_CACHE_DIR ?= $(GLM52_STAGE_SWEEP_OUTPUT_DIR)/validators
+GLM52_STAGE_SWEEP_REQUIRED_CUDA_LINK_ARGS ?=
+GLM52_STAGE_SWEEP_FORCE_VALIDATOR_REBUILD ?= 0
 B12X_ADAPTER_ARCHIVE := $(abspath build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a)
 B12X_COMPILED_BACKEND_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a)
 B12X_GENERATED_KERNEL_TABLE_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a)
@@ -309,6 +315,12 @@ glm52_stage_bucket_sweep:
 		--aot-output-dir "$(B12X_AOT_OUTPUT_DIR)" \
 		--b12x-moe-pack-dir "$(B12X_MOE_PACK_OUTPUT_DIR)" \
 		--b12x-moe-pack-layers "$(B12X_MOE_PACK_LAYERS)" \
+		--module-archive "$(GLM52_STAGE_SWEEP_MODULE_ARCHIVE)" \
+		--driver-so "$(GLM52_STAGE_SWEEP_DRIVER_SO)" \
+		--validator-cache-dir "$(GLM52_STAGE_SWEEP_VALIDATOR_CACHE_DIR)" \
+		$(if $(GLM52_STAGE_SWEEP_REQUIRED_CUDA_LINK_ARGS),--required-cuda-link-args "$(GLM52_STAGE_SWEEP_REQUIRED_CUDA_LINK_ARGS)",) \
+		$(if $(filter 1,$(GLM52_STAGE_SWEEP_PACKAGE_EACH_RUN)),--package-each-run,) \
+		$(if $(filter 1,$(GLM52_STAGE_SWEEP_FORCE_VALIDATOR_REBUILD)),--force-validator-rebuild,) \
 		$(if $(filter 1,$(B12X_MOE_PACK_REQUIRE_REUSE)),--require-pack-reuse,--allow-pack-build) \
 		$(if $(filter 1,$(B12X_MOE_PACK_VERIFY_REUSED_SHA256)),--verify-reused-sha256,) \
 		$(GLM52_STAGE_SWEEP_STAGE_ARGS) \

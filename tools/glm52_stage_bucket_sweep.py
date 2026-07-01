@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
@@ -16,6 +17,12 @@ HIDDEN_DIMENSION = 6144
 BF16_BYTES = 2
 DEFAULT_BUCKETS = (8, 16, 32, 64)
 DEFAULT_STAGES = ("11:8", "19:8", "27:8", "35:8", "43:8", "51:8", "59:8", "67:8", "75:3")
+DEFAULT_AOT_OUTPUT_DIR = Path("build/glm52_b12x_aot")
+DEFAULT_MODULE_ARCHIVE = Path("build/modules/glm52_resident_decode_stage/libglm52_resident_decode_stage.a")
+DEFAULT_DRIVER_SO = Path("build/packages/glm52_resident_decode_stage/stages/stage_000/model_driver.so")
+DEFAULT_B12X_ADAPTER_ARCHIVE = Path("build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a")
+DEFAULT_B12X_BACKEND_ARCHIVE = Path("build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a")
+DEFAULT_B12X_KERNEL_TABLE_ARCHIVE = Path("build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a")
 PASS_RE = re.compile(
     r"routed_pipeline_from_hidden=1.*?first_routed_layer=(?P<first>\d+).*?"
     r"routed_chain_layers=(?P<count>\d+).*?total_submissions=(?P<submissions>\d+).*?"
@@ -83,6 +90,231 @@ def ensure_batch_hidden(base_hidden: Path, output_dir: Path, batch: int) -> Path
     return output_path
 
 
+def resolve_path(root: Path, path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return (root / path).resolve()
+
+
+def require_nonempty_file(path: Path, label: str) -> None:
+    if not path.is_file() or path.stat().st_size == 0:
+        raise SweepFailure(f"missing {label}: {path}")
+
+
+def require_directory(path: Path, label: str) -> None:
+    if not path.is_dir():
+        raise SweepFailure(f"missing {label}: {path}")
+
+
+def read_runtime_link_args(path: Path) -> List[str]:
+    require_nonempty_file(path, "B12x runtime link args")
+    return shlex.split(path.read_text(encoding="utf-8"))
+
+
+def resolve_link_arg_file(root: Path, link_arg: str) -> Path | None:
+    if link_arg.startswith("-"):
+        return None
+    candidate = Path(link_arg)
+    if candidate.suffix not in {".a", ".so", ".o"}:
+        return None
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    return candidate.resolve()
+
+
+def required_cuda_link_args(root: Path, args: argparse.Namespace) -> List[str]:
+    if args.required_cuda_link_args:
+        return shlex.split(args.required_cuda_link_args)
+    aot_output_dir = resolve_path(root, Path(args.aot_output_dir))
+    archive_paths = [
+        resolve_path(root, DEFAULT_B12X_ADAPTER_ARCHIVE),
+        resolve_path(root, DEFAULT_B12X_BACKEND_ARCHIVE),
+        resolve_path(root, DEFAULT_B12X_KERNEL_TABLE_ARCHIVE),
+    ]
+    for archive_path in archive_paths:
+        require_nonempty_file(archive_path, "B12x CUDA archive")
+    runtime_link_args = read_runtime_link_args(
+        aot_output_dir / "generated" / "runtime_link_args.txt"
+    )
+    return [str(archive_path) for archive_path in archive_paths] + runtime_link_args
+
+
+def library_path_from_link_args(root: Path, link_args: Sequence[str]) -> str:
+    directories: List[str] = []
+    seen: set[str] = set()
+    for link_arg in link_args:
+        candidate = resolve_link_arg_file(root, link_arg)
+        if candidate is None or candidate.suffix != ".so":
+            continue
+        directory = str(candidate.parent)
+        if directory not in seen:
+            seen.add(directory)
+            directories.append(directory)
+    return ":".join(directories)
+
+
+def validator_inputs(
+    root: Path,
+    args: argparse.Namespace,
+    required_link_args: Sequence[str],
+) -> List[Path]:
+    inputs = [
+        root / "modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu",
+        args.module_archive,
+        root / "build/libsparkpipe_common.a",
+        root / "build/libsparkpipe_runtime.a",
+        root / "build/libsparkpipe_compiler.a",
+    ]
+    for link_arg in required_link_args:
+        candidate = resolve_link_arg_file(root, link_arg)
+        if candidate is not None:
+            inputs.append(candidate)
+    return inputs
+
+
+def validator_metadata(
+    compile_command: Sequence[str],
+    input_paths: Sequence[Path],
+) -> Dict[str, Any]:
+    return {
+        "compile_command": list(compile_command),
+        "inputs": [
+            {
+                "path": str(input_path),
+                "mtime_ns": input_path.stat().st_mtime_ns,
+                "size": input_path.stat().st_size,
+            }
+            for input_path in input_paths
+        ],
+    }
+
+
+def validator_is_current(
+    validator_path: Path,
+    metadata_path: Path,
+    expected_metadata: Dict[str, Any],
+) -> bool:
+    if not validator_path.is_file() or validator_path.stat().st_size == 0:
+        return False
+    if not metadata_path.is_file():
+        return False
+    try:
+        actual_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+    return actual_metadata == expected_metadata
+
+
+def ensure_cached_validator(
+    root: Path,
+    args: argparse.Namespace,
+    batch: int,
+    required_link_args: Sequence[str],
+) -> Path:
+    cache_dir = resolve_path(root, args.validator_cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    validator_path = cache_dir / f"glm52_resident_decode_stage_validator_b{batch}"
+    metadata_path = validator_path.with_suffix(".json")
+    make_command = [
+        "make",
+        "build/libsparkpipe_common.a",
+        "build/libsparkpipe_runtime.a",
+        "build/libsparkpipe_compiler.a",
+    ]
+    make_result = subprocess.run(
+        make_command,
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if make_result.returncode != 0:
+        raise SweepFailure(
+            "failed to build base SparkPipe archives for validator:\n"
+            + make_result.stdout
+            + make_result.stderr
+        )
+    input_paths = validator_inputs(root, args, required_link_args)
+    for input_path in input_paths:
+        require_nonempty_file(input_path, "validator input")
+    module_dir = root / "modules/glm52_resident_decode_stage"
+    compile_command = [
+        args.nvcc,
+        "-std=c++17",
+        "-O3",
+        "--use_fast_math",
+        f"-arch={args.cuda_arch}",
+        f"-DSPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT={batch}u",
+        f"-I{root / 'include'}",
+        f"-I{module_dir / 'include'}",
+        f"-I{module_dir / 'source'}",
+        str(module_dir / "validation/spark_glm52_resident_decode_stage_cuda_validation.cu"),
+        str(args.module_archive),
+        str(root / "build/libsparkpipe_runtime.a"),
+        str(root / "build/libsparkpipe_compiler.a"),
+        str(root / "build/libsparkpipe_common.a"),
+        *required_link_args,
+        "-lcublasLt",
+        "-lcublas",
+        "-ldl",
+        "-o",
+        str(validator_path),
+    ]
+    metadata = validator_metadata(compile_command, input_paths)
+    if not args.force_validator_rebuild and validator_is_current(
+        validator_path,
+        metadata_path,
+        metadata,
+    ):
+        return validator_path
+    compile_result = subprocess.run(
+        compile_command,
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    compile_log = cache_dir / f"glm52_resident_decode_stage_validator_b{batch}.build.log"
+    compile_log.write_text(compile_result.stdout + compile_result.stderr, encoding="utf-8")
+    if compile_result.returncode != 0:
+        raise SweepFailure(f"validator compile failed; see {compile_log}")
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    return validator_path
+
+
+def direct_validator_environment(
+    root: Path,
+    args: argparse.Namespace,
+    batch: int,
+    first_layer: int,
+    layer_count: int,
+    input_hidden: Path,
+    output_hidden: Path,
+) -> Dict[str, str]:
+    env = os.environ.copy()
+    library_path = library_path_from_link_args(root, args.required_cuda_link_args_list)
+    if library_path:
+        env["LD_LIBRARY_PATH"] = (
+            library_path
+            if not env.get("LD_LIBRARY_PATH")
+            else library_path + ":" + env["LD_LIBRARY_PATH"]
+        )
+    env["GLM52_MODEL_DIR"] = args.model_dir
+    env["GLM52_ALLOW_REMOTE_MODEL_DIR"] = os.environ.get("GLM52_ALLOW_REMOTE_MODEL_DIR", "0")
+    env["GLM52_B12X_MOE_PACK_DIR"] = str(args.b12x_moe_pack_dir)
+    env["GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX"] = str(first_layer)
+    env["GLM52_ROUTED_CHAIN_LAYER_COUNT"] = str(layer_count)
+    env["GLM52_ENABLE_CUDA_GRAPH_REPLAY"] = "1" if args.graph else "0"
+    env["GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT"] = str(batch)
+    env["GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16"] = "1"
+    env["GLM52_PIPELINE_INPUT_HIDDEN_BF16"] = str(input_hidden)
+    env["GLM52_PIPELINE_OUTPUT_HIDDEN_BF16"] = str(output_hidden)
+    env["GLM52_REQUIRED_CUDA_LINK_ARGS"] = " ".join(args.required_cuda_link_args_list)
+    return env
+
+
 def parse_result(log_text: str) -> Dict[str, Any]:
     match = None
     for candidate in PASS_RE.finditer(log_text):
@@ -106,7 +338,7 @@ def parse_result(log_text: str) -> Dict[str, Any]:
     }
 
 
-def build_command(
+def build_package_command(
     args: argparse.Namespace,
     batch: int,
     first_layer: int,
@@ -150,6 +382,16 @@ def build_command(
     return command
 
 
+def build_direct_command(
+    validator_path: Path,
+    args: argparse.Namespace,
+) -> List[str]:
+    command = [str(validator_path), str(args.max_stage_us)]
+    if args.driver_so:
+        command.append(str(args.driver_so))
+    return command
+
+
 def run_one(
     root: Path,
     args: argparse.Namespace,
@@ -165,8 +407,25 @@ def run_one(
         args.output_dir /
         f"output_hidden_f{first_layer}_c{layer_count}_b{batch}_{attempt_label}.bf16"
     )
-    command = build_command(args, batch, first_layer, layer_count, input_hidden, output_hidden)
-    env = os.environ.copy()
+    if args.package_each_run:
+        command = build_package_command(args, batch, first_layer, layer_count, input_hidden, output_hidden)
+        env = os.environ.copy()
+        execution_mode = "package"
+        validator_path = ""
+    else:
+        validator = ensure_cached_validator(root, args, batch, args.required_cuda_link_args_list)
+        command = build_direct_command(validator, args)
+        env = direct_validator_environment(
+            root,
+            args,
+            batch,
+            first_layer,
+            layer_count,
+            input_hidden,
+            output_hidden,
+        )
+        execution_mode = "direct_cached_validator"
+        validator_path = str(validator)
     completed = subprocess.run(
         command,
         cwd=root,
@@ -184,6 +443,8 @@ def run_one(
         "attempt_index": attempt_index,
         "warmup": warmup,
         "graph_requested": bool(args.graph),
+        "execution_mode": execution_mode,
+        "validator_path": validator_path,
         "command": command,
         "returncode": completed.returncode,
         "log_path": str(
@@ -265,6 +526,8 @@ def write_reports(
         "warmup_runs",
         "measure_runs",
         "best_attempt_index",
+        "execution_mode",
+        "validator_path",
         "error",
         "log_path",
     ]
@@ -285,9 +548,18 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--cuda-arch", default="sm_121a")
     parser.add_argument("--nvcc", default=os.environ.get("NVCC", "nvcc"))
     parser.add_argument("--aot-env", default=os.environ.get("SPARKPIPE_B12X_AOT_ENV", ""))
-    parser.add_argument("--aot-output-dir", default=os.environ.get("B12X_AOT_OUTPUT_DIR", ""))
+    parser.add_argument(
+        "--aot-output-dir",
+        default=os.environ.get("B12X_AOT_OUTPUT_DIR", str(DEFAULT_AOT_OUTPUT_DIR)),
+    )
     parser.add_argument("--b12x-moe-pack-dir", default=os.environ.get("B12X_MOE_PACK_OUTPUT_DIR", ""))
     parser.add_argument("--b12x-moe-pack-layers", default=os.environ.get("B12X_MOE_PACK_LAYERS", ""))
+    parser.add_argument("--module-archive", default=DEFAULT_MODULE_ARCHIVE, type=Path)
+    parser.add_argument("--driver-so", default=DEFAULT_DRIVER_SO, type=Path)
+    parser.add_argument("--validator-cache-dir", default=None, type=Path)
+    parser.add_argument("--required-cuda-link-args", default=os.environ.get("GLM52_REQUIRED_CUDA_LINK_ARGS", ""))
+    parser.add_argument("--force-validator-rebuild", action="store_true")
+    parser.add_argument("--package-each-run", action="store_true")
     parser.add_argument("--allow-pack-build", action="store_true")
     parser.add_argument("--require-pack-reuse", action="store_true")
     parser.add_argument("--verify-reused-sha256", action="store_true")
@@ -302,6 +574,24 @@ def main(argv: Sequence[str]) -> int:
     root = repo_root()
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if args.validator_cache_dir is None:
+        args.validator_cache_dir = args.output_dir / "validators"
+    args.module_archive = resolve_path(root, args.module_archive)
+    args.driver_so = resolve_path(root, args.driver_so)
+    args.input_hidden = resolve_path(root, args.input_hidden)
+    if args.b12x_moe_pack_dir:
+        args.b12x_moe_pack_dir = resolve_path(root, Path(args.b12x_moe_pack_dir))
+    if not args.package_each_run:
+        require_nonempty_file(args.module_archive, "resident decode-stage module archive")
+        require_nonempty_file(args.driver_so, "resident decode-stage driver shared object")
+        if not args.model_dir:
+            raise SweepFailure("set --model-dir or GLM52_MODEL_DIR for direct cached validation")
+        if not args.b12x_moe_pack_dir:
+            raise SweepFailure("set --b12x-moe-pack-dir for direct cached validation")
+        require_directory(Path(args.b12x_moe_pack_dir), "B12x MoE pack directory")
+        args.required_cuda_link_args_list = required_cuda_link_args(root, args)
+    else:
+        args.required_cuda_link_args_list = []
     if not args.input_hidden.exists():
         raise SweepFailure(f"missing input hidden file: {args.input_hidden}")
     if args.warmup_runs < 0 or args.measure_runs <= 0:

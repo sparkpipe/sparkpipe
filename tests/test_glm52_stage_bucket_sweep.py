@@ -55,16 +55,19 @@ def main() -> int:
         warmup_runs=1,
         measure_runs=2,
     )
-    command = module.build_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
+    command = module.build_package_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
     assert "B12X_MOE_PACK_REQUIRE_REUSE=1" in command
     assert "B12X_MOE_PACK_VERIFY_REUSED_SHA256=1" not in command
     args.allow_pack_build = True
-    command = module.build_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
+    command = module.build_package_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
     assert "B12X_MOE_PACK_REQUIRE_REUSE=0" in command
     args.allow_pack_build = False
     args.verify_reused_sha256 = True
-    command = module.build_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
+    command = module.build_package_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
     assert "B12X_MOE_PACK_VERIFY_REUSED_SHA256=1" in command
+    args.driver_so = Path("model_driver.so")
+    command = module.build_direct_command(Path("validator_b8"), args)
+    assert command == ["validator_b8", "1000000", "model_driver.so"]
     attempts = [
         {"status": "pass", "warmup": True, "attempt_index": 0, "total_us": 60000.0},
         {"status": "pass", "warmup": False, "attempt_index": 0, "total_us": 50000.0},
