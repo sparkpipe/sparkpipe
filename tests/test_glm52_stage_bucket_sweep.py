@@ -39,6 +39,21 @@ def main() -> int:
     assert tok_s == 1000.0
     assert module.parse_csv_u32("8,16;32") == [8, 16, 32]
     assert module.parse_stage("75:3") == (75, 3)
+    assert module.parse_stage("0:9") == (0, 9)
+    assert module.stage_validator_parameters(0, 9) == (3, 6, True)
+    assert module.stage_validator_parameters(75, 3) == (75, 3, False)
+    dense_prefix_sample = (
+        "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 "
+        "dense_prefix_routed_pipeline=1 intermediate_stage=1 production_b12x=1 "
+        "dense_chain_layers=3 first_routed_layer=3 routed_chain_layers=6 "
+        "total_submissions=9 total_us=45000.000 maximum_us=5200.000 limit_us=1000000.000 "
+        "pipeline_output_hidden=y input_embedding_token=1000 layer3_selected_expert=42 "
+        "layer3_bound_experts=256 launch_chains=9 graph_captures=1 graph_replays=1"
+    )
+    dense_parsed = module.parse_result(dense_prefix_sample)
+    assert dense_parsed["first_layer"] == 0
+    assert dense_parsed["layer_count"] == 9
+    assert dense_parsed["submissions"] == 9
     args = SimpleNamespace(
         max_stage_us="1000000",
         graph=False,
@@ -58,6 +73,11 @@ def main() -> int:
     command = module.build_package_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
     assert "B12X_MOE_PACK_REQUIRE_REUSE=1" in command
     assert "B12X_MOE_PACK_VERIFY_REUSED_SHA256=1" not in command
+    dense_command = module.build_package_command(args, 8, 0, 9, Path("in.bf16"), Path("out.bf16"))
+    assert "GLM52_VALIDATION_MODE=dense_to_layer3_routed" in dense_command
+    assert "GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX=3" in dense_command
+    assert "GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT=6" in dense_command
+    assert "GLM52_PIPELINE_INPUT_HIDDEN_BF16=in.bf16" not in dense_command
     args.allow_pack_build = True
     command = module.build_package_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
     assert "B12X_MOE_PACK_REQUIRE_REUSE=0" in command
