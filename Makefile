@@ -81,6 +81,7 @@ PYTHON_TESTS := \
 	tests/test_b12x_scale_layout.py \
 	tests/test_glm52_b12x_pack_worker.py \
 	tests/test_glm52_b12x_relocate_aot_bundle.py \
+	tests/test_glm52_final_from_hidden_mode.py \
 	tests/test_glm52_stage_bucket_sweep.py
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \

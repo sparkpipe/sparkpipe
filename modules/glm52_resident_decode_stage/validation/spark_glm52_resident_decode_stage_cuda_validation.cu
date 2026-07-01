@@ -4172,6 +4172,71 @@ static bool SparkValidationWriteHiddenBf16File(
     return true;
 }
 
+static void SparkValidationSetOutputHiddenOnly(
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t enabled)
+{
+    if (enabled != 0u)
+    {
+        node_context->reserved_execution_flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY;
+    }
+    else
+    {
+        node_context->reserved_execution_flags &=
+            ~SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY;
+    }
+}
+
+static bool SparkValidationReadFinalTokenEvidence(
+    SparkValidationDeviceBuffers *buffers,
+    uint32_t *selected_token_id,
+    uint32_t *mtp_draft_token_id,
+    uint32_t *mtp_reject_token_id)
+{
+    uint32_t mtp_draft_token_ids[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT];
+    uint32_t mtp_committed_token_ids[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT];
+
+    if (buffers == 0 ||
+        selected_token_id == 0 ||
+        mtp_draft_token_id == 0 ||
+        mtp_reject_token_id == 0)
+    {
+        return false;
+    }
+    memset(mtp_draft_token_ids, 0, sizeof(mtp_draft_token_ids));
+    memset(mtp_committed_token_ids, 0, sizeof(mtp_committed_token_ids));
+    if (!SparkValidationCudaSucceeded(
+            cudaMemcpy(
+                selected_token_id,
+                buffers->restricted_selected_token_ids,
+                sizeof(*selected_token_id),
+                cudaMemcpyDeviceToHost),
+            "copy final restricted selected token") ||
+        !SparkValidationCudaSucceeded(
+            cudaMemcpy(
+                mtp_draft_token_ids,
+                buffers->mtp_draft_token_ids,
+                sizeof(mtp_draft_token_ids),
+                cudaMemcpyDeviceToHost),
+            "copy final mtp draft tokens") ||
+        !SparkValidationCudaSucceeded(
+            cudaMemcpy(
+                mtp_committed_token_ids,
+                buffers->mtp_committed_token_ids,
+                sizeof(mtp_committed_token_ids),
+                cudaMemcpyDeviceToHost),
+            "copy final mtp committed tokens"))
+    {
+        return false;
+    }
+    *mtp_draft_token_id = mtp_draft_token_ids[0];
+    *mtp_reject_token_id = mtp_committed_token_ids[1];
+    return true;
+}
+
 static bool SparkValidationCopyDeviceBf16Row(
     uint16_t *host_row,
     const uint16_t *device_rows,
@@ -6712,6 +6777,7 @@ static bool SparkValidationRunRoutedChainFromHidden(
     SparkValidationLayer3RoutedExpertNvfp4Fixture *layer3_routed_expert,
     uint32_t first_routed_layer_index,
     uint32_t routed_chain_layer_count,
+    uint32_t final_token_stage,
     double *total_microseconds,
     double *maximum_observed_microseconds,
     uint32_t *submission_count)
@@ -6739,6 +6805,13 @@ static bool SparkValidationRunRoutedChainFromHidden(
          routed_layer_offset < routed_chain_layer_count;
          ++routed_layer_offset)
     {
+        uint32_t run_final_outputs;
+
+        run_final_outputs = final_token_stage != 0u &&
+            routed_layer_offset + 1u == routed_chain_layer_count;
+        SparkValidationSetOutputHiddenOnly(
+            node_context,
+            run_final_outputs == 0u);
         if (!SparkValidationRunRoutedLayerProductionB12x(
                 buffers,
                 node_context,
@@ -6751,15 +6824,28 @@ static bool SparkValidationRunRoutedChainFromHidden(
                 SPARK_VALIDATION_CURRENT_POSITION,
                 SPARK_VALIDATION_CURRENT_CACHE_SLOT,
                 SPARK_VALIDATION_CONTEXT_LENGTH,
-                0u,
+                run_final_outputs,
                 total_microseconds,
                 maximum_observed_microseconds,
                 submission_count))
+        {
+            SparkValidationSetOutputHiddenOnly(
+                node_context,
+                final_token_stage == 0u);
             return false;
+        }
         if (routed_layer_offset + 1u < routed_chain_layer_count &&
             !SparkValidationCopyLayerOutputToInput(buffers))
+        {
+            SparkValidationSetOutputHiddenOnly(
+                node_context,
+                final_token_stage == 0u);
             return false;
+        }
     }
+    SparkValidationSetOutputHiddenOnly(
+        node_context,
+        final_token_stage == 0u);
     return true;
 }
 
@@ -6794,6 +6880,7 @@ int main(int argc, char **argv)
     const char *load_layer3_routed_expert_topk_text;
     const char *chain_dense_layer3_routed_expert_topk_text;
     const char *chain_routed_from_hidden_text;
+    const char *chain_routed_from_hidden_final_text;
     const char *pipeline_input_hidden_path;
     const char *pipeline_output_hidden_path;
     const char *routed_chain_first_layer_text;
@@ -6817,6 +6904,7 @@ int main(int argc, char **argv)
     uint32_t use_layer3_routed_expert_topk;
     uint32_t use_dense_chain_layer3_routed_expert_topk;
     uint32_t use_routed_chain_from_hidden;
+    uint32_t use_routed_chain_from_hidden_final;
     uint32_t routed_chain_first_layer_index;
     uint32_t routed_chain_layer_count;
     uint32_t enable_graph_replay;
@@ -6865,6 +6953,8 @@ int main(int argc, char **argv)
         getenv("GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK");
     chain_routed_from_hidden_text =
         getenv("GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16");
+    chain_routed_from_hidden_final_text =
+        getenv("GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN");
     pipeline_input_hidden_path =
         getenv("GLM52_PIPELINE_INPUT_HIDDEN_BF16");
     pipeline_output_hidden_path =
@@ -6919,6 +7009,10 @@ int main(int argc, char **argv)
         chain_routed_from_hidden_text != 0 &&
         chain_routed_from_hidden_text[0] != '\0' &&
         strcmp(chain_routed_from_hidden_text, "0") != 0;
+    use_routed_chain_from_hidden_final =
+        chain_routed_from_hidden_final_text != 0 &&
+        chain_routed_from_hidden_final_text[0] != '\0' &&
+        strcmp(chain_routed_from_hidden_final_text, "0") != 0;
     enable_graph_replay =
         enable_graph_replay_text != 0 &&
         enable_graph_replay_text[0] != '\0' &&
@@ -6934,7 +7028,8 @@ int main(int argc, char **argv)
         use_layer3_routed_expert = 1u;
         use_layer3_routed_expert_topk = 1u;
     }
-    if (use_routed_chain_from_hidden != 0u)
+    if (use_routed_chain_from_hidden != 0u ||
+        use_routed_chain_from_hidden_final != 0u)
     {
         use_attention_bf16 = 1u;
         use_layer3_routed_expert = 1u;
@@ -7080,12 +7175,19 @@ int main(int argc, char **argv)
          use_prefill_kv != 0u ||
          use_dense_chain != 0u ||
          use_routed_chain_from_hidden != 0u ||
+         use_routed_chain_from_hidden_final != 0u ||
          use_layer3_router != 0u ||
          use_layer3_shared_expert != 0u ||
          check_layer0_reference != 0u ||
          check_layer0_full_reference != 0u))
     {
         fprintf(stderr, "GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK requires GLM52_INPUT_TOKEN_ID and owns dense-prefix plus layer3 top-k checks\n");
+        return 2;
+    }
+    if (use_routed_chain_from_hidden != 0u &&
+        use_routed_chain_from_hidden_final != 0u)
+    {
+        fprintf(stderr, "choose only one routed-from-hidden mode: intermediate or final-token\n");
         return 2;
     }
     if (use_routed_chain_from_hidden != 0u &&
@@ -7101,6 +7203,21 @@ int main(int argc, char **argv)
          check_layer0_full_reference != 0u))
     {
         fprintf(stderr, "GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16 requires GLM52_PIPELINE_INPUT_HIDDEN_BF16 and owns routed slice checks\n");
+        return 2;
+    }
+    if (use_routed_chain_from_hidden_final != 0u &&
+        (pipeline_input_hidden_path == 0 ||
+         pipeline_input_hidden_path[0] == '\0' ||
+         use_input_embedding != 0u ||
+         use_prefill_kv != 0u ||
+         use_dense_chain != 0u ||
+         use_dense_chain_layer3_routed_expert_topk != 0u ||
+         use_layer3_router != 0u ||
+         use_layer3_shared_expert != 0u ||
+         check_layer0_reference != 0u ||
+         check_layer0_full_reference != 0u))
+    {
+        fprintf(stderr, "GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN requires GLM52_PIPELINE_INPUT_HIDDEN_BF16 and owns final routed slice checks\n");
         return 2;
     }
     if (use_layer3_router != 0u &&
@@ -7130,6 +7247,7 @@ int main(int argc, char **argv)
     if (use_layer3_routed_expert != 0u &&
         use_dense_chain_layer3_routed_expert_topk == 0u &&
         use_routed_chain_from_hidden == 0u &&
+        use_routed_chain_from_hidden_final == 0u &&
         (use_input_embedding == 0u ||
          use_prefill_kv != 0u ||
          use_dense_chain != 0u ||
@@ -7229,6 +7347,7 @@ int main(int argc, char **argv)
     if (use_layer3_routed_expert != 0u &&
         use_dense_chain_layer3_routed_expert_topk == 0u &&
         use_routed_chain_from_hidden == 0u &&
+        use_routed_chain_from_hidden_final == 0u &&
         !SparkValidationLoadLayer3RoutedExpertNvfp4Fixture(
             &buffers,
             model_directory,
@@ -7284,7 +7403,8 @@ int main(int argc, char **argv)
     }
     if (use_layer3_routed_expert != 0u &&
         use_dense_chain_layer3_routed_expert_topk == 0u &&
-        use_routed_chain_from_hidden == 0u)
+        use_routed_chain_from_hidden == 0u &&
+        use_routed_chain_from_hidden_final == 0u)
     {
         if (!SparkValidationBindB12xMoePlanForLayer(
                 &buffers,
@@ -7312,7 +7432,8 @@ int main(int argc, char **argv)
     if (use_layer3_router != 0u ||
         use_layer3_routed_expert != 0u ||
         use_dense_chain_layer3_routed_expert_topk != 0u ||
-        use_routed_chain_from_hidden != 0u)
+        use_routed_chain_from_hidden != 0u ||
+        use_routed_chain_from_hidden_final != 0u)
     {
         required_linear_plan_mask |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_ROUTER_LOGITS;
@@ -7337,7 +7458,8 @@ int main(int argc, char **argv)
     {
         return 2;
     }
-    if (use_routed_chain_from_hidden != 0u &&
+    if ((use_routed_chain_from_hidden != 0u ||
+         use_routed_chain_from_hidden_final != 0u) &&
         !SparkValidationReadHiddenBf16File(
             &buffers,
             pipeline_input_hidden_path))
@@ -7446,6 +7568,7 @@ int main(int argc, char **argv)
                     &layer3_routed_expert,
                     routed_chain_first_layer_index,
                     routed_chain_layer_count,
+                    0u,
                     &total_microseconds,
                     &maximum_observed_microseconds,
                     &submission_count) ||
@@ -7479,6 +7602,79 @@ int main(int argc, char **argv)
                 pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
                 layer3_routed_expert.selected_expert_id,
                 layer3_routed_expert.bound_expert_count,
+                (unsigned long long)cuda_slot_state.launch_chain_count,
+                (unsigned long long)cuda_slot_state.graph_capture_count,
+                (unsigned long long)cuda_slot_state.graph_replay_count);
+            return 0;
+        }
+        if (use_routed_chain_from_hidden_final != 0u)
+        {
+            uint32_t submission_count;
+            uint32_t selected_token_id;
+            uint32_t mtp_draft_token_id;
+            uint32_t mtp_reject_token_id;
+
+            if (!SparkValidationRunRoutedChainFromHidden(
+                    &buffers,
+                    &node_context,
+                    cuda_stream,
+                    argv[2],
+                    model_directory,
+                    &real_lm_head,
+                    &layer3_routed_expert,
+                    routed_chain_first_layer_index,
+                    routed_chain_layer_count,
+                    1u,
+                    &total_microseconds,
+                    &maximum_observed_microseconds,
+                    &submission_count) ||
+                !SparkValidationWriteHiddenBf16File(
+                    pipeline_output_hidden_path,
+                    buffers.layer_output_hidden_bf16) ||
+                !SparkValidationReadFinalTokenEvidence(
+                    &buffers,
+                    &selected_token_id,
+                    &mtp_draft_token_id,
+                    &mtp_reject_token_id))
+            {
+                return 2;
+            }
+            if (enable_graph_replay != 0u &&
+                cuda_slot_state.graph_capture_count == 0u &&
+                cuda_slot_state.graph_replay_count == 0u)
+            {
+                fprintf(stderr, "GLM52_ENABLE_CUDA_GRAPH_REPLAY requested but no graph capture/replay was observed\n");
+                return 2;
+            }
+            SparkGlm52ResidentDecodeStageBackendQuiesce(&node_context);
+            if (maximum_observed_microseconds > maximum_stage_microseconds)
+            {
+                fprintf(
+                    stderr,
+                    "glm52_resident_decode_stage final routed pipeline orchestrator validation failed total_us=%.3f maximum_us=%.3f limit_us=%.3f submissions=%u\n",
+                    total_microseconds,
+                    maximum_observed_microseconds,
+                    maximum_stage_microseconds,
+                    submission_count);
+                return 1;
+            }
+            printf(
+                "glm52_resident_decode_stage orchestrator validation passed fixture=local_hidden_handoff routed_pipeline_from_hidden_final=1 final_stage=1 first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s restricted_token=%u mtp_draft=%u mtp_reject=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+                routed_chain_first_layer_index,
+                routed_chain_layer_count,
+                submission_count,
+                total_microseconds,
+                maximum_observed_microseconds,
+                maximum_stage_microseconds,
+                pipeline_input_hidden_path,
+                pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
+                selected_token_id,
+                mtp_draft_token_id,
+                mtp_reject_token_id,
+                layer3_routed_expert.selected_expert_id,
+                layer3_routed_expert.bound_expert_count,
+                real_lm_head.ready,
+                real_lm_head.maximum_logit_error,
                 (unsigned long long)cuda_slot_state.launch_chain_count,
                 (unsigned long long)cuda_slot_state.graph_capture_count,
                 (unsigned long long)cuda_slot_state.graph_replay_count);
@@ -7789,6 +7985,7 @@ int main(int argc, char **argv)
                 &layer3_routed_expert,
                 routed_chain_first_layer_index,
                 routed_chain_layer_count,
+                0u,
                 &total_microseconds,
                 &maximum_observed_microseconds,
                 &submission_count) ||
@@ -7822,6 +8019,79 @@ int main(int argc, char **argv)
             pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
             layer3_routed_expert.selected_expert_id,
             layer3_routed_expert.bound_expert_count,
+            (unsigned long long)cuda_slot_state.launch_chain_count,
+            (unsigned long long)cuda_slot_state.graph_capture_count,
+            (unsigned long long)cuda_slot_state.graph_replay_count);
+        return 0;
+    }
+    if (use_routed_chain_from_hidden_final != 0u)
+    {
+        uint32_t submission_count;
+        uint32_t selected_token_id;
+        uint32_t mtp_draft_token_id;
+        uint32_t mtp_reject_token_id;
+
+        if (!SparkValidationRunRoutedChainFromHidden(
+                &buffers,
+                &node_context,
+                cuda_stream,
+                0,
+                model_directory,
+                &real_lm_head,
+                &layer3_routed_expert,
+                routed_chain_first_layer_index,
+                routed_chain_layer_count,
+                1u,
+                &total_microseconds,
+                &maximum_observed_microseconds,
+                &submission_count) ||
+            !SparkValidationWriteHiddenBf16File(
+                pipeline_output_hidden_path,
+                buffers.layer_output_hidden_bf16) ||
+            !SparkValidationReadFinalTokenEvidence(
+                &buffers,
+                &selected_token_id,
+                &mtp_draft_token_id,
+                &mtp_reject_token_id))
+        {
+            return 2;
+        }
+        if (enable_graph_replay != 0u &&
+            cuda_slot_state.graph_capture_count == 0u &&
+            cuda_slot_state.graph_replay_count == 0u)
+        {
+            fprintf(stderr, "GLM52_ENABLE_CUDA_GRAPH_REPLAY requested but no graph capture/replay was observed\n");
+            return 2;
+        }
+        SparkGlm52ResidentDecodeStageBackendQuiesce(&node_context);
+        if (maximum_observed_microseconds > maximum_stage_microseconds)
+        {
+            fprintf(
+                stderr,
+                "glm52_resident_decode_stage final routed pipeline validation failed total_us=%.3f maximum_us=%.3f limit_us=%.3f submissions=%u\n",
+                total_microseconds,
+                maximum_observed_microseconds,
+                maximum_stage_microseconds,
+                submission_count);
+            return 1;
+        }
+        printf(
+            "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff routed_pipeline_from_hidden_final=1 final_stage=1 first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s restricted_token=%u mtp_draft=%u mtp_reject=%u layer3_selected_expert=%u layer3_bound_experts=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            routed_chain_first_layer_index,
+            routed_chain_layer_count,
+            submission_count,
+            total_microseconds,
+            maximum_observed_microseconds,
+            maximum_stage_microseconds,
+            pipeline_input_hidden_path,
+            pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
+            selected_token_id,
+            mtp_draft_token_id,
+            mtp_reject_token_id,
+            layer3_routed_expert.selected_expert_id,
+            layer3_routed_expert.bound_expert_count,
+            real_lm_head.ready,
+            real_lm_head.maximum_logit_error,
             (unsigned long long)cuda_slot_state.launch_chain_count,
             (unsigned long long)cuda_slot_state.graph_capture_count,
             (unsigned long long)cuda_slot_state.graph_replay_count);

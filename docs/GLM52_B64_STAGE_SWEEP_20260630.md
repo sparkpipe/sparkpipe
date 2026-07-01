@@ -35,6 +35,12 @@ For a filled B64 pipeline, this stage currently sets the aggregate routed-pipeli
 - The generated AOT metadata originally contained Spark2 absolute runtime paths. Worker validation needed `tvm_ffi_flags.mk` and `runtime_link_args.txt` relocated to the worker user path.
 - CUDA graph replay was disabled for this sweep.
 - The current execution still reports 8 submissions for each 8-layer stage; true stage-slice graph capture remains a separate optimization target.
+- `tools/glm52_stage_bucket_sweep.py` is a benchmark/setup harness only. It is
+  not a production pipeline runner. After AOT and `.spb12x` setup, runtime
+  execution must be C/CUDA.
+- The `75:3` line above used hidden-only intermediate timing. Final token
+  validation must use `GLM52_VALIDATION_MODE=routed_from_hidden_final` and emit
+  `routed_pipeline_from_hidden_final=1 final_stage=1`.
 
 ## Evidence Paths
 
