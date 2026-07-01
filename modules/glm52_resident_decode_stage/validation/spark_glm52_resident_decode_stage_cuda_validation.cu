@@ -2509,6 +2509,8 @@ static bool SparkValidationAllocateDeviceBuffers(
     uint64_t routed_down_scale_count;
     uint64_t routed_bound_expert_capacity;
     uint64_t restricted_weight_count;
+    uint64_t final_token_count;
+    uint64_t mtp_token_count;
     uint64_t mtp_payload_count;
     uint64_t mtp_scale_count;
     uint64_t rope_table_count;
@@ -2641,6 +2643,11 @@ static bool SparkValidationAllocateDeviceBuffers(
     restricted_weight_count =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    final_token_count =
+        (uint64_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT;
+    mtp_token_count =
+        final_token_count *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
     mtp_payload_count = restricted_weight_count / 2u;
     mtp_scale_count =
         restricted_weight_count /
@@ -2732,9 +2739,9 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->moe_router_score_bias_f32, SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT * 4u, "cudaMalloc moe_router_bias") &&
         SparkValidationAllocateZeroed((void **)&buffers->moe_router_logits, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT * 4u, "cudaMalloc moe_router_logits") &&
         SparkValidationAllocateZeroed((void **)&buffers->moe_topk_weights, SPARK_VALIDATION_MOE_ROUTE_COUNT * 4u, "cudaMalloc moe_topk_weights") &&
-        SparkValidationAllocateZeroed((void **)&buffers->restricted_logits, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * 4u, "cudaMalloc restricted_logits") &&
-        SparkValidationAllocateZeroed((void **)&buffers->restricted_selected_token_scores, 4u, "cudaMalloc selected_scores") &&
-        SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_logits, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_logits") &&
+        SparkValidationAllocateZeroed((void **)&buffers->restricted_logits, final_token_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * 4u, "cudaMalloc restricted_logits") &&
+        SparkValidationAllocateZeroed((void **)&buffers->restricted_selected_token_scores, final_token_count * 4u, "cudaMalloc selected_scores") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_logits, mtp_token_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * 4u, "cudaMalloc mtp_logits") &&
         SparkValidationAllocateZeroed((void **)&buffers->positions, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * 4u, "cudaMalloc positions") &&
         SparkValidationAllocateZeroed((void **)&buffers->slot_mapping, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * 4u, "cudaMalloc slot_mapping") &&
         SparkValidationAllocateZeroed((void **)&buffers->block_table, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE * 4u, "cudaMalloc block_table") &&
@@ -2743,11 +2750,11 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->sparse_token_indices, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * 4u, "cudaMalloc sparse_indices") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_token_ids, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * 4u, "cudaMalloc restricted_token_ids") &&
         SparkValidationAllocateZeroed((void **)&buffers->moe_topk_expert_ids, SPARK_VALIDATION_MOE_ROUTE_COUNT * 4u, "cudaMalloc moe_topk_expert_ids") &&
-        SparkValidationAllocateZeroed((void **)&buffers->restricted_selected_token_ids, 4u, "cudaMalloc selected_token_ids") &&
-        SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_token_ids, SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_draft_token_ids") &&
-        SparkValidationAllocateZeroed((void **)&buffers->mtp_target_token_ids, SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_target_token_ids") &&
-        SparkValidationAllocateZeroed((void **)&buffers->mtp_accept_mask, SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_accept_mask") &&
-        SparkValidationAllocateZeroed((void **)&buffers->mtp_committed_token_ids, SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * 4u, "cudaMalloc mtp_committed_token_ids") &&
+        SparkValidationAllocateZeroed((void **)&buffers->restricted_selected_token_ids, final_token_count * 4u, "cudaMalloc selected_token_ids") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_token_ids, mtp_token_count * 4u, "cudaMalloc mtp_draft_token_ids") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_target_token_ids, mtp_token_count * 4u, "cudaMalloc mtp_target_token_ids") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_accept_mask, mtp_token_count * 4u, "cudaMalloc mtp_accept_mask") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_committed_token_ids, mtp_token_count * 4u, "cudaMalloc mtp_committed_token_ids") &&
         SparkValidationAllocateZeroed((void **)&buffers->mtp_event_counters, SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_EVENT_COUNTER_COUNT * 4u, "cudaMalloc mtp_event_counters") &&
         SparkValidationAllocateZeroed((void **)&buffers->phase_clock_cycles, SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT * 8u, "cudaMalloc phase_clocks");
 }
@@ -2788,6 +2795,7 @@ static bool SparkValidationInitializeDeviceInputs(
     uint32_t block_table[SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE];
     uint32_t first_block_token_offset;
     uint32_t mtp_target_token_ids[
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT];
     uint32_t moe_topk_expert_ids[SPARK_VALIDATION_MOE_ROUTE_COUNT];
     float moe_topk_weights[SPARK_VALIDATION_MOE_ROUTE_COUNT];
@@ -2874,8 +2882,17 @@ static bool SparkValidationInitializeDeviceInputs(
     block_table[0] = 1u;
     block_table[1] = 0u;
     first_block_token_offset = SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET;
-    mtp_target_token_ids[0] = SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN;
-    mtp_target_token_ids[1] = SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN;
+    for (index = 0u;
+         index < SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT;
+         ++index)
+    {
+        mtp_target_token_ids[
+            index * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT] =
+            SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN;
+        mtp_target_token_ids[
+            (index * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT) +
+            1u] = SPARK_VALIDATION_EXPECTED_MTP_REJECT_TOKEN;
+    }
     return
         SparkValidationCopyToDevice(buffers->mla_cache_bf16, cache_seed, sizeof(cache_seed), "copy seeded cache") &&
         SparkValidationCopyToDevice(buffers->input_hidden_bf16, input_hidden, sizeof(input_hidden), "copy input_hidden") &&
@@ -5639,6 +5656,7 @@ static bool SparkValidationCheckOutputs(
     uint32_t head_index;
     uint32_t dimension_index;
     uint32_t token_index;
+    uint32_t expected_mtp_event_count;
 
     memset(current_kv_value, 0, sizeof(current_kv_value));
     memset(cached_kv_value, 0, sizeof(cached_kv_value));
@@ -5657,6 +5675,9 @@ static bool SparkValidationCheckOutputs(
     memset(mtp_committed_token_ids, 0, sizeof(mtp_committed_token_ids));
     memset(counters, 0, sizeof(counters));
     memset(phase_clocks, 0, sizeof(phase_clocks));
+    expected_mtp_event_count =
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
     if (!SparkValidationCudaSucceeded(
             cudaMemcpy(
                 current_kv_value,
@@ -6097,13 +6118,20 @@ static bool SparkValidationCheckOutputs(
         fprintf(stderr, "MTP commit counter was not incremented\n");
         return false;
     }
-    if (counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_ACCEPTED] != 1u ||
-        counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_REJECTED] != 1u ||
-        counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_COMMITTED] != 2u ||
-        counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_ROLLBACK] != 1u ||
-        counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_CANCELLED] != 0u)
+    if ((counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_ACCEPTED] +
+         counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_REJECTED]) !=
+            expected_mtp_event_count ||
+        (counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_COMMITTED] +
+         counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_CANCELLED]) !=
+            expected_mtp_event_count ||
+        counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_ROLLBACK] !=
+            counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_REJECTED] ||
+        counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_COMMITTED] <
+            SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT ||
+        counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_COMMITTED] >
+            expected_mtp_event_count)
     {
-        fprintf(stderr, "MTP event counters do not match accept/reject fixture\n");
+        fprintf(stderr, "MTP event counters do not match aggregate invariants accepted=%u rejected=%u committed=%u rollback=%u cancelled=%u expected_events=%u\n", counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_ACCEPTED], counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_REJECTED], counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_COMMITTED], counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_ROLLBACK], counters[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_CANCELLED], expected_mtp_event_count);
         return false;
     }
     return true;
