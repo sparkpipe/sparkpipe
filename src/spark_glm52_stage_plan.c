@@ -480,25 +480,25 @@ static SparkStatus SparkGlm52StagePlanLoadMeasuredB64CostProfile(
     uint64_t *final_stage_extra_cost_ns_out)
 {
     static const uint32_t first_layer_index[13] = {
-        0u, 3u, 10u, 17u, 24u, 30u, 36u, 42u, 48u, 54u, 60u, 66u, 72u
+        0u, 6u, 12u, 18u, 24u, 30u, 36u, 42u, 48u, 54u, 60u, 66u, 72u
     };
     static const uint32_t layer_count[13] = {
-        3u, 7u, 7u, 7u, 6u, 6u, 6u, 6u, 6u, 6u, 6u, 6u, 6u
+        6u, 6u, 6u, 6u, 6u, 6u, 6u, 6u, 6u, 6u, 6u, 6u, 6u
     };
     static const uint64_t stage_cost_ns[13] = {
-        109282561u,
-        53329600u,
-        53304160u,
-        53497633u,
-        45740192u,
-        46787521u,
-        43794208u,
-        45640128u,
-        46685888u,
-        44448416u,
-        45181631u,
-        45586912u,
-        45202016u
+        50660288u,
+        45685889u,
+        45232480u,
+        45782816u,
+        44223711u,
+        45062784u,
+        45439968u,
+        45055391u,
+        45370304u,
+        46190688u,
+        44552225u,
+        45824320u,
+        46449792u
     };
     uint32_t stage_index;
 
@@ -510,7 +510,7 @@ static SparkStatus SparkGlm52StagePlanLoadMeasuredB64CostProfile(
             layer_count[stage_index],
             layer_cost_ns);
     }
-    *final_stage_extra_cost_ns_out = 16000000u;
+    *final_stage_extra_cost_ns_out = 0u;
     return SPARK_STATUS_OK;
 }
 
@@ -545,6 +545,41 @@ static SparkStatus SparkGlm52StagePlanLoadMeasuredB32CostProfile(
     }
     *final_stage_extra_cost_ns_out = 39342000u;
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52StagePlanBuildMeasuredB64Pp13Exact(
+    SparkGlm52StagePlan *stage_plan,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    static const uint32_t first_layer_index[13] = {
+        0u, 6u, 12u, 18u, 24u, 30u, 36u, 42u, 48u, 54u, 60u, 66u, 72u
+    };
+    uint32_t stage_index;
+
+    if (stage_plan == 0)
+    {
+        return SparkGlm52StagePlanReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "stage plan is null");
+    }
+    SparkGlm52StagePlanReset(stage_plan);
+    stage_plan->stage_count = SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT;
+    for (stage_index = 0u;
+         stage_index < SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT;
+         ++stage_index)
+    {
+        stage_plan->stages[stage_index].first_layer_index =
+            first_layer_index[stage_index];
+        stage_plan->stages[stage_index].layer_count = 6u;
+    }
+    SparkGlm52StagePlanAssignStageFlags(stage_plan);
+    return SparkGlm52StagePlanValidate(
+        stage_plan,
+        error_buffer,
+        error_buffer_bytes);
 }
 
 SparkStatus SparkGlm52StagePlanLoadMeasuredCostProfileForQuantization(
@@ -675,10 +710,34 @@ SparkStatus SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
+    uint32_t normalized_quantization_mode;
+    SparkStatus status;
+
+    status = SparkGlm52StagePlanNormalizeQuantizationMode(
+        quantization_mode,
+        &normalized_quantization_mode);
+    if (status != SPARK_STATUS_OK)
+    {
+        return SparkGlm52StagePlanReport(
+            error_buffer,
+            error_buffer_bytes,
+            status,
+            "invalid measured stage-plan quantization mode");
+    }
+    if (measured_profile_id == SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701 &&
+        batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B64 &&
+        (normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
+         normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT))
+    {
+        return SparkGlm52StagePlanBuildMeasuredB64Pp13Exact(
+            stage_plan,
+            error_buffer,
+            error_buffer_bytes);
+    }
     return SparkGlm52StagePlanBuildMeasuredBalancedForQuantization(
         measured_profile_id,
         batch_bucket,
-        quantization_mode,
+        normalized_quantization_mode,
         SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT,
         stage_plan,
         error_buffer,
