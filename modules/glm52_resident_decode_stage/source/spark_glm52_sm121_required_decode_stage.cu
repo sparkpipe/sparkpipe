@@ -4746,7 +4746,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     dim3 grid;
     cudaError_t cuda_status;
     uint32_t sequence_tile_rows;
-    uint32_t output_tile_columns;
 
     if (linear_plan == 0 || input == 0 || output == 0 ||
         active_sequence_count == 0u ||
@@ -4763,7 +4762,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     }
 
     sequence_tile_rows = SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M;
-    output_tile_columns = SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
     if (linear_plan->input_dimension ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION &&
         linear_plan->output_dimension ==
@@ -4772,7 +4770,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
         if (active_sequence_count > 32u)
         {
             sequence_tile_rows = 64u;
-            output_tile_columns = 32u;
         }
         else if (active_sequence_count > 16u)
         {
@@ -4780,29 +4777,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
         }
     }
     grid = dim3(
-        (linear_plan->output_dimension + output_tile_columns - 1u) /
-            output_tile_columns,
+        (linear_plan->output_dimension +
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N - 1u) /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
         (active_sequence_count + sequence_tile_rows - 1u) / sequence_tile_rows,
         1u);
-    if (sequence_tile_rows == 64u && output_tile_columns == 32u)
-    {
-        SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel<64u, 32u><<<
-            grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)input,
-            (const uint8_t *)quantized_view->weight_payload,
-            quantized_view->weight_scale,
-            output,
-            active_sequence_count,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            quantized_view->weight_format,
-            quantized_view->scale_block_size,
-            linear_plan->output_is_f32);
-    }
-    else if (sequence_tile_rows == 64u)
+    if (sequence_tile_rows == 64u)
     {
         SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel<64u, 16u><<<
             grid,
