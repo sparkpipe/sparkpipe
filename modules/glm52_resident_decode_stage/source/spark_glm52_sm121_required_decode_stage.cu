@@ -9091,6 +9091,13 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
         &exact_stage_slice_plan);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0)
+        {
+            fprintf(
+                stderr,
+                "exact_pp13_validate_failed status=%d\n",
+                (int)status);
+        }
         return status;
     }
 
@@ -9157,6 +9164,14 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
         else
         {
             first_cuda_slot_state->launch_error_count += 1u;
+            if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0)
+            {
+                fprintf(
+                    stderr,
+                    "exact_pp13_begin_capture_failed error=%d message=%s\n",
+                    (int)cuda_status,
+                    cudaGetErrorString(cuda_status));
+            }
             return SPARK_STATUS_INTERNAL_ERROR;
         }
     }
@@ -9181,6 +9196,14 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
         &exact_stage_slice_plan_was_launched);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0)
+        {
+            fprintf(
+                stderr,
+                "exact_pp13_try_launch_failed launched=%u status=%d\n",
+                exact_stage_slice_plan_was_launched ? 1u : 0u,
+                (int)status);
+        }
         if (graph_capture_active != 0u)
         {
             SparkGlm52ResidentDecodeStageAbortGraphCapture(
@@ -9203,6 +9226,13 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
             typed_cuda_stream);
         if (status != SPARK_STATUS_OK)
         {
+            if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0)
+            {
+                fprintf(
+                    stderr,
+                    "exact_pp13_body_failed status=%d\n",
+                    (int)status);
+            }
             if (graph_capture_active != 0u)
             {
                 SparkGlm52ResidentDecodeStageAbortGraphCapture(
