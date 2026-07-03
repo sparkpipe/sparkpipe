@@ -10,6 +10,10 @@
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_CUBLASLT 1
 #endif
 
+#ifndef SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_NATIVE_BLOCK_SCALED_MMA
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_NATIVE_BLOCK_SCALED_MMA 0
+#endif
+
 #if SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_CUBLASLT
 #include <cublasLt.h>
 #endif
@@ -1371,7 +1375,8 @@ void SparkGlm52ResidentDecodeStageBlackwellNativeFp8TensorCoreLinearKernel(
     uint32_t output_dimension,
     uint32_t output_is_f32)
 {
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1200)
+#if SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_NATIVE_BLOCK_SCALED_MMA && \
+    defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1200)
     uint32_t lane_index;
     uint32_t warp_index;
     uint32_t sequence_tile_begin;
@@ -1507,7 +1512,8 @@ void SparkGlm52ResidentDecodeStageBlackwellNativeFp4TensorCoreLinearKernel(
     uint32_t scale_block_size,
     uint32_t output_is_f32)
 {
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1200)
+#if SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_NATIVE_BLOCK_SCALED_MMA && \
+    defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1200)
     uint32_t lane_index;
     uint32_t warp_index;
     uint32_t sequence_tile_begin;
@@ -4232,6 +4238,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+
+#if !SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_NATIVE_BLOCK_SCALED_MMA
+    return SPARK_STATUS_NOT_FOUND;
+#endif
 
     required_workspace_bytes =
         SparkGlm52ResidentDecodeStageBlackwellNativeWorkspaceBytes(
