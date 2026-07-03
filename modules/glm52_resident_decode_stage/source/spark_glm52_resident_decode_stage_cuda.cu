@@ -1,6 +1,8 @@
 #include "spark_glm52_resident_decode_stage_backend.h"
 
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include <cuda_runtime_api.h>
 
@@ -72,6 +74,20 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
         return status;
     }
 
+    if (getenv("GLM52_STAGE_SLICE_DEBUG_SYNC") != 0)
+    {
+        cuda_status = cudaStreamSynchronize((cudaStream_t)cuda_stream);
+        if (cuda_status != cudaSuccess)
+        {
+            fprintf(
+                stderr,
+                "spark_glm52_stage_slice_debug_sync_failed error=%d message=%s\n",
+                (int)cuda_status,
+                cudaGetErrorString(cuda_status));
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
+    }
+
     cuda_status = cudaLaunchHostFunc(
         (cudaStream_t)cuda_stream,
         SparkGlm52ResidentDecodeStageCudaCompletion,
@@ -140,6 +156,20 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     if (status != SPARK_STATUS_OK)
     {
         return status;
+    }
+
+    if (getenv("GLM52_STAGE_SLICE_DEBUG_SYNC") != 0)
+    {
+        cuda_status = cudaStreamSynchronize((cudaStream_t)cuda_stream);
+        if (cuda_status != cudaSuccess)
+        {
+            fprintf(
+                stderr,
+                "spark_glm52_stage_slice_debug_sync_failed error=%d message=%s\n",
+                (int)cuda_status,
+                cudaGetErrorString(cuda_status));
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
     }
 
     cuda_status = cudaLaunchHostFunc(
