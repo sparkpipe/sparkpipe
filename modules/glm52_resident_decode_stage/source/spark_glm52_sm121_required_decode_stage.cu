@@ -4726,13 +4726,19 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     }
 
     sequence_tile_rows = SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M;
-    if (active_sequence_count > 32u)
+    if (linear_plan->input_dimension ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION &&
+        linear_plan->output_dimension ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)
     {
-        sequence_tile_rows = 64u;
-    }
-    else if (active_sequence_count > 16u)
-    {
-        sequence_tile_rows = 32u;
+        if (active_sequence_count > 32u)
+        {
+            sequence_tile_rows = 64u;
+        }
+        else if (active_sequence_count > 16u)
+        {
+            sequence_tile_rows = 32u;
+        }
     }
     grid = dim3(
         (linear_plan->output_dimension +
