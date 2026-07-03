@@ -4233,10 +4233,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-#if defined(__CUDA_ARCH__)
-#error "SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedTensorCoreLinearPlan must remain a host launch function."
-#endif
-
     required_workspace_bytes =
         SparkGlm52ResidentDecodeStageBlackwellNativeWorkspaceBytes(
             linear_plan,
