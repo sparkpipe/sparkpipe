@@ -1006,7 +1006,7 @@ static void SparkTestInitializeHiddenTransportEndpoint(
     memset(endpoint, 0, sizeof(*endpoint));
     endpoint->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
     endpoint->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES;
-    endpoint->capability_flags = SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS;
+    endpoint->capability_flags = SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS;
     endpoint->hidden_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
     endpoint->bytes_per_sequence =
@@ -1104,12 +1104,12 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
     assert(SparkHiddenTransportOpen(
                &input_endpoint,
                &transport_interface,
-               SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+               SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS,
                &input_session) == SPARK_STATUS_OK);
     assert(SparkHiddenTransportOpen(
                &output_endpoint,
                &transport_interface,
-               SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+               SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS,
                &output_session) == SPARK_STATUS_OK);
 
     memset(&completion_state, 0, sizeof(completion_state));

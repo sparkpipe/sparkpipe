@@ -310,17 +310,21 @@ static void SparkTestHiddenTransportPersistentRingBackend(void)
     uint16_t hidden_payload[6144u * 2u];
 
     SparkTestInitializeEndpoint(&endpoint);
-    endpoint.capability_flags = SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS;
+    endpoint.capability_flags = SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SIMULATION_CAPS;
     endpoint.transport_module_id = SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_MODULE_ID;
     SparkTestInitializePacket(&packets[0], &endpoint, hidden_payload, 41u);
     SparkTestInitializePacket(&packets[1], &endpoint, hidden_payload, 42u);
 
     assert(SparkHiddenTransportPersistentRingGetInterface(&transport_interface) ==
         SPARK_STATUS_OK);
+    assert(SparkHiddenTransportValidateInterface(
+        &transport_interface,
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS) ==
+            SPARK_STATUS_INVALID_ARGUMENT);
     assert(SparkHiddenTransportOpen(
         &endpoint,
         &transport_interface,
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS,
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SIMULATION_CAPS,
         &session) == SPARK_STATUS_OK);
     assert(session != 0);
     assert(SparkHiddenTransportSendBatch(session, packets, 2u) == SPARK_STATUS_OK);

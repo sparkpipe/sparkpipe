@@ -27,6 +27,29 @@ static uint32_t SparkHiddenTransportSessionCanUseBatchSubmission(
         session->transport_interface.send_batch != 0;
 }
 
+static uint32_t SparkHiddenTransportCapabilitiesAreSimulationOnly(
+    uint32_t capability_flags)
+{
+    return (capability_flags &
+        SPARK_HIDDEN_TRANSPORT_CAP_SIMULATION_ONLY) != 0u;
+}
+
+static uint32_t SparkHiddenTransportCapabilitiesMeetProduction(
+    uint32_t capability_flags)
+{
+    return (capability_flags &
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS) ==
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS;
+}
+
+static uint32_t SparkHiddenTransportCapabilitiesMeetSimulation(
+    uint32_t capability_flags)
+{
+    return (capability_flags &
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS) ==
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS;
+}
+
 SparkStatus SparkHiddenTransportValidateEndpoint(
     const SparkHiddenTransportEndpoint *endpoint)
 {
@@ -41,10 +64,23 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
     {
         return SPARK_STATUS_ABI_MISMATCH;
     }
-    if ((endpoint->capability_flags &
-         SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS) !=
-            SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS ||
-        endpoint->transport_module_id == 0 ||
+    if (SparkHiddenTransportCapabilitiesAreSimulationOnly(
+            endpoint->capability_flags))
+    {
+        if (!SparkHiddenTransportCapabilitiesMeetSimulation(
+                endpoint->capability_flags) ||
+            SparkHiddenTransportCapabilitiesMeetProduction(
+                endpoint->capability_flags))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    else if (!SparkHiddenTransportCapabilitiesMeetProduction(
+            endpoint->capability_flags))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (endpoint->transport_module_id == 0 ||
         endpoint->transport_module_id[0] == '\0' ||
         endpoint->route_name == 0 ||
         endpoint->route_name[0] == '\0' ||
@@ -186,6 +222,14 @@ SparkStatus SparkHiddenTransportValidateInterface(
             SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES)
     {
         return SPARK_STATUS_ABI_MISMATCH;
+    }
+    if (SparkHiddenTransportCapabilitiesAreSimulationOnly(
+            transport_interface->capability_flags) &&
+        (required_capability_flags &
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS) ==
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ((transport_interface->capability_flags & required_capability_flags) !=
             required_capability_flags ||
@@ -649,7 +693,7 @@ SparkStatus SparkHiddenTransportPersistentRingGetInterface(
     transport_interface->descriptor_bytes =
         SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES;
     transport_interface->capability_flags =
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS;
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SIMULATION_CAPS;
     transport_interface->initialize =
         SparkHiddenTransportPersistentRingInitialize;
     transport_interface->destroy =
