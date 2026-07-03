@@ -454,6 +454,12 @@ typedef int (*SparkGlm52B12xTvmFunction)(
     int32_t,
     TVMFFIAny *);
 
+extern "C" int TVMFFIEnvSetStream(
+    int32_t device_type,
+    int32_t device_id,
+    void *stream,
+    void **previous_stream);
+
 static const SparkGlm52Sm121B12xGeneratedKernelBucket
     SparkGlm52B12xGeneratedBuckets[] = {{
 {',\n'.join(bucket_initializers)}
@@ -539,14 +545,20 @@ static SparkStatus SparkGlm52B12xInvoke(
     SparkGlm52B12xTvmFunction function,
     const char *function_name,
     const TVMFFIAny *arguments,
-    int32_t argument_count)
+    int32_t argument_count,
+    void *cuda_stream)
 {{
     TVMFFIAny result;
+    void *previous_stream;
     int status;
 
     memset(&result, 0, sizeof(result));
     result.type_index = kTVMFFINone;
+    if (TVMFFIEnvSetStream(kDLCUDA, 0, cuda_stream, &previous_stream) != 0)
+        return SPARK_STATUS_INTERNAL_ERROR;
     status = function(0, arguments, argument_count, &result);
+    if (TVMFFIEnvSetStream(kDLCUDA, 0, previous_stream, 0) != 0)
+        return SPARK_STATUS_INTERNAL_ERROR;
     if (status != 0)
     {{
         fprintf(
@@ -699,7 +711,7 @@ static SparkStatus {c_name}(
     call_arguments[23] = SparkGlm52B12xTensorArgument(&tensors[19]);
     call_arguments[24] = SparkGlm52B12xPointerArgument(arguments->cuda_stream);
 
-    return SparkGlm52B12xInvoke(__tvm_ffi_{function_name}, "{function_name}", call_arguments, 25);
+    return SparkGlm52B12xInvoke(__tvm_ffi_{function_name}, "{function_name}", call_arguments, 25, arguments->cuda_stream);
 }}
 '''
 

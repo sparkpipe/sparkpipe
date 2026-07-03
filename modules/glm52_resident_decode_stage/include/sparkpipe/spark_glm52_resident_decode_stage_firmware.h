@@ -688,6 +688,8 @@ typedef struct SparkGlm52ResidentDecodeStageCudaPipelineSlotState
     uint64_t graph_capture_count;
     uint64_t graph_replay_count;
     uint64_t launch_chain_count;
+    uint64_t layer_body_success_count;
+    uint64_t b12x_moe_success_count;
     uint64_t launch_error_count;
 } SparkGlm52ResidentDecodeStageCudaPipelineSlotState;
 

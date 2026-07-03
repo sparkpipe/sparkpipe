@@ -33,6 +33,8 @@ struct SparkGlm52ResidentDecodeStageLinearPlanResidentBinding
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
     SparkGlm52ResidentDecodeStageLinearPlanStorage storage[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
+    SparkGlm52ResidentDecodeStageQuantizedLinearView quantized_views[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
 };
 
 static SparkStatus SparkGlm52LinearPlanCudaToSparkStatus(
@@ -435,6 +437,107 @@ static SparkStatus SparkGlm52LinearPlanCreateOne(
     return SPARK_STATUS_OK;
 }
 
+static uint64_t SparkGlm52LinearPlanDivideRoundUpU64(uint64_t value,uint64_t divisor)
+{
+    if (divisor == 0u)
+    {
+        return 0u;
+    }
+    return (value + divisor - 1u) / divisor;
+}
+
+static uint64_t SparkGlm52LinearPlanFp8PayloadBytes(
+    uint32_t input_dimension,
+    uint32_t output_dimension)
+{
+    return (uint64_t)input_dimension * (uint64_t)output_dimension;
+}
+
+static uint64_t SparkGlm52LinearPlanFp8ScaleBytes(
+    uint32_t input_dimension,
+    uint32_t output_dimension)
+{
+    uint64_t input_scale_block_count;
+    uint64_t output_scale_block_count;
+
+    input_scale_block_count = SparkGlm52LinearPlanDivideRoundUpU64(
+        input_dimension,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK);
+    output_scale_block_count = SparkGlm52LinearPlanDivideRoundUpU64(
+        output_dimension,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK);
+    return input_scale_block_count * output_scale_block_count *
+        (uint64_t)sizeof(float);
+}
+
+static SparkStatus SparkGlm52LinearPlanCreateQuantizedFp8One(
+    SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
+    uint32_t plan_index,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t output_is_f32,
+    const void *weight_payload,
+    const void *weight_scale,
+    const SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo *create_info)
+{
+    SparkGlm52ResidentDecodeStageLinearPlan *plan;
+    SparkGlm52ResidentDecodeStageQuantizedLinearView *view;
+
+    if (binding == 0 || create_info == 0 ||
+        plan_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT ||
+        input_dimension == 0u ||
+        output_dimension == 0u ||
+        weight_payload == 0 ||
+        weight_scale == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    plan = &binding->plans[plan_index];
+    view = &binding->quantized_views[plan_index];
+    memset(plan, 0, sizeof(*plan));
+    memset(view, 0, sizeof(*view));
+
+    view->abi_version =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUANTIZED_LINEAR_VIEW_ABI_VERSION;
+    view->weight_format =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
+    view->input_dimension = input_dimension;
+    view->output_dimension = output_dimension;
+    view->scale_block_size = SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK;
+    view->output_is_f32 = output_is_f32;
+    view->weight_payload = weight_payload;
+    view->weight_scale = weight_scale;
+    view->weight_payload_bytes = SparkGlm52LinearPlanFp8PayloadBytes(
+        input_dimension,
+        output_dimension);
+    view->weight_scale_bytes = SparkGlm52LinearPlanFp8ScaleBytes(
+        input_dimension,
+        output_dimension);
+
+    plan->abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ABI_VERSION;
+    plan->plan_kind =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR;
+    plan->input_dimension = input_dimension;
+    plan->output_dimension = output_dimension;
+    plan->maximum_active_sequence_count =
+        create_info->maximum_active_sequence_count;
+    plan->output_is_f32 = output_is_f32;
+    plan->custom_state = view;
+    plan->workspace = 0;
+    plan->workspace_bytes = 0u;
+    plan->alpha = 1.0f;
+    plan->beta = 0.0f;
+    return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkGlm52LinearPlanUseQuantizedFp8(
+    const void *weight_payload,
+    const void *weight_scale)
+{
+    return weight_payload != 0 && weight_scale != 0;
+}
+
 static SparkStatus SparkGlm52LinearPlanValidateCreateInfo(
     const SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo *create_info)
 {
@@ -597,16 +700,33 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
     if ((normalized_create_info.required_plan_mask &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_QUERY_A) != 0u)
     {
-        status = SparkGlm52LinearPlanCreateOne(
-            binding,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
-            0u,
-            normalized_create_info.raw_projection_input_bf16,
-            normalized_create_info.raw_query_a_weight_bf16,
-            normalized_create_info.raw_query_a_output_bf16,
-            &normalized_create_info);
+        if (SparkGlm52LinearPlanUseQuantizedFp8(
+                normalized_create_info.raw_query_a_weight_fp8_e4m3,
+                normalized_create_info.raw_query_a_weight_scale_inv_f32) != 0u)
+        {
+            status = SparkGlm52LinearPlanCreateQuantizedFp8One(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+                0u,
+                normalized_create_info.raw_query_a_weight_fp8_e4m3,
+                normalized_create_info.raw_query_a_weight_scale_inv_f32,
+                &normalized_create_info);
+        }
+        else
+        {
+            status = SparkGlm52LinearPlanCreateOne(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+                0u,
+                normalized_create_info.raw_projection_input_bf16,
+                normalized_create_info.raw_query_a_weight_bf16,
+                normalized_create_info.raw_query_a_output_bf16,
+                &normalized_create_info);
+        }
         if (status != SPARK_STATUS_OK)
         {
             SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(binding);
@@ -617,16 +737,33 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
     if ((normalized_create_info.required_plan_mask &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_QUERY_B) != 0u)
     {
-        status = SparkGlm52LinearPlanCreateOne(
-            binding,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_B,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,
-            0u,
-            normalized_create_info.raw_query_b_input_bf16,
-            normalized_create_info.raw_query_b_weight_bf16,
-            normalized_create_info.raw_query_b_output_bf16,
-            &normalized_create_info);
+        if (SparkGlm52LinearPlanUseQuantizedFp8(
+                normalized_create_info.raw_query_b_weight_fp8_e4m3,
+                normalized_create_info.raw_query_b_weight_scale_inv_f32) != 0u)
+        {
+            status = SparkGlm52LinearPlanCreateQuantizedFp8One(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_B,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,
+                0u,
+                normalized_create_info.raw_query_b_weight_fp8_e4m3,
+                normalized_create_info.raw_query_b_weight_scale_inv_f32,
+                &normalized_create_info);
+        }
+        else
+        {
+            status = SparkGlm52LinearPlanCreateOne(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_B,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,
+                0u,
+                normalized_create_info.raw_query_b_input_bf16,
+                normalized_create_info.raw_query_b_weight_bf16,
+                normalized_create_info.raw_query_b_output_bf16,
+                &normalized_create_info);
+        }
         if (status != SPARK_STATUS_OK)
         {
             SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(binding);
@@ -637,16 +774,33 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
     if ((normalized_create_info.required_plan_mask &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_KV_A) != 0u)
     {
-        status = SparkGlm52LinearPlanCreateOne(
-            binding,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_A,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,
-            0u,
-            normalized_create_info.raw_projection_input_bf16,
-            normalized_create_info.raw_kv_a_weight_bf16,
-            normalized_create_info.raw_kv_a_output_bf16,
-            &normalized_create_info);
+        if (SparkGlm52LinearPlanUseQuantizedFp8(
+                normalized_create_info.raw_kv_a_weight_fp8_e4m3,
+                normalized_create_info.raw_kv_a_weight_scale_inv_f32) != 0u)
+        {
+            status = SparkGlm52LinearPlanCreateQuantizedFp8One(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_A,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,
+                0u,
+                normalized_create_info.raw_kv_a_weight_fp8_e4m3,
+                normalized_create_info.raw_kv_a_weight_scale_inv_f32,
+                &normalized_create_info);
+        }
+        else
+        {
+            status = SparkGlm52LinearPlanCreateOne(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_A,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,
+                0u,
+                normalized_create_info.raw_projection_input_bf16,
+                normalized_create_info.raw_kv_a_weight_bf16,
+                normalized_create_info.raw_kv_a_output_bf16,
+                &normalized_create_info);
+        }
         if (status != SPARK_STATUS_OK)
         {
             SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(binding);
@@ -657,16 +811,33 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
     if ((normalized_create_info.required_plan_mask &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_KV_B) != 0u)
     {
-        status = SparkGlm52LinearPlanCreateOne(
-            binding,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_B,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,
-            0u,
-            normalized_create_info.raw_kv_b_input_bf16,
-            normalized_create_info.raw_kv_b_weight_bf16,
-            normalized_create_info.raw_kv_b_output_bf16,
-            &normalized_create_info);
+        if (SparkGlm52LinearPlanUseQuantizedFp8(
+                normalized_create_info.raw_kv_b_weight_fp8_e4m3,
+                normalized_create_info.raw_kv_b_weight_scale_inv_f32) != 0u)
+        {
+            status = SparkGlm52LinearPlanCreateQuantizedFp8One(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_B,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,
+                0u,
+                normalized_create_info.raw_kv_b_weight_fp8_e4m3,
+                normalized_create_info.raw_kv_b_weight_scale_inv_f32,
+                &normalized_create_info);
+        }
+        else
+        {
+            status = SparkGlm52LinearPlanCreateOne(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_B,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,
+                0u,
+                normalized_create_info.raw_kv_b_input_bf16,
+                normalized_create_info.raw_kv_b_weight_bf16,
+                normalized_create_info.raw_kv_b_output_bf16,
+                &normalized_create_info);
+        }
         if (status != SPARK_STATUS_OK)
         {
             SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(binding);
@@ -677,16 +848,33 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
     if ((normalized_create_info.required_plan_mask &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_ATTENTION_OUTPUT) != 0u)
     {
-        status = SparkGlm52LinearPlanCreateOne(
-            binding,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ATTENTION_OUTPUT,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-            0u,
-            normalized_create_info.attention_output_input_bf16,
-            normalized_create_info.attention_output_weight_bf16,
-            normalized_create_info.attention_output_bf16,
-            &normalized_create_info);
+        if (SparkGlm52LinearPlanUseQuantizedFp8(
+                normalized_create_info.attention_output_weight_fp8_e4m3,
+                normalized_create_info.attention_output_weight_scale_inv_f32) != 0u)
+        {
+            status = SparkGlm52LinearPlanCreateQuantizedFp8One(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ATTENTION_OUTPUT,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                0u,
+                normalized_create_info.attention_output_weight_fp8_e4m3,
+                normalized_create_info.attention_output_weight_scale_inv_f32,
+                &normalized_create_info);
+        }
+        else
+        {
+            status = SparkGlm52LinearPlanCreateOne(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ATTENTION_OUTPUT,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                0u,
+                normalized_create_info.attention_output_input_bf16,
+                normalized_create_info.attention_output_weight_bf16,
+                normalized_create_info.attention_output_bf16,
+                &normalized_create_info);
+        }
         if (status != SPARK_STATUS_OK)
         {
             SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(binding);

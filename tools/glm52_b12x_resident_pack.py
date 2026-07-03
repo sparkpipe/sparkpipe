@@ -373,6 +373,81 @@ def manifest_contract_matches(manifest_path: Path, model_dir: Path, aot_manifest
     return manifest.get("model_dir") == str(model_dir) and manifest.get("aot_manifest") == str(aot_manifest_path)
 
 
+
+def retag_existing_pack_metadata(
+    output_path: Path,
+    model_dir: Path,
+    layer: int,
+    maximum_token_count: int,
+    qualified_maximum_microseconds: int,
+    qualification_hash_low64: int,
+    kernel_manifest_hash_low64: int,
+) -> Dict[str, Any]:
+    regions = reserve_regions()
+    expected_bytes = regions[-1]["offset"] + regions[-1]["bytes"]
+    if not output_path.exists():
+        raise PackFailure(f"cannot retag missing pack: {output_path}")
+    if output_path.stat().st_size != expected_bytes:
+        raise PackFailure(f"cannot retag {output_path}: size mismatch")
+    prefix, observed_regions = unpack_pack_header(output_path)
+    fixed_prefix = (
+        MAGIC,
+        ABI_VERSION,
+        HEADER_BYTES,
+        layer,
+        maximum_token_count,
+        HIDDEN_DIMENSION,
+        INTERMEDIATE_DIMENSION,
+        EXPERT_COUNT,
+        TOP_K,
+        GATE_UP_ORDER_UP_GATE,
+        WEIGHT_LAYOUT_FLASHINFER_STATIC_VIEW,
+        SCALE_LAYOUT_FLASHINFER_STATIC_STORAGE,
+        QUANT_MODE_NVFP4,
+        OUTPUT_DTYPE_BF16,
+        CUDA_ARCHITECTURE_SM121,
+        0,
+        0,
+    )
+    if prefix[:17] != fixed_prefix:
+        raise PackFailure(f"cannot retag {output_path}: fixed header fields mismatch")
+    if observed_regions != regions:
+        raise PackFailure(f"cannot retag {output_path}: region layout mismatch")
+    pack_hash_low64 = pack_metadata_hash_low64(
+        layer,
+        regions,
+        maximum_token_count,
+        qualified_maximum_microseconds,
+        qualification_hash_low64,
+        kernel_manifest_hash_low64,
+    )
+    header = pack_header(
+        layer,
+        maximum_token_count,
+        qualified_maximum_microseconds,
+        qualification_hash_low64,
+        kernel_manifest_hash_low64,
+        pack_hash_low64,
+        regions,
+    )
+    with output_path.open("r+b") as file:
+        file.seek(0)
+        file.write(header)
+    return {
+        "bytes": expected_bytes,
+        "kernel_manifest_hash_low64": kernel_manifest_hash_low64,
+        "layer_index": layer,
+        "model_dir": str(model_dir),
+        "pack_hash_low64": pack_hash_low64,
+        "path": str(output_path),
+        "qualification_record_hash_low64": qualification_hash_low64,
+        "qualified_maximum_microseconds": qualified_maximum_microseconds,
+        "regions": regions,
+        "retagged": True,
+        "reused": True,
+        "sha256": "",
+    }
+
 def try_reuse_pack(
     output_path: Path,
     manifest_path: Path,
@@ -760,6 +835,7 @@ def main() -> int:
     parser.add_argument("--reuse-valid", action="store_true")
     parser.add_argument("--require-reuse", action="store_true")
     parser.add_argument("--verify-reused-sha256", action="store_true")
+    parser.add_argument("--retag-existing-metadata", action="store_true")
     parser.add_argument("--jobs", default=1, type=int)
     args = parser.parse_args()
 
@@ -776,14 +852,28 @@ def main() -> int:
     if qualified_us <= 0:
         raise PackFailure("qualified maximum microseconds must be positive")
     qualification_hash_low64 = low64_from_hex(sha256_file(aot_manifest_path))
-    weight_map = read_weight_index(model_dir)
     layers = parse_layers(args.layers)
     manifest_path = output_dir / "resident_moe_pack_manifest.json"
     if args.jobs <= 0:
         raise PackFailure("--jobs must be positive")
 
     records_by_layer: Dict[int, Dict[str, Any]] = {}
-    if args.jobs == 1 or len(layers) == 1:
+    if args.retag_existing_metadata:
+        for layer in layers:
+            output_path = output_dir / f"glm52_layer_{layer:04d}_b12x_moe.spb12x"
+            record = retag_existing_pack_metadata(
+                output_path,
+                model_dir,
+                layer,
+                maximum_token_count,
+                qualified_us,
+                qualification_hash_low64,
+                kernel_manifest_hash_low64,
+            )
+            records_by_layer[layer] = record
+            print(json.dumps(record, sort_keys=True), flush=True)
+    elif args.jobs == 1 or len(layers) == 1:
+        weight_map = read_weight_index(model_dir)
         for layer in layers:
             record = process_layer(
                 model_dir,
@@ -803,6 +893,7 @@ def main() -> int:
             records_by_layer[layer] = record
             print(json.dumps(record, sort_keys=True), flush=True)
     else:
+        weight_map = read_weight_index(model_dir)
         worker_arguments = [
             (
                 str(model_dir),

@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "spark_glm52_resident_decode_stage_backend.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_b12x_moe_plan.h"
@@ -3470,28 +3471,48 @@ static bool SparkValidationBindRequiredLinearPlans(
         buffers->normalized_hidden_bf16;
     create_info.raw_query_a_weight_bf16 =
         buffers->raw_query_a_weight_bf16;
+    create_info.raw_query_a_weight_fp8_e4m3 =
+        buffers->raw_query_a_weight_fp8_e4m3;
+    create_info.raw_query_a_weight_scale_inv_f32 =
+        buffers->raw_query_a_weight_scale_inv_f32;
     create_info.raw_query_a_output_bf16 =
         buffers->raw_query_a_bf16;
     create_info.raw_query_b_input_bf16 =
         buffers->raw_query_a_normalized_bf16;
     create_info.raw_query_b_weight_bf16 =
         buffers->raw_query_b_weight_bf16;
+    create_info.raw_query_b_weight_fp8_e4m3 =
+        buffers->raw_query_b_weight_fp8_e4m3;
+    create_info.raw_query_b_weight_scale_inv_f32 =
+        buffers->raw_query_b_weight_scale_inv_f32;
     create_info.raw_query_b_output_bf16 =
         buffers->raw_query_b_bf16;
     create_info.raw_kv_a_weight_bf16 =
         buffers->raw_kv_a_weight_bf16;
+    create_info.raw_kv_a_weight_fp8_e4m3 =
+        buffers->raw_kv_a_weight_fp8_e4m3;
+    create_info.raw_kv_a_weight_scale_inv_f32 =
+        buffers->raw_kv_a_weight_scale_inv_f32;
     create_info.raw_kv_a_output_bf16 =
         buffers->raw_kv_a_bf16;
     create_info.raw_kv_b_input_bf16 =
         buffers->raw_kv_a_normalized_bf16;
     create_info.raw_kv_b_weight_bf16 =
         buffers->raw_kv_b_weight_bf16;
+    create_info.raw_kv_b_weight_fp8_e4m3 =
+        buffers->raw_kv_b_weight_fp8_e4m3;
+    create_info.raw_kv_b_weight_scale_inv_f32 =
+        buffers->raw_kv_b_weight_scale_inv_f32;
     create_info.raw_kv_b_output_bf16 =
         buffers->raw_kv_b_bf16;
     create_info.attention_output_input_bf16 =
         buffers->attention_output_latent_bf16;
     create_info.attention_output_weight_bf16 =
         buffers->attention_output_weight_bf16;
+    create_info.attention_output_weight_fp8_e4m3 =
+        buffers->attention_output_weight_fp8_e4m3;
+    create_info.attention_output_weight_scale_inv_f32 =
+        buffers->attention_output_weight_scale_inv_f32;
     create_info.attention_output_bf16 =
         buffers->attention_projected_hidden_bf16;
     create_info.restricted_logits_input_bf16 =
@@ -7334,6 +7355,11 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
         node_context->reserved_execution_flags |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_FORBID_DEBUG_SYNCHRONIZATION;
     }
+    if (getenv("GLM52_EXACT_PP13_PHASE_PROFILE") != 0)
+    {
+        node_context->phase_clock_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_DEVICE_CLOCK64;
+    }
     if (disable_graph_replay == 0u)
     {
         node_context->enable_cuda_graph_replay = 1u;
@@ -7434,19 +7460,42 @@ static bool SparkValidationRunExactPp13StageSliceSubmit(
 {
     SparkValidationCompletionState completion_state;
     SparkGlm52ResidentDecodeStageBackendCompletion completion;
+    struct timespec host_start_time;
+    struct timespec host_stop_time;
+    cudaStream_t stage_cuda_stream;
     cudaEvent_t start_event;
     cudaEvent_t stop_event;
+    uint64_t host_elapsed_nanoseconds;
+    uint32_t use_device_sync_timing;
     SparkStatus status;
 
+    host_elapsed_nanoseconds = 0u;
+    use_device_sync_timing =
+        getenv("GLM52_EXACT_PP13_DEVICE_SYNC_TIMING") != 0 ? 1u : 0u;
+    stage_cuda_stream = cuda_stream;
+    if (runtime != 0 &&
+        runtime->pipeline_slots[0].cuda_stream != 0)
+    {
+        stage_cuda_stream =
+            (cudaStream_t)runtime->pipeline_slots[0].cuda_stream;
+    }
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&completion, 0, sizeof(completion));
     completion.function = SparkValidationCompletion;
     completion.context = &completion_state;
     start_event = 0;
     stop_event = 0;
-    if (!SparkValidationCudaSucceeded(cudaEventCreate(&start_event), "cudaEventCreate exact_pp13_start") ||
+    if (use_device_sync_timing != 0u)
+    {
+        if (clock_gettime(CLOCK_MONOTONIC, &host_start_time) != 0)
+        {
+            fprintf(stderr, "clock_gettime exact_pp13_start failed\n");
+            return false;
+        }
+    }
+    else if (!SparkValidationCudaSucceeded(cudaEventCreate(&start_event), "cudaEventCreate exact_pp13_start") ||
         !SparkValidationCudaSucceeded(cudaEventCreate(&stop_event), "cudaEventCreate exact_pp13_stop") ||
-        !SparkValidationCudaSucceeded(cudaEventRecord(start_event, cuda_stream), "cudaEventRecord exact_pp13_start"))
+        !SparkValidationCudaSucceeded(cudaEventRecord(start_event, stage_cuda_stream), "cudaEventRecord exact_pp13_start"))
     {
         return false;
     }
@@ -7464,7 +7513,21 @@ static bool SparkValidationRunExactPp13StageSliceSubmit(
         fprintf(stderr, "exact PP13 stage-slice submit failed status=%d\n", (int)status);
         return false;
     }
-    if (!SparkValidationCudaSucceeded(cudaEventRecord(stop_event, cuda_stream), "cudaEventRecord exact_pp13_stop") ||
+    if (use_device_sync_timing != 0u)
+    {
+        if (!SparkValidationCudaSucceeded(
+                cudaDeviceSynchronize(),
+                "cudaDeviceSynchronize exact_pp13_device_sync_timing"))
+        {
+            return false;
+        }
+        if (clock_gettime(CLOCK_MONOTONIC, &host_stop_time) != 0)
+        {
+            fprintf(stderr, "clock_gettime exact_pp13_stop failed\n");
+            return false;
+        }
+    }
+    else if (!SparkValidationCudaSucceeded(cudaEventRecord(stop_event, stage_cuda_stream), "cudaEventRecord exact_pp13_stop") ||
         !SparkValidationCudaSucceeded(cudaEventSynchronize(stop_event), "cudaEventSynchronize exact_pp13_stop"))
     {
         return false;
@@ -7474,6 +7537,27 @@ static bool SparkValidationRunExactPp13StageSliceSubmit(
         fprintf(stderr, "exact PP13 stage-slice completion callback did not fire\n");
         return false;
     }
+    if (use_device_sync_timing != 0u)
+    {
+        if (host_stop_time.tv_nsec >= host_start_time.tv_nsec)
+        {
+            host_elapsed_nanoseconds =
+                ((uint64_t)(host_stop_time.tv_sec - host_start_time.tv_sec) *
+                 1000000000ull) +
+                (uint64_t)(host_stop_time.tv_nsec - host_start_time.tv_nsec);
+        }
+        else
+        {
+            host_elapsed_nanoseconds =
+                ((uint64_t)(host_stop_time.tv_sec - host_start_time.tv_sec - 1) *
+                 1000000000ull) +
+                (uint64_t)(host_stop_time.tv_nsec + 1000000000 -
+                           host_start_time.tv_nsec);
+        }
+        *elapsed_microseconds =
+            (float)((double)host_elapsed_nanoseconds / 1000.0);
+        return true;
+    }
     if (!SparkValidationCudaSucceeded(
             cudaEventElapsedTime(elapsed_microseconds, start_event, stop_event),
             "cudaEventElapsedTime exact_pp13"))
@@ -7482,6 +7566,104 @@ static bool SparkValidationRunExactPp13StageSliceSubmit(
     }
     cudaEventDestroy(start_event);
     cudaEventDestroy(stop_event);
+    return true;
+}
+
+static uint64_t SparkValidationPhaseDelta(
+    const uint64_t *phase_clocks,
+    uint32_t first_phase,
+    uint32_t second_phase)
+{
+    if (phase_clocks == 0 ||
+        first_phase >= SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT ||
+        second_phase >= SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT ||
+        phase_clocks[first_phase] == 0u ||
+        phase_clocks[second_phase] == 0u ||
+        phase_clocks[second_phase] < phase_clocks[first_phase])
+    {
+        return 0u;
+    }
+    return phase_clocks[second_phase] - phase_clocks[first_phase];
+}
+
+static bool SparkValidationPrintExactPp13PhaseProfile(
+    SparkValidationExactPp13StageSliceRuntime *runtime,
+    uint32_t first_layer_index)
+{
+    uint64_t phase_clocks[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT];
+    uint32_t layer_offset;
+    uint32_t layer_index;
+
+    if (getenv("GLM52_EXACT_PP13_PHASE_PROFILE") == 0)
+    {
+        return true;
+    }
+    if (runtime == 0)
+    {
+        return false;
+    }
+    for (layer_offset = 0u;
+         layer_offset < SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT;
+         ++layer_offset)
+    {
+        memset(phase_clocks, 0, sizeof(phase_clocks));
+        if (!SparkValidationCudaSucceeded(
+                cudaMemcpy(
+                    phase_clocks,
+                    runtime->buffers[layer_offset].phase_clock_cycles,
+                    sizeof(phase_clocks),
+                    cudaMemcpyDeviceToHost),
+                "copy exact pp13 phase profile"))
+        {
+            return false;
+        }
+        layer_index = first_layer_index + layer_offset;
+        fprintf(
+            stderr,
+            "exact_pp13_phase_profile layer=%u attention_norm_ns=%llu attention_projection_ns=%llu dsa_selection_ns=%llu rope_kv_write_ns=%llu mla_attention_ns=%llu output_projection_ns=%llu post_attention_norm_ns=%llu local_moe_ns=%llu completion_tail_ns=%llu total_ns=%llu\n",
+            layer_index,
+            (unsigned long long)SparkValidationPhaseDelta(
+                phase_clocks,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_SUBMITTED,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_ATTENTION_NORM),
+            (unsigned long long)SparkValidationPhaseDelta(
+                phase_clocks,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_ATTENTION_NORM,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_ATTENTION_PROJECTION),
+            (unsigned long long)SparkValidationPhaseDelta(
+                phase_clocks,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_ATTENTION_PROJECTION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_DSA_SELECTION),
+            (unsigned long long)SparkValidationPhaseDelta(
+                phase_clocks,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_DSA_SELECTION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_ROPE_KV_WRITE),
+            (unsigned long long)SparkValidationPhaseDelta(
+                phase_clocks,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_ROPE_KV_WRITE,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_MLA_ATTENTION),
+            (unsigned long long)SparkValidationPhaseDelta(
+                phase_clocks,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_MLA_ATTENTION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_OUTPUT_PROJECTION),
+            (unsigned long long)SparkValidationPhaseDelta(
+                phase_clocks,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_OUTPUT_PROJECTION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_POST_ATTENTION_NORM),
+            (unsigned long long)SparkValidationPhaseDelta(
+                phase_clocks,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_POST_ATTENTION_NORM,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE),
+            (unsigned long long)SparkValidationPhaseDelta(
+                phase_clocks,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_COMPLETION_READY),
+            (unsigned long long)SparkValidationPhaseDelta(
+                phase_clocks,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_SUBMITTED,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_COMPLETION_READY));
+    }
     return true;
 }
 
@@ -7545,6 +7727,10 @@ static bool SparkValidationRunExactPp13StageSliceFromHidden(
             cuda_stream,
             final_token_stage,
             &elapsed_microseconds))
+    {
+        return false;
+    }
+    if (!SparkValidationPrintExactPp13PhaseProfile(runtime, first_layer_index))
     {
         return false;
     }
@@ -7792,6 +7978,10 @@ int main(int argc, char **argv)
         enable_graph_replay_text != 0 &&
         enable_graph_replay_text[0] != '\0' &&
         strcmp(enable_graph_replay_text, "0") != 0;
+    if (enable_graph_replay == 0u)
+    {
+        disable_exact_pp13_graph_replay = 1u;
+    }
     production_timing =
         production_timing_text != 0 &&
         production_timing_text[0] != '\0' &&
@@ -8312,10 +8502,19 @@ int main(int argc, char **argv)
         uint32_t mtp_draft_token_id;
         uint32_t mtp_reject_token_id;
         uint32_t submission_count;
+        uint32_t expected_layer_body_success_count;
+        uint32_t expected_b12x_moe_success_count;
+        uint32_t routed_layer_count;
+        uint32_t layer_offset;
+        uint64_t layer_body_success_count;
+        uint64_t b12x_moe_success_count;
 
         selected_token_id = 0u;
         mtp_draft_token_id = 0u;
         mtp_reject_token_id = 0u;
+        routed_layer_count = 0u;
+        layer_body_success_count = 0u;
+        b12x_moe_success_count = 0u;
         if (!SparkValidationRunExactPp13StageSliceFromHidden(
                 &exact_stage_slice_runtime,
                 cuda_stream,
@@ -8346,6 +8545,46 @@ int main(int argc, char **argv)
             return 2;
         }
         exact_slot_state = &exact_stage_slice_runtime.cuda_slot_states[0];
+        for (layer_offset = 0u;
+             layer_offset < SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT;
+             ++layer_offset)
+        {
+            layer_body_success_count += exact_stage_slice_runtime
+                .cuda_slot_states[layer_offset].layer_body_success_count;
+            b12x_moe_success_count += exact_stage_slice_runtime
+                .cuda_slot_states[layer_offset].b12x_moe_success_count;
+            if (routed_chain_first_layer_index + layer_offset >=
+                SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX)
+            {
+                routed_layer_count += 1u;
+            }
+        }
+        expected_layer_body_success_count =
+            disable_exact_pp13_graph_replay != 0u
+            ? (2u * SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT)
+            : SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT;
+        if (layer_body_success_count < expected_layer_body_success_count)
+        {
+            fprintf(
+                stderr,
+                "exact PP13 stage-slice expected at least %u successful layer bodies, saw %llu\n",
+                expected_layer_body_success_count,
+                (unsigned long long)layer_body_success_count);
+            return 2;
+        }
+        expected_b12x_moe_success_count =
+            disable_exact_pp13_graph_replay != 0u
+            ? (2u * routed_layer_count)
+            : routed_layer_count;
+        if (b12x_moe_success_count < expected_b12x_moe_success_count)
+        {
+            fprintf(
+                stderr,
+                "exact PP13 stage-slice expected at least %u B12x MoE launches, saw %llu\n",
+                expected_b12x_moe_success_count,
+                (unsigned long long)b12x_moe_success_count);
+            return 2;
+        }
         if (disable_exact_pp13_graph_replay == 0u &&
             (exact_slot_state->graph_capture_count != 1u ||
              exact_slot_state->graph_replay_count != 2u))
@@ -8374,7 +8613,7 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff exact_pp13_stage_slice=1 intermediate_stage=%u final_stage=%u stage_index=%u first_layer=%u layer_count=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s restricted_token=%u mtp_draft=%u mtp_reject=%u built_in_exact_pp13_aot=1 built_in_final_epilogue=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff exact_pp13_stage_slice=1 intermediate_stage=%u final_stage=%u stage_index=%u first_layer=%u layer_count=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s restricted_token=%u mtp_draft=%u mtp_reject=%u built_in_exact_pp13_aot=1 built_in_final_epilogue=%u layer_bodies=%llu b12x_moe_launches=%llu launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             use_exact_pp13_stage_slice_final == 0u ? 1u : 0u,
             use_exact_pp13_stage_slice_final,
             routed_chain_first_layer_index /
@@ -8391,6 +8630,8 @@ int main(int argc, char **argv)
             mtp_draft_token_id,
             mtp_reject_token_id,
             use_exact_pp13_stage_slice_final,
+            (unsigned long long)layer_body_success_count,
+            (unsigned long long)b12x_moe_success_count,
             (unsigned long long)exact_slot_state->launch_chain_count,
             (unsigned long long)exact_slot_state->graph_capture_count,
             (unsigned long long)exact_slot_state->graph_replay_count);

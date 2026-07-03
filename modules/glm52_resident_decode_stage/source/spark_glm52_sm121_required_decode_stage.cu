@@ -465,10 +465,13 @@ static __global__ void SparkGlm52ResidentDecodeStageMarkPhaseKernel(
     uint64_t *phase_clock_cycles,
     uint32_t phase_index)
 {
+    uint64_t global_time;
+
     if (phase_clock_cycles != 0 && blockIdx.x == 0u && threadIdx.x == 0u &&
         phase_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT)
     {
-        phase_clock_cycles[phase_index] = clock64();
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(global_time));
+        phase_clock_cycles[phase_index] = global_time;
     }
 }
 
@@ -4413,6 +4416,22 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchQuantizedReferenceLinearPl
     }
 
     cuda_status = cudaPeekAtLastError();
+    if (cuda_status != cudaSuccess &&
+        getenv("GLM52_LINEAR_DEBUG") != 0)
+    {
+        fprintf(
+            stderr,
+            "quantized_tensor_core_linear_launch_failed kind=%u in=%u out=%u active=%u grid=(%u,%u,%u) error=%d message=%s\n",
+            linear_plan->plan_kind,
+            linear_plan->input_dimension,
+            linear_plan->output_dimension,
+            active_sequence_count,
+            grid.x,
+            grid.y,
+            grid.z,
+            (int)cuda_status,
+            cudaGetErrorString(cuda_status));
+    }
     return cuda_status == cudaSuccess
         ? SPARK_STATUS_OK
         : SPARK_STATUS_INTERNAL_ERROR;
@@ -5193,6 +5212,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFullStagePlan(
     {
         return status;
     }
+    if (getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
+    {
+        fprintf(
+            stderr,
+            "stage_slice_plan_launch_returned status=%d launched=1\n",
+            (int)status);
+    }
     *plan_was_launched = true;
     if (cuda_slot_state != 0)
     {
@@ -5275,6 +5301,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchStageSlicePlan(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_STAGE_SLICE_LAYER_COUNT];
     const SparkGlm52ResidentDecodeStageNodeContext *const *effective_layer_node_contexts;
     uint32_t required_capabilities;
+    uint32_t has_builtin_exact_pp13;
     SparkStatus status;
 
     if (plan_was_launched == 0)
@@ -5289,13 +5316,19 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchStageSlicePlan(
 
     required_capabilities =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_REQUIRED_CAPABILITIES;
+    has_builtin_exact_pp13 =
+        (stage_slice_plan->capability_flags &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_PP13_AOT) != 0u
+        ? 1u
+        : 0u;
     if (stage_slice_plan->abi_version !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PLAN_ABI_VERSION ||
         stage_slice_plan->maximum_active_sequence_count < active_sequence_count ||
         stage_slice_plan->maximum_layer_count < layer_count ||
         stage_slice_plan->maximum_layer_count >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_STAGE_SLICE_LAYER_COUNT ||
-        stage_slice_plan->launch_function == 0 ||
+        (stage_slice_plan->launch_function == 0 &&
+            has_builtin_exact_pp13 == 0u) ||
         stage_slice_plan->validated_maximum_latency_ns == 0u ||
         (stage_slice_plan->capability_flags & required_capabilities) !=
             required_capabilities)
@@ -5317,17 +5350,32 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchStageSlicePlan(
         effective_layer_node_contexts = runtime_layer_node_contexts;
     }
 
-    launch_function =
-        (SparkGlm52ResidentDecodeStageStageSliceLaunchFunction)
-            stage_slice_plan->launch_function;
-    status = launch_function(
-        stage_slice_plan,
-        effective_layer_node_contexts,
-        layer_count,
-        pipeline_slot_index,
-        active_sequence_count,
-        final_token_stage,
-        (void *)cuda_stream);
+    if (stage_slice_plan->launch_function != 0)
+    {
+        launch_function =
+            (SparkGlm52ResidentDecodeStageStageSliceLaunchFunction)
+                stage_slice_plan->launch_function;
+        status = launch_function(
+            stage_slice_plan,
+            effective_layer_node_contexts,
+            layer_count,
+            pipeline_slot_index,
+            active_sequence_count,
+            final_token_stage,
+            (void *)cuda_stream);
+    }
+    else
+    {
+        status = SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
+            stage_slice_plan,
+            effective_layer_node_contexts,
+            layer_count,
+            pipeline_slot_index,
+            active_sequence_count,
+            final_token_stage,
+            runtime_kv_block_table,
+            (void *)cuda_stream);
+    }
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -5344,10 +5392,18 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchStageSlicePlan(
             cuda_slot_state->graph_replay_count += 1u;
         }
     }
-    return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
         layer_node_contexts[0],
         cuda_slot_state,
         cuda_stream);
+    if (getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
+    {
+        fprintf(
+            stderr,
+            "stage_slice_plan_post_check status=%d\n",
+            (int)status);
+    }
+    return status;
 }
 
 static const SparkGlm52ResidentDecodeStageLinearPlan *SparkGlm52ResidentDecodeStageGetLinearPlan(
@@ -5511,6 +5567,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(
     bool *plan_was_launched)
 {
     const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan;
+    SparkStatus status;
 
     if (plan_was_launched != 0)
     {
@@ -5524,23 +5581,62 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(
         active_sequence_count);
     if (linear_plan == 0)
     {
+        if (plan_is_required && getenv("GLM52_LINEAR_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "linear_plan_missing index=%u in=%u out=%u active=%u count=%u\n",
+                plan_index,
+                input_dimension,
+                output_dimension,
+                active_sequence_count,
+                node_context != 0 ? node_context->linear_plan_count : 0u);
+        }
         return plan_is_required ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK;
     }
     if (active_sequence_count != linear_plan->maximum_active_sequence_count)
     {
+        if (plan_is_required && getenv("GLM52_LINEAR_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "linear_plan_active_mismatch index=%u in=%u out=%u active=%u max=%u kind=%u\n",
+                plan_index,
+                input_dimension,
+                output_dimension,
+                active_sequence_count,
+                linear_plan->maximum_active_sequence_count,
+                linear_plan->plan_kind);
+        }
         return plan_is_required ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK;
     }
     if (plan_was_launched != 0)
     {
         *plan_was_launched = true;
     }
-    return SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
+    status = SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
         linear_plan,
         input,
         weight,
         output,
         active_sequence_count,
         cuda_stream);
+    if (status != SPARK_STATUS_OK &&
+        getenv("GLM52_LINEAR_DEBUG") != 0)
+    {
+        fprintf(
+            stderr,
+            "linear_plan_launch_failed index=%u kind=%u in=%u out=%u active=%u max=%u output_f32=%u status=%d\n",
+            plan_index,
+            linear_plan->plan_kind,
+            linear_plan->input_dimension,
+            linear_plan->output_dimension,
+            active_sequence_count,
+            linear_plan->maximum_active_sequence_count,
+            linear_plan->output_is_f32,
+            (int)status);
+    }
+    return status;
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinear(
@@ -5743,6 +5839,22 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRmsNormDimension(
         cuda_stream);
 }
 
+static SparkStatus SparkGlm52ResidentDecodeStageTraceProjectionStatus(
+    const char *phase_name,
+    SparkStatus status)
+{
+    if (status != SPARK_STATUS_OK &&
+        getenv("GLM52_PROJECTION_DEBUG") != 0)
+    {
+        fprintf(
+            stderr,
+            "projection_failed phase=%s status=%d\n",
+            phase_name != 0 ? phase_name : "unknown",
+            (int)status);
+    }
+    return status;
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
@@ -5768,7 +5880,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceProjectionStatus(
+            "raw_query_a",
+            status);
     }
     status = SparkGlm52ResidentDecodeStageLaunchRmsNormDimension(
         node_context,
@@ -5781,7 +5895,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceProjectionStatus(
+            "raw_query_a_norm",
+            status);
     }
     status = SparkGlm52ResidentDecodeStageLaunchRawLinear(
         node_context,
@@ -5798,7 +5914,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_B);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceProjectionStatus(
+            "raw_query_b",
+            status);
     }
     raw_query_map_count =
         (uint64_t)active_sequence_count *
@@ -5819,7 +5937,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceProjectionStatus(
+            "raw_query_map",
+            status);
     }
     status = SparkGlm52ResidentDecodeStageLaunchRawLinear(
         node_context,
@@ -5836,7 +5956,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_A);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceProjectionStatus(
+            "raw_kv_a",
+            status);
     }
     SparkGlm52ResidentDecodeStageSplitRawKvAKernel<<<
         SparkGlm52ResidentDecodeStageElementBlockCount(
@@ -5855,7 +5977,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceProjectionStatus(
+            "raw_kv_a_split",
+            status);
     }
     status = SparkGlm52ResidentDecodeStageLaunchRmsNormDimension(
         node_context,
@@ -5868,9 +5992,11 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceProjectionStatus(
+            "raw_kv_a_norm",
+            status);
     }
-    return SparkGlm52ResidentDecodeStageLaunchRawLinear(
+    status = SparkGlm52ResidentDecodeStageLaunchRawLinear(
         node_context,
         cuda_slot_state,
         cuda_stream,
@@ -5883,6 +6009,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawGlmProjection(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_B);
+    return SparkGlm52ResidentDecodeStageTraceProjectionStatus(
+        "raw_kv_b",
+        status);
 }
 
 static uint32_t SparkGlm52ResidentDecodeStageExactStageSliceCanOverlapRawProjection(
@@ -6386,6 +6515,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRequiredB12xMoe(
     {
         return status;
     }
+    if (cuda_slot_state != 0)
+    {
+        cuda_slot_state->b12x_moe_success_count += 1u;
+    }
     return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
         node_context,
         pipeline_slot,
@@ -6518,6 +6651,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinFusedStageMoeLayer(
         if (status != SPARK_STATUS_OK)
         {
             return status;
+        }
+        if (cuda_slot_state != 0)
+        {
+            cuda_slot_state->b12x_moe_success_count += 1u;
         }
         return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
             node_context,
@@ -7309,6 +7446,22 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltInFusedFinalTokenEpil
     return status;
 }
 
+static SparkStatus SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+    const char *phase_name,
+    SparkStatus status)
+{
+    if (status != SPARK_STATUS_OK &&
+        getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+    {
+        fprintf(
+            stderr,
+            "layer_body_failed phase=%s status=%d\n",
+            phase_name != 0 ? phase_name : "unknown",
+            (int)status);
+    }
+    return status;
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
@@ -7331,7 +7484,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_SUBMITTED);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "submitted_phase",
+            status);
     }
     status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
         node_context,
@@ -7339,7 +7494,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "submitted_check",
+            status);
     }
 
     if (hidden_output_only == 0u)
@@ -7357,7 +7514,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
             cuda_stream);
         if (status != SPARK_STATUS_OK)
         {
-            return status;
+            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+                "clear_mtp_events",
+                status);
         }
     }
 
@@ -7377,7 +7536,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "attention_norm",
+            status);
     }
     status = SparkGlm52ResidentDecodeStageMaybeMarkPhase(
         node_context,
@@ -7387,7 +7548,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_ATTENTION_NORM);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "attention_norm_phase",
+            status);
     }
 
     if (node_context->projection_mode !=
@@ -7412,7 +7575,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
     }
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "attention_projection",
+            status);
     }
     status = SparkGlm52ResidentDecodeStageMaybeMarkPhase(
         node_context,
@@ -7422,7 +7587,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_ATTENTION_PROJECTION);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "attention_projection_phase",
+            status);
     }
 
     status = SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
@@ -7433,7 +7600,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         active_sequence_count);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "sparse_index_selection",
+            status);
     }
     status = SparkGlm52ResidentDecodeStageMaybeMarkPhase(
         node_context,
@@ -7443,7 +7612,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_DSA_SELECTION);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "dsa_selection_phase",
+            status);
     }
 
     SparkGlm52ResidentDecodeStagePrepareKernel<<<
@@ -7472,7 +7643,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "rope_kv_write",
+            status);
     }
     status = SparkGlm52ResidentDecodeStageMaybeMarkPhase(
         node_context,
@@ -7482,7 +7655,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_ROPE_KV_WRITE);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "rope_kv_write_phase",
+            status);
     }
 
     attention_grid = dim3(
@@ -7542,7 +7717,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "mla_attention",
+            status);
     }
     status = SparkGlm52ResidentDecodeStageMaybeMarkPhase(
         node_context,
@@ -7552,7 +7729,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_MLA_ATTENTION);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "mla_attention_phase",
+            status);
     }
 
     status = SparkGlm52ResidentDecodeStageLaunchRawLinear(
@@ -7570,7 +7749,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ATTENTION_OUTPUT);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "attention_output_projection",
+            status);
     }
     hidden_element_count =
         (uint64_t)active_sequence_count *
@@ -7590,7 +7771,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "post_attention_residual",
+            status);
     }
     status = SparkGlm52ResidentDecodeStageMaybeMarkPhase(
         node_context,
@@ -7600,7 +7783,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_OUTPUT_PROJECTION);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "output_projection_phase",
+            status);
     }
 
     status = SparkGlm52ResidentDecodeStageLaunchPostAttentionMlp(
@@ -7612,7 +7797,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         exact_stage_slice_plan);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "post_attention_mlp",
+            status);
     }
 
     if (hidden_output_only != 0u)
@@ -7626,6 +7813,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         if (status != SPARK_STATUS_OK)
         {
             return status;
+        }
+        if (cuda_slot_state != 0)
+        {
+            cuda_slot_state->layer_body_success_count += 1u;
         }
         return SPARK_STATUS_OK;
     }
@@ -7745,6 +7936,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         return status;
     }
 
+    if (cuda_slot_state != 0)
+    {
+        cuda_slot_state->layer_body_success_count += 1u;
+    }
     return SPARK_STATUS_OK;
 }
 
@@ -9091,7 +9286,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
         &exact_stage_slice_plan);
     if (status != SPARK_STATUS_OK)
     {
-        if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0)
+        if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0 ||
+            getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
         {
             fprintf(
                 stderr,
@@ -9130,6 +9326,14 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
         {
             first_cuda_slot_state->launch_error_count += 1u;
             cudaStreamSynchronize(typed_cuda_stream);
+            if (getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
+            {
+                fprintf(
+                    stderr,
+                    "exact_pp13_graph_replay_failed error=%d message=%s\n",
+                    (int)cuda_status,
+                    cudaGetErrorString(cuda_status));
+            }
             return SPARK_STATUS_INTERNAL_ERROR;
         }
         first_cuda_slot_state->graph_replay_count += 1u;
@@ -9164,7 +9368,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
         else
         {
             first_cuda_slot_state->launch_error_count += 1u;
-            if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0)
+            if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0 ||
+                getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
             {
                 fprintf(
                     stderr,
@@ -9196,7 +9401,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
         &exact_stage_slice_plan_was_launched);
     if (status != SPARK_STATUS_OK)
     {
-        if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0)
+        if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0 ||
+            getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
         {
             fprintf(
                 stderr,
@@ -9226,7 +9432,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
             typed_cuda_stream);
         if (status != SPARK_STATUS_OK)
         {
-            if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0)
+            if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0 ||
+                getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
             {
                 fprintf(
                     stderr,
@@ -9248,12 +9455,21 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
             active_sequence_count;
         first_cuda_slot_state->graph_capture_count += 1u;
     }
-    return SparkGlm52ResidentDecodeStageFinishSubmit(
+    status = SparkGlm52ResidentDecodeStageFinishSubmit(
         typed_cuda_stream,
         first_cuda_slot_state,
         graph_capture_active,
         graph_specialization_signature,
         0);
+    if (getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
+    {
+        fprintf(
+            stderr,
+            "exact_pp13_finish_submit status=%d graph_capture=%u\n",
+            (int)status,
+            graph_capture_active);
+    }
+    return status;
 }
 
 extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
@@ -9307,7 +9523,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
         SparkGlm52ResidentDecodeStageStageSlicePlanIsExactPp13(
             stage_slice_plan))
     {
-        return SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSlice(
+        status = SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSlice(
             stage_slice_plan,
             layer_node_contexts,
             layer_count,
@@ -9316,6 +9532,14 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
             final_token_stage,
             runtime_kv_block_table,
             cuda_stream);
+        if (getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "stage_slice_builtin_exact_returned status=%d\n",
+                (int)status);
+        }
+        return status;
     }
 
     stage_slice_plan_was_launched = false;
