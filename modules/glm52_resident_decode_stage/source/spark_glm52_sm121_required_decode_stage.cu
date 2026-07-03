@@ -8617,6 +8617,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageLayer
     SparkGlm52ResidentDecodeStagePipelineSlot runtime_pipeline_slot;
     const SparkGlm52ResidentDecodeStagePipelineSlot *effective_pipeline_slot;
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *layer_cuda_slot_state;
+    SparkStatus status;
     uint32_t hidden_output_only;
 
     if (layer_node_contexts == 0 || layer_offset >= 6u)
@@ -8664,7 +8665,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageLayer
             layer_offset,
             6u,
             final_token_stage);
-    return SparkGlm52ResidentDecodeStageLaunchLayerBody(
+    status = SparkGlm52ResidentDecodeStageLaunchLayerBody(
         effective_node_context,
         effective_pipeline_slot,
         layer_cuda_slot_state,
@@ -8672,6 +8673,16 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageLayer
         active_sequence_count,
         hidden_output_only,
         exact_stage_slice_plan);
+    if (status != SPARK_STATUS_OK &&
+        getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0)
+    {
+        fprintf(
+            stderr,
+            "exact_pp13_builtin_layer_failed offset=%u status=%d\n",
+            layer_offset,
+            (int)status);
+    }
+    return status;
 }
 
 template <uint32_t StageIndex, uint32_t BatchBucket, uint32_t FinalTokenStage>
