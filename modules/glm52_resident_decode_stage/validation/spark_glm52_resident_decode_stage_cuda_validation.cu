@@ -7318,12 +7318,22 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
         layer_offset == 0u
         ? buffers->input_hidden_bf16
         : runtime->buffers[layer_offset - 1u].layer_output_hidden_bf16;
-    node_context->launch_check_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAUNCH_CHECK_NONE;
-    node_context->phase_clock_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_DISABLED;
-    node_context->reserved_execution_flags |=
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_FORBID_DEBUG_SYNCHRONIZATION;
+    if (getenv("GLM52_EXACT_PP13_DEBUG_LAUNCH_CHECK") != 0)
+    {
+        node_context->launch_check_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAUNCH_CHECK_SYNC_ON_ERROR;
+        node_context->phase_clock_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_DEVICE_CLOCK64;
+    }
+    else
+    {
+        node_context->launch_check_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAUNCH_CHECK_NONE;
+        node_context->phase_clock_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_DISABLED;
+        node_context->reserved_execution_flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_FORBID_DEBUG_SYNCHRONIZATION;
+    }
     if (disable_graph_replay == 0u)
     {
         node_context->enable_cuda_graph_replay = 1u;
