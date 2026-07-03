@@ -47,8 +47,11 @@ COMMON_SOURCES := \
     src/spark_status.c \
     src/spark_filesystem.c \
     src/spark_hidden_transport.c \
+    src/spark_glm52_kv_cache.c \
     src/spark_glm52_stage_plan.c \
-    src/spark_glm52_scheduler.c
+    src/spark_glm52_scheduler.c \
+    src/spark_glm52_prefix_cache.c \
+    src/spark_glm52_request_api.c
 
 COMPILER_SOURCES := \
     src/spark_sha256.c \
@@ -79,8 +82,11 @@ TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 TEST_NAMES := \
     test_json \
     test_hidden_transport \
+    test_glm52_kv_cache \
     test_glm52_stage_plan \
     test_glm52_scheduler \
+    test_glm52_prefix_cache \
+    test_glm52_request_api \
     test_model_description \
     test_module_library \
     test_driver_compiler \
@@ -206,12 +212,21 @@ build/test_json: tests/test_json.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 build/test_hidden_transport: tests/test_hidden_transport.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_glm52_kv_cache: tests/test_glm52_kv_cache.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_stage_plan: tests/test_glm52_stage_plan.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_scheduler: tests/test_glm52_scheduler.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_prefix_cache: tests/test_glm52_prefix_cache.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_request_api: tests/test_glm52_request_api.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 
 build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

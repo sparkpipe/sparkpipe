@@ -5,10 +5,56 @@
 
 #include "glm52_resident_decode_stage_fake_backend.h"
 
+static SparkStatus SparkGlm52ResidentDecodeStageFakeValidateRuntimeKvBlockTable(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t active_sequence_count,
+    const SparkGlm52KvBlockTableView *runtime_kv_block_table)
+{
+    if (runtime_kv_block_table == 0)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (runtime_kv_block_table->abi_version != SPARK_GLM52_KV_CACHE_ABI_VERSION ||
+        runtime_kv_block_table->descriptor_bytes !=
+            SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES ||
+        runtime_kv_block_table->block_token_count == 0u ||
+        runtime_kv_block_table->lane_count < active_sequence_count ||
+        runtime_kv_block_table->lane_count > node_context->max_active_sequence_count ||
+        runtime_kv_block_table->lane_stride != node_context->max_blocks_per_sequence ||
+        runtime_kv_block_table->lane_capacity != node_context->max_blocks_per_sequence ||
+        runtime_kv_block_table->physical_block_indices == 0 ||
+        runtime_kv_block_table->lane_physical_block_counts == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static void SparkGlm52ResidentDecodeStageFakeRecordRuntimeKvBlockTable(
+    SparkGlm52ResidentDecodeStageFakeStream *fake_stream,
+    const SparkGlm52KvBlockTableView *runtime_kv_block_table)
+{
+    if (runtime_kv_block_table == 0)
+    {
+        fake_stream->last_runtime_kv_block_table = 0;
+        fake_stream->last_runtime_kv_physical_block_indices = 0;
+        fake_stream->last_runtime_kv_block_token_count = 0u;
+        fake_stream->last_runtime_kv_lane_count = 0u;
+        return;
+    }
+    fake_stream->last_runtime_kv_block_table = runtime_kv_block_table;
+    fake_stream->last_runtime_kv_physical_block_indices =
+        runtime_kv_block_table->physical_block_indices;
+    fake_stream->last_runtime_kv_block_token_count =
+        runtime_kv_block_table->block_token_count;
+    fake_stream->last_runtime_kv_lane_count = runtime_kv_block_table->lane_count;
+}
+
 SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
+    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     SparkGlm52ResidentDecodeStageFakeStream *fake_stream;
@@ -16,7 +62,11 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
     if (node_context == 0 || completion == 0 || completion->function == 0 ||
         pipeline_slot_index >= node_context->pipeline_slot_count ||
         active_sequence_count == 0u ||
-        active_sequence_count > node_context->max_active_sequence_count)
+        active_sequence_count > node_context->max_active_sequence_count ||
+        SparkGlm52ResidentDecodeStageFakeValidateRuntimeKvBlockTable(
+            node_context,
+            active_sequence_count,
+            runtime_kv_block_table) != SPARK_STATUS_OK)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -36,6 +86,9 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
     fake_stream->submit_count += 1u;
     fake_stream->last_pipeline_slot = pipeline_slot_index;
     fake_stream->last_active_sequence_count = active_sequence_count;
+    SparkGlm52ResidentDecodeStageFakeRecordRuntimeKvBlockTable(
+        fake_stream,
+        runtime_kv_block_table);
     fake_stream->pending_completion_function = completion->function;
     fake_stream->pending_completion_context = completion->context;
     if (!fake_stream->defer_completion)
@@ -53,6 +106,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
+    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
@@ -73,7 +127,11 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     if (first_node_context == 0 ||
         pipeline_slot_index >= first_node_context->pipeline_slot_count ||
         active_sequence_count == 0u ||
-        active_sequence_count > first_node_context->max_active_sequence_count)
+        active_sequence_count > first_node_context->max_active_sequence_count ||
+        SparkGlm52ResidentDecodeStageFakeValidateRuntimeKvBlockTable(
+            first_node_context,
+            active_sequence_count,
+            runtime_kv_block_table) != SPARK_STATUS_OK)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -108,6 +166,9 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     fake_stream->last_stage_slice_layer_count = layer_count;
     fake_stream->last_stage_slice_final_token_stage = final_token_stage;
     fake_stream->last_stage_slice_plan = stage_slice_plan;
+    SparkGlm52ResidentDecodeStageFakeRecordRuntimeKvBlockTable(
+        fake_stream,
+        runtime_kv_block_table);
     fake_stream->pending_completion_function = completion->function;
     fake_stream->pending_completion_context = completion->context;
     if (!fake_stream->defer_completion)
@@ -122,6 +183,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t prompt_token_count,
+    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     SparkGlm52ResidentDecodeStageFakeStream *fake_stream;
@@ -131,6 +193,10 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
         active_sequence_count == 0u ||
         active_sequence_count > node_context->max_active_sequence_count ||
         prompt_token_count == 0u ||
+        SparkGlm52ResidentDecodeStageFakeValidateRuntimeKvBlockTable(
+            node_context,
+            active_sequence_count,
+            runtime_kv_block_table) != SPARK_STATUS_OK ||
         node_context->bulk_prefill_plan == 0 ||
         prompt_token_count >
             node_context->bulk_prefill_plan->maximum_prompt_token_count)
@@ -153,6 +219,9 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
     fake_stream->last_pipeline_slot = pipeline_slot_index;
     fake_stream->last_active_sequence_count = active_sequence_count;
     fake_stream->last_bulk_prefill_prompt_token_count = prompt_token_count;
+    SparkGlm52ResidentDecodeStageFakeRecordRuntimeKvBlockTable(
+        fake_stream,
+        runtime_kv_block_table);
     fake_stream->pending_completion_function = completion->function;
     fake_stream->pending_completion_context = completion->context;
     if (!fake_stream->defer_completion)
@@ -168,6 +237,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t prompt_token_count,
+    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
@@ -188,7 +258,11 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
     if (first_node_context == 0 ||
         pipeline_slot_index >= first_node_context->pipeline_slot_count ||
         active_sequence_count == 0u ||
-        active_sequence_count > first_node_context->max_active_sequence_count)
+        active_sequence_count > first_node_context->max_active_sequence_count ||
+        SparkGlm52ResidentDecodeStageFakeValidateRuntimeKvBlockTable(
+            first_node_context,
+            active_sequence_count,
+            runtime_kv_block_table) != SPARK_STATUS_OK)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -227,6 +301,9 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
     fake_stream->last_stage_slice_layer_count = layer_count;
     fake_stream->last_bulk_prefill_layer_count = layer_count;
     fake_stream->last_bulk_prefill_prompt_token_count = prompt_token_count;
+    SparkGlm52ResidentDecodeStageFakeRecordRuntimeKvBlockTable(
+        fake_stream,
+        runtime_kv_block_table);
     fake_stream->pending_completion_function = completion->function;
     fake_stream->pending_completion_context = completion->context;
     if (!fake_stream->defer_completion)

@@ -35,11 +35,13 @@ Stage-slice decode and stage-slice prefill both have one-submit paths. Bulk-pref
 
 The remaining performance-critical code is the plan-provided tensor-core implementation. The reference quantized kernels are correctness/fallback paths; production performance should attach prebound tensor-core projection plans, FP8-MoE plans, NVFP4 B12x plans, stage-slice plans, and bulk-prefill plans.
 
-## Current measured-balanced PP13 estimate
+## Current measured PP13 target
 
-Using the measured 2026-07-01 profile and 13 sparks:
+PR #55 supersedes the earlier variable-width B64 estimate. The current measured production target is the fixed six-layer PP13 plan:
 
-- B64 balanced PP13 slowest-stage estimate: 78.741333 ms, about 813 tok/s.
-- B32 balanced PP13 slowest-stage estimate: 63.119000 ms, about 507 tok/s.
+```text
+0:6, 6:6, 12:6, 18:6, 24:6, 30:6, 36:6,
+42:6, 48:6, 54:6, 60:6, 66:6, 72:6
+```
 
-These estimates are stage-balance ceilings. They assume the per-stage one-submit path is used and that the attached plan launch functions are actually fast enough to reach the modeled per-layer costs.
+The measured B64 slowest stage is `50.660288 ms`, about `1263 tok/s` before transport. See `GLM52_PP13_EXACT_SLICE_AND_VLLM_KERNEL_WORK_20260701.md` for the exact-slice launcher work that targets the remaining per-layer graph replay overhead.

@@ -1,5 +1,7 @@
 # GLM-5.2 PP13 stage-slice balancing estimate, 2026-07-01
 
+Superseded note: PR #55 measured the fixed six-layer PP13 B64 plan as faster than the variable-width B64 estimate below. Keep this file only as historical analysis; use `GLM52_PP13_EXACT_SLICE_AND_VLLM_KERNEL_WORK_20260701.md` for the current B64 target.
+
 This note uses the Spark2 PP13 timing data from
 `GLM52_PP13_STAGE_RULES_AND_TIMING_20260701.md` and keeps the production
 constraint that only 13 sparks are currently available.  Each measured six-layer

@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ABI_VERSION 2u
+#define SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ABI_VERSION 3u
 #define SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_MODULE_ID \
     "spark.glm52.sm121.flashinfer_b12x_fused_moe.nvfp4.bf16.v2"
 #define SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_REQUIRED_ARCH "sm_121a"
@@ -24,6 +24,8 @@ extern "C" {
 #define SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_SCALE_LAYOUT_FLASHINFER_STATIC_STORAGE 2u
 #define SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_QUANT_MODE_NVFP4 1u
 #define SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_OUTPUT_DTYPE_BF16 1u
+
+#define SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS 0x00000001u
 
 #define SPARK_GLM52_SM121_FLASHINFER_B12X_REQUIRED_BACKEND_SYMBOL_CREATE \
     "SparkFlashInferB12xCompiledMoeCreate"
@@ -60,10 +62,14 @@ typedef struct SparkGlm52Sm121FlashInferB12xMoeArguments
     uint32_t top_k;
     uint32_t hidden_dimension;
     uint32_t intermediate_dimension;
-    uint32_t reserved0;
+    uint32_t argument_flags;
     const void *hidden_bf16;
-    const int32_t *topk_ids_i32;
-    const float *topk_weights_fp32;
+    int32_t *topk_ids_i32;
+    float *topk_weights_fp32;
+    const float *router_logits_f32;
+    const float *router_score_bias_f32;
+    uint32_t router_norm_topk_prob;
+    float router_routed_scaling_factor;
     const void *w1_weight_fp4_static_view;
     const void *w1_scale_static_storage_ue4m3;
     const float *w1_alpha_fp32_by_expert;

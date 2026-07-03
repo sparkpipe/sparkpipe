@@ -3750,6 +3750,7 @@ static bool SparkValidationRunOnce(
         node_context,
         0u,
         SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT,
+        0,
         &completion);
     if (status != SPARK_STATUS_OK)
     {

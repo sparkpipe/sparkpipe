@@ -18,6 +18,11 @@ extern "C" {
 #define SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportCompletion))
 #define SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT 2u
+#define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH 1024u
+#define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_MODULE_ID \
+    "spark.hidden_transport.persistent_ring.device.v1"
+#define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_STATISTICS_BYTES \
+    ((uint32_t)sizeof(SparkHiddenTransportPersistentRingStatistics))
 
 #define SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_CONNECTION 0x00000001u
 #define SPARK_HIDDEN_TRANSPORT_CAP_DEVICE_POINTER_IO 0x00000002u
@@ -26,14 +31,20 @@ extern "C" {
 #define SPARK_HIDDEN_TRANSPORT_CAP_NO_DEVICE_MEMCPY 0x00000010u
 #define SPARK_HIDDEN_TRANSPORT_CAP_NO_FILE_TRANSPORT 0x00000020u
 #define SPARK_HIDDEN_TRANSPORT_CAP_NO_SHELL_TRANSPORT 0x00000040u
+#define SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION 0x00000080u
 
 #define SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS \
     (SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_CONNECTION | \
      SPARK_HIDDEN_TRANSPORT_CAP_DEVICE_POINTER_IO | \
      SPARK_HIDDEN_TRANSPORT_CAP_STREAM_ORDERED | \
      SPARK_HIDDEN_TRANSPORT_CAP_NO_HOST_STAGING | \
+     SPARK_HIDDEN_TRANSPORT_CAP_NO_DEVICE_MEMCPY | \
      SPARK_HIDDEN_TRANSPORT_CAP_NO_FILE_TRANSPORT | \
      SPARK_HIDDEN_TRANSPORT_CAP_NO_SHELL_TRANSPORT)
+
+#define SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS \
+    (SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS | \
+     SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION)
 
 #define SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 0x00000001u
 #define SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER 0x00000002u
@@ -81,6 +92,18 @@ typedef struct SparkHiddenTransportCompletion
     uint64_t service_time_ns;
 } SparkHiddenTransportCompletion;
 
+typedef struct SparkHiddenTransportPersistentRingStatistics
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint64_t send_count;
+    uint64_t receive_count;
+    uint64_t completion_count;
+    uint64_t dropped_completion_count;
+    uint32_t queued_completion_count;
+    uint32_t queue_depth;
+} SparkHiddenTransportPersistentRingStatistics;
+
 typedef SparkStatus (*SparkHiddenTransportInitializeFunction)(
     const SparkHiddenTransportEndpoint *endpoint,
     void **transport_state);
@@ -94,6 +117,14 @@ typedef SparkStatus (*SparkHiddenTransportSendFunction)(
 typedef SparkStatus (*SparkHiddenTransportPollFunction)(
     void *transport_state,
     SparkHiddenTransportCompletion *completion);
+typedef SparkStatus (*SparkHiddenTransportPostReceiveBatchFunction)(
+    void *transport_state,
+    SparkHiddenTransportPacket *packets,
+    uint32_t packet_count);
+typedef SparkStatus (*SparkHiddenTransportSendBatchFunction)(
+    void *transport_state,
+    const SparkHiddenTransportPacket *packets,
+    uint32_t packet_count);
 
 typedef struct SparkHiddenTransportInterface
 {
@@ -106,6 +137,8 @@ typedef struct SparkHiddenTransportInterface
     SparkHiddenTransportPostReceiveFunction post_receive;
     SparkHiddenTransportSendFunction send;
     SparkHiddenTransportPollFunction poll;
+    SparkHiddenTransportPostReceiveBatchFunction post_receive_batch;
+    SparkHiddenTransportSendBatchFunction send_batch;
 } SparkHiddenTransportInterface;
 
 SparkStatus SparkHiddenTransportValidateEndpoint(
@@ -113,6 +146,10 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
 SparkStatus SparkHiddenTransportValidatePacket(
     const SparkHiddenTransportEndpoint *endpoint,
     const SparkHiddenTransportPacket *packet);
+SparkStatus SparkHiddenTransportValidatePacketBatch(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const SparkHiddenTransportPacket *packets,
+    uint32_t packet_count);
 SparkStatus SparkHiddenTransportValidateInterface(
     const SparkHiddenTransportInterface *transport_interface,
     uint32_t required_capability_flags);
@@ -129,9 +166,22 @@ SparkStatus SparkHiddenTransportPostReceive(
 SparkStatus SparkHiddenTransportSend(
     SparkHiddenTransportSession *session,
     const SparkHiddenTransportPacket *packet);
+SparkStatus SparkHiddenTransportPostReceiveBatch(
+    SparkHiddenTransportSession *session,
+    SparkHiddenTransportPacket *packets,
+    uint32_t packet_count);
+SparkStatus SparkHiddenTransportSendBatch(
+    SparkHiddenTransportSession *session,
+    const SparkHiddenTransportPacket *packets,
+    uint32_t packet_count);
 SparkStatus SparkHiddenTransportPoll(
     SparkHiddenTransportSession *session,
     SparkHiddenTransportCompletion *completion);
+SparkStatus SparkHiddenTransportPersistentRingGetInterface(
+    SparkHiddenTransportInterface *transport_interface);
+SparkStatus SparkHiddenTransportPersistentRingGetStatistics(
+    SparkHiddenTransportSession *session,
+    SparkHiddenTransportPersistentRingStatistics *statistics);
 
 #ifdef __cplusplus
 }

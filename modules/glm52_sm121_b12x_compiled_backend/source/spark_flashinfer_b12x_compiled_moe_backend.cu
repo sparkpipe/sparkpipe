@@ -1,5 +1,6 @@
 #include "sparkpipe/spark_glm52_sm121_b12x_generated_kernel_table.h"
 
+#include <float.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -218,6 +219,255 @@ __global__ void SparkGlm52B12xPrepareMicroTopKKernel(
     active_expert_count[0] = (int32_t)active_count;
 }
 
+
+__global__ void SparkGlm52B12xPrepareRouterTopKParallelKernel(
+    const float *router_logits,
+    const float *router_score_bias,
+    int32_t *topk_ids,
+    float *topk_weights,
+    uint32_t token_count,
+    uint32_t expert_count,
+    uint32_t top_k,
+    uint32_t norm_topk_prob,
+    float routed_scaling_factor)
+{
+    __shared__ float shared_choice_scores[
+        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_EXPERT_COUNT];
+    __shared__ float shared_route_weights[
+        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_EXPERT_COUNT];
+    __shared__ int32_t shared_selected_ids[
+        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_TOP_K];
+    __shared__ float shared_selected_weights[
+        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_TOP_K];
+    uint32_t token_index;
+    uint32_t expert_index;
+
+    token_index = blockIdx.x;
+    expert_index = threadIdx.x;
+    if (token_index >= token_count ||
+        expert_index >= SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_EXPERT_COUNT)
+    {
+        return;
+    }
+
+    if (expert_index < expert_count)
+    {
+        float router_logit;
+        float router_score;
+
+        router_logit = router_logits[
+            ((uint64_t)token_index *
+             (uint64_t)SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_EXPERT_COUNT) +
+            (uint64_t)expert_index];
+        router_score = 1.0f / (1.0f + __expf(-router_logit));
+        shared_route_weights[expert_index] = router_score;
+        shared_choice_scores[expert_index] =
+            router_score + router_score_bias[expert_index];
+    }
+    else
+    {
+        shared_route_weights[expert_index] = 0.0f;
+        shared_choice_scores[expert_index] = -FLT_MAX;
+    }
+    __syncthreads();
+
+    if (threadIdx.x == 0u)
+    {
+        float selected_weight_sum;
+        uint32_t selected_index;
+
+        selected_weight_sum = 0.0f;
+        for (selected_index = 0u; selected_index < top_k; ++selected_index)
+        {
+            float best_score;
+            uint32_t best_expert;
+            uint32_t candidate_expert;
+
+            best_score = -FLT_MAX;
+            best_expert = 0u;
+            for (candidate_expert = 0u;
+                 candidate_expert < expert_count;
+                 ++candidate_expert)
+            {
+                float candidate_score;
+
+                candidate_score = shared_choice_scores[candidate_expert];
+                if (candidate_score > best_score ||
+                    (candidate_score == best_score &&
+                     candidate_expert < best_expert))
+                {
+                    best_score = candidate_score;
+                    best_expert = candidate_expert;
+                }
+            }
+            shared_selected_ids[selected_index] = (int32_t)best_expert;
+            shared_selected_weights[selected_index] =
+                shared_route_weights[best_expert];
+            selected_weight_sum += shared_selected_weights[selected_index];
+            shared_choice_scores[best_expert] = -FLT_MAX;
+        }
+        for (selected_index = 0u; selected_index < top_k; ++selected_index)
+        {
+            float selected_weight;
+            uint64_t route_index;
+
+            selected_weight = shared_selected_weights[selected_index];
+            if (norm_topk_prob != 0u && selected_weight_sum > 0.0f)
+            {
+                selected_weight /= selected_weight_sum;
+            }
+            selected_weight *= routed_scaling_factor;
+            route_index =
+                ((uint64_t)token_index * (uint64_t)top_k) +
+                (uint64_t)selected_index;
+            topk_ids[route_index] = shared_selected_ids[selected_index];
+            topk_weights[route_index] = selected_weight;
+        }
+    }
+}
+
+__global__ void SparkGlm52B12xPrepareRouterTopKMicroKernel(
+    const float *router_logits,
+    const float *router_score_bias,
+    int32_t *topk_ids,
+    float *topk_weights,
+    int32_t *compact_topk_ids,
+    int32_t *weight_expert_ids,
+    int32_t *active_expert_count,
+    uint32_t token_count,
+    uint32_t expert_count,
+    uint32_t top_k,
+    uint32_t norm_topk_prob,
+    float routed_scaling_factor)
+{
+    __shared__ float shared_choice_scores[
+        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_EXPERT_COUNT];
+    __shared__ float shared_route_weights[
+        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_EXPERT_COUNT];
+    __shared__ int32_t shared_selected_ids[
+        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_TOP_K];
+    __shared__ float shared_selected_weights[
+        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_TOP_K];
+    __shared__ uint32_t shared_active_expert_count;
+    uint32_t token_index;
+    uint32_t expert_index;
+
+    if (threadIdx.x == 0u)
+    {
+        shared_active_expert_count = 0u;
+    }
+    __syncthreads();
+
+    expert_index = threadIdx.x;
+    for (token_index = 0u; token_index < token_count; ++token_index)
+    {
+        if (expert_index < expert_count)
+        {
+            float router_logit;
+            float router_score;
+
+            router_logit = router_logits[
+                ((uint64_t)token_index *
+                 (uint64_t)SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_EXPERT_COUNT) +
+                (uint64_t)expert_index];
+            router_score = 1.0f / (1.0f + __expf(-router_logit));
+            shared_route_weights[expert_index] = router_score;
+            shared_choice_scores[expert_index] =
+                router_score + router_score_bias[expert_index];
+        }
+        else if (expert_index < SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_EXPERT_COUNT)
+        {
+            shared_route_weights[expert_index] = 0.0f;
+            shared_choice_scores[expert_index] = -FLT_MAX;
+        }
+        __syncthreads();
+
+        if (threadIdx.x == 0u)
+        {
+            float selected_weight_sum;
+            uint32_t selected_index;
+
+            selected_weight_sum = 0.0f;
+            for (selected_index = 0u; selected_index < top_k; ++selected_index)
+            {
+                float best_score;
+                uint32_t best_expert;
+                uint32_t candidate_expert;
+
+                best_score = -FLT_MAX;
+                best_expert = 0u;
+                for (candidate_expert = 0u;
+                     candidate_expert < expert_count;
+                     ++candidate_expert)
+                {
+                    float candidate_score;
+
+                    candidate_score = shared_choice_scores[candidate_expert];
+                    if (candidate_score > best_score ||
+                        (candidate_score == best_score &&
+                         candidate_expert < best_expert))
+                    {
+                        best_score = candidate_score;
+                        best_expert = candidate_expert;
+                    }
+                }
+                shared_selected_ids[selected_index] = (int32_t)best_expert;
+                shared_selected_weights[selected_index] =
+                    shared_route_weights[best_expert];
+                selected_weight_sum += shared_selected_weights[selected_index];
+                shared_choice_scores[best_expert] = -FLT_MAX;
+            }
+
+            for (selected_index = 0u; selected_index < top_k; ++selected_index)
+            {
+                uint64_t route_index;
+                uint32_t compact_index;
+                uint32_t found;
+                float selected_weight;
+                int32_t selected_expert;
+
+                route_index =
+                    ((uint64_t)token_index * (uint64_t)top_k) +
+                    (uint64_t)selected_index;
+                selected_expert = shared_selected_ids[selected_index];
+                selected_weight = shared_selected_weights[selected_index];
+                if (norm_topk_prob != 0u && selected_weight_sum > 0.0f)
+                {
+                    selected_weight /= selected_weight_sum;
+                }
+                selected_weight *= routed_scaling_factor;
+                topk_ids[route_index] = selected_expert;
+                topk_weights[route_index] = selected_weight;
+
+                found = 0u;
+                compact_index = 0u;
+                while (compact_index < shared_active_expert_count)
+                {
+                    if (weight_expert_ids[compact_index] == selected_expert)
+                    {
+                        found = 1u;
+                        break;
+                    }
+                    ++compact_index;
+                }
+                if (found == 0u)
+                {
+                    compact_index = shared_active_expert_count;
+                    weight_expert_ids[compact_index] = selected_expert;
+                    ++shared_active_expert_count;
+                }
+                compact_topk_ids[route_index] = (int32_t)compact_index;
+            }
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0u)
+    {
+        active_expert_count[0] = (int32_t)shared_active_expert_count;
+    }
+}
+
 static SparkStatus SparkGlm52B12xPrepareMicroTopK(
     const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket,
     SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
@@ -248,6 +498,83 @@ static SparkStatus SparkGlm52B12xPrepareMicroTopK(
         (int32_t *)workspace->weight_expert_ids_i32,
         (int32_t *)workspace->active_expert_count_i32,
         route_count);
+    return SparkGlm52B12xCudaToSparkStatus(cudaGetLastError());
+}
+
+
+static SparkStatus SparkGlm52B12xPrepareRouterTopK(
+    const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket,
+    SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
+    const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments,
+    const int32_t **launch_topk_ids_out)
+{
+    uint32_t route_count;
+    cudaStream_t cuda_stream;
+
+    if (bucket == 0 || workspace == 0 || arguments == 0 ||
+        launch_topk_ids_out == 0 ||
+        arguments->router_logits_f32 == 0 ||
+        arguments->router_score_bias_f32 == 0 ||
+        arguments->topk_ids_i32 == 0 ||
+        arguments->topk_weights_fp32 == 0 ||
+        arguments->top_k == 0u ||
+        arguments->token_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    route_count = arguments->token_count * arguments->top_k;
+    if (route_count > bucket->max_rows)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+
+    cuda_stream = (cudaStream_t)arguments->cuda_stream;
+    if (bucket->backend_kind == SPARK_GLM52_SM121_B12X_BACKEND_KIND_MICRO)
+    {
+        if (workspace->compact_topk_ids_i32 == 0 ||
+            workspace->weight_expert_ids_i32 == 0 ||
+            workspace->active_expert_count_i32 == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        SparkGlm52B12xPrepareRouterTopKMicroKernel<<<
+            1u,
+            SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_EXPERT_COUNT,
+            0u,
+            cuda_stream>>>(
+            arguments->router_logits_f32,
+            arguments->router_score_bias_f32,
+            arguments->topk_ids_i32,
+            arguments->topk_weights_fp32,
+            (int32_t *)workspace->compact_topk_ids_i32,
+            (int32_t *)workspace->weight_expert_ids_i32,
+            (int32_t *)workspace->active_expert_count_i32,
+            arguments->token_count,
+            arguments->expert_count,
+            arguments->top_k,
+            arguments->router_norm_topk_prob,
+            arguments->router_routed_scaling_factor);
+        *launch_topk_ids_out =
+            (const int32_t *)workspace->compact_topk_ids_i32;
+    }
+    else
+    {
+        SparkGlm52B12xPrepareRouterTopKParallelKernel<<<
+            arguments->token_count,
+            SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_EXPERT_COUNT,
+            0u,
+            cuda_stream>>>(
+            arguments->router_logits_f32,
+            arguments->router_score_bias_f32,
+            arguments->topk_ids_i32,
+            arguments->topk_weights_fp32,
+            arguments->token_count,
+            arguments->expert_count,
+            arguments->top_k,
+            arguments->router_norm_topk_prob,
+            arguments->router_routed_scaling_factor);
+        *launch_topk_ids_out = arguments->topk_ids_i32;
+    }
     return SparkGlm52B12xCudaToSparkStatus(cudaGetLastError());
 }
 
@@ -956,7 +1283,20 @@ extern "C" SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
         return status;
     }
     launch_topk_ids = arguments->topk_ids_i32;
-    if (bucket->backend_kind == SPARK_GLM52_SM121_B12X_BACKEND_KIND_MICRO)
+    if ((arguments->argument_flags &
+            SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS) != 0u)
+    {
+        status = SparkGlm52B12xPrepareRouterTopK(
+            bucket,
+            &state->workspaces[bucket_index],
+            arguments,
+            &launch_topk_ids);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    else if (bucket->backend_kind == SPARK_GLM52_SM121_B12X_BACKEND_KIND_MICRO)
     {
         status = SparkGlm52B12xPrepareMicroTopK(
             bucket,

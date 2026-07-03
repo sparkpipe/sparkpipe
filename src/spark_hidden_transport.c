@@ -3,6 +3,30 @@
 #include <stdlib.h>
 #include <string.h>
 
+struct SparkHiddenTransportSession
+{
+    SparkHiddenTransportEndpoint endpoint;
+    SparkHiddenTransportInterface transport_interface;
+    void *transport_state;
+};
+
+static uint32_t SparkHiddenTransportInterfaceRequiresBatchFunctions(
+    const SparkHiddenTransportInterface *transport_interface,
+    uint32_t required_capability_flags)
+{
+    return ((transport_interface->capability_flags | required_capability_flags) &
+        SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION) != 0u;
+}
+
+static uint32_t SparkHiddenTransportSessionCanUseBatchSubmission(
+    const SparkHiddenTransportSession *session)
+{
+    return (session->transport_interface.capability_flags &
+        SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION) != 0u &&
+        session->transport_interface.post_receive_batch != 0 &&
+        session->transport_interface.send_batch != 0;
+}
+
 SparkStatus SparkHiddenTransportValidateEndpoint(
     const SparkHiddenTransportEndpoint *endpoint)
 {
@@ -46,7 +70,6 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
     }
     return SPARK_STATUS_OK;
 }
-
 
 SparkStatus SparkHiddenTransportValidatePacket(
     const SparkHiddenTransportEndpoint *endpoint,
@@ -125,6 +148,31 @@ SparkStatus SparkHiddenTransportValidatePacket(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkHiddenTransportValidatePacketBatch(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const SparkHiddenTransportPacket *packets,
+    uint32_t packet_count)
+{
+    SparkStatus status;
+    uint32_t packet_index;
+
+    if (packets == 0 || packet_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
+    {
+        status = SparkHiddenTransportValidatePacket(
+            endpoint,
+            &packets[packet_index]);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkHiddenTransportValidateInterface(
     const SparkHiddenTransportInterface *transport_interface,
     uint32_t required_capability_flags)
@@ -141,6 +189,7 @@ SparkStatus SparkHiddenTransportValidateInterface(
     }
     if ((transport_interface->capability_flags & required_capability_flags) !=
             required_capability_flags ||
+        transport_interface->reserved != 0u ||
         transport_interface->initialize == 0 ||
         transport_interface->destroy == 0 ||
         transport_interface->post_receive == 0 ||
@@ -149,15 +198,16 @@ SparkStatus SparkHiddenTransportValidateInterface(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    if (SparkHiddenTransportInterfaceRequiresBatchFunctions(
+            transport_interface,
+            required_capability_flags) &&
+        (transport_interface->post_receive_batch == 0 ||
+         transport_interface->send_batch == 0))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
     return SPARK_STATUS_OK;
 }
-
-struct SparkHiddenTransportSession
-{
-    SparkHiddenTransportEndpoint endpoint;
-    SparkHiddenTransportInterface transport_interface;
-    void *transport_state;
-};
 
 SparkStatus SparkHiddenTransportOpen(
     const SparkHiddenTransportEndpoint *endpoint,
@@ -271,6 +321,86 @@ SparkStatus SparkHiddenTransportSend(
         packet);
 }
 
+SparkStatus SparkHiddenTransportPostReceiveBatch(
+    SparkHiddenTransportSession *session,
+    SparkHiddenTransportPacket *packets,
+    uint32_t packet_count)
+{
+    SparkStatus status;
+    uint32_t packet_index;
+
+    if (session == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenTransportValidatePacketBatch(
+        &session->endpoint,
+        packets,
+        packet_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (SparkHiddenTransportSessionCanUseBatchSubmission(session))
+    {
+        return session->transport_interface.post_receive_batch(
+            session->transport_state,
+            packets,
+            packet_count);
+    }
+    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
+    {
+        status = session->transport_interface.post_receive(
+            session->transport_state,
+            &packets[packet_index]);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkHiddenTransportSendBatch(
+    SparkHiddenTransportSession *session,
+    const SparkHiddenTransportPacket *packets,
+    uint32_t packet_count)
+{
+    SparkStatus status;
+    uint32_t packet_index;
+
+    if (session == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenTransportValidatePacketBatch(
+        &session->endpoint,
+        packets,
+        packet_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (SparkHiddenTransportSessionCanUseBatchSubmission(session))
+    {
+        return session->transport_interface.send_batch(
+            session->transport_state,
+            packets,
+            packet_count);
+    }
+    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
+    {
+        status = session->transport_interface.send(
+            session->transport_state,
+            &packets[packet_index]);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkHiddenTransportPoll(
     SparkHiddenTransportSession *session,
     SparkHiddenTransportCompletion *completion)
@@ -302,5 +432,266 @@ SparkStatus SparkHiddenTransportPoll(
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
+    return SPARK_STATUS_OK;
+}
+
+typedef struct SparkHiddenTransportPersistentRingState
+{
+    SparkHiddenTransportEndpoint endpoint;
+    SparkHiddenTransportCompletion completions[
+        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH];
+    uint32_t completion_head;
+    uint32_t completion_tail;
+    uint32_t completion_count;
+    uint64_t send_count;
+    uint64_t receive_count;
+    uint64_t completion_total_count;
+    uint64_t dropped_completion_count;
+} SparkHiddenTransportPersistentRingState;
+
+static SparkStatus SparkHiddenTransportPersistentRingPushCompletion(
+    SparkHiddenTransportPersistentRingState *state,
+    const SparkHiddenTransportPacket *packet,
+    SparkStatus packet_status)
+{
+    SparkHiddenTransportCompletion *completion;
+    uint64_t transfer_bytes;
+
+    if (state == 0 || packet == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (state->completion_count >=
+        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH)
+    {
+        state->dropped_completion_count += 1u;
+        return SPARK_STATUS_BUSY;
+    }
+
+    transfer_bytes = (uint64_t)packet->bytes_per_sequence *
+        (uint64_t)packet->active_sequence_count;
+    completion = &state->completions[state->completion_tail];
+    memset(completion, 0, sizeof(*completion));
+    completion->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+    completion->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
+    completion->status = packet_status;
+    completion->active_sequence_count = packet->active_sequence_count;
+    completion->sequence_id = packet->sequence_id;
+    completion->token_index = packet->token_index;
+    completion->transfer_bytes = transfer_bytes;
+    completion->service_time_ns = state->endpoint.validated_latency_ns;
+
+    state->completion_tail =
+        (state->completion_tail + 1u) %
+        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH;
+    state->completion_count += 1u;
+    state->completion_total_count += 1u;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenTransportPersistentRingInitialize(
+    const SparkHiddenTransportEndpoint *endpoint,
+    void **transport_state)
+{
+    SparkHiddenTransportPersistentRingState *state;
+
+    if (endpoint == 0 || transport_state == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    state = (SparkHiddenTransportPersistentRingState *)calloc(1u, sizeof(*state));
+    if (state == 0)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    state->endpoint = *endpoint;
+    *transport_state = state;
+    return SPARK_STATUS_OK;
+}
+
+static void SparkHiddenTransportPersistentRingDestroy(void *transport_state)
+{
+    free(transport_state);
+}
+
+static SparkStatus SparkHiddenTransportPersistentRingPostReceive(
+    void *transport_state,
+    SparkHiddenTransportPacket *packet)
+{
+    SparkHiddenTransportPersistentRingState *state;
+    SparkStatus status;
+
+    if (transport_state == 0 || packet == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    state = (SparkHiddenTransportPersistentRingState *)transport_state;
+    status = SparkHiddenTransportPersistentRingPushCompletion(
+        state,
+        packet,
+        SPARK_STATUS_OK);
+    if (status == SPARK_STATUS_OK)
+    {
+        state->receive_count += 1u;
+    }
+    return status;
+}
+
+static SparkStatus SparkHiddenTransportPersistentRingSend(
+    void *transport_state,
+    const SparkHiddenTransportPacket *packet)
+{
+    SparkHiddenTransportPersistentRingState *state;
+    SparkStatus status;
+
+    if (transport_state == 0 || packet == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    state = (SparkHiddenTransportPersistentRingState *)transport_state;
+    status = SparkHiddenTransportPersistentRingPushCompletion(
+        state,
+        packet,
+        SPARK_STATUS_OK);
+    if (status == SPARK_STATUS_OK)
+    {
+        state->send_count += 1u;
+    }
+    return status;
+}
+
+static SparkStatus SparkHiddenTransportPersistentRingPostReceiveBatch(
+    void *transport_state,
+    SparkHiddenTransportPacket *packets,
+    uint32_t packet_count)
+{
+    uint32_t packet_index;
+    SparkStatus status;
+
+    if (transport_state == 0 || packets == 0 || packet_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
+    {
+        status = SparkHiddenTransportPersistentRingPostReceive(
+            transport_state,
+            &packets[packet_index]);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenTransportPersistentRingSendBatch(
+    void *transport_state,
+    const SparkHiddenTransportPacket *packets,
+    uint32_t packet_count)
+{
+    uint32_t packet_index;
+    SparkStatus status;
+
+    if (transport_state == 0 || packets == 0 || packet_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
+    {
+        status = SparkHiddenTransportPersistentRingSend(
+            transport_state,
+            &packets[packet_index]);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenTransportPersistentRingPoll(
+    void *transport_state,
+    SparkHiddenTransportCompletion *completion)
+{
+    SparkHiddenTransportPersistentRingState *state;
+
+    if (transport_state == 0 || completion == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    state = (SparkHiddenTransportPersistentRingState *)transport_state;
+    if (state->completion_count == 0u)
+    {
+        completion->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+        completion->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
+        completion->status = SPARK_STATUS_BUSY;
+        return SPARK_STATUS_OK;
+    }
+
+    *completion = state->completions[state->completion_head];
+    state->completion_head =
+        (state->completion_head + 1u) %
+        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH;
+    state->completion_count -= 1u;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkHiddenTransportPersistentRingGetInterface(
+    SparkHiddenTransportInterface *transport_interface)
+{
+    if (transport_interface == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(transport_interface, 0, sizeof(*transport_interface));
+    transport_interface->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+    transport_interface->descriptor_bytes =
+        SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES;
+    transport_interface->capability_flags =
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS;
+    transport_interface->initialize =
+        SparkHiddenTransportPersistentRingInitialize;
+    transport_interface->destroy =
+        SparkHiddenTransportPersistentRingDestroy;
+    transport_interface->post_receive =
+        SparkHiddenTransportPersistentRingPostReceive;
+    transport_interface->send = SparkHiddenTransportPersistentRingSend;
+    transport_interface->poll = SparkHiddenTransportPersistentRingPoll;
+    transport_interface->post_receive_batch =
+        SparkHiddenTransportPersistentRingPostReceiveBatch;
+    transport_interface->send_batch = SparkHiddenTransportPersistentRingSendBatch;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkHiddenTransportPersistentRingGetStatistics(
+    SparkHiddenTransportSession *session,
+    SparkHiddenTransportPersistentRingStatistics *statistics)
+{
+    SparkHiddenTransportPersistentRingState *state;
+
+    if (session == 0 || statistics == 0 || session->transport_state == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (session->transport_interface.initialize !=
+            SparkHiddenTransportPersistentRingInitialize ||
+        session->transport_interface.poll != SparkHiddenTransportPersistentRingPoll)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    state = (SparkHiddenTransportPersistentRingState *)session->transport_state;
+    memset(statistics, 0, sizeof(*statistics));
+    statistics->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+    statistics->descriptor_bytes =
+        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_STATISTICS_BYTES;
+    statistics->send_count = state->send_count;
+    statistics->receive_count = state->receive_count;
+    statistics->completion_count = state->completion_total_count;
+    statistics->dropped_completion_count = state->dropped_completion_count;
+    statistics->queued_completion_count = state->completion_count;
+    statistics->queue_depth =
+        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH;
     return SPARK_STATUS_OK;
 }

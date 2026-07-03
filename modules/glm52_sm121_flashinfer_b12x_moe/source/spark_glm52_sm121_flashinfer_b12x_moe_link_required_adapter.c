@@ -119,6 +119,11 @@ static SparkStatus SparkGlm52Sm121FlashInferB12xMoeValidateArguments(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    if ((arguments->argument_flags &
+            ~SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
     if (arguments->hidden_bf16 == 0 ||
         arguments->topk_ids_i32 == 0 ||
         arguments->topk_weights_fp32 == 0 ||
@@ -131,6 +136,23 @@ static SparkStatus SparkGlm52Sm121FlashInferB12xMoeValidateArguments(
         arguments->w2_alpha_fp32_by_expert == 0 ||
         arguments->output_bf16 == 0 ||
         arguments->cuda_stream == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((arguments->argument_flags &
+            SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS) != 0u)
+    {
+        if (arguments->router_logits_f32 == 0 ||
+            arguments->router_score_bias_f32 == 0 ||
+            arguments->router_routed_scaling_factor == 0.0f)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    else if (arguments->router_logits_f32 != 0 ||
+             arguments->router_score_bias_f32 != 0 ||
+             arguments->router_norm_topk_prob != 0u ||
+             arguments->router_routed_scaling_factor != 0.0f)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
