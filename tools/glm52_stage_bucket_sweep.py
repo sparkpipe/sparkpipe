@@ -61,6 +61,15 @@ DENSE_CHAIN_PASS_RE = re.compile(
     r"maximum_us=(?P<maximum>[0-9.]+).*?limit_us=(?P<limit>[0-9.]+).*?"
     r"graph_captures=(?P<captures>\d+).*?graph_replays=(?P<replays>\d+)"
 )
+EXACT_PP13_PASS_RE = re.compile(
+    r"exact_pp13_stage_slice=1.*?final_stage=(?P<final>\d+).*?"
+    r"stage_index=(?P<stage>\d+).*?first_layer=(?P<first>\d+).*?"
+    r"layer_count=(?P<count>\d+).*?total_submissions=(?P<submissions>\d+).*?"
+    r"total_us=(?P<total>[0-9.]+).*?maximum_us=(?P<maximum>[0-9.]+).*?"
+    r"limit_us=(?P<limit>[0-9.]+).*?built_in_exact_pp13_aot=(?P<aot>\d+).*?"
+    r"built_in_final_epilogue=(?P<epilogue>\d+).*?graph_captures=(?P<captures>\d+).*?"
+    r"graph_replays=(?P<replays>\d+)"
+)
 
 
 class SweepFailure(RuntimeError):
@@ -111,6 +120,10 @@ def stage_validator_parameters(first_layer: int, layer_count: int) -> Tuple[int,
     if first_layer < FIRST_ROUTED_LAYER or layer_count > MAX_ROUTED_LAYERS_PER_STAGE:
         raise SweepFailure(f"invalid routed stage {first_layer}:{layer_count}")
     return first_layer, layer_count, False
+
+
+def is_exact_pp13_stage(first_layer: int, layer_count: int) -> bool:
+    return layer_count == 6 and first_layer % 6 == 0 and first_layer + layer_count <= LAYER_COUNT
 
 
 def parse_stages(values: Sequence[str]) -> List[Tuple[int, int]]:
@@ -361,7 +374,14 @@ def direct_validator_environment(
     env["GLM52_ENABLE_CUDA_GRAPH_REPLAY"] = "1" if args.graph else "0"
     env["GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT"] = str(batch)
     env["GLM52_PRODUCTION_TIMING"] = "0" if args.validation_timing else "1"
-    if dense_prefix:
+    if is_exact_pp13_stage(first_layer, layer_count) and not args.validation_timing:
+        env["GLM52_EXACT_PP13_STAGE_SLICE"] = "1"
+        env["GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX"] = str(first_layer)
+        env["GLM52_ROUTED_CHAIN_LAYER_COUNT"] = str(layer_count)
+        env["GLM52_PIPELINE_INPUT_HIDDEN_BF16"] = str(input_hidden)
+        if first_layer + layer_count == LAYER_COUNT:
+            env["GLM52_EXACT_PP13_STAGE_SLICE_FINAL_TOKEN"] = "1"
+    elif dense_prefix:
         env["GLM52_INPUT_TOKEN_ID"] = os.environ.get("GLM52_INPUT_TOKEN_ID", "1000")
         if routed_layer_count == 0:
             env["GLM52_CHAIN_DENSE_LAYERS"] = "1"
@@ -382,6 +402,7 @@ def direct_validator_environment(
 def parse_result(log_text: str) -> Dict[str, Any]:
     match = None
     dense_prefix = False
+    exact_pp13 = False
     for candidate in ROUTED_PASS_RE.finditer(log_text):
         match = candidate
     for candidate in DENSE_PREFIX_PASS_RE.finditer(log_text):
@@ -390,6 +411,10 @@ def parse_result(log_text: str) -> Dict[str, Any]:
     for candidate in DENSE_CHAIN_PASS_RE.finditer(log_text):
         match = candidate
         dense_prefix = True
+    for candidate in EXACT_PP13_PASS_RE.finditer(log_text):
+        match = candidate
+        dense_prefix = False
+        exact_pp13 = True
     if match is None:
         raise SweepFailure("validator did not emit stage timing")
     total_us = float(match.group("total"))
@@ -397,7 +422,10 @@ def parse_result(log_text: str) -> Dict[str, Any]:
     submissions = int(match.group("submissions"))
     if total_us <= 0.0 or maximum_us <= 0.0 or submissions <= 0:
         raise SweepFailure("validator timing output was invalid")
-    if dense_prefix:
+    if exact_pp13:
+        first_layer = int(match.group("first"))
+        layer_count = int(match.group("count"))
+    elif dense_prefix:
         dense_count = int(match.group("dense"))
         first_layer = 0
         routed_count = int(match.groupdict().get("count", 0) or 0)
@@ -414,6 +442,8 @@ def parse_result(log_text: str) -> Dict[str, Any]:
         "limit_us": float(match.group("limit")),
         "graph_captures": int(match.group("captures")),
         "graph_replays": int(match.group("replays")),
+        "exact_pp13_stage_slice": 1 if exact_pp13 else 0,
+        "final_stage": int(match.group("final")) if exact_pp13 else 0,
     }
 
 
@@ -612,6 +642,8 @@ def write_reports(
         "submissions",
         "graph_captures",
         "graph_replays",
+        "exact_pp13_stage_slice",
+        "final_stage",
         "attempt_count",
         "warmup_runs",
         "measure_runs",

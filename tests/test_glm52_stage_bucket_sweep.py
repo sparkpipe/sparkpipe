@@ -31,6 +31,7 @@ def main() -> int:
     parsed = module.parse_result(sample)
     assert parsed["first_layer"] == 11
     assert parsed["layer_count"] == 8
+    assert parsed["exact_pp13_stage_slice"] == 0
     assert parsed["submissions"] == 8
     assert parsed["total_us"] == 32000.0
     assert parsed["maximum_us"] == 4100.0
@@ -68,6 +69,33 @@ def main() -> int:
     assert dense_chain_parsed["first_layer"] == 0
     assert dense_chain_parsed["layer_count"] == 3
     assert dense_chain_parsed["submissions"] == 12
+    exact_sample = (
+        "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff "
+        "exact_pp13_stage_slice=1 intermediate_stage=1 final_stage=0 stage_index=2 "
+        "first_layer=12 layer_count=6 total_submissions=1 total_us=28000.000 "
+        "maximum_us=28000.000 limit_us=1000000.000 pipeline_input_hidden=x "
+        "pipeline_output_hidden=y restricted_token=0 mtp_draft=0 mtp_reject=0 "
+        "built_in_exact_pp13_aot=1 built_in_final_epilogue=0 launch_chains=1 "
+        "graph_captures=1 graph_replays=1"
+    )
+    exact_parsed = module.parse_result(exact_sample)
+    assert exact_parsed["first_layer"] == 12
+    assert exact_parsed["layer_count"] == 6
+    assert exact_parsed["submissions"] == 1
+    assert exact_parsed["exact_pp13_stage_slice"] == 1
+    assert exact_parsed["final_stage"] == 0
+    final_exact_sample = (
+        "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff "
+        "exact_pp13_stage_slice=1 intermediate_stage=0 final_stage=1 stage_index=12 "
+        "first_layer=72 layer_count=6 total_submissions=1 total_us=31000.000 "
+        "maximum_us=31000.000 limit_us=1000000.000 pipeline_input_hidden=x "
+        "pipeline_output_hidden=y restricted_token=42 mtp_draft=43 mtp_reject=44 "
+        "built_in_exact_pp13_aot=1 built_in_final_epilogue=1 launch_chains=1 "
+        "graph_captures=1 graph_replays=1"
+    )
+    final_exact_parsed = module.parse_result(final_exact_sample)
+    assert final_exact_parsed["first_layer"] == 72
+    assert final_exact_parsed["final_stage"] == 1
     args = SimpleNamespace(
         max_stage_us="1000000",
         graph=False,
@@ -105,6 +133,46 @@ def main() -> int:
     args.driver_so = None
     command = module.build_direct_command(Path("validator_b8"), args)
     assert command == ["validator_b8", "1000000"]
+    args.required_cuda_link_args_list = []
+    args.validation_timing = False
+    args.graph = True
+    env = module.direct_validator_environment(
+        Path("/repo"),
+        args,
+        32,
+        12,
+        6,
+        Path("in.bf16"),
+        Path("out.bf16"),
+    )
+    assert env["GLM52_EXACT_PP13_STAGE_SLICE"] == "1"
+    assert env["GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX"] == "12"
+    assert env["GLM52_ROUTED_CHAIN_LAYER_COUNT"] == "6"
+    assert env["GLM52_PIPELINE_INPUT_HIDDEN_BF16"] == "in.bf16"
+    assert "GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16" not in env
+    assert "GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK" not in env
+    env = module.direct_validator_environment(
+        Path("/repo"),
+        args,
+        64,
+        72,
+        6,
+        Path("in.bf16"),
+        Path("out.bf16"),
+    )
+    assert env["GLM52_EXACT_PP13_STAGE_SLICE_FINAL_TOKEN"] == "1"
+    args.validation_timing = True
+    env = module.direct_validator_environment(
+        Path("/repo"),
+        args,
+        32,
+        12,
+        6,
+        Path("in.bf16"),
+        Path("out.bf16"),
+    )
+    assert "GLM52_EXACT_PP13_STAGE_SLICE" not in env
+    assert env["GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16"] == "1"
     attempts = [
         {"status": "pass", "warmup": True, "attempt_index": 0, "total_us": 60000.0},
         {"status": "pass", "warmup": False, "attempt_index": 0, "total_us": 50000.0},

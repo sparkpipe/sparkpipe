@@ -5467,25 +5467,37 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinearFp8(
     uint32_t plan_index,
     bool plan_is_required)
 {
+    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan;
     dim3 grid;
-    bool plan_was_launched;
-    SparkStatus status;
 
-    status = SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(
+    linear_plan = SparkGlm52ResidentDecodeStageGetLinearPlan(
         node_context,
         plan_index,
-        input_bf16,
-        weight_fp8_e4m3,
-        output_bf16,
-        active_sequence_count,
         input_dimension,
         output_dimension,
-        cuda_stream,
-        plan_is_required,
-        &plan_was_launched);
-    if (status != SPARK_STATUS_OK || plan_was_launched)
+        active_sequence_count);
+    if (linear_plan != 0)
     {
-        return status;
+        if (active_sequence_count !=
+                linear_plan->maximum_active_sequence_count ||
+            linear_plan->plan_kind ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR)
+        {
+            return plan_is_required
+                ? SPARK_STATUS_INVALID_ARGUMENT
+                : SPARK_STATUS_OK;
+        }
+        return SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
+            linear_plan,
+            input_bf16,
+            weight_fp8_e4m3,
+            output_bf16,
+            active_sequence_count,
+            cuda_stream);
+    }
+    if (plan_is_required)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
     grid = dim3(output_dimension, active_sequence_count, 1u);
@@ -8293,7 +8305,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateExactPp13StageSlicePlan(
     }
     if ((exact_stage_slice_plan->capability_flags &
             SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_FUSED_FINAL_TOKEN_TAIL) != 0u &&
-        exact_stage_slice_plan->final_token_launch_function == 0)
+        exact_stage_slice_plan->final_token_launch_function == 0 &&
+        (exact_stage_slice_plan->capability_flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_FUSED_FINAL_TOKEN_EPILOGUE) == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }

@@ -32,6 +32,7 @@
 #define SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT 3u
 #define SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX 3u
 #define SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT 8u
+#define SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT 6u
 #define SPARK_VALIDATION_LAYER_COUNT 78u
 #define SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET 61u
 #define SPARK_VALIDATION_CURRENT_POSITION 64u
@@ -269,6 +270,29 @@ typedef struct SparkValidationDeviceBuffers
     uint32_t routed_layer_base_index;
     SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *linear_plan_binding;
 } SparkValidationDeviceBuffers;
+
+typedef struct SparkValidationExactPp13StageSliceRuntime
+{
+    SparkValidationDeviceBuffers buffers[
+        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT];
+    SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slots[
+        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT];
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState cuda_slot_states[
+        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT];
+    SparkGlm52ResidentDecodeStageNodeContext node_contexts[
+        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT];
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context_pointers[
+        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT];
+    SparkGlm52ResidentDecodeStageStageSlicePlan stage_slice_plan;
+    SparkGlm52ResidentDecodeStageExactStageSlicePlan exact_stage_slice_plan;
+    cudaStream_t query_branch_stream;
+    cudaStream_t kv_branch_stream;
+    cudaEvent_t branch_ready_event;
+    cudaEvent_t query_branch_event;
+    cudaEvent_t kv_branch_event;
+    void *final_epilogue_workspace;
+    uint64_t final_epilogue_workspace_bytes;
+} SparkValidationExactPp13StageSliceRuntime;
 
 static bool SparkValidationCudaSucceeded(
     cudaError_t cuda_status,
@@ -7119,9 +7143,439 @@ static bool SparkValidationRunRoutedChainFromHidden(
     return true;
 }
 
+static uint32_t SparkValidationExactPp13BucketForActiveCount(void)
+{
+    if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 16u)
+        return 16u;
+    if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 32u)
+        return 32u;
+    if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 64u)
+        return 64u;
+    return 0u;
+}
+
+static bool SparkValidationAllocateExactFinalEpilogueWorkspace(
+    SparkValidationExactPp13StageSliceRuntime *runtime,
+    uint32_t bucket)
+{
+    uint64_t candidate_count;
+    uint64_t workspace_bytes;
+
+    runtime->final_epilogue_workspace = 0;
+    runtime->final_epilogue_workspace_bytes = 0u;
+    candidate_count =
+        (uint64_t)bucket *
+        (uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT;
+    workspace_bytes =
+        (candidate_count * (uint64_t)sizeof(float)) +
+        (candidate_count * (uint64_t)sizeof(uint32_t));
+    if (workspace_bytes == 0u)
+        return false;
+    if (!SparkValidationAllocateZeroed(
+            &runtime->final_epilogue_workspace,
+            workspace_bytes,
+            "cudaMalloc exact_pp13_final_epilogue_workspace"))
+        return false;
+    runtime->final_epilogue_workspace_bytes = workspace_bytes;
+    return true;
+}
+
+static bool SparkValidationInitializeExactPp13StageSlicePlan(
+    SparkValidationExactPp13StageSliceRuntime *runtime,
+    uint32_t first_layer_index,
+    uint32_t final_token_stage)
+{
+    uint32_t bucket;
+    uint32_t stage_index;
+    uint32_t capability_flags;
+
+    if (runtime == 0 ||
+        first_layer_index % SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT != 0u ||
+        first_layer_index + SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT >
+            SPARK_VALIDATION_LAYER_COUNT)
+    {
+        return false;
+    }
+    bucket = SparkValidationExactPp13BucketForActiveCount();
+    if (bucket == 0u)
+    {
+        fprintf(stderr, "exact PP13 stage-slice validation supports B<=64 active sequences\n");
+        return false;
+    }
+    stage_index = first_layer_index /
+        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT;
+    capability_flags =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES;
+    if (!SparkValidationCudaSucceeded(
+            cudaStreamCreate(&runtime->query_branch_stream),
+            "cudaStreamCreate exact_pp13_query_branch") ||
+        !SparkValidationCudaSucceeded(
+            cudaStreamCreate(&runtime->kv_branch_stream),
+            "cudaStreamCreate exact_pp13_kv_branch") ||
+        !SparkValidationCudaSucceeded(
+            cudaEventCreate(&runtime->branch_ready_event),
+            "cudaEventCreate exact_pp13_branch_ready") ||
+        !SparkValidationCudaSucceeded(
+            cudaEventCreate(&runtime->query_branch_event),
+            "cudaEventCreate exact_pp13_query_done") ||
+        !SparkValidationCudaSucceeded(
+            cudaEventCreate(&runtime->kv_branch_event),
+            "cudaEventCreate exact_pp13_kv_done") ||
+        !SparkValidationAllocateExactFinalEpilogueWorkspace(runtime, bucket))
+    {
+        return false;
+    }
+    memset(&runtime->exact_stage_slice_plan, 0, sizeof(runtime->exact_stage_slice_plan));
+    runtime->exact_stage_slice_plan.abi_version =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXACT_STAGE_SLICE_PLAN_ABI_VERSION;
+    runtime->exact_stage_slice_plan.descriptor_bytes =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXACT_STAGE_SLICE_PLAN_DESCRIPTOR_BYTES;
+    runtime->exact_stage_slice_plan.stage_index = stage_index;
+    runtime->exact_stage_slice_plan.first_layer_index = first_layer_index;
+    runtime->exact_stage_slice_plan.layer_count =
+        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT;
+    runtime->exact_stage_slice_plan.batch_bucket = bucket;
+    runtime->exact_stage_slice_plan.maximum_active_sequence_count = bucket;
+    runtime->exact_stage_slice_plan.capability_flags = capability_flags;
+    runtime->exact_stage_slice_plan.query_branch_stream =
+        runtime->query_branch_stream;
+    runtime->exact_stage_slice_plan.kv_branch_stream =
+        runtime->kv_branch_stream;
+    runtime->exact_stage_slice_plan.branch_ready_event =
+        runtime->branch_ready_event;
+    runtime->exact_stage_slice_plan.query_branch_event =
+        runtime->query_branch_event;
+    runtime->exact_stage_slice_plan.kv_branch_event =
+        runtime->kv_branch_event;
+    runtime->exact_stage_slice_plan.workspace =
+        runtime->final_epilogue_workspace;
+    runtime->exact_stage_slice_plan.workspace_bytes =
+        runtime->final_epilogue_workspace_bytes;
+    runtime->exact_stage_slice_plan.validated_maximum_latency_ns =
+        1000000000ull;
+    memset(&runtime->stage_slice_plan, 0, sizeof(runtime->stage_slice_plan));
+    runtime->stage_slice_plan.abi_version =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PLAN_ABI_VERSION;
+    runtime->stage_slice_plan.maximum_active_sequence_count = bucket;
+    runtime->stage_slice_plan.maximum_layer_count =
+        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT;
+    runtime->stage_slice_plan.capability_flags = capability_flags;
+    runtime->stage_slice_plan.opaque_state =
+        &runtime->exact_stage_slice_plan;
+    runtime->stage_slice_plan.workspace =
+        runtime->final_epilogue_workspace;
+    runtime->stage_slice_plan.workspace_bytes =
+        runtime->final_epilogue_workspace_bytes;
+    runtime->stage_slice_plan.validated_maximum_latency_ns = 1000000000ull;
+    return final_token_stage == (first_layer_index +
+        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT ==
+        SPARK_VALIDATION_LAYER_COUNT ? 1u : 0u);
+}
+
+static bool SparkValidationPrepareExactPp13StageSliceLayer(
+    SparkValidationExactPp13StageSliceRuntime *runtime,
+    const char *model_directory,
+    cudaStream_t cuda_stream,
+    uint32_t first_layer_index,
+    uint32_t layer_offset,
+    uint32_t final_token_stage,
+    uint32_t disable_graph_replay)
+{
+    SparkValidationLayer0AttentionBf16Fixture attention_fixture;
+    SparkValidationLayer0DenseBf16Fixture dense_fixture;
+    SparkValidationLayer3RouterBf16Fixture router_fixture;
+    SparkValidationFinalNormBf16Fixture final_norm_fixture;
+    SparkValidationRealLmHeadFixture real_lm_head_fixture;
+    SparkValidationDeviceBuffers *buffers;
+    SparkGlm52ResidentDecodeStageNodeContext *node_context;
+    SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot;
+    uint32_t layer_index;
+    uint32_t required_linear_plan_mask;
+    uint32_t use_dense_mlp;
+
+    layer_index = first_layer_index + layer_offset;
+    use_dense_mlp = layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX;
+    buffers = &runtime->buffers[layer_offset];
+    pipeline_slot = &runtime->pipeline_slots[layer_offset];
+    node_context = &runtime->node_contexts[layer_offset];
+    if (!SparkValidationAllocateDeviceBuffers(buffers) ||
+        !SparkValidationInitializeDenseLayerCacheAliases(buffers) ||
+        !SparkValidationInitializeDeviceInputs(buffers))
+    {
+        return false;
+    }
+    buffers->routed_layer_base_index = layer_index;
+    SparkValidationConfigureNode(
+        buffers,
+        cuda_stream,
+        pipeline_slot,
+        &runtime->cuda_slot_states[layer_offset],
+        node_context,
+        use_dense_mlp,
+        0u);
+    pipeline_slot->input_hidden_bf16 =
+        layer_offset == 0u
+        ? buffers->input_hidden_bf16
+        : runtime->buffers[layer_offset - 1u].layer_output_hidden_bf16;
+    node_context->launch_check_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAUNCH_CHECK_NONE;
+    node_context->phase_clock_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_DISABLED;
+    node_context->reserved_execution_flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_FORBID_DEBUG_SYNCHRONIZATION;
+    if (disable_graph_replay == 0u)
+    {
+        node_context->enable_cuda_graph_replay = 1u;
+        node_context->reserved_execution_flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_GRAPH_REPLAY;
+    }
+    required_linear_plan_mask =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS;
+    if (!SparkValidationLoadLayer0AttentionBf16Fixture(
+            buffers,
+            model_directory,
+            layer_index,
+            &attention_fixture) ||
+        !SparkValidationSetDecodeScalars(
+            buffers,
+            SPARK_VALIDATION_CURRENT_POSITION,
+            SPARK_VALIDATION_CURRENT_CACHE_SLOT,
+            SPARK_VALIDATION_CONTEXT_LENGTH))
+    {
+        return false;
+    }
+    if (use_dense_mlp != 0u)
+    {
+        if (!SparkValidationLoadLayer0DenseBf16Fixture(
+                buffers,
+                model_directory,
+                layer_index,
+                &dense_fixture) ||
+            !SparkValidationBindDenseLayerCache(
+                buffers,
+                node_context,
+                layer_index))
+        {
+            return false;
+        }
+        required_linear_plan_mask |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN;
+    }
+    else
+    {
+        if (!SparkValidationLoadRoutedLayerRouterBf16Fixture(
+                buffers,
+                model_directory,
+                layer_index,
+                &router_fixture) ||
+            !SparkValidationBindRoutedLayerCache(
+                buffers,
+                node_context,
+                layer_index) ||
+            !SparkValidationBindB12xMoePlanForLayer(
+                buffers,
+                node_context,
+                layer_index))
+        {
+            return false;
+        }
+        SparkValidationEnableLayer3RoutedExpertNvfp4(
+            0,
+            buffers,
+            node_context);
+        required_linear_plan_mask |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_ROUTER_LOGITS;
+    }
+    if (final_token_stage != 0u &&
+        layer_offset + 1u == SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT)
+    {
+        if (!SparkValidationLoadFinalNormBf16Fixture(
+                buffers,
+                model_directory,
+                &final_norm_fixture) ||
+            !SparkValidationLoadRealLmHeadFixture(
+                buffers,
+                model_directory,
+                &real_lm_head_fixture))
+        {
+            return false;
+        }
+    }
+    if (!SparkValidationBindRequiredLinearPlans(
+            buffers,
+            node_context,
+            cuda_stream,
+            required_linear_plan_mask))
+    {
+        return false;
+    }
+    runtime->node_context_pointers[layer_offset] = node_context;
+    return true;
+}
+
+static bool SparkValidationRunExactPp13StageSliceSubmit(
+    SparkValidationExactPp13StageSliceRuntime *runtime,
+    cudaStream_t cuda_stream,
+    uint32_t final_token_stage,
+    float *elapsed_microseconds)
+{
+    SparkValidationCompletionState completion_state;
+    SparkGlm52ResidentDecodeStageBackendCompletion completion;
+    cudaEvent_t start_event;
+    cudaEvent_t stop_event;
+    SparkStatus status;
+
+    memset(&completion_state, 0, sizeof(completion_state));
+    memset(&completion, 0, sizeof(completion));
+    completion.function = SparkValidationCompletion;
+    completion.context = &completion_state;
+    start_event = 0;
+    stop_event = 0;
+    if (!SparkValidationCudaSucceeded(cudaEventCreate(&start_event), "cudaEventCreate exact_pp13_start") ||
+        !SparkValidationCudaSucceeded(cudaEventCreate(&stop_event), "cudaEventCreate exact_pp13_stop") ||
+        !SparkValidationCudaSucceeded(cudaEventRecord(start_event, cuda_stream), "cudaEventRecord exact_pp13_start"))
+    {
+        return false;
+    }
+    status = SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
+        &runtime->stage_slice_plan,
+        runtime->node_context_pointers,
+        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT,
+        0u,
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT,
+        final_token_stage,
+        0,
+        &completion);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "exact PP13 stage-slice submit failed status=%d\n", (int)status);
+        return false;
+    }
+    if (!SparkValidationCudaSucceeded(cudaEventRecord(stop_event, cuda_stream), "cudaEventRecord exact_pp13_stop") ||
+        !SparkValidationCudaSucceeded(cudaEventSynchronize(stop_event), "cudaEventSynchronize exact_pp13_stop"))
+    {
+        return false;
+    }
+    if (completion_state.completion_count.load(std::memory_order_acquire) != 1u)
+    {
+        fprintf(stderr, "exact PP13 stage-slice completion callback did not fire\n");
+        return false;
+    }
+    if (!SparkValidationCudaSucceeded(
+            cudaEventElapsedTime(elapsed_microseconds, start_event, stop_event),
+            "cudaEventElapsedTime exact_pp13"))
+    {
+        return false;
+    }
+    cudaEventDestroy(start_event);
+    cudaEventDestroy(stop_event);
+    return true;
+}
+
+static bool SparkValidationRunExactPp13StageSliceFromHidden(
+    SparkValidationExactPp13StageSliceRuntime *runtime,
+    cudaStream_t cuda_stream,
+    const char *model_directory,
+    const char *pipeline_input_hidden_path,
+    uint32_t first_layer_index,
+    uint32_t final_token_stage,
+    uint32_t disable_graph_replay,
+    double *total_microseconds,
+    double *maximum_observed_microseconds,
+    uint32_t *submission_count)
+{
+    SparkValidationDeviceBuffers *last_buffers;
+    float elapsed_microseconds;
+    float warmup_microseconds;
+    uint32_t layer_offset;
+
+    memset(runtime, 0, sizeof(*runtime));
+    *total_microseconds = 0.0;
+    *maximum_observed_microseconds = 0.0;
+    *submission_count = 0u;
+    if (!SparkValidationInitializeExactPp13StageSlicePlan(
+            runtime,
+            first_layer_index,
+            final_token_stage))
+    {
+        return false;
+    }
+    for (layer_offset = 0u;
+         layer_offset < SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT;
+         ++layer_offset)
+    {
+        if (!SparkValidationPrepareExactPp13StageSliceLayer(
+                runtime,
+                model_directory,
+                cuda_stream,
+                first_layer_index,
+                layer_offset,
+                final_token_stage,
+                disable_graph_replay))
+        {
+            return false;
+        }
+    }
+    if (!SparkValidationReadHiddenBf16File(
+            &runtime->buffers[0],
+            pipeline_input_hidden_path))
+    {
+        return false;
+    }
+    if (!SparkValidationRunExactPp13StageSliceSubmit(
+            runtime,
+            cuda_stream,
+            final_token_stage,
+            &warmup_microseconds) ||
+        !SparkValidationRunExactPp13StageSliceSubmit(
+            runtime,
+            cuda_stream,
+            final_token_stage,
+            &elapsed_microseconds))
+    {
+        return false;
+    }
+    *total_microseconds = (double)elapsed_microseconds;
+    *maximum_observed_microseconds = (double)elapsed_microseconds;
+    *submission_count = 1u;
+    last_buffers =
+        &runtime->buffers[SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT - 1u];
+    fprintf(
+        stderr,
+        "exact_pp13_stage_slice_warmup_us=%.3f timed_us=%.3f\n",
+        (double)warmup_microseconds,
+        (double)elapsed_microseconds);
+    if (final_token_stage != 0u)
+    {
+        uint32_t selected_token_id;
+        uint32_t mtp_draft_token_id;
+        uint32_t mtp_reject_token_id;
+
+        if (!SparkValidationReadFinalTokenEvidence(
+                last_buffers,
+                &selected_token_id,
+                &mtp_draft_token_id,
+                &mtp_reject_token_id))
+        {
+            return false;
+        }
+        fprintf(
+            stderr,
+            "exact_pp13_stage_slice_final_evidence restricted_token=%u mtp_draft=%u mtp_reject=%u built_in_final_epilogue=1\n",
+            selected_token_id,
+            mtp_draft_token_id,
+            mtp_reject_token_id);
+    }
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     SparkValidationDeviceBuffers buffers;
+    SparkValidationExactPp13StageSliceRuntime exact_stage_slice_runtime;
     SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slot;
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState cuda_slot_state;
     SparkGlm52ResidentDecodeStageNodeContext node_context;
@@ -7152,6 +7606,9 @@ int main(int argc, char **argv)
     const char *dense_prefix_current_token_only_text;
     const char *chain_routed_from_hidden_text;
     const char *chain_routed_from_hidden_final_text;
+    const char *exact_pp13_stage_slice_text;
+    const char *exact_pp13_stage_slice_final_text;
+    const char *exact_pp13_disable_graph_replay_text;
     const char *pipeline_input_hidden_path;
     const char *pipeline_output_hidden_path;
     const char *routed_chain_first_layer_text;
@@ -7179,6 +7636,9 @@ int main(int argc, char **argv)
     uint32_t dense_prefix_current_token_only;
     uint32_t use_routed_chain_from_hidden;
     uint32_t use_routed_chain_from_hidden_final;
+    uint32_t use_exact_pp13_stage_slice;
+    uint32_t use_exact_pp13_stage_slice_final;
+    uint32_t disable_exact_pp13_graph_replay;
     uint32_t routed_chain_first_layer_index;
     uint32_t routed_chain_layer_count;
     uint32_t enable_graph_replay;
@@ -7233,6 +7693,12 @@ int main(int argc, char **argv)
         getenv("GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16");
     chain_routed_from_hidden_final_text =
         getenv("GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN");
+    exact_pp13_stage_slice_text =
+        getenv("GLM52_EXACT_PP13_STAGE_SLICE");
+    exact_pp13_stage_slice_final_text =
+        getenv("GLM52_EXACT_PP13_STAGE_SLICE_FINAL_TOKEN");
+    exact_pp13_disable_graph_replay_text =
+        getenv("GLM52_EXACT_PP13_DISABLE_GRAPH_REPLAY");
     pipeline_input_hidden_path =
         getenv("GLM52_PIPELINE_INPUT_HIDDEN_BF16");
     pipeline_output_hidden_path =
@@ -7299,6 +7765,19 @@ int main(int argc, char **argv)
         chain_routed_from_hidden_final_text != 0 &&
         chain_routed_from_hidden_final_text[0] != '\0' &&
         strcmp(chain_routed_from_hidden_final_text, "0") != 0;
+    use_exact_pp13_stage_slice_final =
+        exact_pp13_stage_slice_final_text != 0 &&
+        exact_pp13_stage_slice_final_text[0] != '\0' &&
+        strcmp(exact_pp13_stage_slice_final_text, "0") != 0;
+    use_exact_pp13_stage_slice =
+        use_exact_pp13_stage_slice_final != 0u ||
+        (exact_pp13_stage_slice_text != 0 &&
+         exact_pp13_stage_slice_text[0] != '\0' &&
+         strcmp(exact_pp13_stage_slice_text, "0") != 0);
+    disable_exact_pp13_graph_replay =
+        exact_pp13_disable_graph_replay_text != 0 &&
+        exact_pp13_disable_graph_replay_text[0] != '\0' &&
+        strcmp(exact_pp13_disable_graph_replay_text, "0") != 0;
     enable_graph_replay =
         enable_graph_replay_text != 0 &&
         enable_graph_replay_text[0] != '\0' &&
@@ -7415,10 +7894,13 @@ int main(int argc, char **argv)
         parsed_layer_index = strtoul(routed_chain_first_layer_text, &end_pointer, 10);
         if (end_pointer == routed_chain_first_layer_text ||
             *end_pointer != '\0' ||
-            parsed_layer_index < (unsigned long)SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX ||
+            parsed_layer_index <
+                (use_exact_pp13_stage_slice != 0u
+                    ? 0ul
+                    : (unsigned long)SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX) ||
             parsed_layer_index >= (unsigned long)SPARK_VALIDATION_LAYER_COUNT)
         {
-            fprintf(stderr, "GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX is invalid; expected %u..%u\n", SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX, SPARK_VALIDATION_LAYER_COUNT - 1u);
+            fprintf(stderr, "GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX is invalid; expected %u..%u\n", use_exact_pp13_stage_slice != 0u ? 0u : SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX, SPARK_VALIDATION_LAYER_COUNT - 1u);
             return 2;
         }
         routed_chain_first_layer_index = (uint32_t)parsed_layer_index;
@@ -7482,6 +7964,32 @@ int main(int argc, char **argv)
         use_routed_chain_from_hidden_final != 0u)
     {
         fprintf(stderr, "choose only one routed-from-hidden mode: intermediate or final-token\n");
+        return 2;
+    }
+    if (use_exact_pp13_stage_slice != 0u &&
+        (pipeline_input_hidden_path == 0 ||
+         pipeline_input_hidden_path[0] == '\0' ||
+         pipeline_output_hidden_path == 0 ||
+         pipeline_output_hidden_path[0] == '\0' ||
+         model_directory == 0 ||
+         model_directory[0] == '\0' ||
+         routed_chain_layer_count !=
+            SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT ||
+         (routed_chain_first_layer_index %
+            SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT) != 0u ||
+         use_input_embedding != 0u ||
+         use_prefill_kv != 0u ||
+         use_dense_chain != 0u ||
+         use_dense_chain_layer3_routed_expert_topk != 0u ||
+         use_routed_chain_from_hidden != 0u ||
+         use_routed_chain_from_hidden_final != 0u ||
+         use_layer3_router != 0u ||
+         use_layer3_shared_expert != 0u ||
+         use_layer3_routed_expert != 0u ||
+         check_layer0_reference != 0u ||
+         check_layer0_full_reference != 0u))
+    {
+        fprintf(stderr, "GLM52_EXACT_PP13_STAGE_SLICE requires model dir, input/output hidden, first layer multiple of 6, count=6, and owns production slice timing\n");
         return 2;
     }
     if (use_routed_chain_from_hidden != 0u &&
@@ -7651,6 +8159,7 @@ int main(int argc, char **argv)
         return 2;
     }
     if (use_routed_chain_from_hidden == 0u &&
+        use_exact_pp13_stage_slice == 0u &&
         use_dense_chain_layer3_routed_expert_topk == 0u &&
         model_directory != 0 && model_directory[0] != '\0' &&
         !SparkValidationLoadFinalNormBf16Fixture(
@@ -7661,6 +8170,7 @@ int main(int argc, char **argv)
         return 2;
     }
     if (use_routed_chain_from_hidden == 0u &&
+        use_exact_pp13_stage_slice == 0u &&
         use_dense_chain_layer3_routed_expert_topk == 0u &&
         model_directory != 0 && model_directory[0] != '\0' &&
         !SparkValidationLoadRealLmHeadFixture(
@@ -7784,6 +8294,97 @@ int main(int argc, char **argv)
             &prefill_kv))
     {
         return 2;
+    }
+    if (use_exact_pp13_stage_slice != 0u)
+    {
+        SparkGlm52ResidentDecodeStageCudaPipelineSlotState *exact_slot_state;
+        uint32_t selected_token_id;
+        uint32_t mtp_draft_token_id;
+        uint32_t mtp_reject_token_id;
+        uint32_t submission_count;
+
+        selected_token_id = 0u;
+        mtp_draft_token_id = 0u;
+        mtp_reject_token_id = 0u;
+        if (!SparkValidationRunExactPp13StageSliceFromHidden(
+                &exact_stage_slice_runtime,
+                cuda_stream,
+                model_directory,
+                pipeline_input_hidden_path,
+                routed_chain_first_layer_index,
+                use_exact_pp13_stage_slice_final,
+                disable_exact_pp13_graph_replay,
+                &total_microseconds,
+                &maximum_observed_microseconds,
+                &submission_count) ||
+            !SparkValidationWriteHiddenBf16File(
+                pipeline_output_hidden_path,
+                exact_stage_slice_runtime
+                    .buffers[SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT - 1u]
+                    .layer_output_hidden_bf16))
+        {
+            return 2;
+        }
+        if (use_exact_pp13_stage_slice_final != 0u &&
+            !SparkValidationReadFinalTokenEvidence(
+                &exact_stage_slice_runtime
+                    .buffers[SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT - 1u],
+                &selected_token_id,
+                &mtp_draft_token_id,
+                &mtp_reject_token_id))
+        {
+            return 2;
+        }
+        exact_slot_state = &exact_stage_slice_runtime.cuda_slot_states[0];
+        if (disable_exact_pp13_graph_replay == 0u &&
+            (exact_slot_state->graph_capture_count != 1u ||
+             exact_slot_state->graph_replay_count != 2u))
+        {
+            fprintf(stderr, "exact PP13 stage-slice expected one graph capture, one warmup replay, and one timed replay; captures=%llu replays=%llu\n", (unsigned long long)exact_slot_state->graph_capture_count, (unsigned long long)exact_slot_state->graph_replay_count);
+            return 2;
+        }
+        if (disable_exact_pp13_graph_replay != 0u &&
+            (exact_slot_state->graph_capture_count != 0u ||
+             exact_slot_state->graph_replay_count != 0u))
+        {
+            fprintf(stderr, "exact PP13 diagnostic graph-disable expected no graph capture or replay; captures=%llu replays=%llu\n", (unsigned long long)exact_slot_state->graph_capture_count, (unsigned long long)exact_slot_state->graph_replay_count);
+            return 2;
+        }
+        SparkGlm52ResidentDecodeStageBackendQuiesce(
+            &exact_stage_slice_runtime.node_contexts[0]);
+        if (maximum_observed_microseconds > maximum_stage_microseconds)
+        {
+            fprintf(
+                stderr,
+                "glm52_resident_decode_stage exact PP13 stage-slice validation failed total_us=%.3f maximum_us=%.3f limit_us=%.3f submissions=%u\n",
+                total_microseconds,
+                maximum_observed_microseconds,
+                maximum_stage_microseconds,
+                submission_count);
+            return 1;
+        }
+        printf(
+            "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff exact_pp13_stage_slice=1 intermediate_stage=%u final_stage=%u stage_index=%u first_layer=%u layer_count=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s restricted_token=%u mtp_draft=%u mtp_reject=%u built_in_exact_pp13_aot=1 built_in_final_epilogue=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            use_exact_pp13_stage_slice_final == 0u ? 1u : 0u,
+            use_exact_pp13_stage_slice_final,
+            routed_chain_first_layer_index /
+                SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT,
+            routed_chain_first_layer_index,
+            SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT,
+            submission_count,
+            total_microseconds,
+            maximum_observed_microseconds,
+            maximum_stage_microseconds,
+            pipeline_input_hidden_path,
+            pipeline_output_hidden_path,
+            selected_token_id,
+            mtp_draft_token_id,
+            mtp_reject_token_id,
+            use_exact_pp13_stage_slice_final,
+            (unsigned long long)exact_slot_state->launch_chain_count,
+            (unsigned long long)exact_slot_state->graph_capture_count,
+            (unsigned long long)exact_slot_state->graph_replay_count);
+        return 0;
     }
     if (argc == 3)
     {
