@@ -20,6 +20,8 @@
 
 #include <float.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS 256u
@@ -4050,6 +4052,15 @@ static SparkStatus SparkGlm52ResidentDecodeStageCheckCudaLaunch(
         : cudaGetLastError();
     if (cuda_status != cudaSuccess)
     {
+        if (getenv("GLM52_CUDA_LAUNCH_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "spark_glm52_cuda_launch_error mode=%u error=%d message=%s\n",
+                node_context->launch_check_mode,
+                (int)cuda_status,
+                cudaGetErrorString(cuda_status));
+        }
         if (cuda_slot_state != 0)
         {
             cuda_slot_state->launch_error_count += 1u;
