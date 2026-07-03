@@ -578,15 +578,25 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInQuantizedProjectionValidatio
     SparkGlm52ResidentDecodeStageDestroy(module_state);
 
     linear_plans[SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A]
+        .custom_launch_function = 0;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_OK);
+    assert(module_state != 0);
+    SparkGlm52ResidentDecodeStageDestroy(module_state);
+
+    linear_plans[SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A]
         .workspace_bytes = 0u;
     module_state = 0;
     assert(SparkGlm52ResidentDecodeStageInitialize(
         &configuration,
         &host_services,
-        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+        &module_state) == SPARK_STATUS_OK);
+    assert(module_state != 0);
+    SparkGlm52ResidentDecodeStageDestroy(module_state);
 
-    linear_plans[SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A]
-        .workspace_bytes = UINT64_MAX;
     quantized_views[SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A]
         .weight_payload_bytes = 0u;
     module_state = 0;

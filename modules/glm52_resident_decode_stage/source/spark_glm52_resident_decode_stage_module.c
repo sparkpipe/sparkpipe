@@ -9,6 +9,14 @@
 
 #include "spark_glm52_resident_decode_stage_backend.h"
 
+#ifndef SPARK_GLM52_RESIDENT_DECODE_STAGE_MAYBE_UNUSED
+#if defined(__GNUC__) || defined(__clang__)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAYBE_UNUSED __attribute__((unused))
+#else
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAYBE_UNUSED
+#endif
+#endif
+
 #if defined(SPARK_GLM52_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES)
 extern SparkStatus SparkGlm52ResidentDecodeStageBackendVerifyRequiredCudaModules(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context);
@@ -241,14 +249,14 @@ static uint32_t SparkGlm52ResidentDecodeStageLinearPlanExpectedScaleBlockSize(
     return 0u;
 }
 
-static uint64_t SparkGlm52ResidentDecodeStageAlignUpU64(
+static SPARK_GLM52_RESIDENT_DECODE_STAGE_MAYBE_UNUSED uint64_t SparkGlm52ResidentDecodeStageAlignUpU64(
     uint64_t value,
     uint64_t alignment)
 {
     return (value + alignment - 1u) & ~(alignment - 1u);
 }
 
-static uint64_t SparkGlm52ResidentDecodeStageNativeActivationScaleBlockSize(
+static SPARK_GLM52_RESIDENT_DECODE_STAGE_MAYBE_UNUSED uint64_t SparkGlm52ResidentDecodeStageNativeActivationScaleBlockSize(
     uint32_t weight_format)
 {
     if (weight_format ==
@@ -266,7 +274,7 @@ static uint64_t SparkGlm52ResidentDecodeStageNativeActivationScaleBlockSize(
     return 0u;
 }
 
-static uint64_t SparkGlm52ResidentDecodeStageNativeQuantizedProjectionWorkspaceBytes(
+static SPARK_GLM52_RESIDENT_DECODE_STAGE_MAYBE_UNUSED uint64_t SparkGlm52ResidentDecodeStageNativeQuantizedProjectionWorkspaceBytes(
     const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
     uint32_t weight_format)
 {
@@ -373,19 +381,8 @@ static bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTensorCore
         ? scale_element_count * (uint64_t)sizeof(float)
         : scale_element_count;
 
-    if (view->weight_payload_bytes < required_payload_bytes ||
-        view->weight_scale_bytes < required_scale_bytes)
-    {
-        return false;
-    }
-
-    required_payload_bytes =
-        SparkGlm52ResidentDecodeStageNativeQuantizedProjectionWorkspaceBytes(
-            linear_plan,
-            view->weight_format);
-    return required_payload_bytes != 0u &&
-        linear_plan->workspace != 0 &&
-        linear_plan->workspace_bytes >= required_payload_bytes;
+    return view->weight_payload_bytes >= required_payload_bytes &&
+        view->weight_scale_bytes >= required_scale_bytes;
 }
 
 static bool SparkGlm52ResidentDecodeStageLinearPlanHasQuantizedProjectionKind(

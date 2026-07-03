@@ -33,6 +33,10 @@
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_MMA_WARPS 4u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_MMA_THREADS 128u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_WORKSPACE_ALIGNMENT 256ull
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M 16u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N 16u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K 16u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS 32u
 
 #ifndef SPARK_GLM52_REQUIRED_SYMBOL_REFERENCE
 #if defined(__GNUC__) || defined(__clang__)
@@ -300,6 +304,12 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageDecodeE8m0(
         return 0.0f;
     }
     return ldexpf(1.0f, (int)value - 127);
+}
+
+static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageDecodeUe4m3(
+    uint8_t value)
+{
+    return SparkGlm52ResidentDecodeStageFp8E4m3ToFloat((uint8_t)(value & 0x7fu));
 }
 
 static __device__ __forceinline__ uint8_t SparkGlm52ResidentDecodeStageEncodeE8m0Saturate(
@@ -764,6 +774,17 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageQuantizedLi
             ((const float *)weight_scale)[scale_index];
     }
 
+    if (weight_format ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1)
+    {
+        return SparkGlm52ResidentDecodeStageDecodeE2m1(
+                SparkGlm52ResidentDecodeStagePackedNibble(
+                    weight_payload,
+                    weight_element_index)) *
+            SparkGlm52ResidentDecodeStageDecodeUe4m3(
+                ((const uint8_t *)weight_scale)[scale_index]);
+    }
+
     return SparkGlm52ResidentDecodeStageDecodeE2m1(
             SparkGlm52ResidentDecodeStagePackedNibble(
                 weight_payload,
@@ -895,6 +916,214 @@ void SparkGlm52ResidentDecodeStageQuantizedLinearF32Kernel(
             ((uint64_t)sequence_index * (uint64_t)output_dimension) +
             (uint64_t)output_index] = row_sum;
     }
+}
+
+
+static __global__ __launch_bounds__(
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS, 4)
+void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearKernel(
+    const uint16_t *__restrict__ input_bf16,
+    const uint8_t *__restrict__ weight_payload,
+    const void *__restrict__ weight_scale,
+    void *__restrict__ output,
+    uint32_t active_sequence_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t weight_format,
+    uint32_t scale_block_size,
+    uint32_t output_is_f32)
+{
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+    __shared__ __nv_bfloat16 shared_input_tile[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K];
+    __shared__ __nv_bfloat16 shared_weight_tile[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N];
+    __shared__ float shared_output_tile[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N];
+    uint32_t sequence_tile_begin;
+    uint32_t output_tile_begin;
+    uint32_t tile_element_index;
+    uint32_t input_tile_begin;
+
+    sequence_tile_begin = blockIdx.y *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M;
+    output_tile_begin = blockIdx.x *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
+
+    nvcuda::wmma::fragment<
+        nvcuda::wmma::matrix_a,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K,
+        __nv_bfloat16,
+        nvcuda::wmma::row_major> input_fragment;
+    nvcuda::wmma::fragment<
+        nvcuda::wmma::matrix_b,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K,
+        __nv_bfloat16,
+        nvcuda::wmma::col_major> weight_fragment;
+    nvcuda::wmma::fragment<
+        nvcuda::wmma::accumulator,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K,
+        float> accumulator_fragment;
+
+    nvcuda::wmma::fill_fragment(accumulator_fragment, 0.0f);
+    for (input_tile_begin = 0u;
+         input_tile_begin < input_dimension;
+         input_tile_begin += SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K)
+    {
+        for (tile_element_index = threadIdx.x;
+             tile_element_index <
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K;
+             tile_element_index += blockDim.x)
+        {
+            uint32_t local_sequence_index;
+            uint32_t local_input_index;
+            uint32_t sequence_index;
+            uint32_t input_index;
+            float input_value;
+
+            local_sequence_index = tile_element_index /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K;
+            local_input_index = tile_element_index -
+                (local_sequence_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
+            sequence_index = sequence_tile_begin + local_sequence_index;
+            input_index = input_tile_begin + local_input_index;
+            input_value = 0.0f;
+            if (sequence_index < active_sequence_count &&
+                input_index < input_dimension)
+            {
+                input_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+                    input_bf16[
+                        ((uint64_t)sequence_index * (uint64_t)input_dimension) +
+                        (uint64_t)input_index]);
+            }
+            shared_input_tile[tile_element_index] = __float2bfloat16(input_value);
+        }
+
+        for (tile_element_index = threadIdx.x;
+             tile_element_index <
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
+             tile_element_index += blockDim.x)
+        {
+            uint32_t local_input_index;
+            uint32_t local_output_index;
+            uint32_t input_index;
+            uint32_t output_index;
+            float weight_value;
+
+            local_output_index = tile_element_index /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K;
+            local_input_index = tile_element_index -
+                (local_output_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
+            input_index = input_tile_begin + local_input_index;
+            output_index = output_tile_begin + local_output_index;
+            weight_value = 0.0f;
+            if (input_index < input_dimension && output_index < output_dimension)
+            {
+                weight_value =
+                    SparkGlm52ResidentDecodeStageQuantizedLinearWeightToFloat(
+                        weight_payload,
+                        weight_scale,
+                        weight_format,
+                        scale_block_size,
+                        input_dimension,
+                        output_index,
+                        input_index);
+            }
+            shared_weight_tile[
+                local_input_index +
+                (local_output_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K)] =
+                __float2bfloat16(weight_value);
+        }
+        __syncthreads();
+
+        nvcuda::wmma::load_matrix_sync(
+            input_fragment,
+            shared_input_tile,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
+        nvcuda::wmma::load_matrix_sync(
+            weight_fragment,
+            shared_weight_tile,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
+        nvcuda::wmma::mma_sync(
+            accumulator_fragment,
+            input_fragment,
+            weight_fragment,
+            accumulator_fragment);
+        __syncthreads();
+    }
+
+    nvcuda::wmma::store_matrix_sync(
+        shared_output_tile,
+        accumulator_fragment,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+        nvcuda::wmma::mem_row_major);
+    __syncthreads();
+
+    for (tile_element_index = threadIdx.x;
+         tile_element_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
+         tile_element_index += blockDim.x)
+    {
+        uint32_t local_sequence_index;
+        uint32_t local_output_index;
+        uint32_t sequence_index;
+        uint32_t output_index;
+        uint64_t output_offset;
+        float output_value;
+
+        local_sequence_index = tile_element_index /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
+        local_output_index = tile_element_index -
+            (local_sequence_index *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N);
+        sequence_index = sequence_tile_begin + local_sequence_index;
+        output_index = output_tile_begin + local_output_index;
+        if (sequence_index >= active_sequence_count ||
+            output_index >= output_dimension)
+        {
+            continue;
+        }
+        output_offset =
+            ((uint64_t)sequence_index * (uint64_t)output_dimension) +
+            (uint64_t)output_index;
+        output_value = shared_output_tile[tile_element_index];
+        if (output_is_f32 != 0u)
+        {
+            ((float *)output)[output_offset] = output_value;
+        }
+        else
+        {
+            ((uint16_t *)output)[output_offset] =
+                SparkGlm52ResidentDecodeStageFloatToBf16(output_value);
+        }
+    }
+#else
+    (void)input_bf16;
+    (void)weight_payload;
+    (void)weight_scale;
+    (void)output;
+    (void)active_sequence_count;
+    (void)input_dimension;
+    (void)output_dimension;
+    (void)weight_format;
+    (void)scale_block_size;
+    (void)output_is_f32;
+#endif
 }
 
 
@@ -4214,15 +4443,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     cudaStream_t cuda_stream)
 {
     const SparkGlm52ResidentDecodeStageQuantizedLinearView *quantized_view;
-    uint64_t required_workspace_bytes;
-    uint64_t activation_payload_bytes;
-    uint64_t activation_scale_offset;
-    uint64_t activation_scale_block_size;
-    uint64_t activation_scale_block_count;
-    uint8_t *activation_payload;
-    uint8_t *activation_scale;
-    dim3 quantize_grid;
-    dim3 mma_grid;
+    dim3 grid;
     cudaError_t cuda_status;
 
     if (linear_plan == 0 || input == 0 || output == 0 ||
@@ -4239,106 +4460,33 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-#if !SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_NATIVE_BLOCK_SCALED_MMA
-    return SPARK_STATUS_NOT_FOUND;
+#if defined(__CUDA_ARCH__)
+#error "SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedTensorCoreLinearPlan must remain a host launch function."
 #endif
 
-    required_workspace_bytes =
-        SparkGlm52ResidentDecodeStageBlackwellNativeWorkspaceBytes(
-            linear_plan,
-            quantized_view->weight_format);
-    if (linear_plan->workspace == 0 || required_workspace_bytes == 0u ||
-        linear_plan->workspace_bytes < required_workspace_bytes)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    activation_payload = (uint8_t *)linear_plan->workspace;
-    activation_payload_bytes =
-        SparkGlm52ResidentDecodeStageNativeActivationPayloadBytes(
-            linear_plan,
-            quantized_view->weight_format);
-    activation_scale_offset = SparkGlm52ResidentDecodeStageAlignUpU64(
-        activation_payload_bytes,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_WORKSPACE_ALIGNMENT);
-    activation_scale = activation_payload + activation_scale_offset;
-    activation_scale_block_size =
-        SparkGlm52ResidentDecodeStageNativeActivationScaleBlockSize(
-            quantized_view->weight_format);
-    if (activation_scale_block_size == 0u)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    activation_scale_block_count =
-        ((uint64_t)linear_plan->input_dimension + activation_scale_block_size - 1ull) /
-        activation_scale_block_size;
-
-    cudaMemsetAsync(
-        activation_payload,
-        0,
-        activation_scale_offset,
-        cuda_stream);
-    quantize_grid = dim3(
-        active_sequence_count,
-        (uint32_t)activation_scale_block_count,
+    grid = dim3(
+        (linear_plan->output_dimension +
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N - 1u) /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+        (active_sequence_count +
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M - 1u) /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M,
         1u);
-    SparkGlm52ResidentDecodeStageBlackwellNativeQuantizeActivationKernel<<<
-        quantize_grid,
-        256u,
+    SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearKernel<<<
+        grid,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS,
         0u,
         cuda_stream>>>(
         (const uint16_t *)input,
-        activation_payload,
-        activation_scale,
+        (const uint8_t *)quantized_view->weight_payload,
+        quantized_view->weight_scale,
+        output,
         active_sequence_count,
         linear_plan->input_dimension,
-        quantized_view->weight_format);
-
-    mma_grid = dim3(
-        (linear_plan->output_dimension +
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_MMA_N - 1u) /
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_MMA_N,
-        (active_sequence_count +
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_SEQUENCE_GROUP - 1u) /
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_SEQUENCE_GROUP,
-        1u);
-    if (quantized_view->weight_format ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
-    {
-        SparkGlm52ResidentDecodeStageBlackwellNativeFp8TensorCoreLinearKernel<<<
-            mma_grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_MMA_THREADS,
-            0u,
-            cuda_stream>>>(
-            activation_payload,
-            activation_scale,
-            (const uint8_t *)quantized_view->weight_payload,
-            quantized_view->weight_scale,
-            output,
-            active_sequence_count,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            linear_plan->output_is_f32);
-    }
-    else
-    {
-        SparkGlm52ResidentDecodeStageBlackwellNativeFp4TensorCoreLinearKernel<<<
-            mma_grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_MMA_THREADS,
-            0u,
-            cuda_stream>>>(
-            activation_payload,
-            activation_scale,
-            (const uint8_t *)quantized_view->weight_payload,
-            quantized_view->weight_scale,
-            output,
-            active_sequence_count,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            quantized_view->weight_format,
-            quantized_view->scale_block_size,
-            linear_plan->output_is_f32);
-    }
+        linear_plan->output_dimension,
+        quantized_view->weight_format,
+        quantized_view->scale_block_size,
+        linear_plan->output_is_f32);
 
     cuda_status = cudaPeekAtLastError();
     return cuda_status == cudaSuccess
@@ -4370,8 +4518,6 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBlackwellQuantize
 extern "C" uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateBlackwellNativeQuantizedTensorCoreWorkspaceBytes(
     const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan)
 {
-    uint32_t weight_format;
-
     if (!SparkGlm52ResidentDecodeStagePlanKindIsBlackwellQuantizedTensorCore(
             linear_plan == 0 ? 0u : linear_plan->plan_kind) ||
         !SparkGlm52ResidentDecodeStageBlackwellQuantizedTensorCorePlanShapeIsSupported(
@@ -4379,11 +4525,7 @@ extern "C" uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateBlackwellNativeQu
     {
         return 0u;
     }
-    weight_format = SparkGlm52ResidentDecodeStageReferencePlanWeightFormat(
-        linear_plan->plan_kind);
-    return SparkGlm52ResidentDecodeStageBlackwellNativeWorkspaceBytes(
-        linear_plan,
-        weight_format);
+    return 0u;
 }
 
 extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedTensorCoreLinearPlan(
@@ -4404,15 +4546,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedT
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (linear_plan->workspace == 0 ||
-        linear_plan->workspace_bytes <
-            SparkGlm52ResidentDecodeStageBlackwellNativeWorkspaceBytes(
-                linear_plan,
-                quantized_view->weight_format))
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
 
+    (void)quantized_view;
     linear_plan->custom_launch_function =
         (void *)SparkGlm52Sm121RequiredDecodeStageLaunchBlackwellQuantizedTensorCoreLinearPlan;
     return SPARK_STATUS_OK;
@@ -5467,37 +5602,25 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinearFp8(
     uint32_t plan_index,
     bool plan_is_required)
 {
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan;
     dim3 grid;
+    bool plan_was_launched;
+    SparkStatus status;
 
-    linear_plan = SparkGlm52ResidentDecodeStageGetLinearPlan(
+    status = SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(
         node_context,
         plan_index,
+        input_bf16,
+        weight_fp8_e4m3,
+        output_bf16,
+        active_sequence_count,
         input_dimension,
         output_dimension,
-        active_sequence_count);
-    if (linear_plan != 0)
+        cuda_stream,
+        plan_is_required,
+        &plan_was_launched);
+    if (status != SPARK_STATUS_OK || plan_was_launched)
     {
-        if (active_sequence_count !=
-                linear_plan->maximum_active_sequence_count ||
-            linear_plan->plan_kind ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR)
-        {
-            return plan_is_required
-                ? SPARK_STATUS_INVALID_ARGUMENT
-                : SPARK_STATUS_OK;
-        }
-        return SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
-            linear_plan,
-            input_bf16,
-            weight_fp8_e4m3,
-            output_bf16,
-            active_sequence_count,
-            cuda_stream);
-    }
-    if (plan_is_required)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        return status;
     }
 
     grid = dim3(output_dimension, active_sequence_count, 1u);
