@@ -3821,14 +3821,19 @@ static bool SparkValidationReadFp8MoePackHeader(
     memset(header, 0, sizeof(*header));
     memcpy(header->magic, header_bytes, sizeof(header->magic));
     memcpy(header->fields, header_bytes + 16u, sizeof(header->fields));
-    memcpy(
-        header->region_offsets,
-        header_bytes + 80u,
-        sizeof(header->region_offsets));
-    memcpy(
-        header->region_bytes,
-        header_bytes + 80u + sizeof(header->region_offsets),
-        sizeof(header->region_bytes));
+    for (region_index = 0u;
+         region_index < SPARK_VALIDATION_FP8_MOE_PACK_REGION_COUNT;
+         ++region_index)
+    {
+        memcpy(
+            &header->region_offsets[region_index],
+            header_bytes + 80u + ((uint64_t)region_index * 16u),
+            sizeof(header->region_offsets[region_index]));
+        memcpy(
+            &header->region_bytes[region_index],
+            header_bytes + 88u + ((uint64_t)region_index * 16u),
+            sizeof(header->region_bytes[region_index]));
+    }
     if (memcmp(header->magic, "SPARKGLM52FP8", 13u) != 0 ||
         header->fields[0] != 1u ||
         header->fields[1] != SPARK_VALIDATION_FP8_MOE_PACK_HEADER_BYTES ||
