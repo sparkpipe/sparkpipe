@@ -1572,6 +1572,96 @@ static bool SparkValidationLoadLayer0AttentionBf16Fixture(
     return true;
 }
 
+static bool SparkValidationLoadLayer0AttentionFp8Fixture(
+    SparkValidationDeviceBuffers *buffers,
+    const char *model_directory,
+    uint32_t layer_index,
+    SparkValidationLayer0AttentionBf16Fixture *fixture)
+{
+    const uint64_t hidden_shape[1] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t query_a_norm_shape[1] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION};
+    const uint64_t kv_a_norm_shape[1] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION};
+    const uint64_t query_a_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t query_a_scale_shape[2] = {16u, 48u};
+    const uint64_t query_b_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION};
+    const uint64_t query_b_scale_shape[2] = {128u, 16u};
+    const uint64_t kv_a_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t kv_a_scale_shape[2] = {5u, 48u};
+    const uint64_t kv_b_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION};
+    const uint64_t kv_b_scale_shape[2] = {224u, 4u};
+    const uint64_t output_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION};
+    const uint64_t output_scale_shape[2] = {48u, 128u};
+    char input_norm_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char q_a_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char q_a_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char q_a_norm_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char q_b_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char q_b_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char kv_a_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char kv_a_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char kv_a_norm_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char kv_b_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char kv_b_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char output_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char output_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+
+    memset(fixture, 0, sizeof(*fixture));
+    if (layer_index >= SPARK_VALIDATION_LAYER_COUNT)
+    {
+        fprintf(stderr, "GLM52 attention layer index must be 0..%u\n", SPARK_VALIDATION_LAYER_COUNT - 1u);
+        return false;
+    }
+    if (!SparkValidationBuildLayerTensorName(input_norm_name, sizeof(input_norm_name), layer_index, "input_layernorm.weight") ||
+        !SparkValidationBuildLayerTensorName(q_a_name, sizeof(q_a_name), layer_index, "self_attn.q_a_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(q_a_scale_name, sizeof(q_a_scale_name), layer_index, "self_attn.q_a_proj.weight_scale_inv") ||
+        !SparkValidationBuildLayerTensorName(q_a_norm_name, sizeof(q_a_norm_name), layer_index, "self_attn.q_a_layernorm.weight") ||
+        !SparkValidationBuildLayerTensorName(q_b_name, sizeof(q_b_name), layer_index, "self_attn.q_b_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(q_b_scale_name, sizeof(q_b_scale_name), layer_index, "self_attn.q_b_proj.weight_scale_inv") ||
+        !SparkValidationBuildLayerTensorName(kv_a_name, sizeof(kv_a_name), layer_index, "self_attn.kv_a_proj_with_mqa.weight") ||
+        !SparkValidationBuildLayerTensorName(kv_a_scale_name, sizeof(kv_a_scale_name), layer_index, "self_attn.kv_a_proj_with_mqa.weight_scale_inv") ||
+        !SparkValidationBuildLayerTensorName(kv_a_norm_name, sizeof(kv_a_norm_name), layer_index, "self_attn.kv_a_layernorm.weight") ||
+        !SparkValidationBuildLayerTensorName(kv_b_name, sizeof(kv_b_name), layer_index, "self_attn.kv_b_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(kv_b_scale_name, sizeof(kv_b_scale_name), layer_index, "self_attn.kv_b_proj.weight_scale_inv") ||
+        !SparkValidationBuildLayerTensorName(output_name, sizeof(output_name), layer_index, "self_attn.o_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(output_scale_name, sizeof(output_scale_name), layer_index, "self_attn.o_proj.weight_scale_inv"))
+    {
+        fprintf(stderr, "FP8 attention layer tensor name is too long\n");
+        return false;
+    }
+    if (!SparkValidationCopyBf16TensorToDevice(model_directory, input_norm_name, hidden_shape, 1u, buffers->attention_norm_weight_bf16, &fixture->copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, q_a_name, query_a_shape, 2u, buffers->raw_query_a_weight_fp8_e4m3, &fixture->copied_bytes) ||
+        !SparkValidationCopyF32TensorToDevice(model_directory, q_a_scale_name, query_a_scale_shape, 2u, buffers->raw_query_a_weight_scale_inv_f32, &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(model_directory, q_a_norm_name, query_a_norm_shape, 1u, buffers->raw_query_a_norm_weight_bf16, &fixture->copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, q_b_name, query_b_shape, 2u, buffers->raw_query_b_weight_fp8_e4m3, &fixture->copied_bytes) ||
+        !SparkValidationCopyF32TensorToDevice(model_directory, q_b_scale_name, query_b_scale_shape, 2u, buffers->raw_query_b_weight_scale_inv_f32, &fixture->copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, kv_a_name, kv_a_shape, 2u, buffers->raw_kv_a_weight_fp8_e4m3, &fixture->copied_bytes) ||
+        !SparkValidationCopyF32TensorToDevice(model_directory, kv_a_scale_name, kv_a_scale_shape, 2u, buffers->raw_kv_a_weight_scale_inv_f32, &fixture->copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(model_directory, kv_a_norm_name, kv_a_norm_shape, 1u, buffers->raw_kv_a_norm_weight_bf16, &fixture->copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, kv_b_name, kv_b_shape, 2u, buffers->raw_kv_b_weight_fp8_e4m3, &fixture->copied_bytes) ||
+        !SparkValidationCopyF32TensorToDevice(model_directory, kv_b_scale_name, kv_b_scale_shape, 2u, buffers->raw_kv_b_weight_scale_inv_f32, &fixture->copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, output_name, output_shape, 2u, buffers->attention_output_weight_fp8_e4m3, &fixture->copied_bytes) ||
+        !SparkValidationCopyF32TensorToDevice(model_directory, output_scale_name, output_scale_shape, 2u, buffers->attention_output_weight_scale_inv_f32, &fixture->copied_bytes))
+    {
+        return false;
+    }
+    fixture->ready = 1u;
+    fprintf(stderr, "layer0_attention_fp8_fixture_ready=1 model_dir=%s layer_index=%u bytes=%llu\n", model_directory, layer_index, (unsigned long long)fixture->copied_bytes);
+    return true;
+}
+
 static bool SparkValidationLoadRoutedLayerRouterBf16Fixture(
     SparkValidationDeviceBuffers *buffers,
     const char *model_directory,
@@ -8272,11 +8362,18 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
     }
     required_linear_plan_mask =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS;
-    if (!SparkValidationLoadLayer0AttentionBf16Fixture(
-            buffers,
-            model_directory,
-            layer_index,
-            &attention_fixture) ||
+    if (!(model_quantization ==
+            SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8
+            ? SparkValidationLoadLayer0AttentionFp8Fixture(
+                buffers,
+                model_directory,
+                layer_index,
+                &attention_fixture)
+            : SparkValidationLoadLayer0AttentionBf16Fixture(
+                buffers,
+                model_directory,
+                layer_index,
+                &attention_fixture)) ||
         !SparkValidationSetDecodeScalars(
             buffers,
             SPARK_VALIDATION_CURRENT_POSITION,
