@@ -211,6 +211,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_PAGED_ATTENTION 0x00000200u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_RUNTIME_KV_TABLE 0x00000400u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_VARIABLE_PROMPT_LENGTHS 0x00000800u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_RUNTIME_PREFILL_VIEW 0x00001000u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_REQUIRED_CAPABILITIES \
     (SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_STREAM_ORDERED | \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_TENSOR_CORE_PROJECTIONS | \
@@ -264,7 +265,33 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_TARGET \
     "cuda.sm121.glm52.resident_decode_stage.bf16"
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 4u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION 1u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52ResidentDecodeStagePrefillFrameView))
+
+typedef struct SparkGlm52ResidentDecodeStagePrefillFrameView
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t active_sequence_count;
+    uint32_t prompt_token_offset;
+    uint32_t prompt_token_count;
+    uint32_t prompt_token_stride;
+    uint32_t hidden_dimension;
+    uint32_t reserved0;
+    const uint32_t *prompt_positions;
+    const uint32_t *prompt_slot_mapping;
+    const uint32_t *prompt_context_lengths;
+    const uint32_t *prompt_first_block_token_offsets;
+    const uint32_t *prompt_token_counts;
+    const void *prompt_hidden_bf16;
+    const void *prompt_query_latent_bf16;
+    const void *prompt_rotated_query_rope_bf16;
+    void *prompt_attention_output_latent_bf16;
+    void *prompt_output_hidden_bf16;
+} SparkGlm52ResidentDecodeStagePrefillFrameView;
+
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 5u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52ResidentDecodeStageFrameContext))
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE \
@@ -275,11 +302,14 @@ extern "C" {
     0x00000004u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS \
     0x00000008u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW \
+    0x00000010u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_KNOWN_FLAGS \
     (SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE | \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT | \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT | \
-     SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS)
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS | \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW)
 
 typedef SparkStatus (*SparkGlm52ResidentDecodeStageHiddenTransportPostReceiveSessionFunction)(
     SparkHiddenTransportSession *transport_session,
@@ -295,6 +325,7 @@ typedef struct SparkGlm52ResidentDecodeStageFrameContext
     uint32_t flags;
     uint32_t reserved;
     const SparkGlm52KvBlockTableView *kv_block_table;
+    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_view;
     const SparkGlm52DsparkHiddenTapPlan *dspark_hidden_tap_plan;
     void *dspark_hidden_tap_output_bf16[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT];
     uint64_t dspark_hidden_tap_lane_stride_bytes;

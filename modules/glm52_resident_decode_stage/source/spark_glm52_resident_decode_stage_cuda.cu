@@ -193,6 +193,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot;
@@ -228,6 +229,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
         prompt_token_offset,
         prompt_token_count,
         runtime_kv_block_table,
+        prefill_frame_view,
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
@@ -254,6 +256,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkP
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
@@ -318,6 +321,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkP
         prompt_token_offset,
         prompt_token_count,
         runtime_kv_block_table,
+        prefill_frame_view,
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {

@@ -2870,6 +2870,37 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateDsparkHiddenTapFrameCont
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52ResidentDecodeStageValidatePrefillFrameView(
+    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_view)
+{
+    if (prefill_view == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (prefill_view->abi_version !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION ||
+        prefill_view->descriptor_bytes !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_DESCRIPTOR_BYTES ||
+        prefill_view->active_sequence_count == 0u ||
+        prefill_view->prompt_token_count == 0u ||
+        prefill_view->prompt_token_count >
+            UINT32_MAX - prefill_view->prompt_token_offset ||
+        prefill_view->prompt_token_stride < prefill_view->prompt_token_count ||
+        prefill_view->hidden_dimension !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION ||
+        prefill_view->reserved0 != 0u ||
+        prefill_view->prompt_positions == 0 ||
+        prefill_view->prompt_slot_mapping == 0 ||
+        prefill_view->prompt_context_lengths == 0 ||
+        prefill_view->prompt_first_block_token_offsets == 0 ||
+        prefill_view->prompt_token_counts == 0 ||
+        prefill_view->prompt_hidden_bf16 == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageExtractFrameContext(
     const SparkGlm52ResidentDecodeStageState *state,
     const SparkModelDriverFrame *frame,
@@ -2903,8 +2934,46 @@ static SparkStatus SparkGlm52ResidentDecodeStageExtractFrameContext(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    if ((frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW) != 0u &&
+        SparkGlm52ResidentDecodeStageValidatePrefillFrameView(
+            frame_context->prefill_view) != SPARK_STATUS_OK)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
 
     *frame_context_out = frame_context;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageExtractRuntimePrefillView(
+    const SparkModelDriverFrame *frame,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    const SparkGlm52ResidentDecodeStagePrefillFrameView **prefill_view_out)
+{
+    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_view;
+
+    if (frame == 0 || prefill_view_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *prefill_view_out = 0;
+    if (frame_context == 0 ||
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW) == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    prefill_view = frame_context->prefill_view;
+    if (prefill_view == 0 ||
+        prefill_view->active_sequence_count != frame->active_slot_count ||
+        prefill_view->prompt_token_offset !=
+            (uint32_t)frame->sequence_position ||
+        prefill_view->prompt_token_count != frame->new_token_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *prefill_view_out = prefill_view;
     return SPARK_STATUS_OK;
 }
 
@@ -3185,6 +3254,7 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
     SparkGlm52ResidentDecodeStagePendingCompletion *pending_completion;
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context;
     const SparkGlm52KvBlockTableView *runtime_kv_block_table;
+    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view;
     uint64_t pipeline_slot_value;
     uint32_t pipeline_slot_index;
     uint64_t current_dispatch_generation;
@@ -3225,6 +3295,19 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
         frame,
         frame_context,
         &runtime_kv_block_table);
+    if (status != SPARK_STATUS_OK)
+    {
+        atomic_fetch_add_explicit(
+            &state->rejected_count,
+            1u,
+            memory_order_relaxed);
+        return status;
+    }
+
+    status = SparkGlm52ResidentDecodeStageExtractRuntimePrefillView(
+        frame,
+        frame_context,
+        &prefill_frame_view);
     if (status != SPARK_STATUS_OK)
     {
         atomic_fetch_add_explicit(
@@ -3351,6 +3434,7 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
                 (uint32_t)frame->sequence_position,
                 frame->new_token_count,
                 runtime_kv_block_table,
+                prefill_frame_view,
                 &pending_completion->backend_completion);
         }
         else
@@ -3362,6 +3446,7 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
                 (uint32_t)frame->sequence_position,
                 frame->new_token_count,
                 runtime_kv_block_table,
+                prefill_frame_view,
                 &pending_completion->backend_completion);
         }
     }

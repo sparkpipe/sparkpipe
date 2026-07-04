@@ -193,6 +193,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     SparkGlm52ResidentDecodeStageFakeStream *fake_stream;
@@ -229,6 +230,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
     fake_stream->last_active_sequence_count = active_sequence_count;
     fake_stream->last_bulk_prefill_prompt_token_offset = prompt_token_offset;
     fake_stream->last_bulk_prefill_prompt_token_count = prompt_token_count;
+    fake_stream->last_prefill_frame_view = prefill_frame_view;
     SparkGlm52ResidentDecodeStageFakeRecordRuntimeKvBlockTable(
         fake_stream,
         runtime_kv_block_table);
@@ -249,6 +251,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
@@ -313,6 +316,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
     fake_stream->last_bulk_prefill_layer_count = layer_count;
     fake_stream->last_bulk_prefill_prompt_token_offset = prompt_token_offset;
     fake_stream->last_bulk_prefill_prompt_token_count = prompt_token_count;
+    fake_stream->last_prefill_frame_view = prefill_frame_view;
     SparkGlm52ResidentDecodeStageFakeRecordRuntimeKvBlockTable(
         fake_stream,
         runtime_kv_block_table);

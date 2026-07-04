@@ -43,6 +43,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion);
 
 SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
@@ -53,6 +54,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion);
 
 void SparkGlm52ResidentDecodeStageBackendQuiesce(

@@ -1575,11 +1575,18 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     SparkGlm52RequestApiCacheState cache_state;
     SparkGlm52KvBlockTableView block_table_view;
     SparkGlm52ResidentDecodeStageFrameContext frame_context;
+    SparkGlm52ResidentDecodeStagePrefillFrameView prefill_view;
     SparkModelDriverFrame frame;
     uint32_t prompt_token_ids[24];
     uint32_t host_block_indices[4];
     uint32_t execution_block_indices[4];
     uint32_t lane_block_counts[1];
+    uint32_t prompt_positions[8];
+    uint32_t prompt_slot_mapping[8];
+    uint32_t prompt_context_lengths[1];
+    uint32_t prompt_first_block_token_offsets[1];
+    uint32_t prompt_token_counts[1];
+    uint16_t prompt_hidden[8];
     uint32_t token_index;
     void *module_state;
 
@@ -1696,8 +1703,37 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     frame_context.descriptor_bytes =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_DESCRIPTOR_BYTES;
     frame_context.flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE;
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE |
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW;
     frame_context.kv_block_table = &block_table_view;
+    for (token_index = 0u; token_index < 8u; ++token_index)
+    {
+        prompt_positions[token_index] = 16u + token_index;
+        prompt_slot_mapping[token_index] = 16u + token_index;
+        prompt_hidden[token_index] = (uint16_t)(0x5100u + token_index);
+    }
+    prompt_context_lengths[0] = 24u;
+    prompt_first_block_token_offsets[0] = 0u;
+    prompt_token_counts[0] = 8u;
+    memset(&prefill_view, 0, sizeof(prefill_view));
+    prefill_view.abi_version =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION;
+    prefill_view.descriptor_bytes =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_DESCRIPTOR_BYTES;
+    prefill_view.active_sequence_count = 1u;
+    prefill_view.prompt_token_offset = 0u;
+    prefill_view.prompt_token_count = 8u;
+    prefill_view.prompt_token_stride = 8u;
+    prefill_view.hidden_dimension =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    prefill_view.prompt_positions = prompt_positions;
+    prefill_view.prompt_slot_mapping = prompt_slot_mapping;
+    prefill_view.prompt_context_lengths = prompt_context_lengths;
+    prefill_view.prompt_first_block_token_offsets =
+        prompt_first_block_token_offsets;
+    prefill_view.prompt_token_counts = prompt_token_counts;
+    prefill_view.prompt_hidden_bf16 = prompt_hidden;
+    frame_context.prefill_view = &prefill_view;
     memset(&frame, 0, sizeof(frame));
     frame.request_id = dispatch.request_ids[0];
     frame.sequence_id = dispatch.sequence_ids[0];
@@ -1710,12 +1746,17 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
     frame.user_context = &frame_context;
     assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    assert(fake_streams[0].submit_count == 0u);
+    prefill_view.prompt_token_offset = 16u;
+    assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
         SPARK_STATUS_OK);
     assert(fake_streams[0].submit_count == 1u);
     assert(fake_streams[0].last_stage_slice_layer_count == 2u);
     assert(fake_streams[0].last_bulk_prefill_layer_count == 2u);
     assert(fake_streams[0].last_bulk_prefill_prompt_token_offset == 16u);
     assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 8u);
+    assert(fake_streams[0].last_prefill_frame_view == &prefill_view);
     assert(fake_streams[0].last_runtime_kv_block_table == &block_table_view);
     assert(fake_streams[0].last_runtime_kv_physical_block_indices ==
         execution_block_indices);
