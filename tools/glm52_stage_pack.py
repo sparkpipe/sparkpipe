@@ -71,7 +71,7 @@ def read_safetensors_header(path: Path) -> Tuple[Dict[str, Any], int]:
     return header, 8 + header_length
 
 
-def load_source_index(model_dir: Path) -> Tuple[Mapping[str, str], Dict[str, Dict[str, Any]], Dict[str, int]]:
+def load_weight_map(model_dir: Path) -> Mapping[str, str]:
     index_path = model_dir / "model.safetensors.index.json"
     if not index_path.exists():
         raise StagePackFailure(f"missing safetensors index: {index_path}")
@@ -79,14 +79,21 @@ def load_source_index(model_dir: Path) -> Tuple[Mapping[str, str], Dict[str, Dic
     weight_map = index.get("weight_map")
     if not isinstance(weight_map, dict):
         raise StagePackFailure("safetensors index is missing weight_map")
+    return weight_map
+
+
+def load_source_headers(
+    model_dir: Path,
+    shard_names: Iterable[str],
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, int]]:
     headers: Dict[str, Dict[str, Any]] = {}
     payload_bases: Dict[str, int] = {}
-    for shard_name in sorted(set(weight_map.values())):
+    for shard_name in sorted(set(str(item) for item in shard_names)):
         shard_path = model_dir / str(shard_name)
         if not shard_path.exists():
             raise StagePackFailure(f"missing safetensors shard: {shard_path}")
         headers[str(shard_name)], payload_bases[str(shard_name)] = read_safetensors_header(shard_path)
-    return weight_map, headers, payload_bases
+    return headers, payload_bases
 
 
 def tensor_stage(name: str) -> int | None:
@@ -109,23 +116,22 @@ def is_moe_expert_tensor(name: str) -> bool:
 
 def collect_stage_tensors(
     weight_map: Mapping[str, str],
-    headers: Mapping[str, Mapping[str, Any]],
     selected_stages: Iterable[int],
-) -> Dict[int, List[str]]:
+) -> Tuple[Dict[int, List[str]], List[str]]:
     selected = set(selected_stages)
     stage_tensors: Dict[int, List[str]] = {stage: [] for stage in selected}
+    shard_names: List[str] = []
     for name in sorted(weight_map.keys()):
         if is_moe_expert_tensor(name):
             continue
         stage = tensor_stage(name)
         if stage is None or stage not in selected:
             continue
-        shard = str(weight_map[name])
-        header = headers.get(shard)
-        if header is None or name not in header:
-            raise StagePackFailure(f"tensor {name} missing from shard header {shard}")
         stage_tensors[stage].append(name)
-    return stage_tensors
+        shard = str(weight_map[name])
+        if shard not in shard_names:
+            shard_names.append(shard)
+    return stage_tensors, shard_names
 
 
 def copy_exact(file_in: BinaryIO, file_out: BinaryIO, byte_count: int) -> None:
@@ -257,8 +263,9 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
     model_dir = args.model_dir.resolve()
     output_dir = args.output_dir.resolve()
     selected_stages = parse_stages(args.stages)
-    weight_map, headers, payload_bases = load_source_index(model_dir)
-    stage_tensors = collect_stage_tensors(weight_map, headers, selected_stages)
+    weight_map = load_weight_map(model_dir)
+    stage_tensors, shard_names = collect_stage_tensors(weight_map, selected_stages)
+    headers, payload_bases = load_source_headers(model_dir, shard_names)
     index = load_existing_index(output_dir)
     index["format"] = FORMAT
     index["model_quantization"] = args.model_quantization
