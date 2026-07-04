@@ -11097,6 +11097,7 @@ __global__ static void SparkGlm52ResidentDecodeStagePagedPrefillBlockMetadataKer
     const uint32_t *prompt_block_table,
     uint32_t *sparse_token_indices,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     uint32_t prompt_token_stride,
     uint32_t block_token_count,
