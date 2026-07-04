@@ -54,7 +54,7 @@ def parse_stages(text: str) -> List[int]:
     return stages
 
 
-def read_safetensors_header(path: Path) -> Dict[str, Any]:
+def read_safetensors_header(path: Path) -> Tuple[Dict[str, Any], int]:
     with path.open("rb") as file:
         header_bytes = file.read(8)
         if len(header_bytes) != 8:
@@ -68,10 +68,10 @@ def read_safetensors_header(path: Path) -> Dict[str, Any]:
     header = json.loads(header_text.decode("utf-8"))
     if not isinstance(header, dict):
         raise StagePackFailure(f"safetensors header is not an object: {path}")
-    return header
+    return header, 8 + header_length
 
 
-def load_source_index(model_dir: Path) -> Tuple[Mapping[str, str], Dict[str, Dict[str, Any]]]:
+def load_source_index(model_dir: Path) -> Tuple[Mapping[str, str], Dict[str, Dict[str, Any]], Dict[str, int]]:
     index_path = model_dir / "model.safetensors.index.json"
     if not index_path.exists():
         raise StagePackFailure(f"missing safetensors index: {index_path}")
@@ -80,12 +80,13 @@ def load_source_index(model_dir: Path) -> Tuple[Mapping[str, str], Dict[str, Dic
     if not isinstance(weight_map, dict):
         raise StagePackFailure("safetensors index is missing weight_map")
     headers: Dict[str, Dict[str, Any]] = {}
+    payload_bases: Dict[str, int] = {}
     for shard_name in sorted(set(weight_map.values())):
         shard_path = model_dir / str(shard_name)
         if not shard_path.exists():
             raise StagePackFailure(f"missing safetensors shard: {shard_path}")
-        headers[str(shard_name)] = read_safetensors_header(shard_path)
-    return weight_map, headers
+        headers[str(shard_name)], payload_bases[str(shard_name)] = read_safetensors_header(shard_path)
+    return weight_map, headers, payload_bases
 
 
 def tensor_stage(name: str) -> int | None:
@@ -182,6 +183,7 @@ def write_stage_pack(
     tensor_names: Sequence[str],
     weight_map: Mapping[str, str],
     headers: Mapping[str, Mapping[str, Any]],
+    payload_bases: Mapping[str, int],
     reuse: bool,
 ) -> Dict[str, Any]:
     stage_file_name = STAGE_FILE_TEMPLATE.format(stage_index=stage_index)
@@ -217,8 +219,7 @@ def write_stage_pack(
             record["file"] = stage_file_name
             shard_path = model_dir / shard_name
             with shard_path.open("rb") as shard_file:
-                header_length = struct.unpack("<Q", shard_file.read(8))[0]
-                shard_file.seek(8 + header_length + tensor_start)
+                shard_file.seek(payload_bases[shard_name] + tensor_start)
                 copy_exact(shard_file, temp_file, tensor_bytes)
             stage_tensor_map[name] = record
     os.replace(temp_path, output_path)
@@ -256,7 +257,7 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
     model_dir = args.model_dir.resolve()
     output_dir = args.output_dir.resolve()
     selected_stages = parse_stages(args.stages)
-    weight_map, headers = load_source_index(model_dir)
+    weight_map, headers, payload_bases = load_source_index(model_dir)
     stage_tensors = collect_stage_tensors(weight_map, headers, selected_stages)
     index = load_existing_index(output_dir)
     index["format"] = FORMAT
@@ -275,6 +276,7 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
             stage_tensors[stage_index],
             weight_map,
             headers,
+            payload_bases,
             args.reuse,
         )
         if "tensor_map" not in result:
