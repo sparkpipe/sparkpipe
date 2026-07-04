@@ -72,6 +72,11 @@
 #define SPARK_VALIDATION_LOGIT_REDUCTION_THREADS 256u
 #define SPARK_VALIDATION_SAFETENSORS_HEADER_MAX_BYTES (128ull * 1024ull * 1024ull)
 #define SPARK_VALIDATION_TENSOR_NAME_BYTES 256u
+#define SPARK_VALIDATION_FP8_MOE_PACK_HEADER_BYTES 512u
+#define SPARK_VALIDATION_FP8_MOE_PACK_REGION_COUNT 4u
+#define SPARK_VALIDATION_FP8_MOE_COPY_CHUNK_BYTES (64ull * 1024ull * 1024ull)
+#define SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_NVFP4 0u
+#define SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8 1u
 
 typedef struct SparkValidationCompletionState
 {
@@ -277,9 +282,26 @@ typedef struct SparkValidationDeviceBuffers
         b12x_moe_bindings[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
     uint32_t b12x_moe_binding_ready[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
     uint32_t b12x_moe_binding_layer_indices[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    SparkGlm52ResidentDecodeStageFp8MoePlan
+        fp8_moe_plans[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    uint8_t *fp8_moe_w1_weight_fp8_e4m3[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    float *fp8_moe_w1_scale_inv_f32[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    uint8_t *fp8_moe_w2_weight_fp8_e4m3[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    float *fp8_moe_w2_scale_inv_f32[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    void *fp8_moe_workspace[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    uint32_t fp8_moe_plan_ready[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
+    uint32_t fp8_moe_plan_layer_indices[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
     uint32_t routed_layer_base_index;
     SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *linear_plan_binding;
 } SparkValidationDeviceBuffers;
+
+typedef struct SparkValidationFp8MoePackHeader
+{
+    uint8_t magic[16];
+    uint32_t fields[16];
+    uint64_t region_offsets[SPARK_VALIDATION_FP8_MOE_PACK_REGION_COUNT];
+    uint64_t region_bytes[SPARK_VALIDATION_FP8_MOE_PACK_REGION_COUNT];
+} SparkValidationFp8MoePackHeader;
 
 typedef struct SparkValidationExactPp13StageSliceRuntime
 {
@@ -333,6 +355,16 @@ static bool SparkValidationAllocateZeroed(
     }
     return SparkValidationCudaSucceeded(
         cudaMemset(*device_pointer, 0, (size_t)byte_count),
+        name);
+}
+
+static bool SparkValidationAllocateDeviceOnly(
+    void **device_pointer,
+    uint64_t byte_count,
+    const char *name)
+{
+    return SparkValidationCudaSucceeded(
+        cudaMalloc(device_pointer, (size_t)byte_count),
         name);
 }
 
@@ -3382,6 +3414,395 @@ static bool SparkValidationBindB12xMoePlanForLayer(
     node_context->moe_intermediate_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
     return true;
+}
+
+static uint64_t SparkValidationFp8MoePackExpectedRegionBytes(
+    uint32_t region_index)
+{
+    if (region_index == 0u)
+    {
+        return
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT *
+            (uint64_t)(2u * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION) *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    }
+    if (region_index == 1u)
+    {
+        return
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT *
+            32ull * 48ull * 4ull;
+    }
+    if (region_index == 2u)
+    {
+        return
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+    }
+    if (region_index == 3u)
+    {
+        return
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT *
+            48ull * 16ull * 4ull;
+    }
+    return 0u;
+}
+
+static bool SparkValidationCopyFp8MoePackRegionToDevice(
+    FILE *file,
+    const char *pack_path,
+    uint64_t region_offset,
+    uint64_t region_bytes,
+    void *device_pointer)
+{
+    uint8_t *host_buffer;
+    uint8_t *device_bytes;
+    uint64_t copied_bytes;
+    uint64_t chunk_bytes;
+    size_t read_bytes;
+
+    if (file == 0 || pack_path == 0 || device_pointer == 0 ||
+        region_bytes == 0u)
+    {
+        return false;
+    }
+    host_buffer = (uint8_t *)malloc((size_t)SPARK_VALIDATION_FP8_MOE_COPY_CHUNK_BYTES);
+    if (host_buffer == 0)
+    {
+        fprintf(stderr, "failed to allocate FP8 pack copy buffer\n");
+        return false;
+    }
+    if (fseeko(file, (off_t)region_offset, SEEK_SET) != 0)
+    {
+        fprintf(stderr, "failed to seek FP8 pack region path=%s offset=%llu\n", pack_path, (unsigned long long)region_offset);
+        free(host_buffer);
+        return false;
+    }
+    device_bytes = (uint8_t *)device_pointer;
+    copied_bytes = 0u;
+    while (copied_bytes < region_bytes)
+    {
+        chunk_bytes = region_bytes - copied_bytes;
+        if (chunk_bytes > SPARK_VALIDATION_FP8_MOE_COPY_CHUNK_BYTES)
+        {
+            chunk_bytes = SPARK_VALIDATION_FP8_MOE_COPY_CHUNK_BYTES;
+        }
+        read_bytes = fread(host_buffer, 1u, (size_t)chunk_bytes, file);
+        if (read_bytes != (size_t)chunk_bytes)
+        {
+            fprintf(stderr, "short read from FP8 pack path=%s offset=%llu wanted=%llu got=%llu\n", pack_path, (unsigned long long)(region_offset + copied_bytes), (unsigned long long)chunk_bytes, (unsigned long long)read_bytes);
+            free(host_buffer);
+            return false;
+        }
+        if (!SparkValidationCopyToDevice(
+                device_bytes + copied_bytes,
+                host_buffer,
+                chunk_bytes,
+                "copy FP8 MoE pack region"))
+        {
+            free(host_buffer);
+            return false;
+        }
+        copied_bytes += chunk_bytes;
+    }
+    free(host_buffer);
+    return true;
+}
+
+static bool SparkValidationReadFp8MoePackHeader(
+    FILE *file,
+    const char *pack_path,
+    uint32_t layer_index,
+    SparkValidationFp8MoePackHeader *header)
+{
+    uint8_t header_bytes[SPARK_VALIDATION_FP8_MOE_PACK_HEADER_BYTES];
+    uint32_t region_index;
+
+    if (file == 0 || pack_path == 0 || header == 0)
+    {
+        return false;
+    }
+    if (fseeko(file, 0, SEEK_SET) != 0 ||
+        fread(header_bytes, 1u, sizeof(header_bytes), file) != sizeof(header_bytes))
+    {
+        fprintf(stderr, "failed to read FP8 MoE pack header path=%s\n", pack_path);
+        return false;
+    }
+    memset(header, 0, sizeof(*header));
+    memcpy(header->magic, header_bytes, sizeof(header->magic));
+    memcpy(header->fields, header_bytes + 16u, sizeof(header->fields));
+    memcpy(
+        header->region_offsets,
+        header_bytes + 80u,
+        sizeof(header->region_offsets));
+    memcpy(
+        header->region_bytes,
+        header_bytes + 80u + sizeof(header->region_offsets),
+        sizeof(header->region_bytes));
+    if (memcmp(header->magic, "SPARKGLM52FP8", 13u) != 0 ||
+        header->fields[0] != 1u ||
+        header->fields[1] != SPARK_VALIDATION_FP8_MOE_PACK_HEADER_BYTES ||
+        header->fields[2] != layer_index ||
+        header->fields[3] != SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_SCALE_BLOCK_SIZE ||
+        header->fields[4] != SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION ||
+        header->fields[5] != SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION ||
+        header->fields[6] != SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT ||
+        header->fields[7] != SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K ||
+        header->fields[8] != SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_GATE_UP_ORDER_UP_GATE ||
+        header->fields[9] != SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR ||
+        header->fields[10] != SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_SCALE_LAYOUT_EXPERT_MAJOR_ROW_BLOCK_MAJOR ||
+        header->fields[11] != SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_QUANT_MODE_E4M3 ||
+        header->fields[12] != SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_OUTPUT_DTYPE_BF16 ||
+        header->fields[13] != 121u)
+    {
+        fprintf(stderr, "invalid FP8 MoE pack header path=%s layer=%u\n", pack_path, layer_index);
+        return false;
+    }
+    for (region_index = 0u;
+         region_index < SPARK_VALIDATION_FP8_MOE_PACK_REGION_COUNT;
+         ++region_index)
+    {
+        if (header->region_offsets[region_index] == 0u ||
+            header->region_bytes[region_index] !=
+                SparkValidationFp8MoePackExpectedRegionBytes(region_index))
+        {
+            fprintf(stderr, "invalid FP8 MoE pack region path=%s region=%u offset=%llu bytes=%llu\n", pack_path, region_index, (unsigned long long)header->region_offsets[region_index], (unsigned long long)header->region_bytes[region_index]);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool SparkValidationBuildFp8MoePackPath(
+    char *pack_path,
+    uint32_t pack_path_bytes,
+    uint32_t layer_index)
+{
+    const char *single_pack_path;
+    const char *pack_directory;
+    int written_bytes;
+
+    if (pack_path == 0 || pack_path_bytes == 0u)
+    {
+        return false;
+    }
+    single_pack_path = getenv("GLM52_FP8_MOE_PACK");
+    if (single_pack_path != 0 && single_pack_path[0] != '\0')
+    {
+        written_bytes = snprintf(
+            pack_path,
+            (size_t)pack_path_bytes,
+            "%s",
+            single_pack_path);
+        return written_bytes >= 0 && (uint32_t)written_bytes < pack_path_bytes;
+    }
+    pack_directory = getenv("GLM52_FP8_MOE_PACK_DIR");
+    if (pack_directory == 0 || pack_directory[0] == '\0')
+    {
+        fprintf(stderr, "set GLM52_FP8_MOE_PACK_DIR to the FP8 resident MoE pack directory\n");
+        return false;
+    }
+    written_bytes = snprintf(
+        pack_path,
+        (size_t)pack_path_bytes,
+        "%s/glm52_layer_%04u_fp8_moe.spfp8",
+        pack_directory,
+        layer_index);
+    return written_bytes >= 0 && (uint32_t)written_bytes < pack_path_bytes;
+}
+
+static bool SparkValidationBindFp8MoePlanForLayer(
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t layer_index)
+{
+    SparkValidationFp8MoePackHeader header;
+    SparkGlm52ResidentDecodeStageFp8MoePlan *plan;
+    FILE *file;
+    SparkStatus status;
+    char pack_path[PATH_MAX];
+    uint32_t binding_index;
+
+    if (buffers == 0 || node_context == 0 ||
+        layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX ||
+        layer_index < buffers->routed_layer_base_index)
+    {
+        return false;
+    }
+    binding_index = layer_index - buffers->routed_layer_base_index;
+    if (binding_index >= SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT)
+    {
+        fprintf(stderr, "layer %u has no validation FP8 binding slot base=%u\n", layer_index, buffers->routed_layer_base_index);
+        return false;
+    }
+    plan = &buffers->fp8_moe_plans[binding_index];
+    if (buffers->fp8_moe_plan_ready[binding_index] == 0u ||
+        buffers->fp8_moe_plan_layer_indices[binding_index] != layer_index)
+    {
+        if (!SparkValidationBuildFp8MoePackPath(
+                pack_path,
+                (uint32_t)sizeof(pack_path),
+                layer_index))
+        {
+            return false;
+        }
+        file = fopen(pack_path, "rb");
+        if (file == 0)
+        {
+            fprintf(stderr, "failed to open FP8 MoE pack path=%s\n", pack_path);
+            return false;
+        }
+        if (!SparkValidationReadFp8MoePackHeader(
+                file,
+                pack_path,
+                layer_index,
+                &header))
+        {
+            fclose(file);
+            return false;
+        }
+        memset(plan, 0, sizeof(*plan));
+        plan->abi_version =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PLAN_ABI_VERSION;
+        plan->capability_flags =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REQUIRED_CAPABILITIES;
+        plan->maximum_active_sequence_count =
+            node_context->max_active_sequence_count;
+        plan->maximum_token_count = node_context->max_active_sequence_count;
+        plan->expert_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
+        plan->top_k = SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
+        plan->hidden_dimension = SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+        plan->intermediate_dimension =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+        plan->output_dtype =
+            SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_OUTPUT_DTYPE_BF16;
+        plan->cuda_architecture = 121u;
+        plan->gate_up_order =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_GATE_UP_ORDER_UP_GATE;
+        plan->weight_layout =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR;
+        plan->scale_layout =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_SCALE_LAYOUT_EXPERT_MAJOR_ROW_BLOCK_MAJOR;
+        plan->quant_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_QUANT_MODE_E4M3;
+        plan->scale_block_size =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_SCALE_BLOCK_SIZE;
+        plan->validated_maximum_latency_ns = 1000000000ull;
+        if (!SparkValidationAllocateDeviceOnly(
+                (void **)&buffers->fp8_moe_w1_weight_fp8_e4m3[binding_index],
+                header.region_bytes[0],
+                "cudaMalloc fp8 moe w1 weight") ||
+            !SparkValidationAllocateDeviceOnly(
+                (void **)&buffers->fp8_moe_w1_scale_inv_f32[binding_index],
+                header.region_bytes[1],
+                "cudaMalloc fp8 moe w1 scale") ||
+            !SparkValidationAllocateDeviceOnly(
+                (void **)&buffers->fp8_moe_w2_weight_fp8_e4m3[binding_index],
+                header.region_bytes[2],
+                "cudaMalloc fp8 moe w2 weight") ||
+            !SparkValidationAllocateDeviceOnly(
+                (void **)&buffers->fp8_moe_w2_scale_inv_f32[binding_index],
+                header.region_bytes[3],
+                "cudaMalloc fp8 moe w2 scale"))
+        {
+            fclose(file);
+            return false;
+        }
+        plan->w1_weight_fp8_e4m3 =
+            buffers->fp8_moe_w1_weight_fp8_e4m3[binding_index];
+        plan->w1_scale_inv_f32 =
+            buffers->fp8_moe_w1_scale_inv_f32[binding_index];
+        plan->w2_weight_fp8_e4m3 =
+            buffers->fp8_moe_w2_weight_fp8_e4m3[binding_index];
+        plan->w2_scale_inv_f32 =
+            buffers->fp8_moe_w2_scale_inv_f32[binding_index];
+        plan->workspace_bytes =
+            SparkGlm52Sm121RequiredDecodeStageCalculateFp8MoeGroupedReferenceWorkspaceBytes(
+                plan);
+        if (plan->workspace_bytes == 0u ||
+            !SparkValidationAllocateDeviceOnly(
+                &buffers->fp8_moe_workspace[binding_index],
+                plan->workspace_bytes,
+                "cudaMalloc fp8 moe workspace"))
+        {
+            fclose(file);
+            return false;
+        }
+        plan->workspace = buffers->fp8_moe_workspace[binding_index];
+        if (!SparkValidationCopyFp8MoePackRegionToDevice(
+                file,
+                pack_path,
+                header.region_offsets[0],
+                header.region_bytes[0],
+                buffers->fp8_moe_w1_weight_fp8_e4m3[binding_index]) ||
+            !SparkValidationCopyFp8MoePackRegionToDevice(
+                file,
+                pack_path,
+                header.region_offsets[1],
+                header.region_bytes[1],
+                buffers->fp8_moe_w1_scale_inv_f32[binding_index]) ||
+            !SparkValidationCopyFp8MoePackRegionToDevice(
+                file,
+                pack_path,
+                header.region_offsets[2],
+                header.region_bytes[2],
+                buffers->fp8_moe_w2_weight_fp8_e4m3[binding_index]) ||
+            !SparkValidationCopyFp8MoePackRegionToDevice(
+                file,
+                pack_path,
+                header.region_offsets[3],
+                header.region_bytes[3],
+                buffers->fp8_moe_w2_scale_inv_f32[binding_index]))
+        {
+            fclose(file);
+            return false;
+        }
+        fclose(file);
+        status = SparkGlm52Sm121RequiredDecodeStageBindFp8MoeGroupedReferencePlan(
+            plan);
+        if (status != SPARK_STATUS_OK)
+        {
+            fprintf(
+                stderr,
+                "failed to bind FP8 resident MoE pack for layer %u path=%s status=%d\n",
+                layer_index,
+                pack_path,
+                (int)status);
+            return false;
+        }
+        buffers->fp8_moe_plan_ready[binding_index] = 1u;
+        buffers->fp8_moe_plan_layer_indices[binding_index] = layer_index;
+    }
+    node_context->fp8_moe_plan = plan;
+    node_context->model_quantization_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
+    node_context->mlp_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
+    node_context->moe_expert_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
+    node_context->moe_first_bound_expert_id = 0u;
+    node_context->moe_bound_expert_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
+    node_context->moe_top_k =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
+    node_context->moe_intermediate_dimension =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+    return true;
+}
+
+static void SparkValidationEnableLayer3RoutedExpertFp8(
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    SparkValidationEnableLayer3RouterTopK(buffers, node_context);
+    node_context->layer_progression_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK;
+    node_context->model_quantization_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
+    node_context->reserved_execution_flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
+    node_context->mlp_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
 }
 
 static void SparkValidationReleaseLinearPlanBinding(
@@ -7583,7 +8004,8 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
     uint32_t first_layer_index,
     uint32_t layer_offset,
     uint32_t final_token_stage,
-    uint32_t disable_graph_replay)
+    uint32_t disable_graph_replay,
+    uint32_t model_quantization)
 {
     SparkValidationLayer0AttentionBf16Fixture attention_fixture;
     SparkValidationLayer0DenseBf16Fixture dense_fixture;
@@ -7692,18 +8114,38 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
             !SparkValidationBindRoutedLayerCache(
                 buffers,
                 node_context,
-                layer_index) ||
-            !SparkValidationBindB12xMoePlanForLayer(
-                buffers,
-                node_context,
                 layer_index))
         {
             return false;
         }
-        SparkValidationEnableLayer3RoutedExpertNvfp4(
-            0,
-            buffers,
-            node_context);
+        if (model_quantization ==
+            SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8)
+        {
+            if (!SparkValidationBindFp8MoePlanForLayer(
+                    buffers,
+                    node_context,
+                    layer_index))
+            {
+                return false;
+            }
+            SparkValidationEnableLayer3RoutedExpertFp8(
+                buffers,
+                node_context);
+        }
+        else
+        {
+            if (!SparkValidationBindB12xMoePlanForLayer(
+                    buffers,
+                    node_context,
+                    layer_index))
+            {
+                return false;
+            }
+            SparkValidationEnableLayer3RoutedExpertNvfp4(
+                0,
+                buffers,
+                node_context);
+        }
         required_linear_plan_mask |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_ROUTER_LOGITS;
     }
@@ -7916,6 +8358,7 @@ static bool SparkValidationRunExactPp13StageSliceFromHidden(
     uint32_t first_layer_index,
     uint32_t final_token_stage,
     uint32_t disable_graph_replay,
+    uint32_t model_quantization,
     double *total_microseconds,
     double *maximum_observed_microseconds,
     uint32_t *submission_count)
@@ -7947,7 +8390,8 @@ static bool SparkValidationRunExactPp13StageSliceFromHidden(
                 first_layer_index,
                 layer_offset,
                 final_token_stage,
-                disable_graph_replay))
+                disable_graph_replay,
+                model_quantization))
         {
             return false;
         }
@@ -8063,6 +8507,7 @@ int main(int argc, char **argv)
     const char *exact_pp13_stage_slice_text;
     const char *exact_pp13_stage_slice_final_text;
     const char *exact_pp13_disable_graph_replay_text;
+    const char *exact_pp13_model_quantization_text;
     const char *pipeline_input_hidden_path;
     const char *pipeline_output_hidden_path;
     const char *routed_chain_first_layer_text;
@@ -8094,6 +8539,7 @@ int main(int argc, char **argv)
     uint32_t use_exact_pp13_stage_slice;
     uint32_t use_exact_pp13_stage_slice_final;
     uint32_t disable_exact_pp13_graph_replay;
+    uint32_t exact_pp13_model_quantization;
     uint32_t routed_chain_first_layer_index;
     uint32_t routed_chain_layer_count;
     uint32_t enable_graph_replay;
@@ -8158,6 +8604,8 @@ int main(int argc, char **argv)
         getenv("GLM52_EXACT_PP13_STAGE_SLICE_FINAL_TOKEN");
     exact_pp13_disable_graph_replay_text =
         getenv("GLM52_EXACT_PP13_DISABLE_GRAPH_REPLAY");
+    exact_pp13_model_quantization_text =
+        getenv("GLM52_EXACT_PP13_MODEL_QUANTIZATION");
     pipeline_input_hidden_path =
         getenv("GLM52_PIPELINE_INPUT_HIDDEN_BF16");
     pipeline_output_hidden_path =
@@ -8241,6 +8689,30 @@ int main(int argc, char **argv)
         exact_pp13_disable_graph_replay_text != 0 &&
         exact_pp13_disable_graph_replay_text[0] != '\0' &&
         strcmp(exact_pp13_disable_graph_replay_text, "0") != 0;
+    exact_pp13_model_quantization =
+        SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_NVFP4;
+    if (exact_pp13_model_quantization_text != 0 &&
+        exact_pp13_model_quantization_text[0] != '\0')
+    {
+        if (strcmp(exact_pp13_model_quantization_text, "fp8") == 0 ||
+            strcmp(exact_pp13_model_quantization_text, "fp8_e4m3") == 0 ||
+            strcmp(exact_pp13_model_quantization_text, "8") == 0)
+        {
+            exact_pp13_model_quantization =
+                SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8;
+        }
+        else if (strcmp(exact_pp13_model_quantization_text, "nvfp4") == 0 ||
+                 strcmp(exact_pp13_model_quantization_text, "4") == 0)
+        {
+            exact_pp13_model_quantization =
+                SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_NVFP4;
+        }
+        else
+        {
+            fprintf(stderr, "unknown GLM52_EXACT_PP13_MODEL_QUANTIZATION=%s\n", exact_pp13_model_quantization_text);
+            return 2;
+        }
+    }
     enable_graph_replay =
         enable_graph_replay_text != 0 &&
         enable_graph_replay_text[0] != '\0' &&
@@ -8863,6 +9335,7 @@ int main(int argc, char **argv)
                 routed_chain_first_layer_index,
                 use_exact_pp13_stage_slice_final,
                 disable_exact_pp13_graph_replay,
+                exact_pp13_model_quantization,
                 &total_microseconds,
                 &maximum_observed_microseconds,
                 &submission_count) ||
@@ -8913,10 +9386,14 @@ int main(int argc, char **argv)
             return 2;
         }
         expected_b12x_moe_success_count =
-            disable_exact_pp13_graph_replay != 0u
-            ? (2u * routed_layer_count)
-            : routed_layer_count;
-        if (b12x_moe_success_count < expected_b12x_moe_success_count)
+            exact_pp13_model_quantization ==
+                SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8
+            ? 0u
+            : (disable_exact_pp13_graph_replay != 0u
+                ? (2u * routed_layer_count)
+                : routed_layer_count);
+        if (expected_b12x_moe_success_count != 0u &&
+            b12x_moe_success_count < expected_b12x_moe_success_count)
         {
             fprintf(
                 stderr,
@@ -8953,7 +9430,11 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff exact_pp13_stage_slice=1 intermediate_stage=%u final_stage=%u stage_index=%u first_layer=%u layer_count=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s restricted_token=%u expected_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f built_in_exact_pp13_aot=1 built_in_final_epilogue=%u layer_bodies=%llu b12x_moe_launches=%llu launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff exact_pp13_stage_slice=1 model_quantization=%s intermediate_stage=%u final_stage=%u stage_index=%u first_layer=%u layer_count=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s restricted_token=%u expected_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f built_in_exact_pp13_aot=1 built_in_final_epilogue=%u layer_bodies=%llu b12x_moe_launches=%llu launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            exact_pp13_model_quantization ==
+                SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8
+                ? "fp8"
+                : "nvfp4",
             use_exact_pp13_stage_slice_final == 0u ? 1u : 0u,
             use_exact_pp13_stage_slice_final,
             routed_chain_first_layer_index /

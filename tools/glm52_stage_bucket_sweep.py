@@ -40,6 +40,8 @@ DEFAULT_DRIVER_SO = ""
 DEFAULT_B12X_ADAPTER_ARCHIVE = Path("build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a")
 DEFAULT_B12X_BACKEND_ARCHIVE = Path("build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a")
 DEFAULT_B12X_KERNEL_TABLE_ARCHIVE = Path("build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a")
+MODEL_QUANTIZATION_NVFP4 = "nvfp4"
+MODEL_QUANTIZATION_FP8 = "fp8"
 ROUTED_PASS_RE = re.compile(
     r"routed_pipeline_from_hidden=1.*?first_routed_layer=(?P<first>\d+).*?"
     r"routed_chain_layers=(?P<count>\d+).*?total_submissions=(?P<submissions>\d+).*?"
@@ -78,6 +80,14 @@ class SweepFailure(RuntimeError):
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def selected_model_quantization(args: argparse.Namespace) -> str:
+    return getattr(args, "model_quantization", MODEL_QUANTIZATION_NVFP4)
+
+
+def selected_fp8_moe_pack_dir(args: argparse.Namespace) -> Any:
+    return getattr(args, "fp8_moe_pack_dir", "")
 
 
 def parse_csv_u32(text: str) -> List[int]:
@@ -367,7 +377,11 @@ def direct_validator_environment(
         )
     env["GLM52_MODEL_DIR"] = args.model_dir
     env["GLM52_ALLOW_REMOTE_MODEL_DIR"] = os.environ.get("GLM52_ALLOW_REMOTE_MODEL_DIR", "0")
-    env["GLM52_B12X_MOE_PACK_DIR"] = str(args.b12x_moe_pack_dir)
+    env["GLM52_EXACT_PP13_MODEL_QUANTIZATION"] = selected_model_quantization(args)
+    if selected_model_quantization(args) == MODEL_QUANTIZATION_FP8:
+        env["GLM52_FP8_MOE_PACK_DIR"] = str(selected_fp8_moe_pack_dir(args))
+    else:
+        env["GLM52_B12X_MOE_PACK_DIR"] = str(args.b12x_moe_pack_dir)
     if not (dense_prefix and routed_layer_count == 0):
         env["GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX"] = str(routed_first_layer)
         env["GLM52_ROUTED_CHAIN_LAYER_COUNT"] = str(routed_layer_count)
@@ -492,6 +506,9 @@ def build_package_command(
         command.append(f"B12X_MOE_PACK_OUTPUT_DIR={args.b12x_moe_pack_dir}")
     if args.b12x_moe_pack_layers:
         command.append(f"B12X_MOE_PACK_LAYERS={args.b12x_moe_pack_layers}")
+    command.append(f"GLM52_EXACT_PP13_MODEL_QUANTIZATION={selected_model_quantization(args)}")
+    if selected_fp8_moe_pack_dir(args):
+        command.append(f"GLM52_FP8_MOE_PACK_DIR={selected_fp8_moe_pack_dir(args)}")
     command.append(
         "B12X_MOE_PACK_REQUIRE_REUSE=0"
         if args.allow_pack_build
@@ -563,6 +580,7 @@ def run_one(
         "attempt_index": attempt_index,
         "warmup": warmup,
         "graph_requested": bool(args.graph),
+        "model_quantization": selected_model_quantization(args),
         "execution_mode": execution_mode,
         "validator_path": validator_path,
         "command": command,
@@ -642,6 +660,7 @@ def write_reports(
         "submissions",
         "graph_captures",
         "graph_replays",
+        "model_quantization",
         "exact_pp13_stage_slice",
         "final_stage",
         "attempt_count",
@@ -675,6 +694,12 @@ def main(argv: Sequence[str]) -> int:
         default=os.environ.get("B12X_AOT_OUTPUT_DIR", str(DEFAULT_AOT_OUTPUT_DIR)),
     )
     parser.add_argument("--b12x-moe-pack-dir", default=os.environ.get("B12X_MOE_PACK_OUTPUT_DIR", ""))
+    parser.add_argument("--fp8-moe-pack-dir", default=os.environ.get("FP8_MOE_PACK_OUTPUT_DIR", ""))
+    parser.add_argument(
+        "--model-quantization",
+        choices=(MODEL_QUANTIZATION_NVFP4, MODEL_QUANTIZATION_FP8),
+        default=os.environ.get("GLM52_EXACT_PP13_MODEL_QUANTIZATION", MODEL_QUANTIZATION_NVFP4),
+    )
     parser.add_argument("--b12x-moe-pack-layers", default=os.environ.get("B12X_MOE_PACK_LAYERS", ""))
     parser.add_argument("--module-archive", default=DEFAULT_MODULE_ARCHIVE, type=Path)
     parser.add_argument("--driver-so", default=os.environ.get("GLM52_STAGE_SWEEP_DRIVER_SO", DEFAULT_DRIVER_SO))
@@ -711,15 +736,22 @@ def main(argv: Sequence[str]) -> int:
     args.input_hidden = resolve_path(root, args.input_hidden)
     if args.b12x_moe_pack_dir:
         args.b12x_moe_pack_dir = resolve_path(root, Path(args.b12x_moe_pack_dir))
+    if args.fp8_moe_pack_dir:
+        args.fp8_moe_pack_dir = resolve_path(root, Path(args.fp8_moe_pack_dir))
     if not args.package_each_run:
         require_nonempty_file(args.module_archive, "resident decode-stage module archive")
         if args.driver_so is not None:
             require_nonempty_file(args.driver_so, "resident decode-stage driver shared object")
         if not args.model_dir:
             raise SweepFailure("set --model-dir or GLM52_MODEL_DIR for direct cached validation")
-        if not args.b12x_moe_pack_dir:
-            raise SweepFailure("set --b12x-moe-pack-dir for direct cached validation")
-        require_directory(Path(args.b12x_moe_pack_dir), "B12x MoE pack directory")
+        if args.model_quantization == MODEL_QUANTIZATION_FP8:
+            if not args.fp8_moe_pack_dir:
+                raise SweepFailure("set --fp8-moe-pack-dir for direct cached FP8 validation")
+            require_directory(Path(args.fp8_moe_pack_dir), "FP8 MoE pack directory")
+        else:
+            if not args.b12x_moe_pack_dir:
+                raise SweepFailure("set --b12x-moe-pack-dir for direct cached validation")
+            require_directory(Path(args.b12x_moe_pack_dir), "B12x MoE pack directory")
         args.required_cuda_link_args_list = required_cuda_link_args(root, args)
     else:
         args.required_cuda_link_args_list = []
