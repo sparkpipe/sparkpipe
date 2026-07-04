@@ -115,6 +115,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_b12x_deterministic_finalize.py \
 	tests/test_glm52_final_from_hidden_mode.py \
 	tests/test_glm52_exact_pp13_prefill_hidden.py \
+	tests/test_glm52_stage_pack.py \
 	tests/test_glm52_stage_bucket_sweep.py \
 	tests/test_glm52_prompt_pipeline_input.py
 TEST_SUPPORT_OBJECT := build/test_support.o

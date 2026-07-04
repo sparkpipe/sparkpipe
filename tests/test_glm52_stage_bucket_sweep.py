@@ -100,6 +100,7 @@ def main() -> int:
         max_stage_us="1000000",
         graph=False,
         model_dir="/models/glm52",
+        stage_pack_dir="/packs/glm52_pp13",
         cuda_arch="sm_121a",
         nvcc="/usr/local/cuda/bin/nvcc",
         aot_env="/home/spark2/.config/sparkpipe/glm52_b12x_aot_env.sh",
@@ -114,6 +115,7 @@ def main() -> int:
     )
     command = module.build_package_command(args, 8, 75, 3, Path("in.bf16"), Path("out.bf16"))
     assert "B12X_MOE_PACK_REQUIRE_REUSE=1" in command
+    assert "GLM52_STAGE_PACK_DIR=/packs/glm52_pp13" in command
     assert "B12X_MOE_PACK_VERIFY_REUSED_SHA256=1" not in command
     dense_command = module.build_package_command(args, 8, 0, 9, Path("in.bf16"), Path("out.bf16"))
     assert "GLM52_VALIDATION_MODE=dense_to_layer3_routed" in dense_command
@@ -146,6 +148,7 @@ def main() -> int:
         Path("out.bf16"),
     )
     assert env["GLM52_EXACT_PP13_STAGE_SLICE"] == "1"
+    assert env["GLM52_STAGE_PACK_DIR"] == "/packs/glm52_pp13"
     assert env["GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX"] == "12"
     assert env["GLM52_ROUTED_CHAIN_LAYER_COUNT"] == "6"
     assert env["GLM52_PIPELINE_INPUT_HIDDEN_BF16"] == "in.bf16"

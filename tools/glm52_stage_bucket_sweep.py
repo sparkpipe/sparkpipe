@@ -376,6 +376,8 @@ def direct_validator_environment(
             else library_path + ":" + env["LD_LIBRARY_PATH"]
         )
     env["GLM52_MODEL_DIR"] = args.model_dir
+    if getattr(args, "stage_pack_dir", ""):
+        env["GLM52_STAGE_PACK_DIR"] = str(args.stage_pack_dir)
     env["GLM52_ALLOW_REMOTE_MODEL_DIR"] = os.environ.get("GLM52_ALLOW_REMOTE_MODEL_DIR", "0")
     env["GLM52_EXACT_PP13_MODEL_QUANTIZATION"] = selected_model_quantization(args)
     if selected_model_quantization(args) == MODEL_QUANTIZATION_FP8:
@@ -494,6 +496,8 @@ def build_package_command(
         command.append(f"GLM52_PIPELINE_INPUT_HIDDEN_BF16={input_hidden}")
     if args.model_dir:
         command.append(f"GLM52_MODEL_DIR={args.model_dir}")
+    if getattr(args, "stage_pack_dir", ""):
+        command.append(f"GLM52_STAGE_PACK_DIR={args.stage_pack_dir}")
     if args.cuda_arch:
         command.append(f"CUDA_ARCH={args.cuda_arch}")
     if args.nvcc:
@@ -686,6 +690,7 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--output-dir", default=Path("build/glm52_stage_bucket_sweep"), type=Path)
     parser.add_argument("--max-stage-us", default="1000000")
     parser.add_argument("--model-dir", default=os.environ.get("GLM52_MODEL_DIR", ""))
+    parser.add_argument("--stage-pack-dir", default=os.environ.get("GLM52_STAGE_PACK_DIR", ""))
     parser.add_argument("--cuda-arch", default="sm_121a")
     parser.add_argument("--nvcc", default=os.environ.get("NVCC", "nvcc"))
     parser.add_argument("--aot-env", default=os.environ.get("SPARKPIPE_B12X_AOT_ENV", ""))
@@ -738,12 +743,18 @@ def main(argv: Sequence[str]) -> int:
         args.b12x_moe_pack_dir = resolve_path(root, Path(args.b12x_moe_pack_dir))
     if args.fp8_moe_pack_dir:
         args.fp8_moe_pack_dir = resolve_path(root, Path(args.fp8_moe_pack_dir))
+    if args.stage_pack_dir:
+        args.stage_pack_dir = resolve_path(root, Path(args.stage_pack_dir))
     if not args.package_each_run:
         require_nonempty_file(args.module_archive, "resident decode-stage module archive")
         if args.driver_so is not None:
             require_nonempty_file(args.driver_so, "resident decode-stage driver shared object")
-        if not args.model_dir:
-            raise SweepFailure("set --model-dir or GLM52_MODEL_DIR for direct cached validation")
+        if not args.validation_timing:
+            if not args.stage_pack_dir:
+                raise SweepFailure("set --stage-pack-dir or GLM52_STAGE_PACK_DIR for production timing; raw HF model dirs are offline inputs only")
+            require_directory(Path(args.stage_pack_dir), "GLM52 stage pack directory")
+        elif not args.model_dir:
+            raise SweepFailure("set --model-dir or GLM52_MODEL_DIR for legacy validation timing")
         if args.model_quantization == MODEL_QUANTIZATION_FP8:
             if not args.fp8_moe_pack_dir:
                 raise SweepFailure("set --fp8-moe-pack-dir for direct cached FP8 validation")

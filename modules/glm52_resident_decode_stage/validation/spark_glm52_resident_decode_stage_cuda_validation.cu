@@ -453,6 +453,132 @@ static bool SparkValidationBuildLayerTensorName(
     return written_bytes >= 0 && (uint32_t)written_bytes < tensor_name_bytes;
 }
 
+static const char *SparkValidationStagePackDirectory(void)
+{
+    const char *stage_pack_directory;
+
+    stage_pack_directory = getenv("GLM52_STAGE_PACK_DIR");
+    if (stage_pack_directory == 0 || stage_pack_directory[0] == '\0')
+        return 0;
+    return stage_pack_directory;
+}
+
+static bool SparkValidationBuildStagePackPath(
+    const char *stage_pack_directory,
+    const char *leaf_name,
+    char *path,
+    uint32_t path_bytes)
+{
+    int written_bytes;
+
+    written_bytes = snprintf(path, (size_t)path_bytes, "%s/%s", stage_pack_directory, leaf_name);
+    return written_bytes >= 0 && (uint32_t)written_bytes < path_bytes;
+}
+
+static bool SparkValidationReadStagePackTypedTensorOffsets(
+    const char *tensor_name,
+    const char *expected_dtype,
+    uint64_t bytes_per_element,
+    const uint64_t *expected_shape,
+    uint32_t expected_rank,
+    char *tensor_path,
+    uint32_t tensor_path_bytes,
+    uint64_t *payload_file_offset,
+    uint64_t *tensor_bytes)
+{
+    SparkJsonDocument document;
+    const char *stage_pack_directory;
+    char index_path[4096];
+    char *file_name;
+    uint64_t observed_bytes;
+    uint64_t expected_bytes;
+    uint32_t dimension_index;
+    int32_t root_token_index;
+    int32_t tensor_map_token_index;
+    int32_t tensor_token_index;
+    int32_t file_token_index;
+    int32_t dtype_token_index;
+    int32_t shape_token_index;
+    int32_t offset_token_index;
+    int32_t bytes_token_index;
+    SparkStatus status;
+    bool succeeded;
+
+    stage_pack_directory = SparkValidationStagePackDirectory();
+    if (stage_pack_directory == 0)
+        return false;
+    file_name = 0;
+    if (!SparkValidationBuildStagePackPath(
+            stage_pack_directory,
+            "stagepack_index.json",
+            index_path,
+            sizeof(index_path)))
+    {
+        fprintf(stderr, "stage pack index path is too long\n");
+        return false;
+    }
+    SparkJsonDocumentReset(&document);
+    status = SparkJsonLoadFile(index_path, &document);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "could not load stage pack index %s: %s\n", index_path, SparkStatusToString(status));
+        return false;
+    }
+    root_token_index = SparkJsonGetRootToken(&document);
+    tensor_map_token_index = SparkJsonFindObjectMember(&document, root_token_index, "tensor_map");
+    tensor_token_index = tensor_map_token_index >= 0
+        ? SparkJsonFindObjectMember(&document, tensor_map_token_index, tensor_name)
+        : -1;
+    file_token_index = tensor_token_index >= 0 ? SparkJsonFindObjectMember(&document, tensor_token_index, "file") : -1;
+    dtype_token_index = tensor_token_index >= 0 ? SparkJsonFindObjectMember(&document, tensor_token_index, "dtype") : -1;
+    shape_token_index = tensor_token_index >= 0 ? SparkJsonFindObjectMember(&document, tensor_token_index, "shape") : -1;
+    offset_token_index = tensor_token_index >= 0 ? SparkJsonFindObjectMember(&document, tensor_token_index, "offset") : -1;
+    bytes_token_index = tensor_token_index >= 0 ? SparkJsonFindObjectMember(&document, tensor_token_index, "bytes") : -1;
+    succeeded = tensor_token_index >= 0 &&
+        file_token_index >= 0 &&
+        SparkJsonCopyString(&document, file_token_index, &file_name) == SPARK_STATUS_OK &&
+        dtype_token_index >= 0 &&
+        SparkJsonStringEquals(&document, dtype_token_index, expected_dtype) &&
+        shape_token_index >= 0 &&
+        SparkJsonGetArrayElementCount(&document, shape_token_index) == expected_rank &&
+        offset_token_index >= 0 &&
+        bytes_token_index >= 0 &&
+        SparkJsonGetUInt64(&document, offset_token_index, payload_file_offset) == SPARK_STATUS_OK &&
+        SparkJsonGetUInt64(&document, bytes_token_index, &observed_bytes) == SPARK_STATUS_OK;
+    expected_bytes = bytes_per_element;
+    for (dimension_index = 0u; succeeded && dimension_index < expected_rank; ++dimension_index)
+    {
+        uint64_t observed_dimension;
+
+        succeeded =
+            SparkJsonGetUInt64(
+                &document,
+                SparkJsonGetArrayElement(&document, shape_token_index, dimension_index),
+                &observed_dimension) == SPARK_STATUS_OK &&
+            observed_dimension == expected_shape[dimension_index] &&
+            expected_shape[dimension_index] != 0u &&
+            expected_bytes <= UINT64_MAX / expected_shape[dimension_index];
+        if (succeeded)
+            expected_bytes *= expected_shape[dimension_index];
+    }
+    succeeded = succeeded &&
+        observed_bytes == expected_bytes &&
+        SparkValidationBuildStagePackPath(
+            stage_pack_directory,
+            file_name != 0 ? file_name : "",
+            tensor_path,
+            tensor_path_bytes);
+    free(file_name);
+    SparkJsonDocumentDestroy(&document);
+    if (!succeeded)
+    {
+        fprintf(stderr, "%s is missing or malformed in stage pack %s\n", tensor_name, index_path);
+        return false;
+    }
+    *tensor_bytes = observed_bytes;
+    return true;
+}
+
 static bool SparkValidationReadSafetensorsHeader(
     const char *path,
     char **header_text,
@@ -782,11 +908,32 @@ static bool SparkValidationCopyTypedTensorToDevice(
     shard_name = 0;
     host_tensor = 0;
     file = 0;
-    succeeded =
-        SparkValidationReadTensorShardName(model_directory, tensor_name, &shard_name) &&
-        SparkValidationBuildModelPath(model_directory, shard_name, tensor_path, sizeof(tensor_path)) &&
-        read_offsets(tensor_path, tensor_name, expected_shape, expected_rank, &payload_file_offset, &tensor_bytes);
-    free(shard_name);
+    if (SparkValidationStagePackDirectory() != 0)
+    {
+        succeeded = SparkValidationReadStagePackTypedTensorOffsets(
+            tensor_name,
+            read_offsets == SparkValidationReadBf16TensorOffsets ? "BF16" :
+                read_offsets == SparkValidationReadF32TensorOffsets ? "F32" :
+                read_offsets == SparkValidationReadU8TensorOffsets ? "U8" :
+                "F8_E4M3",
+            read_offsets == SparkValidationReadBf16TensorOffsets ? 2u :
+                read_offsets == SparkValidationReadF32TensorOffsets ? 4u :
+                1u,
+            expected_shape,
+            expected_rank,
+            tensor_path,
+            sizeof(tensor_path),
+            &payload_file_offset,
+            &tensor_bytes);
+    }
+    else
+    {
+        succeeded =
+            SparkValidationReadTensorShardName(model_directory, tensor_name, &shard_name) &&
+            SparkValidationBuildModelPath(model_directory, shard_name, tensor_path, sizeof(tensor_path)) &&
+            read_offsets(tensor_path, tensor_name, expected_shape, expected_rank, &payload_file_offset, &tensor_bytes);
+        free(shard_name);
+    }
     if (!succeeded)
     {
         return false;
@@ -940,11 +1087,27 @@ static bool SparkValidationReadScalarF32Tensor(
 
     shard_name = 0;
     file = 0;
-    succeeded =
-        SparkValidationReadTensorShardName(model_directory, tensor_name, &shard_name) &&
-        SparkValidationBuildModelPath(model_directory, shard_name, tensor_path, sizeof(tensor_path)) &&
-        SparkValidationReadF32TensorOffsets(tensor_path, tensor_name, scalar_shape, 0u, &payload_file_offset, &tensor_bytes);
-    free(shard_name);
+    if (SparkValidationStagePackDirectory() != 0)
+    {
+        succeeded = SparkValidationReadStagePackTypedTensorOffsets(
+            tensor_name,
+            "F32",
+            4u,
+            scalar_shape,
+            0u,
+            tensor_path,
+            sizeof(tensor_path),
+            &payload_file_offset,
+            &tensor_bytes);
+    }
+    else
+    {
+        succeeded =
+            SparkValidationReadTensorShardName(model_directory, tensor_name, &shard_name) &&
+            SparkValidationBuildModelPath(model_directory, shard_name, tensor_path, sizeof(tensor_path)) &&
+            SparkValidationReadF32TensorOffsets(tensor_path, tensor_name, scalar_shape, 0u, &payload_file_offset, &tensor_bytes);
+        free(shard_name);
+    }
     if (!succeeded || tensor_bytes != sizeof(float))
     {
         fprintf(stderr, "%s scalar metadata is not F32\n", tensor_name);
@@ -1006,11 +1169,27 @@ static bool SparkValidationCopyBf16TensorRowToDevice(
     }
     row_bytes = expected_shape[1] * 2u;
     row_offset = row_index * row_bytes;
-    succeeded =
-        SparkValidationReadTensorShardName(model_directory, tensor_name, &shard_name) &&
-        SparkValidationBuildModelPath(model_directory, shard_name, tensor_path, sizeof(tensor_path)) &&
-        SparkValidationReadBf16TensorOffsets(tensor_path, tensor_name, expected_shape, expected_rank, &payload_file_offset, &tensor_bytes);
-    free(shard_name);
+    if (SparkValidationStagePackDirectory() != 0)
+    {
+        succeeded = SparkValidationReadStagePackTypedTensorOffsets(
+            tensor_name,
+            "BF16",
+            2u,
+            expected_shape,
+            expected_rank,
+            tensor_path,
+            sizeof(tensor_path),
+            &payload_file_offset,
+            &tensor_bytes);
+    }
+    else
+    {
+        succeeded =
+            SparkValidationReadTensorShardName(model_directory, tensor_name, &shard_name) &&
+            SparkValidationBuildModelPath(model_directory, shard_name, tensor_path, sizeof(tensor_path)) &&
+            SparkValidationReadBf16TensorOffsets(tensor_path, tensor_name, expected_shape, expected_rank, &payload_file_offset, &tensor_bytes);
+        free(shard_name);
+    }
     if (!succeeded)
     {
         return false;
@@ -1804,16 +1983,37 @@ static bool SparkValidationLoadRealLmHeadFixture(
     uint64_t payload_file_offset;
     uint64_t tensor_bytes;
     uint64_t copy_bytes;
+    const uint64_t lm_head_shape[2] = {
+        154880u,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
     bool succeeded;
 
     memset(fixture, 0, sizeof(*fixture));
     shard_name = 0;
-    succeeded =
-        SparkValidationReadLmHeadShardName(model_directory, &shard_name) &&
-        SparkValidationBuildModelPath(model_directory, shard_name, tensor_path, sizeof(tensor_path)) &&
-        SparkValidationReadLmHeadOffsets(tensor_path, &payload_file_offset, &tensor_bytes) &&
-        SparkValidationReadLmHeadRows(tensor_path, payload_file_offset, tensor_bytes, fixture);
-    free(shard_name);
+    if (SparkValidationStagePackDirectory() != 0)
+    {
+        succeeded =
+            SparkValidationReadStagePackTypedTensorOffsets(
+                "lm_head.weight",
+                "BF16",
+                2u,
+                lm_head_shape,
+                2u,
+                tensor_path,
+                sizeof(tensor_path),
+                &payload_file_offset,
+                &tensor_bytes) &&
+            SparkValidationReadLmHeadRows(tensor_path, payload_file_offset, tensor_bytes, fixture);
+    }
+    else
+    {
+        succeeded =
+            SparkValidationReadLmHeadShardName(model_directory, &shard_name) &&
+            SparkValidationBuildModelPath(model_directory, shard_name, tensor_path, sizeof(tensor_path)) &&
+            SparkValidationReadLmHeadOffsets(tensor_path, &payload_file_offset, &tensor_bytes) &&
+            SparkValidationReadLmHeadRows(tensor_path, payload_file_offset, tensor_bytes, fixture);
+        free(shard_name);
+    }
     if (!succeeded)
     {
         SparkValidationDestroyRealLmHeadFixture(fixture);
@@ -8486,6 +8686,7 @@ int main(int argc, char **argv)
     SparkValidationLayer3RoutedExpertNvfp4Fixture layer3_routed_expert;
     cudaStream_t cuda_stream;
     const char *model_directory;
+    const char *stage_pack_directory;
     const char *load_layer0_dense;
     const char *load_layer0_attention;
     const char *input_token_text;
@@ -8571,6 +8772,9 @@ int main(int argc, char **argv)
     memset(&layer3_shared_expert, 0, sizeof(layer3_shared_expert));
     memset(&layer3_routed_expert, 0, sizeof(layer3_routed_expert));
     model_directory = getenv("GLM52_MODEL_DIR");
+    if (model_directory == 0)
+        model_directory = "";
+    stage_pack_directory = SparkValidationStagePackDirectory();
     load_layer0_dense = getenv("GLM52_LOAD_LAYER0_DENSE_BF16");
     load_layer0_attention = getenv("GLM52_LOAD_LAYER0_ATTENTION_BF16");
     input_token_text = getenv("GLM52_INPUT_TOKEN_ID");
@@ -8811,8 +9015,8 @@ int main(int argc, char **argv)
         (use_input_embedding == 0u ||
          pipeline_output_hidden_path == 0 ||
          pipeline_output_hidden_path[0] == '\0' ||
-         model_directory == 0 ||
-         model_directory[0] == '\0' ||
+         (stage_pack_directory == 0 &&
+          (model_directory == 0 || model_directory[0] == '\0')) ||
          use_prefill_kv != 0u ||
          check_layer0_reference != 0u ||
          check_layer0_full_reference != 0u ||
@@ -8825,7 +9029,7 @@ int main(int argc, char **argv)
          use_layer3_shared_expert != 0u ||
          use_layer3_routed_expert != 0u))
     {
-        fprintf(stderr, "GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16 requires only GLM52_INPUT_TOKEN_ID, GLM52_MODEL_DIR, and GLM52_PIPELINE_OUTPUT_HIDDEN_BF16\n");
+        fprintf(stderr, "GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16 requires only GLM52_INPUT_TOKEN_ID, GLM52_STAGE_PACK_DIR or GLM52_MODEL_DIR, and GLM52_PIPELINE_OUTPUT_HIDDEN_BF16\n");
         return 2;
     }
     if (dense_layer_index_text != 0 && dense_layer_index_text[0] != '\0')
@@ -8949,8 +9153,8 @@ int main(int argc, char **argv)
          pipeline_input_hidden_path[0] == '\0' ||
          pipeline_output_hidden_path == 0 ||
          pipeline_output_hidden_path[0] == '\0' ||
-         model_directory == 0 ||
-         model_directory[0] == '\0' ||
+         (stage_pack_directory == 0 &&
+          (model_directory == 0 || model_directory[0] == '\0')) ||
          routed_chain_layer_count !=
             SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT ||
          (routed_chain_first_layer_index %
@@ -8967,7 +9171,7 @@ int main(int argc, char **argv)
          check_layer0_reference != 0u ||
          check_layer0_full_reference != 0u))
     {
-        fprintf(stderr, "GLM52_EXACT_PP13_STAGE_SLICE requires model dir, input/output hidden, first layer multiple of 6, count=6, and owns production slice timing\n");
+        fprintf(stderr, "GLM52_EXACT_PP13_STAGE_SLICE requires stage pack or model dir, input/output hidden, first layer multiple of 6, count=6, and owns production slice timing\n");
         return 2;
     }
     if (use_routed_chain_from_hidden != 0u &&
@@ -9075,9 +9279,10 @@ int main(int argc, char **argv)
     if ((use_dense_mlp != 0u ||
          use_attention_bf16 != 0u ||
          use_input_embedding != 0u) &&
+        stage_pack_directory == 0 &&
         (model_directory == 0 || model_directory[0] == '\0'))
     {
-        fprintf(stderr, "layer0 checkpoint fixtures require GLM52_MODEL_DIR\n");
+        fprintf(stderr, "checkpoint fixtures require GLM52_STAGE_PACK_DIR or GLM52_MODEL_DIR\n");
         return 2;
     }
     if (use_input_embedding != 0u &&
@@ -9159,7 +9364,8 @@ int main(int argc, char **argv)
     if (use_routed_chain_from_hidden == 0u &&
         use_exact_pp13_stage_slice == 0u &&
         use_dense_chain_layer3_routed_expert_topk == 0u &&
-        model_directory != 0 && model_directory[0] != '\0' &&
+        (stage_pack_directory != 0 ||
+         (model_directory != 0 && model_directory[0] != '\0')) &&
         !SparkValidationLoadFinalNormBf16Fixture(
             &buffers,
             model_directory,
@@ -9170,7 +9376,8 @@ int main(int argc, char **argv)
     if (use_routed_chain_from_hidden == 0u &&
         use_exact_pp13_stage_slice == 0u &&
         use_dense_chain_layer3_routed_expert_topk == 0u &&
-        model_directory != 0 && model_directory[0] != '\0' &&
+        (stage_pack_directory != 0 ||
+         (model_directory != 0 && model_directory[0] != '\0')) &&
         !SparkValidationLoadRealLmHeadFixture(
             &buffers,
             model_directory,
@@ -9180,7 +9387,8 @@ int main(int argc, char **argv)
     }
     if (use_exact_pp13_stage_slice != 0u &&
         use_exact_pp13_stage_slice_final != 0u &&
-        model_directory != 0 && model_directory[0] != '\0' &&
+        (stage_pack_directory != 0 ||
+         (model_directory != 0 && model_directory[0] != '\0')) &&
         !SparkValidationLoadRealLmHeadFixture(
             &buffers,
             model_directory,
@@ -9270,7 +9478,8 @@ int main(int argc, char **argv)
     }
     if (use_routed_chain_from_hidden == 0u &&
         use_dense_chain_layer3_routed_expert_topk == 0u &&
-        model_directory != 0 && model_directory[0] != '\0')
+        (stage_pack_directory != 0 ||
+         (model_directory != 0 && model_directory[0] != '\0')))
     {
         required_linear_plan_mask |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RESTRICTED_LOGITS;
