@@ -1,5 +1,7 @@
 #include <assert.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_hidden_transport.h"
 
@@ -114,6 +116,16 @@ static void SparkTestInitializeEndpoint(
     endpoint->transport_module_id =
         "spark.glm52.hidden_stage_transport.100g.persistent.v1";
     endpoint->route_name = "spark2_to_sparka";
+}
+
+static void SparkTestInitializeGpudirectEndpoint(
+    SparkHiddenTransportEndpoint *endpoint)
+{
+    SparkTestInitializeEndpoint(endpoint);
+    endpoint->capability_flags =
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS;
+    endpoint->transport_module_id =
+        SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_VERBS_MODULE_ID;
 }
 
 static void SparkTestInitializePacket(
@@ -438,6 +450,45 @@ static void SparkTestHiddenTransportRejectsInvalidInterface(void)
         &session) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkTestHiddenTransportGpudirectPreflight(void)
+{
+    SparkHiddenTransportEndpoint endpoint;
+    const char *peermem_path;
+    const char *infiniband_path;
+
+    peermem_path = "build/test_hidden_transport_peermem";
+    infiniband_path = "build/test_hidden_transport_infiniband";
+    rmdir(peermem_path);
+    rmdir(infiniband_path);
+
+    SparkTestInitializeGpudirectEndpoint(&endpoint);
+    assert(SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+        &endpoint,
+        peermem_path,
+        infiniband_path) == SPARK_STATUS_NOT_FOUND);
+
+    assert(mkdir(peermem_path, 0777) == 0);
+    assert(SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+        &endpoint,
+        peermem_path,
+        infiniband_path) == SPARK_STATUS_ROUTE_NOT_FOUND);
+
+    assert(mkdir(infiniband_path, 0777) == 0);
+    assert(SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+        &endpoint,
+        peermem_path,
+        infiniband_path) == SPARK_STATUS_OK);
+
+    endpoint.transport_module_id = "spark.hidden_transport.not_gpudirect.v1";
+    assert(SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+        &endpoint,
+        peermem_path,
+        infiniband_path) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    rmdir(infiniband_path);
+    rmdir(peermem_path);
+}
+
 int main(void)
 {
     SparkTestHiddenTransportValidatesEndpointAndPacket();
@@ -447,5 +498,6 @@ int main(void)
     SparkTestHiddenTransportPersistentRingBackend();
     SparkTestHiddenTransportPersistentRingAccountsSidebandBytes();
     SparkTestHiddenTransportRejectsInvalidInterface();
+    SparkTestHiddenTransportGpudirectPreflight();
     return 0;
 }

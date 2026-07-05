@@ -21,6 +21,12 @@ extern "C" {
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH 1024u
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_MODULE_ID \
     "spark.hidden_transport.persistent_ring.device.v1"
+#define SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_VERBS_MODULE_ID \
+    "spark.hidden_transport.gpudirect_rdma.verbs.v1"
+#define SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_PEERMEM_SYSFS_PATH \
+    "/sys/module/nvidia_peermem"
+#define SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_INFINIBAND_SYSFS_PATH \
+    "/sys/class/infiniband"
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_STATISTICS_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportPersistentRingStatistics))
 
@@ -198,6 +204,10 @@ SparkStatus SparkHiddenTransportPersistentRingGetInterface(
 SparkStatus SparkHiddenTransportPersistentRingGetStatistics(
     SparkHiddenTransportSession *session,
     SparkHiddenTransportPersistentRingStatistics *statistics);
+SparkStatus SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const char *peermem_sysfs_path,
+    const char *infiniband_sysfs_path);
 
 #ifdef __cplusplus
 }

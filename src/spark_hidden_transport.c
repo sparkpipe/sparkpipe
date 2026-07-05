@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 struct SparkHiddenTransportSession
 {
@@ -48,6 +49,17 @@ static uint32_t SparkHiddenTransportCapabilitiesMeetSimulation(
     return (capability_flags &
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS) ==
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS;
+}
+
+static uint32_t SparkHiddenTransportStringsEqual(
+    const char *left,
+    const char *right)
+{
+    if (left == 0 || right == 0)
+    {
+        return 0u;
+    }
+    return strcmp(left, right) == 0;
 }
 
 SparkStatus SparkHiddenTransportValidateEndpoint(
@@ -774,5 +786,54 @@ SparkStatus SparkHiddenTransportPersistentRingGetStatistics(
     statistics->queued_completion_count = state->completion_count;
     statistics->queue_depth =
         SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const char *peermem_sysfs_path,
+    const char *infiniband_sysfs_path)
+{
+    SparkStatus status;
+    const char *peermem_path;
+    const char *infiniband_path;
+
+    status = SparkHiddenTransportValidateEndpoint(endpoint);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (!SparkHiddenTransportStringsEqual(
+            endpoint->transport_module_id,
+            SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_VERBS_MODULE_ID))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((endpoint->capability_flags &
+            SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS) !=
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    peermem_path = peermem_sysfs_path;
+    if (peermem_path == 0 || peermem_path[0] == '\0')
+    {
+        peermem_path =
+            SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_PEERMEM_SYSFS_PATH;
+    }
+    infiniband_path = infiniband_sysfs_path;
+    if (infiniband_path == 0 || infiniband_path[0] == '\0')
+    {
+        infiniband_path =
+            SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_INFINIBAND_SYSFS_PATH;
+    }
+    if (access(peermem_path, F_OK) != 0)
+    {
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    if (access(infiniband_path, F_OK) != 0)
+    {
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
     return SPARK_STATUS_OK;
 }
