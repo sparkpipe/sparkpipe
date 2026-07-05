@@ -114,6 +114,17 @@ static int32_t SparkGlm52Pp13DaemonParseU32(
     return 0;
 }
 
+static void SparkGlm52Pp13DaemonSetDefaultError(
+    char *error_buffer,
+    uint32_t error_buffer_bytes,
+    const char *message)
+{
+    if (error_buffer == 0 || error_buffer_bytes == 0u ||
+        error_buffer[0] != '\0')
+        return;
+    snprintf(error_buffer,error_buffer_bytes,"%s",message);
+}
+
 static int32_t SparkGlm52Pp13DaemonApplyArgument(
     SparkGlm52Pp13DaemonConfig *configuration,
     int argc,
@@ -626,38 +637,89 @@ static SparkStatus SparkGlm52Pp13DaemonInitialize(
         error_buffer,
         error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to build PP13 rank plan");
         return status;
+    }
     status = SparkGlm52Pp13RuntimeBuildFinalEventRoute(
         configuration->port_base,
         &runtime->final_event_route,
         error_buffer,
         error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to build PP13 final event route");
         return status;
+    }
     status = SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
         &runtime->rank_plan,
         configuration->fp8_pack_root,
         error_buffer,
         error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to validate rank FP8 pack files");
         return status;
+    }
     status = SparkGlm52Pp13DaemonLoadTransport(runtime,configuration);
     if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to load production hidden transport");
         return status;
+    }
     status = SparkGlm52Pp13DaemonOpenHiddenTransport(runtime);
     if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to open neighbor hidden transport session");
         return status;
+    }
     status = SparkGlm52Pp13DaemonLoadDriver(
         runtime,
         configuration,
         error_buffer,
         error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to load GLM52 model driver");
         return status;
+    }
     status = SparkGlm52Pp13DaemonInitializeRunner(runtime);
     if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to initialize production stage runner");
         return status;
-    return SparkGlm52Pp13DaemonOpenFinalEventPath(runtime,configuration);
+    }
+    status = SparkGlm52Pp13DaemonOpenFinalEventPath(runtime,configuration);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to open final event route");
+        return status;
+    }
+    return SPARK_STATUS_OK;
 }
 
 static void SparkGlm52Pp13DaemonDestroy(
