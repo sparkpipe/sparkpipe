@@ -761,6 +761,14 @@ static bool SparkGlm52ResidentDecodeStageMtpDraftPlanIsUsable(
     return true;
 }
 
+static bool SparkGlm52ResidentDecodeStageMtpDraftRequired(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    return SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
+        node_context,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MTP_DRAFT);
+}
+
 static bool SparkGlm52ResidentDecodeStageFullStagePlanIsUsable(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
@@ -1704,9 +1712,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
-            node_context,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MTP_DRAFT) &&
+    if (SparkGlm52ResidentDecodeStageMtpDraftRequired(node_context) &&
         !SparkGlm52ResidentDecodeStageMtpDraftPlanIsUsable(
             node_context->mtp_draft_plan))
     {
@@ -2281,9 +2287,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
     if ((node_context->mtp_draft_plan != 0 &&
             !SparkGlm52ResidentDecodeStageMtpDraftPlanIsUsable(
                 node_context->mtp_draft_plan)) ||
-        (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
-                node_context,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MTP_DRAFT) &&
+        (SparkGlm52ResidentDecodeStageMtpDraftRequired(node_context) &&
             !SparkGlm52ResidentDecodeStageMtpDraftPlanIsUsable(
                 node_context->mtp_draft_plan)))
     {
@@ -2298,14 +2302,19 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
              node_context->restricted_lm_head_weight_bf16,
              2u) ||
          !SparkGlm52ResidentDecodeStagePointerIsAligned(
+             node_context->restricted_token_ids,
+             4u)))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (hidden_output_only == 0u &&
+        SparkGlm52ResidentDecodeStageMtpDraftRequired(node_context) &&
+        (!SparkGlm52ResidentDecodeStagePointerIsAligned(
              node_context->mtp_mxfp4_weight_payload_u8,
              1u) ||
          !SparkGlm52ResidentDecodeStagePointerIsAligned(
              node_context->mtp_mxfp4_scale_e8m0_u8,
-             1u) ||
-         !SparkGlm52ResidentDecodeStagePointerIsAligned(
-             node_context->restricted_token_ids,
-             4u)))
+             1u)))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
