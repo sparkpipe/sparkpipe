@@ -23,6 +23,8 @@ extern "C" {
     "spark.hidden_transport.persistent_ring.device.v1"
 #define SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_VERBS_MODULE_ID \
     "spark.hidden_transport.gpudirect_rdma.verbs.v1"
+#define SPARK_HIDDEN_TRANSPORT_CUDA_HOST_DMABUF_VERBS_MODULE_ID \
+    "spark.hidden_transport.cuda_host_dmabuf.verbs.v1"
 #define SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_PEERMEM_SYSFS_PATH \
     "/sys/module/nvidia_peermem"
 #define SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_INFINIBAND_SYSFS_PATH \

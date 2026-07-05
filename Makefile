@@ -1,6 +1,7 @@
 CC ?= cc
 AR ?= ar
 NVCC ?= nvcc
+CUDA_HOME ?= /usr/local/cuda
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3 -g -pthread
 CPPFLAGS ?= -Iinclude -Isrc
 LDFLAGS ?=
@@ -147,6 +148,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/libglm52_resident_decode_stage_test.a
 
 .PHONY: all clean test tools demo \
+    hidden_transport_cuda_host_dmabuf_verbs_preflight \
     cuda_glm52_resident_decode_stage \
     cuda_glm52_resident_decode_stage_publish \
     glm52_flashinfer_b12x_moe_adapter \
@@ -200,6 +202,12 @@ build/sparkpipe_glm52_prefill_dryrun: tools/sparkpipe_glm52_prefill_dryrun.c $(C
 
 build/sparkpipe_hidden_transport_preflight: tools/sparkpipe_hidden_transport_preflight.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_cuda_host_dmabuf_verbs_preflight: tools/sparkpipe_cuda_host_dmabuf_verbs_preflight.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -I$(CUDA_HOME)/include $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcuda -libverbs $(LDLIBS) -o $@
+
+hidden_transport_cuda_host_dmabuf_verbs_preflight: build/sparkpipe_cuda_host_dmabuf_verbs_preflight
+	./build/sparkpipe_cuda_host_dmabuf_verbs_preflight
 
 build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
