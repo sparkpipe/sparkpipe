@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_pp13_runtime.h"
+#include "sparkpipe/spark_glm52_pp13_work_control.h"
 #include "sparkpipe/spark_glm52_serving_engine.h"
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_status.h"
@@ -24,10 +25,12 @@ extern "C" {
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_FP8_PACKS 0x00000001u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_STAGE_SLICE 0x00000002u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK0_TOKEN_INPUT 0x00000004u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK_WORK_DISPATCH 0x00000008u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_REQUIRED_PRODUCTION_CAPS \
 	(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_FP8_PACKS | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_STAGE_SLICE | \
-	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK0_TOKEN_INPUT)
+	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK0_TOKEN_INPUT | \
+	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK_WORK_DISPATCH)
 
 typedef struct SparkGlm52Pp13NodeContextBuilderConfiguration
 {
@@ -84,6 +87,13 @@ typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderDecodeFunction)(
 	void *builder_state,
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
 	SparkGlm52ServingDecodeResult *decode_result);
+typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderSubmitWorkFunction)(
+	void *builder_state,
+	const SparkGlm52Pp13WorkControlPacket *work_packet,
+	SparkHiddenTransportSession *input_transport_session,
+	SparkHiddenTransportSession *output_transport_session,
+	SparkModelDriverCompletionFunction completion_function,
+	void *completion_context);
 
 typedef struct SparkGlm52Pp13NodeContextBuilderInterface
 {
@@ -98,6 +108,7 @@ typedef struct SparkGlm52Pp13NodeContextBuilderInterface
 	SparkGlm52Pp13NodeContextBuilderAttachDriverFunction attach_driver;
 	SparkGlm52Pp13NodeContextBuilderPrefillFunction prefill;
 	SparkGlm52Pp13NodeContextBuilderDecodeFunction decode;
+	SparkGlm52Pp13NodeContextBuilderSubmitWorkFunction submit_work;
 } SparkGlm52Pp13NodeContextBuilderInterface;
 
 typedef const SparkGlm52Pp13NodeContextBuilderInterface *(

@@ -15,6 +15,7 @@
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_glm52_pp13_node_context_builder.h"
 #include "sparkpipe/spark_glm52_pp13_runtime.h"
+#include "sparkpipe/spark_glm52_pp13_work_control.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
 
 #define SPARK_GLM52_PP13_DAEMON_DEFAULT_MAX_ACTIVE 1024u
@@ -52,8 +53,17 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     void *driver_instance;
     const SparkModelDriverProgramDescriptor *program;
     SparkGlm52ResidentDecodeStageProductionRunner runner;
+    int32_t work_listen_fd;
+    int32_t work_input_socket_fd;
+    int32_t work_output_socket_fd;
     int32_t final_event_listen_fd;
     int32_t final_event_socket_fd;
+    uint8_t work_read_buffer[SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES];
+    uint32_t work_read_offset;
+    uint64_t work_receive_count;
+    uint64_t work_forward_count;
+    uint64_t work_submit_count;
+    uint64_t work_error_count;
     uint8_t final_event_read_buffer[128];
     uint32_t final_event_read_offset;
     uint64_t final_event_send_count;
@@ -594,6 +604,177 @@ static SparkStatus SparkGlm52Pp13DaemonInitializeRunner(
         &configuration);
 }
 
+static SparkStatus SparkGlm52Pp13DaemonOpenWorkControlPath(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    if ((runtime->rank_plan.flags &
+        SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) == 0u)
+        return SPARK_STATUS_OK;
+    runtime->work_listen_fd =
+        SparkGlm52Pp13DaemonCreateListenSocket(
+            "0.0.0.0",
+            runtime->rank_plan.listen_port);
+    if (runtime->work_listen_fd < 0)
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    if (SparkGlm52Pp13DaemonSetNonblocking(runtime->work_listen_fd) < 0)
+        return SPARK_STATUS_INTERNAL_ERROR;
+    return SPARK_STATUS_OK;
+}
+
+static void SparkGlm52Pp13DaemonAcceptWorkSocket(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    int32_t fd;
+
+    if (runtime->work_listen_fd < 0 || runtime->work_input_socket_fd >= 0)
+        return;
+    fd = accept(runtime->work_listen_fd,0,0);
+    if (fd < 0)
+    {
+        if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+            runtime->work_error_count += 1u;
+        return;
+    }
+    if (SparkGlm52Pp13DaemonSetNonblocking(fd) < 0)
+    {
+        close(fd);
+        runtime->work_error_count += 1u;
+        return;
+    }
+    runtime->work_input_socket_fd = fd;
+}
+
+static SparkStatus SparkGlm52Pp13DaemonEnsureWorkOutputSocket(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    if ((runtime->rank_plan.flags &
+        SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u)
+        return SPARK_STATUS_OK;
+    if (runtime->work_output_socket_fd >= 0)
+        return SPARK_STATUS_OK;
+    runtime->work_output_socket_fd =
+        SparkGlm52Pp13DaemonConnectSocket(
+            runtime->rank_plan.next_host_name,
+            runtime->rank_plan.next_port);
+    if (runtime->work_output_socket_fd < 0)
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    if (SparkGlm52Pp13DaemonSetNonblocking(
+            runtime->work_output_socket_fd) < 0)
+    {
+        close(runtime->work_output_socket_fd);
+        runtime->work_output_socket_fd = -1;
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13DaemonForwardWork(
+    SparkGlm52Pp13DaemonRuntime *runtime,
+    const SparkGlm52Pp13WorkControlPacket *packet)
+{
+    SparkStatus status;
+
+    if ((runtime->rank_plan.flags &
+        SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u)
+        return SPARK_STATUS_OK;
+    status = SparkGlm52Pp13DaemonEnsureWorkOutputSocket(runtime);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    if (SparkGlm52Pp13DaemonWriteAll(
+            runtime->work_output_socket_fd,
+            packet,
+            sizeof(*packet)) < 0)
+    {
+        close(runtime->work_output_socket_fd);
+        runtime->work_output_socket_fd = -1;
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
+    runtime->work_forward_count += 1u;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
+    SparkGlm52Pp13DaemonRuntime *runtime,
+    const SparkGlm52Pp13WorkControlPacket *packet)
+{
+    if (runtime == 0 || packet == 0 ||
+        runtime->builder_state == 0 ||
+        runtime->builder_library.builder_interface.submit_work == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    return runtime->builder_library.builder_interface.submit_work(
+        runtime->builder_state,
+        packet,
+        runtime->input_transport_session,
+        runtime->output_transport_session,
+        SparkGlm52Pp13DaemonCompletion,
+        runtime);
+}
+
+static void SparkGlm52Pp13DaemonHandleWork(
+    SparkGlm52Pp13DaemonRuntime *runtime,
+    const SparkGlm52Pp13WorkControlPacket *packet)
+{
+    SparkStatus status;
+
+    status = SparkGlm52Pp13WorkControlValidatePacket(
+        packet,
+        runtime->rank_plan.max_active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
+    if (status == SPARK_STATUS_OK)
+        status = SparkGlm52Pp13DaemonForwardWork(runtime,packet);
+    if (status == SPARK_STATUS_OK)
+        status = SparkGlm52Pp13DaemonSubmitWork(runtime,packet);
+    if (status == SPARK_STATUS_OK)
+    {
+        runtime->work_receive_count += 1u;
+        runtime->work_submit_count += 1u;
+    }
+    else
+    {
+        runtime->work_error_count += 1u;
+    }
+}
+
+static void SparkGlm52Pp13DaemonPumpWorkControl(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    SparkGlm52Pp13WorkControlPacket *packet;
+    ssize_t got;
+    uint32_t remaining;
+
+    SparkGlm52Pp13DaemonAcceptWorkSocket(runtime);
+    if (runtime->work_listen_fd < 0 || runtime->work_input_socket_fd < 0)
+        return;
+    for (;;)
+    {
+        remaining = ((uint32_t)sizeof(runtime->work_read_buffer) -
+            runtime->work_read_offset);
+        got = read(
+            runtime->work_input_socket_fd,
+            runtime->work_read_buffer + runtime->work_read_offset,
+            remaining);
+        if (got < 0)
+        {
+            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+                runtime->work_error_count += 1u;
+            return;
+        }
+        if (got == 0)
+        {
+            close(runtime->work_input_socket_fd);
+            runtime->work_input_socket_fd = -1;
+            runtime->work_read_offset = 0u;
+            return;
+        }
+        runtime->work_read_offset += (uint32_t)got;
+        if (runtime->work_read_offset < sizeof(*packet))
+            return;
+        packet = (SparkGlm52Pp13WorkControlPacket *)runtime->work_read_buffer;
+        SparkGlm52Pp13DaemonHandleWork(runtime,packet);
+        runtime->work_read_offset = 0u;
+    }
+}
+
 static SparkStatus SparkGlm52Pp13DaemonOpenFinalEventPath(
     SparkGlm52Pp13DaemonRuntime *runtime,
     const SparkGlm52Pp13DaemonConfig *configuration)
@@ -733,6 +914,9 @@ static SparkStatus SparkGlm52Pp13DaemonInitialize(
     SparkStatus status;
 
     memset(runtime,0,sizeof(*runtime));
+    runtime->work_listen_fd = -1;
+    runtime->work_input_socket_fd = -1;
+    runtime->work_output_socket_fd = -1;
     runtime->final_event_listen_fd = -1;
     runtime->final_event_socket_fd = -1;
     SparkLoadedModelDriverReset(&runtime->loaded_driver);
@@ -835,6 +1019,15 @@ static SparkStatus SparkGlm52Pp13DaemonInitialize(
             "failed to initialize production stage runner");
         return status;
     }
+    status = SparkGlm52Pp13DaemonOpenWorkControlPath(runtime);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to open production work-control path");
+        return status;
+    }
     status = SparkGlm52Pp13DaemonOpenFinalEventPath(runtime,configuration);
     if (status != SPARK_STATUS_OK)
     {
@@ -852,6 +1045,12 @@ static void SparkGlm52Pp13DaemonDestroy(
 {
     if (runtime == 0)
         return;
+    if (runtime->work_output_socket_fd >= 0)
+        close(runtime->work_output_socket_fd);
+    if (runtime->work_input_socket_fd >= 0)
+        close(runtime->work_input_socket_fd);
+    if (runtime->work_listen_fd >= 0)
+        close(runtime->work_listen_fd);
     if (runtime->final_event_socket_fd >= 0)
         close(runtime->final_event_socket_fd);
     if (runtime->final_event_listen_fd >= 0)
@@ -896,6 +1095,17 @@ static void SparkGlm52Pp13DaemonPrintReady(
         runtime->input_transport_session != 0 ? 1u : 0u);
     printf("output_transport=%u\n",
         runtime->output_transport_session != 0 ? 1u : 0u);
+    printf("work_listen=%d\n",runtime->work_listen_fd);
+    printf("work_input_socket=%d\n",runtime->work_input_socket_fd);
+    printf("work_output_socket=%d\n",runtime->work_output_socket_fd);
+    printf("work_received=%llu\n",
+        (unsigned long long)runtime->work_receive_count);
+    printf("work_forwarded=%llu\n",
+        (unsigned long long)runtime->work_forward_count);
+    printf("work_submitted=%llu\n",
+        (unsigned long long)runtime->work_submit_count);
+    printf("work_errors=%llu\n",
+        (unsigned long long)runtime->work_error_count);
     printf("final_event_listen=%d\n",runtime->final_event_listen_fd);
     printf("final_event_socket=%d\n",runtime->final_event_socket_fd);
     printf("final_event_sent=%llu\n",
@@ -939,9 +1149,10 @@ int main(int argc,char **argv)
     }
     SparkGlm52Pp13DaemonPrintReady(&runtime,&configuration);
     sleep_time.tv_sec = 0;
-    sleep_time.tv_nsec = 100000000L;
+    sleep_time.tv_nsec = 1000000L;
     while (SparkGlm52Pp13DaemonRunning != 0)
     {
+        SparkGlm52Pp13DaemonPumpWorkControl(&runtime);
         SparkGlm52Pp13DaemonPumpFinalEvents(&runtime);
         nanosleep(&sleep_time,0);
     }

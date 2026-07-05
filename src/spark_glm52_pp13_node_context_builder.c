@@ -31,6 +31,11 @@ SparkStatus SparkGlm52Pp13NodeContextBuilderValidateInterface(
 		 builder_interface->prefill == 0 ||
 		 builder_interface->decode == 0))
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((required_capability_flags &
+			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK_WORK_DISPATCH) !=
+			0u &&
+		builder_interface->submit_work == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	return SPARK_STATUS_OK;
 }
 

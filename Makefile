@@ -60,8 +60,10 @@ COMMON_SOURCES := \
     src/spark_glm52_kv_cache.c \
     src/spark_glm52_dspark.c \
     src/spark_glm52_stage_plan.c \
+    src/spark_glm52_stagepack.c \
     src/spark_glm52_production_topology.c \
     src/spark_glm52_pp13_runtime.c \
+    src/spark_glm52_pp13_work_control.c \
     src/spark_glm52_pp13_node_context_builder.c \
     src/spark_glm52_scheduler.c \
     src/spark_glm52_prefix_cache.c \
@@ -116,8 +118,10 @@ TEST_NAMES := \
     test_glm52_kv_cache \
     test_glm52_dspark \
     test_glm52_stage_plan \
+    test_glm52_stagepack \
     test_glm52_production_topology \
     test_glm52_pp13_runtime \
+    test_glm52_pp13_work_control \
     test_glm52_scheduler \
     test_glm52_prefix_cache \
     test_glm52_request_api \
@@ -320,6 +324,9 @@ build/test_glm52_kv_cache: tests/test_glm52_kv_cache.c $(COMMON_LIBRARY)
 build/test_glm52_stage_plan: tests/test_glm52_stage_plan.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_glm52_stagepack: tests/test_glm52_stagepack.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_glm52_dspark: tests/test_glm52_dspark.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -327,6 +334,9 @@ build/test_glm52_production_topology: tests/test_glm52_production_topology.c $(C
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_pp13_runtime: tests/test_glm52_pp13_runtime.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_pp13_work_control: tests/test_glm52_pp13_work_control.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_scheduler: tests/test_glm52_scheduler.c $(COMMON_LIBRARY)
