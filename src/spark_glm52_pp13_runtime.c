@@ -456,3 +456,93 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
         SPARK_STATUS_OK,
         "");
 }
+
+SparkStatus SparkGlm52Pp13RuntimeBuildFinalEventRoute(
+    uint32_t port_base,
+    SparkGlm52Pp13RuntimeFinalEventRoute *route,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    int written;
+    SparkStatus status;
+
+    if (route == 0 ||
+        port_base > (65535u - SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_PORT_OFFSET))
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "PP13 final event route arguments are invalid");
+    }
+    memset(route,0,sizeof(*route));
+    route->abi_version = SPARK_GLM52_PP13_RUNTIME_ABI_VERSION;
+    route->descriptor_bytes =
+        SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_ROUTE_DESCRIPTOR_BYTES;
+    route->source_rank_index = SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT - 1u;
+    route->sink_rank_index = 0u;
+    route->listen_port =
+        port_base + SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_PORT_OFFSET;
+    route->connect_port = route->listen_port;
+    status = SparkGlm52Pp13RuntimeRankHostName(
+        route->source_rank_index,
+        route->source_host_name,
+        sizeof(route->source_host_name));
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52Pp13RuntimeRankHostName(
+        route->sink_rank_index,
+        route->sink_host_name,
+        sizeof(route->sink_host_name));
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    written = snprintf(
+        route->route_name,
+        sizeof(route->route_name),
+        "%s_to_%s_final_events",
+        route->source_host_name,
+        route->sink_host_name);
+    if (written < 0 || (uint32_t)written >= sizeof(route->route_name))
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    return SparkGlm52Pp13RuntimeValidateFinalEventRoute(
+        route,
+        error_buffer,
+        error_buffer_bytes);
+}
+
+SparkStatus SparkGlm52Pp13RuntimeValidateFinalEventRoute(
+    const SparkGlm52Pp13RuntimeFinalEventRoute *route,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    if (route == 0 ||
+        route->abi_version != SPARK_GLM52_PP13_RUNTIME_ABI_VERSION ||
+        route->descriptor_bytes !=
+            SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_ROUTE_DESCRIPTOR_BYTES ||
+        route->source_rank_index !=
+            SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT - 1u ||
+        route->sink_rank_index != 0u ||
+        route->listen_port == 0u ||
+        route->connect_port != route->listen_port ||
+        strcmp(route->source_host_name,"sparkc") != 0 ||
+        strcmp(route->sink_host_name,"spark0") != 0 ||
+        strcmp(route->route_name,"sparkc_to_spark0_final_events") != 0)
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "PP13 final event route is invalid");
+    }
+    return SparkGlm52Pp13RuntimeReport(
+        error_buffer,
+        error_buffer_bytes,
+        SPARK_STATUS_OK,
+        "");
+}

@@ -18,13 +18,14 @@ LAN HTTP/SSE gateway shell
 demo UI served by the gateway
 PP13 rank-plan API
 resident decode-stage production runner API
+resident PP13 rank daemon
+sparkc to spark0 final completion event route
 ```
 
 Missing:
 
 ```text
 attach HTTP/SSE gateway to the production C service runtime
-final-stage sparkc to spark0 event return path
 token-id to text streaming response formatter
 authentication and tenant policy above the C API
 public schema examples for final OpenAI and Anthropic responses
@@ -48,16 +49,28 @@ streaming client-visible response
 
 ## Distributed PP13 Runtime
 
-Status: rank planning exists; full live ring still needs completion.
+Status: resident rank daemon exists; full live ring still needs completion.
+
+What exists:
+
+```text
+fixed PP13 rank planning
+rank-local FP8 pack validation at daemon startup
+resident daemon binary per rank
+rank-specific input/output hidden transport requirements
+sparkc completion event socket back to spark0
+fail-closed requirement for production hidden transport shared object
+fail-closed requirement for GLM-5.2 model driver shared object
+```
 
 Missing:
 
 ```text
-resident process launcher per rank
-rank-local pack validation at startup
-rank-local GPU residency proof
 13-rank service startup and health protocol
 real persistent hidden transport backend
+GLM-5.2 rank model-driver shared object for the resident daemon
+driver node-context binding for resident weights, KV, graph buckets, and packs
+rank dispatch loop from Spark0 service requests into stage runner submissions
 cross-rank error propagation
 ring restart and quiesce path
 ```

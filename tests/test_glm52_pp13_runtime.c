@@ -99,9 +99,31 @@ static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
             SPARK_STATUS_OK);
 }
 
+static void SparkTestGlm52Pp13RuntimeFinalEventRoute(void)
+{
+    SparkGlm52Pp13RuntimeFinalEventRoute route;
+    char error_buffer[256];
+
+    assert(SparkGlm52Pp13RuntimeBuildFinalEventRoute(
+        52100u,&route,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+    assert(route.source_rank_index == 12u);
+    assert(route.sink_rank_index == 0u);
+    assert(route.listen_port == 52300u);
+    assert(route.connect_port == 52300u);
+    assert(strcmp(route.source_host_name,"sparkc") == 0);
+    assert(strcmp(route.sink_host_name,"spark0") == 0);
+    assert(strcmp(route.route_name,"sparkc_to_spark0_final_events") == 0);
+    assert(SparkGlm52Pp13RuntimeValidateFinalEventRoute(
+        &route,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+    route.sink_rank_index = 1u;
+    assert(SparkGlm52Pp13RuntimeValidateFinalEventRoute(
+        &route,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 int main(void)
 {
     SparkTestGlm52Pp13RuntimeRankPlan();
     SparkTestGlm52Pp13RuntimeFp8Packs();
+    SparkTestGlm52Pp13RuntimeFinalEventRoute();
     return 0;
 }

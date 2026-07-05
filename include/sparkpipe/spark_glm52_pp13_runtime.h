@@ -19,6 +19,8 @@ extern "C" {
 #define SPARK_GLM52_PP13_RUNTIME_ROUTE_NAME_BYTES 64u
 #define SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES 512u
 #define SPARK_GLM52_PP13_RUNTIME_DEFAULT_PORT_BASE 52100u
+#define SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_PORT_OFFSET 200u
+#define SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_ROUTE_NAME_BYTES 64u
 #define SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION 6144u
 #define SPARK_GLM52_PP13_RUNTIME_QUANTIZATION_MODE \
     SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT
@@ -64,6 +66,22 @@ typedef struct SparkGlm52Pp13RuntimeRankPlan
     SparkHiddenTransportEndpoint output_endpoint;
 } SparkGlm52Pp13RuntimeRankPlan;
 
+typedef struct SparkGlm52Pp13RuntimeFinalEventRoute
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t source_rank_index;
+    uint32_t sink_rank_index;
+    uint32_t listen_port;
+    uint32_t connect_port;
+    char source_host_name[SPARK_GLM52_PP13_RUNTIME_HOST_NAME_BYTES];
+    char sink_host_name[SPARK_GLM52_PP13_RUNTIME_HOST_NAME_BYTES];
+    char route_name[SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_ROUTE_NAME_BYTES];
+} SparkGlm52Pp13RuntimeFinalEventRoute;
+
+#define SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_ROUTE_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52Pp13RuntimeFinalEventRoute))
+
 SparkStatus SparkGlm52Pp13RuntimeBuildFixedStagePlan(
     SparkGlm52StagePlan *stage_plan,
     char *error_buffer,
@@ -96,6 +114,17 @@ SparkStatus SparkGlm52Pp13RuntimeBuildFp8PackPath(
 SparkStatus SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
     const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
     const char *pack_root,
+    char *error_buffer,
+    uint32_t error_buffer_bytes);
+
+SparkStatus SparkGlm52Pp13RuntimeBuildFinalEventRoute(
+    uint32_t port_base,
+    SparkGlm52Pp13RuntimeFinalEventRoute *route,
+    char *error_buffer,
+    uint32_t error_buffer_bytes);
+
+SparkStatus SparkGlm52Pp13RuntimeValidateFinalEventRoute(
+    const SparkGlm52Pp13RuntimeFinalEventRoute *route,
     char *error_buffer,
     uint32_t error_buffer_bytes);
 
