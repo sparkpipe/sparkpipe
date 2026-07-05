@@ -417,6 +417,14 @@ static void SparkTestServingRejectsTailWindowRuntimeContract(void)
     assert(SparkGlm52ServingEngineInitialize(
         &serving_engine,
         &serving_configuration) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    Fixture.request_api.configuration_flags |=
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING;
+    serving_configuration.runtime_contract_flags &=
+        ~SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_INDEXSHARE_STAGE_BOUNDARY_STATE;
+    assert(SparkGlm52ServingEngineInitialize(
+        &serving_engine,
+        &serving_configuration) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestServingFireAndForgetPumpRunsFullPromptToDecode(void)

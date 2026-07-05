@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 21u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 22u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION 6144u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT 64u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION 512u
@@ -389,7 +389,9 @@ typedef enum SparkGlm52ResidentDecodeStageSparseIndexMode
 {
     SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_PRESELECTED = 0,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_COPY_CONTEXT_PREFIX = 1,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DEBUG_SERIAL_TOPK = 2
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DEBUG_SERIAL_TOPK = 2,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL = 3,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED = 4
 } SparkGlm52ResidentDecodeStageSparseIndexMode;
 
 typedef enum SparkGlm52ResidentDecodeStageLaunchCheckMode
@@ -916,7 +918,13 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     float moe_routed_scaling_factor;
     uint32_t moe_norm_topk_prob;
     uint32_t kv_block_token_count;
+    uint32_t layer_index;
+    uint32_t dsa_indexshare_source_layer_index;
+    uint32_t dsa_indexshare_group_end_layer_exclusive;
+    uint32_t dsa_indexshare_selected_token_count;
+    uint32_t dsa_indexshare_layer_count;
     uint32_t reserved2;
+    uint32_t *selected_token_indices_by_layer;
 
 } SparkGlm52ResidentDecodeStageNodeContext;
 

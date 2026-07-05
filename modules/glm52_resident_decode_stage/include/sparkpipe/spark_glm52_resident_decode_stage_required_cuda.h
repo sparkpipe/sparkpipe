@@ -363,6 +363,20 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBlackwellQuantizedTensorCore
     uint32_t active_sequence_count,
     void *cuda_stream);
 
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareExportSelectedTokens(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t source_layer_index,
+    void *selected_token_sideband,
+    uint32_t active_sequence_count,
+    void *cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareImportSelectedTokens(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const void *selected_token_sideband,
+    uint32_t source_layer_index,
+    uint32_t active_sequence_count,
+    void *cuda_stream);
+
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunch(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,

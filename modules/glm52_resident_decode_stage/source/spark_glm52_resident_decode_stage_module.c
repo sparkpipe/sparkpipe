@@ -2162,7 +2162,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->layer_progression_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK ||
         node_context->sparse_index_mode >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DEBUG_SERIAL_TOPK ||
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED ||
         node_context->launch_check_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LAUNCH_CHECK_SYNC_ON_ERROR ||
         node_context->phase_clock_mode >
@@ -2182,6 +2182,23 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
             SPARK_GLM52_KV_CACHE_MAX_BLOCK_TOKENS ||
         !SparkGlm52ResidentDecodeStageLayerMatchesModelQuantization(
             node_context) ||
+        ((node_context->sparse_index_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL ||
+          node_context->sparse_index_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED) &&
+         (node_context->selected_token_indices_by_layer == 0 ||
+          node_context->dsa_indexshare_selected_token_count !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT ||
+          node_context->dsa_indexshare_layer_count <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ||
+          node_context->layer_index >=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ||
+          node_context->dsa_indexshare_source_layer_index >=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ||
+          node_context->dsa_indexshare_group_end_layer_exclusive >
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ||
+          node_context->dsa_indexshare_source_layer_index >=
+            node_context->dsa_indexshare_group_end_layer_exclusive)) ||
         !isfinite(node_context->qk_scale) ||
         node_context->qk_scale <= 0.0f ||
         !isfinite(node_context->rms_norm_epsilon) ||
