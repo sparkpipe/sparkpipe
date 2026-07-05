@@ -171,6 +171,41 @@ static void SparkTestTokenizerEncodesByteBpeAndSpecialTokens(void)
     SparkTokenizerDestroy(&tokenizer);
 }
 
+
+static void SparkTestTokenizerDecodesByteLevelTokens(void)
+{
+    SparkTokenizer tokenizer;
+    uint32_t token_ids[3u];
+    char text[64u];
+    uint32_t text_bytes;
+
+    SparkTestTokenizerLoadFixture(&tokenizer);
+    token_ids[0u] = SPARK_TEST_TOKEN_SPACE;
+    token_ids[1u] = SPARK_TEST_TOKEN_ABC;
+    token_ids[2u] = SPARK_TEST_TOKEN_STOP;
+    assert(SparkTokenizerDecodeTokenIds(
+        &tokenizer,
+        token_ids,
+        3u,
+        SPARK_TOKENIZER_DECODE_FLAG_SKIP_SPECIAL_TOKENS,
+        text,
+        sizeof(text),
+        &text_bytes) == SPARK_STATUS_OK);
+    assert(text_bytes == 4u);
+    assert(strcmp(text, " abc") == 0);
+
+    assert(SparkTokenizerDecodeTokenIds(
+        &tokenizer,
+        token_ids,
+        2u,
+        0u,
+        text,
+        3u,
+        &text_bytes) == SPARK_STATUS_CAPACITY_EXCEEDED);
+
+    SparkTokenizerDestroy(&tokenizer);
+}
+
 static void SparkTestTokenizerEncodesBatch(void)
 {
     SparkTokenizer tokenizer;
@@ -370,6 +405,7 @@ static void SparkTestTokenizerLoadsLargeMergeArrayWithoutIndexedArrayWalk(void)
 int main(void)
 {
     SparkTestTokenizerEncodesByteBpeAndSpecialTokens();
+    SparkTestTokenizerDecodesByteLevelTokens();
     SparkTestTokenizerEncodesBatch();
     SparkTestTokenizerCompiledFileAndConfiguredBatch();
     SparkTestTokenizerLoadsLargeMergeArrayWithoutIndexedArrayWalk();

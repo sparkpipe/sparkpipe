@@ -51,6 +51,9 @@ Supported endpoints:
 ```text
 GET  /
 GET  /health
+OPTIONS /v1/chat/completions
+OPTIONS /v1/completions
+OPTIONS /v1/messages
 POST /v1/chat/completions
 POST /v1/completions
 POST /v1/messages
@@ -59,6 +62,21 @@ POST /v1/messages
 `/` serves a small demo UI. `/v1/chat/completions` and `/v1/completions` use
 OpenAI-compatible request JSON. `/v1/messages` uses Anthropic-compatible
 request JSON. Streaming requests receive `text/event-stream`.
+
+The demo UI supports prompt text plus multiple text-file uploads. The browser
+reads files client-side and sends them as request JSON:
+
+```json
+{
+  "messages": [{"role": "user", "content": "Use the attachment."}],
+  "files": [{"filename": "notes.txt", "content": "file text"}],
+  "stream": true
+}
+```
+
+The C compatibility layer folds uploaded text into explicit prompt sections
+before tokenization. Browser CORS preflight is supported for the three public
+generation routes.
 
 Until the PP13 backend is attached, the gateway returns fail-closed errors:
 

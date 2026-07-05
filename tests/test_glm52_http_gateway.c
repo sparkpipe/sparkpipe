@@ -9,6 +9,10 @@ static void SparkTestHttpGatewayRoutes(void)
 	SparkGlm52HttpGatewayRequest request;
 
 	SparkGlm52HttpGatewayInitializeRequest(&request);
+	request.method = "OPTIONS";
+	request.path = "/v1/chat/completions";
+	assert(SparkGlm52HttpGatewayRoute(&request) ==
+		SPARK_GLM52_HTTP_GATEWAY_ROUTE_CORS_PREFLIGHT);
 	request.method = "GET";
 	request.path = "/";
 	assert(SparkGlm52HttpGatewayRoute(&request) ==
@@ -29,6 +33,19 @@ static void SparkTestHttpGatewayRoutes(void)
 	request.path = "/bad";
 	assert(SparkGlm52HttpGatewayRoute(&request) ==
 		SPARK_GLM52_HTTP_GATEWAY_ROUTE_NONE);
+}
+
+
+static void SparkTestHttpGatewayBuildsCorsPreflight(void)
+{
+    SparkGlm52HttpGatewayResponse response;
+    char body[16];
+
+    SparkGlm52HttpGatewayInitializeResponse(&response, body, sizeof(body));
+    assert(SparkGlm52HttpGatewayBuildCorsPreflight(&response) ==
+        SPARK_STATUS_OK);
+    assert(response.status_code == 200u);
+    assert(response.body_bytes == 0u);
 }
 
 static void SparkTestHttpGatewayBuildsHealth(void)
@@ -57,6 +74,58 @@ static void SparkTestHttpGatewayBuildsSseUnavailable(void)
 	assert((response.flags & SPARK_GLM52_HTTP_GATEWAY_RESPONSE_FLAG_STREAM) != 0u);
 	assert(strcmp(response.content_type,"text/event-stream") == 0);
 	assert(strstr(body,"event: error") != 0);
+}
+
+
+static void SparkTestHttpGatewayBuildsServiceHealth(void)
+{
+    SparkGlm52HttpGatewayResponse response;
+    SparkGlm52ServiceStats stats;
+    char body[1024];
+
+    memset(&stats, 0, sizeof(stats));
+    stats.connected_client_count = 2u;
+    stats.live_request_count = 3u;
+    stats.serving_stats.queued_request_count = 4u;
+    stats.serving_stats.jit_prefetch_dispatch_count = 5u;
+    SparkGlm52HttpGatewayInitializeResponse(&response, body, sizeof(body));
+    assert(SparkGlm52HttpGatewayBuildServiceHealth(
+        &response,
+        &stats,
+        1u,
+        1u,
+        1048576u,
+        SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS) ==
+        SPARK_STATUS_OK);
+    assert(response.status_code == 200u);
+    assert(strstr(body, "\"max_context_tokens\":1048576") != 0);
+    assert(strstr(body, "\"connected_clients\":2") != 0);
+    assert(strstr(body, "\"jit_prefetch_dispatches\":5") != 0);
+}
+
+static void SparkTestHttpGatewayFormatsTokenEvent(void)
+{
+    SparkGlm52HttpGatewayResponse response;
+    SparkGlm52ServiceEvent event;
+    char body[1024];
+
+    memset(&event, 0, sizeof(event));
+    event.abi_version = SPARK_GLM52_SERVICE_ABI_VERSION;
+    event.descriptor_bytes = SPARK_GLM52_SERVICE_EVENT_DESCRIPTOR_BYTES;
+    event.kind = SPARK_GLM52_SERVICE_EVENT_KIND_TOKEN;
+    event.client_id = 11u;
+    event.client_request_id = 22u;
+    event.token_id = 333u;
+    event.token_index = 4u;
+    SparkGlm52HttpGatewayInitializeResponse(&response, body, sizeof(body));
+    assert(SparkGlm52HttpGatewayBuildServiceEventStream(
+        &response,
+        &event,
+        0) == SPARK_STATUS_OK);
+    assert(response.status_code == 200u);
+    assert((response.flags & SPARK_GLM52_HTTP_GATEWAY_RESPONSE_FLAG_STREAM) != 0u);
+    assert(strstr(body, "event: token") != 0);
+    assert(strstr(body, "\"token_id\":333") != 0);
 }
 
 static void SparkTestHttpGatewayAuth(void)
@@ -89,8 +158,11 @@ static void SparkTestHttpGatewayStreamFlag(void)
 int main(void)
 {
 	SparkTestHttpGatewayRoutes();
+	SparkTestHttpGatewayBuildsCorsPreflight();
 	SparkTestHttpGatewayBuildsHealth();
+	SparkTestHttpGatewayBuildsServiceHealth();
 	SparkTestHttpGatewayBuildsSseUnavailable();
+	SparkTestHttpGatewayFormatsTokenEvent();
 	SparkTestHttpGatewayAuth();
 	SparkTestHttpGatewayStreamFlag();
 	return 0;

@@ -46,6 +46,29 @@ static void SparkTestCompatOpenAiPrompt(void)
     assert(strcmp(text, "plain prompt") == 0);
 }
 
+
+static void SparkTestCompatOpenAiChatWithFiles(void)
+{
+    static const char RequestJson[] =
+        "{"
+        "\"model\":\"glm-5.2\","
+        "\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Use the attachment.\"}]}],"
+        "\"files\":[{\"filename\":\"notes.txt\",\"content\":\"alpha\\nbeta\"}]"
+        "}";
+    SparkGlm52CompatTextRequest request;
+    char text[512];
+
+    SparkGlm52CompatInitializeTextRequest(&request, text, sizeof(text));
+    assert(SparkGlm52CompatPrepareOpenAiJson(
+        RequestJson,
+        ((uint32_t)strlen(RequestJson)),
+        &request) == SPARK_STATUS_OK);
+    assert(strstr(text, "user: Use the attachment.\n") != 0);
+    assert(strstr(text, "[uploaded file: notes.txt]") != 0);
+    assert(strstr(text, "alpha\nbeta") != 0);
+    assert(strstr(text, "[/uploaded file]") != 0);
+}
+
 static void SparkTestCompatAnthropicMessages(void)
 {
     static const char RequestJson[] =
@@ -89,6 +112,7 @@ int main(void)
 {
     SparkTestCompatOpenAiChat();
     SparkTestCompatOpenAiPrompt();
+    SparkTestCompatOpenAiChatWithFiles();
     SparkTestCompatAnthropicMessages();
     SparkTestCompatRejectsSmallBuffer();
     return 0;

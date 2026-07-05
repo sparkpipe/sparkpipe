@@ -16,6 +16,10 @@ OpenAI JSON to service request adapter
 Anthropic JSON to service request adapter
 LAN HTTP/SSE gateway shell
 demo UI served by the gateway
+text file upload folding into prompt input
+CORS preflight for public JSON endpoints
+token-id to text decoder
+SSE service event formatter
 PP13 rank-plan API
 resident decode-stage production runner API
 resident PP13 rank daemon
@@ -26,7 +30,6 @@ Missing:
 
 ```text
 attach HTTP/SSE gateway to the production C service runtime
-token-id to text streaming response formatter
 authentication and tenant policy above the C API
 public schema examples for final OpenAI and Anthropic responses
 versioned API compatibility tests for external callers
@@ -127,7 +130,6 @@ Missing:
 service-level tokenizer initialization contract
 zero-allocation tokenizer loop proof
 large-context tokenizer benchmark from pulled main
-token-id to text streaming decoder
 OpenAI and Anthropic response formatting over decoded text
 ```
 

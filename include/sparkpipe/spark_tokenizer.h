@@ -37,6 +37,9 @@ extern "C" {
     (SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_SPECIAL_TOKEN_MATCH | \
      SPARK_TOKENIZER_ENCODE_FLAG_ADD_PREFIX_SPACE | \
      SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_REGEX_PRETOKENIZATION)
+#define SPARK_TOKENIZER_DECODE_FLAG_SKIP_SPECIAL_TOKENS 0x00000001u
+#define SPARK_TOKENIZER_DECODE_KNOWN_FLAGS \
+    SPARK_TOKENIZER_DECODE_FLAG_SKIP_SPECIAL_TOKENS
 
 typedef struct SparkTokenizerStringEntry
 {
@@ -237,6 +240,15 @@ SparkStatus SparkTokenizerEncodeBatchUtf8(
 SparkStatus SparkTokenizerEncodeBatchUtf8Configured(
     const SparkTokenizer *tokenizer,
     const SparkTokenizerBatchEncodeConfiguration *configuration);
+
+SparkStatus SparkTokenizerDecodeTokenIds(
+    const SparkTokenizer *tokenizer,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    uint32_t decode_flags,
+    char *text,
+    uint32_t text_capacity,
+    uint32_t *text_bytes_out);
 
 #ifdef __cplusplus
 }

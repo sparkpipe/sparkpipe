@@ -10,7 +10,7 @@
 
 #include "sparkpipe/spark_glm52_http_gateway.h"
 
-#define SPARK_GLM52_GATEWAY_REQUEST_BYTES (1024u * 1024u)
+#define SPARK_GLM52_GATEWAY_REQUEST_BYTES (SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_UPLOAD_BYTES + (1024u * 1024u))
 #define SPARK_GLM52_GATEWAY_RESPONSE_BYTES (128u * 1024u)
 #define SPARK_GLM52_GATEWAY_DEFAULT_PORT 8080u
 
@@ -317,6 +317,8 @@ static int32_t SparkGlm52GatewayReadRequest(
 	if (SparkGlm52GatewayParseRequestLine(buffer,request) < 0)
 		return -4;
 	SparkGlm52GatewayExtractHeaders(line_end + 2,request,&content_length);
+	if (content_length > (capacity - (uint32_t)(body - buffer)))
+		return -6;
 	while (((uint32_t)(bytes - (uint32_t)(body - buffer))) < content_length &&
 		bytes < capacity)
 	{
@@ -334,6 +336,10 @@ static const char *SparkGlm52GatewayStatusText(uint32_t status_code)
 {
 	if (status_code == 200u)
 		return "OK";
+	if (status_code == 202u)
+		return "Accepted";
+	if (status_code == 400u)
+		return "Bad Request";
 	if (status_code == 401u)
 		return "Unauthorized";
 	if (status_code == 404u)
@@ -357,6 +363,8 @@ static int32_t SparkGlm52GatewaySendResponse(
 		"Content-Type: %s\r\n"
 		"Content-Length: %u\r\n"
 		"Access-Control-Allow-Origin: *\r\n"
+		"Access-Control-Allow-Headers: authorization, content-type\r\n"
+		"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
 		"Cache-Control: no-cache\r\n"
 		"Connection: close\r\n\r\n",
 		response->status_code,
@@ -373,6 +381,19 @@ static int32_t SparkGlm52GatewaySendResponse(
 	return 0;
 }
 
+static SparkStatus SparkGlm52GatewayBuildBadRequest(
+	SparkGlm52HttpGatewayResponse *response)
+{
+	if (response == 0 || response->body == 0 || response->body_capacity < 64u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	response->status_code = 400u;
+	response->flags = 0u;
+	response->content_type = "application/json";
+	strcpy(response->body,"{\"error\":{\"type\":\"bad_request\",\"message\":\"invalid or oversized request\"}}\n");
+	response->body_bytes = (uint32_t)strlen(response->body);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52GatewayBuildResponse(
 	const SparkGlm52GatewayConfig *configuration,
 	const SparkGlm52HttpGatewayRequest *request,
@@ -382,13 +403,18 @@ static SparkStatus SparkGlm52GatewayBuildResponse(
 	uint32_t stream;
 
 	route = SparkGlm52HttpGatewayRoute(request);
+	if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_CORS_PREFLIGHT)
+		return SparkGlm52HttpGatewayBuildCorsPreflight(response);
 	if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_DEMO_UI)
 		return SparkGlm52HttpGatewayBuildDemoUi(response);
 	if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_HEALTH)
-		return SparkGlm52HttpGatewayBuildHealth(
+		return SparkGlm52HttpGatewayBuildServiceHealth(
 			response,
+			0,
 			configuration->backend_ready,
-			configuration->pp13_ready);
+			configuration->pp13_ready,
+			SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS,
+			0u);
 	if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_NONE)
 		return SparkGlm52HttpGatewayBuildNotFound(response);
 	if (SparkGlm52HttpGatewayAuthorizationMatches(
@@ -410,19 +436,24 @@ static int32_t SparkGlm52GatewayServeOne(
 	SparkGlm52HttpGatewayRequest request;
 	SparkGlm52HttpGatewayResponse response;
 	SparkStatus status;
+	int32_t read_status;
 
 	SparkGlm52HttpGatewayInitializeRequest(&request);
 	SparkGlm52HttpGatewayInitializeResponse(
 		&response,
 		response_buffer,
 		sizeof(response_buffer));
-	if (SparkGlm52GatewayReadRequest(
-			client_fd,
-			request_buffer,
-			sizeof(request_buffer),
-			&request) < 0)
+	read_status = SparkGlm52GatewayReadRequest(
+		client_fd,
+		request_buffer,
+		sizeof(request_buffer),
+		&request);
+	if (read_status < 0)
 	{
-		(void)SparkGlm52HttpGatewayBuildNotFound(&response);
+		if (read_status == -6)
+			(void)SparkGlm52GatewayBuildBadRequest(&response);
+		else
+			(void)SparkGlm52HttpGatewayBuildNotFound(&response);
 	}
 	else
 	{

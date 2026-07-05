@@ -110,6 +110,99 @@ static uint32_t SparkTokenizerByteToUnicodeCodePoint(
     return byte_value;
 }
 
+
+static uint32_t SparkTokenizerUnicodeCodePointToByte(
+    uint32_t code_point,
+    uint8_t *byte_out)
+{
+    uint32_t candidate;
+    uint32_t next_code_point;
+
+    if (byte_out == 0)
+    {
+        return 0u;
+    }
+    if ((code_point >= 33u && code_point <= 126u) ||
+        (code_point >= 161u && code_point <= 172u) ||
+        (code_point >= 174u && code_point <= 255u))
+    {
+        *byte_out = (uint8_t)code_point;
+        return 1u;
+    }
+
+    next_code_point = 256u;
+    for (candidate = 0u; candidate <= 255u; ++candidate)
+    {
+        if (!((candidate >= 33u && candidate <= 126u) ||
+              (candidate >= 161u && candidate <= 172u) ||
+              (candidate >= 174u && candidate <= 255u)))
+        {
+            if (code_point == next_code_point)
+            {
+                *byte_out = (uint8_t)candidate;
+                return 1u;
+            }
+            next_code_point += 1u;
+        }
+    }
+    return 0u;
+}
+
+static uint32_t SparkTokenizerReadUtf8CodePoint(
+    const char *text,
+    uint32_t text_bytes,
+    uint32_t *position,
+    uint32_t *code_point_out)
+{
+    uint8_t first_byte;
+    uint32_t remaining_bytes;
+
+    if (text == 0 || position == 0 || code_point_out == 0 ||
+        *position >= text_bytes)
+    {
+        return 0u;
+    }
+    first_byte = (uint8_t)text[*position];
+    remaining_bytes = text_bytes - *position;
+    if (first_byte < 0x80u)
+    {
+        *code_point_out = first_byte;
+        *position += 1u;
+        return 1u;
+    }
+    if ((first_byte & 0xe0u) == 0xc0u && remaining_bytes >= 2u &&
+        (((uint8_t)text[*position + 1u]) & 0xc0u) == 0x80u)
+    {
+        *code_point_out = ((uint32_t)(first_byte & 0x1fu) << 6u) |
+            ((uint32_t)((uint8_t)text[*position + 1u]) & 0x3fu);
+        *position += 2u;
+        return 1u;
+    }
+    if ((first_byte & 0xf0u) == 0xe0u && remaining_bytes >= 3u &&
+        (((uint8_t)text[*position + 1u]) & 0xc0u) == 0x80u &&
+        (((uint8_t)text[*position + 2u]) & 0xc0u) == 0x80u)
+    {
+        *code_point_out = ((uint32_t)(first_byte & 0x0fu) << 12u) |
+            (((uint32_t)((uint8_t)text[*position + 1u]) & 0x3fu) << 6u) |
+            ((uint32_t)((uint8_t)text[*position + 2u]) & 0x3fu);
+        *position += 3u;
+        return 1u;
+    }
+    if ((first_byte & 0xf8u) == 0xf0u && remaining_bytes >= 4u &&
+        (((uint8_t)text[*position + 1u]) & 0xc0u) == 0x80u &&
+        (((uint8_t)text[*position + 2u]) & 0xc0u) == 0x80u &&
+        (((uint8_t)text[*position + 3u]) & 0xc0u) == 0x80u)
+    {
+        *code_point_out = ((uint32_t)(first_byte & 0x07u) << 18u) |
+            (((uint32_t)((uint8_t)text[*position + 1u]) & 0x3fu) << 12u) |
+            (((uint32_t)((uint8_t)text[*position + 2u]) & 0x3fu) << 6u) |
+            ((uint32_t)((uint8_t)text[*position + 3u]) & 0x3fu);
+        *position += 4u;
+        return 1u;
+    }
+    return 0u;
+}
+
 static uint32_t SparkTokenizerAppendUtf8CodePoint(
     char *destination,
     uint32_t code_point)
@@ -2509,4 +2602,138 @@ SparkStatus SparkTokenizerEncodeBatchUtf8Configured(
         configuration->overflow_token_counts,
         configuration->invalid_segment_counts,
         configuration->worker_count);
+}
+
+static uint32_t SparkTokenizerTokenIdIsSpecial(
+    const SparkTokenizer *tokenizer,
+    uint32_t token_id)
+{
+    uint32_t special_index;
+
+    if (tokenizer == 0)
+    {
+        return 0u;
+    }
+    for (special_index = 0u;
+         special_index < tokenizer->special_token_count;
+         ++special_index)
+    {
+        if (tokenizer->special_tokens[special_index].token_id == token_id)
+        {
+            return 1u;
+        }
+    }
+    return 0u;
+}
+
+static SparkStatus SparkTokenizerDecodeOneTokenText(
+    const char *token_text,
+    uint32_t token_text_bytes,
+    char *text,
+    uint32_t text_capacity,
+    uint32_t *text_bytes_inout)
+{
+    uint32_t position;
+    uint32_t code_point;
+    uint8_t decoded_byte;
+
+    if (token_text == 0 || text == 0 || text_bytes_inout == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    position = 0u;
+    while (position < token_text_bytes)
+    {
+        if (SparkTokenizerReadUtf8CodePoint(
+                token_text,
+                token_text_bytes,
+                &position,
+                &code_point) == 0u)
+        {
+            return SPARK_STATUS_PARSE_ERROR;
+        }
+        if (SparkTokenizerUnicodeCodePointToByte(
+                code_point,
+                &decoded_byte) == 0u)
+        {
+            return SPARK_STATUS_PARSE_ERROR;
+        }
+        if (*text_bytes_inout + 1u >= text_capacity)
+        {
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+        text[*text_bytes_inout] = (char)decoded_byte;
+        *text_bytes_inout += 1u;
+    }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkTokenizerDecodeTokenIds(
+    const SparkTokenizer *tokenizer,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    uint32_t decode_flags,
+    char *text,
+    uint32_t text_capacity,
+    uint32_t *text_bytes_out)
+{
+    uint32_t token_index;
+    uint32_t text_bytes;
+    SparkStatus status;
+
+    if (text_bytes_out != 0)
+    {
+        *text_bytes_out = 0u;
+    }
+    if (tokenizer == 0 ||
+        tokenizer->abi_version != SPARK_TOKENIZER_ABI_VERSION ||
+        tokenizer->descriptor_bytes != SPARK_TOKENIZER_DESCRIPTOR_BYTES ||
+        token_ids == 0 ||
+        text == 0 ||
+        text_capacity == 0u ||
+        (decode_flags & ~SPARK_TOKENIZER_DECODE_KNOWN_FLAGS) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    text_bytes = 0u;
+    text[0u] = '\0';
+    for (token_index = 0u; token_index < token_count; ++token_index)
+    {
+        uint32_t token_id;
+        const char *token_text;
+        uint32_t token_text_bytes;
+
+        token_id = token_ids[token_index];
+        if ((decode_flags & SPARK_TOKENIZER_DECODE_FLAG_SKIP_SPECIAL_TOKENS) != 0u &&
+            SparkTokenizerTokenIdIsSpecial(tokenizer, token_id) != 0u)
+        {
+            continue;
+        }
+        if (token_id > tokenizer->maximum_token_id ||
+            tokenizer->token_text_by_id == 0 ||
+            tokenizer->token_text_bytes_by_id == 0 ||
+            tokenizer->token_text_by_id[token_id] == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        token_text = tokenizer->token_text_by_id[token_id];
+        token_text_bytes = tokenizer->token_text_bytes_by_id[token_id];
+        status = SparkTokenizerDecodeOneTokenText(
+            token_text,
+            token_text_bytes,
+            text,
+            text_capacity,
+            &text_bytes);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    text[text_bytes] = '\0';
+    if (text_bytes_out != 0)
+    {
+        *text_bytes_out = text_bytes;
+    }
+    return SPARK_STATUS_OK;
 }

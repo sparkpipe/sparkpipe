@@ -2,7 +2,9 @@
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_glm52_compat_api.h"
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_tokenizer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,8 +22,14 @@ extern "C" {
 #define SPARK_GLM52_HTTP_GATEWAY_ROUTE_OPENAI_CHAT 3u
 #define SPARK_GLM52_HTTP_GATEWAY_ROUTE_OPENAI_COMPLETIONS 4u
 #define SPARK_GLM52_HTTP_GATEWAY_ROUTE_ANTHROPIC_MESSAGES 5u
+#define SPARK_GLM52_HTTP_GATEWAY_ROUTE_CORS_PREFLIGHT 6u
 
 #define SPARK_GLM52_HTTP_GATEWAY_RESPONSE_FLAG_STREAM 0x00000001u
+
+#define SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS \
+    SPARK_GLM52_SERVICE_MAX_TOKEN_FRAME_COUNT
+#define SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_UPLOAD_BYTES \
+    SPARK_GLM52_SERVICE_MAX_TEXT_BYTES
 
 typedef struct SparkGlm52HttpGatewayRequest
 {
@@ -76,6 +84,9 @@ SparkStatus SparkGlm52HttpGatewayBuildUnauthorized(
 SparkStatus SparkGlm52HttpGatewayBuildNotFound(
     SparkGlm52HttpGatewayResponse *response);
 
+SparkStatus SparkGlm52HttpGatewayBuildCorsPreflight(
+    SparkGlm52HttpGatewayResponse *response);
+
 uint32_t SparkGlm52HttpGatewayBodyRequestsStream(
     const char *body,
     uint32_t body_bytes);
@@ -83,6 +94,33 @@ uint32_t SparkGlm52HttpGatewayBodyRequestsStream(
 uint32_t SparkGlm52HttpGatewayAuthorizationMatches(
     const SparkGlm52HttpGatewayRequest *request,
     const char *api_key);
+
+SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
+    SparkGlm52HttpGatewayResponse *response,
+    const SparkGlm52ServiceStats *stats,
+    uint32_t backend_ready,
+    uint32_t pp13_ready,
+    uint32_t max_context_tokens,
+    uint32_t production_contract_flags);
+
+SparkStatus SparkGlm52HttpGatewaySubmitJsonToService(
+    SparkGlm52ServiceRuntime *service,
+    const SparkGlm52HttpGatewayRequest *request,
+    SparkGlm52ServiceClientId client_id,
+    SparkGlm52ServiceRequestId client_request_id,
+    SparkGlm52CompatTextRequest *compat_request,
+    SparkGlm52ServiceSubmitResult *submit_result,
+    SparkGlm52HttpGatewayResponse *response);
+
+SparkStatus SparkGlm52HttpGatewayBuildSubmitAccepted(
+    SparkGlm52HttpGatewayResponse *response,
+    const SparkGlm52ServiceSubmitResult *submit_result,
+    uint32_t stream);
+
+SparkStatus SparkGlm52HttpGatewayBuildServiceEventStream(
+    SparkGlm52HttpGatewayResponse *response,
+    const SparkGlm52ServiceEvent *service_event,
+    const SparkTokenizer *tokenizer);
 
 #ifdef __cplusplus
 }
