@@ -621,9 +621,13 @@ static uint32_t SparkGlm52GatewayServiceEventMatchesSubmit(
 {
 	if (event == 0 || submit_result == 0)
 		return 0u;
-	return event->client_request_id == submit_result->client_request_id &&
-		event->serving_request_id == submit_result->serving_request_id &&
-		event->sequence_id == submit_result->sequence_id;
+	if (event->client_request_id != submit_result->client_request_id ||
+		event->serving_request_id != submit_result->serving_request_id)
+		return 0u;
+	if (submit_result->sequence_id != 0ull &&
+		event->sequence_id != submit_result->sequence_id)
+		return 0u;
+	return 1u;
 }
 
 static SparkStatus SparkGlm52GatewayAppendResponseBody(

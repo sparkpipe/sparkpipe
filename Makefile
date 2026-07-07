@@ -67,6 +67,7 @@ COMMON_SOURCES := \
     src/spark_filesystem.c \
     src/spark_json.c \
     src/spark_hidden_transport.c \
+    src/spark_memlink.c \
     src/spark_glm52_kv_cache.c \
     src/spark_glm52_dspark.c \
     src/spark_glm52_stage_plan.c \
@@ -119,13 +120,17 @@ TOOL_NAMES := \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
     sparkpipe_tokenizer_benchmark \
-    sparkpipe_glm52_http_gateway
+    sparkpipe_glm52_http_gateway \
+    sparkpipe_memlink \
+    sparkpipe_prevcp \
+    sparkpipe_nextcp
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
 TEST_NAMES := \
     test_json \
     test_hidden_transport \
+    test_memlink \
     test_glm52_kv_cache \
     test_glm52_dspark \
     test_glm52_stage_plan \
@@ -278,6 +283,15 @@ build/sparkpipe_tokenizer_benchmark: tools/sparkpipe_tokenizer_benchmark.c $(COM
 build/sparkpipe_glm52_http_gateway: tools/sparkpipe_glm52_http_gateway.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_memlink: tools/sparkpipe_memlink.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_prevcp: tools/sparkpipe_memlink.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DSPARK_MEMLINK_FIXED_COMMAND=\"prevcp\" $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_nextcp: tools/sparkpipe_memlink.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DSPARK_MEMLINK_FIXED_COMMAND=\"nextcp\" $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/sparkpipe_glm52_pp13_ring_check: tools/sparkpipe_glm52_pp13_ring_check.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -I$(CUDA_HOME)/include $(CFLAGS) tools/sparkpipe_glm52_pp13_ring_check.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 $(LDLIBS) -lcudart -o $@
 
@@ -364,6 +378,9 @@ build/test_json: tests/test_json.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 
 build/test_hidden_transport: tests/test_hidden_transport.c $(COMMON_LIBRARY) $(TEST_HIDDEN_TRANSPORT_MODULE)
 	$(CC) $(CPPFLAGS) -Itests -DSPARK_TEST_HIDDEN_TRANSPORT_MODULE_PATH=\"$(TEST_HIDDEN_TRANSPORT_MODULE)\" $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_memlink: tests/test_memlink.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_kv_cache: tests/test_glm52_kv_cache.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
