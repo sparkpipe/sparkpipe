@@ -2936,7 +2936,8 @@ static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
         &pending_completion->backend_completion_ready,
         1u,
         memory_order_release);
-    SparkGlm52ResidentDecodeStageTryComplete(pending_completion);
+    if (pending_completion->hidden_output_transport_active == 0u)
+        SparkGlm52ResidentDecodeStageTryComplete(pending_completion);
 }
 
 SparkStatus SparkGlm52ResidentDecodeStageInitialize(
@@ -4162,6 +4163,7 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
         &state->submitted_count,
         1u,
         memory_order_relaxed);
+    SparkGlm52ResidentDecodeStageProgressPendingCompletions(state);
     return SPARK_STATUS_OK;
 }
 
