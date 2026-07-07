@@ -20,13 +20,15 @@
 #include "sparkpipe/spark_glm52_cuda_resident_ipc.h"
 #include "sparkpipe/spark_glm52_pp13_node_context_builder.h"
 #include "sparkpipe/spark_glm52_pp13_runtime.h"
+#include "sparkpipe/spark_glm52_prompt_pipeline.h"
+#include "sparkpipe/spark_glm52_request_api.h"
+#include "sparkpipe/spark_glm52_serving_engine.h"
 #include "sparkpipe/spark_hidden_transport.h"
 
 #define SPARK_GLM52_CUDA_RESIDENTD_DEFAULT_MAX_ACTIVE 1024u
 #define SPARK_GLM52_CUDA_RESIDENTD_DEFAULT_PROGRAM "glm52.pp13.rank.production"
 #define SPARK_GLM52_CUDA_RESIDENTD_DEFAULT_SOCKET_PREFIX "/tmp/sparkpipe_glm52_cuda_resident_rank"
 #define SPARK_GLM52_CUDA_RESIDENTD_POLL_TIMEOUT_MS 10
-#define SPARK_GLM52_CUDA_RESIDENTD_CONTROL_PAYLOAD_CAPACITY 4096u
 
 #define SPARK_GLM52_CUDA_RESIDENTD_POLL_LISTEN 0u
 #define SPARK_GLM52_CUDA_RESIDENTD_MAX_CLIENTS 4u
@@ -74,7 +76,15 @@ typedef struct SparkGlm52CudaResidentdRuntime
     uint64_t submit_failed_count;
     uint64_t completion_count;
     uint64_t control_error_count;
+    uint64_t ingest_prefill_count;
+    uint64_t ingest_decode_count;
     uint32_t state;
+    uint32_t ingest_lane_block_count;
+    SparkGlm52RequestApiDispatch ingest_request_dispatch;
+    SparkGlm52RequestApiPrefillDispatchView ingest_prefill_view;
+    SparkGlm52RequestApiDecodeDispatchView ingest_decode_view;
+    SparkGlm52ServingDecodeResult ingest_decode_result;
+    uint8_t control_payload[SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_CONTROL_PAYLOAD_BYTES];
     char blocker[SPARK_GLM52_CUDA_RESIDENT_IPC_ERROR_TEXT_BYTES];
 } SparkGlm52CudaResidentdRuntime;
 
@@ -761,14 +771,36 @@ static SparkStatus SparkGlm52CudaResidentdFillStats(
     return SPARK_STATUS_OK;
 }
 
+static void SparkGlm52CudaResidentdWriteSubmitResult(
+    SparkGlm52CudaResidentdRuntime *runtime,
+    const SparkGlm52CudaResidentdConfiguration *configuration,
+    SparkStatus status,
+    const char *failure_text)
+{
+    SparkGlm52CudaResidentIpcSubmitResult result;
+    memset(&result, 0, sizeof(result));
+    result.descriptor_bytes = SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_RESULT_BYTES;
+    result.status = (uint32_t)status;
+    SparkGlm52CudaResidentdFillStats(runtime, configuration, &result.stats);
+    result.stats.rejected_count = runtime->submit_failed_count;
+    if (status != SPARK_STATUS_OK)
+        snprintf(result.stats.blocker, sizeof(result.stats.blocker),
+            "%s status=%u", failure_text, (uint32_t)status);
+    pthread_mutex_lock(&runtime->completion_write_mutex);
+    (void)SparkGlm52CudaResidentdWriteMessage(
+        runtime,
+        SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_RESULT,
+        &result,
+        sizeof(result));
+    pthread_mutex_unlock(&runtime->completion_write_mutex);
+}
+
 static SparkStatus SparkGlm52CudaResidentdHandleSubmitWork(
     SparkGlm52CudaResidentdRuntime *runtime,
     const SparkGlm52CudaResidentdConfiguration *configuration,
     const SparkGlm52CudaResidentIpcSubmitWork *message)
 {
-    SparkGlm52CudaResidentIpcSubmitResult result;
     SparkStatus status;
-
     if (message == 0 || message->descriptor_bytes !=
         SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_BYTES)
         return SPARK_STATUS_ABI_MISMATCH;
@@ -783,21 +815,137 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitWork(
         runtime->submitted_count += 1u;
     else
         runtime->submit_failed_count += 1u;
-    memset(&result, 0, sizeof(result));
-    result.descriptor_bytes = SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_RESULT_BYTES;
-    result.status = (uint32_t)status;
-    SparkGlm52CudaResidentdFillStats(runtime, configuration, &result.stats);
-    result.stats.rejected_count = runtime->submit_failed_count;
+    SparkGlm52CudaResidentdWriteSubmitResult(runtime, configuration, status, "submit_work_failed");
+    return status;
+}
+
+static SparkStatus SparkGlm52CudaResidentdBuildIngestKvView(
+    SparkGlm52CudaResidentdRuntime *runtime,
+    SparkGlm52KvBlockTableView *view,
+    const uint32_t *block_indices,
+    uint32_t block_count,
+    uint32_t block_token_count)
+{
+    if (block_count == 0u ||
+        block_count > SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS ||
+        block_token_count == 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    runtime->ingest_lane_block_count = block_count;
+    memset(view, 0, sizeof(*view));
+    view->abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    view->descriptor_bytes = SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
+    view->block_token_count = block_token_count;
+    view->lane_count = 1u;
+    view->lane_stride = block_count;
+    view->lane_capacity = 1u;
+    view->physical_block_indices = block_indices;
+    view->lane_physical_block_counts = &runtime->ingest_lane_block_count;
+    view->host_physical_block_indices = block_indices;
+    view->host_lane_physical_block_counts = &runtime->ingest_lane_block_count;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(
+    SparkGlm52CudaResidentdRuntime *runtime,
+    const SparkGlm52CudaResidentdConfiguration *configuration,
+    const SparkGlm52CudaResidentIpcSubmitPrefill *message)
+{
+    SparkGlm52PromptPipelinePrefillDispatch dispatch;
+    SparkGlm52KvBlockTableView kv_view;
+    SparkStatus status;
+    if (message == 0 || message->descriptor_bytes !=
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_PREFILL_BYTES)
+        return SPARK_STATUS_ABI_MISMATCH;
+    if (message->prompt_token_count == 0u ||
+        message->prompt_token_count >
+            SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS)
+    {
+        SparkGlm52CudaResidentdWriteSubmitResult(runtime, configuration, SPARK_STATUS_INVALID_ARGUMENT, "ingest_prefill_tokens_invalid");
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52CudaResidentdBuildIngestKvView(runtime, &kv_view, message->kv_physical_block_indices, message->kv_lane_block_count, message->kv_block_token_count);
     if (status != SPARK_STATUS_OK)
-        snprintf(result.stats.blocker, sizeof(result.stats.blocker),
-            "submit_work_failed status=%u", (uint32_t)status);
-    pthread_mutex_lock(&runtime->completion_write_mutex);
-    (void)SparkGlm52CudaResidentdWriteMessage(
-        runtime,
-        SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_RESULT,
-        &result,
-        sizeof(result));
-    pthread_mutex_unlock(&runtime->completion_write_mutex);
+    {
+        SparkGlm52CudaResidentdWriteSubmitResult(runtime, configuration, status, "ingest_prefill_kv_invalid");
+        return status;
+    }
+    memset(&runtime->ingest_request_dispatch, 0, sizeof(runtime->ingest_request_dispatch));
+    runtime->ingest_request_dispatch.highest_priority = message->highest_priority;
+    runtime->ingest_request_dispatch.request_ids[0u] = message->request_id;
+    runtime->ingest_request_dispatch.sequence_ids[0u] = message->sequence_id;
+    memset(&runtime->ingest_prefill_view, 0, sizeof(runtime->ingest_prefill_view));
+    runtime->ingest_prefill_view.descriptor_bytes = (uint32_t)sizeof(runtime->ingest_prefill_view);
+    runtime->ingest_prefill_view.active_sequence_count = 1u;
+    runtime->ingest_prefill_view.lane_count = 1u;
+    runtime->ingest_prefill_view.prompt_token_offset = message->prompt_token_offset;
+    runtime->ingest_prefill_view.prompt_token_count = message->prompt_token_count;
+    memset(&dispatch, 0, sizeof(dispatch));
+    dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
+    dispatch.active_sequence_count = 1u;
+    dispatch.lane_count = 1u;
+    dispatch.prompt_token_offset = message->prompt_token_offset;
+    dispatch.prompt_token_count = message->prompt_token_count;
+    dispatch.request_dispatch = &runtime->ingest_request_dispatch;
+    dispatch.prefill_view = &runtime->ingest_prefill_view;
+    dispatch.host_token_ids = message->prompt_token_ids;
+    dispatch.kv_block_table_view = &kv_view;
+    status = runtime->builder_library.builder_interface.prefill(runtime->builder_state, &dispatch, 0, 0);
+    if (status == SPARK_STATUS_OK)
+        runtime->ingest_prefill_count += 1u;
+    else
+        runtime->submit_failed_count += 1u;
+    SparkGlm52CudaResidentdWriteSubmitResult(runtime, configuration, status, "ingest_prefill_failed");
+    return status;
+}
+
+static SparkStatus SparkGlm52CudaResidentdHandleSubmitDecode(
+    SparkGlm52CudaResidentdRuntime *runtime,
+    const SparkGlm52CudaResidentdConfiguration *configuration,
+    const SparkGlm52CudaResidentIpcSubmitDecode *message)
+{
+    SparkGlm52ServingDecodeDispatch dispatch;
+    SparkGlm52KvBlockTableView kv_view;
+    SparkStatus status;
+    if (message == 0 || message->descriptor_bytes !=
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_BYTES)
+        return SPARK_STATUS_ABI_MISMATCH;
+    status = SparkGlm52CudaResidentdBuildIngestKvView(runtime, &kv_view, message->kv_physical_block_indices, message->kv_lane_block_count, message->kv_block_token_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52CudaResidentdWriteSubmitResult(runtime, configuration, status, "ingest_decode_kv_invalid");
+        return status;
+    }
+    memset(&runtime->ingest_request_dispatch, 0, sizeof(runtime->ingest_request_dispatch));
+    runtime->ingest_request_dispatch.highest_priority = message->highest_priority;
+    runtime->ingest_request_dispatch.flags = message->request_flags;
+    runtime->ingest_request_dispatch.mtp_draft_token_budget = message->mtp_draft_token_budget;
+    runtime->ingest_request_dispatch.request_ids[0u] = message->request_id;
+    runtime->ingest_request_dispatch.sequence_ids[0u] = message->sequence_id;
+    memset(&runtime->ingest_decode_view, 0, sizeof(runtime->ingest_decode_view));
+    runtime->ingest_decode_view.descriptor_bytes = (uint32_t)sizeof(runtime->ingest_decode_view);
+    runtime->ingest_decode_view.active_sequence_count = 1u;
+    runtime->ingest_decode_view.lane_count = 1u;
+    runtime->ingest_decode_view.lanes[0u].sequence_position = message->sequence_position;
+    runtime->ingest_decode_view.lanes[0u].context_token_count = message->context_token_count;
+    runtime->ingest_decode_view.lanes[0u].request_id = message->request_id;
+    runtime->ingest_decode_view.lanes[0u].sequence_id = message->sequence_id;
+    memset(&dispatch, 0, sizeof(dispatch));
+    dispatch.abi_version = SPARK_GLM52_SERVING_ENGINE_ABI_VERSION;
+    dispatch.descriptor_bytes = SPARK_GLM52_SERVING_DECODE_DISPATCH_DESCRIPTOR_BYTES;
+    dispatch.dispatch_kind = SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
+    dispatch.request_count = 1u;
+    dispatch.active_sequence_count = 1u;
+    dispatch.request_dispatch = &runtime->ingest_request_dispatch;
+    dispatch.kv_block_table_view = &kv_view;
+    dispatch.decode_view = &runtime->ingest_decode_view;
+    dispatch.input_token_ids[0u] = message->input_token_id;
+    memset(&runtime->ingest_decode_result, 0, sizeof(runtime->ingest_decode_result));
+    status = runtime->builder_library.builder_interface.decode(runtime->builder_state, &dispatch, &runtime->ingest_decode_result);
+    if (status == SPARK_STATUS_OK)
+        runtime->ingest_decode_count += 1u;
+    else
+        runtime->submit_failed_count += 1u;
+    SparkGlm52CudaResidentdWriteSubmitResult(runtime, configuration, status, "ingest_decode_failed");
     return status;
 }
 
@@ -807,12 +955,13 @@ static uint32_t SparkGlm52CudaResidentdPumpClient(
     uint32_t slot)
 {
     SparkGlm52CudaResidentIpcHeader header;
-    uint8_t payload[SPARK_GLM52_CUDA_RESIDENTD_CONTROL_PAYLOAD_CAPACITY];
+    uint8_t *payload;
     SparkGlm52CudaResidentIpcStats stats;
     SparkStatus status;
     int32_t fd;
     if (runtime == 0 || slot >= SPARK_GLM52_CUDA_RESIDENTD_MAX_CLIENTS)
         return 0u;
+    payload = runtime->control_payload;
     fd = runtime->client_fds[slot];
     if (fd < 0)
         return 0u;
@@ -830,7 +979,7 @@ static uint32_t SparkGlm52CudaResidentdPumpClient(
     status = SparkGlm52CudaResidentIpcValidateHeader(
         &header,
         0u,
-        sizeof(payload));
+        SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_CONTROL_PAYLOAD_BYTES);
     if (status != SPARK_STATUS_OK)
     {
         runtime->control_error_count += 1u;
@@ -880,6 +1029,24 @@ static uint32_t SparkGlm52CudaResidentdPumpClient(
                 runtime,
                 configuration,
                 (const SparkGlm52CudaResidentIpcSubmitWork *)payload);
+            break;
+        case SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_PREFILL:
+            if (runtime->builder_library.builder_interface.prefill == 0)
+                SparkGlm52CudaResidentdWriteSubmitResult(runtime, configuration, SPARK_STATUS_MODULE_NOT_VALIDATED, "ingest_prefill_unavailable");
+            else
+                (void)SparkGlm52CudaResidentdHandleSubmitPrefill(
+                    runtime,
+                    configuration,
+                    (const SparkGlm52CudaResidentIpcSubmitPrefill *)payload);
+            break;
+        case SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_DECODE:
+            if (runtime->builder_library.builder_interface.decode == 0)
+                SparkGlm52CudaResidentdWriteSubmitResult(runtime, configuration, SPARK_STATUS_MODULE_NOT_VALIDATED, "ingest_decode_unavailable");
+            else
+                (void)SparkGlm52CudaResidentdHandleSubmitDecode(
+                    runtime,
+                    configuration,
+                    (const SparkGlm52CudaResidentIpcSubmitDecode *)payload);
             break;
         case SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SHUTDOWN:
             SparkGlm52CudaResidentdRunning = 0;

@@ -1105,7 +1105,9 @@ static int32_t SparkGlm52GatewayServeOne(
 	else
 	{
 		status = SparkGlm52GatewayBuildResponse(runtime,&request,&response);
-		if (status != SPARK_STATUS_OK)
+		if (status == SPARK_STATUS_BUSY)
+			(void)SparkGlm52HttpGatewayBuildRequestTimeout(&response,SparkGlm52HttpGatewayBodyRequestsStream(request.body,request.body_bytes));
+		else if (status != SPARK_STATUS_OK)
 			(void)SparkGlm52HttpGatewayBuildBackendUnavailable(&response,0u);
 	}
 	return SparkGlm52GatewaySendResponse(client_fd,&response);

@@ -174,6 +174,26 @@ SparkStatus SparkGlm52HttpGatewayBuildBackendUnavailable(
 	return SparkGlm52HttpWriteBody(response,"application/json",503u,0u,JsonBody);
 }
 
+SparkStatus SparkGlm52HttpGatewayBuildRequestTimeout(
+	SparkGlm52HttpGatewayResponse *response,
+	uint32_t stream)
+{
+	static const char JsonBody[] =
+		"{\"error\":{\"type\":\"request_timeout\",\"message\":\"GLM52 PP13 request produced no terminal event before the stream poll budget\"}}\n";
+	static const char StreamBody[] =
+		"event: error\n"
+		"data: {\"error\":{\"type\":\"request_timeout\",\"message\":\"GLM52 PP13 request produced no terminal event before the stream poll budget\"}}\n\n";
+
+	if (stream != 0u)
+		return SparkGlm52HttpWriteBody(
+			response,
+			"text/event-stream",
+			504u,
+			SPARK_GLM52_HTTP_GATEWAY_RESPONSE_FLAG_STREAM,
+			StreamBody);
+	return SparkGlm52HttpWriteBody(response,"application/json",504u,0u,JsonBody);
+}
+
 SparkStatus SparkGlm52HttpGatewayBuildUnauthorized(
 	SparkGlm52HttpGatewayResponse *response)
 {

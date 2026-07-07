@@ -298,28 +298,18 @@ static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(SparkGlm52Pp1
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52Pp13ServiceBackendSubmitWorkToResident(SparkGlm52Pp13ServiceBackendState *state, const SparkGlm52Pp13WorkControlPacket *packet)
+static SparkStatus SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(SparkGlm52Pp13ServiceBackendState *state)
 {
-	SparkGlm52CudaResidentIpcSubmitWork submit_message;
 	SparkGlm52CudaResidentIpcHeader header;
 	SparkGlm52CudaResidentIpcSubmitResult submit_result;
 	SparkGlm52CudaResidentIpcCompletion completion_message;
 	SparkStatus status;
-	if (state == 0 || packet == 0 || state->cuda_resident_fd < 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	memset(&submit_message,0,sizeof(submit_message));
-	submit_message.descriptor_bytes = SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_BYTES;
-	submit_message.work_packet = *packet;
-	status = SparkGlm52Pp13ServiceBackendResidentWriteMessage(state,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_WORK,&submit_message,sizeof(submit_message));
-	if (status != SPARK_STATUS_OK)
-		return status;
-	state->cuda_resident_submit_count += 1u;
 	for (;;)
 	{
 		status = SparkGlm52Pp13ServiceBackendResidentReadFull(state->cuda_resident_fd,&header,sizeof(header));
 		if (status != SPARK_STATUS_OK)
 			return status;
-		status = SparkGlm52CudaResidentIpcValidateHeader(&header,0u,sizeof(submit_result));
+		status = SparkGlm52CudaResidentIpcValidateHeader(&header,0u,SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_CONTROL_PAYLOAD_BYTES);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		if (header.kind == SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_RESULT)
@@ -343,6 +333,83 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitWorkToResident(SparkGlm52Pp
 		}
 		return SPARK_STATUS_ABI_MISMATCH;
 	}
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendMarshalIngestKv(const SparkGlm52KvBlockTableView *view, uint32_t *out_indices, uint32_t *out_count, uint32_t *out_block_tokens)
+{
+	const uint32_t *source_blocks;
+	uint32_t block_count;
+	if (view == 0 || view->lane_physical_block_counts == 0 || view->lane_count != 1u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	source_blocks = view->host_physical_block_indices != 0 ? view->host_physical_block_indices : view->physical_block_indices;
+	if (source_blocks == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	block_count = view->lane_physical_block_counts[0u];
+	if (block_count == 0u || block_count > SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	memcpy(out_indices,source_blocks,(size_t)block_count * sizeof(uint32_t));
+	*out_count = block_count;
+	*out_block_tokens = view->block_token_count;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendSubmitPrefillToResident(SparkGlm52Pp13ServiceBackendState *state, const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+{
+	static SparkGlm52CudaResidentIpcSubmitPrefill message;
+	SparkStatus status;
+	if (state == 0 || prefill_dispatch == 0 || state->cuda_resident_fd < 0 ||
+		prefill_dispatch->request_dispatch == 0 ||
+		prefill_dispatch->host_token_ids == 0 ||
+		prefill_dispatch->prompt_token_count == 0u ||
+		prefill_dispatch->prompt_token_count > SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	memset(&message,0,sizeof(message));
+	message.descriptor_bytes = SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_PREFILL_BYTES;
+	message.highest_priority = prefill_dispatch->request_dispatch->highest_priority;
+	message.request_id = prefill_dispatch->request_dispatch->request_ids[0u];
+	message.sequence_id = prefill_dispatch->request_dispatch->sequence_ids[0u];
+	message.prompt_token_offset = prefill_dispatch->prompt_token_offset;
+	message.prompt_token_count = prefill_dispatch->prompt_token_count;
+	memcpy(message.prompt_token_ids,prefill_dispatch->host_token_ids,(size_t)prefill_dispatch->prompt_token_count * sizeof(uint32_t));
+	status = SparkGlm52Pp13ServiceBackendMarshalIngestKv(prefill_dispatch->kv_block_table_view,message.kv_physical_block_indices,&message.kv_lane_block_count,&message.kv_block_token_count);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = SparkGlm52Pp13ServiceBackendResidentWriteMessage(state,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_PREFILL,&message,sizeof(message));
+	if (status != SPARK_STATUS_OK)
+		return status;
+	state->cuda_resident_submit_count += 1u;
+	return SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(state);
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendSubmitDecodeToResident(SparkGlm52Pp13ServiceBackendState *state, const SparkGlm52ServingDecodeDispatch *decode_dispatch)
+{
+	static SparkGlm52CudaResidentIpcSubmitDecode message;
+	const SparkGlm52RequestApiDecodeDispatchLaneView *lane;
+	SparkStatus status;
+	if (state == 0 || decode_dispatch == 0 || state->cuda_resident_fd < 0 ||
+		decode_dispatch->request_dispatch == 0 ||
+		decode_dispatch->decode_view == 0 ||
+		decode_dispatch->decode_view->lane_count != 1u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	lane = &decode_dispatch->decode_view->lanes[0u];
+	memset(&message,0,sizeof(message));
+	message.descriptor_bytes = SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_BYTES;
+	message.highest_priority = decode_dispatch->request_dispatch->highest_priority;
+	message.request_id = decode_dispatch->request_dispatch->request_ids[0u];
+	message.sequence_id = decode_dispatch->request_dispatch->sequence_ids[0u];
+	message.request_flags = decode_dispatch->request_dispatch->flags;
+	message.mtp_draft_token_budget = decode_dispatch->request_dispatch->mtp_draft_token_budget;
+	message.input_token_id = decode_dispatch->input_token_ids[0u];
+	message.sequence_position = lane->sequence_position;
+	message.context_token_count = lane->context_token_count;
+	status = SparkGlm52Pp13ServiceBackendMarshalIngestKv(decode_dispatch->kv_block_table_view,message.kv_physical_block_indices,&message.kv_lane_block_count,&message.kv_block_token_count);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = SparkGlm52Pp13ServiceBackendResidentWriteMessage(state,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_DECODE,&message,sizeof(message));
+	if (status != SPARK_STATUS_OK)
+		return status;
+	state->cuda_resident_submit_count += 1u;
+	return SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(state);
 }
 
 static void SparkGlm52Pp13ServiceBackendFreeStorage(
@@ -461,7 +528,12 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
 	if (state == 0 || prefill_dispatch == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (state->cuda_resident_attached != 0u)
-		return SparkGlm52Pp13ServiceBackendForwardPrefillWork(state,prefill_dispatch);
+	{
+		status = SparkGlm52Pp13ServiceBackendForwardPrefillWork(state,prefill_dispatch);
+		if (status != SPARK_STATUS_OK)
+			return status;
+		return SparkGlm52Pp13ServiceBackendSubmitPrefillToResident(state,prefill_dispatch);
+	}
 	if (state->builder_library.builder_interface.prefill == 0 ||
 		state->builder_state == 0)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
@@ -897,15 +969,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 		status = SparkGlm52Pp13ServiceBackendEnqueueWorkPacket(state,&packet);
 		if (status != SPARK_STATUS_OK)
 			return status;
-		if (state->cuda_resident_attached != 0u)
-		{
-			status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
-			if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
-				return status;
-			status = SparkGlm52Pp13ServiceBackendSubmitWorkToResident(state,&packet);
-			if (status != SPARK_STATUS_OK)
-				return status;
-		}
 	}
 	status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
 	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
@@ -936,8 +999,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 	status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
 	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
 		return status;
-	if (state->cuda_resident_attached != 0u)
-		return SparkGlm52Pp13ServiceBackendSubmitWorkToResident(state,&packet);
 	return SPARK_STATUS_OK;
 }
 
@@ -956,6 +1017,10 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
 	if (state->cuda_resident_attached != 0u)
 	{
 		memset(decode_result,0,sizeof(*decode_result));
+		decode_result->abi_version = SPARK_GLM52_SERVING_ENGINE_ABI_VERSION;
+		decode_result->descriptor_bytes = SPARK_GLM52_SERVING_DECODE_RESULT_DESCRIPTOR_BYTES;
+		decode_result->lane_count = 1u;
+		decode_result->token_stride = SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE;
 		pending = 0;
 		status = SparkGlm52Pp13ServiceBackendRegisterPendingDecode(
 			state,
@@ -964,7 +1029,10 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
 			&pending);
 		if (status != SPARK_STATUS_OK)
 			return status;
-		return SparkGlm52Pp13ServiceBackendForwardDecodeWork(state,decode_dispatch);
+		status = SparkGlm52Pp13ServiceBackendForwardDecodeWork(state,decode_dispatch);
+		if (status != SPARK_STATUS_OK)
+			return status;
+		return SparkGlm52Pp13ServiceBackendSubmitDecodeToResident(state,decode_dispatch);
 	}
 	if (state->builder_library.builder_interface.decode == 0 ||
 		state->builder_state == 0)

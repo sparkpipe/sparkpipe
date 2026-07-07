@@ -78,6 +78,10 @@ SparkStatus SparkGlm52HttpGatewayBuildBackendUnavailable(
     SparkGlm52HttpGatewayResponse *response,
     uint32_t stream);
 
+SparkStatus SparkGlm52HttpGatewayBuildRequestTimeout(
+    SparkGlm52HttpGatewayResponse *response,
+    uint32_t stream);
+
 SparkStatus SparkGlm52HttpGatewayBuildUnauthorized(
     SparkGlm52HttpGatewayResponse *response);
 
