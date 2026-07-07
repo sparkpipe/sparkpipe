@@ -57,7 +57,7 @@ static void SparkReleaseManagerPrintUsage(void)
         "  sparkpipe_release_manager validate --manifest PATH\n"
         "  sparkpipe_release_manager plan --manifest PATH --host HOST --rank N [--role NAME]\n"
         "  sparkpipe_release_manager sync --manifest PATH --release-dir DIR [--install-dir DIR]\n"
-        "  sparkpipe_release_manager agent (--release-dir DIR | --release-url http://HOST:PORT) --state-dir DIR --host HOST --rank N --role NAME [--install-dir DIR] [--once]\n"
+        "  sparkpipe_release_manager agent (--release-dir DIR | --release-url http://HOST:PORT[/sparkpipe.json]) --state-dir DIR --host HOST --rank N --role NAME [--install-dir DIR] [--once]\n"
         "  sparkpipe_release_manager serve --release-dir DIR [--bind ADDRESS] [--port PORT]\n",
         stderr);
 }
@@ -180,6 +180,30 @@ static SparkStatus SparkReleaseManagerParseUrl(
     return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkReleaseManagerUrlPathIsManifest(const char *path)
+{
+    const char *manifest_name;
+    size_t path_length;
+    size_t manifest_bytes;
+
+    if (path == 0)
+    {
+        return 0u;
+    }
+    manifest_name = "sparkpipe.json";
+    path_length = strlen(path);
+    manifest_bytes = strlen(manifest_name);
+    if (path_length < manifest_bytes)
+    {
+        return 0u;
+    }
+    if (strcmp(path + path_length - manifest_bytes,manifest_name) != 0)
+    {
+        return 0u;
+    }
+    return path_length == manifest_bytes || path[path_length - manifest_bytes - 1u] == '/' ? 1u : 0u;
+}
+
 static SparkStatus SparkReleaseManagerBuildUrlPath(
     const SparkReleaseManagerUrl *base_url,
     const char *relative_path,
@@ -188,12 +212,44 @@ static SparkStatus SparkReleaseManagerBuildUrlPath(
 {
     const char *base_path;
 
-    if (base_url == 0 || relative_path == 0 || path == 0)
+    if (base_url == 0 || relative_path == 0 || path == 0 || path_bytes == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     base_path = base_url->path[0] == '\0' ? "/" : base_url->path;
-    if (base_path[strlen(base_path) - 1u] == '/')
+    if (SparkReleaseManagerUrlPathIsManifest(base_path) != 0u)
+    {
+        const char *slash;
+
+        if (strcmp(relative_path,"sparkpipe.json") == 0)
+        {
+            if (snprintf(path,path_bytes,"%s",base_path) >= (int)path_bytes)
+            {
+                return SPARK_STATUS_CAPACITY_EXCEEDED;
+            }
+            return SPARK_STATUS_OK;
+        }
+        slash = strrchr(base_path,'/');
+        if (slash == 0 || slash == base_path)
+        {
+            if (snprintf(path,path_bytes,"/%s",relative_path) >= (int)path_bytes)
+            {
+                return SPARK_STATUS_CAPACITY_EXCEEDED;
+            }
+            return SPARK_STATUS_OK;
+        }
+        if (snprintf(
+                path,
+                path_bytes,
+                "%.*s/%s",
+                (int)(slash - base_path),
+                base_path,
+                relative_path) >= (int)path_bytes)
+        {
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+    }
+    else if (base_path[strlen(base_path) - 1u] == '/')
     {
         if (snprintf(path,path_bytes,"%s%s",base_path,relative_path) >= (int)path_bytes)
         {
