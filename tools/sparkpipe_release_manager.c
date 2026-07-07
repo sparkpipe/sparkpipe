@@ -839,10 +839,12 @@ static SparkStatus SparkReleaseManagerRunAgentOnce(SparkReleaseManagerAgentConfi
 static int SparkReleaseManagerRunAgent(int argc,char **argv)
 {
     SparkReleaseManagerAgentConfig configuration;
+    char default_staging_directory[SPARK_RELEASE_MAX_PATH_BYTES];
     int index;
     SparkStatus status;
 
     memset(&configuration,0,sizeof(configuration));
+    memset(default_staging_directory,0,sizeof(default_staging_directory));
     configuration.poll_interval_ms = SPARK_RELEASE_MANAGER_AGENT_IDLE_SLEEP_MS;
     for (index = 2; index < argc; ++index)
     {
@@ -908,7 +910,18 @@ static int SparkReleaseManagerRunAgent(int argc,char **argv)
     }
     if (configuration.staging_directory == 0)
     {
-        configuration.staging_directory = configuration.state_directory != 0 ? configuration.state_directory : "/tmp/sparkpipe_release_staging";
+        if (configuration.state_directory != 0)
+        {
+            if (snprintf(default_staging_directory,sizeof(default_staging_directory),"%s/release_staging",configuration.state_directory) >= (int)sizeof(default_staging_directory))
+            {
+                return 2;
+            }
+            configuration.staging_directory = default_staging_directory;
+        }
+        else
+        {
+            configuration.staging_directory = "/tmp/sparkpipe_release_staging";
+        }
     }
     do
     {
