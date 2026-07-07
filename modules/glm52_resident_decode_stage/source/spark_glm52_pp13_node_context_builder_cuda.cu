@@ -24,8 +24,6 @@
 	(SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS)
 #define SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS 1024u
 #define SPARK_GLM52_PP13_BUILDER_PREFILL_TILE_ROWS 16u
-#define SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS \
-	(SPARK_GLM52_KV_POOL_TOKENS / SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS)
 #define SPARK_GLM52_PP13_BUILDER_COPY_CHUNK_BYTES (64ull * 1024ull * 1024ull)
 #define SPARK_GLM52_PP13_BUILDER_MAX_ALLOCATIONS 512u
 #define SPARK_GLM52_PP13_BUILDER_ROPE_THETA 8000000.0
@@ -134,6 +132,8 @@ typedef struct SparkGlm52Pp13BuilderState
 {
 	SparkGlm52Pp13NodeContextBuilderConfiguration configuration;
 	SparkGlm52Pp13RuntimeRankPlan rank_plan;
+	uint32_t kv_pool_tokens;
+	uint32_t kv_pool_blocks;
 	SparkGlm52Pp13BuilderLayer layers[SPARK_GLM52_PP13_BUILDER_LAYER_COUNT];
 	const SparkGlm52ResidentDecodeStageNodeContext *layer_pointers[
 		SPARK_GLM52_PP13_BUILDER_LAYER_COUNT];
@@ -932,21 +932,21 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	ALLOC_FIELD(block_table,b * SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE,sizeof(uint32_t));
 	ALLOC_FIELD(context_lengths,b,sizeof(uint32_t));
 	ALLOC_FIELD(first_block_token_offsets,b,sizeof(uint32_t));
-	ALLOC_FIELD(mla_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,2u);
+	ALLOC_FIELD(mla_cache,(uint64_t)state->kv_pool_tokens * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,2u);
 	ALLOC_FIELD(key_nope_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION,2u);
 	ALLOC_FIELD(value_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,2u);
-	ALLOC_FIELD(key_index_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ALLOC_FIELD(key_index_block_min,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ALLOC_FIELD(key_index_block_max,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ALLOC_FIELD(dsa_summary_dirty_flags,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS,1u);
+	ALLOC_FIELD(key_index_cache,(uint64_t)state->kv_pool_tokens * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ALLOC_FIELD(key_index_block_min,(uint64_t)state->kv_pool_blocks * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ALLOC_FIELD(key_index_block_max,(uint64_t)state->kv_pool_blocks * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ALLOC_FIELD(dsa_summary_dirty_flags,(uint64_t)state->kv_pool_blocks,1u);
 	ZERO_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
-	ZERO_FIELD(mla_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,2u);
+	ZERO_FIELD(mla_cache,(uint64_t)state->kv_pool_tokens * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,2u);
 	ZERO_FIELD(key_nope_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION,2u);
 	ZERO_FIELD(value_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,2u);
-	ZERO_FIELD(key_index_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ZERO_FIELD(key_index_block_min,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ZERO_FIELD(key_index_block_max,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ZERO_FIELD(dsa_summary_dirty_flags,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS,1u);
+	ZERO_FIELD(key_index_cache,(uint64_t)state->kv_pool_tokens * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ZERO_FIELD(key_index_block_min,(uint64_t)state->kv_pool_blocks * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ZERO_FIELD(key_index_block_max,(uint64_t)state->kv_pool_blocks * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ZERO_FIELD(dsa_summary_dirty_flags,(uint64_t)state->kv_pool_blocks,1u);
 #undef ALLOC_FIELD
 #undef ALLOC_FIELD_MAPPED
 #undef ZERO_FIELD
@@ -1133,8 +1133,8 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 	node->pipeline_slot_count = SPARK_GLM52_PP13_BUILDER_PIPELINE_SLOT_COUNT;
 	node->max_active_sequence_count = state->rank_plan.max_active_sequence_count;
-	node->cache_token_capacity = SPARK_GLM52_KV_POOL_TOKENS;
-	node->kv_block_count = SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS;
+	node->cache_token_capacity = state->kv_pool_tokens;
+	node->kv_block_count = state->kv_pool_blocks;
 	node->max_blocks_per_sequence = SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
 	node->position_count = SPARK_GLM52_PP13_BUILDER_POSITION_COUNT;
 	node->dsa_candidate_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
@@ -1775,6 +1775,15 @@ static SparkStatus SparkGlm52Pp13BuilderInitialize(
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	state->configuration = *configuration;
 	state->rank_plan = *configuration->rank_plan;
+	state->kv_pool_tokens = configuration->kv_pool_tokens != 0u ? configuration->kv_pool_tokens : SPARK_GLM52_KV_POOL_TOKENS;
+	if (state->kv_pool_tokens % SPARK_GLM52_KV_BLOCK_TOKENS != 0u ||
+		state->kv_pool_tokens > SPARK_GLM52_KV_POOL_TOKENS ||
+		state->kv_pool_tokens < SPARK_GLM52_KV_CONTEXT_TOKENS)
+	{
+		free(state);
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	state->kv_pool_blocks = state->kv_pool_tokens / SPARK_GLM52_KV_BLOCK_TOKENS;
 	if (cudaStreamCreate(&state->stream) != cudaSuccess)
 	{
 		free(state);

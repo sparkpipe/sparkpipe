@@ -40,7 +40,7 @@ typedef struct SparkGlm52Pp13NodeContextBuilderConfiguration
 	uint32_t rank_index;
 	uint32_t max_active_sequence_count;
 	uint32_t port_base;
-	uint32_t reserved0;
+	uint32_t kv_pool_tokens;
 	uint32_t reserved1;
 	const char *fp8_pack_root;
 	const char *stagepack_root;

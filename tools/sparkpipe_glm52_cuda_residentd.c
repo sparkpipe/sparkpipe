@@ -48,6 +48,7 @@ typedef struct SparkGlm52CudaResidentdConfiguration
     uint32_t rank_is_set;
     uint32_t max_active_sequence_count;
     uint32_t port_base;
+    uint32_t kv_pool_tokens;
     uint64_t cuda_generation;
     uint64_t control_generation;
 } SparkGlm52CudaResidentdConfiguration;
@@ -258,6 +259,15 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
         if ((*index + 1) >= argc)
             return -14;
         configuration->node_target = argv[*index + 1];
+        *index += 1;
+        return 0;
+    }
+    if (strcmp(argv[*index], "--kv-pool-tokens") == 0)
+    {
+        if ((*index + 1) >= argc ||
+            SparkGlm52CudaResidentdParseU32(argv[*index + 1], &parsed_u32) < 0)
+            return -15;
+        configuration->kv_pool_tokens = parsed_u32;
         *index += 1;
         return 0;
     }
@@ -525,6 +535,7 @@ static SparkStatus SparkGlm52CudaResidentdBuildNodeContext(
     builder_configuration.stagepack_root = configuration->stagepack_root;
     builder_configuration.embedding_pack_path = configuration->embedding_pack_path;
     builder_configuration.node_target = configuration->node_target;
+    builder_configuration.kv_pool_tokens = configuration->kv_pool_tokens;
     builder_configuration.rank_plan = &runtime->rank_plan;
     status = SparkGlm52Pp13NodeContextBuilderLoadInterfaceFromSharedObject(
         configuration->node_context_builder_shared_object_path,
