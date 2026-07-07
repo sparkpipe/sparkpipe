@@ -38,6 +38,7 @@ typedef struct SparkGlm52GatewayConfig
 	const char *tokenizer_path;
 	const char *final_event_bind_address;
 	const char *final_event_return_host;
+	const char *cuda_resident_socket_path;
 	char api_key_storage[256];
 	uint32_t port;
 	uint32_t require_service_backend;
@@ -267,6 +268,14 @@ static int32_t SparkGlm52GatewayApplyArgument(
 		if ((*index + 1) >= argc)
 			return -18;
 		configuration->final_event_return_host = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--cuda-resident-socket") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -20;
+		configuration->cuda_resident_socket_path = argv[*index + 1];
 		*index += 1;
 		return 0;
 	}
@@ -562,6 +571,8 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 		runtime->configuration.final_event_bind_address;
 	backend_configuration.final_event_return_host =
 		runtime->configuration.final_event_return_host;
+	backend_configuration.cuda_resident_socket_path =
+		runtime->configuration.cuda_resident_socket_path;
 	status = runtime->service_backend_library.backend_interface.initialize(
 		&backend_configuration,
 		&runtime->service_backend_state);

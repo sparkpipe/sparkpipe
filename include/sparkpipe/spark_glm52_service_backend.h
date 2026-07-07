@@ -55,6 +55,7 @@ typedef struct SparkGlm52ServiceBackendConfiguration
 	const char *tokenizer_path;
 	const char *final_event_bind_address;
 	const char *final_event_return_host;
+	const char *cuda_resident_socket_path;
 } SparkGlm52ServiceBackendConfiguration;
 
 typedef struct SparkGlm52ServiceBackendView
