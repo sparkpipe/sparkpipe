@@ -60,6 +60,7 @@ typedef struct SparkGlm52Pp13DaemonConfig
     const char *final_event_return_host;
     uint32_t rank_index;
     uint32_t rank_is_set;
+    uint32_t own_final_event;
     uint32_t max_active_sequence_count;
     uint32_t port_base;
 } SparkGlm52Pp13DaemonConfig;
@@ -340,6 +341,11 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
             return -12;
         configuration->final_event_return_host = argv[*index + 1];
         *index += 1;
+        return 0;
+    }
+    if (strcmp(argv[*index],"--own-final-event") == 0)
+    {
+        configuration->own_final_event = 1u;
         return 0;
     }
     return -13;
@@ -2055,7 +2061,8 @@ static SparkStatus SparkGlm52Pp13DaemonOpenFinalEventPath(
     SparkGlm52Pp13DaemonRuntime *runtime,
     const SparkGlm52Pp13DaemonConfig *configuration)
 {
-    if (runtime->rank_plan.rank_index == 0u)
+    if (runtime->rank_plan.rank_index == 0u &&
+        configuration->own_final_event != 0u)
     {
         runtime->final_event_listen_fd =
             SparkGlm52Pp13DaemonCreateListenSocket(

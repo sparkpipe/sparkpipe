@@ -894,15 +894,19 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
 		if (status != SPARK_STATUS_OK)
 			return status;
-		if (state->cuda_resident_attached != 0u)
-			status = SparkGlm52Pp13ServiceBackendSubmitWorkToResident(state,&packet);
-		else
-			status = SparkGlm52Pp13ServiceBackendEnqueueWorkPacket(state,&packet);
+		status = SparkGlm52Pp13ServiceBackendEnqueueWorkPacket(state,&packet);
 		if (status != SPARK_STATUS_OK)
 			return status;
+		if (state->cuda_resident_attached != 0u)
+		{
+			status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
+			if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+				return status;
+			status = SparkGlm52Pp13ServiceBackendSubmitWorkToResident(state,&packet);
+			if (status != SPARK_STATUS_OK)
+				return status;
+		}
 	}
-	if (state->cuda_resident_attached != 0u)
-		return SPARK_STATUS_OK;
 	status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
 	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
 		return status;
@@ -926,14 +930,14 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	if (state->cuda_resident_attached != 0u)
-		return SparkGlm52Pp13ServiceBackendSubmitWorkToResident(state,&packet);
 	status = SparkGlm52Pp13ServiceBackendEnqueueWorkPacket(state,&packet);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
 	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
 		return status;
+	if (state->cuda_resident_attached != 0u)
+		return SparkGlm52Pp13ServiceBackendSubmitWorkToResident(state,&packet);
 	return SPARK_STATUS_OK;
 }
 
@@ -952,6 +956,14 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
 	if (state->cuda_resident_attached != 0u)
 	{
 		memset(decode_result,0,sizeof(*decode_result));
+		pending = 0;
+		status = SparkGlm52Pp13ServiceBackendRegisterPendingDecode(
+			state,
+			decode_dispatch,
+			decode_result,
+			&pending);
+		if (status != SPARK_STATUS_OK)
+			return status;
 		return SparkGlm52Pp13ServiceBackendForwardDecodeWork(state,decode_dispatch);
 	}
 	if (state->builder_library.builder_interface.decode == 0 ||
@@ -1552,13 +1564,92 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRunner(
 		&configuration);
 }
 
+static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0LocalCuda(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52ServiceBackendConfiguration *configuration,
+	char *error_buffer)
+{
+	char rank_buffer[16];
+	char port_buffer[16];
+	SparkStatus status;
+	if (snprintf(rank_buffer,sizeof(rank_buffer),"%u",
+			state->rank_plan.rank_index) < 0 ||
+		snprintf(port_buffer,sizeof(port_buffer),"%u",
+			SparkGlm52Pp13ServiceBackendPortBase(configuration)) < 0 ||
+		setenv("SPARKPIPE_PP13_TRANSPORT_RANK",rank_buffer,1) != 0 ||
+		setenv("SPARKPIPE_PP13_TRANSPORT_PORT_BASE",port_buffer,1) != 0)
+		return SparkGlm52Pp13ServiceBackendRank0Fail(
+			state,SPARK_STATUS_INTERNAL_ERROR,error_buffer,
+			"failed to configure rank0 transport environment");
+	status = SparkHiddenTransportLoadInterfaceFromSharedObject(
+		configuration->transport_shared_object_path,
+		SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
+		&state->transport_library);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13ServiceBackendRank0Fail(
+			state,status,error_buffer,"failed to load production transport");
+	status = SparkHiddenTransportOpen(
+		&state->rank_plan.output_endpoint,
+		&state->transport_library.transport_interface,
+		SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
+		&state->output_transport_session);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13ServiceBackendRank0Fail(
+			state,status,error_buffer,"failed to open rank0 output transport");
+	status = SparkGlm52Pp13ServiceBackendBuildNodeContext(state,configuration);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13ServiceBackendRank0Fail(
+			state,status,error_buffer,"failed to build rank0 resident context");
+	status = SparkGlm52Pp13ServiceBackendLoadDriver(
+		state,
+		configuration,
+		error_buffer,
+		SPARK_GLM52_SERVICE_BACKEND_BLOCKER_BYTES);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13ServiceBackendRank0Fail(
+			state,status,error_buffer,"failed to load GLM52 driver");
+	status = SparkGlm52Pp13ServiceBackendAttachBuilderDriver(state);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13ServiceBackendRank0Fail(
+			state,status,error_buffer,"failed to attach rank0 bridge driver");
+	status = SparkGlm52Pp13ServiceBackendInitializeRunner(state);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13ServiceBackendRank0Fail(
+			state,status,error_buffer,"failed to initialize rank0 runner");
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendOpenFinalEventListener(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52ServiceBackendConfiguration *configuration,
+	char *error_buffer)
+{
+	state->final_event_listen_fd =
+		SparkGlm52Pp13ServiceBackendCreateListenSocket(
+			configuration->final_event_bind_address,
+			state->final_event_route.listen_port);
+	if (state->final_event_listen_fd < 0)
+		return SparkGlm52Pp13ServiceBackendRank0Fail(
+			state,
+			SPARK_STATUS_ROUTE_NOT_FOUND,
+			error_buffer,
+			"failed to open rank0 final-event listener");
+	if (SparkGlm52Pp13ServiceBackendSetNonblocking(
+			state->final_event_listen_fd) < 0)
+		return SparkGlm52Pp13ServiceBackendRank0Fail(
+			state,
+			SPARK_STATUS_INTERNAL_ERROR,
+			error_buffer,
+			"failed to make final-event listener nonblocking");
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 	SparkGlm52Pp13ServiceBackendState *state,
 	const SparkGlm52ServiceBackendConfiguration *configuration)
 {
 	char error_buffer[SPARK_GLM52_SERVICE_BACKEND_BLOCKER_BYTES];
 	SparkStatus status;
-
 	error_buffer[0] = '\0';
 	status = SparkGlm52Pp13RuntimeBuildRankPlan(
 		0u,
@@ -1587,79 +1678,14 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 		return SparkGlm52Pp13ServiceBackendRank0Fail(
 			state,status,error_buffer,"failed to validate rank0 FP8 packs");
 	if (configuration->cuda_resident_socket_path != 0)
-	{
 		status = SparkGlm52Pp13ServiceBackendConnectCudaResident(state,configuration);
-		if (status != SPARK_STATUS_OK)
-			return SparkGlm52Pp13ServiceBackendRank0Fail(
-				state,status,error_buffer,"failed to connect rank0 CUDA resident daemon");
-		state->rank0_runtime_ready = 1u;
-		return SPARK_STATUS_OK;
-	}
-	{
-		char rank_buffer[16];
-		char port_buffer[16];
-		if (snprintf(rank_buffer,sizeof(rank_buffer),"%u",
-				state->rank_plan.rank_index) < 0 ||
-			snprintf(port_buffer,sizeof(port_buffer),"%u",
-				SparkGlm52Pp13ServiceBackendPortBase(configuration)) < 0 ||
-			setenv("SPARKPIPE_PP13_TRANSPORT_RANK",rank_buffer,1) != 0 ||
-			setenv("SPARKPIPE_PP13_TRANSPORT_PORT_BASE",port_buffer,1) != 0)
-			return SparkGlm52Pp13ServiceBackendRank0Fail(
-				state,SPARK_STATUS_INTERNAL_ERROR,error_buffer,
-				"failed to configure rank0 transport environment");
-	}
-	status = SparkHiddenTransportLoadInterfaceFromSharedObject(
-		configuration->transport_shared_object_path,
-		SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
-		&state->transport_library);
+	else
+		status = SparkGlm52Pp13ServiceBackendInitializeRank0LocalCuda(state,configuration,error_buffer);
 	if (status != SPARK_STATUS_OK)
-		return SparkGlm52Pp13ServiceBackendRank0Fail(
-			state,status,error_buffer,"failed to load production transport");
-	status = SparkHiddenTransportOpen(
-		&state->rank_plan.output_endpoint,
-		&state->transport_library.transport_interface,
-		SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
-		&state->output_transport_session);
+		return status;
+	status = SparkGlm52Pp13ServiceBackendOpenFinalEventListener(state,configuration,error_buffer);
 	if (status != SPARK_STATUS_OK)
-		return SparkGlm52Pp13ServiceBackendRank0Fail(
-			state,status,error_buffer,"failed to open rank0 output transport");
-	status = SparkGlm52Pp13ServiceBackendBuildNodeContext(state,configuration);
-	if (status != SPARK_STATUS_OK)
-		return SparkGlm52Pp13ServiceBackendRank0Fail(
-			state,status,error_buffer,"failed to build rank0 resident context");
-	status = SparkGlm52Pp13ServiceBackendLoadDriver(
-		state,
-		configuration,
-		error_buffer,
-		sizeof(error_buffer));
-	if (status != SPARK_STATUS_OK)
-		return SparkGlm52Pp13ServiceBackendRank0Fail(
-			state,status,error_buffer,"failed to load GLM52 driver");
-	status = SparkGlm52Pp13ServiceBackendAttachBuilderDriver(state);
-	if (status != SPARK_STATUS_OK)
-		return SparkGlm52Pp13ServiceBackendRank0Fail(
-			state,status,error_buffer,"failed to attach rank0 bridge driver");
-	status = SparkGlm52Pp13ServiceBackendInitializeRunner(state);
-	if (status != SPARK_STATUS_OK)
-		return SparkGlm52Pp13ServiceBackendRank0Fail(
-			state,status,error_buffer,"failed to initialize rank0 runner");
-	state->final_event_listen_fd =
-		SparkGlm52Pp13ServiceBackendCreateListenSocket(
-			configuration->final_event_bind_address,
-			state->final_event_route.listen_port);
-	if (state->final_event_listen_fd < 0)
-		return SparkGlm52Pp13ServiceBackendRank0Fail(
-			state,
-			SPARK_STATUS_ROUTE_NOT_FOUND,
-			error_buffer,
-			"failed to open rank0 final-event listener");
-	if (SparkGlm52Pp13ServiceBackendSetNonblocking(
-			state->final_event_listen_fd) < 0)
-		return SparkGlm52Pp13ServiceBackendRank0Fail(
-			state,
-			SPARK_STATUS_INTERNAL_ERROR,
-			error_buffer,
-			"failed to make final-event listener nonblocking");
+		return status;
 	state->rank0_runtime_ready = 1u;
 	return SPARK_STATUS_OK;
 }
