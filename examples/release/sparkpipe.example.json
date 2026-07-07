@@ -49,6 +49,14 @@
       "resident_reload_boundary": true
     },
     {
+      "path": "lib/runtime_libs/libcute_dsl_runtime.so",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "path": "lib/runtime_libs/libtvm_ffi.so",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
       "path": "tokenizer/tokenizer.json",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "restart_on_change": false
@@ -91,7 +99,7 @@
         "52100"
       ],
       "env": [
-        "LD_LIBRARY_PATH={install_root}/lib"
+        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs"
       ]
     },
     {
@@ -127,7 +135,7 @@
         "52100"
       ],
       "env": [
-        "LD_LIBRARY_PATH={install_root}/lib"
+        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs"
       ]
     },
     {
@@ -148,7 +156,7 @@
         "spark0"
       ],
       "env": [
-        "LD_LIBRARY_PATH={install_root}/lib"
+        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs"
       ],
       "restart_on_update": true
     }
