@@ -2584,6 +2584,7 @@ int main(int argc,char **argv)
     }
     signal(SIGINT,SparkGlm52Pp13DaemonSignal);
     signal(SIGTERM,SparkGlm52Pp13DaemonSignal);
+    signal(SIGPIPE,SIG_IGN);
     error_buffer[0] = '\0';
     status = SparkGlm52Pp13DaemonInitialize(
         &runtime,

@@ -784,8 +784,12 @@ static void SparkGlm52CudaResidentdWriteSubmitResult(
     SparkGlm52CudaResidentdFillStats(runtime, configuration, &result.stats);
     result.stats.rejected_count = runtime->submit_failed_count;
     if (status != SPARK_STATUS_OK)
+    {
         snprintf(result.stats.blocker, sizeof(result.stats.blocker),
             "%s status=%u", failure_text, (uint32_t)status);
+        fprintf(stderr, "cuda_residentd_submit_result_error rank=%u %s status=%u\n",
+            runtime->rank_plan.rank_index, failure_text, (uint32_t)status);
+    }
     pthread_mutex_lock(&runtime->completion_write_mutex);
     (void)SparkGlm52CudaResidentdWriteMessage(
         runtime,
@@ -1133,6 +1137,7 @@ int main(int argc, char **argv)
     }
     signal(SIGINT, SparkGlm52CudaResidentdSignal);
     signal(SIGTERM, SparkGlm52CudaResidentdSignal);
+    signal(SIGPIPE, SIG_IGN);
     status = SparkGlm52CudaResidentdInitialize(&runtime, &configuration);
     if (status != SPARK_STATUS_OK)
     {

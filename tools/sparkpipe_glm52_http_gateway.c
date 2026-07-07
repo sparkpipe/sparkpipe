@@ -1108,7 +1108,10 @@ static int32_t SparkGlm52GatewayServeOne(
 		if (status == SPARK_STATUS_BUSY)
 			(void)SparkGlm52HttpGatewayBuildRequestTimeout(&response,SparkGlm52HttpGatewayBodyRequestsStream(request.body,request.body_bytes));
 		else if (status != SPARK_STATUS_OK)
+		{
+			fprintf(stderr,"gateway_build_response_failed status=%d\n",(int32_t)status);
 			(void)SparkGlm52HttpGatewayBuildBackendUnavailable(&response,0u);
+		}
 	}
 	return SparkGlm52GatewaySendResponse(client_fd,&response);
 }

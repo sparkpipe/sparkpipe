@@ -319,6 +319,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(SparkGl
 			status = SparkGlm52Pp13ServiceBackendResidentReadFull(state->cuda_resident_fd,&submit_result,sizeof(submit_result));
 			if (status != SPARK_STATUS_OK)
 				return status;
+			if (submit_result.status != (uint32_t)SPARK_STATUS_OK)
+				fprintf(stderr,"pp13_resident_submit_rejected status=%u blocker=%.*s\n",submit_result.status,(int32_t)sizeof(submit_result.stats.blocker),submit_result.stats.blocker);
 			return (SparkStatus)submit_result.status;
 		}
 		if (header.kind == SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_COMPLETION)
