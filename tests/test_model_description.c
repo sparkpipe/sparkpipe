@@ -75,7 +75,7 @@ int main(void)
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL) != 0u);
     assert(decode_program->scheduling.max_active_slots ==
         SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
-    assert(decode_program->scheduling.max_new_tokens == 3u);
+    assert(decode_program->scheduling.max_new_tokens == 7u);
     assert(decode_program->scheduling.max_resident_sequences ==
         SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
     assert(decode_program->scheduling.private_queue_count ==

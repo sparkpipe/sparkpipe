@@ -4245,6 +4245,7 @@ SparkStatus SparkGlm52ResidentDecodeStageAdmit(
         return SPARK_STATUS_OK;
     }
 
+    SparkGlm52ResidentDecodeStageProgressPendingCompletions(state);
     selected_slot = SparkGlm52ResidentDecodeStageFindAvailableSlot(state);
     available_slot_count = SparkGlm52ResidentDecodeStageCountSlotsInState(
         state,

@@ -1462,6 +1462,8 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
     SparkHiddenTransportPersistentRingStatistics output_statistics;
     SparkGlm52ResidentDecodeStageFrameContext frame_context;
     SparkModelDriverFrame frame;
+    SparkModelDriverAdmissionRequest admission_request;
+    SparkModelDriverAdmissionDecision admission_decision;
     SparkModelDriverRuntimeSnapshot snapshot;
     void *module_state;
 
@@ -1580,12 +1582,22 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
     assert(output_statistics.send_count == 0u);
 
     SparkGlm52ResidentDecodeStageFakeStreamComplete(&fake_streams[0]);
+    memset(&admission_request, 0, sizeof(admission_request));
+    admission_request.descriptor_bytes = sizeof(admission_request);
+    admission_request.program_id = 1u;
+    admission_request.active_slot_count = 2u;
+    admission_request.new_token_count = 1u;
+    assert(SparkGlm52ResidentDecodeStageAdmit(
+               module_state,
+               &admission_request,
+               &admission_decision) == SPARK_STATUS_OK);
+    assert(admission_decision.accepted == 1u);
+    assert(completion_state.completion_count == 1u);
     memset(&snapshot, 0, sizeof(snapshot));
     assert(SparkGlm52ResidentDecodeStageSnapshot(
                module_state,
                1u,
                &snapshot) == SPARK_STATUS_OK);
-    assert(completion_state.completion_count == 1u);
     assert(completion_state.completions[0].status == SPARK_STATUS_OK);
     assert(SparkHiddenTransportPersistentRingGetStatistics(
                output_session,
