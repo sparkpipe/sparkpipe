@@ -400,8 +400,10 @@ SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerWaitIdle(
         if (snapshot.active_submission_count == 0u &&
             snapshot.completed_count >= snapshot.submitted_count)
             return SPARK_STATUS_OK;
+        if (poll_index < 512u)
+            continue;
         sleep_interval.tv_sec = 0;
-        sleep_interval.tv_nsec = 200000;
+        sleep_interval.tv_nsec = 20000;
         (void)nanosleep(&sleep_interval,0);
     }
     return SPARK_STATUS_BUSY;
