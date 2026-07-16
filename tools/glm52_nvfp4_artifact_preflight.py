@@ -95,9 +95,10 @@ def validate_aot_buckets(
             bucket.get("backend_kind"),
             "AOT bucket backend_kind",
         )
-        if backend_kind not in ("micro", "static", "dynamic"):
+        if backend_kind != "static":
             raise PreflightFailure(
-                f"unsupported AOT backend kind {backend_kind!r}")
+                "production NVFP4 requires exact static AOT buckets; "
+                f"found {backend_kind!r} for {token_count} rows")
         function_name = stagepack.require_string(
             bucket.get("function_name"),
             "AOT bucket function_name",
@@ -111,13 +112,21 @@ def validate_aot_buckets(
             routed_rows,
             f"AOT bucket {token_count} routed row capacity",
         )
-        if stagepack.require_int(
+        stagepack.require_equal(
             bucket.get("max_rows"),
+            routed_rows,
             f"AOT bucket {token_count} max_rows",
-            1,
-        ) < routed_rows:
-            raise PreflightFailure(
-                f"AOT bucket {token_count} max_rows is below routed rows")
+        )
+        stagepack.require_equal(
+            bucket.get("physical_tile_capacity"),
+            0,
+            f"AOT bucket {token_count} physical tile capacity",
+        )
+        stagepack.require_equal(
+            bucket.get("task_capacity"),
+            0,
+            f"AOT bucket {token_count} task capacity",
+        )
         stagepack.require_equal(
             bucket.get("route_output_slice_count"),
             (b12x.INTERMEDIATE_DIMENSION + 127) // 128,
@@ -191,6 +200,11 @@ def validate_generated_aot_files(
             f"runtime link path does not exist: {missing_runtime_paths[0]}")
     object_receipts: list[dict[str, Any]] = []
     for function_name, record in sorted(exported.items()):
+        stagepack.require_equal(
+            record.get("kind"),
+            "static",
+            f"AOT object {function_name} backend kind",
+        )
         object_name = stagepack.require_string(
             record.get("object"),
             f"AOT object {function_name} file",
@@ -256,6 +270,21 @@ def validate_aot_manifest(
         document.get("runtime_backend_selection"),
         "forbidden",
         "AOT runtime backend selection",
+    )
+    stagepack.require_equal(
+        document.get("production_backend_policy"),
+        "exact_static_buckets_only",
+        "AOT production backend policy",
+    )
+    stagepack.require_equal(
+        document.get("runtime_bucket_decomposition"),
+        "forbidden",
+        "AOT runtime bucket decomposition",
+    )
+    stagepack.require_equal(
+        document.get("runtime_diagnostic_routing_mutation"),
+        "forbidden",
+        "AOT runtime diagnostic routing mutation",
     )
     stagepack.require_equal(
         require_bool(
@@ -608,6 +637,9 @@ def validate_resident_manifest(
         "runtime_language": "c_cuda",
         "fallback_allowed": False,
         "runtime_backend_selection": "forbidden",
+        "production_backend_policy": "exact_static_buckets_only",
+        "runtime_bucket_decomposition": "forbidden",
+        "runtime_diagnostic_routing_mutation": "forbidden",
         "pack_magic": b12x.MAGIC.rstrip(b"\0").decode("ascii"),
         "pack_extension": b12x.PACK_EXTENSION,
         "pack_abi_version": b12x.ABI_VERSION,
@@ -830,6 +862,11 @@ def main() -> int:
                 f"available={maximum_token_count} "
                 f"max_supported_logical_lanes="
                 f"{maximum_token_count // rows_per_lane}")
+        if required_execution_rows not in aot_receipt["buckets"]:
+            raise PreflightFailure(
+                "NVFP4 requires an exact static AOT bucket for the requested "
+                f"execution rows: required={required_execution_rows} "
+                f"available={aot_receipt['buckets']}")
     except PreflightFailure as error:
         print(f"glm52_nvfp4_artifact_preflight: {error}", file=sys.stderr)
         return 1

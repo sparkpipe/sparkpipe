@@ -10,6 +10,12 @@ def require_contains(path: str, needle: str) -> None:
         raise AssertionError(f"missing {needle!r} in {path}")
 
 
+def forbid_contains(path: str, needle: str) -> None:
+    text = (ROOT / path).read_text()
+    if needle in text:
+        raise AssertionError(f"forbidden {needle!r} in {path}")
+
+
 def main() -> int:
     require_contains(
         "modules/glm52_sm121_b12x_compiled_backend/include/sparkpipe/spark_glm52_sm121_b12x_generated_kernel_table.h",
@@ -29,7 +35,11 @@ def main() -> int:
     )
     require_contains(
         "modules/glm52_sm121_b12x_compiled_backend/source/spark_flashinfer_b12x_compiled_moe_backend.cu",
-        "generated_arguments.output_bf16 =\n        state->workspaces[bucket_index].route_output_bf16;",
+        "generated_arguments.output_bf16 =\n        state->workspace.route_output_bf16;",
+    )
+    forbid_contains(
+        "modules/glm52_sm121_b12x_compiled_backend/source/spark_flashinfer_b12x_compiled_moe_backend.cu",
+        "state->workspaces",
     )
     require_contains(
         "third_party/flashinfer/flashinfer/cute_dsl/fp4_common.py",
@@ -56,22 +66,6 @@ def main() -> int:
         "route_slice_row = (",
     )
     require_contains(
-        "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_micro_kernel.py",
-        "scatter_total = total_pairs * Int32(self.output_tile_count_n) * cols",
-    )
-    require_contains(
-        "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_micro_kernel.py",
-        "route_slice_row = (",
-    )
-    require_contains(
-        "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_dynamic_kernel.py",
-        "scatter_total_u32 = (",
-    )
-    require_contains(
-        "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_dynamic_kernel.py",
-        "route_slice_row = (",
-    )
-    require_contains(
         "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_dispatch.py",
         "routed_rows * route_output_slice_count",
     )
@@ -87,9 +81,17 @@ def main() -> int:
         "tools/glm52_b12x_aot_compile.py",
         "token_count = int(key[5])",
     )
-    require_contains(
+    forbid_contains(
         "tools/glm52_b12x_aot_compile.py",
         "token_count = int(key[4])",
+    )
+    forbid_contains(
+        "tools/glm52_b12x_aot_compile.py",
+        "_MICRO_KERNEL_CACHE",
+    )
+    forbid_contains(
+        "tools/glm52_b12x_aot_compile.py",
+        "_DYNAMIC_KERNEL_CACHE",
     )
     return 0
 

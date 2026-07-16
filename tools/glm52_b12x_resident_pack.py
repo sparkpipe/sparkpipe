@@ -688,6 +688,12 @@ def read_aot_manifest(path: Path) -> Tuple[int, int, int]:
         raise PackFailure("AOT manifest permits fallback")
     if document.get("runtime_backend_selection") != "forbidden":
         raise PackFailure("AOT manifest permits runtime backend selection")
+    if document.get("production_backend_policy") != "exact_static_buckets_only":
+        raise PackFailure("AOT manifest is not exact-static production")
+    if document.get("runtime_bucket_decomposition") != "forbidden":
+        raise PackFailure("AOT manifest permits runtime bucket decomposition")
+    if document.get("runtime_diagnostic_routing_mutation") != "forbidden":
+        raise PackFailure("AOT manifest permits diagnostic routing mutation")
     manifest_hash_sha256 = document.get("manifest_hash_sha256")
     if not isinstance(manifest_hash_sha256, str) or \
             len(manifest_hash_sha256) != 64:
@@ -722,6 +728,8 @@ def read_aot_manifest(path: Path) -> Tuple[int, int, int]:
             bucket_token_count = int(bucket.get("token_upper_bound", 0))
             if bucket_token_count <= 0:
                 raise PackFailure("AOT manifest bucket capacity is invalid")
+            if bucket.get("backend_kind") != "static":
+                raise PackFailure("AOT manifest contains a non-static bucket")
             bucket_token_counts.append(bucket_token_count)
             qualified = max(
                 qualified,
@@ -733,6 +741,8 @@ def read_aot_manifest(path: Path) -> Tuple[int, int, int]:
             raise PackFailure("AOT manifest bucket is invalid")
     if max(bucket_token_counts) != maximum_token_count:
         raise PackFailure("AOT manifest maximum_token_count does not match buckets")
+    if bucket_token_counts != sorted(set(bucket_token_counts)):
+        raise PackFailure("AOT manifest buckets are not unique and sorted")
     if qualified <= 0:
         qualified = 1
     return maximum_token_count, qualified, manifest_hash_low64
@@ -930,6 +940,9 @@ def build_resident_manifest(
         "compile_time_languages": ["python", "torch", "safetensors"],
         "fallback_allowed": False,
         "runtime_backend_selection": "forbidden",
+        "production_backend_policy": "exact_static_buckets_only",
+        "runtime_bucket_decomposition": "forbidden",
+        "runtime_diagnostic_routing_mutation": "forbidden",
         "pack_magic": MAGIC.rstrip(b"\0").decode("ascii"),
         "pack_extension": PACK_EXTENSION,
         "pack_abi_version": ABI_VERSION,

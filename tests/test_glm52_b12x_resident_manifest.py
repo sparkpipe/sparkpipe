@@ -16,9 +16,13 @@ def write_aot_manifest(module, path: Path, maximum_token_count: int = 1024):
         "required_arch": module.REQUIRED_ARCH,
         "fallback_allowed": False,
         "runtime_backend_selection": "forbidden",
+        "production_backend_policy": "exact_static_buckets_only",
+        "runtime_bucket_decomposition": "forbidden",
+        "runtime_diagnostic_routing_mutation": "forbidden",
         "maximum_token_count": maximum_token_count,
         "buckets": [{
             "token_upper_bound": maximum_token_count,
+            "backend_kind": "static",
             "p95_us": 17,
         }],
     }
@@ -96,6 +100,11 @@ def main() -> int:
         assert manifest["fc2_input_scale"] == "ones_fp32_by_expert"
         assert manifest["fallback_allowed"] is False
         assert manifest["runtime_backend_selection"] == "forbidden"
+        assert manifest["production_backend_policy"] == (
+            "exact_static_buckets_only"
+        )
+        assert manifest["runtime_bucket_decomposition"] == "forbidden"
+        assert manifest["runtime_diagnostic_routing_mutation"] == "forbidden"
         assert manifest["packs"] == records
         stale_aot_manifest = root / "stale_aot_manifest.json"
         stale_document = dict(aot_document)

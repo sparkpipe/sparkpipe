@@ -247,7 +247,7 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchSiluMulFp8E4m3ActivationQuan
     uint32_t scale_block_size,
     void *cuda_stream);
 
-#define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_MOE_PACKED_ROUTE_VIEW_ABI_VERSION 1u
+#define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_MOE_PACKED_ROUTE_VIEW_ABI_VERSION 2u
 #define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_MOE_PACKED_ROUTE_WORKSPACE_ALIGNMENT_BYTES 256ull
 
 typedef struct SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView
@@ -262,6 +262,7 @@ typedef struct SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView
     uint32_t reserved1;
     uint32_t *expert_route_offsets;
     uint32_t *expert_route_counts;
+    uint32_t *expert_route_write_cursors;
     uint32_t *packed_expert_ids;
     uint32_t *packed_source_token_indices;
     uint32_t *packed_source_route_indices;

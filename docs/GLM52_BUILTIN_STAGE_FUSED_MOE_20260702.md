@@ -2,6 +2,10 @@
 
 Date: 2026-07-02
 
+Updated for production NVFP4 dispatch on 2026-07-16. Micro and dynamic buckets
+were removed. Current production requires an exact static AOT bucket and fails
+closed when one is absent.
+
 This pass connects the PP13 fused MoE optimization to the required SM121 execution path instead of leaving it as an external callback contract.
 
 ## Production path
@@ -12,32 +16,29 @@ For B12x-routed GLM-5.2 layers, the resident stage now does:
 post-attention normalized hidden
     -> prebound production-fast router projection
     -> router logits
-    -> B12x backend-owned top-k / dispatch preparation
-    -> generated B12x expert kernel
+    -> 256-thread resident top-k reduction per execution row
+    -> generated exact-static B12x expert kernel
+    -> deterministic parallel route finalizer
     -> residual combine
 ```
 
-The resident layer no longer launches a separate router top-k kernel before calling the B12x backend. The backend receives router logits, score bias, normalization mode, and routed scaling factor through the B12x launch ABI and owns top-k preparation immediately before expert dispatch.
+The resident stage owns router projection and top-k selection. The B12x backend
+accepts precomputed top-k rows only; setting the router-logits argument flag is
+rejected. This keeps one shared, parallel top-k implementation for NVFP4,
+W8LUT, and the other production expert paths.
 
-## Micro-bucket fusion
+## Exact-static buckets
 
-For B12x micro buckets, the backend combines:
+Every live execution-row count must have a generated static bucket with exact
+capacity and geometry. The runtime does not select micro or dynamic kernels,
+split a request across buckets, or substitute a smaller/larger bucket.
 
-```text
-router-logit top-k selection
-compact top-k id generation
-active expert list construction
-```
+## Router and workspace contract
 
-into one backend preparation kernel. This removes the old resident top-k kernel plus the backend micro compact-topk kernel boundary for the micro path.
-
-## Static / dynamic buckets
-
-For larger generated B12x buckets, the backend performs router top-k preparation internally and passes the prepared top-k buffers to the generated expert launch. This keeps top-k and dispatch preparation inside the same backend launch contract and avoids contaminating the resident stage with backend-specific dispatch preparation.
-
-## No placeholder fused-router kernel
-
-The prior path referenced a future fused BF16 router/top-k kernel before falling back to the prebound router projection. That dependency is removed. Router logits are produced by the already-validated production-fast linear plan, and the B12x backend consumes those logits directly.
+Router logits are produced by the validated production-fast linear plan. Top-k
+uses a block-wide reduction over all 256 experts for each execution row. One
+generated AOT workspace sized for the largest exact bucket is shared by the
+model-ordered local routed layers; layer weights remain resident and distinct.
 
 ## ABI change
 
@@ -51,8 +52,14 @@ router_norm_topk_prob
 router_routed_scaling_factor
 ```
 
-`SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS` selects the backend-owned router-topK path. Without this flag, the backend keeps supporting precomputed top-k buffers for non-B12x or external integration paths.
+The production backend requires precomputed `topk_ids_i32` and
+`topk_weights_fp32`. `SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS`
+is retained in the public ABI for compatibility but is rejected by this
+production implementation.
 
 ## Validation status
 
-Local C/Python tests pass. The B12x adapter source also compiles under the C compiler. CUDA hardware validation still needs Spark2 because this container does not have `nvcc`.
+The host readiness and source-contract suites cover exact-bucket dispatch,
+fallback rejection, parallel top-k/route preparation, generated-manifest
+identity, and deterministic finalization. CUDA build validation is performed
+from an isolated SM121 Spark checkout before hardware qualification.

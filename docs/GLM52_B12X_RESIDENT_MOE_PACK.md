@@ -95,7 +95,7 @@ SparkGlm52ResidentDecodeStageB12xMoePlan
 ```
 
 A PP rank owns one compiled B12x state and generated AOT workspace. Local
-routed layers execute serially against that shared state while retaining
+routed layers execute in model order against that shared state while retaining
 layer-local expert weight buffers. The first layer owns the state; later layers
 bind it as external state and cannot destroy it.
 

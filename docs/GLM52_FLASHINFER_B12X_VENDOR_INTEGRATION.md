@@ -70,6 +70,9 @@ weight_layout: flashinfer_static_view
 scale_layout: flashinfer_static_storage
 fallback_allowed: false
 runtime_backend_selection: forbidden
+production_backend_policy: exact_static_buckets_only
+runtime_bucket_decomposition: forbidden
+runtime_diagnostic_routing_mutation: forbidden
 ```
 
 The strict adapter module is:

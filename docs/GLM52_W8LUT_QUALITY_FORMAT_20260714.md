@@ -6,6 +6,11 @@ work — compilation, host tests, and checkpoint measurements. **No runtime stat
 claimed.** Offline measurements are labeled with their exact inputs and are reproducible
 from the shipped code.
 
+Implementation update 2026-07-16: the independent `.spw8lut` artifact path,
+resident binding, parallel router/route/tile preparation, and BF16 WMMA expert
+kernel are implemented and host-qualified. Full-ring accuracy and throughput
+remain hardware qualification work, not a production claim.
+
 ## 0. Summary
 
 Replace the routed-expert quantization for layers 3–77 with **W8LUT v2**, a per-tensor

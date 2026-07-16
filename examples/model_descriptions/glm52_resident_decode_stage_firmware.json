@@ -311,6 +311,9 @@
             "objects/*.o"
           ],
           "kernel_identity": "resident pack kernel_manifest_hash_low64 must equal the linked generated manifest hash",
+          "production_backend_policy": "exact_static_buckets_only",
+          "runtime_bucket_decomposition": "forbidden",
+          "runtime_diagnostic_routing_mutation": "forbidden",
           "deterministic_fc2_finalize": true,
           "runtime_python": false,
           "runtime_torch": false
@@ -321,9 +324,32 @@
           "mtp_and_dspark_rows_per_lane": 7,
           "required_rule": "maximum_token_count >= logical_lane_capacity * rows_per_lane",
           "plain_b1024_minimum_token_count": 1024,
-          "mtp_b1024_minimum_token_count": 7168
+          "mtp_b1024_minimum_token_count": 7168,
+          "default_dspark_logical_lane_buckets": [
+            1,
+            2,
+            4,
+            8,
+            16,
+            32,
+            64,
+            96,
+            128
+          ],
+          "default_dspark_execution_row_buckets": [
+            7,
+            14,
+            28,
+            56,
+            112,
+            224,
+            448,
+            672,
+            896
+          ]
         },
-        "runtime_state_contract": "one compiled B12x backend state and AOT workspace is shared across serial local routed layers; each layer retains its own resident expert weights and small deterministic workspace",
+        "runtime_state_contract": "one compiled B12x backend state and AOT workspace is shared across ordered local routed layers; each layer retains its own resident expert weights and small deterministic workspace",
+        "execution_contract": "every execution-row count requires an exact static AOT bucket; micro, dynamic, chunk-decomposed, diagnostic-routing, and synchronized fallback execution are forbidden",
         "source_identity_contract": "StagePack and B12x manifests must contain the same 64-hex source_model_index_sha256",
         "fallback_allowed": false
       },
@@ -359,6 +385,7 @@
           "gate_up_order": "up_gate"
         },
         "source_identity_contract": "stagepack and W8LUT manifests must contain the same 64-hex source_model_index_sha256",
+        "execution_contract": "expert tile descriptors are built in parallel on the request CUDA stream and routed expert matrices execute through the built-in BF16 WMMA kernel; no CPU, scalar CUDA, or reference fallback is permitted",
         "fallback_allowed": false
       }
     ]
@@ -406,6 +433,9 @@
                       "SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan"
                     ],
                     "backend_state_ownership": "one shared external W8LUT workspace per PP rank with layer-local resident codes and exponent bases",
+                    "execution_backend": "builtin_bf16_wmma",
+                    "parallel_tile_builder": true,
+                    "diagnostic_routing_mutation": false,
                     "fallback_allowed": false
                   },
                   "nvfp4": {
@@ -427,6 +457,10 @@
                     ],
                     "backend_state_ownership": "one shared compiled B12x state and generated AOT workspace per PP rank with layer-local resident NVFP4 weights",
                     "capacity_units": "execution_rows",
+                    "production_backend_policy": "exact_static_buckets_only",
+                    "runtime_bucket_decomposition": "forbidden",
+                    "diagnostic_routing_mutation": false,
+                    "stream_synchronization": false,
                     "fallback_allowed": false
                   }
                 },
