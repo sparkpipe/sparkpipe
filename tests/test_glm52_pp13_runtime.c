@@ -39,9 +39,9 @@ static void SparkTestGlm52Pp13RuntimeRankPlan(void)
     assert(rank_plan.listen_port == 52100u);
     assert(rank_plan.next_port == 52101u);
     assert(rank_plan.logical_lane_capacity == 1024u);
-    assert(rank_plan.maximum_speculative_rows_per_lane == 7u);
-    assert(rank_plan.execution_row_capacity == 7168u);
-    assert(rank_plan.output_endpoint.max_active_sequence_count == 7168u);
+    assert(rank_plan.maximum_speculative_rows_per_lane == 8u);
+    assert(rank_plan.execution_row_capacity == 8192u);
+    assert(rank_plan.output_endpoint.max_active_sequence_count == 8192u);
     assert((rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_DENSE_PREFIX) != 0u);
     assert((rank_plan.flags &

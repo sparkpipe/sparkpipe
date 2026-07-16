@@ -93,13 +93,15 @@ Start the attached gateway with the matching logical capacity:
 --kv-logical-blocks 1048576
 ```
 
-Add `--mtp` for the MTP run. MTP and DSpark remain separate configurations. Current DSpark live capture is deliberately lane-1 fail-closed; Sparkdev must not remove that rejection until the batched DSpark backend and its B1024 numerical gate are connected.
+Add `--mtp` for MTP and `--dspark` for DSpark. The packed DSpark backend uses
+eight verifier rows per lane and can be enabled together with MTP; no
+single-lane verifier fallback is permitted.
 
 After a clean resident start, the log must contain:
 
 ```text
 logical_lane_capacity=1024
-execution_row_capacity=7168
+execution_row_capacity=8192
 fp8_moe_layers=N/N
 fp8_scaled_gemm_plans=N/N
 kv_nvme_mode=batched_cohort_jit

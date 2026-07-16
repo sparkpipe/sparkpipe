@@ -25,10 +25,12 @@ The production AOT compiler emits exact static SM121 buckets only. Each live
 execution-row count must have its own bucket. Micro, dynamic, and runtime
 chunk-decomposition paths are forbidden.
 
-The default set includes seven-row DSpark verifier buckets through 128 logical
-lanes (`7,14,28,56,112,224,448,672,896`). Wider DSpark batches require adding
-their exact `7 * logical_lanes` row counts at AOT generation time; the runtime
-will fail closed rather than split or substitute a different bucket.
+The default set includes eight-row DSpark verifier buckets through 128 logical
+lanes (`8,16,32,64,128,256,512,1024`). These buckets matter only for the
+NVFP4 verifier. FP8 and W8LUT use the same DSpark hidden-tap and scheduling
+contracts without B12x. Wider NVFP4 DSpark batches require their exact
+`8 * logical_lanes` row counts at AOT generation time; the runtime fails
+closed rather than splitting or substituting a different bucket.
 
 The tool uses vendored FlashInfer B12x CuTe DSL source to compile exact GLM52/SM121 buckets. It emits:
 

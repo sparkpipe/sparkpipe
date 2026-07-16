@@ -1957,6 +1957,20 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
         runtime);
 }
 
+static SparkStatus SparkGlm52Pp13DaemonProgressBuilder(
+	SparkGlm52Pp13DaemonRuntime *runtime)
+{
+	if (runtime == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (runtime->cuda_resident_fd >= 0)
+		return SPARK_STATUS_OK;
+	if (runtime->builder_state == 0 ||
+		runtime->builder_library.builder_interface.progress == 0)
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	return runtime->builder_library.builder_interface.progress(
+		runtime->builder_state);
+}
+
 static uint32_t SparkGlm52Pp13DaemonWorkPacketHash(
 	const SparkGlm52Pp13WorkControlPacket *packet)
 {
@@ -3056,6 +3070,7 @@ int main(int argc,char **argv)
     uint64_t timeout_ns;
     uint64_t next_timer_ns;
     uint64_t now_ns;
+	SparkStatus builder_status;
 
     SparkGlm52Pp13DaemonInitializeConfig(&configuration);
     if (SparkGlm52Pp13DaemonParseArguments(&configuration,argc,argv) < 0)
@@ -3106,19 +3121,31 @@ int main(int argc,char **argv)
         if (runtime.cuda_resident_fd < 0)
             (void)SparkGlm52ResidentDecodeStageProductionRunnerProgress(
                 &runtime.runner);
+		builder_status = SparkGlm52Pp13DaemonProgressBuilder(&runtime);
+		if (builder_status != SPARK_STATUS_OK &&
+			builder_status != SPARK_STATUS_BUSY)
+		{
+			fprintf(stderr,
+				"rank daemon builder progress failed status=%u\n",
+				(uint32_t)builder_status);
+			break;
+		}
         progress |= SparkGlm52Pp13DaemonPumpQueuedWork(&runtime);
         progress |= SparkGlm52Pp13DaemonPumpFinalEvents(&runtime);
         if (progress == 0u)
         {
             if (configuration.transport_busy_poll != 0u)
                 continue;
-            timeout_ns = 0u;
+            timeout_ns = builder_status == SPARK_STATUS_BUSY ?
+				UINT64_C(1000000) : 0u;
             next_timer_ns = SparkGlm52Pp13DaemonNextTimerNs(&runtime);
             if (next_timer_ns != 0u)
             {
                 now_ns = SparkGlm52Pp13DaemonMonotonicNs();
-                timeout_ns = next_timer_ns > now_ns ?
-                    next_timer_ns - now_ns : 1u;
+				next_timer_ns = next_timer_ns > now_ns ?
+					next_timer_ns - now_ns : 1u;
+				if (timeout_ns == 0u || next_timer_ns < timeout_ns)
+					timeout_ns = next_timer_ns;
             }
             event_mask = SparkGlm52Pp13DaemonWaitForEvents(
                 &runtime,

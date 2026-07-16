@@ -98,6 +98,8 @@ int main(void)
     assert(strstr(description.metadata_json,
         "mtp_b1024_minimum_token_count") != 0);
     assert(strstr(description.metadata_json,
+        "dspark_b1024_minimum_token_count") != 0);
+    assert(strstr(description.metadata_json,
         "only routed experts use NVFP4") != 0);
     assert(strstr(description.metadata_json,
         "source_model_index_sha256") != 0);

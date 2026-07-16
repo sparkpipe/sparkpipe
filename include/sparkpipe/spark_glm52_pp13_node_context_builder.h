@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 14u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 16u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT \
 	16384u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS 256u
@@ -92,6 +92,8 @@ typedef struct SparkGlm52Pp13NodeContextBuilderConfiguration
 	const char *stagepack_root;
 	const char *embedding_pack_path;
 	const char *node_target;
+	const char *dspark_manifest_path;
+	const char *dspark_config_path;
 	const char *dspark_safetensors_path;
 	const char *kv_nvme_path;
 	uint32_t dspark_maximum_lane_count;
@@ -205,6 +207,8 @@ typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderSubmitWorkFunction)(
 	SparkHiddenTransportSession *output_transport_session,
 	SparkModelDriverCompletionFunction completion_function,
 	void *completion_context);
+typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderProgressFunction)(
+	void *builder_state);
 typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderTakeDsparkDraftFunction)(
 	void *builder_state,
 	SparkGlm52DsparkDraftResult *draft_result);
@@ -229,6 +233,7 @@ typedef struct SparkGlm52Pp13NodeContextBuilderInterface
 	SparkGlm52Pp13NodeContextBuilderPrefillFunction prefill;
 	SparkGlm52Pp13NodeContextBuilderDecodeFunction decode;
 	SparkGlm52Pp13NodeContextBuilderSubmitWorkFunction submit_work;
+	SparkGlm52Pp13NodeContextBuilderProgressFunction progress;
 	SparkGlm52Pp13NodeContextBuilderTakeDsparkDraftFunction take_dspark_draft;
 	SparkGlm52Pp13NodeContextBuilderGetKvStatsFunction get_kv_stats;
 	SparkGlm52Pp13NodeContextBuilderResetControlGenerationFunction

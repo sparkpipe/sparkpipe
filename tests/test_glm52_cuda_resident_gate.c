@@ -20,7 +20,7 @@ static void SparkTestGlm52CudaResidentGateAcceptsMeasuredB1024(void)
 	stats.rank_index = 0u;
 	stats.max_active_sequence_count = 1024u;
 	stats.logical_lane_capacity = 1024u;
-	stats.execution_row_capacity = 7168u;
+	stats.execution_row_capacity = 8192u;
 	stats.model_quantization_mode =
 		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
 	stats.moe_backend_kind =
@@ -46,8 +46,10 @@ static void SparkTestGlm52CudaResidentGateAcceptsMeasuredB1024(void)
 	stats.layer_major_submit_count = 1u;
 	stats.layer_major_completion_count = 1u;
 	stats.last_layer_major_logical_lane_count = 1024u;
-	stats.last_layer_major_rows_per_lane = 7u;
-	stats.last_layer_major_execution_row_count = 7168u;
+	stats.last_layer_major_rows_per_lane =
+		SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
+	stats.last_layer_major_execution_row_count =
+		1024u * SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
 	assert(SparkGlm52CudaResidentGateValidateStats(
 		&stats,0u,
 		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,

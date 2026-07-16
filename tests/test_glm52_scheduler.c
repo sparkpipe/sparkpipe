@@ -287,6 +287,37 @@ static void SparkTestGlm52SchedulerSupportsFp8AndPrefill(void)
     assert(SparkGlm52SchedulerReleaseSequence(&scheduler, 11u) == SPARK_STATUS_OK);
 }
 
+static void SparkTestGlm52SchedulerSupportsW8lut(void)
+{
+    SparkGlm52PrefixCache cache;
+    SparkGlm52PrefixCacheEntry entries[128u];
+    SparkGlm52PrefixCacheSequenceBinding bindings[512u];
+    SparkGlm52SchedulerConfiguration configuration;
+    SparkGlm52Scheduler scheduler;
+    SparkGlm52SchedulerRequest request;
+    SparkGlm52SchedulerDecision decision;
+
+    SparkTestInitializePrefixCache(&cache, entries, bindings, 128u, 512u);
+    SparkTestInitializeSchedulerConfiguration(
+        &configuration,
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,
+        &cache);
+    assert(SparkGlm52SchedulerInitialize(
+        &scheduler,
+        &configuration) == SPARK_STATUS_OK);
+    SparkTestInitializeDecodeRequest(&request, 16u);
+    assert(SparkGlm52SchedulerAdmit(
+        &scheduler,
+        &request,
+        &decision) == SPARK_STATUS_OK);
+    assert(decision.accepted == 1u);
+    assert(decision.quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT);
+    assert(SparkGlm52SchedulerComplete(
+        &scheduler,
+        &decision) == SPARK_STATUS_OK);
+}
+
 static void SparkTestGlm52SchedulerUsesVllmStyleChunkedPrefill(void)
 {
     SparkGlm52PrefixCache cache;
@@ -1172,6 +1203,7 @@ int main(void)
 {
     SparkTestGlm52SchedulerAdmitsCurrentSparkPp13Decode();
     SparkTestGlm52SchedulerSupportsFp8AndPrefill();
+    SparkTestGlm52SchedulerSupportsW8lut();
     SparkTestGlm52SchedulerUsesVllmStyleChunkedPrefill();
     SparkTestGlm52SchedulerUsesIntegratedPrefixCacheAdmission();
     SparkTestGlm52SchedulerInterleavesPrefillAndDecode();

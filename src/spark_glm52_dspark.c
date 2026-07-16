@@ -19,8 +19,8 @@ SparkStatus SparkGlm52DsparkBuildDefaultModelContract(
     model_contract->abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
     model_contract->descriptor_bytes =
         SPARK_GLM52_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES;
-    model_contract->verifier_quantization_mode =
-        SPARK_GLM52_DSPARK_VERIFIER_QUANTIZATION_FP8_E4M3_8BIT;
+    model_contract->verifier_hidden_dtype =
+        SPARK_GLM52_DSPARK_VERIFIER_HIDDEN_DTYPE_BF16;
     model_contract->draft_dtype = SPARK_GLM52_DSPARK_DRAFT_DTYPE_BF16;
     model_contract->draft_layer_count = SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT;
     model_contract->block_size = SPARK_GLM52_DSPARK_BLOCK_SIZE;
@@ -60,8 +60,8 @@ SparkStatus SparkGlm52DsparkValidateModelContract(
         model_contract->abi_version != SPARK_GLM52_DSPARK_ABI_VERSION ||
         model_contract->descriptor_bytes !=
             SPARK_GLM52_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES ||
-        model_contract->verifier_quantization_mode !=
-            SPARK_GLM52_DSPARK_VERIFIER_QUANTIZATION_FP8_E4M3_8BIT ||
+        model_contract->verifier_hidden_dtype !=
+            SPARK_GLM52_DSPARK_VERIFIER_HIDDEN_DTYPE_BF16 ||
         model_contract->draft_dtype != SPARK_GLM52_DSPARK_DRAFT_DTYPE_BF16 ||
         model_contract->draft_layer_count !=
             SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT ||

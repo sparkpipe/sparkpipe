@@ -65,8 +65,9 @@ The stub and the AOT output produce the same archive name, so nothing
 downstream of the archive changes between modes.
 
 `maximum_token_count` is measured in execution rows, not logical requests.
-Plain B1024 requires at least 1024 rows. MTP or DsPARK with seven rows per lane
-requires 7168 rows for B1024. Run
+Plain B1024 requires at least 1024 rows. MTP tree verification uses six rows
+per lane and requires 6144 rows for B1024. DsPARK uses eight rows per lane and
+requires 8192 rows for B1024. Run
 `tools/glm52_nvfp4_artifact_preflight.py` before a CUDA build to validate the
 StagePack, B12x packs, AOT objects, generated launch table, runtime link paths,
 kernel identity, and requested row capacity.

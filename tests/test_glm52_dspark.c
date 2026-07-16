@@ -85,7 +85,7 @@ static void SparkTestDsparkModelContractRejectsNonFp8Verifier(void)
         &model_contract) == SPARK_STATUS_OK);
     assert(SparkGlm52DsparkValidateModelContract(
         &model_contract) == SPARK_STATUS_OK);
-    model_contract.verifier_quantization_mode = 1u;
+    model_contract.verifier_hidden_dtype = 0u;
     assert(SparkGlm52DsparkValidateModelContract(
         &model_contract) == SPARK_STATUS_INVALID_ARGUMENT);
 }

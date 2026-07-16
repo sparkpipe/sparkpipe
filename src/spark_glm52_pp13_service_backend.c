@@ -83,6 +83,10 @@ typedef struct SparkGlm52Pp13ServiceBackendPendingDecode
 	uint32_t state;
 	uint32_t done_count;
 	uint8_t lane_done[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+	uint8_t dspark_draft_valid[
+		SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+	SparkGlm52DsparkDraftResult dspark_drafts[
+		SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
 	SparkGlm52RequestApiDispatch dispatch;
 	SparkGlm52ServingDecodeResult result;
 } SparkGlm52Pp13ServiceBackendPendingDecode;
@@ -123,14 +127,10 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	SparkGlm52DsparkSpeculator dspark_speculator;
 	SparkGlm52DsparkModelContract dspark_model_contract;
 	SparkGlm52DsparkSequenceState *dspark_sequence_states;
-	SparkGlm52DsparkDraftResult dspark_ready_draft;
-	uint64_t dspark_ready_request_id;
-	uint64_t dspark_ready_sequence_id;
 	uint32_t dspark_enabled;
 	uint32_t mtp_enabled;
 	uint32_t kv_logical_block_capacity;
 	uint32_t kv_physical_block_capacity;
-	uint32_t dspark_ready_draft_valid;
 	SparkGlm52ServingEngine serving_engine;
 	SparkGlm52ServiceRuntime service;
 	SparkGlm52KvCacheBlock *kv_blocks;
@@ -1051,7 +1051,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeResidentPayload(
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	status = SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 		decode_dispatch->request_dispatch,
-		(uint32_t)execution_row_count,
+		lane_count,
 		&message->execution_batch_bucket);
 	if (status != SPARK_STATUS_OK)
 		return status;
@@ -2221,7 +2221,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeScheduler(
 	scheduler_configuration.measured_profile_id =
 		SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701;
 	scheduler_configuration.quantization_mode =
-		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
+		state->rank_plan.quantization_mode;
 	scheduler_configuration.max_prefill_tokens_per_step =
 		SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_WAVE_TOKENS;
 	scheduler_configuration.prefix_cache_block_tokens =
@@ -2240,17 +2240,50 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDsparkDraft(
 	SparkGlm52DsparkDraftResult *result)
 {
 	SparkGlm52Pp13ServiceBackendState *state;
+	SparkGlm52Pp13ServiceBackendPendingDecode *pending;
+	SparkGlm52DsparkDraftResult *ready_draft;
+	uint32_t pending_index;
+	uint32_t lane_index;
 	uint32_t token_index;
 
 	state = (SparkGlm52Pp13ServiceBackendState *)context;
 	if (state == 0 || request == 0 || result == 0 ||
-		state->dspark_ready_draft_valid == 0u ||
-		state->dspark_ready_request_id != request->request_id ||
-		state->dspark_ready_sequence_id != request->sequence_id ||
 		request->requested_token_count == 0u ||
-		request->requested_token_count > state->dspark_ready_draft.token_count)
+		request->requested_token_count >
+			SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	*result = state->dspark_ready_draft;
+	ready_draft = 0;
+	for (pending_index = 0u;
+		 pending_index < SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY;
+		 ++pending_index)
+	{
+		pending = &state->pending_decodes[pending_index];
+		if (pending->state !=
+			SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE)
+			continue;
+		for (lane_index = 0u;
+			 lane_index < pending->dispatch.request_count;
+			 ++lane_index)
+		{
+			if (pending->dispatch.request_ids[lane_index] ==
+					request->request_id &&
+				pending->dispatch.sequence_ids[lane_index] ==
+					request->sequence_id &&
+				pending->dspark_draft_valid[lane_index] != 0u)
+			{
+				ready_draft = &pending->dspark_drafts[lane_index];
+				break;
+			}
+		}
+		if (ready_draft != 0)
+			break;
+	}
+	if (ready_draft == 0)
+		return SPARK_STATUS_NOT_FOUND;
+	if (request->requested_token_count > ready_draft->token_count)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	pending->dspark_draft_valid[lane_index] = 0u;
+	*result = *ready_draft;
 	result->token_count = request->requested_token_count;
 	for (token_index = result->token_count;
 		 token_index < SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
@@ -2259,8 +2292,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDsparkDraft(
 		result->token_ids[token_index] = 0u;
 		result->confidence_milli[token_index] = 0u;
 	}
-	memset(&state->dspark_ready_draft,0,sizeof(state->dspark_ready_draft));
-	state->dspark_ready_draft_valid = 0u;
+	memset(ready_draft,0,sizeof(*ready_draft));
 	return SPARK_STATUS_OK;
 }
 
@@ -2856,12 +2888,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 		(configuration->flags &
 			~SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_KNOWN_FLAGS) != 0u)
 		return SPARK_STATUS_ABI_MISMATCH;
-	if ((configuration->flags &
-			(SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_DSPARK |
-			 SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP)) ==
-			(SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_DSPARK |
-			 SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP))
-		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (SparkGlm52Pp13RuntimeQuantizationModeName(
 			configuration->model_quantization_mode) == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -3424,10 +3450,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
 				SPARK_GLM52_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES ||
 			event->dspark_draft.token_count == 0u)
 			return SPARK_STATUS_VALIDATION_FAILED;
-		state->dspark_ready_draft = event->dspark_draft;
-		state->dspark_ready_request_id = event->request_id;
-		state->dspark_ready_sequence_id = event->sequence_id;
-		state->dspark_ready_draft_valid = 1u;
+		pending->dspark_drafts[lane_index] = event->dspark_draft;
+		pending->dspark_draft_valid[lane_index] = 1u;
 	}
 	if (pending->lane_done[lane_index] != 0u)
 		return SPARK_STATUS_OK;

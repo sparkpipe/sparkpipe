@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION 2u
+#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION 3u
 #define SPARK_GLM52_DSPARK_DRAFT_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52DsparkDraftBackendConfiguration))
 #define SPARK_GLM52_DSPARK_DRAFT_BACKEND_DESCRIPTOR_BYTES \
@@ -21,6 +21,12 @@ extern "C" {
      SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION)
 #define SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION \
     (SPARK_GLM52_DSPARK_AUX_LAYER_COUNT * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION)
+#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT \
+    (SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT * \
+     SPARK_GLM52_DSPARK_BLOCK_SIZE)
+#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_NONE 0u
+#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_STAGE 1u
+#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_DRAFT 2u
 
 typedef struct SparkGlm52DsparkDraftBackendConfiguration
 {
@@ -30,6 +36,8 @@ typedef struct SparkGlm52DsparkDraftBackendConfiguration
     uint32_t maximum_context_token_count;
     uint32_t restricted_vocabulary_count;
     const uint32_t *restricted_token_ids;
+    const char *manifest_path;
+    const char *config_path;
     const char *safetensors_path;
     void *cuda_stream;
 } SparkGlm52DsparkDraftBackendConfiguration;
@@ -45,6 +53,17 @@ typedef struct SparkGlm52DsparkDraftBackendLaneState
     uint32_t reserved;
 } SparkGlm52DsparkDraftBackendLaneState;
 
+typedef struct SparkGlm52DsparkDraftBackendStage
+{
+    uint64_t sequence_id;
+    uint64_t sequence_position;
+    uint64_t tap_generation;
+    uint32_t tap_row_index;
+    uint32_t backend_lane_index;
+    uint32_t token_id;
+    uint32_t reserved;
+} SparkGlm52DsparkDraftBackendStage;
+
 typedef struct SparkGlm52DsparkDraftBackend
 {
     uint32_t abi_version;
@@ -54,8 +73,9 @@ typedef struct SparkGlm52DsparkDraftBackend
     uint32_t restricted_vocabulary_count;
     uint32_t owns_cuda_stream;
     uint32_t weight_count;
-    uint32_t reserved0;
-    uint32_t reserved1;
+    uint32_t maximum_tap_row_count;
+    uint32_t pending_operation_kind;
+    uint32_t pending_draft_lane_count;
     SparkGlm52DsparkModelContract contract;
     void *cuda_stream;
     void *cublas_handle;
@@ -63,6 +83,7 @@ typedef struct SparkGlm52DsparkDraftBackend
     uint32_t *device_restricted_token_ids;
     uint16_t *device_tap_arena_bf16;
     uint64_t tap_arena_lane_stride_bytes;
+    uint16_t *device_stage_tap_bf16;
     uint16_t *device_target_hidden_bf16;
     uint16_t *device_context_key_bf16;
     uint16_t *device_context_value_bf16;
@@ -80,10 +101,30 @@ typedef struct SparkGlm52DsparkDraftBackend
     uint16_t *device_markov_logits_bf16;
     uint32_t *device_argmax_u32;
     float *device_confidence_f32;
+    uint32_t *device_tap_row_indices;
+    uint32_t *device_backend_lane_indices;
+    uint32_t *device_sequence_positions;
+    uint32_t *device_context_token_counts;
+    uint32_t *device_last_token_ids;
     uint32_t *host_argmax_u32;
     float *host_confidence_f32;
+    void *completion_event;
+    uint32_t host_tap_row_indices[
+        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT];
+    uint32_t host_backend_lane_indices[
+        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT];
+    uint32_t host_sequence_positions[
+        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT];
+    uint32_t host_context_token_counts[
+        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
+    uint32_t host_last_token_ids[
+        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
+    uint32_t host_requested_token_counts[
+        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
     SparkGlm52DsparkDraftBackendLaneState
         lane_states[SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
+    SparkGlm52DsparkDraftBackendLaneState
+        validation_lane_states[SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
 } SparkGlm52DsparkDraftBackend;
 
 SparkStatus SparkGlm52DsparkDraftBackendInitialize(
@@ -103,18 +144,21 @@ SparkStatus SparkGlm52DsparkDraftBackendTapOutputPointers(
     void *tap_output_bf16[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT],
     uint64_t *lane_stride_bytes_out);
 
-SparkStatus SparkGlm52DsparkDraftBackendStageLane(
+SparkStatus SparkGlm52DsparkDraftBackendStageBatch(
     SparkGlm52DsparkDraftBackend *backend,
-    uint32_t lane_index,
-    uint64_t sequence_id,
-    uint64_t sequence_position,
-    uint32_t last_token_id,
-    uint64_t tap_generation);
+    const SparkGlm52DsparkDraftBackendStage *stages,
+    uint32_t stage_count);
 
-SparkStatus SparkGlm52DsparkDraftBackendDraft(
-    void *context,
-    const SparkGlm52DsparkDraftRequest *request,
-    SparkGlm52DsparkDraftResult *result);
+SparkStatus SparkGlm52DsparkDraftBackendLaunchDraftBatch(
+    SparkGlm52DsparkDraftBackend *backend,
+    const SparkGlm52DsparkDraftRequest *requests,
+    uint32_t lane_count);
+
+SparkStatus SparkGlm52DsparkDraftBackendTakeBatchResults(
+    SparkGlm52DsparkDraftBackend *backend,
+    SparkGlm52DsparkDraftResult *results,
+    uint32_t result_capacity,
+    uint32_t *result_count);
 
 #ifdef __cplusplus
 }

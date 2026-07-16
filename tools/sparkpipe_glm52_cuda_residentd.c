@@ -66,6 +66,8 @@ typedef struct SparkGlm52CudaResidentdConfiguration
     const char *driver_path;
     const char *node_context_builder_shared_object_path;
     const char *embedding_pack_path;
+    const char *dspark_manifest_path;
+    const char *dspark_config_path;
     const char *dspark_safetensors_path;
     const char *kv_nvme_path;
     const char *program_name;
@@ -471,6 +473,22 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
         *index += 1;
         return 0;
     }
+    if (strcmp(argv[*index], "--dspark-manifest") == 0)
+    {
+        if ((*index + 1) >= argc)
+            return -17;
+        configuration->dspark_manifest_path = argv[*index + 1];
+        *index += 1;
+        return 0;
+    }
+    if (strcmp(argv[*index], "--dspark-config") == 0)
+    {
+        if ((*index + 1) >= argc)
+            return -18;
+        configuration->dspark_config_path = argv[*index + 1];
+        *index += 1;
+        return 0;
+    }
     if (strcmp(argv[*index], "--dspark-max-context") == 0)
     {
         if ((*index + 1) >= argc ||
@@ -542,7 +560,9 @@ static SparkStatus SparkGlm52CudaResidentdValidateConfiguration(
     }
     if (configuration->dspark_enabled != 0u &&
         configuration->rank_index == SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT - 1u &&
-        (configuration->dspark_safetensors_path == 0 ||
+        (configuration->dspark_manifest_path == 0 ||
+         configuration->dspark_config_path == 0 ||
+         configuration->dspark_safetensors_path == 0 ||
          configuration->dspark_maximum_context_token_count == 0u))
         return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
@@ -1043,9 +1063,14 @@ static SparkStatus SparkGlm52CudaResidentdBuildNodeContext(
     {
         builder_configuration.flags |=
             SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK;
+        builder_configuration.dspark_manifest_path =
+            configuration->dspark_manifest_path;
+        builder_configuration.dspark_config_path =
+            configuration->dspark_config_path;
         builder_configuration.dspark_safetensors_path =
             configuration->dspark_safetensors_path;
-        builder_configuration.dspark_maximum_lane_count = 1u;
+        builder_configuration.dspark_maximum_lane_count =
+            configuration->max_active_sequence_count;
         builder_configuration.dspark_maximum_context_token_count =
             configuration->dspark_maximum_context_token_count;
     }
@@ -2198,7 +2223,7 @@ static uint32_t SparkGlm52CudaResidentdPumpClient(
 }
 
 static void SparkGlm52CudaResidentdProgressDriver(
-    SparkGlm52CudaResidentdRuntime *runtime)
+	SparkGlm52CudaResidentdRuntime *runtime)
 {
     SparkModelDriverRuntimeSnapshot snapshot;
 
@@ -2211,7 +2236,18 @@ static void SparkGlm52CudaResidentdProgressDriver(
     (void)runtime->loaded_driver.interface->snapshot(
         runtime->driver_instance,
         runtime->program->program_id,
-        &snapshot);
+	    &snapshot);
+}
+
+static SparkStatus SparkGlm52CudaResidentdProgressBuilder(
+	SparkGlm52CudaResidentdRuntime *runtime)
+{
+	if (runtime == 0 ||
+		runtime->builder_library.builder_interface.progress == 0 ||
+		runtime->builder_state == 0)
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	return runtime->builder_library.builder_interface.progress(
+		runtime->builder_state);
 }
 
 static void SparkGlm52CudaResidentdPrintReady(
@@ -2270,7 +2306,7 @@ static void SparkGlm52CudaResidentdPrintReady(
 static void SparkGlm52CudaResidentdUsage(const char *program)
 {
     fprintf(stderr,
-        "usage: %s --rank n --socket path --model-quantization fp8|nvfp4|w8lut --moe-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--mtp] [--dspark --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--kv-pool-tokens n] [--kv-nvme-path path --kv-nvme-blocks n --kv-nvme-batch-blocks n] [--port-base n]\n",
+        "usage: %s --rank n --socket path --model-quantization fp8|nvfp4|w8lut --moe-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--mtp] [--dspark --dspark-manifest path --dspark-config path --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--kv-pool-tokens n] [--kv-nvme-path path --kv-nvme-blocks n --kv-nvme-batch-blocks n] [--port-base n]\n",
         program);
 }
 
@@ -2280,11 +2316,13 @@ int main(int argc, char **argv)
     static SparkGlm52CudaResidentdRuntime runtime;
     SparkStatus status;
     struct pollfd fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CAPACITY];
-    int32_t index;
-    int poll_status;
-    int32_t exit_code;
-    uint32_t fd_count;
-    uint32_t slot;
+	int32_t index;
+	int poll_status;
+	int poll_timeout_ms;
+	int32_t exit_code;
+	uint32_t fd_count;
+	uint32_t slot;
+	SparkStatus builder_status;
 
     SparkGlm52CudaResidentdInitializeConfiguration(&configuration);
     for (index = 1; index < argc; ++index)
@@ -2328,9 +2366,19 @@ int main(int argc, char **argv)
                 (uint32_t)status);
             exit_code = 1;
             break;
-        }
-        SparkGlm52CudaResidentdProgressDriver(&runtime);
-        while (SparkGlm52CudaResidentdPumpQueuedWork(&runtime) != 0u &&
+	    }
+	    SparkGlm52CudaResidentdProgressDriver(&runtime);
+		builder_status = SparkGlm52CudaResidentdProgressBuilder(&runtime);
+		if (builder_status != SPARK_STATUS_OK &&
+			builder_status != SPARK_STATUS_BUSY)
+		{
+			fprintf(stderr,
+				"cuda_residentd_builder_progress_failed status=%u\n",
+				(uint32_t)builder_status);
+			exit_code = 1;
+			break;
+		}
+	    while (SparkGlm52CudaResidentdPumpQueuedWork(&runtime) != 0u &&
             runtime.driver_inflight_count == 0u)
         {
         }
@@ -2347,9 +2395,11 @@ int main(int argc, char **argv)
             fprintf(stderr,"cuda_residentd_poll_build_failed status=%u\n",
                 (uint32_t)status);
             exit_code = 1;
-            break;
-        }
-        poll_status = poll(fds,fd_count,-1);
+	        break;
+	    }
+		poll_timeout_ms = runtime.driver_inflight_count != 0u ||
+			builder_status == SPARK_STATUS_BUSY ? 1 : -1;
+	    poll_status = poll(fds,fd_count,poll_timeout_ms);
         if (poll_status < 0 && errno != EINTR)
         {
             fprintf(stderr,"cuda_residentd_poll_failed errno=%d\n",errno);

@@ -95,7 +95,7 @@ One-time AOT generation on `spark1`:
 tools/glm52_b12x_prepare_spark_env.sh
 . "$HOME/.config/sparkpipe/glm52_b12x_aot_env.sh"
 ./tools/glm52_b12x_aot_compile.py \
-    --tokens 1,2,4,7,8,14,16,28,32,56,64,96,112,128,224,256,448,512,672,896,1024 \
+    --tokens 1,2,4,6,8,12,16,24,32,48,64,96,128,192,256,384,512,576,768,1024 \
     --warmup 5 \
     --iterations 20 \
     --benchmark \
@@ -105,8 +105,9 @@ tools/glm52_b12x_prepare_spark_env.sh
 The production AOT tool emits only exact static SM121 buckets. Every requested
 execution-row count must have its own exported kernel. Micro, dynamic, and
 runtime chunk-decomposition paths are rejected rather than substituted.
-The default list includes seven-row DSpark verification through 128 logical
-lanes; wider DSpark batches must add their exact execution-row counts.
+The default list includes eight-row DSpark verification through 128 logical
+lanes. DSpark uses the same BF16 hidden-tap contract with FP8, W8LUT, and
+NVFP4 verifiers; only NVFP4 needs B12x AOT buckets for those execution rows.
 
 Build the strict primitive adapter and compiled backend:
 
@@ -118,6 +119,8 @@ make glm52_b12x_compiled_backend NVCC=nvcc
 If `build/glm52_b12x_aot/generated/spark_glm52_sm121_b12x_generated_kernel_table.cu`, `tvm_ffi_flags.mk`, or `objects/*.o` is missing, the generated backend target fails. The serving link must include the generated archive plus runtime libraries listed in `build/glm52_b12x_aot/generated/runtime_link_args.txt`.
 
 The AOT maximum is measured in execution rows. The default list supports
-plain B1024. MTP or DsPARK at B1024 needs a qualified 7168-row bucket; do not
-claim that capacity from a 1024-row table. Validate the complete rank-local
-artifact chain with `tools/glm52_nvfp4_artifact_preflight.py`.
+plain B1024. NVFP4 MTP at B1024 needs a qualified 6144-row bucket, while
+NVFP4 DSpark needs an 8192-row bucket; do not claim either capacity from a
+1024-row table. Validate the NVFP4 rank-local chain with
+`tools/glm52_nvfp4_artifact_preflight.py` and validate DSpark independently
+with `tools/glm52_dspark_artifact_preflight.py`.

@@ -333,20 +333,20 @@ def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
     start = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderFinalizeSpeculativeVerify(")
+        "static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(")
     end = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderFinalizeCapturedCompletion(",
+        "static SparkStatus SparkGlm52Pp13BuilderEmitPackedDsparkVerifyCompletions(",
         start)
     function_body = source[start:end]
-    assert ("state->speculative_verify_draft_count + 1u;" in
+    assert "completion.token_count = work_packet->rows_per_lane;" in function_body
+    assert ("completion.token_count = accepted_draft_count + 1u;" not in
             function_body)
-    assert ("state->speculative_verify_accepted_count + 1u;" not in
-            function_body)
+    assert "execution_row_base + token_index" in function_body
 
     start = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderEmitWideDecodeCompletions(")
+        "static SparkStatus SparkGlm52Pp13BuilderEmitPackedDsparkVerifyCompletions(")
     end = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpPreviousTargets(",
+        "static SparkStatus SparkGlm52Pp13BuilderPrepareDsparkStages(",
         start)
     function_body = source[start:end]
     assert "completion.token_count = work_packet->rows_per_lane;" in function_body
@@ -583,7 +583,8 @@ def test_mtp_gpu_profile_is_graph_compatible_and_explicitly_enabled(
             '"verify_followup"' in source)
     assert ("*draft_token_count_out =\n"
             "\t\t\tSPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;" in source)
-    assert ("SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT" in source)
+    assert "SparkGlm52Pp13BuilderPrepareSerialVerifierMtpDraft" not in source
+    assert "SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT" not in source
     assert "graph_compatible=1" in source
 
 
@@ -875,20 +876,22 @@ def test_plain_wide_decode_bypasses_dspark_finalizer(root: Path) -> None:
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
     start = source.index(
-        "static void SparkGlm52Pp13BuilderCompletePendingWork(")
+        "static SparkStatus SparkGlm52Pp13BuilderStartPendingWorkFinalizer(")
     end = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderBuildResidentKvTable(",
+        "static SparkStatus SparkGlm52Pp13BuilderProgress(",
         start)
     function_body = source[start:end]
-    plain_decode_guard = (
-        "SparkGlm52Pp13BuilderWorkIsPlainDecodeBatch(work_packet) == 0u")
-    captured_finalize = "SparkGlm52Pp13BuilderFinalizeCapturedCompletion("
     wide_finalize = "SparkGlm52Pp13BuilderEmitWideDecodeCompletions("
-    assert plain_decode_guard in function_body
-    assert function_body.index(plain_decode_guard) < function_body.index(
-        captured_finalize)
-    assert function_body.index(captured_finalize) < function_body.index(
-        wide_finalize)
+    dspark_guard = (
+        "SparkGlm52Pp13BuilderWorkCapturesDspark(work_packet) != 0u")
+    dspark_prepare = "SparkGlm52Pp13BuilderPrepareDsparkStages("
+    assert wide_finalize in function_body
+    assert dspark_guard in function_body
+    assert dspark_prepare in function_body
+    assert function_body.index(wide_finalize) < function_body.index(
+        dspark_guard)
+    assert function_body.index(dspark_guard) < function_body.index(
+        dspark_prepare)
 
 
 def test_resident_block_stride_is_independent_of_the_physical_pool(

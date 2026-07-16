@@ -253,13 +253,12 @@ static void SparkTestMtpTreeExecutionContract(void)
         SPARK_GLM52_STAGE_PLAN_BUCKET_B128;
     assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
         &dispatch,
-        SPARK_GLM52_STAGE_PLAN_BUCKET_B128 *
-            SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT,
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B128,
         &batch_bucket) == SPARK_STATUS_OK);
-    assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B1024);
+    assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128);
     assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
         &dispatch,
-        SPARK_GLM52_STAGE_PLAN_BUCKET_B1024 + 1u,
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B128 + 1u,
         &batch_bucket) == SPARK_STATUS_INVALID_ARGUMENT);
     assert(SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH,

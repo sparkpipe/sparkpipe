@@ -39,10 +39,16 @@ def write_config(path: Path) -> None:
             "head_dim": 64,
             "hidden_size": 6144,
             "intermediate_size": 12288,
+            "max_position_embeddings": 1048576,
             "model_type": "qwen3",
             "num_attention_heads": 64,
             "num_hidden_layers": 5,
             "num_key_value_heads": 64,
+            "rms_norm_eps": 1e-5,
+            "rope_parameters": {
+                "rope_theta": 8000000,
+                "rope_type": "default",
+            },
             "vocab_size": 154880,
         },
     }
@@ -64,15 +70,28 @@ def test_manifest() -> None:
                 str(model_dir),
                 "--output",
                 str(output),
+                "--model-revision",
+                "de0110be167c8da84eb7a253f07ba34eb172672e",
             ]
         )
         manifest = json.loads(output.read_text())
-        assert manifest["format"] == "sparkpipe.glm52.dspark.speculator_manifest.v1"
-        assert manifest["base_model"] == "zai-org/GLM-5.2-FP8"
-        assert manifest["verifier_quantization"] == "fp8_e4m3_8bit"
+        assert manifest["format"] == "sparkpipe.glm52.dspark.speculator_manifest.v2"
+        assert manifest["model_revision"] == (
+            "de0110be167c8da84eb7a253f07ba34eb172672e"
+        )
+        assert manifest["training_verifier_model"] == "zai-org/GLM-5.2-FP8"
+        assert manifest["verifier_contract"] == {
+            "quantization_independent": True,
+            "hidden_dtype": "bf16",
+            "hidden_dimension": 6144,
+            "vocabulary_size": 154880,
+        }
         assert manifest["aux_hidden_state_layer_ids"] == [8, 23, 39, 55, 70]
         assert manifest["maximum_speculative_token_count"] == 7
-        assert manifest["contract"]["verifier_quantization_mode"] == 2
+        assert manifest["contract"]["verifier_hidden_dtype"] == 1
+        assert manifest["contract"]["rope_theta"] == 8000000
+        assert manifest["model_safetensors"]["path"] == "model.safetensors"
+        assert manifest["config_json"]["path"] == "config.json"
         assert manifest["model_safetensors"]["sha256"] == (
             "19d151c5ad852a58ff2a464349b69bd14820375cb838ed046eae308a08523d7f"
         )

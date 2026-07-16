@@ -110,6 +110,42 @@ def set_model_arguments(
         set_role_argument(manifest,role_name,"--moe-pack-root",moe_pack_root)
 
 
+def set_dspark_arguments(
+        manifest,enabled,model_dir,manifest_path,maximum_context_tokens):
+    gateway_role = "spark0_gateway"
+    resident_role = "pp13_cuda_residentd"
+    set_role_switch(manifest,gateway_role,"--dspark",enabled)
+    set_role_switch(manifest,resident_role,"--dspark",enabled)
+    for argument in (
+            "--dspark-config",
+            "--dspark-manifest",
+            "--dspark-safetensors",
+            "--dspark-max-context"):
+        remove_role_argument(manifest,resident_role,argument)
+    if not enabled:
+        if model_dir is not None or manifest_path is not None:
+            raise SystemExit(
+                "--dspark-model-dir and --dspark-manifest require --dspark")
+        return
+    if model_dir is None:
+        raise SystemExit("--dspark-model-dir is required with --dspark")
+    if manifest_path is None:
+        raise SystemExit("--dspark-manifest is required with --dspark")
+    if maximum_context_tokens < 1:
+        raise SystemExit("--dspark-max-context must be positive")
+    set_role_argument(
+        manifest,resident_role,"--dspark-config",
+        os.path.join(model_dir,"config.json"))
+    set_role_argument(
+        manifest,resident_role,"--dspark-manifest",manifest_path)
+    set_role_argument(
+        manifest,resident_role,"--dspark-safetensors",
+        os.path.join(model_dir,"model.safetensors"))
+    set_role_argument(
+        manifest,resident_role,"--dspark-max-context",
+        maximum_context_tokens)
+
+
 def set_role_switch(manifest,role_name,argument,enabled):
     matching_roles = [role for role in manifest["roles"] if role.get("name") == role_name]
     if len(matching_roles) != 1:
@@ -222,6 +258,10 @@ def main():
     decode_mode = parser.add_mutually_exclusive_group(required=True)
     decode_mode.add_argument("--mtp",action="store_true")
     decode_mode.add_argument("--plain-decode",action="store_true")
+    parser.add_argument("--dspark",action="store_true")
+    parser.add_argument("--dspark-model-dir")
+    parser.add_argument("--dspark-manifest")
+    parser.add_argument("--dspark-max-context",type=int,default=2048)
     parser.add_argument("--without-diagnostics",action="store_true")
     parser.add_argument("--role-env",action="append",default=[])
     parser.add_argument("--role-env-unset",action="append",default=[])
@@ -270,6 +310,12 @@ def main():
         arguments.stagepack_root)
     set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
     set_role_switch(manifest,"pp13_cuda_residentd","--mtp",arguments.mtp)
+    set_dspark_arguments(
+        manifest,
+        arguments.dspark,
+        arguments.dspark_model_dir,
+        arguments.dspark_manifest,
+        arguments.dspark_max_context)
     set_runtime_diagnostics(manifest,not arguments.without_diagnostics)
     for specification in arguments.role_env_unset:
         unset_role_environment(manifest,specification)

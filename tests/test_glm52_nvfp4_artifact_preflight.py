@@ -400,6 +400,22 @@ def main() -> int:
         assert receipt["required_execution_rows"] == 1024
         assert receipt["aot"]["object_count"] == 1
         assert [item["layer"] for item in receipt["layers"]] == [layer]
+        dspark = run_preflight(
+            script,
+            stagepack_root,
+            nvfp4_root,
+            aot_manifest,
+            rank,
+            layer,
+            "--max-active",
+            "128",
+            "--rows-per-lane",
+            "8",
+        )
+        assert dspark.returncode == 0, dspark.stderr
+        dspark_receipt = json.loads(dspark.stdout)
+        assert dspark_receipt["rows_per_lane"] == 8
+        assert dspark_receipt["required_execution_rows"] == 1024
         mtp = run_preflight(
             script,
             stagepack_root,
@@ -410,7 +426,7 @@ def main() -> int:
             "--mtp",
         )
         assert mtp.returncode != 0
-        assert "required=7168 available=1024" in mtp.stderr
+        assert "required=6144 available=1024" in mtp.stderr
         resident["scale2_baked_into_block_scales"] = False
         resident_path.write_text(json.dumps(resident), encoding="utf-8")
         stale_scale_contract = run_preflight(

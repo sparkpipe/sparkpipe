@@ -7,6 +7,8 @@ BUILD_DIRECTORY := $(REPOSITORY_ROOT)/build/modules/glm52_dspark_draft_backend
 BACKEND_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_dspark_draft_backend.o
 BACKEND_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_dspark_draft_backend.a
 VALIDATOR := $(BUILD_DIRECTORY)/validate_glm52_dspark_epoch3_cuda
+DSPARK_MANIFEST ?=
+DSPARK_CONFIG ?=
 DSPARK_SAFETENSORS ?=
 DSPARK_ORACLE_DIR ?=
 
@@ -31,11 +33,16 @@ $(VALIDATOR): validation/validate_glm52_dspark_epoch3_cuda.cu $(BACKEND_ARCHIVE)
 		-lcublas -o $@
 
 validate_epoch3: $(VALIDATOR)
+	@test -s "$(DSPARK_MANIFEST)" || \
+		{ echo "set DSPARK_MANIFEST to the DSpark manifest" >&2; exit 2; }
+	@test -s "$(DSPARK_CONFIG)" || \
+		{ echo "set DSPARK_CONFIG to the DSpark config" >&2; exit 2; }
 	@test -s "$(DSPARK_SAFETENSORS)" || \
 		{ echo "set DSPARK_SAFETENSORS to the epoch-3 checkpoint" >&2; exit 2; }
 	@test -d "$(DSPARK_ORACLE_DIR)" || \
 		{ echo "set DSPARK_ORACLE_DIR to the epoch-3 oracle directory" >&2; exit 2; }
-	$(VALIDATOR) "$(DSPARK_SAFETENSORS)" "$(DSPARK_ORACLE_DIR)"
+	$(VALIDATOR) "$(DSPARK_MANIFEST)" "$(DSPARK_CONFIG)" \
+		"$(DSPARK_SAFETENSORS)" "$(DSPARK_ORACLE_DIR)"
 
 clean:
 	rm -rf $(BUILD_DIRECTORY)

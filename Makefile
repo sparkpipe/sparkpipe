@@ -21,7 +21,7 @@ ifneq ($(UNAME_S),Darwin)
 GLM52_PP13_NODE_CONTEXT_BUILDER_RPATH := -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs'
 endif
 SPARKPIPE_B12X_AOT_ENV ?= $(HOME)/.config/sparkpipe/glm52_b12x_aot_env.sh
-B12X_AOT_TOKENS ?= 1,2,4,7,8,14,16,28,32,56,64,96,112,128,224,256,448,512,672,896,1024
+B12X_AOT_TOKENS ?= 1,2,4,6,8,12,16,24,32,48,64,96,128,192,256,384,512,576,768,1024
 B12X_AOT_WARMUP ?= 5
 B12X_AOT_ITERATIONS ?= 20
 B12X_AOT_OUTPUT_DIR ?= build/glm52_b12x_aot_prompt
@@ -191,6 +191,7 @@ PYTHON_TESTS := \
 	tests/test_memory_contracts.py \
 	tests/test_b12x_scale_layout.py \
 	tests/test_glm52_dspark_manifest.py \
+	tests/test_glm52_dspark_artifact_preflight.py \
 	tests/test_glm52_b12x_pack_worker.py \
 	tests/test_glm52_b12x_resident_manifest.py \
 	tests/test_glm52_fp8_pack_layout.py \

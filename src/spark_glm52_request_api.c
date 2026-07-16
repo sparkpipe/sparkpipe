@@ -1501,12 +1501,14 @@ static uint32_t SparkGlm52RequestApiCollectDecodeBatchMembers(
     {
         SparkGlm52RequestApiSlot *slot;
 
-        slot = &api->request_slots[slot_index];
-        if (slot == leader_slot ||
-            !SparkGlm52RequestApiSlotIsSchedulableDecode(slot))
-        {
-            continue;
-        }
+		slot = &api->request_slots[slot_index];
+		if (slot == leader_slot ||
+			!SparkGlm52RequestApiSlotIsSchedulableDecode(slot) ||
+			SparkGlm52RequestApiSlotCanUseDspark(api,slot) !=
+				SparkGlm52RequestApiSlotCanUseDspark(api,leader_slot))
+		{
+			continue;
+		}
         if ((require_resident_kv != 0u ||
              slot->priority < leader_slot->priority) &&
             !SparkGlm52RequestApiDecodeBlocksAreResident(api, slot))
@@ -3685,11 +3687,13 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefill(
     {
         SparkGlm52RequestApiSlot *candidate;
 
-        candidate = &api->request_slots[slot_index];
-        if (candidate == slot ||
-            candidate->state != SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL ||
-            SparkGlm52RequestApiSharedCachePrefixTokenCount(
-                api,
+		candidate = &api->request_slots[slot_index];
+		if (candidate == slot ||
+			candidate->state != SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL ||
+			SparkGlm52RequestApiSlotCanUseDspark(api,candidate) !=
+				SparkGlm52RequestApiSlotCanUseDspark(api,slot) ||
+			SparkGlm52RequestApiSharedCachePrefixTokenCount(
+				api,
                 slot,
                 candidate) < dispatch->shared_prefix_token_count)
         {
@@ -3740,8 +3744,10 @@ static uint32_t SparkGlm52RequestApiSlotIsCompatiblePrefillBatchMember(
     {
         *candidate_scheduled_prompt_token_count_out = 0u;
     }
-    if (candidate_slot == leader_slot ||
-        !SparkGlm52RequestApiSlotIsSchedulablePrefill(candidate_slot))
+	if (candidate_slot == leader_slot ||
+		!SparkGlm52RequestApiSlotIsSchedulablePrefill(candidate_slot) ||
+		SparkGlm52RequestApiSlotCanUseDspark(api,candidate_slot) !=
+			SparkGlm52RequestApiSlotCanUseDspark(api,leader_slot))
     {
         return 0u;
     }
@@ -4020,9 +4026,9 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefillBatch(
     dispatch->request_count =
         dispatch->prefill_batch_decision.packed_request_count;
     dispatch->highest_priority = first_slot->priority;
-    for (request_index = 0u;
-         request_index < dispatch->request_count;
-         ++request_index)
+	for (request_index = 0u;
+		 request_index < dispatch->request_count;
+		 ++request_index)
     {
         SparkGlm52RequestApiSlot *selected_slot;
 
@@ -4035,10 +4041,16 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefillBatch(
         dispatch->request_slot_indices[request_index] =
             SparkGlm52RequestApiSlotIndex(api, selected_slot);
         dispatch->request_ids[request_index] = selected_slot->request_id;
-        dispatch->sequence_ids[request_index] = selected_slot->sequence_id;
-    }
-    api->scheduled_prefill_dispatch_count += 1u;
-    return SPARK_STATUS_OK;
+		dispatch->sequence_ids[request_index] = selected_slot->sequence_id;
+	}
+	if (SparkGlm52RequestApiSlotCanUseDspark(api,first_slot))
+	{
+		dispatch->flags |=
+			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
+		api->dspark_tap_capture_dispatch_count += 1u;
+	}
+	api->scheduled_prefill_dispatch_count += 1u;
+	return SPARK_STATUS_OK;
 }
 
 static void SparkGlm52RequestApiFillDecodeSchedulerRequest(
@@ -4213,10 +4225,12 @@ static uint32_t SparkGlm52RequestApiCollectSpeculativeVerifyBatchMembers(
         SparkGlm52DsparkDraftResult draft_result;
         uint32_t draft_source;
 
-        slot = &api->request_slots[slot_index];
-        if (slot == leader_slot ||
-            !SparkGlm52RequestApiSlotIsSchedulableSpeculativeVerify(slot) ||
-            ((require_resident_kv != 0u ||
+		slot = &api->request_slots[slot_index];
+		if (slot == leader_slot ||
+			!SparkGlm52RequestApiSlotIsSchedulableSpeculativeVerify(slot) ||
+			SparkGlm52RequestApiSlotCanUseDspark(api,slot) !=
+				SparkGlm52RequestApiSlotCanUseDspark(api,leader_slot) ||
+			((require_resident_kv != 0u ||
               slot->priority < leader_slot->priority) &&
              !SparkGlm52RequestApiDecodeBlocksAreResident(api, slot)))
         {
@@ -4424,12 +4438,22 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
     else
     {
         dispatch->flags |=
-            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY;
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY |
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
         dispatch->speculative_verifier_token_count =
             leader_draft.token_count + 1u;
         dispatch->speculative_max_committed_token_count =
             leader_draft.token_count + 1u;
     }
+    if (leader_source == SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP &&
+        SparkGlm52RequestApiSlotCanUseDspark(api,first_slot))
+    {
+        dispatch->flags |=
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
+    }
+    if ((dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u)
+        api->dspark_tap_capture_dispatch_count += 1u;
     dispatch->request_count =
         dispatch->decode_batch_decision.packed_request_count;
     dispatch->highest_priority = first_slot->priority;
@@ -4666,17 +4690,15 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
         dispatch->request_ids[request_index] = selected_slot->request_id;
         dispatch->sequence_ids[request_index] = selected_slot->sequence_id;
         dispatch->decode_committed_token_counts[request_index] = 1u;
-        if ((selected_slot->flags &
-                SPARK_GLM52_REQUEST_API_REQUEST_FLAG_DISABLE_SPECULATION) != 0u)
-        {
-            batch_disables_speculation = 1u;
-        }
-        if (SparkGlm52RequestApiSlotCanUseDspark(api, selected_slot))
-        {
-            dispatch->flags |=
-                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
-        }
-    }
+		if ((selected_slot->flags &
+				SPARK_GLM52_REQUEST_API_REQUEST_FLAG_DISABLE_SPECULATION) != 0u)
+		{
+			batch_disables_speculation = 1u;
+		}
+	}
+	if (SparkGlm52RequestApiSlotCanUseDspark(api,first_slot))
+		dispatch->flags |=
+			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
     if (mtp_draft_token_budget != 0u &&
         batch_disables_speculation == 0u)
     {

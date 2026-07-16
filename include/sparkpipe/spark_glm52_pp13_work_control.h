@@ -198,7 +198,7 @@ uint32_t SparkGlm52Pp13WorkControlCalculatePacketBytes(
 	uint32_t active_sequence_count);
 SparkStatus SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 	const SparkGlm52RequestApiDispatch *request_dispatch,
-	uint32_t execution_row_count,
+	uint32_t batch_lane_or_row_count,
 	uint32_t *batch_bucket_out);
 SparkStatus SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
 	uint32_t dispatch_kind,

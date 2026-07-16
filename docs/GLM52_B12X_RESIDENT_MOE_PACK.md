@@ -108,12 +108,13 @@ AOT table:
 
 ```text
 plain decode: execution_rows = logical_lanes
-MTP/DsPARK:   execution_rows = logical_lanes * 7
+MTP:          execution_rows = logical_lanes * 6
+DsPARK:       execution_rows = logical_lanes * 8
 ```
 
-Therefore plain B1024 requires an AOT maximum of at least 1024, while MTP or
-DsPARK B1024 requires at least 7168. A 1024-row AOT table supports at most 146
-logical lanes at seven rows per lane.
+Therefore plain B1024 requires an AOT maximum of at least 1024, MTP B1024
+requires at least 6144, and DsPARK B1024 requires at least 8192. A 1024-row
+AOT table supports at most 170 MTP lanes or 128 DsPARK lanes.
 
 Validate one rank-local artifact set before building:
 
@@ -126,7 +127,8 @@ python3 tools/glm52_nvfp4_artifact_preflight.py \
   --max-active 1024
 ```
 
-Add `--mtp` for the seven-row capacity contract. The preflight checks source
+Add `--mtp` for the six-row tree-verifier capacity contract, or
+`--rows-per-lane 8` for DSpark. The preflight checks source
 identity, exact pack layout, scale metadata, AOT object hashes, generated CUDA
 files, runtime link paths, and the linked-kernel manifest hash. It has no
 fallback mode.

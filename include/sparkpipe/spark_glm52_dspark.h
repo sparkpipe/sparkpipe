@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_SPARK_GLM52_DSPARK_H
-#define SPARKPIPE_SPARK_GLM52_DSPARK_H
+#pragma once
 
 #include <stdint.h>
 
@@ -10,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_DSPARK_ABI_VERSION 1u
+#define SPARK_GLM52_DSPARK_ABI_VERSION 2u
 #define SPARK_GLM52_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52DsparkSpeculatorConfiguration))
 #define SPARK_GLM52_DSPARK_DESCRIPTOR_BYTES \
@@ -58,7 +57,7 @@ extern "C" {
 #define SPARK_GLM52_DSPARK_DEFAULT_MAX_VERIFY_TOKENS \
     SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT
 #define SPARK_GLM52_DSPARK_INVALID_LAYER_INDEX 0xffffffffu
-#define SPARK_GLM52_DSPARK_VERIFIER_QUANTIZATION_FP8_E4M3_8BIT 2u
+#define SPARK_GLM52_DSPARK_VERIFIER_HIDDEN_DTYPE_BF16 1u
 #define SPARK_GLM52_DSPARK_DRAFT_DTYPE_BF16 1u
 
 #define SPARK_GLM52_DSPARK_POLICY_FLAG_ENABLE_REALTIME 0x00000001u
@@ -115,7 +114,7 @@ typedef struct SparkGlm52DsparkModelContract
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
-    uint32_t verifier_quantization_mode;
+    uint32_t verifier_hidden_dtype;
     uint32_t draft_dtype;
     uint32_t draft_layer_count;
     uint32_t block_size;
@@ -291,6 +290,4 @@ SparkStatus SparkGlm52DsparkCancelSequence(
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

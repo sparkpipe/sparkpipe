@@ -3372,6 +3372,98 @@ static void SparkTestRequestApiMtpDraftRequiresSpeculativeVerify(void)
         4u);
 }
 
+static void SparkTestRequestApiMtpVerifyCapturesDsparkBatchTap(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiHandle handle;
+    uint32_t prompt[16u];
+    uint32_t draft_token_ids[SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT];
+    uint32_t verifier_token_ids[
+        SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT];
+
+    SparkTestFillTokenIds(prompt,16u,153200u);
+    SparkTestInitializeFixture(&fixture);
+    SparkTestEnableDsparkSpeculation(&fixture);
+    fixture.api.configuration_flags |=
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+    fixture.dspark_speculator.policy_flags = 0u;
+    SparkTestInitializeSubmitRequest(
+        &request,
+        1532u,
+        11532u,
+        SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
+        prompt,
+        16u,
+        20u);
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,
+        &request,
+        &handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) == 0u);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u);
+    dispatch.decode_committed_token_counts[0u] = 1u;
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    SparkTestFillMtpTreeCandidates(draft_token_ids,93000u);
+    assert(SparkGlm52RequestApiArmMtpVerifyDispatch(
+        &fixture.api,
+        &dispatch,
+        draft_token_ids,
+        SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT,
+        SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT) == SPARK_STATUS_OK);
+    fixture.dspark_speculator.policy_flags =
+        SPARK_GLM52_DSPARK_POLICY_DEFAULT_FLAGS;
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH);
+    assert(dispatch.request_count == 1u);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) == 0u);
+    SparkTestFillMtpTreeVerifier(
+        draft_token_ids,
+        SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH1,
+        94000u,
+        verifier_token_ids);
+    assert(SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
+        &fixture.api,
+        &dispatch,
+        verifier_token_ids,
+        SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT,
+        SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(fixture.dspark_capture.call_count == 1u);
+    assert(fixture.api.dspark_draft_ready_count == 1u);
+    assert(SparkGlm52RequestApiCancelRequest(
+        &fixture.api,
+        handle) == SPARK_STATUS_OK);
+}
+
 static void SparkTestRequestApiUsesSpeculationOnlyAfterEqualPriorityRealWork(void)
 {
     SparkTestRequestApiFixture fixture;
@@ -4194,6 +4286,7 @@ int main(void)
     SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest();
     SparkTestMtpTreeResolvesEveryPath();
     SparkTestRequestApiMtpDraftRequiresSpeculativeVerify();
+    SparkTestRequestApiMtpVerifyCapturesDsparkBatchTap();
     SparkTestRequestApiUsesSpeculationOnlyAfterEqualPriorityRealWork();
     SparkTestRequestApiMtpDraftBudgetRemainsTransactional();
     SparkTestRequestApiMtpRejectedDraftStaysOutsideNextContext();

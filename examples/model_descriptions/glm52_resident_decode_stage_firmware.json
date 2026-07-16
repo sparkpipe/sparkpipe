@@ -321,10 +321,12 @@
         "capacity_contract": {
           "maximum_token_count_units": "execution_rows",
           "plain_decode_rows_per_lane": 1,
-          "mtp_and_dspark_rows_per_lane": 7,
+          "mtp_rows_per_lane": 6,
+          "dspark_rows_per_lane": 8,
           "required_rule": "maximum_token_count >= logical_lane_capacity * rows_per_lane",
           "plain_b1024_minimum_token_count": 1024,
-          "mtp_b1024_minimum_token_count": 7168,
+          "mtp_b1024_minimum_token_count": 6144,
+          "dspark_b1024_minimum_token_count": 8192,
           "default_dspark_logical_lane_buckets": [
             1,
             2,
@@ -337,15 +339,15 @@
             128
           ],
           "default_dspark_execution_row_buckets": [
-            7,
-            14,
-            28,
-            56,
-            112,
-            224,
-            448,
-            672,
-            896
+            8,
+            16,
+            32,
+            64,
+            128,
+            256,
+            512,
+            768,
+            1024
           ]
         },
         "runtime_state_contract": "one compiled B12x backend state and AOT workspace is shared across ordered local routed layers; each layer retains its own resident expert weights and small deterministic workspace",
@@ -543,7 +545,7 @@
               "no_file_transport",
               "no_shell_transport"
             ],
-            "max_active_slots": 7168,
+            "max_active_slots": 8192,
             "max_new_tokens": 7,
             "max_resident_sequences": 16384,
             "max_sequence_tokens": 8192,

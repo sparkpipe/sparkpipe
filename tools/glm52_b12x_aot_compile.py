@@ -35,6 +35,19 @@ REQUIRED_SHAPE = {
         MODEL_CONTRACT["moe_intermediate_dimension"]
     ),
 }
+DEFAULT_LOGICAL_LANE_BUCKETS = (1, 2, 4, 8, 16, 32, 64, 96, 128)
+DEFAULT_ROWS_PER_LANE = (
+    1,
+    MODEL_CONTRACT["mtp_draft_token_count"],
+    MODEL_CONTRACT["dspark"]["maximum_speculative_token_count"] + 1,
+)
+DEFAULT_AOT_TOKEN_BUCKETS = tuple(sorted({
+    lane_bucket * rows_per_lane
+    for lane_bucket in DEFAULT_LOGICAL_LANE_BUCKETS
+    for rows_per_lane in DEFAULT_ROWS_PER_LANE
+}))
+DEFAULT_AOT_TOKENS = ",".join(
+    str(token_count) for token_count in DEFAULT_AOT_TOKEN_BUCKETS)
 
 class AotFailure(RuntimeError):
     pass
@@ -742,10 +755,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--tokens",
-        default=(
-            "1,2,4,7,8,14,16,28,32,56,64,96,112,128,"
-            "224,256,448,512,672,896,1024"
-        ),
+        default=DEFAULT_AOT_TOKENS,
     )
     parser.add_argument("--output-dir", default="build/glm52_b12x_aot")
     parser.add_argument("--warmup", type=int, default=5)

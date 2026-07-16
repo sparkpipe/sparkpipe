@@ -1,13 +1,14 @@
 # GLM-5.2 DSpark speculative decode integration
 
 This pass adds an internal Sparkpipe DSpark speculative-decode path for the
-GLM-5.2 FP8 verifier deployment shape.
+GLM-5.2 verifier. The verifier may use FP8, W8LUT experts with a BF16 trunk,
+or NVFP4 experts with a BF16 trunk.
 
 The supported DSpark contract is intentionally exact:
 
 ```text
 auxiliary verifier layers: 8, 23, 39, 55, 70
-verifier quantization: FP8 E4M3
+verifier hidden taps: BF16, independent of verifier weight quantization
 draft dtype: BF16
 fixed PP13 stage width: 6 layers
 speculator draft layers: 5
@@ -24,9 +25,10 @@ confidence head: required by policy
 markov head: required by policy
 ```
 
-The request API now rejects DSpark configuration unless the attached
-`SparkGlm52DsparkSpeculator` validates this exact model contract. In particular,
-the optional path is not allowed to silently run against a non-FP8 verifier.
+The request API rejects DSpark configuration unless the attached
+`SparkGlm52DsparkSpeculator` validates this exact hidden-state, vocabulary,
+tap-layer, and draft-model contract. Verifier weight quantization is validated
+by the stage driver and is not part of the DSpark ABI.
 
 ## Setup manifest
 
@@ -36,13 +38,16 @@ manifest with:
 ```sh
 python3 tools/glm52_dspark_manifest.py \
   --model-dir /home/spark0/ds4_nvme/models/hf/RedHatAI/GLM-5.2-speculator.dspark \
-  --output /home/spark0/ds4_nvme/sparkpipe_artifacts/dspark/glm52_dspark_manifest.json
+  --output /home/spark0/ds4_nvme/sparkpipe_artifacts/dspark/glm52_dspark_manifest.json \
+  --model-revision de0110be167c8da84eb7a253f07ba34eb172672e
 ```
 
 The tool validates the checkpoint `config.json` against the Sparkpipe DSpark
-contract and records the `model.safetensors` byte count and SHA-256. Python is
-only used here during one-time setup; serving should consume the JSON contract
-and the resident weights from C/CUDA.
+contract and records the config and `model.safetensors` byte counts and
+SHA-256 values. The checkpoint's FP8 verifier name is retained as training
+provenance, not as a deployment restriction. Run
+`tools/glm52_dspark_artifact_preflight.py` with the selected verifier
+quantization before serving.
 
 The PP13 tap mapping is:
 

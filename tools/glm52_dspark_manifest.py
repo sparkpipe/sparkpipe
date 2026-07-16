@@ -18,9 +18,9 @@ from glm52_model_contract import load_model_contract
 
 MODEL_CONTRACT = load_model_contract()
 DSPARK_CONTRACT = MODEL_CONTRACT["dspark"]
-FORMAT = "sparkpipe.glm52.dspark.speculator_manifest.v1"
+FORMAT = "sparkpipe.glm52.dspark.speculator_manifest.v2"
 MODEL_ID = "RedHatAI/GLM-5.2-speculator.dspark"
-BASE_MODEL = "zai-org/GLM-5.2-FP8"
+TRAINING_VERIFIER_MODEL = "zai-org/GLM-5.2-FP8"
 AUX_LAYERS = DSPARK_CONTRACT["aux_layer_ids"]
 MAX_SPECULATIVE_TOKENS = DSPARK_CONTRACT["maximum_speculative_token_count"]
 
@@ -58,8 +58,9 @@ def load_config(model_dir: Path) -> Dict[str, Any]:
     return json.loads(config_path.read_text())
 
 
-def build_manifest(model_dir: Path, skip_sha256: bool) -> Dict[str, Any]:
+def build_manifest(model_dir: Path, model_revision: str) -> Dict[str, Any]:
     config = load_config(model_dir)
+    config_path = model_dir / "config.json"
     transformer = config.get("transformer_layer_config") or {}
     speculators = config.get("speculators_config") or {}
     proposals = speculators.get("proposal_methods") or []
@@ -92,7 +93,11 @@ def build_manifest(model_dir: Path, skip_sha256: bool) -> Dict[str, Any]:
         MAX_SPECULATIVE_TOKENS,
     )
     require_equal("proposal verifier_accept_k", proposal.get("verifier_accept_k"), 1)
-    require_equal("verifier.name_or_path", verifier.get("name_or_path"), BASE_MODEL)
+    require_equal(
+        "verifier.name_or_path",
+        verifier.get("name_or_path"),
+        TRAINING_VERIFIER_MODEL,
+    )
     require_equal("draft hidden_size", transformer.get("hidden_size"), MODEL_CONTRACT["hidden_dimension"])
     require_equal("draft intermediate_size", transformer.get("intermediate_size"), DSPARK_CONTRACT["draft_intermediate_dimension"])
     require_equal("draft num_hidden_layers", transformer.get("num_hidden_layers"), DSPARK_CONTRACT["draft_layer_count"])
@@ -100,6 +105,21 @@ def build_manifest(model_dir: Path, skip_sha256: bool) -> Dict[str, Any]:
     require_equal("draft num_key_value_heads", transformer.get("num_key_value_heads"), DSPARK_CONTRACT["draft_kv_head_count"])
     require_equal("draft head_dim", transformer.get("head_dim"), DSPARK_CONTRACT["draft_head_dimension"])
     require_equal("draft vocab_size", transformer.get("vocab_size"), MODEL_CONTRACT["output_vocab_count"])
+    require_equal(
+        "draft max_position_embeddings",
+        transformer.get("max_position_embeddings"),
+        MODEL_CONTRACT["maximum_context_tokens"],
+    )
+    require_equal(
+        "draft rms_norm_eps",
+        transformer.get("rms_norm_eps"),
+        MODEL_CONTRACT["rms_norm_epsilon"],
+    )
+    require_equal(
+        "draft rope_theta",
+        (transformer.get("rope_parameters") or {}).get("rope_theta"),
+        MODEL_CONTRACT["rope_theta"],
+    )
 
     if not model_path.exists():
         raise ManifestFailure(f"missing DSpark weights: {model_path}")
@@ -107,20 +127,32 @@ def build_manifest(model_dir: Path, skip_sha256: bool) -> Dict[str, Any]:
     manifest = {
         "format": FORMAT,
         "model_id": MODEL_ID,
-        "base_model": BASE_MODEL,
-        "verifier_quantization": "fp8_e4m3_8bit",
+        "model_revision": model_revision,
+        "training_verifier_model": TRAINING_VERIFIER_MODEL,
+        "verifier_contract": {
+            "quantization_independent": True,
+            "hidden_dtype": "bf16",
+            "hidden_dimension": MODEL_CONTRACT["hidden_dimension"],
+            "vocabulary_size": MODEL_CONTRACT["output_vocab_count"],
+        },
         "draft_dtype": "bf16",
         "draft_architecture": "qwen3",
         "aux_hidden_state_layer_ids": aux_layers,
         "maximum_speculative_token_count": MAX_SPECULATIVE_TOKENS,
         "verifier_accept_k": 1,
+        "config_json": {
+            "path": config_path.name,
+            "bytes": config_path.stat().st_size,
+            "sha256": sha256_file(config_path),
+        },
         "model_safetensors": {
-            "path": str(model_path),
+            "path": model_path.name,
             "bytes": model_path.stat().st_size,
+            "sha256": sha256_file(model_path),
         },
         "contract": {
-            "abi_version": 1,
-            "verifier_quantization_mode": 2,
+            "abi_version": 2,
+            "verifier_hidden_dtype": 1,
             "draft_dtype": 1,
             "draft_layer_count": DSPARK_CONTRACT["draft_layer_count"],
             "block_size": DSPARK_CONTRACT["block_size"],
@@ -137,10 +169,11 @@ def build_manifest(model_dir: Path, skip_sha256: bool) -> Dict[str, Any]:
             "verifier_accept_k": 1,
             "enable_confidence_head": 1,
             "confidence_head_with_markov": 1,
+            "maximum_context_tokens": MODEL_CONTRACT["maximum_context_tokens"],
+            "rms_norm_epsilon": MODEL_CONTRACT["rms_norm_epsilon"],
+            "rope_theta": MODEL_CONTRACT["rope_theta"],
         },
     }
-    if not skip_sha256:
-        manifest["model_safetensors"]["sha256"] = sha256_file(model_path)
     return manifest
 
 
@@ -150,9 +183,9 @@ def main() -> int:
     )
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--skip-sha256", action="store_true")
+    parser.add_argument("--model-revision", required=True)
     args = parser.parse_args()
-    manifest = build_manifest(Path(args.model_dir), args.skip_sha256)
+    manifest = build_manifest(Path(args.model_dir), args.model_revision)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

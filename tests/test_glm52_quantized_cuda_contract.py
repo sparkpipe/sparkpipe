@@ -56,6 +56,14 @@ def main() -> int:
         "modules/glm52_resident_decode_stage/source/"
         "spark_glm52_pp13_node_context_builder_cuda.cu"
     )
+    dspark_backend_path = repository / (
+        "modules/glm52_dspark_draft_backend/source/"
+        "spark_glm52_dspark_draft_backend.cu"
+    )
+    dspark_backend_header_path = repository / (
+        "modules/glm52_dspark_draft_backend/include/sparkpipe/"
+        "spark_glm52_dspark_draft_backend.h"
+    )
     makefile_path = repository / "Makefile"
     sentinel_path = repository / (
         "modules/glm52_sm121_b12x_compiled_backend/source/"
@@ -66,6 +74,9 @@ def main() -> int:
     aot = aot_path.read_text(encoding="utf-8")
     packed_route_header = packed_route_header_path.read_text(encoding="utf-8")
     builder = builder_path.read_text(encoding="utf-8")
+    dspark_backend = dspark_backend_path.read_text(encoding="utf-8")
+    dspark_backend_header = dspark_backend_header_path.read_text(
+        encoding="utf-8")
     makefile = makefile_path.read_text(encoding="utf-8")
     sentinel = sentinel_path.read_text(encoding="utf-8")
 
@@ -210,12 +221,49 @@ def main() -> int:
         "missing exact static AOT buckets",
     ):
         require(aot, required, "NVFP4 production AOT compiler")
-    for dspark_rows in ("7", "14", "28", "56", "112", "224", "448", "672", "896"):
-        require(
-            makefile,
-            dspark_rows,
-            "NVFP4 default DSpark exact bucket set",
+    require(
+        makefile,
+        "B12X_AOT_TOKENS ?= "
+        "1,2,4,6,8,12,16,24,32,48,64,96,128,192,"
+        "256,384,512,576,768,1024",
+        "NVFP4 exact MTP-tree and DSpark bucket set",
+    )
+    for text, label in (
+        (dspark_backend, "DSpark backend"),
+        (dspark_backend_header, "DSpark backend ABI"),
+    ):
+        forbid(
+            text,
+            "SparkGlm52DsparkDraftBackendStageLane",
+            label,
         )
+        forbid(
+            text,
+            "SparkGlm52DsparkDraftBackendDraft(",
+            label,
+        )
+    dspark_batch_path = dspark_backend[dspark_backend.index(
+        "SparkStatus SparkGlm52DsparkDraftBackendStageBatch("):]
+    require(
+        dspark_batch_path,
+        "SparkGlm52DsparkDraftBackendLaunchDraftBatch(",
+        "DSpark batched production path",
+    )
+    require(
+        dspark_batch_path,
+        "SparkGlm52DsparkDraftBackendTakeBatchResults(",
+        "DSpark batched production path",
+    )
+    require(
+        dspark_batch_path,
+        "cudaEventQuery(",
+        "DSpark event-polled production path",
+    )
+    forbid(
+        dspark_batch_path,
+        "cudaStreamSynchronize(",
+        "DSpark batched production path",
+    )
 
     forbid(sentinel, "__global__", "inactive B12x sentinel")
     forbid(sentinel, "cuda", "inactive B12x sentinel")

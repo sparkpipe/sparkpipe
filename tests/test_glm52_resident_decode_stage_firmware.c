@@ -3693,9 +3693,12 @@ int main(void)
     void *inspection_handle;
     char error_buffer[1024];
 
-    assert(SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_EXECUTION_ROW_COUNT == 7168u);
+    assert(SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_EXECUTION_ROW_COUNT == 8192u);
     assert(256u *
         (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) <=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_EXECUTION_ROW_COUNT);
+    assert(1024u *
+        (SPARK_GLM52_MODEL_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u) ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_EXECUTION_ROW_COUNT);
     SparkTestGlm52ResidentDecodeStageLinearPlanPreparedRowContract();
     SparkTestGlm52ResidentDecodeStageDsaSelectedBlockContract();

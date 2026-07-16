@@ -29,7 +29,8 @@ PREFLIGHT_SCHEMA = "sparkpipe.glm52.nvfp4.artifact_preflight.v1"
 GENERATED_SOURCE = "spark_glm52_sm121_b12x_generated_kernel_table.cu"
 GENERATED_FLAGS = "tvm_ffi_flags.mk"
 RUNTIME_LINK_ARGS = "runtime_link_args.txt"
-MTP_ROWS_PER_LANE = 7
+MTP_ROWS_PER_LANE = 6
+MAX_ROWS_PER_LANE = 8
 
 
 PreflightFailure = stagepack.PreflightFailure
@@ -824,8 +825,10 @@ def main() -> int:
             raise PreflightFailure("--sample-bytes must be in 16..65536")
         if arguments.max_active <= 0 or arguments.max_active > 1024:
             raise PreflightFailure("--max-active must be in 1..1024")
-        if arguments.rows_per_lane <= 0 or arguments.rows_per_lane > 7:
-            raise PreflightFailure("--rows-per-lane must be in 1..7")
+        if (arguments.rows_per_lane <= 0 or
+                arguments.rows_per_lane > MAX_ROWS_PER_LANE):
+            raise PreflightFailure(
+                f"--rows-per-lane must be in 1..{MAX_ROWS_PER_LANE}")
         rows_per_lane = (
             MTP_ROWS_PER_LANE if arguments.mtp else arguments.rows_per_lane
         )

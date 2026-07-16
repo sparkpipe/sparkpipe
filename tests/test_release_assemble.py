@@ -68,6 +68,9 @@ def main():
             "--kv-pool-tokens","65536",
             "--kv-logical-blocks","1024",
             "--mtp",
+            "--dspark",
+            "--dspark-model-dir","/models/dspark",
+            "--dspark-manifest","/models/dspark/dspark_manifest.json",
             "--replace","bin/runtime=" + str(replacement),
         ],check=True)
         diagnostic = json.loads(
@@ -87,6 +90,20 @@ def main():
             "pp13_rank_daemon"]["env"]
         assert "SPARKPIPE_PP13_TRACE=1" in diagnostic_by_role[
             "pp13_rank_daemon"]["env"]
+        assert "--dspark" in diagnostic_by_role["spark0_gateway"]["argv"]
+        assert "--dspark" in diagnostic_by_role[
+            "pp13_cuda_residentd"]["argv"]
+        assert diagnostic_by_role["pp13_cuda_residentd"]["argv"][
+            diagnostic_by_role["pp13_cuda_residentd"]["argv"].index(
+                "--dspark-config") + 1] == "/models/dspark/config.json"
+        assert diagnostic_by_role["pp13_cuda_residentd"]["argv"][
+            diagnostic_by_role["pp13_cuda_residentd"]["argv"].index(
+                "--dspark-manifest") + 1] == (
+                    "/models/dspark/dspark_manifest.json")
+        assert diagnostic_by_role["pp13_cuda_residentd"]["argv"][
+            diagnostic_by_role["pp13_cuda_residentd"]["argv"].index(
+                "--dspark-safetensors") + 1] == (
+                    "/models/dspark/model.safetensors")
         subprocess.run([
             "python3",str(tool),
             "--template",str(template),
@@ -164,6 +181,7 @@ def main():
         plain = json.loads(
             (plain_output / "sparkpipe.json").read_text(encoding="utf-8"))
         assert all("--mtp" not in role["argv"] for role in plain["roles"])
+        assert all("--dspark" not in role["argv"] for role in plain["roles"])
         subprocess.run([
             "python3",str(tool),
             "--template",str(template),
@@ -175,6 +193,9 @@ def main():
             "--stagepack-root","/home/{host}/artifacts/w8-stage",
             "--moe-pack-root","/home/{host}/artifacts/w8-moe",
             "--mtp",
+            "--dspark",
+            "--dspark-model-dir","/models/dspark",
+            "--dspark-manifest","/models/dspark/dspark_manifest.json",
         ],check=True)
         w8 = json.loads(
             (w8_output / "sparkpipe.json").read_text(encoding="utf-8"))
@@ -187,6 +208,7 @@ def main():
                 "/home/{host}/artifacts/w8-stage")
             assert arguments[arguments.index("--moe-pack-root") + 1] == (
                 "/home/{host}/artifacts/w8-moe")
+            assert "--dspark" in arguments
         subprocess.run([
             "python3",str(tool),
             "--template",str(template),
@@ -198,6 +220,9 @@ def main():
             "--stagepack-root","/home/{host}/artifacts/nvfp4-stage",
             "--moe-pack-root","/home/{host}/artifacts/nvfp4-moe",
             "--mtp",
+            "--dspark",
+            "--dspark-model-dir","/models/dspark",
+            "--dspark-manifest","/models/dspark/dspark_manifest.json",
         ],check=True)
         nvfp4 = json.loads(
             (nvfp4_output / "sparkpipe.json").read_text(encoding="utf-8"))
@@ -210,6 +235,7 @@ def main():
                 "/home/{host}/artifacts/nvfp4-stage")
             assert arguments[arguments.index("--moe-pack-root") + 1] == (
                 "/home/{host}/artifacts/nvfp4-moe")
+            assert "--dspark" in arguments
         missing_w8_stage = subprocess.run([
             "python3",str(tool),
             "--template",str(template),
@@ -223,6 +249,20 @@ def main():
         ],capture_output=True,text=True)
         assert missing_w8_stage.returncode != 0
         assert "--stagepack-root is required" in missing_w8_stage.stderr
+        missing_dspark_artifacts = subprocess.run([
+            "python3",str(tool),
+            "--template",str(template),
+            "--output",str(root / "missing-dspark-artifacts"),
+            "--release-id","missing-dspark-artifacts",
+            "--git-commit","abc123",
+            "--kv-logical-blocks","1024",
+            "--model-quantization","fp8",
+            "--plain-decode",
+            "--dspark",
+        ],capture_output=True,text=True)
+        assert missing_dspark_artifacts.returncode != 0
+        assert "--dspark-model-dir is required" in (
+            missing_dspark_artifacts.stderr)
 
 
 if __name__ == "__main__":
