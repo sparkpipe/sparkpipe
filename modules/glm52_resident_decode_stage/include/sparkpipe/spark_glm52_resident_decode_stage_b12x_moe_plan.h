@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PLAN_H
-#define SPARKPIPE_SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PLAN_H
+#pragma once
 
 #include <stdint.h>
 
@@ -17,6 +16,13 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_ALIGNMENT 4096u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_U32_FIELD_COUNT 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_U64_FIELD_COUNT 4u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_BINDING_ABI_VERSION 2u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_BINDING_CREATE_ABI_VERSION \
+    2u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_BINDING_CREATE_FLAG_EXTERNAL_STATE \
+    0x00000001u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_BINDING_CREATE_KNOWN_FLAGS \
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_BINDING_CREATE_FLAG_EXTERNAL_STATE
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W1_WEIGHT 0u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W1_SCALE 1u
@@ -88,6 +94,8 @@ typedef struct SparkGlm52ResidentDecodeStageB12xMoeResidentBinding
     SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan dispatch_plan;
     SparkGlm52ResidentDecodeStageB12xMoePlan plan;
     void *state_cell;
+    uint32_t owns_state_cell;
+    uint32_t reserved0;
     void *w1_weight_fp4_static_view;
     void *w1_scale_static_storage_ue4m3;
     void *w1_alpha_fp32_by_expert;
@@ -102,8 +110,9 @@ typedef struct SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateInfo
     uint32_t abi_version;
     uint32_t layer_index;
     uint32_t maximum_active_sequence_count;
-    uint32_t reserved;
+    uint32_t flags;
     const char *pack_path;
+    void *external_state_cell;
 } SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateInfo;
 
 SparkStatus SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile(
@@ -115,6 +124,4 @@ void SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy(
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

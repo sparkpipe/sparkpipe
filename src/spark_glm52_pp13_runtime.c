@@ -57,6 +57,9 @@ SparkStatus SparkGlm52Pp13RuntimeParseQuantizationMode(
     if (strcmp(name,"fp8") == 0)
         *quantization_mode_out =
             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
+    else if (strcmp(name,"nvfp4") == 0)
+        *quantization_mode_out =
+            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
     else if (strcmp(name,"w8lut") == 0)
         *quantization_mode_out =
             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
@@ -71,6 +74,9 @@ const char *SparkGlm52Pp13RuntimeQuantizationModeName(
     if (quantization_mode ==
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
         return "fp8";
+    if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
+        return "nvfp4";
     if (quantization_mode ==
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
         return "w8lut";
@@ -90,12 +96,37 @@ SparkStatus SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
             ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
     }
     if (quantization_mode ==
-        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
+        quantization_mode ==
+            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
     {
         return bound_plan_count == 0u && expected_plan_count == 0u
             ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
     }
     return SPARK_STATUS_INVALID_ARGUMENT;
+}
+
+SparkStatus SparkGlm52Pp13RuntimeExpectedMoeBackendKind(
+    uint32_t quantization_mode,
+    uint32_t *backend_kind_out)
+{
+    if (backend_kind_out == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
+        *backend_kind_out =
+            SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_FP8_FLASHINFER_GROUPED;
+    else if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
+        *backend_kind_out =
+            SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_NVFP4_B12X;
+    else if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+        *backend_kind_out =
+            SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_W8LUT_BF16_WMMA;
+    else
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    return SPARK_STATUS_OK;
 }
 
 static uint32_t SparkGlm52Pp13RuntimePathIsPresent(const char *path)
@@ -213,6 +244,8 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
         rank_index >= SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT ||
         (quantization_mode !=
              SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT &&
+         quantization_mode !=
+             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT &&
          quantization_mode !=
              SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT) ||
         port_base > (65535u - SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT))
@@ -385,6 +418,8 @@ SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
         (rank_plan->quantization_mode !=
              SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT &&
          rank_plan->quantization_mode !=
+             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT &&
+         rank_plan->quantization_mode !=
              SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT) ||
         rank_plan->max_packet_bytes !=
             ((uint64_t)SPARK_GLM52_PP13_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
@@ -463,6 +498,16 @@ SparkStatus SparkGlm52Pp13RuntimeBuildMoePackPath(
             layer_index);
     }
     else if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
+    {
+        written = snprintf(
+            pack_path,
+            pack_path_bytes,
+            "%s/glm52_layer_%04u_b12x_moe.spb12x",
+            pack_root,
+            layer_index);
+    }
+    else if (quantization_mode ==
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
     {
         written = snprintf(
@@ -494,10 +539,12 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
     char pack_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
     char manifest_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
     char foreign_manifest_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
+    const char *manifest_names[3];
     SparkStatus status;
     uint32_t layer_index;
+    uint32_t manifest_index;
+    uint32_t selected_manifest_index;
     const char *manifest_name;
-    const char *foreign_manifest_name;
     int written;
 
     status = SparkGlm52Pp13RuntimeValidateRankPlan(
@@ -516,14 +563,18 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
             SPARK_STATUS_INVALID_ARGUMENT,
             "MoE pack root is empty");
     }
-    manifest_name = rank_plan->quantization_mode ==
-            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT
-        ? SPARK_GLM52_PP13_RUNTIME_FP8_PACK_MANIFEST
-        : SPARK_GLM52_PP13_RUNTIME_W8LUT_PACK_MANIFEST;
-    foreign_manifest_name = rank_plan->quantization_mode ==
-            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT
-        ? SPARK_GLM52_PP13_RUNTIME_W8LUT_PACK_MANIFEST
-        : SPARK_GLM52_PP13_RUNTIME_FP8_PACK_MANIFEST;
+    manifest_names[0] = SPARK_GLM52_PP13_RUNTIME_FP8_PACK_MANIFEST;
+    manifest_names[1] = SPARK_GLM52_PP13_RUNTIME_B12X_PACK_MANIFEST;
+    manifest_names[2] = SPARK_GLM52_PP13_RUNTIME_W8LUT_PACK_MANIFEST;
+    if (rank_plan->quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
+        selected_manifest_index = 0u;
+    else if (rank_plan->quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
+        selected_manifest_index = 1u;
+    else
+        selected_manifest_index = 2u;
+    manifest_name = manifest_names[selected_manifest_index];
     written = snprintf(
         manifest_path,
         sizeof(manifest_path),
@@ -542,21 +593,26 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
             SPARK_STATUS_NOT_FOUND,
             "resident MoE pack manifest is missing");
     }
-    written = snprintf(
-        foreign_manifest_path,
-        sizeof(foreign_manifest_path),
-        "%s/%s",
-        pack_root,
-        foreign_manifest_name);
-    if (written < 0 || (uint32_t)written >= sizeof(foreign_manifest_path))
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
-    if (SparkGlm52Pp13RuntimePathIsPresent(foreign_manifest_path))
+    for (manifest_index = 0u; manifest_index < 3u; ++manifest_index)
     {
-        return SparkGlm52Pp13RuntimeReport(
-            error_buffer,
-            error_buffer_bytes,
-            SPARK_STATUS_MODULE_NOT_VALIDATED,
-            "resident MoE pack root mixes quantization formats");
+        if (manifest_index == selected_manifest_index)
+            continue;
+        written = snprintf(
+            foreign_manifest_path,
+            sizeof(foreign_manifest_path),
+            "%s/%s",
+            pack_root,
+            manifest_names[manifest_index]);
+        if (written < 0 || (uint32_t)written >= sizeof(foreign_manifest_path))
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        if (SparkGlm52Pp13RuntimePathIsPresent(foreign_manifest_path))
+        {
+            return SparkGlm52Pp13RuntimeReport(
+                error_buffer,
+                error_buffer_bytes,
+                SPARK_STATUS_MODULE_NOT_VALIDATED,
+                "resident MoE pack root mixes quantization formats");
+        }
     }
     for (layer_index = rank_plan->first_layer_index;
          layer_index < rank_plan->first_layer_index + rank_plan->layer_count;

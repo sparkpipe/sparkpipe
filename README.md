@@ -95,7 +95,7 @@ One-time AOT generation on `spark1`:
 tools/glm52_b12x_prepare_spark_env.sh
 . "$HOME/.config/sparkpipe/glm52_b12x_aot_env.sh"
 ./tools/glm52_b12x_aot_compile.py \
-    --tokens 1,2,4,8,16,32,64,96,128 \
+    --tokens 1,2,4,8,16,32,64,96,128,256,512,1024 \
     --warmup 5 \
     --iterations 20 \
     --benchmark \
@@ -114,3 +114,8 @@ make glm52_b12x_compiled_backend NVCC=nvcc
 ```
 
 If `build/glm52_b12x_aot/generated/spark_glm52_sm121_b12x_generated_kernel_table.cu`, `tvm_ffi_flags.mk`, or `objects/*.o` is missing, the generated backend target fails. The serving link must include the generated archive plus runtime libraries listed in `build/glm52_b12x_aot/generated/runtime_link_args.txt`.
+
+The AOT maximum is measured in execution rows. The default list supports
+plain B1024. MTP or DsPARK at B1024 needs a qualified 7168-row bucket; do not
+claim that capacity from a 1024-row table. Validate the complete rank-local
+artifact chain with `tools/glm52_nvfp4_artifact_preflight.py`.

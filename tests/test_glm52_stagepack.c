@@ -139,9 +139,45 @@ static void SparkTestGlm52StagePackW8lutContract(void)
 		stagepack_root,w8lut_root) == SPARK_STATUS_SCHEMA_ERROR);
 }
 
+static void SparkTestGlm52StagePackNvfp4Contract(void)
+{
+	const char *stagepack_root;
+	const char *nvfp4_root;
+
+	stagepack_root = "build/test_glm52_stagepack_nvfp4_data";
+	nvfp4_root = "build/test_glm52_stagepack_nvfp4_data/moe";
+	SparkTestMakeDirectory(stagepack_root);
+	SparkTestMakeDirectory(nvfp4_root);
+	SparkTestWriteTextFile(
+		"build/test_glm52_stagepack_nvfp4_data/stagepack_index.json",
+		"{\"format\":\"sparkpipe.glm52.pp13.stagepack.v1\","
+		"\"model_quantization\":\"nvfp4\","
+		"\"non_expert_weight_dtype\":\"BF16\","
+		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_A "\"}");
+	SparkTestWriteTextFile(
+		"build/test_glm52_stagepack_nvfp4_data/moe/resident_moe_pack_manifest.json",
+		"{\"record_schema\":\"sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1\","
+		"\"pack_magic\":\"SPARKGLM52B12X\","
+		"\"pack_extension\":\".spb12x\","
+		"\"quant_mode\":1,"
+		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_A "\"}");
+	assert(SparkGlm52StagePackValidateNvfp4Contract(
+		stagepack_root,nvfp4_root) == SPARK_STATUS_OK);
+	SparkTestWriteTextFile(
+		"build/test_glm52_stagepack_nvfp4_data/moe/resident_moe_pack_manifest.json",
+		"{\"record_schema\":\"sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1\","
+		"\"pack_magic\":\"SPARKGLM52B12X\","
+		"\"pack_extension\":\".spb12x\","
+		"\"quant_mode\":1,"
+		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_B "\"}");
+	assert(SparkGlm52StagePackValidateNvfp4Contract(
+		stagepack_root,nvfp4_root) == SPARK_STATUS_SCHEMA_ERROR);
+}
+
 int main(void)
 {
 	SparkTestGlm52StagePackResolveTensor();
 	SparkTestGlm52StagePackW8lutContract();
+	SparkTestGlm52StagePackNvfp4Contract();
 	return 0;
 }

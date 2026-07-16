@@ -216,7 +216,7 @@ def main():
     parser.add_argument("--kv-pool-tokens",type=int)
     parser.add_argument("--kv-logical-blocks",type=int,required=True)
     parser.add_argument(
-        "--model-quantization",choices=["fp8","w8lut"],default="fp8")
+        "--model-quantization",choices=["fp8","nvfp4","w8lut"],default="fp8")
     parser.add_argument("--stagepack-root")
     parser.add_argument("--moe-pack-root")
     decode_mode = parser.add_mutually_exclusive_group(required=True)

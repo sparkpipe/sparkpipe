@@ -33,6 +33,12 @@ extern "C" {
     "fp8_moe_pack_manifest.json"
 #define SPARK_GLM52_PP13_RUNTIME_W8LUT_PACK_MANIFEST \
     "w8lut_moe_pack_manifest.json"
+#define SPARK_GLM52_PP13_RUNTIME_B12X_PACK_MANIFEST \
+    "resident_moe_pack_manifest.json"
+#define SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_NONE 0u
+#define SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_FP8_FLASHINFER_GROUPED 1u
+#define SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_W8LUT_BF16_WMMA 2u
+#define SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_NVFP4_B12X 3u
 #define SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE \
     SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES
 #define SPARK_GLM52_PP13_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE \
@@ -104,6 +110,10 @@ SparkStatus SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
     uint32_t quantization_mode,
     uint32_t bound_plan_count,
     uint32_t expected_plan_count);
+
+SparkStatus SparkGlm52Pp13RuntimeExpectedMoeBackendKind(
+    uint32_t quantization_mode,
+    uint32_t *backend_kind_out);
 
 typedef struct SparkGlm52Pp13RuntimeFinalEventRoute
 {

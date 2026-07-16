@@ -90,10 +90,14 @@ static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
     pack_root = "build/test_glm52_pp13_runtime_packs";
     (void)mkdir(pack_root,0775);
     (void)remove("build/test_glm52_pp13_runtime_packs/fp8_moe_pack_manifest.json");
+    (void)remove("build/test_glm52_pp13_runtime_packs/resident_moe_pack_manifest.json");
     (void)remove("build/test_glm52_pp13_runtime_packs/w8lut_moe_pack_manifest.json");
     (void)remove("build/test_glm52_pp13_runtime_packs/glm52_layer_0003_fp8_moe.spfp8");
     (void)remove("build/test_glm52_pp13_runtime_packs/glm52_layer_0004_fp8_moe.spfp8");
     (void)remove("build/test_glm52_pp13_runtime_packs/glm52_layer_0005_fp8_moe.spfp8");
+    (void)remove("build/test_glm52_pp13_runtime_packs/glm52_layer_0003_b12x_moe.spb12x");
+    (void)remove("build/test_glm52_pp13_runtime_packs/glm52_layer_0004_b12x_moe.spb12x");
+    (void)remove("build/test_glm52_pp13_runtime_packs/glm52_layer_0005_b12x_moe.spb12x");
     (void)remove("build/test_glm52_pp13_runtime_packs/glm52_layer_0003_w8lut_moe.spw8lut");
     (void)remove("build/test_glm52_pp13_runtime_packs/glm52_layer_0004_w8lut_moe.spw8lut");
     (void)remove("build/test_glm52_pp13_runtime_packs/glm52_layer_0005_w8lut_moe.spw8lut");
@@ -138,6 +142,38 @@ static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
         &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
             SPARK_STATUS_MODULE_NOT_VALIDATED);
     assert(remove("build/test_glm52_pp13_runtime_packs/fp8_moe_pack_manifest.json") == 0);
+    assert(remove("build/test_glm52_pp13_runtime_packs/w8lut_moe_pack_manifest.json") == 0);
+    SparkTestWriteFile("build/test_glm52_pp13_runtime_packs/resident_moe_pack_manifest.json");
+    assert(SparkGlm52Pp13RuntimeBuildRankPlan(
+        0u,1024u,52100u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,
+        &rank_plan,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+    assert(SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
+        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
+            SPARK_STATUS_NOT_FOUND);
+    assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
+        pack_root,rank_plan.quantization_mode,3u,pack_path,sizeof(pack_path)) ==
+            SPARK_STATUS_OK);
+    assert(strcmp(pack_path,
+        "build/test_glm52_pp13_runtime_packs/glm52_layer_0003_b12x_moe.spb12x") == 0);
+    SparkTestWriteFile(pack_path);
+    assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
+        pack_root,rank_plan.quantization_mode,4u,pack_path,sizeof(pack_path)) ==
+            SPARK_STATUS_OK);
+    SparkTestWriteFile(pack_path);
+    assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
+        pack_root,rank_plan.quantization_mode,5u,pack_path,sizeof(pack_path)) ==
+            SPARK_STATUS_OK);
+    SparkTestWriteFile(pack_path);
+    assert(SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
+        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+    assert(remove("build/test_glm52_pp13_runtime_packs/resident_moe_pack_manifest.json") == 0);
+    SparkTestWriteFile("build/test_glm52_pp13_runtime_packs/w8lut_moe_pack_manifest.json");
+    assert(SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
+        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
+            SPARK_STATUS_NOT_FOUND);
+    assert(SparkGlm52Pp13RuntimeBuildRankPlan(
+        0u,1024u,52100u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,
+        &rank_plan,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
         &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
             SPARK_STATUS_NOT_FOUND);
@@ -165,6 +201,10 @@ static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
     assert(strcmp(SparkGlm52Pp13RuntimeQuantizationModeName(
         rank_plan.quantization_mode),"fp8") == 0);
     assert(SparkGlm52Pp13RuntimeParseQuantizationMode(
+        "nvfp4",&rank_plan.quantization_mode) == SPARK_STATUS_OK);
+    assert(strcmp(SparkGlm52Pp13RuntimeQuantizationModeName(
+        rank_plan.quantization_mode),"nvfp4") == 0);
+    assert(SparkGlm52Pp13RuntimeParseQuantizationMode(
         "w8lut",&rank_plan.quantization_mode) == SPARK_STATUS_OK);
     assert(strcmp(SparkGlm52Pp13RuntimeQuantizationModeName(
         rank_plan.quantization_mode),"w8lut") == 0);
@@ -175,6 +215,12 @@ static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u,0u) ==
         SPARK_STATUS_MODULE_NOT_VALIDATED);
     assert(SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,0u,0u) ==
+        SPARK_STATUS_OK);
+    assert(SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,1u,1u) ==
+        SPARK_STATUS_MODULE_NOT_VALIDATED);
+    assert(SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,0u,0u) ==
         SPARK_STATUS_OK);
     assert(SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
@@ -182,6 +228,21 @@ static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
         SPARK_STATUS_MODULE_NOT_VALIDATED);
     assert(SparkGlm52Pp13RuntimeParseQuantizationMode(
         "auto",&rank_plan.quantization_mode) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkGlm52Pp13RuntimeExpectedMoeBackendKind(
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        &rank_plan.quantization_mode) == SPARK_STATUS_OK);
+    assert(rank_plan.quantization_mode ==
+        SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_FP8_FLASHINFER_GROUPED);
+    assert(SparkGlm52Pp13RuntimeExpectedMoeBackendKind(
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,
+        &rank_plan.quantization_mode) == SPARK_STATUS_OK);
+    assert(rank_plan.quantization_mode ==
+        SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_NVFP4_B12X);
+    assert(SparkGlm52Pp13RuntimeExpectedMoeBackendKind(
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,
+        &rank_plan.quantization_mode) == SPARK_STATUS_OK);
+    assert(rank_plan.quantization_mode ==
+        SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_W8LUT_BF16_WMMA);
 }
 
 static void SparkTestGlm52Pp13RuntimeFinalEventRoute(void)

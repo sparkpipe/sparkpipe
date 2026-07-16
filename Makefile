@@ -192,9 +192,11 @@ PYTHON_TESTS := \
 	tests/test_b12x_scale_layout.py \
 	tests/test_glm52_dspark_manifest.py \
 	tests/test_glm52_b12x_pack_worker.py \
+	tests/test_glm52_b12x_resident_manifest.py \
 	tests/test_glm52_fp8_pack_layout.py \
 	tests/test_glm52_w8lut_pack_layout.py \
 	tests/test_glm52_w8lut_artifact_preflight.py \
+	tests/test_glm52_nvfp4_artifact_preflight.py \
 	tests/test_glm52_w8lut_ring_preflight.py \
 	tests/test_glm52_w8lut_validation_wiring.py \
 	tests/test_glm52_w8lut_stage_pack_watch.py \
@@ -244,6 +246,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     glm52_b12x_aot_compile \
     glm52_b12x_resident_pack \
     glm52_b12x_compiled_backend \
+    glm52_quantized_readiness_test \
     glm52_required_cuda_link_args \
     glm52_stage_bucket_sweep \
     glm52_spark2_accuracy_gate \
@@ -532,6 +535,17 @@ build/test_glm52_resident_decode_stage_firmware: tests/test_glm52_resident_decod
 
 build/test_glm52_resident_decode_stage_production_runner: tests/test_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+glm52_quantized_readiness_test: build/test_glm52_pp13_runtime build/test_glm52_stagepack build/test_glm52_cuda_resident_gate build/test_model_description
+	./build/test_glm52_pp13_runtime
+	./build/test_glm52_stagepack
+	./build/test_glm52_cuda_resident_gate
+	./build/test_model_description
+	python3 tests/test_glm52_stage_pack.py
+	python3 tests/test_glm52_w8lut_artifact_preflight.py
+	python3 tests/test_glm52_nvfp4_artifact_preflight.py
+	python3 tests/test_glm52_b12x_resident_manifest.py
+	python3 tests/test_release_assemble.py
 
 test: $(TEST_BINARIES) build/sparkpipe_glm52_prefill_dryrun glm52_w8lut_quality_reference
 	@set -e; \

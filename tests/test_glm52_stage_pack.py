@@ -189,6 +189,29 @@ def main() -> int:
         assert "model.layers.18.mlp.experts.0.gate_proj.weight" not in w8_index[
             "tensor_map"
         ]
+        nvfp4_output_dir = root / "nvfp4-stagepacks"
+        nvfp4_args = type(
+            "Args",
+            (),
+            {
+                "model_dir": w8_model_dir,
+                "output_dir": nvfp4_output_dir,
+                "model_quantization": module.MODEL_QUANTIZATION_NVFP4,
+                "stages": "3",
+                "reuse": False,
+                "mtp_only": False,
+            },
+        )()
+        nvfp4_result = module.build_stage_packs(nvfp4_args)
+        nvfp4_index = json.loads(
+            (nvfp4_output_dir / module.INDEX_FILE).read_text(encoding="utf-8")
+        )
+        assert nvfp4_result["non_expert_weight_dtype"] == "BF16"
+        assert nvfp4_index["model_quantization"] == "nvfp4"
+        assert nvfp4_index["non_expert_weight_dtype"] == "BF16"
+        assert nvfp4_index["tensor_map"][
+            "model.layers.18.self_attn.q_proj.weight"
+        ]["dtype"] == "BF16"
         bad_args = type(
             "Args",
             (),
@@ -207,6 +230,24 @@ def main() -> int:
             assert "must be BF16" in str(error)
         else:
             raise AssertionError("W8LUT stage pack accepted a non-BF16 weight")
+        bad_nvfp4_args = type(
+            "Args",
+            (),
+            {
+                "model_dir": model_dir,
+                "output_dir": root / "bad-nvfp4-stagepacks",
+                "model_quantization": module.MODEL_QUANTIZATION_NVFP4,
+                "stages": "3",
+                "reuse": False,
+                "mtp_only": False,
+            },
+        )()
+        try:
+            module.build_stage_packs(bad_nvfp4_args)
+        except module.StagePackFailure as error:
+            assert "must be BF16" in str(error)
+        else:
+            raise AssertionError("NVFP4 stage pack accepted a non-BF16 weight")
     return 0
 
 

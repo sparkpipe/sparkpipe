@@ -16,6 +16,7 @@ def main():
         output = root / "output"
         diagnostic_output = root / "diagnostic-output"
         plain_output = root / "plain-output"
+        nvfp4_output = root / "nvfp4-output"
         w8_output = root / "w8-output"
         replacement = root / "replacement.bin"
         (template / "bin").mkdir(parents=True)
@@ -186,6 +187,29 @@ def main():
                 "/home/{host}/artifacts/w8-stage")
             assert arguments[arguments.index("--moe-pack-root") + 1] == (
                 "/home/{host}/artifacts/w8-moe")
+        subprocess.run([
+            "python3",str(tool),
+            "--template",str(template),
+            "--output",str(nvfp4_output),
+            "--release-id","nvfp4",
+            "--git-commit","abc123",
+            "--kv-logical-blocks","1024",
+            "--model-quantization","nvfp4",
+            "--stagepack-root","/home/{host}/artifacts/nvfp4-stage",
+            "--moe-pack-root","/home/{host}/artifacts/nvfp4-moe",
+            "--mtp",
+        ],check=True)
+        nvfp4 = json.loads(
+            (nvfp4_output / "sparkpipe.json").read_text(encoding="utf-8"))
+        nvfp4_by_role = {role["name"]: role for role in nvfp4["roles"]}
+        for role_name in ("spark0_gateway","pp13_cuda_residentd"):
+            arguments = nvfp4_by_role[role_name]["argv"]
+            assert arguments[arguments.index("--model-quantization") + 1] == (
+                "nvfp4")
+            assert arguments[arguments.index("--stagepack-root") + 1] == (
+                "/home/{host}/artifacts/nvfp4-stage")
+            assert arguments[arguments.index("--moe-pack-root") + 1] == (
+                "/home/{host}/artifacts/nvfp4-moe")
         missing_w8_stage = subprocess.run([
             "python3",str(tool),
             "--template",str(template),

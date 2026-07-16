@@ -1081,10 +1081,16 @@ static SparkStatus SparkGlm52Pp13DaemonConnectCudaResident(
     SparkGlm52CudaResidentIpcHeader header;
     SparkGlm52CudaResidentIpcStats stats;
     SparkStatus status;
+    uint32_t expected_moe_backend_kind;
     int32_t fd;
 
     if (runtime == 0 || socket_path == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
+    status = SparkGlm52Pp13RuntimeExpectedMoeBackendKind(
+        runtime->rank_plan.quantization_mode,
+        &expected_moe_backend_kind);
+    if (status != SPARK_STATUS_OK)
+        return status;
     fd = socket(AF_UNIX,SOCK_STREAM,0);
     if (fd < 0)
         return SPARK_STATUS_IO_ERROR;
@@ -1132,11 +1138,7 @@ static SparkStatus SparkGlm52Pp13DaemonConnectCudaResident(
          stats.kv_physical_block_capacity == 0u ||
          stats.kv_logical_block_capacity < stats.kv_physical_block_capacity ||
          stats.model_quantization_mode != runtime->rank_plan.quantization_mode ||
-         stats.moe_backend_kind !=
-            (runtime->rank_plan.quantization_mode ==
-                SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
-                ? SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA
-                : SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED) ||
+         stats.moe_backend_kind != expected_moe_backend_kind ||
          stats.moe_bound_layer_count == 0u ||
          stats.moe_bound_layer_count != stats.moe_expected_layer_count ||
          (stats.kv_nvme_enabled != 0u &&
@@ -3059,7 +3061,7 @@ int main(int argc,char **argv)
     if (SparkGlm52Pp13DaemonParseArguments(&configuration,argc,argv) < 0)
     {
         fprintf(stderr,
-            "usage: %s --rank n [--cuda-resident-socket path | --model-quantization fp8|w8lut --moe-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path] [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--transport-busy-poll]\n",
+            "usage: %s --rank n [--cuda-resident-socket path | --model-quantization fp8|nvfp4|w8lut --moe-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path] [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--transport-busy-poll]\n",
             argv[0]);
         return 2;
     }

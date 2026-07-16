@@ -80,6 +80,22 @@ static void SparkTestGlm52CudaResidentGateAcceptsMeasuredB1024(void)
 		SPARK_STATUS_MODULE_NOT_VALIDATED);
 	stats.fp8_scaled_gemm_bound_plan_count = 0u;
 	stats.fp8_scaled_gemm_expected_plan_count = 0u;
+	stats.model_quantization_mode =
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
+	stats.moe_backend_kind =
+		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_NVFP4_B12X;
+	assert(SparkGlm52CudaResidentGateValidateStats(
+		&stats,0u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,0u) ==
+		SPARK_STATUS_OK);
+	stats.moe_backend_kind =
+		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED;
+	assert(SparkGlm52CudaResidentGateValidateStats(
+		&stats,0u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,0u) ==
+		SPARK_STATUS_MODULE_NOT_VALIDATED);
+	stats.model_quantization_mode =
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
+	stats.moe_backend_kind =
+		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA;
 	assert(SparkGlm52CudaResidentGateValidateStats(
 		&stats,0u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u) ==
 		SPARK_STATUS_MODULE_NOT_VALIDATED);

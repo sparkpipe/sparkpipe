@@ -89,8 +89,14 @@ static SparkStatus SparkGlm52CudaResidentGateValidateStats(
 		SPARK_GLM52_CUDA_RESIDENT_IPC_FLAG_BUILDER_RESIDENT |
 		SPARK_GLM52_CUDA_RESIDENT_IPC_FLAG_TRANSPORT_RESIDENT |
 		SPARK_GLM52_CUDA_RESIDENT_IPC_FLAG_CUDA_STATE_RESIDENT;
+	uint32_t expected_moe_backend_kind;
 
 	if (stats == 0 ||
+		SparkGlm52Pp13RuntimeExpectedMoeBackendKind(
+			expected_quantization_mode,
+			&expected_moe_backend_kind) != SPARK_STATUS_OK)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (
 		stats->descriptor_bytes != SPARK_GLM52_CUDA_RESIDENT_IPC_STATS_BYTES ||
 		stats->state != SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_READY ||
 		(stats->capability_flags & required_capability_flags) !=
@@ -104,11 +110,7 @@ static SparkStatus SparkGlm52CudaResidentGateValidateStats(
 			SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET *
 			SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE ||
 		stats->model_quantization_mode != expected_quantization_mode ||
-		stats->moe_backend_kind !=
-			(expected_quantization_mode ==
-				SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
-				? SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA
-				: SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED) ||
+		stats->moe_backend_kind != expected_moe_backend_kind ||
 		stats->moe_bound_layer_count == 0u ||
 		stats->moe_bound_layer_count !=
 			stats->moe_expected_layer_count ||
@@ -276,7 +278,7 @@ int main(int argc,char **argv)
 			&configuration,argc,argv) != 0)
 	{
 		fprintf(stderr,
-			"usage: %s --socket path --rank n [--model-quantization fp8|w8lut] [--require-work] "
+			"usage: %s --socket path --rank n [--model-quantization fp8|nvfp4|w8lut] [--require-work] "
 			"[--require-layer-major]\n",argv[0]);
 		return 2;
 	}

@@ -13,6 +13,15 @@ extern "C" {
 #define SPARK_GLM52_STAGEPACK_MAX_RANK 8u
 #define SPARK_GLM52_STAGEPACK_INDEX_FILE "stagepack_index.json"
 #define SPARK_GLM52_STAGEPACK_FORMAT "sparkpipe.glm52.pp13.stagepack.v1"
+#define SPARK_GLM52_STAGEPACK_NVFP4_MODEL_QUANTIZATION "nvfp4"
+#define SPARK_GLM52_STAGEPACK_NVFP4_NON_EXPERT_DTYPE "BF16"
+#define SPARK_GLM52_STAGEPACK_NVFP4_MANIFEST_FILE \
+	"resident_moe_pack_manifest.json"
+#define SPARK_GLM52_STAGEPACK_NVFP4_MANIFEST_SCHEMA \
+	"sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1"
+#define SPARK_GLM52_STAGEPACK_NVFP4_PACK_MAGIC "SPARKGLM52B12X"
+#define SPARK_GLM52_STAGEPACK_NVFP4_PACK_EXTENSION ".spb12x"
+#define SPARK_GLM52_STAGEPACK_NVFP4_QUANT_MODE 1u
 #define SPARK_GLM52_STAGEPACK_W8LUT_MODEL_QUANTIZATION "w8lut"
 #define SPARK_GLM52_STAGEPACK_W8LUT_NON_EXPERT_DTYPE "BF16"
 #define SPARK_GLM52_STAGEPACK_W8LUT_MANIFEST_FILE "w8lut_moe_pack_manifest.json"
@@ -49,6 +58,10 @@ SparkStatus SparkGlm52StagePackResolveTensor(
 SparkStatus SparkGlm52StagePackValidateW8lutContract(
 	const char *stagepack_root,
 	const char *w8lut_pack_root);
+
+SparkStatus SparkGlm52StagePackValidateNvfp4Contract(
+	const char *stagepack_root,
+	const char *nvfp4_pack_root);
 
 #ifdef __cplusplus
 }

@@ -275,7 +275,57 @@
         "stage_plan_quantization_constant": "SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT",
         "resident_layer_progression": "SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK",
         "moe_execution": "FlashInfer B12x fused NVFP4 MoE",
-        "projection_contract": "BF16/FP8/NVFP4/MXFP4 projections selected by node context and linear plans"
+        "projection_contract": "RAW_GLM_BF16 attention, DSA, dense, shared-expert, embedding, normalization, vocabulary-head, and MLA KV tensors; only routed experts use NVFP4",
+        "hf_tensor_contract_member": "hf_tensor_contract",
+        "stagepack_contract": {
+          "format": "sparkpipe.glm52.pp13.stagepack.v1",
+          "model_quantization": "nvfp4",
+          "non_expert_weight_dtype": "BF16",
+          "index_file": "stagepack_index.json"
+        },
+        "resident_moe_pack_contract": {
+          "record_schema": "sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1",
+          "manifest_file": "resident_moe_pack_manifest.json",
+          "file_pattern": "glm52_layer_%04u_b12x_moe.spb12x",
+          "pack_magic": "SPARKGLM52B12X",
+          "pack_abi_version": 3,
+          "quant_mode": 1,
+          "output_dtype": "BF16",
+          "weight_layout": "flashinfer_static_view",
+          "scale_layout": "flashinfer_static_storage",
+          "scale2_baked_into_block_scales": true,
+          "alpha_contract": "w1_alpha, w2_alpha, and fc2_input_scale are FP32 ones by expert",
+          "contains_all_experts": true,
+          "expert_count": 256,
+          "gate_up_order": "up_gate"
+        },
+        "aot_contract": {
+          "record_schema": "sparkpipe.glm52.sm121.b12x.aot_manifest.v1",
+          "required_module": "spark.glm52.sm121.flashinfer_b12x_fused_moe.nvfp4.bf16.v2",
+          "required_arch": "sm_121a",
+          "generated_files": [
+            "aot_manifest.json",
+            "spark_glm52_sm121_b12x_generated_kernel_table.cu",
+            "runtime_link_args.txt",
+            "tvm_ffi_flags.mk",
+            "objects/*.o"
+          ],
+          "kernel_identity": "resident pack kernel_manifest_hash_low64 must equal the linked generated manifest hash",
+          "deterministic_fc2_finalize": true,
+          "runtime_python": false,
+          "runtime_torch": false
+        },
+        "capacity_contract": {
+          "maximum_token_count_units": "execution_rows",
+          "plain_decode_rows_per_lane": 1,
+          "mtp_and_dspark_rows_per_lane": 7,
+          "required_rule": "maximum_token_count >= logical_lane_capacity * rows_per_lane",
+          "plain_b1024_minimum_token_count": 1024,
+          "mtp_b1024_minimum_token_count": 7168
+        },
+        "runtime_state_contract": "one compiled B12x backend state and AOT workspace is shared across serial local routed layers; each layer retains its own resident expert weights and small deterministic workspace",
+        "source_identity_contract": "StagePack and B12x manifests must contain the same 64-hex source_model_index_sha256",
+        "fallback_allowed": false
       },
       {
         "name": "glm52_fp8_e4m3_8bit",
@@ -339,10 +389,47 @@
                   "SparkGlm52Sm121RequiredDecodeStageQuiesce",
                   "SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice",
                   "SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill",
-                  "SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPrefill",
-                  "SparkGlm52Sm121RequiredDecodeStageCalculateW8lutMoeWorkspaceBytes",
-                  "SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan"
+                  "SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPrefill"
                 ],
+                "quantization_driver_contracts": {
+                  "w8lut": {
+                    "stagepack_model_quantization": "w8lut",
+                    "non_expert_weight_dtype": "BF16",
+                    "mla_kv_dtype": "BF16",
+                    "resident_pack_manifest": "w8lut_moe_pack_manifest.json",
+                    "resident_pack_magic": "SPARKGLM52W8LUT",
+                    "resident_pack_abi_version": 1,
+                    "required_symbols": [
+                      "SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingCreateFromPackFile",
+                      "SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingDestroy",
+                      "SparkGlm52Sm121RequiredDecodeStageCalculateW8lutMoeWorkspaceBytes",
+                      "SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan"
+                    ],
+                    "backend_state_ownership": "one shared external W8LUT workspace per PP rank with layer-local resident codes and exponent bases",
+                    "fallback_allowed": false
+                  },
+                  "nvfp4": {
+                    "stagepack_model_quantization": "nvfp4",
+                    "non_expert_weight_dtype": "BF16",
+                    "mla_kv_dtype": "BF16",
+                    "resident_pack_manifest": "resident_moe_pack_manifest.json",
+                    "resident_pack_magic": "SPARKGLM52B12X",
+                    "resident_pack_abi_version": 3,
+                    "resident_binding_abi_version": 2,
+                    "resident_binding_create_abi_version": 2,
+                    "aot_manifest_schema": "sparkpipe.glm52.sm121.b12x.aot_manifest.v1",
+                    "required_symbols": [
+                      "SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile",
+                      "SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy",
+                      "SparkGlm52Sm121FlashInferB12xMoeActiveKernelManifestHashLow64",
+                      "SparkGlm52Sm121B12xGeneratedManifestInstance",
+                      "SparkGlm52Sm121B12xGeneratedLaunch"
+                    ],
+                    "backend_state_ownership": "one shared compiled B12x state and generated AOT workspace per PP rank with layer-local resident NVFP4 weights",
+                    "capacity_units": "execution_rows",
+                    "fallback_allowed": false
+                  }
+                },
                 "required_primitive_modules": [
                   {
                     "module": "spark.glm52.sm121.flashinfer_b12x_fused_moe.nvfp4.bf16.v2",
@@ -371,17 +458,8 @@
                   "third_party/flashinfer/SPARKPIPE_UPSTREAM_MANIFEST.sha256"
                 ],
                 "aot_generation_tool": "tools/glm52_b12x_aot_compile.py",
-                "required_stage_moe_plan": {
-                  "plan_kind": "flashinfer_b12x",
-                  "b12x_moe_dispatch_plan_kind_constant": "SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_DISPATCH_PLAN_KIND_FLASHINFER_B12X",
-                  "opaque_state_type": "SparkGlm52ResidentDecodeStageB12xMoePlan",
-                  "state_lifecycle": "SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile creates resident buffers and B12x state; SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy tears them down",
-                  "router": "stage computes top-k ids and weights, then B12x consumes them",
-                  "output_contract": "B12x writes MoE output to moe_route_output_bf16; stage residual-adds post_attention_hidden_bf16 into layer_output_hidden_bf16",
-                  "fallback_allowed": false,
-                  "resident_pack_header": "SparkGlm52ResidentDecodeStageB12xMoePackHeader"
-                },
                 "resident_moe_pack_tool": "tools/glm52_b12x_resident_pack.py",
+                "resident_moe_artifact_preflight": "tools/glm52_nvfp4_artifact_preflight.py",
                 "required_resident_moe_packs": {
                   "schema": "sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1",
                   "directory": "build/glm52_b12x_resident_moe",
