@@ -242,6 +242,24 @@ def main() -> int:
             "SparkGlm52DsparkDraftBackendDraft(",
             label,
         )
+    for forbidden in (
+        "SparkGlm52DsparkBuildQueryBlockKernel",
+        "SparkGlm52DsparkGatherMarkovEmbeddingKernel",
+        "SparkGlm52DsparkHeadNormRopeRowsKernel",
+        "SparkGlm52DsparkBlockAttentionKernel",
+        "SparkGlm52DsparkArgmaxKernel",
+        "SparkGlm52DsparkConfidenceKernel",
+        "SparkGlm52DsparkAppendContextLayer",
+        "SparkGlm52DsparkBlockAttention(",
+        "SparkGlm52DsparkBlockMlp(",
+        "SparkGlm52DsparkLayerForward(",
+        "SparkGlm52DsparkRunHeadStep(",
+    ):
+        forbid(
+            dspark_backend,
+            forbidden,
+            "DSpark batch-only CUDA backend",
+        )
     dspark_batch_path = dspark_backend[dspark_backend.index(
         "SparkStatus SparkGlm52DsparkDraftBackendStageBatch("):]
     require(
