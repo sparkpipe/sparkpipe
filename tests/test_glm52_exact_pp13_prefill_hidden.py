@@ -224,6 +224,7 @@ def test_bulk_prefill_progresses_runner_after_each_chunk(root: Path) -> None:
     assert "token_offset += chunk_token_count" in prefill_body
     assert "state->prefill_frame_view" in source
     assert "false &&" not in source
+    assert "&&\n        false)" not in source
 
 
 def test_bulk_prefill_validates_the_runtime_view_stride(root: Path) -> None:
@@ -1025,6 +1026,62 @@ def test_short_context_bypasses_indexshare_for_exact_prefix_attention(
     assert function_body.index(prefix) < function_body.index(shared)
 
 
+def test_decode_kv_directory_is_resident_and_delta_uploaded(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    prepare_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderPrepareDeviceKvView(")
+    prepare_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderApplyMtpTreeKvRows(",
+        prepare_start)
+    prepare_body = source[prepare_start:prepare_end]
+    metadata_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchDecodeMetadataForAllLayers(")
+    metadata_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderUploadWorkDecodePositions(",
+        metadata_start)
+    metadata_body = source[metadata_start:metadata_end]
+    assert "SparkGlm52Pp13BuilderUploadKvLaneDelta(" in prepare_body
+    assert "cudaMemcpy2DAsync" not in prepare_body
+    assert "host_uploaded_physical_block_indices" in source
+    assert "cudaMemcpy" not in metadata_body
+    assert "BuildDecodeSparseTokenIndicesKernel" not in source
+    assert "ALLOC_FIELD(block_table" not in source
+    assert "layer->block_table = state->device_physical_block_indices;" in source
+
+
+def test_absorbed_mla_dense_math_uses_tensor_cores(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                  encoding="utf-8")
+    query_start = source.index(
+        "void SparkGlm52ResidentDecodeStageAbsorbedQueryProjectKernel(")
+    query_end = source.index(
+        "void SparkGlm52ResidentDecodeStageAbsorbedQueryCommitKernel(",
+        query_start)
+    attention_start = source.index(
+        "void SparkGlm52ResidentDecodeStageAbsorbedAttentionKernel(")
+    attention_end = source.index(
+        "void SparkGlm52ResidentDecodeStageAbsorbedValueApplyKernel(",
+        attention_start)
+    value_start = attention_end
+    value_end = source.index(
+        "void SparkGlm52ResidentDecodeStageAttentionKernel(", value_start)
+    query_body = source[query_start:query_end]
+    attention_body = source[attention_start:attention_end]
+    value_body = source[value_start:value_end]
+    assert "nvcuda::wmma::mma_sync(" in query_body
+    assert "nvcuda::wmma::mma_sync(" in attention_body
+    assert "nvcuda::wmma::mma_sync(" in value_body
+    assert "accumulated_value +=" not in query_body
+    assert "accumulated_value +=" not in value_body
+    assert "WarpAllReduceSum(lane_partial)" not in attention_body
+    assert 'asm("trap;");' in query_body
+    assert 'asm("trap;");' in attention_body
+    assert 'asm("trap;");' in value_body
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_final_stage_has_hidden_only_builtin_launcher(root)
@@ -1060,6 +1117,8 @@ def main() -> None:
     test_final_event_pump_detects_disconnect_before_send(root)
     test_rank_queue_does_not_overtake_a_deferred_sequence_position(root)
     test_short_context_bypasses_indexshare_for_exact_prefix_attention(root)
+    test_decode_kv_directory_is_resident_and_delta_uploaded(root)
+    test_absorbed_mla_dense_math_uses_tensor_cores(root)
     test_mtp_retry_cleanup_preserves_resolution_receipt(root)
     test_mtp_serial_train_continuation_keeps_transaction_open(root)
     test_attached_resident_decode_preserves_mtp_resolution(root)

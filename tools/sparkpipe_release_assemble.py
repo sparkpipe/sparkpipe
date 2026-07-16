@@ -222,7 +222,7 @@ def main():
     decode_mode = parser.add_mutually_exclusive_group(required=True)
     decode_mode.add_argument("--mtp",action="store_true")
     decode_mode.add_argument("--plain-decode",action="store_true")
-    parser.add_argument("--without-diagnostics",action="store_true")
+    parser.add_argument("--diagnostics",action="store_true")
     parser.add_argument("--role-env",action="append",default=[])
     parser.add_argument("--role-env-unset",action="append",default=[])
     parser.add_argument("--replace",action="append",default=[])
@@ -270,7 +270,7 @@ def main():
         arguments.stagepack_root)
     set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
     set_role_switch(manifest,"pp13_cuda_residentd","--mtp",arguments.mtp)
-    set_runtime_diagnostics(manifest,not arguments.without_diagnostics)
+    set_runtime_diagnostics(manifest,arguments.diagnostics)
     for specification in arguments.role_env_unset:
         unset_role_environment(manifest,specification)
     for specification in arguments.role_env:

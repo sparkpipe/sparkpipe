@@ -20,7 +20,7 @@
 #define SPARK_GLM52_GATEWAY_DEFAULT_PORT 8080u
 #define SPARK_GLM52_GATEWAY_DEFAULT_PUMP_STEPS 1u
 #define SPARK_GLM52_GATEWAY_BATCH_COALESCE_POLL_MS 10u
-#define SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY 8u
+#define SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY 16u
 #define SPARK_GLM52_GATEWAY_STREAM_BODY_BYTES 4096u
 #define SPARK_GLM52_GATEWAY_STREAM_SLOT_BITS 16u
 #define SPARK_GLM52_GATEWAY_STREAM_SLOT_MASK 0xffffu
@@ -630,9 +630,11 @@ static void SparkGlm52GatewayPumpService(SparkGlm52GatewayRuntime *runtime)
 static int32_t SparkGlm52GatewayPollTimeout(
 	const SparkGlm52GatewayRuntime *runtime)
 {
-	if (runtime != 0 && runtime->pump_log_valid != 0u &&
-		runtime->last_pump_status == SPARK_STATUS_OK)
-		return 0;
+	if (runtime != 0 &&
+		(runtime->pending_stream_count != 0u ||
+		 runtime->last_live_request_count != 0u ||
+		 runtime->last_queued_request_count != 0u))
+		return 1;
 	return -1;
 }
 

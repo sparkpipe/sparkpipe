@@ -674,6 +674,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPumpCudaResidentResponses(
 				state,&header);
 		else
 			status = SPARK_STATUS_ABI_MISMATCH;
+		if (status == SPARK_STATUS_BUSY)
+			continue;
 		if (status != SPARK_STATUS_OK)
 			break;
 	}
@@ -3597,6 +3599,17 @@ static SparkStatus SparkGlm52Pp13ServiceBackendGetPollDescriptors(
 		(descriptor_capacity != 0u && descriptors == 0))
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	descriptor_count = 0u;
+	if (state->cuda_resident_fd >= 0 &&
+		descriptor_count < descriptor_capacity)
+	{
+		memset(&descriptors[descriptor_count],0,sizeof(descriptors[descriptor_count]));
+		descriptors[descriptor_count].descriptor_bytes =
+			SPARK_GLM52_SERVICE_BACKEND_POLL_DESCRIPTOR_BYTES;
+		descriptors[descriptor_count].fd = state->cuda_resident_fd;
+		descriptors[descriptor_count].events =
+			SPARK_GLM52_SERVICE_BACKEND_POLL_READ;
+		descriptor_count += 1u;
+	}
 	if (state->final_event_socket_fd >= 0)
 		fd = state->final_event_socket_fd;
 	else

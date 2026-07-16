@@ -67,7 +67,13 @@ static void SparkTestHttpGatewayPollsBetweenDispatches(void)
 	assert(SparkGlm52GatewayPollTimeout(&runtime) == -1);
 	runtime.pump_log_valid = 1u;
 	runtime.last_pump_status = SPARK_STATUS_OK;
-	assert(SparkGlm52GatewayPollTimeout(&runtime) == 0);
+	assert(SparkGlm52GatewayPollTimeout(&runtime) == -1);
+	runtime.last_live_request_count = 1u;
+	assert(SparkGlm52GatewayPollTimeout(&runtime) == 1);
+	runtime.last_live_request_count = 0u;
+	runtime.last_queued_request_count = 1u;
+	assert(SparkGlm52GatewayPollTimeout(&runtime) == 1);
+	runtime.last_queued_request_count = 0u;
 	runtime.last_pump_status = SPARK_STATUS_BUSY;
 	assert(SparkGlm52GatewayPollTimeout(&runtime) == -1);
 }

@@ -67,6 +67,7 @@ def main():
             "--kv-pool-tokens","65536",
             "--kv-logical-blocks","1024",
             "--mtp",
+            "--diagnostics",
             "--replace","bin/runtime=" + str(replacement),
         ],check=True)
         diagnostic = json.loads(
@@ -96,7 +97,6 @@ def main():
             "--kv-pool-tokens","65536",
             "--kv-logical-blocks","1024",
             "--mtp",
-            "--without-diagnostics",
             "--role-env-unset","pp13_cuda_residentd=SPARKPIPE_MTP_GPU_PROFILE",
             "--role-env","spark0_gateway=KEEP_GATEWAY=2",
             "--replace","bin/runtime=" + str(replacement),
@@ -158,7 +158,6 @@ def main():
             "--git-commit","abc123",
             "--kv-logical-blocks","1024",
             "--plain-decode",
-            "--without-diagnostics",
         ],check=True)
         plain = json.loads(
             (plain_output / "sparkpipe.json").read_text(encoding="utf-8"))

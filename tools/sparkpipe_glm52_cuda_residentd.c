@@ -781,7 +781,8 @@ static void SparkGlm52CudaResidentdCompletion(
     {
 		if (runtime->synthetic_failure_completion_active == 0u)
 			runtime->work_queue_error_count += 1u;
-		if (completion->status != SPARK_STATUS_CAPACITY_EXCEEDED)
+		if (completion->status != SPARK_STATUS_BUSY &&
+			completion->status != SPARK_STATUS_CAPACITY_EXCEEDED)
 		{
 			runtime->state = SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_FAILED;
 			runtime->deferred_failure_status = completion->status;
@@ -1669,7 +1670,8 @@ static void SparkGlm52CudaResidentdEmitWorkFailure(
 static uint32_t SparkGlm52CudaResidentdWorkFailureIsNonfatal(
     SparkStatus status)
 {
-    return status == SPARK_STATUS_INVALID_ARGUMENT ||
+    return status == SPARK_STATUS_BUSY ||
+        status == SPARK_STATUS_INVALID_ARGUMENT ||
         status == SPARK_STATUS_CAPACITY_EXCEEDED ||
         status == SPARK_STATUS_NOT_FOUND ||
         status == SPARK_STATUS_VALIDATION_FAILED ||

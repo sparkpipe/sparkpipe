@@ -150,12 +150,10 @@ Validate before serving:
     --manifest <new-release>/sparkpipe.json
 ```
 
-After byte-exact correctness is retained, add `--without-diagnostics` when
-assembling a performance release. The assembler installs the canonical
-diagnostic profile by default and removes it as one checked operation for a
-performance release. Template history cannot silently omit or retain stage
-dumps, phase hashes, completion logs, or PP13 packet tracing. Do not hand-edit
-the manifest.
+Production releases omit runtime diagnostics by default. Add `--diagnostics`
+only when assembling a release for an explicit correctness investigation.
+Template history cannot silently retain stage dumps, phase hashes, completion
+logs, or PP13 packet tracing. Do not hand-edit the manifest.
 
 The 16,384-token physical pool and 256 logical blocks are the current measured
 B1 configuration when rank12 also owns native MTP weights. Increase either
