@@ -11,6 +11,7 @@ DSPARK_MANIFEST ?=
 DSPARK_CONFIG ?=
 DSPARK_SAFETENSORS ?=
 DSPARK_ORACLE_DIR ?=
+DSPARK_VALIDATION_LANE_COUNT ?= 2
 
 .PHONY: archive validate_epoch3 clean
 
@@ -42,7 +43,8 @@ validate_epoch3: $(VALIDATOR)
 	@test -d "$(DSPARK_ORACLE_DIR)" || \
 		{ echo "set DSPARK_ORACLE_DIR to the epoch-3 oracle directory" >&2; exit 2; }
 	$(VALIDATOR) "$(DSPARK_MANIFEST)" "$(DSPARK_CONFIG)" \
-		"$(DSPARK_SAFETENSORS)" "$(DSPARK_ORACLE_DIR)"
+		"$(DSPARK_SAFETENSORS)" "$(DSPARK_ORACLE_DIR)" \
+		"$(DSPARK_VALIDATION_LANE_COUNT)"
 
 clean:
 	rm -rf $(BUILD_DIRECTORY)

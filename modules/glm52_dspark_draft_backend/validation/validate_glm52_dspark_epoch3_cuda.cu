@@ -9,7 +9,7 @@
 #include "sparkpipe/spark_glm52_dspark_draft_backend.h"
 
 #define SPARK_GLM52_DSPARK_VALIDATION_ANCHOR_TOKEN_ID 10397u
-#define SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT 2u
+#define SPARK_GLM52_DSPARK_DEFAULT_VALIDATION_LANE_COUNT 2u
 
 typedef struct SparkGlm52DsparkValidationMetrics
 {
@@ -35,6 +35,22 @@ static int32_t SparkGlm52DsparkReadFile(
     fclose(file);
     if (bytes_read != expected_bytes || trailing != EOF)
         return -2;
+    return 0;
+}
+
+static int32_t SparkGlm52DsparkParseLaneCount(
+    const char *text,
+    uint32_t *lane_count_out)
+{
+    unsigned int lane_count;
+    char trailing;
+
+    if (text == 0 || lane_count_out == 0 ||
+        sscanf(text, "%u%c", &lane_count, &trailing) != 1 ||
+        lane_count == 0u ||
+        lane_count > SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT)
+        return -1;
+    *lane_count_out = (uint32_t)lane_count;
     return 0;
 }
 
@@ -228,22 +244,29 @@ int main(int argc,char **argv)
 {
     SparkGlm52DsparkDraftBackend backend;
     SparkGlm52DsparkDraftBackendConfiguration configuration;
-    SparkGlm52DsparkDraftBackendStage
-        stages[SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT];
-    SparkGlm52DsparkDraftRequest
-        requests[SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT];
-    SparkGlm52DsparkDraftResult
-        results[SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT];
+    SparkGlm52DsparkDraftBackendStage *stages;
+    SparkGlm52DsparkDraftRequest *requests;
+    SparkGlm52DsparkDraftResult *results;
     uint16_t *taps,*expected_target,*expected_final;
     uint32_t expected_tokens[SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
-    uint32_t lane_index,result_count;
+    uint32_t lane_count,lane_index,result_count;
     float expected_confidence[SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
     cudaEvent_t start_event,stop_event;
     float stage_ms,draft_ms;
     int32_t validation_status;
 
-    if (argc != 5)
+    if (argc != 5 && argc != 6)
         return 2;
+    lane_count = SPARK_GLM52_DSPARK_DEFAULT_VALIDATION_LANE_COUNT;
+    if (argc == 6 &&
+        SparkGlm52DsparkParseLaneCount(argv[5], &lane_count) != 0)
+        return 2;
+    stages = (SparkGlm52DsparkDraftBackendStage *)calloc(
+        lane_count, sizeof(stages[0]));
+    requests = (SparkGlm52DsparkDraftRequest *)calloc(
+        lane_count, sizeof(requests[0]));
+    results = (SparkGlm52DsparkDraftResult *)calloc(
+        lane_count, sizeof(results[0]));
     taps = (uint16_t *)malloc(
         SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION * sizeof(uint16_t));
     expected_target = (uint16_t *)malloc(
@@ -251,7 +274,8 @@ int main(int argc,char **argv)
     expected_final = (uint16_t *)malloc(
         SPARK_GLM52_DSPARK_BLOCK_SIZE * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION *
             sizeof(uint16_t));
-    if (taps == 0 || expected_target == 0 || expected_final == 0)
+    if (stages == 0 || requests == 0 || results == 0 ||
+        taps == 0 || expected_target == 0 || expected_final == 0)
         return 3;
     if (SparkGlm52DsparkLoadOracle(argv[4], taps, expected_target,
         expected_final, expected_tokens, expected_confidence) != 0)
@@ -260,7 +284,7 @@ int main(int argc,char **argv)
     configuration.abi_version = SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION;
     configuration.descriptor_bytes =
         SPARK_GLM52_DSPARK_DRAFT_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES;
-    configuration.maximum_lane_count = SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT;
+    configuration.maximum_lane_count = lane_count;
     configuration.maximum_context_token_count = 16u;
     configuration.manifest_path = argv[1];
     configuration.config_path = argv[2];
@@ -269,7 +293,7 @@ int main(int argc,char **argv)
         &backend, &configuration) != SPARK_STATUS_OK)
         return 5;
     for (lane_index=0u;
-         lane_index<SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT;
+         lane_index<lane_count;
          ++lane_index)
     {
         if (SparkGlm52DsparkUploadTaps(&backend, taps, lane_index) != 0)
@@ -287,20 +311,19 @@ int main(int argc,char **argv)
     cudaEventCreate(&stop_event);
     cudaEventRecord(start_event, (cudaStream_t)backend.cuda_stream);
     if (SparkGlm52DsparkDraftBackendStageBatch(
-        &backend, stages,
-        SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT) != SPARK_STATUS_OK)
+        &backend, stages, lane_count) != SPARK_STATUS_OK)
         return 7;
     cudaEventRecord(stop_event, (cudaStream_t)backend.cuda_stream);
     cudaEventSynchronize(stop_event);
     cudaEventElapsedTime(&stage_ms, start_event, stop_event);
     result_count = UINT32_MAX;
     if (SparkGlm52DsparkDraftBackendTakeBatchResults(
-        &backend, results, SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT,
+        &backend, results, lane_count,
         &result_count) != SPARK_STATUS_OK ||
         result_count != 0u)
         return 7;
     for (lane_index=0u;
-         lane_index<SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT;
+         lane_index<lane_count;
          ++lane_index)
     {
         memset(&requests[lane_index], 0, sizeof(requests[lane_index]));
@@ -317,21 +340,20 @@ int main(int argc,char **argv)
     }
     cudaEventRecord(start_event, (cudaStream_t)backend.cuda_stream);
     if (SparkGlm52DsparkDraftBackendLaunchDraftBatch(
-        &backend, requests,
-        SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT) != SPARK_STATUS_OK)
+        &backend, requests, lane_count) != SPARK_STATUS_OK)
         return 8;
     cudaEventRecord(stop_event, (cudaStream_t)backend.cuda_stream);
     cudaEventSynchronize(stop_event);
     cudaEventElapsedTime(&draft_ms, start_event, stop_event);
     result_count = 0u;
     if (SparkGlm52DsparkDraftBackendTakeBatchResults(
-        &backend, results, SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT,
+        &backend, results, lane_count,
         &result_count) != SPARK_STATUS_OK ||
-        result_count != SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT)
+        result_count != lane_count)
         return 8;
     validation_status = 0;
     for (lane_index=0u;
-         lane_index<SPARK_GLM52_DSPARK_VALIDATION_LANE_COUNT;
+         lane_index<lane_count;
          ++lane_index)
     {
         if (SparkGlm52DsparkValidateOutputs(
@@ -340,13 +362,16 @@ int main(int argc,char **argv)
             expected_tokens, expected_confidence) != 0)
             validation_status = -1;
     }
-    fprintf(stdout, "dspark_timing stage_ms=%.6f draft_ms=%.6f\n",
-        stage_ms, draft_ms);
+    fprintf(stdout, "dspark_timing lanes=%u stage_ms=%.6f draft_ms=%.6f\n",
+        lane_count, stage_ms, draft_ms);
     SparkGlm52DsparkDraftBackendTeardown(&backend);
     cudaEventDestroy(start_event);
     cudaEventDestroy(stop_event);
     free(taps);
     free(expected_target);
     free(expected_final);
+    free(stages);
+    free(requests);
+    free(results);
     return validation_status == 0 ? 0 : 9;
 }
