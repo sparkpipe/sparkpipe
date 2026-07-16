@@ -1077,6 +1077,16 @@ def test_absorbed_mla_dense_math_uses_tensor_cores(root: Path) -> None:
     assert "accumulated_value +=" not in query_body
     assert "accumulated_value +=" not in value_body
     assert "WarpAllReduceSum(lane_partial)" not in attention_body
+    assert query_body.index(
+        "SparkGlm52ResidentDecodeStageQuantizedLinearWeightToFloat(") < (
+            query_body.index("for (sequence_tile_begin = 0u;"))
+    assert value_body.index(
+        "SparkGlm52ResidentDecodeStageQuantizedLinearWeightToFloat(") < (
+            value_body.index("for (sequence_tile_begin = 0u;"))
+    assert "shared_weight_tile + input_tile_begin" in query_body
+    assert "shared_weight_tile + input_tile_begin" in value_body
+    assert "blockIdx.z" not in query_body
+    assert "blockIdx.z" not in value_body
     assert 'asm("trap;");' in query_body
     assert 'asm("trap;");' in attention_body
     assert 'asm("trap;");' in value_body
