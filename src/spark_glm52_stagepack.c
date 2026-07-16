@@ -158,13 +158,15 @@ static SparkStatus SparkGlm52StagePackRequireRootString(
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52StagePackValidateW8lutDocument(
+static SparkStatus SparkGlm52StagePackValidateQuantizedDocument(
 	const SparkJsonDocument *document,
+	const char *schema_member_name,
 	const char *expected_format,
 	const char *expected_dtype,
 	const char *expected_quantization,
 	const char *expected_magic,
-	const char *expected_extension)
+	const char *expected_extension,
+	uint64_t expected_quant_mode)
 {
 	uint64_t quant_mode;
 	int32_t root_token_index,token_index;
@@ -172,7 +174,7 @@ static SparkStatus SparkGlm52StagePackValidateW8lutDocument(
 
 	root_token_index = SparkJsonGetRootToken(document);
 	status = SparkGlm52StagePackRequireRootString(
-		document,root_token_index,"format",expected_format);
+		document,root_token_index,schema_member_name,expected_format);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52StagePackRequireRootString(
 			document,root_token_index,"non_expert_weight_dtype",expected_dtype);
@@ -191,19 +193,21 @@ static SparkStatus SparkGlm52StagePackValidateW8lutDocument(
 		document,root_token_index,"quant_mode");
 	if (token_index < 0 ||
 		SparkJsonGetUInt64(document,token_index,&quant_mode) != SPARK_STATUS_OK ||
-		quant_mode != SPARK_GLM52_STAGEPACK_W8LUT_QUANT_MODE)
+		quant_mode != expected_quant_mode)
 		return SPARK_STATUS_SCHEMA_ERROR;
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52StagePackReadW8lutContract(
+static SparkStatus SparkGlm52StagePackReadQuantizedContract(
 	const char *root,
 	const char *index_file,
+	const char *schema_member_name,
 	const char *expected_format,
 	const char *expected_dtype,
 	const char *expected_quantization,
 	const char *expected_magic,
 	const char *expected_extension,
+	uint64_t expected_quant_mode,
 	char **source_sha256_out)
 {
 	SparkJsonDocument document;
@@ -221,9 +225,10 @@ static SparkStatus SparkGlm52StagePackReadW8lutContract(
 	if (status == SPARK_STATUS_OK)
 		status = SparkJsonLoadFile(path,&document);
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52StagePackValidateW8lutDocument(
-			&document,expected_format,expected_dtype,expected_quantization,
-			expected_magic,expected_extension);
+		status = SparkGlm52StagePackValidateQuantizedDocument(
+			&document,schema_member_name,expected_format,expected_dtype,
+			expected_quantization,expected_magic,expected_extension,
+			expected_quant_mode);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52StagePackCopyRootString(
 			&document,"source_model_index_sha256",&source_sha256);
@@ -240,42 +245,88 @@ static SparkStatus SparkGlm52StagePackReadW8lutContract(
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52StagePackValidateQuantizedContract(
+	const char *stagepack_root,
+	const char *pack_root,
+	const char *model_quantization,
+	const char *non_expert_dtype,
+	const char *manifest_file,
+	const char *manifest_schema_member,
+	const char *manifest_schema,
+	const char *pack_magic,
+	const char *pack_extension,
+	uint64_t quant_mode)
+{
+	char *stagepack_sha256,*pack_sha256;
+	SparkStatus status;
+
+	if (stagepack_root == 0 || pack_root == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	stagepack_sha256 = 0;
+	pack_sha256 = 0;
+	status = SparkGlm52StagePackReadQuantizedContract(
+		stagepack_root,
+		SPARK_GLM52_STAGEPACK_INDEX_FILE,
+		"format",
+		SPARK_GLM52_STAGEPACK_FORMAT,
+		non_expert_dtype,
+		model_quantization,
+		0,
+		0,
+		0u,
+		&stagepack_sha256);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52StagePackReadQuantizedContract(
+			pack_root,
+			manifest_file,
+			manifest_schema_member,
+			manifest_schema,
+			0,
+			0,
+			pack_magic,
+			pack_extension,
+			quant_mode,
+			&pack_sha256);
+	if (status == SPARK_STATUS_OK &&
+		strcmp(stagepack_sha256,pack_sha256) != 0)
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	free(stagepack_sha256);
+	free(pack_sha256);
+	return status;
+}
+
 SparkStatus SparkGlm52StagePackValidateW8lutContract(
 	const char *stagepack_root,
 	const char *w8lut_pack_root)
 {
-	char *stagepack_sha256,*w8lut_sha256;
-	SparkStatus status;
-
-	if (stagepack_root == 0 || w8lut_pack_root == 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	stagepack_sha256 = 0;
-	w8lut_sha256 = 0;
-	status = SparkGlm52StagePackReadW8lutContract(
+	return SparkGlm52StagePackValidateQuantizedContract(
 		stagepack_root,
-		SPARK_GLM52_STAGEPACK_INDEX_FILE,
-		SPARK_GLM52_STAGEPACK_FORMAT,
-		SPARK_GLM52_STAGEPACK_W8LUT_NON_EXPERT_DTYPE,
+		w8lut_pack_root,
 		SPARK_GLM52_STAGEPACK_W8LUT_MODEL_QUANTIZATION,
-		0,
-		0,
-		&stagepack_sha256);
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52StagePackReadW8lutContract(
-			w8lut_pack_root,
-			SPARK_GLM52_STAGEPACK_W8LUT_MANIFEST_FILE,
-			SPARK_GLM52_STAGEPACK_W8LUT_MANIFEST_FORMAT,
-			0,
-			0,
-			SPARK_GLM52_STAGEPACK_W8LUT_PACK_MAGIC,
-			SPARK_GLM52_STAGEPACK_W8LUT_PACK_EXTENSION,
-			&w8lut_sha256);
-	if (status == SPARK_STATUS_OK &&
-		strcmp(stagepack_sha256,w8lut_sha256) != 0)
-		status = SPARK_STATUS_SCHEMA_ERROR;
-	free(stagepack_sha256);
-	free(w8lut_sha256);
-	return status;
+		SPARK_GLM52_STAGEPACK_W8LUT_NON_EXPERT_DTYPE,
+		SPARK_GLM52_STAGEPACK_W8LUT_MANIFEST_FILE,
+		"format",
+		SPARK_GLM52_STAGEPACK_W8LUT_MANIFEST_FORMAT,
+		SPARK_GLM52_STAGEPACK_W8LUT_PACK_MAGIC,
+		SPARK_GLM52_STAGEPACK_W8LUT_PACK_EXTENSION,
+		SPARK_GLM52_STAGEPACK_W8LUT_QUANT_MODE);
+}
+
+SparkStatus SparkGlm52StagePackValidateNvfp4Contract(
+	const char *stagepack_root,
+	const char *nvfp4_pack_root)
+{
+	return SparkGlm52StagePackValidateQuantizedContract(
+		stagepack_root,
+		nvfp4_pack_root,
+		SPARK_GLM52_STAGEPACK_NVFP4_MODEL_QUANTIZATION,
+		SPARK_GLM52_STAGEPACK_NVFP4_NON_EXPERT_DTYPE,
+		SPARK_GLM52_STAGEPACK_NVFP4_MANIFEST_FILE,
+		"record_schema",
+		SPARK_GLM52_STAGEPACK_NVFP4_MANIFEST_SCHEMA,
+		SPARK_GLM52_STAGEPACK_NVFP4_PACK_MAGIC,
+		SPARK_GLM52_STAGEPACK_NVFP4_PACK_EXTENSION,
+		SPARK_GLM52_STAGEPACK_NVFP4_QUANT_MODE);
 }
 
 static SparkStatus SparkGlm52StagePackReadTensorRegion(

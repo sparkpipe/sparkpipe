@@ -21,7 +21,11 @@ from typing import Any, BinaryIO, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 
 FORMAT = "sparkpipe.glm52.pp13.stagepack.v1"
+MODEL_QUANTIZATION_NVFP4 = "nvfp4"
 MODEL_QUANTIZATION_W8LUT = "w8lut"
+BF16_NON_EXPERT_QUANTIZATIONS = frozenset(
+    (MODEL_QUANTIZATION_NVFP4, MODEL_QUANTIZATION_W8LUT)
+)
 STAGE_COUNT = 13
 LAYER_COUNT = 78
 MTP_LAYER_INDEX = LAYER_COUNT
@@ -193,10 +197,11 @@ def source_tensor_name(name: str) -> str:
     return MTP_EMBEDDING_SOURCE if name == MTP_EMBEDDING_ALIAS else name
 
 
-def validate_w8lut_source_dtypes(
+def validate_bf16_non_expert_source_dtypes(
     stage_tensors: Mapping[int, Sequence[str]],
     weight_map: Mapping[str, str],
     headers: Mapping[str, Mapping[str, Any]],
+    model_quantization: str,
 ) -> None:
     for tensor_names in stage_tensors.values():
         for name in tensor_names:
@@ -210,12 +215,13 @@ def validate_w8lut_source_dtypes(
             dtype = item.get("dtype")
             if source_name.endswith(".weight_scale_inv"):
                 raise StagePackFailure(
-                    "W8LUT stage packs require the BF16 master checkpoint, "
+                    f"{model_quantization} stage packs require the BF16 "
+                    "master checkpoint, "
                     f"but found quantization scale tensor: {source_name}"
                 )
             if source_name.endswith(".weight") and dtype != "BF16":
                 raise StagePackFailure(
-                    "W8LUT non-expert weights must be BF16: "
+                    f"{model_quantization} non-expert weights must be BF16: "
                     f"{source_name} has dtype {dtype}"
                 )
 
@@ -367,16 +373,23 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
     else:
         stage_tensors, shard_names = collect_stage_tensors(weight_map, selected_stages)
     headers, payload_bases = load_source_headers(model_dir, shard_names)
-    if args.model_quantization == MODEL_QUANTIZATION_W8LUT:
-        validate_w8lut_source_dtypes(stage_tensors, weight_map, headers)
+    if args.model_quantization in BF16_NON_EXPERT_QUANTIZATIONS:
+        validate_bf16_non_expert_source_dtypes(
+            stage_tensors,
+            weight_map,
+            headers,
+            args.model_quantization,
+        )
     index["format"] = FORMAT
     index["model_quantization"] = args.model_quantization
     index["source_model_dir"] = str(model_dir)
     index["source_model_index_sha256"] = sha256_file(
         model_dir / SOURCE_INDEX_FILE
     )
-    if args.model_quantization == MODEL_QUANTIZATION_W8LUT:
+    if args.model_quantization in BF16_NON_EXPERT_QUANTIZATIONS:
         index["non_expert_weight_dtype"] = "BF16"
+    else:
+        index.pop("non_expert_weight_dtype", None)
     index["topology"] = "pp13_fixed6"
     index["stage_count"] = STAGE_COUNT
     index["layers_per_stage"] = LAYERS_PER_STAGE
@@ -437,7 +450,7 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
         "source_model_index_sha256": index["source_model_index_sha256"],
         "non_expert_weight_dtype": (
             "BF16"
-            if args.model_quantization == MODEL_QUANTIZATION_W8LUT
+            if args.model_quantization in BF16_NON_EXPERT_QUANTIZATIONS
             else None
         ),
         "stages": built,
@@ -451,7 +464,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument(
         "--model-quantization",
-        choices=("fp8", "nvfp4", MODEL_QUANTIZATION_W8LUT),
+        choices=("fp8", MODEL_QUANTIZATION_NVFP4, MODEL_QUANTIZATION_W8LUT),
         required=True,
     )
     parser.add_argument("--stages", default="all")

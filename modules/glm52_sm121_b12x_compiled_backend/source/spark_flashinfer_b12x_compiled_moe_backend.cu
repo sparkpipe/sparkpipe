@@ -1521,6 +1521,7 @@ static SparkStatus SparkGlm52B12xValidateRecipeAgainstGeneratedManifest(
         manifest->top_k != recipe->top_k ||
         manifest->maximum_token_count == 0u ||
         recipe->maximum_token_count == 0u ||
+        manifest->maximum_token_count != recipe->maximum_token_count ||
         manifest->cuda_architecture != recipe->cuda_architecture)
     {
         return SPARK_STATUS_TARGET_MISMATCH;

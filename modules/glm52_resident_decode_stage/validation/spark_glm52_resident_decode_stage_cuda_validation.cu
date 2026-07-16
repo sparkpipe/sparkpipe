@@ -4227,8 +4227,8 @@ static bool SparkValidationBindB12xMoePlanForLayer(
         SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy(
             &buffers->b12x_moe_bindings[binding_index]);
         memset(&create_info, 0, sizeof(create_info));
-        create_info.abi_version =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PLAN_ABI_VERSION;
+    create_info.abi_version =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_BINDING_CREATE_ABI_VERSION;
         create_info.layer_index = layer_index;
         create_info.maximum_active_sequence_count =
             node_context->max_active_sequence_count;

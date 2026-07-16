@@ -17,6 +17,13 @@ from glm52_model_contract import load_model_contract
 MODEL_CONTRACT = load_model_contract()
 MAGIC = b"SPARKGLM52B12X\0\0"
 ABI_VERSION = 3
+MANIFEST_SCHEMA = "sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1"
+AOT_MANIFEST_SCHEMA = "sparkpipe.glm52.sm121.b12x.aot_manifest.v1"
+REQUIRED_MODULE = \
+    "spark.glm52.sm121.flashinfer_b12x_fused_moe.nvfp4.bf16.v2"
+REQUIRED_ARCH = "sm_121a"
+PACK_EXTENSION = ".spb12x"
+SOURCE_INDEX_FILE = "model.safetensors.index.json"
 HEADER_BYTES = 512
 REGION_ALIGNMENT = 4096
 REGION_COUNT = 7
@@ -122,7 +129,7 @@ def load_json(path: Path) -> Dict[str, Any]:
 
 
 def read_weight_index(model_dir: Path) -> Dict[str, str]:
-    index_path = model_dir / "model.safetensors.index.json"
+    index_path = model_dir / SOURCE_INDEX_FILE
     if not index_path.exists():
         raise PackFailure(f"missing safetensors index: {index_path}")
     document = load_json(index_path)
@@ -671,22 +678,61 @@ def write_alpha_region(file: BinaryIO) -> None:
 
 def read_aot_manifest(path: Path) -> Tuple[int, int, int]:
     document = load_json(path)
+    if document.get("record_schema") != AOT_MANIFEST_SCHEMA:
+        raise PackFailure("AOT manifest schema is invalid")
+    if document.get("required_module") != REQUIRED_MODULE:
+        raise PackFailure("AOT manifest module is invalid")
+    if document.get("required_arch") != REQUIRED_ARCH:
+        raise PackFailure("AOT manifest architecture is invalid")
+    if document.get("fallback_allowed") is not False:
+        raise PackFailure("AOT manifest permits fallback")
+    if document.get("runtime_backend_selection") != "forbidden":
+        raise PackFailure("AOT manifest permits runtime backend selection")
+    manifest_hash_sha256 = document.get("manifest_hash_sha256")
+    if not isinstance(manifest_hash_sha256, str) or \
+            len(manifest_hash_sha256) != 64:
+        raise PackFailure("AOT manifest SHA256 is missing")
+    try:
+        int(manifest_hash_sha256, 16)
+    except ValueError as error:
+        raise PackFailure("AOT manifest SHA256 is invalid") from error
+    hash_document = dict(document)
+    hash_document.pop("manifest_hash_sha256", None)
+    hash_document.pop("manifest_hash_low64", None)
+    observed_hash_sha256 = sha256_text(json.dumps(
+        hash_document,
+        sort_keys=True,
+        separators=(",", ":"),
+    ))
+    if observed_hash_sha256 != manifest_hash_sha256:
+        raise PackFailure("AOT manifest content hash does not match")
     manifest_hash_low64 = int(document.get("manifest_hash_low64", 0))
-    if manifest_hash_low64 == 0:
-        digest = sha256_text(json.dumps(document, sort_keys=True, separators=(",", ":")))
-        manifest_hash_low64 = low64_from_hex(digest)
+    if manifest_hash_low64 != low64_from_hex(manifest_hash_sha256):
+        raise PackFailure("AOT manifest low64 hash does not match")
     maximum_token_count = int(document.get("maximum_token_count", 0))
     if maximum_token_count <= 0:
         raise PackFailure("AOT manifest maximum_token_count is missing")
     qualified = 0
-    for bucket in document.get("buckets", []):
+    bucket_token_counts = []
+    buckets = document.get("buckets")
+    if not isinstance(buckets, list) or not buckets:
+        raise PackFailure("AOT manifest buckets are missing")
+    for bucket in buckets:
         if isinstance(bucket, dict):
+            bucket_token_count = int(bucket.get("token_upper_bound", 0))
+            if bucket_token_count <= 0:
+                raise PackFailure("AOT manifest bucket capacity is invalid")
+            bucket_token_counts.append(bucket_token_count)
             qualified = max(
                 qualified,
                 int(bucket.get("p95_us", 0) or 0),
                 int(bucket.get("avg_us", 0) or 0),
                 int(bucket.get("qualified_p95_microseconds", 0) or 0),
             )
+        else:
+            raise PackFailure("AOT manifest bucket is invalid")
+    if max(bucket_token_counts) != maximum_token_count:
+        raise PackFailure("AOT manifest maximum_token_count does not match buckets")
     if qualified <= 0:
         qualified = 1
     return maximum_token_count, qualified, manifest_hash_low64
@@ -856,6 +902,62 @@ def process_layer_worker(arguments: Tuple[str, Dict[str, str], str, str, str, in
     )
 
 
+def build_resident_manifest(
+    model_dir: Path,
+    aot_manifest_path: Path,
+    maximum_token_count: int,
+    kernel_manifest_hash_low64: int,
+    records: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    source_index_path = model_dir / SOURCE_INDEX_FILE
+    if not source_index_path.exists():
+        raise PackFailure(f"missing safetensors index: {source_index_path}")
+    if not aot_manifest_path.exists():
+        raise PackFailure(f"AOT manifest does not exist: {aot_manifest_path}")
+    if maximum_token_count <= 0 or kernel_manifest_hash_low64 == 0:
+        raise PackFailure("resident manifest capacity or AOT hash is invalid")
+    return {
+        "record_schema": MANIFEST_SCHEMA,
+        "model_dir": str(model_dir),
+        "source_model_index_file": SOURCE_INDEX_FILE,
+        "source_model_index_sha256": sha256_file(source_index_path),
+        "aot_manifest": str(aot_manifest_path),
+        "aot_manifest_sha256": sha256_file(aot_manifest_path),
+        "kernel_manifest_hash_low64": kernel_manifest_hash_low64,
+        "required_module": REQUIRED_MODULE,
+        "required_arch": REQUIRED_ARCH,
+        "runtime_language": "c_cuda",
+        "compile_time_languages": ["python", "torch", "safetensors"],
+        "fallback_allowed": False,
+        "runtime_backend_selection": "forbidden",
+        "pack_magic": MAGIC.rstrip(b"\0").decode("ascii"),
+        "pack_extension": PACK_EXTENSION,
+        "pack_abi_version": ABI_VERSION,
+        "maximum_token_count": maximum_token_count,
+        "gate_up_order": "up_gate",
+        "gate_up_order_id": GATE_UP_ORDER_UP_GATE,
+        "weight_layout": "flashinfer_static_view",
+        "weight_layout_id": WEIGHT_LAYOUT_FLASHINFER_STATIC_VIEW,
+        "scale_layout": "flashinfer_static_storage",
+        "scale_layout_id": SCALE_LAYOUT_FLASHINFER_STATIC_STORAGE,
+        "quant_mode": QUANT_MODE_NVFP4,
+        "output_dtype": OUTPUT_DTYPE_BF16,
+        "output_dtype_name": "BF16",
+        "cuda_architecture": CUDA_ARCHITECTURE_SM121,
+        "scale2_baked_into_block_scales": True,
+        "w1_alpha": "ones_fp32_by_expert",
+        "w2_alpha": "ones_fp32_by_expert",
+        "fc2_input_scale": "ones_fp32_by_expert",
+        "shape": {
+            "hidden_dimension": HIDDEN_DIMENSION,
+            "intermediate_dimension": INTERMEDIATE_DIMENSION,
+            "expert_count": EXPERT_COUNT,
+            "top_k": TOP_K,
+        },
+        "packs": records,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-dir", required=True)
@@ -880,8 +982,10 @@ def main() -> int:
         raise PackFailure(f"AOT manifest does not exist: {aot_manifest_path}")
 
     maximum_token_count, manifest_qualified_us, kernel_manifest_hash_low64 = read_aot_manifest(aot_manifest_path)
-    if args.maximum_token_count > 0:
-        maximum_token_count = args.maximum_token_count
+    if args.maximum_token_count > 0 and \
+            args.maximum_token_count != maximum_token_count:
+        raise PackFailure(
+            "--maximum-token-count must match the compiled AOT manifest")
     qualified_us = args.qualified_maximum_microseconds or manifest_qualified_us
     if qualified_us <= 0:
         raise PackFailure("qualified maximum microseconds must be positive")
@@ -954,29 +1058,13 @@ def main() -> int:
                 print(json.dumps(record, sort_keys=True), flush=True)
     records = [records_by_layer[layer] for layer in layers]
 
-    manifest = {
-        "record_schema": "sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1",
-        "model_dir": str(model_dir),
-        "aot_manifest": str(aot_manifest_path),
-        "required_module": "spark.glm52.sm121.flashinfer_b12x_fused_moe.nvfp4.bf16.v2",
-        "required_arch": "sm_121a",
-        "runtime_language": "c_cuda",
-        "compile_time_languages": ["python", "torch", "safetensors"],
-        "fallback_allowed": False,
-        "runtime_backend_selection": "forbidden",
-        "gate_up_order": "up_gate",
-        "scale2_baked_into_block_scales": False,
-        "w1_alpha": "weight_scale_2_fp32_by_expert",
-        "w2_alpha": "weight_scale_2_fp32_by_expert",
-        "fc2_input_scale": "ones_fp32_by_expert",
-        "shape": {
-            "hidden_dimension": HIDDEN_DIMENSION,
-            "intermediate_dimension": INTERMEDIATE_DIMENSION,
-            "expert_count": EXPERT_COUNT,
-            "top_k": TOP_K,
-        },
-        "packs": records,
-    }
+    manifest = build_resident_manifest(
+        model_dir,
+        aot_manifest_path,
+        maximum_token_count,
+        kernel_manifest_hash_low64,
+        records,
+    )
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(f"wrote {manifest_path}")
     return 0

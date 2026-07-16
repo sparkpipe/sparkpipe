@@ -131,38 +131,47 @@ static SparkStatus SparkGlm52B12xPlanFileSize(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52B12xPlanValidateRegion(
+static SparkStatus SparkGlm52B12xPlanValidateRegionLayout(
     const SparkGlm52ResidentDecodeStageB12xMoePackHeader *header,
-    uint32_t region_index,
-    uint64_t expected_bytes,
+    const uint64_t expected_region_bytes[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_COUNT],
     uint64_t file_size)
 {
     const SparkGlm52ResidentDecodeStageB12xMoePackRegion *region;
-    uint64_t end_offset;
+    uint64_t expected_offset;
     SparkStatus status;
+    uint32_t index;
 
-    if (header == 0 || region_index >=
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_COUNT)
+    if (header == 0 || expected_region_bytes == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    region = &header->regions[region_index];
-    status = SparkGlm52B12xPlanCheckedAddU64(
-        region->offset,
-        region->bytes,
-        &end_offset);
-    if (status != SPARK_STATUS_OK)
+    expected_offset = header->header_bytes;
+    for (index = 0u;
+         index < SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_COUNT;
+         ++index)
     {
-        return status;
+        expected_offset = SparkGlm52B12xPlanAlignUpU64(
+            expected_offset,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_ALIGNMENT);
+        region = &header->regions[index];
+        if (region->offset != expected_offset ||
+            region->bytes != expected_region_bytes[index])
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        status = SparkGlm52B12xPlanCheckedAddU64(
+            expected_offset,
+            region->bytes,
+            &expected_offset);
+        if (status != SPARK_STATUS_OK)
+            return status;
     }
-    if (region->offset < header->header_bytes ||
-        (region->offset %
-         SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_ALIGNMENT) != 0u ||
-        region->bytes != expected_bytes ||
-        end_offset > file_size)
-    {
+    if (expected_offset != file_size)
         return SPARK_STATUS_INVALID_ARGUMENT;
-    }
+    for (index = 0u;
+         index < (uint32_t)sizeof(header->reserved_bytes);
+         ++index)
+        if (header->reserved_bytes[index] != 0u)
+            return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
 }
 
@@ -176,6 +185,8 @@ static SparkStatus SparkGlm52B12xPlanValidatePackHeader(
     uint64_t w2_weight_bytes;
     uint64_t w2_scale_bytes;
     uint64_t alpha_bytes;
+    uint64_t expected_region_bytes[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_COUNT];
     SparkStatus status;
 
     if (header == 0 || create_info == 0)
@@ -215,6 +226,7 @@ static SparkStatus SparkGlm52B12xPlanValidatePackHeader(
         header->qualified_maximum_microseconds == 0u ||
         header->qualification_record_hash_low64 == 0u ||
         header->kernel_manifest_hash_low64 == 0u ||
+        header->pack_hash_low64 == 0u ||
         file_size < header->header_bytes)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -291,64 +303,30 @@ static SparkStatus SparkGlm52B12xPlanValidatePackHeader(
     }
 
     alpha_bytes = (uint64_t)header->expert_count * sizeof(float);
-    status = SparkGlm52B12xPlanValidateRegion(
+    expected_region_bytes[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W1_WEIGHT] =
+        w1_weight_bytes;
+    expected_region_bytes[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W1_SCALE] =
+        w1_scale_bytes;
+    expected_region_bytes[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W1_ALPHA] =
+        alpha_bytes;
+    expected_region_bytes[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_FC2_INPUT_SCALE] =
+        alpha_bytes;
+    expected_region_bytes[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W2_WEIGHT] =
+        w2_weight_bytes;
+    expected_region_bytes[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W2_SCALE] =
+        w2_scale_bytes;
+    expected_region_bytes[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W2_ALPHA] =
+        alpha_bytes;
+    return SparkGlm52B12xPlanValidateRegionLayout(
         header,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W1_WEIGHT,
-        w1_weight_bytes,
-        file_size);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkGlm52B12xPlanValidateRegion(
-        header,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W1_SCALE,
-        w1_scale_bytes,
-        file_size);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkGlm52B12xPlanValidateRegion(
-        header,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W1_ALPHA,
-        alpha_bytes,
-        file_size);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkGlm52B12xPlanValidateRegion(
-        header,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_FC2_INPUT_SCALE,
-        alpha_bytes,
-        file_size);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkGlm52B12xPlanValidateRegion(
-        header,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W2_WEIGHT,
-        w2_weight_bytes,
-        file_size);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkGlm52B12xPlanValidateRegion(
-        header,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W2_SCALE,
-        w2_scale_bytes,
-        file_size);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    return SparkGlm52B12xPlanValidateRegion(
-        header,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W2_ALPHA,
-        alpha_bytes,
+        expected_region_bytes,
         file_size);
 }
 
@@ -573,7 +551,7 @@ static void SparkGlm52B12xPlanPopulateBinding(
         (uint64_t)maximum_active_sequence_count * (uint64_t)header->top_k;
 
     binding->abi_version =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PLAN_ABI_VERSION;
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_BINDING_ABI_VERSION;
     binding->layer_index = header->layer_index;
     memset(&binding->dispatch_plan, 0, sizeof(binding->dispatch_plan));
     binding->dispatch_plan.abi_version =
@@ -653,13 +631,19 @@ SparkStatus SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFil
 {
     SparkGlm52ResidentDecodeStageB12xMoePackHeader header;
     FILE *file;
+    uint64_t active_kernel_manifest_hash_low64;
     uint64_t file_size;
     SparkStatus status;
 
     if (binding == 0 || create_info == 0 || create_info->pack_path == 0 ||
         create_info->abi_version !=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PLAN_ABI_VERSION ||
-        create_info->reserved != 0u ||
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_BINDING_CREATE_ABI_VERSION ||
+        (create_info->flags &
+            ~SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_BINDING_CREATE_KNOWN_FLAGS) !=
+                0u ||
+        (((create_info->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_BINDING_CREATE_FLAG_EXTERNAL_STATE) !=
+                0u) != (create_info->external_state_cell != 0)) ||
         create_info->maximum_active_sequence_count == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -749,11 +733,13 @@ SparkStatus SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFil
             binding,
             &header,
             create_info->maximum_active_sequence_count);
-        binding->plan.recipe.kernel_manifest_hash_low64 =
+        active_kernel_manifest_hash_low64 =
             SparkGlm52Sm121FlashInferB12xMoeActiveKernelManifestHashLow64();
-        if (binding->plan.recipe.kernel_manifest_hash_low64 == 0u)
+        if (active_kernel_manifest_hash_low64 == 0u ||
+            active_kernel_manifest_hash_low64 !=
+                binding->plan.recipe.kernel_manifest_hash_low64)
         {
-            status = SPARK_STATUS_MODULE_NOT_VALIDATED;
+            status = SPARK_STATUS_HASH_MISMATCH;
         }
     }
     if (status == SPARK_STATUS_OK)
@@ -762,11 +748,21 @@ SparkStatus SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFil
             binding,
             &header);
     }
-    if (status == SPARK_STATUS_OK)
+    if (status == SPARK_STATUS_OK &&
+        (create_info->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_BINDING_CREATE_FLAG_EXTERNAL_STATE) !=
+                0u)
+    {
+        binding->state_cell = create_info->external_state_cell;
+        binding->owns_state_cell = 0u;
+    }
+    else if (status == SPARK_STATUS_OK)
     {
         status = SparkGlm52Sm121FlashInferB12xMoeCreate(
             &binding->plan.recipe,
             &binding->state_cell);
+        if (status == SPARK_STATUS_OK)
+            binding->owns_state_cell = 1u;
     }
     if (status != SPARK_STATUS_OK)
     {
@@ -783,11 +779,12 @@ void SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy(
     {
         return;
     }
-    if (binding->state_cell != 0)
+    if (binding->state_cell != 0 && binding->owns_state_cell != 0u)
     {
         SparkGlm52Sm121FlashInferB12xMoeDestroy(binding->state_cell);
-        binding->state_cell = 0;
     }
+    binding->state_cell = 0;
+    binding->owns_state_cell = 0u;
     SparkGlm52B12xPlanFreeDevicePointer(&binding->w1_weight_fp4_static_view);
     SparkGlm52B12xPlanFreeDevicePointer(&binding->w1_scale_static_storage_ue4m3);
     SparkGlm52B12xPlanFreeDevicePointer(&binding->w1_alpha_fp32_by_expert);

@@ -233,6 +233,7 @@ def validate_tensor_record(
     expected: tuple[str, tuple[int, ...]] | None,
     stage_file_name: str,
     stage_file_bytes: int,
+    quantization_label: str = "W8LUT",
 ) -> tuple[int, int]:
     record = require_object(record_value, f"tensor_map[{name}]")
     file_name = require_string(record.get("file"), f"tensor_map[{name}].file")
@@ -254,7 +255,8 @@ def validate_tensor_record(
     if offset + byte_count > stage_file_bytes:
         raise PreflightFailure(f"tensor {name} exceeds StagePack file size")
     if ".mlp.experts." in name or name.endswith("weight_scale_inv"):
-        raise PreflightFailure(f"W8LUT StagePack contains forbidden tensor {name}")
+        raise PreflightFailure(
+            f"{quantization_label} StagePack contains forbidden tensor {name}")
     return offset, byte_count
 
 
@@ -315,11 +317,17 @@ def validate_stagepack(
     rank: int,
     selected_layers: list[int],
     sample_bytes: int,
+    model_quantization: str = STAGEPACK_QUANTIZATION,
+    quantization_label: str = "W8LUT",
 ) -> tuple[str, dict[str, Any]]:
     index = load_json_object(root / STAGEPACK_INDEX, "StagePack index")
     require_equal(index.get("format"), STAGEPACK_FORMAT, "StagePack format")
     require_equal(index.get("topology"), STAGEPACK_TOPOLOGY, "StagePack topology")
-    require_equal(index.get("model_quantization"), STAGEPACK_QUANTIZATION, "StagePack quantization")
+    require_equal(
+        index.get("model_quantization"),
+        model_quantization,
+        "StagePack quantization",
+    )
     require_equal(index.get("non_expert_weight_dtype"), STAGEPACK_DTYPE, "StagePack non-expert dtype")
     require_equal(index.get("stage_count"), STAGE_COUNT, "StagePack stage_count")
     require_equal(index.get("layers_per_stage"), LAYERS_PER_STAGE, "StagePack layers_per_stage")
@@ -362,6 +370,7 @@ def validate_stagepack(
             required.get(name),
             stage_file_name,
             stage_file_bytes,
+            quantization_label,
         )
         ranges.append((offset, offset + byte_count, name))
     ranges.sort()

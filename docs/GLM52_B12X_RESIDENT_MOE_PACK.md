@@ -24,6 +24,10 @@ SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile(...)
 SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy(...)
 ```
 
+The PP13 model contract keeps attention, DSA, dense layers, shared experts,
+embedding, normalization, vocabulary head, and MLA KV in BF16. Only routed
+experts are stored as NVFP4.
+
 Each pack contains all 256 GLM52 experts for one routed layer.  Pack ABI v3 is
 the first ABI that stores B12x scale factors in the required FlashInfer static
 storage order; ABI v2 packs must be regenerated.
@@ -90,9 +94,42 @@ SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan
 SparkGlm52ResidentDecodeStageB12xMoePlan
 ```
 
+A PP rank owns one compiled B12x state and generated AOT workspace. Local
+routed layers execute serially against that shared state while retaining
+layer-local expert weight buffers. The first layer owns the state; later layers
+bind it as external state and cannot destroy it.
+
 A routed GLM52 stage without this bound plan is invalid.  Missing packs, missing
 compiled B12x archive, bad shapes, bad layout IDs, zero qualification hashes, or
 insufficient token capacity all fail before the routed launch.
+
+`maximum_token_count` is the number of execution rows accepted by the linked
+AOT table:
+
+```text
+plain decode: execution_rows = logical_lanes
+MTP/DsPARK:   execution_rows = logical_lanes * 7
+```
+
+Therefore plain B1024 requires an AOT maximum of at least 1024, while MTP or
+DsPARK B1024 requires at least 7168. A 1024-row AOT table supports at most 146
+logical lanes at seven rows per lane.
+
+Validate one rank-local artifact set before building:
+
+```bash
+python3 tools/glm52_nvfp4_artifact_preflight.py \
+  --rank 2 \
+  --stagepack-root /path/to/rank2/stagepack \
+  --nvfp4-pack-root /path/to/rank2/b12x \
+  --aot-manifest /path/to/generated/aot_manifest.json \
+  --max-active 1024
+```
+
+Add `--mtp` for the seven-row capacity contract. The preflight checks source
+identity, exact pack layout, scale metadata, AOT object hashes, generated CUDA
+files, runtime link paths, and the linked-kernel manifest hash. It has no
+fallback mode.
 
 The B12x implementation and scale/weight layout contract are derived from the
 vendored FlashInfer B12x fused-MoE source under `third_party/flashinfer/` and
