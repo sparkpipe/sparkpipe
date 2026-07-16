@@ -21,7 +21,7 @@ ifneq ($(UNAME_S),Darwin)
 GLM52_PP13_NODE_CONTEXT_BUILDER_RPATH := -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs'
 endif
 SPARKPIPE_B12X_AOT_ENV ?= $(HOME)/.config/sparkpipe/glm52_b12x_aot_env.sh
-B12X_AOT_TOKENS ?= 1,2,4,8,16,32,64,96,128,256,512,1024
+B12X_AOT_TOKENS ?= 1,2,4,7,8,14,16,28,32,56,64,96,112,128,224,256,448,512,672,896,1024
 B12X_AOT_WARMUP ?= 5
 B12X_AOT_ITERATIONS ?= 20
 B12X_AOT_OUTPUT_DIR ?= build/glm52_b12x_aot_prompt
@@ -197,6 +197,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_w8lut_pack_layout.py \
 	tests/test_glm52_w8lut_artifact_preflight.py \
 	tests/test_glm52_nvfp4_artifact_preflight.py \
+	tests/test_glm52_quantized_cuda_contract.py \
 	tests/test_glm52_w8lut_ring_preflight.py \
 	tests/test_glm52_w8lut_validation_wiring.py \
 	tests/test_glm52_w8lut_stage_pack_watch.py \
@@ -544,6 +545,7 @@ glm52_quantized_readiness_test: build/test_glm52_pp13_runtime build/test_glm52_s
 	python3 tests/test_glm52_stage_pack.py
 	python3 tests/test_glm52_w8lut_artifact_preflight.py
 	python3 tests/test_glm52_nvfp4_artifact_preflight.py
+	python3 tests/test_glm52_quantized_cuda_contract.py
 	python3 tests/test_glm52_b12x_resident_manifest.py
 	python3 tests/test_release_assemble.py
 

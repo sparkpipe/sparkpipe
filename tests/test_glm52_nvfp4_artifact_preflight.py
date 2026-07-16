@@ -123,6 +123,9 @@ def create_aot_bundle(tool, generated: Path, maximum_tokens: int) -> Path:
         ],
         "fallback_allowed": False,
         "runtime_backend_selection": "forbidden",
+        "production_backend_policy": "exact_static_buckets_only",
+        "runtime_bucket_decomposition": "forbidden",
+        "runtime_diagnostic_routing_mutation": "forbidden",
         "deterministic_fc2_finalize": True,
         "route_scatter_output": True,
         "route_slice_output": True,
@@ -355,6 +358,16 @@ def main() -> int:
             generated,
             maximum_tokens,
         )
+        micro_document = json.loads(
+            aot_manifest.read_text(encoding="utf-8")
+        )
+        micro_document["buckets"][0]["backend_kind"] = "micro"
+        try:
+            tool.validate_aot_buckets(micro_document, maximum_tokens)
+        except tool.PreflightFailure as error:
+            assert "requires exact static AOT buckets" in str(error)
+        else:
+            raise AssertionError("micro AOT bucket unexpectedly passed preflight")
         pack_path, record = create_pack(
             tool,
             nvfp4_root,

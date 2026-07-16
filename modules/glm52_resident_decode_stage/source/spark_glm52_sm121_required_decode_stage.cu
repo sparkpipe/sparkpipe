@@ -10077,7 +10077,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchValidatedFlashInferB12xMoe
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
 
-    status = SparkGlm52ResidentDecodeStageLaunchMoeRouterLogitsForB12x(
+    status = SparkGlm52ResidentDecodeStageLaunchMoeRouterForB12x(
         node_context,
         pipeline_slot,
         cuda_stream,
@@ -10097,16 +10097,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchValidatedFlashInferB12xMoe
     arguments.hidden_dimension = b12x_plan->hidden_dimension;
     arguments.intermediate_dimension = b12x_plan->intermediate_dimension;
     arguments.argument_flags =
-        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS |
         SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_DETERMINISTIC_FC2_FINALIZE;
     arguments.hidden_bf16 = pipeline_slot->post_attention_normalized_hidden_bf16;
     arguments.topk_ids_i32 = (int32_t *)pipeline_slot->moe_topk_expert_ids;
     arguments.topk_weights_fp32 = pipeline_slot->moe_topk_weights;
-    arguments.router_logits_f32 = pipeline_slot->moe_router_logits;
-    arguments.router_score_bias_f32 = node_context->moe_router_score_bias_f32;
-    arguments.router_norm_topk_prob = node_context->moe_norm_topk_prob;
-    arguments.router_routed_scaling_factor =
-        node_context->moe_routed_scaling_factor;
     arguments.w1_weight_fp4_static_view = b12x_plan->w1_weight_fp4_static_view;
     arguments.w1_scale_static_storage_ue4m3 =
         b12x_plan->w1_scale_static_storage_ue4m3;
@@ -10383,6 +10377,11 @@ static uint64_t SparkGlm52ResidentDecodeStageMoePackedRouteWorkspaceBytesForShap
             alignment) ||
         !SparkGlm52ResidentDecodeStageAddAlignedWorkspaceRange(
             &workspace_offset,
+            expert_count,
+            sizeof(uint32_t),
+            alignment) ||
+        !SparkGlm52ResidentDecodeStageAddAlignedWorkspaceRange(
+            &workspace_offset,
             maximum_route_count,
             sizeof(uint32_t),
             alignment) ||
@@ -10515,6 +10514,20 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageResolveMoePackedRouteWo
             workspace_base,
             workspace_bytes,
             &workspace_offset,
+            expert_count,
+            sizeof(uint32_t),
+            alignment,
+            &range_pointer))
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    packed_route_view_out->expert_route_write_cursors =
+        (uint32_t *)range_pointer;
+
+    if (!SparkGlm52ResidentDecodeStageAssignAlignedWorkspaceRange(
+            workspace_base,
+            workspace_bytes,
+            &workspace_offset,
             maximum_route_count,
             sizeof(uint32_t),
             alignment,
@@ -10637,6 +10650,7 @@ static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREA
 void SparkGlm52ResidentDecodeStageMoePackedRouteResetKernel(
     uint32_t *__restrict__ expert_route_offsets,
     uint32_t *__restrict__ expert_route_counts,
+    uint32_t *__restrict__ expert_route_write_cursors,
     uint32_t *__restrict__ packed_expert_ids,
     uint32_t *__restrict__ packed_source_token_indices,
     uint32_t *__restrict__ packed_source_route_indices,
@@ -10664,6 +10678,7 @@ void SparkGlm52ResidentDecodeStageMoePackedRouteResetKernel(
         if (linear_index < expert_count)
         {
             expert_route_counts[linear_index] = 0u;
+            expert_route_write_cursors[linear_index] = 0u;
         }
         if (linear_index < route_count)
         {
@@ -10684,76 +10699,77 @@ static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREA
 void SparkGlm52ResidentDecodeStageMoePackedRouteCountKernel(
     const uint32_t *__restrict__ topk_expert_ids,
     uint32_t *__restrict__ expert_route_counts,
-    uint32_t active_sequence_count,
+    uint32_t route_count,
     uint32_t expert_count,
-    uint32_t top_k)
+    uint32_t maximum_route_count)
 {
-    __shared__ uint32_t shared_counts[SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    uint32_t expert_index;
-    uint32_t route_count;
     uint32_t route_linear_index;
-    uint32_t local_count;
-    uint32_t reduction_stride;
+    uint32_t expert_index;
 
-    expert_index = blockIdx.x;
-    if (expert_index >= expert_count)
+    route_linear_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+    if (route_linear_index >= route_count ||
+        route_linear_index >= maximum_route_count)
     {
         return;
     }
-
-    route_count = active_sequence_count * top_k;
-    local_count = 0u;
-    for (route_linear_index = threadIdx.x;
-         route_linear_index < route_count;
-         route_linear_index += blockDim.x)
+    expert_index = topk_expert_ids[route_linear_index];
+    if (expert_index >= expert_count)
     {
-        if (topk_expert_ids[route_linear_index] == expert_index)
-        {
-            local_count += 1u;
-        }
+        asm volatile("trap;");
+        return;
     }
-
-    shared_counts[threadIdx.x] = local_count;
-    __syncthreads();
-    for (reduction_stride = blockDim.x >> 1u;
-         reduction_stride > 0u;
-         reduction_stride >>= 1u)
-    {
-        if (threadIdx.x < reduction_stride)
-        {
-            shared_counts[threadIdx.x] += shared_counts[threadIdx.x + reduction_stride];
-        }
-        __syncthreads();
-    }
-    if (threadIdx.x == 0u)
-    {
-        expert_route_counts[expert_index] = shared_counts[0];
-    }
+    atomicAdd(&expert_route_counts[expert_index], 1u);
 }
 
 static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 1)
 void SparkGlm52ResidentDecodeStageMoePackedRoutePrefixKernel(
     const uint32_t *__restrict__ expert_route_counts,
     uint32_t *__restrict__ expert_route_offsets,
+    uint32_t *__restrict__ expert_route_write_cursors,
     uint32_t *__restrict__ packed_route_count,
     uint32_t expert_count)
 {
+    __shared__ uint32_t shared_prefix[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT];
+    uint32_t addend;
     uint32_t expert_index;
-    uint32_t running_offset;
+    uint32_t offset;
+    uint32_t total;
 
-    if (threadIdx.x != 0u || blockIdx.x != 0u)
+    expert_index = threadIdx.x;
+    if (blockIdx.x != 0u ||
+        expert_count == 0u ||
+        expert_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT)
     {
         return;
     }
-
-    running_offset = 0u;
-    for (expert_index = 0u; expert_index < expert_count; ++expert_index)
+    shared_prefix[expert_index] =
+        expert_index < expert_count ? expert_route_counts[expert_index] : 0u;
+    __syncthreads();
+    for (offset = 1u;
+         offset < SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
+         offset <<= 1u)
     {
-        expert_route_offsets[expert_index] = running_offset;
-        running_offset += expert_route_counts[expert_index];
+        addend = expert_index >= offset
+            ? shared_prefix[expert_index - offset]
+            : 0u;
+        __syncthreads();
+        shared_prefix[expert_index] += addend;
+        __syncthreads();
     }
-    expert_route_offsets[expert_count] = running_offset;
-    *packed_route_count = running_offset;
+    if (expert_index < expert_count)
+    {
+        expert_route_offsets[expert_index] =
+            expert_index == 0u ? 0u : shared_prefix[expert_index - 1u];
+        expert_route_write_cursors[expert_index] =
+            expert_route_offsets[expert_index];
+    }
+    if (expert_index == 0u)
+    {
+        total = shared_prefix[expert_count - 1u];
+        expert_route_offsets[expert_count] = total;
+        *packed_route_count = total;
+    }
 }
 
 static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 1)
@@ -10761,6 +10777,8 @@ void SparkGlm52ResidentDecodeStageMoePackedRouteFillKernel(
     const uint32_t *__restrict__ topk_expert_ids,
     const float *__restrict__ topk_weights,
     const uint32_t *__restrict__ expert_route_offsets,
+    const uint32_t *__restrict__ expert_route_counts,
+    uint32_t *__restrict__ expert_route_write_cursors,
     uint32_t *__restrict__ packed_expert_ids,
     uint32_t *__restrict__ packed_source_token_indices,
     uint32_t *__restrict__ packed_source_route_indices,
@@ -10770,38 +10788,41 @@ void SparkGlm52ResidentDecodeStageMoePackedRouteFillKernel(
     uint32_t expert_count,
     uint32_t top_k)
 {
-    uint32_t expert_index;
-    uint32_t route_count;
     uint32_t route_linear_index;
+    uint32_t route_count;
+    uint32_t expert_index;
+    uint32_t token_index;
+    uint32_t route_index;
     uint32_t write_index;
 
-    expert_index = blockIdx.x;
-    if (expert_index >= expert_count || threadIdx.x != 0u)
+    route_linear_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+    route_count = active_sequence_count * top_k;
+    if (route_linear_index >= route_count)
     {
         return;
     }
-
-    route_count = active_sequence_count * top_k;
-    write_index = expert_route_offsets[expert_index];
-    for (route_linear_index = 0u;
-         route_linear_index < route_count;
-         ++route_linear_index)
+    expert_index = topk_expert_ids[route_linear_index];
+    if (expert_index >= expert_count)
     {
-        if (topk_expert_ids[route_linear_index] == expert_index)
-        {
-            uint32_t token_index;
-            uint32_t route_index;
-
-            token_index = route_linear_index / top_k;
-            route_index = route_linear_index - (token_index * top_k);
-            packed_expert_ids[write_index] = expert_index;
-            packed_source_token_indices[write_index] = token_index;
-            packed_source_route_indices[write_index] = route_index;
-            packed_route_rows_by_token_route[route_linear_index] = write_index;
-            packed_route_weights[write_index] = topk_weights[route_linear_index];
-            ++write_index;
-        }
+        asm volatile("trap;");
+        return;
     }
+    write_index = atomicAdd(&expert_route_write_cursors[expert_index], 1u);
+    if (write_index < expert_route_offsets[expert_index] ||
+        write_index >=
+            expert_route_offsets[expert_index] +
+            expert_route_counts[expert_index])
+    {
+        asm volatile("trap;");
+        return;
+    }
+    token_index = route_linear_index / top_k;
+    route_index = route_linear_index - (token_index * top_k);
+    packed_expert_ids[write_index] = expert_index;
+    packed_source_token_indices[write_index] = token_index;
+    packed_source_route_indices[write_index] = route_index;
+    packed_route_rows_by_token_route[route_linear_index] = write_index;
+    packed_route_weights[write_index] = topk_weights[route_linear_index];
 }
 
 static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 4)
@@ -10843,6 +10864,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateMoePackedRouteView(
         packed_route_view->reserved1 != 0u ||
         packed_route_view->expert_route_offsets == 0 ||
         packed_route_view->expert_route_counts == 0 ||
+        packed_route_view->expert_route_write_cursors == 0 ||
         packed_route_view->packed_expert_ids == 0 ||
         packed_route_view->packed_source_token_indices == 0 ||
         packed_route_view->packed_source_route_indices == 0 ||
@@ -10865,6 +10887,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchMoePackedRouteBui
     cudaStream_t cuda_stream;
     cudaError_t cuda_status;
     uint32_t route_count;
+    uint32_t route_block_count;
     uint32_t reset_limit;
     uint32_t reset_block_count;
     SparkStatus status;
@@ -10891,6 +10914,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchMoePackedRouteBui
     reset_limit = route_count > (packed_route_view->expert_count + 1u)
         ? route_count
         : (packed_route_view->expert_count + 1u);
+    route_block_count =
+        SparkGlm52ResidentDecodeStageElementBlockCount(route_count);
     reset_block_count = SparkGlm52ResidentDecodeStageElementBlockCount(reset_limit);
     cuda_stream = (cudaStream_t)cuda_stream_pointer;
 
@@ -10901,6 +10926,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchMoePackedRouteBui
         cuda_stream>>>(
         packed_route_view->expert_route_offsets,
         packed_route_view->expert_route_counts,
+        packed_route_view->expert_route_write_cursors,
         packed_route_view->packed_expert_ids,
         packed_route_view->packed_source_token_indices,
         packed_route_view->packed_source_route_indices,
@@ -10916,15 +10942,15 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchMoePackedRouteBui
     }
 
     SparkGlm52ResidentDecodeStageMoePackedRouteCountKernel<<<
-        packed_route_view->expert_count,
+        route_block_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
         0u,
         cuda_stream>>>(
         topk_expert_ids,
         packed_route_view->expert_route_counts,
-        active_sequence_count,
+        route_count,
         packed_route_view->expert_count,
-        packed_route_view->top_k);
+        packed_route_view->maximum_route_count);
     cuda_status = cudaPeekAtLastError();
     if (cuda_status != cudaSuccess)
     {
@@ -10938,6 +10964,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchMoePackedRouteBui
         cuda_stream>>>(
         packed_route_view->expert_route_counts,
         packed_route_view->expert_route_offsets,
+        packed_route_view->expert_route_write_cursors,
         packed_route_view->packed_route_count,
         packed_route_view->expert_count);
     cuda_status = cudaPeekAtLastError();
@@ -10947,13 +10974,15 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchMoePackedRouteBui
     }
 
     SparkGlm52ResidentDecodeStageMoePackedRouteFillKernel<<<
-        packed_route_view->expert_count,
+        route_block_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
         0u,
         cuda_stream>>>(
         topk_expert_ids,
         topk_weights,
         packed_route_view->expert_route_offsets,
+        packed_route_view->expert_route_counts,
+        packed_route_view->expert_route_write_cursors,
         packed_route_view->packed_expert_ids,
         packed_route_view->packed_source_token_indices,
         packed_route_view->packed_source_route_indices,
@@ -12563,35 +12592,44 @@ static __global__ void SparkGlm52ResidentDecodeStageW8lutBuildTilesKernel(
     uint32_t count;
     uint32_t cursor;
     uint32_t expert_index;
+    uint32_t expert_tile_count;
     uint32_t row_offset;
-    if (blockIdx.x != 0u || threadIdx.x != 0u)
+    uint32_t tile_index;
+    expert_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+    if (expert_index >= expert_count)
     {
         return;
     }
-    cursor = 0u;
-    for (expert_index = 0u; expert_index < expert_count; ++expert_index)
+    count = expert_route_counts[expert_index];
+    expert_tile_count =
+        (count + SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_WMMA_M - 1u) /
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_WMMA_M;
+    if (expert_tile_count == 0u)
     {
-        count = expert_route_counts[expert_index];
-        for (row_offset = 0u; row_offset < count;
-             row_offset += SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_WMMA_M)
-        {
-            if (cursor >= tile_capacity)
-            {
-                *tile_count = UINT32_MAX;
-                return;
-            }
-            tiles[cursor].expert_index = expert_index;
-            tiles[cursor].packed_row_begin =
-                expert_route_offsets[expert_index] + row_offset;
-            tiles[cursor].row_count = count - row_offset >
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_WMMA_M
-                ? SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_WMMA_M
-                : count - row_offset;
-            tiles[cursor].reserved0 = 0u;
-            ++cursor;
-        }
+        return;
     }
-    *tile_count = cursor;
+    cursor = atomicAdd(tile_count, expert_tile_count);
+    if (cursor >= tile_capacity ||
+        expert_tile_count > tile_capacity - cursor)
+    {
+        atomicExch(tile_count, UINT32_MAX);
+        asm volatile("trap;");
+        return;
+    }
+    for (row_offset = 0u; row_offset < count;
+         row_offset += SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_WMMA_M)
+    {
+        tile_index = cursor +
+            (row_offset / SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_WMMA_M);
+        tiles[tile_index].expert_index = expert_index;
+        tiles[tile_index].packed_row_begin =
+            expert_route_offsets[expert_index] + row_offset;
+        tiles[tile_index].row_count = count - row_offset >
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_WMMA_M
+            ? SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_WMMA_M
+            : count - row_offset;
+        tiles[tile_index].reserved0 = 0u;
+    }
 }
 
 static __global__ __launch_bounds__(
@@ -12815,18 +12853,14 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchW8lutMoeTensorCore(
     {
         return SPARK_STATUS_INTERNAL_ERROR;
     }
-    status = SparkGlm52ResidentDecodeStageMaybeForceBenchmarkExpertCoverage(
-        pipeline_slot->moe_topk_expert_ids,
-        pipeline_slot->moe_topk_weights,
-        active_sequence_count,
-        node_context->moe_expert_count,
-        node_context->moe_top_k,
-        node_context->moe_routed_scaling_factor,
-        cuda_stream,
-        "w8lut_moe");
-    if (status != SPARK_STATUS_OK)
+    cuda_status = cudaMemsetAsync(
+        view.tile_count,
+        0,
+        sizeof(*view.tile_count),
+        cuda_stream);
+    if (cuda_status != cudaSuccess)
     {
-        return status;
+        return SPARK_STATUS_INTERNAL_ERROR;
     }
     status = SparkGlm52Sm121RequiredDecodeStageLaunchMoePackedRouteBuild(
         pipeline_slot->moe_topk_expert_ids,
@@ -12845,7 +12879,11 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchW8lutMoeTensorCore(
         (routed_row_count < plan->expert_count
             ? routed_row_count
             : plan->expert_count);
-    SparkGlm52ResidentDecodeStageW8lutBuildTilesKernel<<<1u, 1u, 0u, cuda_stream>>>(
+    SparkGlm52ResidentDecodeStageW8lutBuildTilesKernel<<<
+        1u,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT,
+        0u,
+        cuda_stream>>>(
         view.packed_route_view.expert_route_offsets,
         view.packed_route_view.expert_route_counts,
         view.tiles,

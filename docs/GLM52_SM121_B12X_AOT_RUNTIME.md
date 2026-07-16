@@ -10,7 +10,7 @@ Run this on the target `spark1` software stack:
 tools/glm52_b12x_prepare_spark_env.sh
 . "$HOME/.config/sparkpipe/glm52_b12x_aot_env.sh"
 ./tools/glm52_b12x_aot_compile.py \
-  --tokens 1,2,4,8,16,32,64,96,128 \
+  --tokens 1,2,4,7,8,14,16,28,32,56,64,96,112,128,224,256,448,512,672,896,1024 \
   --warmup 5 \
   --iterations 20 \
   --benchmark \
@@ -21,9 +21,14 @@ The environment prep script installs the Python 3.12 development headers into a
 user-owned sysroot. This satisfies Triton's AOT launcher compilation without
 sudo or system package mutation.
 
-The AOT compiler defaults to static/micro SM121 buckets. The dynamic backend is
-behind `--allow-dynamic`; do not publish a dynamic bucket unless it passes on
-the target GPU.
+The production AOT compiler emits exact static SM121 buckets only. Each live
+execution-row count must have its own bucket. Micro, dynamic, and runtime
+chunk-decomposition paths are forbidden.
+
+The default set includes seven-row DSpark verifier buckets through 128 logical
+lanes (`7,14,28,56,112,224,448,672,896`). Wider DSpark batches require adding
+their exact `7 * logical_lanes` row counts at AOT generation time; the runtime
+will fail closed rather than split or substitute a different bucket.
 
 The tool uses vendored FlashInfer B12x CuTe DSL source to compile exact GLM52/SM121 buckets. It emits:
 
@@ -88,6 +93,9 @@ gate_up_order: up_gate
 weight_layout: flashinfer_static_view
 scale_layout: flashinfer_static_storage
 runtime_backend_selection: forbidden
+production_backend_policy: exact_static_buckets_only
+runtime_bucket_decomposition: forbidden
+runtime_diagnostic_routing_mutation: forbidden
 fallback_allowed: false
 ```
 

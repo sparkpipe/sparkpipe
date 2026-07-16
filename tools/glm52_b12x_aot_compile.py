@@ -20,7 +20,7 @@ import shutil
 import statistics
 import subprocess
 import sys
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 from glm52_model_contract import load_model_contract
 
@@ -35,13 +35,6 @@ REQUIRED_SHAPE = {
         MODEL_CONTRACT["moe_intermediate_dimension"]
     ),
 }
-
-BACKEND_KIND = {
-    "micro": 1,
-    "static": 2,
-    "dynamic": 3,
-}
-
 
 class AotFailure(RuntimeError):
     pass
@@ -250,101 +243,67 @@ def time_bucket(torch_module: Any, wrapper: Any, weights: Dict[str, Any], token_
     }
 
 
-def kernel_function_name(kind: str, token_count: Optional[int]) -> str:
-    if kind == "dynamic":
-        return "spark_glm52_b12x_dynamic_e256_h6144_i2048_topk8"
-    if token_count is None:
-        raise AotFailure("static and micro kernels need a token count")
-    return f"spark_glm52_b12x_{kind}_t{token_count}_e256_h6144_i2048_topk8"
+def kernel_function_name(kind: str, token_count: int) -> str:
+    if kind != "static":
+        raise AotFailure(f"production AOT forbids backend kind {kind!r}")
+    return f"spark_glm52_b12x_static_t{token_count}_e256_h6144_i2048_topk8"
 
 
-def export_compiled_objects(dispatch_module: Any, objects_directory: Path) -> Dict[str, Dict[str, Any]]:
+def export_compiled_objects(
+    dispatch_module: Any,
+    objects_directory: Path,
+    token_buckets: List[int],
+) -> Dict[str, Dict[str, Any]]:
     objects_directory.mkdir(parents=True, exist_ok=True)
     exported: Dict[str, Dict[str, Any]] = {}
-    caches = [
-        ("static", dispatch_module._STATIC_KERNEL_CACHE),
-        ("micro", dispatch_module._MICRO_KERNEL_CACHE),
-        ("dynamic", dispatch_module._DYNAMIC_KERNEL_CACHE),
-    ]
-    for kind, cache in caches:
-        for key, value in sorted(cache.items(), key=lambda item: repr(item[0])):
-            compiled = value[0]
-            token_count: Optional[int] = None
-            if kind == "static":
-                token_count = int(key[5])
-            elif kind == "micro":
-                token_count = int(key[4])
-            name = kernel_function_name(kind, token_count)
-            object_path = objects_directory / f"{name}.o"
-            if not hasattr(compiled, "export_to_c"):
-                raise AotFailure(f"compiled {kind} object does not support export_to_c")
-            compiled.export_to_c(str(object_path), function_name=name)
-            exported[name] = {
-                "kind": kind,
-                "token_count": token_count,
-                "object": object_path.name,
-                "cache_key_repr": repr(key),
-                "sha256": sha256_file(object_path),
-            }
+    required_tokens = set(token_buckets)
+    for key, value in sorted(
+        dispatch_module._STATIC_KERNEL_CACHE.items(),
+        key=lambda item: repr(item[0]),
+    ):
+        compiled = value[0]
+        token_count = int(key[5])
+        if token_count not in required_tokens:
+            continue
+        name = kernel_function_name("static", token_count)
+        object_path = objects_directory / f"{name}.o"
+        if not hasattr(compiled, "export_to_c"):
+            raise AotFailure("compiled static object does not support export_to_c")
+        compiled.export_to_c(str(object_path), function_name=name)
+        exported[name] = {
+            "kind": "static",
+            "token_count": token_count,
+            "object": object_path.name,
+            "cache_key_repr": repr(key),
+            "sha256": sha256_file(object_path),
+        }
+    exported_tokens = {
+        int(record["token_count"])
+        for record in exported.values()
+    }
+    if exported_tokens != required_tokens:
+        missing = sorted(required_tokens - exported_tokens)
+        raise AotFailure(f"missing exact static AOT buckets: {missing}")
     return exported
 
 
 def find_export_for_bucket(exported: Dict[str, Dict[str, Any]], kind: str, token_count: int) -> Tuple[str, str]:
-    if kind == "dynamic":
-        name = kernel_function_name("dynamic", None)
-        if name not in exported:
-            raise AotFailure(f"dynamic kernel for token bucket {token_count} was not exported")
-        return name, "dynamic"
-    if kind == "static":
-        name = kernel_function_name("micro", token_count)
-        if name in exported:
-            return name, "micro"
-        name = kernel_function_name("static", token_count)
-        if name in exported:
-            return name, "static"
+    if kind != "static":
         raise AotFailure(
-            f"neither static nor micro kernel for token bucket {token_count} was exported"
+            f"production AOT bucket {token_count} selected forbidden backend {kind}"
         )
-    name = kernel_function_name(kind, token_count)
+    name = kernel_function_name("static", token_count)
     if name not in exported:
-        raise AotFailure(f"{kind} kernel for token bucket {token_count} was not exported")
-    return name, kind
-
-
-def dynamic_geometry(routed_rows: int) -> Dict[str, int]:
-    expert_count = REQUIRED_SHAPE["expert_count"]
-    intermediate_dimension = REQUIRED_SHAPE["intermediate_dimension"]
-    tile_m = 128
-    tile_n = 128
-    base_m_tiles = align_up(max(1, routed_rows), tile_m) // tile_m
-    active_expert_upper_bound = min(expert_count, max(1, routed_rows))
-    physical_tiles = max(1, base_m_tiles + active_expert_upper_bound - 1)
-    gate_tile_count = max(1, ceil_div(intermediate_dimension, tile_n))
-    slice_groups = gate_tile_count
-    task_capacity = physical_tiles * slice_groups
-    return {
-        "max_rows": physical_tiles * tile_m,
-        "physical_tile_capacity": physical_tiles,
-        "task_capacity": task_capacity,
-    }
+        raise AotFailure(
+            f"exact static kernel for token bucket {token_count} was not exported"
+        )
+    return name, "static"
 
 
 def bucket_geometry(kind: str, token_count: int) -> Dict[str, int]:
+    if kind != "static":
+        raise AotFailure(f"production AOT forbids backend kind {kind!r}")
     routed_rows = token_count * REQUIRED_SHAPE["top_k"]
-    if kind == "dynamic":
-        geometry = dynamic_geometry(routed_rows)
-        return {
-            "routed_rows_capacity": routed_rows,
-            "max_rows": geometry["max_rows"],
-            "physical_tile_capacity": geometry["physical_tile_capacity"],
-            "task_capacity": geometry["task_capacity"],
-            "static_mma_tile_m": 128,
-            "static_mma_tile_n": 128,
-            "route_output_slice_count": ceil_div(
-                REQUIRED_SHAPE["intermediate_dimension"],
-                128,
-            ),
-        }
     return {
         "routed_rows_capacity": routed_rows,
         "max_rows": routed_rows,
@@ -457,13 +416,7 @@ def generate_launch_table_source(manifest: Dict[str, Any], exported: Dict[str, D
 
 #include <tvm/ffi/c_api.h>
 
-#ifndef kDLFloat4_e2m1fn
-#define kDLFloat4_e2m1fn 17
-#endif
-
-#ifndef TVM_FFI_C_API_H_
-#error "TVM FFI headers are required for the generated B12x runtime table"
-#endif
+static const uint8_t SPARK_GLM52_B12X_DLPACK_FLOAT4_E2M1FN = 17u;
 
 {externs}
 
@@ -597,7 +550,11 @@ SparkStatus SparkGlm52Sm121B12xGeneratedLaunch(
     {{
         return SPARK_STATUS_INVALID_ARGUMENT;
     }}
-    if (arguments->token_count > bucket->token_upper_bound)
+    if (bucket->backend_kind != SPARK_GLM52_SM121_B12X_BACKEND_KIND_STATIC)
+    {{
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+    }}
+    if (arguments->token_count != bucket->token_upper_bound)
     {{
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }}
@@ -619,11 +576,14 @@ def generate_bucket_launch_function(bucket: Dict[str, Any]) -> str:
     kind = bucket["backend_kind"]
     function_name = bucket["function_name"]
     c_name = f"SparkGlm52B12xLaunch{kind.capitalize()}T{token_count}"
-    if kind in ("static", "micro"):
-        return generate_static_launch_function(c_name, function_name, token_count, int(bucket["max_rows"]))
-    if kind == "dynamic":
-        return generate_dynamic_launch_function(c_name, function_name, token_count, int(bucket["max_rows"]), int(bucket["physical_tile_capacity"]), int(bucket["task_capacity"]))
-    raise AotFailure(f"unsupported backend kind {kind}")
+    if kind != "static":
+        raise AotFailure(f"production AOT forbids backend kind {kind!r}")
+    return generate_static_launch_function(
+        c_name,
+        function_name,
+        token_count,
+        int(bucket["max_rows"]),
+    )
 
 
 def generate_static_launch_function(c_name: str, function_name: str, token_count: int, max_rows: int) -> str:
@@ -672,7 +632,7 @@ static SparkStatus {c_name}(
     int64_t token_map_strides[2] = {{{max_rows}, 1}};
 
     bf16_type = SparkGlm52B12xDataType(kDLBfloat, 16, 1);
-    fp4_type = SparkGlm52B12xDataType(kDLFloat4_e2m1fn, 4, 2);
+    fp4_type = SparkGlm52B12xDataType(SPARK_GLM52_B12X_DLPACK_FLOAT4_E2M1FN, 4, 2);
     uint8_type = SparkGlm52B12xDataType(kDLUInt, 8, 1);
     int32_type = SparkGlm52B12xDataType(kDLInt, 32, 1);
     float32_type = SparkGlm52B12xDataType(kDLFloat, 32, 1);
@@ -729,99 +689,6 @@ static SparkStatus {c_name}(
 '''
 
 
-def generate_dynamic_launch_function(c_name: str, function_name: str, token_count: int, max_rows: int, physical_tiles: int, task_capacity: int) -> str:
-    hidden = REQUIRED_SHAPE["hidden_dimension"]
-    intermediate = REQUIRED_SHAPE["intermediate_dimension"]
-    experts = REQUIRED_SHAPE["expert_count"]
-    w1_rows = 2 * intermediate
-    return f'''
-static SparkStatus {c_name}(
-    const SparkGlm52Sm121B12xGeneratedLaunchArguments *arguments)
-{{
-    DLDataType fp4_type;
-    DLDataType int32_type;
-    DLDataType float32_type;
-    DLTensor tensors[16];
-    TVMFFIAny call_arguments[41];
-    int64_t scalar_shape[1] = {{1}};
-    int64_t scalar_strides[1] = {{1}};
-    int64_t w1_shape[3] = {{{w1_rows}, {hidden // 2}, {experts}}};
-    int64_t w1_strides[3] = {{{hidden // 2}, 1, {w1_rows * (hidden // 2)}}};
-    int64_t w2_shape[3] = {{{hidden}, {intermediate // 2}, {experts}}};
-    int64_t w2_strides[3] = {{{intermediate // 2}, 1, {hidden * (intermediate // 2)}}};
-    int64_t expert_shape[1] = {{{experts}}};
-    int64_t expert_strides[1] = {{1}};
-    int64_t expert_plus_one_shape[1] = {{{experts + 1}}};
-    int64_t expert_plus_one_strides[1] = {{1}};
-
-    fp4_type = SparkGlm52B12xDataType(kDLFloat4_e2m1fn, 4, 2);
-    int32_type = SparkGlm52B12xDataType(kDLInt, 32, 1);
-    float32_type = SparkGlm52B12xDataType(kDLFloat, 32, 1);
-
-    SparkGlm52B12xFillTensor(&tensors[0], arguments->generated_workspace->barrier_count_i32, int32_type, 1, scalar_shape, scalar_strides);
-    SparkGlm52B12xFillTensor(&tensors[1], arguments->generated_workspace->barrier_epoch_i32, int32_type, 1, scalar_shape, scalar_strides);
-    SparkGlm52B12xFillTensor(&tensors[2], arguments->generated_workspace->pair_head_i32, int32_type, 1, scalar_shape, scalar_strides);
-    SparkGlm52B12xFillTensor(&tensors[3], arguments->generated_workspace->producers_done_count_i32, int32_type, 1, scalar_shape, scalar_strides);
-    SparkGlm52B12xFillTensor(&tensors[4], arguments->generated_workspace->all_work_published_i32, int32_type, 1, scalar_shape, scalar_strides);
-    SparkGlm52B12xFillTensor(&tensors[5], arguments->generated_workspace->task_head_i32, int32_type, 1, scalar_shape, scalar_strides);
-    SparkGlm52B12xFillTensor(&tensors[6], arguments->generated_workspace->task_tail_i32, int32_type, 1, scalar_shape, scalar_strides);
-    SparkGlm52B12xFillTensor(&tensors[7], (void *)arguments->w1_weight_fp4_static_view, fp4_type, 3, w1_shape, w1_strides);
-    SparkGlm52B12xFillTensor(&tensors[8], (void *)arguments->w2_weight_fp4_static_view, fp4_type, 3, w2_shape, w2_strides);
-    SparkGlm52B12xFillTensor(&tensors[9], arguments->generated_workspace->row_counts_i32, int32_type, 1, expert_shape, expert_strides);
-    SparkGlm52B12xFillTensor(&tensors[10], arguments->generated_workspace->expert_write_rows_i32, int32_type, 1, expert_shape, expert_strides);
-    SparkGlm52B12xFillTensor(&tensors[11], arguments->generated_workspace->expert_tile_base_i32, int32_type, 1, expert_plus_one_shape, expert_plus_one_strides);
-    SparkGlm52B12xFillTensor(&tensors[12], (void *)arguments->w1_alpha_fp32_by_expert, float32_type, 1, expert_shape, expert_strides);
-    SparkGlm52B12xFillTensor(&tensors[13], (void *)arguments->w1_alpha_fp32_by_expert, float32_type, 1, expert_shape, expert_strides);
-    SparkGlm52B12xFillTensor(&tensors[14], (void *)arguments->w2_alpha_fp32_by_expert, float32_type, 1, expert_shape, expert_strides);
-    SparkGlm52B12xFillTensor(&tensors[15], (void *)arguments->fc2_input_scale_fp32_by_expert, float32_type, 1, expert_shape, expert_strides);
-
-    call_arguments[0] = SparkGlm52B12xPointerArgument(arguments->hidden_bf16);
-    call_arguments[1] = SparkGlm52B12xPointerArgument(arguments->topk_ids_i32);
-    call_arguments[2] = SparkGlm52B12xPointerArgument(arguments->topk_weights_fp32);
-    call_arguments[3] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->packed_input_u8);
-    call_arguments[4] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->packed_input_scale_u8);
-    call_arguments[5] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->packed_input_u8);
-    call_arguments[6] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->packed_input_scale_u8);
-    call_arguments[7] = SparkGlm52B12xTensorArgument(&tensors[0]);
-    call_arguments[8] = SparkGlm52B12xTensorArgument(&tensors[1]);
-    call_arguments[9] = SparkGlm52B12xTensorArgument(&tensors[2]);
-    call_arguments[10] = SparkGlm52B12xTensorArgument(&tensors[3]);
-    call_arguments[11] = SparkGlm52B12xTensorArgument(&tensors[4]);
-    call_arguments[12] = SparkGlm52B12xTensorArgument(&tensors[5]);
-    call_arguments[13] = SparkGlm52B12xTensorArgument(&tensors[6]);
-    call_arguments[14] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->task_ready_i32);
-    call_arguments[15] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->task_expert_i32);
-    call_arguments[16] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->task_m_tile_i32);
-    call_arguments[17] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->task_slice_begin_i32);
-    call_arguments[18] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->task_slice_count_i32);
-    call_arguments[19] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->task_valid_rows_i32);
-    call_arguments[20] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->tile_write_count_i32);
-    call_arguments[21] = SparkGlm52B12xTensorArgument(&tensors[7]);
-    call_arguments[22] = SparkGlm52B12xPointerArgument(arguments->w1_scale_static_storage_ue4m3);
-    call_arguments[23] = SparkGlm52B12xTensorArgument(&tensors[8]);
-    call_arguments[24] = SparkGlm52B12xPointerArgument(arguments->w2_scale_static_storage_ue4m3);
-    call_arguments[25] = SparkGlm52B12xTensorArgument(&tensors[9]);
-    call_arguments[26] = SparkGlm52B12xTensorArgument(&tensors[10]);
-    call_arguments[27] = SparkGlm52B12xTensorArgument(&tensors[11]);
-    call_arguments[28] = SparkGlm52B12xTensorArgument(&tensors[12]);
-    call_arguments[29] = SparkGlm52B12xTensorArgument(&tensors[13]);
-    call_arguments[30] = SparkGlm52B12xTensorArgument(&tensors[14]);
-    call_arguments[31] = SparkGlm52B12xTensorArgument(&tensors[15]);
-    call_arguments[32] = SparkGlm52B12xPointerArgument(arguments->output_bf16);
-    call_arguments[33] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->token_map_i32);
-    call_arguments[34] = SparkGlm52B12xPointerArgument(arguments->generated_workspace->token_weights_fp32);
-    call_arguments[35] = SparkGlm52B12xIntegerArgument(arguments->token_count);
-    call_arguments[36] = SparkGlm52B12xIntegerArgument({max_rows});
-    call_arguments[37] = SparkGlm52B12xIntegerArgument({physical_tiles * 128});
-    call_arguments[38] = SparkGlm52B12xIntegerArgument({task_capacity});
-    call_arguments[39] = SparkGlm52B12xIntegerArgument({physical_tiles});
-    call_arguments[40] = SparkGlm52B12xPointerArgument(arguments->cuda_stream);
-
-    return SparkGlm52B12xInvoke(__tvm_ffi_{function_name}, "{function_name}", call_arguments, 41);
-}}
-'''
-
-
 def build_manifest(exported: Dict[str, Dict[str, Any]], bucket_results: List[Dict[str, Any]], output_dir: Path) -> Dict[str, Any]:
     buckets: List[Dict[str, Any]] = []
     for result in bucket_results:
@@ -853,6 +720,9 @@ def build_manifest(exported: Dict[str, Dict[str, Any]], bucket_results: List[Dic
         "compile_time_languages": ["python", "torch", "flashinfer", "cutlass_cute_dsl"],
         "fallback_allowed": False,
         "runtime_backend_selection": "forbidden",
+        "production_backend_policy": "exact_static_buckets_only",
+        "runtime_bucket_decomposition": "forbidden",
+        "runtime_diagnostic_routing_mutation": "forbidden",
         "deterministic_fc2_finalize": True,
         "route_scatter_output": True,
         "route_slice_output": True,
@@ -870,13 +740,17 @@ def build_manifest(exported: Dict[str, Dict[str, Any]], bucket_results: List[Dic
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tokens", default="1,2,4,8,16,32,64,96,128")
+    parser.add_argument(
+        "--tokens",
+        default=(
+            "1,2,4,7,8,14,16,28,32,56,64,96,112,128,"
+            "224,256,448,512,672,896,1024"
+        ),
+    )
     parser.add_argument("--output-dir", default="build/glm52_b12x_aot")
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--benchmark", action="store_true")
-    parser.add_argument("--disable-micro", action="store_true")
-    parser.add_argument("--allow-dynamic", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -902,14 +776,11 @@ def main() -> int:
         return 0
 
     install_vendored_flashinfer(root, output_dir / "flashinfer_cache")
-    if args.disable_micro:
-        os.environ.setdefault("FLASHINFER_B12X_MICRO_SHARE_INPUT", "0")
-    if not args.allow_dynamic:
-        maximum_routed_rows = max(token_buckets) * REQUIRED_SHAPE["top_k"]
-        os.environ.setdefault(
-            "FLASHINFER_B12X_STATIC_COMPACT_CUTOVER_PAIRS",
-            str(maximum_routed_rows),
-        )
+    maximum_routed_rows = max(token_buckets) * REQUIRED_SHAPE["top_k"]
+    os.environ["FLASHINFER_B12X_MICRO_SHARE_INPUT"] = "0"
+    os.environ["FLASHINFER_B12X_STATIC_COMPACT_CUTOVER_PAIRS"] = str(
+        maximum_routed_rows
+    )
     os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
     os.environ["SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT"] = "1"
 
@@ -918,9 +789,8 @@ def main() -> int:
     import flashinfer.fused_moe.cute_dsl.blackwell_sm12x.moe_dispatch as moe_dispatch
     from flashinfer.fused_moe.cute_dsl.blackwell_sm12x.moe_dispatch import select_sm120_moe_backend
 
-    if args.disable_micro:
-        moe_dispatch._MICRO_COMPACT_CUTOVER_PAIRS = 0
-        moe_dispatch._MICRO_COMPACT_CUTOVER_PAIRS_MULTI_TOPK = 0
+    moe_dispatch._MICRO_COMPACT_CUTOVER_PAIRS = 0
+    moe_dispatch._MICRO_COMPACT_CUTOVER_PAIRS_MULTI_TOPK = 0
 
     require_sm121(torch)
     weights = make_weights(torch)
@@ -946,8 +816,11 @@ def main() -> int:
             num_topk=REQUIRED_SHAPE["top_k"],
             quant_mode="nvfp4",
         )
-        if args.disable_micro and selected_backend == "micro":
-            selected_backend = "static"
+        if selected_backend != "static":
+            raise AotFailure(
+                f"token bucket {token_count} selected forbidden backend "
+                f"{selected_backend!r}; production requires exact static AOT"
+            )
         result: Dict[str, Any] = {
             "tokens": token_count,
             "selected_backend": selected_backend,
@@ -957,7 +830,7 @@ def main() -> int:
         bucket_results.append(result)
         print(json.dumps(result, sort_keys=True), flush=True)
 
-    exported = export_compiled_objects(moe_dispatch, objects_dir)
+    exported = export_compiled_objects(moe_dispatch, objects_dir, token_buckets)
     manifest = build_manifest(exported, bucket_results, output_dir)
     manifest_path = generated_dir / "aot_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

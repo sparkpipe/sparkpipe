@@ -95,16 +95,18 @@ One-time AOT generation on `spark1`:
 tools/glm52_b12x_prepare_spark_env.sh
 . "$HOME/.config/sparkpipe/glm52_b12x_aot_env.sh"
 ./tools/glm52_b12x_aot_compile.py \
-    --tokens 1,2,4,8,16,32,64,96,128,256,512,1024 \
+    --tokens 1,2,4,7,8,14,16,28,32,56,64,96,112,128,224,256,448,512,672,896,1024 \
     --warmup 5 \
     --iterations 20 \
     --benchmark \
     --output-dir build/glm52_b12x_aot
 ```
 
-The AOT tool defaults to static/micro SM121 buckets. Dynamic export is only
-enabled with `--allow-dynamic`; it is not part of the production recipe unless
-it has a passing target-hardware qualification.
+The production AOT tool emits only exact static SM121 buckets. Every requested
+execution-row count must have its own exported kernel. Micro, dynamic, and
+runtime chunk-decomposition paths are rejected rather than substituted.
+The default list includes seven-row DSpark verification through 128 logical
+lanes; wider DSpark batches must add their exact execution-row counts.
 
 Build the strict primitive adapter and compiled backend:
 
