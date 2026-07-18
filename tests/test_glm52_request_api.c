@@ -3641,6 +3641,54 @@ static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
         &fixture.api,handle) == SPARK_STATUS_OK);
 }
 
+static void SparkTestRequestApiPrefillWaveSpansMultipleKvBlocks(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiPrefillDispatchView prefill_view;
+    SparkGlm52RequestApiHandle handle;
+    static uint32_t prompt[300u];
+
+    SparkTestFillTokenIds(prompt,300u,120000u);
+    SparkTestInitializeFixture(&fixture);
+    SparkTestInitializeSubmitRequest(
+        &request,1570u,11570u,SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
+        prompt,300u,8u);
+    request.thinking_token_budget = 0u;
+    request.max_prefill_tokens_per_step = 0u;
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,&request,&handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiDescribePrefillDispatch(
+        &dispatch,&prefill_view) == SPARK_STATUS_OK);
+    assert(prefill_view.prompt_token_offset == 0u);
+    assert(prefill_view.prompt_token_count ==
+        SPARK_GLM52_MODEL_MAX_PREFILL_TOKENS_PER_DISPATCH);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiDescribePrefillDispatch(
+        &dispatch,&prefill_view) == SPARK_STATUS_OK);
+    assert(prefill_view.prompt_token_offset ==
+        SPARK_GLM52_MODEL_MAX_PREFILL_TOKENS_PER_DISPATCH);
+    assert(prefill_view.prompt_token_count ==
+        300u - SPARK_GLM52_MODEL_MAX_PREFILL_TOKENS_PER_DISPATCH);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+    assert(SparkGlm52RequestApiCancelDispatch(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiCancelRequest(
+        &fixture.api,handle) == SPARK_STATUS_OK);
+}
+
 static void SparkTestRequestApiMtpAdaptiveFloorSuppressesAndRecovers(void)
 {
     SparkTestRequestApiFixture fixture;
@@ -4545,6 +4593,7 @@ int main(void)
     SparkTestRequestApiMtpVerifyCapturesDsparkBatchTap();
     SparkTestRequestApiUsesHigherYieldMtpBeforeEqualPriorityDecode();
     SparkTestRequestApiMtpDraftBudgetRemainsTransactional();
+    SparkTestRequestApiPrefillWaveSpansMultipleKvBlocks();
     SparkTestRequestApiMtpAdaptiveFloorSuppressesAndRecovers();
     SparkTestRequestApiMtpRejectedDraftStaysOutsideNextContext();
     SparkTestRequestApiMtpBudgetLeavesVerifierFallbackHeadroom();
