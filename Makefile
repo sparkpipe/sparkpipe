@@ -161,6 +161,7 @@ TEST_NAMES := \
     test_glm52_kv_cache \
     test_glm52_dspark \
     test_glm52_stage_plan \
+    test_glm52_mtp_tree \
     test_glm52_stagepack \
     test_glm52_production_topology \
     test_glm52_pp13_runtime \
@@ -463,6 +464,9 @@ build/test_glm52_kv_cache: tests/test_glm52_kv_cache.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_stage_plan: tests/test_glm52_stage_plan.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_stagepack: tests/test_glm52_stagepack.c $(COMMON_LIBRARY)

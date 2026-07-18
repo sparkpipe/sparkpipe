@@ -48,68 +48,65 @@ typedef struct SparkGlm52MtpTreeResolution
 	uint32_t fallback_row_index;
 } SparkGlm52MtpTreeResolution;
 
+typedef struct SparkGlm52MtpTreeNode
+{
+	uint8_t parent_row;
+	uint8_t depth;
+	uint8_t candidate_index;
+	uint8_t child_row_base;
+	uint8_t child_count;
+} SparkGlm52MtpTreeNode;
+
+static inline const SparkGlm52MtpTreeNode *SparkGlm52MtpTreeNodeAt(
+	uint32_t row_index)
+{
+	static const SparkGlm52MtpTreeNode
+		Nodes[SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT] =
+	{
+		{0u,0u,0u,1u,1u},
+		{0u,1u,0u,2u,2u},
+		{1u,2u,1u,4u,2u},
+		{1u,2u,2u,0u,0u},
+		{2u,3u,3u,0u,0u},
+		{2u,3u,4u,0u,0u}
+	};
+	if (row_index >= SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT)
+		return 0;
+	return &Nodes[row_index];
+}
+
 static inline uint32_t SparkGlm52MtpTreeVerifierPositionOffset(
 	uint32_t row_index)
 {
-	if (row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_INPUT_ROW)
-		return 0u;
-	if (row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW)
-		return 1u;
-	if (row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW ||
-		row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_ALTERNATE_ROW)
-		return 2u;
-	if (row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_PRIMARY_ROW ||
-		row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_ALTERNATE_ROW)
-		return 3u;
-	return UINT32_MAX;
+	const SparkGlm52MtpTreeNode *node;
+	node = SparkGlm52MtpTreeNodeAt(row_index);
+	return node != 0 ? node->depth : UINT32_MAX;
 }
 
 static inline uint32_t SparkGlm52MtpTreeAcceptedTokenCount(uint32_t path_id)
 {
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH1)
-		return 1u;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY ||
-		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
-		return 2u;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY ||
-		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
-		return 3u;
-	return 0u;
+	const SparkGlm52MtpTreeNode *node;
+	node = SparkGlm52MtpTreeNodeAt(path_id);
+	return node != 0 ? node->depth : 0u;
 }
 
 static inline uint32_t SparkGlm52MtpTreeFallbackRowIndex(uint32_t path_id)
 {
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_ALTERNATE_ROW;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY)
-		return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_PRIMARY_ROW;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_ALTERNATE_ROW;
-	return SparkGlm52MtpTreeAcceptedTokenCount(path_id);
+	return SparkGlm52MtpTreeNodeAt(path_id) != 0 ? path_id : 0u;
 }
 
 static inline uint32_t SparkGlm52MtpTreeTailCandidateIndex(uint32_t path_id)
 {
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY)
-		return SPARK_GLM52_MODEL_MTP_TREE_DEPTH2_PRIMARY_INDEX;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_DEPTH2_ALTERNATE_INDEX;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY)
-		return SPARK_GLM52_MODEL_MTP_TREE_DEPTH3_PRIMARY_INDEX;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_DEPTH3_ALTERNATE_INDEX;
-	return SPARK_GLM52_MODEL_MTP_TREE_DEPTH1_PRIMARY_INDEX;
+	const SparkGlm52MtpTreeNode *node;
+	node = SparkGlm52MtpTreeNodeAt(path_id);
+	return node != 0 ? node->candidate_index : 0u;
 }
 
 static inline uint32_t SparkGlm52MtpTreeTailParentRowIndex(uint32_t path_id)
 {
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY ||
-		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY ||
-		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW;
-	return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_INPUT_ROW;
+	const SparkGlm52MtpTreeNode *node;
+	node = SparkGlm52MtpTreeNodeAt(path_id);
+	return node != 0 ? node->parent_row : 0u;
 }
 
 static inline uint32_t SparkGlm52MtpTreeTailBasePositionOffset(
@@ -132,10 +129,63 @@ static inline uint32_t SparkGlm52MtpTreeResolutionIsValid(
 			path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
 	if (proposed_token_count != SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT)
 		return path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
-	if (path_id >= SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_COUNT)
+	if (path_id >= SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT)
 		return 0u;
 	return accepted_token_count ==
 		SparkGlm52MtpTreeAcceptedTokenCount(path_id);
+}
+
+static inline uint32_t SparkGlm52MtpTreeTopologyIsValid(void)
+{
+	uint32_t row_index,child_offset,candidate_seen_mask,max_depth;
+	const SparkGlm52MtpTreeNode *node,*parent,*child;
+	node = SparkGlm52MtpTreeNodeAt(0u);
+	if (node == 0 || node->depth != 0u || node->parent_row != 0u)
+		return 0u;
+	candidate_seen_mask = 0u;
+	max_depth = 0u;
+	for (row_index = 1u;
+		 row_index < SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
+		 ++row_index)
+	{
+		node = SparkGlm52MtpTreeNodeAt(row_index);
+		parent = SparkGlm52MtpTreeNodeAt(node->parent_row);
+		if (parent == 0 || node->parent_row >= row_index ||
+			node->depth != parent->depth + 1u ||
+			node->candidate_index >=
+				SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT ||
+			(candidate_seen_mask & (1u << node->candidate_index)) != 0u)
+			return 0u;
+		candidate_seen_mask |= 1u << node->candidate_index;
+		if (node->depth > max_depth)
+			max_depth = node->depth;
+	}
+	if (candidate_seen_mask !=
+			(1u << SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT) - 1u ||
+		max_depth != SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION ||
+		max_depth + 1u != SPARK_GLM52_MODEL_MTP_TREE_MAX_COMMITTED_TOKEN_COUNT)
+		return 0u;
+	for (row_index = 0u;
+		 row_index < SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
+		 ++row_index)
+	{
+		node = SparkGlm52MtpTreeNodeAt(row_index);
+		if (node->child_count == 0u)
+			continue;
+		if (node->child_row_base <= row_index ||
+			(uint32_t)node->child_row_base + node->child_count >
+				SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT)
+			return 0u;
+		for (child_offset = 0u; child_offset < node->child_count;
+			 ++child_offset)
+		{
+			child = SparkGlm52MtpTreeNodeAt(
+				node->child_row_base + child_offset);
+			if (child->parent_row != row_index)
+				return 0u;
+		}
+	}
+	return 1u;
 }
 
 static inline SparkStatus SparkGlm52MtpTreeResolve(
@@ -143,7 +193,8 @@ static inline SparkStatus SparkGlm52MtpTreeResolve(
 	const uint32_t *verifier_token_ids,
 	SparkGlm52MtpTreeResolution *resolution)
 {
-	uint32_t path_id,token_index;
+	const SparkGlm52MtpTreeNode *node,*child;
+	uint32_t current_row,path_id,token_index,child_offset,matched;
 	if (candidate_token_ids == 0 || verifier_token_ids == 0 ||
 		resolution == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -163,32 +214,26 @@ static inline SparkStatus SparkGlm52MtpTreeResolve(
 			SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT)
 			return SPARK_STATUS_INVALID_ARGUMENT;
 	}
+	current_row = SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_INPUT_ROW;
 	path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
-	if (verifier_token_ids[
-			SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_INPUT_ROW] ==
-		candidate_token_ids[SPARK_GLM52_MODEL_MTP_TREE_DEPTH1_PRIMARY_INDEX])
+	matched = 1u;
+	while (matched != 0u)
 	{
-		path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH1;
-		if (verifier_token_ids[
-				SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW] ==
-			candidate_token_ids[SPARK_GLM52_MODEL_MTP_TREE_DEPTH2_PRIMARY_INDEX])
+		matched = 0u;
+		node = SparkGlm52MtpTreeNodeAt(current_row);
+		for (child_offset = 0u; child_offset < node->child_count;
+			 ++child_offset)
 		{
-			path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY;
-			if (verifier_token_ids[
-					SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW] ==
-				candidate_token_ids[
-					SPARK_GLM52_MODEL_MTP_TREE_DEPTH3_PRIMARY_INDEX])
-				path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY;
-			else if (verifier_token_ids[
-					SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW] ==
-				candidate_token_ids[
-					SPARK_GLM52_MODEL_MTP_TREE_DEPTH3_ALTERNATE_INDEX])
-				path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE;
+			child = SparkGlm52MtpTreeNodeAt(
+				node->child_row_base + child_offset);
+			if (verifier_token_ids[current_row] !=
+				candidate_token_ids[child->candidate_index])
+				continue;
+			current_row = node->child_row_base + child_offset;
+			path_id = current_row;
+			matched = 1u;
+			break;
 		}
-		else if (verifier_token_ids[
-				SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW] ==
-			candidate_token_ids[SPARK_GLM52_MODEL_MTP_TREE_DEPTH2_ALTERNATE_INDEX])
-			path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE;
 	}
 	resolution->path_id = path_id;
 	resolution->accepted_token_count =

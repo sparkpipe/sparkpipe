@@ -107,6 +107,10 @@ extern "C" {
     SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT
 #define SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT \
     SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT
+#define SPARK_GLM52_REQUEST_API_MTP_COMMIT_EMA_DIVISOR 4
+#define SPARK_GLM52_REQUEST_API_MTP_COMMIT_EMA_INITIAL_MILLI 2900u
+#define SPARK_GLM52_REQUEST_API_MTP_SUPPRESS_THRESHOLD_MILLI 1150u
+#define SPARK_GLM52_REQUEST_API_MTP_REPROBE_INTERVAL 16u
 
 #define SPARK_GLM52_REQUEST_API_PENDING_PREFETCH_CAPACITY 8u
 #define SPARK_GLM52_REQUEST_API_SLOT_HASH_SLOTS 4096u
@@ -175,6 +179,8 @@ typedef struct SparkGlm52RequestApiSlot
     const uint32_t *prompt_token_ids;
     uint32_t mtp_draft_token_count;
     uint32_t mtp_next_draft_token_budget;
+    uint32_t mtp_commit_ema_milli;
+    uint32_t mtp_probe_countdown;
     uint64_t mtp_resolution_base_position;
     uint32_t mtp_resolution_proposed_token_count;
     uint32_t mtp_resolution_accepted_token_count;
