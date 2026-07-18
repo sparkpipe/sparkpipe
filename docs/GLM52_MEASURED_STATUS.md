@@ -43,7 +43,9 @@ receipt is `docs/GLM52_MTP_B1_MEASUREMENT_20260714.md`.
 | MTP activity | `OBSERVED` | 22 drafts, 22 verifies, 16 accepted drafts, 6 rejected drafts, 48 decode dispatches |
 | Model accuracy | `NOT_MEASURED` | no corpus, perplexity, long-context, or retained reference-equivalence score |
 | DSpark correctness and throughput | `NOT_MEASURED` | no retained full-ring token, acceptance, or throughput receipt |
-| B4/B16/B64/B256/B1024 serving | `NOT_WORKING` | active release admits one request, active sequence, and lane |
+| B4/B16/B64 serving | `MEASURED` | 7.58 / 20.99 / 58.22 token events/s end-to-end; commit 1d7f176b, release glm52-fp8-main-1d7f176b-b64-perf, generation 20260713220928; raw output under `diagnostics/glm52_b64_api_performance_20260714/` |
+| B256/B1024 serving | `NOT_MEASURED` | no retained end-to-end receipt |
+| Ring occupancy | `MEASURED` | per-rank occupancy 86-95 ms against 15-19 ms kernels, reattributed to the F32 linear-plan M=1 launch loop; see `docs/GLM52_PP13_MULTIROW_LINEAR_PLAN_FIX_20260718.md` |
 
 The prior retained full-ring performance measurement is:
 

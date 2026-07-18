@@ -23,14 +23,27 @@ static void SparkTestGlm52ResidentDecodeStageLinearPlanPreparedRowContract(void)
     memset(&linear_plan, 0, sizeof(linear_plan));
     linear_plan.maximum_active_sequence_count = 7u;
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
-        &linear_plan, 2u) == 2u);
+        &linear_plan, 2u) == 7u);
     linear_plan.output_is_f32 = 1u;
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
-        &linear_plan, 2u) == 1u);
+        &linear_plan, 2u) == 7u);
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
         &linear_plan, 0u) == 0u);
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
         &linear_plan, 8u) == 0u);
+    linear_plan.maximum_active_sequence_count = 1024u;
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 1u) == 16u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 6u) == 16u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 16u) == 16u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 17u) == 32u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 64u) == 64u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 1024u) == 1024u);
 }
 
 static void SparkTestGlm52ResidentDecodeStageDsaSelectedBlockContract(void)

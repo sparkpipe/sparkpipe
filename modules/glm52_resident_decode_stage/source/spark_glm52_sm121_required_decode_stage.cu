@@ -13961,20 +13961,28 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
             SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
                 linear_plan, active_sequence_count);
         if (linear_plan->plan_kind ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR &&
-            (prepared_active_sequence_count == 0u ||
-             SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(
-                linear_plan) != prepared_active_sequence_count))
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR)
         {
-            fprintf(
-                stderr,
-                "linear_plan_active_rows_mismatch prepared=%u required=%u active=%u input=%u output=%u\n",
-                SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(linear_plan),
-                prepared_active_sequence_count,
-                active_sequence_count,
-                linear_plan->input_dimension,
-                linear_plan->output_dimension);
-            return SPARK_STATUS_MODULE_NOT_VALIDATED;
+            if (prepared_active_sequence_count == 0u ||
+                SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(
+                    linear_plan) != prepared_active_sequence_count)
+            {
+                fprintf(
+                    stderr,
+                    "linear_plan_active_rows_mismatch prepared=%u required=%u active=%u input=%u output=%u\n",
+                    SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(linear_plan),
+                    prepared_active_sequence_count,
+                    active_sequence_count,
+                    linear_plan->input_dimension,
+                    linear_plan->output_dimension);
+                return SPARK_STATUS_MODULE_NOT_VALIDATED;
+            }
+            launch_count = 1u;
+        }
+        else
+        {
+            launch_count = prepared_active_sequence_count == active_sequence_count
+                ? 1u : active_sequence_count;
         }
         alpha = linear_plan->alpha != 0.0f ? linear_plan->alpha : 1.0f;
         beta = linear_plan->beta;
@@ -13984,8 +13992,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
             ? (uint64_t)sizeof(float) : (uint64_t)sizeof(uint16_t);
         output_row_bytes = (uint64_t)linear_plan->output_dimension *
             output_element_bytes;
-        launch_count = prepared_active_sequence_count == active_sequence_count
-            ? 1u : active_sequence_count;
         cublas_status = CUBLAS_STATUS_SUCCESS;
         for (row_index = 0u; row_index < launch_count; ++row_index)
         {
