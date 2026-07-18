@@ -9186,6 +9186,30 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 		work_packet->execution_row_count >
 			work_packet->execution_batch_bucket)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	if (input_transport_session != 0)
+	{
+		SparkHiddenTransportPacket early_input_packet;
+		SparkGlm52Pp13BuilderBuildPacket(
+			state,
+			work_packet,
+			state->layers[0].input_hidden,
+			state->input_sideband,
+			SparkGlm52Pp13BuilderNeedsInputSideband(state),
+			&early_input_packet);
+		status = SparkGlm52Pp13BuilderArmDsparkSideband(
+			state,
+			work_packet,
+			state->rank_plan.rank_index - 1u,
+			state->input_sideband,
+			&early_input_packet);
+		if (status != SPARK_STATUS_OK)
+			return status;
+		status = SparkHiddenTransportPostReceive(
+			input_transport_session,
+			&early_input_packet);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
 	state->exact_plan.batch_bucket = work_packet->execution_batch_bucket;
 	status = SparkGlm52Pp13BuilderApplyMtpKvResolutions(state,work_packet);
 	if (status != SPARK_STATUS_OK)
@@ -9295,6 +9319,9 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 			(const uint32_t *)state->layers[0].mtp_draft_token_budgets;
 	dispatch.hidden_input_transport_session = input_transport_session;
 	dispatch.hidden_output_transport_session = output_transport_session;
+	if (input_transport_session != 0)
+		dispatch.flags |=
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_HIDDEN_INPUT_PRERECEIVED;
 	SparkGlm52Pp13BuilderApplyDsparkDispatch(state,work_packet,&dispatch);
 	SparkGlm52Pp13BuilderBuildPacket(
 		state,

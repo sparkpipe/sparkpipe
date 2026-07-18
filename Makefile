@@ -137,6 +137,7 @@ TOOL_NAMES := \
     sparkpipe_hidden_transport_preflight \
     sparkpipe_glm52_pp13_rank_gate \
     sparkpipe_glm52_pp13_loopback_probe \
+    sparkpipe_glm52_pipesim \
     sparkpipe_glm52_pp13_rank_daemon \
     sparkpipe_glm52_cuda_residentd \
     sparkpipe_glm52_cuda_resident_gate \
@@ -305,6 +306,9 @@ build/sparkpipe_glm52_pp13_rank_gate: tools/sparkpipe_glm52_pp13_rank_gate.c $(C
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_pp13_loopback_probe: tools/sparkpipe_glm52_pp13_loopback_probe.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_glm52_pipesim: tools/sparkpipe_glm52_pipesim.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(COMMON_LIBRARY)

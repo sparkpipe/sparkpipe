@@ -168,6 +168,12 @@ static void SparkGlm52ProductionRunnerBuildFrameContext(
         frame_context->flags |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_TREE_VERIFY;
     }
+    if ( (dispatch->flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_HIDDEN_INPUT_PRERECEIVED) != 0u )
+    {
+        frame_context->flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_PRERECEIVED;
+    }
     frame_context->kv_block_table = dispatch->kv_block_table;
     frame_context->hidden_input_transport_session =
         dispatch->hidden_input_transport_session;

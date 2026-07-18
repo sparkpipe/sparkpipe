@@ -3921,6 +3921,11 @@ static SparkStatus SparkGlm52ResidentDecodeStagePostInputHiddenTransport(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    if ((frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_PRERECEIVED) != 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
     input_node_context = state->stage_slice_layer_count == 0u ?
         state->node_context : state->stage_slice_node_contexts[0];
     pipeline_slot = &input_node_context->pipeline_slots[pipeline_slot_index];
