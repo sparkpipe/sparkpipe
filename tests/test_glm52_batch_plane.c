@@ -67,8 +67,8 @@ static void SparkTestJitKvPoolPrefetchEvictionAndLateness(void)
 	assert(SparkGlm52JitKvPoolTick(&test_pool,3000000u) == SPARK_STATUS_OK);
 	assert(SparkGlm52JitKvPoolFragmentIsResident(&test_pool,2u) == 1u);
 	assert(test_pool.dram_resident_count == 2u && test_pool.late_count == 0u);
-	assert(SparkGlm52JitKvPoolFragmentIsResident(&test_pool,0u) == 0u);
-	assert(SparkGlm52JitKvPoolFragmentIsResident(&test_pool,1u) == 1u);
+	assert(SparkGlm52JitKvPoolFragmentIsResident(&test_pool,0u) == 1u);
+	assert(SparkGlm52JitKvPoolFragmentIsResident(&test_pool,1u) == 0u);
 	require_ids[0u] = 3u;
 	assert(SparkGlm52JitKvPoolRequireByEta(&test_pool,3000000u,require_ids,1u,3500000u) == SPARK_STATUS_OK);
 	assert(SparkGlm52JitKvPoolTick(&test_pool,10000000u) == SPARK_STATUS_OK);
@@ -110,11 +110,46 @@ static void SparkTestBatchSequenceTableLifecycleAndThreshold(void)
 	assert(SparkGlm52BatchSequenceTableComplete(&test_table,second_index) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static SparkGlm52JitKvPool stress_pool;
+
+static void SparkTestJitKvPoolScaleAndBurst(void)
+{
+	SparkGlm52JitKvPoolConfiguration configuration;
+	uint32_t fragment_index,require_id;
+	uint64_t now_ns = 0u;
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_GLM52_JIT_KV_POOL_ABI_VERSION;
+	configuration.fragment_capacity = 200000u;
+	configuration.dram_fragment_capacity = 100000u;
+	configuration.fragment_bytes = 442368u;
+	configuration.nvme_bytes_per_second = 6000000000u;
+	assert(SparkGlm52JitKvPoolInitialize(&stress_pool,&configuration) == SPARK_STATUS_OK);
+	for (fragment_index=0u; fragment_index<200000u; fragment_index++)
+		assert(SparkGlm52JitKvPoolAdmitFragment(&stress_pool,fragment_index,fragment_index / 32u,fragment_index % 32u,fragment_index < 100000u ? SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM : SPARK_GLM52_JIT_KV_FRAGMENT_STATE_NVME) == SPARK_STATUS_OK);
+	assert(stress_pool.eviction_heap_count == 100000u);
+	// Burst far beyond the transfer ring without ticking: inline overflow drain
+	// must keep every require succeeding rather than hard-failing.
+	for (fragment_index=0u; fragment_index<10000u; fragment_index++)
+	{
+		require_id = 100000u + fragment_index;
+		assert(SparkGlm52JitKvPoolRequireByEta(&stress_pool,now_ns,&require_id,1u,now_ns + 20000000000u) == SPARK_STATUS_OK);
+	}
+	assert(stress_pool.overflow_drain_count != 0u);
+	assert(stress_pool.transfer_count <= SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS);
+	// Heap root is always the farthest-future need among residents.
+	{
+		uint32_t root = stress_pool.eviction_heap[0u],child;
+		for (child=1u; child<stress_pool.eviction_heap_count && child<7u; child++)
+			assert(stress_pool.fragments[root].next_need_ns >= stress_pool.fragments[stress_pool.eviction_heap[child]].next_need_ns);
+	}
+}
+
 int main(void)
 {
 	SparkTestExpertQueueThresholdDeadlineAndOrder();
 	SparkTestJitKvPoolPrefetchEvictionAndLateness();
 	SparkTestBatchSequenceTableLifecycleAndThreshold();
+	SparkTestJitKvPoolScaleAndBurst();
 	printf("test_glm52_batch_plane PASS\n");
 	return(0);
 }

@@ -2,6 +2,93 @@
 
 #include <string.h>
 
+// Max-heap over DRAM-resident fragments keyed on next_need_ns: the root is the
+// farthest-future need, the correct eviction victim by Belady. heap_position
+// tracks each fragment's slot so an ETA change re-sifts in place. Transfers are
+// a ring buffer; on overflow the oldest in-flight transfer is completed inline
+// rather than refusing the require, so a prefetch burst never hard-fails.
+
+static void SparkGlm52JitKvPoolHeapSwap(SparkGlm52JitKvPool *pool,uint32_t a,uint32_t b)
+{
+	uint32_t fragment_a = pool->eviction_heap[a],fragment_b = pool->eviction_heap[b];
+	pool->eviction_heap[a] = fragment_b;
+	pool->eviction_heap[b] = fragment_a;
+	pool->fragments[fragment_a].heap_position = b;
+	pool->fragments[fragment_b].heap_position = a;
+}
+
+// Ordering: farthest next_need_ns is the max (root, evicted first); on equal
+// need the larger fragment_id is the max, so ties evict highest id and keep
+// lowest, deterministic for the ring SHA gates.
+static uint32_t SparkGlm52JitKvPoolHeapGreater(const SparkGlm52JitKvPool *pool,uint32_t heap_left,uint32_t heap_right)
+{
+	uint32_t fragment_left = pool->eviction_heap[heap_left],fragment_right = pool->eviction_heap[heap_right];
+	uint64_t need_left = pool->fragments[fragment_left].next_need_ns,need_right = pool->fragments[fragment_right].next_need_ns;
+	if ( need_left != need_right )
+		return(need_left > need_right ? 1u : 0u);
+	return(fragment_left > fragment_right ? 1u : 0u);
+}
+
+static void SparkGlm52JitKvPoolHeapSiftUp(SparkGlm52JitKvPool *pool,uint32_t position)
+{
+	while (position != 0u)
+	{
+		uint32_t parent = ((position - 1u) / 2u);
+		if ( !SparkGlm52JitKvPoolHeapGreater(pool,position,parent) )
+			break;
+		SparkGlm52JitKvPoolHeapSwap(pool,position,parent);
+		position = parent;
+	}
+}
+
+static void SparkGlm52JitKvPoolHeapSiftDown(SparkGlm52JitKvPool *pool,uint32_t position)
+{
+	for (;;)
+	{
+		uint32_t left = (2u * position + 1u),right = (2u * position + 2u),largest = position;
+		if ( left < pool->eviction_heap_count && SparkGlm52JitKvPoolHeapGreater(pool,left,largest) )
+			largest = left;
+		if ( right < pool->eviction_heap_count && SparkGlm52JitKvPoolHeapGreater(pool,right,largest) )
+			largest = right;
+		if ( largest == position )
+			break;
+		SparkGlm52JitKvPoolHeapSwap(pool,position,largest);
+		position = largest;
+	}
+}
+
+static void SparkGlm52JitKvPoolHeapInsert(SparkGlm52JitKvPool *pool,uint32_t fragment_id)
+{
+	uint32_t position = pool->eviction_heap_count;
+	pool->eviction_heap[position] = fragment_id;
+	pool->fragments[fragment_id].heap_position = position;
+	pool->eviction_heap_count += 1u;
+	SparkGlm52JitKvPoolHeapSiftUp(pool,position);
+}
+
+static void SparkGlm52JitKvPoolHeapRemove(SparkGlm52JitKvPool *pool,uint32_t fragment_id)
+{
+	uint32_t position = pool->fragments[fragment_id].heap_position,last;
+	if ( position >= pool->eviction_heap_count || pool->eviction_heap[position] != fragment_id )
+		return;
+	last = (pool->eviction_heap_count - 1u);
+	pool->eviction_heap_count -= 1u;
+	if ( position == last )
+		return;
+	SparkGlm52JitKvPoolHeapSwap(pool,position,last);
+	SparkGlm52JitKvPoolHeapSiftDown(pool,position);
+	SparkGlm52JitKvPoolHeapSiftUp(pool,position);
+}
+
+static void SparkGlm52JitKvPoolHeapUpdate(SparkGlm52JitKvPool *pool,uint32_t fragment_id)
+{
+	uint32_t position = pool->fragments[fragment_id].heap_position;
+	if ( position >= pool->eviction_heap_count || pool->eviction_heap[position] != fragment_id )
+		return;
+	SparkGlm52JitKvPoolHeapSiftDown(pool,position);
+	SparkGlm52JitKvPoolHeapSiftUp(pool,position);
+}
+
 SparkStatus SparkGlm52JitKvPoolInitialize(SparkGlm52JitKvPool *pool,const SparkGlm52JitKvPoolConfiguration *configuration)
 {
 	if ( pool == 0 || configuration == 0 ||
@@ -32,49 +119,62 @@ SparkStatus SparkGlm52JitKvPoolAdmitFragment(SparkGlm52JitKvPool *pool,uint32_t 
 	fragment = &pool->fragments[fragment_id];
 	if ( fragment->state != SPARK_GLM52_JIT_KV_FRAGMENT_STATE_FREE )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( initial_state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM )
-	{
-		if ( pool->dram_resident_count >= pool->dram_fragment_capacity )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		pool->dram_resident_count += 1u;
-	}
+	if ( initial_state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM &&
+		pool->dram_resident_count >= pool->dram_fragment_capacity )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	fragment->sequence_id = sequence_id;
 	fragment->fragment_index_in_sequence = fragment_index_in_sequence;
 	fragment->state = initial_state;
 	fragment->next_need_ns = UINT64_MAX;
+	if ( initial_state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM )
+	{
+		pool->dram_resident_count += 1u;
+		SparkGlm52JitKvPoolHeapInsert(pool,fragment_id);
+	}
 	return(SPARK_STATUS_OK);
 }
 
-static uint32_t SparkGlm52JitKvPoolSelectEvictionVictim(const SparkGlm52JitKvPool *pool)
+static void SparkGlm52JitKvPoolCompleteTransfer(SparkGlm52JitKvPool *pool,uint32_t ring_index,uint64_t now_ns)
 {
-	uint64_t best_need_ns = 0u;
-	uint32_t fragment_index,victim = UINT32_MAX;
-	for (fragment_index=0u; fragment_index<pool->fragment_capacity; fragment_index++)
+	SparkGlm52JitKvTransfer *transfer = &pool->transfers[ring_index];
+	SparkGlm52JitKvFragment *fragment = &pool->fragments[transfer->fragment_id];
+	uint64_t effective_now = (now_ns > transfer->done_ns ? now_ns : transfer->done_ns);
+	if ( transfer->direction_in != 0u )
 	{
-		const SparkGlm52JitKvFragment *fragment = &pool->fragments[fragment_index];
-		if ( fragment->state != SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM )
-			continue;
-		if ( victim == UINT32_MAX || fragment->next_need_ns > best_need_ns ||
-			(fragment->next_need_ns == best_need_ns && fragment_index < victim) )
-		{
-			best_need_ns = fragment->next_need_ns;
-			victim = fragment_index;
-		}
+		fragment->state = SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM;
+		pool->staging_in_count -= 1u;
+		pool->dram_resident_count += 1u;
+		SparkGlm52JitKvPoolHeapInsert(pool,transfer->fragment_id);
+		if ( transfer->done_ns > fragment->next_need_ns )
+			pool->late_count += 1u;
 	}
-	return(victim);
+	else
+	{
+		fragment->state = SPARK_GLM52_JIT_KV_FRAGMENT_STATE_NVME;
+		fragment->next_need_ns = UINT64_MAX;
+		pool->staging_out_count -= 1u;
+	}
+	(void)effective_now;
 }
 
 static SparkStatus SparkGlm52JitKvPoolQueueTransfer(SparkGlm52JitKvPool *pool,uint32_t fragment_id,uint32_t direction_in,uint64_t now_ns)
 {
 	SparkGlm52JitKvTransfer *transfer;
 	uint64_t start_ns,duration_ns;
+	uint32_t tail;
 	if ( pool->transfer_count >= SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	{
+		SparkGlm52JitKvPoolCompleteTransfer(pool,pool->transfer_head,now_ns);
+		pool->transfer_head = ((pool->transfer_head + 1u) % SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS);
+		pool->transfer_count -= 1u;
+		pool->overflow_drain_count += 1u;
+	}
 	start_ns = (pool->nvme_busy_until_ns > now_ns ? pool->nvme_busy_until_ns : now_ns);
 	duration_ns = ((pool->fragment_bytes * 1000000000u) / pool->nvme_bytes_per_second);
 	if ( duration_ns == 0u )
 		duration_ns = 1u;
-	transfer = &pool->transfers[pool->transfer_count];
+	tail = ((pool->transfer_head + pool->transfer_count) % SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS);
+	transfer = &pool->transfers[tail];
 	transfer->fragment_id = fragment_id;
 	transfer->direction_in = direction_in;
 	transfer->start_ns = start_ns;
@@ -90,11 +190,13 @@ static SparkStatus SparkGlm52JitKvPoolStageIn(SparkGlm52JitKvPool *pool,uint32_t
 	SparkStatus status;
 	if ( pool->dram_resident_count + pool->staging_in_count >= pool->dram_fragment_capacity )
 	{
-		uint32_t victim = SparkGlm52JitKvPoolSelectEvictionVictim(pool);
-		if ( victim == UINT32_MAX )
+		uint32_t victim;
+		if ( pool->eviction_heap_count == 0u )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		victim = pool->eviction_heap[0];
 		if ( pool->fragments[victim].next_need_ns <= fragment->next_need_ns )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SparkGlm52JitKvPoolHeapRemove(pool,victim);
 		status = SparkGlm52JitKvPoolQueueTransfer(pool,victim,0u,now_ns);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
@@ -127,7 +229,11 @@ SparkStatus SparkGlm52JitKvPoolRequireByEta(SparkGlm52JitKvPool *pool,uint64_t n
 		if ( fragment->state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_FREE )
 			return(SPARK_STATUS_NOT_FOUND);
 		if ( need_ns < fragment->next_need_ns )
+		{
 			fragment->next_need_ns = need_ns;
+			if ( fragment->state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM )
+				SparkGlm52JitKvPoolHeapUpdate(pool,fragment_ids[request_index]);
+		}
 		if ( fragment->state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM ||
 			fragment->state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_STAGING_IN )
 		{
@@ -144,36 +250,17 @@ SparkStatus SparkGlm52JitKvPoolRequireByEta(SparkGlm52JitKvPool *pool,uint64_t n
 
 SparkStatus SparkGlm52JitKvPoolTick(SparkGlm52JitKvPool *pool,uint64_t now_ns)
 {
-	SparkGlm52JitKvFragment *fragment;
-	uint32_t transfer_index,kept = 0u;
 	if ( pool == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	for (transfer_index=0u; transfer_index<pool->transfer_count; transfer_index++)
+	while (pool->transfer_count != 0u)
 	{
-		SparkGlm52JitKvTransfer *transfer = &pool->transfers[transfer_index];
+		SparkGlm52JitKvTransfer *transfer = &pool->transfers[pool->transfer_head];
 		if ( transfer->done_ns > now_ns )
-		{
-			pool->transfers[kept] = *transfer;
-			kept += 1u;
-			continue;
-		}
-		fragment = &pool->fragments[transfer->fragment_id];
-		if ( transfer->direction_in != 0u )
-		{
-			fragment->state = SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM;
-			pool->staging_in_count -= 1u;
-			pool->dram_resident_count += 1u;
-			if ( transfer->done_ns > fragment->next_need_ns )
-				pool->late_count += 1u;
-		}
-		else
-		{
-			fragment->state = SPARK_GLM52_JIT_KV_FRAGMENT_STATE_NVME;
-			fragment->next_need_ns = UINT64_MAX;
-			pool->staging_out_count -= 1u;
-		}
+			break;
+		SparkGlm52JitKvPoolCompleteTransfer(pool,pool->transfer_head,now_ns);
+		pool->transfer_head = ((pool->transfer_head + 1u) % SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS);
+		pool->transfer_count -= 1u;
 	}
-	pool->transfer_count = kept;
 	return(SPARK_STATUS_OK);
 }
 

@@ -30,8 +30,7 @@ typedef struct SparkGlm52JitKvFragment
 	uint64_t next_need_ns;
 	uint32_t state;
 	uint32_t fragment_index_in_sequence;
-	uint32_t dram_slot;
-	uint32_t list_next;
+	uint32_t heap_position;
 } SparkGlm52JitKvFragment;
 
 typedef struct SparkGlm52JitKvTransfer
@@ -67,9 +66,13 @@ typedef struct SparkGlm52JitKvPool
 	uint64_t hit_count;
 	uint64_t miss_count;
 	uint64_t late_count;
+	uint64_t overflow_drain_count;
+	uint32_t eviction_heap_count;
+	uint32_t transfer_head;
+	uint32_t transfer_count;
 	SparkGlm52JitKvFragment fragments[SPARK_GLM52_JIT_KV_POOL_MAX_FRAGMENTS];
 	SparkGlm52JitKvTransfer transfers[SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS];
-	uint32_t transfer_count;
+	uint32_t eviction_heap[SPARK_GLM52_JIT_KV_POOL_MAX_FRAGMENTS];
 } SparkGlm52JitKvPool;
 
 SparkStatus SparkGlm52JitKvPoolInitialize(SparkGlm52JitKvPool *pool,const SparkGlm52JitKvPoolConfiguration *configuration);
