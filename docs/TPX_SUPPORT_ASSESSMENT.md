@@ -140,3 +140,41 @@ crossover from about batch sixteen toward batch thirty-two; and the actual
 crossover batch on the real fabric. The compute-side numbers inherit the known
 up-to-1.7x optimism on the per-rank stage anchor until the ring measures the
 optimized stage.
+
+## Speculative decode on the wide shape: the path to ~100 tok/s at B1
+
+Running dspark on a node outside the verify group and verifying on the wide
+shape changes the speculation economics in both directions. The wide verify is
+about 13 ms plus collectives, so the draft is no longer nearly free the way it
+was against the 212 ms PP13 token: the 5-layer draft is about 1.64B params,
+9.4 ms per drafted token at FP8, and drafting is sequential. Speculation must
+be pipelined, the draft node producing window t+1 while the verify group checks
+window t, and the cycle time is the max of the two. The verify pass over a
+window is bandwidth-priced by expert coverage: k+1 positions at top-8 draw up
+to 8(k+1) experts per layer naively, and only within-sequence routing
+correlation keeps that near the single-token cost.
+
+Scenario table at per-position acceptance 0.667 (the sim setting, not measured
+on GLM-5.2), pipelined draft, EP13 verify with 2.5 ms collectives:
+
+pessimistic (FP8 draft, naive coverage, k=4): cycle 52 ms, about 50 tok/s,
+which is worse than the roughly 64 tok/s of plain unspeculated EP13; at fast
+targets speculation can lose. moderate (NVFP4 draft, correlated coverage near
+20 experts per layer, k=4): cycle 19 ms, about 136 tok/s. good (NVFP4,
+coverage near 14, k=3): about 167 tok/s. MTP-only with no draft node at
+acceptance 0.5 lands near 50 to 64 tok/s, no better than baseline, because the
+wide verify already prices the whole window's coverage.
+
+Two design consequences. First, the draft must be fast: NVFP4 draft weights
+halve the 9.4 ms, and since the good scenarios are draft-bound, draft speed
+converts directly to committed tok/s. With fifteen physical nodes the right
+placement is all thirteen in the verify group and the draft on a spare; better
+still, the two spares as a TP2 draft pair over their direct link cut the draft
+to about 2.6 ms per token and move the cycle to verify-bound near 16.5 ms,
+about 158 tok/s in the moderate-coverage case. Second, the crossover from win
+to loss is governed by two unmeasured numbers that join the ring list:
+real dspark per-position acceptance on GLM-5.2, and within-sequence expert
+coverage of a k-token verify window, which is the same routing-correlation
+measurement already queued for the batch plane but at window scale. If
+coverage measures near naive, speculation at B1 on the wide shape should be
+disabled rather than assumed.
