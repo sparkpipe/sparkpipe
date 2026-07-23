@@ -505,6 +505,25 @@ SparkStatus SparkGlm52RequestApiReleaseCompletedRequest(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiHandle handle);
 
+struct SparkGlm52RowAllocatorSlotInput;
+
+// Wave-level draft-budget assignment: divides firing_row_cap between real rows
+// and speculative draft rows across all decode-eligible slots by marginal
+// expected commit, using each slot's commit EMA (see spark_glm52_row_allocator.h
+// for the policy). Overwrites mtp_next_draft_token_budget on every eligible
+// slot, so once a caller adopts this it must be called before every wave: the
+// allocator becomes the budget authority and the per-slot suppress and reprobe
+// machinery no longer needs to self-restore. Suppressed slots (zero budget with
+// a live reprobe countdown) keep their countdown and receive no draft rows.
+// scratch_inputs and scratch_budgets are caller-owned arrays of at least
+// request_capacity entries; nothing is allocated. Returns the total rows
+// assigned including one base row per eligible slot, clamped to the cap.
+uint32_t SparkGlm52RequestApiAssignDraftBudgets(
+    SparkGlm52RequestApi *api,
+    uint32_t firing_row_cap,
+    struct SparkGlm52RowAllocatorSlotInput *scratch_inputs,
+    uint32_t *scratch_budgets);
+
 #ifdef __cplusplus
 }
 #endif

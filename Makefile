@@ -100,6 +100,7 @@ COMMON_SOURCES := \
     src/spark_glm52_scheduler.c \
     src/spark_glm52_prefix_cache.c \
     src/spark_glm52_request_api.c \
+    src/spark_glm52_row_allocator.c \
     src/spark_glm52_long_context.c \
     src/spark_tokenizer.c \
     src/spark_glm52_chat_template.c \
@@ -162,6 +163,7 @@ TEST_NAMES := \
     test_glm52_dspark \
     test_glm52_stage_plan \
     test_glm52_mtp_tree \
+    test_glm52_row_allocator \
     test_glm52_stagepack \
     test_glm52_production_topology \
     test_glm52_pp13_runtime \
@@ -465,6 +467,9 @@ build/test_glm52_kv_cache: tests/test_glm52_kv_cache.c $(COMMON_LIBRARY)
 
 build/test_glm52_stage_plan: tests/test_glm52_stage_plan.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_row_allocator: tests/test_glm52_row_allocator.c include/sparkpipe/spark_glm52_row_allocator.h $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

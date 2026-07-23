@@ -1,5 +1,6 @@
 #include "sparkpipe/spark_glm52_request_api.h"
 #include "sparkpipe/spark_glm52_mtp_tree.h"
+#include "sparkpipe/spark_glm52_row_allocator.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -7156,4 +7157,45 @@ SparkStatus SparkGlm52RequestApiReleaseCompletedRequest(
         api->free_slot_head = released_slot_index;
     }
     return SPARK_STATUS_OK;
+}
+
+uint32_t SparkGlm52RequestApiAssignDraftBudgets(
+    SparkGlm52RequestApi *api,
+    uint32_t firing_row_cap,
+    struct SparkGlm52RowAllocatorSlotInput *scratch_inputs,
+    uint32_t *scratch_budgets)
+{
+    uint32_t slot_index,eligible_count,total,apply_index;
+    if (api == 0 || scratch_inputs == 0 || scratch_budgets == 0 || firing_row_cap == 0u)
+        return 0u;
+    eligible_count = 0u;
+    for (slot_index = 0u; slot_index < api->request_capacity; ++slot_index)
+    {
+        SparkGlm52RequestApiSlot *slot = &api->request_slots[slot_index];
+        if ((slot->state != SPARK_GLM52_REQUEST_API_STATE_READY_DECODE &&
+             slot->state != SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY) ||
+            (slot->remaining_thinking_token_budget == 0u &&
+             slot->remaining_output_token_budget == 0u))
+            continue;
+        scratch_inputs[eligible_count].commit_ema_milli = slot->mtp_commit_ema_milli;
+        scratch_inputs[eligible_count].maximum_draft_depth =
+            (slot->mtp_next_draft_token_budget == 0u && slot->mtp_probe_countdown != 0u) ?
+            0u : SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
+        scratch_inputs[eligible_count].probe = 0u;
+        eligible_count += 1u;
+    }
+    total = SparkGlm52RowAllocatorAssign(scratch_inputs, eligible_count, firing_row_cap, scratch_budgets);
+    apply_index = 0u;
+    for (slot_index = 0u; slot_index < api->request_capacity && apply_index < eligible_count; ++slot_index)
+    {
+        SparkGlm52RequestApiSlot *slot = &api->request_slots[slot_index];
+        if ((slot->state != SPARK_GLM52_REQUEST_API_STATE_READY_DECODE &&
+             slot->state != SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY) ||
+            (slot->remaining_thinking_token_budget == 0u &&
+             slot->remaining_output_token_budget == 0u))
+            continue;
+        slot->mtp_next_draft_token_budget = scratch_budgets[apply_index];
+        apply_index += 1u;
+    }
+    return total;
 }
