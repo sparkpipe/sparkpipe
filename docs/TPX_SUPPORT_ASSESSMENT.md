@@ -178,3 +178,70 @@ coverage of a k-token verify window, which is the same routing-correlation
 measurement already queued for the batch plane but at window scale. If
 coverage measures near naive, speculation at B1 on the wide shape should be
 disabled rather than assumed.
+
+## Real rows versus speculative rows: what exists and the correct economics
+
+What is implemented today, on the verify-multirow branch and not yet on main:
+a per-slot adaptive MTP floor in the request API, an EMA (alpha one quarter) of
+committed tokens per verify cycle per slot, dropping that slot's draft budget
+to zero below 1.15 tokens per cycle and re-probing every 16 committed tokens,
+plus the table-driven tree engine. What does not exist anywhere is a global
+allocator that divides the firing-row budget between real rows from queued
+lanes and deeper speculative rows by marginal value.
+
+The correct threshold falls out of the marginal accounting. A speculative row
+at depth d commits with probability alpha to the d, the chain-survival
+probability, so its marginal expected commit is always below one; a real row
+from a queued lane commits one. Slot costs are comparable (both draw top-8
+experts; a lane's own spec rows are somewhat cheaper through routing
+correlation). Therefore when real lanes are queued past the firing cap,
+speculation should never displace a real row, and the displacement threshold
+is exactly one, which speculation cannot reach. The two-to-three-times
+intuition belongs to a different decision, whether a lane should speculate at
+all, which is what the existing 1.15 floor gates per slot. The clean
+implementation of the full policy is a greedy selection: score every candidate
+row, one for real, the slot's EMA-estimated alpha to the d for a spec row at
+depth d, and take the top rows up to the firing cap. The EMA the branch
+already maintains supplies the estimate, so this is small code on top of what
+exists, and it makes the plane self-balancing: undersubscribed waves fill with
+deep speculation, saturated waves converge to all-real automatically.
+
+## Topology meta-scheduler
+
+Shape switching becomes a scheduling decision once both slicings are resident
+on NVMe and in-flight batches pause through the NVMe-backed KV pool rather
+than draining: the switch cost is roughly ten to twelve seconds. Cluster the
+queue by shape affinity, which is essentially arrival pattern and context size
+against each shape's KV capacity; score each cluster by cumulative pending age
+times priority; switch when a pending cluster's score exceeds the active
+cluster's by more than the amortized switch cost, with hysteresis so the fleet
+never thrashes. An interactive session outranks everything and flips the fleet
+to the wide shape; during interactive mode the honest options for the backlog
+are running small same-shape batches in the idle gaps between the user's
+tokens at reduced efficiency, since cross-shape backfill would require a
+second partition of the fleet.
+
+## Low-batch MoE kernel: the bundled top-K ceiling for GLM-5.2
+
+MoE is 77 percent of B1 bytes (22.65 of 29.49 GB per token). The bundled
+top-K kernel's local gain is the ratio between achievable streaming and what
+the current low-batch kernel actually sustains during its active window, a
+number nobody has measured; the calibrated 174 GB per second (64 percent of
+the published 273) is the demonstrated-achievable mark. End-to-end B1 speedup
+if the bundle kernel reaches that mark, as a function of the current kernel's
+DRAM fraction of peak: 20 percent gives 2.7x, 32 percent gives 1.8x, 40
+percent gives 1.5x, 50 percent gives 1.2x. A one-row workload on a 128-row
+MMA-tile grouped kernel with single-expert accumulation chains plausibly sits
+in the 20 to 40 percent band, so the plausible end-to-end band is 1.5 to
+2.7x, multiplicative with the wide shape's roughly 12x, and it raises the
+speculated B1 band proportionally. The single decisive measurement is Nsight
+DRAM throughput during the active low-batch MoE kernel window, which
+collapses the whole table to a point; nvidia-smi utilization cannot answer
+this because it measures kernel-resident duty cycle, which PP13 already pins
+near one thirteenth at B1. The right first artifacts are the split FC1 and
+FC2 kernels without the resident-grid barrier in AOT bundle widths one, two,
+four, and eight; the 32 to 64 KiB compact intermediate is noise beside the
+roughly 300 MB of selected expert weights per layer. One interaction to keep
+in view: the bundle kernel is the low-B workhorse for TP-sharded or
+single-node execution, while under EP the per-rank B1 work is one or two
+whole-expert GEMVs and lives in a different kernel regime.
