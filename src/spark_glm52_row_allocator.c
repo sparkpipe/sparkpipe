@@ -46,7 +46,7 @@ static uint32_t SparkGlm52RowAllocatorGrantProbes(const SparkGlm52RowAllocatorSl
 // is alpha^d in milli fixed point, maintained incrementally per slot. The scan
 // is O(grants x slots); at wave cadence with bounded depth this is negligible,
 // and a threshold binary search is the drop-in replacement if it ever profiles.
-static void SparkGlm52RowAllocatorGreedyGrant(const SparkGlm52RowAllocatorSlotInput *slots,uint32_t slot_count,uint32_t remaining,uint32_t *draft_budgets_out)
+static void SparkGlm52RowAllocatorGreedyGrant(const SparkGlm52RowAllocatorSlotInput *slots,uint32_t slot_count,uint32_t remaining,uint32_t spec_row_relative_cost_milli,uint32_t *draft_budgets_out)
 {
     uint32_t slot_index,best_index,best_value;
     uint64_t next_value;
@@ -68,7 +68,8 @@ static void SparkGlm52RowAllocatorGreedyGrant(const SparkGlm52RowAllocatorSlotIn
             alpha_milli = SparkGlm52RowAllocatorAlphaMilli(slots[slot_index].commit_ema_milli);
             if (alpha_milli == 0u)
                 continue;
-            value = alpha_milli;
+            value = (uint32_t)(((uint64_t)alpha_milli * SPARK_GLM52_ROW_ALLOCATOR_MILLI) /
+                (spec_row_relative_cost_milli == 0u ? SPARK_GLM52_ROW_ALLOCATOR_MILLI : spec_row_relative_cost_milli));
             for (depth = 0u; depth < granted; ++depth)
             {
                 next_value = ((uint64_t)value * alpha_milli) / SPARK_GLM52_ROW_ALLOCATOR_MILLI;
@@ -91,6 +92,7 @@ uint32_t SparkGlm52RowAllocatorAssign(
     const SparkGlm52RowAllocatorSlotInput *slots,
     uint32_t slot_count,
     uint32_t firing_row_cap,
+    uint32_t spec_row_relative_cost_milli,
     uint32_t *draft_budgets_out)
 {
     uint32_t slot_index,base_rows,remaining,total;
@@ -107,7 +109,7 @@ uint32_t SparkGlm52RowAllocatorAssign(
         base_rows = firing_row_cap;
     remaining = firing_row_cap - base_rows;
     remaining = SparkGlm52RowAllocatorGrantProbes(slots, slot_count, remaining, draft_budgets_out);
-    SparkGlm52RowAllocatorGreedyGrant(slots, slot_count, remaining, draft_budgets_out);
+    SparkGlm52RowAllocatorGreedyGrant(slots, slot_count, remaining, spec_row_relative_cost_milli, draft_budgets_out);
     total = base_rows;
     for (slot_index = 0u; slot_index < slot_count; ++slot_index)
         total += draft_budgets_out[slot_index];

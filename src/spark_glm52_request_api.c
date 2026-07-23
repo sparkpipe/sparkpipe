@@ -7184,7 +7184,7 @@ uint32_t SparkGlm52RequestApiAssignDraftBudgets(
         scratch_inputs[eligible_count].probe = 0u;
         eligible_count += 1u;
     }
-    total = SparkGlm52RowAllocatorAssign(scratch_inputs, eligible_count, firing_row_cap, scratch_budgets);
+    total = SparkGlm52RowAllocatorAssign(scratch_inputs, eligible_count, firing_row_cap, 1000u, scratch_budgets);
     apply_index = 0u;
     for (slot_index = 0u; slot_index < api->request_capacity && apply_index < eligible_count; ++slot_index)
     {

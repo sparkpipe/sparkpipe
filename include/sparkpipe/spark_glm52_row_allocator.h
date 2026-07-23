@@ -36,10 +36,18 @@ typedef struct SparkGlm52RowAllocatorSlotInput
 // slot-index order up to the cap; probe grants next; remaining capacity is
 // granted greedily by marginal value with deterministic lower-index tie
 // breaking. All buffers are caller owned; the function allocates nothing.
+// spec_row_relative_cost_milli scales speculative-row scores by marginal cost:
+// 1000 means a spec row costs the same marginal bytes as a real row (scores are
+// pure alpha^d and real rows always win contested slots); measured routing
+// correlation lowers it (a lane's own spec rows draw correlated experts and are
+// cheaper), letting cheap spec rows legitimately outrank a marginal real row in
+// the byte-bound regime: score = alpha^d * 1000 / cost. Values below 1000 only;
+// the E(R) identical-versus-diverse ring measurement calibrates it.
 uint32_t SparkGlm52RowAllocatorAssign(
     const SparkGlm52RowAllocatorSlotInput *slots,
     uint32_t slot_count,
     uint32_t firing_row_cap,
+    uint32_t spec_row_relative_cost_milli,
     uint32_t *draft_budgets_out);
 
 #endif
