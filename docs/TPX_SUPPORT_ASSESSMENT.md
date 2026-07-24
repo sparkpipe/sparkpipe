@@ -245,3 +245,34 @@ roughly 300 MB of selected expert weights per layer. One interaction to keep
 in view: the bundle kernel is the low-B workhorse for TP-sharded or
 single-node execution, while under EP the per-rank B1 work is one or two
 whole-expert GEMVs and lives in a different kernel regime.
+
+
+## Decision update: TP, PP, and TP times PP only; shape-driven configuration
+
+Expert parallelism is dropped by decision. The parallelism space is TP, PP,
+and their product, which collapses the design: one sharding framework covers
+every tensor including experts (intra-expert output and input dimension
+splits through the same classes), the only collectives are the TP group
+all-reduce and the existing point-to-point stage transport, and the widest
+clean shape becomes TP8 x PP1, since 64 heads admit degrees 1, 2, 4, 8 and
+nothing else. At TP8 the B1 compute floor is 29.49 GB over 8 ranks at the
+calibrated effective, about 21 ms plus collectives, roughly 44 tokens per
+second unspeculated, with the speculation economics from the earlier section
+scaling accordingly; the 13-wide numbers earlier in this document described
+the dropped EP variant and no longer apply.
+
+The driver is told the inference shape and derives everything from it: the
+node holds exactly the layers of its PP stage and, if TP sharded, exactly its
+shard of those layers' tensors. The shape-config module computes the layer
+slice (even split, fail closed on remainders, since every shape in use
+divides the 78 layers exactly), the per-rank kernel dimensions, the KV bytes
+per token (stage depth times the latent row, independent of TP degree because
+every rank of a stage holds the full head-agnostic latent for its layers),
+and a configuration hash extending the fail-closed contract to the whole node
+shape; the node-pack generator then writes a self-contained sliced stagepack
+in the standard schema, so the existing resolver and loader run unmodified on
+a node pack with no knowledge of sharding anywhere downstream. Remaining for
+the load path: the sliced resident MoE pack in the same shape-driven flow
+(the packers are the python tools glm52_b12x_resident_pack and
+glm52_fp8_resident_pack with resident_pack_common), and the builder filling
+the model geometry from the module header.
