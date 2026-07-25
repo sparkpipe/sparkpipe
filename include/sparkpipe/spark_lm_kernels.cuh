@@ -909,6 +909,10 @@ static __device__ __forceinline__ void SparkLmTileStageInput(const void *input_b
  * guarded, so any slot count and output width are served.
  */
 template <uint32_t GROUP_SIZE>
+// CONTRACT: input_dimension MUST be a multiple of SPARK_LM_TILE_K. The K
+// loop steps a whole tile at a time and the stagers bound rows and neurons
+// but not K, so a partial trailing K tile stages out-of-row data. Callers
+// with arbitrary widths must check (see SparkLmHostLaunchBatchedLinear).
 static __device__ void SparkLmExpertTileBody(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t slot_base, uint32_t neuron_base)
 {
 	__shared__ __nv_bfloat16 tile_input[SPARK_LM_TILE * SPARK_LM_TILE_K];
@@ -1162,6 +1166,15 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
 // deliberately breaks DRY into exactly three paths with two crossovers -
 // more paths would not pay because per-token cost is flat within a regime:
 //
+// The tile also REQUIRES input_dimension to be a multiple of the K tile: it
+// staged rows and neurons under a row bound and an N bound but never a K
+// bound, so a trailing partial K tile would stage whatever follows the row
+// and fold it into the dot product - wrong output, no crash. Expert shapes
+// are always K-aligned so this never bit them, but a dense projection can
+// have any width, and the next model generation may well change one. Any
+// non-aligned width therefore takes the scalar path, which carries explicit
+// scalar tails and handles arbitrary dimensions exactly.
+//
 //   B < SPARK_LM_TILE  (tiny): the scalar one-warp-per-neuron kernel. B1
 //     decode is memory bound; a tensor tile over a near-empty M wastes the
 //     fragment and the padded rows. Unchanged, correct here.
@@ -1181,7 +1194,7 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 {
 	uint32_t m_blocks = (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
 	uint32_t n_tiles = (output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N;
-	if ( row_count < SPARK_LM_TILE )
+	if ( row_count < SPARK_LM_TILE || (input_dimension % SPARK_LM_TILE_K) != 0u )
 	{
 		dim3 scalar_grid(row_count,(output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
 		uint32_t shared_bytes = input_dimension * (uint32_t)sizeof(float);
