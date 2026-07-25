@@ -1,176 +1,111 @@
-# Handoff: KV sharing, kernel work, and what not to re-derive
+# KV architecture: what already exists, before you build anything
 
-Written at the end of a session that spent a lot of budget re-deriving things
-and making three wrong calls from incomplete searches. Read the METHOD section
-first; it is the part that would have saved the most time.
+The previous version of this document described `work_control.c`'s KV manager in
+detail, concluded "the only gap is the directory key", and specified prefix
+sharing to close it. That specification was implemented (PR #509, ~983 lines)
+before anyone searched for the words "prefix cache". This repository already
+contains a complete prefix-reuse implementation. Read this section before
+writing a line.
 
-## METHOD - the failures worth not repeating
+## Three subsystems, two of them overlapping
 
-1. **Grep for CALLERS, not for files.** A component existing, being tested, and
-   being in `sources.mk` says nothing about whether the runtime uses it. I
-   concluded "JIT KV caching was never wired" because `jit_kv_pool.c` had no
-   production callers. That was wrong: production has JIT KV caching, in a
-   different file (`work_control.c`). The conclusion was drawn from one grep.
-2. **Never infer behaviour from a name.** I claimed `physical_block_pin_counts`
-   "is already the refcount" and that eviction "already does LRU". Reading found
-   pins ARE a refcount but there is a `!= 1u` hard constraint in one path (it is
-   scoped to transient scratch blocks, so it does not block sharing - but the
-   name gave no way to know that), and eviction is a CLOCK SWEEP with an epoch
-   guard, not LRU.
-3. **Search the repo before implementing.** I wrote content-hash + refcount
-   sharing into the JIT pool without finding `spark_glm52_kv_dedup.c`, which
-   already implements exactly that, better. The commit was reverted.
-4. **The repo has a large measurement corpus.** `diagnostics/` holds 2533 files
-   across 18 campaigns. Read it before claiming data does not exist.
-
-## ENVIRONMENT (verified)
-
-- No GPU, no CUDA runtime. `nvcc 13.1` compiles only; **nothing in this
-  container has ever executed a kernel**. Host C tests DO run.
-- No cuBLAS SDK, so `spark_glm52_pp13_node_context_builder_cuda.cu` and
-  `spark_glm52_sm121_required_decode_stage.cu` have **no local compile gate**.
-  Changes there are diff-review only.
-- Target arch `sm_121a`. Probed: **TMA (`cp.async.bulk.tensor`) and
-  `__cluster_dims__` ARE available; `tcgen05` is NOT.**
-- Repo was restructured (PRs #505/#506): shared kernels now live at
-  `model-families/common/include/sparkpipe/`, model headers at
-  `model-families/<family>/include/sparkpipe/`, but `.cu` sources are still
-  under `modules/<family>_resident_decode_stage/source/`.
-- Compile a family: `nvcc -std=c++17 -arch=sm_121a -O2 -Xcompiler -Wall,-Wextra
-  -include model-families/<f>/include/sparkpipe/spark_<f>_model.h
-  -I model-families/common/include -I model-families/<f>/include -I include
-  -I modules/<f>_resident_decode_stage/include -c <source.cu> -o /tmp/x.o`
-- `tools/length_gate.py <files>` enforces the 50-line rule and **exits nonzero**
-  (it used to only print, which let four violations ride through a `&&` chain).
-
-## TARGETS (from the owner, not inferred)
-
-- **No precision loss.** FP4 weight quantization is rejected. Anything that
-  converts weights to a narrower type for speed is off the table. FP8 weights
-  with FP32 accumulate are fine because the weights already ship as FP8.
-- **MLA is the only attention path.**
-- **B8 is the default chat batch**, submitted by centaur as **shared-prefix**
-  requests. **B256-B1024** for code audits and benchmark runs. B1 and B128 are
-  NOT the targets - earlier tuning aimed at B1 and should be re-judged.
-- Deployment: **TP13 for chat, PP13 for batch**, possibly mixed, with a **30
-  second or less mode switch** and pending requests suspended across it.
-
-## KV ARCHITECTURE - GROUND TRUTH (read, not inferred)
-
-The production KV manager is `SparkGlm52Pp13WorkControlKvState` in
-`model-families/glm52/src/spark_glm52_pp13_work_control.c`. It already has:
-
-- An **open-addressed directory** (`KvDirectoryFind`, `KvDirectoryHash`, linear
-  probing, tombstones) keyed by **`(sequence_id, logical_block_index)`**.
-- **`physical_block_pin_counts`** with a real Pin/Unpin refcount (increment
-  guards `UINT32_MAX`, decrement guards 0). A separate
-  `ReleaseTransientPhysicalBlock` requires `pin == 1`, but only for TRANSIENT
-  scratch blocks (`sequence_id == UINT64_MAX`), so it does not constrain sharing.
-- **Eviction: a CLOCK SWEEP** over `next_physical_block_index`, which skips
-  blocks with `pin_count != 0`, skips blocks touched in the current `epoch`, and
-  requires `RESIDENT` + backing capacity to swap out.
-- **NVMe paging, wired**: `backing_block_*` free list, `swap_store_function` /
-  `swap_load_function`, `swap_store_count`, `swap_load_count`,
-  `swapped_block_count`, `clean_evict_count`.
-
-**The only gap is the directory key.** Because it is keyed by sequence, two
-sequences with an identical prefix get two physical blocks holding identical
-bytes. For B8 shared-prefix chat that is 8 copies stored and 8 read per step.
-
-## THE DUPLICATION PROBLEM
-
-| file | residency + paging | content dedup | reachable from runtime |
+| | `KvCacheArena` | `PrefixCache` | `WorkControlKvState` |
 | --- | --- | --- | --- |
-| `work_control.c` KvState | yes, full | **no** | **yes** |
-| `glm52/src/spark_glm52_jit_kv_pool.c` | yes, duplicate | no | no |
-| `glm52/src/spark_glm52_kv_dedup.c` | no | yes | no |
+| file | `glm52/src/spark_glm52_kv_cache.c` | `glm52/src/spark_glm52_prefix_cache.c` | `glm52/src/spark_glm52_pp13_work_control.c` |
+| lines | 2401 | 2713 | 2141 |
+| allocate | `ArenaAcquireBlock` | via arena | `KvAcquirePhysicalBlock` |
+| refcount | `ArenaRetainBlock` / `ReleaseBlockReference` | entry `reference_count` | `KvBlockResolve` / `KvBlockDeref` |
+| residency | `ArenaMarkBlockResident` / `MarkBlockNonResident` | `ProbeReusablePrefixResidency` | `residency_state` |
+| eviction | `ArenaTrimResidentBlocks`, `EvictResidentBlocksToLimit` | `TrimResidentBlocksByReuseScore` | clock sweep |
+| prefetch | `ArenaBuildPrefetchPlan` | `BuildSequencePrefetchSources` | `CollectKvPrefetchEntries` |
+| identity | - | `HashPromptTokens`, rolling per-block chain over token ids | 128-bit block key (added by #509) |
+| block table | - | `BuildPhysicalBlockTable` -> lane-major | `BuildHostKvBlockTable` -> lane-major |
 
-`jit_kv_pool.c` reimplements production residency for the simulator.
-`kv_dedup.c` implements the one thing production lacks. Both are compiled into
-the shipping driver via `sources.mk` and called only by
-`tests/test_glm52_batch_plane.c` and `tools/sparkpipe_glm52_batchplane_sim.c`.
+The last two rows are the point. `PrefixCache` and `WorkControlKvState` both hash
+identity and both emit a lane-major physical block table with per-lane counts.
+They are two implementations of one thing.
 
-This is also why the batch-plane simulator's predictions never matched reality:
-it faithfully models components the runtime does not run.
+## The two block tables never meet
 
-## DESIGN - prefix sharing, minimal and DRY
+- `pp13_service_backend.c:2226` allocates `host_physical_block_indices` and hands
+  it to the serving configuration at `:2535`. The scheduler fills it through
+  `PrefixCacheBuildPhysicalBlockTable`.
+- `spark_glm52_pp13_node_context_builder_cuda.cu:5738` allocates its **own**
+  `host_physical_block_indices` and fills it through
+  `WorkControlBuildHostKvBlockTable`. That is the table the device uses; see the
+  dirty-range copies at `.cu:6570-6684`.
 
-1. Add a **content -> physical index for SEALED blocks only**, reusing
-   `KvDirectoryHash` and the existing probe/tombstone pattern. Do not write a
-   third probe loop; there are already two in that file.
-2. **Keep the `(sequence, logical)` directory.** A sequence must still find its
-   own blocks. Sharing is many-to-one from that directory into physical blocks.
-3. On **seal**, register `content_hash -> physical_block_index`.
-4. On **acquire**, look up content first. On hit, point the new directory entry
-   at the existing physical block and **Pin** it. On miss, allocate as today.
-5. **Eviction needs no change** - the existing pin guard protects shared blocks,
-   and clock-sweep-plus-pins is more robust for a hot prefix than recency.
-6. **INVARIANT, the one silent-failure risk:** only fully-written (sealed) blocks
-   may be shared. A partially-filled tail block must stay private, or one
-   sequence's continuation corrupts another sequence's prefix.
-7. Then **collapse the duplicates**: fold `kv_dedup.c` into work_control, delete
-   `jit_kv_pool.c`, and rebuild the simulator on `WorkControlKvState`. One
-   residency implementation, one identity implementation, both the ones
-   production runs.
+The prefix cache's table does not reach the device.
 
-`tests/test_glm52_shared_prefix_admission.c` (on PR #507) pins the composition
-contract and RUNS: 8 rows, one prefix hash, 1 physical admission, 7 shares.
+## Cross-sequence prefix reuse is implemented and switched off
 
-## WHY MLA MAKES THE MODE SWITCH WORK
+```c
+// pp13_service_backend.c:2352
+scheduler_configuration.configuration_flags =
+    SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS &
+    ~SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE;
+```
 
-MLA stores one **head-independent** latent row per (token, layer). So the latent
-cache is **replicated across TP ranks, not sharded**, and a content-hashed
-fragment is byte-identical on every rank and across a PP relayout.
+`..._FLAG_CROSS_SEQUENCE_PREFIX_REUSE` (`0x40`) is part of `DEFAULT_FLAGS`.
+`scheduler.c:147` and `request_api.c:197` both honour it. The standalone serving
+path gets cross-sequence prefix reuse by default. The PP13 backend is the only
+caller that masks it off, with no comment.
 
-- **TP -> PP is a pure discard** (each rank already holds all layers; keep your
-  slice, free the rest, zero network).
-- **PP -> TP must NOT gather in memory.** At `kv_pool_token_capacity = 1376256`
-  and 1152 B/token/layer, ~11 GB/rank; gathering 13 slices is ~144 GB against
-  **775 MB free on rank 12 at B256** (`diagnostics/glm52_b256_compressed_mla_20260715`).
-  It must reload through the KV store instead.
-- Spilling ~11 GB/rank at the documented ~6 GB/s NVMe budget is ~2 s, ranks in
-  parallel - comfortably inside 30 s. Sharing makes it cheaper still.
-- **Verify `layout_fp` covers TP/PP geometry** before trusting a cross-mode cache
-  hit. MLA's geometry-independence should make it safe; the failure mode if it
-  is not is silent wrong context, not a crash.
+`git log -S` dates that mask to `120c171 Import audited SparkPipe architecture
+proposal` - the initial import. It was not disabled because something broke. It
+has simply never been enabled on the ring path.
 
-## MEASUREMENT REALITY
+## What this means for the B8 duplication
 
-`diagnostics/` granularity is **per-stage** (`timings.tsv`: first_layer,
-layer_count, total_us, maximum_us, graph_replays) and **per-request**
-(`*.summary.json`: latency, TTFT, `token_events_per_s`). There is **no
-per-kernel breakdown anywhere** - no `.nsys-rep`, no kernel-name timing table.
-So "which kernel owns the time" is still not answerable from the repo. That one
-nsys capture remains the highest-value datum from ring access.
+The B8 shared-prefix problem is not a missing capability. It is a capability
+that exists, defaults on, is honoured by two call paths, and is masked off for
+the one path that needs it - feeding a block table the device never reads.
 
-Calibration notes live in `docs/GB10_CUDA_COST_MODEL_CALIBRATION.md`; the model
-is in `tools/sparkpipe_family_cost_model.c`. Both are projections from the
-measured stage buckets, not silicon truth for the family drivers, none of which
-has ever run.
+Before adding sharing anywhere, answer these two, in this order:
 
-## PR #507 - what is already done
+1. Why is the mask there? A deliberate disable with no comment usually means
+   somebody hit something. `git log -S` says it predates all development, so the
+   answer may be "nobody ever tried".
+2. Should the device consume the scheduler's table instead of building its own?
+   If yes, `WorkControlKvState`'s directory, pool, residency, clock sweep,
+   prefetch and NVMe paging - roughly 1300 lines - are all deletable, because
+   `KvCacheArena` and `PrefixCache` already do every one of those things.
 
-Branch `agent/tile-k-alignment-guard`, base `main`. All compile-clean; only the
-host C test executes.
+Both answers are subtractive. PR #509 is additive. That is the wrong direction
+and #509 should not merge until question 2 is settled.
 
-- Hard-fail on non-K-aligned width and on unhandled weight format in the linear
-  dispatch (both were silent wrong-number paths; F32/U32 fell through to the FP8
-  decoder and were read as packed E4M3 bytes).
-- FP8 tile: per-K-tile activation scale, removing a full-K rescan that was 272x
-  redundant at worst and could make FP8 slower than the bf16 tile it replaces.
-  Finer granularity is also strictly more accurate.
-- Gate/router input staged once per row instead of once per expert block:
-  33.6 MB -> 1.0 MB per layer at B128, bit-identical numerics.
-- Attention head grouping chosen by batch instead of pinned at 4.
-  **Re-judge this against B8, not B1** - it was tuned before the targets were known.
-- `tests/test_glm52_shared_prefix_admission.c`.
+## Method, restated because it failed twice
 
-## NEXT, in order
+The previous handoff's first lesson was "search the repo before implementing",
+written after content-hash sharing was rewritten on top of an existing
+`spark_glm52_kv_dedup.c`. The same failure then happened one layer up, at larger
+scale, by an author who had read that lesson and quoted it.
 
-1. Prefix sharing in `work_control.c` per the design above. Highest value; serves
-   the stated primary workload; reduces memory pressure at B256+.
-2. Collapse the duplicate components and rebuild the simulator on the production
-   KV state.
-3. Spill/restore through the existing KV store, then TP<->PP reconfiguration.
-4. Re-judge attention grouping and the tile M-chunking for B8 and B256-B1024,
-   which are the real targets and neither of which has been modelled.
+Grepping for callers of the component you intend to modify is not sufficient.
+`work_control.c` has a genuine production caller; that check passes and tells you
+nothing. **Search for the capability by name before you build it** - "prefix",
+"reuse", "dedup", "share", "hash" - across `model-families/` and `modules/`.
+
+## Environment (verified this session)
+
+- No GPU and **no nvcc** in the working container. Host C builds and runs;
+  `make -j4 test` exits 0. Anything `.cu` or `.cuh` is diff-review only, with no
+  compile gate at all.
+- `tools/length_gate.py` enforces 50 lines per function and exits nonzero.
+- Worst offenders in `work_control.c`, both pre-existing: `ValidatePacket` 325
+  lines, `BuildPrefillPacket` 124.
+- `model-families/glm52/src/spark_glm52_request_api.c` is 7350 lines and has not
+  been audited for the duplication described above.
+
+## PR state at handoff
+
+- **#507** rebased onto current `main`. Two kernel-dispatch conflicts resolved by
+  keeping both guards. One commit skipped: `a3a10fe`, the FP8 per-K-tile
+  activation scale, which conflicts with main's corrected `SparkLmFp8LoadFragA`
+  fragment mapping. It needs re-deriving on top of main's structure somewhere
+  with a compiler; a wrong mma fragment mapping assembles cleanly and renders
+  silently wrong.
+- **#509** block identity and prefix sharing in `work_control.c`. Compiles,
+  tested, `make -j4 test` exits 0, B8 collapses 40 sequence slots onto 12
+  physical blocks. Deletes `kv_dedup.c`, `jit_kv_pool.c` and the batch-plane
+  simulator. Net +983/-1616. **Hold it** - see question 2 above.
