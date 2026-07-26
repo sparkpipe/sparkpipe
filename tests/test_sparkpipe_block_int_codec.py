@@ -1,6 +1,6 @@
 import numpy as np, sys
 sys.path.insert(0,str(__import__('pathlib').Path(__file__).resolve().parents[1] / 'tools'))
-import glm52_int8_codec as I8
+import sparkpipe_block_int_codec as I8
 rng=np.random.default_rng(0); fails=0
 def check(name,cond):
     global fails

@@ -2,6 +2,14 @@ from __future__ import annotations
 
 import numpy as np
 
+# Block-scaled symmetric integer weight codec, shared across model families.
+#
+# Nothing here is family-specific: the input is a bf16 tensor and the output is
+# a code array plus one bf16 scale per block. Bit width and block size are
+# tuning parameters, not constants, because the right choice depends on the
+# weight distribution of the family being packed. Use
+# tools/sparkpipe_quant_calibrate.py to measure a family and pick them.
+
 BLOCK = 128
 BITS = 8
 
@@ -25,11 +33,11 @@ def f32_to_bf16(values):
 def encode(values, block=BLOCK, bits=BITS):
     source = np.ascontiguousarray(values).reshape(-1).astype(np.uint16, copy=False)
     if source.size % block:
-        raise ValueError("int8 codec element count is not a multiple of the block size")
+        raise ValueError("int codec element count is not a multiple of the block size")
     level_count = levels(bits)
     exponents = (source >> np.uint16(7)) & np.uint16(0xFF)
     if int(exponents.max(initial=0)) == 0xFF:
-        raise ValueError("int8 codec source contains inf or nan")
+        raise ValueError("int codec source contains inf or nan")
     blocks = bf16_to_f32(source).reshape(-1, block)
     absolute_maximum = np.abs(blocks).max(axis=1)
     # The stored scale is itself bf16 so that decode is exact in the kernel and
@@ -62,12 +70,12 @@ def verify(values, codes, scales, block=BLOCK, bits=BITS):
     source = np.ascontiguousarray(values).reshape(-1).astype(np.uint16, copy=False)
     decoded = decode(codes, scales, block)
     if decoded.shape != source.shape:
-        raise ValueError("int8 codec decode produced the wrong element count")
+        raise ValueError("int codec decode produced the wrong element count")
     recodes, rescales, _ = encode(decoded, block, bits)
     if not np.array_equal(rescales, scales):
-        raise ValueError("int8 codec decode and re-encode changed the block scales")
+        raise ValueError("int codec decode and re-encode changed the block scales")
     if not np.array_equal(recodes, codes):
-        raise ValueError("int8 codec decode and re-encode is not idempotent")
+        raise ValueError("int codec decode and re-encode is not idempotent")
     original = bf16_to_f32(source).astype(np.float64)
     reconstructed = bf16_to_f32(decoded).astype(np.float64)
     residual = np.linalg.norm(original - reconstructed)

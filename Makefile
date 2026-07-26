@@ -240,7 +240,8 @@ PYTHON_TESTS := \
 	tests/test_measured_status.py \
 	tests/test_release_assemble.py \
 	tests/test_glm52_stage_pack.py \
-	tests/test_glm52_int8_codec.py \
+	tests/test_sparkpipe_block_int_codec.py \
+	tests/test_sparkpipe_quant_calibrate.py \
 	tests/test_glm52_stage_bucket_sweep.py \
 	tests/test_glm52_prompt_pipeline_input.py
 TEST_SUPPORT_OBJECT := build/test_support.o
