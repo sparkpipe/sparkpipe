@@ -34,4 +34,20 @@ except ValueError: check("rejects ragged element count",True)
 try:
     I8.encode(bf(np.array([np.inf]*128)),128); check("rejects inf/nan",False)
 except ValueError: check("rejects inf/nan",True)
+
+# 9 parametrised widths: 6/7/8 bits at two block sizes
+for _bits in (6,7,8):
+    for _blk in (32,128):
+        _u=bf(rng.standard_normal(_blk*64))
+        _c,_s,_st=I8.encode(_u,_blk,_bits); I8.verify(_u,_c,_s,_blk,_bits)
+        check("verify() passes bits=%d blk=%d"%(_bits,_blk),True)
+        check("  bits/weight == %d+16/%d"%(_bits,_blk),abs(_st["bits_per_weight"]-(_bits+16/_blk))<1e-9)
+        check("  codes fit in %d bits"%_bits,int(abs(_c).max())<=(1<<(_bits-1))-1)
+try:
+    I8.encode(bf(rng.standard_normal(128)),128,9); check("rejects bits>8",False)
+except ValueError: check("rejects bits>8",True)
+try:
+    I8.encode(bf(rng.standard_normal(128)),128,1); check("rejects bits<2",False)
+except ValueError: check("rejects bits<2",True)
+
 print("\n%d failures"%fails); sys.exit(1 if fails else 0)

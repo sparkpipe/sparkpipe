@@ -3,7 +3,13 @@ from __future__ import annotations
 import numpy as np
 
 BLOCK = 128
-LEVELS = 127
+BITS = 8
+
+
+def levels(bits=BITS):
+    if bits < 2 or bits > 8:
+        raise ValueError("int codec supports 2 to 8 bits per weight")
+    return (1 << (bits - 1)) - 1
 
 
 def bf16_to_f32(values):
@@ -16,10 +22,11 @@ def f32_to_bf16(values):
     return (rounded >> np.uint32(16)).astype(np.uint16)
 
 
-def encode(values, block=BLOCK):
+def encode(values, block=BLOCK, bits=BITS):
     source = np.ascontiguousarray(values).reshape(-1).astype(np.uint16, copy=False)
     if source.size % block:
         raise ValueError("int8 codec element count is not a multiple of the block size")
+    level_count = levels(bits)
     exponents = (source >> np.uint16(7)) & np.uint16(0xFF)
     if int(exponents.max(initial=0)) == 0xFF:
         raise ValueError("int8 codec source contains inf or nan")
@@ -28,18 +35,19 @@ def encode(values, block=BLOCK):
     # The stored scale is itself bf16 so that decode is exact in the kernel and
     # re-encoding is idempotent: the block maximum decodes to code LEVELS, whose
     # product with the scale reproduces the stored scale exactly.
-    scales = f32_to_bf16(absolute_maximum.astype(np.float32) / np.float32(LEVELS))
+    scales = f32_to_bf16(absolute_maximum.astype(np.float32) / np.float32(level_count))
     divisor = bf16_to_f32(scales).reshape(-1, 1)
     divisor = np.where(divisor == 0.0, np.float32(1.0), divisor)
-    codes = np.clip(np.rint(blocks / divisor), -LEVELS, LEVELS).astype(np.int8)
+    codes = np.clip(np.rint(blocks / divisor), -level_count, level_count).astype(np.int8)
     zero_blocks = int((absolute_maximum == 0.0).sum())
     stats = {
         "element_count": int(source.size),
         "block_count": int(scales.size),
         "block": int(block),
         "zero_block_count": zero_blocks,
-        "clipped_count": int((np.abs(codes) == LEVELS).sum()),
-        "bits_per_weight": 8.0 + 16.0 / block,
+        "bits": int(bits),
+        "clipped_count": int((np.abs(codes) == level_count).sum()),
+        "bits_per_weight": float(bits) + 16.0 / block,
     }
     return codes, scales, stats
 
@@ -50,12 +58,12 @@ def decode(codes, scales, block=BLOCK):
     return f32_to_bf16(packed * factor).reshape(-1)
 
 
-def verify(values, codes, scales, block=BLOCK):
+def verify(values, codes, scales, block=BLOCK, bits=BITS):
     source = np.ascontiguousarray(values).reshape(-1).astype(np.uint16, copy=False)
     decoded = decode(codes, scales, block)
     if decoded.shape != source.shape:
         raise ValueError("int8 codec decode produced the wrong element count")
-    recodes, rescales, _ = encode(decoded, block)
+    recodes, rescales, _ = encode(decoded, block, bits)
     if not np.array_equal(rescales, scales):
         raise ValueError("int8 codec decode and re-encode changed the block scales")
     if not np.array_equal(recodes, codes):
@@ -64,5 +72,6 @@ def verify(values, codes, scales, block=BLOCK):
     reconstructed = bf16_to_f32(decoded).astype(np.float64)
     residual = np.linalg.norm(original - reconstructed)
     reference = np.linalg.norm(original)
-    if reference > 0.0 and residual / reference > 0.02:
-        raise ValueError("int8 codec relative error exceeded the 2 percent guard")
+    guard = 0.02 * float(1 << (8 - bits))
+    if reference > 0.0 and residual / reference > guard:
+        raise ValueError("int codec relative error exceeded its guard")
