@@ -106,7 +106,7 @@ The production AOT tool emits only exact static SM121 buckets. Every requested
 execution-row count must have its own exported kernel. Micro, dynamic, and
 runtime chunk-decomposition paths are rejected rather than substituted.
 The default list includes eight-row DSpark verification through 128 logical
-lanes. DSpark uses the same BF16 hidden-tap contract with FP8, W8LUT, and
+lanes. DSpark uses the same BF16 hidden-tap contract with FP8 and
 NVFP4 verifiers; only NVFP4 needs B12x AOT buckets for those execution rows.
 
 Build the strict primitive adapter and compiled backend:

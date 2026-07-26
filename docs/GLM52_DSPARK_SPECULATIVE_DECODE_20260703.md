@@ -1,7 +1,7 @@
 # GLM-5.2 DSpark speculative decode integration
 
 This pass adds an internal Sparkpipe DSpark speculative-decode path for the
-GLM-5.2 verifier. The verifier may use FP8, W8LUT experts with a BF16 trunk,
+GLM-5.2 verifier. The verifier may use FP8 experts with a BF16 trunk,
 or NVFP4 experts with a BF16 trunk.
 
 The supported DSpark contract is intentionally exact:

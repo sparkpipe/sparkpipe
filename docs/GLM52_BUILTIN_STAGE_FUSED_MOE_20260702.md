@@ -25,7 +25,7 @@ post-attention normalized hidden
 The resident stage owns router projection and top-k selection. The B12x backend
 accepts precomputed top-k rows only; setting the router-logits argument flag is
 rejected. This keeps one shared, parallel top-k implementation for NVFP4,
-W8LUT, and the other production expert paths.
+and the other production expert paths.
 
 ## Exact-static buckets
 

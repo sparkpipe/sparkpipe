@@ -27,7 +27,7 @@ chunk-decomposition paths are forbidden.
 
 The default set includes eight-row DSpark verifier buckets through 128 logical
 lanes (`8,16,32,64,128,256,512,1024`). These buckets matter only for the
-NVFP4 verifier. FP8 and W8LUT use the same DSpark hidden-tap and scheduling
+NVFP4 verifier. FP8 uses the same DSpark hidden-tap and scheduling
 contracts without B12x. Wider NVFP4 DSpark batches require their exact
 `8 * logical_lanes` row counts at AOT generation time; the runtime fails
 closed rather than splitting or substituting a different bucket.

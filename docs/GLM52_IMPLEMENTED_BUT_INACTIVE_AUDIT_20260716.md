@@ -51,7 +51,6 @@ advertises and implements native batching.
 | Item | Status | Reason |
 | --- | --- | --- |
 | MTP | BUILT_NOT_SELECTED | MTP request, verifier, cache-transaction, and final-stage code exists, but the generated FP8 release does not pass `--mtp` to the gateway or residents. |
-| W8LUT | BUILT_NOT_SELECTED | Separate model driver and pack format. |
 | TCP CUDA hidden transport | BUILT_NOT_SELECTED | Built as a staged debug/reference transport. The generated FP8 release selects verbs RDMA. |
 | Standalone memlink RAM service | BUILT_NOT_SELECTED | Its lane partition helper is active inside RDMA, but inference does not route through the object-store daemon. |
 | Persistent-ring transport | UNREACHABLE | Simulation and unit-test backend only; it carries the simulation capability and cannot satisfy production requirements. |

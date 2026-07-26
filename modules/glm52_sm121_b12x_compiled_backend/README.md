@@ -31,7 +31,7 @@ exact bucket, reused in model order across local routed layers.
 
 ## Build modes
 
-The PP13 runtime selects FP8, W8LUT, or NVFP4 explicitly. The NVFP4 mode uses
+The PP13 runtime selects FP8 or NVFP4 explicitly. The NVFP4 mode uses
 `LAYER_ROUTED_NVFP4_TOPK` with a BF16 non-expert trunk and BF16 MLA KV. Only
 the routed experts use B12x NVFP4. The decode-stage object references the B12x
 symbols unconditionally, so every build links either the unavailable table or
@@ -55,11 +55,6 @@ the real generated table.
   path. The model loader also requires matching `.spstage` and `.spb12x`
   artifacts and rejects a pack whose kernel hash differs from the linked AOT
   manifest.
-
-- `GLM52_MOE_BACKEND=w8lut`: the generated B12x archive remains an unavailable
-  C-only sentinel because W8LUT uses its independent BF16-WMMA expert driver
-  and `.spw8lut` packs. The sentinel contains no CUDA implementation and any
-  accidental NVFP4 dispatch fails before launch.
 
 The stub and the AOT output produce the same archive name, so nothing
 downstream of the archive changes between modes.
