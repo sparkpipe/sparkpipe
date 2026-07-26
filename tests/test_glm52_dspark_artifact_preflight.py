@@ -100,12 +100,12 @@ def main() -> None:
             "--model-revision",
             REVISION,
         ], check=True)
-        for quantization in ("fp8", "w8lut", "nvfp4"):
+        for quantization in ("fp8", "nvfp4"):
             receipt = run_preflight(
                 model_dir,
                 manifest,
                 quantization,
-                mtp=quantization == "w8lut",
+                mtp=quantization == "nvfp4",
             )
             assert receipt["model_quantization"] == quantization
             assert receipt["quantization_contract"] == "independent"

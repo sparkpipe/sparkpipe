@@ -96,49 +96,6 @@ static void SparkTestGlm52StagePackResolveTensor(void)
 		SPARK_STATUS_SCHEMA_ERROR);
 }
 
-static void SparkTestGlm52StagePackW8lutContract(void)
-{
-	const char *stagepack_root;
-	const char *w8lut_root;
-
-	stagepack_root = "build/test_glm52_stagepack_w8_data";
-	w8lut_root = "build/test_glm52_stagepack_w8_data/moe";
-	SparkTestMakeDirectory(stagepack_root);
-	SparkTestMakeDirectory(w8lut_root);
-	SparkTestWriteTextFile(
-		"build/test_glm52_stagepack_w8_data/stagepack_index.json",
-		"{\"format\":\"sparkpipe.glm52.pp13.stagepack.v1\","
-		"\"model_quantization\":\"w8lut\","
-		"\"non_expert_weight_dtype\":\"BF16\","
-		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_A "\"}");
-	SparkTestWriteTextFile(
-		"build/test_glm52_stagepack_w8_data/moe/w8lut_moe_pack_manifest.json",
-		"{\"format\":\"sparkpipe.glm52.w8lut.resident_moe_pack.v1\","
-		"\"pack_magic\":\"SPARKGLM52W8LUT\","
-		"\"pack_extension\":\".spw8lut\","
-		"\"quant_mode\":3,"
-		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_A "\"}");
-	assert(SparkGlm52StagePackValidateW8lutContract(
-		stagepack_root,w8lut_root) == SPARK_STATUS_OK);
-	SparkTestWriteTextFile(
-		"build/test_glm52_stagepack_w8_data/moe/w8lut_moe_pack_manifest.json",
-		"{\"format\":\"sparkpipe.glm52.w8lut.resident_moe_pack.v1\","
-		"\"pack_magic\":\"SPARKGLM52W8LUT\","
-		"\"pack_extension\":\".spw8lut\","
-		"\"quant_mode\":3,"
-		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_B "\"}");
-	assert(SparkGlm52StagePackValidateW8lutContract(
-		stagepack_root,w8lut_root) == SPARK_STATUS_SCHEMA_ERROR);
-	SparkTestWriteTextFile(
-		"build/test_glm52_stagepack_w8_data/stagepack_index.json",
-		"{\"format\":\"sparkpipe.glm52.pp13.stagepack.v1\","
-		"\"model_quantization\":\"fp8\","
-		"\"non_expert_weight_dtype\":\"BF16\","
-		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_B "\"}");
-	assert(SparkGlm52StagePackValidateW8lutContract(
-		stagepack_root,w8lut_root) == SPARK_STATUS_SCHEMA_ERROR);
-}
-
 static void SparkTestGlm52StagePackNvfp4Contract(void)
 {
 	const char *stagepack_root;
@@ -177,7 +134,6 @@ static void SparkTestGlm52StagePackNvfp4Contract(void)
 int main(void)
 {
 	SparkTestGlm52StagePackResolveTensor();
-	SparkTestGlm52StagePackW8lutContract();
 	SparkTestGlm52StagePackNvfp4Contract();
 	return 0;
 }

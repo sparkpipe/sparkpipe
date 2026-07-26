@@ -22,7 +22,6 @@ NVFP4_LABEL = "NVFP4"
 NVFP4_MANIFEST = "resident_moe_pack_manifest.json"
 FOREIGN_MANIFESTS = (
     "fp8_moe_pack_manifest.json",
-    "w8lut_moe_pack_manifest.json",
 )
 AOT_SCHEMA = "sparkpipe.glm52.sm121.b12x.aot_manifest.v1"
 PREFLIGHT_SCHEMA = "sparkpipe.glm52.nvfp4.artifact_preflight.v1"
@@ -745,7 +744,7 @@ def validate_resident_manifest(
         if layer in records:
             raise PreflightFailure(f"duplicate NVFP4 manifest layer {layer}")
         records[layer] = record
-    expected_layers = stagepack.expected_w8lut_layers(rank)
+    expected_layers = stagepack.expected_pack_layers(rank)
     if require_complete_stage:
         stagepack.require_equal(
             sorted(records),
@@ -779,7 +778,7 @@ def parse_layers(
     values: list[int] | None,
     rank: int,
 ) -> tuple[list[int], bool]:
-    expected = stagepack.expected_w8lut_layers(rank)
+    expected = stagepack.expected_pack_layers(rank)
     if values is None:
         return expected, True
     selected: list[int] = []

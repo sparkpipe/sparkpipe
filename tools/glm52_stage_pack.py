@@ -22,9 +22,8 @@ from typing import Any, BinaryIO, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 FORMAT = "sparkpipe.glm52.pp13.stagepack.v1"
 MODEL_QUANTIZATION_NVFP4 = "nvfp4"
-MODEL_QUANTIZATION_W8LUT = "w8lut"
 BF16_NON_EXPERT_QUANTIZATIONS = frozenset(
-    (MODEL_QUANTIZATION_NVFP4, MODEL_QUANTIZATION_W8LUT)
+    (MODEL_QUANTIZATION_NVFP4,)
 )
 STAGE_COUNT = 13
 LAYER_COUNT = 78
@@ -464,7 +463,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument(
         "--model-quantization",
-        choices=("fp8", MODEL_QUANTIZATION_NVFP4, MODEL_QUANTIZATION_W8LUT),
+        choices=("fp8", MODEL_QUANTIZATION_NVFP4),
         required=True,
     )
     parser.add_argument("--stages", default="all")
