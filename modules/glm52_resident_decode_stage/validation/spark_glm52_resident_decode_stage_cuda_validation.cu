@@ -19,7 +19,6 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_fp8_moe_plan.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_linear_plan.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_required_cuda.h"
-#include "sparkpipe/spark_glm52_resident_decode_stage_w8lut_moe_plan.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_orchestrator.h"
 #include "sparkpipe/spark_status.h"
@@ -96,7 +95,6 @@
 #define SPARK_VALIDATION_FP8_MOE_COPY_CHUNK_BYTES (64ull * 1024ull * 1024ull)
 #define SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_NVFP4 0u
 #define SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8 1u
-#define SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_W8LUT 2u
 #define SPARK_VALIDATION_DSA_INDEXSHARE_GROUP_LAYER_COUNT \
     SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT
 
@@ -107,11 +105,6 @@ static const char *SparkValidationModelQuantizationName(
         SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8)
     {
         return "fp8";
-    }
-    if (model_quantization ==
-        SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_W8LUT)
-    {
-        return "w8lut";
     }
     return "nvfp4";
 }
@@ -388,10 +381,6 @@ typedef struct SparkValidationDeviceBuffers
     void *fp8_moe_workspace[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
     uint32_t fp8_moe_plan_ready[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
     uint32_t fp8_moe_plan_layer_indices[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
-    SparkGlm52ResidentDecodeStageW8lutMoeResidentBinding
-        w8lut_moe_bindings[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
-    uint32_t w8lut_moe_binding_ready[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
-    uint32_t w8lut_moe_binding_layer_indices[SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT];
     uint32_t routed_layer_base_index;
     SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *linear_plan_binding;
 } SparkValidationDeviceBuffers;
@@ -4778,139 +4767,6 @@ static void SparkValidationEnableLayer3RoutedExpertFp8(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
 }
 
-static bool SparkValidationBuildW8lutMoePackPath(
-    char *pack_path,
-    uint32_t pack_path_bytes,
-    uint32_t layer_index)
-{
-    const char *single_pack_path;
-    const char *pack_directory;
-    int written_bytes;
-
-    if (pack_path == 0 || pack_path_bytes == 0u)
-    {
-        return false;
-    }
-    single_pack_path = getenv("GLM52_W8LUT_MOE_PACK");
-    if (single_pack_path != 0 && single_pack_path[0] != '\0')
-    {
-        written_bytes = snprintf(
-            pack_path,
-            (size_t)pack_path_bytes,
-            "%s",
-            single_pack_path);
-        return written_bytes >= 0 && (uint32_t)written_bytes < pack_path_bytes;
-    }
-    pack_directory = getenv("GLM52_W8LUT_MOE_PACK_DIR");
-    if (pack_directory == 0 || pack_directory[0] == '\0')
-    {
-        fprintf(stderr, "set GLM52_W8LUT_MOE_PACK_DIR to the W8LUT resident MoE pack directory\n");
-        return false;
-    }
-    written_bytes = snprintf(
-        pack_path,
-        (size_t)pack_path_bytes,
-        "%s/glm52_layer_%04u_w8lut_moe.spw8lut",
-        pack_directory,
-        layer_index);
-    return written_bytes >= 0 && (uint32_t)written_bytes < pack_path_bytes;
-}
-
-static bool SparkValidationBindW8lutMoePlanForLayer(
-    SparkValidationDeviceBuffers *buffers,
-    SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    uint32_t layer_index)
-{
-    SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingCreateInfo create_info;
-    SparkGlm52ResidentDecodeStageW8lutMoeResidentBinding *binding;
-    SparkStatus status;
-    char pack_path[PATH_MAX];
-    uint32_t binding_index;
-
-    if (buffers == 0 || node_context == 0 ||
-        layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX ||
-        layer_index < buffers->routed_layer_base_index)
-    {
-        return false;
-    }
-    binding_index = layer_index - buffers->routed_layer_base_index;
-    if (binding_index >= SPARK_VALIDATION_ROUTED_CHAIN_LAYER_LIMIT)
-    {
-        fprintf(stderr, "layer %u has no validation W8LUT binding slot base=%u\n", layer_index, buffers->routed_layer_base_index);
-        return false;
-    }
-    binding = &buffers->w8lut_moe_bindings[binding_index];
-    if (buffers->w8lut_moe_binding_ready[binding_index] == 0u ||
-        buffers->w8lut_moe_binding_layer_indices[binding_index] != layer_index)
-    {
-        if (!SparkValidationBuildW8lutMoePackPath(
-                pack_path,
-                (uint32_t)sizeof(pack_path),
-                layer_index))
-        {
-            return false;
-        }
-        SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingDestroy(binding);
-        memset(&create_info, 0, sizeof(create_info));
-        create_info.abi_version =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_BINDING_CREATE_ABI_VERSION;
-        create_info.layer_index = layer_index;
-        create_info.maximum_active_sequence_count =
-            node_context->max_active_sequence_count;
-        create_info.pack_path = pack_path;
-        status = SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingCreateFromPackFile(
-            binding,
-            &create_info);
-        if (status != SPARK_STATUS_OK ||
-            binding->backend_kind !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_BACKEND_BUILTIN_BF16_WMMA ||
-            binding->plan.launch_function == 0)
-        {
-            fprintf(
-                stderr,
-                "failed to bind W8LUT resident MoE pack for layer %u path=%s status=%d backend=%u\n",
-                layer_index,
-                pack_path,
-                (int)status,
-                binding->backend_kind);
-            SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingDestroy(binding);
-            return false;
-        }
-        buffers->w8lut_moe_binding_ready[binding_index] = 1u;
-        buffers->w8lut_moe_binding_layer_indices[binding_index] = layer_index;
-    }
-    node_context->w8lut_moe_plan = &binding->plan;
-    node_context->model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT;
-    node_context->mlp_execution_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE;
-    node_context->moe_expert_count =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
-    node_context->moe_first_bound_expert_id = 0u;
-    node_context->moe_bound_expert_count =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
-    node_context->moe_top_k =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
-    node_context->moe_intermediate_dimension =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
-    return true;
-}
-
-static void SparkValidationEnableLayer3RoutedExpertW8lut(
-    SparkValidationDeviceBuffers *buffers,
-    SparkGlm52ResidentDecodeStageNodeContext *node_context)
-{
-    SparkValidationEnableLayer3RouterTopK(buffers, node_context);
-    node_context->layer_progression_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK;
-    node_context->model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT;
-    node_context->reserved_execution_flags |=
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
-    node_context->mlp_execution_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE;
-}
-
 static void SparkValidationReleaseLinearPlanBinding(
     SparkValidationDeviceBuffers *buffers)
 {
@@ -9045,27 +8901,6 @@ static bool SparkValidationRunRoutedLayerProductionB12x(
         node_context->dense_intermediate_dimension =
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
     }
-    else if (model_quantization ==
-        SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_W8LUT)
-    {
-        if (!SparkValidationLoadRoutedLayerSharedExpertBf16Fixture(
-                buffers,
-                model_directory,
-                layer_index,
-                &shared_expert_bf16_fixture) ||
-            !SparkValidationBindW8lutMoePlanForLayer(
-                buffers,
-                node_context,
-                layer_index))
-        {
-            return false;
-        }
-        SparkValidationEnableLayer3RoutedExpertW8lut(
-            buffers,
-            node_context);
-        node_context->dense_intermediate_dimension =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
-    }
     else
     {
         if (!SparkValidationBindB12xMoePlanForLayer(
@@ -9845,16 +9680,6 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
             node_context->mlp_execution_mode =
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE;
         }
-        else if (model_quantization ==
-            SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_W8LUT)
-        {
-            node_context->model_quantization_mode =
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT;
-            node_context->reserved_execution_flags |=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
-            node_context->mlp_execution_mode =
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE;
-        }
     }
     else
     {
@@ -9888,31 +9713,6 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
                 return false;
             }
             SparkValidationEnableLayer3RoutedExpertFp8(
-                buffers,
-                node_context);
-            node_context->dense_intermediate_dimension =
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
-            required_linear_plan_mask |=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN;
-        }
-        else if (model_quantization ==
-            SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_W8LUT)
-        {
-            if (!SparkValidationLoadRoutedLayerSharedExpertBf16Fixture(
-                    buffers,
-                    model_directory,
-                    layer_index,
-                    &shared_expert_fixture) ||
-                !SparkValidationBindW8lutMoePlanForLayer(
-                    buffers,
-                    node_context,
-                    layer_index))
-            {
-                return false;
-            }
-            SparkValidationEnableLayer3RoutedExpertW8lut(
                 buffers,
                 node_context);
             node_context->dense_intermediate_dimension =
@@ -9985,10 +9785,7 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
             node_context,
             cuda_stream,
             required_linear_plan_mask,
-            model_quantization ==
-                SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_W8LUT
-                ? 0u
-                : 1u))
+            1u))
     {
         return false;
     }
@@ -11126,12 +10923,6 @@ int main(int argc, char **argv)
             exact_pp13_model_quantization =
                 SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8;
         }
-        else if (strcmp(exact_pp13_model_quantization_text, "w8lut") == 0 ||
-                 strcmp(exact_pp13_model_quantization_text, "w8") == 0)
-        {
-            exact_pp13_model_quantization =
-                SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_W8LUT;
-        }
         else if (strcmp(exact_pp13_model_quantization_text, "nvfp4") == 0 ||
                  strcmp(exact_pp13_model_quantization_text, "4") == 0)
         {
@@ -11716,29 +11507,6 @@ int main(int argc, char **argv)
         node_context.dense_intermediate_dimension =
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
     }
-    else if ((use_routed_chain_from_hidden != 0u ||
-              use_routed_chain_from_hidden_final != 0u) &&
-             exact_pp13_model_quantization ==
-                 SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_W8LUT)
-    {
-        if (!SparkValidationLoadRoutedLayerSharedExpertBf16Fixture(
-                &buffers,
-                model_directory,
-                routed_chain_first_layer_index,
-                &layer3_shared_expert) ||
-            !SparkValidationBindW8lutMoePlanForLayer(
-                &buffers,
-                &node_context,
-                routed_chain_first_layer_index))
-        {
-            return 2;
-        }
-        SparkValidationEnableLayer3RoutedExpertW8lut(
-            &buffers,
-            &node_context);
-        node_context.dense_intermediate_dimension =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
-    }
     if (use_routed_chain_from_hidden != 0u ||
         use_dense_chain_layer3_routed_expert_topk != 0u ||
         (use_dense_chain != 0u && production_timing != 0u))
@@ -11808,9 +11576,7 @@ int main(int argc, char **argv)
         ((use_routed_chain_from_hidden != 0u ||
          use_routed_chain_from_hidden_final != 0u) &&
          (exact_pp13_model_quantization ==
-              SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8 ||
-          exact_pp13_model_quantization ==
-              SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_W8LUT)))
+              SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8)))
     {
         required_linear_plan_mask |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
@@ -11845,11 +11611,8 @@ int main(int argc, char **argv)
             &node_context,
             cuda_stream,
             required_linear_plan_mask,
-            exact_pp13_model_quantization ==
-                SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_W8LUT
-                ? 0u
-                : ((check_layer0_reference != 0u ||
-                    check_layer0_full_reference != 0u) ? 0u : 1u)))
+            ((check_layer0_reference != 0u ||
+              check_layer0_full_reference != 0u) ? 0u : 1u)))
     {
         return 2;
     }
