@@ -278,7 +278,7 @@ int main(int argc,char **argv)
 			&configuration,argc,argv) != 0)
 	{
 		fprintf(stderr,
-			"usage: %s --socket path --rank n [--model-quantization fp8|nvfp4|w8lut] [--require-work] "
+			"usage: %s --socket path --rank n [--model-quantization fp8|nvfp4] [--require-work] "
 			"[--require-layer-major]\n",argv[0]);
 		return 2;
 	}

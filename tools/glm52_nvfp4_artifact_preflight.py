@@ -14,7 +14,7 @@ from typing import Any
 
 import glm52_b12x_aot_compile as aot
 import glm52_b12x_resident_pack as b12x
-import glm52_w8lut_artifact_preflight as stagepack
+import glm52_stagepack_artifact_preflight as stagepack
 
 
 NVFP4_QUANTIZATION = "nvfp4"

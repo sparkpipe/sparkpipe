@@ -131,7 +131,7 @@ int main(int argc,char **argv)
 	if ( realtime_frac < 0.0 || realtime_frac > 0.9 )
 		realtime_frac = 0.25;
 	printf("sparkpipe batch-plane model (calibrated: 16.1ms/1-row anchor, 174GB/s eff)\n");
-	bp_table("W8LUT / FP8 (8-bit experts)",BP_EXPERT_MB_8B,BP_FLOPS_FP8,realtime_frac);
+	bp_table("FP8 (8-bit experts)",BP_EXPERT_MB_8B,BP_FLOPS_FP8,realtime_frac);
 	bp_table("NVFP4 (4-bit experts, 2x tensor rate)",BP_EXPERT_MB_FP4,2.0 * BP_FLOPS_FP8,realtime_frac);
 	rt_commit = (realtime_frac * rt_width / (stage_rt_ms / 1000.0)) * (BP_SPEC_COMMIT / 1.33);
 	printf("\n== realtime plane (frame mode, %.0f%% slice, B~64, dspark) ==\n",realtime_frac * 100.0);

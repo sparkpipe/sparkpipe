@@ -75,9 +75,6 @@ SparkStatus SparkGlm52Pp13RuntimeParseQuantizationMode(
     else if (strcmp(name,"nvfp4") == 0)
         *quantization_mode_out =
             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
-    else if (strcmp(name,"w8lut") == 0)
-        *quantization_mode_out =
-            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
     else
         return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
@@ -92,9 +89,6 @@ const char *SparkGlm52Pp13RuntimeQuantizationModeName(
     if (quantization_mode ==
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
         return "nvfp4";
-    if (quantization_mode ==
-        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
-        return "w8lut";
     return 0;
 }
 
@@ -111,9 +105,7 @@ SparkStatus SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
             ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
     }
     if (quantization_mode ==
-            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-        quantization_mode ==
-            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
     {
         return bound_plan_count == 0u && expected_plan_count == 0u
             ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
@@ -135,10 +127,6 @@ SparkStatus SparkGlm52Pp13RuntimeExpectedMoeBackendKind(
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
         *backend_kind_out =
             SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_NVFP4_B12X;
-    else if (quantization_mode ==
-        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
-        *backend_kind_out =
-            SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_W8LUT_BF16_WMMA;
     else
         return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
@@ -259,9 +247,7 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
         (quantization_mode !=
              SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT &&
          quantization_mode !=
-             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT &&
-         quantization_mode !=
-             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT) ||
+             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT) ||
         port_base > (65535u - SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT))
     {
         return SparkGlm52Pp13RuntimeReport(
@@ -421,9 +407,7 @@ SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
         (rank_plan->quantization_mode !=
              SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT &&
          rank_plan->quantization_mode !=
-             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT &&
-         rank_plan->quantization_mode !=
-             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT) ||
+             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT) ||
         rank_plan->max_packet_bytes !=
             ((uint64_t)SPARK_GLM52_PP13_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
              (uint64_t)rank_plan->execution_row_capacity))
@@ -510,16 +494,6 @@ SparkStatus SparkGlm52Pp13RuntimeBuildMoePackPath(
             pack_root,
             layer_index);
     }
-    else if (quantization_mode ==
-        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
-    {
-        written = snprintf(
-            pack_path,
-            pack_path_bytes,
-            "%s/glm52_layer_%04u_w8lut_moe.spw8lut",
-            pack_root,
-            layer_index);
-    }
     else
     {
         pack_path[0] = '\0';
@@ -542,7 +516,7 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
     char pack_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
     char manifest_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
     char foreign_manifest_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
-    const char *manifest_names[3];
+    const char *manifest_names[2];
     SparkStatus status;
     uint32_t layer_index;
     uint32_t manifest_index;
@@ -568,7 +542,6 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
     }
     manifest_names[0] = SPARK_GLM52_PP13_RUNTIME_FP8_PACK_MANIFEST;
     manifest_names[1] = SPARK_GLM52_PP13_RUNTIME_B12X_PACK_MANIFEST;
-    manifest_names[2] = SPARK_GLM52_PP13_RUNTIME_W8LUT_PACK_MANIFEST;
     if (rank_plan->quantization_mode ==
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
         selected_manifest_index = 0u;
@@ -576,7 +549,13 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
         selected_manifest_index = 1u;
     else
-        selected_manifest_index = 2u;
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "unsupported MoE quantization mode");
+    }
     manifest_name = manifest_names[selected_manifest_index];
     written = snprintf(
         manifest_path,

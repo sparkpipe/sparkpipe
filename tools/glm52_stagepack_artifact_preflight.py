@@ -199,7 +199,7 @@ def required_stage_tensors(rank: int) -> dict[str, tuple[str, tuple[int, ...]]]:
     return specs
 
 
-def expected_w8lut_layers(rank: int) -> list[int]:
+def expected_pack_layers(rank: int) -> list[int]:
     first_layer = rank * LAYERS_PER_STAGE
     layers = list(range(
         max(first_layer, FIRST_ROUTED_LAYER),
@@ -633,7 +633,7 @@ def validate_w8lut_manifest(
         if layer in records:
             raise PreflightFailure(f"duplicate W8LUT manifest layer {layer}")
         records[layer] = record
-    expected = expected_w8lut_layers(rank)
+    expected = expected_pack_layers(rank)
     if require_complete_stage:
         require_equal(sorted(records), expected, f"rank {rank} W8LUT manifest layers")
     for layer in selected_layers:
@@ -655,7 +655,7 @@ def validate_w8lut_manifest(
 
 
 def parse_layers(values: list[int] | None, rank: int) -> tuple[list[int], bool]:
-    expected = expected_w8lut_layers(rank)
+    expected = expected_pack_layers(rank)
     if values is None:
         return expected, True
     layers: list[int] = []

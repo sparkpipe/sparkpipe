@@ -17,8 +17,7 @@ static uint32_t SparkGlm52SchedulerQuantizationModeIsSupported(
 {
     return quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_AUTO ||
         quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
-        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
+        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
 }
 
 static uint32_t SparkGlm52SchedulerMinimumU32(

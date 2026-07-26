@@ -55,8 +55,7 @@ static SparkStatus SparkGlm52StagePlanNormalizeQuantizationMode(
         return SPARK_STATUS_OK;
     }
     if (quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
-        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
     {
         *normalized_quantization_mode_out = quantization_mode;
         return SPARK_STATUS_OK;
@@ -740,7 +739,6 @@ SparkStatus SparkGlm52StagePlanLoadMeasuredCostProfileForQuantization(
     {
         case SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT:
         case SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT:
-        case SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT:
             break;
         default:
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -870,8 +868,7 @@ SparkStatus SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
         batch_bucket >= SPARK_GLM52_STAGE_PLAN_BUCKET_B64 &&
         SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) != 0u &&
         (normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-         normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
-         normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT))
+         normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT))
     {
         return SparkGlm52StagePlanBuildMeasuredB64Pp13Exact(
             stage_plan,

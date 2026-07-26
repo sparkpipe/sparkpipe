@@ -295,23 +295,6 @@ static SparkStatus SparkGlm52StagePackValidateQuantizedContract(
 	return status;
 }
 
-SparkStatus SparkGlm52StagePackValidateW8lutContract(
-	const char *stagepack_root,
-	const char *w8lut_pack_root)
-{
-	return SparkGlm52StagePackValidateQuantizedContract(
-		stagepack_root,
-		w8lut_pack_root,
-		SPARK_GLM52_STAGEPACK_W8LUT_MODEL_QUANTIZATION,
-		SPARK_GLM52_STAGEPACK_W8LUT_NON_EXPERT_DTYPE,
-		SPARK_GLM52_STAGEPACK_W8LUT_MANIFEST_FILE,
-		"format",
-		SPARK_GLM52_STAGEPACK_W8LUT_MANIFEST_FORMAT,
-		SPARK_GLM52_STAGEPACK_W8LUT_PACK_MAGIC,
-		SPARK_GLM52_STAGEPACK_W8LUT_PACK_EXTENSION,
-		SPARK_GLM52_STAGEPACK_W8LUT_QUANT_MODE);
-}
-
 SparkStatus SparkGlm52StagePackValidateNvfp4Contract(
 	const char *stagepack_root,
 	const char *nvfp4_pack_root)
