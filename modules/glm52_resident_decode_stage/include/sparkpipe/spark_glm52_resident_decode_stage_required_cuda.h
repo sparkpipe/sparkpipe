@@ -310,12 +310,6 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchMoePackedRouteBuild(
     uint32_t active_sequence_count,
     void *cuda_stream);
 
-uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateW8lutMoeWorkspaceBytes(
-    const SparkGlm52ResidentDecodeStageW8lutMoePlan *w8lut_moe_plan);
-
-SparkStatus SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan(
-    SparkGlm52ResidentDecodeStageW8lutMoePlan *w8lut_moe_plan);
-
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedHiddenQuantize(
     const void *hidden_bf16,
     const uint32_t *packed_route_rows_by_token_route,

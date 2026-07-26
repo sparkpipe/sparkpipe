@@ -137,9 +137,7 @@ static bool SparkGlm52ResidentDecodeStageModelQuantizationModeIsSupported(
         model_quantization_mode ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT ||
         model_quantization_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT ||
-        model_quantization_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT;
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
 }
 
 static uint32_t SparkGlm52ResidentDecodeStageEffectiveModelQuantizationMode(
@@ -155,11 +153,6 @@ static uint32_t SparkGlm52ResidentDecodeStageEffectiveModelQuantizationMode(
     {
         return SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
     }
-    if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK)
-    {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT;
-    }
     return SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
 }
 
@@ -174,25 +167,13 @@ static bool SparkGlm52ResidentDecodeStageLayerMatchesModelQuantization(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT)
     {
         return node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK &&
-            node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK;
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK;
     }
     if (model_quantization_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT)
     {
         return node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK &&
-            node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK;
-    }
-    if (model_quantization_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT)
-    {
-        return node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK &&
-            node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK;
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK;
     }
     return false;
 }
@@ -1349,60 +1330,6 @@ static bool SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(
     return true;
 }
 
-static bool SparkGlm52ResidentDecodeStageW8lutMoePlanIsUsable(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
-{
-    const SparkGlm52ResidentDecodeStageW8lutMoePlan *plan;
-    uint32_t required_capabilities;
-    if (node_context == 0 || node_context->w8lut_moe_plan == 0)
-    {
-        return false;
-    }
-    plan = node_context->w8lut_moe_plan;
-    required_capabilities =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_REQUIRED_CAPABILITIES;
-    return plan->abi_version ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_PLAN_ABI_VERSION &&
-        plan->reserved0 == 0u && plan->reserved1 == 0u &&
-        plan->maximum_active_sequence_count >=
-            node_context->max_active_sequence_count &&
-        plan->maximum_token_count >= node_context->max_active_sequence_count &&
-        plan->expert_count == SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT &&
-        plan->top_k == SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K &&
-        plan->hidden_dimension == SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION &&
-        plan->intermediate_dimension ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION &&
-        plan->output_dtype ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_OUTPUT_DTYPE_BF16 &&
-        plan->cuda_architecture == 121u &&
-        plan->gate_up_order ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_GATE_UP_ORDER_UP_GATE &&
-        plan->weight_layout ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR &&
-        plan->scale_layout ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_SCALE_LAYOUT_EXPERT_COMPONENT_E0 &&
-        plan->quant_mode == SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_QUANT_MODE &&
-        plan->launch_function != 0 && plan->w1_weight_codes != 0 &&
-        plan->w1_exponent_base != 0 && plan->w2_weight_codes != 0 &&
-        plan->w2_exponent_base != 0 && plan->workspace != 0 &&
-        plan->workspace_bytes != 0u &&
-        (plan->capability_flags & required_capabilities) == required_capabilities &&
-        SparkGlm52ResidentDecodeStagePointerIsAligned(
-            plan->w1_weight_codes,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_WEIGHT_ALIGNMENT_BYTES) &&
-        SparkGlm52ResidentDecodeStagePointerIsAligned(
-            plan->w2_weight_codes,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_WEIGHT_ALIGNMENT_BYTES) &&
-        SparkGlm52ResidentDecodeStagePointerIsAligned(
-            plan->w1_exponent_base,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_EXPONENT_ALIGNMENT_BYTES) &&
-        SparkGlm52ResidentDecodeStagePointerIsAligned(
-            plan->w2_exponent_base,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_EXPONENT_ALIGNMENT_BYTES) &&
-        SparkGlm52ResidentDecodeStagePointerIsAligned(
-            plan->workspace,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_WORKSPACE_ALIGNMENT_BYTES);
-}
 
 static bool SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
@@ -1583,15 +1510,6 @@ static bool SparkGlm52ResidentDecodeStageLayerSupportsBuiltInFusedStageMoe(
             SparkGlm52ResidentDecodeStageRouterLinearPlanIsProductionFast(
                 node_context) &&
             SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(node_context);
-    }
-    if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK)
-    {
-        return node_context->mlp_execution_mode ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE &&
-            SparkGlm52ResidentDecodeStageRouterLinearPlanIsProductionFast(
-                node_context) &&
-            SparkGlm52ResidentDecodeStageW8lutMoePlanIsUsable(node_context);
     }
     return false;
 }
@@ -1837,16 +1755,6 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SparkGlm52ResidentDecodeStageReportValidationFailure(
                 node_context,
                 "fast_fp8_moe_plan",
-                SPARK_STATUS_INVALID_ARGUMENT);
-            return SPARK_STATUS_INVALID_ARGUMENT;
-        }
-        if (node_context->layer_progression_mode ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK &&
-            !SparkGlm52ResidentDecodeStageW8lutMoePlanIsUsable(node_context))
-        {
-            SparkGlm52ResidentDecodeStageReportValidationFailure(
-                node_context,
-                "fast_w8lut_moe_plan",
                 SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -2341,36 +2249,6 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageLayerPointers(
         return SparkValidateGlm52ResidentDecodeStageRequiredDenseMlpPlans(
             node_context);
     }
-    if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK)
-    {
-        if (node_context->moe_expert_count !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT ||
-            node_context->moe_top_k !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K ||
-            node_context->moe_intermediate_dimension !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION ||
-            node_context->dense_intermediate_dimension !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION ||
-            node_context->mlp_execution_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE ||
-            node_context->projection_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16 ||
-            !SparkGlm52ResidentDecodeStagePointerIsAligned(
-                node_context->post_attention_norm_weight_bf16,
-                2u) ||
-            !SparkGlm52ResidentDecodeStageRouterWeightOrPlanIsUsable(
-                node_context) ||
-            !SparkGlm52ResidentDecodeStagePointerIsAligned(
-                node_context->moe_router_score_bias_f32,
-                4u) ||
-            !SparkGlm52ResidentDecodeStageW8lutMoePlanIsUsable(node_context))
-        {
-            return SPARK_STATUS_INVALID_ARGUMENT;
-        }
-        return SparkValidateGlm52ResidentDecodeStageRequiredDenseMlpPlans(
-            node_context);
-    }
     return SPARK_STATUS_INVALID_ARGUMENT;
 }
 
@@ -2414,7 +2292,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->projection_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_MXFP4_E2M1 ||
         node_context->layer_progression_mode >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK ||
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK ||
         node_context->sparse_index_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED ||
         node_context->launch_check_mode >
@@ -2424,7 +2302,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->projection_backend_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE ||
         node_context->mlp_execution_mode >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE ||
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE ||
         node_context->attention_execution_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT ||
         !SparkGlm52ResidentDecodeStageModelQuantizationModeIsSupported(
@@ -2539,19 +2417,6 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
             SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (SparkGlm52ResidentDecodeStageEffectiveModelQuantizationMode(
-            node_context) ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT &&
-        node_context->projection_mode !=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16)
-    {
-        SparkGlm52ResidentDecodeStageReportValidationFailure(
-            node_context,
-            "w8lut_projection_mode",
-            SPARK_STATUS_INVALID_ARGUMENT);
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
     if ((node_context->mtp_draft_plan != 0 &&
             !SparkGlm52ResidentDecodeStageMtpDraftPlanIsUsable(
                 node_context->mtp_draft_plan)) ||
@@ -2628,16 +2493,6 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         SparkGlm52ResidentDecodeStageReportValidationFailure(
             node_context,
             "fp8_moe_plan",
-            SPARK_STATUS_INVALID_ARGUMENT);
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    if (node_context->mlp_execution_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE &&
-        !SparkGlm52ResidentDecodeStageW8lutMoePlanIsUsable(node_context))
-    {
-        SparkGlm52ResidentDecodeStageReportValidationFailure(
-            node_context,
-            "w8lut_moe_plan",
             SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }

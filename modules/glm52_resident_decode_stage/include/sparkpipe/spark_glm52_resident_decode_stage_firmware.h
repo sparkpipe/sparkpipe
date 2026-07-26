@@ -108,7 +108,6 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_EXACT_STAGE_SLICE_PLAN_ABI_VERSION 4u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_PLAN_ABI_VERSION 3u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PLAN_ABI_VERSION 2u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_PLAN_ABI_VERSION 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_EVENT_COUNTER_COUNT 5u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_SIZE 32u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT \
@@ -338,25 +337,6 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_SCALE_ALIGNMENT_BYTES 4u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_WORKSPACE_ALIGNMENT_BYTES 256u
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_CAPABILITY_STREAM_ORDERED 0x00000001u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_CAPABILITY_TENSOR_CORE 0x00000002u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_CAPABILITY_ZERO_HOST_STAGING 0x00000004u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_CAPABILITY_ZERO_DEVICE_MEMCPY 0x00000008u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_CAPABILITY_ROUTE_STRIDED_SILU 0x00000010u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_REQUIRED_CAPABILITIES \
-    (SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_CAPABILITY_STREAM_ORDERED | \
-     SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_CAPABILITY_TENSOR_CORE | \
-     SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_CAPABILITY_ZERO_HOST_STAGING | \
-     SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_CAPABILITY_ZERO_DEVICE_MEMCPY | \
-     SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_CAPABILITY_ROUTE_STRIDED_SILU)
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_GATE_UP_ORDER_UP_GATE 1u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR 1u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_SCALE_LAYOUT_EXPERT_COMPONENT_E0 2u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_QUANT_MODE 3u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_OUTPUT_DTYPE_BF16 1u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_WEIGHT_ALIGNMENT_BYTES 16u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_EXPONENT_ALIGNMENT_BYTES 2u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_WORKSPACE_ALIGNMENT_BYTES 256u
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MODULE_ID \
     "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b1024.rv256.mtp6.v1"
@@ -601,8 +581,7 @@ typedef enum SparkGlm52ResidentDecodeStageLayerProgressionMode
     SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP = 1,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY = 2,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK = 3,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK = 4,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK = 5
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK = 4
 } SparkGlm52ResidentDecodeStageLayerProgressionMode;
 
 
@@ -619,8 +598,7 @@ typedef enum SparkGlm52ResidentDecodeStageMlpExecutionMode
     SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE = 1,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE = 2,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE = 3,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE = 4,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE = 5
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE = 4
 } SparkGlm52ResidentDecodeStageMlpExecutionMode;
 
 typedef enum SparkGlm52ResidentDecodeStageAttentionExecutionMode
@@ -678,8 +656,7 @@ typedef enum SparkGlm52ResidentDecodeStageModelQuantizationMode
 {
     SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_AUTO = 0,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT = 1,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT = 2,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT = 3
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT = 2
 } SparkGlm52ResidentDecodeStageModelQuantizationMode;
 
 typedef struct SparkGlm52ResidentDecodeStageQuantizedLinearView
@@ -797,35 +774,6 @@ typedef struct SparkGlm52ResidentDecodeStageFp8MoePlan
     uint64_t workspace_bytes;
     uint64_t validated_maximum_latency_ns;
 } SparkGlm52ResidentDecodeStageFp8MoePlan;
-
-typedef struct SparkGlm52ResidentDecodeStageW8lutMoePlan
-{
-    uint32_t abi_version;
-    uint32_t capability_flags;
-    uint32_t maximum_active_sequence_count;
-    uint32_t maximum_token_count;
-    uint32_t expert_count;
-    uint32_t top_k;
-    uint32_t hidden_dimension;
-    uint32_t intermediate_dimension;
-    uint32_t output_dtype;
-    uint32_t cuda_architecture;
-    uint32_t gate_up_order;
-    uint32_t weight_layout;
-    uint32_t scale_layout;
-    uint32_t quant_mode;
-    uint32_t reserved0;
-    uint32_t reserved1;
-    void *launch_function;
-    void *opaque_state;
-    const uint8_t *w1_weight_codes;
-    const uint16_t *w1_exponent_base;
-    const uint8_t *w2_weight_codes;
-    const uint16_t *w2_exponent_base;
-    void *workspace;
-    uint64_t workspace_bytes;
-    uint64_t validated_maximum_latency_ns;
-} SparkGlm52ResidentDecodeStageW8lutMoePlan;
 
 typedef struct SparkGlm52ResidentDecodeStageFp8KvCachePlan
 {
@@ -1144,7 +1092,6 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     const SparkGlm52ResidentDecodeStageFullStagePlan *full_stage_plan;
     const SparkGlm52ResidentDecodeStageBulkPrefillPlan *bulk_prefill_plan;
     const SparkGlm52ResidentDecodeStageFp8MoePlan *fp8_moe_plan;
-    const SparkGlm52ResidentDecodeStageW8lutMoePlan *w8lut_moe_plan;
     const SparkGlm52ResidentDecodeStageFp8KvCachePlan *fp8_kv_cache_plan;
     uint32_t model_quantization_mode;
     uint32_t reserved1;
@@ -1250,13 +1197,6 @@ SparkStatus SparkGlm52ResidentDecodeStageLaunchFlashInferB12xMoe(
 
 SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8Moe(
     const SparkGlm52ResidentDecodeStageFp8MoePlan *fp8_moe_plan,
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
-    uint32_t active_sequence_count,
-    void *cuda_stream);
-
-SparkStatus SparkGlm52ResidentDecodeStageLaunchW8lutMoe(
-    const SparkGlm52ResidentDecodeStageW8lutMoePlan *w8lut_moe_plan,
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t active_sequence_count,
