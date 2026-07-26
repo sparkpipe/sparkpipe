@@ -416,7 +416,8 @@ static SparkStatus SparkGlm52Pp13GateWritePackList(
         }
         status = SparkGlm52Pp13RuntimeBuildMoePackPath(
             moe_pack_root,rank_plan->quantization_mode,
-            layer_index,pack_path,sizeof(pack_path));
+            layer_index,rank_plan->tp_degree,rank_plan->tp_rank,
+            pack_path,sizeof(pack_path));
         if (status != SPARK_STATUS_OK)
         {
             fclose(file);

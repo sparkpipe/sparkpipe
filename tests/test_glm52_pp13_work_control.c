@@ -16,12 +16,13 @@ typedef struct SparkTestWorkControlKvStorage
 		SPARK_TEST_KV_LANE_CAPACITY * SPARK_TEST_KV_LANE_STRIDE];
 	uint32_t lane_counts[SPARK_TEST_KV_LANE_CAPACITY];
 	uint8_t block_states[SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY];
-	uint64_t block_sequence_ids[SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY];
-	uint32_t block_logical_indices[SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY];
+	SparkGlm52Pp13KvKey block_keys[SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY];
 	uint64_t block_last_used_epochs[SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY];
 	uint32_t block_pin_counts[SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY];
 	SparkGlm52Pp13WorkControlKvDirectoryEntry
 		directory_entries[SPARK_TEST_KV_DIRECTORY_CAPACITY];
+	SparkGlm52Pp13WorkControlKvBlockEntry
+		block_entries[SPARK_TEST_KV_DIRECTORY_CAPACITY];
 } SparkTestWorkControlKvStorage;
 
 typedef struct SparkTestWorkControlSwapStorage
@@ -36,8 +37,7 @@ typedef struct SparkTestWorkControlSwapStorage
 
 static SparkStatus SparkTestWorkControlSwapStore(
 	void *context,
-	uint64_t sequence_id,
-	uint32_t logical_block_index,
+	SparkGlm52Pp13KvKey key,
 	uint32_t physical_block_index,
 	uint32_t backing_block_index)
 {
@@ -48,17 +48,15 @@ static SparkStatus SparkTestWorkControlSwapStore(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	storage->backing_values[backing_block_index] =
 		storage->physical_values[physical_block_index];
-	storage->backing_sequence_ids[backing_block_index] = sequence_id;
-	storage->backing_logical_indices[backing_block_index] =
-		logical_block_index;
+	storage->backing_sequence_ids[backing_block_index] = key.low;
+	storage->backing_logical_indices[backing_block_index] = (uint32_t)key.high;
 	storage->store_count += 1u;
 	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkTestWorkControlSwapLoad(
 	void *context,
-	uint64_t sequence_id,
-	uint32_t logical_block_index,
+	SparkGlm52Pp13KvKey key,
 	uint32_t physical_block_index,
 	uint32_t backing_block_index)
 {
@@ -66,9 +64,9 @@ static SparkStatus SparkTestWorkControlSwapLoad(
 	storage = (SparkTestWorkControlSwapStorage *)context;
 	if (storage == 0 || physical_block_index >= 2u ||
 		backing_block_index >= 8u ||
-		storage->backing_sequence_ids[backing_block_index] != sequence_id ||
+		storage->backing_sequence_ids[backing_block_index] != key.low ||
 		storage->backing_logical_indices[backing_block_index] !=
-			logical_block_index)
+			(uint32_t)key.high)
 		return SPARK_STATUS_VALIDATION_FAILED;
 	storage->physical_values[physical_block_index] =
 		storage->backing_values[backing_block_index];
@@ -90,13 +88,14 @@ static SparkStatus SparkTestInitializeKvState(
 		256u,
 		SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY,
 		SPARK_TEST_KV_DIRECTORY_CAPACITY,
+		SPARK_TEST_KV_DIRECTORY_CAPACITY,
 		storage->physical_blocks,
 		storage->lane_counts,
 		storage->block_states,
-		storage->block_sequence_ids,
-		storage->block_logical_indices,
+		storage->block_keys,
 		storage->block_last_used_epochs,
-		storage->directory_entries);
+		storage->directory_entries,
+		storage->block_entries);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	return SparkGlm52Pp13WorkControlConfigureKvPins(
@@ -664,9 +663,9 @@ static void SparkTestGlm52Pp13WorkControlB1024PhysicalDirectory(void)
 	uint32_t *physical_blocks;
 	uint32_t *lane_counts;
 	uint8_t *block_states;
-	uint64_t *block_sequence_ids;
-	uint32_t *block_logical_indices;
+	SparkGlm52Pp13KvKey *block_keys;
 	uint64_t *block_last_used_epochs;
+	SparkGlm52Pp13WorkControlKvBlockEntry *block_entries;
 	uint32_t lane_index;
 	uint32_t first_physical_block;
 	uint32_t last_physical_block;
@@ -675,22 +674,23 @@ static void SparkTestGlm52Pp13WorkControlB1024PhysicalDirectory(void)
 	physical_blocks = (uint32_t *)calloc(1024u,sizeof(*physical_blocks));
 	lane_counts = (uint32_t *)calloc(1024u,sizeof(*lane_counts));
 	block_states = (uint8_t *)calloc(1024u,sizeof(*block_states));
-	block_sequence_ids =
-		(uint64_t *)calloc(1024u,sizeof(*block_sequence_ids));
-	block_logical_indices =
-		(uint32_t *)calloc(1024u,sizeof(*block_logical_indices));
+	block_keys =
+		(SparkGlm52Pp13KvKey *)calloc(1024u,sizeof(*block_keys));
+	block_entries =
+		(SparkGlm52Pp13WorkControlKvBlockEntry *)calloc(
+			2048u,sizeof(*block_entries));
 	block_last_used_epochs =
 		(uint64_t *)calloc(1024u,sizeof(*block_last_used_epochs));
 	directory_entries =
 		(SparkGlm52Pp13WorkControlKvDirectoryEntry *)calloc(
 			2048u,sizeof(*directory_entries));
 	assert(physical_blocks != 0 && lane_counts != 0 && block_states != 0 &&
-		block_sequence_ids != 0 && block_logical_indices != 0 &&
+		block_keys != 0 && block_entries != 0 &&
 		block_last_used_epochs != 0 && directory_entries != 0);
 	assert(SparkGlm52Pp13WorkControlInitializeKvState(
-		&state,1024u,1u,256u,1024u,2048u,physical_blocks,lane_counts,
-		block_states,block_sequence_ids,block_logical_indices,
-		block_last_used_epochs,directory_entries) == SPARK_STATUS_OK);
+		&state,1024u,1u,256u,1024u,2048u,2048u,physical_blocks,lane_counts,
+		block_states,block_keys,block_last_used_epochs,directory_entries,
+		block_entries) == SPARK_STATUS_OK);
 
 	SparkTestInitializeWorkPacket(&packet);
 	packet.active_sequence_count = 1024u;
@@ -743,11 +743,11 @@ static void SparkTestGlm52Pp13WorkControlB1024PhysicalDirectory(void)
 
 	free(directory_entries);
 	free(block_last_used_epochs);
-	free(block_logical_indices);
-	free(block_sequence_ids);
 	free(block_states);
 	free(lane_counts);
 	free(physical_blocks);
+	free(block_keys);
+	free(block_entries);
 }
 
 static void SparkTestGlm52Pp13WorkControlNvmeSwapAndRelease(void)
@@ -758,12 +758,12 @@ static void SparkTestGlm52Pp13WorkControlNvmeSwapAndRelease(void)
 	SparkGlm52Pp13WorkControlKvPrefetchEntry prefetch_entries[2u];
 	SparkGlm52KvBlockTableView view;
 	SparkGlm52Pp13WorkControlKvDirectoryEntry directory_entries[16u];
+	SparkGlm52Pp13WorkControlKvBlockEntry block_entries[16u];
 	SparkTestWorkControlSwapStorage swap_storage;
 	uint32_t physical_blocks[8u];
 	uint32_t lane_counts[2u];
 	uint8_t block_states[2u];
-	uint64_t block_sequence_ids[2u];
-	uint32_t block_logical_indices[2u];
+	SparkGlm52Pp13KvKey block_keys[2u];
 	uint64_t block_last_used_epochs[2u];
 	uint32_t backing_free_next[8u];
 	uint32_t sequence_index;
@@ -772,9 +772,9 @@ static void SparkTestGlm52Pp13WorkControlNvmeSwapAndRelease(void)
 
 	memset(&swap_storage,0,sizeof(swap_storage));
 	assert(SparkGlm52Pp13WorkControlInitializeKvState(
-		&state,2u,4u,64u,2u,16u,physical_blocks,lane_counts,
-		block_states,block_sequence_ids,block_logical_indices,
-		block_last_used_epochs,directory_entries) == SPARK_STATUS_OK);
+		&state,2u,4u,64u,2u,16u,16u,physical_blocks,lane_counts,
+		block_states,block_keys,block_last_used_epochs,directory_entries,
+		block_entries) == SPARK_STATUS_OK);
 	assert(SparkGlm52Pp13WorkControlConfigureKvSwap(
 		&state,8u,backing_free_next,SparkTestWorkControlSwapStore,
 		SparkTestWorkControlSwapLoad,&swap_storage) == SPARK_STATUS_OK);
@@ -864,8 +864,8 @@ static void SparkTestGlm52Pp13WorkControlNvmeSwapAndRelease(void)
 		prefetch_packets,2u,&state,prefetch_entries,2u,
 		&prefetch_entry_count) == SPARK_STATUS_OK);
 	assert(prefetch_entry_count == 1u);
-	assert(prefetch_entries[0u].sequence_id == 200u);
-	assert(prefetch_entries[0u].logical_block_index == 0u);
+	assert(SparkGlm52Pp13WorkControlKvKeyEqual(prefetch_entries[0u].key,
+		SparkGlm52Pp13WorkControlPrivateKey(200u,0u)) != 0u);
 	assert(prefetch_entries[0u].backing_block_index < 8u);
 	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 		&packet,&state,&view) == SPARK_STATUS_OK);

@@ -65,14 +65,11 @@ static SparkStatus SparkGlm52ResidentDecodeStageFakeCopyFinalTokens(
         completion == 0 || pipeline_slot->restricted_selected_token_ids == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
     token_count = completion->requested_token_count;
-    if (token_count == 0u)
-        token_count = 1u;
-    if (token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY)
-        token_count = SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
-    if (token_count >
-        (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u))
-        token_count =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u;
+    if (token_count == 0u ||
+        token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY ||
+        token_count >
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u))
+        return SPARK_STATUS_INVALID_ARGUMENT;
     completion->token_ids[0u] = pipeline_slot->restricted_selected_token_ids[0u];
     if (token_count > 1u)
     {
@@ -147,6 +144,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
+    const SparkGlm52ResidentDecodeStageNodeContext *completion_node_context;
     SparkGlm52ResidentDecodeStageFakeStream *fake_stream;
     uint32_t layer_index;
 
@@ -163,6 +161,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     first_node_context = layer_node_contexts[0];
     (void)frame_context;
     if (first_node_context == 0 ||
+        first_node_context->pipeline_slots == 0 ||
         pipeline_slot_index >= first_node_context->pipeline_slot_count ||
         active_sequence_count == 0u ||
         active_sequence_count > first_node_context->max_active_sequence_count ||
@@ -187,6 +186,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     for (layer_index = 0u; layer_index < layer_count; ++layer_index)
     {
         if (layer_node_contexts[layer_index] == 0 ||
+            layer_node_contexts[layer_index]->pipeline_slots == 0 ||
             pipeline_slot_index >=
                 layer_node_contexts[layer_index]->pipeline_slot_count ||
             layer_node_contexts[layer_index]->pipeline_slots[
@@ -197,8 +197,11 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
     }
+    completion_node_context = final_token_stage != 0u
+        ? layer_node_contexts[layer_count - 1u]
+        : first_node_context;
     if (SparkGlm52ResidentDecodeStageFakeCopyFinalTokens(
-            &first_node_context->pipeline_slots[pipeline_slot_index],
+            &completion_node_context->pipeline_slots[pipeline_slot_index],
             final_token_stage,
             active_sequence_count,
             completion) != SPARK_STATUS_OK)

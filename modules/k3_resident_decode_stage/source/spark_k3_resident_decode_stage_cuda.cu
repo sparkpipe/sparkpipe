@@ -760,12 +760,19 @@ __global__ void SparkK3MlaAttendKernel(const void *query_latent_bf16, const void
 				score = fmaf(query_register[latent],__bfloat162float(token_tile[tile_token][(latent * SPARK_K3_WARP_LANES) + lane_id]),score);
 			score = SparkLmWarpReduceSum(score);
 			score = __shfl_sync(0xffffffffu,score,0) * qk_scale;
-			previous_maximum = maximum;
-			if ( score > maximum )
-				maximum = score;
-			correction = __expf(previous_maximum - maximum);
-			score = __expf(score - maximum);
-			total = (total * correction) + score;
+			if ( lane_id == 0u )
+			{
+				previous_maximum = maximum;
+				if ( score > maximum )
+					maximum = score;
+				correction = __expf(previous_maximum - maximum);
+				score = __expf(score - maximum);
+				total = (total * correction) + score;
+			}
+			maximum = __shfl_sync(0xffffffffu,maximum,0);
+			correction = __shfl_sync(0xffffffffu,correction,0);
+			score = __shfl_sync(0xffffffffu,score,0);
+			total = __shfl_sync(0xffffffffu,total,0);
 			for (element = 0; element < (SPARK_K3_MODEL_MLA_LATENT_DIMENSION / SPARK_K3_WARP_LANES); element++)
 			{
 				latent = (element * SPARK_K3_WARP_LANES) + lane_id;
@@ -835,55 +842,87 @@ __global__ void SparkK3MlaValueUpKernel(const void *attention_latent_bf16, const
 }
 
 /*
- * Router: sigmoid scores with additive bias, exact top-k by k sequential
- * argmax passes over the shared score table (k = 16, expert_count = 896:
- * 14336 shared reads per row, negligible), then top-k normalization and the
- * routed scaling factor.
+ * Router: sigmoid scores with additive bias followed by exact block-parallel
+ * top-k.  Every rank uses a CTA-wide argmax with deterministic lower-index
+ * tie breaking; only the selected score table remains in shared memory.
  */
 __global__ void SparkK3MoeRouteKernel(const void *router_logits_bf16, const float *score_bias_f32, uint32_t *topk_expert_ids, float *topk_weights, uint32_t row_count, float routed_scaling_factor, uint32_t norm_topk)
 {
-	__shared__ float scores[SPARK_K3_MODEL_MOE_EXPERT_COUNT];
-	__shared__ uint32_t winner_index;
-	__shared__ float winner_score;
-	uint32_t row = blockIdx.x;
-	uint32_t expert,pick,candidate;
-	float score,total;
-	if ( row >= row_count )
-		return;
-	for (expert = threadIdx.x; expert < SPARK_K3_MODEL_MOE_EXPERT_COUNT; expert += blockDim.x)
-	{
-		score = SparkLmSigmoid(SparkLmBf16ToFloat(router_logits_bf16,((uint64_t)row * SPARK_K3_MODEL_MOE_EXPERT_COUNT) + expert));
-		scores[expert] = score + score_bias_f32[expert];
-	}
-	__syncthreads();
-	for (pick = 0; pick < SPARK_K3_MODEL_MOE_TOP_K; pick++)
-	{
-		if ( threadIdx.x == 0u )
-		{
-			winner_index = 0u;
-			winner_score = -3.0e38f;
-			for (candidate = 0; candidate < SPARK_K3_MODEL_MOE_EXPERT_COUNT; candidate++)
-				if ( scores[candidate] > winner_score )
-				{
-					winner_score = scores[candidate];
-					winner_index = candidate;
-				}
-			topk_expert_ids[((uint64_t)row * SPARK_K3_MODEL_MOE_TOP_K) + pick] = winner_index;
-			topk_weights[((uint64_t)row * SPARK_K3_MODEL_MOE_TOP_K) + pick] = winner_score - score_bias_f32[winner_index];
-			scores[winner_index] = -3.0e38f;
-		}
-		__syncthreads();
-	}
-	if ( threadIdx.x == 0u )
-	{
-		total = 0.0f;
-		for (pick = 0; pick < SPARK_K3_MODEL_MOE_TOP_K; pick++)
-			total += topk_weights[((uint64_t)row * SPARK_K3_MODEL_MOE_TOP_K) + pick];
-		if ( norm_topk == 0u || total <= 0.0f )
-			total = 1.0f;
-		for (pick = 0; pick < SPARK_K3_MODEL_MOE_TOP_K; pick++)
-			topk_weights[((uint64_t)row * SPARK_K3_MODEL_MOE_TOP_K) + pick] = (topk_weights[((uint64_t)row * SPARK_K3_MODEL_MOE_TOP_K) + pick] / total) * routed_scaling_factor;
-	}
+    __shared__ float scores[SPARK_K3_MODEL_MOE_EXPERT_COUNT];
+    __shared__ float best_scores[SPARK_LM_CTA_WARPS];
+    __shared__ uint32_t best_candidates[SPARK_LM_CTA_WARPS];
+    uint32_t row = blockIdx.x;
+    uint32_t expert;
+    uint32_t pick;
+    float total;
+
+    if (row >= row_count)
+    {
+        return;
+    }
+    for (expert = threadIdx.x;
+         expert < SPARK_K3_MODEL_MOE_EXPERT_COUNT;
+         expert += blockDim.x)
+    {
+        float unbiased_score = SparkLmSigmoid(SparkLmBf16ToFloat(
+            router_logits_bf16,
+            ((uint64_t)row * SPARK_K3_MODEL_MOE_EXPERT_COUNT) + expert));
+        scores[expert] = unbiased_score + score_bias_f32[expert];
+    }
+    __syncthreads();
+
+    for (pick = 0u; pick < SPARK_K3_MODEL_MOE_TOP_K; ++pick)
+    {
+        float running_best = -3.0e38f;
+        uint32_t running_candidate = UINT32_MAX;
+
+        for (expert = threadIdx.x;
+             expert < SPARK_K3_MODEL_MOE_EXPERT_COUNT;
+             expert += blockDim.x)
+        {
+            float candidate_score = scores[expert];
+            if (candidate_score > running_best ||
+                (candidate_score == running_best && expert < running_candidate))
+            {
+                running_best = candidate_score;
+                running_candidate = expert;
+            }
+        }
+        SparkLmArgmaxReduce(
+            running_best,
+            running_candidate,
+            best_scores,
+            best_candidates);
+        if (threadIdx.x == 0u)
+        {
+            uint32_t winner = best_candidates[0];
+            float biased_score = best_scores[0];
+            topk_expert_ids[((uint64_t)row * SPARK_K3_MODEL_MOE_TOP_K) + pick] = winner;
+            topk_weights[((uint64_t)row * SPARK_K3_MODEL_MOE_TOP_K) + pick] =
+                biased_score - score_bias_f32[winner];
+            scores[winner] = -3.0e38f;
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0u)
+    {
+        total = 0.0f;
+        for (pick = 0u; pick < SPARK_K3_MODEL_MOE_TOP_K; ++pick)
+        {
+            total += topk_weights[((uint64_t)row * SPARK_K3_MODEL_MOE_TOP_K) + pick];
+        }
+        if (norm_topk == 0u || total <= 0.0f)
+        {
+            total = 1.0f;
+        }
+        for (pick = 0u; pick < SPARK_K3_MODEL_MOE_TOP_K; ++pick)
+        {
+            uint64_t route_index = ((uint64_t)row * SPARK_K3_MODEL_MOE_TOP_K) + pick;
+            topk_weights[route_index] =
+                (topk_weights[route_index] / total) * routed_scaling_factor;
+        }
+    }
 }
 
 __device__ __forceinline__ float SparkK3ExpertWeightValue(uint32_t weight_format, const void *payload, const uint8_t *scale_e8m0, uint64_t weight_index)
@@ -895,6 +934,116 @@ __device__ __forceinline__ float SparkK3ExpertWeightValue(uint32_t weight_format
 	packed = ((const uint8_t *)payload)[weight_index >> 1u];
 	scale_value = SparkLmDecodeE8m0(scale_e8m0[weight_index / SPARK_K3_MODEL_MXFP4_GROUP_SIZE]);
 	return(SparkLmDecodeE2m1((weight_index & 1u) != 0u ? (packed >> 4u) : (packed & 0x0fu)) * scale_value);
+}
+
+#define SPARK_K3_LINEAR_BUNDLE_MAX_ENTRY_COUNT 8u
+#define SPARK_K3_LINEAR_BUNDLE_OUTPUTS_PER_CTA 64u
+
+typedef struct SparkK3LinearBundleEntry
+{
+	const void *input_bf16;
+	void *output_bf16;
+	const void *weight_payload;
+	const uint8_t *weight_scale_e8m0;
+	uint32_t input_dimension;
+	uint32_t output_dimension;
+	uint32_t weight_format;
+	uint32_t output_offset;
+} SparkK3LinearBundleEntry;
+
+typedef struct SparkK3LinearBundleArguments
+{
+	SparkK3LinearBundleEntry entries[SPARK_K3_LINEAR_BUNDLE_MAX_ENTRY_COUNT];
+	uint32_t entry_count;
+	uint32_t total_output_dimension;
+	uint32_t row_count;
+	uint32_t maximum_input_dimension;
+} SparkK3LinearBundleArguments;
+
+static __device__ __forceinline__ float SparkK3LinearBundleDot(
+	const SparkK3LinearBundleEntry *entry,
+	const float *shared_input,
+	uint32_t neuron,
+	uint32_t lane)
+{
+	if ( entry->weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+		return(SparkLmDotRowBf16(shared_input,entry->weight_payload,neuron,entry->input_dimension,lane));
+	return(SparkLmDotRowMxfp4<SPARK_K3_MODEL_MXFP4_GROUP_SIZE>(
+		shared_input,
+		entry->weight_payload,
+		entry->weight_scale_e8m0,
+		neuron,
+		entry->input_dimension,
+		lane));
+}
+
+/*
+ * One launch covers a bundle of row-major projections. Each CTA owns a
+ * 64-neuron output tile from exactly one projection, stages that projection's
+ * input row once, and lets every warp evaluate eight output rows in sequence.
+ * The old scalar linear staged the same input once for every eight outputs;
+ * this keeps the B1 weight-streaming behavior while cutting input staging and
+ * CTA scheduling by eight. Bundle output boundaries are required to be
+ * 64-neuron aligned, so a CTA never needs two different input rows.
+ */
+static __global__ void SparkK3LinearBundleKernel(SparkK3LinearBundleArguments arguments)
+{
+	extern __shared__ float shared_input[];
+	uint32_t row = blockIdx.x;
+	uint32_t output_tile_base = blockIdx.y * SPARK_K3_LINEAR_BUNDLE_OUTPUTS_PER_CTA;
+	uint32_t warp = threadIdx.x / SPARK_K3_WARP_LANES;
+	uint32_t lane = threadIdx.x % SPARK_K3_WARP_LANES;
+	uint32_t entry_index;
+	uint32_t element;
+	uint32_t output_in_tile;
+	uint32_t neuron;
+	float accumulator;
+	float2 input_pair;
+	const SparkK3LinearBundleEntry *entry;
+
+	if ( row >= arguments.row_count || output_tile_base >= arguments.total_output_dimension )
+		return;
+	entry_index = 0u;
+	while ( entry_index + 1u < arguments.entry_count &&
+		output_tile_base >= arguments.entries[entry_index + 1u].output_offset )
+	{
+		entry_index++;
+	}
+	entry = &arguments.entries[entry_index];
+	for (element = threadIdx.x; element < (entry->input_dimension >> 1u); element += blockDim.x)
+	{
+		input_pair = SparkLmLoadBf16Pair(
+			entry->input_bf16,
+			(((uint64_t)row * entry->input_dimension) >> 1u) + element);
+		shared_input[element << 1u] = input_pair.x;
+		shared_input[(element << 1u) + 1u] = input_pair.y;
+	}
+	for (element = ((entry->input_dimension >> 1u) << 1u) + threadIdx.x;
+		element < entry->input_dimension;
+		element += blockDim.x)
+	{
+		shared_input[element] = SparkLmBf16ToFloat(
+			entry->input_bf16,
+			((uint64_t)row * entry->input_dimension) + element);
+	}
+	__syncthreads();
+	for (output_in_tile = warp;
+		output_in_tile < SPARK_K3_LINEAR_BUNDLE_OUTPUTS_PER_CTA;
+		output_in_tile += SPARK_K3_CTA_WARPS)
+	{
+		neuron = output_tile_base + output_in_tile - entry->output_offset;
+		if ( neuron >= entry->output_dimension )
+			continue;
+		accumulator = SparkK3LinearBundleDot(entry,shared_input,neuron,lane);
+		accumulator = SparkLmWarpReduceSum(accumulator);
+		if ( lane == 0u )
+		{
+			SparkLmFloatToBf16(
+				entry->output_bf16,
+				((uint64_t)row * entry->output_dimension) + neuron,
+				accumulator);
+		}
+	}
 }
 
 /*
@@ -945,13 +1094,126 @@ __global__ void SparkK3MoeExpertInterKernel(const void *input_bf16, const uint32
 	}
 }
 
+/*
+ * Routed rows are first grouped by expert on device. Launching in grouped-slot
+ * order keeps consecutive CTAs on the same expert weight ranges, so L2 can
+ * retain gate/up tiles instead of alternating among the row-major route list.
+ * The gate and up dot products remain fused and write the activated SiTU row
+ * directly; no second intermediate tensor is materialized.
+ */
+__global__ void SparkK3MoeGroupedExpertInterKernel(
+	const void *input_bf16,
+	const uint32_t *pair_expert_ids,
+	const uint32_t *grouped_rows,
+	const uint32_t *grouped_weight_slots,
+	uint32_t weight_format,
+	const void *gate_payload,
+	const uint8_t *gate_scale,
+	uint64_t gate_payload_stride,
+	uint64_t gate_scale_stride,
+	const void *up_payload,
+	const uint8_t *up_scale,
+	uint64_t up_payload_stride,
+	uint64_t up_scale_stride,
+	void *grouped_intermediate_bf16,
+	uint32_t pair_count,
+	uint32_t input_dimension,
+	uint32_t intermediate_dimension)
+{
+	extern __shared__ float shared_input[];
+	uint32_t grouped_slot = blockIdx.x;
+	uint32_t pair_index;
+	uint32_t row;
+	uint32_t expert;
+	uint32_t warp = threadIdx.x / SPARK_K3_WARP_LANES;
+	uint32_t lane = threadIdx.x % SPARK_K3_WARP_LANES;
+	uint32_t neuron;
+	uint32_t element;
+	const uint8_t *gate_base;
+	const uint8_t *up_base;
+	const uint8_t *gate_scale_base;
+	const uint8_t *up_scale_base;
+	float gate_accumulator;
+	float up_accumulator;
+	float2 input_pair;
+
+	if ( grouped_slot >= pair_count )
+		return;
+	pair_index = grouped_weight_slots[grouped_slot];
+	row = grouped_rows[grouped_slot];
+	expert = pair_expert_ids[pair_index];
+	gate_base = ((const uint8_t *)gate_payload) +
+		((uint64_t)expert * gate_payload_stride);
+	up_base = ((const uint8_t *)up_payload) +
+		((uint64_t)expert * up_payload_stride);
+	gate_scale_base = gate_scale != 0
+		? gate_scale + ((uint64_t)expert * gate_scale_stride)
+		: 0;
+	up_scale_base = up_scale != 0
+		? up_scale + ((uint64_t)expert * up_scale_stride)
+		: 0;
+	for (element = threadIdx.x; element < (input_dimension >> 1u); element += blockDim.x)
+	{
+		input_pair = SparkLmLoadBf16Pair(
+			input_bf16,
+			(((uint64_t)row * input_dimension) >> 1u) + element);
+		shared_input[element << 1u] = input_pair.x;
+		shared_input[(element << 1u) + 1u] = input_pair.y;
+	}
+	__syncthreads();
+	for (neuron = warp; neuron < intermediate_dimension; neuron += SPARK_K3_CTA_WARPS)
+	{
+		if ( weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+		{
+			gate_accumulator = SparkLmDotRowBf16(
+				shared_input,
+				gate_base,
+				neuron,
+				input_dimension,
+				lane);
+			up_accumulator = SparkLmDotRowBf16(
+				shared_input,
+				up_base,
+				neuron,
+				input_dimension,
+				lane);
+		}
+		else
+		{
+			gate_accumulator = SparkLmDotRowMxfp4<SPARK_K3_MODEL_MXFP4_GROUP_SIZE>(
+				shared_input,
+				gate_base,
+				gate_scale_base,
+				neuron,
+				input_dimension,
+				lane);
+			up_accumulator = SparkLmDotRowMxfp4<SPARK_K3_MODEL_MXFP4_GROUP_SIZE>(
+				shared_input,
+				up_base,
+				up_scale_base,
+				neuron,
+				input_dimension,
+				lane);
+		}
+		gate_accumulator = SparkLmWarpReduceSum(gate_accumulator);
+		up_accumulator = SparkLmWarpReduceSum(up_accumulator);
+		if ( lane == 0u )
+		{
+			SparkLmFloatToBf16(
+				grouped_intermediate_bf16,
+				((uint64_t)grouped_slot * intermediate_dimension) + neuron,
+				SparkLmSigmoid(gate_accumulator) * tanhf(up_accumulator));
+		}
+	}
+}
+
 // out[row][o] (+)= sum over routes of route_weight * (W_down[e] intermediate).
-__global__ void SparkK3MoeExpertDownKernel(const void *intermediate_bf16, const uint32_t *expert_ids, const float *route_weights, uint32_t weight_format, const void *down_payload, const uint8_t *down_scale, uint64_t down_payload_stride, uint64_t down_scale_stride, void *output_bf16, uint32_t row_count, uint32_t route_count, uint32_t intermediate_dimension, uint32_t output_dimension, uint32_t accumulate)
+__global__ void SparkK3MoeExpertDownKernel(const void *intermediate_bf16, const uint32_t *expert_ids, const uint32_t *inverse_map, const float *route_weights, uint32_t weight_format, const void *down_payload, const uint8_t *down_scale, uint64_t down_payload_stride, uint64_t down_scale_stride, void *output_bf16, uint32_t row_count, uint32_t route_count, uint32_t intermediate_dimension, uint32_t output_dimension, uint32_t accumulate)
 {
 	uint32_t row = blockIdx.x,neuron_base = blockIdx.y * SPARK_K3_CTA_WARPS;
 	uint32_t warp = threadIdx.x / SPARK_K3_WARP_LANES,lane = threadIdx.x % SPARK_K3_WARP_LANES;
 	uint32_t neuron = neuron_base + warp;
-	uint32_t route,expert,element;
+	uint32_t route,expert,element,pair_index,intermediate_slot;
 	const uint8_t *down_base;
 	const uint8_t *down_scale_base;
 	float total,route_accumulator,route_weight;
@@ -961,15 +1223,19 @@ __global__ void SparkK3MoeExpertDownKernel(const void *intermediate_bf16, const 
 	total = 0.0f;
 	for (route = 0; route < route_count; route++)
 	{
-		expert = expert_ids != 0 ? expert_ids[((uint64_t)row * route_count) + route] : 0u;
-		route_weight = route_weights != 0 ? route_weights[((uint64_t)row * route_count) + route] : 1.0f;
+		pair_index = (row * route_count) + route;
+		intermediate_slot = inverse_map != 0 ? inverse_map[pair_index] : pair_index;
+		expert = expert_ids != 0 ? expert_ids[pair_index] : 0u;
+		route_weight = route_weights != 0 ? route_weights[pair_index] : 1.0f;
 		down_base = ((const uint8_t *)down_payload) + ((uint64_t)expert * down_payload_stride);
 		down_scale_base = down_scale != 0 ? (down_scale + ((uint64_t)expert * down_scale_stride)) : 0;
 		route_accumulator = 0.0f;
 		#pragma unroll 2
 		for (element = lane; element < (intermediate_dimension >> 1u); element += SPARK_K3_WARP_LANES)
 		{
-			stage_pair = SparkLmLoadBf16Pair(intermediate_bf16,(((((uint64_t)row * route_count) + route) * intermediate_dimension) >> 1u) + element);
+			stage_pair = SparkLmLoadBf16Pair(
+				intermediate_bf16,
+				(((uint64_t)intermediate_slot * intermediate_dimension) >> 1u) + element);
 			if ( weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
 			{
 				weight_pair = SparkLmLoadBf16Pair(down_base,(((uint64_t)neuron * intermediate_dimension) >> 1u) + element);
@@ -1043,6 +1309,114 @@ static SparkStatus SparkK3LaunchStatus(void)
 	return(cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR);
 }
 
+static SparkStatus SparkK3LinearBundleAppend(
+	SparkK3LinearBundleArguments *arguments,
+	const SparkK3Mxfp4LinearView *view,
+	const void *input_bf16,
+	void *output_bf16)
+{
+	SparkK3LinearBundleEntry *entry;
+
+	if ( arguments == 0 || view == 0 || input_bf16 == 0 || output_bf16 == 0 ||
+		arguments->entry_count >= SPARK_K3_LINEAR_BUNDLE_MAX_ENTRY_COUNT ||
+		view->abi_version != SPARK_K3_RESIDENT_DECODE_STAGE_MXFP4_LINEAR_VIEW_ABI_VERSION ||
+		view->weight_payload == 0 || view->input_dimension == 0u ||
+		view->output_dimension == 0u ||
+		(view->output_dimension % SPARK_K3_LINEAR_BUNDLE_OUTPUTS_PER_CTA) != 0u ||
+		(view->weight_format != SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
+		 view->weight_format != SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1) ||
+		(view->weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 &&
+		 view->weight_scale_e8m0 == 0) ||
+		arguments->total_output_dimension > UINT32_MAX - view->output_dimension)
+	{
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	entry = &arguments->entries[arguments->entry_count];
+	entry->input_bf16 = input_bf16;
+	entry->output_bf16 = output_bf16;
+	entry->weight_payload = view->weight_payload;
+	entry->weight_scale_e8m0 = view->weight_scale_e8m0;
+	entry->input_dimension = view->input_dimension;
+	entry->output_dimension = view->output_dimension;
+	entry->weight_format = view->weight_format;
+	entry->output_offset = arguments->total_output_dimension;
+	arguments->entry_count++;
+	arguments->total_output_dimension += view->output_dimension;
+	if ( arguments->maximum_input_dimension < view->input_dimension )
+		arguments->maximum_input_dimension = view->input_dimension;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkK3LaunchLinearBundle(
+	SparkK3LinearBundleArguments *arguments,
+	uint32_t row_count,
+	void *stream)
+{
+	dim3 grid;
+	uint32_t entry_index;
+
+	if ( arguments == 0 || stream == 0 || row_count == 0u ||
+		arguments->entry_count == 0u || arguments->total_output_dimension == 0u ||
+		arguments->maximum_input_dimension == 0u )
+	{
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	for (entry_index = 0u; entry_index < arguments->entry_count; ++entry_index)
+	{
+		if ( arguments->entries[entry_index].output_offset %
+				SPARK_K3_LINEAR_BUNDLE_OUTPUTS_PER_CTA != 0u )
+		{
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+	}
+	arguments->row_count = row_count;
+	grid = dim3(
+		row_count,
+		arguments->total_output_dimension /
+			SPARK_K3_LINEAR_BUNDLE_OUTPUTS_PER_CTA,
+		1u);
+	SparkK3LinearBundleKernel<<<
+		grid,
+		SPARK_K3_CTA_THREADS,
+		arguments->maximum_input_dimension * (uint32_t)sizeof(float),
+		(cudaStream_t)stream>>>(*arguments);
+	return(SparkK3LaunchStatus());
+}
+
+extern "C" SparkStatus SparkK3ConfigureCudaKernels(void)
+{
+	SparkK3KdaSmemLayout chunk_plan;
+	uint32_t linear_shared_bytes;
+	uint32_t expert_shared_bytes;
+
+	chunk_plan = SparkK3KdaSmemPlan();
+	linear_shared_bytes = SPARK_K3_MODEL_DENSE_INTERMEDIATE_DIMENSION >
+		SPARK_K3_MODEL_HIDDEN_DIMENSION
+		? SPARK_K3_MODEL_DENSE_INTERMEDIATE_DIMENSION * (uint32_t)sizeof(float)
+		: SPARK_K3_MODEL_HIDDEN_DIMENSION * (uint32_t)sizeof(float);
+	expert_shared_bytes = SPARK_K3_MODEL_HIDDEN_DIMENSION * (uint32_t)sizeof(float);
+	if (cudaFuncSetAttribute(
+			SparkLmLinearKernel<SPARK_K3_MODEL_MXFP4_GROUP_SIZE>,
+			cudaFuncAttributeMaxDynamicSharedMemorySize,
+			(int)linear_shared_bytes) != cudaSuccess ||
+		cudaFuncSetAttribute(
+			SparkK3KdaDecodeStepKernel,
+			cudaFuncAttributeMaxDynamicSharedMemorySize,
+			(int)(SPARK_K3_KDA_DECODE_SMEM_FLOATS * sizeof(float))) != cudaSuccess ||
+		cudaFuncSetAttribute(
+			SparkK3KdaChunkKernel,
+			cudaFuncAttributeMaxDynamicSharedMemorySize,
+			(int)chunk_plan.total) != cudaSuccess ||
+		cudaFuncSetAttribute(
+			SparkK3MoeExpertInterKernel,
+			cudaFuncAttributeMaxDynamicSharedMemorySize,
+			(int)expert_shared_bytes) != cudaSuccess)
+	{
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
+	return SPARK_STATUS_OK;
+}
+
 extern "C" SparkStatus SparkK3LaunchEmbeddingGather(const SparkK3ResidentDecodeStageNodeContext *node_context, const SparkK3PipelineSlot *slot, uint32_t row_count, void *stream)
 {
 	uint64_t representation_stride;
@@ -1050,7 +1424,7 @@ extern "C" SparkStatus SparkK3LaunchEmbeddingGather(const SparkK3ResidentDecodeS
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( node_context->token_embedding_bf16 == 0 || node_context->owns_embedding == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	representation_stride = (uint64_t)node_context->max_active_sequence_count * SPARK_K3_MODEL_HIDDEN_DIMENSION;
+	representation_stride = (uint64_t)node_context->row_capacity * SPARK_K3_MODEL_HIDDEN_DIMENSION;
 	SparkK3EmbeddingGatherKernel<<<row_count,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(slot->input_token_ids,node_context->token_embedding_bf16,slot->attnres_representations_bf16,row_count,representation_stride);
 	return(SparkK3LaunchStatus());
 }
@@ -1062,7 +1436,7 @@ extern "C" SparkStatus SparkK3LaunchAttnResMix(const SparkK3ResidentDecodeStageN
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( representation_count == 0u || representation_count > SPARK_K3_MODEL_ATTNRES_MAX_REPRESENTATIONS )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	representation_stride = (uint64_t)node_context->max_active_sequence_count * SPARK_K3_MODEL_HIDDEN_DIMENSION;
+	representation_stride = (uint64_t)node_context->row_capacity * SPARK_K3_MODEL_HIDDEN_DIMENSION;
 	SparkK3AttnResMixKernel<<<row_count,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(slot->attnres_representations_bf16,representation_stride,site->pseudo_query_bf16,site->key_norm_weight_bf16,slot->mixed_hidden_bf16,representation_count,row_count,node_context->rms_norm_epsilon);
 	return(SparkK3LaunchStatus());
 }
@@ -1074,7 +1448,7 @@ extern "C" SparkStatus SparkK3LaunchAttnResAccumulate(const SparkK3ResidentDecod
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( open_new_block > 1u || (completed_block_count + open_new_block) >= SPARK_K3_MODEL_ATTNRES_MAX_REPRESENTATIONS )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	representation_stride = (uint64_t)node_context->max_active_sequence_count * SPARK_K3_MODEL_HIDDEN_DIMENSION;
+	representation_stride = (uint64_t)node_context->row_capacity * SPARK_K3_MODEL_HIDDEN_DIMENSION;
 	SparkK3AttnResAccumulateKernel<<<row_count,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(slot->attnres_representations_bf16,representation_stride,sublayer_output_bf16,open_new_block,completed_block_count,row_count);
 	return(SparkK3LaunchStatus());
 }
@@ -1083,58 +1457,159 @@ extern "C" SparkStatus SparkK3LaunchRmsNorm(const void *input_bf16, const void *
 {
 	if ( input_bf16 == 0 || gain_bf16 == 0 || output_bf16 == 0 || row_count == 0u || dimension == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	SparkLmRmsNormKernel<<<row_count,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(input_bf16,gain_bf16,output_bf16,row_count,dimension,epsilon);
+	SparkLmRmsNormKernel<<<row_count,SPARK_K3_CTA_THREADS,dimension * (uint32_t)sizeof(float),(cudaStream_t)stream>>>(input_bf16,gain_bf16,output_bf16,row_count,dimension,epsilon);
 	return(SparkK3LaunchStatus());
 }
 
 extern "C" SparkStatus SparkK3LaunchLinear(const SparkK3Mxfp4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count, void *stream)
 {
-	dim3 grid;
-	uint32_t shared_bytes;
-	if ( view == 0 || input_bf16 == 0 || output_bf16 == 0 || row_count == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( view->weight_payload == 0 || view->input_dimension == 0u || view->output_dimension == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( view->weight_format != SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 && view->weight_format != SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( view->weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 && view->weight_scale_e8m0 == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	grid = dim3(row_count,(view->output_dimension + SPARK_K3_CTA_WARPS - 1u) / SPARK_K3_CTA_WARPS,1);
-	shared_bytes = view->input_dimension * (uint32_t)sizeof(float);
-	if ( cudaFuncSetAttribute(SparkLmLinearKernel<SPARK_K3_MODEL_MXFP4_GROUP_SIZE>,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shared_bytes) != cudaSuccess )
-		return(SPARK_STATUS_INTERNAL_ERROR);
-	SparkLmLinearKernel<SPARK_K3_MODEL_MXFP4_GROUP_SIZE><<<grid,SPARK_K3_CTA_THREADS,shared_bytes,(cudaStream_t)stream>>>(view->weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 ? SPARK_LM_WEIGHT_FORMAT_BF16 : SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension);
-	return(SparkK3LaunchStatus());
+    cudaError_t cuda_status;
+    uint32_t common_weight_format;
+
+    if (view == 0 || input_bf16 == 0 || output_bf16 == 0 || row_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (view->weight_payload == 0 ||
+        view->input_dimension == 0u ||
+        view->output_dimension == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (view->weight_format != SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
+        view->weight_format != SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (view->weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 &&
+        view->weight_scale_e8m0 == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    common_weight_format = view->weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16
+        ? SPARK_LM_WEIGHT_FORMAT_BF16
+        : SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1;
+    cuda_status = SparkLmHostLaunchBatchedLinear<SPARK_K3_MODEL_MXFP4_GROUP_SIZE>(
+        (cudaStream_t)stream,
+        common_weight_format,
+        view->weight_payload,
+        view->weight_scale_e8m0,
+        input_bf16,
+        output_bf16,
+        row_count,
+        view->input_dimension,
+        view->output_dimension);
+    return cuda_status == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
 extern "C" SparkStatus SparkK3LaunchKdaMaterialize(const SparkK3ResidentDecodeStageNodeContext *node_context, const SparkK3PipelineSlot *slot, const SparkK3KdaLayerWeights *weights, uint32_t row_count, void *stream)
 {
+	SparkK3LinearBundleArguments input_bundle = {};
+	SparkK3LinearBundleArguments low_rank_bundle = {};
 	SparkStatus status;
 	dim3 grid;
-	if ( node_context == 0 || slot == 0 || weights == 0 || row_count == 0u )
+	uint64_t wide_pair_count;
+	uint64_t beta_pair_count;
+	uint64_t activation_pair_count;
+	uint32_t activation_block_count;
+
+	if ( node_context == 0 || slot == 0 || weights == 0 || row_count == 0u || stream == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkK3LaunchLinear(&weights->query,slot->normalized_hidden_bf16,slot->kda_query_bf16,row_count,stream);
+	status = SparkK3LinearBundleAppend(
+		&input_bundle,
+		&weights->query,
+		slot->normalized_hidden_bf16,
+		slot->kda_query_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkK3LaunchLinear(&weights->key,slot->normalized_hidden_bf16,slot->kda_key_bf16,row_count,stream);
+	{
+		status = SparkK3LinearBundleAppend(
+			&input_bundle,
+			&weights->key,
+			slot->normalized_hidden_bf16,
+			slot->kda_key_bf16);
+	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkK3LaunchLinear(&weights->value,slot->normalized_hidden_bf16,slot->kda_value_bf16,row_count,stream);
+	{
+		status = SparkK3LinearBundleAppend(
+			&input_bundle,
+			&weights->value,
+			slot->normalized_hidden_bf16,
+			slot->kda_value_bf16);
+	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkK3LaunchLinear(&weights->decay_low,slot->normalized_hidden_bf16,slot->kda_low_rank_bf16,row_count,stream);
+	{
+		status = SparkK3LinearBundleAppend(
+			&input_bundle,
+			&weights->decay_low,
+			slot->normalized_hidden_bf16,
+			slot->kda_decay_low_rank_bf16);
+	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkK3LaunchLinear(&weights->decay_high,slot->kda_low_rank_bf16,slot->kda_log_decay_bf16,row_count,stream);
+	{
+		status = SparkK3LinearBundleAppend(
+			&input_bundle,
+			&weights->output_gate_low,
+			slot->normalized_hidden_bf16,
+			slot->kda_gate_low_rank_bf16);
+	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkK3LaunchLinear(&weights->output_gate_low,slot->normalized_hidden_bf16,slot->kda_low_rank_bf16,row_count,stream);
+	{
+		status = SparkK3LinearBundleAppend(
+			&input_bundle,
+			&weights->beta,
+			slot->normalized_hidden_bf16,
+			slot->kda_beta_bf16);
+	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkK3LaunchLinear(&weights->output_gate_high,slot->kda_low_rank_bf16,slot->kda_gate_bf16,row_count,stream);
+		status = SparkK3LaunchLinearBundle(&input_bundle,row_count,stream);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkK3LaunchLinear(&weights->beta,slot->normalized_hidden_bf16,slot->kda_beta_bf16,row_count,stream);
+	{
+		status = SparkK3LinearBundleAppend(
+			&low_rank_bundle,
+			&weights->decay_high,
+			slot->kda_decay_low_rank_bf16,
+			slot->kda_log_decay_bf16);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		status = SparkK3LinearBundleAppend(
+			&low_rank_bundle,
+			&weights->output_gate_high,
+			slot->kda_gate_low_rank_bf16,
+			slot->kda_gate_bf16);
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkK3LaunchLinearBundle(&low_rank_bundle,row_count,stream);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	grid = dim3(row_count,SPARK_K3_MODEL_KDA_HEAD_COUNT,1);
-	SparkK3KdaNormalizeQkKernel<<<grid,SPARK_K3_WARP_LANES * 4u,0,(cudaStream_t)stream>>>(slot->kda_query_bf16,slot->kda_key_bf16,row_count);
+	SparkK3KdaNormalizeQkKernel<<<
+		grid,
+		SPARK_K3_WARP_LANES * 4u,
+		0,
+		(cudaStream_t)stream>>>(
+			slot->kda_query_bf16,
+			slot->kda_key_bf16,
+			row_count);
 	if ( SparkK3LaunchStatus() != SPARK_STATUS_OK )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	SparkK3KdaGateBetaKernel<<<256u,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(slot->kda_log_decay_bf16,slot->kda_gate_bf16,slot->kda_beta_bf16,row_count);
+	wide_pair_count = ((uint64_t)row_count * SPARK_K3_MODEL_KDA_QK_DIMENSION) >> 1u;
+	beta_pair_count = ((uint64_t)row_count * SPARK_K3_MODEL_KDA_HEAD_COUNT) >> 1u;
+	activation_pair_count = wide_pair_count > beta_pair_count
+		? wide_pair_count
+		: beta_pair_count;
+	activation_block_count = (uint32_t)((activation_pair_count +
+		SPARK_K3_CTA_THREADS - 1u) / SPARK_K3_CTA_THREADS);
+	SparkK3KdaGateBetaKernel<<<
+		activation_block_count,
+		SPARK_K3_CTA_THREADS,
+		0,
+		(cudaStream_t)stream>>>(
+			slot->kda_log_decay_bf16,
+			slot->kda_gate_bf16,
+			slot->kda_beta_bf16,
+			row_count);
 	return(SparkK3LaunchStatus());
 }
 
@@ -1148,10 +1623,7 @@ extern "C" SparkStatus SparkK3LaunchKdaDecodeStep(const SparkK3ResidentDecodeSta
 	if ( slot->lane_indices == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	grid = dim3(SPARK_K3_MODEL_KDA_HEAD_COUNT,row_count,1);
-	if ( cudaFuncSetAttribute(SparkK3KdaDecodeStepKernel,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)(SPARK_K3_KDA_DECODE_SMEM_FLOATS * sizeof(float))) != cudaSuccess )
-		return(SPARK_STATUS_INTERNAL_ERROR);
 	SparkK3KdaDecodeStepKernel<<<grid,SPARK_K3_CTA_THREADS,SPARK_K3_KDA_DECODE_SMEM_FLOATS * sizeof(float),(cudaStream_t)stream>>>((const __nv_bfloat16 *)slot->kda_query_bf16,(const __nv_bfloat16 *)slot->kda_key_bf16,(const __nv_bfloat16 *)slot->kda_value_bf16,(const __nv_bfloat16 *)slot->kda_log_decay_bf16,(const __nv_bfloat16 *)slot->kda_beta_bf16,node_context->kda_state_pool,slot->lane_indices,node_context->kda_state_pool.state_cold_by_row,kda_layer_ordinal,(__nv_bfloat16 *)slot->kda_core_output_bf16);
-	SparkK3KdaDecodeStepKernel<<<grid,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>((const __nv_bfloat16 *)slot->kda_query_bf16,(const __nv_bfloat16 *)slot->kda_key_bf16,(const __nv_bfloat16 *)slot->kda_value_bf16,(const __nv_bfloat16 *)slot->kda_log_decay_bf16,(const __nv_bfloat16 *)slot->kda_beta_bf16,node_context->kda_state_pool,slot->lane_indices,node_context->kda_state_pool.state_cold_by_row,kda_layer_ordinal,(__nv_bfloat16 *)slot->kda_core_output_bf16);
 	return(SparkK3LaunchStatus());
 }
 
@@ -1168,8 +1640,6 @@ extern "C" SparkStatus SparkK3LaunchKdaChunk(const SparkK3ResidentDecodeStageNod
 	if ( slot->lane_indices == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	plan = SparkK3KdaSmemPlan();
-	if ( cudaFuncSetAttribute(SparkK3KdaChunkKernel,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)plan.total) != cudaSuccess )
-		return(SPARK_STATUS_INTERNAL_ERROR);
 	grid = dim3(SPARK_K3_MODEL_KDA_HEAD_COUNT,sequence_count,1);
 	SparkK3KdaChunkKernel<<<grid,SPARK_K3_CTA_THREADS,plan.total,(cudaStream_t)stream>>>((const __nv_bfloat16 *)slot->kda_query_bf16,(const __nv_bfloat16 *)slot->kda_key_bf16,(const __nv_bfloat16 *)slot->kda_value_bf16,(const __nv_bfloat16 *)slot->kda_log_decay_bf16,(const __nv_bfloat16 *)slot->kda_beta_bf16,node_context->kda_state_pool,slot->lane_indices,kda_layer_ordinal,(__nv_bfloat16 *)slot->kda_core_output_bf16,sequence_token_counts,chunk_token_count,carry_state_in,write_state_out);
 	return(SparkK3LaunchStatus());
@@ -1268,15 +1738,100 @@ static SparkStatus SparkK3LaunchExpertPair(const void *input_bf16, const uint32_
 {
 	dim3 inter_grid,down_grid;
 	uint32_t shared_bytes = SPARK_K3_MODEL_HIDDEN_DIMENSION * (uint32_t)sizeof(float);
-	if ( cudaFuncSetAttribute(SparkK3MoeExpertInterKernel,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shared_bytes) != cudaSuccess )
-		return(SPARK_STATUS_INTERNAL_ERROR);
 	inter_grid = dim3(row_count,route_count,1);
 	SparkK3MoeExpertInterKernel<<<inter_grid,SPARK_K3_CTA_THREADS,shared_bytes,(cudaStream_t)stream>>>(input_bf16,expert_ids,weight_format,gate_payload,gate_scale,gate_payload_stride,gate_scale_stride,up_payload,up_scale,up_payload_stride,up_scale_stride,intermediate_bf16,row_count,route_count,SPARK_K3_MODEL_HIDDEN_DIMENSION,intermediate_dimension);
 	if ( SparkK3LaunchStatus() != SPARK_STATUS_OK )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	down_grid = dim3(row_count,(SPARK_K3_MODEL_HIDDEN_DIMENSION + SPARK_K3_CTA_WARPS - 1u) / SPARK_K3_CTA_WARPS,1);
-	SparkK3MoeExpertDownKernel<<<down_grid,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(intermediate_bf16,expert_ids,route_weights,weight_format,down_payload,down_scale,down_payload_stride,down_scale_stride,output_bf16,row_count,route_count,intermediate_dimension,SPARK_K3_MODEL_HIDDEN_DIMENSION,accumulate);
+	SparkK3MoeExpertDownKernel<<<down_grid,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(intermediate_bf16,expert_ids,0,route_weights,weight_format,down_payload,down_scale,down_payload_stride,down_scale_stride,output_bf16,row_count,route_count,intermediate_dimension,SPARK_K3_MODEL_HIDDEN_DIMENSION,accumulate);
 	(void)weights;
+	return(SparkK3LaunchStatus());
+}
+
+static SparkStatus SparkK3LaunchGroupedExpertPair(
+	const SparkK3PipelineSlot *slot,
+	const SparkK3MoeLayerWeights *weights,
+	uint32_t row_count,
+	void *stream)
+{
+	uint32_t pair_count;
+	uint32_t shared_bytes;
+	dim3 down_grid;
+	cudaError_t cuda_status;
+
+	if ( slot == 0 || weights == 0 || stream == 0 || row_count == 0u ||
+		slot->moe_topk_expert_ids == 0 || slot->moe_topk_weights_f32 == 0 ||
+		slot->moe_expert_offsets == 0 || slot->moe_grouped_rows == 0 ||
+		slot->moe_grouped_weight_slots == 0 || slot->moe_inverse_map == 0 ||
+		slot->moe_intermediate_bf16 == 0 || slot->moe_output_hidden_bf16 == 0 )
+	{
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( row_count > UINT32_MAX / SPARK_K3_MODEL_MOE_TOP_K )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	pair_count = row_count * SPARK_K3_MODEL_MOE_TOP_K;
+	cuda_status = SparkLmHostLaunchMoeGroup(
+		(cudaStream_t)stream,
+		slot->moe_topk_expert_ids,
+		pair_count,
+		SPARK_K3_MODEL_MOE_EXPERT_COUNT,
+		SPARK_K3_MODEL_MOE_TOP_K,
+		slot->moe_expert_offsets,
+		slot->moe_grouped_rows,
+		slot->moe_grouped_weight_slots,
+		slot->moe_inverse_map);
+	if ( cuda_status != cudaSuccess )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	shared_bytes = SPARK_K3_MODEL_HIDDEN_DIMENSION * (uint32_t)sizeof(float);
+	SparkK3MoeGroupedExpertInterKernel<<<
+		pair_count,
+		SPARK_K3_CTA_THREADS,
+		shared_bytes,
+		(cudaStream_t)stream>>>(
+			slot->normalized_hidden_bf16,
+			slot->moe_topk_expert_ids,
+			slot->moe_grouped_rows,
+			slot->moe_grouped_weight_slots,
+			weights->weight_format,
+			weights->expert_gate_payload,
+			weights->expert_gate_scale_e8m0,
+			weights->expert_gate_payload_stride_bytes,
+			weights->expert_gate_scale_stride_bytes,
+			weights->expert_up_payload,
+			weights->expert_up_scale_e8m0,
+			weights->expert_up_payload_stride_bytes,
+			weights->expert_up_scale_stride_bytes,
+			slot->moe_intermediate_bf16,
+			pair_count,
+			SPARK_K3_MODEL_HIDDEN_DIMENSION,
+			weights->intermediate_dimension);
+	if ( SparkK3LaunchStatus() != SPARK_STATUS_OK )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	down_grid = dim3(
+		row_count,
+		(SPARK_K3_MODEL_HIDDEN_DIMENSION + SPARK_K3_CTA_WARPS - 1u) /
+			SPARK_K3_CTA_WARPS,
+		1u);
+	SparkK3MoeExpertDownKernel<<<
+		down_grid,
+		SPARK_K3_CTA_THREADS,
+		0,
+		(cudaStream_t)stream>>>(
+			slot->moe_intermediate_bf16,
+			slot->moe_topk_expert_ids,
+			slot->moe_inverse_map,
+			slot->moe_topk_weights_f32,
+			weights->weight_format,
+			weights->expert_down_payload,
+			weights->expert_down_scale_e8m0,
+			weights->expert_down_payload_stride_bytes,
+			weights->expert_down_scale_stride_bytes,
+			slot->moe_output_hidden_bf16,
+			row_count,
+			SPARK_K3_MODEL_MOE_TOP_K,
+			weights->intermediate_dimension,
+			SPARK_K3_MODEL_HIDDEN_DIMENSION,
+			0u);
 	return(SparkK3LaunchStatus());
 }
 
@@ -1287,7 +1842,7 @@ extern "C" SparkStatus SparkK3LaunchMoeExperts(const SparkK3ResidentDecodeStageN
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( weights->expert_gate_payload == 0 || weights->expert_up_payload == 0 || weights->expert_down_payload == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkK3LaunchExpertPair(slot->normalized_hidden_bf16,slot->moe_topk_expert_ids,slot->moe_topk_weights_f32,weights->weight_format,weights,weights->expert_gate_payload,weights->expert_gate_scale_e8m0,weights->expert_gate_payload_stride_bytes,weights->expert_gate_scale_stride_bytes,weights->expert_up_payload,weights->expert_up_scale_e8m0,weights->expert_up_payload_stride_bytes,weights->expert_up_scale_stride_bytes,weights->expert_down_payload,weights->expert_down_scale_e8m0,weights->expert_down_payload_stride_bytes,weights->expert_down_scale_stride_bytes,slot->moe_intermediate_bf16,slot->moe_output_hidden_bf16,row_count,SPARK_K3_MODEL_MOE_TOP_K,weights->intermediate_dimension,0u,stream);
+	status = SparkK3LaunchGroupedExpertPair(slot,weights,row_count,stream);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( weights->shared_gate.weight_payload == 0 || weights->shared_up.weight_payload == 0 || weights->shared_down.weight_payload == 0 )

@@ -117,47 +117,337 @@
       }
     },
     "hf_tensor_contract": [
-      { "name": "model.embed_tokens.weight", "dtype": "BF16", "shape": [163840, 7168] },
-      { "name": "model.layers.{layer}.attn_res.attn.query", "dtype": "BF16", "shape": [1, 7168] },
-      { "name": "model.layers.{layer}.attn_res.attn.key_norm.weight", "dtype": "BF16", "shape": [1, 7168] },
-      { "name": "model.layers.{layer}.attn_res.mlp.query", "dtype": "BF16", "shape": [1, 7168] },
-      { "name": "model.layers.{layer}.attn_res.mlp.key_norm.weight", "dtype": "BF16", "shape": [1, 7168] },
-      { "name": "model.layers.{layer}.input_layernorm.weight", "dtype": "BF16", "shape": [1, 7168] },
-      { "name": "model.layers.{layer}.post_attention_layernorm.weight", "dtype": "BF16", "shape": [1, 7168] },
-      { "name": "model.layers.{kda_layer}.linear_attn.q_proj.weight", "dtype": "MXFP4", "shape": [8192, 7168] },
-      { "name": "model.layers.{kda_layer}.linear_attn.k_proj.weight", "dtype": "MXFP4", "shape": [8192, 7168] },
-      { "name": "model.layers.{kda_layer}.linear_attn.v_proj.weight", "dtype": "MXFP4", "shape": [8192, 7168] },
-      { "name": "model.layers.{kda_layer}.linear_attn.f_a_proj.weight", "dtype": "MXFP4", "shape": [128, 7168] },
-      { "name": "model.layers.{kda_layer}.linear_attn.f_b_proj.weight", "dtype": "MXFP4", "shape": [8192, 128] },
-      { "name": "model.layers.{kda_layer}.linear_attn.b_proj.weight", "dtype": "MXFP4", "shape": [64, 7168] },
-      { "name": "model.layers.{kda_layer}.linear_attn.g_a_proj.weight", "dtype": "MXFP4", "shape": [128, 7168] },
-      { "name": "model.layers.{kda_layer}.linear_attn.g_b_proj.weight", "dtype": "MXFP4", "shape": [8192, 128] },
-      { "name": "model.layers.{kda_layer}.linear_attn.o_proj.weight", "dtype": "MXFP4", "shape": [7168, 8192] },
-      { "name": "model.layers.{kda_layer}.linear_attn.norm.weight", "dtype": "BF16", "shape": [1, 128] },
-      { "name": "model.layers.{mla_layer}.self_attn.q_a_proj.weight", "dtype": "MXFP4", "shape": [1536, 7168] },
-      { "name": "model.layers.{mla_layer}.self_attn.q_a_layernorm.weight", "dtype": "BF16", "shape": [1, 1536] },
-      { "name": "model.layers.{mla_layer}.self_attn.q_b_proj.weight", "dtype": "MXFP4", "shape": [8192, 1536] },
-      { "name": "model.layers.{mla_layer}.self_attn.kv_a_proj_with_mqa.weight", "dtype": "MXFP4", "shape": [512, 7168] },
-      { "name": "model.layers.{mla_layer}.self_attn.kv_a_layernorm.weight", "dtype": "BF16", "shape": [1, 512] },
-      { "name": "model.layers.{mla_layer}.self_attn.kv_b_proj.weight", "dtype": "MXFP4", "shape": [16384, 512] },
-      { "name": "model.layers.{mla_layer}.self_attn.head_gate_proj.weight", "dtype": "MXFP4", "shape": [64, 7168] },
-      { "name": "model.layers.{mla_layer}.self_attn.o_proj.weight", "dtype": "MXFP4", "shape": [7168, 8192] },
-      { "name": "model.layers.{routed_layer}.mlp.gate.weight", "dtype": "BF16", "shape": [896, 7168] },
-      { "name": "model.layers.{routed_layer}.mlp.gate.e_score_correction_bias", "dtype": "F32", "shape": [1, 896] },
-      { "name": "model.layers.{routed_layer}.mlp.experts.gate_proj.weight", "dtype": "MXFP4", "shape": [896, 2048, 7168] },
-      { "name": "model.layers.{routed_layer}.mlp.experts.up_proj.weight", "dtype": "MXFP4", "shape": [896, 2048, 7168] },
-      { "name": "model.layers.{routed_layer}.mlp.experts.down_proj.weight", "dtype": "MXFP4", "shape": [896, 7168, 2048] },
-      { "name": "model.layers.{routed_layer}.mlp.shared_experts.gate_proj.weight", "dtype": "MXFP4", "shape": [2048, 7168] },
-      { "name": "model.layers.{routed_layer}.mlp.shared_experts.up_proj.weight", "dtype": "MXFP4", "shape": [2048, 7168] },
-      { "name": "model.layers.{routed_layer}.mlp.shared_experts.down_proj.weight", "dtype": "MXFP4", "shape": [7168, 2048] },
-      { "name": "model.layers.0.mlp.gate_proj.weight", "dtype": "MXFP4", "shape": [18432, 7168] },
-      { "name": "model.layers.0.mlp.up_proj.weight", "dtype": "MXFP4", "shape": [18432, 7168] },
-      { "name": "model.layers.0.mlp.down_proj.weight", "dtype": "MXFP4", "shape": [7168, 18432] },
-      { "name": "model.attn_res.final.query", "dtype": "BF16", "shape": [1, 7168] },
-      { "name": "model.attn_res.final.key_norm.weight", "dtype": "BF16", "shape": [1, 7168] },
-      { "name": "model.norm.weight", "dtype": "BF16", "shape": [1, 7168] },
-      { "name": "lm_head.restricted.weight", "dtype": "BF16", "shape": [256, 7168] },
-      { "name": "lm_head.restricted.token_ids", "dtype": "U32", "shape": [1, 256] }
+      {
+        "name": "model.embed_tokens.weight",
+        "dtype": "BF16",
+        "shape": [
+          163840,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{layer}.attn_res.attn.query",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{layer}.attn_res.attn.key_norm.weight",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{layer}.attn_res.mlp.query",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{layer}.attn_res.mlp.key_norm.weight",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{layer}.input_layernorm.weight",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{layer}.post_attention_layernorm.weight",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{kda_layer}.linear_attn.q_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          8192,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{kda_layer}.linear_attn.k_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          8192,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{kda_layer}.linear_attn.v_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          8192,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{kda_layer}.linear_attn.f_a_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          128,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{kda_layer}.linear_attn.f_b_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          8192,
+          128
+        ]
+      },
+      {
+        "name": "model.layers.{kda_layer}.linear_attn.b_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          64,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{kda_layer}.linear_attn.g_a_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          128,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{kda_layer}.linear_attn.g_b_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          8192,
+          128
+        ]
+      },
+      {
+        "name": "model.layers.{kda_layer}.linear_attn.o_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          7168,
+          8192
+        ]
+      },
+      {
+        "name": "model.layers.{kda_layer}.linear_attn.norm.weight",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          128
+        ]
+      },
+      {
+        "name": "model.layers.{mla_layer}.self_attn.q_a_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          1536,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{mla_layer}.self_attn.q_a_layernorm.weight",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          1536
+        ]
+      },
+      {
+        "name": "model.layers.{mla_layer}.self_attn.q_b_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          8192,
+          1536
+        ]
+      },
+      {
+        "name": "model.layers.{mla_layer}.self_attn.kv_a_proj_with_mqa.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          512,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{mla_layer}.self_attn.kv_a_layernorm.weight",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          512
+        ]
+      },
+      {
+        "name": "model.layers.{mla_layer}.self_attn.kv_b_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          16384,
+          512
+        ]
+      },
+      {
+        "name": "model.layers.{mla_layer}.self_attn.head_gate_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          64,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{mla_layer}.self_attn.o_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          7168,
+          8192
+        ]
+      },
+      {
+        "name": "model.layers.{routed_layer}.mlp.gate.weight",
+        "dtype": "BF16",
+        "shape": [
+          896,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{routed_layer}.mlp.gate.e_score_correction_bias",
+        "dtype": "F32",
+        "shape": [
+          1,
+          896
+        ]
+      },
+      {
+        "name": "model.layers.{routed_layer}.mlp.experts.gate_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          896,
+          2048,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{routed_layer}.mlp.experts.up_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          896,
+          2048,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{routed_layer}.mlp.experts.down_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          896,
+          7168,
+          2048
+        ]
+      },
+      {
+        "name": "model.layers.{routed_layer}.mlp.shared_experts.gate_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          2048,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{routed_layer}.mlp.shared_experts.up_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          2048,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.{routed_layer}.mlp.shared_experts.down_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          7168,
+          2048
+        ]
+      },
+      {
+        "name": "model.layers.0.mlp.gate_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          18432,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.0.mlp.up_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          18432,
+          7168
+        ]
+      },
+      {
+        "name": "model.layers.0.mlp.down_proj.weight",
+        "dtype": "MXFP4",
+        "shape": [
+          7168,
+          18432
+        ]
+      },
+      {
+        "name": "model.attn_res.final.query",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          7168
+        ]
+      },
+      {
+        "name": "model.attn_res.final.key_norm.weight",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          7168
+        ]
+      },
+      {
+        "name": "model.norm.weight",
+        "dtype": "BF16",
+        "shape": [
+          1,
+          7168
+        ]
+      },
+      {
+        "name": "lm_head.restricted.weight",
+        "dtype": "BF16",
+        "shape": [
+          256,
+          7168
+        ]
+      },
+      {
+        "name": "lm_head.restricted.token_ids",
+        "dtype": "U32",
+        "shape": [
+          1,
+          256
+        ]
+      }
     ],
     "resident_footprint": {
       "mxfp4_weight_bytes": 1498024968192,
@@ -166,7 +456,44 @@
       "stage_pack_gib": 1398.2,
       "note": "measured by k3_pack_synthesize --dry-run at this geometry; 1.4 TiB does not fit one GB10, so a real deployment is pipeline-parallel and this v1 single-node module cannot host the full model"
     },
-    "supported_quantization_variants": ["mxfp4", "bf16"]
+    "supported_quantization_variants": [
+      "mxfp4",
+      "bf16"
+    ],
+    "qualification": {
+      "status": "NOT_MEASURED",
+      "production_ready": false,
+      "gpu_numerical_correctness": "NOT_MEASURED",
+      "gpu_latency": "NOT_MEASURED",
+      "gpu_throughput": "NOT_MEASURED",
+      "controlled_bring_up_only": true
+    },
+    "runtime_contract": {
+      "firmware_module_abi": 4,
+      "model_driver_abi": 6,
+      "completion": "submit_return",
+      "fallback_allowed": false,
+      "runtime_backend_selection": "forbidden",
+      "model_frame_context": "SparkK3ResidentDecodeStageFrameContext",
+      "driver_dispatch_slot_semantics": "advisory scheduler ticket only; this module rejects DRIVER_DISPATCH_SLOT_VALID",
+      "configuration_source": "strict process environment pending migration into immutable module configuration JSON",
+      "required_environment": [
+        "K3_ALLOW_UNQUALIFIED_EXECUTION",
+        "K3_STAGE_PACK",
+        "K3_MAX_LANES",
+        "K3_MAX_CONTEXT_TOKENS",
+        "K3_PIPELINE_SLOTS",
+        "K3_STAGE_COUNT",
+        "K3_STAGE_INDEX",
+        "K3_STAGE_FIRST_LAYER",
+        "K3_STAGE_LAYER_COUNT"
+      ],
+      "notes": [
+        "the K3 geometry is provisional and has no retained GPU qualification receipt",
+        "prefill and decode lane identities are carried by the model-specific frame context, never by driver_dispatch_slot",
+        "host token input is required only on the embedding stage and host token output only on the head stage"
+      ]
+    }
   },
   "stages": [
     {
@@ -174,42 +501,30 @@
       "target": "cuda.sm121.k3.resident_decode_stage.mxfp4",
       "programs": [
         {
-          "name": "decode",
+          "name": "resident_decode",
           "id": 1,
           "max_inflight": 1,
-          "completion": "external",
+          "completion": "submit_return",
+          "scheduling": {
+            "flags": [
+              "stream_ordered",
+              "driver_owns_resident_state",
+              "driver_owns_kv_cache",
+              "fixed_firmware",
+              "requires_hidden_transport",
+              "no_file_transport",
+              "no_shell_transport"
+            ]
+          },
           "operations": [
             {
-              "name": "resident_decode_stage",
+              "name": "k3_resident_decode_stage",
               "module": "spark.k3.resident_decode_stage.mxfp4.h7168.l72.e896.k16.kda128.mla512.rv256.v1",
               "configuration": {
-                "required_arch": "sm_121a",
+                "qualification_status": "NOT_MEASURED",
+                "production_ready": false,
                 "fallback_allowed": false,
-                "runtime_backend_selection": "forbidden",
-                "required_symbols": [
-                  "SparkK3ResidentDecodeStageInitialize",
-                  "SparkK3ResidentDecodeStageExecute",
-                  "SparkK3ResidentDecodeStageAdmit",
-                  "SparkK3ResidentDecodeStageSnapshot",
-                  "SparkK3ResidentDecodeStageDestroy"
-                ],
-                "environment": {
-                  "K3_STAGE_PACK": "path to the k3 stage pack, required",
-                  "K3_MAX_LANES": "concurrent sequences, 1..64, required",
-                  "K3_MAX_CONTEXT_TOKENS": "per-lane context cap, 64..1048576, required",
-                  "K3_PIPELINE_SLOTS": "1..4, required"
-                },
-                "frame_contract": {
-                  "dispatch": "one sequence per frame",
-                  "driver_dispatch_slot": "required and valid, it is the lane",
-                  "buffers": [
-                    { "slot": 0, "flags": "read", "contents": "new_token_count host token ids" },
-                    { "slot": 1, "flags": "write", "contents": "new_token_count host sampled token ids" }
-                  ],
-                  "decode_new_token_count": 1,
-                  "prefill_new_token_count_max": 64,
-                  "user_context": "optional SparkK3ResidentDecodeStageFrameContext, may only override the MLA block table; hidden transport is rejected in v1"
-                }
+                "runtime_backend_selection": "forbidden"
               }
             }
           ]

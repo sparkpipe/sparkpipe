@@ -65,7 +65,7 @@ def test_pp13_builder_uses_direct_full_fp8_tiled_attention(root: Path) -> None:
                   encoding="utf-8")
     wire_start = source.index("static void SparkGlm52Pp13BuilderWireLayer(")
     wire_end = source.index(
-        "static void SparkGlm52Pp13BuilderConfigureMtpLayer(", wire_start)
+        "static SparkStatus SparkGlm52Pp13BuilderConfigureMtpLayer(", wire_start)
     wire_body = source[wire_start:wire_end]
     assert "node->key_nope_cache_bf16 = bf16_trunk != 0u" in wire_body
     assert "node->value_cache_bf16 = bf16_trunk != 0u" in wire_body
@@ -154,6 +154,12 @@ def test_rdma_transport_is_multilane_and_event_driven(root: Path) -> None:
         "static SparkStatus SparkHiddenSparkHostRdmaSend(",
         scalar_prepare_start)
     scalar_prepare_body = source[scalar_prepare_start:scalar_prepare_end]
+    packet_memory_start = source.index(
+        "static SparkStatus SparkHiddenSparkHostRdmaPreparePacketMemory(")
+    packet_memory_end = source.index(
+        "static uint32_t SparkHiddenSparkHostRdmaPacketUsesDoorbell(",
+        packet_memory_start)
+    packet_memory_body = source[packet_memory_start:packet_memory_end]
     assert "SparkMemlinkBuildTransferPartition(" in source
     assert "cudaEventRecord(" in send_body
     assert "cudaEventQuery(" in send_body
@@ -163,15 +169,16 @@ def test_rdma_transport_is_multilane_and_event_driven(root: Path) -> None:
     assert "ibv_poll_cq(" not in lane_post_body
     assert "IBV_SEND_SIGNALED" in lane_post_body
     assert "outstanding_send_wr_counts" in lane_post_body
-    assert "SparkHiddenSparkHostRdmaStagePacket(" in scalar_prepare_body
-    assert "SparkHiddenSparkHostRdmaGetCachedMemoryRegion(" not in scalar_prepare_body
-    assert ("return status == SPARK_STATUS_OK ? SPARK_STATUS_OK : "
-            "SPARK_STATUS_BUSY;" in scalar_prepare_body)
-    assert "cudaHostAlloc(" in source
+    assert "SparkHiddenSparkHostRdmaPreparePacketMemory(" in scalar_prepare_body
+    assert "SparkHiddenSparkHostRdmaGetCachedMemoryRegion(" in packet_memory_body
+    assert "memcpy(" not in packet_memory_body
+    assert "return SPARK_STATUS_BUSY;" in scalar_prepare_body
+    assert "SparkHiddenSparkHostRdmaInitializeStaging" not in source
+    assert "cudaHostAlloc(" not in source
     assert "ibv_reg_mr(" in source
     assert "SparkHiddenSparkHostRdmaRetireCompletedSends(state);" in source
     assert ("SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION" in
-            (root / "include" / "sparkpipe" /
+            (root / "model-families" / "common" / "include" / "sparkpipe" /
              "spark_hidden_transport.h").read_text(encoding="utf-8"))
     assert ("transport_interface.post_receive_batch =\n"
             "        SparkHiddenSparkHostRdmaPostReceiveBatch;" in source)
@@ -384,7 +391,7 @@ def test_decode_uses_one_tree_aware_work_packet_path(root: Path) -> None:
     builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
                "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                    encoding="utf-8")
-    service = (root / "src" /
+    service = (root / "model-families" / "glm52" / "src" /
                "spark_glm52_pp13_service_backend.c").read_text(
                    encoding="utf-8")
     decode_start = builder.index(
@@ -571,7 +578,7 @@ def test_mtp_previous_target_position_contracts_are_explicit(root: Path) -> None
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
-    model_header = (root / "include" / "sparkpipe" /
+    model_header = (root / "model-families" / "glm52" / "include" / "sparkpipe" /
                     "spark_glm52_model.h").read_text(encoding="utf-8")
     assert ("#define SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA 1u" in
             model_header)
@@ -986,7 +993,7 @@ def test_mtp_serial_train_continuation_keeps_transaction_open(root: Path) -> Non
 
 
 def test_attached_resident_decode_preserves_mtp_resolution(root: Path) -> None:
-    backend = (root / "src" / "spark_glm52_pp13_service_backend.c").read_text(
+    backend = (root / "model-families" / "glm52" / "src" / "spark_glm52_pp13_service_backend.c").read_text(
         encoding="utf-8")
     daemon = (root / "tools" / "sparkpipe_glm52_cuda_residentd.c").read_text(
         encoding="utf-8")
@@ -1012,7 +1019,7 @@ def test_attached_resident_decode_preserves_mtp_resolution(root: Path) -> None:
 
 
 def test_attached_prefill_uses_nonblocking_ordered_forwarding(root: Path) -> None:
-    backend = (root / "src" /
+    backend = (root / "model-families" / "glm52" / "src" /
                "spark_glm52_pp13_service_backend.c").read_text(
                    encoding="utf-8")
     daemon = (root / "tools" /
@@ -1186,7 +1193,7 @@ def test_resident_block_stride_is_independent_of_the_physical_pool(
 
 
 def test_service_backend_namespaces_ids_per_live_session(root: Path) -> None:
-    source = (root / "src" /
+    source = (root / "model-families" / "glm52" / "src" /
               "spark_glm52_pp13_service_backend.c").read_text(
                   encoding="utf-8")
     assert "state->request_api.next_sequence_id = state->session_id_base" in source
@@ -1195,7 +1202,7 @@ def test_service_backend_namespaces_ids_per_live_session(root: Path) -> None:
 
 
 def test_pending_decode_slots_apply_backpressure(root: Path) -> None:
-    source = (root / "src" /
+    source = (root / "model-families" / "glm52" / "src" /
               "spark_glm52_pp13_service_backend.c").read_text(
                   encoding="utf-8")
     start = source.index(
@@ -1210,12 +1217,12 @@ def test_pending_decode_slots_apply_backpressure(root: Path) -> None:
 
 
 def test_async_decode_has_distinct_pending_and_retry_contract(root: Path) -> None:
-    backend = (root / "src" /
+    backend = (root / "model-families" / "glm52" / "src" /
                "spark_glm52_pp13_service_backend.c").read_text(
                    encoding="utf-8")
-    engine = (root / "src" / "spark_glm52_serving_engine.c").read_text(
+    engine = (root / "model-families" / "glm52" / "src" / "spark_glm52_serving_engine.c").read_text(
         encoding="utf-8")
-    request_api = (root / "src" / "spark_glm52_request_api.c").read_text(
+    request_api = (root / "model-families" / "glm52" / "src" / "spark_glm52_request_api.c").read_text(
         encoding="utf-8")
     assert "return SPARK_STATUS_PENDING;" in backend
     assert "SparkGlm52RequestApiRetryDecodeDispatch(" in engine
@@ -1223,7 +1230,7 @@ def test_async_decode_has_distinct_pending_and_retry_contract(root: Path) -> Non
 
 
 def test_service_backend_drains_ready_final_events(root: Path) -> None:
-    source = (root / "src" /
+    source = (root / "model-families" / "glm52" / "src" /
               "spark_glm52_pp13_service_backend.c").read_text(
                   encoding="utf-8")
     assert "SparkGlm52Pp13ServiceBackendPumpFinalEvents(" in source
@@ -1355,13 +1362,13 @@ def test_absorbed_mla_uses_measured_correct_math(root: Path) -> None:
 
 
 def test_pp13_prefill_keeps_distributed_kv_sequence_local(root: Path) -> None:
-    backend = (root / "src" / "spark_glm52_pp13_service_backend.c").read_text(
+    backend = (root / "model-families" / "glm52" / "src" / "spark_glm52_pp13_service_backend.c").read_text(
         encoding="utf-8")
-    request_api = (root / "src" / "spark_glm52_request_api.c").read_text(
+    request_api = (root / "model-families" / "glm52" / "src" / "spark_glm52_request_api.c").read_text(
         encoding="utf-8")
-    scheduler = (root / "src" / "spark_glm52_scheduler.c").read_text(
+    scheduler = (root / "model-families" / "glm52" / "src" / "spark_glm52_scheduler.c").read_text(
         encoding="utf-8")
-    prefix_cache = (root / "src" / "spark_glm52_prefix_cache.c").read_text(
+    prefix_cache = (root / "model-families" / "glm52" / "src" / "spark_glm52_prefix_cache.c").read_text(
         encoding="utf-8")
     scheduler_start = backend.index(
         "static SparkStatus SparkGlm52Pp13ServiceBackendInitializeScheduler(")
@@ -1379,13 +1386,15 @@ def test_pp13_prefill_keeps_distributed_kv_sequence_local(root: Path) -> None:
     assert "SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING" not in request_body
     assert "QUEUE_AWARE_PREFIX_CACHE_EVICTION" not in request_body
     assert "scheduler_request->computed_prompt_token_count =" in request_api
-    assert "? 0u : slot->computed_prompt_token_count;" in request_api
+    assert "SparkGlm52RequestApiCrossSequencePrefixReuseIsEnabled(api) != 0u" in request_api
+    assert "SparkGlm52RequestApiMaximumU32(" in request_api
+    assert "slot->dispatched_prompt_token_count" in request_api
     assert "SparkGlm52PrefixCacheReserveSequencePrompt(" in scheduler
     assert "allow_cross_sequence_reuse == 0u" in prefix_cache
 
 
 def test_pp13_service_uses_full_dispatch_prefill_waves(root: Path) -> None:
-    backend = (root / "src" / "spark_glm52_pp13_service_backend.c").read_text(
+    backend = (root / "model-families" / "glm52" / "src" / "spark_glm52_pp13_service_backend.c").read_text(
         encoding="utf-8")
     definition = (
         "#define SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_WAVE_TOKENS \\\n"
@@ -1400,7 +1409,7 @@ def test_pp13_request_failures_do_not_kill_resident_roles(root: Path) -> None:
         encoding="utf-8")
     daemon = (root / "tools" / "sparkpipe_glm52_pp13_rank_daemon.c").read_text(
         encoding="utf-8")
-    backend = (root / "src" / "spark_glm52_pp13_service_backend.c").read_text(
+    backend = (root / "model-families" / "glm52" / "src" / "spark_glm52_pp13_service_backend.c").read_text(
         encoding="utf-8")
     progress_start = daemon.index(
         "static SparkStatus SparkGlm52Pp13DaemonProgressBuilder(")

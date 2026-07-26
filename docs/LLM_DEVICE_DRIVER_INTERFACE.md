@@ -1,238 +1,184 @@
 # LLM device-driver interface
 
-This document is the handoff contract between the SparkPipe scheduler and a model-specific LLM firmware driver.
+This document defines the boundary between the neutral SparkPipe scheduler and a model-specific resident firmware driver. It describes the current implementation: model-driver ABI **6**, firmware-module ABI **4**, and immutable module-record schema **4**.
 
-SparkPipe is not an LLM runtime. SparkPipe does not own KV pages, attention metadata, CUDA graphs, expert queues, token-selection policy, quantization details, or model-stage topology. A model driver owns those details and exposes only the minimum neutral signals needed for scheduling across heterogeneous nodes.
+SparkPipe is not a universal tensor runtime. The neutral layer owns package loading, route selection, admission comparison, inflight accounting, completion retirement, and aggregate operational counters. A model driver owns model geometry, resident weights, KV layout, sequence lanes, stage-local streams, CUDA graphs, transport handoff, MoE policy, speculation state, token selection, and all other model-specific execution details.
 
-## Boundary
-
-```text
-SparkPipe orchestrator
-    owns routes, node targets, loaded driver instances, replica choice,
-    inflight accounting, deadline-aware admission scoring, completion retirement.
-
-Model-specific LLM driver
-    owns resident weights, JIT KV cache, page layout, CUDA streams/events,
-    CUDA graph instances, persistent kernels, MoE queues, MTP state,
-    sparse token selection, transport handoff, and completion production.
-```
-
-The shared ABI is intentionally small:
+## Physical ownership
 
 ```text
-create       bind one driver instance to one node context
-admit        answer whether this driver can accept one frame now
-submit       run one exact externally callable program
-snapshot     export neutral runtime counters
-destroy      quiesce and release the driver instance
-completion   report finished work to SparkPipe
+include/sparkpipe/             neutral public ABI only
+src/                          neutral core, compiler, loader, orchestrator
+model-families/common/        reusable model-runtime facilities
+model-families/<family>/      model-family host implementation
+modules/<family>_*/           linkable model firmware
+deployment/                   release and rollout services
 ```
 
-SparkPipe passes an opaque `node_context` at creation time. For CUDA LLM firmware this is where the deployment binds streams, resident device buffers, CUDA graph slots, KV-cache storage, workspace pointers, table pointers, and fixed capacities. SparkPipe never interprets it.
+The core/compiler/runtime compilation closure must not require any model-family include directory. `make architecture_audit` enforces that rule against source includes, archive members, and exported symbols.
 
-## Driver ABI version 3
+## ABI objects
 
-ABI v3 adds dispatch-ticket integrity and CUDA-shape counters without exposing LLM internals.
+### Model-driver ABI 6
 
-An admission decision may now return:
+The generated or hand-authored driver exports `SparkModelDriverGetInterface` and a `SparkModelDriverInterface` whose `abi_version` is `SPARK_MODEL_DRIVER_ABI_VERSION`.
+
+The interface provides:
 
 ```text
-opaque dispatch slot
-dispatch generation
-dispatch cookie 0
-dispatch cookie 1
+create       bind an instance to a deployment-owned node context
+admit        report whether one exact frame shape can be accepted now
+snapshot     expose neutral aggregate counters
+submit       execute one published program through its program descriptor
+destroy      release a quiescent instance
+completion   return externally complete work when the program owns completion
 ```
 
-SparkPipe copies these fields into the submitted frame only when the driver returns a valid dispatch slot. The driver may use them to prevent stale advisory admission from reusing a slot that has since completed, been recycled, or changed ownership. SparkPipe treats the fields as bytes with scheduling meaning only to the driver.
+Every descriptor carrying `descriptor_bytes` must be validated before fields added by the current ABI are read. Reserved fields must be zero. Unknown flags are rejected rather than ignored.
 
-The runtime snapshot can report:
+### Firmware-module ABI 4
 
-```text
-cuda_graph_capture_count
-cuda_graph_replay_count
-host_callback_completion_count
-stale_admission_count
-```
+Each operation is initialized with:
 
-These are neutral performance counters. They do not describe graph topology, stream topology, or kernel structure. They exist to detect whether a supposedly fixed firmware path is still launching too many chains, failing to replay graphs, using host callback completion more often than expected, or racing stale admission tickets.
+- `SparkFirmwareModuleConfiguration`, including ABI, descriptor size, operation index, model/stage/program/operation identities, and immutable configuration JSON;
+- `SparkFirmwareModuleHostServices`, including completion and wake callbacks, node identity, node target, and the opaque node context.
 
-## Program scheduling profile
+Every module initializer must call `SparkFirmwareModuleValidateInitialization`. The helper clears the returned module state, validates both descriptor sizes and ABI versions, and rejects nonzero reserved fields.
 
-A program profile declares the contract SparkPipe may rely on when choosing routes:
+## Node and frame contexts
 
-```text
-stream_ordered
-external_completion
-driver_owns_resident_state
-driver_owns_kv_cache
-jit_kv_cache
-zero_copy_node_context
-private_queue_pressure
-no_host_staging
-no_device_memcpy
-fixed_firmware
-captured_cuda_graph
-stream_event_dependencies
-residency_affinity_required
-driver_private_expert_queues
-batch_shape_fixed
-validated_latency
-```
+`SparkModelDriverCreateRequest.node_context` is opaque to SparkPipe. A deployment may use it to bind streams, transport sessions, resident allocations, graph slots, and fixed capacities.
 
-These flags are not a generic LLM plan. They are promises about the compiled driver. If a driver declares `no_host_staging`, its completions and snapshots must keep host-staging bytes at zero. If it declares `jit_kv_cache`, SparkPipe may schedule by residency token and pressure, but it still may not inspect the page allocator. If it declares `driver_private_expert_queues`, SparkPipe may use private queue pressure, but it must not see individual expert queues.
+`SparkModelDriverFrame.user_context` is model-specific. Persistent model identities—such as sequence lane, KV block table, prefill ranges, GDN snapshots, or MTP draft state—belong there or in model-specific views reachable from it.
 
-## Token-selection programs
+The generic `driver_dispatch_slot` is an advisory execution-resource ticket. It is not a sequence lane, KV owner, or model-state identifier. A model module that does not implement dispatch-ticket validation must reject `SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID`. The DSV4, K3, MiMo 2.5, and Qwen 3.6 modules in this proposal do so and never read `frame->driver_dispatch_slot` as model state.
 
-Token selection is owned by the model-specific driver. SparkPipe must not provide a generic restricted-vocabulary mask, token list, grammar state, sampler, or output-head layout. The model description should select exact externally callable programs such as:
+## Buffers
 
-```text
-full_decode
-final_restricted_decode_k256
-final_restricted_decode_k64
-binary_choice_decode
-json_schema_profile_decode
-classifier_decode
-```
+A model module must validate, before any transfer or kernel launch:
 
-Restricted-token programs are final-head optimizations. They begin after the driver has produced the hidden state for the next token through the normal transformer body:
+- exact buffer count for its stage position and frame mode;
+- logical slot number;
+- allowed and required read/write flags;
+- non-null address;
+- overflow-safe minimum byte size;
+- whether the stage actually owns embedding input or final-head output.
 
-```text
-attention
-KV reads and writes
-MoE / MLP
-residuals
-norms
-routing
-MTP verify state
-```
+Intermediate pipeline stages must not require artificial host token buffers. Hidden-state transport remains model-owned and is passed through the model-specific frame context.
 
-The allowed output-token set may reduce final RMSNorm, LM-head projection, logits processing, and sampling. It must not change the exact transformer-body semantics unless the model package explicitly publishes a separate approximate firmware program with its own quality and performance validation.
+## Shared model-runtime transport
 
-For thinking-capable models, a tiny restricted vocabulary is only valid for the final answer phase. The broad reasoning phase should use `full_decode` or another broad-vocabulary program, then switch to a final restricted or classifier program when the model-driver policy says answer emission has begun.
+Reusable transport implementations belong under `model-families/common/`, not in the neutral scheduler ABI. The shared TCP tensor-parallel reference collective uses its own ABI 2 and is intentionally narrower than a universal transport graph.
 
-SparkPipe may see only neutral scheduling facts for these programs:
+Every rank must receive one immutable configuration containing a nonzero collective identifier, degree, rank, numeric IPv4 peers, and explicit connection and operation deadlines. Reciprocal connection handshakes validate group identity and topology. Every all-reduce exchanges a protocol header that validates group, operation sequence, recursive-doubling step, sender rank, operation kind, and element count before any payload is transferred.
 
-```text
-restricted_vocab_token_count
-expected_service_time
-expected_host_staging_bytes
-expected_device_memcpy_bytes
-completion mode
-```
+The collective supports one serial operation stream per instance. Peer loss, timeout, cross-group wiring, call-order disagreement, or shape disagreement permanently fails and closes the instance. The native-F32 reference wire format assumes homogeneous peers. These restrictions are explicit because silently reusing a damaged connection or interpreting mismatched payload lengths would corrupt resident model state.
 
-It must not see token IDs, packed output-head rows, trie state, grammar stacks, logits buffers, sampler internals, or MTP accept/reject policy. Dynamic reused token subsets belong inside a driver-owned resident cache, typically keyed by an opaque subset hash.
+## Program completion
+
+A program declares one of two completion contracts.
+
+### `submit_return`
+
+The program is externally complete when its submit function returns. The generated driver synthesizes the completion record after all operations return successfully. DSV4, K3, MiMo 2.5, and Qwen 3.6 currently use this contract.
+
+### External completion
+
+The owning operation reports completion later through the host completion callback. Because completion ownership is otherwise ambiguous, the compiler rejects an external-completion program containing more than one operation.
+
+No operation may claim asynchronous completion merely because it enqueues CUDA work. The published contract must match what the operation actually guarantees to its caller.
 
 ## Admission
 
-Admission answers one question: can this exact driver instance take this frame now, and at what neutral scheduling cost?
+Admission is advisory and must be fail-closed. A decision reports only neutral scheduling information:
 
-The driver may base its answer on internal details such as:
+- accepted or rejected;
+- rejection reason;
+- queue and service estimates;
+- endpoint cost;
+- residency match score;
+- expected host-staging and device-copy bytes;
+- private queue pressure;
+- available execution slots;
+- optional opaque dispatch ticket.
 
-```text
-free CUDA graph slot
-free persistent-kernel lane
-resident KV capacity
-sequence residency affinity
-MoE expert queue pressure
-DSA/sparse-index work queue pressure
-transport queue depth
-stream ownership
-batch-shape compatibility
-```
+For multi-operation programs, generated drivers merge decisions conservatively:
 
-The decision exposes only:
+- queue delay and pressure use the maximum;
+- service time, endpoint cost, and transfer bytes use saturating sums;
+- available capacity uses the minimum;
+- residency score uses the minimum;
+- conflicting non-invalid dispatch tickets are an ABI failure;
+- an invalid acceptance/rejection enum or inconsistent accepted state is rejected.
 
-```text
-accepted / rejected
-rejection reason
-estimated queue delay
-estimated service time
-endpoint cost
-private queue pressure
-residency match score
-expected host staging bytes
-expected device memcpy bytes
-available dispatch slots
-opaque dispatch ticket
-```
+Model modules must base acceptance on real slot and lane availability, not only configured capacity. Admission does not reserve a model lane. Execute must claim ownership atomically and return busy if the advisory result became stale.
 
-SparkPipe chooses the lowest-cost accepted endpoint and submits the frame. If the advisory decision becomes stale and the driver returns busy, SparkPipe performs bounded retry across the route. Admission is not a heavyweight reservation protocol.
+## Lane ownership and continuity
 
-## Submit
+A model module that owns persistent per-sequence state must:
 
-The generated model driver calls exact module entry points directly. The LLM firmware module receives:
+1. validate all lane indices and reject duplicates in one frame;
+2. atomically claim every referenced lane;
+3. release only lanes successfully claimed by that request;
+4. verify sequence identity and position continuity before reusing persistent state;
+5. commit continuity only after successful execution;
+6. invalidate continuity after a failed execution when partially updated state cannot be trusted.
 
-```text
-request identity
-sequence identity
-sequence position
-active sequence count
-new-token count
-priority/deadline
-opaque dispatch ticket
-residency token
-driver completion function
-```
-
-For a firmware-owned resident decode stage, the frame must not contain host-staged tensor buffers. Dynamic submission data should be metadata, not payload. Payloads live in resident device memory that was bound at driver creation.
-
-The hot path must not perform:
-
-```text
-module lookup
-model graph traversal
-kernel capability selection
-fallback selection
-heap allocation
-runtime validation scan
-manifest parsing
-host tensor staging
-avoidable device-to-device copy
-device-wide synchronization
-```
+Releasing an unclaimed lane is a concurrency violation because it can unlock state owned by another request. The shared stage helper and all four audited non-GLM drivers use explicit claim-success tracking.
 
 ## Snapshot
 
-Snapshot is the only sanctioned way for SparkPipe to observe driver internals. It reports aggregate neutral counters:
+Snapshots expose aggregate neutral counters only. Generated multi-operation drivers merge them using semantics appropriate to each field:
+
+- active counts and cumulative counters are summed with saturation;
+- available slots use the minimum;
+- queue pressure uses the maximum;
+- capacities that represent a whole-program bottleneck use the minimum where appropriate;
+- transfer costs are summed.
+
+A snapshot must not expose model-specific page tables, expert queues, CUDA stream identities, graph nodes, or sequence-lane internals.
+
+## Destruction
+
+The caller must stop new work and quiesce the driver before destroy. The shared resident-stage helper performs a bounded wait for slot release. Because the public destroy function is `void`, a module that cannot prove quiescence returns without freeing resident state rather than causing use-after-free. This deliberate leak-on-unsafe-destroy behavior is safer than freeing live CUDA or transport resources, but it is not a substitute for deployment-level quiescence.
+
+## Qualification and publication
+
+Source presence, host compilation, and a CPU reference do not qualify GPU firmware.
+
+The audited non-GLM package examples state:
 
 ```text
-active submissions
-available dispatch slots
-submitted/completed/rejected counts
-resident sequence/token count
-KV token capacity
-host-staging bytes per submit
-device-memcpy bytes per submit
-CUDA graph capture/replay counts
-stale admission count
-private queue pressure
+qualification.status       NOT_MEASURED
+production_ready           false
+fallback_allowed           false
+runtime_backend_selection  forbidden
+completion                 submit_return
 ```
 
-A snapshot must never expose KV-page tables, expert IDs, graph nodes, stream IDs, or model-specific operation state.
+Their module Makefiles default the controlled bring-up switch to zero. Initialization returns `SPARK_STATUS_MODULE_NOT_VALIDATED` unless the explicit family switch is set to one.
 
-## Completion
+Publication additionally requires:
 
-The driver calls SparkPipe’s completion function after the submitted work is externally complete. Completion records include request identity, program identity, dispatch slot, accepted token count, residency token, status, and neutral memcpy/staging counters.
+- the exact `sm_121a` CUDA target;
+- a readable stage pack;
+- an executable retained-receipt GPU validator;
+- a validation recipe that includes the complete runtime-configuration hash;
+- the configuration hash as a validator argument.
 
-A CUDA driver may produce completion through a stream-ordered host function, a driver-owned event poller, a persistent-kernel doorbell, or transport completion. SparkPipe does not care which mechanism is used as long as ordering and counters are correct. A SOTA deployment should measure the completion mechanism and replace host callback completion if it becomes material latency.
+Module-record schema 4 binds the validator executable SHA-256, validator arguments, validation recipe, target, entry points, and exact link-unit bytes into the immutable identity. Replacing only the validator executable forces revalidation.
 
-## MoE and unavoidable pressure leakage
+Current non-GLM configuration is still read from strict process environment variables. The configuration string is hashed for publication, but a production deployment should migrate these values into immutable configuration JSON passed through `SparkFirmwareModuleConfiguration` so runtime state cannot diverge from the qualified package.
 
-MoE cannot be scheduled well if SparkPipe sees no pressure at all, but exposing individual expert queues would contaminate the orchestrator. The compromise is:
+## No fallback
 
-```text
-Driver owns expert queues and batching policy.
-Driver exposes only private_queue_pressure, endpoint_cost, and service estimates.
-SparkPipe routes by those neutral scalars.
-```
+A published program may not silently choose another backend, CPU reference, host-staged path, approximation, or unqualified shape. Unsupported input is rejected. Availability must be provided by routing to a separately identified and separately qualified package, not by changing implementation inside a package.
 
-If future expert scheduling needs more signal, add another neutral scalar to the driver ABI. Do not add expert-specific structures to SparkPipe.
+## Rule for extending the boundary
 
-## Artificial compatibility code rule
+When a model does not fit, do not add model geometry or a universal tensor plan to the neutral layer. Either:
 
-When a model does not fit the driver boundary, do not add a generic compatibility adapter that makes every model look like a universal graph. Either:
+1. implement a different model-specific operation behind the existing ABI; or
+2. extend the ABI with a neutral scheduling or lifecycle concept that remains meaningful across model families.
 
-1. generate a different model-specific firmware module behind the same ABI; or
-2. extend the ABI with a neutral scheduling concept that does not leak LLM internals.
-
-SparkPipe remains the OS/orchestrator. Each model package remains a device driver.
+The acceptance test for a clean boundary is that a materially different second model can reach production without adding its geometry, caches, transport types, or execution policy to `include/sparkpipe/` or `src/`.

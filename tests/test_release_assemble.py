@@ -189,7 +189,7 @@ def main():
             "--release-id","w8",
             "--git-commit","abc123",
             "--kv-logical-blocks","1024",
-            "--model-quantization","w8lut",
+            "--model-quantization","nvfp4",
             "--stagepack-root","/home/{host}/artifacts/w8-stage",
             "--moe-pack-root","/home/{host}/artifacts/w8-moe",
             "--mtp",
@@ -203,7 +203,7 @@ def main():
         for role_name in ("spark0_gateway","pp13_cuda_residentd"):
             arguments = w8_by_role[role_name]["argv"]
             assert arguments[arguments.index("--model-quantization") + 1] == (
-                "w8lut")
+                "nvfp4")
             assert arguments[arguments.index("--stagepack-root") + 1] == (
                 "/home/{host}/artifacts/w8-stage")
             assert arguments[arguments.index("--moe-pack-root") + 1] == (
@@ -243,7 +243,7 @@ def main():
             "--release-id","missing-w8-stage",
             "--git-commit","abc123",
             "--kv-logical-blocks","1024",
-            "--model-quantization","w8lut",
+            "--model-quantization","nvfp4",
             "--moe-pack-root","/w8-moe",
             "--mtp",
         ],capture_output=True,text=True)

@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 int main(int argument_count, char **arguments)
 {
@@ -7,6 +8,10 @@ int main(int argument_count, char **arguments)
     FILE *counter_file;
     unsigned long validation_count;
 
+    if (argument_count >= 2 && strcmp(arguments[1], "--fail") == 0)
+    {
+        return 8;
+    }
     if (argument_count < 3)
     {
         return 2;

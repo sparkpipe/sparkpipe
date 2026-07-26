@@ -73,7 +73,7 @@ static int32_t SparkDsv4SynthesizeWritePayload(SparkDsv4SynthesizeContext *conte
 			for (offset = 0; offset + 4u <= chunk; offset += 4u)
 			{
 				index = SparkDsv4SynthesizeNext(&context->seed) % SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT;
-				memcpy(buffer + offset,&index,4u);
+				memcpy(buffer + offset,&index,sizeof(index));
 			}
 		}
 		if ( fwrite(buffer,1u,chunk,context->file) != chunk )

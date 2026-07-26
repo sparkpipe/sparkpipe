@@ -1,0 +1,147 @@
+/Library/Developer/CommandLineTools/usr/bin/make -C modules/glm52_w8lut_quality_weights test_ref crosscheck
+build/test_w8lut_ref
+W8LUT_DUMP=/Users/cem/Documents/Codex/2026-07-24/continue-the-sparkpipe-pr-from-users/work/sparkpipe-pr505-integration/modules/glm52_w8lut_quality_weights/build/w8lut_dump python3 source/test_crosscheck.py
+property: e0=113 below=5477ppm maxrel=0.03030 frob=0.01407
+G0 ALL PASS (v2)
+crosscheck PASS: {'element_count': 300000, 'below_window_count': 5853, 'below_window_ppm': 19510, 'e0': 116}
+RUN build/test_json
+RUN build/test_hidden_transport
+RUN build/test_memlink
+RUN build/test_release
+RUN build/test_glm52_kv_cache
+RUN build/test_kv_store
+test_kv_store: ok
+RUN build/test_kv_mooncake
+RUN build/test_qwen36_work_control
+test_qwen36_work_control PASS
+RUN build/test_glm52_dspark
+RUN build/test_glm52_stage_plan
+RUN build/test_glm52_mtp_tree
+test_glm52_mtp_tree PASS
+RUN build/test_glm52_tp_shard
+RUN build/test_glm52_shape_config
+RUN build/test_glm52_row_allocator
+RUN build/test_glm52_stagepack
+RUN build/test_glm52_production_topology
+RUN build/test_glm52_pp13_runtime
+RUN build/test_glm52_cuda_resident_ipc
+RUN build/test_glm52_cuda_resident_gate
+RUN build/test_glm52_pp13_work_control
+RUN build/test_glm52_scheduler
+RUN build/test_glm52_prefix_cache
+RUN build/test_glm52_request_api
+RUN build/test_glm52_long_context
+RUN build/test_tokenizer
+RUN build/test_glm52_prompt_pipeline
+RUN build/test_glm52_serving_engine
+serving_prefill_invoke_failed status=1 request=9101
+RUN build/test_glm52_service
+RUN build/test_glm52_service_backend
+RUN build/test_glm52_compat_api
+RUN build/test_glm52_http_gateway
+RUN build/test_glm52_pp13_rank_daemon
+RUN build/test_model_description
+RUN build/test_stage_module_common
+RUN build/test_module_library
+RUN build/test_driver_compiler
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+RUN build/test_orchestrator
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+ld: warning: -undefined error is deprecated
+RUN build/test_glm52_resident_decode_stage_firmware
+glm52_module_validation layer=none check=slice_base status=1
+glm52_module_validation layer=0 check=fp8_projection_mode status=1 mode=2 projection=3 mlp=0 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=projection_pointers status=1 mode=1 projection=3 mlp=0 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=projection_pointers status=1 mode=1 projection=3 mlp=0 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=projection_pointers status=1 mode=1 projection=3 mlp=0 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=base status=1 mode=1 projection=2 mlp=4 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=fp8_moe_plan status=1 mode=2 projection=2 mlp=4 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=fp8_moe_plan status=1 mode=2 projection=2 mlp=4 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=fp8_moe_plan status=1 mode=2 projection=2 mlp=4 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=fp8_moe_plan status=1 mode=2 projection=2 mlp=4 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=fp8_moe_plan status=1 mode=2 projection=2 mlp=4 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=w8lut_projection_mode status=1 mode=3 projection=2 mlp=5 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=base status=1 mode=2 projection=1 mlp=5 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=w8lut_moe_plan status=1 mode=3 projection=1 mlp=5 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=w8lut_moe_plan status=1 mode=3 projection=1 mlp=5 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=w8lut_moe_plan status=1 mode=3 projection=1 mlp=5 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=w8lut_moe_plan status=1 mode=3 projection=1 mlp=5 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=projection_pointers status=1 mode=1 projection=3 mlp=0 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=layer_pointers status=1 mode=2 projection=2 mlp=3 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=base status=1 mode=0 projection=0 mlp=0 sparse=0 flags=0x00200000
+glm52_module_validation layer=0 check=fp8_kv_cache_plan status=1 mode=0 projection=0 mlp=0 sparse=0 flags=0x00200000
+glm52_module_validation layer=0 check=fp8_kv_cache_plan status=1 mode=0 projection=0 mlp=0 sparse=0 flags=0x00200002
+glm52_module_validation layer=0 check=fp8_kv_cache_plan status=1 mode=0 projection=0 mlp=0 sparse=0 flags=0x00200000
+glm52_module_validation layer=0 check=base status=1 mode=0 projection=0 mlp=0 sparse=0 flags=0x00000000
+glm52_module_validation layer=0 check=kv_storage_capacity status=1 mode=0 projection=0 mlp=0 sparse=0 flags=0x00000000
+glm52_module_validation layer=4 check=base status=1 mode=0 projection=0 mlp=0 sparse=3 flags=0x00000000
+glm52_module_validation layer=4 check=dsa_pipeline_slot status=1 mode=0 projection=0 mlp=0 sparse=3 flags=0x00000000
+glm52_module_validation layer=4 check=dsa_pipeline_slot status=1 mode=0 projection=0 mlp=0 sparse=3 flags=0x00000000
+glm52_module_validation layer=4 check=dsa_pipeline_slot status=1 mode=0 projection=0 mlp=0 sparse=3 flags=0x00000000
+glm52_module_validation layer=4 check=base status=1 mode=0 projection=0 mlp=0 sparse=3 flags=0x00000000
+resident_stage_execute_reject step=frame_context status=8 flags=0x00000002 user_context=0x16d8e1610
+resident_stage_execute_reject step=frame_context status=8 flags=0x00000002 user_context=0x16d723f00
+resident_stage_execute_reject step=frame_context status=8 flags=0x00000002 user_context=0x16d724a90
+resident_stage_execute_reject step=frame_context status=8 flags=0x00000002 user_context=0x16d724a90
+glm52_module_validation layer=0 check=slice_plan status=1 mode=0 projection=0 mlp=0 sparse=0 flags=0x00000000
+resident_stage_execute_reject step=shape flags=0x00000000 active=2 tokens=8 position=77
+glm52_module_validation layer=0 check=slice_plan status=1 mode=0 projection=0 mlp=0 sparse=0 flags=0x00000000
+glm52_module_validation layer=0 check=fp8_moe_plan status=1 mode=2 projection=2 mlp=4 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=slice_layer status=1 mode=2 projection=2 mlp=4 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=slice_fused_moe status=1 mode=2 projection=2 mlp=4 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=linear_plan_table status=1 mode=1 projection=3 mlp=2 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=slice_layer status=1 mode=1 projection=3 mlp=2 sparse=0 flags=0x00020000
+glm52_module_validation layer=0 check=slice_plan status=1 mode=0 projection=0 mlp=0 sparse=0 flags=0x00000000
+resident_stage_execute_reject step=frame_context status=1 flags=0x00000002 user_context=0x0
+resident_stage_execute_reject step=frame_context status=8 flags=0x00000002 user_context=0x16d8e1610
+resident_stage_execute_reject step=frame_context status=1 flags=0x00000000 user_context=0x0
+ld: warning: -undefined error is deprecated
+RUN build/test_glm52_resident_decode_stage_production_runner
+production_runner_validate_reject status=1 flags=0x00000000 active=111 tokens=7 slot=5 kv=0x102078018 in_session=0x1000 out_session=0x2000 prefill_view=0x0 runner_flags=0x00000007
+production_runner_validate_reject status=1 flags=0x00000000 active=1 tokens=1 slot=5 kv=0x102078018 in_session=0x1000 out_session=0x0 prefill_view=0x0 runner_flags=0x00000007
+production_runner_admit_reject reason=1 request=1001 sequence=2002 position=33 active=1 tokens=1 flags=0x00000000 available=0 pressure=0
+RUN tests/test_api_stress.py
+RUN tests/test_memory_contracts.py
+RUN tests/test_cuda_performance_contracts.py
+PASS CUDA performance source contracts
+RUN tests/test_b12x_scale_layout.py
+RUN tests/test_glm52_dspark_manifest.py
+dspark_manifest path=/var/folders/v6/19vlh6t956l68cwmr6g4vd480000gn/T/tmp12bxuga6/manifest.json
+RUN tests/test_glm52_dspark_artifact_preflight.py
+dspark_manifest path=/var/folders/v6/19vlh6t956l68cwmr6g4vd480000gn/T/tmp9bxx9cku/manifest.json
+RUN tests/test_glm52_dspark_trace_quality.py
+RUN tests/test_glm52_b12x_pack_worker.py
+RUN tests/test_glm52_b12x_resident_manifest.py
+RUN tests/test_glm52_fp8_pack_layout.py
+RUN tests/test_glm52_w8lut_pack_layout.py
+RUN tests/test_glm52_w8lut_artifact_preflight.py
+RUN tests/test_glm52_nvfp4_artifact_preflight.py
+RUN tests/test_glm52_quantized_cuda_contract.py
+RUN tests/test_glm52_w8lut_ring_preflight.py
+RUN tests/test_glm52_w8lut_validation_wiring.py
+RUN tests/test_glm52_w8lut_stage_pack_watch.py
+RUN tests/test_glm52_b12x_relocate_aot_bundle.py
+relocated_files=2
+/private/var/folders/v6/19vlh6t956l68cwmr6g4vd480000gn/T/tmpufohksh_/generated/tvm_ffi_flags.mk
+/private/var/folders/v6/19vlh6t956l68cwmr6g4vd480000gn/T/tmpufohksh_/generated/runtime_link_args.txt
+RUN tests/test_glm52_b12x_deterministic_finalize.py
+RUN tests/test_glm52_final_from_hidden_mode.py
+RUN tests/test_glm52_exact_pp13_prefill_hidden.py
+RUN tests/test_glm52_firmware_package.py
+RUN tests/test_measured_status.py
+RUN tests/test_release_assemble.py
+RUN tests/test_glm52_stage_pack.py
+RUN tests/test_glm52_stage_bucket_sweep.py
+RUN tests/test_glm52_prompt_pipeline_input.py

@@ -56,55 +56,82 @@
       "attn_output_gate": true,
       "mtp_num_hidden_layers": 1,
       "tie_word_embeddings": false
+    },
+    "qualification": {
+      "status": "NOT_MEASURED",
+      "production_ready": false,
+      "gpu_numerical_correctness": "NOT_MEASURED",
+      "gpu_latency": "NOT_MEASURED",
+      "gpu_throughput": "NOT_MEASURED",
+      "controlled_bring_up_only": true
+    },
+    "runtime_contract": {
+      "firmware_module_abi": 4,
+      "model_driver_abi": 6,
+      "completion": "submit_return",
+      "fallback_allowed": false,
+      "runtime_backend_selection": "forbidden",
+      "model_frame_context": "SparkQwen36ResidentDecodeStageFrameContext",
+      "driver_dispatch_slot_semantics": "advisory scheduler ticket only; this module rejects DRIVER_DISPATCH_SLOT_VALID",
+      "configuration_source": "strict process environment pending migration into immutable module configuration JSON",
+      "required_environment": [
+        "SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION",
+        "SPARK_QWEN36_STAGE_PACK_PATH",
+        "SPARK_QWEN36_STAGE_COUNT",
+        "SPARK_QWEN36_STAGE_INDEX",
+        "SPARK_QWEN36_STAGE_FIRST_LAYER",
+        "SPARK_QWEN36_STAGE_LAYER_COUNT",
+        "SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES",
+        "SPARK_QWEN36_STAGE_PIPELINE_SLOTS",
+        "SPARK_QWEN36_STAGE_KV_BLOCKS",
+        "SPARK_QWEN36_STAGE_MTP",
+        "SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS",
+        "SPARK_QWEN36_STAGE_KV_STORE",
+        "SPARK_QWEN36_STAGE_KV_SERVICE",
+        "SPARK_QWEN36_STAGE_KV_SOCKET",
+        "SPARK_QWEN36_STAGE_KV_POOL_BYTES",
+        "SPARK_QWEN36_STAGE_KV_WORKERS"
+      ],
+      "notes": [
+        "decode and bounded bulk-prefill frames are structurally supported but remain unqualified",
+        "lane identities are carried by model-specific decode or prefill views, never by driver_dispatch_slot",
+        "GDN snapshot, MTP draft, and KV block-table views are descriptor-sized and fail closed on malformed inputs"
+      ]
     }
   },
   "stages": [
     {
       "name": "qwen36_resident_decode_stage",
-      "target": "cuda_sm_121a",
+      "target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "programs": [
         {
           "name": "resident_decode",
           "id": 1,
-          "operations": [
-            "SparkQwen36ResidentDecodeStageInitialize",
-            "SparkQwen36ResidentDecodeStageExecute",
-            "SparkQwen36ResidentDecodeStageAdmit",
-            "SparkQwen36ResidentDecodeStageSnapshot",
-            "SparkQwen36ResidentDecodeStageDestroy"
-          ],
-          "environment": {
-            "SPARK_QWEN36_STAGE_PACK_PATH": "path to the qwen36 stage pack, required",
-            "SPARK_QWEN36_STAGE_INDEX": "this stage's index, required",
-            "SPARK_QWEN36_STAGE_COUNT": "total stages, required",
-            "SPARK_QWEN36_STAGE_FIRST_LAYER": "first layer of the slice, required",
-            "SPARK_QWEN36_STAGE_LAYER_COUNT": "layers in the slice, required",
-            "SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES": "concurrent lanes, required",
-            "SPARK_QWEN36_STAGE_MAX_SEQ": "per-lane context cap, required",
-            "SPARK_QWEN36_STAGE_PIPELINE_SLOTS": "1..4, required",
-            "SPARK_QWEN36_STAGE_MTP": "MTP draft depth, optional",
-            "SPARK_QWEN36_STAGE_KV_POOL_BYTES": "jit kv pool bytes, optional",
-            "SPARK_QWEN36_STAGE_KV_BLOCKS": "paged kv blocks, optional",
-            "SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS": "gdn state snapshot slots, optional"
+          "max_inflight": 1,
+          "completion": "submit_return",
+          "scheduling": {
+            "flags": [
+              "stream_ordered",
+              "driver_owns_resident_state",
+              "driver_owns_kv_cache",
+              "fixed_firmware",
+              "requires_hidden_transport",
+              "no_file_transport",
+              "no_shell_transport"
+            ]
           },
-          "frame_contract": {
-            "dispatch": "one sequence per frame",
-            "driver_dispatch_slot": "required and valid, it is the lane",
-            "buffers": [
-              {
-                "slot": 0,
-                "flags": "read",
-                "contents": "new_token_count host token ids"
-              },
-              {
-                "slot": 1,
-                "flags": "write",
-                "contents": "new_token_count host sampled token ids"
+          "operations": [
+            {
+              "name": "qwen36_resident_decode_stage",
+              "module": "spark.qwen36.resident_decode_stage.bf16.h5120.l64.gdn48.mtp1.v1",
+              "configuration": {
+                "qualification_status": "NOT_MEASURED",
+                "production_ready": false,
+                "fallback_allowed": false,
+                "runtime_backend_selection": "forbidden"
               }
-            ],
-            "decode_new_token_count": 1,
-            "mtp": "drafts appended after the sampled token when armed, per the driver frame context"
-          }
+            }
+          ]
         }
       ]
     }

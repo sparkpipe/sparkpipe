@@ -12,6 +12,7 @@
 #include <cuda_runtime.h>
 
 #include "sparkpipe/spark_mimo25_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "spark_mimo25_stagepack_format.h"
 
@@ -36,6 +37,7 @@
  */
 
 #define SPARK_MIMO25_MODULE_TAG "mimo25_stage"
+#define SPARK_MIMO25_MODULE_MTP_CONCATENATED_INPUT_COUNT 2u
 
 typedef struct SparkMimo25LayerWeights
 {
@@ -129,7 +131,13 @@ typedef struct SparkMimo25ModuleState
 	uint64_t v_swa_lane_stride;
 	SparkMimo25ModuleSlot slots[SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
-	atomic_ullong frames_executed;
+	atomic_uint lane_states[SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t lane_sequence_ids[SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t lane_next_positions[SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	atomic_ullong submitted_count;
+	atomic_ullong completed_count;
+	atomic_ullong rejected_count;
+	atomic_ullong failed_count;
 	atomic_ullong tokens_emitted;
 } SparkMimo25ModuleState;
 
@@ -560,7 +568,7 @@ static SparkStatus SparkMimo25ModuleAllocateSlotMtp(SparkMimo25ModuleState *stat
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->mtp_armed * sizeof(uint32_t),(void **)&slot->mtp_draft_ids_u32);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * 2u * dim * bf16,&slot->mtp_concat_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODULE_MTP_CONCATENATED_INPUT_COUNT * dim * bf16,&slot->mtp_concat_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * dim * bf16,&slot->mtp_hidden_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -617,35 +625,250 @@ static SparkStatus SparkMimo25ModuleAllocateSlot(SparkMimo25ModuleState *state, 
 	return(status);
 }
 
-static SparkStatus SparkMimo25ModuleValidateFrame(SparkMimo25ModuleState *state, const SparkModelDriverFrame *frame, const SparkMimo25ResidentDecodeStageFrameContext **context_out)
+static SparkStatus SparkMimo25ModuleValidateFrame(
+    SparkMimo25ModuleState *state,
+    const SparkModelDriverFrame *frame,
+    const SparkMimo25ResidentDecodeStageFrameContext **context_out)
 {
-	const SparkMimo25ResidentDecodeStageFrameContext *context;
-	const SparkMimo25DecodeBatchView *batch;
-	uint32_t needs_input = state->stage_index > 0u ? 1u : 0u,needs_output = state->stage_index + 1u < state->stage_count ? 1u : 0u;
-	uint32_t expected_buffers = state->owns_embedding + state->owns_final_head;
-	if ( frame == 0 || frame->user_context == 0 || frame->buffer_count != expected_buffers )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	context = (const SparkMimo25ResidentDecodeStageFrameContext *)frame->user_context;
-	if ( context->abi_version != SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes != (uint32_t)sizeof(*context) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (context->flags & SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW) != 0u )
-	{
-		fprintf(stderr,"%s prefill_pending\n",SPARK_MIMO25_MODULE_TAG);
-		return(SPARK_STATUS_MODULE_NOT_VALIDATED);
-	}
-	if ( (context->flags & SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW) == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( ((context->flags & SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u) != (needs_input != 0u) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( ((context->flags & SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u) != (needs_output != 0u) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	batch = context->decode_batch;
-	if ( batch == 0 || batch->abi_version != SPARK_MIMO25_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION || batch->descriptor_bytes != (uint32_t)sizeof(*batch) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( batch->row_count == 0u || batch->row_count > state->max_active_sequence_count || batch->row_count != frame->new_token_count || batch->row_lane_indices == 0 || batch->row_positions == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	*context_out = context;
-	return(SPARK_STATUS_OK);
+    const uint32_t known_frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+    const uint32_t known_context_flags =
+        SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW |
+        SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT |
+        SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT |
+        SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW |
+        SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_TAP;
+    const SparkMimo25ResidentDecodeStageFrameContext *context;
+    const SparkMimo25DecodeBatchView *batch;
+    uint32_t expected_buffer_count;
+    uint32_t needs_hidden_input;
+    uint32_t needs_hidden_output;
+    uint32_t output_buffer_index;
+    uint64_t token_bytes;
+    SparkStatus status;
+
+    if (state == 0 || frame == 0 || context_out == 0 ||
+        frame->program_id == 0u || frame->reserved != 0u ||
+        (frame->flags & ~known_frame_flags) != 0u ||
+        (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
+    {
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+    }
+    if (frame->active_slot_count == 0u ||
+        frame->active_slot_count > state->max_active_sequence_count ||
+        frame->new_token_count != frame->active_slot_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    expected_buffer_count = state->owns_embedding + state->owns_final_head;
+    if (frame->buffer_count != expected_buffer_count ||
+        (expected_buffer_count != 0u && frame->buffers == 0) ||
+        frame->user_context == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    context = (const SparkMimo25ResidentDecodeStageFrameContext *)frame->user_context;
+    if (context->abi_version !=
+            SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION ||
+        context->descriptor_bytes < (uint32_t)sizeof(*context) ||
+        context->tap_reserved != 0u ||
+        (context->flags & ~known_context_flags) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((context->flags &
+         SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW) != 0u)
+    {
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+    }
+    if ((context->flags &
+         SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    needs_hidden_input = state->stage_index > 0u ? 1u : 0u;
+    needs_hidden_output = state->stage_index + 1u < state->stage_count ? 1u : 0u;
+    if (((context->flags &
+          SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u) !=
+            (needs_hidden_input != 0u) ||
+        ((context->flags &
+          SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u) !=
+            (needs_hidden_output != 0u))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((needs_hidden_input != 0u &&
+         (context->hidden_input_transport_session == 0 ||
+          context->hidden_input_post_receive_function == 0)) ||
+        (needs_hidden_input == 0u &&
+         (context->hidden_input_transport_session != 0 ||
+          context->hidden_input_post_receive_function != 0)) ||
+        (needs_hidden_output != 0u &&
+         (context->hidden_output_transport_session == 0 ||
+          context->hidden_output_send_function == 0)) ||
+        (needs_hidden_output == 0u &&
+         (context->hidden_output_transport_session != 0 ||
+          context->hidden_output_send_function != 0)))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    if ((context->flags &
+         SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_TAP) == 0u &&
+        (context->tap_layer_count != 0u ||
+         context->tap_layer_indices != 0 ||
+         context->tap_arena_bf16 != 0))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (state->mtp_armed == 0u &&
+        (context->mtp_draft_depth != 0u || context->mtp_draft_tokens != 0))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (state->mtp_armed != 0u && state->owns_final_head != 0u &&
+        (context->mtp_draft_depth != state->mtp_armed ||
+         context->mtp_draft_tokens == 0))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    batch = context->decode_batch;
+    if (batch == 0 ||
+        batch->abi_version !=
+            SPARK_MIMO25_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION ||
+        batch->descriptor_bytes < (uint32_t)sizeof(*batch) ||
+        batch->reserved0 != 0u ||
+        batch->row_count != frame->active_slot_count ||
+        batch->row_count != frame->new_token_count ||
+        batch->row_lane_indices == 0 ||
+        batch->row_positions == 0 ||
+        batch->row_sequence_ids == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    token_bytes = (uint64_t)batch->row_count * sizeof(uint32_t);
+    if (state->owns_embedding != 0u)
+    {
+        status = SparkModelDriverValidateBuffer(
+            frame,
+            0u,
+            0u,
+            SPARK_MODEL_DRIVER_BUFFER_FLAG_READ,
+            token_bytes);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    if (state->owns_final_head != 0u)
+    {
+        output_buffer_index = state->owns_embedding != 0u ? 1u : 0u;
+        status = SparkModelDriverValidateBuffer(
+            frame,
+            output_buffer_index,
+            1u,
+            SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE,
+            token_bytes);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+
+    *context_out = context;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkMimo25ModuleValidateLaneSequenceContinuity(
+    SparkMimo25ModuleState *state,
+    const SparkMimo25DecodeBatchView *batch)
+{
+    uint32_t row;
+
+    if (state == 0 || batch == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (row = 0u; row < batch->row_count; row++)
+    {
+        uint32_t lane;
+        uint32_t previous_row;
+        uint64_t sequence_id;
+        uint64_t position;
+        uint64_t current_sequence_id;
+
+        lane = batch->row_lane_indices[row];
+        sequence_id = batch->row_sequence_ids[row];
+        position = batch->row_positions[row];
+        for (previous_row = 0u; previous_row < row; previous_row++)
+        {
+            if (batch->row_sequence_ids[previous_row] == sequence_id)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+        }
+        if (lane >= state->max_active_sequence_count || sequence_id == 0u ||
+            position >= state->max_sequence_positions)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        current_sequence_id = state->lane_sequence_ids[lane];
+        if (current_sequence_id == sequence_id)
+        {
+            if (position != state->lane_next_positions[lane])
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+        }
+        else if (position != 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
+static void SparkMimo25ModuleCommitLaneSequenceContinuity(
+    SparkMimo25ModuleState *state,
+    const SparkMimo25DecodeBatchView *batch)
+{
+    uint32_t row;
+
+    for (row = 0u; row < batch->row_count; row++)
+    {
+        uint32_t lane;
+
+        lane = batch->row_lane_indices[row];
+        state->lane_sequence_ids[lane] = batch->row_sequence_ids[row];
+        state->lane_next_positions[lane] = batch->row_positions[row] + 1u;
+    }
+}
+
+static void SparkMimo25ModuleInvalidateLaneSequenceContinuity(
+    SparkMimo25ModuleState *state,
+    const SparkMimo25DecodeBatchView *batch)
+{
+    uint32_t row;
+
+    for (row = 0u; row < batch->row_count; row++)
+    {
+        uint32_t lane;
+
+        lane = batch->row_lane_indices[row];
+        if (lane < state->max_active_sequence_count)
+        {
+            state->lane_sequence_ids[lane] = 0u;
+            state->lane_next_positions[lane] = 0u;
+        }
+    }
 }
 
 static SparkStatus SparkMimo25ModuleStageRows(SparkMimo25ModuleState *state, const SparkMimo25DecodeBatchView *batch, SparkMimo25ModuleSlot *slot)
@@ -806,8 +1029,6 @@ static SparkStatus SparkMimo25ModuleRunFfn(SparkMimo25ModuleSlot *slot, const Sp
 		error = SparkMimo25LaunchGateScores(stream,&layer->moe.gate,slot->normalized_bf16,slot->moe_scores_f32,rows);
 		if ( error == cudaSuccess )
 			error = SparkMimo25LaunchGateSelect(stream,slot->moe_scores_f32,layer->moe.gate_bias_f32,rows,SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT,SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN,SPARK_MIMO25_MODEL_ROUTER_NORM_EPSILON,SPARK_MIMO25_MODEL_ROUTED_SCALING_FACTOR,slot->moe_indices_u32,slot->moe_weights_f32);
-		if ( error == cudaSuccess )
-			error = cudaMemsetAsync(slot->ffn_accum_bf16,0,(uint64_t)rows * SPARK_MIMO25_MODEL_HIDDEN_DIMENSION * SPARK_MIMO25_MODEL_BF16_ELEMENT_BYTES,stream);
 		if ( error != cudaSuccess )
 			return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"moe_gate"));
 		status = SparkMimo25ModuleRunMoeRouted(slot,&layer->moe,rows);
@@ -1097,135 +1318,386 @@ static SparkStatus SparkMimo25ModuleFinish(SparkMimo25ModuleState *state, SparkM
 	return(status);
 }
 
-SparkStatus SparkMimo25ResidentDecodeStageExecute(void *module_state, SparkModelDriverFrame *frame)
+SparkStatus SparkMimo25ResidentDecodeStageExecute(
+    void *module_state,
+    SparkModelDriverFrame *frame)
 {
-	SparkMimo25ModuleState *state = (SparkMimo25ModuleState *)module_state;
-	SparkMimo25ResidentDecodeStageFrameContext *context = 0;
-	const SparkMimo25DecodeBatchView *batch;
-	SparkMimo25ModuleSlot *slot;
-	uint32_t slot_index = 0u,rows;
-	SparkStatus status;
-	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkMimo25ModuleValidateFrame(state,frame,(const SparkMimo25ResidentDecodeStageFrameContext **)&context);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	batch = context->decode_batch;
-	rows = batch->row_count;
-	status = SparkMimo25ModuleValidateTap(state,context);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	status = SparkStageModuleSlotClaim(state->slot_states,state->pipeline_slot_count,&slot_index);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	slot = &state->slots[slot_index];
-	status = SparkMimo25ModuleStageRows(state,batch,slot);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkMimo25ModuleBeginHidden(state,slot,context,frame,rows);
-	slot->residual_pending = 0u;
-	if ( status == SPARK_STATUS_OK )
-		status = SparkMimo25ModuleRunLayers(state,slot,batch,context,rows);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkMimo25ModuleFinish(state,slot,context,frame,rows);
-	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u && state->mtp_armed != 0u )
-	{
-		status = SparkMimo25ModuleRunMtp(state,slot,context,batch,rows);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)slot->cuda_stream),"mtp_sync");
-	}
-	SparkStageModuleSlotRelease(state->slot_states,slot_index);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	atomic_fetch_add(&state->frames_executed,1u);
-	atomic_fetch_add(&state->tokens_emitted,rows);
-	return(SPARK_STATUS_OK);
+    SparkMimo25ModuleState *state;
+    SparkMimo25ResidentDecodeStageFrameContext *context;
+    const SparkMimo25DecodeBatchView *batch;
+    SparkMimo25ModuleSlot *slot;
+    uint32_t slot_index;
+    uint32_t rows;
+    uint32_t lanes_claimed;
+    SparkStatus status;
+
+    state = (SparkMimo25ModuleState *)module_state;
+    if (state == 0 || frame == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    context = 0;
+    status = SparkMimo25ModuleValidateFrame(
+        state,
+        frame,
+        (const SparkMimo25ResidentDecodeStageFrameContext **)&context);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkMimo25ModuleValidateTap(state, context);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        atomic_fetch_add_explicit(&state->rejected_count, 1u, memory_order_relaxed);
+        return status;
+    }
+    batch = context->decode_batch;
+    rows = batch->row_count;
+    lanes_claimed = 0u;
+    status = SparkStageModuleIndexSetClaim(
+        state->lane_states,
+        state->max_active_sequence_count,
+        batch->row_lane_indices,
+        rows);
+    lanes_claimed = status == SPARK_STATUS_OK ? 1u : 0u;
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkMimo25ModuleValidateLaneSequenceContinuity(state, batch);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        if (lanes_claimed != 0u)
+        {
+            SparkStageModuleIndexSetRelease(
+                state->lane_states,
+                state->max_active_sequence_count,
+                batch->row_lane_indices,
+                rows);
+        }
+        atomic_fetch_add_explicit(&state->rejected_count, 1u, memory_order_relaxed);
+        return status;
+    }
+
+    slot_index = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
+    status = SparkStageModuleSlotClaim(
+        state->slot_states,
+        state->pipeline_slot_count,
+        &slot_index);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkStageModuleIndexSetRelease(
+            state->lane_states,
+            state->max_active_sequence_count,
+            batch->row_lane_indices,
+            rows);
+        atomic_fetch_add_explicit(&state->rejected_count, 1u, memory_order_relaxed);
+        return status;
+    }
+
+    atomic_fetch_add_explicit(&state->submitted_count, 1u, memory_order_relaxed);
+    slot = &state->slots[slot_index];
+    status = SparkMimo25ModuleStageRows(state, batch, slot);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkMimo25ModuleBeginHidden(state, slot, context, frame, rows);
+    }
+    slot->residual_pending = 0u;
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkMimo25ModuleRunLayers(state, slot, batch, context, rows);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkMimo25ModuleFinish(state, slot, context, frame, rows);
+    }
+    if (status == SPARK_STATUS_OK &&
+        state->owns_final_head != 0u &&
+        state->mtp_armed != 0u)
+    {
+        status = SparkMimo25ModuleRunMtp(state, slot, context, batch, rows);
+        if (status == SPARK_STATUS_OK)
+        {
+            status = SparkStageModuleCudaStatus(
+                SPARK_MIMO25_MODULE_TAG,
+                cudaStreamSynchronize((cudaStream_t)slot->cuda_stream),
+                "mtp_sync");
+        }
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        SparkMimo25ModuleCommitLaneSequenceContinuity(state, batch);
+        atomic_fetch_add_explicit(&state->completed_count, 1u, memory_order_relaxed);
+        atomic_fetch_add_explicit(&state->tokens_emitted, rows, memory_order_relaxed);
+    }
+    else
+    {
+        SparkMimo25ModuleInvalidateLaneSequenceContinuity(state, batch);
+        atomic_fetch_add_explicit(&state->failed_count, 1u, memory_order_relaxed);
+    }
+
+    SparkStageModuleIndexSetRelease(
+        state->lane_states,
+        state->max_active_sequence_count,
+        batch->row_lane_indices,
+        rows);
+    SparkStageModuleSlotRelease(state->slot_states, slot_index);
+    return status;
 }
 
-SparkStatus SparkMimo25ResidentDecodeStageAdmit(void *module_state, const SparkModelDriverAdmissionRequest *request, SparkModelDriverAdmissionDecision *decision)
+SparkStatus SparkMimo25ResidentDecodeStageAdmit(
+    void *module_state,
+    const SparkModelDriverAdmissionRequest *request,
+    SparkModelDriverAdmissionDecision *decision)
 {
-	SparkMimo25ModuleState *state = (SparkMimo25ModuleState *)module_state;
-	if ( state == 0 || request == 0 || decision == 0 || request->descriptor_bytes != (uint32_t)sizeof(*request) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(decision,0,sizeof(*decision));
-	decision->descriptor_bytes = (uint32_t)sizeof(*decision);
-	decision->accepted = 1u;
-	decision->available_dispatch_slot_count = state->pipeline_slot_count;
-	return(SPARK_STATUS_OK);
+    const uint32_t known_frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+    SparkMimo25ModuleState *state;
+    uint32_t available_slot_count;
+
+    state = (SparkMimo25ModuleState *)module_state;
+    if (state == 0 || request == 0 || decision == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    available_slot_count = SparkStageModuleSlotCountFree(
+        state->slot_states,
+        state->pipeline_slot_count);
+    SparkStageModuleAdmissionDecisionInitialize(
+        decision,
+        available_slot_count);
+    if (request->descriptor_bytes < (uint32_t)sizeof(*request) ||
+        request->program_id == 0u)
+    {
+        return SPARK_STATUS_ABI_MISMATCH;
+    }
+    if ((request->frame_flags & ~known_frame_flags) != 0u ||
+        (request->frame_flags &
+         SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) != 0u ||
+        (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ||
+        request->active_slot_count == 0u ||
+        request->active_slot_count > state->max_active_sequence_count ||
+        request->new_token_count != request->active_slot_count)
+    {
+        SparkStageModuleAdmissionDecisionReject(
+            decision,
+            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);
+        atomic_fetch_add_explicit(
+            &state->rejected_count,
+            1u,
+            memory_order_relaxed);
+        return SPARK_STATUS_OK;
+    }
+    if (request->sequence_position >= (uint64_t)state->max_sequence_positions)
+    {
+        SparkStageModuleAdmissionDecisionReject(
+            decision,
+            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_KV_CAPACITY);
+        atomic_fetch_add_explicit(
+            &state->rejected_count,
+            1u,
+            memory_order_relaxed);
+        return SPARK_STATUS_OK;
+    }
+    if (available_slot_count == 0u)
+    {
+        SparkStageModuleAdmissionDecisionReject(
+            decision,
+            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY);
+        atomic_fetch_add_explicit(
+            &state->rejected_count,
+            1u,
+            memory_order_relaxed);
+        return SPARK_STATUS_OK;
+    }
+
+    SparkStageModuleAdmissionDecisionAccept(decision);
+    decision->host_staging_bytes = (uint64_t)request->new_token_count *
+        (sizeof(uint32_t) *
+             (uint64_t)(state->owns_embedding + state->owns_final_head + 1u) +
+         sizeof(uint64_t));
+    decision->device_memcpy_bytes = decision->host_staging_bytes;
+    return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkMimo25ResidentDecodeStageSnapshot(void *module_state, uint32_t program_id, SparkModelDriverRuntimeSnapshot *snapshot)
+SparkStatus SparkMimo25ResidentDecodeStageSnapshot(
+    void *module_state,
+    uint32_t program_id,
+    SparkModelDriverRuntimeSnapshot *snapshot)
 {
-	SparkMimo25ModuleState *state = (SparkMimo25ModuleState *)module_state;
-	if ( state == 0 || snapshot == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(snapshot,0,sizeof(*snapshot));
-	snapshot->descriptor_bytes = (uint32_t)sizeof(*snapshot);
-	snapshot->program_id = program_id;
-	snapshot->submitted_count = atomic_load(&state->frames_executed);
-	snapshot->completed_count = atomic_load(&state->frames_executed);
-	snapshot->resident_token_count = atomic_load(&state->tokens_emitted);
-	snapshot->kv_token_capacity = (uint64_t)state->max_active_sequence_count * state->max_sequence_positions;
-	snapshot->available_dispatch_slot_count = state->pipeline_slot_count;
-	return(SPARK_STATUS_OK);
+    SparkMimo25ModuleState *state;
+
+    state = (SparkMimo25ModuleState *)module_state;
+    if (state == 0 || snapshot == 0 || program_id == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    SparkStageModuleRuntimeSnapshotInitialize(
+        snapshot,
+        program_id,
+        state->slot_states,
+        state->pipeline_slot_count);
+    snapshot->submitted_count = atomic_load_explicit(
+        &state->submitted_count,
+        memory_order_relaxed);
+    snapshot->completed_count = atomic_load_explicit(
+        &state->completed_count,
+        memory_order_relaxed);
+    snapshot->rejected_count = atomic_load_explicit(
+        &state->rejected_count,
+        memory_order_relaxed);
+    snapshot->kv_token_capacity = (uint64_t)state->max_active_sequence_count * state->max_sequence_positions;
+    return SPARK_STATUS_OK;
 }
 
 void SparkMimo25ResidentDecodeStageDestroy(void *module_state)
 {
-	SparkMimo25ModuleState *state = (SparkMimo25ModuleState *)module_state;
-	uint32_t slot_index;
-	if ( state == 0 )
-		return;
-	for (slot_index = 0; slot_index < state->pipeline_slot_count; slot_index++)
-	{
-		if ( state->slots[slot_index].cuda_stream != 0 )
-			cudaStreamDestroy((cudaStream_t)state->slots[slot_index].cuda_stream);
-		if ( state->slots[slot_index].layer_graph_exec != 0 )
-			cudaGraphExecDestroy((cudaGraphExec_t)state->slots[slot_index].layer_graph_exec);
-		if ( state->slots[slot_index].host_mtp_positions != 0 )
-			cudaFreeHost(state->slots[slot_index].host_mtp_positions);
-	}
-	SparkStageModuleLedgerRelease(&state->ledger);
-	free(state);
+    SparkMimo25ModuleState *state;
+    uint32_t slot_index;
+
+    state = (SparkMimo25ModuleState *)module_state;
+    if (state == 0)
+    {
+        return;
+    }
+    if (SparkStageModuleWaitForSlots(
+            SPARK_MIMO25_MODULE_TAG,
+            state->slot_states,
+            state->pipeline_slot_count,
+            SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK)
+    {
+        return;
+    }
+    for (slot_index = 0u; slot_index < state->pipeline_slot_count; ++slot_index)
+    {
+        if (state->slots[slot_index].layer_graph_exec != 0)
+        {
+            cudaGraphExecDestroy((cudaGraphExec_t)state->slots[slot_index].layer_graph_exec);
+        }
+        if (state->slots[slot_index].cuda_stream != 0)
+        {
+            cudaStreamDestroy((cudaStream_t)state->slots[slot_index].cuda_stream);
+        }
+        if (state->slots[slot_index].host_mtp_positions != 0)
+        {
+            cudaFreeHost(state->slots[slot_index].host_mtp_positions);
+        }
+    }
+    SparkStageModuleLedgerRelease(&state->ledger);
+    free(state);
 }
 
-SparkStatus SparkMimo25ResidentDecodeStageInitialize(const SparkFirmwareModuleConfiguration *configuration, const SparkFirmwareModuleHostServices *host_services, void **module_state)
+SparkStatus SparkMimo25ResidentDecodeStageInitialize(
+    const SparkFirmwareModuleConfiguration *configuration,
+    const SparkFirmwareModuleHostServices *host_services,
+    void **module_state)
 {
-	SparkMimo25ModuleState *state;
-	const char *pack_path = 0;
-	SparkStatus status;
-	uint32_t slot_index;
-	(void)host_services;
-	if ( configuration == 0 || module_state == 0 || configuration->abi_version != SPARK_FIRMWARE_MODULE_ABI_VERSION )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	state = (SparkMimo25ModuleState *)calloc(1u,sizeof(*state));
-	if ( state == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	state->ledger.module_tag = SPARK_MIMO25_MODULE_TAG;
-	status = SparkMimo25ModuleConfigure(state);
-	state->layer_graphs_enabled = getenv("SPARK_MIMO25_STAGE_GRAPHS") != 0 ? 1u : 0u;
-	if ( status == SPARK_STATUS_OK )
-		status = SparkMimo25ModuleValidateSlice(state);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentText(SPARK_MIMO25_MODULE_TAG,"SPARK_MIMO25_STAGE_PACK_PATH",&pack_path);
-	if ( status == SPARK_STATUS_OK )
-	{
-		SparkMimo25ModuleBuildOrdinals(state);
-		status = SparkMimo25ModuleLoadPack(state,pack_path);
-	}
-	if ( status == SPARK_STATUS_OK )
-		status = SparkMimo25ModuleUploadFreqs(state);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkMimo25ModuleAllocatePools(state);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkMimo25ModuleBuildHeadShadow(state);
-	for (slot_index = 0; status == SPARK_STATUS_OK && slot_index < state->pipeline_slot_count; slot_index++)
-		status = SparkMimo25ModuleAllocateSlot(state,&state->slots[slot_index]);
-	if ( status != SPARK_STATUS_OK )
-	{
-		SparkMimo25ResidentDecodeStageDestroy(state);
-		return(status);
-	}
-	fprintf(stderr,"%s ready stage=%u/%u slice=%u+%u full=%u swa=%u lanes=%u max_seq=%u device_gib=%.1f\n",SPARK_MIMO25_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count,state->full_layer_count,state->swa_layer_count,state->max_active_sequence_count,state->max_sequence_positions,(double)state->ledger.device_bytes_resident / (1024.0 * 1024.0 * 1024.0));
-	*module_state = state;
-	return(SPARK_STATUS_OK);
+    SparkMimo25ModuleState *state;
+    const char *pack_path;
+    uint32_t allow_unqualified_execution;
+    uint32_t slot_index;
+    SparkStatus status;
+
+    pack_path = 0;
+    allow_unqualified_execution = 0u;
+    status = SparkFirmwareModuleValidateInitialization(
+        configuration,
+        host_services,
+        module_state);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkStageModuleEnvironmentUnsigned(
+        SPARK_MIMO25_MODULE_TAG,
+        "SPARK_MIMO25_ALLOW_UNQUALIFIED_EXECUTION",
+        1u,
+        1u,
+        &allow_unqualified_execution);
+    if (status != SPARK_STATUS_OK || allow_unqualified_execution != 1u)
+    {
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+    }
+
+    state = (SparkMimo25ModuleState *)calloc(1u, sizeof(*state));
+    if (state == 0)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    state->ledger.module_tag = SPARK_MIMO25_MODULE_TAG;
+    atomic_init(&state->submitted_count, 0u);
+    atomic_init(&state->completed_count, 0u);
+    atomic_init(&state->rejected_count, 0u);
+    atomic_init(&state->failed_count, 0u);
+    atomic_init(&state->tokens_emitted, 0u);
+
+    status = SparkMimo25ModuleConfigure(state);
+    if (status == SPARK_STATUS_OK)
+    {
+        SparkStageModuleAtomicStateArrayInitialize(
+            state->slot_states,
+            state->pipeline_slot_count);
+        SparkStageModuleAtomicStateArrayInitialize(
+            state->lane_states,
+            state->max_active_sequence_count);
+        status = SparkStageModuleEnvironmentUnsigned(
+            SPARK_MIMO25_MODULE_TAG,
+            "SPARK_MIMO25_STAGE_GRAPHS",
+            0u,
+            1u,
+            &state->layer_graphs_enabled);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkMimo25ModuleValidateSlice(state);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkStageModuleEnvironmentText(
+            SPARK_MIMO25_MODULE_TAG,
+            "SPARK_MIMO25_STAGE_PACK_PATH",
+            &pack_path);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        SparkMimo25ModuleBuildOrdinals(state);
+        status = SparkMimo25ModuleLoadPack(state, pack_path);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkMimo25ModuleUploadFreqs(state);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkMimo25ModuleAllocatePools(state);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkMimo25ModuleBuildHeadShadow(state);
+    }
+    for (slot_index = 0u;
+         status == SPARK_STATUS_OK && slot_index < state->pipeline_slot_count;
+         slot_index++)
+    {
+        status = SparkMimo25ModuleAllocateSlot(state, &state->slots[slot_index]);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkMimo25ResidentDecodeStageDestroy(state);
+        return status;
+    }
+
+    fprintf(
+        stderr,
+        "%s ready stage=%u/%u slice=%u+%u full=%u swa=%u lanes=%u max_seq=%u device_gib=%.1f\n",
+        SPARK_MIMO25_MODULE_TAG,
+        state->stage_index,
+        state->stage_count,
+        state->first_layer_index,
+        state->layer_count,
+        state->full_layer_count,
+        state->swa_layer_count,
+        state->max_active_sequence_count,
+        state->max_sequence_positions,
+        (double)state->ledger.device_bytes_resident /
+            (1024.0 * 1024.0 * 1024.0));
+    *module_state = state;
+    return SPARK_STATUS_OK;
 }

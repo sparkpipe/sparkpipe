@@ -11,8 +11,8 @@
 extern "C" {
 #endif
 
-#define SPARK_K3_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 1u
-#define SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 2u
+#define SPARK_K3_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 3u
+#define SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
 #define SPARK_K3_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_K3_RESIDENT_DECODE_STAGE_KDA_STATE_POOL_ABI_VERSION 1u
 #define SPARK_K3_RESIDENT_DECODE_STAGE_MLA_BLOCK_TABLE_ABI_VERSION 1u
@@ -227,7 +227,8 @@ typedef struct SparkK3MlaBlockTableView
 
 /*
  * Per-pipeline-slot device activation buffers. Row counts are
- * max_active_sequence_count for decode and max_prefill_tokens for prefill
+ * row_capacity for both decode rows and padded prefill rows;
+ * max_prefill_tokens records the qualified unpadded prefill limit.
  * staging; the AttnRes representation buffer is representation-major
  * ([representation][row][hidden]) and holds the embedding block, every
  * completed block and, as its last live candidate, the running partial sum.
@@ -255,7 +256,8 @@ typedef struct SparkK3PipelineSlot
 	void *kda_value_bf16;
 	void *kda_log_decay_bf16;
 	void *kda_beta_bf16;
-	void *kda_low_rank_bf16;
+	void *kda_decay_low_rank_bf16;
+	void *kda_gate_low_rank_bf16;
 	void *kda_core_output_bf16;
 	void *kda_gate_bf16;
 	void *mla_query_a_bf16;
@@ -270,6 +272,10 @@ typedef struct SparkK3PipelineSlot
 	float *moe_topk_weights_f32;
 	void *moe_gate_bf16;
 	void *moe_intermediate_bf16;
+	uint32_t *moe_expert_offsets;
+	uint32_t *moe_grouped_rows;
+	uint32_t *moe_grouped_weight_slots;
+	uint32_t *moe_inverse_map;
 	void *moe_output_hidden_bf16;
 	float *restricted_logits_f32;
 } SparkK3PipelineSlot;
@@ -278,7 +284,7 @@ typedef struct SparkK3ResidentDecodeStageNodeContext
 {
 	uint32_t abi_version;
 	uint32_t pipeline_slot_count;
-	uint32_t max_active_sequence_count;
+	uint32_t row_capacity;
 	uint32_t max_prefill_tokens;
 	uint32_t first_layer_index;
 	uint32_t layer_count;
@@ -346,6 +352,8 @@ typedef struct SparkK3ResidentDecodeStageFrameContext
 	uint32_t descriptor_bytes;
 	uint32_t flags;
 	uint32_t logical_lane_count;
+	uint32_t prefill_lane_index;
+	uint32_t reserved0;
 	const SparkK3MlaBlockTableView *mla_block_table;
 	const SparkK3DecodeBatchView *decode_batch;
 	SparkHiddenTransportSession *hidden_input_transport_session;
@@ -387,6 +395,7 @@ void SparkK3ResidentDecodeStageDestroy(void *module_state);
  * unit. Every launcher is stream-ordered and returns only launch status;
  * completion is observed by the caller through stream events.
  */
+SparkStatus SparkK3ConfigureCudaKernels(void);
 SparkStatus SparkK3LaunchEmbeddingGather(const SparkK3ResidentDecodeStageNodeContext *node_context, const SparkK3PipelineSlot *slot, uint32_t row_count, void *stream);
 SparkStatus SparkK3LaunchAttnResMix(const SparkK3ResidentDecodeStageNodeContext *node_context, const SparkK3PipelineSlot *slot, const SparkK3AttnResSiteWeights *site, uint32_t representation_count, uint32_t row_count, void *stream);
 SparkStatus SparkK3LaunchAttnResAccumulate(const SparkK3ResidentDecodeStageNodeContext *node_context, const SparkK3PipelineSlot *slot, const void *sublayer_output_bf16, uint32_t open_new_block, uint32_t completed_block_count, uint32_t row_count, void *stream);

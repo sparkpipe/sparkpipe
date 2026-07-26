@@ -1001,11 +1001,19 @@ static SparkStatus SparkHiddenTcpCudaSend(
     slot->header.sideband_bytes_per_sequence =
         packet->sideband_bytes_per_sequence;
     memcpy(slot->payload,&slot->header,sizeof(slot->header));
-    cuda_error = cudaMemcpy(
+    // Asynchronous, on the packet's own stream. The synchronous form ran on the
+    // default stream, which blocks the host and implicitly serialises against
+    // every other stream, and there were two of them per hop. Issuing both on
+    // the packet stream lets them overlap each other and costs one
+    // synchronisation instead of two. The staging buffers are pinned via
+    // cudaHostAlloc, so this is genuinely asynchronous rather than silently
+    // degrading to a blocking copy.
+    cuda_error = cudaMemcpyAsync(
         slot->payload + sizeof(slot->header),
         packet->hidden_bf16,
         (size_t)hidden_bytes,
-        cudaMemcpyDeviceToHost);
+        cudaMemcpyDeviceToHost,
+        (cudaStream_t)packet->cuda_stream);
     if (cuda_error != cudaSuccess)
     {
         fprintf(
@@ -1027,11 +1035,12 @@ static SparkStatus SparkHiddenTcpCudaSend(
     }
     if (sideband_bytes != 0u)
     {
-        cuda_error = cudaMemcpy(
+        cuda_error = cudaMemcpyAsync(
             slot->payload + sizeof(slot->header) + hidden_bytes,
             packet->sideband_payload,
             (size_t)sideband_bytes,
-            cudaMemcpyDeviceToHost);
+            cudaMemcpyDeviceToHost,
+            (cudaStream_t)packet->cuda_stream);
         if (cuda_error != cudaSuccess)
         {
             fprintf(
@@ -1051,6 +1060,23 @@ static SparkStatus SparkHiddenTcpCudaSend(
             (void)pthread_mutex_unlock(&state->lock);
             return SPARK_STATUS_IO_ERROR;
         }
+    }
+    // The copies above are asynchronous, and the next three lines hand this slot
+    // to the sender thread. Retire them here or the sender transmits whatever
+    // the staging buffer held before the DMA landed.
+    cuda_error = cudaStreamSynchronize((cudaStream_t)packet->cuda_stream);
+    if (cuda_error != cudaSuccess)
+    {
+        fprintf(
+            stderr,
+            "hidden_tcp_send_cuda_error stage=stage_retire error=%d name=%s message=%s seq=%llu token=%llu\n",
+            (int32_t)cuda_error,
+            cudaGetErrorName(cuda_error),
+            cudaGetErrorString(cuda_error),
+            (unsigned long long)packet->sequence_id,
+            (unsigned long long)packet->token_index);
+        (void)pthread_mutex_unlock(&state->lock);
+        return SPARK_STATUS_IO_ERROR;
     }
     slot->bytes = sizeof(slot->header) + hidden_bytes + sideband_bytes;
     state->outgoing_count += 1u;

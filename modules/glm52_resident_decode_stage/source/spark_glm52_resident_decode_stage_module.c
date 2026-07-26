@@ -3005,15 +3005,13 @@ SparkStatus SparkGlm52ResidentDecodeStageInitialize(
     uint32_t pipeline_slot_index;
     SparkStatus status;
 
-    if (configuration == 0 || host_services == 0 || module_state == 0)
+    status = SparkFirmwareModuleValidateInitialization(
+        configuration,
+        host_services,
+        module_state);
+    if (status != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    *module_state = 0;
-    if (configuration->abi_version != SPARK_FIRMWARE_MODULE_ABI_VERSION ||
-        configuration->reserved != 0u)
-    {
-        return SPARK_STATUS_ABI_MISMATCH;
+        return status;
     }
     if (host_services->completion_function == 0 ||
         host_services->node_context == 0)
@@ -3190,6 +3188,21 @@ static uint32_t SparkGlm52ResidentDecodeStageFindAvailableSlot(
     return SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 }
 
+static bool SparkGlm52ResidentDecodeStageDecodeTokenCountIsSupported(
+    const SparkGlm52ResidentDecodeStageState *state,
+    uint32_t token_count)
+{
+    if (state == 0 ||
+        token_count >
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE)
+    {
+        return false;
+    }
+    return state->stage_slice_final_token_stage == 0u ||
+        token_count <=
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u);
+}
+
 static bool SparkGlm52ResidentDecodeStageFrameShapeIsSupported(
     const SparkGlm52ResidentDecodeStageState *state,
     const SparkModelDriverFrame *frame)
@@ -3226,8 +3239,9 @@ static bool SparkGlm52ResidentDecodeStageFrameShapeIsSupported(
         return true;
     }
 
-    if (frame->new_token_count >
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE)
+    if (!SparkGlm52ResidentDecodeStageDecodeTokenCountIsSupported(
+            state,
+            frame->new_token_count))
     {
         return false;
     }
@@ -4210,8 +4224,9 @@ SparkStatus SparkGlm52ResidentDecodeStageAdmit(
             return SPARK_STATUS_OK;
         }
     }
-    else if (request->new_token_count >
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE)
+    else if (!SparkGlm52ResidentDecodeStageDecodeTokenCountIsSupported(
+        state,
+        request->new_token_count))
     {
         decision->rejection_reason =
             SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE;

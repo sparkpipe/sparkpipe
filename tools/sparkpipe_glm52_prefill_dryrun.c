@@ -5,6 +5,7 @@
 
 #include "sparkpipe/spark_glm52_request_api.h"
 #include "sparkpipe/spark_tokenizer.h"
+#include "sparkpipe_tool_file.h"
 
 #define SPARK_PREFILL_DRYRUN_REQUEST_SLOT_COUNT 4u
 #define SPARK_PREFILL_DRYRUN_KV_BLOCK_COUNT \
@@ -144,60 +145,6 @@ static int32_t SparkPrefillDryrunReadTokenFile(
     }
     *token_count_out = token_count;
     return 0;
-}
-
-static char *SparkPrefillDryrunReadTextFile(
-    const char *path,
-    uint32_t *text_bytes_out)
-{
-    FILE *file;
-    long file_bytes;
-    char *text;
-    size_t read_bytes;
-
-    if (path == 0 || text_bytes_out == 0)
-    {
-        return 0;
-    }
-    *text_bytes_out = 0u;
-    file = fopen(path, "rb");
-    if (file == 0)
-    {
-        return 0;
-    }
-    if (fseek(file, 0, SEEK_END) != 0)
-    {
-        fclose(file);
-        return 0;
-    }
-    file_bytes = ftell(file);
-    if (file_bytes < 0 || (uint64_t)file_bytes > 0xffffffffull)
-    {
-        fclose(file);
-        return 0;
-    }
-    if (fseek(file, 0, SEEK_SET) != 0)
-    {
-        fclose(file);
-        return 0;
-    }
-    text = (char *)malloc((size_t)file_bytes + 1u);
-    if (text == 0)
-    {
-        fclose(file);
-        return 0;
-    }
-    read_bytes = fread(text, 1u, (size_t)file_bytes, file);
-    if (read_bytes != (size_t)file_bytes)
-    {
-        free(text);
-        fclose(file);
-        return 0;
-    }
-    fclose(file);
-    text[file_bytes] = '\0';
-    *text_bytes_out = (uint32_t)file_bytes;
-    return text;
 }
 
 static int32_t SparkPrefillDryrunWriteTokenFile(
@@ -660,7 +607,7 @@ int main(
     {
         if (prompt_file_path != 0)
         {
-            owned_prompt_text = SparkPrefillDryrunReadTextFile(
+            owned_prompt_text = SparkToolReadWholeFile(
                 prompt_file_path,
                 &prompt_text_bytes);
             if (owned_prompt_text == 0)

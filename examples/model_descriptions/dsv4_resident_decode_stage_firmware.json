@@ -71,51 +71,77 @@
       "routed_scaling_factor": 1.5,
       "rms_norm_eps": 1e-06,
       "max_position_embeddings": 1048576
+    },
+    "qualification": {
+      "status": "NOT_MEASURED",
+      "production_ready": false,
+      "gpu_numerical_correctness": "NOT_MEASURED",
+      "gpu_latency": "NOT_MEASURED",
+      "gpu_throughput": "NOT_MEASURED",
+      "controlled_bring_up_only": true
+    },
+    "runtime_contract": {
+      "firmware_module_abi": 4,
+      "model_driver_abi": 6,
+      "completion": "submit_return",
+      "fallback_allowed": false,
+      "runtime_backend_selection": "forbidden",
+      "model_frame_context": "SparkDsv4ResidentDecodeStageFrameContext",
+      "driver_dispatch_slot_semantics": "advisory scheduler ticket only; this module rejects DRIVER_DISPATCH_SLOT_VALID",
+      "configuration_source": "strict process environment pending migration into immutable module configuration JSON",
+      "required_environment": [
+        "SPARK_DSV4_ALLOW_UNQUALIFIED_EXECUTION",
+        "SPARK_DSV4_STAGE_PACK_PATH",
+        "SPARK_DSV4_STAGE_COUNT",
+        "SPARK_DSV4_STAGE_INDEX",
+        "SPARK_DSV4_STAGE_FIRST_LAYER",
+        "SPARK_DSV4_STAGE_LAYER_COUNT",
+        "SPARK_DSV4_STAGE_MAX_ACTIVE_SEQUENCES",
+        "SPARK_DSV4_STAGE_MAX_SEQ",
+        "SPARK_DSV4_STAGE_PIPELINE_SLOTS",
+        "SPARK_DSV4_STAGE_MTP",
+        "SPARK_DSV4_STAGE_GRAPHS"
+      ],
+      "notes": [
+        "decode only; prefill and MTP execution fail closed until qualified",
+        "lane identities are carried by the model-specific decode batch, never by driver_dispatch_slot",
+        "host token input is required only on the embedding stage and host token output only on the head stage"
+      ]
     }
   },
   "stages": [
     {
       "name": "dsv4_resident_decode_stage",
-      "target": "cuda_sm_121a",
+      "target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
       "programs": [
         {
           "name": "resident_decode",
           "id": 1,
-          "operations": [
-            "SparkDsv4ResidentDecodeStageInitialize",
-            "SparkDsv4ResidentDecodeStageExecute",
-            "SparkDsv4ResidentDecodeStageAdmit",
-            "SparkDsv4ResidentDecodeStageSnapshot",
-            "SparkDsv4ResidentDecodeStageDestroy"
-          ],
-          "environment": {
-            "SPARK_DSV4_STAGE_PACK_PATH": "path to the dsv4 stage pack, required",
-            "SPARK_DSV4_STAGE_INDEX": "this stage's index, required",
-            "SPARK_DSV4_STAGE_COUNT": "total stages, required",
-            "SPARK_DSV4_STAGE_FIRST_LAYER": "first layer of the slice, required",
-            "SPARK_DSV4_STAGE_LAYER_COUNT": "layers in the slice, required",
-            "SPARK_DSV4_STAGE_MAX_ACTIVE_SEQUENCES": "concurrent lanes, required",
-            "SPARK_DSV4_STAGE_MAX_SEQ": "per-lane context cap, required",
-            "SPARK_DSV4_STAGE_PIPELINE_SLOTS": "1..4, required",
-            "SPARK_DSV4_STAGE_MTP": "MTP draft depth, optional"
+          "max_inflight": 1,
+          "completion": "submit_return",
+          "scheduling": {
+            "flags": [
+              "stream_ordered",
+              "driver_owns_resident_state",
+              "driver_owns_kv_cache",
+              "fixed_firmware",
+              "requires_hidden_transport",
+              "no_file_transport",
+              "no_shell_transport"
+            ]
           },
-          "frame_contract": {
-            "dispatch": "one sequence per frame",
-            "driver_dispatch_slot": "required and valid, it is the lane",
-            "buffers": [
-              {
-                "slot": 0,
-                "flags": "read",
-                "contents": "new_token_count host token ids"
-              },
-              {
-                "slot": 1,
-                "flags": "write",
-                "contents": "new_token_count host sampled token ids"
+          "operations": [
+            {
+              "name": "dsv4_resident_decode_stage",
+              "module": "spark.dsv4.resident_decode_stage.bf16.h4096.l43.e256.k6.v1",
+              "configuration": {
+                "qualification_status": "NOT_MEASURED",
+                "production_ready": false,
+                "fallback_allowed": false,
+                "runtime_backend_selection": "forbidden"
               }
-            ],
-            "decode_new_token_count": 1
-          }
+            }
+          ]
         }
       ]
     }

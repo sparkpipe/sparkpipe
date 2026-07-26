@@ -7,6 +7,7 @@
 #include "sparkpipe/spark_tokenizer.h"
 
 #include "sparkpipe/spark_glm52_model.h"
+#include "sparkpipe_tool_file.h"
 
 #define SPARK_GLM52_TOKENIZE_DEFAULT_TOKEN_CAPACITY \
     SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS
@@ -38,63 +39,6 @@ static int32_t SparkGlm52TokenizeParseU32(
         }
     }
     *value_out = (uint32_t)value;
-    return 0;
-}
-
-static int32_t SparkGlm52TokenizeReadFile(
-    const char *path,
-    char **text_out,
-    uint32_t *text_bytes_out)
-{
-    FILE *file;
-    long file_bytes;
-    char *text;
-    size_t read_bytes;
-
-    if (path == 0 || text_out == 0 || text_bytes_out == 0)
-    {
-        return -1;
-    }
-    *text_out = 0;
-    *text_bytes_out = 0u;
-    file = fopen(path, "rb");
-    if (file == 0)
-    {
-        return -2;
-    }
-    if (fseek(file, 0, SEEK_END) != 0)
-    {
-        fclose(file);
-        return -3;
-    }
-    file_bytes = ftell(file);
-    if (file_bytes < 0 || (uint64_t)file_bytes > 0xffffffffull)
-    {
-        fclose(file);
-        return -4;
-    }
-    if (fseek(file, 0, SEEK_SET) != 0)
-    {
-        fclose(file);
-        return -5;
-    }
-    text = (char *)malloc((size_t)file_bytes + 1u);
-    if (text == 0)
-    {
-        fclose(file);
-        return -6;
-    }
-    read_bytes = fread(text, 1u, (size_t)file_bytes, file);
-    if (read_bytes != (size_t)file_bytes)
-    {
-        free(text);
-        fclose(file);
-        return -7;
-    }
-    fclose(file);
-    text[file_bytes] = '\0';
-    *text_out = text;
-    *text_bytes_out = (uint32_t)file_bytes;
     return 0;
 }
 
@@ -399,7 +343,7 @@ int main(
         }
         memcpy(prompt_text, prompt_argument, prompt_bytes + 1u);
     }
-    else if (SparkGlm52TokenizeReadFile(prompt_file, &prompt_text, &prompt_bytes) != 0)
+    else if (((prompt_text = SparkToolReadWholeFile(prompt_file, &prompt_bytes)) == 0))
     {
         fprintf(stderr, "failed to read prompt file\n");
         free(owned_tokenizer_json_path);
@@ -419,7 +363,7 @@ int main(
         memcpy(system_prompt_text, system_prompt_argument, system_prompt_bytes + 1u);
     }
     else if (system_prompt_file != 0 &&
-        SparkGlm52TokenizeReadFile(system_prompt_file, &system_prompt_text, &system_prompt_bytes) != 0)
+        ((system_prompt_text = SparkToolReadWholeFile(system_prompt_file, &system_prompt_bytes)) == 0))
     {
         fprintf(stderr, "failed to read system prompt file\n");
         free(prompt_text);

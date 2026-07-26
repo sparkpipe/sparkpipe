@@ -40,12 +40,49 @@ static void SparkTestCreateThinArchiveMarker(const char *path)
     assert(fclose(file) == 0);
 }
 
+static void SparkTestCopyExecutable(
+    const char *source_path,
+    const char *destination_path)
+{
+    FILE *source;
+    FILE *destination;
+    unsigned char buffer[4096];
+    size_t bytes_read;
+
+    source = fopen(source_path, "rb");
+    assert(source != 0);
+    destination = fopen(destination_path, "wb");
+    assert(destination != 0);
+    while ((bytes_read = fread(buffer, 1u, sizeof(buffer), source)) != 0u)
+    {
+        assert(fwrite(buffer, 1u, bytes_read, destination) == bytes_read);
+    }
+    assert(ferror(source) == 0);
+    assert(fclose(source) == 0);
+    assert(fclose(destination) == 0);
+    assert(chmod(destination_path, S_IRUSR | S_IWUSR | S_IXUSR) == 0);
+}
+
+static void SparkTestAppendExecutableByte(const char *path)
+{
+    FILE *file;
+
+    file = fopen(path, "ab");
+    assert(file != 0);
+    assert(fputc(0, file) != EOF);
+    assert(fclose(file) == 0);
+}
+
 int main(void)
 {
     static const char LibraryRoot[] = "build/test_module_library_store";
     static const char CounterPath[] = "build/test_module_library_validator_count.txt";
     static const char ValidationArgumentCounterPath[] =
         "build/test_module_library_validator_argument_count.txt";
+    static const char ValidatorIdentityCounterPath[] =
+        "build/test_module_library_validator_identity_count.txt";
+    static const char ValidatorCopyPath[] =
+        "build/test_module_validator_identity_copy";
     static const char ModifiedLinkUnitPath[] = "build/test_modules/module_add_one_modified.o";
     static const char ThinArchivePath[] = "build/test_modules/module_thin_archive.a";
     SparkModulePublishReport first_report;
@@ -56,6 +93,9 @@ int main(void)
     SparkModulePublishReport validation_argument_first_report;
     SparkModulePublishReport validation_argument_second_report;
     SparkModulePublishReport validation_argument_changed_report;
+    SparkModulePublishReport validator_identity_first_report;
+    SparkModulePublishReport validator_identity_second_report;
+    SparkModulePublishReport validator_identity_changed_report;
     SparkModulePublishRequest modified_request;
     SparkModuleArtifact artifact;
     const char *validator_arguments[1];
@@ -68,6 +108,8 @@ int main(void)
                "rm -rf build/test_module_library_store "
                "build/test_module_library_validator_count.txt "
                "build/test_module_library_validator_argument_count.txt "
+               "build/test_module_library_validator_identity_count.txt "
+               "build/test_module_validator_identity_copy "
                "build/test_modules/module_add_one_modified.o "
                "build/test_modules/module_thin_archive.a") == 0);
 
@@ -197,6 +239,58 @@ int main(void)
     assert(!validation_argument_changed_report.validation_reused);
     assert(SparkTestReadCounter(ValidationArgumentCounterPath) == 2u);
 
+    SparkTestCopyExecutable("build/test_module_validator", ValidatorCopyPath);
+    memset(&modified_request, 0, sizeof(modified_request));
+    validator_arguments[0] = ValidatorIdentityCounterPath;
+    modified_request.library_root = LibraryRoot;
+    modified_request.module_id = "spark.test.validator.identity.v1";
+    modified_request.target = "host.cpu";
+    modified_request.module_abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    modified_request.link_unit_path = "build/test_modules/module_add_one.o";
+    modified_request.validation_recipe = "test.module.validator.identity.v1";
+    modified_request.initialize_symbol = "SparkTestAddOneInitialize";
+    modified_request.execute_symbol = "SparkTestAddOneExecute";
+    modified_request.destroy_symbol = "SparkTestAddOneDestroy";
+    modified_request.validator_path = ValidatorCopyPath;
+    modified_request.validator_arguments = validator_arguments;
+    modified_request.validator_argument_count = 1u;
+    assert(SparkPublishValidatedModule(
+               &modified_request,
+               &validator_identity_first_report,
+               error_buffer,
+               sizeof(error_buffer)) == SPARK_STATUS_OK);
+    assert(!validator_identity_first_report.validation_reused);
+    assert(SparkTestReadCounter(ValidatorIdentityCounterPath) == 1u);
+
+    assert(SparkPublishValidatedModule(
+               &modified_request,
+               &validator_identity_second_report,
+               error_buffer,
+               sizeof(error_buffer)) == SPARK_STATUS_OK);
+    assert(validator_identity_second_report.validation_reused);
+    assert(strcmp(
+               validator_identity_first_report.validator_sha256,
+               validator_identity_second_report.validator_sha256) == 0);
+    assert(SparkTestReadCounter(ValidatorIdentityCounterPath) == 1u);
+
+    SparkTestAppendExecutableByte(ValidatorCopyPath);
+    assert(SparkPublishValidatedModule(
+               &modified_request,
+               &validator_identity_changed_report,
+               error_buffer,
+               sizeof(error_buffer)) == SPARK_STATUS_OK);
+    assert(!validator_identity_changed_report.validation_reused);
+    assert(strcmp(
+               validator_identity_first_report.artifact_sha256,
+               validator_identity_changed_report.artifact_sha256) == 0);
+    assert(strcmp(
+               validator_identity_first_report.validator_sha256,
+               validator_identity_changed_report.validator_sha256) != 0);
+    assert(strcmp(
+               validator_identity_first_report.immutable_record_path,
+               validator_identity_changed_report.immutable_record_path) != 0);
+    assert(SparkTestReadCounter(ValidatorIdentityCounterPath) == 2u);
+
     SparkTestCreateThinArchiveMarker(ThinArchivePath);
     modified_request.module_id = "spark.test.thin.archive.v1";
     modified_request.link_unit_path = ThinArchivePath;
@@ -235,7 +329,10 @@ int main(void)
                sizeof(error_buffer)) == SPARK_STATUS_CAPACITY_EXCEEDED);
 
     modified_request.module_id = "spark.test.validation.failure.v1";
-    modified_request.validator_path = "/bin/false";
+    validator_arguments[0] = "--fail";
+    modified_request.validator_path = "build/test_module_validator";
+    modified_request.validator_arguments = validator_arguments;
+    modified_request.validator_argument_count = 1u;
     assert(SparkPublishValidatedModule(
                &modified_request,
                &modified_report,

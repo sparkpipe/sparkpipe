@@ -48,15 +48,15 @@ def main():
     assert scheduling["max_active_slots"] == 1024 * 8
     assert scheduling["max_resident_sequences"] == 16384
     assert scheduling["validated_latency_ns"] == 0
-    assert scheduling["private_queue_count"] == 0
+    assert scheduling["private_queue_count"] == 1
     assert flags.isdisjoint(FORBIDDEN_FLAGS)
     assert "current_spark_topology" not in model["metadata"]
 
     health_source = (
-        ROOT / "src" / "spark_glm52_http_gateway.c"
+        ROOT / "model-families" / "glm52" / "src" / "spark_glm52_http_gateway.c"
     ).read_text(encoding="utf-8")
     backend_source = (
-        ROOT / "src" / "spark_glm52_pp13_service_backend.c"
+        ROOT / "model-families" / "glm52" / "src" / "spark_glm52_pp13_service_backend.c"
     ).read_text(encoding="utf-8")
     assert "production_contract_flags" not in health_source
     assert "ring_control_ready" not in health_source

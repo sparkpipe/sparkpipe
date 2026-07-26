@@ -311,6 +311,19 @@ SparkStatus SparkLoadModuleArtifactRecord(
     status = SparkModuleCopyJsonStringMember(
         &document,
         root_token_index,
+        "validator_sha256",
+        artifact->validator_sha256,
+        sizeof(artifact->validator_sha256),
+        false,
+        error_buffer,
+        error_buffer_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        goto cleanup;
+    }
+    status = SparkModuleCopyJsonStringMember(
+        &document,
+        root_token_index,
         "initialize_symbol",
         artifact->initialize_symbol,
         sizeof(artifact->initialize_symbol),
@@ -390,9 +403,10 @@ SparkStatus SparkLoadModuleArtifactRecord(
         status = SPARK_STATUS_MODULE_NOT_VALIDATED;
         goto cleanup;
     }
-    if (!SparkSha256HexIsValid(artifact->artifact_sha256))
+    if (!SparkSha256HexIsValid(artifact->artifact_sha256) ||
+        !SparkSha256HexIsValid(artifact->validator_sha256))
     {
-        SparkSetError(error_buffer, error_buffer_bytes, "module record artifact hash is invalid");
+        SparkSetError(error_buffer, error_buffer_bytes, "module record artifact or validator hash is invalid");
         status = SPARK_STATUS_SCHEMA_ERROR;
         goto cleanup;
     }
@@ -456,6 +470,7 @@ static SparkStatus SparkModuleComputeValidationKey(
     const SparkModulePublishRequest *request,
     SparkModuleLinkUnitKind link_unit_kind,
     const char *artifact_sha256,
+    const char *validator_sha256,
     char key[SPARK_SHA256_HEX_BYTES])
 {
     SparkSha256Context hash_context;
@@ -464,7 +479,9 @@ static SparkStatus SparkModuleComputeValidationKey(
     char validator_argument_count_text[32];
     uint32_t validator_argument_index;
 
-    if (request == 0 || artifact_sha256 == 0 || key == 0)
+    if (request == 0 || artifact_sha256 == 0 || validator_sha256 == 0 || key == 0 ||
+        !SparkSha256HexIsValid(artifact_sha256) ||
+        !SparkSha256HexIsValid(validator_sha256))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -484,12 +501,16 @@ static SparkStatus SparkModuleComputeValidationKey(
     {
         return SPARK_STATUS_INTERNAL_ERROR;
     }
+
     SparkSha256Initialize(&hash_context);
     SparkModuleHashValidationField(&hash_context, request->module_id);
     SparkModuleHashValidationField(&hash_context, request->target);
     SparkModuleHashValidationField(&hash_context, artifact_sha256);
-    SparkModuleHashValidationField(&hash_context, SparkModuleLinkUnitKindToString(link_unit_kind));
+    SparkModuleHashValidationField(
+        &hash_context,
+        SparkModuleLinkUnitKindToString(link_unit_kind));
     SparkModuleHashValidationField(&hash_context, request->validation_recipe);
+    SparkModuleHashValidationField(&hash_context, validator_sha256);
     SparkModuleHashValidationField(&hash_context, module_abi_text);
     SparkModuleHashValidationField(&hash_context, request->initialize_symbol);
     SparkModuleHashValidationField(&hash_context, request->execute_symbol);
@@ -601,6 +622,7 @@ static SparkStatus SparkModuleFormatRecord(
     const SparkModulePublishRequest *request,
     SparkModuleLinkUnitKind link_unit_kind,
     const char *artifact_sha256,
+    const char *validator_sha256,
     const char *relative_link_unit_path,
     char **record_text,
     size_t *record_bytes)
@@ -617,8 +639,10 @@ static SparkStatus SparkModuleFormatRecord(
     int formatted_bytes;
     char *buffer;
 
-    if (request == 0 || artifact_sha256 == 0 || relative_link_unit_path == 0 ||
-        record_text == 0 || record_bytes == 0)
+    if (request == 0 || artifact_sha256 == 0 || validator_sha256 == 0 ||
+        relative_link_unit_path == 0 || record_text == 0 || record_bytes == 0 ||
+        !SparkSha256HexIsValid(artifact_sha256) ||
+        !SparkSha256HexIsValid(validator_sha256))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -638,9 +662,10 @@ static SparkStatus SparkModuleFormatRecord(
         request->snapshot_symbol != 0 ? request->snapshot_symbol : "");
     destroy_symbol = SparkModuleEscapeJsonString(
         request->destroy_symbol != 0 ? request->destroy_symbol : "");
-    if (module_id == 0 || target == 0 || link_unit_path == 0 || validation_recipe == 0 ||
-        initialize_symbol == 0 || execute_symbol == 0 || admit_symbol == 0 ||
-        snapshot_symbol == 0 || destroy_symbol == 0)
+    if (module_id == 0 || target == 0 || link_unit_path == 0 ||
+        validation_recipe == 0 || initialize_symbol == 0 ||
+        execute_symbol == 0 || admit_symbol == 0 || snapshot_symbol == 0 ||
+        destroy_symbol == 0)
     {
         free(module_id);
         free(target);
@@ -654,38 +679,46 @@ static SparkStatus SparkModuleFormatRecord(
         return SPARK_STATUS_INTERNAL_ERROR;
     }
 
+#define SPARK_MODULE_RECORD_FORMAT \
+        "{\n" \
+        "  \"schema_version\": %u,\n" \
+        "  \"module_id\": \"%s\",\n" \
+        "  \"target\": \"%s\",\n" \
+        "  \"module_abi_version\": %u,\n" \
+        "  \"artifact_sha256\": \"%s\",\n" \
+        "  \"link_unit_kind\": \"%s\",\n" \
+        "  \"link_unit\": \"%s\",\n" \
+        "  \"validation_recipe\": \"%s\",\n" \
+        "  \"validator_sha256\": \"%s\",\n" \
+        "  \"validation_state\": \"passed\",\n" \
+        "  \"initialize_symbol\": \"%s\",\n" \
+        "  \"execute_symbol\": \"%s\",\n" \
+        "  \"admit_symbol\": \"%s\",\n" \
+        "  \"snapshot_symbol\": \"%s\",\n" \
+        "  \"destroy_symbol\": \"%s\"\n" \
+        "}\n"
+
+#define SPARK_MODULE_RECORD_ARGUMENTS \
+        SPARK_MODULE_ARTIFACT_SCHEMA_VERSION, \
+        module_id, \
+        target, \
+        request->module_abi_version, \
+        artifact_sha256, \
+        SparkModuleLinkUnitKindToString(link_unit_kind), \
+        link_unit_path, \
+        validation_recipe, \
+        validator_sha256, \
+        initialize_symbol, \
+        execute_symbol, \
+        admit_symbol, \
+        snapshot_symbol, \
+        destroy_symbol
+
     formatted_bytes = snprintf(
         0,
         0,
-        "{\n"
-        "  \"schema_version\": %u,\n"
-        "  \"module_id\": \"%s\",\n"
-        "  \"target\": \"%s\",\n"
-        "  \"module_abi_version\": %u,\n"
-        "  \"artifact_sha256\": \"%s\",\n"
-        "  \"link_unit_kind\": \"%s\",\n"
-        "  \"link_unit\": \"%s\",\n"
-        "  \"validation_recipe\": \"%s\",\n"
-        "  \"validation_state\": \"passed\",\n"
-        "  \"initialize_symbol\": \"%s\",\n"
-        "  \"execute_symbol\": \"%s\",\n"
-        "  \"admit_symbol\": \"%s\",\n"
-        "  \"snapshot_symbol\": \"%s\",\n"
-        "  \"destroy_symbol\": \"%s\"\n"
-        "}\n",
-        SPARK_MODULE_ARTIFACT_SCHEMA_VERSION,
-        module_id,
-        target,
-        request->module_abi_version,
-        artifact_sha256,
-        SparkModuleLinkUnitKindToString(link_unit_kind),
-        link_unit_path,
-        validation_recipe,
-        initialize_symbol,
-        execute_symbol,
-        admit_symbol,
-        snapshot_symbol,
-        destroy_symbol);
+        SPARK_MODULE_RECORD_FORMAT,
+        SPARK_MODULE_RECORD_ARGUMENTS);
     if (formatted_bytes < 0)
     {
         free(module_id);
@@ -713,38 +746,27 @@ static SparkStatus SparkModuleFormatRecord(
         free(destroy_symbol);
         return SPARK_STATUS_INTERNAL_ERROR;
     }
-    snprintf(
-        buffer,
-        (size_t)formatted_bytes + 1u,
-        "{\n"
-        "  \"schema_version\": %u,\n"
-        "  \"module_id\": \"%s\",\n"
-        "  \"target\": \"%s\",\n"
-        "  \"module_abi_version\": %u,\n"
-        "  \"artifact_sha256\": \"%s\",\n"
-        "  \"link_unit_kind\": \"%s\",\n"
-        "  \"link_unit\": \"%s\",\n"
-        "  \"validation_recipe\": \"%s\",\n"
-        "  \"validation_state\": \"passed\",\n"
-        "  \"initialize_symbol\": \"%s\",\n"
-        "  \"execute_symbol\": \"%s\",\n"
-        "  \"admit_symbol\": \"%s\",\n"
-        "  \"snapshot_symbol\": \"%s\",\n"
-        "  \"destroy_symbol\": \"%s\"\n"
-        "}\n",
-        SPARK_MODULE_ARTIFACT_SCHEMA_VERSION,
-        module_id,
-        target,
-        request->module_abi_version,
-        artifact_sha256,
-        SparkModuleLinkUnitKindToString(link_unit_kind),
-        link_unit_path,
-        validation_recipe,
-        initialize_symbol,
-        execute_symbol,
-        admit_symbol,
-        snapshot_symbol,
-        destroy_symbol);
+    if (snprintf(
+            buffer,
+            (size_t)formatted_bytes + 1u,
+            SPARK_MODULE_RECORD_FORMAT,
+            SPARK_MODULE_RECORD_ARGUMENTS) != formatted_bytes)
+    {
+        free(buffer);
+        free(module_id);
+        free(target);
+        free(link_unit_path);
+        free(validation_recipe);
+        free(initialize_symbol);
+        free(execute_symbol);
+        free(admit_symbol);
+        free(snapshot_symbol);
+        free(destroy_symbol);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+
+#undef SPARK_MODULE_RECORD_ARGUMENTS
+#undef SPARK_MODULE_RECORD_FORMAT
 
     free(module_id);
     free(target);
@@ -773,22 +795,31 @@ static SparkStatus SparkModuleValidatePublishRequest(
 
     if (request == 0 || request->library_root == 0 || request->module_id == 0 ||
         request->target == 0 || request->link_unit_path == 0 ||
-        request->validation_recipe == 0 || request->execute_symbol == 0)
+        request->validation_recipe == 0 || request->execute_symbol == 0 ||
+        request->validator_path == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (request->library_root[0] == '\0' || request->module_id[0] == '\0' ||
         request->target[0] == '\0' || request->link_unit_path[0] == '\0' ||
-        request->validation_recipe[0] == '\0' || request->execute_symbol[0] == '\0' ||
+        request->validation_recipe[0] == '\0' ||
+        request->execute_symbol[0] == '\0' || request->validator_path[0] == '\0' ||
         request->module_abi_version == 0u)
     {
-        SparkSetError(error_buffer, error_buffer_bytes, "module publish request contains an empty required field");
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "module publish request contains an empty required field");
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    initialize_symbol = request->initialize_symbol != 0 ? request->initialize_symbol : "";
+    initialize_symbol = request->initialize_symbol != 0
+        ? request->initialize_symbol
+        : "";
     admit_symbol = request->admit_symbol != 0 ? request->admit_symbol : "";
-    snapshot_symbol = request->snapshot_symbol != 0 ? request->snapshot_symbol : "";
+    snapshot_symbol = request->snapshot_symbol != 0
+        ? request->snapshot_symbol
+        : "";
     destroy_symbol = request->destroy_symbol != 0 ? request->destroy_symbol : "";
     if (strlen(request->module_id) >= SPARK_MODULE_ID_BYTES ||
         strlen(request->target) >= SPARK_MODULE_TARGET_BYTES ||
@@ -799,7 +830,10 @@ static SparkStatus SparkModuleValidatePublishRequest(
         strlen(snapshot_symbol) >= SPARK_MODULE_SYMBOL_BYTES ||
         strlen(destroy_symbol) >= SPARK_MODULE_SYMBOL_BYTES)
     {
-        SparkSetError(error_buffer, error_buffer_bytes, "module publish request exceeds an artifact field capacity");
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "module publish request exceeds an artifact field capacity");
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
     if (!SparkCIdentifierIsValid(initialize_symbol, true) ||
@@ -808,12 +842,19 @@ static SparkStatus SparkModuleValidatePublishRequest(
         !SparkCIdentifierIsValid(snapshot_symbol, true) ||
         !SparkCIdentifierIsValid(destroy_symbol, true))
     {
-        SparkSetError(error_buffer, error_buffer_bytes, "module publish request contains an invalid C symbol");
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "module publish request contains an invalid C symbol");
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (request->validator_argument_count != 0u && request->validator_arguments == 0)
+    if (request->validator_argument_count != 0u &&
+        request->validator_arguments == 0)
     {
-        SparkSetError(error_buffer, error_buffer_bytes, "module validator arguments are missing");
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "module validator arguments are missing");
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     for (validator_argument_index = 0u;
@@ -832,8 +873,30 @@ static SparkStatus SparkModuleValidatePublishRequest(
     }
     if (!SparkPathExists(request->link_unit_path))
     {
-        SparkSetError(error_buffer, error_buffer_bytes, "module link unit '%s' does not exist", request->link_unit_path);
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "module link unit '%s' does not exist",
+            request->link_unit_path);
         return SPARK_STATUS_NOT_FOUND;
+    }
+    if (!SparkPathExists(request->validator_path))
+    {
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "module validator '%s' does not exist",
+            request->validator_path);
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    if (access(request->validator_path, X_OK) != 0)
+    {
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "module validator '%s' is not executable",
+            request->validator_path);
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     return SPARK_STATUS_OK;
 }
@@ -895,29 +958,38 @@ static bool SparkModuleRecordMatchesRequest(
     const SparkModuleArtifact *artifact,
     const SparkModulePublishRequest *request,
     SparkModuleLinkUnitKind link_unit_kind,
-    const char *artifact_sha256)
+    const char *artifact_sha256,
+    const char *validator_sha256)
 {
     return artifact != 0 && request != 0 && artifact_sha256 != 0 &&
+           validator_sha256 != 0 &&
            artifact->schema_version == SPARK_MODULE_ARTIFACT_SCHEMA_VERSION &&
            artifact->module_abi_version == request->module_abi_version &&
            artifact->link_unit_kind == link_unit_kind &&
            strcmp(artifact->module_id, request->module_id) == 0 &&
            strcmp(artifact->target, request->target) == 0 &&
            strcmp(artifact->artifact_sha256, artifact_sha256) == 0 &&
+           strcmp(artifact->validator_sha256, validator_sha256) == 0 &&
            strcmp(artifact->validation_recipe, request->validation_recipe) == 0 &&
            strcmp(
                artifact->initialize_symbol,
-               request->initialize_symbol != 0 ? request->initialize_symbol : "") == 0 &&
+               request->initialize_symbol != 0
+                   ? request->initialize_symbol
+                   : "") == 0 &&
            strcmp(artifact->execute_symbol, request->execute_symbol) == 0 &&
            strcmp(
                artifact->admit_symbol,
                request->admit_symbol != 0 ? request->admit_symbol : "") == 0 &&
            strcmp(
                artifact->snapshot_symbol,
-               request->snapshot_symbol != 0 ? request->snapshot_symbol : "") == 0 &&
+               request->snapshot_symbol != 0
+                   ? request->snapshot_symbol
+                   : "") == 0 &&
            strcmp(
                artifact->destroy_symbol,
-               request->destroy_symbol != 0 ? request->destroy_symbol : "") == 0 &&
+               request->destroy_symbol != 0
+                   ? request->destroy_symbol
+                   : "") == 0 &&
            artifact->validated;
 }
 
@@ -972,7 +1044,21 @@ SparkStatus SparkPublishValidatedModule(
     status = SparkSha256File(request->link_unit_path, report->artifact_sha256);
     if (status != SPARK_STATUS_OK)
     {
-        SparkSetError(error_buffer, error_buffer_bytes, "cannot hash module link unit '%s'", request->link_unit_path);
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "cannot hash module link unit '%s'",
+            request->link_unit_path);
+        return status;
+    }
+    status = SparkSha256File(request->validator_path, report->validator_sha256);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "cannot hash validator executable '%s'",
+            request->validator_path);
         return status;
     }
     status = SparkModuleComputeIdentityKey(request->module_id, request->target, identity_key);
@@ -984,6 +1070,7 @@ SparkStatus SparkPublishValidatedModule(
         request,
         report->link_unit_kind,
         report->artifact_sha256,
+        report->validator_sha256,
         validation_key);
     if (status != SPARK_STATUS_OK)
     {
@@ -1112,7 +1199,8 @@ SparkStatus SparkPublishValidatedModule(
                 &existing_artifact,
                 request,
                 report->link_unit_kind,
-                report->artifact_sha256))
+                report->artifact_sha256,
+                report->validator_sha256))
         {
             SparkSetError(
                 error_buffer,
@@ -1137,6 +1225,7 @@ SparkStatus SparkPublishValidatedModule(
     }
     {
         char validated_hash[SPARK_SHA256_HEX_BYTES];
+        char validator_hash_after_validation[SPARK_SHA256_HEX_BYTES];
         SparkModuleLinkUnitKind validated_kind;
 
         status = SparkSha256File(report->stored_link_unit_path, validated_hash);
@@ -1160,6 +1249,20 @@ SparkStatus SparkPublishValidatedModule(
             SparkSetError(error_buffer, error_buffer_bytes, "validator changed the module link-unit kind");
             return SPARK_STATUS_HASH_MISMATCH;
         }
+        status = SparkSha256File(
+            request->validator_path,
+            validator_hash_after_validation);
+        if (status != SPARK_STATUS_OK ||
+            strcmp(
+                validator_hash_after_validation,
+                report->validator_sha256) != 0)
+        {
+            SparkSetError(
+                error_buffer,
+                error_buffer_bytes,
+                "validator executable changed during module publication");
+            return SPARK_STATUS_HASH_MISMATCH;
+        }
     }
     if (chmod(report->stored_link_unit_path, S_IRUSR | S_IRGRP | S_IROTH) != 0)
     {
@@ -1171,6 +1274,7 @@ SparkStatus SparkPublishValidatedModule(
         request,
         report->link_unit_kind,
         report->artifact_sha256,
+        report->validator_sha256,
         relative_link_unit_path,
         &record_text,
         &record_bytes);

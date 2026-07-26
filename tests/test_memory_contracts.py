@@ -51,15 +51,25 @@ SIZEOF_CONTRACT_SUFFIXES = (
     "_STATISTICS_BYTES",
 )
 MODEL_LITERAL_ALLOWLIST = {
-    "6144": {"include/sparkpipe/spark_glm52_model.h"},
-    "154880": {"include/sparkpipe/spark_glm52_model.h"},
+    "6144": {"model-families/glm52/include/sparkpipe/spark_glm52_model.h"},
+    "154880": {"model-families/glm52/include/sparkpipe/spark_glm52_model.h"},
     "28672": set(),
     "576": set(),
-    "12288": {"include/sparkpipe/spark_glm52_model.h"},
+    "12288": {"model-families/glm52/include/sparkpipe/spark_glm52_model.h"},
 }
 TYPED_FIELD_CALLS = {"ALLOC_FIELD", "ALLOC_FIELD_MAPPED", "ZERO_FIELD"}
+NON_GLM_MODEL_PREFIXES = (
+    "model-families/dsv4/",
+    "model-families/k3/",
+    "model-families/mimo25/",
+    "model-families/qwen36/",
+    "modules/dsv4_",
+    "modules/k3_",
+    "modules/mimo25_",
+    "modules/qwen36_",
+)
 REQUIRED_SYMBOLIC_DEFINES = {
-    "src/spark_glm52_pp13_service_backend.c": {
+    "model-families/glm52/src/spark_glm52_pp13_service_backend.c": {
         "SPARK_GLM52_PP13_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY":
             "SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT",
         "SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY":
@@ -67,7 +77,7 @@ REQUIRED_SYMBOLIC_DEFINES = {
         "SPARK_GLM52_PP13_SERVICE_BACKEND_DEFAULT_LOGICAL_BLOCK_COUNT":
             "SPARK_GLM52_PP13_SERVICE_BACKEND_GPU_BLOCK_COUNT",
     },
-    "include/sparkpipe/spark_glm52_pp13_runtime.h": {
+    "model-families/glm52/include/sparkpipe/spark_glm52_pp13_runtime.h": {
         "SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT":
             "SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT",
         "SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE":
@@ -75,7 +85,7 @@ REQUIRED_SYMBOLIC_DEFINES = {
         "SPARK_GLM52_PP13_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE":
             "SPARK_GLM52_MODEL_DSA_SELECTED_INDEX_BYTES",
     },
-    "include/sparkpipe/spark_glm52_production_topology.h": {
+    "model-families/glm52/include/sparkpipe/spark_glm52_production_topology.h": {
         "SPARK_GLM52_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT":
             "SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER",
         "SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT":
@@ -83,7 +93,7 @@ REQUIRED_SYMBOLIC_DEFINES = {
         "SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET":
             "SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET",
     },
-    "include/sparkpipe/spark_glm52_request_api.h": {
+    "model-families/glm52/include/sparkpipe/spark_glm52_request_api.h": {
         "SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT":
             "SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT",
     },
@@ -122,6 +132,10 @@ SIZE_ARGUMENTS_BY_CALL = {
 }
 RAW_DIRECT_BYTE_COUNT = re.compile(
     r"(?:\([^)]+\))?\s*(?:[2-9]|[1-9][0-9]+)(?:u|ul|ull)?")
+
+
+def glm_model_literal_scope(relative_path):
+    return not relative_path.startswith(NON_GLM_MODEL_PREFIXES)
 
 
 def source_paths():
@@ -259,7 +273,7 @@ def main():
                 report(violations, path, text, offset,
                     f"{match.group(1)} is not derived from its wire type")
         for literal, allowed_paths in MODEL_LITERAL_ALLOWLIST.items():
-            if relative in allowed_paths:
+            if not glm_model_literal_scope(relative) or relative in allowed_paths:
                 continue
             if path.suffix == ".py" and relative.startswith("tests/"):
                 continue
@@ -283,12 +297,12 @@ def main():
         for match in final_event_pattern.finditer(text):
             final_event_definitions.append(str(path.relative_to(ROOT)))
     if final_event_definitions != [
-            "include/sparkpipe/spark_glm52_pp13_runtime.h"]:
+            "model-families/glm52/include/sparkpipe/spark_glm52_pp13_runtime.h"]:
         violations.append(
             "PP13 final-event wire type is not single-source: " +
             ", ".join(final_event_definitions))
     model_contract = load_model_contract(ROOT)
-    model_header = ROOT / "include/sparkpipe/spark_glm52_model.h"
+    model_header = ROOT / "model-families/glm52/include/sparkpipe/spark_glm52_model.h"
     if model_header.read_text() != render_c_header(model_contract):
         violations.append("generated GLM-5.2 C model contract is stale")
     fp8_header = ROOT / (
@@ -304,7 +318,7 @@ def main():
     if "dsa_prefill_scores_f32" in all_source_text:
         violations.append("DSA score storage retains a prefill-only ABI field")
     backend_text = (
-        ROOT / "src/spark_glm52_pp13_service_backend.c").read_text()
+        ROOT / "model-families/glm52/src/spark_glm52_pp13_service_backend.c").read_text()
     if re.search(
             r"message->control_generation\s*=\s*state->session_id_base\s*;",
             backend_text) is None:

@@ -10,7 +10,7 @@ from typing import Any, Dict
 
 
 CONTRACT_RELATIVE_PATH = Path("model_contracts/glm52.json")
-HEADER_RELATIVE_PATH = Path("include/sparkpipe/spark_glm52_model.h")
+HEADER_RELATIVE_PATH = Path("model-families/glm52/include/sparkpipe/spark_glm52_model.h")
 INTEGER_MACROS = {
     "SPARK_GLM52_MODEL_HIDDEN_DIMENSION": "hidden_dimension",
     "SPARK_GLM52_MODEL_LAYER_COUNT": "layer_count",

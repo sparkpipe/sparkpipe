@@ -45,8 +45,16 @@ Packets above the threshold retain the existing multi-lane striped RDMA path and
 TCP completion message. This preserves large-batch bandwidth while the small
 decode path removes the expensive per-lane and completion-message overhead.
 
-Set `SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DOORBELL_MAX_BYTES` to override the
-threshold. Setting it to `0` disables the doorbell path.
+The compiled defaults are eight striped lanes, control-port base `55700`, IB
+port `1`, GID index `0`, and a `262144`-byte doorbell threshold. Set
+`SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_LANES`,
+`SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_CONTROL_PORT_BASE`,
+`SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_PORT`,
+`SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_GID_INDEX`, or
+`SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DOORBELL_MAX_BYTES` to override them.
+Present values are parsed strictly: malformed or out-of-range configuration
+fails initialization rather than selecting a different setting. A doorbell
+threshold of `0` explicitly disables the doorbell path.
 
 For the PP13 linear ring, the module selects the RoCE device per edge: `f0`
 faces the previous rank and `f1` faces the next rank. Non-adjacent routes fail
@@ -57,12 +65,18 @@ ConnectX ports.
 ## Registration lifetime
 
 Mapped boundary memory regions are registered once and retained until transport
-destruction. The cache fails closed when full instead of deregistering an entry
-that may still be advertised to a peer. With the PP13 builder, each edge reuses
-fixed hidden and sideband pointers, so steady-state packets hit the cache.
+destruction. CUDA-visible pointers passed to the transport must therefore
+remain allocated and keep the same backing allocation until destruction. Exact
+pointer-and-size cache hits intentionally bypass repeated CUDA pointer-attribute
+queries under that lifetime contract. The cache fails closed when full instead
+of deregistering an entry that may still be advertised to a peer. With the PP13
+builder, each edge reuses fixed hidden and sideband pointers, so steady-state
+packets hit the cache.
 
-When `SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DEBUG` is set, transport destruction logs
-doorbell sends, striped sends, memory-registration count, and MR-cache hits.
+When `SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DEBUG=1`, transport destruction logs
+doorbell sends, striped sends, pointer-attribute queries,
+memory-registration count, and MR-cache hits. The only other accepted value is
+`0`.
 
 ## Hardware validation
 

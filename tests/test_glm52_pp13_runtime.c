@@ -110,29 +110,29 @@ static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
             SPARK_STATUS_NOT_FOUND);
     SparkTestWriteFile("build/test_glm52_pp13_runtime_packs/fp8_moe_pack_manifest.json");
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,3u,pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
+        pack_root,rank_plan.quantization_mode,3u,1u,0u,pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
     assert(strcmp(pack_path,
         "build/test_glm52_pp13_runtime_packs/glm52_layer_0003_fp8_moe.spfp8") == 0);
     SparkTestWriteFile(pack_path);
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,4u,pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
+        pack_root,rank_plan.quantization_mode,4u,1u,0u,pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
     SparkTestWriteFile(pack_path);
     assert(SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
         &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
             SPARK_STATUS_NOT_FOUND);
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,5u,pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
+        pack_root,rank_plan.quantization_mode,5u,1u,0u,pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
     SparkTestWriteFile(pack_path);
     assert(SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
         &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
             SPARK_STATUS_OK);
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,SPARK_GLM52_MODEL_MTP_LAYER_INDEX,
+        pack_root,rank_plan.quantization_mode,SPARK_GLM52_MODEL_MTP_LAYER_INDEX,1u,0u,
         pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
     assert(strcmp(pack_path,
         "build/test_glm52_pp13_runtime_packs/glm52_layer_0078_fp8_moe.spfp8") == 0);
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,SPARK_GLM52_MODEL_WEIGHT_LAYER_COUNT,
+        pack_root,rank_plan.quantization_mode,SPARK_GLM52_MODEL_WEIGHT_LAYER_COUNT,1u,0u,
         pack_path,sizeof(pack_path)) == SPARK_STATUS_INVALID_ARGUMENT);
     assert(SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
         &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
@@ -146,17 +146,17 @@ static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
         &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
             SPARK_STATUS_NOT_FOUND);
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,3u,pack_path,sizeof(pack_path)) ==
+        pack_root,rank_plan.quantization_mode,3u,1u,0u,pack_path,sizeof(pack_path)) ==
             SPARK_STATUS_OK);
     assert(strcmp(pack_path,
         "build/test_glm52_pp13_runtime_packs/glm52_layer_0003_b12x_moe.spb12x") == 0);
     SparkTestWriteFile(pack_path);
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,4u,pack_path,sizeof(pack_path)) ==
+        pack_root,rank_plan.quantization_mode,4u,1u,0u,pack_path,sizeof(pack_path)) ==
             SPARK_STATUS_OK);
     SparkTestWriteFile(pack_path);
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,5u,pack_path,sizeof(pack_path)) ==
+        pack_root,rank_plan.quantization_mode,5u,1u,0u,pack_path,sizeof(pack_path)) ==
             SPARK_STATUS_OK);
     SparkTestWriteFile(pack_path);
     assert(SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
@@ -169,21 +169,21 @@ static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
         &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
             SPARK_STATUS_NOT_FOUND);
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,3u,pack_path,sizeof(pack_path)) ==
+        pack_root,rank_plan.quantization_mode,3u,1u,0u,pack_path,sizeof(pack_path)) ==
             SPARK_STATUS_OK);
     SparkTestWriteFile(pack_path);
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,4u,pack_path,sizeof(pack_path)) ==
+        pack_root,rank_plan.quantization_mode,4u,1u,0u,pack_path,sizeof(pack_path)) ==
             SPARK_STATUS_OK);
     SparkTestWriteFile(pack_path);
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,5u,pack_path,sizeof(pack_path)) ==
+        pack_root,rank_plan.quantization_mode,5u,1u,0u,pack_path,sizeof(pack_path)) ==
             SPARK_STATUS_OK);
     SparkTestWriteFile(pack_path);
     assert(SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
         &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
-        pack_root,UINT32_MAX,3u,pack_path,sizeof(pack_path)) ==
+        pack_root,UINT32_MAX,3u,1u,0u,pack_path,sizeof(pack_path)) ==
             SPARK_STATUS_INVALID_ARGUMENT);
     assert(SparkGlm52Pp13RuntimeParseQuantizationMode(
         "fp8",&rank_plan.quantization_mode) == SPARK_STATUS_OK);
@@ -241,8 +241,63 @@ static void SparkTestGlm52Pp13RuntimeFinalEventRoute(void)
         &route,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+// Shape-driven rank plans: legacy builds carry degree-one shape defaults and
+// a nonzero configuration hash; a TP4 x PP3 middle node derives the
+// twenty-six layer slice, ring neighbors at the same TP rank one stage away,
+// and same-stage collective peers; a tampered hash fails validation; and a
+// shape whose linear node index exceeds the host table fails closed, which
+// is exactly the TP16 state until the table grows with the hardware.
+static void SparkTestPp13RuntimeShapePlans(void)
+{
+    SparkGlm52Pp13RuntimeRankPlan plan;
+    SparkGlm52TpShapeDescriptor shape;
+    char error_buffer[256];
+    char pack_path[512];
+    assert(SparkGlm52Pp13RuntimeBuildRankPlan(
+        5u,16u,42000u,
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        &plan,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+    assert(plan.tp_degree == 1u && plan.tp_rank == 0u);
+    assert(plan.pp_stage_count == 13u && plan.pp_stage_index == 5u);
+    assert(plan.shape_configuration_hash != 0u);
+    memset(&shape,0,sizeof(shape));
+    shape.abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+    shape.tp_degree = 4u;
+    shape.tp_rank = 2u;
+    shape.pp_stage_count = 3u;
+    shape.pp_stage_index = 1u;
+    assert(SparkGlm52Pp13RuntimeBuildShapeRankPlan(
+        &shape,16u,42000u,43000u,
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        &plan,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+    assert(plan.rank_index == 6u);
+    assert(plan.first_layer_index == 26u && plan.layer_count == 26u);
+    assert(plan.previous_rank_index == 2u && plan.next_rank_index == 10u);
+    assert(plan.tp_collective_listen_port == 43006u);
+    assert(plan.tp_peer_ports[0] == 43007u && plan.tp_peer_ports[1] == 43004u);
+    assert(plan.tp_peer_host_names[0][0] != '\0');
+    assert((plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_DENSE_PREFIX) == 0u);
+    assert((plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u);
+    assert(SparkGlm52Pp13RuntimeBuildMoePackPath(
+        "packs",plan.quantization_mode,7u,plan.tp_degree,plan.tp_rank,
+        pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
+    assert(strstr(pack_path,"_tp4r2.spfp8") != 0);
+    plan.shape_configuration_hash += 1u;
+    assert(SparkGlm52Pp13RuntimeValidateRankPlan(
+        &plan,error_buffer,sizeof(error_buffer)) != SPARK_STATUS_OK);
+    shape.tp_degree = 16u;
+    shape.tp_rank = 15u;
+    shape.pp_stage_count = 1u;
+    shape.pp_stage_index = 0u;
+    assert(SparkGlm52Pp13RuntimeBuildShapeRankPlan(
+        &shape,16u,42000u,43000u,
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        &plan,error_buffer,sizeof(error_buffer)) != SPARK_STATUS_OK);
+}
+
 int main(void)
 {
+    SparkTestPp13RuntimeShapePlans();
     SparkTestGlm52Pp13RuntimeRankPlan();
     SparkTestGlm52Pp13RuntimeDsaCandidateBucket();
     SparkTestGlm52Pp13RuntimeFp8Packs();

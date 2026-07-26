@@ -78,3 +78,19 @@ def parse_layers(value: str) -> List[int]:
     if len(set(layers)) != len(layers):
         raise PackFailure("duplicate layer selection")
     return layers
+
+
+def tp_shard_range(dimension: int, tp_degree: int, tp_rank: int, block: int = 1) -> Tuple[int, int]:
+    """This rank's [start, start+count) slice of a dimension split across a TP
+    group, with count required to be a whole number of quantization blocks so
+    scale tensors slice on block boundaries. Fails closed on any misalignment
+    rather than producing a shard whose scales cannot be represented."""
+    if tp_degree < 1 or tp_rank < 0 or tp_rank >= tp_degree:
+        raise PackFailure(f"invalid tp shard {tp_rank}/{tp_degree}")
+    if dimension % tp_degree != 0:
+        raise PackFailure(f"dimension {dimension} not divisible by tp degree {tp_degree}")
+    count = dimension // tp_degree
+    if block > 1 and count % block != 0:
+        raise PackFailure(
+            f"tp shard extent {count} not aligned to quantization block {block}")
+    return tp_rank * count, count

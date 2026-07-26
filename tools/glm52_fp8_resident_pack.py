@@ -15,7 +15,7 @@ from multiprocessing import Pool
 from pathlib import Path
 import struct
 import tempfile
-from typing import Any, BinaryIO, Dict, Iterable, List, Tuple
+from typing import Any, BinaryIO, Dict, Iterable, List, Optional, Tuple
 
 from glm52_resident_pack_common import (
     EXPERT_COUNT,
@@ -30,6 +30,7 @@ from glm52_resident_pack_common import (
     import_torch,
     parse_layers,
     tensor_name,
+    tp_shard_range,
 )
 
 
@@ -132,17 +133,19 @@ def scale_shape(rows: int, columns: int) -> Tuple[int, int]:
     return scale_extent(rows), scale_extent(columns)
 
 
-def reserve_regions() -> List[Dict[str, int]]:
-    w1_rows = W1_COMPONENT_COUNT * INTERMEDIATE_DIMENSION
+def reserve_regions(intermediate_dimension: Optional[int] = None) -> List[Dict[str, int]]:
+    if intermediate_dimension is None:
+        intermediate_dimension = INTERMEDIATE_DIMENSION
+    w1_rows = W1_COMPONENT_COUNT * intermediate_dimension
     w1_weight_bytes = EXPERT_COUNT * w1_rows * HIDDEN_DIMENSION
     w1_scale_bytes = (
         EXPERT_COUNT * scale_extent(w1_rows) * scale_extent(HIDDEN_DIMENSION) *
         FLOAT32_BYTES
     )
-    w2_weight_bytes = EXPERT_COUNT * HIDDEN_DIMENSION * INTERMEDIATE_DIMENSION
+    w2_weight_bytes = EXPERT_COUNT * HIDDEN_DIMENSION * intermediate_dimension
     w2_scale_bytes = (
         EXPERT_COUNT * scale_extent(HIDDEN_DIMENSION) *
-        scale_extent(INTERMEDIATE_DIMENSION) * FLOAT32_BYTES
+        scale_extent(intermediate_dimension) * FLOAT32_BYTES
     )
     offset = HEADER_BYTES
     regions: List[Dict[str, int]] = []
@@ -153,9 +156,11 @@ def reserve_regions() -> List[Dict[str, int]]:
     return regions
 
 
-def expected_pack_header(layer: int, max_active: int) -> Fp8MoePackHeader:
+def expected_pack_header(layer: int, max_active: int, tp_degree: int = 1, tp_rank: int = 0) -> Fp8MoePackHeader:
     if max_active <= 0:
         raise PackFailure("maximum active sequence count must be positive")
+    if INTERMEDIATE_DIMENSION % tp_degree != 0:
+        raise PackFailure("intermediate not divisible by tp degree")
     return Fp8MoePackHeader(
         magic=WIRE_MAGIC,
         abi_version=ABI_VERSION,
@@ -163,7 +168,7 @@ def expected_pack_header(layer: int, max_active: int) -> Fp8MoePackHeader:
         layer_index=layer,
         maximum_token_count=max_active,
         hidden_dimension=HIDDEN_DIMENSION,
-        intermediate_dimension=INTERMEDIATE_DIMENSION,
+        intermediate_dimension=INTERMEDIATE_DIMENSION // tp_degree,
         expert_count=EXPERT_COUNT,
         top_k=TOP_K,
         gate_up_order=GATE_UP_ORDER_UP_GATE,
@@ -172,13 +177,13 @@ def expected_pack_header(layer: int, max_active: int) -> Fp8MoePackHeader:
         quant_mode=QUANT_MODE_FP8_E4M3,
         output_dtype=OUTPUT_DTYPE_BF16,
         cuda_architecture=CUDA_ARCHITECTURE_SM121,
-        reserved0=0,
-        reserved1=0,
+        reserved0=tp_degree,
+        reserved1=tp_rank,
     )
 
 
-def pack_header(layer: int, regions: List[Dict[str, int]], max_active: int) -> bytes:
-    header_fields = expected_pack_header(layer, max_active)
+def pack_header(layer: int, regions: List[Dict[str, int]], max_active: int, tp_degree: int = 1, tp_rank: int = 0) -> bytes:
+    header_fields = expected_pack_header(layer, max_active, tp_degree, tp_rank)
     prefix = HEADER_PREFIX_STRUCT.pack(
         header_fields.magic,
         header_fields.abi_version,
@@ -237,18 +242,18 @@ def existing_pack_header(
         raise PackFailure(f"{error}: {path}") from error
 
 
-def existing_pack_can_reuse(path: Path, layer: int, expected_bytes: int, max_active: int) -> bool:
+def existing_pack_can_reuse(path: Path, layer: int, expected_bytes: int, max_active: int, tp_degree: int = 1, tp_rank: int = 0) -> bool:
     if not path.exists() or path.stat().st_size != expected_bytes:
         return False
     header, regions = existing_pack_header(path)
-    expected_regions = reserve_regions()
+    expected_regions = reserve_regions(INTERMEDIATE_DIMENSION // tp_degree)
     if regions != expected_regions:
         return False
-    if header != expected_pack_header(layer, header.maximum_token_count):
+    if header != expected_pack_header(layer, header.maximum_token_count, tp_degree, tp_rank):
         return False
     if header.maximum_token_count < max_active:
         with path.open("r+b") as file:
-            file.write(pack_header(layer, regions, max_active))
+            file.write(pack_header(layer, regions, max_active, tp_degree, tp_rank))
     return True
 
 
@@ -306,6 +311,27 @@ def write_scale_bytes(
     )
 
 
+def slice_scale_leading_blocks(tensor: Any, full_shape: Tuple[int, int], block_start: int, block_count: int, name: str) -> Any:
+    """Slice the leading (row-block) axis of a scale tensor in whichever
+    orientation the checkpoint stored it; downstream orientation handling is
+    unchanged. Column slices are made contiguous for byte export."""
+    shape = tuple(tensor.shape)
+    if shape == full_shape:
+        return tensor[block_start:block_start + block_count]
+    if shape == (full_shape[1], full_shape[0]):
+        return tensor[:, block_start:block_start + block_count].contiguous()
+    raise PackFailure(f"{name} has shape {shape}, expected {full_shape} or transposed")
+
+
+def slice_scale_trailing_blocks(tensor: Any, full_shape: Tuple[int, int], block_start: int, block_count: int, name: str) -> Any:
+    shape = tuple(tensor.shape)
+    if shape == full_shape:
+        return tensor[:, block_start:block_start + block_count].contiguous()
+    if shape == (full_shape[1], full_shape[0]):
+        return tensor[block_start:block_start + block_count]
+    raise PackFailure(f"{name} has shape {shape}, expected {full_shape} or transposed")
+
+
 def write_layer_pack(
     model_dir: Path,
     output_dir: Path,
@@ -313,14 +339,21 @@ def write_layer_pack(
     max_active: int,
     reuse: bool,
     allow_transposed_scales: bool,
+    tp_degree: int = 1,
+    tp_rank: int = 0,
 ) -> Dict[str, Any]:
     reader = SafetensorReader(model_dir)
-    regions = reserve_regions()
-    output_path = output_dir / f"glm52_layer_{layer:04d}_fp8_moe.spfp8"
+    shard_start, shard_count = tp_shard_range(
+        INTERMEDIATE_DIMENSION, tp_degree, tp_rank, FP8_SCALE_BLOCK)
+    block_start = shard_start // FP8_SCALE_BLOCK
+    block_count = shard_count // FP8_SCALE_BLOCK
+    regions = reserve_regions(shard_count)
+    shape_tag = "" if tp_degree == 1 else f"_tp{tp_degree}r{tp_rank}"
+    output_path = output_dir / f"glm52_layer_{layer:04d}_fp8_moe{shape_tag}.spfp8"
     expected_bytes = regions[-1]["offset"] + regions[-1]["bytes"]
     try:
-        if reuse and existing_pack_can_reuse(output_path, layer, expected_bytes, max_active):
-            return {"layer": layer, "path": str(output_path), "bytes": expected_bytes, "reused": True, "max_active": max_active}
+        if reuse and existing_pack_can_reuse(output_path, layer, expected_bytes, max_active, tp_degree, tp_rank):
+            return {"layer": layer, "path": str(output_path), "bytes": expected_bytes, "reused": True, "max_active": max_active, "tp_degree": tp_degree, "tp_rank": tp_rank}
         output_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             prefix=f".glm52_layer_{layer:04d}_",
@@ -329,34 +362,42 @@ def write_layer_pack(
             delete=False,
         ) as file:
             tmp_path = Path(file.name)
-            file.write(pack_header(layer, regions, max_active))
+            file.write(pack_header(layer, regions, max_active, tp_degree, tp_rank))
             seek_region(file, regions, REGION_W1_WEIGHT)
             for expert in range(EXPERT_COUNT):
                 write_tensor_bytes(
                     file,
-                    reader.tensor(tensor_name(layer, expert, "up_proj", "weight")),
-                    (INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION),
+                    reader.tensor(tensor_name(layer, expert, "up_proj", "weight"))[shard_start:shard_start + shard_count],
+                    (shard_count, HIDDEN_DIMENSION),
                     f"layer {layer} expert {expert} up weight",
                 )
                 write_tensor_bytes(
                     file,
-                    reader.tensor(tensor_name(layer, expert, "gate_proj", "weight")),
-                    (INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION),
+                    reader.tensor(tensor_name(layer, expert, "gate_proj", "weight"))[shard_start:shard_start + shard_count],
+                    (shard_count, HIDDEN_DIMENSION),
                     f"layer {layer} expert {expert} gate weight",
                 )
             seek_region(file, regions, REGION_W1_SCALE_INV)
             for expert in range(EXPERT_COUNT):
                 write_scale_bytes(
                     file,
-                    reader.tensor(tensor_name(layer, expert, "up_proj", "weight_scale_inv")),
-                    scale_shape(INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION),
+                    slice_scale_leading_blocks(
+                        reader.tensor(tensor_name(layer, expert, "up_proj", "weight_scale_inv")),
+                        scale_shape(INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION),
+                        block_start, block_count,
+                        f"layer {layer} expert {expert} up scale_inv"),
+                    scale_shape(shard_count, HIDDEN_DIMENSION),
                     f"layer {layer} expert {expert} up scale_inv",
                     allow_transposed_scales,
                 )
                 write_scale_bytes(
                     file,
-                    reader.tensor(tensor_name(layer, expert, "gate_proj", "weight_scale_inv")),
-                    scale_shape(INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION),
+                    slice_scale_leading_blocks(
+                        reader.tensor(tensor_name(layer, expert, "gate_proj", "weight_scale_inv")),
+                        scale_shape(INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION),
+                        block_start, block_count,
+                        f"layer {layer} expert {expert} gate scale_inv"),
+                    scale_shape(shard_count, HIDDEN_DIMENSION),
                     f"layer {layer} expert {expert} gate scale_inv",
                     allow_transposed_scales,
                 )
@@ -364,27 +405,31 @@ def write_layer_pack(
             for expert in range(EXPERT_COUNT):
                 write_tensor_bytes(
                     file,
-                    reader.tensor(tensor_name(layer, expert, "down_proj", "weight")),
-                    (HIDDEN_DIMENSION, INTERMEDIATE_DIMENSION),
+                    reader.tensor(tensor_name(layer, expert, "down_proj", "weight"))[:, shard_start:shard_start + shard_count].contiguous(),
+                    (HIDDEN_DIMENSION, shard_count),
                     f"layer {layer} expert {expert} down weight",
                 )
             seek_region(file, regions, REGION_W2_SCALE_INV)
             for expert in range(EXPERT_COUNT):
                 write_scale_bytes(
                     file,
-                    reader.tensor(tensor_name(layer, expert, "down_proj", "weight_scale_inv")),
-                    scale_shape(HIDDEN_DIMENSION, INTERMEDIATE_DIMENSION),
+                    slice_scale_trailing_blocks(
+                        reader.tensor(tensor_name(layer, expert, "down_proj", "weight_scale_inv")),
+                        scale_shape(HIDDEN_DIMENSION, INTERMEDIATE_DIMENSION),
+                        block_start, block_count,
+                        f"layer {layer} expert {expert} down scale_inv"),
+                    scale_shape(HIDDEN_DIMENSION, shard_count),
                     f"layer {layer} expert {expert} down scale_inv",
                     allow_transposed_scales,
                 )
         tmp_path.replace(output_path)
-        return {"layer": layer, "path": str(output_path), "bytes": expected_bytes, "reused": False, "max_active": max_active}
+        return {"layer": layer, "path": str(output_path), "bytes": expected_bytes, "reused": False, "max_active": max_active, "tp_degree": tp_degree, "tp_rank": tp_rank}
     finally:
         reader.close()
 
 
-def worker(argument: Tuple[str, str, int, int, bool, bool]) -> Dict[str, Any]:
-    model_dir, output_dir, layer, max_active, reuse, allow_transposed_scales = argument
+def worker(argument: Tuple[str, str, int, int, bool, bool, int, int]) -> Dict[str, Any]:
+    model_dir, output_dir, layer, max_active, reuse, allow_transposed_scales, tp_degree, tp_rank = argument
     return write_layer_pack(
         Path(model_dir),
         Path(output_dir),
@@ -392,6 +437,8 @@ def worker(argument: Tuple[str, str, int, int, bool, bool]) -> Dict[str, Any]:
         max_active,
         reuse,
         allow_transposed_scales,
+        tp_degree,
+        tp_rank,
     )
 
 
@@ -416,6 +463,11 @@ def main() -> int:
     parser.add_argument("--max-active", type=int, default=DEFAULT_MAX_ACTIVE_SEQUENCE_COUNT)
     parser.add_argument("--no-reuse", action="store_true")
     parser.add_argument("--allow-transposed-scales", action="store_true")
+    parser.add_argument("--tp-degree", type=int, default=1,
+        help="Tensor-parallel degree: each expert's gate and up rows and down "
+        "columns are sliced to this rank's intermediate shard, scale blocks "
+        "included, producing a per-node pack for the shape.")
+    parser.add_argument("--tp-rank", type=int, default=0)
     args = parser.parse_args()
     layers = parse_layers(args.layers)
     jobs = max(1, int(args.jobs))
@@ -431,6 +483,8 @@ def main() -> int:
             max_active,
             not args.no_reuse,
             bool(args.allow_transposed_scales),
+            int(args.tp_degree),
+            int(args.tp_rank),
         )
         for layer in layers
     ]

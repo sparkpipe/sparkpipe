@@ -1,0 +1,166 @@
+{
+  "clean_build_required": true,
+  "exclusive_run_lock": true,
+  "fingerprint_excluded_paths": [
+    "PACKAGE_MANIFEST.json",
+    "SHA256SUMS",
+    "docs/PROPOSED_CHANGE_MANIFEST.md",
+    "docs/VALIDATION_STATUS.json",
+    "docs/VALIDATION_STATUS.md"
+  ],
+  "fingerprint_excluded_prefixes": [
+    "docs/validation-logs/"
+  ],
+  "generated_at": "2026-07-25T08:25:34.741764+00:00",
+  "host_validation_only": true,
+  "input_source_file_count": 5031,
+  "input_source_fingerprint": "40f4913b21d1b943f9cbc9f43dc5a650eb7a4d81aa07d15d98cfed2453346b1f",
+  "output_source_file_count": 5031,
+  "output_source_fingerprint": "40f4913b21d1b943f9cbc9f43dc5a650eb7a4d81aa07d15d98cfed2453346b1f",
+  "repository_root": "/Users/cem/Documents/Codex/2026-07-24/continue-the-sparkpipe-pr-from-users/work/sparkpipe-pr505-integration",
+  "results": [
+    {
+      "category": "preflight",
+      "command": [
+        "make",
+        "clean"
+      ],
+      "duration_seconds": 0.24,
+      "log_path": "docs/validation-logs/clean_build.log",
+      "name": "clean_build",
+      "note": "",
+      "return_code": 0,
+      "status": "passed"
+    },
+    {
+      "category": "tooling",
+      "command": [
+        "/Users/cem/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-m",
+        "py_compile",
+        "tools/audit_core_boundaries.py",
+        "tools/generate_proposed_change_manifest.py",
+        "tools/package_audited_proposal.py",
+        "tools/run_deep_audit_validation.py",
+        "tests/test_model_driver_contracts.py"
+      ],
+      "duration_seconds": 0.179,
+      "log_path": "docs/validation-logs/python_tool_syntax.log",
+      "name": "python_tool_syntax",
+      "note": "",
+      "return_code": 0,
+      "status": "passed"
+    },
+    {
+      "category": "build",
+      "command": [
+        "make",
+        "-j2",
+        "all"
+      ],
+      "duration_seconds": 7.47,
+      "log_path": "docs/validation-logs/host_build.log",
+      "name": "host_build",
+      "note": "",
+      "return_code": 0,
+      "status": "passed"
+    },
+    {
+      "category": "architecture",
+      "command": [
+        "make",
+        "architecture_audit"
+      ],
+      "duration_seconds": 0.235,
+      "log_path": "docs/validation-logs/core_boundary_audit.log",
+      "name": "core_boundary_audit",
+      "note": "",
+      "return_code": 0,
+      "status": "passed"
+    },
+    {
+      "category": "driver-contract",
+      "command": [
+        "make",
+        "model_driver_contracts"
+      ],
+      "duration_seconds": 1.55,
+      "log_path": "docs/validation-logs/non_glm_model_driver_contracts.log",
+      "name": "non_glm_model_driver_contracts",
+      "note": "",
+      "return_code": 0,
+      "status": "passed"
+    },
+    {
+      "category": "contract",
+      "command": [
+        "/Users/cem/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "tests/test_memory_contracts.py"
+      ],
+      "duration_seconds": 4.504,
+      "log_path": "docs/validation-logs/memory_contracts.log",
+      "name": "memory_contracts",
+      "note": "",
+      "return_code": 0,
+      "status": "passed"
+    },
+    {
+      "category": "test",
+      "command": [
+        "make",
+        "-j2",
+        "test"
+      ],
+      "duration_seconds": 16.222,
+      "log_path": "docs/validation-logs/host_test_suite.log",
+      "name": "host_test_suite",
+      "note": "",
+      "return_code": 2,
+      "status": "failed"
+    },
+    {
+      "category": "build",
+      "command": [
+        "make",
+        "-j2",
+        "glm52_pp13_service_backend",
+        "tools"
+      ],
+      "duration_seconds": 0.071,
+      "log_path": "docs/validation-logs/required_host_targets.log",
+      "name": "required_host_targets",
+      "note": "",
+      "return_code": 0,
+      "status": "passed"
+    },
+    {
+      "category": "optional-cuda-build",
+      "command": [
+        "make",
+        "-j2",
+        "glm52_pp13_node_context_builder"
+      ],
+      "duration_seconds": 0.0,
+      "log_path": "docs/validation-logs/cuda_node_context_builder.log",
+      "name": "cuda_node_context_builder",
+      "note": "nvcc is unavailable; this is not a pass",
+      "return_code": null,
+      "status": "skipped"
+    },
+    {
+      "category": "preflight",
+      "command": [
+        "internal",
+        "source-tree-fingerprint"
+      ],
+      "duration_seconds": 1.624,
+      "log_path": "docs/validation-logs/source_tree_stability.log",
+      "name": "source_tree_stability",
+      "note": "input=40f4913b21d1b943f9cbc9f43dc5a650eb7a4d81aa07d15d98cfed2453346b1f output=40f4913b21d1b943f9cbc9f43dc5a650eb7a4d81aa07d15d98cfed2453346b1f input_files=5031 output_files=5031",
+      "return_code": 0,
+      "status": "passed"
+    }
+  ],
+  "schema_version": 3,
+  "source_tree_stability_required": true
+}

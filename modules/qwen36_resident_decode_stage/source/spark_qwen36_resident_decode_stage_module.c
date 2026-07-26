@@ -11,6 +11,7 @@
 #include <cuda_runtime.h>
 
 #include "sparkpipe/spark_qwen36_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "spark_qwen36_stagepack_format.h"
@@ -35,6 +36,9 @@
  */
 
 #define SPARK_QWEN36_MODULE_TAG "qwen36_stage"
+#define SPARK_QWEN36_MODULE_FUSED_QUERY_COMPONENT_COUNT 2u
+
+#define SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY (SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT + SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS)
 
 typedef struct SparkQwen36ModuleSlot
 {
@@ -75,9 +79,13 @@ typedef struct SparkQwen36ModuleSlot
 	float *chunk_w_f32;
 	float *chunk_kg_f32;
 	uint32_t *mtp_draft_ids;
+	uint32_t mtp_seed_row;
+	uint32_t host_row_cold[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t host_slot_mapping[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
+	uint32_t host_context_lengths[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
+	uint32_t host_row_lane_indices[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
+	uint64_t host_row_positions[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
 } SparkQwen36ModuleSlot;
-
-#define SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY (SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT + SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS)
 
 typedef struct SparkQwen36ModuleState
 {
@@ -96,7 +104,6 @@ typedef struct SparkQwen36ModuleState
 	uint32_t cache_layer_count;
 	uint32_t mtp_armed;
 	uint32_t mtp_cache_ordinal;
-	uint32_t mtp_seed_row;
 	uint32_t gdn_snapshot_slot_count;
 	float *snapshot_state_f32;
 	void *snapshot_tail_bf16;
@@ -122,18 +129,20 @@ typedef struct SparkQwen36ModuleState
 	uint64_t cache_layer_stride;
 	uint64_t cache_block_stride;
 	uint8_t lane_warm[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t host_row_cold[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t host_slot_mapping[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
-	uint32_t host_context_lengths[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
-	uint32_t host_row_lane_indices[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
-	uint64_t host_row_positions[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
+	uint64_t lane_sequence_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t lane_next_positions[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkQwen36ModuleSlot slots[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
+	atomic_uint lane_states[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkStageKvClient kv_client;
-	atomic_ullong frames_executed;
+	atomic_ullong submitted_count;
+	atomic_ullong completed_count;
+	atomic_ullong rejected_count;
+	atomic_ullong failed_count;
 	atomic_ullong tokens_emitted;
 } SparkQwen36ModuleState;
 
+extern cudaError_t SparkQwen36ConfigureCudaKernels(void);
 extern cudaError_t SparkQwen36LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkQwen36LaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQwen36LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
@@ -590,7 +599,7 @@ static SparkStatus SparkQwen36ModuleAllocateSlot(SparkQwen36ModuleState *state, 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->gated_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * 2u * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->q_fused_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODULE_FUSED_QUERY_COMPONENT_COUNT * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->q_fused_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_ATTN_KV_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->k_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -727,93 +736,363 @@ static SparkStatus SparkQwen36ModuleRunLayer(SparkQwen36ModuleState *state, Spar
 	return(status);
 }
 
-static SparkStatus SparkQwen36ModuleValidateDecodeView(SparkQwen36ModuleState *state, const SparkModelDriverFrame *frame, const SparkQwen36ResidentDecodeStageFrameContext *context)
+static SparkStatus SparkQwen36ModuleValidateDecodeView(
+    SparkQwen36ModuleState *state,
+    const SparkModelDriverFrame *frame,
+    const SparkQwen36ResidentDecodeStageFrameContext *context)
 {
-	const SparkQwen36DecodeBatchView *batch = context->decode_batch;
-	if ( batch == 0 || batch->abi_version != SPARK_QWEN36_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION || batch->descriptor_bytes != (uint32_t)sizeof(*batch) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( batch->row_count == 0u || batch->row_count > state->max_active_sequence_count || batch->row_count != frame->new_token_count )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SPARK_STATUS_OK);
+    const SparkQwen36DecodeBatchView *batch;
+    uint32_t row;
+
+    batch = context->decode_batch;
+    if (batch == 0 ||
+        batch->abi_version !=
+            SPARK_QWEN36_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION ||
+        batch->descriptor_bytes < (uint32_t)sizeof(*batch) ||
+        batch->reserved0 != 0u ||
+        batch->row_count == 0u ||
+        batch->row_count > state->max_active_sequence_count ||
+        batch->row_count != frame->active_slot_count ||
+        batch->row_count != frame->new_token_count ||
+        batch->row_lane_indices == 0 ||
+        batch->row_positions == 0 ||
+        batch->row_sequence_ids == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    for (row = 0u; row < batch->row_count; row++)
+    {
+        uint32_t previous_row;
+
+        if (batch->row_lane_indices[row] >= state->max_active_sequence_count ||
+            batch->row_sequence_ids[row] == 0u ||
+            batch->row_positions[row] >=
+                SPARK_QWEN36_MODEL_MAXIMUM_CONTEXT_TOKENS)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        for (previous_row = 0u; previous_row < row; previous_row++)
+        {
+            if (batch->row_lane_indices[previous_row] == batch->row_lane_indices[row] ||
+                batch->row_sequence_ids[previous_row] == batch->row_sequence_ids[row])
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+        }
+    }
+    return SPARK_STATUS_OK;
 }
 
 // The base-zero rule: a fresh lane starts at position zero and gets its
 // recurrent state reset; a continuation frame is only meaningful on a lane
 // warmed by the preceding frames of the same prompt.
-static SparkStatus SparkQwen36ModuleValidatePrefillView(SparkQwen36ModuleState *state, const SparkModelDriverFrame *frame, const SparkQwen36ResidentDecodeStageFrameContext *context)
+static SparkStatus SparkQwen36ModuleValidatePrefillView(
+    SparkQwen36ModuleState *state,
+    const SparkModelDriverFrame *frame,
+    const SparkQwen36ResidentDecodeStageFrameContext *context)
 {
-	const SparkQwen36PrefillFrameView *view = context->prefill_frame;
-	if ( view == 0 || view->abi_version != SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION || view->descriptor_bytes != (uint32_t)sizeof(*view) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( view->lane_index >= state->max_active_sequence_count || view->token_count == 0u || view->token_count > state->max_active_sequence_count || view->token_count != frame->new_token_count )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( view->base_position != 0u && state->lane_warm[view->lane_index] == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SPARK_STATUS_OK);
+    const SparkQwen36PrefillFrameView *view;
+
+    view = context->prefill_frame;
+    if (view == 0 ||
+        view->abi_version !=
+            SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION ||
+        view->descriptor_bytes < (uint32_t)sizeof(*view) ||
+        view->lane_index >= state->max_active_sequence_count ||
+        view->sequence_id == 0u ||
+        view->token_count == 0u ||
+        view->token_count > state->max_active_sequence_count ||
+        view->token_count != frame->new_token_count ||
+        frame->active_slot_count != 1u ||
+        view->base_position != frame->sequence_position ||
+        view->sequence_id != frame->sequence_id ||
+        SparkModelDriverRangeFitsWithinCapacity(
+            view->base_position,
+            view->token_count,
+            SPARK_QWEN36_MODEL_MAXIMUM_CONTEXT_TOKENS) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkQwen36ModuleValidateSpeculation(SparkQwen36ModuleState *state, const SparkQwen36ResidentDecodeStageFrameContext *context)
+static SparkStatus SparkQwen36ModuleValidateSpeculation(
+    SparkQwen36ModuleState *state,
+    const SparkQwen36ResidentDecodeStageFrameContext *context)
 {
-	const SparkQwen36PrefillFrameView *prefill = context->prefill_frame;
-	const SparkQwen36MtpDraftView *draft = context->mtp_draft;
-	const SparkQwen36GdnSnapshotView *snapshot = context->gdn_snapshot;
-	uint32_t verify = context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY;
-	uint32_t restore = context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST;
-	uint32_t drafted = context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER;
-	if ( verify != 0u || restore != 0u )
-	{
-		if ( prefill == 0 || (verify != 0u && restore != 0u) )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( verify != 0u && prefill->base_position == 0u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( snapshot == 0 || snapshot->abi_version != SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION || snapshot->descriptor_bytes != (uint32_t)sizeof(*snapshot) )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( state->gdn_layer_count != 0u && (state->gdn_snapshot_slot_count == 0u || snapshot->snapshot_index >= state->gdn_snapshot_slot_count) )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-	}
-	if ( drafted != 0u )
-	{
-		if ( state->mtp_armed == 0u || state->owns_final_head == 0u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( draft == 0 || draft->abi_version != SPARK_QWEN36_RESIDENT_DECODE_STAGE_MTP_DRAFT_VIEW_ABI_VERSION || draft->descriptor_bytes != (uint32_t)sizeof(*draft) )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( draft->draft_token_count == 0u || draft->draft_token_count > SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS || draft->lane_index >= state->max_active_sequence_count )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( state->owns_embedding == 0u && draft->row_token_ids == 0 )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( prefill != 0 && (draft->lane_index != prefill->lane_index || draft->base_position != prefill->base_position + prefill->token_count) )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-	}
-	return(SPARK_STATUS_OK);
+    const SparkQwen36PrefillFrameView *prefill;
+    const SparkQwen36MtpDraftView *draft;
+    const SparkQwen36GdnSnapshotView *snapshot;
+    const SparkQwen36DecodeBatchView *decode_batch;
+    uint32_t drafted;
+    uint32_t restore;
+    uint32_t verify;
+    uint32_t row;
+    uint32_t matching_row_found;
+
+    prefill = context->prefill_frame;
+    draft = context->mtp_draft;
+    snapshot = context->gdn_snapshot;
+    decode_batch = context->decode_batch;
+    verify = context->flags &
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY;
+    restore = context->flags &
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST;
+    drafted = context->flags &
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER;
+
+    if (verify != 0u || restore != 0u)
+    {
+        if (prefill == 0 || (verify != 0u && restore != 0u) ||
+            (verify != 0u && prefill->base_position == 0u) ||
+            snapshot == 0 ||
+            snapshot->abi_version !=
+                SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION ||
+            snapshot->descriptor_bytes < (uint32_t)sizeof(*snapshot) ||
+            snapshot->reserved0 != 0u ||
+            (state->gdn_layer_count != 0u &&
+             (state->gdn_snapshot_slot_count == 0u ||
+              snapshot->snapshot_index >= state->gdn_snapshot_slot_count)))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    else if (snapshot != 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (drafted == 0u)
+    {
+        return draft == 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (state->mtp_armed == 0u || state->owns_final_head == 0u ||
+        draft == 0 ||
+        draft->abi_version !=
+            SPARK_QWEN36_RESIDENT_DECODE_STAGE_MTP_DRAFT_VIEW_ABI_VERSION ||
+        draft->descriptor_bytes < (uint32_t)sizeof(*draft) ||
+        draft->draft_token_count == 0u ||
+        draft->draft_token_count >
+            SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS ||
+        draft->lane_index >= state->max_active_sequence_count ||
+        (state->owns_embedding == 0u && draft->row_token_ids == 0))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (prefill != 0)
+    {
+        if (draft->lane_index != prefill->lane_index ||
+            draft->sequence_id != prefill->sequence_id ||
+            draft->base_position !=
+                prefill->base_position + prefill->token_count)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        return SPARK_STATUS_OK;
+    }
+
+    matching_row_found = 0u;
+    for (row = 0u; row < decode_batch->row_count; row++)
+    {
+        if (decode_batch->row_lane_indices[row] == draft->lane_index)
+        {
+            if (draft->sequence_id != decode_batch->row_sequence_ids[row] ||
+                draft->base_position != decode_batch->row_positions[row] + 1u)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            matching_row_found = 1u;
+            break;
+        }
+    }
+    return matching_row_found != 0u
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INVALID_ARGUMENT;
 }
 
-static SparkStatus SparkQwen36ModuleValidateFrame(SparkQwen36ModuleState *state, const SparkModelDriverFrame *frame, const SparkQwen36ResidentDecodeStageFrameContext **context_out)
+static SparkStatus SparkQwen36ModuleValidateFrame(
+    SparkQwen36ModuleState *state,
+    const SparkModelDriverFrame *frame,
+    const SparkQwen36ResidentDecodeStageFrameContext **context_out)
 {
-	const SparkQwen36ResidentDecodeStageFrameContext *context;
-	uint32_t needs_input = state->stage_index > 0u ? 1u : 0u,needs_output = state->stage_index + 1u < state->stage_count ? 1u : 0u;
-	uint32_t expected_buffers = state->owns_embedding + state->owns_final_head,mode;
-	SparkStatus status;
-	if ( frame == 0 || frame->user_context == 0 || frame->buffer_count != expected_buffers )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	context = (const SparkQwen36ResidentDecodeStageFrameContext *)frame->user_context;
-	if ( context->abi_version != SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes != (uint32_t)sizeof(*context) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	mode = context->flags & (SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW);
-	if ( mode != SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW && mode != SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( ((context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u) != (needs_input != 0u) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( ((context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u) != (needs_output != 0u) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( state->attn_layer_count != 0u && ((context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE) == 0u || context->kv_block_table == 0 || context->kv_block_table->host_physical_block_indices == 0 || context->kv_block_table->host_lane_physical_block_counts == 0) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = mode == SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW ? SparkQwen36ModuleValidatePrefillView(state,frame,context) : SparkQwen36ModuleValidateDecodeView(state,frame,context);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen36ModuleValidateSpeculation(state,context);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	*context_out = context;
-	return(SPARK_STATUS_OK);
+    const uint32_t known_frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+    const uint32_t known_context_flags =
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE |
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW |
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT |
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT |
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW |
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER |
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY |
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST;
+    const SparkQwen36ResidentDecodeStageFrameContext *context;
+    const SparkQwen36KvBlockTableView *block_table;
+    uint32_t expected_buffer_count;
+    uint32_t is_prefill;
+    uint32_t mode;
+    uint32_t needs_hidden_input;
+    uint32_t needs_hidden_output;
+    uint32_t output_buffer_index;
+    uint32_t output_token_count;
+    uint32_t row_count;
+    uint64_t token_bytes;
+    SparkStatus status;
+
+    if (state == 0 || frame == 0 || context_out == 0 ||
+        frame->program_id == 0u || frame->reserved != 0u ||
+        (frame->flags & ~known_frame_flags) != 0u ||
+        (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) != 0u ||
+        frame->new_token_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    expected_buffer_count = state->owns_embedding + state->owns_final_head;
+    if (frame->buffer_count != expected_buffer_count ||
+        (expected_buffer_count != 0u && frame->buffers == 0) ||
+        frame->user_context == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    context = (const SparkQwen36ResidentDecodeStageFrameContext *)frame->user_context;
+    if (context->abi_version !=
+            SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION ||
+        context->descriptor_bytes < (uint32_t)sizeof(*context) ||
+        context->reserved0 != 0u ||
+        (context->flags & ~known_context_flags) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    mode = context->flags &
+        (SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW |
+         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW);
+    is_prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u
+        ? 1u
+        : 0u;
+    if ((is_prefill != 0u &&
+         mode != SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW) ||
+        (is_prefill == 0u &&
+         mode != SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    needs_hidden_input = state->stage_index > 0u ? 1u : 0u;
+    needs_hidden_output = state->stage_index + 1u < state->stage_count ? 1u : 0u;
+    if (((context->flags &
+          SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u) !=
+            (needs_hidden_input != 0u) ||
+        ((context->flags &
+          SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u) !=
+            (needs_hidden_output != 0u))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((needs_hidden_input != 0u &&
+         (context->hidden_input_transport_session == 0 ||
+          context->hidden_input_post_receive_function == 0)) ||
+        (needs_hidden_input == 0u &&
+         (context->hidden_input_transport_session != 0 ||
+          context->hidden_input_post_receive_function != 0)) ||
+        (needs_hidden_output != 0u &&
+         (context->hidden_output_transport_session == 0 ||
+          context->hidden_output_send_function == 0)) ||
+        (needs_hidden_output == 0u &&
+         (context->hidden_output_transport_session != 0 ||
+          context->hidden_output_send_function != 0)))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    block_table = context->kv_block_table;
+    if (state->attn_layer_count != 0u)
+    {
+        if ((context->flags &
+             SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE) == 0u ||
+            block_table == 0 ||
+            block_table->abi_version !=
+                SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION ||
+            block_table->descriptor_bytes < (uint32_t)sizeof(*block_table) ||
+            block_table->block_token_count !=
+                SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS ||
+            block_table->lane_count != state->max_active_sequence_count ||
+            block_table->lane_capacity < block_table->lane_count ||
+            block_table->lane_stride == 0u ||
+            block_table->physical_block_indices == 0 ||
+            block_table->lane_physical_block_counts == 0 ||
+            block_table->host_physical_block_indices == 0 ||
+            block_table->host_lane_physical_block_counts == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    else if ((context->flags &
+              SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE) != 0u ||
+             block_table != 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    status = is_prefill != 0u
+        ? SparkQwen36ModuleValidatePrefillView(state, frame, context)
+        : SparkQwen36ModuleValidateDecodeView(state, frame, context);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkQwen36ModuleValidateSpeculation(state, context);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+
+    row_count = is_prefill != 0u
+        ? context->prefill_frame->token_count
+        : context->decode_batch->row_count;
+    token_bytes = (uint64_t)row_count * sizeof(uint32_t);
+    if (state->owns_embedding != 0u)
+    {
+        status = SparkModelDriverValidateBuffer(
+            frame,
+            0u,
+            0u,
+            SPARK_MODEL_DRIVER_BUFFER_FLAG_READ,
+            token_bytes);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    if (state->owns_final_head != 0u)
+    {
+        output_token_count = is_prefill != 0u &&
+            (context->flags &
+             SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) == 0u
+            ? 1u
+            : row_count;
+        if ((context->flags &
+             SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER) != 0u)
+        {
+            output_token_count += context->mtp_draft->draft_token_count;
+        }
+        output_buffer_index = state->owns_embedding != 0u ? 1u : 0u;
+        status = SparkModelDriverValidateBuffer(
+            frame,
+            output_buffer_index,
+            1u,
+            SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE,
+            (uint64_t)output_token_count * sizeof(uint32_t));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+
+    *context_out = context;
+    return SPARK_STATUS_OK;
 }
 
 /*
@@ -829,11 +1108,11 @@ static SparkStatus SparkQwen36ModuleValidateFrame(SparkQwen36ModuleState *state,
  * rows all pass through here; an uncovered position is a refused frame,
  * never a stray cache write.
  */
-static SparkStatus SparkQwen36ModuleStagePosition(SparkQwen36ModuleState *state, const SparkQwen36KvBlockTableView *table, uint32_t lane, uint64_t position, uint32_t index)
+static SparkStatus SparkQwen36ModuleStagePosition(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, const SparkQwen36KvBlockTableView *table, uint32_t lane, uint64_t position, uint32_t index)
 {
 	uint32_t block_ordinal,block;
-	state->host_row_lane_indices[index] = lane;
-	state->host_row_positions[index] = position;
+	slot->host_row_lane_indices[index] = lane;
+	slot->host_row_positions[index] = position;
 	if ( state->attn_layer_count == 0u )
 		return(SPARK_STATUS_OK);
 	if ( position + 1u > (uint64_t)table->lane_stride * SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS )
@@ -844,12 +1123,12 @@ static SparkStatus SparkQwen36ModuleStagePosition(SparkQwen36ModuleState *state,
 	block = table->host_physical_block_indices[((uint64_t)lane * table->lane_stride) + block_ordinal];
 	if ( block == SPARK_QWEN36_RESIDENT_DECODE_STAGE_NO_BLOCK || block >= state->kv_block_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	state->host_slot_mapping[index] = (block * SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) + (uint32_t)(position % SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
-	state->host_context_lengths[index] = (uint32_t)(position + 1u);
+	slot->host_slot_mapping[index] = (block * SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) + (uint32_t)(position % SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
+	slot->host_context_lengths[index] = (uint32_t)(position + 1u);
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkQwen36ModuleStageRows(SparkQwen36ModuleState *state, const SparkQwen36ResidentDecodeStageFrameContext *context, uint8_t *lane_used)
+static SparkStatus SparkQwen36ModuleStageRows(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, const SparkQwen36ResidentDecodeStageFrameContext *context, uint8_t *lane_used)
 {
 	const SparkQwen36DecodeBatchView *batch = context->decode_batch;
 	uint32_t row,lane;
@@ -860,8 +1139,8 @@ static SparkStatus SparkQwen36ModuleStageRows(SparkQwen36ModuleState *state, con
 		if ( lane >= state->max_active_sequence_count || lane_used[lane] != 0u )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		lane_used[lane] = 1u;
-		state->host_row_cold[row] = state->lane_warm[lane] != 0u ? 0u : 1u;
-		status = SparkQwen36ModuleStagePosition(state,context->kv_block_table,lane,batch->row_positions[row],row);
+		slot->host_row_cold[row] = state->lane_warm[lane] != 0u ? 0u : 1u;
+		status = SparkQwen36ModuleStagePosition(state,slot,context->kv_block_table,lane,batch->row_positions[row],row);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
@@ -875,14 +1154,14 @@ static SparkStatus SparkQwen36ModuleStageRows(SparkQwen36ModuleState *state, con
  * block-table mirrors exactly as decode does per row. Any uncovered
  * position is a refused frame, never a stray cache write.
  */
-static SparkStatus SparkQwen36ModulePrefillStage(SparkQwen36ModuleState *state, const SparkQwen36ResidentDecodeStageFrameContext *context)
+static SparkStatus SparkQwen36ModulePrefillStage(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, const SparkQwen36ResidentDecodeStageFrameContext *context)
 {
 	const SparkQwen36PrefillFrameView *view = context->prefill_frame;
 	uint32_t index;
 	SparkStatus status;
 	for (index = 0; index < view->token_count; index++)
 	{
-		status = SparkQwen36ModuleStagePosition(state,context->kv_block_table,view->lane_index,view->base_position + index,index);
+		status = SparkQwen36ModuleStagePosition(state,slot,context->kv_block_table,view->lane_index,view->base_position + index,index);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
@@ -895,7 +1174,7 @@ static SparkStatus SparkQwen36ModulePrefillStage(SparkQwen36ModuleState *state, 
  * drafted lane; the first draft position must be exactly one past it, so a
  * mispointed draft view is refused before anything launches.
  */
-static SparkStatus SparkQwen36ModuleStageMtpDraft(SparkQwen36ModuleState *state, const SparkQwen36ResidentDecodeStageFrameContext *context, const SparkQwen36PrefillFrameView *prefill, uint32_t rows)
+static SparkStatus SparkQwen36ModuleStageMtpDraft(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, const SparkQwen36ResidentDecodeStageFrameContext *context, const SparkQwen36PrefillFrameView *prefill, uint32_t rows)
 {
 	const SparkQwen36MtpDraftView *view = context->mtp_draft;
 	uint32_t seed_row = rows - 1u,row,draft;
@@ -909,12 +1188,12 @@ static SparkStatus SparkQwen36ModuleStageMtpDraft(SparkQwen36ModuleState *state,
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		seed_row = row;
 	}
-	if ( state->host_row_positions[seed_row] + 1u != view->base_position )
+	if ( slot->host_row_positions[seed_row] + 1u != view->base_position )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	state->mtp_seed_row = seed_row;
+	slot->mtp_seed_row = seed_row;
 	for (draft = 0; draft + 1u < view->draft_token_count; draft++)
 	{
-		status = SparkQwen36ModuleStagePosition(state,context->kv_block_table,view->lane_index,view->base_position + draft,rows + draft);
+		status = SparkQwen36ModuleStagePosition(state,slot,context->kv_block_table,view->lane_index,view->base_position + draft,rows + draft);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
@@ -928,15 +1207,15 @@ static SparkStatus SparkQwen36ModuleUploadRows(SparkQwen36ModuleState *state, Sp
 	uint32_t staged = rows + (drafted != 0u ? context->mtp_draft->draft_token_count - 1u : 0u);
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
-	error = cudaMemcpyAsync(slot->row_lane_indices,state->host_row_lane_indices,staged * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	error = cudaMemcpyAsync(slot->row_lane_indices,slot->host_row_lane_indices,staged * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
-		error = cudaMemcpyAsync(slot->row_positions,state->host_row_positions,staged * sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
+		error = cudaMemcpyAsync(slot->row_positions,slot->host_row_positions,staged * sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess && prefill == 0 )
-		error = cudaMemcpyAsync(slot->row_cold,state->host_row_cold,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+		error = cudaMemcpyAsync(slot->row_cold,slot->host_row_cold,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess && state->attn_layer_count != 0u )
-		error = cudaMemcpyAsync(slot->slot_mapping,state->host_slot_mapping,staged * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+		error = cudaMemcpyAsync(slot->slot_mapping,slot->host_slot_mapping,staged * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess && state->attn_layer_count != 0u )
-		error = cudaMemcpyAsync(slot->context_lengths,state->host_context_lengths,staged * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+		error = cudaMemcpyAsync(slot->context_lengths,slot->host_context_lengths,staged * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess && state->owns_embedding != 0u )
 	{
 		for (token_guard = 0; token_guard < rows; token_guard++)
@@ -1098,7 +1377,7 @@ static SparkStatus SparkQwen36ModuleRunMtpDraftChain(SparkQwen36ModuleState *sta
 	const SparkQwen36MtpDraftView *view = context->mtp_draft;
 	uint32_t verify = (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u ? 1u : 0u;
 	uint32_t head_rows = prefill != 0 && verify == 0u ? 1u : rows;
-	uint32_t rows_p = prefill != 0 ? rows : 1u,row_base = prefill != 0 ? 0u : state->mtp_seed_row,step;
+	uint32_t rows_p = prefill != 0 ? rows : 1u,row_base = prefill != 0 ? 0u : slot->mtp_seed_row,step;
 	uint32_t out_index = state->owns_embedding != 0u ? 1u : 0u;
 	const uint32_t *seed_ids = slot->input_token_ids + (state->owns_embedding != 0u ? row_base : 0u);
 	const void *seed_hidden = (const uint8_t *)slot->hidden_bf16 + ((uint64_t)row_base * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES);
@@ -1197,12 +1476,137 @@ static SparkStatus SparkQwen36ModuleOpenKvTier(SparkQwen36ModuleState *state)
 	return(SparkStageKvClientOpen(&state->kv_client,SPARK_QWEN36_MODULE_TAG,provider,state->stage_index,state->first_layer_index,state->layer_count,model_fp,layout_fp,service,socket_path,pool_bytes,workers));
 }
 
+static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
+    SparkQwen36ModuleState *state,
+    const SparkQwen36ResidentDecodeStageFrameContext *context,
+    const SparkQwen36PrefillFrameView *prefill,
+    uint8_t *lane_requires_reset)
+{
+    uint32_t row_count;
+    uint32_t row;
+
+    if (state == 0 || context == 0 || lane_requires_reset == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    row_count = prefill != 0 ? 1u : context->decode_batch->row_count;
+    memset(lane_requires_reset, 0, row_count * sizeof(*lane_requires_reset));
+    if (prefill != 0)
+    {
+        uint64_t current_sequence_id;
+        uint64_t expected_position;
+        uint32_t restore_first;
+
+        current_sequence_id = state->lane_sequence_ids[prefill->lane_index];
+        expected_position = state->lane_next_positions[prefill->lane_index];
+        restore_first = (context->flags &
+            SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u
+            ? 1u
+            : 0u;
+        if (current_sequence_id == prefill->sequence_id)
+        {
+            if ((restore_first == 0u && prefill->base_position != expected_position) ||
+                (restore_first != 0u && prefill->base_position > expected_position))
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+        }
+        else
+        {
+            if (prefill->base_position != 0u)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            lane_requires_reset[0] = 1u;
+        }
+        return SPARK_STATUS_OK;
+    }
+
+    for (row = 0u; row < context->decode_batch->row_count; row++)
+    {
+        uint32_t lane;
+        uint64_t sequence_id;
+        uint64_t position;
+        uint64_t current_sequence_id;
+
+        lane = context->decode_batch->row_lane_indices[row];
+        sequence_id = context->decode_batch->row_sequence_ids[row];
+        position = context->decode_batch->row_positions[row];
+        current_sequence_id = state->lane_sequence_ids[lane];
+        if (current_sequence_id == sequence_id)
+        {
+            if (position != state->lane_next_positions[lane])
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+        }
+        else
+        {
+            if (position != 0u)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            lane_requires_reset[row] = 1u;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
+static void SparkQwen36ModuleCommitLaneSequenceContinuity(
+    SparkQwen36ModuleState *state,
+    const SparkQwen36ResidentDecodeStageFrameContext *context,
+    const SparkQwen36PrefillFrameView *prefill)
+{
+    uint32_t row;
+
+    if (prefill != 0)
+    {
+        state->lane_sequence_ids[prefill->lane_index] = prefill->sequence_id;
+        state->lane_next_positions[prefill->lane_index] =
+            prefill->base_position + prefill->token_count;
+        state->lane_warm[prefill->lane_index] = 1u;
+        return;
+    }
+    for (row = 0u; row < context->decode_batch->row_count; row++)
+    {
+        uint32_t lane;
+
+        lane = context->decode_batch->row_lane_indices[row];
+        state->lane_sequence_ids[lane] = context->decode_batch->row_sequence_ids[row];
+        state->lane_next_positions[lane] = context->decode_batch->row_positions[row] + 1u;
+        state->lane_warm[lane] = 1u;
+    }
+}
+
+static void SparkQwen36ModuleInvalidateLaneSequenceContinuity(
+    SparkQwen36ModuleState *state,
+    const SparkQwen36ResidentDecodeStageFrameContext *context,
+    const SparkQwen36PrefillFrameView *prefill)
+{
+    uint32_t row;
+
+    if (prefill != 0)
+    {
+        state->lane_sequence_ids[prefill->lane_index] = 0u;
+        state->lane_next_positions[prefill->lane_index] = 0u;
+        state->lane_warm[prefill->lane_index] = 0u;
+        return;
+    }
+    for (row = 0u; row < context->decode_batch->row_count; row++)
+    {
+        uint32_t lane;
+
+        lane = context->decode_batch->row_lane_indices[row];
+        state->lane_sequence_ids[lane] = 0u;
+        state->lane_next_positions[lane] = 0u;
+        state->lane_warm[lane] = 0u;
+    }
+}
+
 static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, SparkQwen36ResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, const SparkQwen36PrefillFrameView *prefill, uint32_t rows)
 {
 	SparkStatus status = SparkQwen36ModuleUploadRows(state,slot,context,frame,prefill,rows);
 	uint32_t layer;
-	if ( status == SPARK_STATUS_OK && prefill != 0 && prefill->base_position == 0u )
-		status = SparkQwen36ModuleResetLaneState(state,slot,prefill->lane_index);
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u )
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u )
@@ -1216,128 +1620,457 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	return(status);
 }
 
-SparkStatus SparkQwen36ResidentDecodeStageExecute(void *module_state, SparkModelDriverFrame *frame)
+SparkStatus SparkQwen36ResidentDecodeStageExecute(
+    void *module_state,
+    SparkModelDriverFrame *frame)
 {
-	SparkQwen36ModuleState *state = (SparkQwen36ModuleState *)module_state;
-	SparkQwen36ResidentDecodeStageFrameContext *context = 0;
-	const SparkQwen36PrefillFrameView *prefill;
-	uint8_t lane_used[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	SparkQwen36ModuleSlot *slot;
-	uint32_t slot_index = 0u,rows,row;
-	SparkStatus status;
-	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkQwen36ModuleValidateFrame(state,frame,(const SparkQwen36ResidentDecodeStageFrameContext **)&context);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	prefill = (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW) != 0u ? context->prefill_frame : 0;
-	rows = prefill != 0 ? prefill->token_count : context->decode_batch->row_count;
-	if ( prefill != 0 )
-		status = SparkQwen36ModulePrefillStage(state,context);
-	else
-	{
-		memset(lane_used,0,sizeof(lane_used));
-		status = SparkQwen36ModuleStageRows(state,context,lane_used);
-	}
-	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER) != 0u )
-		status = SparkQwen36ModuleStageMtpDraft(state,context,prefill,rows);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	status = SparkStageModuleSlotClaim(state->slot_states,state->pipeline_slot_count,&slot_index);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	slot = &state->slots[slot_index];
-	status = SparkQwen36ModuleRunFrame(state,slot,context,frame,prefill,rows);
-	SparkStageModuleSlotRelease(state->slot_states,slot_index);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	if ( prefill != 0 )
-		state->lane_warm[prefill->lane_index] = 1u;
-	else
-		for (row = 0; row < rows; row++)
-			state->lane_warm[context->decode_batch->row_lane_indices[row]] = 1u;
-	atomic_fetch_add(&state->frames_executed,1u);
-	atomic_fetch_add(&state->tokens_emitted,rows);
-	return(SPARK_STATUS_OK);
+    SparkQwen36ModuleState *state;
+    SparkQwen36ResidentDecodeStageFrameContext *context;
+    const SparkQwen36PrefillFrameView *prefill;
+    const uint32_t *claimed_lane_indices;
+    uint32_t prefill_lane_index;
+    uint8_t lane_requires_reset[
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+    uint8_t lane_used[
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+    SparkQwen36ModuleSlot *slot;
+    uint32_t claimed_lane_count;
+    uint32_t slot_index;
+    uint32_t rows;
+    uint32_t row;
+    uint32_t lanes_claimed;
+    SparkStatus status;
+
+    state = (SparkQwen36ModuleState *)module_state;
+    if (state == 0 || frame == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    context = 0;
+    status = SparkQwen36ModuleValidateFrame(
+        state,
+        frame,
+        (const SparkQwen36ResidentDecodeStageFrameContext **)&context);
+    if (status != SPARK_STATUS_OK)
+    {
+        atomic_fetch_add_explicit(
+            &state->rejected_count,
+            1u,
+            memory_order_relaxed);
+        return status;
+    }
+
+    prefill = (context->flags &
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW) != 0u
+        ? context->prefill_frame
+        : 0;
+    rows = prefill != 0 ? prefill->token_count : context->decode_batch->row_count;
+    if (prefill != 0)
+    {
+        prefill_lane_index = prefill->lane_index;
+        claimed_lane_indices = &prefill_lane_index;
+        claimed_lane_count = 1u;
+    }
+    else
+    {
+        claimed_lane_indices = context->decode_batch->row_lane_indices;
+        claimed_lane_count = rows;
+    }
+
+    lanes_claimed = 0u;
+    status = SparkStageModuleIndexSetClaim(
+        state->lane_states,
+        state->max_active_sequence_count,
+        claimed_lane_indices,
+        claimed_lane_count);
+    lanes_claimed = status == SPARK_STATUS_OK ? 1u : 0u;
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkQwen36ModuleValidateLaneSequenceContinuity(
+            state,
+            context,
+            prefill,
+            lane_requires_reset);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        if (lanes_claimed != 0u)
+        {
+            SparkStageModuleIndexSetRelease(
+                state->lane_states,
+                state->max_active_sequence_count,
+                claimed_lane_indices,
+                claimed_lane_count);
+        }
+        atomic_fetch_add_explicit(
+            &state->rejected_count,
+            1u,
+            memory_order_relaxed);
+        return status;
+    }
+
+    slot_index = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
+    status = SparkStageModuleSlotClaim(
+        state->slot_states,
+        state->pipeline_slot_count,
+        &slot_index);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkStageModuleIndexSetRelease(
+            state->lane_states,
+            state->max_active_sequence_count,
+            claimed_lane_indices,
+            claimed_lane_count);
+        atomic_fetch_add_explicit(
+            &state->rejected_count,
+            1u,
+            memory_order_relaxed);
+        return status;
+    }
+    slot = &state->slots[slot_index];
+
+    for (row = 0u; status == SPARK_STATUS_OK && row < claimed_lane_count; row++)
+    {
+        if (lane_requires_reset[row] != 0u)
+        {
+            state->lane_warm[claimed_lane_indices[row]] = 0u;
+            status = SparkQwen36ModuleResetLaneState(
+                state,
+                slot,
+                claimed_lane_indices[row]);
+        }
+    }
+    if (status == SPARK_STATUS_OK && prefill != 0)
+    {
+        status = SparkQwen36ModulePrefillStage(state, slot, context);
+    }
+    else if (status == SPARK_STATUS_OK)
+    {
+        memset(lane_used, 0, sizeof(lane_used));
+        status = SparkQwen36ModuleStageRows(state, slot, context, lane_used);
+    }
+    if (status == SPARK_STATUS_OK &&
+        (context->flags &
+         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER) != 0u)
+    {
+        status = SparkQwen36ModuleStageMtpDraft(
+            state,
+            slot,
+            context,
+            prefill,
+            rows);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        atomic_fetch_add_explicit(
+            &state->submitted_count,
+            1u,
+            memory_order_relaxed);
+        status = SparkQwen36ModuleRunFrame(
+            state,
+            slot,
+            context,
+            frame,
+            prefill,
+            rows);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        SparkQwen36ModuleCommitLaneSequenceContinuity(
+            state,
+            context,
+            prefill);
+        atomic_fetch_add_explicit(
+            &state->completed_count,
+            1u,
+            memory_order_relaxed);
+        atomic_fetch_add_explicit(
+            &state->tokens_emitted,
+            rows,
+            memory_order_relaxed);
+    }
+    else
+    {
+        SparkQwen36ModuleInvalidateLaneSequenceContinuity(
+            state,
+            context,
+            prefill);
+        atomic_fetch_add_explicit(
+            &state->failed_count,
+            1u,
+            memory_order_relaxed);
+    }
+
+    SparkStageModuleIndexSetRelease(
+        state->lane_states,
+        state->max_active_sequence_count,
+        claimed_lane_indices,
+        claimed_lane_count);
+    SparkStageModuleSlotRelease(state->slot_states, slot_index);
+    return status;
 }
 
-SparkStatus SparkQwen36ResidentDecodeStageAdmit(void *module_state, const SparkModelDriverAdmissionRequest *request, SparkModelDriverAdmissionDecision *decision)
+SparkStatus SparkQwen36ResidentDecodeStageAdmit(
+    void *module_state,
+    const SparkModelDriverAdmissionRequest *request,
+    SparkModelDriverAdmissionDecision *decision)
 {
-	SparkQwen36ModuleState *state = (SparkQwen36ModuleState *)module_state;
-	if ( state == 0 || request == 0 || decision == 0 || request->descriptor_bytes != (uint32_t)sizeof(*request) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(decision,0,sizeof(*decision));
-	decision->descriptor_bytes = (uint32_t)sizeof(*decision);
-	decision->accepted = 1u;
-	decision->available_dispatch_slot_count = state->pipeline_slot_count;
-	return(SPARK_STATUS_OK);
+    const uint32_t known_frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+    SparkQwen36ModuleState *state;
+    uint32_t available_slot_count;
+    uint32_t is_prefill;
+
+    state = (SparkQwen36ModuleState *)module_state;
+    if (state == 0 || request == 0 || decision == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    available_slot_count = SparkStageModuleSlotCountFree(
+        state->slot_states,
+        state->pipeline_slot_count);
+    SparkStageModuleAdmissionDecisionInitialize(
+        decision,
+        available_slot_count);
+    if (request->descriptor_bytes < (uint32_t)sizeof(*request) ||
+        request->program_id == 0u)
+    {
+        return SPARK_STATUS_ABI_MISMATCH;
+    }
+
+    is_prefill = (request->frame_flags &
+                  SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u
+        ? 1u
+        : 0u;
+    if ((request->frame_flags & ~known_frame_flags) != 0u ||
+        (request->frame_flags &
+         SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) != 0u ||
+        request->active_slot_count == 0u ||
+        request->active_slot_count > state->max_active_sequence_count ||
+        request->new_token_count == 0u ||
+        request->new_token_count > state->max_active_sequence_count ||
+        (is_prefill != 0u && request->active_slot_count != 1u) ||
+        (is_prefill == 0u &&
+         request->new_token_count != request->active_slot_count))
+    {
+        SparkStageModuleAdmissionDecisionReject(
+            decision,
+            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);
+        atomic_fetch_add_explicit(
+            &state->rejected_count,
+            1u,
+            memory_order_relaxed);
+        return SPARK_STATUS_OK;
+    }
+    if ((is_prefill != 0u &&
+         SparkModelDriverRangeFitsWithinCapacity(
+             request->sequence_position,
+             request->new_token_count,
+             SPARK_QWEN36_MODEL_MAXIMUM_CONTEXT_TOKENS) == 0u) ||
+        (is_prefill == 0u &&
+         request->sequence_position >=
+             SPARK_QWEN36_MODEL_MAXIMUM_CONTEXT_TOKENS))
+    {
+        SparkStageModuleAdmissionDecisionReject(
+            decision,
+            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_KV_CAPACITY);
+        atomic_fetch_add_explicit(
+            &state->rejected_count,
+            1u,
+            memory_order_relaxed);
+        return SPARK_STATUS_OK;
+    }
+    if (available_slot_count == 0u)
+    {
+        SparkStageModuleAdmissionDecisionReject(
+            decision,
+            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY);
+        atomic_fetch_add_explicit(
+            &state->rejected_count,
+            1u,
+            memory_order_relaxed);
+        return SPARK_STATUS_OK;
+    }
+
+    SparkStageModuleAdmissionDecisionAccept(decision);
+    decision->host_staging_bytes = (uint64_t)request->new_token_count *
+        (sizeof(uint32_t) *
+             (uint64_t)(state->owns_embedding + state->owns_final_head + 3u) +
+         sizeof(uint64_t));
+    decision->device_memcpy_bytes = decision->host_staging_bytes;
+    return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkQwen36ResidentDecodeStageSnapshot(void *module_state, uint32_t program_id, SparkModelDriverRuntimeSnapshot *snapshot)
+SparkStatus SparkQwen36ResidentDecodeStageSnapshot(
+    void *module_state,
+    uint32_t program_id,
+    SparkModelDriverRuntimeSnapshot *snapshot)
 {
-	SparkQwen36ModuleState *state = (SparkQwen36ModuleState *)module_state;
-	if ( state == 0 || snapshot == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(snapshot,0,sizeof(*snapshot));
-	snapshot->descriptor_bytes = (uint32_t)sizeof(*snapshot);
-	snapshot->program_id = program_id;
-	snapshot->submitted_count = atomic_load(&state->frames_executed);
-	snapshot->completed_count = atomic_load(&state->frames_executed);
-	snapshot->resident_token_count = atomic_load(&state->tokens_emitted);
-	snapshot->kv_token_capacity = (uint64_t)state->kv_block_count * SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-	snapshot->available_dispatch_slot_count = state->pipeline_slot_count;
-	return(SPARK_STATUS_OK);
+    SparkQwen36ModuleState *state;
+
+    state = (SparkQwen36ModuleState *)module_state;
+    if (state == 0 || snapshot == 0 || program_id == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    SparkStageModuleRuntimeSnapshotInitialize(
+        snapshot,
+        program_id,
+        state->slot_states,
+        state->pipeline_slot_count);
+    snapshot->submitted_count = atomic_load_explicit(
+        &state->submitted_count,
+        memory_order_relaxed);
+    snapshot->completed_count = atomic_load_explicit(
+        &state->completed_count,
+        memory_order_relaxed);
+    snapshot->rejected_count = atomic_load_explicit(
+        &state->rejected_count,
+        memory_order_relaxed);
+    snapshot->kv_token_capacity = (uint64_t)state->kv_block_count * SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+    return SPARK_STATUS_OK;
 }
 
 void SparkQwen36ResidentDecodeStageDestroy(void *module_state)
 {
-	SparkQwen36ModuleState *state = (SparkQwen36ModuleState *)module_state;
-	uint32_t slot_index;
-	if ( state == 0 )
-		return;
-	for (slot_index = 0; slot_index < state->pipeline_slot_count; slot_index++)
-		if ( state->slots[slot_index].cuda_stream != 0 )
-			cudaStreamDestroy((cudaStream_t)state->slots[slot_index].cuda_stream);
-	SparkStageKvClientClose(&state->kv_client);
-	SparkStageModuleLedgerRelease(&state->ledger);
-	free(state);
+    SparkQwen36ModuleState *state;
+    uint32_t slot_index;
+
+    state = (SparkQwen36ModuleState *)module_state;
+    if (state == 0)
+    {
+        return;
+    }
+    if (SparkStageModuleWaitForSlots(
+            SPARK_QWEN36_MODULE_TAG,
+            state->slot_states,
+            state->pipeline_slot_count,
+            SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK)
+    {
+        return;
+    }
+    for (slot_index = 0u; slot_index < state->pipeline_slot_count; ++slot_index)
+    {
+        if (state->slots[slot_index].cuda_stream != 0)
+        {
+            cudaStreamDestroy((cudaStream_t)state->slots[slot_index].cuda_stream);
+        }
+    }
+    SparkStageKvClientClose(&state->kv_client);
+    SparkStageModuleLedgerRelease(&state->ledger);
+    free(state);
 }
 
-SparkStatus SparkQwen36ResidentDecodeStageInitialize(const SparkFirmwareModuleConfiguration *configuration, const SparkFirmwareModuleHostServices *host_services, void **module_state)
+SparkStatus SparkQwen36ResidentDecodeStageInitialize(
+    const SparkFirmwareModuleConfiguration *configuration,
+    const SparkFirmwareModuleHostServices *host_services,
+    void **module_state)
 {
-	SparkQwen36ModuleState *state;
-	const char *pack_path = 0;
-	SparkStatus status;
-	uint32_t slot_index;
-	(void)host_services;
-	if ( configuration == 0 || module_state == 0 || configuration->abi_version != SPARK_FIRMWARE_MODULE_ABI_VERSION )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	state = (SparkQwen36ModuleState *)calloc(1u,sizeof(*state));
-	if ( state == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	state->ledger.module_tag = SPARK_QWEN36_MODULE_TAG;
-	status = SparkQwen36ModuleConfigure(state);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentText(SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_STAGE_PACK_PATH",&pack_path);
-	if ( status == SPARK_STATUS_OK )
-	{
-		SparkQwen36ModuleBuildOrdinals(state);
-		status = SparkQwen36ModuleLoadPack(state,pack_path);
-	}
-	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen36ModuleAllocatePools(state);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen36ModuleBuildHeadShadow(state);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen36ModuleOpenKvTier(state);
-	for (slot_index = 0; status == SPARK_STATUS_OK && slot_index < state->pipeline_slot_count; slot_index++)
-		status = SparkQwen36ModuleAllocateSlot(state,&state->slots[slot_index]);
-	if ( status != SPARK_STATUS_OK )
-	{
-		SparkQwen36ResidentDecodeStageDestroy(state);
-		return(status);
-	}
-	fprintf(stderr,"%s ready stage=%u/%u slice=%u+%u gdn=%u attn=%u lanes=%u kv_blocks=%u device_gib=%.1f\n",SPARK_QWEN36_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count,state->gdn_layer_count,state->attn_layer_count,state->max_active_sequence_count,state->kv_block_count,(double)state->ledger.device_bytes_resident / (1024.0 * 1024.0 * 1024.0));
-	*module_state = state;
-	return(SPARK_STATUS_OK);
+    SparkQwen36ModuleState *state;
+    const char *pack_path;
+    uint32_t allow_unqualified_execution;
+    uint32_t slot_index;
+    SparkStatus status;
+
+    pack_path = 0;
+    allow_unqualified_execution = 0u;
+    status = SparkFirmwareModuleValidateInitialization(
+        configuration,
+        host_services,
+        module_state);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkStageModuleEnvironmentUnsigned(
+        SPARK_QWEN36_MODULE_TAG,
+        "SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION",
+        1u,
+        1u,
+        &allow_unqualified_execution);
+    if (status != SPARK_STATUS_OK || allow_unqualified_execution != 1u)
+    {
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+    }
+
+    state = (SparkQwen36ModuleState *)calloc(1u, sizeof(*state));
+    if (state == 0)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    state->ledger.module_tag = SPARK_QWEN36_MODULE_TAG;
+    atomic_init(&state->submitted_count, 0u);
+    atomic_init(&state->completed_count, 0u);
+    atomic_init(&state->rejected_count, 0u);
+    atomic_init(&state->failed_count, 0u);
+    atomic_init(&state->tokens_emitted, 0u);
+
+    status = SparkQwen36ModuleConfigure(state);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkStageModuleCudaStatus(
+            SPARK_QWEN36_MODULE_TAG,
+            SparkQwen36ConfigureCudaKernels(),
+            "configure_cuda_kernels");
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        SparkStageModuleAtomicStateArrayInitialize(
+            state->slot_states,
+            state->pipeline_slot_count);
+        SparkStageModuleAtomicStateArrayInitialize(
+            state->lane_states,
+            state->max_active_sequence_count);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkStageModuleEnvironmentText(
+            SPARK_QWEN36_MODULE_TAG,
+            "SPARK_QWEN36_STAGE_PACK_PATH",
+            &pack_path);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        SparkQwen36ModuleBuildOrdinals(state);
+        status = SparkQwen36ModuleLoadPack(state, pack_path);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkQwen36ModuleAllocatePools(state);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkQwen36ModuleBuildHeadShadow(state);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkQwen36ModuleOpenKvTier(state);
+    }
+    for (slot_index = 0u;
+         status == SPARK_STATUS_OK && slot_index < state->pipeline_slot_count;
+         slot_index++)
+    {
+        status = SparkQwen36ModuleAllocateSlot(state, &state->slots[slot_index]);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkQwen36ResidentDecodeStageDestroy(state);
+        return status;
+    }
+
+    fprintf(
+        stderr,
+        "%s ready stage=%u/%u slice=%u+%u gdn=%u attn=%u lanes=%u kv_blocks=%u device_gib=%.1f\n",
+        SPARK_QWEN36_MODULE_TAG,
+        state->stage_index,
+        state->stage_count,
+        state->first_layer_index,
+        state->layer_count,
+        state->gdn_layer_count,
+        state->attn_layer_count,
+        state->max_active_sequence_count,
+        state->kv_block_count,
+        (double)state->ledger.device_bytes_resident /
+            (1024.0 * 1024.0 * 1024.0));
+    *module_state = state;
+    return SPARK_STATUS_OK;
 }

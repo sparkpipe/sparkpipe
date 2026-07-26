@@ -1,4 +1,5 @@
 .env
+.audit/
 build/
 __pycache__/
 *.pyc

@@ -579,8 +579,14 @@ class MoEDirectMicroKernel:
         lane_cb = lane >> Int32(3)
         lane_mode_c = (lane >> Int32(1)) & Int32(3)
         bsf_byte_shift = lane_mode_c * Int32(8)
-        out_acc0 = Float32(0.0)
-        out_acc1 = Float32(0.0)
+        # Independent per-expert accumulation chains: the single out_acc chain
+        # serialized all top-K experts' FMAs through one register dependency even
+        # though range_constexpr fully unrolls; per-expert partials give the
+        # scheduler K independent chains and K outstanding load streams, and the
+        # router scale leaves the chain entirely, applied once at the combine.
+        acc0 = [Float32(0.0) for _ in range(cfg.num_topk)]
+        acc1 = [Float32(0.0) for _ in range(cfg.num_topk)]
+        expert_scale = [Float32(0.0) for _ in range(cfg.num_topk)]
 
         for kk in cutlass.range_constexpr(cfg.num_topk):
             eid_addr = Int32(kk)
@@ -588,6 +594,7 @@ class MoEDirectMicroKernel:
             router_w = topk_weights[eid_addr]
             alpha_fc2 = w2_alphas[eid]
             scale_lane = alpha_fc2 * router_w
+            expert_scale[kk] = scale_lane
 
             ebase_w = Int64(eid) * Int64(cfg.k_dim * cfg.n_half)
             ebase_sf = Int64(eid) * Int64(cfg.w2_sf_rows * cfg.w2_sf_cols)
@@ -620,12 +627,11 @@ class MoEDirectMicroKernel:
             sf_word0 = ld_global_nc_u32(w2s_base_addr + ebase_sf + bsf_off0)
             bsf_byte0 = (sf_word0 >> Uint32(bsf_byte_shift)) & Uint32(0xFF)
             bsf_f0 = cvt_e4m3_to_f32_via_f16(bsf_byte0)
-            out_acc0 = (
-                out_acc0
-                + bsf_f0
-                * self._fp4_dot4_for_math(u_packed0, xh0, xh1, xh2, xh3)
-                * scale_lane
-            )
+            acc0[kk] = (
+    acc0[kk]
+    + bsf_f0
+    * self._fp4_dot4_for_math(u_packed0, xh0, xh1, xh2, xh3)
+    )
 
             u_packed1 = ld_global_nc_u32(
                 w2_base_addr
@@ -642,13 +648,17 @@ class MoEDirectMicroKernel:
             sf_word1 = ld_global_nc_u32(w2s_base_addr + ebase_sf + bsf_off1)
             bsf_byte1 = (sf_word1 >> Uint32(bsf_byte_shift)) & Uint32(0xFF)
             bsf_f1 = cvt_e4m3_to_f32_via_f16(bsf_byte1)
-            out_acc1 = (
-                out_acc1
-                + bsf_f1
-                * self._fp4_dot4_for_math(u_packed1, xh0, xh1, xh2, xh3)
-                * scale_lane
-            )
+            acc1[kk] = (
+    acc1[kk]
+    + bsf_f1
+    * self._fp4_dot4_for_math(u_packed1, xh0, xh1, xh2, xh3)
+    )
 
+        out_acc0 = Float32(0.0)
+        out_acc1 = Float32(0.0)
+        for kk in cutlass.range_constexpr(cfg.num_topk):
+            out_acc0 = out_acc0 + acc0[kk] * expert_scale[kk]
+            out_acc1 = out_acc1 + acc1[kk] * expert_scale[kk]
         sum_warp0 = cute.arch.warp_reduction_sum(out_acc0)
         sum_warp1 = cute.arch.warp_reduction_sum(out_acc1)
         if lane == Int32(0):
@@ -681,8 +691,14 @@ class MoEDirectMicroKernel:
         lane_cb = lane >> Int32(3)
         lane_mode_c = (lane >> Int32(1)) & Int32(3)
         bsf_byte_shift = lane_mode_c * Int32(8)
-        out_acc0 = Float32(0.0)
-        out_acc1 = Float32(0.0)
+        # Independent per-expert accumulation chains: the single out_acc chain
+        # serialized all top-K experts' FMAs through one register dependency even
+        # though range_constexpr fully unrolls; per-expert partials give the
+        # scheduler K independent chains and K outstanding load streams, and the
+        # router scale leaves the chain entirely, applied once at the combine.
+        acc0 = [Float32(0.0) for _ in range(cfg.num_topk)]
+        acc1 = [Float32(0.0) for _ in range(cfg.num_topk)]
+        expert_scale = [Float32(0.0) for _ in range(cfg.num_topk)]
 
         for kk in cutlass.range_constexpr(cfg.num_topk):
             eid_addr = Int32(kk)
@@ -690,6 +706,7 @@ class MoEDirectMicroKernel:
             router_w = topk_weights[eid_addr]
             alpha_fc2 = w2_alphas[eid]
             scale_lane = alpha_fc2 * router_w
+            expert_scale[kk] = scale_lane
 
             ebase_w = Int64(eid) * Int64(cfg.k_dim * cfg.n_half)
             ebase_sf = Int64(eid) * Int64(cfg.w2_sf_rows * cfg.w2_sf_cols)
@@ -739,12 +756,11 @@ class MoEDirectMicroKernel:
                     if w_valid > Int32(0)
                     else Float32(0.0)
                 )
-                out_acc0 = (
-                    out_acc0
-                    + bsf_f0
-                    * self._fp4_dot4_for_math(u_packed0, xh0, xh1, xh2, xh3)
-                    * scale_lane
-                )
+                acc0[kk] = (
+    acc0[kk]
+    + bsf_f0
+    * self._fp4_dot4_for_math(u_packed0, xh0, xh1, xh2, xh3)
+    )
 
                 u_packed1 = (
                     ld_global_nc_u32(
@@ -774,13 +790,17 @@ class MoEDirectMicroKernel:
                     if w_valid > Int32(0)
                     else Float32(0.0)
                 )
-                out_acc1 = (
-                    out_acc1
-                    + bsf_f1
-                    * self._fp4_dot4_for_math(u_packed1, xh0, xh1, xh2, xh3)
-                    * scale_lane
-                )
+                acc1[kk] = (
+    acc1[kk]
+    + bsf_f1
+    * self._fp4_dot4_for_math(u_packed1, xh0, xh1, xh2, xh3)
+    )
 
+        out_acc0 = Float32(0.0)
+        out_acc1 = Float32(0.0)
+        for kk in cutlass.range_constexpr(cfg.num_topk):
+            out_acc0 = out_acc0 + acc0[kk] * expert_scale[kk]
+            out_acc1 = out_acc1 + acc1[kk] * expert_scale[kk]
         sum_warp0 = cute.arch.warp_reduction_sum(out_acc0)
         sum_warp1 = cute.arch.warp_reduction_sum(out_acc1)
         if lane == Int32(0):

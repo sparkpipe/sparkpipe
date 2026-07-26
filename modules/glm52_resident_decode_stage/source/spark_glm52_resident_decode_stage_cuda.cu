@@ -42,19 +42,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     token_count = completion->requested_token_count;
-    if (token_count == 0u)
+    if (token_count == 0u ||
+        token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY ||
+        token_count >
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u))
     {
-        token_count = 1u;
-    }
-    if (token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY)
-    {
-        token_count = SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
-    }
-    if (token_count >
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE)
-    {
-        token_count =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE;
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     cuda_status = cudaMemcpyAsync(
         &completion->token_ids[0u],
@@ -68,13 +61,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
     }
     if (token_count > 1u)
     {
-        if (pipeline_slot->mtp_draft_token_ids == 0)
+        if (pipeline_slot->mtp_committed_token_ids == 0)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         cuda_status = cudaMemcpyAsync(
             &completion->token_ids[1u],
-            pipeline_slot->mtp_draft_token_ids,
+            pipeline_slot->mtp_committed_token_ids,
             (size_t)(token_count - 1u) * sizeof(uint32_t),
             cudaMemcpyDeviceToHost,
             cuda_stream);
@@ -243,18 +236,6 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
         return status;
     }
 
-    if (final_token_stage == 0u)
-    {
-        cuda_status = cudaStreamSynchronize((cudaStream_t)cuda_stream);
-        if (cuda_status != cudaSuccess)
-        {
-            fprintf(stderr,"stage_slice_sync_failed slot=%u code=%d name=%s\n",pipeline_slot_index,(int32_t)cuda_status,cudaGetErrorString(cuda_status));
-            return SPARK_STATUS_INTERNAL_ERROR;
-        }
-        completion->function(completion->context);
-        return SPARK_STATUS_OK;
-    }
-
     if (getenv("GLM52_STAGE_SLICE_DEBUG_SYNC") != 0)
     {
         cuda_status = cudaStreamSynchronize((cudaStream_t)cuda_stream);
@@ -269,23 +250,30 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
         }
     }
 
-    status = SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
-        completion_pipeline_slot,
-        final_token_stage,
-        active_sequence_count,
-        completion,
-        (cudaStream_t)cuda_stream);
-    if (status != SPARK_STATUS_OK)
+    if (final_token_stage != 0u)
     {
-        cudaStreamSynchronize((cudaStream_t)cuda_stream);
-        return status;
+        status = SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
+            completion_pipeline_slot,
+            final_token_stage,
+            active_sequence_count,
+            completion,
+            (cudaStream_t)cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            cudaStreamSynchronize((cudaStream_t)cuda_stream);
+            return status;
+        }
     }
-    cuda_status = cudaStreamSynchronize((cudaStream_t)cuda_stream);
+
+    cuda_status = cudaLaunchHostFunc(
+        (cudaStream_t)cuda_stream,
+        SparkGlm52ResidentDecodeStageCudaCompletion,
+        completion);
     if (cuda_status != cudaSuccess)
     {
+        cudaStreamSynchronize((cudaStream_t)cuda_stream);
         return SPARK_STATUS_INTERNAL_ERROR;
     }
-    completion->function(completion->context);
     return SPARK_STATUS_OK;
 }
 

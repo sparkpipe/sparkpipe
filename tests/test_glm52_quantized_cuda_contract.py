@@ -43,7 +43,7 @@ def main() -> int:
         "modules/glm52_sm121_b12x_compiled_backend/source/"
         "spark_flashinfer_b12x_compiled_moe_backend.cu"
     )
-    w8lut_path = repository / (
+    required_stage_path = repository / (
         "modules/glm52_resident_decode_stage/source/"
         "spark_glm52_sm121_required_decode_stage.cu"
     )
@@ -70,7 +70,7 @@ def main() -> int:
         "spark_glm52_sm121_b12x_generated_kernel_table_unavailable.c"
     )
     nvfp4 = nvfp4_path.read_text(encoding="utf-8")
-    w8lut = w8lut_path.read_text(encoding="utf-8")
+    required_stage = required_stage_path.read_text(encoding="utf-8")
     aot = aot_path.read_text(encoding="utf-8")
     packed_route_header = packed_route_header_path.read_text(encoding="utf-8")
     builder = builder_path.read_text(encoding="utf-8")
@@ -116,46 +116,19 @@ def main() -> int:
         "NVFP4 precomputed top-k rejection",
     )
 
-    w8_kernel = section(
-        w8lut,
-        "static __global__ void "
-        "SparkGlm52ResidentDecodeStageW8lutBuildTilesKernel",
-        "static __global__ __launch_bounds__(",
-    )
-    require(w8_kernel, "atomicAdd(tile_count, expert_tile_count)", "W8LUT tile builder")
-    forbid(
-        w8_kernel,
-        "blockIdx.x != 0u || threadIdx.x != 0u",
-        "W8LUT tile builder",
-    )
-    w8_launch = section(
-        w8lut,
-        "static SparkStatus "
-        "SparkGlm52Sm121RequiredDecodeStageLaunchW8lutMoeTensorCore",
-        'extern "C" SparkStatus '
-        "SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan",
-    )
-    require(w8_launch, "cudaMemsetAsync(", "W8LUT tile counter reset")
     require(
-        w8_launch,
-        "SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT",
-        "W8LUT parallel tile launch",
+        required_stage,
+        "__shared__ uint64_t shared_ordered_keys",
+        "parallel exact NVFP4 top-k",
     )
-    forbid(
-        w8_launch,
-        "SparkGlm52ResidentDecodeStageMaybeForceBenchmarkExpertCoverage",
-        "W8LUT production launch",
-    )
-    forbid(w8_launch, "cudaStreamSynchronize", "W8LUT production launch")
-    forbid(w8_launch, "<<<1u, 1u", "W8LUT production launch")
     require(
-        w8lut,
-        "__shared__ float shared_reduce_scores",
-        "parallel W8LUT and NVFP4 top-k",
+        required_stage,
+        "partner_index = expert_index ^ bitonic_stride",
+        "single-pass NVFP4 top-k sort",
     )
 
     packed_route_prefix = section(
-        w8lut,
+        required_stage,
         "void SparkGlm52ResidentDecodeStageMoePackedRoutePrefixKernel",
         "static __global__ __launch_bounds__("
         "SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 1)\n"
@@ -172,7 +145,7 @@ def main() -> int:
         "packed-route parallel prefix",
     )
     packed_route_fill = section(
-        w8lut,
+        required_stage,
         "void SparkGlm52ResidentDecodeStageMoePackedRouteFillKernel",
         "static __global__ __launch_bounds__("
         "SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 4)\n"

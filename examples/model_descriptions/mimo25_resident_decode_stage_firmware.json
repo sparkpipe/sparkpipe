@@ -55,52 +55,77 @@
       "intermediate_size": 16384,
       "mtp_num_hidden_layers": 3,
       "routed_scaling_factor": null
+    },
+    "qualification": {
+      "status": "NOT_MEASURED",
+      "production_ready": false,
+      "gpu_numerical_correctness": "NOT_MEASURED",
+      "gpu_latency": "NOT_MEASURED",
+      "gpu_throughput": "NOT_MEASURED",
+      "controlled_bring_up_only": true
+    },
+    "runtime_contract": {
+      "firmware_module_abi": 4,
+      "model_driver_abi": 6,
+      "completion": "submit_return",
+      "fallback_allowed": false,
+      "runtime_backend_selection": "forbidden",
+      "model_frame_context": "SparkMimo25ResidentDecodeStageFrameContext",
+      "driver_dispatch_slot_semantics": "advisory scheduler ticket only; this module rejects DRIVER_DISPATCH_SLOT_VALID",
+      "configuration_source": "strict process environment pending migration into immutable module configuration JSON",
+      "required_environment": [
+        "SPARK_MIMO25_ALLOW_UNQUALIFIED_EXECUTION",
+        "SPARK_MIMO25_STAGE_PACK_PATH",
+        "SPARK_MIMO25_STAGE_COUNT",
+        "SPARK_MIMO25_STAGE_INDEX",
+        "SPARK_MIMO25_STAGE_FIRST_LAYER",
+        "SPARK_MIMO25_STAGE_LAYER_COUNT",
+        "SPARK_MIMO25_STAGE_MAX_ACTIVE_SEQUENCES",
+        "SPARK_MIMO25_STAGE_MAX_SEQ",
+        "SPARK_MIMO25_STAGE_PIPELINE_SLOTS",
+        "SPARK_MIMO25_STAGE_MTP",
+        "SPARK_MIMO25_STAGE_GRAPHS"
+      ],
+      "notes": [
+        "decode only; prefill execution fails closed until qualified",
+        "lane identities are carried by the model-specific decode batch, never by driver_dispatch_slot",
+        "MTP fields must be canonically empty unless the final-head stage is explicitly armed for MTP"
+      ]
     }
   },
   "stages": [
     {
       "name": "mimo25_resident_decode_stage",
-      "target": "cuda_sm_121a",
+      "target": "cuda.sm121.mimo25.resident_decode_stage.bf16",
       "programs": [
         {
           "name": "resident_decode",
           "id": 1,
-          "operations": [
-            "SparkMimo25ResidentDecodeStageInitialize",
-            "SparkMimo25ResidentDecodeStageExecute",
-            "SparkMimo25ResidentDecodeStageAdmit",
-            "SparkMimo25ResidentDecodeStageSnapshot",
-            "SparkMimo25ResidentDecodeStageDestroy"
-          ],
-          "environment": {
-            "SPARK_MIMO25_STAGE_PACK_PATH": "path to the mimo25 stage pack, required",
-            "SPARK_MIMO25_STAGE_INDEX": "this stage's index, required",
-            "SPARK_MIMO25_STAGE_COUNT": "total stages, required",
-            "SPARK_MIMO25_STAGE_FIRST_LAYER": "first layer of the slice, required",
-            "SPARK_MIMO25_STAGE_LAYER_COUNT": "layers in the slice, required",
-            "SPARK_MIMO25_STAGE_MAX_ACTIVE_SEQUENCES": "concurrent lanes, required",
-            "SPARK_MIMO25_STAGE_MAX_SEQ": "per-lane context cap, required",
-            "SPARK_MIMO25_STAGE_PIPELINE_SLOTS": "1..4, required",
-            "SPARK_MIMO25_STAGE_MTP": "MTP draft depth 0..3, optional"
+          "max_inflight": 1,
+          "completion": "submit_return",
+          "scheduling": {
+            "flags": [
+              "stream_ordered",
+              "driver_owns_resident_state",
+              "driver_owns_kv_cache",
+              "fixed_firmware",
+              "requires_hidden_transport",
+              "no_file_transport",
+              "no_shell_transport"
+            ]
           },
-          "frame_contract": {
-            "dispatch": "one sequence per frame",
-            "driver_dispatch_slot": "required and valid, it is the lane",
-            "buffers": [
-              {
-                "slot": 0,
-                "flags": "read",
-                "contents": "new_token_count host token ids"
-              },
-              {
-                "slot": 1,
-                "flags": "write",
-                "contents": "new_token_count host sampled token ids"
+          "operations": [
+            {
+              "name": "mimo25_resident_decode_stage",
+              "module": "spark.mimo25.resident_decode_stage.bf16.h4096.l48.e256.k8.mtp3.v1",
+              "configuration": {
+                "qualification_status": "NOT_MEASURED",
+                "production_ready": false,
+                "fallback_allowed": false,
+                "runtime_backend_selection": "forbidden"
               }
-            ],
-            "decode_new_token_count": 1,
-            "mtp": "three drafts appended row-major [row][depth] after the sampled token when armed, frame context v2"
-          }
+            }
+          ]
         }
       ]
     }

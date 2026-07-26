@@ -14,11 +14,15 @@ SparkStatus SparkTestAddOneInitialize(
     const SparkFirmwareModuleHostServices *host_services,
     void **module_state)
 {
-    (void)host_services;
+    SparkStatus status;
 
-    if (configuration == 0 || module_state == 0 || configuration->abi_version != SPARK_FIRMWARE_MODULE_ABI_VERSION)
+    status = SparkFirmwareModuleValidateInitialization(
+        configuration,
+        host_services,
+        module_state);
+    if (status != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        return status;
     }
     *module_state = (void *)(uintptr_t)2u;
     return SPARK_STATUS_OK;

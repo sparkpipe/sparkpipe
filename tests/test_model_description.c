@@ -86,7 +86,7 @@ int main(void)
     assert(decode_program->scheduling.max_new_tokens == 7u);
     assert(decode_program->scheduling.max_resident_sequences ==
         SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT);
-    assert(decode_program->scheduling.private_queue_count == 0u);
+    assert(decode_program->scheduling.private_queue_count == 1u);
     assert(decode_program->scheduling.validated_latency_ns == 0u);
     assert(decode_program->scheduling.host_staging_bytes_per_submit_ceiling == 0u);
     assert(strstr(description.metadata_json,

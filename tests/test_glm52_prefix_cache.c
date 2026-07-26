@@ -533,9 +533,75 @@ static void SparkTestPrefixCacheSequenceReservationDoesNotReuseContent(void)
             SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY) != 0u);
 }
 
+// The three probes share one chain walk. Pin what that walk must produce:
+// the same match length from every probe, a recency tick advanced once per
+// matched block, and a capacity refusal that does not consume the chain.
+static void SparkTestPrefixCacheProbesShareOneWalk(void)
+{
+    SparkGlm52PrefixCache cache;
+    SparkGlm52PrefixCacheEntry entries[8u];
+    SparkGlm52PrefixCacheSequenceBinding bindings[16u];
+    SparkGlm52PrefixCacheLookup lookup;
+    uint32_t tokens[16u];
+    uint32_t physical_block_indices[8u];
+    uint32_t token_index;
+    uint32_t matched_token_count;
+    uint32_t physical_block_count;
+    uint32_t resident_block_count;
+    uint32_t nonresident_block_count;
+    uint64_t tick_before;
+
+    for (token_index = 0u; token_index < 16u; ++token_index)
+    {
+        tokens[token_index] = 4000u + token_index;
+    }
+    SparkTestInitializePrefixCache(&cache, entries, bindings, 8u, 16u, 4u);
+    assert(SparkGlm52PrefixCacheCommitPrompt(
+        &cache, 11u, tokens, 16u, &lookup) == SPARK_STATUS_OK);
+    assert(lookup.matched_block_count == 4u);
+
+    // The final block is withheld from reuse - a prompt must keep at least one
+    // token to generate from - so 16 tokens at block size 4 yield three.
+    tick_before = cache.tick;
+    assert(SparkGlm52PrefixCacheProbePhysicalBlockTable(
+        &cache, tokens, 16u, physical_block_indices, 8u,
+        &matched_token_count, &physical_block_count) == SPARK_STATUS_OK);
+    assert(physical_block_count == 3u);
+    assert(matched_token_count == 12u);
+    assert(cache.tick == tick_before + 3u);
+
+    // A second probe over the same prompt must agree on the match length.
+    assert(SparkGlm52PrefixCacheProbeReusablePrefixResidency(
+        &cache, tokens, 16u, &matched_token_count,
+        &resident_block_count, &nonresident_block_count) == SPARK_STATUS_OK);
+    assert(matched_token_count == 12u);
+    assert(resident_block_count + nonresident_block_count == 3u);
+
+    // A short output refuses rather than truncating, and the refusal must not
+    // leave the chain half-walked for the next caller.
+    assert(SparkGlm52PrefixCacheProbePhysicalBlockTable(
+        &cache, tokens, 16u, physical_block_indices, 2u,
+        &matched_token_count, &physical_block_count) ==
+            SPARK_STATUS_CAPACITY_EXCEEDED);
+    assert(SparkGlm52PrefixCacheProbePhysicalBlockTable(
+        &cache, tokens, 16u, physical_block_indices, 8u,
+        &matched_token_count, &physical_block_count) == SPARK_STATUS_OK);
+    assert(physical_block_count == 3u);
+    assert(matched_token_count == 12u);
+
+    // A prompt that diverges after one block matches exactly one block.
+    tokens[4u] = 9999u;
+    assert(SparkGlm52PrefixCacheProbePhysicalBlockTable(
+        &cache, tokens, 16u, physical_block_indices, 8u,
+        &matched_token_count, &physical_block_count) == SPARK_STATUS_OK);
+    assert(physical_block_count == 1u);
+    assert(matched_token_count == 4u);
+}
+
 int main(void)
 {
     SparkTestPrefixCacheMatchesCommittedBlocks();
+    SparkTestPrefixCacheProbesShareOneWalk();
     SparkTestPrefixCacheStopsAtChangedBlock();
     SparkTestPrefixCacheTracksSequenceOwnership();
     SparkTestPrefixCacheEvictsReleasedBlocks();

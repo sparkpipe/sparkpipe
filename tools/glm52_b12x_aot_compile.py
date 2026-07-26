@@ -762,6 +762,16 @@ def main() -> int:
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--benchmark", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--qualify-lowb",
+        action="store_true",
+        help="Qualification lane for the low-batch fast path: leaves the "
+        "direct-micro cutovers at the dispatch module's defaults instead of "
+        "forcing them to zero, so buckets at and below the cutover compile "
+        "and run the direct-micro kernel (with the per-expert bundled FC2 "
+        "accumulation) for A/B against the static kernel. Does not change "
+        "the production policy: exact_static_buckets_only remains the "
+        "emitted contract until a passed qualification flips it explicitly.")
     args = parser.parse_args()
 
     root = repo_root()
@@ -799,8 +809,9 @@ def main() -> int:
     import flashinfer.fused_moe.cute_dsl.blackwell_sm12x.moe_dispatch as moe_dispatch
     from flashinfer.fused_moe.cute_dsl.blackwell_sm12x.moe_dispatch import select_sm120_moe_backend
 
-    moe_dispatch._MICRO_COMPACT_CUTOVER_PAIRS = 0
-    moe_dispatch._MICRO_COMPACT_CUTOVER_PAIRS_MULTI_TOPK = 0
+    if not args.qualify_lowb:
+        moe_dispatch._MICRO_COMPACT_CUTOVER_PAIRS = 0
+        moe_dispatch._MICRO_COMPACT_CUTOVER_PAIRS_MULTI_TOPK = 0
 
     require_sm121(torch)
     weights = make_weights(torch)

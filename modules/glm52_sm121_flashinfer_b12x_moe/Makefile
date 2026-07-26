@@ -14,8 +14,8 @@ archive: $(ADAPTER_ARCHIVE)
 $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
 
-$(ADAPTER_OBJECT): source/spark_glm52_sm121_flashinfer_b12x_moe_link_required_adapter.c $(REPOSITORY_ROOT)/include/sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
+$(ADAPTER_OBJECT): source/spark_glm52_sm121_flashinfer_b12x_moe_link_required_adapter.c $(REPOSITORY_ROOT)/model-families/glm52/include/sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h | $(BUILD_DIRECTORY)
+	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(ADAPTER_ARCHIVE): $(ADAPTER_OBJECT)
 	rm -f $@

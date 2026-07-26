@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODULE_ARTIFACT_SCHEMA_VERSION 3u
+#define SPARK_MODULE_ARTIFACT_SCHEMA_VERSION 4u
 #define SPARK_MODULE_SYMBOL_BYTES 192u
 #define SPARK_MODULE_ID_BYTES 256u
 #define SPARK_MODULE_TARGET_BYTES 128u
@@ -34,6 +34,7 @@ typedef struct SparkModuleArtifact
     char artifact_sha256[SPARK_SHA256_HEX_BYTES];
     char link_unit_path[SPARK_MODULE_PATH_BYTES];
     char validation_recipe[SPARK_MODULE_RECIPE_BYTES];
+    char validator_sha256[SPARK_SHA256_HEX_BYTES];
     char initialize_symbol[SPARK_MODULE_SYMBOL_BYTES];
     char execute_symbol[SPARK_MODULE_SYMBOL_BYTES];
     char admit_symbol[SPARK_MODULE_SYMBOL_BYTES];
@@ -65,6 +66,7 @@ typedef struct SparkModulePublishReport
     bool validation_reused;
     SparkModuleLinkUnitKind link_unit_kind;
     char artifact_sha256[SPARK_SHA256_HEX_BYTES];
+    char validator_sha256[SPARK_SHA256_HEX_BYTES];
     char immutable_record_path[SPARK_MODULE_PATH_BYTES];
     char active_record_path[SPARK_MODULE_PATH_BYTES];
     char stored_link_unit_path[SPARK_MODULE_PATH_BYTES];

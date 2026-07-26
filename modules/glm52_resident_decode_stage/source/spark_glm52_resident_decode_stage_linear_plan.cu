@@ -634,20 +634,6 @@ static uint64_t SparkGlm52LinearPlanFp8ScaleBytes(
         (uint64_t)sizeof(float);
 }
 
-static uint32_t SparkGlm52LinearPlanFp8StorageOutputDimension(
-    uint32_t output_dimension)
-{
-    uint32_t alignment;
-
-    alignment =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT;
-    if (output_dimension == 0u || output_dimension > UINT32_MAX - alignment + 1u)
-    {
-        return 0u;
-    }
-    return ((output_dimension + alignment - 1u) / alignment) * alignment;
-}
-
 static SparkStatus SparkGlm52LinearPlanInitializeFp8TailStorage(
     SparkGlm52ResidentDecodeStageLinearPlanStorage *storage,
     uint32_t maximum_active_sequence_count,
@@ -659,76 +645,32 @@ static SparkStatus SparkGlm52LinearPlanInitializeFp8TailStorage(
     uint32_t *storage_output_dimension_out,
     const void **storage_weight_payload_out)
 {
-    uint32_t storage_output_dimension;
-    uint64_t weight_payload_bytes;
-    uint64_t output_workspace_bytes;
-    uint64_t output_element_bytes;
-    cudaError_t cuda_status;
+    uint32_t alignment;
 
     if (storage == 0 || weight_payload == 0 || cuda_stream == 0 ||
-        storage_output_dimension_out == 0 || storage_weight_payload_out == 0)
+        storage_output_dimension_out == 0 || storage_weight_payload_out == 0 ||
+        maximum_active_sequence_count == 0u || input_dimension == 0u ||
+        output_dimension == 0u || output_is_f32 > 1u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    storage_output_dimension = SparkGlm52LinearPlanFp8StorageOutputDimension(
-        output_dimension);
-    if (storage_output_dimension == 0u)
+    alignment =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT;
+    if ((output_dimension % alignment) != 0u)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        /*
+         * The production GLM geometry is alignment-clean. Padding an
+         * unsupported shape here creates a second output tensor followed by
+         * a full device-to-device row trim on every decode. Fail closed
+         * instead: a future unaligned shape needs a backend with a genuine
+         * strided/direct epilogue and its own retained qualification receipt.
+         */
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
     }
-    *storage_output_dimension_out = storage_output_dimension;
+    *storage_output_dimension_out = output_dimension;
     *storage_weight_payload_out = weight_payload;
-    if (storage_output_dimension == output_dimension)
-    {
-        return SPARK_STATUS_OK;
-    }
-    weight_payload_bytes = (uint64_t)input_dimension * storage_output_dimension;
-    output_element_bytes = output_is_f32 != 0u
-        ? (uint64_t)sizeof(float)
-        : (uint64_t)sizeof(uint16_t);
-    output_workspace_bytes = (uint64_t)maximum_active_sequence_count *
-        storage_output_dimension * output_element_bytes;
-    if (weight_payload_bytes > (uint64_t)SIZE_MAX ||
-        output_workspace_bytes > (uint64_t)SIZE_MAX)
-    {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
-    }
-    cuda_status = cudaMalloc(
-        &storage->quantized_weight_workspace,
-        (size_t)weight_payload_bytes);
-    if (cuda_status == cudaSuccess)
-    {
-        cuda_status = cudaMalloc(
-            &storage->quantized_output_workspace,
-            (size_t)output_workspace_bytes);
-    }
-    if (cuda_status == cudaSuccess)
-    {
-        storage->quantized_output_workspace_bytes = output_workspace_bytes;
-        cuda_status = cudaMemsetAsync(
-            storage->quantized_weight_workspace,
-            0,
-            (size_t)weight_payload_bytes,
-            cuda_stream);
-    }
-    if (cuda_status == cudaSuccess)
-    {
-        cuda_status = cudaMemcpyAsync(
-            storage->quantized_weight_workspace,
-            weight_payload,
-            (size_t)((uint64_t)input_dimension * output_dimension),
-            cudaMemcpyDeviceToDevice,
-            cuda_stream);
-    }
-    if (cuda_status == cudaSuccess)
-    {
-        cuda_status = cudaStreamSynchronize(cuda_stream);
-    }
-    if (cuda_status != cudaSuccess)
-    {
-        return SparkGlm52LinearPlanCudaToSparkStatus(cuda_status);
-    }
-    *storage_weight_payload_out = storage->quantized_weight_workspace;
+    storage->quantized_output_workspace = 0;
+    storage->quantized_output_workspace_bytes = 0u;
     return SPARK_STATUS_OK;
 }
 

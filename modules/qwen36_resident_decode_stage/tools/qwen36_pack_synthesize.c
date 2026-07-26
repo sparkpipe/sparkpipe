@@ -199,7 +199,7 @@ static void SparkQwen36SynthesizeFillPayload(const SparkQwen36StagePackEntry *en
 		{
 			noise = SparkQwen36SynthesizeNext(random_state);
 			f32 = ((float)(int32_t)(noise & 0xffffu) - 32768.0f) / 262144.0f;
-			memcpy(buffer + index,&f32,4u);
+			memcpy(buffer + index,&f32,sizeof(f32));
 		}
 		return;
 	}
@@ -207,8 +207,8 @@ static void SparkQwen36SynthesizeFillPayload(const SparkQwen36StagePackEntry *en
 	{
 		noise = SparkQwen36SynthesizeNext(random_state);
 		f32 = ((float)(int32_t)(noise & 0xffffu) - 32768.0f) / 1048576.0f;
-		memcpy(&bf16,((const uint8_t *)&f32) + 2u,2u);
-		memcpy(buffer + index,&bf16,2u);
+		memcpy(&bf16,((const uint8_t *)&f32) + sizeof(bf16),sizeof(bf16));
+		memcpy(buffer + index,&bf16,sizeof(bf16));
 	}
 }
 

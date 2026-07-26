@@ -1,0 +1,2 @@
+python3 tools/audit_core_boundaries.py --repository . --core-archive build/libsparkpipe_core.a --compiler-archive build/libsparkpipe_compiler.a --runtime-archive build/libsparkpipe_runtime.a
+PASS core-boundary audit: 9 neutral sources, 20 source/header files in include closure, no model-family archive members or exported symbols

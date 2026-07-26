@@ -318,6 +318,18 @@ static SparkStatus SparkResolveDriverBuildImage(
         const SparkModelProgramDescription *program;
 
         program = &stage->programs[program_index];
+        if (program->completion_mode == SPARK_MODEL_PROGRAM_COMPLETION_EXTERNAL &&
+            program->operation_count != 1u)
+        {
+            SparkSetError(
+                error_buffer,
+                error_buffer_bytes,
+                "program '%s' uses external completion with %u operations; external completion requires exactly one owner operation",
+                program->name,
+                program->operation_count);
+            SparkDriverBuildImageDestroy(driver_image);
+            return SPARK_STATUS_SCHEMA_ERROR;
+        }
         for (operation_index = 0u; operation_index < program->operation_count; ++operation_index)
         {
             SparkDriverBuildOperation *resolved_operation;
@@ -471,19 +483,24 @@ static void SparkWriteGeneratedConfigurations(
             resolved_operation->operation->configuration_json_bytes);
         fputs(";\n", file);
         fprintf(file, "static const SparkFirmwareModuleConfiguration SparkGeneratedConfiguration_%u =\n{\n", operation_index);
-        fprintf(file, "    SPARK_FIRMWARE_MODULE_ABI_VERSION,\n    %uu,\n    ", operation_index);
+        fputs("    .abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION,\n", file);
+        fputs("    .descriptor_bytes = sizeof(SparkFirmwareModuleConfiguration),\n", file);
+        fprintf(file, "    .operation_index = %uu,\n", operation_index);
+        fputs("    .reserved0 = 0u,\n    .model_id = ", file);
         SparkWriteCStringLiteral(file, description->model_id, strlen(description->model_id));
-        fputs(",\n    ", file);
+        fputs(",\n    .model_revision = ", file);
         SparkWriteCStringLiteral(file, description->model_revision, strlen(description->model_revision));
-        fputs(",\n    ", file);
+        fputs(",\n    .stage_name = ", file);
         SparkWriteCStringLiteral(file, driver_image->stage->name, strlen(driver_image->stage->name));
-        fputs(",\n    ", file);
+        fputs(",\n    .program_name = ", file);
         SparkWriteCStringLiteral(file, resolved_operation->program->name, strlen(resolved_operation->program->name));
-        fputs(",\n    ", file);
+        fputs(",\n    .operation_name = ", file);
         SparkWriteCStringLiteral(file, resolved_operation->operation->name, strlen(resolved_operation->operation->name));
         fprintf(
             file,
-            ",\n    SparkGeneratedConfigurationJson_%u,\n    %uu,\n    0u\n};\n\n",
+            ",\n    .configuration_json = SparkGeneratedConfigurationJson_%u,\n"
+            "    .configuration_json_bytes = %uu,\n"
+            "    .reserved1 = 0u\n};\n\n",
             operation_index,
             resolved_operation->operation->configuration_json_bytes);
     }
@@ -534,15 +551,33 @@ static void SparkWriteGeneratedDestroy(FILE *file, const SparkDriverBuildImage *
 static void SparkWriteGeneratedCreate(FILE *file, const SparkDriverBuildImage *driver_image)
 {
     uint32_t operation_index;
+    uint32_t program_index;
+    int requires_external_completion;
+
+    requires_external_completion = 0;
+    for (program_index = 0u; program_index < driver_image->stage->program_count; ++program_index)
+    {
+        if (driver_image->stage->programs[program_index].completion_mode == SPARK_MODEL_PROGRAM_COMPLETION_EXTERNAL)
+        {
+            requires_external_completion = 1;
+            break;
+        }
+    }
 
     fputs("static SparkStatus SparkGeneratedDriverCreate(const SparkModelDriverCreateRequest *request, void **driver_instance)\n{\n", file);
     fputs("    SparkGeneratedDriverInstance *instance;\n    SparkStatus status;\n\n", file);
     fputs("    if (request == 0 || driver_instance == 0)\n    {\n        return SPARK_STATUS_INVALID_ARGUMENT;\n    }\n", file);
+    if (requires_external_completion != 0)
+    {
+        fputs("    if (request->completion_function == 0)\n    {\n        return SPARK_STATUS_INVALID_ARGUMENT;\n    }\n", file);
+    }
     fputs("    *driver_instance = 0;\n", file);
     fputs("    instance = (SparkGeneratedDriverInstance *)calloc(1u, sizeof(*instance));\n", file);
     fputs("    if (instance == 0)\n    {\n        return SPARK_STATUS_INTERNAL_ERROR;\n    }\n", file);
     fputs("    instance->completion_function = request->completion_function;\n", file);
     fputs("    instance->completion_context = request->completion_context;\n", file);
+    fputs("    instance->host_services.abi_version = SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;\n", file);
+    fputs("    instance->host_services.descriptor_bytes = sizeof(instance->host_services);\n", file);
     fputs("    instance->host_services.completion_function = request->completion_function;\n", file);
     fputs("    instance->host_services.completion_context = request->completion_context;\n", file);
     fputs("    instance->host_services.wake_function = request->wake_function;\n", file);
@@ -650,57 +685,110 @@ static void SparkWriteGeneratedProgramFunction(
 
 static void SparkWriteGeneratedAdmissionHelpers(FILE *file)
 {
+    fputs("static uint64_t SparkGeneratedSaturatingAddU64(uint64_t left, uint64_t right)\n{\n", file);
+    fputs("    if (UINT64_MAX - left < right)\n    {\n        return UINT64_MAX;\n    }\n", file);
+    fputs("    return left + right;\n}\n\n", file);
+
+    fputs("static int SparkGeneratedAdmissionDecisionIsValid(const SparkModelDriverAdmissionDecision *decision)\n{\n", file);
+    fputs("    if (decision->descriptor_bytes < sizeof(*decision) || decision->accepted > 1u ||\n", file);
+    fputs("        decision->rejection_reason > SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE)\n    {\n", file);
+    fputs("        return 0;\n    }\n", file);
+    fputs("    if ((decision->accepted != 0u) != (decision->rejection_reason == SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED))\n    {\n", file);
+    fputs("        return 0;\n    }\n", file);
+    fputs("    if (decision->driver_dispatch_slot == SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT &&\n", file);
+    fputs("        (decision->driver_dispatch_generation != 0u || decision->driver_dispatch_cookie0 != 0u ||\n", file);
+    fputs("         decision->driver_dispatch_cookie1 != 0u))\n    {\n", file);
+    fputs("        return 0;\n    }\n", file);
+    fputs("    return 1;\n}\n\n", file);
+
     fputs("static void SparkGeneratedInitializeAdmissionDecision(SparkModelDriverAdmissionDecision *decision)\n{\n", file);
     fputs("    memset(decision, 0, sizeof(*decision));\n", file);
     fputs("    decision->descriptor_bytes = sizeof(*decision);\n", file);
     fputs("    decision->accepted = 1u;\n", file);
     fputs("    decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;\n", file);
     fputs("    decision->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;\n", file);
+    fputs("    decision->residency_match_score = UINT64_MAX;\n", file);
+    fputs("    decision->available_dispatch_slot_count = UINT32_MAX;\n", file);
+    fputs("}\n\n", file);
+
+    fputs("static void SparkGeneratedFinalizeAdmissionDecision(SparkModelDriverAdmissionDecision *decision)\n{\n", file);
+    fputs("    if (decision->residency_match_score == UINT64_MAX)\n    {\n        decision->residency_match_score = 0u;\n    }\n", file);
+    fputs("    if (decision->available_dispatch_slot_count == UINT32_MAX)\n    {\n        decision->available_dispatch_slot_count = 0u;\n    }\n", file);
     fputs("}\n\n", file);
 
     fputs("static SparkStatus SparkGeneratedRejectAdmission(SparkModelDriverAdmissionDecision *decision, uint32_t reason)\n{\n", file);
     fputs("    SparkGeneratedInitializeAdmissionDecision(decision);\n", file);
     fputs("    decision->accepted = 0u;\n", file);
     fputs("    decision->rejection_reason = reason;\n", file);
+    fputs("    SparkGeneratedFinalizeAdmissionDecision(decision);\n", file);
     fputs("    return SPARK_STATUS_OK;\n", file);
     fputs("}\n\n", file);
 
-    fputs("static void SparkGeneratedMergeAdmissionDecision(SparkModelDriverAdmissionDecision *destination, const SparkModelDriverAdmissionDecision *source)\n{\n", file);
-    fputs("    if (source->driver_dispatch_slot != SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT &&\n", file);
-    fputs("        destination->driver_dispatch_slot == SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT)\n    {\n", file);
-    fputs("        destination->driver_dispatch_slot = source->driver_dispatch_slot;\n", file);
-    fputs("        destination->driver_dispatch_generation = source->driver_dispatch_generation;\n", file);
-    fputs("        destination->driver_dispatch_cookie0 = source->driver_dispatch_cookie0;\n", file);
-    fputs("        destination->driver_dispatch_cookie1 = source->driver_dispatch_cookie1;\n    }\n", file);
+    fputs("static SparkStatus SparkGeneratedMergeAdmissionDecision(SparkModelDriverAdmissionDecision *destination, const SparkModelDriverAdmissionDecision *source)\n{\n", file);
+    fputs("    if (!SparkGeneratedAdmissionDecisionIsValid(source) || source->accepted == 0u)\n    {\n", file);
+    fputs("        return SPARK_STATUS_ABI_MISMATCH;\n    }\n", file);
+    fputs("    if (source->driver_dispatch_slot != SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT)\n    {\n", file);
+    fputs("        if (destination->driver_dispatch_slot == SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT)\n        {\n", file);
+    fputs("            destination->driver_dispatch_slot = source->driver_dispatch_slot;\n", file);
+    fputs("            destination->driver_dispatch_generation = source->driver_dispatch_generation;\n", file);
+    fputs("            destination->driver_dispatch_cookie0 = source->driver_dispatch_cookie0;\n", file);
+    fputs("            destination->driver_dispatch_cookie1 = source->driver_dispatch_cookie1;\n        }\n", file);
+    fputs("        else if (destination->driver_dispatch_slot != source->driver_dispatch_slot ||\n", file);
+    fputs("                 destination->driver_dispatch_generation != source->driver_dispatch_generation ||\n", file);
+    fputs("                 destination->driver_dispatch_cookie0 != source->driver_dispatch_cookie0 ||\n", file);
+    fputs("                 destination->driver_dispatch_cookie1 != source->driver_dispatch_cookie1)\n        {\n", file);
+    fputs("            return SPARK_STATUS_ABI_MISMATCH;\n        }\n    }\n", file);
     fputs("    if (source->estimated_queue_delay_ns > destination->estimated_queue_delay_ns)\n    {\n", file);
     fputs("        destination->estimated_queue_delay_ns = source->estimated_queue_delay_ns;\n    }\n", file);
-    fputs("    if (source->estimated_service_time_ns > destination->estimated_service_time_ns)\n    {\n", file);
-    fputs("        destination->estimated_service_time_ns = source->estimated_service_time_ns;\n    }\n", file);
-    fputs("    destination->endpoint_cost += source->endpoint_cost;\n", file);
-    fputs("    destination->residency_match_score += source->residency_match_score;\n", file);
-    fputs("    destination->device_memcpy_bytes += source->device_memcpy_bytes;\n", file);
-    fputs("    destination->host_staging_bytes += source->host_staging_bytes;\n", file);
+    fputs("    destination->estimated_service_time_ns = SparkGeneratedSaturatingAddU64(destination->estimated_service_time_ns, source->estimated_service_time_ns);\n", file);
+    fputs("    destination->endpoint_cost = SparkGeneratedSaturatingAddU64(destination->endpoint_cost, source->endpoint_cost);\n", file);
+    fputs("    if (source->residency_match_score < destination->residency_match_score)\n    {\n", file);
+    fputs("        destination->residency_match_score = source->residency_match_score;\n    }\n", file);
+    fputs("    destination->device_memcpy_bytes = SparkGeneratedSaturatingAddU64(destination->device_memcpy_bytes, source->device_memcpy_bytes);\n", file);
+    fputs("    destination->host_staging_bytes = SparkGeneratedSaturatingAddU64(destination->host_staging_bytes, source->host_staging_bytes);\n", file);
     fputs("    if (source->private_queue_pressure > destination->private_queue_pressure)\n    {\n", file);
     fputs("        destination->private_queue_pressure = source->private_queue_pressure;\n    }\n", file);
-    fputs("    if (source->available_dispatch_slot_count > destination->available_dispatch_slot_count)\n    {\n", file);
+    fputs("    if (source->available_dispatch_slot_count < destination->available_dispatch_slot_count)\n    {\n", file);
     fputs("        destination->available_dispatch_slot_count = source->available_dispatch_slot_count;\n    }\n", file);
+    fputs("    return SPARK_STATUS_OK;\n", file);
+    fputs("}\n\n", file);
+
+    fputs("static void SparkGeneratedInitializeRuntimeSnapshot(SparkModelDriverRuntimeSnapshot *snapshot, uint32_t program_id)\n{\n", file);
+    fputs("    memset(snapshot, 0, sizeof(*snapshot));\n", file);
+    fputs("    snapshot->descriptor_bytes = sizeof(*snapshot);\n", file);
+    fputs("    snapshot->program_id = program_id;\n", file);
+    fputs("    snapshot->available_dispatch_slot_count = UINT32_MAX;\n", file);
+    fputs("    snapshot->resident_sequence_count = UINT64_MAX;\n", file);
+    fputs("    snapshot->resident_token_count = UINT64_MAX;\n", file);
+    fputs("    snapshot->kv_token_capacity = UINT64_MAX;\n", file);
+    fputs("}\n\n", file);
+
+    fputs("static void SparkGeneratedFinalizeRuntimeSnapshot(SparkModelDriverRuntimeSnapshot *snapshot)\n{\n", file);
+    fputs("    if (snapshot->available_dispatch_slot_count == UINT32_MAX)\n    {\n        snapshot->available_dispatch_slot_count = 0u;\n    }\n", file);
+    fputs("    if (snapshot->resident_sequence_count == UINT64_MAX)\n    {\n        snapshot->resident_sequence_count = 0u;\n    }\n", file);
+    fputs("    if (snapshot->resident_token_count == UINT64_MAX)\n    {\n        snapshot->resident_token_count = 0u;\n    }\n", file);
+    fputs("    if (snapshot->kv_token_capacity == UINT64_MAX)\n    {\n        snapshot->kv_token_capacity = 0u;\n    }\n", file);
+    fputs("}\n\n", file);
+
+    fputs("static int SparkGeneratedRuntimeSnapshotIsValid(const SparkModelDriverRuntimeSnapshot *snapshot, uint32_t program_id)\n{\n", file);
+    fputs("    return snapshot->descriptor_bytes >= sizeof(*snapshot) && snapshot->program_id == program_id && snapshot->reserved == 0u;\n", file);
     fputs("}\n\n", file);
 
     fputs("static void SparkGeneratedMergeRuntimeSnapshot(SparkModelDriverRuntimeSnapshot *destination, const SparkModelDriverRuntimeSnapshot *source)\n{\n", file);
-    fputs("    destination->active_submission_count += source->active_submission_count;\n", file);
-    fputs("    destination->available_dispatch_slot_count += source->available_dispatch_slot_count;\n", file);
-    fputs("    destination->submitted_count += source->submitted_count;\n", file);
-    fputs("    destination->completed_count += source->completed_count;\n", file);
-    fputs("    destination->rejected_count += source->rejected_count;\n", file);
-    fputs("    destination->resident_sequence_count += source->resident_sequence_count;\n", file);
-    fputs("    destination->resident_token_count += source->resident_token_count;\n", file);
-    fputs("    destination->kv_token_capacity += source->kv_token_capacity;\n", file);
-    fputs("    destination->device_memcpy_bytes_per_submit += source->device_memcpy_bytes_per_submit;\n", file);
-    fputs("    destination->host_staging_bytes_per_submit += source->host_staging_bytes_per_submit;\n", file);
-    fputs("    destination->cuda_graph_capture_count += source->cuda_graph_capture_count;\n", file);
-    fputs("    destination->cuda_graph_replay_count += source->cuda_graph_replay_count;\n", file);
-    fputs("    destination->host_callback_completion_count += source->host_callback_completion_count;\n", file);
-    fputs("    destination->stale_admission_count += source->stale_admission_count;\n", file);
+    fputs("    if (source->active_submission_count > destination->active_submission_count)\n    {\n        destination->active_submission_count = source->active_submission_count;\n    }\n", file);
+    fputs("    if (source->available_dispatch_slot_count < destination->available_dispatch_slot_count)\n    {\n        destination->available_dispatch_slot_count = source->available_dispatch_slot_count;\n    }\n", file);
+    fputs("    if (source->submitted_count > destination->submitted_count)\n    {\n        destination->submitted_count = source->submitted_count;\n    }\n", file);
+    fputs("    if (source->completed_count > destination->completed_count)\n    {\n        destination->completed_count = source->completed_count;\n    }\n", file);
+    fputs("    if (source->rejected_count > destination->rejected_count)\n    {\n        destination->rejected_count = source->rejected_count;\n    }\n", file);
+    fputs("    if (source->resident_sequence_count != 0u && source->resident_sequence_count < destination->resident_sequence_count)\n    {\n        destination->resident_sequence_count = source->resident_sequence_count;\n    }\n", file);
+    fputs("    if (source->resident_token_count != 0u && source->resident_token_count < destination->resident_token_count)\n    {\n        destination->resident_token_count = source->resident_token_count;\n    }\n", file);
+    fputs("    if (source->kv_token_capacity != 0u && source->kv_token_capacity < destination->kv_token_capacity)\n    {\n        destination->kv_token_capacity = source->kv_token_capacity;\n    }\n", file);
+    fputs("    destination->device_memcpy_bytes_per_submit = SparkGeneratedSaturatingAddU64(destination->device_memcpy_bytes_per_submit, source->device_memcpy_bytes_per_submit);\n", file);
+    fputs("    destination->host_staging_bytes_per_submit = SparkGeneratedSaturatingAddU64(destination->host_staging_bytes_per_submit, source->host_staging_bytes_per_submit);\n", file);
+    fputs("    destination->cuda_graph_capture_count = SparkGeneratedSaturatingAddU64(destination->cuda_graph_capture_count, source->cuda_graph_capture_count);\n", file);
+    fputs("    destination->cuda_graph_replay_count = SparkGeneratedSaturatingAddU64(destination->cuda_graph_replay_count, source->cuda_graph_replay_count);\n", file);
+    fputs("    if (source->host_callback_completion_count > destination->host_callback_completion_count)\n    {\n        destination->host_callback_completion_count = source->host_callback_completion_count;\n    }\n", file);
+    fputs("    if (source->stale_admission_count > destination->stale_admission_count)\n    {\n        destination->stale_admission_count = source->stale_admission_count;\n    }\n", file);
     fputs("    if (source->private_queue_pressure > destination->private_queue_pressure)\n    {\n", file);
     fputs("        destination->private_queue_pressure = source->private_queue_pressure;\n    }\n", file);
     fputs("}\n\n", file);
@@ -725,11 +813,25 @@ static void SparkWriteGeneratedAdmitFunction(
         const SparkModelProgramDescription *program;
         uint32_t flattened_operation_index;
         uint32_t program_operation_index;
+        int has_module_admission;
 
         program = &driver_image->stage->programs[program_index];
         flattened_operation_index = SparkFindFlattenedProgramStart(driver_image, program);
+        has_module_admission = 0;
+        for (program_operation_index = 0u; program_operation_index < program->operation_count; ++program_operation_index)
+        {
+            const SparkDriverBuildOperation *candidate_operation;
+
+            candidate_operation = &driver_image->operations[flattened_operation_index + program_operation_index];
+            if (candidate_operation->artifact.admit_symbol[0] != '\0')
+            {
+                has_module_admission = 1;
+                break;
+            }
+        }
         fprintf(file, "        case %uu:\n        {\n", program->program_id);
         fputs("            SparkStatus status;\n", file);
+        fprintf(file, "            decision->available_dispatch_slot_count = %uu;\n", program->max_inflight);
         if (program->scheduling.max_active_slots != 0u)
         {
             fputs("            if (request->active_slot_count == 0u)\n            {\n", file);
@@ -742,9 +844,12 @@ static void SparkWriteGeneratedAdmitFunction(
             fprintf(file, "            if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u && request->new_token_count > %uu)\n            {\n", program->scheduling.max_new_tokens);
             fputs("                return SparkGeneratedRejectAdmission(decision, SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);\n            }\n", file);
         }
-        fprintf(file, "            decision->estimated_service_time_ns = %lluull;\n", (unsigned long long)program->scheduling.target_latency_ns);
-        fprintf(file, "            decision->device_memcpy_bytes = %lluull;\n", (unsigned long long)program->scheduling.device_memcpy_bytes_per_submit_ceiling);
-        fprintf(file, "            decision->host_staging_bytes = %lluull;\n", (unsigned long long)program->scheduling.host_staging_bytes_per_submit_ceiling);
+        if (has_module_admission == 0)
+        {
+            fprintf(file, "            decision->estimated_service_time_ns = %lluull;\n", (unsigned long long)program->scheduling.target_latency_ns);
+            fprintf(file, "            decision->device_memcpy_bytes = %lluull;\n", (unsigned long long)program->scheduling.device_memcpy_bytes_per_submit_ceiling);
+            fprintf(file, "            decision->host_staging_bytes = %lluull;\n", (unsigned long long)program->scheduling.host_staging_bytes_per_submit_ceiling);
+        }
         for (program_operation_index = 0u; program_operation_index < program->operation_count; ++program_operation_index)
         {
             const SparkDriverBuildOperation *resolved_operation;
@@ -756,14 +861,20 @@ static void SparkWriteGeneratedAdmitFunction(
             {
                 fputs("            {\n", file);
                 fputs("                SparkModelDriverAdmissionDecision module_decision;\n", file);
+                fputs("                memset(&module_decision, 0, sizeof(module_decision));\n", file);
+                fputs("                module_decision.driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;\n", file);
                 fprintf(file, "                status = %s(instance->operation_%u_state, request, &module_decision);\n", resolved_operation->artifact.admit_symbol, operation_index);
                 fputs("                if (status != SPARK_STATUS_OK)\n                {\n                    return status;\n                }\n", file);
-                fputs("                if (module_decision.descriptor_bytes < sizeof(module_decision))\n                {\n                    return SPARK_STATUS_ABI_MISMATCH;\n                }\n", file);
+                fputs("                if (!SparkGeneratedAdmissionDecisionIsValid(&module_decision))\n                {\n                    return SPARK_STATUS_ABI_MISMATCH;\n                }\n", file);
                 fputs("                if (module_decision.accepted == 0u)\n                {\n                    *decision = module_decision;\n                    return SPARK_STATUS_OK;\n                }\n", file);
-                fputs("                SparkGeneratedMergeAdmissionDecision(decision, &module_decision);\n", file);
+                fputs("                status = SparkGeneratedMergeAdmissionDecision(decision, &module_decision);\n", file);
+                fputs("                if (status != SPARK_STATUS_OK)\n                {\n                    return status;\n                }\n", file);
                 fputs("            }\n", file);
             }
         }
+        fputs("            SparkGeneratedFinalizeAdmissionDecision(decision);\n", file);
+        fputs("            if (decision->available_dispatch_slot_count == 0u)\n            {\n", file);
+        fputs("                return SparkGeneratedRejectAdmission(decision, SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY);\n            }\n", file);
         fputs("            return SPARK_STATUS_OK;\n        }\n", file);
     }
     fputs("        default:\n        {\n            return SPARK_STATUS_INVALID_ARGUMENT;\n        }\n", file);
@@ -780,9 +891,7 @@ static void SparkWriteGeneratedSnapshotFunction(
     fputs("    SparkGeneratedDriverInstance *instance;\n\n", file);
     fputs("    if (driver_instance == 0 || snapshot == 0)\n    {\n        return SPARK_STATUS_INVALID_ARGUMENT;\n    }\n", file);
     fputs("    instance = (SparkGeneratedDriverInstance *)driver_instance;\n", file);
-    fputs("    memset(snapshot, 0, sizeof(*snapshot));\n", file);
-    fputs("    snapshot->descriptor_bytes = sizeof(*snapshot);\n", file);
-    fputs("    snapshot->program_id = program_id;\n", file);
+    fputs("    SparkGeneratedInitializeRuntimeSnapshot(snapshot, program_id);\n", file);
     fputs("    switch (program_id)\n    {\n", file);
     for (program_index = 0u; program_index < driver_image->stage->program_count; ++program_index)
     {
@@ -805,13 +914,15 @@ static void SparkWriteGeneratedSnapshotFunction(
             {
                 fputs("            {\n", file);
                 fputs("                SparkModelDriverRuntimeSnapshot module_snapshot;\n", file);
+                fputs("                memset(&module_snapshot, 0, sizeof(module_snapshot));\n", file);
                 fprintf(file, "                status = %s(instance->operation_%u_state, program_id, &module_snapshot);\n", resolved_operation->artifact.snapshot_symbol, operation_index);
                 fputs("                if (status != SPARK_STATUS_OK)\n                {\n                    return status;\n                }\n", file);
-                fputs("                if (module_snapshot.descriptor_bytes < sizeof(module_snapshot))\n                {\n                    return SPARK_STATUS_ABI_MISMATCH;\n                }\n", file);
+                fputs("                if (!SparkGeneratedRuntimeSnapshotIsValid(&module_snapshot, program_id))\n                {\n                    return SPARK_STATUS_ABI_MISMATCH;\n                }\n", file);
                 fputs("                SparkGeneratedMergeRuntimeSnapshot(snapshot, &module_snapshot);\n", file);
                 fputs("            }\n", file);
             }
         }
+        fputs("            SparkGeneratedFinalizeRuntimeSnapshot(snapshot);\n", file);
         fputs("            return SPARK_STATUS_OK;\n        }\n", file);
     }
     fputs("        default:\n        {\n            return SPARK_STATUS_INVALID_ARGUMENT;\n        }\n", file);
@@ -915,6 +1026,7 @@ static SparkStatus SparkGenerateDriverSource(
         SparkSetError(error_buffer, error_buffer_bytes, "cannot create generated driver source '%s'", source_path);
         return SPARK_STATUS_IO_ERROR;
     }
+    fputs("#include <stdint.h>\n", file);
     fputs("#include <stdlib.h>\n", file);
     fputs("#include <string.h>\n\n", file);
     fputs("#include \"sparkpipe/spark_model_driver.h\"\n", file);

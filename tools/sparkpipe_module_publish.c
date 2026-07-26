@@ -82,10 +82,11 @@ int main(int argument_count, char **arguments)
         return 1;
     }
     printf(
-        "module=%s target=%s artifact=%s kind=%s validation=%s link_unit=%s record=%s\n",
+        "module=%s target=%s artifact=%s validator=%s kind=%s validation=%s link_unit=%s record=%s\n",
         request.module_id,
         request.target,
         report.artifact_sha256,
+        report.validator_sha256,
         SparkModuleLinkUnitKindToString(report.link_unit_kind),
         report.validation_reused ? "reused" : "executed",
         report.stored_link_unit_path,

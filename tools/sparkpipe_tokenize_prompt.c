@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_tokenizer.h"
 
 #include "sparkpipe/spark_glm52_model.h"
+#include "sparkpipe_tool_file.h"
 
 #define SPARK_TOKENIZE_PROMPT_DEFAULT_TOKEN_CAPACITY \
     SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS
@@ -19,63 +20,6 @@ static int SparkTokenizePromptUsage(
         "usage: %s (--tokenizer-json path | --tokenizer-compiled path) (--prompt text | --prompt-file path | --text text | --text-file path) [--output path] [--save-compiled-tokenizer path] [--disable-special | --disable-special-token-match] [--add-prefix-space] [--disable-regex-pretokenization]\n",
         program);
     return 2;
-}
-
-static char *SparkTokenizePromptReadFile(
-    const char *path,
-    uint32_t *byte_count_out)
-{
-    FILE *file;
-    long file_size;
-    char *text;
-
-    if (path == 0 || byte_count_out == 0)
-    {
-        return 0;
-    }
-    *byte_count_out = 0u;
-    file = fopen(path, "rb");
-    if (file == 0)
-    {
-        return 0;
-    }
-    if (fseek(file, 0, SEEK_END) != 0)
-    {
-        fclose(file);
-        return 0;
-    }
-    file_size = ftell(file);
-    if (file_size < 0 || (uint64_t)file_size > SPARK_TOKENIZE_PROMPT_MAX_TEXT_BYTES)
-    {
-        fclose(file);
-        return 0;
-    }
-    if (fseek(file, 0, SEEK_SET) != 0)
-    {
-        fclose(file);
-        return 0;
-    }
-    text = (char *)malloc((size_t)file_size + 1u);
-    if (text == 0)
-    {
-        fclose(file);
-        return 0;
-    }
-    if (file_size != 0 &&
-        fread(text, 1u, (size_t)file_size, file) != (size_t)file_size)
-    {
-        free(text);
-        fclose(file);
-        return 0;
-    }
-    if (fclose(file) != 0)
-    {
-        free(text);
-        return 0;
-    }
-    text[file_size] = '\0';
-    *byte_count_out = (uint32_t)file_size;
-    return text;
 }
 
 static int SparkTokenizePromptWriteTokens(
@@ -249,7 +193,7 @@ int main(
     owned_prompt_text = 0;
     if (prompt_file_path != 0)
     {
-        owned_prompt_text = SparkTokenizePromptReadFile(
+        owned_prompt_text = SparkToolReadWholeFile(
             prompt_file_path,
             &prompt_text_bytes);
         if (owned_prompt_text == 0)

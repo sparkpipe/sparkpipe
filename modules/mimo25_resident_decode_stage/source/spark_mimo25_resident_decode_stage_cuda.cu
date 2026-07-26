@@ -3,6 +3,8 @@
 
 #include <math.h>
 
+#define SPARK_MIMO25_ROUTER_SORT_CAPACITY 512u
+
 /*
  * MiMo-V2.5 device kernels. The variant model header arrives via the
  * build's -include; nothing below names a variant. Shared machinery
@@ -64,9 +66,9 @@ static __global__ void SparkMimo25ScaleSliceKernel(void *data_bf16, uint64_t row
 static __global__ void SparkMimo25GateScoresKernel(const float *weight_f32, const void *input_bf16, float *scores_f32, uint32_t row_count, uint32_t input_dimension, uint32_t expert_count)
 {
 	extern __shared__ float gate_shared[];
-	uint32_t row = blockIdx.x,expert_base = blockIdx.y * SPARK_LM_CTA_WARPS;
+	uint32_t row = blockIdx.x,warp_count = blockDim.x / SPARK_LM_WARP_LANES;
 	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES,expert,element;
-	float accumulator = 0.0f;
+	float accumulator;
 	float2 stage_pair,weight_pair;
 	if ( row >= row_count )
 		return;
@@ -77,18 +79,19 @@ static __global__ void SparkMimo25GateScoresKernel(const float *weight_f32, cons
 		gate_shared[(element << 1u) + 1u] = stage_pair.y;
 	}
 	__syncthreads();
-	expert = expert_base + warp;
-	if ( expert >= expert_count )
-		return;
-	for (element = lane; element < (input_dimension >> 1u); element += SPARK_LM_WARP_LANES)
+	for (expert = warp; expert < expert_count; expert += warp_count)
 	{
-		weight_pair = __ldg(((const float2 *)weight_f32) + (((uint64_t)expert * input_dimension) >> 1u) + element);
-		accumulator = fmaf(gate_shared[element << 1u],weight_pair.x,accumulator);
-		accumulator = fmaf(gate_shared[(element << 1u) + 1u],weight_pair.y,accumulator);
+		accumulator = 0.0f;
+		for (element = lane; element < (input_dimension >> 1u); element += SPARK_LM_WARP_LANES)
+		{
+			weight_pair = __ldg(((const float2 *)weight_f32) + (((uint64_t)expert * input_dimension) >> 1u) + element);
+			accumulator = fmaf(gate_shared[element << 1u],weight_pair.x,accumulator);
+			accumulator = fmaf(gate_shared[(element << 1u) + 1u],weight_pair.y,accumulator);
+		}
+		accumulator = SparkLmWarpReduceSum(accumulator);
+		if ( lane == 0u )
+			scores_f32[((uint64_t)row * expert_count) + expert] = SparkLmSigmoid(accumulator);
 	}
-	accumulator = SparkLmWarpReduceSum(accumulator);
-	if ( lane == 0u )
-		scores_f32[((uint64_t)row * expert_count) + expert] = SparkLmSigmoid(accumulator);
 }
 
 /*
@@ -97,39 +100,76 @@ static __global__ void SparkMimo25GateScoresKernel(const float *weight_f32, cons
  * sigmoid scores normalized by sum + epsilon and scaled - the routing
  * weight is applied downstream on the expert OUTPUT.
  */
-static __global__ void SparkMimo25GateSelectKernel(const float *scores_f32, const float *bias_f32, uint32_t row_count, uint32_t expert_count, uint32_t topk, float epsilon, float route_scale, uint32_t *indices_u32, float *weights_f32)
+static __global__ void SparkMimo25GateSelectKernel(
+    const float *scores_f32,
+    const float *bias_f32,
+    uint32_t row_count,
+    uint32_t expert_count,
+    uint32_t topk,
+    float epsilon,
+    float route_scale,
+    uint32_t *indices_u32,
+    float *weights_f32)
 {
-	uint32_t row = blockIdx.x * blockDim.x + threadIdx.x,rank,expert,best,chosen;
-	const float *scores;
-	uint32_t *indices;
-	float best_score,shifted,total = 0.0f;
-	if ( row >= row_count )
-		return;
-	scores = scores_f32 + ((uint64_t)row * expert_count);
-	indices = indices_u32 + ((uint64_t)row * topk);
-	for (rank = 0; rank < topk; rank++)
-	{
-		best = 0xffffffffu;
-		best_score = -3.0e38f;
-		for (expert = 0; expert < expert_count; expert++)
-		{
-			for (chosen = 0; chosen < rank; chosen++)
-				if ( indices[chosen] == expert )
-					break;
-			if ( chosen < rank )
-				continue;
-			shifted = scores[expert] + bias_f32[expert];
-			if ( shifted > best_score )
-			{
-				best_score = shifted;
-				best = expert;
-			}
-		}
-		indices[rank] = best;
-		total += scores[best];
-	}
-	for (rank = 0; rank < topk; rank++)
-		weights_f32[((uint64_t)row * topk) + rank] = scores[indices[rank]] / (total + epsilon) * route_scale;
+    __shared__ uint64_t ordered_keys[SPARK_MIMO25_ROUTER_SORT_CAPACITY];
+    uint32_t row;
+    uint32_t expert;
+    uint32_t rank;
+    uint64_t selected_key;
+    uint32_t selected_expert;
+    float selected_score;
+    float selected_total;
+    const float *row_scores;
+
+    static_assert(
+        SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT <=
+            SPARK_MIMO25_ROUTER_SORT_CAPACITY,
+        "MiMo expert count exceeds router sort capacity");
+    row = blockIdx.x;
+    if (row >= row_count ||
+        expert_count == 0u ||
+        expert_count > SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT ||
+        topk == 0u || topk > SPARK_LM_MOE_MAX_TOPK ||
+        topk > expert_count)
+    {
+        return;
+    }
+    row_scores = scores_f32 + ((uint64_t)row * expert_count);
+    for (expert = threadIdx.x;
+         expert < SPARK_MIMO25_ROUTER_SORT_CAPACITY;
+         expert += blockDim.x)
+    {
+        ordered_keys[expert] = expert < expert_count
+            ? SparkLmOrderedTopKKey(
+                row_scores[expert] + bias_f32[expert],
+                expert)
+            : 0u;
+    }
+    __syncthreads();
+    SparkLmBitonicSortKeysAscending<SPARK_MIMO25_ROUTER_SORT_CAPACITY>(
+        ordered_keys);
+
+    rank = threadIdx.x;
+    selected_key = rank < topk
+        ? ordered_keys[SPARK_MIMO25_ROUTER_SORT_CAPACITY - 1u - rank]
+        : 0u;
+    selected_expert = selected_key != 0u
+        ? 0xffffffffu - (uint32_t)selected_key
+        : 0xffffffffu;
+    selected_score = selected_expert < expert_count
+        ? row_scores[selected_expert]
+        : 0.0f;
+    selected_total = threadIdx.x < SPARK_LM_WARP_LANES
+        ? SparkLmWarpReduceSum(selected_score)
+        : 0.0f;
+    selected_total = __shfl_sync(0xffffffffu, selected_total, 0u);
+
+    if (rank < topk && selected_expert < expert_count)
+    {
+        indices_u32[((uint64_t)row * topk) + rank] = selected_expert;
+        weights_f32[((uint64_t)row * topk) + rank] =
+            selected_score / (selected_total + epsilon) * route_scale;
+    }
 }
 
 // Plain silu(gate) * up, no clamp anywhere in this model.
@@ -189,14 +229,18 @@ static __global__ void SparkMimo25ResidualAddKernel(void *hidden_bf16, const voi
 
 extern "C" cudaError_t SparkMimo25LaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
 {
-	SparkLmFusedResidualRmsNormKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,delta_bf16,gain_bf16,output_bf16,row_count,dimension,epsilon);
-	return(cudaGetLastError());
+    size_t shared_memory_bytes = (size_t)dimension * sizeof(float);
+
+    SparkLmFusedResidualRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, shared_memory_bytes, stream>>>(hidden_bf16, delta_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
+    return cudaGetLastError();
 }
 
 extern "C" cudaError_t SparkMimo25LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
 {
-	SparkLmRmsNormKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(input_bf16,gain_bf16,output_bf16,row_count,dimension,epsilon);
-	return(cudaGetLastError());
+    size_t shared_memory_bytes = (size_t)dimension * sizeof(float);
+
+    SparkLmRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, shared_memory_bytes, stream>>>(input_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
+    return cudaGetLastError();
 }
 
 extern "C" cudaError_t SparkMimo25LaunchLinear(cudaStream_t stream, const SparkMimo25LinearView *view, const void *payload, const void *scale, const void *input_bf16, void *output_bf16, uint32_t row_count)
@@ -268,6 +312,11 @@ extern "C" cudaError_t SparkMimo25LaunchExpertTileAll(cudaStream_t stream, const
 	uint64_t payload_stride = rows_per_expert * columns;
 	uint64_t scale_stride = (rows_per_expert / SPARK_MIMO25_MODEL_FP8_SCALE_BLOCK) * (columns / SPARK_MIMO25_MODEL_FP8_SCALE_BLOCK) * sizeof(float);
 	dim3 grid((max_group_slots + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,((uint32_t)rows_per_expert + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N,SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT);
+	if ( stacked == 0 ||
+		(stacked->weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
+			(stacked->scale == 0 || (columns % 128u) != 0u ||
+				(rows_per_expert % 128u) != 0u)) )
+		return(cudaErrorInvalidValue);
 	(void)unused_payload;
 	(void)unused_scale;
 	SparkLmExpertTileAllKernel<128u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(stacked->weight_format,stacked->payload,stacked->scale,payload_stride,scale_stride,input_bf16,grouped_rows,expert_offsets,output_bf16,(uint32_t)columns,(uint32_t)rows_per_expert);
@@ -276,7 +325,7 @@ extern "C" cudaError_t SparkMimo25LaunchExpertTileAll(cudaStream_t stream, const
 
 extern "C" cudaError_t SparkMimo25LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count)
 {
-	return(SparkLmHostLaunchMoePairReduce(stream,slot_out_bf16,inverse_map,pair_weights_f32,accum_bf16,row_count,SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION));
+	return(SparkLmHostLaunchMoePairReduceOverwrite(stream,slot_out_bf16,inverse_map,pair_weights_f32,accum_bf16,row_count,SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION));
 }
 
 extern "C" cudaError_t SparkMimo25LaunchCacheScatter(cudaStream_t stream, const void *qkv_bf16, uint64_t qkv_row_stride, uint32_t k_offset, uint32_t k_width, uint32_t v_offset, uint32_t v_width, void *k_cache_bf16, void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t window_slots, uint32_t row_count)
@@ -301,23 +350,61 @@ extern "C" cudaError_t SparkMimo25LaunchHeadShadowQuantize(cudaStream_t stream, 
 
 extern "C" cudaError_t SparkMimo25LaunchAttnDecode(cudaStream_t stream, const void *q_bf16, uint64_t q_row_stride, const void *k_cache_bf16, const void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, uint64_t k_slot_stride, uint64_t v_slot_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, const float *sink_f32, float scale, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t group_size, uint32_t head_dim, uint32_t value_dim, uint32_t window_slots)
 {
-	dim3 grid(row_count,head_count);
-	uint32_t shared_bytes = (head_dim + (SPARK_LM_CTA_WARPS * value_dim)) * (uint32_t)sizeof(float);
-	SparkLmAttnDecodeKernel<<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(q_bf16,q_row_stride,k_cache_bf16,v_cache_bf16,k_lane_stride,v_lane_stride,k_slot_stride,v_slot_stride,row_lane_indices,row_positions,sink_f32,scale,out_bf16,row_count,head_count,group_size,head_dim,value_dim,window_slots);
-	return(cudaGetLastError());
+    return SparkLmHostLaunchAdaptiveAttnDecode(
+        stream,
+        q_bf16,
+        q_row_stride,
+        k_cache_bf16,
+        v_cache_bf16,
+        k_lane_stride,
+        v_lane_stride,
+        k_slot_stride,
+        v_slot_stride,
+        row_lane_indices,
+        row_positions,
+        sink_f32,
+        scale,
+        out_bf16,
+        row_count,
+        head_count,
+        group_size,
+        head_dim,
+        value_dim,
+        window_slots);
 }
 
 extern "C" cudaError_t SparkMimo25LaunchGateScores(cudaStream_t stream, const SparkMimo25LinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count)
 {
-	dim3 grid(row_count,(gate->rows + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
-	SparkMimo25GateScoresKernel<<<grid,SPARK_LM_CTA_THREADS,gate->columns * (uint32_t)sizeof(float),stream>>>((const float *)gate->payload,input_bf16,scores_f32,row_count,gate->columns,gate->rows);
+	SparkMimo25GateScoresKernel<<<row_count,SPARK_LM_CTA_THREADS,gate->columns * (uint32_t)sizeof(float),stream>>>((const float *)gate->payload,input_bf16,scores_f32,row_count,gate->columns,gate->rows);
 	return(cudaGetLastError());
 }
 
 extern "C" cudaError_t SparkMimo25LaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, uint32_t row_count, uint32_t expert_count, uint32_t topk, float epsilon, float route_scale, uint32_t *indices_u32, float *weights_f32)
 {
-	SparkMimo25GateSelectKernel<<<(row_count + 63u) / 64u,64u,0,stream>>>(scores_f32,bias_f32,row_count,expert_count,topk,epsilon,route_scale,indices_u32,weights_f32);
-	return(cudaGetLastError());
+    if (scores_f32 == 0 || bias_f32 == 0 ||
+        indices_u32 == 0 || weights_f32 == 0 || row_count == 0u ||
+        expert_count == 0u ||
+        expert_count > SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT ||
+        topk == 0u || topk > SPARK_LM_MOE_MAX_TOPK ||
+        topk > expert_count)
+    {
+        return cudaErrorInvalidValue;
+    }
+    SparkMimo25GateSelectKernel<<<
+        row_count,
+        SPARK_LM_CTA_THREADS,
+        0u,
+        stream>>>(
+        scores_f32,
+        bias_f32,
+        row_count,
+        expert_count,
+        topk,
+        epsilon,
+        route_scale,
+        indices_u32,
+        weights_f32);
+    return cudaGetLastError();
 }
 
 extern "C" cudaError_t SparkMimo25LaunchSiluMul(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t width)
@@ -337,7 +424,12 @@ extern "C" cudaError_t SparkMimo25LaunchGatherLinear(cudaStream_t stream, const 
 extern "C" cudaError_t SparkMimo25LaunchExpertTile(cudaStream_t stream, const SparkMimo25LinearView *view, const void *payload, const void *scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count)
 {
 	dim3 grid((slot_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,(view->rows + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
-	SparkLmExpertTileKernel<128u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(view->weight_format,payload != 0 ? payload : view->payload,scale != 0 ? scale : view->scale,input_bf16,input_row_map,output_bf16,slot_count,view->columns,view->rows);
+	const void *effective_scale = scale != 0 ? scale : view->scale;
+	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
+		(effective_scale == 0 || (view->columns % 128u) != 0u ||
+			(view->rows % 128u) != 0u) )
+		return(cudaErrorInvalidValue);
+	SparkLmExpertTileKernel<128u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(view->weight_format,payload != 0 ? payload : view->payload,effective_scale,input_bf16,input_row_map,output_bf16,slot_count,view->columns,view->rows);
 	return(cudaGetLastError());
 }
 

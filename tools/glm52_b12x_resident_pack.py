@@ -13,6 +13,7 @@ import sys
 from typing import Any, BinaryIO, Dict, Iterable, List, Tuple
 
 from glm52_model_contract import load_model_contract
+from glm52_resident_pack_common import tp_shard_range
 
 MODEL_CONTRACT = load_model_contract()
 MAGIC = b"SPARKGLM52B12X\0\0"
@@ -25,6 +26,9 @@ REQUIRED_ARCH = "sm_121a"
 PACK_EXTENSION = ".spb12x"
 SOURCE_INDEX_FILE = "model.safetensors.index.json"
 HEADER_BYTES = 512
+TP_DEGREE = 1
+TP_RANK = 0
+
 REGION_ALIGNMENT = 4096
 REGION_COUNT = 7
 
@@ -250,8 +254,15 @@ def write_padding(file: BinaryIO, target_offset: int) -> None:
         file.write(b"\0" * (target_offset - current_offset))
 
 
-def reserve_regions() -> List[Dict[str, int]]:
-    w1_rows = W1_COMPONENT_COUNT * INTERMEDIATE_DIMENSION
+def pack_file_name(layer: int) -> str:
+    shape_tag = "" if TP_DEGREE == 1 else f"_tp{TP_DEGREE}r{TP_RANK}"
+    return f"glm52_layer_{layer:04d}_b12x_moe{shape_tag}.spb12x"
+
+
+def reserve_regions(intermediate_dimension: int | None = None) -> List[Dict[str, int]]:
+    if intermediate_dimension is None:
+        intermediate_dimension = INTERMEDIATE_DIMENSION // TP_DEGREE
+    w1_rows = W1_COMPONENT_COUNT * intermediate_dimension
     w1_weight_bytes = (
         EXPERT_COUNT * w1_rows * (HIDDEN_DIMENSION // NVFP4_VALUES_PER_BYTE)
     )
@@ -260,9 +271,9 @@ def reserve_regions() -> List[Dict[str, int]]:
     )
     w2_weight_bytes = (
         EXPERT_COUNT * HIDDEN_DIMENSION *
-        (INTERMEDIATE_DIMENSION // NVFP4_VALUES_PER_BYTE)
+        (intermediate_dimension // NVFP4_VALUES_PER_BYTE)
     )
-    w2_scale_bytes = EXPERT_COUNT * HIDDEN_DIMENSION * (INTERMEDIATE_DIMENSION // NVFP4_GROUP_SIZE)
+    w2_scale_bytes = EXPERT_COUNT * HIDDEN_DIMENSION * (intermediate_dimension // NVFP4_GROUP_SIZE)
     alpha_bytes = EXPERT_COUNT * FLOAT32_BYTES
     sizes = [
         w1_weight_bytes,
@@ -415,7 +426,9 @@ def retag_existing_pack_metadata(
     qualification_hash_low64: int,
     kernel_manifest_hash_low64: int,
 ) -> Dict[str, Any]:
-    regions = reserve_regions()
+    shard_start, shard_count = tp_shard_range(
+        INTERMEDIATE_DIMENSION, TP_DEGREE, TP_RANK, NVFP4_GROUP_SIZE)
+    regions = reserve_regions(shard_count)
     expected_bytes = regions[-1]["offset"] + regions[-1]["bytes"]
     if not output_path.exists():
         raise PackFailure(f"cannot retag missing pack: {output_path}")
@@ -608,20 +621,20 @@ def explain_pack_reuse_failure(
     return "pack reuse rejected for an unknown reason"
 
 
-def write_w1_weight_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
+def write_w1_weight_region(reader: SafetensorReader, file: BinaryIO, layer: int, shard_start: int, shard_count: int) -> None:
     expected = (
-        INTERMEDIATE_DIMENSION,
+        shard_count,
         HIDDEN_DIMENSION // NVFP4_VALUES_PER_BYTE,
     )
     for expert in range(EXPERT_COUNT):
         up_name = tensor_name(layer, expert, "up_proj", "weight")
         gate_name = tensor_name(layer, expert, "gate_proj", "weight")
-        file.write(tensor_bytes_uint8(up_name, reader.tensor(up_name), expected))
-        file.write(tensor_bytes_uint8(gate_name, reader.tensor(gate_name), expected))
+        file.write(tensor_bytes_uint8(up_name, reader.tensor(up_name)[shard_start:shard_start + shard_count], expected))
+        file.write(tensor_bytes_uint8(gate_name, reader.tensor(gate_name)[shard_start:shard_start + shard_count], expected))
 
 
-def write_w1_scale_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
-    expected = (INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION // NVFP4_GROUP_SIZE)
+def write_w1_scale_region(reader: SafetensorReader, file: BinaryIO, layer: int, shard_start: int, shard_count: int) -> None:
+    expected = (shard_count, HIDDEN_DIMENSION // NVFP4_GROUP_SIZE)
     for expert in range(EXPERT_COUNT):
         up_name = tensor_name(layer, expert, "up_proj", "weight_scale")
         gate_name = tensor_name(layer, expert, "gate_proj", "weight_scale")
@@ -632,28 +645,32 @@ def write_w1_scale_region(reader: SafetensorReader, file: BinaryIO, layer: int) 
         if abs(up_scale2 - gate_scale2) > 0.0:
             raise PackFailure(f"expert {expert} has mismatched up/gate weight_scale_2")
         row_major = (
-            tensor_bytes_f8_scaled(up_name, reader.tensor(up_name), up_scale2, expected) +
-            tensor_bytes_f8_scaled(gate_name, reader.tensor(gate_name), gate_scale2, expected)
+            tensor_bytes_f8_scaled(up_name, reader.tensor(up_name)[shard_start:shard_start + shard_count], up_scale2, expected) +
+            tensor_bytes_f8_scaled(gate_name, reader.tensor(gate_name)[shard_start:shard_start + shard_count], gate_scale2, expected)
         )
         file.write(scale_bytes_to_flashinfer_static_storage(
             f"layer {layer} expert {expert} w1 scale",
             row_major,
-            2 * INTERMEDIATE_DIMENSION,
+            2 * shard_count,
             HIDDEN_DIMENSION // NVFP4_GROUP_SIZE))
 
 
-def write_w2_weight_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
+def write_w2_weight_region(reader: SafetensorReader, file: BinaryIO, layer: int, shard_start: int, shard_count: int) -> None:
     expected = (
         HIDDEN_DIMENSION,
-        INTERMEDIATE_DIMENSION // NVFP4_VALUES_PER_BYTE,
+        shard_count // NVFP4_VALUES_PER_BYTE,
     )
+    byte_start = shard_start // NVFP4_VALUES_PER_BYTE
+    byte_count = shard_count // NVFP4_VALUES_PER_BYTE
     for expert in range(EXPERT_COUNT):
         down_name = tensor_name(layer, expert, "down_proj", "weight")
-        file.write(tensor_bytes_uint8(down_name, reader.tensor(down_name), expected))
+        file.write(tensor_bytes_uint8(down_name, reader.tensor(down_name)[:, byte_start:byte_start + byte_count].contiguous(), expected))
 
 
-def write_w2_scale_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
-    expected = (HIDDEN_DIMENSION, INTERMEDIATE_DIMENSION // NVFP4_GROUP_SIZE)
+def write_w2_scale_region(reader: SafetensorReader, file: BinaryIO, layer: int, shard_start: int, shard_count: int) -> None:
+    expected = (HIDDEN_DIMENSION, shard_count // NVFP4_GROUP_SIZE)
+    group_start = shard_start // NVFP4_GROUP_SIZE
+    group_count = shard_count // NVFP4_GROUP_SIZE
     for expert in range(EXPERT_COUNT):
         down_name = tensor_name(layer, expert, "down_proj", "weight_scale")
         down_scale2_name = tensor_name(layer, expert, "down_proj", "weight_scale_2")
@@ -662,14 +679,14 @@ def write_w2_scale_region(reader: SafetensorReader, file: BinaryIO, layer: int) 
             reader.tensor(down_scale2_name))
         row_major = tensor_bytes_f8_scaled(
             down_name,
-            reader.tensor(down_name),
+            reader.tensor(down_name)[:, group_start:group_start + group_count].contiguous(),
             down_scale2,
             expected)
         file.write(scale_bytes_to_flashinfer_static_storage(
             f"layer {layer} expert {expert} w2 scale",
             row_major,
             HIDDEN_DIMENSION,
-            INTERMEDIATE_DIMENSION // NVFP4_GROUP_SIZE))
+            shard_count // NVFP4_GROUP_SIZE))
 
 
 def write_alpha_region(file: BinaryIO) -> None:
@@ -758,7 +775,9 @@ def write_pack(
     qualification_hash_low64: int,
     kernel_manifest_hash_low64: int,
 ) -> Dict[str, Any]:
-    regions = reserve_regions()
+    shard_start, shard_count = tp_shard_range(
+        INTERMEDIATE_DIMENSION, TP_DEGREE, TP_RANK, NVFP4_GROUP_SIZE)
+    regions = reserve_regions(shard_count)
     temporary_path = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
     pack_hash_low64 = pack_metadata_hash_low64(
         layer,
@@ -783,17 +802,17 @@ def write_pack(
         with temporary_path.open("wb") as file:
             file.write(header)
             write_padding(file, regions[REGION_W1_WEIGHT]["offset"])
-            write_w1_weight_region(reader, file, layer)
+            write_w1_weight_region(reader, file, layer, shard_start, shard_count)
             write_padding(file, regions[REGION_W1_SCALE]["offset"])
-            write_w1_scale_region(reader, file, layer)
+            write_w1_scale_region(reader, file, layer, shard_start, shard_count)
             write_padding(file, regions[REGION_W1_ALPHA]["offset"])
             write_alpha_region(file)
             write_padding(file, regions[REGION_FC2_INPUT_SCALE]["offset"])
             write_alpha_region(file)
             write_padding(file, regions[REGION_W2_WEIGHT]["offset"])
-            write_w2_weight_region(reader, file, layer)
+            write_w2_weight_region(reader, file, layer, shard_start, shard_count)
             write_padding(file, regions[REGION_W2_SCALE]["offset"])
-            write_w2_scale_region(reader, file, layer)
+            write_w2_scale_region(reader, file, layer, shard_start, shard_count)
             write_padding(file, regions[REGION_W2_ALPHA]["offset"])
             write_alpha_region(file)
         os.replace(temporary_path, output_path)
@@ -847,7 +866,7 @@ def process_layer(
     require_reuse: bool,
     verify_reused_sha256: bool,
 ) -> Dict[str, Any]:
-    output_path = output_dir / f"glm52_layer_{layer:04d}_b12x_moe.spb12x"
+    output_path = output_dir / pack_file_name(layer)
     record = None
     if reuse_valid:
         record = try_reuse_pack(
@@ -984,7 +1003,18 @@ def main() -> int:
     parser.add_argument("--verify-reused-sha256", action="store_true")
     parser.add_argument("--retag-existing-metadata", action="store_true")
     parser.add_argument("--jobs", default=1, type=int)
+    parser.add_argument("--tp-degree", type=int, default=1,
+        help="Tensor-parallel degree: expert up and gate rows and down "
+        "columns are sliced to this rank's intermediate shard, NVFP4 "
+        "groups included; requires --jobs 1 so worker processes cannot "
+        "diverge from the configured shape.")
+    parser.add_argument("--tp-rank", type=int, default=0)
     args = parser.parse_args()
+    global TP_DEGREE, TP_RANK
+    TP_DEGREE = int(args.tp_degree)
+    TP_RANK = int(args.tp_rank)
+    if TP_DEGREE != 1 and args.jobs != 1:
+        raise PackFailure("--tp-degree requires --jobs 1")
 
     model_dir = Path(args.model_dir).resolve()
     aot_manifest_path = Path(args.aot_manifest).resolve()
@@ -1011,7 +1041,7 @@ def main() -> int:
     records_by_layer: Dict[int, Dict[str, Any]] = {}
     if args.retag_existing_metadata:
         for layer in layers:
-            output_path = output_dir / f"glm52_layer_{layer:04d}_b12x_moe.spb12x"
+            output_path = output_dir / pack_file_name(layer)
             record = retag_existing_pack_metadata(
                 output_path,
                 model_dir,

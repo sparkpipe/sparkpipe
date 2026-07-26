@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include "sparkpipe/spark_tokenizer.h"
+#include "sparkpipe_tool_file.h"
 
 static double SparkTokenizerBenchmarkSeconds(void)
 {
@@ -22,63 +23,6 @@ static double SparkTokenizerBenchmarkSeconds(void)
     }
 #endif
     return (double)timestamp.tv_sec + (double)timestamp.tv_nsec * 0.000000001;
-}
-
-static int SparkTokenizerBenchmarkReadFile(
-    const char *path,
-    char **text_out,
-    uint32_t *text_bytes_out)
-{
-    FILE *file;
-    long file_bytes;
-    char *text;
-    size_t read_bytes;
-
-    if (path == 0 || text_out == 0 || text_bytes_out == 0)
-    {
-        return 1;
-    }
-    *text_out = 0;
-    *text_bytes_out = 0u;
-    file = fopen(path, "rb");
-    if (file == 0)
-    {
-        fprintf(stderr, "failed to open prompt file: %s\n", path);
-        return 1;
-    }
-    if (fseek(file, 0, SEEK_END) != 0)
-    {
-        fclose(file);
-        return 1;
-    }
-    file_bytes = ftell(file);
-    if (file_bytes < 0 || (uint64_t)file_bytes > UINT32_MAX)
-    {
-        fclose(file);
-        return 1;
-    }
-    if (fseek(file, 0, SEEK_SET) != 0)
-    {
-        fclose(file);
-        return 1;
-    }
-    text = (char *)malloc((size_t)file_bytes + 1u);
-    if (text == 0)
-    {
-        fclose(file);
-        return 1;
-    }
-    read_bytes = fread(text, 1u, (size_t)file_bytes, file);
-    fclose(file);
-    if (read_bytes != (size_t)file_bytes)
-    {
-        free(text);
-        return 1;
-    }
-    text[file_bytes] = '\0';
-    *text_out = text;
-    *text_bytes_out = (uint32_t)file_bytes;
-    return 0;
 }
 
 static int SparkTokenizerBenchmarkParseUint32(
@@ -246,7 +190,7 @@ int main(
 
     if (prompt_file_path != 0)
     {
-        if (SparkTokenizerBenchmarkReadFile(prompt_file_path, &owned_prompt_text, &prompt_bytes) != 0)
+        if (((owned_prompt_text = SparkToolReadWholeFile(prompt_file_path, &prompt_bytes)) == 0))
         {
             return 1;
         }
