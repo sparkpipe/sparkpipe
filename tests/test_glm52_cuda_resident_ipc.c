@@ -34,7 +34,7 @@ static SparkGlm52CudaResidentIpcSubmitDecode *SparkTestBuildWideDecode(
     message->descriptor_bytes =
         SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES;
     message->control_generation =
-        SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
+        SPARK_GLM52_RING_WORK_CONTROL_STANDALONE_GENERATION;
     message->dispatch_kind =
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
     message->lane_count = lane_count;
@@ -69,23 +69,23 @@ static void SparkTestWideDecodePayload(void)
     SparkGlm52CudaResidentIpcSubmitDecode *message;
     uint32_t payload_bytes;
     message = SparkTestBuildWideDecode(
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT,17u,&payload_bytes);
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT,17u,&payload_bytes);
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
     message->execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B512;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     message->execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B1024;
     message->control_generation = 0u;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     message->control_generation =
-        SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
+        SPARK_GLM52_RING_WORK_CONTROL_STANDALONE_GENERATION;
     assert(message->lanes[1023u].kv_block_offset == 1023u * 17u);
     assert(message->kv_physical_block_indices[
         message->lanes[1023u].kv_block_offset + 16u] ==
@@ -94,7 +94,7 @@ static void SparkTestWideDecodePayload(void)
     message->lanes[511u].kv_block_offset += 1u;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     message->lanes[511u].kv_block_offset -= 1u;
 
@@ -106,10 +106,10 @@ static void SparkTestWideDecodePayload(void)
         message->lanes[lane_index].speculative_token_count = 6u;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT - 1u) ==
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT - 1u) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     free(message);
 }
@@ -119,7 +119,7 @@ static void SparkTestDecodePayloadCapacity(void)
     uint32_t maximum_block_index_count;
     uint32_t payload_bytes;
     maximum_block_index_count =
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT *
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT *
         SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS;
     assert(SparkGlm52CudaResidentIpcDecodePayloadBytes(
         maximum_block_index_count,&payload_bytes) == SPARK_STATUS_OK);
@@ -145,10 +145,10 @@ static void SparkTestInternalDirectoryDecodeHasNoBlockPayload(void)
     message->descriptor_bytes =
         SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES;
     message->control_generation =
-        SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
+        SPARK_GLM52_RING_WORK_CONTROL_STANDALONE_GENERATION;
     message->dispatch_kind =
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
-    message->lane_count = SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT;
+    message->lane_count = SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT;
     message->active_sequence_count = message->lane_count;
     message->execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B1024;
     message->kv_block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
@@ -164,30 +164,30 @@ static void SparkTestInternalDirectoryDecodeHasNoBlockPayload(void)
     }
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
     message->lanes[0u].mtp_resolution_proposed_token_count = 3u;
     message->lanes[0u].mtp_resolution_accepted_token_count = 1u;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
     message->lanes[0u].mtp_resolution_accepted_token_count = 4u;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     message->lanes[0u].mtp_resolution_accepted_token_count = 1u;
     message->lanes[0u].mtp_resolution_path_id =
         SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH1;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     message->lanes[0u].mtp_resolution_path_id =
         SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
     message->lanes[9u].kv_block_count = 1u;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     free(message);
 }
@@ -195,23 +195,23 @@ static void SparkTestInternalDirectoryDecodeHasNoBlockPayload(void)
 static void SparkTestWideSubmitWorkUsesVariablePayload(void)
 {
     SparkGlm52CudaResidentIpcSubmitWork *message;
-    SparkGlm52Pp13WorkControlPacket *packet;
+    SparkGlm52RingWorkControlPacket *packet;
     uint32_t lane_index;
     uint32_t packet_bytes;
     uint32_t submit_bytes;
 
-    packet = (SparkGlm52Pp13WorkControlPacket *)calloc(1u,sizeof(*packet));
+    packet = (SparkGlm52RingWorkControlPacket *)calloc(1u,sizeof(*packet));
     assert(packet != 0);
     message = (SparkGlm52CudaResidentIpcSubmitWork *)calloc(
         1u,sizeof(*message));
     assert(message != 0);
-    packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
-    packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
+    packet->magic = SPARK_GLM52_RING_WORK_CONTROL_PACKET_MAGIC;
+    packet->abi_version = SPARK_GLM52_RING_WORK_CONTROL_ABI_VERSION;
     packet->control_generation =
-        SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
+        SPARK_GLM52_RING_WORK_CONTROL_STANDALONE_GENERATION;
     packet->flags =
-        SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY;
-    packet->lane_count = SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT;
+        SPARK_GLM52_RING_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY;
+    packet->lane_count = SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT;
     packet->active_sequence_count = packet->lane_count;
     packet->rows_per_lane = SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT + 1u;
     packet->execution_row_count = packet->lane_count * packet->rows_per_lane;
@@ -219,9 +219,9 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
     packet->new_token_count = packet->rows_per_lane;
     packet->speculative_token_count =
         SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT;
-    packet_bytes = SparkGlm52Pp13WorkControlCalculatePacketBytes(
+    packet_bytes = SparkGlm52RingWorkControlCalculatePacketBytes(
         packet->lane_count);
-    assert(packet_bytes == SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES);
+    assert(packet_bytes == SPARK_GLM52_RING_WORK_CONTROL_PACKET_BYTES);
     packet->descriptor_bytes = packet_bytes;
     for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
     {
@@ -253,13 +253,13 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
         message,submit_bytes - 1u) == SPARK_STATUS_ABI_MISMATCH);
 
     packet->descriptor_bytes =
-        SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES - 1u;
+        SPARK_GLM52_RING_WORK_CONTROL_PACKET_PREFIX_BYTES - 1u;
     assert(SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(packet) == 0u);
     packet->descriptor_bytes =
-        SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES + 1u;
+        SPARK_GLM52_RING_WORK_CONTROL_PACKET_BYTES + 1u;
     assert(SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(packet) == 0u);
     packet->descriptor_bytes = packet_bytes;
-    packet->flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES;
+    packet->flags = SPARK_GLM52_RING_WORK_CONTROL_FLAG_RELEASE_SEQUENCES;
     assert(SparkGlm52CudaResidentIpcInitializeSubmitWork(
         message,packet,0u) == SPARK_STATUS_INVALID_ARGUMENT);
     assert(SparkGlm52CudaResidentIpcInitializeSubmitWork(
@@ -280,41 +280,41 @@ static void SparkTestMtpTreeExecutionContract(void)
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
     dispatch.decode_batch_decision.batch_bucket =
         SPARK_GLM52_STAGE_PLAN_BUCKET_B128;
-    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+    assert(SparkGlm52RingWorkControlSelectExecutionBatchBucket(
         &dispatch,
         SPARK_GLM52_STAGE_PLAN_BUCKET_B128,
         &batch_bucket) == SPARK_STATUS_OK);
     assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128);
     /* Rows beyond the dispatch bucket widen to the next compiled
      * bucket instead of rejecting the dispatch. */
-    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+    assert(SparkGlm52RingWorkControlSelectExecutionBatchBucket(
         &dispatch,
         SPARK_GLM52_STAGE_PLAN_BUCKET_B128 + 1u,
         &batch_bucket) == SPARK_STATUS_OK);
     assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B256);
-    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+    assert(SparkGlm52RingWorkControlSelectExecutionBatchBucket(
         &dispatch,
         SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET + 1u,
         &batch_bucket) == SPARK_STATUS_CAPACITY_EXCEEDED);
-    assert(SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+    assert(SparkGlm52RingWorkControlSelectMtpDraftBudget(
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH,
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT,
         SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT,
         &mtp_budget) == SPARK_STATUS_OK);
     assert(mtp_budget == SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT);
-    assert(SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+    assert(SparkGlm52RingWorkControlSelectMtpDraftBudget(
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH,
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY |
             SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY,
         SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT,
         &mtp_budget) == SPARK_STATUS_OK);
     assert(mtp_budget == SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT);
-    assert(SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+    assert(SparkGlm52RingWorkControlSelectMtpDraftBudget(
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH,
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY,
         SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT,
         &mtp_budget) == SPARK_STATUS_INVALID_ARGUMENT);
-    assert(SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+    assert(SparkGlm52RingWorkControlSelectMtpDraftBudget(
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH,
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY |
             SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY,
@@ -389,12 +389,12 @@ static void SparkTestPrefillRowsWidenExecutionBucket(void)
     dispatch.kind = SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL;
     dispatch.prefill_decision.batch_bucket =
         SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
-    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+    assert(SparkGlm52RingWorkControlSelectExecutionBatchBucket(
         &dispatch,
         17u,
         &batch_bucket) == SPARK_STATUS_OK);
     assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B32);
-    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+    assert(SparkGlm52RingWorkControlSelectExecutionBatchBucket(
         &dispatch,
         16u,
         &batch_bucket) == SPARK_STATUS_OK);
@@ -404,7 +404,7 @@ static void SparkTestPrefillRowsWidenExecutionBucket(void)
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
     dispatch.decode_batch_decision.batch_bucket =
         SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
-    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+    assert(SparkGlm52RingWorkControlSelectExecutionBatchBucket(
         &dispatch,
         96u,
         &batch_bucket) == SPARK_STATUS_OK);

@@ -31,18 +31,18 @@ def main():
             "files": [{"path": "bin/runtime", "bytes": 3, "sha256": "0" * 64}],
             "roles": [
                 {
-                    "name": "pp13_rank_daemon",
+                    "name": "ring_rank_daemon",
                     "argv": ["--max-active", "16"],
                     "env": ["KEEP_RANK=1"],
                 },
                 {
-                    "name": "pp13_cuda_residentd",
+                    "name": "ring_cuda_residentd",
                     "argv": [
                         "--max-active", "16",
                         "--fp8-pack-root", "/packs",
                         "--stagepack-root", "/packs",
                     ],
-                    "env": ["KEEP_RESIDENT=1", "SPARKPIPE_PP13_TRACE=1",
+                    "env": ["KEEP_RESIDENT=1", "SPARKPIPE_RING_TRACE=1",
                             "SPARKPIPE_MTP_GPU_PROFILE=1"],
                 },
                 {
@@ -76,32 +76,32 @@ def main():
         diagnostic = json.loads(
             (diagnostic_output / "sparkpipe.json").read_text(encoding="utf-8"))
         diagnostic_by_role = {role["name"]: role for role in diagnostic["roles"]}
-        assert "SPARKPIPE_PP13_TRACE=1" in diagnostic_by_role[
+        assert "SPARKPIPE_RING_TRACE=1" in diagnostic_by_role[
             "spark0_gateway"]["env"]
         assert "SPARKPIPE_STAGE_COMPLETION_DEBUG=1" in diagnostic_by_role[
-            "pp13_cuda_residentd"]["env"]
+            "ring_cuda_residentd"]["env"]
         assert "SPARKPIPE_STAGE_PHASE_HASH=1" in diagnostic_by_role[
-            "pp13_cuda_residentd"]["env"]
+            "ring_cuda_residentd"]["env"]
         assert "SPARKPIPE_HIDDEN_DUMP_DIR={state_root}/hidden_dumps" in (
-            diagnostic_by_role["pp13_cuda_residentd"]["env"])
-        assert "SPARKPIPE_PP13_TRACE=1" not in diagnostic_by_role[
-            "pp13_cuda_residentd"]["env"]
+            diagnostic_by_role["ring_cuda_residentd"]["env"])
+        assert "SPARKPIPE_RING_TRACE=1" not in diagnostic_by_role[
+            "ring_cuda_residentd"]["env"]
         assert "SPARKPIPE_STAGE_COMPLETION_DEBUG=1" in diagnostic_by_role[
-            "pp13_rank_daemon"]["env"]
-        assert "SPARKPIPE_PP13_TRACE=1" in diagnostic_by_role[
-            "pp13_rank_daemon"]["env"]
+            "ring_rank_daemon"]["env"]
+        assert "SPARKPIPE_RING_TRACE=1" in diagnostic_by_role[
+            "ring_rank_daemon"]["env"]
         assert "--dspark" in diagnostic_by_role["spark0_gateway"]["argv"]
         assert "--dspark" in diagnostic_by_role[
-            "pp13_cuda_residentd"]["argv"]
-        assert diagnostic_by_role["pp13_cuda_residentd"]["argv"][
-            diagnostic_by_role["pp13_cuda_residentd"]["argv"].index(
+            "ring_cuda_residentd"]["argv"]
+        assert diagnostic_by_role["ring_cuda_residentd"]["argv"][
+            diagnostic_by_role["ring_cuda_residentd"]["argv"].index(
                 "--dspark-config") + 1] == "/models/dspark/config.json"
-        assert diagnostic_by_role["pp13_cuda_residentd"]["argv"][
-            diagnostic_by_role["pp13_cuda_residentd"]["argv"].index(
+        assert diagnostic_by_role["ring_cuda_residentd"]["argv"][
+            diagnostic_by_role["ring_cuda_residentd"]["argv"].index(
                 "--dspark-manifest") + 1] == (
                     "/models/dspark/dspark_manifest.json")
-        assert diagnostic_by_role["pp13_cuda_residentd"]["argv"][
-            diagnostic_by_role["pp13_cuda_residentd"]["argv"].index(
+        assert diagnostic_by_role["ring_cuda_residentd"]["argv"][
+            diagnostic_by_role["ring_cuda_residentd"]["argv"].index(
                 "--dspark-safetensors") + 1] == (
                     "/models/dspark/model.safetensors")
         subprocess.run([
@@ -115,7 +115,7 @@ def main():
             "--kv-logical-blocks","1024",
             "--mtp",
             "--without-diagnostics",
-            "--role-env-unset","pp13_cuda_residentd=SPARKPIPE_MTP_GPU_PROFILE",
+            "--role-env-unset","ring_cuda_residentd=SPARKPIPE_MTP_GPU_PROFILE",
             "--role-env","spark0_gateway=KEEP_GATEWAY=2",
             "--replace","bin/runtime=" + str(replacement),
         ],check=True)
@@ -149,7 +149,7 @@ def main():
             "SPARKPIPE_STAGE_COMPLETION_DEBUG",
             "SPARKPIPE_STAGE_PHASE_HASH",
             "SPARKPIPE_HIDDEN_DUMP_DIR",
-            "SPARKPIPE_PP13_TRACE",
+            "SPARKPIPE_RING_TRACE",
         }
         assert all(entry.split("=",1)[0] not in diagnostic_names
                    for role in result["roles"] for entry in role["env"])
@@ -200,7 +200,7 @@ def main():
         w8 = json.loads(
             (w8_output / "sparkpipe.json").read_text(encoding="utf-8"))
         w8_by_role = {role["name"]: role for role in w8["roles"]}
-        for role_name in ("spark0_gateway","pp13_cuda_residentd"):
+        for role_name in ("spark0_gateway","ring_cuda_residentd"):
             arguments = w8_by_role[role_name]["argv"]
             assert arguments[arguments.index("--model-quantization") + 1] == (
                 "w8lut")
@@ -227,7 +227,7 @@ def main():
         nvfp4 = json.loads(
             (nvfp4_output / "sparkpipe.json").read_text(encoding="utf-8"))
         nvfp4_by_role = {role["name"]: role for role in nvfp4["roles"]}
-        for role_name in ("spark0_gateway","pp13_cuda_residentd"):
+        for role_name in ("spark0_gateway","ring_cuda_residentd"):
             arguments = nvfp4_by_role[role_name]["argv"]
             assert arguments[arguments.index("--model-quantization") + 1] == (
                 "nvfp4")

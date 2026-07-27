@@ -166,10 +166,10 @@ SparkStatus SparkGlm52HttpGatewayBuildBackendUnavailable(
 	uint32_t stream)
 {
 	static const char JsonBody[] =
-		"{\"error\":{\"type\":\"backend_unavailable\",\"message\":\"GLM52 PP13 backend is not attached\"}}\n";
+		"{\"error\":{\"type\":\"backend_unavailable\",\"message\":\"GLM52 RING backend is not attached\"}}\n";
 	static const char StreamBody[] =
 		"event: error\n"
-		"data: {\"error\":{\"type\":\"backend_unavailable\",\"message\":\"GLM52 PP13 backend is not attached\"}}\n\n";
+		"data: {\"error\":{\"type\":\"backend_unavailable\",\"message\":\"GLM52 RING backend is not attached\"}}\n\n";
 
 	if (stream != 0u)
 		return SparkGlm52HttpWriteBody(
@@ -186,10 +186,10 @@ SparkStatus SparkGlm52HttpGatewayBuildRequestTimeout(
 	uint32_t stream)
 {
 	static const char JsonBody[] =
-		"{\"error\":{\"type\":\"request_timeout\",\"message\":\"GLM52 PP13 request produced no terminal event before the stream poll budget\"}}\n";
+		"{\"error\":{\"type\":\"request_timeout\",\"message\":\"GLM52 RING request produced no terminal event before the stream poll budget\"}}\n";
 	static const char StreamBody[] =
 		"event: error\n"
-		"data: {\"error\":{\"type\":\"request_timeout\",\"message\":\"GLM52 PP13 request produced no terminal event before the stream poll budget\"}}\n\n";
+		"data: {\"error\":{\"type\":\"request_timeout\",\"message\":\"GLM52 RING request produced no terminal event before the stream poll budget\"}}\n\n";
 
 	if (stream != 0u)
 		return SparkGlm52HttpWriteBody(

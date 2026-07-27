@@ -69,20 +69,20 @@ NON_GLM_MODEL_PREFIXES = (
     "modules/qwen36_",
 )
 REQUIRED_SYMBOLIC_DEFINES = {
-    "model-families/glm52/src/spark_glm52_pp13_service_backend.c": {
-        "SPARK_GLM52_PP13_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY":
+    "model-families/glm52/src/spark_glm52_ring_service_backend.c": {
+        "SPARK_GLM52_RING_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY":
             "SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT",
-        "SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY":
-            "SPARK_GLM52_PP13_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY",
-        "SPARK_GLM52_PP13_SERVICE_BACKEND_DEFAULT_LOGICAL_BLOCK_COUNT":
-            "SPARK_GLM52_PP13_SERVICE_BACKEND_GPU_BLOCK_COUNT",
+        "SPARK_GLM52_RING_SERVICE_BACKEND_PENDING_DECODE_CAPACITY":
+            "SPARK_GLM52_RING_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY",
+        "SPARK_GLM52_RING_SERVICE_BACKEND_DEFAULT_LOGICAL_BLOCK_COUNT":
+            "SPARK_GLM52_RING_SERVICE_BACKEND_GPU_BLOCK_COUNT",
     },
-    "model-families/glm52/include/sparkpipe/spark_glm52_pp13_runtime.h": {
-        "SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT":
+    "model-families/glm52/include/sparkpipe/spark_glm52_ring_runtime.h": {
+        "SPARK_GLM52_RING_RUNTIME_STAGE_COUNT":
             "SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT",
-        "SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE":
+        "SPARK_GLM52_RING_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE":
             "SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES",
-        "SPARK_GLM52_PP13_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE":
+        "SPARK_GLM52_RING_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE":
             "SPARK_GLM52_MODEL_DSA_SELECTED_INDEX_BYTES",
     },
     "model-families/glm52/include/sparkpipe/spark_glm52_production_topology.h": {
@@ -291,15 +291,15 @@ def main():
         violations.append("B12x public ABI header has a duplicate module copy")
     final_event_definitions = []
     final_event_pattern = re.compile(
-        r"typedef\s+struct\s+SparkGlm52Pp13[A-Za-z0-9_]*FinalEvent\s*\{")
+        r"typedef\s+struct\s+SparkGlm52Ring[A-Za-z0-9_]*FinalEvent\s*\{")
     for path in source_paths():
         text = path.read_text(errors="replace")
         for match in final_event_pattern.finditer(text):
             final_event_definitions.append(str(path.relative_to(ROOT)))
     if final_event_definitions != [
-            "model-families/glm52/include/sparkpipe/spark_glm52_pp13_runtime.h"]:
+            "model-families/glm52/include/sparkpipe/spark_glm52_ring_runtime.h"]:
         violations.append(
-            "PP13 final-event wire type is not single-source: " +
+            "RING final-event wire type is not single-source: " +
             ", ".join(final_event_definitions))
     model_contract = load_model_contract(ROOT)
     model_header = ROOT / "model-families/glm52/include/sparkpipe/spark_glm52_model.h"
@@ -318,7 +318,7 @@ def main():
     if "dsa_prefill_scores_f32" in all_source_text:
         violations.append("DSA score storage retains a prefill-only ABI field")
     backend_text = (
-        ROOT / "model-families/glm52/src/spark_glm52_pp13_service_backend.c").read_text()
+        ROOT / "model-families/glm52/src/spark_glm52_ring_service_backend.c").read_text()
     if re.search(
             r"message->control_generation\s*=\s*state->session_id_base\s*;",
             backend_text) is None:
@@ -339,7 +339,7 @@ def main():
         violations.append("resident decode drops the attached control generation")
     if re.search(
             r"kv_logical_block_capacity\s*<\s*"
-            r"SPARK_GLM52_PP13_SERVICE_BACKEND_GPU_BLOCK_COUNT",
+            r"SPARK_GLM52_RING_SERVICE_BACKEND_GPU_BLOCK_COUNT",
             backend_text):
         violations.append(
             "attached KV geometry is coupled to the local compile-time pool")
@@ -351,13 +351,13 @@ def main():
     service_pump = backend_text.find(
         "service_status = SparkGlm52ServicePump(")
     release_pump = backend_text.find(
-        "release_status = SparkGlm52Pp13ServiceBackendPumpSequenceReleases(",
+        "release_status = SparkGlm52RingServiceBackendPumpSequenceReleases(",
         service_pump)
     work_flush = backend_text.find(
-        "work_status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(",
+        "work_status = SparkGlm52RingServiceBackendPumpWorkOutput(",
         release_pump)
     if (service_pump < 0 or release_pump < 0 or work_flush < 0 or
-            "SparkGlm52Pp13ServiceBackendDrainSequenceReleases" in backend_text):
+            "SparkGlm52RingServiceBackendDrainSequenceReleases" in backend_text):
         violations.append(
             "service pump does not progress sequence releases without a global drain")
     model_description_path = ROOT / (

@@ -234,11 +234,11 @@ def write_artifacts(args: argparse.Namespace, token_ids: List[int], tokenizer_ki
     prefill_chunks = build_prefill_chunks(token_ids, prefill_chunk_tokens)
     prefill_token_count = len(token_ids)
     pipeline_semantics = (
-        "exact PP13 prompt sequence preflight through every prompt token"
+        "exact RING prompt sequence preflight through every prompt token"
         if args.run_full_prompt_sequence else
         "tail-window prompt prefill plus current-token decode for the local validation pipeline")
     prefill_context = (
-        "every prompt token feeds the exact PP13 stage sequence preflight"
+        "every prompt token feeds the exact RING stage sequence preflight"
         if args.run_full_prompt_sequence else
         "last four prompt tokens feed the current validation context")
     payload: Dict[str, Any] = {
@@ -315,8 +315,8 @@ def run_pipeline(args: argparse.Namespace, artifacts: Dict[str, Path], bootstrap
         "GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16",
         "GLM52_PIPELINE_INPUT_HIDDEN_BF16",
         "GLM52_PIPELINE_OUTPUT_HIDDEN_BF16",
-        "GLM52_EXACT_PP13_STAGE_SLICE",
-        "GLM52_EXACT_PP13_STAGE_SLICE_FINAL_TOKEN",
+        "GLM52_EXACT_RING_STAGE_SLICE",
+        "GLM52_EXACT_RING_STAGE_SLICE_FINAL_TOKEN",
         "GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16",
         "GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN",
         "GLM52_CHAIN_DENSE_LAYERS",
@@ -362,7 +362,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--bootstrap-token", choices=("last", "first"), default="last")
     parser.add_argument("--prefill-chunk-tokens", type=int, default=DEFAULT_PREFILL_CHUNK_TOKENS)
     parser.add_argument("--allow-tail-window-run", action="store_true", help="Allow --run-pipeline to collapse prompts longer than four tokens to the validation tail window.")
-    parser.add_argument("--run-full-prompt-sequence", action="store_true", help="Run the exact PP13 prompt-sequence preflight instead of the four-token validation tail window.")
+    parser.add_argument("--run-full-prompt-sequence", action="store_true", help="Run the exact RING prompt-sequence preflight instead of the four-token validation tail window.")
     parser.add_argument("--chat", action="store_true", help="Use the HF chat template when transformers is available.")
     parser.add_argument("--system-prompt")
     parser.add_argument("--no-add-generation-prompt", action="store_true")
@@ -393,7 +393,7 @@ def main(argv: List[str]) -> int:
         if args.run_pipeline and not args.run_full_prompt_sequence and len(token_ids) > TAIL_WINDOW_TOKEN_COUNT and not args.allow_tail_window_run:
             raise PromptInputFailure("refusing to run long prompt through four-token tail-window pipeline; inspect prefill_plan.json or pass --allow-tail-window-run")
         if args.run_full_prompt_sequence and len(token_ids) > 128:
-            raise PromptInputFailure("exact PP13 prompt-sequence preflight currently supports at most 128 tokens")
+            raise PromptInputFailure("exact RING prompt-sequence preflight currently supports at most 128 tokens")
         bootstrap_token = choose_bootstrap_token(token_ids, args.bootstrap_token)
         artifacts = write_artifacts(args, token_ids, tokenizer_kind, bootstrap_token, model_dir)
         print(f"glm52_prompt_tokenizer={tokenizer_kind}")
@@ -407,7 +407,7 @@ def main(argv: List[str]) -> int:
         print(f"glm52_prefill_token_count={len(token_ids)}")
         print(f"glm52_prefill_chunk_count={len(build_prefill_chunks(token_ids, validate_prefill_chunk_tokens(args.prefill_chunk_tokens)))}")
         if args.run_full_prompt_sequence:
-            print("glm52_prompt_pipeline_semantics=exact_pp13_prompt_sequence_preflight")
+            print("glm52_prompt_pipeline_semantics=exact_ring_prompt_sequence_preflight")
         else:
             print("glm52_prompt_pipeline_semantics=tail_window_prompt_prefill_validation_context")
         if run_requested:

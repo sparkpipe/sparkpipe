@@ -43,7 +43,7 @@ run "nvcc: sm_121a build"  "sh tools/build.sh"
 run "makefile parses"      "make -n all"
 run "makefile: test"       "make -n test"
 run "makefile: tools"      "make -n tools"
-run "makefile: backend"    "make -n glm52_pp13_service_backend"
+run "makefile: backend"    "make -n glm52_ring_service_backend"
 run "every source exists"  "python3 tests/test_sources_exist.py"
 printf "  ---- %d pass, %d fail\n" "$ok" "$bad"
 [ "$bad" -eq 0 ]

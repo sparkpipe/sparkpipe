@@ -808,7 +808,7 @@ static void SparkTestKvCacheCapacityEstimatorAccountsForMlaCompression(void)
         SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS);
 }
 
-static void SparkTestKvJitStageBudgetsMatchPp13Storage(void)
+static void SparkTestKvJitStageBudgetsMatchRingStorage(void)
 {
     SparkGlm52KvJitStageBudgetRequest request;
     SparkGlm52KvJitStageBudget budget;
@@ -948,6 +948,6 @@ int main(void)
     SparkTestKvCacheSupportsMlaPrimaryOnlyArenaAndPrefetch();
     SparkTestKvCacheRejectsRecyclingRetainedBlocks();
     SparkTestKvCacheCapacityEstimatorAccountsForMlaCompression();
-    SparkTestKvJitStageBudgetsMatchPp13Storage();
+    SparkTestKvJitStageBudgetsMatchRingStorage();
     return 0;
 }

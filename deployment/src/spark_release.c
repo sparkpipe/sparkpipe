@@ -153,7 +153,7 @@ static uint32_t SparkReleaseSelectorFromText(const char *text)
     {
         return SPARK_RELEASE_NODE_SELECTOR_SPARK0;
     }
-    if (strcmp(text,"rank") == 0 || strcmp(text,"ranks") == 0 || strcmp(text,"pp13_rank") == 0)
+    if (strcmp(text,"rank") == 0 || strcmp(text,"ranks") == 0 || strcmp(text,"ring_rank") == 0)
     {
         return SPARK_RELEASE_NODE_SELECTOR_RANK;
     }
@@ -1140,7 +1140,7 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "      \"executable\": true\n"
         "    },\n"
         "    {\n"
-        "      \"path\": \"bin/sparkpipe_glm52_pp13_rank_daemon\",\n"
+        "      \"path\": \"bin/sparkpipe_glm52_ring_rank_daemon\",\n"
         "      \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\",\n"
         "      \"executable\": true\n"
         "    },\n"
@@ -1156,11 +1156,11 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "      \"executable\": true\n"
         "    },\n"
         "    {\n"
-        "      \"path\": \"lib/libglm52_pp13_service_backend.so\",\n"
+        "      \"path\": \"lib/libglm52_ring_service_backend.so\",\n"
         "      \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n"
         "    },\n"
         "    {\n"
-        "      \"path\": \"lib/libglm52_pp13_node_context_builder.so\",\n"
+        "      \"path\": \"lib/libglm52_ring_node_context_builder.so\",\n"
         "      \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\",\n"
         "      \"resident_reload_boundary\": true\n"
         "    },\n"
@@ -1199,7 +1199,7 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "        \"18080\",\n"
         "        \"--require-service-backend\",\n"
         "        \"--service-backend-so\",\n"
-        "        \"{install_root}/lib/libglm52_pp13_service_backend.so\",\n"
+        "        \"{install_root}/lib/libglm52_ring_service_backend.so\",\n"
         "        \"--model-quantization\",\n"
         "        \"fp8\",\n"
         "        \"--moe-pack-root\",\n"
@@ -1215,7 +1215,7 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "        \"--node-target\",\n"
         "        \"cuda.sm121.glm52.resident_decode_stage.bf16\",\n"
         "        \"--node-context-builder-so\",\n"
-        "        \"{install_root}/lib/libglm52_pp13_node_context_builder.so\",\n"
+        "        \"{install_root}/lib/libglm52_ring_node_context_builder.so\",\n"
         "        \"--embedding-pack\",\n"
         "        \"{install_root}/packs/embedding.sp\",\n"
         "        \"--tokenizer\",\n"
@@ -1233,7 +1233,7 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "      ]\n"
         "    },\n"
         "    {\n"
-        "      \"name\": \"pp13_cuda_residentd\",\n"
+        "      \"name\": \"ring_cuda_residentd\",\n"
         "      \"selector\": \"rank\",\n"
         "      \"command\": \"bin/sparkpipe_glm52_cuda_residentd\",\n"
         "      \"allow_resident_pack_cache\": true,\n"
@@ -1258,7 +1258,7 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "        \"--node-target\",\n"
         "        \"cuda.sm121.glm52.resident_decode_stage.bf16\",\n"
         "        \"--node-context-builder-so\",\n"
-        "        \"{install_root}/lib/libglm52_pp13_node_context_builder.so\",\n"
+        "        \"{install_root}/lib/libglm52_ring_node_context_builder.so\",\n"
         "        \"--embedding-pack\",\n"
         "        \"{install_root}/packs/embedding.sp\",\n"
         "        \"--dspark\",\n"
@@ -1282,7 +1282,7 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "      ]\n"
         "    },\n"
         "    {\n"
-        "      \"name\": \"pp13_rank_daemon\",\n"
+        "      \"name\": \"ring_rank_daemon\",\n"
         "      \"selector\": \"host\",\n"
         "      \"hosts\": [\n"
         "        \"spark1\",\n"
@@ -1298,7 +1298,7 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "        \"sparkb\",\n"
         "        \"sparkc\"\n"
         "      ],\n"
-        "      \"command\": \"bin/sparkpipe_glm52_pp13_rank_daemon\",\n"
+        "      \"command\": \"bin/sparkpipe_glm52_ring_rank_daemon\",\n"
         "      \"argv\": [\n"
         "        \"--rank\",\n"
         "        \"{rank}\",\n"

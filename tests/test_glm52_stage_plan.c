@@ -41,7 +41,7 @@ static uint64_t SparkTestGlm52StagePlanMaximumStageCostNs(
     return maximum_stage_cost_ns;
 }
 
-static void SparkTestGlm52StagePlanValidPp13(void)
+static void SparkTestGlm52StagePlanValidRing(void)
 {
     SparkGlm52StagePlan stage_plan;
     char error_buffer[256];
@@ -383,7 +383,7 @@ static void SparkTestGlm52StagePlanInvalidCuts(void)
 
 int main(void)
 {
-    SparkTestGlm52StagePlanValidPp13();
+    SparkTestGlm52StagePlanValidRing();
     SparkTestGlm52StagePlanLayerCountTable();
     SparkTestGlm52StagePlanBuilderAndBuckets();
     SparkTestGlm52StagePlanMeasuredBalanced();

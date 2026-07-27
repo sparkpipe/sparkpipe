@@ -96,7 +96,7 @@ static const SparkModelDriverProgramDescriptor TestProgram =
     SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_REQUIRED_PROGRAM_FLAGS,
     16u,
     0u,
-    "glm52.pp13.rank.production",
+    "glm52.ring.rank.production",
     &TestProfile,
     SparkTestProductionRunnerSubmit
 };

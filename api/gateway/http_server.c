@@ -12,7 +12,7 @@
 
 #include "sparkpipe/spark_glm52_service_backend.h"
 #include "sparkpipe/spark_glm52_http_gateway.h"
-#include "sparkpipe/spark_glm52_pp13_runtime.h"
+#include "sparkpipe/spark_glm52_ring_runtime.h"
 
 #define SPARK_GLM52_GATEWAY_REQUEST_BYTES (SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_UPLOAD_BYTES + (1024u * 1024u))
 #define SPARK_GLM52_GATEWAY_RESPONSE_BYTES (128u * 1024u)
@@ -110,7 +110,7 @@ static void SparkGlm52GatewayInitializeConfig(
 {
 	memset(configuration,0,sizeof(*configuration));
 	configuration->bind_address = "127.0.0.1";
-	configuration->driver_program_name = "glm52.pp13.rank.production";
+	configuration->driver_program_name = "glm52.ring.rank.production";
 	configuration->final_event_bind_address = "0.0.0.0";
 	configuration->final_event_return_host = "spark0";
 	configuration->port = SPARK_GLM52_GATEWAY_DEFAULT_PORT;
@@ -118,7 +118,7 @@ static void SparkGlm52GatewayInitializeConfig(
 	configuration->max_active_sequence_count = 1024u;
 	configuration->port_base = 52100u;
 	configuration->model_quantization_mode =
-		SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE;
+		SPARK_GLM52_RING_RUNTIME_DEFAULT_QUANTIZATION_MODE;
 }
 
 static int32_t SparkGlm52GatewayInitializePendingStreams(
@@ -352,7 +352,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--model-quantization") == 0)
 	{
 		if ((*index + 1) >= argc ||
-			SparkGlm52Pp13RuntimeParseQuantizationMode(
+			SparkGlm52RingRuntimeParseQuantizationMode(
 				argv[*index + 1],&configuration->model_quantization_mode) !=
 				SPARK_STATUS_OK)
 			return -25;
@@ -751,7 +751,7 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 		return runtime->configuration.require_service_backend != 0u ? -2 : 0;
 	status = SparkGlm52ServiceBackendLoadInterfaceFromSharedObject(
 		runtime->configuration.service_backend_path,
-		SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_PP13_RUNTIME,
+		SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_RING_RUNTIME,
 		&runtime->service_backend_library);
 	if (status != SPARK_STATUS_OK)
 		return -3;

@@ -123,7 +123,7 @@ SparkStatus SparkGlm52CudaResidentIpcReadPayload(
 }
 
 static uint32_t SparkGlm52CudaResidentIpcCalculateWorkMessageBytes(
-	const SparkGlm52Pp13WorkControlPacket *work_packet,
+	const SparkGlm52RingWorkControlPacket *work_packet,
 	uint32_t prefix_bytes,
 	uint32_t maximum_bytes)
 {
@@ -131,16 +131,16 @@ static uint32_t SparkGlm52CudaResidentIpcCalculateWorkMessageBytes(
 
     if (work_packet == 0 ||
         work_packet->descriptor_bytes <
-            SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES ||
+            SPARK_GLM52_RING_WORK_CONTROL_PACKET_PREFIX_BYTES ||
         work_packet->descriptor_bytes >
-            SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES)
+            SPARK_GLM52_RING_WORK_CONTROL_PACKET_BYTES)
         return 0u;
     message_bytes = (uint64_t)prefix_bytes + work_packet->descriptor_bytes;
     return message_bytes <= maximum_bytes ? (uint32_t)message_bytes : 0u;
 }
 
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
-	const SparkGlm52Pp13WorkControlPacket *work_packet)
+	const SparkGlm52RingWorkControlPacket *work_packet)
 {
 	return SparkGlm52CudaResidentIpcCalculateWorkMessageBytes(
 		work_packet,
@@ -150,7 +150,7 @@ uint32_t SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
 
 SparkStatus SparkGlm52CudaResidentIpcInitializeSubmitWork(
     SparkGlm52CudaResidentIpcSubmitWork *message,
-    const SparkGlm52Pp13WorkControlPacket *work_packet,
+    const SparkGlm52RingWorkControlPacket *work_packet,
     uint32_t flags)
 {
     uint32_t message_bytes;
@@ -186,7 +186,7 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitWork(
             ~SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_KNOWN_FLAGS) != 0u)
         return SPARK_STATUS_INVALID_ARGUMENT;
     if ((message->work_packet.flags &
-            SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u &&
+            SPARK_GLM52_RING_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u &&
         (message->flags &
             SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT) == 0u)
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -194,7 +194,7 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitWork(
 }
 
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitPrefillBytes(
-	const SparkGlm52Pp13WorkControlPacket *work_packet)
+	const SparkGlm52RingWorkControlPacket *work_packet)
 {
 	return SparkGlm52CudaResidentIpcCalculateWorkMessageBytes(
 		work_packet,
@@ -231,7 +231,7 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
     uint32_t lane_index;
     SparkStatus status;
     if (message == 0 || maximum_lane_count == 0u ||
-        maximum_lane_count > SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT)
+        maximum_lane_count > SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT)
         return SPARK_STATUS_INVALID_ARGUMENT;
     status = SparkGlm52CudaResidentIpcDecodePayloadBytes(
         message->kv_block_index_count,&expected_payload_bytes);
@@ -263,7 +263,7 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
          message->dispatch_kind !=
             SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH) ||
         message->speculative_token_count >
-            SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT ||
+            SPARK_GLM52_RING_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT ||
         (message->dispatch_kind ==
             SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
          message->speculative_token_count != 0u) ||
@@ -271,7 +271,7 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
             SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
          message->speculative_token_count == 0u))
         return SPARK_STATUS_INVALID_ARGUMENT;
-    status = SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+    status = SparkGlm52RingWorkControlSelectMtpDraftBudget(
         message->dispatch_kind,
         message->request_flags,
         message->lanes[0u].mtp_draft_token_budget,
@@ -294,7 +294,7 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
               lane->mtp_resolution_path_id !=
                 SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE)) ||
             lane->mtp_resolution_proposed_token_count >
-                SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT ||
+                SPARK_GLM52_RING_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT ||
             SparkGlm52MtpTreeResolutionIsValid(
                 lane->mtp_resolution_proposed_token_count,
                 lane->mtp_resolution_accepted_token_count,

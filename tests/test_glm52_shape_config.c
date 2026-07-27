@@ -42,7 +42,7 @@ static void SparkTestShapeInputs(SparkGlm52ShapeModelInputs *inputs)
 	inputs->kv_bytes_per_element = sizeof(uint8_t);
 }
 
-// PP13 reproduces the deployed 6-layer stages; TP4 x PP3 gives 26-layer
+// RING reproduces the deployed 6-layer stages; TP4 x PP3 gives 26-layer
 // quarter-width stages; TP8 x PP1 is the widest clean shape with all 78
 // layers at one-eighth width. KV per token is stage depth times the latent
 // row and independent of the TP degree.

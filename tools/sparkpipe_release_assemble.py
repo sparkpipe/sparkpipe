@@ -10,16 +10,16 @@ import shutil
 
 DIAGNOSTIC_ENVIRONMENT_BY_ROLE = {
     "spark0_gateway": {
-        "SPARKPIPE_PP13_TRACE": "1",
+        "SPARKPIPE_RING_TRACE": "1",
     },
-    "pp13_cuda_residentd": {
+    "ring_cuda_residentd": {
         "SPARKPIPE_STAGE_COMPLETION_DEBUG": "1",
         "SPARKPIPE_STAGE_PHASE_HASH": "1",
         "SPARKPIPE_HIDDEN_DUMP_DIR": "{state_root}/hidden_dumps",
     },
-    "pp13_rank_daemon": {
+    "ring_rank_daemon": {
         "SPARKPIPE_STAGE_COMPLETION_DEBUG": "1",
-        "SPARKPIPE_PP13_TRACE": "1",
+        "SPARKPIPE_RING_TRACE": "1",
     },
 }
 DIAGNOSTIC_ENVIRONMENT_NAMES = {
@@ -92,14 +92,14 @@ def remove_role_argument(manifest,role_name,argument):
 
 def set_model_arguments(
         manifest,model_quantization,moe_pack_root,stagepack_root):
-    roles = ["spark0_gateway","pp13_cuda_residentd"]
+    roles = ["spark0_gateway","ring_cuda_residentd"]
     if model_quantization != "fp8" and stagepack_root is None:
         raise SystemExit("--stagepack-root is required for non-FP8 releases")
     if model_quantization != "fp8" and moe_pack_root is None:
         raise SystemExit("--moe-pack-root is required for non-FP8 releases")
     if stagepack_root is None:
         stagepack_root = get_role_argument(
-            manifest,"pp13_cuda_residentd","--stagepack-root")
+            manifest,"ring_cuda_residentd","--stagepack-root")
     if moe_pack_root is None:
         moe_pack_root = stagepack_root
     for role_name in roles:
@@ -113,7 +113,7 @@ def set_model_arguments(
 def set_dspark_arguments(
         manifest,enabled,model_dir,manifest_path,maximum_context_tokens):
     gateway_role = "spark0_gateway"
-    resident_role = "pp13_cuda_residentd"
+    resident_role = "ring_cuda_residentd"
     set_role_switch(manifest,gateway_role,"--dspark",enabled)
     set_role_switch(manifest,resident_role,"--dspark",enabled)
     for argument in (
@@ -294,7 +294,7 @@ def main():
         if arguments.kv_pool_tokens < 1:
             raise SystemExit("kv-pool-tokens must be positive")
         set_role_argument(
-            manifest,"pp13_cuda_residentd","--kv-pool-tokens",
+            manifest,"ring_cuda_residentd","--kv-pool-tokens",
             arguments.kv_pool_tokens)
     if arguments.kv_logical_blocks < 1:
         raise SystemExit("kv-logical-blocks must be positive")
@@ -309,7 +309,7 @@ def main():
         arguments.moe_pack_root,
         arguments.stagepack_root)
     set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
-    set_role_switch(manifest,"pp13_cuda_residentd","--mtp",arguments.mtp)
+    set_role_switch(manifest,"ring_cuda_residentd","--mtp",arguments.mtp)
     set_dspark_arguments(
         manifest,
         arguments.dspark,

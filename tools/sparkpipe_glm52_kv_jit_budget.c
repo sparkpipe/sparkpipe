@@ -6,8 +6,8 @@
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_glm52_mtp_tree.h"
-#include "sparkpipe/spark_glm52_pp13_node_context_builder.h"
-#include "sparkpipe/spark_glm52_pp13_runtime.h"
+#include "sparkpipe/spark_glm52_ring_node_context_builder.h"
+#include "sparkpipe/spark_glm52_ring_runtime.h"
 
 typedef struct SparkGlm52KvJitBudgetToolConfiguration
 {
@@ -137,7 +137,7 @@ int main(int argc,char **argv)
     configuration.average_context_token_count = 4096u;
     configuration.physical_pool_token_capacity = SPARK_GLM52_KV_POOL_TOKENS;
     configuration.backing_block_capacity =
-        SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_NVME_BLOCK_CAPACITY;
+        SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_NVME_BLOCK_CAPACITY;
     configuration.mtp_enabled = 1u;
     for (index = 1; index < argc; ++index)
     {
@@ -170,7 +170,7 @@ int main(int argc,char **argv)
         return 2;
     }
     memset(error_buffer,0,sizeof(error_buffer));
-    if (SparkGlm52Pp13RuntimeBuildFixedStagePlan(
+    if (SparkGlm52RingRuntimeBuildFixedStagePlan(
             &stage_plan,error_buffer,sizeof(error_buffer)) != SPARK_STATUS_OK)
     {
         fprintf(stderr,"stage plan failed: %s\n",error_buffer);
@@ -286,7 +286,7 @@ int main(int argc,char **argv)
         request.record_alignment_bytes =
             SPARK_GLM52_KV_JIT_DEFAULT_RECORD_ALIGNMENT;
         if (SparkGlm52KvJitBudgetToolPopulateKvLayout(
-                SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE,
+                SPARK_GLM52_RING_RUNTIME_DEFAULT_QUANTIZATION_MODE,
                 &request) != 0)
         {
             fprintf(stderr,"rank %u KV layout is unsupported\n",rank_index);

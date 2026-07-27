@@ -6,7 +6,7 @@
 
 #define SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY 64u
 
-static void SparkTestInitializePp13StagePlan(SparkGlm52StagePlan *stage_plan)
+static void SparkTestInitializeRingStagePlan(SparkGlm52StagePlan *stage_plan)
 {
     uint32_t stage_index;
 
@@ -80,14 +80,14 @@ static void SparkTestGlm52IndexShareSchedule(void)
         &group_end_layer_exclusive) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static void SparkTestGlm52ProductionTopologyPp13Sideband(void)
+static void SparkTestGlm52ProductionTopologyRingSideband(void)
 {
     SparkGlm52StagePlan stage_plan;
     SparkGlm52ProductionTopology topology;
     const SparkGlm52ProductionTopologyIndexShareSideBand *sideband;
     char error_buffer[256];
 
-    SparkTestInitializePp13StagePlan(&stage_plan);
+    SparkTestInitializeRingStagePlan(&stage_plan);
     assert(SparkGlm52ProductionTopologyBuild(
         &stage_plan,
         SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY,
@@ -193,7 +193,7 @@ static void SparkTestGlm52ProductionTopologyRejectsBadDimensions(void)
     SparkGlm52ProductionTopology topology;
     char error_buffer[256];
 
-    SparkTestInitializePp13StagePlan(&stage_plan);
+    SparkTestInitializeRingStagePlan(&stage_plan);
     assert(SparkGlm52ProductionTopologyBuild(
         &stage_plan,
         0u,
@@ -208,7 +208,7 @@ static void SparkTestGlm52ProductionTopologyRejectsBadDimensions(void)
 int main(void)
 {
     SparkTestGlm52IndexShareSchedule();
-    SparkTestGlm52ProductionTopologyPp13Sideband();
+    SparkTestGlm52ProductionTopologyRingSideband();
     SparkTestGlm52ProductionTopologyRejectsBadDimensions();
     return 0;
 }

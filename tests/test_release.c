@@ -173,17 +173,17 @@ static void SparkTestReleaseExampleResidentDeployment(void)
     identity.rank_count = 13u;
     assert(SparkReleaseManifestFindRoleForNode(
         &manifest,&identity,0,&role) == SPARK_STATUS_OK);
-    assert(strcmp(role->name,"pp13_cuda_residentd") == 0);
+    assert(strcmp(role->name,"ring_cuda_residentd") == 0);
     assert(SparkReleaseManifestFindRoleForNode(
-        &manifest,&identity,"pp13_rank_daemon",&role) == SPARK_STATUS_OK);
+        &manifest,&identity,"ring_rank_daemon",&role) == SPARK_STATUS_OK);
     assert(role->explicit_host_count == 12u);
     assert(SparkReleaseResolveRole(&manifest,&identity,role,&resolved_role) == SPARK_STATUS_OK);
-    assert(strstr(resolved_role.command,"/home/spark8/sparkpipe_runtime/bin/sparkpipe_glm52_pp13_rank_daemon") != 0);
+    assert(strstr(resolved_role.command,"/home/spark8/sparkpipe_runtime/bin/sparkpipe_glm52_ring_rank_daemon") != 0);
     assert(strcmp(resolved_role.arguments[1],"8") == 0);
     assert(strstr(resolved_role.arguments[3],"/home/spark8/sparkpipe_state/cuda_resident_rank8.sock") != 0);
     assert(strcmp(resolved_role.arguments[5],"512") == 0);
     assert(SparkReleaseManifestFindRoleForNode(
-        &manifest,&identity,"pp13_cuda_residentd",&role) == SPARK_STATUS_OK);
+        &manifest,&identity,"ring_cuda_residentd",&role) == SPARK_STATUS_OK);
     assert(SparkReleaseResolveRole(&manifest,&identity,role,&resolved_role) == SPARK_STATUS_OK);
     assert(strstr(resolved_role.arguments[11],
         "libhidden_transport_spark_host_rdma_verbs.so") != 0);
@@ -199,7 +199,7 @@ static void SparkTestReleaseExampleResidentDeployment(void)
     identity.rank_is_set = 1u;
     identity.rank_count = 13u;
     assert(SparkReleaseManifestFindRoleForNode(
-        &manifest,&identity,"pp13_rank_daemon",&role) == SPARK_STATUS_NOT_FOUND);
+        &manifest,&identity,"ring_rank_daemon",&role) == SPARK_STATUS_NOT_FOUND);
 }
 
 int main(void)

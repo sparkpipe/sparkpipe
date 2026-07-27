@@ -887,7 +887,7 @@ static bool SparkGlm52ResidentDecodeStageFullStagePlanIsUsable(
 }
 
 
-static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
+static bool SparkGlm52ResidentDecodeStageExactRingStageSlicePlanIsUsable(
     const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan,
     uint32_t required_active_sequence_count,
     uint32_t required_layer_count,
@@ -902,7 +902,7 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
     uint64_t final_token_candidate_row_capacity;
 
     if ((stage_slice_plan->capability_flags &
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_EXACT_PP13_FIXED6) == 0u)
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_EXACT_RING_FIXED6) == 0u)
     {
         return stage_slice_plan->launch_function != 0;
     }
@@ -919,7 +919,7 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
         (const SparkGlm52ResidentDecodeStageExactStageSlicePlan *)
             stage_slice_plan->opaque_state;
     exact_required_capabilities =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_EXACT_PP13_CAPABILITIES;
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_EXACT_RING_CAPABILITIES;
     layer_major_speculative_verify =
         (exact_stage_slice_plan->capability_flags &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_LAYER_MAJOR_SPECULATIVE_VERIFY) != 0u;
@@ -976,9 +976,9 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
         return false;
     }
     if ((exact_stage_slice_plan->capability_flags &
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_PP13_AOT) != 0u &&
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_RING_AOT) != 0u &&
         (stage_slice_plan->capability_flags &
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_PP13_AOT) == 0u)
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_RING_AOT) == 0u)
     {
         return false;
     }
@@ -986,7 +986,7 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_AOT_STAGE_LAUNCH) != 0u &&
         exact_stage_slice_plan->launch_function == 0 &&
         (exact_stage_slice_plan->capability_flags &
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_PP13_AOT) == 0u)
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_RING_AOT) == 0u)
     {
         return false;
     }
@@ -995,7 +995,7 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
         ((exact_stage_slice_plan->capability_flags &
             SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_FUSED_STAGE_MOE) == 0u ||
          (exact_stage_slice_plan->capability_flags &
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_PP13_AOT) == 0u ||
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_RING_AOT) == 0u ||
          (stage_slice_plan->capability_flags &
             SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_FUSED_STAGE_MOE) == 0u))
     {
@@ -1064,7 +1064,7 @@ static bool SparkGlm52ResidentDecodeStageStageSlicePlanIsUsable(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_STAGE_SLICE_LAYER_COUNT &&
         (stage_slice_plan->capability_flags & required_capabilities) ==
             required_capabilities &&
-        SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
+        SparkGlm52ResidentDecodeStageExactRingStageSlicePlanIsUsable(
             stage_slice_plan,
             required_active_sequence_count,
             required_layer_count,
@@ -1543,7 +1543,7 @@ static bool SparkGlm52ResidentDecodeStageStageSlicePlanRequiresBuiltInFusedStage
         return false;
     }
     if ((stage_slice_plan->capability_flags &
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_EXACT_PP13_FIXED6) == 0u)
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_EXACT_RING_FIXED6) == 0u)
     {
         return false;
     }

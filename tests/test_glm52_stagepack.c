@@ -66,7 +66,7 @@ static void SparkTestGlm52StagePackResolveTensor(void)
 	SparkTestWritePayloadFile("build/test_glm52_stagepack_data/stage_03_non_moe.spstage");
 	SparkTestWriteTextFile(
 		"build/test_glm52_stagepack_data/stagepack_index.json",
-		"{\"format\":\"sparkpipe.glm52.pp13.stagepack.v1\","
+		"{\"format\":\"sparkpipe.glm52.ring.stagepack.v1\","
 		"\"tensor_map\":{"
 		"\"model.layers.18.self_attn.q_proj.weight\":{"
 		"\"file\":\"stage_03_non_moe.spstage\","
@@ -107,7 +107,7 @@ static void SparkTestGlm52StagePackW8lutContract(void)
 	SparkTestMakeDirectory(w8lut_root);
 	SparkTestWriteTextFile(
 		"build/test_glm52_stagepack_w8_data/stagepack_index.json",
-		"{\"format\":\"sparkpipe.glm52.pp13.stagepack.v1\","
+		"{\"format\":\"sparkpipe.glm52.ring.stagepack.v1\","
 		"\"model_quantization\":\"w8lut\","
 		"\"non_expert_weight_dtype\":\"BF16\","
 		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_A "\"}");
@@ -131,7 +131,7 @@ static void SparkTestGlm52StagePackW8lutContract(void)
 		stagepack_root,w8lut_root) == SPARK_STATUS_SCHEMA_ERROR);
 	SparkTestWriteTextFile(
 		"build/test_glm52_stagepack_w8_data/stagepack_index.json",
-		"{\"format\":\"sparkpipe.glm52.pp13.stagepack.v1\","
+		"{\"format\":\"sparkpipe.glm52.ring.stagepack.v1\","
 		"\"model_quantization\":\"fp8\","
 		"\"non_expert_weight_dtype\":\"BF16\","
 		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_B "\"}");
@@ -150,7 +150,7 @@ static void SparkTestGlm52StagePackNvfp4Contract(void)
 	SparkTestMakeDirectory(nvfp4_root);
 	SparkTestWriteTextFile(
 		"build/test_glm52_stagepack_nvfp4_data/stagepack_index.json",
-		"{\"format\":\"sparkpipe.glm52.pp13.stagepack.v1\","
+		"{\"format\":\"sparkpipe.glm52.ring.stagepack.v1\","
 		"\"model_quantization\":\"nvfp4\","
 		"\"non_expert_weight_dtype\":\"BF16\","
 		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_A "\"}");

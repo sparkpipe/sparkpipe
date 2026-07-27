@@ -3696,14 +3696,14 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
         SparkHiddenSparkHostRdmaDestroyState(state);
         return status;
     }
-    rank_text = getenv("SPARKPIPE_PP13_TRANSPORT_RANK");
+    rank_text = getenv("SPARKPIPE_RING_TRANSPORT_RANK");
     if (rank_text == 0 || rank_text[0] == '\0')
     {
         SparkHiddenSparkHostRdmaDestroyState(state);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     status = SparkHiddenSparkHostRdmaParseUintEnv(
-        "SPARKPIPE_PP13_TRANSPORT_RANK",
+        "SPARKPIPE_RING_TRANSPORT_RANK",
         0u,
         &local_rank);
     if (status != SPARK_STATUS_OK || local_rank > (uint32_t)INT32_MAX)

@@ -217,11 +217,11 @@ static void SparkTestGlm52ResidentDecodeStageB12xRouterLogitsAbi(void)
         SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS);
     assert(arguments.router_logits_f32 == (const float *)(uintptr_t)0x30u);
     assert(arguments.router_score_bias_f32 == (const float *)(uintptr_t)0x40u);
-    assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES &
+    assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_RING_CAPABILITIES &
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_FUSED_STAGE_MOE) != 0u);
-    assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES &
+    assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_RING_CAPABILITIES &
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_FUSED_STAGE_MOE) != 0u);
-    assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES &
+    assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_RING_CAPABILITIES &
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_QKV_BRANCH_OVERLAP) != 0u);
 }
 
@@ -2542,7 +2542,7 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
 }
 
 
-static void SparkTestGlm52ResidentDecodeStageExactPp13PlanWithoutLaunchFunction(void)
+static void SparkTestGlm52ResidentDecodeStageExactRingPlanWithoutLaunchFunction(void)
 {
     SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slots[2];
     SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
@@ -2582,7 +2582,7 @@ static void SparkTestGlm52ResidentDecodeStageExactPp13PlanWithoutLaunchFunction(
     exact_stage_slice_plan.batch_bucket = 16u;
     exact_stage_slice_plan.maximum_active_sequence_count = 8u;
     exact_stage_slice_plan.capability_flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES;
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_RING_CAPABILITIES;
     exact_stage_slice_plan.query_branch_stream = &fake_streams[0];
     exact_stage_slice_plan.kv_branch_stream = &fake_streams[0];
     exact_stage_slice_plan.branch_ready_event = &fake_streams[0];
@@ -2596,7 +2596,7 @@ static void SparkTestGlm52ResidentDecodeStageExactPp13PlanWithoutLaunchFunction(
     stage_slice_plan.maximum_active_sequence_count = 8u;
     stage_slice_plan.maximum_layer_count = 6u;
     stage_slice_plan.capability_flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES;
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_RING_CAPABILITIES;
     stage_slice_plan.launch_function = 0;
     stage_slice_plan.opaque_state = &exact_stage_slice_plan;
     stage_slice_plan.validated_maximum_latency_ns = 50660288u;
@@ -2651,7 +2651,7 @@ static void SparkTestGlm52ResidentDecodeStageExactPp13PlanWithoutLaunchFunction(
 }
 
 
-static void SparkTestGlm52ResidentDecodeStageRejectsUnbackedExactPp13AotPlan(void)
+static void SparkTestGlm52ResidentDecodeStageRejectsUnbackedExactRingAotPlan(void)
 {
     SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slots[2];
     SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
@@ -2690,7 +2690,7 @@ static void SparkTestGlm52ResidentDecodeStageRejectsUnbackedExactPp13AotPlan(voi
     exact_stage_slice_plan.batch_bucket = 16u;
     exact_stage_slice_plan.maximum_active_sequence_count = 8u;
     exact_stage_slice_plan.capability_flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_EXACT_PP13_CAPABILITIES |
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_EXACT_RING_CAPABILITIES |
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_AOT_STAGE_LAUNCH;
     exact_stage_slice_plan.query_branch_stream = &fake_streams[0];
     exact_stage_slice_plan.kv_branch_stream = &fake_streams[0];
@@ -2705,7 +2705,7 @@ static void SparkTestGlm52ResidentDecodeStageRejectsUnbackedExactPp13AotPlan(voi
     stage_slice_plan.maximum_active_sequence_count = 8u;
     stage_slice_plan.maximum_layer_count = 6u;
     stage_slice_plan.capability_flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_EXACT_PP13_CAPABILITIES |
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_EXACT_RING_CAPABILITIES |
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_AOT_STAGE_LAUNCH;
     stage_slice_plan.opaque_state = &exact_stage_slice_plan;
     stage_slice_plan.validated_maximum_latency_ns = 50660288u;
@@ -2782,9 +2782,9 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFinalTokenEpilogueValidation
     }
 
     capability_flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_EXACT_PP13_CAPABILITIES |
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_EXACT_RING_CAPABILITIES |
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_AOT_STAGE_LAUNCH |
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_PP13_AOT |
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_RING_AOT |
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_FUSED_FINAL_TOKEN_TAIL |
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_FUSED_FINAL_TOKEN_EPILOGUE;
 
@@ -2949,7 +2949,7 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeValidation(void
     exact_stage_slice_plan.batch_bucket = 16u;
     exact_stage_slice_plan.maximum_active_sequence_count = 8u;
     exact_stage_slice_plan.capability_flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES;
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_RING_CAPABILITIES;
     exact_stage_slice_plan.query_branch_stream = &fake_streams[0];
     exact_stage_slice_plan.kv_branch_stream = &fake_streams[0];
     exact_stage_slice_plan.branch_ready_event = &fake_streams[0];
@@ -2963,7 +2963,7 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeValidation(void
     stage_slice_plan.maximum_active_sequence_count = 8u;
     stage_slice_plan.maximum_layer_count = 6u;
     stage_slice_plan.capability_flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES;
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_RING_CAPABILITIES;
     stage_slice_plan.opaque_state = &exact_stage_slice_plan;
     stage_slice_plan.validated_maximum_latency_ns = 50660288u;
 
@@ -3085,7 +3085,7 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeB12xValidation(
     exact_stage_slice_plan.batch_bucket = 16u;
     exact_stage_slice_plan.maximum_active_sequence_count = 8u;
     exact_stage_slice_plan.capability_flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES;
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_RING_CAPABILITIES;
     exact_stage_slice_plan.query_branch_stream = &fake_streams[0];
     exact_stage_slice_plan.kv_branch_stream = &fake_streams[0];
     exact_stage_slice_plan.branch_ready_event = &fake_streams[0];
@@ -3099,7 +3099,7 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeB12xValidation(
     stage_slice_plan.maximum_active_sequence_count = 8u;
     stage_slice_plan.maximum_layer_count = 6u;
     stage_slice_plan.capability_flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES;
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_RING_CAPABILITIES;
     stage_slice_plan.opaque_state = &exact_stage_slice_plan;
     stage_slice_plan.validated_maximum_latency_ns = 50660288u;
 
@@ -3201,9 +3201,9 @@ static void SparkTestGlm52ResidentDecodeStageFinalStageRequiresBuiltInEpilogueWo
     }
 
     exact_capabilities =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_EXACT_PP13_CAPABILITIES |
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_EXACT_RING_CAPABILITIES |
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_AOT_STAGE_LAUNCH |
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_PP13_AOT |
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_RING_AOT |
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_FUSED_FINAL_TOKEN_TAIL |
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_FUSED_FINAL_TOKEN_EPILOGUE;
 
@@ -3983,8 +3983,8 @@ int main(void)
     SparkTestGlm52ResidentDecodeStageBulkPrefillSubmit();
     SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit();
     SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge();
-    SparkTestGlm52ResidentDecodeStageExactPp13PlanWithoutLaunchFunction();
-    SparkTestGlm52ResidentDecodeStageRejectsUnbackedExactPp13AotPlan();
+    SparkTestGlm52ResidentDecodeStageExactRingPlanWithoutLaunchFunction();
+    SparkTestGlm52ResidentDecodeStageRejectsUnbackedExactRingAotPlan();
     SparkTestGlm52ResidentDecodeStageBuiltInFinalTokenEpilogueValidation();
     SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeValidation();
     SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeB12xValidation();

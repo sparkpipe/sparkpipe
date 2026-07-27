@@ -15,7 +15,7 @@
       "executable": true
     },
     {
-      "path": "bin/sparkpipe_glm52_pp13_rank_daemon",
+      "path": "bin/sparkpipe_glm52_ring_rank_daemon",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "executable": true
     },
@@ -31,11 +31,11 @@
       "executable": true
     },
     {
-      "path": "lib/libglm52_pp13_service_backend.so",
+      "path": "lib/libglm52_ring_service_backend.so",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     {
-      "path": "lib/libglm52_pp13_node_context_builder.so",
+      "path": "lib/libglm52_ring_node_context_builder.so",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "resident_reload_boundary": true
     },
@@ -74,7 +74,7 @@
         "18080",
         "--require-service-backend",
         "--service-backend-so",
-        "{install_root}/lib/libglm52_pp13_service_backend.so",
+        "{install_root}/lib/libglm52_ring_service_backend.so",
         "--model-quantization",
         "fp8",
         "--moe-pack-root",
@@ -90,7 +90,7 @@
         "--node-target",
         "cuda.sm121.glm52.resident_decode_stage.bf16",
         "--node-context-builder-so",
-        "{install_root}/lib/libglm52_pp13_node_context_builder.so",
+        "{install_root}/lib/libglm52_ring_node_context_builder.so",
         "--embedding-pack",
         "{install_root}/packs/embedding.sp",
         "--tokenizer",
@@ -110,7 +110,7 @@
       ]
     },
     {
-      "name": "pp13_cuda_residentd",
+      "name": "ring_cuda_residentd",
       "selector": "rank",
       "command": "bin/sparkpipe_glm52_cuda_residentd",
       "allow_resident_pack_cache": true,
@@ -135,7 +135,7 @@
         "--node-target",
         "cuda.sm121.glm52.resident_decode_stage.bf16",
         "--node-context-builder-so",
-        "{install_root}/lib/libglm52_pp13_node_context_builder.so",
+        "{install_root}/lib/libglm52_ring_node_context_builder.so",
         "--embedding-pack",
         "{install_root}/packs/embedding.sp",
         "--max-active",
@@ -155,9 +155,9 @@
       ]
     },
     {
-      "name": "pp13_rank_daemon",
+      "name": "ring_rank_daemon",
       "selector": "rank",
-      "command": "bin/sparkpipe_glm52_pp13_rank_daemon",
+      "command": "bin/sparkpipe_glm52_ring_rank_daemon",
       "allow_resident_pack_cache": false,
       "argv": [
         "--rank",

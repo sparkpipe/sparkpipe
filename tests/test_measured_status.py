@@ -12,7 +12,7 @@ MODEL_PATH = (
 )
 ACTIVE_CUDA_SOURCES = (
     ROOT / "modules" / "glm52_resident_decode_stage" / "source" /
-    "spark_glm52_pp13_node_context_builder_cuda.cu",
+    "spark_glm52_ring_node_context_builder_cuda.cu",
     ROOT / "modules" / "glm52_resident_decode_stage" / "source" /
     "spark_glm52_resident_decode_stage_fp8_moe_plan.cu",
     ROOT / "modules" / "glm52_resident_decode_stage" / "source" /
@@ -56,7 +56,7 @@ def main():
         ROOT / "model-families" / "glm52" / "src" / "spark_glm52_http_gateway.c"
     ).read_text(encoding="utf-8")
     backend_source = (
-        ROOT / "model-families" / "glm52" / "src" / "spark_glm52_pp13_service_backend.c"
+        ROOT / "model-families" / "glm52" / "src" / "spark_glm52_ring_service_backend.c"
     ).read_text(encoding="utf-8")
     assert "production_contract_flags" not in health_source
     assert "ring_control_ready" not in health_source

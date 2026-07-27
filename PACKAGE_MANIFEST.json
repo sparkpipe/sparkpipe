@@ -10992,1742 +10992,1742 @@
       "size_bytes": 1227
     },
     {
-      "path": "diagnostics/glm52_pp13_attention_contract_20260713/README.md",
+      "path": "diagnostics/glm52_ring_attention_contract_20260713/README.md",
       "sha256": "23f79b8b994efdce7052ec3e5156bf5802e18af44b7416c920c7f4e9a353c015",
       "size_bytes": 2395
     },
     {
-      "path": "diagnostics/glm52_pp13_attention_contract_20260713/absorbed_vs_ring_stage0.tsv",
+      "path": "diagnostics/glm52_ring_attention_contract_20260713/absorbed_vs_ring_stage0.tsv",
       "sha256": "dba48b32d93547b4d92cd39e0d7ff6fd07d48f3a02fed038edf7d4984a4abfc3",
       "size_bytes": 2387
     },
     {
-      "path": "diagnostics/glm52_pp13_attention_contract_20260713/tiled_vs_ring.tsv",
+      "path": "diagnostics/glm52_ring_attention_contract_20260713/tiled_vs_ring.tsv",
       "sha256": "a14737bfcca058fb46303a4810daf5d8f484954aaad0aea08bd7e36dd2365f9b",
       "size_bytes": 23697
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/README.md",
+      "path": "diagnostics/glm52_ring_diff_20260708/README.md",
       "sha256": "c2827877c741a0bf830b117423e5201bfdd13840d22b3a15001c34be18f0db1d",
       "size_bytes": 2140
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/manifest.json",
+      "path": "diagnostics/glm52_ring_diff_20260708/manifest.json",
       "sha256": "af28931417c1bdfa8d6e0561b9672018d131ebb374b37056c353fb8402eea133",
       "size_bytes": 1450
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/chain_analysis.txt",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/chain_analysis.txt",
       "sha256": "d0345ffbf4a945c6f49965e6b57d2b7cbab756c9d05f499de8312f43402c8705",
       "size_bytes": 5995
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank0.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank0.log",
       "sha256": "201261caf71533ef53280595acdac7267a18c09d90a8c7c06157b470778aa3fa",
       "size_bytes": 4095
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank1.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank1.log",
       "sha256": "6497ada94f4e56c12c1eabd1085c0a21cdf274cc5db830ffba60283c97b807de",
       "size_bytes": 4937
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank10.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank10.log",
       "sha256": "3095330a66ffe048f0c13fc07e1b0243722a9169754c1ff035a486f848c91730",
       "size_bytes": 105101
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank11.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank11.log",
       "sha256": "2303f7a864f17ac146e360c77a04d7e51262273d3e5d708e5e558eada4b785a5",
       "size_bytes": 121461
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank12.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank12.log",
       "sha256": "ca56f9dc66f660ad78135c24f40f508ab48af5a3cd0d9c22b736a0376dcdc4a8",
       "size_bytes": 108231
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank2.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank2.log",
       "sha256": "a8287dce7254e7de353a6d3711c4f1b565e7cf131bcd7d3aca6bb6ad322cb98a",
       "size_bytes": 20953
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank3.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank3.log",
       "sha256": "1ee51d72b3fff6853e50c67dee3e4f4751435c5d1f2e74f07fab47a4f262cac1",
       "size_bytes": 27246
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank4.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank4.log",
       "sha256": "6575e54a101605ca948a168287169e0bdc57934f020841d8b2a0515edde3bfa6",
       "size_bytes": 49551
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank5.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank5.log",
       "sha256": "3171a8ae63e9f6c63bb703ad7d78cb6498f5849809c7e973d5798159e636372e",
       "size_bytes": 63280
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank6.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank6.log",
       "sha256": "77df5a5feb4d56ba1808d86e8faeeaeb4078c6f7bfa03b66fe7712c597b9be64",
       "size_bytes": 65278
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank7.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank7.log",
       "sha256": "9ce80a86906e6d446f3ac236ee9bc1e9f775b57918c805c9fa52c406a3a327a2",
       "size_bytes": 80150
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank8.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank8.log",
       "sha256": "1be1a95892846cd2fb2dbc3c648f3c4f81d3367e4e4b5406447a9e4d5dbab9b2",
       "size_bytes": 100458
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior/rank9.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_full_trace_prior/rank9.log",
       "sha256": "b2b852c4a8e9ece7485635f14e689803869b5aa7fdf9f95e50c8fe75e7348d43",
       "size_bytes": 83871
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/pre_counts.tsv",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/pre_counts.tsv",
       "sha256": "9252828879649fd778d99fb9a468374399aee4a041d0d235a93b60a994084916",
       "size_bytes": 2212
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/rank2_vs_serial_expected.tsv",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/rank2_vs_serial_expected.tsv",
       "sha256": "55875e63df4436999b9e6839a013952ec640a75b355988769cc4d6696d6dc7c8",
       "size_bytes": 659
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/response.sse",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/response.sse",
       "sha256": "1dec141b4e3a25311fa766fcd2c9d906614624b492eeda60dc8a1d622ba32633",
       "size_bytes": 631
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank0_spark0/gateway.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank0_spark0/gateway.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank0_spark0/http_gateway.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank0_spark0/http_gateway.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank0_spark0/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank0_spark0/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank0_spark0/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank0_spark0/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank0_spark0/spark0_gateway.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank0_spark0/spark0_gateway.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank10_sparka/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank10_sparka/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank10_sparka/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank10_sparka/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank11_sparkb/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank11_sparkb/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank11_sparkb/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank11_sparkb/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank12_sparkc/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank12_sparkc/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank12_sparkc/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank12_sparkc/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank1_spark1/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank1_spark1/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank1_spark1/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank1_spark1/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank2_spark2/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank2_spark2/ring_cuda_residentd.log",
       "sha256": "bd498e72c6464b21612dbbe862013c0d24eb59798bd4890037d4948201dfa09f",
       "size_bytes": 31736
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank2_spark2/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank2_spark2/ring_rank_daemon.log",
       "sha256": "8a679957544885cf191e90bdb57011819c5684b679e3ea864fc2f81ef2523c7a",
       "size_bytes": 8912
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank3_spark3/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank3_spark3/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank3_spark3/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank3_spark3/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank4_spark4/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank4_spark4/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank4_spark4/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank4_spark4/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank5_spark5/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank5_spark5/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank5_spark5/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank5_spark5/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank6_spark6/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank6_spark6/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank6_spark6/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank6_spark6/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank7_spark7/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank7_spark7/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank7_spark7/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank7_spark7/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank8_spark8/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank8_spark8/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank8_spark8/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank8_spark8/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank9_spark9/pp13_cuda_residentd.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank9_spark9/ring_cuda_residentd.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/ring_logs/rank9_spark9/pp13_rank_daemon.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/ring_ring_matched_say_ok_ok/ring_logs/rank9_spark9/ring_rank_daemon.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_11.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_11.bf16",
       "sha256": "49dfbb25569dea453c7525fbe37463f0f60222eabda2213520793a5a95a08daf",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_17.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_17.bf16",
       "sha256": "7212fdc2f98ecf02e4fdfd1f533385133f79e4cf18656a8b2f01ff604abda3f0",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_23.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_23.bf16",
       "sha256": "3afa647b0a4f7860ce14b302b495b3807422c643f51aa73446f80d9db563929c",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_29.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_29.bf16",
       "sha256": "c652717dcf9f5c8cfe7a8780ed2084b74a1aa94861253bf76d35636ef3d3b17c",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_35.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_35.bf16",
       "sha256": "9c4589a76c121848eb008c45976c1d589723014372c98bf524d1c28394e47911",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_41.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_41.bf16",
       "sha256": "fc001f9980eed61d0df40f4b13ac6eac0432e13725507431d1f8901408187ee3",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_47.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_47.bf16",
       "sha256": "14271e1b9093e8bc18e7f483ca0a2e527c6e4e5ba90f7bcc0d897eaeffffb098",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_5.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_5.bf16",
       "sha256": "346101823cff0cb2457021443f7dda8d338f894c6ded8b2b0258f9cda4750bcc",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_53.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_53.bf16",
       "sha256": "e58204e1e5f27a80317559e8483ce37217ad636e800bceef6ee4ead9da5ff01d",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_59.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_59.bf16",
       "sha256": "177df2c50eeea68b8461fa8fa790aac2f7cf639a01e172fee958d153e4fd6839",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_65.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_65.bf16",
       "sha256": "9e835c0e50407672bf3bd611cc1d414aa9180894464c427d288eeedb960f0ab2",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_71.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_71.bf16",
       "sha256": "44f736b57676df8ab3318f4d2a2922835f744b5e04da6df1636206e31685cd78",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/after_layer_77.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/after_layer_77.bf16",
       "sha256": "9ca87db598f4dee8d6ef1335a2a675d9625b67a6bb1d9108b81e78734db4a6dc",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/fnv64_by_token.tsv",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/fnv64_by_token.tsv",
       "sha256": "29683b68602da73116fa8d82b8ef4ab7be9ace7021da01df2535455943f26c19",
       "size_bytes": 3623
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/input_embedding_sequence.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/input_embedding_sequence.log",
       "sha256": "3c95c17685bde7634577a67f6d6dd31571b41779dc8632f2715aca3eae12e5d3",
       "size_bytes": 668
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_0_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_0_6_exact.log",
       "sha256": "5a60c88aae8b8aaddc63d9ea13a8c546aa9f4099c4afaa71406ea580f841054a",
       "size_bytes": 3339
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_12_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_12_6_exact.log",
       "sha256": "a3d1e28269f6a1cdca87ed534b4efdf5a81d716f1b9f90db6c5fe3a1d5032af8",
       "size_bytes": 3001
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_18_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_18_6_exact.log",
       "sha256": "7fdc8f770515b2c03ee82135e863542f7bc5d9e4d47b45c8bc91b96a62d487fd",
       "size_bytes": 3172
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_24_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_24_6_exact.log",
       "sha256": "17f16f00d472d1829a48e18170b08d72d319d6d4f7b3194e7b8faadd0c66504b",
       "size_bytes": 3001
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_30_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_30_6_exact.log",
       "sha256": "fa04b8d705313bbfd992dcdb25841c7e049f4eaa96887785b3ea07064858bc44",
       "size_bytes": 3172
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_36_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_36_6_exact.log",
       "sha256": "a9ac6813fef54882b1f2710ffbf2a9d0e8f9d56701b93c373103ecb5430d7bbd",
       "size_bytes": 3001
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_42_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_42_6_exact.log",
       "sha256": "464e3d225001518daa2475d43d2148e12e6c5fc02d15b98ef784d79f7cf93650",
       "size_bytes": 3172
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_48_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_48_6_exact.log",
       "sha256": "c78eec5bef5246054ba64e8e0fb526269d49746b82127ad3ab1ab147ef316fcb",
       "size_bytes": 3001
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_54_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_54_6_exact.log",
       "sha256": "e2dc1ec56e03f81c43e109781403b31fba000c93360a4b27d94baf030de701e7",
       "size_bytes": 3172
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_60_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_60_6_exact.log",
       "sha256": "3100f2daadce9410d15ae269edf938ebb8e9ccf4643f9af037bfdb3d180a3098",
       "size_bytes": 3001
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_66_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_66_6_exact.log",
       "sha256": "ecf4632e1ff649fe6d0050edd5bd6644b919712c8285e3876bd8e20cdfaad761",
       "size_bytes": 3172
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_6_6_exact.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_6_6_exact.log",
       "sha256": "23050459b87f45ff187287a776598b12bab248041bfb7b0401c6af9785a8e007",
       "size_bytes": 3159
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/logs/stage_72_6_exact_final.log",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/logs/stage_72_6_exact_final.log",
       "sha256": "a01fac83e683f14be99b398cc9c5026d6ba9f4c27f3f01666486e67d834e01a1",
       "size_bytes": 3403
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/sha256.txt",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/sha256.txt",
       "sha256": "3eb0ef307df73d38982f90570f04cb7c5693da956fd39a757d47303eb009352e",
       "size_bytes": 1933
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/stage_input_embedding_sequence.bf16",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/stage_input_embedding_sequence.bf16",
       "sha256": "200824930b118c597fc16a2688b53eca35725934c47edb82b4d06f8b43def716",
       "size_bytes": 61440
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2/tokens.txt",
+      "path": "diagnostics/glm52_ring_diff_20260708/serialized_spark2/tokens.txt",
       "sha256": "9fdaa2697bf68e22a869c6648b160186a806a1c4cab2a4f6bc7b26a25e431e09",
       "size_bytes": 24
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/fixed_tiled_completions_seq3_gateway_trace.txt",
+      "path": "diagnostics/glm52_ring_diff_20260709/fixed_tiled_completions_seq3_gateway_trace.txt",
       "sha256": "9c09dc57ffdeab8af3362bd563df1d4ff9f768dce2c6d33752c414e002bef1e7",
       "size_bytes": 1460
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/fixed_tiled_completions_seq3_numeric.txt",
+      "path": "diagnostics/glm52_ring_diff_20260709/fixed_tiled_completions_seq3_numeric.txt",
       "sha256": "cac977c6cd7016caf8e621252e9858fc45d36c85b7e3c9539b87f5d1613ef648",
       "size_bytes": 4781
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/fixed_tiled_completions_seq3_signatures.txt",
+      "path": "diagnostics/glm52_ring_diff_20260709/fixed_tiled_completions_seq3_signatures.txt",
       "sha256": "8bd92cd5bbcff2cc738ae2b86ac7a9dceda14d11d96ef216d757470f26a9bf1d",
       "size_bytes": 1776
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok0.bin",
       "sha256": "375af2bdd4232af00c59bbfe235f655d655eaae63ce682950d0617e341756878",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok1.bin",
       "sha256": "8a3c2fc238f173f91632fb2583654d9174e93b3bb26cc514ad9d0f5e249798d5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok2.bin",
       "sha256": "27cccce31a7b429571153dc412fa44d8c4f0fa1bcbf1ac43e5abec4f9aac98a2",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok3.bin",
       "sha256": "a647b2d313b04494e7853dae05e6cec42ca56c46c79f06ae539a1ec3ae2e8974",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok4.bin",
       "sha256": "c9546447d5d0303d103e75833d427ac3492f5fef724a24462c190e552a92ce5e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank0_tx_seq3_tok5.bin",
       "sha256": "76387399fcc0334346d608ca51770aa526cacef4d0eea9252ce9972083ba4e8b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok0.bin",
       "sha256": "a59e02b44576c71811856cd31f953242197e1a08902ca5ee7495cb947fa6fc5f",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok1.bin",
       "sha256": "df5f3d3aaacb68ee01f3290f4eedb376e93ead04dba586d58994b567f587ff4b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok2.bin",
       "sha256": "80571f8ba66f4e71d3aca611d38b10ea9d6466785f9fda02ad1614cedb937b6d",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok3.bin",
       "sha256": "fbbbcfd9e119f576d7669184d34b3d92c6bfb4508411ba0dbd7b8fbdaab93aa0",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok4.bin",
       "sha256": "181c278ba2b827a29c3cb9d5baf6d3efae15725c68b0340e5a33015a56934c90",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok5.bin",
       "sha256": "dcaa0e483ea15fd9e7b9db93cb0fef8a2ebde9f6fc0f9481de819a45fdb2e825",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok6.bin",
       "sha256": "4cfefd93ce452add858a7abda591c3d9d4e0bff692e2ff824f8d4d8f5d075e3e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_rx_seq3_tok7.bin",
       "sha256": "e8a465ce3fd4f95d6addf8d2f859044321951db8e18516fa84fe7d04cffd8f67",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok0.bin",
       "sha256": "16f5c131e773f4f04102d8cef072fea6cde0d2fe0a55aeee2c8cb1ff038cf971",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok1.bin",
       "sha256": "a738f27e0d1c54398ca390dc6e556e070d4e6fe1c25112f64fd90750f1c2fb5b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok2.bin",
       "sha256": "a3d4f8eb402bbdbe7ad1464c21d874ea628ecd63552417415056d0b21cd4191a",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok3.bin",
       "sha256": "29ebe0b4a0779113de827539c2d4524db3e11439ffe53ce4ec1e98e00aeaf18e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok4.bin",
       "sha256": "1a250683e782135b07c433fac045293ae0304be51c7da5531f5f93b9f975334c",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok5.bin",
       "sha256": "14b2ce8b7de3ece92db4406a9a33a5c2f132b19f020d4f618a91b6c9b2d11478",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok6.bin",
       "sha256": "67a7575e001925259df125003e10e54fdf868f79bdacb0e4052be98cdccfd71a",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank10_tx_seq3_tok7.bin",
       "sha256": "a412a325a1fdac04d6f464fabe1a1e6dd99310e7138f20527c0eaf191fd0fb17",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok0.bin",
       "sha256": "16f5c131e773f4f04102d8cef072fea6cde0d2fe0a55aeee2c8cb1ff038cf971",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok1.bin",
       "sha256": "a738f27e0d1c54398ca390dc6e556e070d4e6fe1c25112f64fd90750f1c2fb5b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok2.bin",
       "sha256": "a3d4f8eb402bbdbe7ad1464c21d874ea628ecd63552417415056d0b21cd4191a",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok3.bin",
       "sha256": "29ebe0b4a0779113de827539c2d4524db3e11439ffe53ce4ec1e98e00aeaf18e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok4.bin",
       "sha256": "1a250683e782135b07c433fac045293ae0304be51c7da5531f5f93b9f975334c",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok5.bin",
       "sha256": "14b2ce8b7de3ece92db4406a9a33a5c2f132b19f020d4f618a91b6c9b2d11478",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok6.bin",
       "sha256": "67a7575e001925259df125003e10e54fdf868f79bdacb0e4052be98cdccfd71a",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_rx_seq3_tok7.bin",
       "sha256": "a412a325a1fdac04d6f464fabe1a1e6dd99310e7138f20527c0eaf191fd0fb17",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok0.bin",
       "sha256": "a67cdbbb975e337ed2d8d820f9ff6ebf16a18e3cbb89c31eed12945fe0573716",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok1.bin",
       "sha256": "d19ed62f3da5298740e4563c531a910c08bbc3144c51a94cdcf4e7d86bab4a35",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok2.bin",
       "sha256": "87666c259df290eb4467bdb60b2e87c4377e6148c8e7886b763e094be58471f2",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok3.bin",
       "sha256": "34c4077d7f2f560b6179ea48a94712f3cdc34ee485cbfbfd7cb594bbfac64011",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok4.bin",
       "sha256": "344130d6282055decceecef72bd1e5d8979adbd6e00dac13742f37a2253eddd0",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok5.bin",
       "sha256": "2e9b3133453875056d0b95ffff0ec8db4fa79027394226996423fa10a8358282",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok6.bin",
       "sha256": "89cb509b15474c81197ea5d12b39d7a415f79f761c6d50d3c7af2f4303901816",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank11_tx_seq3_tok7.bin",
       "sha256": "85a4ad1532e863761bbedf34f2233a97af993981aa2b372a0bdd499740677a6b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok0.bin",
       "sha256": "a67cdbbb975e337ed2d8d820f9ff6ebf16a18e3cbb89c31eed12945fe0573716",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok1.bin",
       "sha256": "d19ed62f3da5298740e4563c531a910c08bbc3144c51a94cdcf4e7d86bab4a35",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok2.bin",
       "sha256": "87666c259df290eb4467bdb60b2e87c4377e6148c8e7886b763e094be58471f2",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok3.bin",
       "sha256": "34c4077d7f2f560b6179ea48a94712f3cdc34ee485cbfbfd7cb594bbfac64011",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok4.bin",
       "sha256": "344130d6282055decceecef72bd1e5d8979adbd6e00dac13742f37a2253eddd0",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok5.bin",
       "sha256": "2e9b3133453875056d0b95ffff0ec8db4fa79027394226996423fa10a8358282",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok6.bin",
       "sha256": "89cb509b15474c81197ea5d12b39d7a415f79f761c6d50d3c7af2f4303901816",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank12_rx_seq3_tok7.bin",
       "sha256": "85a4ad1532e863761bbedf34f2233a97af993981aa2b372a0bdd499740677a6b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok0.bin",
       "sha256": "375af2bdd4232af00c59bbfe235f655d655eaae63ce682950d0617e341756878",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok1.bin",
       "sha256": "8a3c2fc238f173f91632fb2583654d9174e93b3bb26cc514ad9d0f5e249798d5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok2.bin",
       "sha256": "27cccce31a7b429571153dc412fa44d8c4f0fa1bcbf1ac43e5abec4f9aac98a2",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok3.bin",
       "sha256": "a647b2d313b04494e7853dae05e6cec42ca56c46c79f06ae539a1ec3ae2e8974",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok4.bin",
       "sha256": "c9546447d5d0303d103e75833d427ac3492f5fef724a24462c190e552a92ce5e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok5.bin",
       "sha256": "76387399fcc0334346d608ca51770aa526cacef4d0eea9252ce9972083ba4e8b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok6.bin",
       "sha256": "1eef326cff09d4c228932357ef93a48b630d2eca1e21a41f70a44de16ae9c454",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_rx_seq3_tok7.bin",
       "sha256": "0a0072fe6b3ad8982abf3ef7e89bac92b2c45ab4e76ad16419ac60c721e5bb8f",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok0.bin",
       "sha256": "95eb42cb6f466a4364e324a8b4642e2e9ab5ba80d9e045bdfa6df4753ac8ee1d",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok1.bin",
       "sha256": "92c86fc6b7e14f8bd8ba4e7cb78b30339cf9292b022d2658f30eb88990a649d4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok2.bin",
       "sha256": "25fe8f596165a9a88f069ff4073ab1423814560028d0abbbc29f2267f2dc7a4b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok3.bin",
       "sha256": "809caeb13d894cf377e4a753038b5ef926c37a11a9d1df42158aae30e25871e9",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok4.bin",
       "sha256": "71923fc2631b135db2850a4e42a91e6118fb354e78ca35f48426543b35b5bfc5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok5.bin",
       "sha256": "f2d13481b57d21c602c2452e4019c66368f5442475a96d5581e24ee7888a0506",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok6.bin",
       "sha256": "206d6581d52596f91a8053c42d0595c5d8ecc508290965fc97f72c8be6d91f5c",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank1_tx_seq3_tok7.bin",
       "sha256": "bf3f96562577b7b59a30ec265cfa46e5ae16494d6622cd09c492712f87358bcc",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok0.bin",
       "sha256": "95eb42cb6f466a4364e324a8b4642e2e9ab5ba80d9e045bdfa6df4753ac8ee1d",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok1.bin",
       "sha256": "92c86fc6b7e14f8bd8ba4e7cb78b30339cf9292b022d2658f30eb88990a649d4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok2.bin",
       "sha256": "25fe8f596165a9a88f069ff4073ab1423814560028d0abbbc29f2267f2dc7a4b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok3.bin",
       "sha256": "809caeb13d894cf377e4a753038b5ef926c37a11a9d1df42158aae30e25871e9",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok4.bin",
       "sha256": "71923fc2631b135db2850a4e42a91e6118fb354e78ca35f48426543b35b5bfc5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok5.bin",
       "sha256": "f2d13481b57d21c602c2452e4019c66368f5442475a96d5581e24ee7888a0506",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok6.bin",
       "sha256": "206d6581d52596f91a8053c42d0595c5d8ecc508290965fc97f72c8be6d91f5c",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_rx_seq3_tok7.bin",
       "sha256": "bf3f96562577b7b59a30ec265cfa46e5ae16494d6622cd09c492712f87358bcc",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok0.bin",
       "sha256": "feb957871b5a09b52a5645a7088568d9b48ac83db30f97d91eba1927b1915d54",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok1.bin",
       "sha256": "065229c9ceb1254f9cf019f07b85090f848a7b62d37568f0ede05a9910b7ac64",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok2.bin",
       "sha256": "15ebfc1604df812f2b31250f7f620f85c1e522ad452830dd79c9dc06bf0830a4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok3.bin",
       "sha256": "35553353df25a5197158466e12ef7f2bb68c016c26ca0d099420b931eb0cddc8",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok4.bin",
       "sha256": "6183db723335e2cc0bcd01b71e8eac7c2e6380b2d7ec45f45b318a4767034fe4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok5.bin",
       "sha256": "b524703aaa71e1023dc02bc20ab56c4ddfa438332c620bf343eafcada9ab07af",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok6.bin",
       "sha256": "1f85daf5fa522867600f8750124143ec158292d677933a69653fdb9ce0131712",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank2_tx_seq3_tok7.bin",
       "sha256": "69ee05404a3ec0c69485180ea89e96da65733ed88b73dc604dc954143b14b98f",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok0.bin",
       "sha256": "feb957871b5a09b52a5645a7088568d9b48ac83db30f97d91eba1927b1915d54",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok1.bin",
       "sha256": "065229c9ceb1254f9cf019f07b85090f848a7b62d37568f0ede05a9910b7ac64",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok2.bin",
       "sha256": "15ebfc1604df812f2b31250f7f620f85c1e522ad452830dd79c9dc06bf0830a4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok3.bin",
       "sha256": "35553353df25a5197158466e12ef7f2bb68c016c26ca0d099420b931eb0cddc8",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok4.bin",
       "sha256": "6183db723335e2cc0bcd01b71e8eac7c2e6380b2d7ec45f45b318a4767034fe4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok5.bin",
       "sha256": "b524703aaa71e1023dc02bc20ab56c4ddfa438332c620bf343eafcada9ab07af",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok6.bin",
       "sha256": "1f85daf5fa522867600f8750124143ec158292d677933a69653fdb9ce0131712",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_rx_seq3_tok7.bin",
       "sha256": "69ee05404a3ec0c69485180ea89e96da65733ed88b73dc604dc954143b14b98f",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok0.bin",
       "sha256": "668b4adae71c0a163acf3e615a71d6ed18e0b4dbc649e773b8159bd3e552deeb",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok1.bin",
       "sha256": "0a390fcbb4a58386e41daa3c6dd9c7982e2daf2919922d4642b112c7b425f3e8",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok2.bin",
       "sha256": "1c897f1e1ac30d608cbfac1c38787d186d263effb27918f3e2381db01f8fbb57",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok3.bin",
       "sha256": "52d83777689eaffb4ce2b350c625ad27e3a08f06feda8b4cde56ce39ea4b2cc5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok4.bin",
       "sha256": "111d42c9874f3510ccda383ba69e173701d92f296460e16ffe8a6978f9eb630f",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok5.bin",
       "sha256": "b4d573131f0f23df8e0c7ff084506bce8f979080292f878be309694ec17b98f7",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok6.bin",
       "sha256": "50fcf6071771d796dfc2da35149c18eb597332af45ecc08e6e74c0af277fe6aa",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank3_tx_seq3_tok7.bin",
       "sha256": "f6642dcb97df16b31edbe8f178b381198fe25c9252b0b7a6126ac9ccf0087435",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok0.bin",
       "sha256": "668b4adae71c0a163acf3e615a71d6ed18e0b4dbc649e773b8159bd3e552deeb",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok1.bin",
       "sha256": "0a390fcbb4a58386e41daa3c6dd9c7982e2daf2919922d4642b112c7b425f3e8",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok2.bin",
       "sha256": "1c897f1e1ac30d608cbfac1c38787d186d263effb27918f3e2381db01f8fbb57",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok3.bin",
       "sha256": "52d83777689eaffb4ce2b350c625ad27e3a08f06feda8b4cde56ce39ea4b2cc5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok4.bin",
       "sha256": "111d42c9874f3510ccda383ba69e173701d92f296460e16ffe8a6978f9eb630f",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok5.bin",
       "sha256": "b4d573131f0f23df8e0c7ff084506bce8f979080292f878be309694ec17b98f7",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok6.bin",
       "sha256": "50fcf6071771d796dfc2da35149c18eb597332af45ecc08e6e74c0af277fe6aa",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_rx_seq3_tok7.bin",
       "sha256": "f6642dcb97df16b31edbe8f178b381198fe25c9252b0b7a6126ac9ccf0087435",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok0.bin",
       "sha256": "c254aeb81c7c34ff799a00e1eb63715dae8316b0d107d0ad5da43b779284b3f5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok1.bin",
       "sha256": "828a2966174c0a1753c981313b436d5255c472f73668566befbf71ac09ccec87",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok2.bin",
       "sha256": "28b9fa7875bd4bdd2d4140cc5cf72c25a8fca915058c96b8f4b921dccae82c9e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok3.bin",
       "sha256": "bede292809f5ca6a2ee83e6833cbff8e017ba5d9535226b3aabe276faa347545",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok4.bin",
       "sha256": "1b2c591b1b8536b6342cef5549bef57cb4d1b639c6d1e4484d3bf5cda9c25692",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok5.bin",
       "sha256": "760e9214d2e84a8f6e148c73c1077f0f18ae368fefa7749cc84d04e9422a4166",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok6.bin",
       "sha256": "364a18abee627651ab552b51aff445498acca9195f987706992b8a5a80dcb8ba",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank4_tx_seq3_tok7.bin",
       "sha256": "ab185d5cc2075794ae0607fc46b68fa903b7bc87f5b1969b3a9f4e8a4f1e65b9",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok0.bin",
       "sha256": "c254aeb81c7c34ff799a00e1eb63715dae8316b0d107d0ad5da43b779284b3f5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok1.bin",
       "sha256": "828a2966174c0a1753c981313b436d5255c472f73668566befbf71ac09ccec87",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok2.bin",
       "sha256": "28b9fa7875bd4bdd2d4140cc5cf72c25a8fca915058c96b8f4b921dccae82c9e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok3.bin",
       "sha256": "bede292809f5ca6a2ee83e6833cbff8e017ba5d9535226b3aabe276faa347545",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok4.bin",
       "sha256": "1b2c591b1b8536b6342cef5549bef57cb4d1b639c6d1e4484d3bf5cda9c25692",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok5.bin",
       "sha256": "760e9214d2e84a8f6e148c73c1077f0f18ae368fefa7749cc84d04e9422a4166",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok6.bin",
       "sha256": "364a18abee627651ab552b51aff445498acca9195f987706992b8a5a80dcb8ba",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_rx_seq3_tok7.bin",
       "sha256": "ab185d5cc2075794ae0607fc46b68fa903b7bc87f5b1969b3a9f4e8a4f1e65b9",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok0.bin",
       "sha256": "68b5c6acc2919f3ae1d3e815079ddf07d4038dc76cc561d3c6be2fe3eaf7b062",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok1.bin",
       "sha256": "ada27f34e06fa3e157aca12c78d8a41c0ae62230061e5684623858145db877f0",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok2.bin",
       "sha256": "d6dc9d99e2903c302b83933b7c33aa06e4a4e863646246c6d51c42a63a79807c",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok3.bin",
       "sha256": "1116031c11f7fde38e712a77ae8909fdf2ae49365b83e6187fa414615194d29e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok4.bin",
       "sha256": "1e2097b64ce39ecfccd31f2d84c60e0e3fcccfcea261ce0586bcdae480d37fa5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok5.bin",
       "sha256": "fa1c95de72578d14cb3a026bb89e071baa383efdc87a9981246d1d99020efc45",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok6.bin",
       "sha256": "ddb67c5b57476adba76fa4633ca149b632d997c0e8db17954ce0434ceb56a528",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank5_tx_seq3_tok7.bin",
       "sha256": "425740dd18ddb15c7356c1d21ecc635b7037dd730895658c6f9ed0bbb0745201",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok0.bin",
       "sha256": "68b5c6acc2919f3ae1d3e815079ddf07d4038dc76cc561d3c6be2fe3eaf7b062",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok1.bin",
       "sha256": "ada27f34e06fa3e157aca12c78d8a41c0ae62230061e5684623858145db877f0",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok2.bin",
       "sha256": "d6dc9d99e2903c302b83933b7c33aa06e4a4e863646246c6d51c42a63a79807c",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok3.bin",
       "sha256": "1116031c11f7fde38e712a77ae8909fdf2ae49365b83e6187fa414615194d29e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok4.bin",
       "sha256": "1e2097b64ce39ecfccd31f2d84c60e0e3fcccfcea261ce0586bcdae480d37fa5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok5.bin",
       "sha256": "fa1c95de72578d14cb3a026bb89e071baa383efdc87a9981246d1d99020efc45",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok6.bin",
       "sha256": "ddb67c5b57476adba76fa4633ca149b632d997c0e8db17954ce0434ceb56a528",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_rx_seq3_tok7.bin",
       "sha256": "425740dd18ddb15c7356c1d21ecc635b7037dd730895658c6f9ed0bbb0745201",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok0.bin",
       "sha256": "aaacc2d3cb070e9fb674e365d70d1c34ddf0afd72070ab52edbc2ea8994f92d6",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok1.bin",
       "sha256": "a62075ed4d4dca06331d5c3134713441b414db65fc7ed388ca713eda61ad8683",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok2.bin",
       "sha256": "fa8684ae40c861032726f6cc91f5878ed3b78bd487444dfcd89e16aa98b025d6",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok3.bin",
       "sha256": "2a1357948d36e3e34bdd815dafe763c601ddc0d5eaddf377d1608e523e03d5fa",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok4.bin",
       "sha256": "326e60cd1dca94218297bcd6a9ab47046099300b08acb9c1a8e8af931427e4d3",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok5.bin",
       "sha256": "57d3342b2b991814aa9879d05f78a28cc7f59b5c11dbfacc4590a7100a8e6c1a",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok6.bin",
       "sha256": "7802050a924fe35d5e15dda68ed3aad01759ee15245847984f5930e98bd3c515",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank6_tx_seq3_tok7.bin",
       "sha256": "54f36c2bd6920c610bdd598e9803616cac804d4ca453aeb4dc2e64ea303b8326",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok0.bin",
       "sha256": "aaacc2d3cb070e9fb674e365d70d1c34ddf0afd72070ab52edbc2ea8994f92d6",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok1.bin",
       "sha256": "a62075ed4d4dca06331d5c3134713441b414db65fc7ed388ca713eda61ad8683",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok2.bin",
       "sha256": "fa8684ae40c861032726f6cc91f5878ed3b78bd487444dfcd89e16aa98b025d6",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok3.bin",
       "sha256": "2a1357948d36e3e34bdd815dafe763c601ddc0d5eaddf377d1608e523e03d5fa",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok4.bin",
       "sha256": "326e60cd1dca94218297bcd6a9ab47046099300b08acb9c1a8e8af931427e4d3",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok5.bin",
       "sha256": "57d3342b2b991814aa9879d05f78a28cc7f59b5c11dbfacc4590a7100a8e6c1a",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok6.bin",
       "sha256": "7802050a924fe35d5e15dda68ed3aad01759ee15245847984f5930e98bd3c515",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_rx_seq3_tok7.bin",
       "sha256": "54f36c2bd6920c610bdd598e9803616cac804d4ca453aeb4dc2e64ea303b8326",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok0.bin",
       "sha256": "90833227c58704f40df76eb4597f1397f85f1184a3e63a64ce5be2974d3152d4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok1.bin",
       "sha256": "125b1ebdc8fb9aed861bfda6e7a63af42568247d48e108cc1bff92c588d783ee",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok2.bin",
       "sha256": "0a326a34e8b2752a522b588084f2b2a3b6af1c5df146ecd893012425bfd76d49",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok3.bin",
       "sha256": "1be3ead42d120c492efbfd9abca005d89b457e929d031a7d52dfef9848eb5a4d",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok4.bin",
       "sha256": "bf539f4f64ab637d3f2feb95c7ebdb8d6ce2940f086cba93effd8ea0729abe09",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok5.bin",
       "sha256": "255f02044ea7cee8b8a93983a9d2555a96d24d7072467f70eb9bbffcc7f44ad6",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok6.bin",
       "sha256": "74b1a5271e7eeeb932e2f8688642b52ae410749032e759e6858a5365960a56e8",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank7_tx_seq3_tok7.bin",
       "sha256": "af5fcf06f34c42643e97894edbfb357b593f89197c4841fd7452a51a060792a7",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok0.bin",
       "sha256": "90833227c58704f40df76eb4597f1397f85f1184a3e63a64ce5be2974d3152d4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok1.bin",
       "sha256": "125b1ebdc8fb9aed861bfda6e7a63af42568247d48e108cc1bff92c588d783ee",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok2.bin",
       "sha256": "0a326a34e8b2752a522b588084f2b2a3b6af1c5df146ecd893012425bfd76d49",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok3.bin",
       "sha256": "1be3ead42d120c492efbfd9abca005d89b457e929d031a7d52dfef9848eb5a4d",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok4.bin",
       "sha256": "bf539f4f64ab637d3f2feb95c7ebdb8d6ce2940f086cba93effd8ea0729abe09",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok5.bin",
       "sha256": "255f02044ea7cee8b8a93983a9d2555a96d24d7072467f70eb9bbffcc7f44ad6",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok6.bin",
       "sha256": "74b1a5271e7eeeb932e2f8688642b52ae410749032e759e6858a5365960a56e8",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_rx_seq3_tok7.bin",
       "sha256": "af5fcf06f34c42643e97894edbfb357b593f89197c4841fd7452a51a060792a7",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok0.bin",
       "sha256": "244029561f7bd44fc929603cdf045ec22b3aff499459d337489e2ef5682b3590",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok1.bin",
       "sha256": "5b7c58fc0240fa994956da6e91549f5aaa76d60d7523d73fa19e22cc15e56ad2",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok2.bin",
       "sha256": "1ea534cba81d9c1c36f3273b1fcd7772e90241234fe194fb7738c25775d7acce",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok3.bin",
       "sha256": "b9659675663d5cc72d140cbe6ca2cf9c45f2e28739123ebec28c9007f9aa69ed",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok4.bin",
       "sha256": "5d405eaedb64c400348c282ce6fac37da1cb1b32af0785df718d2960741c473d",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok5.bin",
       "sha256": "3a4ff4a28ff2dec73107546283cce501e53f415611bf07f3f9f6b1acafde2ee1",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok6.bin",
       "sha256": "d085c8f065d22b3a8fd6687bf38c7c473946b8cbd20f9971064d7b83135ceaed",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank8_tx_seq3_tok7.bin",
       "sha256": "b6bd725248f88042ccf2326400d04e2966768e78fe63e7c41b0d896d8dba8b5c",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok0.bin",
       "sha256": "244029561f7bd44fc929603cdf045ec22b3aff499459d337489e2ef5682b3590",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok1.bin",
       "sha256": "5b7c58fc0240fa994956da6e91549f5aaa76d60d7523d73fa19e22cc15e56ad2",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok2.bin",
       "sha256": "1ea534cba81d9c1c36f3273b1fcd7772e90241234fe194fb7738c25775d7acce",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok3.bin",
       "sha256": "b9659675663d5cc72d140cbe6ca2cf9c45f2e28739123ebec28c9007f9aa69ed",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok4.bin",
       "sha256": "5d405eaedb64c400348c282ce6fac37da1cb1b32af0785df718d2960741c473d",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok5.bin",
       "sha256": "3a4ff4a28ff2dec73107546283cce501e53f415611bf07f3f9f6b1acafde2ee1",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok6.bin",
       "sha256": "d085c8f065d22b3a8fd6687bf38c7c473946b8cbd20f9971064d7b83135ceaed",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_rx_seq3_tok7.bin",
       "sha256": "b6bd725248f88042ccf2326400d04e2966768e78fe63e7c41b0d896d8dba8b5c",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok0.bin",
       "sha256": "a59e02b44576c71811856cd31f953242197e1a08902ca5ee7495cb947fa6fc5f",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok1.bin",
       "sha256": "df5f3d3aaacb68ee01f3290f4eedb376e93ead04dba586d58994b567f587ff4b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok2.bin",
       "sha256": "80571f8ba66f4e71d3aca611d38b10ea9d6466785f9fda02ad1614cedb937b6d",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok3.bin",
       "sha256": "fbbbcfd9e119f576d7669184d34b3d92c6bfb4508411ba0dbd7b8fbdaab93aa0",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok4.bin",
       "sha256": "181c278ba2b827a29c3cb9d5baf6d3efae15725c68b0340e5a33015a56934c90",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok5.bin",
       "sha256": "dcaa0e483ea15fd9e7b9db93cb0fef8a2ebde9f6fc0f9481de819a45fdb2e825",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok6.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok6.bin",
       "sha256": "4cfefd93ce452add858a7abda591c3d9d4e0bff692e2ff824f8d4d8f5d075e3e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok7.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709/ring_fixed_tiled_completions_seq3/rank9_tx_seq3_tok7.bin",
       "sha256": "e8a465ce3fd4f95d6addf8d2f859044321951db8e18516fa84fe7d04cffd8f67",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/numeric_diff.txt",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/numeric_diff.txt",
       "sha256": "9715ff6dd3cf1ee7334dd2cbb2dcb85de5336f9bb43f3b221efac974c37d0f7f",
       "size_bytes": 4760
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok0.bin",
       "sha256": "375af2bdd4232af00c59bbfe235f655d655eaae63ce682950d0617e341756878",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok1.bin",
       "sha256": "b7cd73a2c79a6da001cbbf938964901c0eab8613b669b6c83419314e128c0413",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok2.bin",
       "sha256": "f21e8a572e187e0217de0abab036610c847f90eb048b4660b6ec2d13256d1c01",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok3.bin",
       "sha256": "f1eab3d2669358c77381de3f71448f5337bc829bd137a4978e96c1328a45bc0c",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok4.bin",
       "sha256": "69fb7539f40c137d86a279fd198178b5536d86b1b08d86bb3512e32bef830635",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank0_tx_seq1_tok5.bin",
       "sha256": "d4ebc550a4ad3aedd93a21c8717a148f372790789b32caa6a08772ef761089c7",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok0.bin",
       "sha256": "16f5c131e773f4f04102d8cef072fea6cde0d2fe0a55aeee2c8cb1ff038cf971",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok1.bin",
       "sha256": "dfa7ab1f75139a5f9e29a18bea00f6ec07f292bc71e93451e609a3dd46ff425d",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok2.bin",
       "sha256": "131bd3dbba755ac3ecfbc3062402f566bf14bae964cea7f70b760b26c40dc846",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok3.bin",
       "sha256": "d26a11e806f27652175b5e3ef22db23eda98f222a573ba0412ef8493c0fe6a2c",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok4.bin",
       "sha256": "f3c08dabe6a7e43811ca0a0ea99b468884d0d86cd881885a9354e381135bcd3e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank10_tx_seq1_tok5.bin",
       "sha256": "0d0d63fd1497c20ec7838da9068fadb740d04e328bb278f4d1f498e72652f231",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok0.bin",
       "sha256": "a67cdbbb975e337ed2d8d820f9ff6ebf16a18e3cbb89c31eed12945fe0573716",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok1.bin",
       "sha256": "bda7bab8f6ba2dbd8b3caae8a26fcd6424bb484a56589cb0e7767ff33078d5c5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok2.bin",
       "sha256": "b86e19a4078c5423329cab5c02b0a94da88abe93d3a9ea6449f9ef8d4d517308",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok3.bin",
       "sha256": "3db11ba12b61046e9fb117697dccea62f8ff9cbba7e2b9bbf5ed12b04b38581e",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok4.bin",
       "sha256": "b2cc904a546f9bd281a98b846bd6c8dafc95a0c3175a96fb8b25da3be5b9f428",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank11_tx_seq1_tok5.bin",
       "sha256": "926446fbf5726ed5149fde9726f75e25ca3d9e25ad9318440b8eb08bc76a1c0b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok0.bin",
       "sha256": "95eb42cb6f466a4364e324a8b4642e2e9ab5ba80d9e045bdfa6df4753ac8ee1d",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok1.bin",
       "sha256": "9b2c8e1250d94e9d25131dfe6d3bfef2f1c5b3f36b392af17af623ab3c8ad20b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok2.bin",
       "sha256": "24b3ea5b5e7d58e62f9e037c01ceb3bc2d09496f874490ae097fd4efa67fa8d5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok3.bin",
       "sha256": "b9416a3665968316679d92697a22121617cc1fa29ec260d4f232f535b258d8b1",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok4.bin",
       "sha256": "ce971874da8fbe5e4ae3edb91c338fc97b39519d93ff5096e7035bf875dc3856",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank1_tx_seq1_tok5.bin",
       "sha256": "fca26b8b428a0dbdaf118129e4983df560f7174a27cc9f472c6ddca0fe0a05e0",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok0.bin",
       "sha256": "feb957871b5a09b52a5645a7088568d9b48ac83db30f97d91eba1927b1915d54",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok1.bin",
       "sha256": "0898fee15c913ea127e3481346a89b6ae36dcacda7dd5b7092957347d08cbdac",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok2.bin",
       "sha256": "d36fb43abf47128a9a0e78ad54e70f1b3db67cade23db6eeab7b9119bac9843c",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok3.bin",
       "sha256": "3449a97148e8653b44de8fefacaff72418323aca0d21f5b715d715af7ab6b184",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok4.bin",
       "sha256": "250eb5696293efbf5d2e06b8b3d2f462d39418baa4f120c8b4aaa0f3d58d9571",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank2_tx_seq1_tok5.bin",
       "sha256": "e5d68c7d879bdf2284159d11782fa2d9caf226abf736c9fdef3a447ae8c4e401",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok0.bin",
       "sha256": "668b4adae71c0a163acf3e615a71d6ed18e0b4dbc649e773b8159bd3e552deeb",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok1.bin",
       "sha256": "fdc016d91fa423c533241c83c3566ed40eaf4debf11fcebcd08e6400002e2454",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok2.bin",
       "sha256": "748bd542c99ff32fb6b9aeb18a2ad7dd38342002e527b0edd0739212fe3fed97",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok3.bin",
       "sha256": "563dbdfbc5aa4921979c71685aa871120ff22e26a81e13397c0187f497e1dbf8",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok4.bin",
       "sha256": "90a8395c5b8d7ccf297fb2d917a93399ef84c7342fb04b2fc1fa1c360f0d7a15",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank3_tx_seq1_tok5.bin",
       "sha256": "a98408321bd1ec7105484e08e0b75301f3df2592b5e140534c6093364bed4413",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok0.bin",
       "sha256": "c254aeb81c7c34ff799a00e1eb63715dae8316b0d107d0ad5da43b779284b3f5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok1.bin",
       "sha256": "897aae19959e1fa109d02df7cc20b4e291c795f4048da9f7d4f783132edfe347",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok2.bin",
       "sha256": "f97ad6c3eafbdc4894c5d35f1ced8c3bdce7626e6002869efd8c6007777001df",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok3.bin",
       "sha256": "879f03daea0802b60d0da1846bc373bd7687935e5fdc7d337cccaec3f6b57552",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok4.bin",
       "sha256": "984f6238f509fff5a08eb9233bd0407154b24eafb19781f854a9206a216e5f99",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank4_tx_seq1_tok5.bin",
       "sha256": "1c97844aae24c9d5b78cf1fcaf2ad5e054229bfb005bb558d4b7831c32eeab6a",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok0.bin",
       "sha256": "68b5c6acc2919f3ae1d3e815079ddf07d4038dc76cc561d3c6be2fe3eaf7b062",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok1.bin",
       "sha256": "35df0660bcad59985965a05d88fdcb738afe10a2cd2ea6334e4df08df891e60f",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok2.bin",
       "sha256": "39229a41375c9b981b46475fc2930951917f302fd47c1f7b632921610ccb0f95",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok3.bin",
       "sha256": "47a94ede240819872aee1543e09e97a91a1451cef541acf8d20696551d6de56b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok4.bin",
       "sha256": "09fcc527cbd78bb66c395e15d5aeba6edcc78442179343e6665e6c744091ee96",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank5_tx_seq1_tok5.bin",
       "sha256": "eb3c8228f190d72828eb08594f43304c115abebd256f564982976bc270af3cd7",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok0.bin",
       "sha256": "aaacc2d3cb070e9fb674e365d70d1c34ddf0afd72070ab52edbc2ea8994f92d6",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok1.bin",
       "sha256": "f1237c42cb2ee313e922f58ca75efbee99687b1f1a6138b94244e9f3b19d83a3",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok2.bin",
       "sha256": "07363aec9f6df8aeec4d75d5332d8f84a6759cf6e64e9c843aa14ce2cd2fbcc8",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok3.bin",
       "sha256": "e2a4309f3c9785f98de9eaba5e184cda128178690e4ff5bc580b7f002eb7bfa7",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok4.bin",
       "sha256": "e788f7c64cd159ec063b33699a954a080a0968f8c77e4c0d3a7cffeb1cd951ea",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank6_tx_seq1_tok5.bin",
       "sha256": "eea807835e902a5ac8f899c5c9e2154211796766f89a1ef5795f7c751c713fa1",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok0.bin",
       "sha256": "90833227c58704f40df76eb4597f1397f85f1184a3e63a64ce5be2974d3152d4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok1.bin",
       "sha256": "19e44a2c026cd9a672174cd7989e623acbfd2dc61e99a46283c2aa738ea79030",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok2.bin",
       "sha256": "0bd4f81b055c7d64b1d98b14a02a28428203b4dd5add733da0b2ac7564b96d46",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok3.bin",
       "sha256": "45f3a918918fd01d69f7f5b20aec30e1e0947ac6366e114eccf6cbeb920badc4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok4.bin",
       "sha256": "79d0da4537265d1d452fc51c26f419d9a63701c902c587cf3c2d311508e3396a",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank7_tx_seq1_tok5.bin",
       "sha256": "645113bcf7dd18e04d55cc36d87369b906bca261a392b1b21ce6a24ceaefab82",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok0.bin",
       "sha256": "244029561f7bd44fc929603cdf045ec22b3aff499459d337489e2ef5682b3590",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok1.bin",
       "sha256": "cd5f1f1226eb2ddd85029ce77f0c269048caebb5dc0b816dff15cff7d73d60d4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok2.bin",
       "sha256": "974729453eb499ffd9e09ced98ca242ae7639a16b3410f18385d306b9b095567",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok3.bin",
       "sha256": "adfb8c538e6cfb5b0ebbb75c04214585b339cb87d281881ee47f099f12c46963",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok4.bin",
       "sha256": "e66346798474156362d65f94865235efdb7cec41cc1a1c0f1fc7b3c180f6fb0b",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank8_tx_seq1_tok5.bin",
       "sha256": "5b5a2cf60f0e0e57d493576bbf52d89ee543ddf0510c0697de3d6a4094b6c1c4",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok0.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok0.bin",
       "sha256": "a59e02b44576c71811856cd31f953242197e1a08902ca5ee7495cb947fa6fc5f",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok1.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok1.bin",
       "sha256": "5fda12cc2c701e5d82e1f7bafaa79e86e954ae097954ef385d6a3b2960c15023",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok2.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok2.bin",
       "sha256": "b9ff7a07d1b5c8f776581d2d7cc7b26e30fc5c047d7b0e56bee8deaabd7c02fb",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok3.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok3.bin",
       "sha256": "552ded98445d179ddee4c96c5a446a075b2313dea5a40ae64de8be9f93127af5",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok4.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok4.bin",
       "sha256": "fb228abe19249254065d690b9ccaccd13d84bfa44b4cae37845bb097039d5dbf",
       "size_bytes": 12288
     },
     {
-      "path": "diagnostics/glm52_pp13_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok5.bin",
+      "path": "diagnostics/glm52_ring_diff_20260709_release231_seq1/ring_seq1/rank9_tx_seq1_tok5.bin",
       "sha256": "6358cf7512a3a9aa0405e781ea577c4d425d2e853ce0433a0fa43eba2fb1a9f5",
       "size_bytes": 12288
     },
@@ -12892,7 +12892,7 @@
       "size_bytes": 6889
     },
     {
-      "path": "docs/GLM52_FP8_PP13_ATTENTION_MODE_ROOT_CAUSE_20260709.md",
+      "path": "docs/GLM52_FP8_RING_ATTENTION_MODE_ROOT_CAUSE_20260709.md",
       "sha256": "a709decaef345084f9deccbb81ae1a7f4621fddb0e590191a959dbd23b3bd9df",
       "size_bytes": 3406
     },
@@ -12987,67 +12987,67 @@
       "size_bytes": 4506
     },
     {
-      "path": "docs/GLM52_PP13_2X_SPEEDUP_ROOT_CAUSE_20260704.md",
+      "path": "docs/GLM52_RING_2X_SPEEDUP_ROOT_CAUSE_20260704.md",
       "sha256": "a2f22d0e98bed7a1701404eab2ea215f44b9b553c93603c15c64c12fa6f22e75",
       "size_bytes": 5187
     },
     {
-      "path": "docs/GLM52_PP13_4BIT_8BIT_FULL_PERF_20260701.md",
+      "path": "docs/GLM52_RING_4BIT_8BIT_FULL_PERF_20260701.md",
       "sha256": "3ede6789446c23ac19f40a4bc5fc7f28bfaf02eb77e49df497d3bf8a4cf55ff6",
       "size_bytes": 2884
     },
     {
-      "path": "docs/GLM52_PP13_BUILTIN_AOT_STAGE_SLICE_20260702.md",
+      "path": "docs/GLM52_RING_BUILTIN_AOT_STAGE_SLICE_20260702.md",
       "sha256": "2e874511ee923768cb5159adab3e0ba4af72ac23e480645bde298b35f526ef9d",
       "size_bytes": 1960
     },
     {
-      "path": "docs/GLM52_PP13_BUILTIN_FUSED_MOE_20260702.md",
+      "path": "docs/GLM52_RING_BUILTIN_FUSED_MOE_20260702.md",
       "sha256": "7d5ca83f26caa8ce48ca7609c3c29e54cc5ac4a2c29ea3036fbf508ffd6d4cae",
       "size_bytes": 2318
     },
     {
-      "path": "docs/GLM52_PP13_DSA_PREFILL_HISTORY_RECEIPT_20260718.md",
+      "path": "docs/GLM52_RING_DSA_PREFILL_HISTORY_RECEIPT_20260718.md",
       "sha256": "2f4763e940836116245ab8bff175c4cc39677266486cf9e72e9d415bf66884cb",
       "size_bytes": 4241
     },
     {
-      "path": "docs/GLM52_PP13_DSA_SERIAL_RING_EQUIVALENCE_20260710.md",
+      "path": "docs/GLM52_RING_DSA_SERIAL_RING_EQUIVALENCE_20260710.md",
       "sha256": "2d986662e3d3eb1ffbf263619c97961ef3a2a6dce23aec901393ed5f50b01b95",
       "size_bytes": 3457
     },
     {
-      "path": "docs/GLM52_PP13_EXACT_SLICE_AND_VLLM_KERNEL_WORK_20260701.md",
+      "path": "docs/GLM52_RING_EXACT_SLICE_AND_VLLM_KERNEL_WORK_20260701.md",
       "sha256": "dbe083f4a7cca3d31323ede38fd5e111acc194aa005e005ef1a67436a90129f1",
       "size_bytes": 2641
     },
     {
-      "path": "docs/GLM52_PP13_FULL_PERF_PASS_20260702.md",
+      "path": "docs/GLM52_RING_FULL_PERF_PASS_20260702.md",
       "sha256": "3335129ce2825b0fc64c40904c3f6aa52fa38096656d7d8dfff8be67c3d89e39",
       "size_bytes": 5286
     },
     {
-      "path": "docs/GLM52_PP13_MULTIROW_LINEAR_PLAN_FIX_20260718.md",
+      "path": "docs/GLM52_RING_MULTIROW_LINEAR_PLAN_FIX_20260718.md",
       "sha256": "e766e48d75e2f2f0c110867a1b9bd5534032073ef053c896597e59e28c3c93ab",
       "size_bytes": 6064
     },
     {
-      "path": "docs/GLM52_PP13_PRODUCTION_REVIEW_20260704.md",
+      "path": "docs/GLM52_RING_PRODUCTION_REVIEW_20260704.md",
       "sha256": "f31b73ace97fd7eb7c16dab895661a18d992f7a74cff69b766e27072c62242db",
       "size_bytes": 11270
     },
     {
-      "path": "docs/GLM52_PP13_RANK_DAEMON.md",
+      "path": "docs/GLM52_RING_RANK_DAEMON.md",
       "sha256": "0e99623cb973f69847357717210e7246bec3346e33dccb48d8917ec3744bcc49",
       "size_bytes": 2933
     },
     {
-      "path": "docs/GLM52_PP13_STAGE_RULES_AND_TIMING_20260701.md",
+      "path": "docs/GLM52_RING_STAGE_RULES_AND_TIMING_20260701.md",
       "sha256": "611821a9c68c375484bc542c018824c9624270615a8484efad378abcdab05bc4",
       "size_bytes": 4710
     },
     {
-      "path": "docs/GLM52_PP13_WRONG_TOKENS_ROOT_CAUSE_20260710.md",
+      "path": "docs/GLM52_RING_WRONG_TOKENS_ROOT_CAUSE_20260710.md",
       "sha256": "ac46ad27dc41701ef549c299b23bf01067803c546876e2568a6a0d10aaa38e70",
       "size_bytes": 6874
     },
@@ -13112,7 +13112,7 @@
       "size_bytes": 3592
     },
     {
-      "path": "docs/GLM52_W8LUT_PP13_QUALIFICATION.md",
+      "path": "docs/GLM52_W8LUT_RING_QUALIFICATION.md",
       "sha256": "16bfeb94e61dbe35fe19c726691fd12049e2d7f2cb4001ca427a911696dacba5",
       "size_bytes": 4942
     },
@@ -13267,7 +13267,7 @@
       "size_bytes": 5547
     },
     {
-      "path": "examples/runtime_configs/glm52_pp13_fp8_runtime.json",
+      "path": "examples/runtime_configs/glm52_ring_fp8_runtime.json",
       "sha256": "a9dc51fecb3c1a541b912912bb103a41805ee6c28619fd511c7b0363a872da0c",
       "size_bytes": 479
     },
@@ -13487,17 +13487,17 @@
       "size_bytes": 8316
     },
     {
-      "path": "model-families/glm52/include/sparkpipe/spark_glm52_pp13_node_context_builder.h",
+      "path": "model-families/glm52/include/sparkpipe/spark_glm52_ring_node_context_builder.h",
       "sha256": "315faa2db96bf0a63ac32ed1d8d5a7b827eebbd97114ea89cd9434b2c74e5560",
       "size_bytes": 12678
     },
     {
-      "path": "model-families/glm52/include/sparkpipe/spark_glm52_pp13_runtime.h",
+      "path": "model-families/glm52/include/sparkpipe/spark_glm52_ring_runtime.h",
       "sha256": "989eaaaf7d839c6feaca3a68fcfc1490453211e55f341137d94bc2be265dd1aa",
       "size_bytes": 10124
     },
     {
-      "path": "model-families/glm52/include/sparkpipe/spark_glm52_pp13_work_control.h",
+      "path": "model-families/glm52/include/sparkpipe/spark_glm52_ring_work_control.h",
       "sha256": "721e461ed3a0af0a5f26bf301babc2c7546e87b86560a9b025a701305590a896",
       "size_bytes": 11897
     },
@@ -13642,22 +13642,22 @@
       "size_bytes": 25374
     },
     {
-      "path": "model-families/glm52/src/spark_glm52_pp13_node_context_builder.c",
+      "path": "model-families/glm52/src/spark_glm52_ring_node_context_builder.c",
       "sha256": "9cb53b64dc724dfcf2cb99c129f1473ce8a65a2a53b619c47f80b6f105380597",
       "size_bytes": 5194
     },
     {
-      "path": "model-families/glm52/src/spark_glm52_pp13_runtime.c",
+      "path": "model-families/glm52/src/spark_glm52_ring_runtime.c",
       "sha256": "034e3c4cc09ec454c86d553cabeddd1113f3bd220a375abe3cab238d3cdc9116",
       "size_bytes": 34979
     },
     {
-      "path": "model-families/glm52/src/spark_glm52_pp13_service_backend.c",
+      "path": "model-families/glm52/src/spark_glm52_ring_service_backend.c",
       "sha256": "218e9971ba60535045d77bcfefdaea1f1acd3c67b0ed9ba8ddb10b93de248f48",
       "size_bytes": 139315
     },
     {
-      "path": "model-families/glm52/src/spark_glm52_pp13_work_control.c",
+      "path": "model-families/glm52/src/spark_glm52_ring_work_control.c",
       "sha256": "aec965544141be6e79ffd8e85f65ee18dcab5713b5087b78eb2617b9753e108d",
       "size_bytes": 76375
     },
@@ -13882,7 +13882,7 @@
       "size_bytes": 4367
     },
     {
-      "path": "modules/glm52_resident_decode_stage/source/spark_glm52_pp13_node_context_builder_cuda.cu",
+      "path": "modules/glm52_resident_decode_stage/source/spark_glm52_ring_node_context_builder_cuda.cu",
       "sha256": "3cb9a0b31a7ffed1b5d90f353e10c90836f36d29b1d67c94b0825f38152a061e",
       "size_bytes": 419942
     },
@@ -14437,7 +14437,7 @@
       "size_bytes": 2309
     },
     {
-      "path": "tests/test_glm52_exact_pp13_prefill_hidden.py",
+      "path": "tests/test_glm52_exact_ring_prefill_hidden.py",
       "sha256": "288b7a9007c5ef29bf5eb39073401ea92056e7d095d95ad5a53dcc19d3ec785a",
       "size_bytes": 76596
     },
@@ -14482,17 +14482,17 @@
       "size_bytes": 15639
     },
     {
-      "path": "tests/test_glm52_pp13_rank_daemon.c",
+      "path": "tests/test_glm52_ring_rank_daemon.c",
       "sha256": "cc7888bda9a4f0da269d8f738a3efdcd4665bb184f2e540eb681ddafbe352159",
       "size_bytes": 10748
     },
     {
-      "path": "tests/test_glm52_pp13_runtime.c",
+      "path": "tests/test_glm52_ring_runtime.c",
       "sha256": "94e00dcc215fdf379206e8222c2feefc6cad6f00e0c9c7373ff32796ca749164",
       "size_bytes": 17208
     },
     {
-      "path": "tests/test_glm52_pp13_work_control.c",
+      "path": "tests/test_glm52_ring_work_control.c",
       "sha256": "7326a6544e181e5860be65fbf77f02825543fd2c942e0212a0ce2a833f1e40e3",
       "size_bytes": 56058
     },
@@ -25157,22 +25157,22 @@
       "size_bytes": 30282
     },
     {
-      "path": "tools/sparkpipe_glm52_pp13_loopback_probe.c",
+      "path": "tools/sparkpipe_glm52_ring_loopback_probe.c",
       "sha256": "eb3a5508961166a89c60625207a62b8af35707637cab90e39339eb9f3ad77b82",
       "size_bytes": 18122
     },
     {
-      "path": "tools/sparkpipe_glm52_pp13_rank_daemon.c",
+      "path": "tools/sparkpipe_glm52_ring_rank_daemon.c",
       "sha256": "f6b902c9dd69ea64e354c624523a1a6d1465724a8ee1cfd8851239b191aa53b7",
       "size_bytes": 113995
     },
     {
-      "path": "tools/sparkpipe_glm52_pp13_rank_gate.c",
+      "path": "tools/sparkpipe_glm52_ring_rank_gate.c",
       "sha256": "2af8390e949735bcd529e4dce440d6716d21eda6ec3266d9c944be2e0aaf7a29",
       "size_bytes": 27724
     },
     {
-      "path": "tools/sparkpipe_glm52_pp13_ring_check.c",
+      "path": "tools/sparkpipe_glm52_ring_ring_check.c",
       "sha256": "d68c2468ba59e4fe5729b9a277cea89eee9b5c66ab1b07875d4f13d0cbe6c800",
       "size_bytes": 23161
     },

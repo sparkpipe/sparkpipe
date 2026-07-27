@@ -624,7 +624,7 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
     void *cuda_stream,
     void *backend_completion);
 
-SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSlice(
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactRingStageSlice(
     const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan,
     const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
     uint32_t layer_count,

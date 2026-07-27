@@ -105,7 +105,7 @@ def main() -> int:
             json.dumps({
                 "format": module.FORMAT,
                 "model_quantization": "fp8",
-                "topology": "pp13_fixed6",
+                "topology": "ring_fixed6",
                 "stage_count": module.STAGE_COUNT,
                 "layers_per_stage": module.LAYERS_PER_STAGE,
                 "tensor_map": {},

@@ -5682,7 +5682,7 @@ static const char *SparkGlm52RequestApiSpeculativeTraceSource(
     if ((dispatch->flags &
             SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
     {
-        if (getenv("SPARKPIPE_PP13_TRACE") == 0)
+        if (getenv("SPARKPIPE_RING_TRACE") == 0)
         {
             return 0;
         }

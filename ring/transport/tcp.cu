@@ -581,7 +581,7 @@ static void SparkHiddenTcpCudaSenderConnectBlocking(SparkHiddenTcpCudaState *sta
     int fd;
     while (state->stop == 0u && state->socket_fd < 0)
     {
-        host = getenv("SPARKPIPE_PP13_TRANSPORT_HOST_OVERRIDE");
+        host = getenv("SPARKPIPE_RING_TRANSPORT_HOST_OVERRIDE");
         if (host == 0 || host[0] == '\0')
             host = state->sink_host;
         memset(&hints,0,sizeof(hints));
@@ -819,19 +819,19 @@ static SparkStatus SparkHiddenTcpCudaInitialize(
     state->debug_enabled =
         getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0 ? 1u : 0u;
     state->port_base = SparkHiddenTcpCudaParseUintEnv(
-        "SPARKPIPE_PP13_HIDDEN_TRANSPORT_PORT_BASE",
+        "SPARKPIPE_RING_HIDDEN_TRANSPORT_PORT_BASE",
         SparkHiddenTcpCudaParseUintEnv(
-            "SPARKPIPE_PP13_TRANSPORT_PORT_BASE",
+            "SPARKPIPE_RING_TRANSPORT_PORT_BASE",
             SPARK_HIDDEN_TCP_CUDA_DEFAULT_PORT_BASE) +
             SPARK_HIDDEN_TCP_CUDA_DEFAULT_PORT_OFFSET);
-    rank_text = getenv("SPARKPIPE_PP13_TRANSPORT_RANK");
+    rank_text = getenv("SPARKPIPE_RING_TRANSPORT_RANK");
     if (rank_text == 0 || rank_text[0] == '\0')
     {
         free(state);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     state->local_rank = (int32_t)SparkHiddenTcpCudaParseUintEnv(
-        "SPARKPIPE_PP13_TRANSPORT_RANK",1000u);
+        "SPARKPIPE_RING_TRANSPORT_RANK",1000u);
     if (SparkHiddenTcpCudaParseRoute(endpoint->route_name,
             state->source_host,state->sink_host) != SPARK_STATUS_OK)
     {

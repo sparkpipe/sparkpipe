@@ -250,7 +250,7 @@ def test_pipeline_run_scrubs_validation_env(root: Path) -> None:
         "names = [\n"
         "    'GLM52_PREFILL_KV_FROM_EMBEDDINGS',\n"
         "    'GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16',\n"
-        "    'GLM52_EXACT_PP13_STAGE_SLICE',\n"
+        "    'GLM52_EXACT_RING_STAGE_SLICE',\n"
         "    'GLM52_PIPELINE_OUTPUT_HIDDEN_BF16',\n"
         "    'GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID',\n"
         "    'GLM52_LOCAL_PIPELINE_PROMPT_SEQUENCE',\n"
@@ -263,7 +263,7 @@ def test_pipeline_run_scrubs_validation_env(root: Path) -> None:
         "SPARK_TEST_ENV_CAPTURE": str(capture_path),
         "GLM52_PREFILL_KV_FROM_EMBEDDINGS": "1",
         "GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16": "1",
-        "GLM52_EXACT_PP13_STAGE_SLICE": "1",
+        "GLM52_EXACT_RING_STAGE_SLICE": "1",
         "GLM52_PIPELINE_OUTPUT_HIDDEN_BF16": "/tmp/poison.bf16",
     })
     completed = run_prompt_tool(
@@ -273,11 +273,11 @@ def test_pipeline_run_scrubs_validation_env(root: Path) -> None:
         ["--run-full-prompt-sequence", "--pipeline-script", str(fake_pipeline)],
         env=inherited_env)
     assert completed.returncode == 0
-    assert "glm52_prompt_pipeline_semantics=exact_pp13_prompt_sequence_preflight" in completed.stdout
+    assert "glm52_prompt_pipeline_semantics=exact_ring_prompt_sequence_preflight" in completed.stdout
     captured_env = capture_path.read_text(encoding="utf-8")
     assert "GLM52_PREFILL_KV_FROM_EMBEDDINGS=\n" in captured_env
     assert "GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16=\n" in captured_env
-    assert "GLM52_EXACT_PP13_STAGE_SLICE=\n" in captured_env
+    assert "GLM52_EXACT_RING_STAGE_SLICE=\n" in captured_env
     assert "GLM52_PIPELINE_OUTPUT_HIDDEN_BF16=\n" in captured_env
     assert "GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID=505\n" in captured_env
     assert "GLM52_LOCAL_PIPELINE_PROMPT_SEQUENCE=1\n" in captured_env

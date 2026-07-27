@@ -674,7 +674,7 @@ static SparkStatus SparkGlm52StagePlanLoadMeasuredB32CostProfile(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52StagePlanBuildMeasuredB64Pp13Exact(
+static SparkStatus SparkGlm52StagePlanBuildMeasuredB64RingExact(
     SparkGlm52StagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
@@ -873,7 +873,7 @@ SparkStatus SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
          normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
          normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT))
     {
-        return SparkGlm52StagePlanBuildMeasuredB64Pp13Exact(
+        return SparkGlm52StagePlanBuildMeasuredB64RingExact(
             stage_plan,
             error_buffer,
             error_buffer_bytes);

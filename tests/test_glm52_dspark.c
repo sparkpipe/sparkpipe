@@ -90,7 +90,7 @@ static void SparkTestDsparkModelContractRejectsNonFp8Verifier(void)
         &model_contract) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static void SparkTestDsparkDefaultTapPlanMatchesGlm52Pp13(void)
+static void SparkTestDsparkDefaultTapPlanMatchesGlm52Ring(void)
 {
     SparkGlm52DsparkHiddenTapPlan tap_plan;
     static const uint32_t expected_layers[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT] =
@@ -248,7 +248,7 @@ static void SparkTestDsparkResolvesVerifierTokens(void)
 int main(void)
 {
     SparkTestDsparkModelContractRejectsNonFp8Verifier();
-    SparkTestDsparkDefaultTapPlanMatchesGlm52Pp13();
+    SparkTestDsparkDefaultTapPlanMatchesGlm52Ring();
     SparkTestDsparkDraftLifecycleWithConfidenceTruncation();
     SparkTestDsparkResolvesVerifierTokens();
     return 0;

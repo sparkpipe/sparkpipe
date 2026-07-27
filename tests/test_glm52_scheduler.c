@@ -130,7 +130,7 @@ static void SparkTestInitializePrefillRequest(
     request->prompt_token_ids = prompt_token_ids;
 }
 
-static void SparkTestGlm52SchedulerAdmitsCurrentSparkPp13Decode(void)
+static void SparkTestGlm52SchedulerAdmitsCurrentSparkRingDecode(void)
 {
     SparkGlm52PrefixCache cache;
     SparkGlm52PrefixCacheEntry entries[128u];
@@ -1295,7 +1295,7 @@ static void SparkTestGlm52SchedulerEstimatesExpandedDecodeWork(void)
 
 int main(void)
 {
-    SparkTestGlm52SchedulerAdmitsCurrentSparkPp13Decode();
+    SparkTestGlm52SchedulerAdmitsCurrentSparkRingDecode();
     SparkTestGlm52SchedulerSupportsFp8AndPrefill();
     SparkTestGlm52SchedulerSupportsW8lut();
     SparkTestGlm52SchedulerUsesVllmStyleChunkedPrefill();

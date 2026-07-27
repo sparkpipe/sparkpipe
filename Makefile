@@ -58,9 +58,9 @@ else
 SHARED_LIBRARY_FLAGS ?= -shared
 SHARED_LIBRARY_EXT ?= so
 endif
-GLM52_PP13_NODE_CONTEXT_BUILDER_RPATH :=
+GLM52_RING_NODE_CONTEXT_BUILDER_RPATH :=
 ifneq ($(UNAME_S),Darwin)
-GLM52_PP13_NODE_CONTEXT_BUILDER_RPATH := -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs'
+GLM52_RING_NODE_CONTEXT_BUILDER_RPATH := -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs'
 endif
 SPARKPIPE_B12X_AOT_ENV ?= $(HOME)/.config/sparkpipe/glm52_b12x_aot_env.sh
 B12X_AOT_TOKENS ?= 1,2,4,6,8,12,16,24,32,48,64,96,128,192,256,384,512,576,768,1024
@@ -71,9 +71,9 @@ GLM52_MOE_BACKEND ?= fp8
 MOONCAKE_ROOT ?=
 MOONCAKE_LIB ?= $(MOONCAKE_ROOT)/build/mooncake-store/src
 MOONCAKE_DEP_INCLUDE ?= $(MOONCAKE_ROOT)/local/include
-GLM52_EXACT_PP13_MODEL_QUANTIZATION ?= $(GLM52_MOE_BACKEND)
+GLM52_EXACT_RING_MODEL_QUANTIZATION ?= $(GLM52_MOE_BACKEND)
 GLM52_MODEL_DIR ?= $(HOME)/models/hf/zai-org/GLM-5.2-FP8
-GLM52_STAGE_PACK_DIR ?= $(HOME)/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1
+GLM52_STAGE_PACK_DIR ?= $(HOME)/models/sparkpipe/glm52_fp8_ring_stage_payload_v1
 GLM52_FP8_MOE_PACK_DIR ?= $(GLM52_STAGE_PACK_DIR)
 GLM52_W8LUT_MOE_PACK_DIR ?=
 B12X_AOT_BENCHMARK ?= --benchmark
@@ -114,12 +114,12 @@ B12X_GENERATED_KERNEL_TABLE_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_
 DSPARK_DRAFT_BACKEND_ARCHIVE := $(abspath build/modules/glm52_dspark_draft_backend/libglm52_dspark_draft_backend.a)
 B12X_RUNTIME_LINK_ARGS_FILE := $(abspath $(B12X_AOT_OUTPUT_DIR))/generated/runtime_link_args.txt
 ifeq ($(GLM52_MOE_BACKEND),nvfp4)
-GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) $(shell cat "$(B12X_RUNTIME_LINK_ARGS_FILE)" 2>/dev/null)
+GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) $(shell cat "$(B12X_RUNTIME_LINK_ARGS_FILE)" 2>/dev/null)
 else
-GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE)
+GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE)
 endif
-GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS ?= $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS))
-GLM52_PP13_NODE_CONTEXT_BUILDER := build/libglm52_pp13_node_context_builder.$(SHARED_LIBRARY_EXT)
+GLM52_RING_NODE_CONTEXT_BUILDER_LINK_ARGS ?= $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS))
+GLM52_RING_NODE_CONTEXT_BUILDER := build/libglm52_ring_node_context_builder.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_HOST_RDMA := build/libhidden_transport_spark_host_rdma_verbs.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA := build/libhidden_transport_spark_gpudirect_rdma_verbs.$(SHARED_LIBRARY_EXT)
@@ -171,14 +171,14 @@ RUNTIME_LIBRARY := build/libsparkpipe_runtime.a
 COMMON_LIBRARY := $(CORE_LIBRARY)
 LIBRARIES := $(CORE_LIBRARY) $(MODEL_COMMON_LIBRARY) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(DEPLOYMENT_LIBRARY) $(GLM52_HOST_LIBRARY) $(QWEN36_HOST_LIBRARY)
 
-GLM52_PP13_SERVICE_BACKEND := build/libglm52_pp13_service_backend.$(SHARED_LIBRARY_EXT)
+GLM52_RING_SERVICE_BACKEND := build/libglm52_ring_service_backend.$(SHARED_LIBRARY_EXT)
 
 TOOL_NAMES := \
     sparkpipe_module_publish \
     sparkpipe_model_compile \
     sparkpipe_driver_inspect \
     sparkpipe_glm52_pipesim \
-    sparkpipe_glm52_pp13_rank_daemon \
+    sparkpipe_glm52_ring_rank_daemon \
     sparkpipe_glm52_cuda_residentd \
     sparkpipe_glm52_kv_jit_budget \
     sparkpipe_glm52_tokenize \
@@ -210,10 +210,10 @@ TEST_NAMES := \
     test_glm52_row_allocator \
     test_glm52_stagepack \
     test_glm52_production_topology \
-    test_glm52_pp13_runtime \
+    test_glm52_ring_runtime \
     test_glm52_cuda_resident_ipc \
     test_glm52_cuda_resident_gate \
-    test_glm52_pp13_work_control \
+    test_glm52_ring_work_control \
     test_glm52_shared_prefix_admission \
     test_glm52_scheduler \
     test_glm52_prefix_cache \
@@ -226,7 +226,7 @@ TEST_NAMES := \
     test_glm52_service_backend \
     test_glm52_compat_api \
     test_glm52_http_gateway \
-    test_glm52_pp13_rank_daemon \
+    test_glm52_ring_rank_daemon \
     test_model_description \
     test_stage_module_common \
     test_module_library \
@@ -257,7 +257,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_b12x_relocate_aot_bundle.py \
 	tests/test_glm52_b12x_deterministic_finalize.py \
 	tests/test_glm52_final_from_hidden_mode.py \
-	tests/test_glm52_exact_pp13_prefill_hidden.py \
+	tests/test_glm52_exact_ring_prefill_hidden.py \
 	tests/test_glm52_firmware_package.py \
 	tests/test_measured_status.py \
 	tests/test_release_assemble.py \
@@ -302,19 +302,19 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     glm52_b12x_compiled_backend \
     glm52_quantized_readiness_test \
     glm52_required_cuda_link_args \
-    glm52_pp13_service_backend \
+    glm52_ring_service_backend \
     hidden_transport_spark_host_rdma_verbs \
     hidden_transport_spark_gpudirect_rdma_verbs \
-    glm52_pp13_node_context_builder \
+    glm52_ring_node_context_builder \
     kv_mooncake \
     glm52_resident_decode_stage_firmware_package \
     tree_summary \
     architecture_audit \
     model_driver_contracts
 
-all: $(LIBRARIES) tools $(GLM52_PP13_SERVICE_BACKEND)
+all: $(LIBRARIES) tools $(GLM52_RING_SERVICE_BACKEND)
 
-tools: $(TOOL_BINARIES) $(GLM52_PP13_SERVICE_BACKEND)
+tools: $(TOOL_BINARIES) $(GLM52_RING_SERVICE_BACKEND)
 
 .PHONY: core model_common deployment audit-boundaries architecture_audit model_driver_contracts non_glm_model_driver_contracts
 
@@ -359,8 +359,8 @@ GLM52_LINK_TARGETS := \
     build/sparkpipe_glm52_batchplane_model \
     build/test_glm52_batch_plane \
     build/test_model_description \
-    $(GLM52_PP13_SERVICE_BACKEND) \
-    $(GLM52_PP13_NODE_CONTEXT_BUILDER)
+    $(GLM52_RING_SERVICE_BACKEND) \
+    $(GLM52_RING_NODE_CONTEXT_BUILDER)
 QWEN36_LINK_TARGETS := build/test_qwen36_work_control
 DEPLOYMENT_LINK_TARGETS := build/sparkpipe_release_manager build/test_release
 
@@ -449,7 +449,7 @@ build/sparkpipe_nextcp: node/memlink_tool.c $(COMMON_LIBRARY)
 build/sparkpipe_release_manager: deployment/tools/sparkpipe_release_manager.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_glm52_pp13_rank_daemon: node/rank_daemon.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+build/sparkpipe_glm52_ring_rank_daemon: node/rank_daemon.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) node/rank_daemon.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_cuda_residentd: node/residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
@@ -458,10 +458,10 @@ build/sparkpipe_glm52_cuda_residentd: node/residentd.c $(RUNTIME_LIBRARY) $(COMM
 build/sparkpipe_glm52_kv_jit_budget: tools/sparkpipe_glm52_kv_jit_budget.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tools/sparkpipe_glm52_kv_jit_budget.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-$(GLM52_PP13_SERVICE_BACKEND): api/backend.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) api/backend.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+$(GLM52_RING_SERVICE_BACKEND): node/backend.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) node/backend.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-glm52_pp13_service_backend: $(GLM52_PP13_SERVICE_BACKEND)
+glm52_ring_service_backend: $(GLM52_RING_SERVICE_BACKEND)
 
 $(HIDDEN_TRANSPORT_TCP_CUDA): ring/transport/tcp.cu $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
@@ -515,15 +515,15 @@ $(DSPARK_DRAFT_BACKEND_ARCHIVE): FORCE
 	fi
 
 # UNRESOLVED. The CUDA translation unit this shared library was built from,
-# modules/glm52_resident_decode_stage/source/spark_glm52_pp13_node_context_builder_cuda.cu,
+# modules/glm52_resident_decode_stage/source/spark_glm52_ring_node_context_builder_cuda.cu,
 # was deleted with the 10,628-line node context builder. Its replacement in
 # inference/stage/ is not wired to a link line yet, so this target names the gap
 # instead of failing on a missing prerequisite. .updaterepo-policy runs it when
 # nvcc is present; it will stop here until an owner supplies the source.
-$(GLM52_PP13_NODE_CONTEXT_BUILDER): inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h model-families/glm52/include/sparkpipe/spark_glm52_kv_cache.h model-families/glm52/include/sparkpipe/spark_glm52_pp13_work_control.h $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(DSPARK_DRAFT_BACKEND_ARCHIVE) $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY)
-	@echo "glm52_pp13_node_context_builder: source deleted, replacement not wired; see HANDOFF.md" >&2; exit 2
+$(GLM52_RING_NODE_CONTEXT_BUILDER): inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h model-families/glm52/include/sparkpipe/spark_glm52_kv_cache.h model-families/glm52/include/sparkpipe/spark_glm52_ring_work_control.h $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(DSPARK_DRAFT_BACKEND_ARCHIVE) $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY)
+	@echo "glm52_ring_node_context_builder: source deleted, replacement not wired; see HANDOFF.md" >&2; exit 2
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "glm52_pp13_node_context_builder skipped: nvcc unavailable"; \
+		echo "glm52_ring_node_context_builder skipped: nvcc unavailable"; \
 	else \
 		if [ "$(GLM52_MOE_BACKEND)" = "nvfp4" ] && [ -z "$(GLM52_REQUIRED_CUDA_LINK_ARGS)" ] && [ ! -s "$(B12X_RUNTIME_LINK_ARGS_FILE)" ]; then \
 			echo "missing $(B12X_RUNTIME_LINK_ARGS_FILE); run make glm52_b12x_aot_compile first (GLM52_MOE_BACKEND=nvfp4)" >&2; \
@@ -531,7 +531,7 @@ $(GLM52_PP13_NODE_CONTEXT_BUILDER): inference/stage/runner.c modules/glm52_resid
 		fi; \
 	fi
 
-glm52_pp13_node_context_builder: $(GLM52_PP13_NODE_CONTEXT_BUILDER)
+glm52_ring_node_context_builder: $(GLM52_RING_NODE_CONTEXT_BUILDER)
 
 kv_mooncake:
 	$(MAKE) -C modules/kv_mooncake MOONCAKE_ROOT="$(MOONCAKE_ROOT)" MOONCAKE_LIB="$(MOONCAKE_LIB)" MOONCAKE_DEP_INCLUDE="$(MOONCAKE_DEP_INCLUDE)"
@@ -628,10 +628,10 @@ build/test_glm52_dspark: tests/test_glm52_dspark.c $(COMMON_LIBRARY)
 build/test_glm52_production_topology: tests/test_glm52_production_topology.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_pp13_runtime: tests/test_glm52_pp13_runtime.c $(COMMON_LIBRARY)
+build/test_glm52_ring_runtime: tests/test_glm52_ring_runtime.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_pp13_work_control: tests/test_glm52_pp13_work_control.c $(COMMON_LIBRARY)
+build/test_glm52_ring_work_control: tests/test_glm52_ring_work_control.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_shared_prefix_admission: tests/test_glm52_shared_prefix_admission.c $(COMMON_LIBRARY)
@@ -679,8 +679,8 @@ build/test_glm52_compat_api: tests/test_glm52_compat_api.c $(COMMON_LIBRARY)
 build/test_glm52_http_gateway: tests/test_glm52_http_gateway.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_pp13_rank_daemon: tests/test_glm52_pp13_rank_daemon.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_glm52_pp13_rank_daemon.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_glm52_ring_rank_daemon: tests/test_glm52_ring_rank_daemon.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_glm52_ring_rank_daemon.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 
 build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY) $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
@@ -704,8 +704,8 @@ build/test_glm52_resident_decode_stage_firmware: tests/test_glm52_resident_decod
 build/test_glm52_resident_decode_stage_production_runner: tests/test_glm52_resident_decode_stage_production_runner.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_glm52_resident_decode_stage_production_runner.c inference/stage/runner.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-glm52_quantized_readiness_test: build/test_glm52_pp13_runtime build/test_glm52_stagepack build/test_glm52_cuda_resident_gate build/test_model_description
-	./build/test_glm52_pp13_runtime
+glm52_quantized_readiness_test: build/test_glm52_ring_runtime build/test_glm52_stagepack build/test_glm52_cuda_resident_gate build/test_model_description
+	./build/test_glm52_ring_runtime
 	./build/test_glm52_stagepack
 	./build/test_glm52_cuda_resident_gate
 	./build/test_model_description
@@ -750,7 +750,7 @@ cuda_glm52_resident_decode_stage:
 		-Iinclude \
 		-Imodules/glm52_resident_decode_stage/include \
 		$(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) \
-		$(GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS) \
+		$(GLM52_RING_NODE_CONTEXT_BUILDER_LINK_ARGS) \
 		-lcublasLt -lcublas -ldl \
 		-o $(GLM52_FP8_SCALED_GEMM_CUDA_GATE)
 
@@ -783,7 +783,7 @@ cuda_glm52_resident_decode_stage_publish: $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILE
 		if [ -n "$(GLM52_REQUIRED_CUDA_LINK_ARGS)" ]; then \
 			required_cuda_link_args='$(GLM52_REQUIRED_CUDA_LINK_ARGS)'; \
 		else \
-			required_cuda_link_args='$(GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS)'; \
+			required_cuda_link_args='$(GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS)'; \
 		fi; \
 		$(MAKE) -C modules/glm52_resident_decode_stage publish \
 			NVCC=$(NVCC) \
@@ -801,7 +801,7 @@ cuda_glm52_resident_decode_stage_publish: $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILE
 			GLM52_PIPELINE_INPUT_HIDDEN_BF16='$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)' \
 			GLM52_PIPELINE_OUTPUT_HIDDEN_BF16='$(GLM52_PIPELINE_OUTPUT_HIDDEN_BF16)' \
 			GLM52_ENABLE_CUDA_GRAPH_REPLAY='$(GLM52_ENABLE_CUDA_GRAPH_REPLAY)' \
-			GLM52_EXACT_PP13_MODEL_QUANTIZATION='$(GLM52_EXACT_PP13_MODEL_QUANTIZATION)' \
+			GLM52_EXACT_RING_MODEL_QUANTIZATION='$(GLM52_EXACT_RING_MODEL_QUANTIZATION)' \
 			GLM52_STAGE_PACK_DIR='$(GLM52_STAGE_PACK_DIR)' \
 			GLM52_FP8_MOE_PACK_DIR='$(GLM52_FP8_MOE_PACK_DIR)' \
 			GLM52_W8LUT_MOE_PACK_DIR='$(GLM52_W8LUT_MOE_PACK_DIR)' \
@@ -923,14 +923,14 @@ ifeq ($(GLM52_MOE_BACKEND),nvfp4)
 		else \
 			required_cuda_link_args='$(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) '"$$(cat "$(B12X_RUNTIME_LINK_ARGS_FILE)")"; \
 		fi; \
-		$(MAKE) -C modules/glm52_resident_decode_stage package NVCC=$(NVCC) CUDA_HOME='$(CUDA_HOME)' CUDA_ARCH=sm_121a MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS) REQUIRED_CUDA_CC_ARGS='$(REQUIRED_CUDA_CC_ARGS)' GLM52_REQUIRED_CUDA_LINK_ARGS="$$required_cuda_link_args" B12X_MOE_PACK_DIR='$(abspath $(B12X_MOE_PACK_OUTPUT_DIR))' B12X_MOE_PACK_LAYERS='$(B12X_MOE_PACK_LAYERS)' B12X_MOE_PACK_REQUIRE_REUSE='$(B12X_MOE_PACK_REQUIRE_REUSE)' B12X_MOE_PACK_VERIFY_REUSED_SHA256='$(B12X_MOE_PACK_VERIFY_REUSED_SHA256)' B12X_MOE_PACK_JOBS='$(B12X_MOE_PACK_JOBS)' B12X_MOE_PACK_PACKAGE_MODE='$(B12X_MOE_PACK_PACKAGE_MODE)' GLM52_MODEL_DIR='$(GLM52_MODEL_DIR)' GLM52_VALIDATION_MODE='$(GLM52_VALIDATION_MODE)' GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT='$(GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT)' GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX='$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)' GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT='$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)' GLM52_PIPELINE_INPUT_HIDDEN_BF16='$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)' GLM52_PIPELINE_OUTPUT_HIDDEN_BF16='$(GLM52_PIPELINE_OUTPUT_HIDDEN_BF16)' GLM52_ENABLE_CUDA_GRAPH_REPLAY='$(GLM52_ENABLE_CUDA_GRAPH_REPLAY)' GLM52_EXACT_PP13_MODEL_QUANTIZATION='$(GLM52_EXACT_PP13_MODEL_QUANTIZATION)' GLM52_STAGE_PACK_DIR='$(GLM52_STAGE_PACK_DIR)' GLM52_FP8_MOE_PACK_DIR='$(GLM52_FP8_MOE_PACK_DIR)' GLM52_W8LUT_MOE_PACK_DIR='$(GLM52_W8LUT_MOE_PACK_DIR)' B12X_PACK_PYTHON="$$SPARKPIPE_B12X_AOT_PYTHON" AOT_MANIFEST='$(abspath $(B12X_AOT_OUTPUT_DIR))/generated/aot_manifest.json'
+		$(MAKE) -C modules/glm52_resident_decode_stage package NVCC=$(NVCC) CUDA_HOME='$(CUDA_HOME)' CUDA_ARCH=sm_121a MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS) REQUIRED_CUDA_CC_ARGS='$(REQUIRED_CUDA_CC_ARGS)' GLM52_REQUIRED_CUDA_LINK_ARGS="$$required_cuda_link_args" B12X_MOE_PACK_DIR='$(abspath $(B12X_MOE_PACK_OUTPUT_DIR))' B12X_MOE_PACK_LAYERS='$(B12X_MOE_PACK_LAYERS)' B12X_MOE_PACK_REQUIRE_REUSE='$(B12X_MOE_PACK_REQUIRE_REUSE)' B12X_MOE_PACK_VERIFY_REUSED_SHA256='$(B12X_MOE_PACK_VERIFY_REUSED_SHA256)' B12X_MOE_PACK_JOBS='$(B12X_MOE_PACK_JOBS)' B12X_MOE_PACK_PACKAGE_MODE='$(B12X_MOE_PACK_PACKAGE_MODE)' GLM52_MODEL_DIR='$(GLM52_MODEL_DIR)' GLM52_VALIDATION_MODE='$(GLM52_VALIDATION_MODE)' GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT='$(GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT)' GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX='$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)' GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT='$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)' GLM52_PIPELINE_INPUT_HIDDEN_BF16='$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)' GLM52_PIPELINE_OUTPUT_HIDDEN_BF16='$(GLM52_PIPELINE_OUTPUT_HIDDEN_BF16)' GLM52_ENABLE_CUDA_GRAPH_REPLAY='$(GLM52_ENABLE_CUDA_GRAPH_REPLAY)' GLM52_EXACT_RING_MODEL_QUANTIZATION='$(GLM52_EXACT_RING_MODEL_QUANTIZATION)' GLM52_STAGE_PACK_DIR='$(GLM52_STAGE_PACK_DIR)' GLM52_FP8_MOE_PACK_DIR='$(GLM52_FP8_MOE_PACK_DIR)' GLM52_W8LUT_MOE_PACK_DIR='$(GLM52_W8LUT_MOE_PACK_DIR)' B12X_PACK_PYTHON="$$SPARKPIPE_B12X_AOT_PYTHON" AOT_MANIFEST='$(abspath $(B12X_AOT_OUTPUT_DIR))/generated/aot_manifest.json'
 else
 	@if [ -n "$(GLM52_REQUIRED_CUDA_LINK_ARGS)" ]; then \
 		required_cuda_link_args='$(GLM52_REQUIRED_CUDA_LINK_ARGS)'; \
 	else \
 		required_cuda_link_args='$(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE)'; \
 	fi; \
-	$(MAKE) -C modules/glm52_resident_decode_stage package NVCC=$(NVCC) CUDA_HOME='$(CUDA_HOME)' CUDA_ARCH=sm_121a MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS) REQUIRED_CUDA_CC_ARGS='$(REQUIRED_CUDA_CC_ARGS)' GLM52_REQUIRED_CUDA_LINK_ARGS="$$required_cuda_link_args" B12X_MOE_PACK_DIR='$(abspath $(B12X_MOE_PACK_OUTPUT_DIR))' B12X_MOE_PACK_LAYERS='$(B12X_MOE_PACK_LAYERS)' B12X_MOE_PACK_REQUIRE_REUSE='$(B12X_MOE_PACK_REQUIRE_REUSE)' B12X_MOE_PACK_VERIFY_REUSED_SHA256='$(B12X_MOE_PACK_VERIFY_REUSED_SHA256)' B12X_MOE_PACK_JOBS='$(B12X_MOE_PACK_JOBS)' B12X_MOE_PACK_PACKAGE_MODE='$(B12X_MOE_PACK_PACKAGE_MODE)' GLM52_MODEL_DIR='$(GLM52_MODEL_DIR)' GLM52_VALIDATION_MODE='$(GLM52_VALIDATION_MODE)' GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT='$(GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT)' GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX='$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)' GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT='$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)' GLM52_PIPELINE_INPUT_HIDDEN_BF16='$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)' GLM52_PIPELINE_OUTPUT_HIDDEN_BF16='$(GLM52_PIPELINE_OUTPUT_HIDDEN_BF16)' GLM52_ENABLE_CUDA_GRAPH_REPLAY='$(GLM52_ENABLE_CUDA_GRAPH_REPLAY)' GLM52_EXACT_PP13_MODEL_QUANTIZATION='$(GLM52_EXACT_PP13_MODEL_QUANTIZATION)' GLM52_STAGE_PACK_DIR='$(GLM52_STAGE_PACK_DIR)' GLM52_FP8_MOE_PACK_DIR='$(GLM52_FP8_MOE_PACK_DIR)' GLM52_W8LUT_MOE_PACK_DIR='$(GLM52_W8LUT_MOE_PACK_DIR)' GLM52_REQUIRE_B12X_RESIDENT_PACK=0 B12X_PACK_PYTHON="$(B12X_PACK_PYTHON)" AOT_MANIFEST=''
+	$(MAKE) -C modules/glm52_resident_decode_stage package NVCC=$(NVCC) CUDA_HOME='$(CUDA_HOME)' CUDA_ARCH=sm_121a MAX_STAGE_MICROSECONDS=$(MAX_STAGE_MICROSECONDS) REQUIRED_CUDA_CC_ARGS='$(REQUIRED_CUDA_CC_ARGS)' GLM52_REQUIRED_CUDA_LINK_ARGS="$$required_cuda_link_args" B12X_MOE_PACK_DIR='$(abspath $(B12X_MOE_PACK_OUTPUT_DIR))' B12X_MOE_PACK_LAYERS='$(B12X_MOE_PACK_LAYERS)' B12X_MOE_PACK_REQUIRE_REUSE='$(B12X_MOE_PACK_REQUIRE_REUSE)' B12X_MOE_PACK_VERIFY_REUSED_SHA256='$(B12X_MOE_PACK_VERIFY_REUSED_SHA256)' B12X_MOE_PACK_JOBS='$(B12X_MOE_PACK_JOBS)' B12X_MOE_PACK_PACKAGE_MODE='$(B12X_MOE_PACK_PACKAGE_MODE)' GLM52_MODEL_DIR='$(GLM52_MODEL_DIR)' GLM52_VALIDATION_MODE='$(GLM52_VALIDATION_MODE)' GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT='$(GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT)' GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX='$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)' GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT='$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)' GLM52_PIPELINE_INPUT_HIDDEN_BF16='$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)' GLM52_PIPELINE_OUTPUT_HIDDEN_BF16='$(GLM52_PIPELINE_OUTPUT_HIDDEN_BF16)' GLM52_ENABLE_CUDA_GRAPH_REPLAY='$(GLM52_ENABLE_CUDA_GRAPH_REPLAY)' GLM52_EXACT_RING_MODEL_QUANTIZATION='$(GLM52_EXACT_RING_MODEL_QUANTIZATION)' GLM52_STAGE_PACK_DIR='$(GLM52_STAGE_PACK_DIR)' GLM52_FP8_MOE_PACK_DIR='$(GLM52_FP8_MOE_PACK_DIR)' GLM52_W8LUT_MOE_PACK_DIR='$(GLM52_W8LUT_MOE_PACK_DIR)' GLM52_REQUIRE_B12X_RESIDENT_PACK=0 B12X_PACK_PYTHON="$(B12X_PACK_PYTHON)" AOT_MANIFEST=''
 endif
 
 tree_summary:

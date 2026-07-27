@@ -4,8 +4,8 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
-#include "sparkpipe/spark_glm52_pp13_node_context_builder.h"
-#include "sparkpipe/spark_glm52_pp13_work_control.h"
+#include "sparkpipe/spark_glm52_ring_node_context_builder.h"
+#include "sparkpipe/spark_glm52_ring_work_control.h"
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_status.h"
 
@@ -44,7 +44,7 @@ extern "C" {
         kv_physical_block_indices))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_DECODE_PAYLOAD_BYTES \
     (SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES + \
-     (SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT * \
+     (SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT * \
       SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS * (uint32_t)sizeof(uint32_t)))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_CONTROL_PAYLOAD_BYTES \
     SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_DECODE_PAYLOAD_BYTES
@@ -116,7 +116,7 @@ typedef struct SparkGlm52CudaResidentIpcSubmitWork
 {
     uint32_t descriptor_bytes;
     uint32_t flags;
-    SparkGlm52Pp13WorkControlPacket work_packet;
+    SparkGlm52RingWorkControlPacket work_packet;
 } SparkGlm52CudaResidentIpcSubmitWork;
 
 typedef struct SparkGlm52CudaResidentIpcCompletion
@@ -222,7 +222,7 @@ typedef struct SparkGlm52CudaResidentIpcSubmitPrefill
 {
     uint32_t descriptor_bytes;
     uint32_t request_flags;
-    SparkGlm52Pp13WorkControlPacket work_packet;
+    SparkGlm52RingWorkControlPacket work_packet;
 } SparkGlm52CudaResidentIpcSubmitPrefill;
 
 typedef struct SparkGlm52CudaResidentIpcDecodeLane
@@ -241,7 +241,7 @@ typedef struct SparkGlm52CudaResidentIpcDecodeLane
     uint32_t kv_block_offset;
     uint32_t kv_block_count;
     uint32_t speculative_draft_token_ids[
-        SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT];
+        SPARK_GLM52_RING_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT];
 } SparkGlm52CudaResidentIpcDecodeLane;
 
 typedef struct SparkGlm52CudaResidentIpcSubmitDecode
@@ -259,7 +259,7 @@ typedef struct SparkGlm52CudaResidentIpcSubmitDecode
     uint32_t resident_flags;
     uint64_t control_generation;
     SparkGlm52CudaResidentIpcDecodeLane
-        lanes[SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT];
+        lanes[SPARK_GLM52_RING_WORK_CONTROL_MAX_LANE_COUNT];
     uint32_t kv_physical_block_indices[];
 } SparkGlm52CudaResidentIpcSubmitDecode;
 
@@ -296,16 +296,16 @@ SparkStatus SparkGlm52CudaResidentIpcReadPayload(
     uint8_t *payload,
     uint32_t payload_capacity);
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
-	const SparkGlm52Pp13WorkControlPacket *work_packet);
+	const SparkGlm52RingWorkControlPacket *work_packet);
 SparkStatus SparkGlm52CudaResidentIpcInitializeSubmitWork(
     SparkGlm52CudaResidentIpcSubmitWork *message,
-    const SparkGlm52Pp13WorkControlPacket *work_packet,
+    const SparkGlm52RingWorkControlPacket *work_packet,
     uint32_t flags);
 SparkStatus SparkGlm52CudaResidentIpcValidateSubmitWork(
     const SparkGlm52CudaResidentIpcSubmitWork *message,
     uint32_t payload_bytes);
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitPrefillBytes(
-	const SparkGlm52Pp13WorkControlPacket *work_packet);
+	const SparkGlm52RingWorkControlPacket *work_packet);
 SparkStatus SparkGlm52CudaResidentIpcDecodePayloadBytes(
     uint32_t kv_block_index_count,
     uint32_t *payload_bytes_out);

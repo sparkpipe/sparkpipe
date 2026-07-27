@@ -52,7 +52,7 @@ SPARKPIPE_GLM52_SOURCES := \
     model-families/glm52/src/spark_glm52_chat_template.c \
     model-families/glm52/src/spark_glm52_cuda_resident_ipc.c \
     model-families/glm52/src/spark_glm52_expert_queue.c \
-    model-families/glm52/src/spark_glm52_pp13_node_context_builder.c \
+    model-families/glm52/src/spark_glm52_ring_node_context_builder.c \
     model-families/glm52/src/spark_glm52_production_topology.c \
     model-families/glm52/src/spark_glm52_prompt_pipeline.c \
     model-families/glm52/src/spark_glm52_row_allocator.c \

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build GLM-5.2 PP13 stage-local non-MoE packs from a Hugging Face checkpoint.
+Build GLM-5.2 RING stage-local non-MoE packs from a Hugging Face checkpoint.
 
 This is an offline setup tool.  The production C/CUDA path should load the
 generated .spstage files and should not open Hugging Face shard files.
@@ -20,7 +20,7 @@ import tempfile
 from typing import Any, BinaryIO, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 
-FORMAT = "sparkpipe.glm52.pp13.stagepack.v1"
+FORMAT = "sparkpipe.glm52.ring.stagepack.v1"
 MODEL_QUANTIZATION_NVFP4 = "nvfp4"
 MODEL_QUANTIZATION_W8LUT = "w8lut"
 BF16_NON_EXPERT_QUANTIZATIONS = frozenset(
@@ -339,7 +339,7 @@ def load_existing_index(output_dir: Path) -> Dict[str, Any]:
     if not index_path.exists():
         return {
             "format": FORMAT,
-            "topology": "pp13_fixed6",
+            "topology": "ring_fixed6",
             "stage_count": STAGE_COUNT,
             "layers_per_stage": LAYERS_PER_STAGE,
             "tensor_map": {},
@@ -390,7 +390,7 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
         index["non_expert_weight_dtype"] = "BF16"
     else:
         index.pop("non_expert_weight_dtype", None)
-    index["topology"] = "pp13_fixed6"
+    index["topology"] = "ring_fixed6"
     index["stage_count"] = STAGE_COUNT
     index["layers_per_stage"] = LAYERS_PER_STAGE
     index.setdefault("tensor_map", {})
@@ -459,7 +459,7 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build GLM-5.2 PP13 stage-local non-MoE packs")
+    parser = argparse.ArgumentParser(description="Build GLM-5.2 RING stage-local non-MoE packs")
     parser.add_argument("--model-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument(

@@ -278,7 +278,7 @@
         "projection_contract": "RAW_GLM_BF16 attention, DSA, dense, shared-expert, embedding, normalization, vocabulary-head, and MLA KV tensors; only routed experts use NVFP4",
         "hf_tensor_contract_member": "hf_tensor_contract",
         "stagepack_contract": {
-          "format": "sparkpipe.glm52.pp13.stagepack.v1",
+          "format": "sparkpipe.glm52.ring.stagepack.v1",
           "model_quantization": "nvfp4",
           "non_expert_weight_dtype": "BF16",
           "index_file": "stagepack_index.json"
@@ -370,7 +370,7 @@
         "projection_contract": "RAW_GLM_BF16 attention, DSA, dense, shared-expert, embedding, normalization, and vocabulary-head tensors",
         "hf_tensor_contract_member": "hf_tensor_contract",
         "stagepack_contract": {
-          "format": "sparkpipe.glm52.pp13.stagepack.v1",
+          "format": "sparkpipe.glm52.ring.stagepack.v1",
           "model_quantization": "w8lut",
           "non_expert_weight_dtype": "BF16",
           "index_file": "stagepack_index.json"

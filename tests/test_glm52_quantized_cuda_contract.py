@@ -54,7 +54,7 @@ def main() -> int:
     )
     builder_path = repository / (
         "modules/glm52_resident_decode_stage/source/"
-        "spark_glm52_pp13_node_context_builder_cuda.cu"
+        "spark_glm52_ring_node_context_builder_cuda.cu"
     )
     dspark_backend_path = repository / (
         "modules/glm52_dspark_draft_backend/source/"
