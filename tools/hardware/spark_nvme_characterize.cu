@@ -150,7 +150,7 @@ __global__ static void SparkNvmeProbeFingerprintKernel(
     while (index < word_count)
     {
         local ^= SparkNvmeProbeDeviceMix64(words[index] ^
-            SparkNvmeProbeDeviceMix64(absolute_word_offset + index + 1u));
+            (absolute_word_offset + index));
         index += stride;
     }
     for (uint32_t offset = 16u; offset != 0u; offset >>= 1u)
@@ -345,6 +345,7 @@ static bool SparkNvmeProbeCopyAndFingerprint(
     uint64_t *device_fingerprint_out)
 {
     unsigned long long device_fingerprint;
+    uint64_t initial_fingerprint;
     uint32_t blocks;
     uint64_t word_count;
 
@@ -352,8 +353,11 @@ static bool SparkNvmeProbeCopyAndFingerprint(
     blocks = (uint32_t)std::min<uint64_t>(65535u,
         std::max<uint64_t>(1u, (word_count + 255u) / 256u));
     device_fingerprint = 0ull;
-    if (!SparkNvmeProbeCudaCheck(cudaMemsetAsync(slot->device_fingerprint, 0,
-            sizeof(*slot->device_fingerprint), slot->stream), "cudaMemsetAsync fingerprint") ||
+    initial_fingerprint = SparkProbeMix64(
+        word_count ^ (absolute_byte_offset / sizeof(uint64_t)));
+    if (!SparkNvmeProbeCudaCheck(cudaMemcpyAsync(slot->device_fingerprint,
+            &initial_fingerprint, sizeof(initial_fingerprint),
+            cudaMemcpyHostToDevice, slot->stream), "cudaMemcpyAsync fingerprint") ||
         !SparkNvmeProbeCudaCheck(cudaMemcpyAsync(slot->device_buffer,
             slot->host_buffer, options.block_bytes, cudaMemcpyHostToDevice,
             slot->stream), "cudaMemcpyAsync H2D"))
