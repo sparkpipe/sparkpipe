@@ -134,8 +134,9 @@ from pathlib import Path
 # exact count.
 # The hardware-probe failure contract adds the CUDA telemetry parser, the
 # NVMe device fingerprint correction, and fail-closed runner status handling;
-# 137003 is the exact count.
-CEILING = 137003
+# the CUDA fingerprint contract correction adds the CPU-equivalent seed and
+# index reduction; 137007 is the exact count.
+CEILING = 137007
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

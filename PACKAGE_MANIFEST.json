@@ -2688,8 +2688,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "0758bf2c74f6da2a4c38cfbed23d054f80d64cd2a0648fef4d41604781c57717",
-      "size_bytes": 10159
+      "sha256": "cb294187e06c1087a38d7ef099ae3ef5892f79fe025394bf321c35c256b838c7",
+      "size_bytes": 10252
     },
     {
       "path": "tests/test_config_coverage.py",
@@ -3003,8 +3003,8 @@
     },
     {
       "path": "tests/test_hardware_probe_source_contracts.py",
-      "sha256": "deeefed2522b57e8466db513401fe1f5c69103af7a3b4d006908e07f9b84b616",
-      "size_bytes": 4316
+      "sha256": "a2ccdd26428f73beb632a778d8981bb554a07ded88302d99048188370785e2a1",
+      "size_bytes": 4572
     },
     {
       "path": "tests/test_hardware_runner_configs.py",
@@ -3623,8 +3623,8 @@
     },
     {
       "path": "tools/hardware/spark_nvme_characterize.cu",
-      "sha256": "7df1448a37db451dbe888f99fee1fa798b74dbdba77aaa7d85fceafe5e4e063d",
-      "size_bytes": 33196
+      "sha256": "2ebc5bfe7b9b3f0128dff7879a2c66c6d3d45f567f95bd5d75a6251381405726",
+      "size_bytes": 33357
     },
     {
       "path": "tools/hardware/spark_pmtu_characterize.c",
@@ -3800,5 +3800,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 8536303
+  "total_bytes": 8536813
 }
