@@ -1371,10 +1371,13 @@ static cudaError_t SparkDsv4ModuleStageTopk(SparkDsv4ModuleState *state, SparkDs
 static cudaError_t SparkDsv4ModuleRunOutputGroup(SparkDsv4ModuleSlot *slot, const SparkDsv4LayerWeights *layer, uint32_t group, uint32_t rows)
 {
 	SparkDsv4LinearView view = layer->attn.wo_a;
-	uint64_t block_bytes = (uint64_t)SPARK_DSV4_MODEL_OUTPUT_LORA_RANK * SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	uint64_t payload_bytes = SparkDsv4StagePackPayloadBytes(view.weight_format,SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION);
+	uint64_t scale_bytes = SparkDsv4StagePackScaleBytes(view.weight_format,SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION);
+	const uint8_t *payload = (const uint8_t *)view.payload + (uint64_t)group * payload_bytes;
+	const uint8_t *scale = view.scale_e8m0 != 0 ? view.scale_e8m0 + (uint64_t)group * scale_bytes : 0;
 	view.rows = SPARK_DSV4_MODEL_OUTPUT_LORA_RANK;
 	view.columns = SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION;
-	return(SparkDsv4LaunchStridedLinear((cudaStream_t)slot->cuda_stream,&view,(const uint8_t *)layer->attn.wo_a.payload + (uint64_t)group * block_bytes,0,slot->attn_out_bf16,SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,group * SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION,slot->o_ranks_bf16,(uint64_t)SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT * SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,group * SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,rows));
+	return(SparkDsv4LaunchStridedLinear((cudaStream_t)slot->cuda_stream,&view,payload,scale,slot->attn_out_bf16,SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,group * SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION,slot->o_ranks_bf16,(uint64_t)SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT * SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,group * SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,rows));
 }
 
 static cudaError_t SparkDsv4ModuleRunAttention(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4LayerWeights *layer, const SparkDsv4DecodeBatchView *batch, uint32_t layer_index, uint32_t rows)
