@@ -43,4 +43,6 @@ RUNTIME_CONFIGURATION := \
 	SPARK_DSV4_STAGE_MTP=$(MTP_LAYER_COUNT) \
 	SPARK_DSV4_STAGE_GRAPHS=$(CUDA_GRAPH_COUNT)
 
+GPU_VALIDATOR := validation/validate_dsv4_resident_decode_stage_cuda.sh
+
 include ../resident_decode_stage_rules.mk

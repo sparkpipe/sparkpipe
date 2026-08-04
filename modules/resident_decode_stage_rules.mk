@@ -59,7 +59,7 @@ MODULE_CUDA_OBJECT := $(BUILD_DIRECTORY)/$(subst /,_,$(basename $(MODULE_CUDA_SO
 VALIDATION_CONFIGURATION_SHA256 := $(shell printf '%s\n' '$(RUNTIME_CONFIGURATION)' | sha256sum | awk '{print $$1}')
 VALIDATION_RECIPE ?= $(MODULE_FAMILY).resident_decode_stage.$(CUDA_ARCH).gpu.config_$(VALIDATION_CONFIGURATION_SHA256).v1
 
-.PHONY: all archive contract publish clean require_cuda_target require_gpu_validator require_stage_pack
+.PHONY: all archive contract validate publish clean require_cuda_target require_gpu_validator require_stage_pack
 
 all: contract
 
@@ -99,6 +99,12 @@ contract:
 	done
 
 archive: require_cuda_target $(MODULE_ARCHIVE)
+
+validate: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_ARCHIVE)
+	$(RUNTIME_CONFIGURATION) \
+		$(GPU_VALIDATOR) \
+		$(VALIDATION_CONFIGURATION_SHA256) \
+		$(MODULE_ARCHIVE)
 
 publish: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_ARCHIVE)
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
