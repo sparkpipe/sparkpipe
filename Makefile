@@ -34,7 +34,8 @@ CPPFLAGS ?= $(CORE_INCLUDE_FLAGS) $(MODEL_FAMILY_INCLUDE_FLAGS) -Ideployment/inc
 LDFLAGS ?=
 LDLIBS ?= -ldl -pthread
 CUDA_ARCH ?= sm_121a
-NVCCFLAGS ?= -O3 -arch=$(CUDA_ARCH)
+CUDA_COMPUTE_ARCH ?= $(subst sm_,compute_,$(CUDA_ARCH))
+NVCCFLAGS ?= -O3 -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 

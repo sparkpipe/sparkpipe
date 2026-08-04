@@ -103,7 +103,8 @@
         "SPARK_DSV4_STAGE_GRAPHS"
       ],
       "notes": [
-        "decode only; prefill and MTP execution fail closed until qualified",
+        "prefill uses a correctness-first serial one-token state transition; bulk prefill is not yet qualified",
+        "MTP execution fails closed until its pass lands",
         "lane identities are carried by the model-specific decode batch, never by driver_dispatch_slot",
         "host token input is required only on the embedding stage and host token output only on the head stage"
       ]
