@@ -7,6 +7,7 @@
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_dsv4_model.h"
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_dsv4_resident_decode_stage_runner.h"
 
 typedef struct SparkDsv4DriverCudaSmokeState
 {
@@ -72,12 +73,9 @@ static int SparkDsv4DriverCudaSmokeRun(
 	SparkLoadedModelDriver driver;
 	SparkModelDriverCreateRequest create_request;
 	void *driver_instance = 0;
-	SparkModelDriverAdmissionRequest admission_request;
-	SparkModelDriverAdmissionDecision admission_decision;
-	SparkModelDriverBuffer buffer;
-	SparkModelDriverFrame frame;
-	SparkDsv4PrefillBatchView prefill;
-	SparkDsv4ResidentDecodeStageFrameContext context;
+	SparkDsv4StageRunner runner;
+	SparkDsv4StageRunnerConfiguration runner_configuration;
+	SparkDsv4StageRunnerDispatch dispatch;
 	SparkModelDriverRuntimeSnapshot snapshot;
 	const SparkModelDriverProgramDescriptor *program;
 	uint32_t token_id = 10397u;
@@ -114,62 +112,48 @@ static int SparkDsv4DriverCudaSmokeRun(
 		fprintf(stderr,"dsv4_driver_smoke create=%s\n",SparkStatusToString(status));
 		goto unload;
 	}
-	memset(&admission_request,0,sizeof(admission_request));
-	memset(&admission_decision,0,sizeof(admission_decision));
-	admission_request.descriptor_bytes = sizeof(admission_request);
-	admission_request.program_id = program->program_id;
-	admission_request.request_id = 91u;
-	admission_request.sequence_id = sequence_id;
-	admission_request.active_slot_count = 1u;
-	admission_request.new_token_count = 1u;
-	admission_request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
-	status = driver.interface->admit(driver_instance,&admission_request,&admission_decision);
-	if ( status != SPARK_STATUS_OK || admission_decision.accepted == 0u )
+	memset(&runner_configuration,0,sizeof(runner_configuration));
+	runner_configuration.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
+	runner_configuration.descriptor_bytes =
+		SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES;
+	runner_configuration.flags = SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_ADMISSION |
+		SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_TRANSPORT;
+	runner_configuration.stage_index = 0u;
+	runner_configuration.stage_count = 13u;
+	runner_configuration.max_active_sequence_count = 1u;
+	runner_configuration.driver_interface = driver.interface;
+	runner_configuration.driver_instance = driver_instance;
+	runner_configuration.program = program;
+	runner_configuration.hidden_output_send_function =
+		SparkDsv4DriverCudaSmokeSend;
+	status = SparkDsv4StageRunnerInitialize(&runner,&runner_configuration);
+	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"dsv4_driver_smoke admit=%s accepted=%u\n",SparkStatusToString(status),admission_decision.accepted);
+		fprintf(stderr,"dsv4_driver_smoke runner_initialize=%s\n",SparkStatusToString(status));
 		goto destroy;
 	}
-	memset(&prefill,0,sizeof(prefill));
-	prefill.abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION;
-	prefill.descriptor_bytes = sizeof(prefill);
-	prefill.row_count = 1u;
-	prefill.lane_count = 1u;
-	prefill.token_ids = &token_id;
-	prefill.row_lane_indices = &lane_index;
-	prefill.row_positions = &position;
-	prefill.row_sequence_ids = &sequence_id;
-	memset(&context,0,sizeof(context));
-	context.abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
-	context.descriptor_bytes = sizeof(context);
-	context.flags = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_BATCH_VIEW |
-		SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT;
-	context.prefill_batch = &prefill;
-	context.hidden_output_transport_session =
+	memset(&dispatch,0,sizeof(dispatch));
+	dispatch.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
+	dispatch.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES;
+	dispatch.flags = SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL;
+	dispatch.request_id = 91u;
+	dispatch.sequence_id = sequence_id;
+	dispatch.active_sequence_count = 1u;
+	dispatch.new_token_count = 1u;
+	dispatch.row_count = 1u;
+	dispatch.lane_count = 1u;
+	dispatch.token_ids = &token_id;
+	dispatch.row_lane_indices = &lane_index;
+	dispatch.row_positions = &position;
+	dispatch.row_sequence_ids = &sequence_id;
+	dispatch.hidden_output_transport_session =
 		(SparkHiddenTransportSession *)(uintptr_t)1u;
-	context.hidden_output_send_function = SparkDsv4DriverCudaSmokeSend;
-	memset(&buffer,0,sizeof(buffer));
-	buffer.slot = 0u;
-	buffer.flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
-	buffer.address = &token_id;
-	buffer.bytes = sizeof(token_id);
-	memset(&frame,0,sizeof(frame));
-	frame.request_id = 91u;
-	frame.sequence_id = sequence_id;
-	frame.sequence_position = position;
-	frame.active_slot_count = 1u;
-	frame.new_token_count = 1u;
-	frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
-	frame.driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
-	frame.program_id = program->program_id;
-	frame.buffers = &buffer;
-	frame.buffer_count = 1u;
-	frame.user_context = &context;
-	frame.completion_function = SparkDsv4DriverCudaSmokeCompletion;
-	frame.completion_context = &state;
-	status = program->submit(driver_instance,&frame);
+	dispatch.completion_function = SparkDsv4DriverCudaSmokeCompletion;
+	dispatch.completion_context = &state;
+	status = SparkDsv4StageRunnerSubmit(&runner,&dispatch);
 	if ( status != SPARK_STATUS_OK || state.completion_count != 1u ||
 		state.completion.status != SPARK_STATUS_OK || state.send_count != 1u ||
-		state.nonzero_hidden_count == 0u )
+		state.nonzero_hidden_count == 0u || runner.stats.submitted_count != 1u )
 	{
 		fprintf(stderr,"dsv4_driver_smoke execute=%s completion=%u status=%s sends=%u nonzero=%u\n",SparkStatusToString(status),state.completion_count,SparkStatusToString(state.completion.status),state.send_count,state.nonzero_hidden_count);
 		goto destroy;

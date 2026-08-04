@@ -1221,6 +1221,7 @@ static SparkStatus SparkDsv4ModuleBeginStreams(SparkDsv4ModuleState *state, Spar
 	}
 	if ( context->hidden_input_post_receive_function == 0 || context->hidden_input_transport_session == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	context->hidden_input_packet.cuda_stream = slot->cuda_stream;
 	status = context->hidden_input_post_receive_function(context->hidden_input_transport_session,&context->hidden_input_packet);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
