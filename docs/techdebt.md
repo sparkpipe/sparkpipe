@@ -217,6 +217,11 @@ call (ct's), then the node twin-init similarity pass.
 - **DeepSeek V4 GA**: driver at structural parity from the family sweep
   (PR #491); needs GA weights, pack, and its DSA index cache exercised at
   scale.
+- **DSV4 stagepack provenance**: on the next stagepack regeneration, add the
+  upstream model repository, exact upstream commit, full source-index SHA256,
+  and source-shard manifest to the `.spstage` metadata and pack manifest.
+  Existing packs remain readable but cannot prove their upstream revision from
+  the binary alone.
 - **Qwen 3.8**: driver tracking release; dense+MoE hybrid will exercise
   the scheduler's mixed-layer cohort math.
 
