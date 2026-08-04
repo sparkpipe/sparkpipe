@@ -72,7 +72,8 @@
 #define SPARK_DSV4_MODEL_RMS_NORM_EPSILON 1e-6f                 /* CONFIG rms_norm_eps */
 #define SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT 64u              /* CONFIG num_attention_heads */
 #define SPARK_DSV4_MODEL_ATTN_KV_HEAD_COUNT 1u                  /* CONFIG num_key_value_heads */
-#define SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION 512u               /* CONFIG head_dim */
+#define SPARK_DSV4_MODEL_HEAD_DIMENSION 512u                    /* CONFIG head_dim */
+#define SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION SPARK_DSV4_MODEL_HEAD_DIMENSION
 #define SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION 64u                /* CONFIG qk_rope_head_dim */
 #define SPARK_DSV4_MODEL_ATTN_ROPE_THETA 10000.0f               /* CONFIG rope_theta */
 #define SPARK_DSV4_MODEL_ATTN_YARN_FACTOR 16u                   /* CONFIG rope_scaling.factor */

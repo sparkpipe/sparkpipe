@@ -2,6 +2,8 @@
 
 #include "sparkpipe/spark_dsv4_resident_decode_stage_runner.h"
 
+#define SPARK_DSV4_STAGE_RUNNER_MAX_DRIVER_BUFFERS 2u
+
 static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
     const SparkDsv4StageRunnerConfiguration *configuration)
 {
@@ -235,7 +237,8 @@ static void SparkDsv4StageRunnerBuildFrame(
         decode_batch->row_sequence_ids = dispatch->row_sequence_ids;
         context->decode_batch = decode_batch;
     }
-    memset(buffers, 0, sizeof(SparkModelDriverBuffer) * 2u);
+    memset(buffers, 0,
+        sizeof(*buffers) * SPARK_DSV4_STAGE_RUNNER_MAX_DRIVER_BUFFERS);
     buffer_count = 0u;
     if (runner->owns_embedding != 0u)
     {

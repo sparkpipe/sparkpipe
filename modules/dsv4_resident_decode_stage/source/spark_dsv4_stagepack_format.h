@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_SPARK_DSV4_STAGEPACK_FORMAT_H
-#define SPARKPIPE_SPARK_DSV4_STAGEPACK_FORMAT_H
+#pragma once
 
 #include <stdint.h>
 #include <string.h>
@@ -390,5 +389,3 @@ static inline const char *SparkDsv4StagePackGeometryFieldName(int32_t compare_co
 	};
 	return(compare_code <= -1 && compare_code >= -12 ? names[(-compare_code) - 1] : "unknown");
 }
-
-#endif

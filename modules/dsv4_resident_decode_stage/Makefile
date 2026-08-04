@@ -1,9 +1,10 @@
 MODULE_FAMILY := dsv4
 MODULE_IDENTIFIER := spark.dsv4.resident_decode_stage.bf16.h4096.l43.e256.k6.v1
 MODULE_TARGET := cuda.sm121.dsv4.resident_decode_stage.bf16
-MODEL_HEADER := sparkpipe/spark_dsv4_model.h
+MODEL_HEADER := ../../model-families/dsv4/include/sparkpipe/spark_dsv4_model.h
 MODULE_ENTRY_PREFIX := SparkDsv4ResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_dsv4_resident_decode_stage_module.c
+MODULE_ADDITIONAL_HOST_SOURCES := source/spark_dsv4_stage_runner.c
 MODULE_CUDA_SOURCE := source/spark_dsv4_resident_decode_stage_cuda.cu
 
 # Keep the module graph relative to this directory. The checkout path contains

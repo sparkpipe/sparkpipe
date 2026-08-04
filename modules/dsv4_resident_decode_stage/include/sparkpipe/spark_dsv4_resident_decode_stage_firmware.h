@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_SPARK_DSV4_RESIDENT_DECODE_STAGE_FIRMWARE_H
-#define SPARKPIPE_SPARK_DSV4_RESIDENT_DECODE_STAGE_FIRMWARE_H
+#pragma once
 
 #include <stdint.h>
 
@@ -181,6 +180,4 @@ void SparkDsv4ResidentDecodeStageDestroy(void *module_state);
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

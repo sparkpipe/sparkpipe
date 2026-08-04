@@ -136,7 +136,11 @@ from pathlib import Path
 # NVMe device fingerprint correction, and fail-closed runner status handling;
 # the CUDA fingerprint contract correction adds the CPU-equivalent seed and
 # index reduction; 137007 is the exact count.
-CEILING = 137007
+# The DSV4 Flash resident-stage landing adds the stage runner, CUDA doorway,
+# stage-pack wire format, per-rank source staging, and driver smoke gate. Its
+# source is the implementation needed for a real PP13 stage, not generated
+# receipts or test fixtures; 146181 is the exact count after that landing.
+CEILING = 146181
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
