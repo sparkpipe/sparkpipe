@@ -43,7 +43,7 @@ if ! command -v "${nvcc_path}" >/dev/null 2>&1; then
 fi
 
 make -C "${repository_root}" \
-    build/libsparkpipe_common.a \
+    build/libsparkpipe_core.a \
     build/libsparkpipe_runtime.a
 
 "${nvcc_path}" \
@@ -58,7 +58,7 @@ make -C "${repository_root}" \
     "${script_directory}/spark_dsv4_resident_decode_stage_cuda_validation.cu" \
     "${module_archive}" \
     "${repository_root}/build/libsparkpipe_runtime.a" \
-    "${repository_root}/build/libsparkpipe_common.a" \
+    "${repository_root}/build/libsparkpipe_core.a" \
     -L"${CUDA_HOME:-/usr/local/cuda}/lib64" \
     -lcudart \
     -ldl \
