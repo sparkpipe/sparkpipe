@@ -32,6 +32,7 @@
 #include "sparkpipe/spark_ring_runtime.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
 #include "sparkpipe/spark_model_driver.h"
+#include "sparkpipe/spark_model_driver_support.h"
 #include "spark_filesystem.h"
 
 #define SPARK_RING_SERVICE_BACKEND_DEFAULT_MAX_ACTIVE 1024u
@@ -3467,7 +3468,7 @@ static SparkStatus SparkRingServiceBackendLoadDriver(
 				configuration->driver_program_name : "");
 		return SPARK_STATUS_NOT_FOUND;
 	}
-	memset(&create_request,0,sizeof(create_request));
+	SparkModelDriverInitializeCreateRequest(&create_request);
 	create_request.node_id = state->rank_plan.host_name;
 	create_request.node_target = configuration->node_target;
 	create_request.node_context = state->builder_result.node_context;

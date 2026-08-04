@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "coordinator_rank_index": 0,
+  "adapter": {"shared_object_path": "adapter.so"},
+  "driver": {"shared_object_path": "driver.so", "program_name": "resident_decode"},
+  "transport": {"shared_object_path": "transport.so", "mode": "host-rdma", "control_port_base": 59000},
+  "runtime_limits": {"max_inflight_submissions": 1, "max_active_sequences": 1, "max_input_rows": 1, "resident_sequence_capacity": 1},
+  "nodes": [
+    {"rank_index": 0, "stage_index": 0, "runtime_root": "/tmp/test-runtime-0", "node_target": "target", "transport_host": "spark0", "adapter_configuration_path": "adapter.json", "control_endpoint": {"kind": "unix", "path": "/tmp/test-0.sock"}},
+    {"rank_index": 0, "stage_index": 1, "runtime_root": "/tmp/test-runtime-1", "node_target": "target", "transport_host": "spark1", "adapter_configuration_path": "adapter.json", "control_endpoint": {"kind": "unix", "path": "/tmp/test-1.sock"}}
+  ]
+}

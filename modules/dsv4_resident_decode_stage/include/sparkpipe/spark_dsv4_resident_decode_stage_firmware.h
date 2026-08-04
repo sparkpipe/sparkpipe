@@ -3,7 +3,6 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_module_abi.h"
-#include "sparkpipe/spark_hidden_transport.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,10 +23,10 @@ extern "C" {
  *
  * Version 2 executes DECODE batches (one token per lane per frame) across
  * all three attention kinds, both router paths, and the full mHC
- * machinery. Prefill frames use the same proven one-token state transition
- * in a serial loop. This is intentionally a correctness path: it writes
- * every prompt token into the resident KV state before decode, while a
- * future bulk prefill kernel can replace the loop without changing the
+ * machinery. Prefill rows are round-major: one row per live lane is executed
+ * together, then the next row for those lanes. This preserves each sequence's
+ * state dependency without throwing away cross-request CUDA batching. A future
+ * causal bulk-prefill kernel can replace the wavefront without changing the
  * boundary contract. MTP execution remains refused until its pass lands.
  * Caches are dense per lane, bounded by SPARK_DSV4_STAGE_MAX_SEQ: the
  * window ring is 128 slots regardless, the compressed stream max_seq/ratio
@@ -35,16 +34,41 @@ extern "C" {
  * with the family PP pass and changes only the module, not this contract.
  */
 
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 1u
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 2u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 2u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION 1u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT 16u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP 4096u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT 128u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 128u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 4u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT 61u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_ALLOW_UNQUALIFIED \
+	UINT32_C(0x00000001)
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS \
+	SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_ALLOW_UNQUALIFIED
+
+typedef struct SparkDsv4ResidentDecodeStageNodeContext
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t flags;
+	uint32_t stage_count;
+	uint32_t stage_index;
+	uint32_t first_layer_index;
+	uint32_t layer_count;
+	uint32_t resident_sequence_capacity;
+	uint32_t pipeline_slot_count;
+	uint32_t max_sequence_positions;
+	uint32_t reserved0;
+	uint32_t reserved1;
+	const char *stage_pack_path;
+} SparkDsv4ResidentDecodeStageNodeContext;
+
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES \
+	((uint32_t)sizeof(SparkDsv4ResidentDecodeStageNodeContext))
 
 typedef struct SparkDsv4LinearView
 {
@@ -140,21 +164,93 @@ typedef struct SparkDsv4PrefillBatchView
 	uint32_t abi_version;
 	uint32_t descriptor_bytes;
 	uint32_t row_count;
-	uint32_t lane_count;
+	uint32_t active_sequence_count;
 	const uint32_t *token_ids;
 	const uint32_t *row_lane_indices;
 	const uint64_t *row_positions;
 	const uint64_t *row_sequence_ids;
 } SparkDsv4PrefillBatchView;
 
+static inline SparkStatus SparkDsv4ValidateRoundMajorPrefillRows(
+	uint32_t row_count,
+	uint32_t active_sequence_count,
+	const uint32_t *row_lane_indices)
+{
+	uint32_t lane_order[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t counts[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
+	uint32_t row,lane,wave,maximum,index;
+	if ( row_count < active_sequence_count || active_sequence_count == 0u || active_sequence_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || row_lane_indices == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (lane=0u; lane<active_sequence_count; lane++)
+	{
+		lane_order[lane] = row_lane_indices[lane];
+		for (index=0u; index<lane; index++)
+			if ( lane_order[index] == lane_order[lane] )
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	maximum = 0u;
+	for (row=0u; row<row_count; row++)
+	{
+		for (lane=0u; lane<active_sequence_count && lane_order[lane]!=row_lane_indices[row]; lane++)
+			;
+		if ( lane == active_sequence_count )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		counts[lane]++;
+		if ( counts[lane] > maximum )
+			maximum = counts[lane];
+	}
+	row = 0u;
+	for (wave=0u; wave<maximum; wave++)
+		for (lane=0u; lane<active_sequence_count; lane++)
+			if ( counts[lane] > wave && (row >= row_count || row_lane_indices[row++] != lane_order[lane]) )
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(row == row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static inline uint32_t SparkDsv4RoundMajorPrefillLaneOrderIndex(
+	uint32_t active_sequence_count,
+	const uint32_t *row_lane_indices,
+	uint32_t lane_id)
+{
+	uint32_t index;
+	for (index=0u; index<active_sequence_count; index++)
+		if ( row_lane_indices[index] == lane_id )
+			return(index);
+	return(active_sequence_count);
+}
+
+static inline uint32_t SparkDsv4RoundMajorPrefillWaveRowCount(
+	uint32_t row_count,
+	uint32_t active_sequence_count,
+	const uint32_t *row_lane_indices,
+	uint32_t first_row)
+{
+	uint32_t count,current,next;
+	if ( active_sequence_count == 0u || active_sequence_count > row_count ||
+		row_lane_indices == 0 || first_row >= row_count )
+		return(0u);
+	current = SparkDsv4RoundMajorPrefillLaneOrderIndex(
+		active_sequence_count,row_lane_indices,row_lane_indices[first_row]);
+	if ( current == active_sequence_count )
+		return(0u);
+	count = 1u;
+	while ( first_row + count < row_count )
+	{
+		next = SparkDsv4RoundMajorPrefillLaneOrderIndex(active_sequence_count,
+			row_lane_indices,row_lane_indices[first_row + count]);
+		if ( next == active_sequence_count || next <= current )
+			break;
+		current = next;
+		count++;
+	}
+	return(count);
+}
+
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW 0x00000001u
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT 0x00000002u
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT 0x00000004u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_BUFFER 0x00000002u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER 0x00000004u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW 0x00000008u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_BATCH_VIEW 0x00000010u
-
-typedef SparkStatus (*SparkDsv4HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
-typedef SparkStatus (*SparkDsv4HiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);
 
 typedef struct SparkDsv4ResidentDecodeStageFrameContext
 {
@@ -164,12 +260,10 @@ typedef struct SparkDsv4ResidentDecodeStageFrameContext
 	uint32_t reserved0;
 	const SparkDsv4DecodeBatchView *decode_batch;
 	const SparkDsv4PrefillBatchView *prefill_batch;
-	SparkHiddenTransportSession *hidden_input_transport_session;
-	SparkHiddenTransportSession *hidden_output_transport_session;
-	SparkDsv4HiddenTransportPostReceiveFunction hidden_input_post_receive_function;
-	SparkDsv4HiddenTransportSendFunction hidden_output_send_function;
-	SparkHiddenTransportPacket hidden_input_packet;
-	SparkHiddenTransportPacket hidden_output_packet;
+	const void *hidden_input_bf16;
+	uint64_t hidden_input_bytes;
+	void *hidden_output_bf16;
+	uint64_t hidden_output_bytes;
 } SparkDsv4ResidentDecodeStageFrameContext;
 
 SparkStatus SparkDsv4ResidentDecodeStageInitialize(const SparkFirmwareModuleConfiguration *configuration, const SparkFirmwareModuleHostServices *host_services, void **module_state);

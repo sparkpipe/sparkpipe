@@ -2,11 +2,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef SPARK_TEST_MODULE_VALIDATOR_IDENTITY
+#define SPARK_TEST_MODULE_VALIDATOR_IDENTITY 0u
+#endif
+
+static volatile unsigned long SparkTestModuleValidatorIdentity =
+	SPARK_TEST_MODULE_VALIDATOR_IDENTITY;
+
 int main(int argument_count, char **arguments)
 {
     FILE *object_file;
     FILE *counter_file;
-    unsigned long validation_count;
+	unsigned long validation_count;
+	if ( SparkTestModuleValidatorIdentity == ~0ul )
+		return(9);
 
     if (argument_count >= 2 && strcmp(arguments[1], "--fail") == 0)
     {

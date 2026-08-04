@@ -127,7 +127,7 @@ typedef struct SparkServiceBackendInterface
 	SparkServiceBackendGetPollDescriptorsFunction get_poll_descriptors;
 } SparkServiceBackendInterface;
 
-typedef const SparkServiceBackendInterface *(*SparkGlm52ServiceBackendGetInterfaceFunction)(
+typedef const SparkServiceBackendInterface *(*SparkServiceBackendGetInterfaceFunction)(
 	void);
 
 typedef struct SparkServiceBackendDynamicLibrary

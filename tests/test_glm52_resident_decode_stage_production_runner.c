@@ -27,16 +27,26 @@ static SparkStatus SparkTestProductionRunnerAdmit(
     assert(request != 0);
     assert(decision != 0);
     state->admit_count += 1u;
-    decision->descriptor_bytes =
-        ((uint32_t)sizeof(SparkModelDriverAdmissionDecision));
-    decision->accepted = state->admit_accept;
-    decision->driver_dispatch_slot = 11u;
-    decision->driver_dispatch_generation = 99u;
-    decision->driver_dispatch_cookie0 = 123u;
-    decision->driver_dispatch_cookie1 = 456u;
-    if ( state->admit_accept == 0u )
-        decision->rejection_reason =
-            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY;
+	decision->descriptor_bytes =
+		((uint32_t)sizeof(SparkModelDriverAdmissionDecision));
+	decision->accepted = state->admit_accept;
+	if ( state->admit_accept != 0u )
+	{
+		decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
+		decision->driver_dispatch_slot = 11u;
+		decision->driver_dispatch_generation = 99u;
+		decision->driver_dispatch_cookie0 = 123u;
+		decision->driver_dispatch_cookie1 = 456u;
+	}
+	else
+	{
+		decision->rejection_reason =
+			SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY;
+		decision->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
+		decision->driver_dispatch_generation = 0u;
+		decision->driver_dispatch_cookie0 = 0u;
+		decision->driver_dispatch_cookie1 = 0u;
+	}
     return SPARK_STATUS_OK;
 }
 

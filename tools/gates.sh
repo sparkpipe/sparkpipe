@@ -54,6 +54,7 @@ run "makefile: variants"   "make -n -C modules/glm52_resident_decode_stage varia
 run "makefile: variant publish" "make -n -C modules/glm52_resident_decode_stage publish_variants"
 run "core boundaries"      "make -s audit-boundaries"
 run "no python in production" "python3 tests/test_no_python_in_production.py"
+run "model serving architecture" "python3 tests/test_model_serving_architecture.py"
 run "hardware handoff"     "make -s hardware_handoff"
 run "package manifest"     "python3 tools/verify_package_manifest.py"
 printf "  ---- %d pass, %d skip, %d fail\n" "$ok" "$skipped" "$bad"

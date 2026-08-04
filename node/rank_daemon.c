@@ -26,6 +26,7 @@
 #include "sparkpipe/spark_ring_runtime.h"
 #include "sparkpipe/spark_ring_work_control.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
+#include "sparkpipe/spark_model_driver_support.h"
 #include "runtime/net.h"
 
 #define SPARK_RING_DAEMON_DEFAULT_MAX_ACTIVE 1024u
@@ -2329,7 +2330,7 @@ static SparkStatus SparkRingDaemonLoadDriver(
             "decode program not found in GLM52 model driver");
         return SPARK_STATUS_NOT_FOUND;
     }
-    memset(&create_request,0,sizeof(create_request));
+    SparkModelDriverInitializeCreateRequest(&create_request);
     create_request.node_id = runtime->rank_plan.host_name;
     create_request.node_target = configuration->node_target;
     create_request.node_context = runtime->builder_result.node_context;

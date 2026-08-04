@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from host_cuda_compiler import host_cuda_cxx
+
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "dsv4_layer_host.cu"
 BINARY = Path("/tmp") / "lm_dsv4_layer_host"
@@ -25,7 +27,7 @@ BINARY = Path("/tmp") / "lm_dsv4_layer_host"
 
 def main():
     build = subprocess.run(
-        ["g++", "-std=c++17", "-O0", f"-I{ROOT}/tests/host_cuda/shim", f"-I{ROOT}",
+        [host_cuda_cxx(), "-std=c++17", "-O0", f"-I{ROOT}/tests/host_cuda/shim", f"-I{ROOT}",
          f"-I{ROOT}/tests/host_cuda", "-x", "c++", str(SOURCE), "-o", str(BINARY)],
         capture_output=True, text=True)
     if build.returncode != 0:

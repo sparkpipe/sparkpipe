@@ -9,21 +9,14 @@ typedef struct SparkDsv4RunnerTestState
     uint32_t admit_count;
     uint32_t submit_count;
     uint32_t last_frame_flags;
-    uint32_t last_buffer_count;
-    uint32_t prefill_row_count;
-    const uint32_t *prefill_token_ids;
+	uint32_t last_buffer_count;
+	uint32_t prefill_row_count;
+	uint32_t invalid_admission;
+	void *last_execution_stream;
+	const uint32_t *prefill_token_ids;
 } SparkDsv4RunnerTestState;
 
 static SparkDsv4RunnerTestState TestState;
-
-static SparkStatus SparkDsv4RunnerTestSend(
-    SparkHiddenTransportSession *transport_session,
-    const SparkHiddenTransportPacket *packet)
-{
-    (void)transport_session;
-    (void)packet;
-    return SPARK_STATUS_OK;
-}
 
 static SparkStatus SparkDsv4RunnerTestAdmit(
     void *driver_instance,
@@ -41,6 +34,8 @@ static SparkStatus SparkDsv4RunnerTestAdmit(
     decision->accepted = 1u;
     decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
     decision->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
+	if ( state->invalid_admission != 0u )
+		decision->driver_dispatch_slot = 0u;
     return SPARK_STATUS_OK;
 }
 
@@ -57,12 +52,17 @@ static SparkStatus SparkDsv4RunnerTestSubmit(
     context = (SparkDsv4ResidentDecodeStageFrameContext *)
         frame->user_context;
     state->submit_count += 1u;
-    state->last_frame_flags = frame->flags;
-    state->last_buffer_count = frame->buffer_count;
+	state->last_frame_flags = frame->flags;
+	state->last_buffer_count = frame->buffer_count;
+	state->last_execution_stream = frame->execution_stream;
     assert((context->flags &
         SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_BATCH_VIEW) != 0u);
     assert((context->flags &
-        SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u);
+        SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER) != 0u);
+    assert(context->hidden_output_bf16 != 0);
+    assert(context->hidden_output_bytes ==
+        SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
+        SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES);
     assert(context->prefill_batch != 0);
     state->prefill_row_count = context->prefill_batch->row_count;
     state->prefill_token_ids = context->prefill_batch->token_ids;
@@ -118,6 +118,7 @@ static void SparkDsv4RunnerTestPrefillMapping(void)
     SparkDsv4StageRunnerDispatch dispatch;
     uint32_t token_id = 10397u;
     uint32_t lane = 0u;
+    uint16_t hidden_output[SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS];
     uint64_t position = 0u;
     uint64_t sequence = 1u;
 
@@ -127,14 +128,14 @@ static void SparkDsv4RunnerTestPrefillMapping(void)
     configuration.descriptor_bytes =
         SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES;
     configuration.flags = SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_ADMISSION |
-        SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_TRANSPORT;
+        SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY;
     configuration.stage_index = 0u;
     configuration.stage_count = 13u;
-    configuration.max_active_sequence_count = 1u;
+	configuration.max_active_sequence_count = 1u;
+	configuration.max_input_row_count = 1u;
     configuration.driver_interface = &TestInterface;
     configuration.driver_instance = &TestState;
     configuration.program = &TestProgram;
-    configuration.hidden_output_send_function = SparkDsv4RunnerTestSend;
     configuration.execution_stream = (void *)(uintptr_t)1u;
     assert(SparkDsv4StageRunnerInitialize(&runner, &configuration) ==
         SPARK_STATUS_OK);
@@ -152,16 +153,21 @@ static void SparkDsv4RunnerTestPrefillMapping(void)
     dispatch.row_lane_indices = &lane;
     dispatch.row_positions = &position;
     dispatch.row_sequence_ids = &sequence;
-    dispatch.hidden_output_transport_session =
-        (SparkHiddenTransportSession *)(uintptr_t)1u;
+    dispatch.hidden_output_bf16 = hidden_output;
+    dispatch.hidden_output_bytes = sizeof(hidden_output);
     assert(SparkDsv4StageRunnerSubmit(&runner, &dispatch) ==
         SPARK_STATUS_OK);
     assert(TestState.admit_count == 1u);
     assert(TestState.submit_count == 1u);
     assert(TestState.last_frame_flags == SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL);
-    assert(TestState.last_buffer_count == 1u);
+	assert(TestState.last_buffer_count == 1u);
+	assert(TestState.last_execution_stream == configuration.execution_stream);
     assert(TestState.prefill_row_count == 1u);
     assert(TestState.prefill_token_ids == &token_id);
+	TestState.invalid_admission = 1u;
+	assert(SparkDsv4StageRunnerSubmit(&runner, &dispatch) ==
+		SPARK_STATUS_ABI_MISMATCH);
+	assert(TestState.submit_count == 1u);
 }
 
 static void SparkDsv4RunnerTestIntermediateRequiresInput(void)
@@ -175,7 +181,8 @@ static void SparkDsv4RunnerTestIntermediateRequiresInput(void)
         SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES;
     configuration.stage_index = 1u;
     configuration.stage_count = 13u;
-    configuration.max_active_sequence_count = 1u;
+	configuration.max_active_sequence_count = 1u;
+	configuration.max_input_row_count = 1u;
     configuration.driver_interface = &TestInterface;
     configuration.driver_instance = &TestState;
     configuration.program = &TestProgram;
@@ -183,9 +190,21 @@ static void SparkDsv4RunnerTestIntermediateRequiresInput(void)
         SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkDsv4RunnerTestRoundMajorPrefill(void)
+{
+	uint32_t round_major[6] = {7u,3u,11u,3u,11u,3u};
+	uint32_t lane_major[6] = {7u,7u,3u,3u,3u,11u};
+	assert(SparkDsv4ValidateRoundMajorPrefillRows(6u,3u,round_major) == SPARK_STATUS_OK);
+	assert(SparkDsv4ValidateRoundMajorPrefillRows(6u,3u,lane_major) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkDsv4RoundMajorPrefillWaveRowCount(6u,3u,round_major,0u) == 3u);
+	assert(SparkDsv4RoundMajorPrefillWaveRowCount(6u,3u,round_major,3u) == 2u);
+	assert(SparkDsv4RoundMajorPrefillWaveRowCount(6u,3u,round_major,5u) == 1u);
+}
+
 int main(void)
 {
     SparkDsv4RunnerTestPrefillMapping();
     SparkDsv4RunnerTestIntermediateRequiresInput();
+	SparkDsv4RunnerTestRoundMajorPrefill();
     return 0;
 }

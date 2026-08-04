@@ -1,6 +1,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_dsv4_resident_decode_stage_runner.h"
+#include "sparkpipe/spark_model_driver_support.h"
 
 #define SPARK_DSV4_STAGE_RUNNER_MAX_DRIVER_BUFFERS 2u
 
@@ -12,28 +13,31 @@ static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
         configuration->descriptor_bytes !=
             SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES ||
         configuration->reserved0 != 0u ||
-        configuration->reserved1 != 0u ||
-        (configuration->flags & ~SPARK_DSV4_STAGE_RUNNER_KNOWN_FLAGS) != 0u ||
+		(configuration->flags & ~SPARK_DSV4_STAGE_RUNNER_KNOWN_FLAGS) != 0u ||
         configuration->stage_count == 0u ||
         configuration->stage_count >
             SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT ||
         configuration->stage_index >= configuration->stage_count ||
         configuration->max_active_sequence_count == 0u ||
-        configuration->max_active_sequence_count >
-            SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT ||
+		configuration->max_active_sequence_count >
+			SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT ||
+		configuration->max_input_row_count < configuration->max_active_sequence_count ||
+		configuration->max_input_row_count >
+			SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT ||
         configuration->driver_interface == 0 ||
         configuration->driver_instance == 0 ||
         configuration->program == 0 ||
-        configuration->program->submit == 0)
+        configuration->program->submit == 0 ||
+        configuration->execution_stream == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ((configuration->stage_index != 0u) !=
             ((configuration->flags &
-                SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_TRANSPORT) != 0u) ||
+                SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY) != 0u) ||
         (configuration->stage_index + 1u < configuration->stage_count) !=
             ((configuration->flags &
-                SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_TRANSPORT) != 0u))
+                SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY) != 0u))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -43,35 +47,22 @@ static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (configuration->stage_index != 0u &&
-        (configuration->hidden_input_bf16 == 0 ||
-         configuration->hidden_input_bytes == 0u ||
-         configuration->hidden_input_post_receive_function == 0))
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    if (configuration->stage_index + 1u < configuration->stage_count &&
-        configuration->hidden_output_send_function == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkDsv4StageRunnerValidateDispatch(
+static SparkStatus SparkDsv4StageRunnerValidateDispatchShape(
     const SparkDsv4StageRunner *runner,
     const SparkDsv4StageRunnerDispatch *dispatch)
 {
     uint32_t is_prefill;
-    uint64_t hidden_bytes;
-
     if (runner == 0 || dispatch == 0 ||
         dispatch->abi_version != SPARK_DSV4_STAGE_RUNNER_ABI_VERSION ||
         dispatch->descriptor_bytes != SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES ||
         (dispatch->flags & ~SPARK_DSV4_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS) != 0u ||
         dispatch->active_sequence_count == 0u ||
         dispatch->active_sequence_count > runner->max_active_sequence_count ||
-        dispatch->row_count == 0u ||
+		dispatch->row_count == 0u ||
+		dispatch->row_count > runner->max_input_row_count ||
         dispatch->lane_count == 0u ||
         dispatch->lane_count > runner->max_active_sequence_count ||
         dispatch->row_lane_indices == 0 ||
@@ -86,7 +77,11 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatch(
         SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u ? 1u : 0u;
     if (is_prefill != 0u)
     {
-        if (dispatch->new_token_count != dispatch->row_count)
+        if (dispatch->new_token_count != dispatch->row_count ||
+            SparkDsv4ValidateRoundMajorPrefillRows(
+                dispatch->row_count,
+                dispatch->active_sequence_count,
+                dispatch->row_lane_indices) != SPARK_STATUS_OK)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -96,6 +91,14 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatch(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkDsv4StageRunnerValidateDispatchBoundaries(
+	const SparkDsv4StageRunner *runner,
+	const SparkDsv4StageRunnerDispatch *dispatch)
+{
+	uint64_t hidden_bytes;
     if (runner->owns_embedding == 0u && dispatch->token_ids != 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -108,57 +111,43 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatch(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if ((runner->flags &
-            SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_TRANSPORT) != 0u &&
-        dispatch->hidden_input_transport_session == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    if ((runner->flags &
-            SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_TRANSPORT) != 0u &&
-        dispatch->hidden_output_transport_session == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
     if ((runner->stage_index != 0u &&
-         dispatch->hidden_input_transport_session == 0) ||
+         (dispatch->hidden_input_bf16 == 0 ||
+          dispatch->hidden_input_bytes == 0u)) ||
         (runner->stage_index == 0u &&
-         dispatch->hidden_input_transport_session != 0) ||
+         (dispatch->hidden_input_bf16 != 0 ||
+          dispatch->hidden_input_bytes != 0u)) ||
         (runner->owns_final_head == 0u &&
-         dispatch->hidden_output_transport_session == 0) ||
+         (dispatch->hidden_output_bf16 == 0 ||
+          dispatch->hidden_output_bytes == 0u)) ||
         (runner->owns_final_head != 0u &&
-         dispatch->hidden_output_transport_session != 0))
+         (dispatch->hidden_output_bf16 != 0 ||
+          dispatch->hidden_output_bytes != 0u)))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     hidden_bytes = (uint64_t)dispatch->row_count *
         SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
         SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
-    if (runner->stage_index != 0u && hidden_bytes > runner->hidden_input_bytes)
+    if ((runner->stage_index != 0u &&
+         hidden_bytes > dispatch->hidden_input_bytes) ||
+        (runner->owns_final_head == 0u &&
+         hidden_bytes > dispatch->hidden_output_bytes))
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
     return SPARK_STATUS_OK;
 }
 
-static void SparkDsv4StageRunnerInitializePacket(
-    SparkHiddenTransportPacket *packet,
-    uint32_t row_count,
-    const void *hidden_bf16,
-    void *execution_stream)
+static SparkStatus SparkDsv4StageRunnerValidateDispatch(
+	const SparkDsv4StageRunner *runner,
+	const SparkDsv4StageRunnerDispatch *dispatch)
 {
-    memset(packet, 0, sizeof(*packet));
-    packet->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
-    packet->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_PACKET_BYTES;
-    packet->flags = SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 |
-        SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER;
-    packet->active_sequence_count = row_count;
-    packet->hidden_dimension = SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS;
-    packet->bytes_per_sequence =
-        SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
-        SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
-    packet->hidden_bf16 = hidden_bf16;
-    packet->cuda_stream = execution_stream;
+	SparkStatus status;
+	status = SparkDsv4StageRunnerValidateDispatchShape(runner,dispatch);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	return SparkDsv4StageRunnerValidateDispatchBoundaries(runner,dispatch);
 }
 
 static void SparkDsv4StageRunnerBuildFrame(
@@ -186,30 +175,16 @@ static void SparkDsv4StageRunnerBuildFrame(
     if (runner->stage_index != 0u)
     {
         context->flags |=
-            SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT;
-        context->hidden_input_transport_session =
-            dispatch->hidden_input_transport_session;
-        context->hidden_input_post_receive_function =
-            runner->hidden_input_post_receive_function;
-        SparkDsv4StageRunnerInitializePacket(
-            &context->hidden_input_packet,
-            dispatch->row_count,
-            runner->hidden_input_bf16,
-            runner->execution_stream);
+            SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_BUFFER;
+        context->hidden_input_bf16 = dispatch->hidden_input_bf16;
+        context->hidden_input_bytes = dispatch->hidden_input_bytes;
     }
     if (runner->owns_final_head == 0u)
     {
         context->flags |=
-            SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT;
-        context->hidden_output_transport_session =
-            dispatch->hidden_output_transport_session;
-        context->hidden_output_send_function =
-            runner->hidden_output_send_function;
-        SparkDsv4StageRunnerInitializePacket(
-            &context->hidden_output_packet,
-            dispatch->row_count,
-            0,
-            runner->execution_stream);
+            SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER;
+        context->hidden_output_bf16 = dispatch->hidden_output_bf16;
+        context->hidden_output_bytes = dispatch->hidden_output_bytes;
     }
     if (is_prefill != 0u)
     {
@@ -218,7 +193,7 @@ static void SparkDsv4StageRunnerBuildFrame(
             SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION;
         prefill_batch->descriptor_bytes = (uint32_t)sizeof(*prefill_batch);
         prefill_batch->row_count = dispatch->row_count;
-        prefill_batch->lane_count = dispatch->lane_count;
+		prefill_batch->active_sequence_count = dispatch->active_sequence_count;
         prefill_batch->token_ids = dispatch->token_ids;
         prefill_batch->row_lane_indices = dispatch->row_lane_indices;
         prefill_batch->row_positions = dispatch->row_positions;
@@ -271,6 +246,7 @@ static void SparkDsv4StageRunnerBuildFrame(
         SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : 0u;
     frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
     frame->program_id = runner->program->program_id;
+	frame->execution_stream = runner->execution_stream;
     frame->buffers = buffers;
     frame->buffer_count = buffer_count;
     frame->user_context = context;
@@ -305,7 +281,7 @@ static SparkStatus SparkDsv4StageRunnerAdmit(
     request.priority = dispatch->priority;
     request.frame_flags = frame->flags;
     request.residency = dispatch->residency;
-    memset(&decision, 0, sizeof(decision));
+	SparkModelDriverInitializeAdmissionDecision(&decision);
     status = runner->driver_interface->admit(
         runner->driver_instance, &request, &decision);
     if (status != SPARK_STATUS_OK)
@@ -313,7 +289,12 @@ static SparkStatus SparkDsv4StageRunnerAdmit(
         runner->stats.last_status = (uint32_t)status;
         return status;
     }
-    runner->stats.last_admission_rejection = decision.rejection_reason;
+	if (SparkModelDriverAdmissionDecisionIsValid(&decision) == 0u)
+	{
+		runner->stats.last_status = SPARK_STATUS_ABI_MISMATCH;
+		return SPARK_STATUS_ABI_MISMATCH;
+	}
+	runner->stats.last_admission_rejection = decision.rejection_reason;
     if (decision.accepted == 0u)
     {
         runner->stats.rejected_count += 1u;
@@ -322,7 +303,7 @@ static SparkStatus SparkDsv4StageRunnerAdmit(
             SPARK_STATUS_BUSY : SPARK_STATUS_CAPACITY_EXCEEDED;
     }
     runner->stats.admitted_count += 1u;
-    return SPARK_STATUS_OK;
+	return SparkModelDriverApplyAdmissionDecision(&decision, frame);
 }
 
 SparkStatus SparkDsv4StageRunnerInitialize(
@@ -346,21 +327,16 @@ SparkStatus SparkDsv4StageRunnerInitialize(
     runner->flags = configuration->flags;
     runner->stage_index = configuration->stage_index;
     runner->stage_count = configuration->stage_count;
-    runner->max_active_sequence_count =
-        configuration->max_active_sequence_count;
+	runner->max_active_sequence_count =
+		configuration->max_active_sequence_count;
+	runner->max_input_row_count = configuration->max_input_row_count;
     runner->owns_embedding = configuration->stage_index == 0u ? 1u : 0u;
     runner->owns_final_head = configuration->stage_index + 1u ==
         configuration->stage_count ? 1u : 0u;
     runner->driver_interface = configuration->driver_interface;
     runner->driver_instance = configuration->driver_instance;
     runner->program = configuration->program;
-    runner->hidden_input_post_receive_function =
-        configuration->hidden_input_post_receive_function;
-    runner->hidden_output_send_function =
-        configuration->hidden_output_send_function;
     runner->execution_stream = configuration->execution_stream;
-    runner->hidden_input_bf16 = configuration->hidden_input_bf16;
-    runner->hidden_input_bytes = configuration->hidden_input_bytes;
     runner->stats.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
     runner->stats.descriptor_bytes =
         (uint32_t)sizeof(SparkDsv4StageRunnerStats);

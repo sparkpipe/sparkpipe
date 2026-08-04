@@ -1,4 +1,7 @@
-REPOSITORY_ROOT := $(abspath ../..)
+# Keep target and prerequisite names relative to this module.  GNU Make treats
+# spaces in absolute path names as target separators, so expanding abspath here
+# breaks builds from otherwise valid workspaces whose names contain a space.
+REPOSITORY_ROOT := ../..
 NVCC ?= nvcc
 AR ?= ar
 CUDA_ARCH ?= sm_121a
@@ -48,5 +51,4 @@ validate_epoch3: $(VALIDATOR)
 
 clean:
 	rm -rf $(BUILD_DIRECTORY)
-
 

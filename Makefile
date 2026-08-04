@@ -13,9 +13,11 @@ CUDA_RUNTIME_HEADER := $(wildcard $(CUDA_HOME)/include/cuda_runtime.h)
 ifeq ($(CUDA_RUNTIME_HEADER),)
 MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub
 SPARKPIPE_HOST_CUDA_STUB_SOURCE := tests/cuda_stub/cuda_runtime_stub.c
+SPARKPIPE_CUDA_RUNTIME_LINK :=
 else
 MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include
 SPARKPIPE_HOST_CUDA_STUB_SOURCE :=
+SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
 endif
 GLM52_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm52/include
 QWEN36_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen36/include
@@ -116,10 +118,10 @@ GLM52_STAGE_SWEEP_REQUIRED_CUDA_LINK_ARGS ?=
 GLM52_STAGE_SWEEP_FORCE_VALIDATOR_REBUILD ?= 0
 GLM52_REQUIRED_CUDA_LINK_ARGS ?=
 REQUIRED_CUDA_CC_ARGS ?=
-B12X_ADAPTER_ARCHIVE := $(abspath build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a)
-B12X_COMPILED_BACKEND_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a)
-B12X_GENERATED_KERNEL_TABLE_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a)
-DSPARK_DRAFT_BACKEND_ARCHIVE := $(abspath build/modules/glm52_dspark_draft_backend/libglm52_dspark_draft_backend.a)
+B12X_ADAPTER_ARCHIVE := build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a
+B12X_COMPILED_BACKEND_ARCHIVE := build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a
+B12X_GENERATED_KERNEL_TABLE_ARCHIVE := build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a
+DSPARK_DRAFT_BACKEND_ARCHIVE := build/modules/glm52_dspark_draft_backend/libglm52_dspark_draft_backend.a
 B12X_RUNTIME_LINK_ARGS_FILE := $(abspath $(B12X_AOT_OUTPUT_DIR))/generated/runtime_link_args.txt
 ifeq ($(GLM52_MOE_BACKEND),nvfp4)
 GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) $(shell cat "$(B12X_RUNTIME_LINK_ARGS_FILE)" 2>/dev/null)
@@ -183,6 +185,7 @@ COMMON_LIBRARY := $(CORE_LIBRARY)
 LIBRARIES := $(CORE_LIBRARY) $(MODEL_COMMON_LIBRARY) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(DEPLOYMENT_LIBRARY) $(GLM52_HOST_LIBRARY) $(QWEN36_HOST_LIBRARY) $(DSV4_HOST_LIBRARY)
 
 GLM52_RING_SERVICE_BACKEND := build/libglm52_ring_service_backend.$(SHARED_LIBRARY_EXT)
+DSV4_SERVING_ADAPTER := build/libdsv4_serving_adapter.$(SHARED_LIBRARY_EXT)
 
 TOOL_NAMES := \
     sparkpipe_module_publish \
@@ -191,6 +194,7 @@ TOOL_NAMES := \
     sparkpipe_glm52_pipesim \
     sparkpipe_glm52_ring_rank_daemon \
     sparkpipe_glm52_cuda_residentd \
+    sparkpipe_model_residentd \
     sparkpipe_glm52_kv_jit_budget \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
@@ -214,6 +218,13 @@ TEST_NAMES := \
     test_work_transaction \
     test_runtime_completion \
     test_model_runtime \
+    test_model_serving_adapter \
+	test_model_resident_deployment \
+    test_model_resident_ipc \
+    test_model_pipeline_client \
+    test_pipeline_runtime \
+    test_dsv4_serving_adapter \
+    test_model_resident_end_to_end \
     test_distributed_work \
     test_json \
     test_hidden_transport \
@@ -276,6 +287,7 @@ PYTHON_TESTS := \
 	tests/test_dsv4_contracts.py \
 	tests/test_dsv4_driver_source_contracts.py \
 	tests/test_dsv4_layer_host.py \
+	tests/test_dsv4_module_host_syntax.py \
 	tests/test_dsv4_stage_source.py \
 	tests/test_expert_grouping.py \
 	tests/test_fast_defaults.py \
@@ -324,6 +336,7 @@ PYTHON_TESTS := \
 	tests/test_layer_kinds.py \
 	tests/test_measured_status.py \
 	tests/test_memory_contracts.py \
+	tests/test_model_serving_architecture.py \
 	tests/test_mimo25_layer_host.py \
 	tests/test_mla_absorption.py \
 	tests/test_mla_host.py \
@@ -360,7 +373,14 @@ TEST_HIDDEN_TRANSPORT_MODULE := \
     build/test_modules/libhidden_transport_module.$(SHARED_LIBRARY_EXT)
 TEST_SERVICE_BACKEND_MODULE := \
     build/test_modules/libglm52_service_backend_module.$(SHARED_LIBRARY_EXT)
+TEST_MODEL_SERVING_ADAPTER_MODULE := \
+    build/test_modules/libmodel_serving_adapter_module.$(SHARED_LIBRARY_EXT)
+TEST_DSV4_SERVING_DRIVER_MODULE := \
+    build/test_modules/libdsv4_serving_driver_module.$(SHARED_LIBRARY_EXT)
+TEST_MODEL_RESIDENT_TRANSPORT_MODULE := \
+    build/test_modules/libmodel_resident_transport_module.$(SHARED_LIBRARY_EXT)
 TEST_VALIDATOR := build/test_module_validator
+TEST_VALIDATOR_CHANGED := build/test_module_validator_identity_changed
 GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY := \
     build/glm52_resident_decode_stage_test
 GLM52_RESIDENT_DECODE_STAGE_TEST_OBJECTS := \
@@ -400,9 +420,9 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
 # that stops at the unbucketed archive is a partial build. The nvcc guard
 # keeps host-only checkouts building - no CUDA toolchain, no variant archives,
 # one skip line, same contract as the other cuda_* targets.
-all: $(LIBRARIES) tools $(GLM52_RING_SERVICE_BACKEND) cuda_glm52_resident_decode_stage_variants
+all: $(LIBRARIES) tools $(GLM52_RING_SERVICE_BACKEND) $(DSV4_SERVING_ADAPTER) cuda_glm52_resident_decode_stage_variants
 
-tools: $(TOOL_BINARIES) $(GLM52_RING_SERVICE_BACKEND)
+tools: $(TOOL_BINARIES) $(GLM52_RING_SERVICE_BACKEND) $(DSV4_SERVING_ADAPTER)
 
 .PHONY: core model_common deployment audit-boundaries architecture_audit model_driver_contracts non_glm_model_driver_contracts
 
@@ -609,11 +629,17 @@ build/sparkpipe_glm52_ring_rank_daemon: node/rank_daemon.c inference/stage/runne
 build/sparkpipe_glm52_cuda_residentd: node/residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) node/residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_model_residentd: node/model_residentd.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_residentd.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
 build/sparkpipe_glm52_kv_jit_budget: tests/studies/sparkpipe_glm52_kv_jit_budget.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/studies/sparkpipe_glm52_kv_jit_budget.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 $(GLM52_RING_SERVICE_BACKEND): node/backend.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) node/backend.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+$(DSV4_SERVING_ADAPTER): modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_serving_adapter.h modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 glm52_ring_service_backend: $(GLM52_RING_SERVICE_BACKEND)
 
@@ -709,8 +735,20 @@ $(TEST_HIDDEN_TRANSPORT_MODULE): tests/fixtures/hidden_transport_module.c | buil
 $(TEST_SERVICE_BACKEND_MODULE): tests/fixtures/glm52_service_backend_module.c include/sparkpipe/spark_service_backend.h | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
+$(TEST_MODEL_SERVING_ADAPTER_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+$(TEST_DSV4_SERVING_DRIVER_MODULE): tests/fixtures/dsv4_serving_adapter_driver.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h | build/test_modules
+	$(CC) $(CPPFLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE): tests/fixtures/model_resident_transport_module.c include/sparkpipe/spark_hidden_transport.h | build/test_modules
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_VALIDATOR): tests/fixtures/module_validator.c | build
 	$(CC) $(CFLAGS) $< -o $@
+
+$(TEST_VALIDATOR_CHANGED): tests/fixtures/module_validator.c | build
+	$(CC) $(CFLAGS) -DSPARK_TEST_MODULE_VALIDATOR_IDENTITY=1u $< -o $@
 
 
 $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_resident_decode_stage_module.o: inference/stage/module.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_backend.h | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
@@ -743,6 +781,27 @@ build/test_runtime_completion: tests/test_runtime_completion.c $(RUNTIME_LIBRARY
 build/test_model_runtime: tests/test_model_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_model_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_model_serving_adapter: tests/test_model_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(TEST_MODEL_SERVING_ADAPTER_MODULE)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_MODULE_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" $(CFLAGS) tests/test_model_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_model_resident_deployment: tests/test_model_resident_deployment.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_model_resident_deployment.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_model_resident_ipc: tests/test_model_resident_ipc.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_model_resident_ipc.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_model_pipeline_client: tests/test_model_pipeline_client.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_pipeline_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_pipeline_runtime: tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv4_serving_adapter: tests/test_dsv4_serving_adapter.c tests/fixtures/dsv4_serving_adapter_config_absolute.json $(DSV4_SERVING_ADAPTER) $(TEST_DSV4_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_DSV4_SERVING_ADAPTER_PATH=\"$(DSV4_SERVING_ADAPTER)\" -DTEST_DSV4_SERVING_DRIVER_PATH=\"$(TEST_DSV4_SERVING_DRIVER_MODULE)\" -DTEST_DSV4_SERVING_CONFIG_PATH=\"tests/fixtures/dsv4_serving_adapter_config.json\" -DTEST_DSV4_SERVING_STALE_CONFIG_PATH=\"tests/fixtures/dsv4_serving_adapter_config_stale.json\" -DTEST_DSV4_SERVING_ABSOLUTE_CONFIG_PATH=\"tests/fixtures/dsv4_serving_adapter_config_absolute.json\" $(CFLAGS) tests/test_dsv4_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_model_resident_end_to_end: tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c build/sparkpipe_model_residentd $(DSV4_SERVING_ADAPTER) $(TEST_DSV4_SERVING_DRIVER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_DSV4_SERVING_ADAPTER_PATH=\"$(DSV4_SERVING_ADAPTER)\" -DTEST_DSV4_SERVING_DRIVER_PATH=\"$(TEST_DSV4_SERVING_DRIVER_MODULE)\" -DTEST_DSV4_SERVING_CONFIG_PATH=\"tests/fixtures/dsv4_serving_adapter_config.json\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 runtime_completion_tests: build/test_runtime_completion build/test_model_runtime
 	./build/test_runtime_completion
 	./build/test_model_runtime
@@ -753,7 +812,7 @@ runtime_completion_tests: build/test_runtime_completion build/test_model_runtime
 # for cuTensorMapEncodeTiled so the production entry point is exercised too.
 # -x c++ on the stub keeps the symbol mangling identical to the test TU's
 # (the stub predates C and C++ disagreeing on the name).
-build/test_gemm_descriptor_cache: tests/test_gemm_descriptor_cache.cpp tests/cuda_driver_stub/stub.c runtime/gemm_descriptor_cache.h
+build/test_gemm_descriptor_cache: tests/test_gemm_descriptor_cache.cpp tests/cuda_driver_stub/stub.c runtime/gemm_descriptor_cache.h | build
 	$(CXX) -x c++ -Itests/cuda_driver_stub -O2 -Wall -Wextra -c tests/cuda_driver_stub/stub.c -o build/test_gemm_descriptor_cache_stub.o
 	$(CXX) $(CPPFLAGS) -I. -Itests/cuda_driver_stub $(CXXFLAGS) tests/test_gemm_descriptor_cache.cpp build/test_gemm_descriptor_cache_stub.o $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -893,7 +952,7 @@ build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY)
 build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_module_common.c tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Itests/cuda_stub -Itests $(CFLAGS) $^ $(LDFLAGS) -o $@
 
-build/test_module_library: tests/test_module_library.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
+build/test_module_library: tests/test_module_library.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(TEST_VALIDATOR_CHANGED) $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_driver_compiler: tests/test_driver_compiler.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
@@ -908,7 +967,7 @@ build/test_glm52_resident_decode_stage_firmware: tests/test_glm52_resident_decod
 build/test_glm52_resident_decode_stage_production_runner: tests/test_glm52_resident_decode_stage_production_runner.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_glm52_resident_decode_stage_production_runner.c inference/stage/runner.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_dsv4_stage_runner: tests/test_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_runner.h $(COMMON_LIBRARY) $(MODEL_COMMON_LIBRARY)
+build/test_dsv4_stage_runner: tests/test_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_runner.h modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(COMMON_LIBRARY) $(MODEL_COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) tests/test_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(COMMON_LIBRARY) $(MODEL_COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 glm52_quantized_readiness_test: build/test_glm52_ring_runtime build/test_glm52_stagepack build/test_model_description

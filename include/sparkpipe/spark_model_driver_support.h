@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_SPARK_MODEL_DRIVER_SUPPORT_H
-#define SPARKPIPE_SPARK_MODEL_DRIVER_SUPPORT_H
+#pragma once
 
 #include <stdint.h>
 #include <string.h>
@@ -9,6 +8,34 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+static inline void SparkModelDriverInitializeCreateRequest(
+    SparkModelDriverCreateRequest *request)
+{
+    if (request == 0)
+    {
+        return;
+    }
+    memset(request, 0, sizeof(*request));
+    request->abi_version = SPARK_MODEL_DRIVER_ABI_VERSION;
+    request->descriptor_bytes = SPARK_MODEL_DRIVER_CREATE_REQUEST_BYTES;
+}
+
+static inline uint32_t SparkModelDriverCreateRequestIsValid(
+    const SparkModelDriverCreateRequest *request)
+{
+    if (request == 0 ||
+        request->abi_version != SPARK_MODEL_DRIVER_ABI_VERSION ||
+        request->descriptor_bytes != SPARK_MODEL_DRIVER_CREATE_REQUEST_BYTES ||
+        request->flags != 0u || request->reserved0 != 0u ||
+        request->node_id == 0 || request->node_id[0] == '\0' ||
+        request->node_target == 0 || request->node_target[0] == '\0' ||
+        request->reserved[0] != 0u || request->reserved[1] != 0u)
+    {
+        return 0u;
+    }
+    return 1u;
+}
 
 static inline uint32_t SparkModelDriverRangeFitsWithinCapacity(
     uint64_t range_start,
@@ -50,6 +77,52 @@ static inline SparkStatus SparkModelDriverRejectAdmission(
     SparkModelDriverInitializeAdmissionDecision(decision);
     decision->rejection_reason = (uint32_t)rejection_reason;
     decision->available_dispatch_slot_count = available_dispatch_slot_count;
+    return SPARK_STATUS_OK;
+}
+
+static inline uint32_t SparkModelDriverAdmissionDecisionIsValid(
+    const SparkModelDriverAdmissionDecision *decision)
+{
+    uint32_t has_dispatch_slot;
+    if (decision == 0 || decision->descriptor_bytes < sizeof(*decision) ||
+        decision->accepted > 1u ||
+        decision->rejection_reason >
+            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE)
+        return 0u;
+    if ((decision->accepted != 0u) !=
+        (decision->rejection_reason == SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED))
+        return 0u;
+    has_dispatch_slot = decision->driver_dispatch_slot !=
+        SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT ? 1u : 0u;
+    if (decision->accepted == 0u && has_dispatch_slot != 0u)
+        return 0u;
+    if (has_dispatch_slot == 0u &&
+        (decision->driver_dispatch_generation != 0u ||
+         decision->driver_dispatch_cookie0 != 0u ||
+         decision->driver_dispatch_cookie1 != 0u))
+        return 0u;
+    if (has_dispatch_slot != 0u &&
+        decision->driver_dispatch_generation == 0u)
+        return 0u;
+    return 1u;
+}
+
+static inline SparkStatus SparkModelDriverApplyAdmissionDecision(
+    const SparkModelDriverAdmissionDecision *decision,
+    SparkModelDriverFrame *frame)
+{
+    if (frame == 0 || SparkModelDriverAdmissionDecisionIsValid(decision) == 0u)
+        return SPARK_STATUS_ABI_MISMATCH;
+    if (decision->accepted == 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (decision->driver_dispatch_slot ==
+        SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT)
+        return SPARK_STATUS_OK;
+    frame->flags |= SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID;
+    frame->driver_dispatch_slot = decision->driver_dispatch_slot;
+    frame->driver_dispatch_generation = decision->driver_dispatch_generation;
+    frame->driver_dispatch_cookie0 = decision->driver_dispatch_cookie0;
+    frame->driver_dispatch_cookie1 = decision->driver_dispatch_cookie1;
     return SPARK_STATUS_OK;
 }
 
@@ -96,6 +169,5 @@ static inline SparkStatus SparkModelDriverValidateBuffer(
 
 #ifdef __cplusplus
 }
-#endif
 
 #endif

@@ -1,4 +1,8 @@
-REPOSITORY_ROOT := $(abspath ../..)
+# Keep target and prerequisite names relative to this module.  GNU Make treats
+# spaces in absolute path names as target separators, so expanding abspath here
+# breaks release builds from otherwise valid workspaces whose names contain a
+# space.
+REPOSITORY_ROOT := ../..
 CC ?= cc
 AR ?= ar
 NVCC ?= nvcc

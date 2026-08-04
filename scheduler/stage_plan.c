@@ -241,7 +241,7 @@ SparkStatus SparkStagePlanValidate(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INVALID_ARGUMENT,
-                "stage layer range violates GLM-5.2 cut rules");
+                "stage layer range violates model geometry cut rules");
         }
         if ((stage->flags & SPARK_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN) != 0u)
         {
@@ -273,7 +273,7 @@ SparkStatus SparkStagePlanValidate(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
-            "stage plan does not cover all GLM-5.2 layers");
+            "stage plan does not cover all model layers");
     }
     if (final_stage_count != 1u)
     {

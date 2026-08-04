@@ -20,6 +20,7 @@
 #include "sparkpipe/spark_cuda_resident_ipc.h"
 #include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_kv_store.h"
+#include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_ring_node_context_builder.h"
 #include "sparkpipe/spark_ring_runtime.h"
 #include "sparkpipe/spark_prompt_pipeline.h"
@@ -1015,7 +1016,7 @@ static SparkStatus SparkCudaResidentdCreateDriverInstance(
 {
 	SparkModelDriverCreateRequest create_request;
 	SparkStatus status;
-	memset(&create_request, 0, sizeof(create_request));
+	SparkModelDriverInitializeCreateRequest(&create_request);
     create_request.node_id = runtime->rank_plan.host_name;
     create_request.node_target = configuration->node_target;
     create_request.node_context = runtime->builder_result.node_context;

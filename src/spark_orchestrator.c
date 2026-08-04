@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "spark_filesystem.h"
+#include "sparkpipe/spark_model_driver_support.h"
 
 
 typedef struct SparkOrchestratorNode
@@ -287,7 +288,7 @@ SparkStatus SparkOrchestratorAttachDriver(
     }
     driver->completion_context.orchestrator = orchestrator;
     driver->completion_context.driver_handle = orchestrator->driver_count;
-    memset(&create_request, 0, sizeof(create_request));
+    SparkModelDriverInitializeCreateRequest(&create_request);
     create_request.node_id = node->node_id;
     create_request.node_target = node->target;
     create_request.node_context = node->node_context;
@@ -588,7 +589,7 @@ static SparkStatus SparkReserveRouteEndpoint(
             &admission_request,
             &admission_decision);
         if (admission_status != SPARK_STATUS_OK ||
-            admission_decision.descriptor_bytes < sizeof(admission_decision) ||
+            SparkModelDriverAdmissionDecisionIsValid(&admission_decision) == 0u ||
             admission_decision.accepted == 0u)
         {
             continue;
@@ -671,15 +672,14 @@ SparkStatus SparkOrchestratorSubmit(
             return status;
         }
         driver = &orchestrator->drivers[endpoint->driver_handle];
-        if (admission_decision.driver_dispatch_slot !=
-            SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT)
+        status = SparkModelDriverApplyAdmissionDecision(
+            &admission_decision,frame);
+        if (status != SPARK_STATUS_OK)
         {
-            frame->driver_dispatch_slot = admission_decision.driver_dispatch_slot;
-            frame->driver_dispatch_generation =
-                admission_decision.driver_dispatch_generation;
-            frame->driver_dispatch_cookie0 = admission_decision.driver_dispatch_cookie0;
-            frame->driver_dispatch_cookie1 = admission_decision.driver_dispatch_cookie1;
-            frame->flags |= SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID;
+            SparkOrchestratorDecrementIfNonzero(
+                &driver->program_outstanding[endpoint->program_index]);
+            SparkOrchestratorDecrementIfNonzero(&driver->outstanding);
+            return status;
         }
         status = endpoint->program->submit(driver->driver_instance, frame);
         if (status == SPARK_STATUS_OK)

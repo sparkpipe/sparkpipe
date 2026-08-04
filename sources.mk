@@ -27,7 +27,15 @@ SPARKPIPE_RUNTIME_SOURCES := \
     src/spark_driver_loader.c \
     src/spark_orchestrator.c \
     runtime/runtime_completion.c \
-    runtime/model_runtime.c
+    runtime/model_runtime.c \
+	runtime/model_serving_adapter.c \
+	runtime/model_resident_endpoint.c \
+	runtime/model_resident_deployment.c \
+	runtime/model_resident_ipc.c \
+	runtime/model_resident_client.c \
+	runtime/model_pipeline_client.c \
+	runtime/model_batch_engine.c \
+	runtime/pipeline_runtime.c
 
 # Transport, memory link, collectives, tokenizer, KV store, stage module ABI.
 # Formerly model-families/common/src, which is the directory the handoff records

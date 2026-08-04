@@ -1,5 +1,7 @@
-#ifndef SPARKPIPE_SPARK_STATUS_H
-#define SPARKPIPE_SPARK_STATUS_H
+#pragma once
+
+#include <stdint.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,10 +36,6 @@ const char *SparkStatusToString(SparkStatus status);
 #ifdef __cplusplus
 }
 #endif
-
-
-#include <stdint.h>
-#include <stdio.h>
 
 // Shared micro-helpers, extracted from three and four near-identical
 // copies respectively (the duplication instrument found them at 0.97+
@@ -79,7 +77,6 @@ static inline uint64_t SparkHashBytes(uint64_t hash,const void *data,uint32_t da
 
 static inline uint64_t SparkNormalizeRequestIdBase(
     uint64_t default_base,
-
     uint64_t request_id_base)
 {
     if (request_id_base == 0u)
@@ -110,5 +107,3 @@ static inline uint32_t SparkNormalizeMaxContextTokens(
     }
     return max_context_tokens;
 }
-
-#endif

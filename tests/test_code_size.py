@@ -140,7 +140,17 @@ from pathlib import Path
 # stage-pack wire format, per-rank source staging, and driver smoke gate. Its
 # source is the implementation needed for a real PP13 stage, not generated
 # receipts or test fixtures; 146181 is the exact count after that landing.
-CEILING = 146181
+# The generalized model-serving landing adds the model-neutral adapter,
+# manifest, resident IPC/client/daemon, two-phase PP pipeline client, batched
+# token request engine, and pipeline-runtime topology builder. DSV4 contributes
+# only its family-owned adapter and frame translation. The 8,052-line increase
+# is this versioned ownership boundary plus fail-closed distributed lifecycle;
+# the final 43 lines make batch-engine shutdown cancel and release every live
+# resident sequence before destruction. Six module-build lines keep Make
+# targets relative and therefore valid in space-containing workspaces. This is
+# not generated output or a model-specific copy of common serving code; 154239
+# is the exact count after the landing.
+CEILING = 154239
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

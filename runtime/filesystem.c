@@ -326,6 +326,59 @@ SparkStatus SparkJoinPath(const char *left, const char *right, char *path, uint3
     return SPARK_STATUS_OK;
 }
 
+bool SparkPathIsNormalized(const char *path, bool absolute)
+{
+    const char *cursor;
+    const char *segment;
+    uint32_t length;
+
+    if (path == 0 || path[0] == '\0' || ((path[0] == '/') != absolute))
+    {
+        return false;
+    }
+    cursor = path + (absolute ? 1 : 0);
+    if (absolute && cursor[0] == '\0')
+    {
+        return true;
+    }
+    while (cursor[0] != '\0')
+    {
+        segment = cursor;
+        for (length = 0u; cursor[0] != '\0' && cursor[0] != '/'; ++cursor)
+        {
+            ++length;
+        }
+        if (length == 0u || (length == 1u && segment[0] == '.') ||
+            (length == 2u && segment[0] == '.' && segment[1] == '.'))
+        {
+            return false;
+        }
+        if (cursor[0] == '/')
+        {
+            ++cursor;
+            if (cursor[0] == '\0')
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+SparkStatus SparkResolveRuntimePath(
+    const char *runtime_root,
+    const char *relative_path,
+    char *path,
+    uint32_t path_bytes)
+{
+    if (!SparkPathIsNormalized(runtime_root, true) ||
+        !SparkPathIsNormalized(relative_path, false))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SparkJoinPath(runtime_root, relative_path, path, path_bytes);
+}
+
 bool SparkPathExists(const char *path)
 {
     struct stat file_status;

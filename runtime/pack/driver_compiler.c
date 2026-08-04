@@ -566,7 +566,7 @@ static void SparkWriteGeneratedCreate(FILE *file, const SparkDriverBuildImage *d
 
     fputs("static SparkStatus SparkGeneratedDriverCreate(const SparkModelDriverCreateRequest *request, void **driver_instance)\n{\n", file);
     fputs("    SparkGeneratedDriverInstance *instance;\n    SparkStatus status;\n\n", file);
-    fputs("    if (request == 0 || driver_instance == 0)\n    {\n        return SPARK_STATUS_INVALID_ARGUMENT;\n    }\n", file);
+    fputs("    if (driver_instance == 0 || SparkModelDriverCreateRequestIsValid(request) == 0u)\n    {\n        return SPARK_STATUS_INVALID_ARGUMENT;\n    }\n", file);
     if (requires_external_completion != 0)
     {
         fputs("    if (request->completion_function == 0)\n    {\n        return SPARK_STATUS_INVALID_ARGUMENT;\n    }\n", file);
@@ -585,6 +585,7 @@ static void SparkWriteGeneratedCreate(FILE *file, const SparkDriverBuildImage *d
     fputs("    instance->host_services.node_id = request->node_id;\n", file);
     fputs("    instance->host_services.node_target = request->node_target;\n", file);
     fputs("    instance->host_services.node_context = request->node_context;\n", file);
+    fputs("    instance->host_services.execution_stream = request->execution_stream;\n", file);
     fputs("    status = SPARK_STATUS_OK;\n", file);
 
     for (operation_index = 0u; operation_index < driver_image->operation_count; ++operation_index)
@@ -689,18 +690,6 @@ static void SparkWriteGeneratedAdmissionHelpers(FILE *file)
     fputs("    if (UINT64_MAX - left < right)\n    {\n        return UINT64_MAX;\n    }\n", file);
     fputs("    return left + right;\n}\n\n", file);
 
-    fputs("static int SparkGeneratedAdmissionDecisionIsValid(const SparkModelDriverAdmissionDecision *decision)\n{\n", file);
-    fputs("    if (decision->descriptor_bytes < sizeof(*decision) || decision->accepted > 1u ||\n", file);
-    fputs("        decision->rejection_reason > SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE)\n    {\n", file);
-    fputs("        return 0;\n    }\n", file);
-    fputs("    if ((decision->accepted != 0u) != (decision->rejection_reason == SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED))\n    {\n", file);
-    fputs("        return 0;\n    }\n", file);
-    fputs("    if (decision->driver_dispatch_slot == SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT &&\n", file);
-    fputs("        (decision->driver_dispatch_generation != 0u || decision->driver_dispatch_cookie0 != 0u ||\n", file);
-    fputs("         decision->driver_dispatch_cookie1 != 0u))\n    {\n", file);
-    fputs("        return 0;\n    }\n", file);
-    fputs("    return 1;\n}\n\n", file);
-
     fputs("static void SparkGeneratedInitializeAdmissionDecision(SparkModelDriverAdmissionDecision *decision)\n{\n", file);
     fputs("    memset(decision, 0, sizeof(*decision));\n", file);
     fputs("    decision->descriptor_bytes = sizeof(*decision);\n", file);
@@ -725,7 +714,7 @@ static void SparkWriteGeneratedAdmissionHelpers(FILE *file)
     fputs("}\n\n", file);
 
     fputs("static SparkStatus SparkGeneratedMergeAdmissionDecision(SparkModelDriverAdmissionDecision *destination, const SparkModelDriverAdmissionDecision *source)\n{\n", file);
-    fputs("    if (!SparkGeneratedAdmissionDecisionIsValid(source) || source->accepted == 0u)\n    {\n", file);
+    fputs("    if (SparkModelDriverAdmissionDecisionIsValid(source) == 0u || source->accepted == 0u)\n    {\n", file);
     fputs("        return SPARK_STATUS_ABI_MISMATCH;\n    }\n", file);
     fputs("    if (source->driver_dispatch_slot != SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT)\n    {\n", file);
     fputs("        if (destination->driver_dispatch_slot == SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT)\n        {\n", file);
@@ -865,7 +854,7 @@ static void SparkWriteGeneratedAdmitFunction(
                 fputs("                module_decision.driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;\n", file);
                 fprintf(file, "                status = %s(instance->operation_%u_state, request, &module_decision);\n", resolved_operation->artifact.admit_symbol, operation_index);
                 fputs("                if (status != SPARK_STATUS_OK)\n                {\n                    return status;\n                }\n", file);
-                fputs("                if (!SparkGeneratedAdmissionDecisionIsValid(&module_decision))\n                {\n                    return SPARK_STATUS_ABI_MISMATCH;\n                }\n", file);
+                fputs("                if (SparkModelDriverAdmissionDecisionIsValid(&module_decision) == 0u)\n                {\n                    return SPARK_STATUS_ABI_MISMATCH;\n                }\n", file);
                 fputs("                if (module_decision.accepted == 0u)\n                {\n                    *decision = module_decision;\n                    return SPARK_STATUS_OK;\n                }\n", file);
                 fputs("                status = SparkGeneratedMergeAdmissionDecision(decision, &module_decision);\n", file);
                 fputs("                if (status != SPARK_STATUS_OK)\n                {\n                    return status;\n                }\n", file);
@@ -1030,6 +1019,7 @@ static SparkStatus SparkGenerateDriverSource(
     fputs("#include <stdlib.h>\n", file);
     fputs("#include <string.h>\n\n", file);
     fputs("#include \"sparkpipe/spark_model_driver.h\"\n", file);
+    fputs("#include \"sparkpipe/spark_model_driver_support.h\"\n", file);
     fputs("#include \"sparkpipe/spark_module_abi.h\"\n\n", file);
     SparkWriteGeneratedExterns(file, driver_image);
     SparkWriteGeneratedConfigurations(file, description, driver_image);

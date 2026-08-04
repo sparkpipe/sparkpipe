@@ -82,31 +82,29 @@
     },
     "runtime_contract": {
       "firmware_module_abi": 4,
-      "model_driver_abi": 6,
+      "firmware_host_services_abi": 2,
+      "model_driver_abi": 7,
+      "model_serving_adapter_abi": 9,
+      "model_resident_ipc_abi": 9,
+      "dsv4_node_context_abi": 2,
       "completion": "submit_return",
+      "execution_stream": "one resident-owned nonblocking CUDA stream is supplied at driver creation and must match every submitted frame",
       "fallback_allowed": false,
       "runtime_backend_selection": "forbidden",
       "model_frame_context": "SparkDsv4ResidentDecodeStageFrameContext",
       "driver_dispatch_slot_semantics": "advisory scheduler ticket only; this module rejects DRIVER_DISPATCH_SLOT_VALID",
-      "configuration_source": "strict process environment pending migration into immutable module configuration JSON",
-      "required_environment": [
-        "SPARK_DSV4_ALLOW_UNQUALIFIED_EXECUTION",
-        "SPARK_DSV4_STAGE_PACK_PATH",
-        "SPARK_DSV4_STAGE_COUNT",
-        "SPARK_DSV4_STAGE_INDEX",
-        "SPARK_DSV4_STAGE_FIRST_LAYER",
-        "SPARK_DSV4_STAGE_LAYER_COUNT",
-        "SPARK_DSV4_STAGE_MAX_ACTIVE_SEQUENCES",
-        "SPARK_DSV4_STAGE_MAX_SEQ",
-        "SPARK_DSV4_STAGE_PIPELINE_SLOTS",
-        "SPARK_DSV4_STAGE_MTP",
-        "SPARK_DSV4_STAGE_GRAPHS"
-      ],
+      "resident_sequence_slot_semantics": "batch-local rows are translated by the serving adapter to explicit persistent KV slots; a changed sequence may rebind a slot only at position zero, which resets that slot before execution",
+      "configuration_source": "typed SparkDsv4ResidentDecodeStageNodeContext supplied by the DSV4 serving adapter",
+      "required_environment": [],
       "notes": [
-        "prefill uses a correctness-first serial one-token state transition; bulk prefill is not yet qualified",
+        "production module initialization does not read model geometry, stage-pack paths, or qualification state from process environment",
+        "validation and smoke tools may translate their explicit test arguments into the typed node context",
+        "prefill uses strict round-major wavefront execution so one token from every live sequence runs in one CUDA batch; causal bulk prefill is not yet qualified",
         "MTP execution fails closed until its pass lands",
-        "lane identities are carried by the model-specific decode batch, never by driver_dispatch_slot",
-        "host token input is required only on the embedding stage and host token output only on the head stage"
+        "persistent resident sequence slots are independent of batch lane order and are bounds checked against startup KV capacity",
+        "host token input is required only on the embedding stage and host token output only on the head stage",
+        "the module never creates a private CUDA stream; intermediate boundary production and transport are ordered on the same resident stream",
+        "only the final head synchronizes so host token ids are visible before submit-return completion"
       ]
     }
   },
@@ -118,7 +116,7 @@
         {
           "name": "resident_decode",
           "id": 1,
-          "max_inflight": 1,
+          "max_inflight": 4,
           "completion": "submit_return",
           "scheduling": {
             "flags": [

@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from host_cuda_compiler import host_cuda_cxx
+
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "kv_failure_host.cu"
 BINARY = Path("/tmp") / "lm_kv_failure_host"
@@ -19,7 +21,7 @@ BINARY = Path("/tmp") / "lm_kv_failure_host"
 def main() -> int:
     build = subprocess.run(
         [
-            "g++",
+            host_cuda_cxx(),
             "-std=c++17",
             "-O0",
             f"-I{ROOT}",

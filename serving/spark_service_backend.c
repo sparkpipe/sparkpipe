@@ -37,7 +37,7 @@ SparkStatus SparkServiceBackendLoadInterfaceFromSharedObject(
 	SparkServiceBackendDynamicLibrary *library)
 {
 	void *dynamic_library;
-	SparkGlm52ServiceBackendGetInterfaceFunction get_interface;
+	SparkServiceBackendGetInterfaceFunction get_interface;
 	const SparkServiceBackendInterface *backend_interface;
 	SparkStatus status;
 
@@ -47,7 +47,7 @@ SparkStatus SparkServiceBackendLoadInterfaceFromSharedObject(
 	dynamic_library = dlopen(shared_object_path,RTLD_NOW | RTLD_LOCAL);
 	if (dynamic_library == 0)
 		return SPARK_STATUS_NOT_FOUND;
-	get_interface = (SparkGlm52ServiceBackendGetInterfaceFunction)dlsym(
+	get_interface = (SparkServiceBackendGetInterfaceFunction)dlsym(
 		dynamic_library,
 		SPARK_SERVICE_BACKEND_INTERFACE_SYMBOL);
 	if (get_interface == 0)

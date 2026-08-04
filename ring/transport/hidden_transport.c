@@ -10,7 +10,57 @@ struct SparkHiddenTransportSession
     SparkHiddenTransportEndpoint endpoint;
     SparkHiddenTransportInterface transport_interface;
     void *transport_state;
+    char transport_module_id[512];
+    char route_name[512];
+    char source_host[512];
+    char sink_host[512];
 };
+
+static SparkStatus SparkHiddenTransportCopySessionText(
+    char *destination,
+    uint32_t destination_bytes,
+    const char *source,
+    uint32_t required)
+{
+    uint64_t bytes;
+    if (destination == 0 || destination_bytes == 0u ||
+        (required != 0u && (source == 0 || source[0] == '\0')))
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (source == 0)
+    {
+        destination[0] = '\0';
+        return SPARK_STATUS_OK;
+    }
+    bytes = (uint64_t)strlen(source) + 1u;
+    if (bytes > destination_bytes)
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    memcpy(destination,source,(size_t)bytes);
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenTransportOwnEndpointText(
+    SparkHiddenTransportSession *session,
+    const SparkHiddenTransportEndpoint *endpoint)
+{
+    SparkStatus status;
+    session->endpoint = *endpoint;
+    status = SparkHiddenTransportCopySessionText(session->transport_module_id,
+        sizeof(session->transport_module_id),endpoint->transport_module_id,1u);
+    if (status == SPARK_STATUS_OK)
+        status = SparkHiddenTransportCopySessionText(session->route_name,
+            sizeof(session->route_name),endpoint->route_name,1u);
+    if (status == SPARK_STATUS_OK)
+        status = SparkHiddenTransportCopySessionText(session->source_host,
+            sizeof(session->source_host),endpoint->source_host,0u);
+    if (status == SPARK_STATUS_OK)
+        status = SparkHiddenTransportCopySessionText(session->sink_host,
+            sizeof(session->sink_host),endpoint->sink_host,0u);
+    session->endpoint.transport_module_id = session->transport_module_id;
+    session->endpoint.route_name = session->route_name;
+    session->endpoint.source_host = endpoint->source_host != 0 ? session->source_host : 0;
+    session->endpoint.sink_host = endpoint->sink_host != 0 ? session->sink_host : 0;
+    return status;
+}
 
 static uint32_t SparkHiddenTransportInterfaceRequiresBatchFunctions(
     const SparkHiddenTransportInterface *transport_interface,
@@ -70,6 +120,19 @@ static uint32_t SparkHiddenTransportCapabilitiesMeetSparkGpudirectRdma(
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS;
 }
 
+static void SparkHiddenTransportCopyRouteConfiguration(
+    SparkHiddenTransportEndpoint *destination,
+    const SparkHiddenTransportEndpoint *source)
+{
+    destination->configuration_flags = source->configuration_flags;
+    destination->local_rank_index = source->local_rank_index;
+    destination->source_rank_index = source->source_rank_index;
+    destination->sink_rank_index = source->sink_rank_index;
+    destination->control_port_base = source->control_port_base;
+    destination->source_host = source->source_host;
+    destination->sink_host = source->sink_host;
+}
+
 static void SparkHiddenTransportBuildEffectiveEndpoint(
     const SparkHiddenTransportEndpoint *endpoint,
     const SparkHiddenTransportInterface *transport_interface,
@@ -92,6 +155,7 @@ static void SparkHiddenTransportBuildEffectiveEndpoint(
             endpoint->route_name);
         effective_endpoint->bytes_per_sequence = endpoint->bytes_per_sequence;
         effective_endpoint->max_packet_bytes = endpoint->max_packet_bytes;
+        SparkHiddenTransportCopyRouteConfiguration(effective_endpoint,endpoint);
     }
     else if (transport_interface != 0 &&
         SparkHiddenTransportCapabilitiesMeetSparkHostRdma(
@@ -105,6 +169,7 @@ static void SparkHiddenTransportBuildEffectiveEndpoint(
             endpoint->route_name);
         effective_endpoint->bytes_per_sequence = endpoint->bytes_per_sequence;
         effective_endpoint->max_packet_bytes = endpoint->max_packet_bytes;
+        SparkHiddenTransportCopyRouteConfiguration(effective_endpoint,endpoint);
     }
 }
 
@@ -135,9 +200,16 @@ static uint32_t SparkHiddenTransportStringsEqual(
     return strcmp(left, right) == 0;
 }
 
+static uint32_t SparkHiddenTransportRouteHostIsValid(const char *host)
+{
+    return host != 0 && host[0] != '\0' && strcmp(host,"0.0.0.0") != 0 &&
+        strcmp(host,"::") != 0 && strcmp(host,"*") != 0;
+}
+
 SparkStatus SparkHiddenTransportValidateEndpoint(
     const SparkHiddenTransportEndpoint *endpoint)
 {
+    uint64_t bytes_per_sequence;
     uint64_t maximum_payload_bytes;
 
     if (endpoint == 0)
@@ -178,9 +250,42 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (endpoint->bytes_per_sequence !=
-        (endpoint->hidden_dimension *
-         SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT))
+    if ((endpoint->configuration_flags &
+            ~SPARK_HIDDEN_TRANSPORT_ENDPOINT_KNOWN_FLAGS) != 0u ||
+        endpoint->reserved0 != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((endpoint->configuration_flags &
+            SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION) != 0u)
+    {
+        if (endpoint->local_rank_index > (uint32_t)INT32_MAX ||
+            endpoint->source_rank_index > (uint32_t)INT32_MAX ||
+            endpoint->sink_rank_index > (uint32_t)INT32_MAX ||
+            endpoint->source_rank_index == endpoint->sink_rank_index ||
+            (endpoint->local_rank_index != endpoint->source_rank_index &&
+             endpoint->local_rank_index != endpoint->sink_rank_index) ||
+            endpoint->control_port_base == 0u ||
+            endpoint->control_port_base >
+                UINT16_MAX - endpoint->sink_rank_index ||
+            SparkHiddenTransportRouteHostIsValid(endpoint->source_host) == 0u ||
+            SparkHiddenTransportRouteHostIsValid(endpoint->sink_host) == 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    else if (endpoint->local_rank_index != 0u ||
+        endpoint->source_rank_index != 0u ||
+        endpoint->sink_rank_index != 0u ||
+        endpoint->control_port_base != 0u || endpoint->source_host != 0 ||
+        endpoint->sink_host != 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    bytes_per_sequence = (uint64_t)endpoint->hidden_dimension *
+        SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
+    if (bytes_per_sequence > UINT32_MAX ||
+        endpoint->bytes_per_sequence != bytes_per_sequence)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -478,7 +583,12 @@ SparkStatus SparkHiddenTransportOpen(
     {
         return SPARK_STATUS_INTERNAL_ERROR;
     }
-    session->endpoint = effective_endpoint;
+    status = SparkHiddenTransportOwnEndpointText(session,&effective_endpoint);
+    if (status != SPARK_STATUS_OK)
+    {
+        free(session);
+        return status;
+    }
     session->transport_interface = *transport_interface;
     status = session->transport_interface.initialize(
         &session->endpoint,
@@ -1014,8 +1124,9 @@ static void SparkHiddenTransportInitializeRdmaEndpoint(
     endpoint->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES;
     endpoint->capability_flags = capability_flags;
     endpoint->hidden_dimension = hidden_dimension;
-    endpoint->bytes_per_sequence =
-        hidden_dimension * SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
+    endpoint->bytes_per_sequence = hidden_dimension <=
+        UINT32_MAX / SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT ?
+        hidden_dimension * SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT : 0u;
     endpoint->max_active_sequence_count = max_active_sequence_count;
     endpoint->max_packet_bytes =
         (uint64_t)endpoint->bytes_per_sequence *

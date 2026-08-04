@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from host_cuda_compiler import host_cuda_cxx
+
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "head_host.cu"
 BINARY = Path("/tmp") / "lm_head_host"
@@ -28,7 +30,7 @@ def f32(x):
 
 def build():
     result = subprocess.run(
-        ["g++", "-std=c++17", "-O0", f"-I{ROOT}/tests/host_cuda/shim",
+        [host_cuda_cxx(), "-std=c++17", "-O0", f"-I{ROOT}/tests/host_cuda/shim",
          f"-I{ROOT}/tests/host_cuda", f"-I{ROOT}",
          "-x", "c++", str(SOURCE), "-o", str(BINARY)],
         capture_output=True, text=True)

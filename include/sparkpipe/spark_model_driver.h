@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_SPARK_MODEL_DRIVER_H
-#define SPARKPIPE_SPARK_MODEL_DRIVER_H
+#pragma once
 
 #include <stdint.h>
 
@@ -9,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 6u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 7u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
@@ -204,13 +203,19 @@ typedef struct SparkModelDriverRuntimeSnapshot
 
 typedef struct SparkModelDriverCreateRequest
 {
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t flags;
+    uint32_t reserved0;
     const char *node_id;
     const char *node_target;
     void *node_context;
+    void *execution_stream;
     SparkModelDriverCompletionFunction completion_function;
     void *completion_context;
     SparkModelDriverWakeFunction wake_function;
     void *wake_context;
+    uint64_t reserved[2];
 } SparkModelDriverCreateRequest;
 
 typedef SparkStatus (*SparkModelDriverProgramSubmitFunction)(void *driver_instance, SparkModelDriverFrame *frame);
@@ -254,8 +259,9 @@ typedef struct SparkModelDriverInterface
 
 typedef const SparkModelDriverInterface *(*SparkModelDriverGetInterfaceFunction)(void);
 
+#define SPARK_MODEL_DRIVER_CREATE_REQUEST_BYTES \
+    ((uint32_t)sizeof(SparkModelDriverCreateRequest))
+
 #ifdef __cplusplus
 }
-#endif
-
 #endif

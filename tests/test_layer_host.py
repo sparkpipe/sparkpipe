@@ -21,6 +21,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from host_cuda_compiler import host_cuda_cxx
+
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "layer_host.cu"
 BINARY = Path("/tmp") / "lm_layer_host"
@@ -29,7 +31,7 @@ TOLERANCE = 6e-3   # bf16 storage on both ends of every comparison
 
 def build():
     result = subprocess.run(
-        ["g++", "-std=c++17", "-O0", f"-I{ROOT}", f"-I{ROOT}/tests/host_cuda",
+        [host_cuda_cxx(), "-std=c++17", "-O0", f"-I{ROOT}", f"-I{ROOT}/tests/host_cuda",
          "-x", "c++", str(SOURCE), "-o", str(BINARY)],
         capture_output=True, text=True)
     if result.returncode != 0:

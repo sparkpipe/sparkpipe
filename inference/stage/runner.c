@@ -5,6 +5,7 @@
 
 #include "sparkpipe/spark_mtp_tree.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
+#include "sparkpipe/spark_model_driver_support.h"
 
 static SparkStatus SparkGlm52ProductionRunnerValidateProgram(
     const SparkModelDriverProgramDescriptor *program)
@@ -279,15 +280,15 @@ static SparkStatus SparkGlm52ProductionRunnerAdmit(
         SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_ADMISSION) == 0u )
         return SPARK_STATUS_OK;
     SparkGlm52ProductionRunnerBuildAdmissionRequest(runner, dispatch, &request);
-    memset(&decision, 0, sizeof(decision));
-    decision.descriptor_bytes =
-        ((uint32_t)sizeof(SparkModelDriverAdmissionDecision));
+	SparkModelDriverInitializeAdmissionDecision(&decision);
     status = runner->driver_interface->admit(
         runner->driver_instance,
         &request,
         &decision);
-    if ( status != SPARK_STATUS_OK )
-        return status;
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	if ( SparkModelDriverAdmissionDecisionIsValid(&decision) == 0u )
+		return SPARK_STATUS_ABI_MISMATCH;
     if ( decision.accepted == 0u )
     {
         runner->stats.last_admission_rejection = decision.rejection_reason;
@@ -305,14 +306,9 @@ static SparkStatus SparkGlm52ProductionRunnerAdmit(
             decision.available_dispatch_slot_count,
             decision.private_queue_pressure);
         return SPARK_STATUS_BUSY;
-    }
-    runner->stats.admitted_count += 1u;
-    frame->flags |= SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID;
-    frame->driver_dispatch_slot = decision.driver_dispatch_slot;
-    frame->driver_dispatch_generation = decision.driver_dispatch_generation;
-    frame->driver_dispatch_cookie0 = decision.driver_dispatch_cookie0;
-    frame->driver_dispatch_cookie1 = decision.driver_dispatch_cookie1;
-    return SPARK_STATUS_OK;
+	}
+	runner->stats.admitted_count += 1u;
+	return SparkModelDriverApplyAdmissionDecision(&decision, frame);
 }
 
 SparkStatus SparkResidentDecodeStageProductionRunnerInitialize(

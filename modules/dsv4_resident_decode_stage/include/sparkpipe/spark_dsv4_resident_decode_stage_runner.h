@@ -20,12 +20,12 @@ extern "C" {
     ((uint32_t)sizeof(SparkDsv4StageRunner))
 
 #define SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_ADMISSION 0x00000001u
-#define SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_TRANSPORT 0x00000002u
-#define SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_TRANSPORT 0x00000004u
+#define SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY 0x00000002u
+#define SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY 0x00000004u
 #define SPARK_DSV4_STAGE_RUNNER_KNOWN_FLAGS \
     (SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_ADMISSION | \
-     SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_TRANSPORT | \
-     SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_TRANSPORT)
+     SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY | \
+     SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY)
 
 #define SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL \
     SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL
@@ -38,18 +38,14 @@ typedef struct SparkDsv4StageRunnerConfiguration
     uint32_t descriptor_bytes;
     uint32_t flags;
     uint32_t reserved0;
-    uint32_t stage_index;
-    uint32_t stage_count;
-    uint32_t max_active_sequence_count;
-    uint32_t reserved1;
+	uint32_t stage_index;
+	uint32_t stage_count;
+	uint32_t max_active_sequence_count;
+	uint32_t max_input_row_count;
     const SparkModelDriverInterface *driver_interface;
     void *driver_instance;
     const SparkModelDriverProgramDescriptor *program;
-    SparkDsv4HiddenTransportPostReceiveFunction hidden_input_post_receive_function;
-    SparkDsv4HiddenTransportSendFunction hidden_output_send_function;
     void *execution_stream;
-    void *hidden_input_bf16;
-    uint64_t hidden_input_bytes;
 } SparkDsv4StageRunnerConfiguration;
 
 typedef struct SparkDsv4StageRunnerDispatch
@@ -71,8 +67,10 @@ typedef struct SparkDsv4StageRunnerDispatch
     const uint64_t *row_positions;
     const uint64_t *row_sequence_ids;
     uint32_t *output_token_ids;
-    SparkHiddenTransportSession *hidden_input_transport_session;
-    SparkHiddenTransportSession *hidden_output_transport_session;
+    const void *hidden_input_bf16;
+    uint64_t hidden_input_bytes;
+    void *hidden_output_bf16;
+    uint64_t hidden_output_bytes;
     SparkModelDriverResidencyToken residency;
     SparkModelDriverCompletionFunction completion_function;
     void *completion_context;
@@ -96,18 +94,15 @@ typedef struct SparkDsv4StageRunner
     uint32_t descriptor_bytes;
     uint32_t flags;
     uint32_t stage_index;
-    uint32_t stage_count;
-    uint32_t max_active_sequence_count;
-    uint32_t owns_embedding;
+	uint32_t stage_count;
+	uint32_t max_active_sequence_count;
+	uint32_t max_input_row_count;
+	uint32_t owns_embedding;
     uint32_t owns_final_head;
     const SparkModelDriverInterface *driver_interface;
     void *driver_instance;
     const SparkModelDriverProgramDescriptor *program;
-    SparkDsv4HiddenTransportPostReceiveFunction hidden_input_post_receive_function;
-    SparkDsv4HiddenTransportSendFunction hidden_output_send_function;
     void *execution_stream;
-    void *hidden_input_bf16;
-    uint64_t hidden_input_bytes;
     SparkDsv4StageRunnerStats stats;
 } SparkDsv4StageRunner;
 
