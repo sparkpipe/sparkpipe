@@ -287,9 +287,17 @@ static void SparkDsv4ModuleBuildOrdinals(SparkDsv4ModuleState *state)
 		kind = SparkDsv4ModelLayerKind(layer);
 		state->layer_local_by_layer[layer] = layer - state->first_layer_index;
 		if ( kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA )
+		{
 			state->compress_ordinal_by_layer[layer] = state->compress_layer_count++;
+			state->layers[layer].compressor.ratio = kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA ? SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO : SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO;
+			state->layers[layer].compressor.overlap = kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA ? SPARK_DSV4_MODEL_CSA_OVERLAP_FACTOR : 1u;
+		}
 		if ( kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
+		{
 			state->csa_ordinal_by_layer[layer] = state->csa_layer_count++;
+			state->layers[layer].indexer.compressor.ratio = SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO;
+			state->layers[layer].indexer.compressor.overlap = SPARK_DSV4_MODEL_CSA_OVERLAP_FACTOR;
+		}
 	}
 	state->index_slot_capacity = state->max_sequence_positions / SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO;
 	state->topk_column_count = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS + (SPARK_DSV4_MODEL_INDEX_TOP_K > hca_columns ? SPARK_DSV4_MODEL_INDEX_TOP_K : hca_columns);
