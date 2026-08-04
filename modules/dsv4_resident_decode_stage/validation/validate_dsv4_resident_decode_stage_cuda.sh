@@ -63,7 +63,7 @@ make -C "${repository_root}" \
     -lcudart \
     -ldl \
     -lm \
-    -pthread \
+    -Xcompiler -pthread \
     -o "${validation_directory}/dsv4_resident_decode_stage_validator"
 
 "${validation_directory}/dsv4_resident_decode_stage_validator" "${configuration_hash}"
