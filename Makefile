@@ -276,6 +276,7 @@ PYTHON_TESTS := \
 	tests/test_dsv4_contracts.py \
 	tests/test_dsv4_driver_source_contracts.py \
 	tests/test_dsv4_layer_host.py \
+	tests/test_dsv4_stage_source.py \
 	tests/test_expert_grouping.py \
 	tests/test_fast_defaults.py \
 	tests/test_gemm_k_alignment.py \
