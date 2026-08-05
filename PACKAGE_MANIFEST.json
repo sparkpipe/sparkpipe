@@ -1268,8 +1268,8 @@
     },
     {
       "path": "inference/kernels/tensor_map.cuh",
-      "sha256": "77784a57b86628900016ee1532bd041d7ec287fed4ac01e3405a722c6bed4b3d",
-      "size_bytes": 6147
+      "sha256": "5291e2f3047afb4c1c1a89da0ffeec494fe06ffb2f21d72da322a7efcab4b0bf",
+      "size_bytes": 6362
     },
     {
       "path": "inference/kernels/tile.cuh",
@@ -3043,8 +3043,8 @@
     },
     {
       "path": "tests/test_tensor_map_geometry.c",
-      "sha256": "f98570e1f500b66d3892a6f3bde8558626b9b5ceb6635f88014f173bc197dc1b",
-      "size_bytes": 3949
+      "sha256": "fc558e0bf6fbb03f2a19c0bdcb49a8f71e655bb21df70d54e602756710a7e3be",
+      "size_bytes": 4099
     },
     {
       "path": "tests/test_tokenizer.c",
@@ -3425,5 +3425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6374279
+  "total_bytes": 6374644
 }

@@ -97,8 +97,11 @@ int32_t main(void)
         LM_TM_BITS_FP8, &plan) == LM_TM_ERR_ROW_SWIZZLE,
         "global row stride must remain 16-byte aligned");
     expect(build(8u, 6144u, 1u, 16u, 128u,
+        LM_TM_BITS_FP8, &plan) == LM_TM_OK,
+        "ragged row tail uses TMA out-of-bounds zero fill");
+    expect(build(128u, 64u, 1u, 16u, 128u,
         LM_TM_BITS_FP8, &plan) == LM_TM_ERR_BOX_EXCEEDS,
-        "box taller than tensor rejected");
+        "K tile wider than tensor rejected");
 
     printf("\n%s (%d failing checks)\n",
         failures == 0 ? "PASS" : "FAIL", failures);

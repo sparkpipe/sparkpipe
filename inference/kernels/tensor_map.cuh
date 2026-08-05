@@ -152,8 +152,11 @@ static int32_t LmTensorMapPlanBuild(
     {
         return LM_TM_ERR_BOX_ALIGN;
     }
-    if ((uint64_t)request->box_rows > request->rows ||
-        (uint64_t)box_column_bytes > column_bytes)
+    // A tile may be taller than the logical tensor. TMA bounds-checks global
+    // coordinates and zero-fills those rows, which is required for ragged M
+    // tails smaller than the selected GEMM tile. K remains a model-shape
+    // contract and must fit completely.
+    if ((uint64_t)box_column_bytes > column_bytes)
     {
         return LM_TM_ERR_BOX_EXCEEDS;
     }
