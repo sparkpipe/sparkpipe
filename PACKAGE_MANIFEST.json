@@ -28,8 +28,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "7bc6a05ca4a8829c01c6b0f26ef2460fd45b8326983fff853cded5026c9e1dfe",
-      "size_bytes": 42252
+      "sha256": "9a585d5a99b020b8abb0b0defae746850cc9f2878f9669082e1c93369cdbce76",
+      "size_bytes": 42483
     },
     {
       "path": "PROPOSED_IMPROVEMENTS_README.md",
@@ -3425,5 +3425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6374644
+  "total_bytes": 6374875
 }

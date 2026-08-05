@@ -183,6 +183,7 @@ TEST_NAMES := \
     test_driver_compiler \
     test_orchestrator \
     test_dsv4_stage_runner \
+    test_tensor_map_geometry \
     test_weight_codec \
     test_topology_switch
 
@@ -601,6 +602,9 @@ runtime_completion_tests: build/test_runtime_completion build/test_model_runtime
 build/test_gemm_descriptor_cache: tests/test_gemm_descriptor_cache.cpp tests/cuda_driver_stub/stub.c runtime/gemm_descriptor_cache.h | build
 	$(CXX) -x c++ -Itests/cuda_driver_stub -O2 -Wall -Wextra -c tests/cuda_driver_stub/stub.c -o build/test_gemm_descriptor_cache_stub.o
 	$(CXX) $(CPPFLAGS) -I. -Itests/cuda_driver_stub $(CXXFLAGS) tests/test_gemm_descriptor_cache.cpp build/test_gemm_descriptor_cache_stub.o $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_tensor_map_geometry: tests/test_tensor_map_geometry.c inference/kernels/tensor_map.cuh | build
+	$(CC) $(CPPFLAGS) -I. $(CFLAGS) tests/test_tensor_map_geometry.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_distributed_work: tests/test_distributed_work.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_distributed_work.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
