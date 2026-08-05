@@ -1592,7 +1592,7 @@ static void SparkDsv4ModulePrepareAsync(
 	const uint64_t *lane_next_positions)
 {
 	SparkDsv4AsyncCompletion *async;
-	uint32_t index,output_index;
+	uint32_t index;
 	async = &state->completions[slot_index];
 	memset(async,0,sizeof(*async));
 	async->state = state;
@@ -1607,8 +1607,7 @@ static void SparkDsv4ModulePrepareAsync(
 		async->lane_sequence_ids[index] = lane_sequence_ids[index];
 		async->lane_next_positions[index] = lane_next_positions[index];
 	}
-	output_index = state->owns_embedding != 0u ? 1u : 0u;
-	async->output_token_destination = state->owns_final_head != 0u ? (uint32_t *)frame->buffers[output_index].address : 0;
+	async->output_token_destination = state->owns_final_head != 0u ? (uint32_t *)frame->buffers[1u].address : 0;
 	async->completion.request_id = frame->request_id;
 	async->completion.sequence_id = frame->sequence_id;
 	async->completion.sequence_position = frame->sequence_position;
