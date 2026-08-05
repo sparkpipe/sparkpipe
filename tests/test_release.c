@@ -90,6 +90,7 @@ static void SparkTestReleaseParseResolveAndSync(void)
     SparkReleaseResolvedRole resolved_role;
     SparkReleaseSyncResult sync_result;
     char command_line[4096];
+    char resolved_install_root[SPARK_RELEASE_MAX_PATH_BYTES];
     char install_path[SPARK_RELEASE_MAX_PATH_BYTES];
 
     assert(SparkRemoveDirectoryTree(SPARK_TEST_RELEASE_ROOT) == SPARK_STATUS_OK);
@@ -131,21 +132,33 @@ static void SparkTestReleaseParseResolveAndSync(void)
     assert(strstr(resolved_role.environment[0],"/install/sparkb/lib") != 0);
     assert(SparkReleaseFormatResolvedCommandLine(&resolved_role,command_line,sizeof(command_line)) == SPARK_STATUS_OK);
     assert(strstr(command_line,"--rank 11") != 0);
+    assert(SparkReleaseResolveInstallRoot(
+        &manifest,
+        &identity,
+        resolved_install_root,
+        sizeof(resolved_install_root)) == SPARK_STATUS_OK);
+    assert(strcmp(
+        resolved_install_root,
+        SPARK_TEST_RELEASE_ROOT "/install/sparkb") == 0);
 
     assert(SparkReleaseSyncFilesFromDirectory(
         &manifest,
         SPARK_TEST_RELEASE_ROOT "/release",
-        SPARK_TEST_RELEASE_ROOT "/installed",
+        resolved_install_root,
         &sync_result) == SPARK_STATUS_OK);
     assert(sync_result.verified_file_count == 2u);
     assert(sync_result.changed_file_count == 2u);
     assert(sync_result.executable_file_count == 1u);
-    snprintf(install_path,sizeof(install_path),"%s/installed/bin/rank_daemon",SPARK_TEST_RELEASE_ROOT);
+    assert(SparkJoinPath(
+        resolved_install_root,
+        "bin/rank_daemon",
+        install_path,
+        sizeof(install_path)) == SPARK_STATUS_OK);
     assert(SparkPathExists(install_path));
     assert(SparkReleaseSyncFilesFromDirectory(
         &manifest,
         SPARK_TEST_RELEASE_ROOT "/release",
-        SPARK_TEST_RELEASE_ROOT "/installed",
+        resolved_install_root,
         &sync_result) == SPARK_STATUS_OK);
     assert(sync_result.verified_file_count == 2u);
     assert(sync_result.changed_file_count == 0u);

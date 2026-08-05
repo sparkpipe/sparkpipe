@@ -882,6 +882,26 @@ static SparkStatus SparkReleaseResolveCommandPath(
     }
 }
 
+SparkStatus SparkReleaseResolveInstallRoot(
+    const SparkReleaseManifest *manifest,
+    const SparkReleaseNodeIdentity *identity,
+    char *install_root,
+    uint32_t install_root_bytes)
+{
+    if (manifest == 0 || identity == 0 || install_root == 0 ||
+        install_root_bytes == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SparkReleaseExpandTemplate(
+        manifest->install_root,
+        manifest,
+        identity,
+        0,
+        install_root,
+        install_root_bytes);
+}
+
 SparkStatus SparkReleaseResolveRole(
     const SparkReleaseManifest *manifest,
     const SparkReleaseNodeIdentity *identity,
