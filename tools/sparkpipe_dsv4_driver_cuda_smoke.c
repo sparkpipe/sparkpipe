@@ -194,6 +194,9 @@ static int SparkDsv4DriverCudaSmokeRun(
 	node_context.resident_sequence_capacity = max_active_sequence_count;
 	node_context.pipeline_slot_count = pipeline_slot_count;
 	node_context.max_sequence_positions = max_sequence_positions;
+	node_context.linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC;
+	node_context.expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC;
+	node_context.kv_cache_codec = SPARK_DSV4_MODEL_KV_CACHE_CODEC;
 	node_context.stage_pack_path = stage_pack_path;
 	create_request.node_id = "spark0";
 	create_request.node_target = expected_target;

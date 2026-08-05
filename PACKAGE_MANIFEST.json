@@ -2483,8 +2483,8 @@
     },
     {
       "path": "tests/test_dsv4_driver_source_contracts.py",
-      "sha256": "ef3e5c1bf0189a61de817f85c6c2c06e394f3b4bfd83e4fc899115dc8351bb22",
-      "size_bytes": 5195
+      "sha256": "0ed0f5702c6a145bb286d166cef47a1ab29288077d2ff16eb1f78bae1d601f6d",
+      "size_bytes": 5655
     },
     {
       "path": "tests/test_dsv4_module_host_syntax.py",
@@ -3373,8 +3373,8 @@
     },
     {
       "path": "tools/sparkpipe_dsv4_driver_cuda_smoke.c",
-      "sha256": "4f4eb8a0999a2134248925df991894b512ea239a728d9ba7edc8cdf4e3981487",
-      "size_bytes": 12291
+      "sha256": "01db5266b219c75a3a210cc42170ce727a8013a4f8c155ccb77670ee7df68105",
+      "size_bytes": 12507
     },
     {
       "path": "tools/sparkpipe_glm52_tokenize.c",
@@ -3425,5 +3425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6375741
+  "total_bytes": 6376417
 }
