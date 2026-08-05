@@ -21,6 +21,7 @@ typedef struct SparkDsv4DriverCudaSmokeState
 	uint32_t receive_count;
 	uint32_t send_count;
 	uint32_t nonzero_hidden_count;
+	uint32_t output_token_id;
 	uint32_t completion_count;
 	SparkModelDriverCompletion completion;
 } SparkDsv4DriverCudaSmokeState;
@@ -98,6 +99,7 @@ static int SparkDsv4DriverCudaSmokeRun(
 	int result = 1;
 
 	memset(&state,0,sizeof(state));
+	state.output_token_id = UINT32_MAX;
 	input_error = cudaStreamCreateWithFlags(
 		&state.execution_stream,cudaStreamNonBlocking);
 	if ( input_error != cudaSuccess )
@@ -254,6 +256,7 @@ static int SparkDsv4DriverCudaSmokeRun(
 	dispatch.hidden_input_bytes = stage_index != 0u ? hidden_input_bytes : 0u;
 	dispatch.hidden_output_bf16 = stage_index + 1u < stage_count ? state.hidden_output_device : 0;
 	dispatch.hidden_output_bytes = stage_index + 1u < stage_count ? hidden_input_bytes : 0u;
+	dispatch.output_token_ids = stage_index + 1u == stage_count ? &state.output_token_id : 0;
 	dispatch.completion_function = SparkDsv4DriverCudaSmokeCompletion;
 	dispatch.completion_context = &state;
 	status = SparkDsv4StageRunnerSubmit(&runner,&dispatch);
@@ -281,9 +284,10 @@ static int SparkDsv4DriverCudaSmokeRun(
 		state.send_count != (stage_index + 1u < stage_count ? 1u : 0u) ||
 		state.receive_count != (stage_index != 0u ? 1u : 0u) ||
 		(stage_index + 1u < stage_count && state.nonzero_hidden_count == 0u) ||
+		(stage_index + 1u == stage_count && state.output_token_id >= SPARK_DSV4_MODEL_VOCAB_COUNT) ||
 		runner.stats.submitted_count != 1u )
 	{
-		fprintf(stderr,"dsv4_driver_smoke execute=%s completion=%u status=%s sends=%u nonzero=%u\n",SparkStatusToString(status),state.completion_count,SparkStatusToString(state.completion.status),state.send_count,state.nonzero_hidden_count);
+		fprintf(stderr,"dsv4_driver_smoke execute=%s completion=%u status=%s sends=%u nonzero=%u output_token=%u\n",SparkStatusToString(status),state.completion_count,SparkStatusToString(state.completion.status),state.send_count,state.nonzero_hidden_count,state.output_token_id);
 		goto destroy;
 	}
 	status = driver.interface->snapshot(driver_instance,program->program_id,&snapshot);
@@ -293,7 +297,7 @@ static int SparkDsv4DriverCudaSmokeRun(
 		fprintf(stderr,"dsv4_driver_smoke snapshot=%s submitted=%llu completed=%llu active=%u\n",SparkStatusToString(status),(unsigned long long)snapshot.submitted_count,(unsigned long long)snapshot.completed_count,snapshot.active_submission_count);
 		goto destroy;
 	}
-	printf("dsv4_driver_cuda_smoke PASS sends=%u nonzero_hidden=%u submitted=%llu completed=%llu\n",state.send_count,state.nonzero_hidden_count,(unsigned long long)snapshot.submitted_count,(unsigned long long)snapshot.completed_count);
+	printf("dsv4_driver_cuda_smoke PASS sends=%u nonzero_hidden=%u output_token=%u submitted=%llu completed=%llu\n",state.send_count,state.nonzero_hidden_count,state.output_token_id,(unsigned long long)snapshot.submitted_count,(unsigned long long)snapshot.completed_count);
 	result = 0;
 destroy:
 	driver.interface->destroy(driver_instance);

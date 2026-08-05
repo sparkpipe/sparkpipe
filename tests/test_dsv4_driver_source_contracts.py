@@ -77,6 +77,9 @@ def main() -> None:
 	require(runner, "buffers[buffer_count].address = (void *)dispatch->token_ids;", "all-stage token driver buffer")
 	require(module, "slot->host_input_token_ids[row] = token_ids[row];", "all-stage token staging")
 	require(module, "token_ids = (const uint32_t *)frame->buffers[0].address;", "decode token routing input")
+	require(module, "frame->buffers[1u].address", "final token output publication")
+	reject(module, "state->owns_embedding != 0u ? 1u : 0u", "embedding-dependent output slot")
+	require(driver_smoke, "dispatch.output_token_ids =", "final-head driver smoke output")
 	reject(adapter + runner + module, "stage_index == 0u ? submission->token_ids", "stage-zero-only token routing")
 	moe = function_body(module, "SparkDsv4ModuleRunMoeRouted(")
 	if moe.count("SparkDsv4LaunchExpertUp(") != 2 or moe.count("SparkDsv4LaunchExpertDown(") != 1:
