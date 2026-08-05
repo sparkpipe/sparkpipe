@@ -2508,8 +2508,8 @@
     },
     {
       "path": "tests/test_dsv4_stagepack.py",
-      "sha256": "d94a07b35a940bdb168161f6c90705f0b34b7f343625bacb8a4e7f475e25d26c",
-      "size_bytes": 3754
+      "sha256": "8f8aac2a3f39ac05ad7fa9ce676794a4ec7ac21118f5ced0de4b38a3e75cce01",
+      "size_bytes": 3814
     },
     {
       "path": "tests/test_expert_grouping.py",
@@ -3123,8 +3123,8 @@
     },
     {
       "path": "tools/dsv4_stagepack.py",
-      "sha256": "df6ec27ced24de91012b306ebeb14c4faf5f14410fb642b573d9da1c2c0d0367",
-      "size_bytes": 31075
+      "sha256": "e18a0169edbd9d188d919dc0c7f5d14d60e2bc0f570eb954daf532d0800fcd51",
+      "size_bytes": 31104
     },
     {
       "path": "tools/gates.sh",
@@ -3425,5 +3425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6373203
+  "total_bytes": 6373292
 }

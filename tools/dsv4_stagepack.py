@@ -691,7 +691,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    if not args.inspect and args.output is None:
+    if args.verify_pack is None and not args.inspect and args.output is None:
         print("dsv4_stagepack: --output is required unless --inspect is used", file=sys.stderr)
         return 2
     try:

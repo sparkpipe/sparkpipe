@@ -86,6 +86,7 @@ def main() -> int:
         assert result["first_layer"] == 40
         assert result["layer_count"] == 3
         assert result["expert_weight_codec_id"] == pack.CODEC_IDS["mxfp4_e2m1"]
+        assert pack.main(["--verify-pack", str(path)]) == 0
         with path.open("r+b") as file:
             file.seek(pack.HEADER_STRUCT.size + 20)
             file.write(b"\1")
