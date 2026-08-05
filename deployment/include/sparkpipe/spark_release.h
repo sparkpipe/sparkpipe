@@ -147,6 +147,11 @@ SparkStatus SparkReleaseResolveRole(
     const SparkReleaseNodeIdentity *identity,
     const SparkReleaseRole *role,
     SparkReleaseResolvedRole *resolved_role);
+SparkStatus SparkReleaseResolveInstallRoot(
+    const SparkReleaseManifest *manifest,
+    const SparkReleaseNodeIdentity *identity,
+    char *install_root,
+    uint32_t install_root_bytes);
 SparkStatus SparkReleaseSyncFilesFromDirectory(
     const SparkReleaseManifest *manifest,
     const char *release_directory,

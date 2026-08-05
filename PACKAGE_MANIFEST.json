@@ -83,8 +83,8 @@
     },
     {
       "path": "deployment/include/sparkpipe/spark_release.h",
-      "sha256": "e19a7e70692778a2735984f9ab6a6533b41929420fe8f04ad2fbe881dfd787d9",
-      "size_bytes": 5912
+      "sha256": "774a1c62b69a230a3c9dda27ac77ec4b57cd1dcd5d6b269bbed18c5746cdc3fe",
+      "size_bytes": 6102
     },
     {
       "path": "deployment/src/spark_hardware_topology_tables.c",
@@ -93,13 +93,13 @@
     },
     {
       "path": "deployment/src/spark_release.c",
-      "sha256": "417fea2ef94ae7766025c5d6f9e1bfcd321557bcb4b9102eee4ad2ff41e87f30",
-      "size_bytes": 41661
+      "sha256": "e29c9659f1febaeb87a18c92c30266989dbc1a23f129df7be47059a24afd0a19",
+      "size_bytes": 42179
     },
     {
       "path": "deployment/tools/sparkpipe_release_manager.c",
-      "sha256": "e4073a4f92576e18c1e1a4cb9d1c10e8bab80706e2a2fbc8728d6de668b4f97e",
-      "size_bytes": 43412
+      "sha256": "7724e8f7929197e75f2637bd83438bb0a8551a1e66dc56ffc6aa34d1be4958da",
+      "size_bytes": 43963
     },
     {
       "path": "docs/AUDIT_2026-07-29_BANDWIDTH_PATH.md",
@@ -2953,8 +2953,8 @@
     },
     {
       "path": "tests/test_release.c",
-      "sha256": "f2102bd3a997b9ff1a9eb3a83b50ad82c4e4652f09cfb2680e1f48dcc83ac847",
-      "size_bytes": 7955
+      "sha256": "763ed71a37d50be5ead26b65c3f59cf94f3691edfe9d8a6626d39a10ec1c1895",
+      "size_bytes": 8320
     },
     {
       "path": "tests/test_release_assemble.py",
@@ -3430,5 +3430,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6378103
+  "total_bytes": 6379727
 }

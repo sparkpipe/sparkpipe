@@ -854,6 +854,8 @@ static SparkStatus SparkReleaseManagerRunAgentOnce(SparkReleaseManagerAgentConfi
     SparkReleaseSyncResult sync_result;
     char manifest_path[SPARK_RELEASE_MAX_PATH_BYTES];
     char command_line[SPARK_RELEASE_MANAGER_COMMAND_LINE_BYTES];
+    char resolved_install_directory[SPARK_RELEASE_MAX_PATH_BYTES];
+    const char *install_directory;
     SparkStatus status;
     char manifest_sha256[SPARK_SHA256_HEX_BYTES];
     uint32_t role_alive;
@@ -917,7 +919,25 @@ static SparkStatus SparkReleaseManagerRunAgentOnce(SparkReleaseManagerAgentConfi
     {
         return status;
     }
-    status = SparkReleaseSyncFilesFromDirectory(&manifest,source_directory,configuration->install_directory,&sync_result);
+    install_directory = configuration->install_directory;
+    if (install_directory == 0)
+    {
+        status = SparkReleaseResolveInstallRoot(
+            &manifest,
+            &identity,
+            resolved_install_directory,
+            sizeof(resolved_install_directory));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        install_directory = resolved_install_directory;
+    }
+    status = SparkReleaseSyncFilesFromDirectory(
+        &manifest,
+        source_directory,
+        install_directory,
+        &sync_result);
     if (status != SPARK_STATUS_OK)
     {
         return status;
