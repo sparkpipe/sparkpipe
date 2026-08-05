@@ -56,6 +56,7 @@ def main() -> None:
 	adapter = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c")
 	validator = read("modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu")
 	validator_script = read("modules/dsv4_resident_decode_stage/validation/validate_dsv4_resident_decode_stage_cuda.sh")
+	driver_smoke = read("tools/sparkpipe_dsv4_driver_cuda_smoke.c")
 	require(header, "Generated from the exact source revision", "generated model contract")
 	require(header, "SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1", "package expert codec")
 	require(header, "SPARK_DSV4_MODEL_LAYER_KIND_INVALID UINT32_MAX", "invalid layer sentinel")
@@ -93,6 +94,9 @@ def main() -> None:
 	):
 		require(validator, name, "stage-specific CUDA validation configuration")
 	require(validator, "frame->frame.completion_function = SparkDsv4ValidationCompletion", "validator external completion")
+	require(driver_smoke, "node_context.linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC", "driver smoke linear codec binding")
+	require(driver_smoke, "node_context.expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC", "driver smoke expert codec binding")
+	require(driver_smoke, "node_context.kv_cache_codec = SPARK_DSV4_MODEL_KV_CACHE_CODEC", "driver smoke KV codec binding")
 	reject(validator, "node_context->stage_count = 2u", "hardcoded validator topology")
 	reject(validator + validator_script + module, "ALLOW_UNQUALIFIED", "runtime qualification bypass")
 	require(validator_script, "-lcuda", "CUDA Driver API validator link")
