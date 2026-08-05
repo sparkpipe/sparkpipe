@@ -718,13 +718,13 @@
     },
     {
       "path": "examples/deployments/dsv4_flash_pp13_host_rdma.json",
-      "sha256": "da1e52d3f2a21083f36b10460646fa91e0f1e41cebb8b763b2e171501180ffc6",
-      "size_bytes": 6834
+      "sha256": "10d569db732fdc2484595052755bcd035062b50cfbac035293453df65db208a4",
+      "size_bytes": 6807
     },
     {
       "path": "examples/deployments/dsv4_flash_pp13_host_rdma.spec.json",
-      "sha256": "471d8cda47e16c08c4ccd504a67cd58bbc0736e4931943cc7add94d1cc2d16e6",
-      "size_bytes": 1284
+      "sha256": "2e55f373fa713ebb009f9056cb8cd530b51b33ec6aa8484f89605c89b0bc847f",
+      "size_bytes": 1257
     },
     {
       "path": "examples/model_descriptions/dsv4_resident_decode_stage_firmware.json",
@@ -2533,8 +2533,8 @@
     },
     {
       "path": "tests/test_generate_model_resident_deployment.py",
-      "sha256": "3ebc07fec2e046a9870c4ff7aeed41f1d53ca74b658436c9b600c8a54b7e272a",
-      "size_bytes": 2614
+      "sha256": "e72493c129d498f96b7ad716e5a1ddeaed4d310cd7f5eb6492b16fc41637a843",
+      "size_bytes": 2867
     },
     {
       "path": "tests/test_glm52_dspark.c",
@@ -2828,8 +2828,8 @@
     },
     {
       "path": "tests/test_model_resident_deployment.c",
-      "sha256": "dd13996c5df7ebf0bac110fe1fcf262f9d26ce5047aaf252c625ad15908130b2",
-      "size_bytes": 4097
+      "sha256": "487a5acef424e5b0b39d639375cb711c10a66272323bc89f8f9021495545f361",
+      "size_bytes": 4278
     },
     {
       "path": "tests/test_model_resident_end_to_end.c",
@@ -3425,5 +3425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6376784
+  "total_bytes": 6377164
 }

@@ -37,6 +37,11 @@ def main() -> int:
     specification = module.load_specification(SPECIFICATION)
     rendered = module.render_deployment(module.build_deployment(specification))
     assert rendered == DEPLOYMENT.read_text(encoding="utf-8")
+    deployment = module.build_deployment(specification)
+    assert deployment["adapter"]["shared_object_path"] == (
+        "lib/model_serving_adapter.so")
+    assert deployment["transport"]["shared_object_path"] == (
+        "lib/hidden_transport.so")
     source = TOOL.read_text(encoding="utf-8").lower()
     for forbidden in ("glm", "dsv", "codec", "int8", "fp8", "mxfp4"):
         assert forbidden not in source
