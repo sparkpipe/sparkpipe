@@ -1973,8 +1973,8 @@
     },
     {
       "path": "runtime/gemm.cuh",
-      "sha256": "e63bb8997a4e9d8ccefd3004fa1e3e8ea6ceeb9ebdacd076754ba3910be51e96",
-      "size_bytes": 15827
+      "sha256": "e61f8cc29ca15171ffa1d7160aa95a5b4f4973cf633103d52535ea8502050c8a",
+      "size_bytes": 16153
     },
     {
       "path": "runtime/gemm_descriptor_cache.h",
@@ -2448,8 +2448,8 @@
     },
     {
       "path": "tests/test_cuda_performance_contracts.py",
-      "sha256": "02e97f6125b55569b0436983bf853f41733e66cbd94df9e14a47f7d461b22841",
-      "size_bytes": 17441
+      "sha256": "07b1783cefb7b2619abe7a82ce10fb8000fb40ac45306e005f1b55d6526c59c7",
+      "size_bytes": 17539
     },
     {
       "path": "tests/test_dequant.c",
@@ -3425,5 +3425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6373292
+  "total_bytes": 6373716
 }

@@ -150,23 +150,16 @@ static cudaError_t LmGemmLaunchTile(
 // (runtime/gemm_descriptor_cache.h). The request fully determines the
 // descriptor bytes, so a cache hit is what cuTensorMapEncodeTiled would have
 // returned and steady-state decode performs zero driver encodes per token.
-static int32_t LmGemmEncodeMapsSplit(
+static int32_t LmGemmEncodeActivationMap(
     CUtensorMap *activation,
-    CUtensorMap *weight,
     const void *activation_bytes,
-    const void *weight_bytes,
     uint32_t activation_rows,
     uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t group_count,
     uint32_t tile_m,
-    uint32_t tile_n,
     uint32_t tile_k,
-    uint32_t activation_bits,
-    uint32_t weight_bits)
+    uint32_t activation_bits)
 {
     LmTensorMapRequest request;
-    int32_t status;
 
     memset(&request, 0, sizeof(request));
     request.global_address = activation_bytes;
@@ -176,9 +169,20 @@ static int32_t LmGemmEncodeMapsSplit(
     request.box_rows = tile_m;
     request.box_columns = tile_k;
     request.element_bits = activation_bits;
-    status = LmGemmTensorMapCached(activation, &request);
-    if (status != LM_TM_ENCODE_OK)
-        return status;
+    return LmGemmTensorMapCached(activation, &request);
+}
+
+static int32_t LmGemmEncodeWeightMap(
+    CUtensorMap *weight,
+    const void *weight_bytes,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t group_count,
+    uint32_t tile_n,
+    uint32_t tile_k,
+    uint32_t weight_bits)
+{
+    LmTensorMapRequest request;
 
     memset(&request, 0, sizeof(request));
     request.global_address = weight_bytes;
@@ -312,19 +316,28 @@ static int32_t LmGemmLaunchAsymmetric(
     if (status != LM_LAUNCH_OK)
         return status;
 
-    status = LmGemmEncodeMapsSplit(
-        &activation_map,
+    memset(&activation_map, 0, sizeof(activation_map));
+    if constexpr ( !INDIRECT_A )
+    {
+        status = LmGemmEncodeActivationMap(
+            &activation_map,
+            activation_bytes,
+            packed_rows,
+            input_dimension,
+            plan.tile_m,
+            TILE_K,
+            FormatA::kStoredBits);
+        if (status != LM_TM_ENCODE_OK)
+            return LM_LAUNCH_ERR_MAP;
+    }
+    status = LmGemmEncodeWeightMap(
         &weight_map,
-        activation_bytes,
         weight_bytes,
-		INDIRECT_A ? tokens : packed_rows,
         input_dimension,
         output_dimension,
         group_count,
-        plan.tile_m,
         TILE_N,
         TILE_K,
-        FormatA::kStoredBits,
         FormatB::kStoredBits);
     if (status != LM_TM_ENCODE_OK)
         return LM_LAUNCH_ERR_MAP;

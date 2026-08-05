@@ -334,6 +334,7 @@ def validate_grouped_moe_contract() -> None:
     require(gemm, "const uint32_t *source_row_map;", "GEMM source-row map")
     require(gemm, "LmPipelineProduceIndirectA<FormatA>", "GEMM direct indexed activation stage")
     require(runtime, "LmGemmWeightOnlyIndirectLaunch(", "weight-only indirect launcher")
+    require(runtime, "if constexpr ( !INDIRECT_A )", "indirect GEMM skips unused activation map")
     require(glm, "gemm.source_row_map = buffers->route_source_token;", "GLM route-to-GEMM binding")
     forbid(glm, "LmGatherRowsKernel", "GLM gathered activation buffer")
 
