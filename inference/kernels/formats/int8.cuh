@@ -2,17 +2,15 @@
 
 // INT8. Eight bits stored, decoded to BF16.
 //
-// The format W8LUT was for, done directly. W8LUT stored an 8-bit index into a
-// per-block 256-entry lookup table - a learned codebook rather than a linear
-// scale - which costs a table read per value and a pack format nothing else
-// understands, in exchange for accuracy INT8 already has:
+// Direct symmetric codes with one scale per 128 values keep the stored format
+// generic and make decode a scale operation. The retained comparison is:
 //
 //     format   blk   error    coded bits
 //     FP8       -    2.57%      8.06
 //     INT8     128   0.647%     7.656
 //
-// Four times better than FP8 at fewer bits, with a scale instead of a table.
-// That is why W8LUT is gone and this is here.
+// This is four times lower error than the measured FP8 reference at fewer
+// coded bits.
 //
 // INT8 CANNOT USE THE FREE DEQUANT. BF16 has exactly seven mantissa bits, so an
 // eight-bit code overflows into the exponent and comes out doubled -
@@ -22,7 +20,7 @@
 // That is an argument for INT7 rather than against INT8: 1.304 percent at 6.651
 // coded bits, free to decode, against 0.647 percent at 7.656 bits that is not.
 // Which one wins depends on whether the weight stream or the error budget is the
-// binding constraint, and both are here so the choice is a config line.
+// binding constraint. Both are peer package codecs; neither is a default.
 
 #include "inference/kernels/mma.cuh"
 

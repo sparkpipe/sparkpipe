@@ -72,7 +72,7 @@ git fetch upstream
 git switch codex/b1024-jit-kv-integration
 make clean
 make -j test
-make -j build/sparkpipe_glm52_cuda_residentd \
+make -j build/sparkpipe_model_residentd \
   build/sparkpipe_glm52_cuda_resident_gate \
   build/sparkpipe_glm52_kv_jit_budget \
   glm52_pp13_service_backend

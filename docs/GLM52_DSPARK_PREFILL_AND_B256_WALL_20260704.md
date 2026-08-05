@@ -68,7 +68,7 @@ either.
 ## DSpark draft backend (modules/glm52_dspark_draft_backend)
 
 Implements the `SparkGlm52DsparkDraftFunction` boundary from
-GLM52_DSPARK_SPECULATIVE_DECODE_20260703.md as a self-contained CUDA module:
+the historical DSpark implementation as a self-contained CUDA module:
 C safetensors loader over spark_json (mmap, per-tensor shape/dtype checks,
 device upload), qwen3 draft layers per the manifest-validated contract
 (per-head q/k/v rms norm, rope, SwiGLU), five-tap fusion fc over a

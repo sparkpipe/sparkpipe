@@ -104,7 +104,7 @@ effective tokens/step = 1 + a1 + a1*a2.
 ### L3. DSpark draft backend (largest single-stream lever)
 
 The scheduler, request API states, tap ABI, and equal-length verify-lane
-packing are done (`GLM52_DSPARK_SPECULATIVE_DECODE_20260703.md`); the doc's own
+packing were completed in the historical DSpark implementation; its own
 "current boundary" is the missing C/CUDA draft network under
 `SparkGlm52DsparkDraftFunction`. A verify lane of up to 7 tokens costs
 approximately one weight sweep, so committed tokens per sweep multiply by

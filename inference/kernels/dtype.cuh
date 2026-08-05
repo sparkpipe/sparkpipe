@@ -3,12 +3,9 @@
 // Element formats and their conversions. One definition per format, used by
 // every kernel and every model family.
 //
-// This file exists because the old tree had the same conversion written four
-// times: SparkGlm52ResidentDecodeStageEncodeFp8E4m3Saturate, SparkLmEncodeE2m1,
-// a lambda inside the W8LUT builder, and a fourth in the dspark draft backend.
-// Four copies of a rounding rule is four chances for the quantiser and the
-// dequantiser to disagree, and that disagreement is invisible in output that
-// still looks like text.
+// Keeping each rounding rule here gives packers and model kernels one numeric
+// contract. Duplicate conversion code can let quantisation and dequantisation
+// disagree while still producing plausible output.
 //
 // Every conversion here is exact and total. No clamping that hides a range
 // error, no default case that silently produces zero. A value that cannot be

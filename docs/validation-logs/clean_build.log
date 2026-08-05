@@ -1,3 +1,0 @@
-/Library/Developer/CommandLineTools/usr/bin/make -C modules/glm52_w8lut_quality_weights clean
-rm -rf build
-rm -rf build
