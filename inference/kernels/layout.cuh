@@ -21,6 +21,7 @@
 #define LM_SMEM_SM_TOTAL 131072u
 
 #define LM_SWIZZLE_CHUNK_BYTES 16u
+#define LM_SWIZZLE_SECTOR_BYTES 128u
 
 static __host__ __device__ constexpr uint32_t LmTileBytes(uint32_t rows, uint32_t depth, uint32_t element_bits)
 {
@@ -37,6 +38,16 @@ static __host__ __device__ constexpr uint32_t LmSwizzleSpanFor(uint32_t row_pitc
 	return((row_pitch_bytes % 128u) == 0u ? 128u
 		: (row_pitch_bytes % 64u) == 0u ? 64u
 		: (row_pitch_bytes % 32u) == 0u ? 32u : 0u);
+}
+
+// TMA derives the xor selector from the row's 128-byte sector, not from the
+// row number. Those are equal only for a 128-byte pitch: 64-byte rows advance
+// every two rows and 32-byte rows every four. The old row-mod-span shortcut
+// therefore corrupted every sub-128-byte weight tile while BF16/FP8 passed.
+static __host__ __device__ constexpr uint32_t LmSwizzleRowSelector(uint32_t row, uint32_t row_pitch_bytes, uint32_t span_bytes)
+{
+	return(((row * row_pitch_bytes) / LM_SWIZZLE_SECTOR_BYTES)
+		% (span_bytes / LM_SWIZZLE_CHUNK_BYTES));
 }
 
 static __host__ __device__ constexpr bool LmTileKIsSwizzleable(uint32_t tile_k, uint32_t element_bits)

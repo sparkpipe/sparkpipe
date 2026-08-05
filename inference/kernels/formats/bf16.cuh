@@ -39,6 +39,6 @@ struct LmBf16Format
 	}
 	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float)
 	{
-		return(*(const uint32_t *)(tile + LmSwizzledOffset(row,0u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes)) + (k * 2u)));
+		return(*(const uint32_t *)(tile + LmSwizzledOffset(row,k * 2u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes))));
 	}
 };

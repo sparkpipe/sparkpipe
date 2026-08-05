@@ -7,6 +7,8 @@
 #include <math.h>
 #include <stdint.h>
 
+#include "inference/kernels/activation.cuh"
+
 /*
  * Shared device kernels for the sparkpipe model-driver family.
  *
@@ -487,7 +489,7 @@ static __global__ void SparkLmEmbeddingGatherKernel(const uint32_t *token_ids, c
 		SparkLmFloatToBf16(hidden_bf16,destination_offset + element,SparkLmBf16ToFloat(embedding_bf16,source_offset + element));
 }
 
-template <uint32_t GROUP_SIZE>
+template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE>
 static __global__ void SparkLmLinearKernel(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
 	extern __shared__ float shared_input[];
@@ -507,6 +509,11 @@ static __global__ void SparkLmLinearKernel(uint32_t weight_format, const void *w
 	for (element = ((input_dimension >> 1u) << 1u) + threadIdx.x; element < input_dimension; element += blockDim.x)
 		shared_input[element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + element);
 	__syncthreads();
+	if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 )
+	{
+		LmActivationFp8QdqFloatRow<ACTIVATION_CODEC>(shared_input,input_dimension);
+		__syncthreads();
+	}
 	neuron = neuron_base + warp;
 	if ( neuron >= output_dimension )
 		return;
@@ -1728,7 +1735,7 @@ static __device__ __forceinline__ void SparkLmTileStageWeightProducerHalf(
  * gathered rows. Missing rows and neurons stage zeros; stores are
  * guarded, so any slot count and output width are served.
  */
-template <uint32_t GROUP_SIZE>
+template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC>
 static __device__ void SparkLmExpertTileBodyAllWarps(
     uint32_t weight_format,
     const void *weight_payload,
@@ -1781,14 +1788,10 @@ static __device__ void SparkLmExpertTileBodyAllWarps(
          k_base < input_dimension;
          k_base += SPARK_LM_TILE_K)
     {
-        SparkLmTileStageInput(
-            input_bf16,
-            input_row_map,
-            slot_base,
-            slot_count,
-            k_base,
-            input_dimension,
-            tile_input);
+		if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 )
+			LmActivationStageFp8Qdq<SPARK_LM_TILE,SPARK_LM_TILE_K,false,ACTIVATION_CODEC>(input_bf16,input_row_map,slot_count,slot_base,slot_count,k_base,input_dimension,tile_input,0u,SPARK_LM_CTA_WARPS);
+		else
+			SparkLmTileStageInput(input_bf16,input_row_map,slot_base,slot_count,k_base,input_dimension,tile_input);
         SparkLmTileStageWeightAll<GROUP_SIZE>(
             weight_format,
             weight_payload,
@@ -1846,7 +1849,7 @@ static __device__ void SparkLmExpertTileBodyAllWarps(
     }
 }
 
-template <uint32_t GROUP_SIZE>
+template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC>
 static __device__ void SparkLmExpertTileBodySoftwarePipelined(
     uint32_t weight_format,
     const void *weight_payload,
@@ -1897,14 +1900,10 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
 
     warp_index = threadIdx.x / SPARK_LM_WARP_LANES;
     current_buffer = 0u;
-    SparkLmTileStageInput(
-        input_bf16,
-        input_row_map,
-        slot_base,
-        slot_count,
-        0u,
-        input_dimension,
-        tile_input[current_buffer]);
+	if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 )
+		LmActivationStageFp8Qdq<SPARK_LM_TILE,SPARK_LM_TILE_K,false,ACTIVATION_CODEC>(input_bf16,input_row_map,slot_count,slot_base,slot_count,0u,input_dimension,tile_input[current_buffer],0u,SPARK_LM_CTA_WARPS);
+	else
+		SparkLmTileStageInput(input_bf16,input_row_map,slot_base,slot_count,0u,input_dimension,tile_input[current_buffer]);
     SparkLmTileStageWeightAll<GROUP_SIZE>(
         weight_format,
         weight_payload,
@@ -1950,15 +1949,10 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
         }
         else if (next_k_base < input_dimension)
         {
-            SparkLmTileStageInputProducerGroup(
-                input_bf16,
-                input_row_map,
-                slot_base,
-                slot_count,
-                next_k_base,
-                input_dimension,
-                4u,
-                tile_input[next_buffer]);
+			if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 )
+				LmActivationStageFp8Qdq<SPARK_LM_TILE,SPARK_LM_TILE_K,false,ACTIVATION_CODEC>(input_bf16,input_row_map,slot_count,slot_base,slot_count,next_k_base,input_dimension,tile_input[next_buffer],4u,4u);
+			else
+				SparkLmTileStageInputProducerGroup(input_bf16,input_row_map,slot_base,slot_count,next_k_base,input_dimension,4u,tile_input[next_buffer]);
             SparkLmTileStageWeightProducerHalf<GROUP_SIZE>(
                 weight_format,
                 weight_payload,
@@ -2048,11 +2042,11 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
 // branch was unreachable and the header it included was never compiled. Both
 // are removed; spark_lm_group_gemm.cuh is the FP8 path, with its fragment
 // mapping verified against CUTLASS rather than hand-derived.
-template <uint32_t GROUP_SIZE>
+template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE>
 static __device__ void SparkLmExpertTileDispatch(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t slot_base, uint32_t neuron_base)
 {
 #if SPARK_LM_EXPERT_TILE_POLICY == SPARK_LM_EXPERT_TILE_POLICY_ALL_WARPS
-    SparkLmExpertTileBodyAllWarps<GROUP_SIZE>(
+    SparkLmExpertTileBodyAllWarps<GROUP_SIZE,ACTIVATION_CODEC>(
         weight_format,
         weight_payload,
         weight_scale,
@@ -2065,7 +2059,7 @@ static __device__ void SparkLmExpertTileDispatch(uint32_t weight_format, const v
         slot_base,
         neuron_base);
 #elif SPARK_LM_EXPERT_TILE_POLICY == SPARK_LM_EXPERT_TILE_POLICY_SOFTWARE_PIPELINED
-    SparkLmExpertTileBodySoftwarePipelined<GROUP_SIZE>(
+    SparkLmExpertTileBodySoftwarePipelined<GROUP_SIZE,ACTIVATION_CODEC>(
         weight_format,
         weight_payload,
         weight_scale,
@@ -2080,7 +2074,7 @@ static __device__ void SparkLmExpertTileDispatch(uint32_t weight_format, const v
 #else
     if (input_dimension <= SPARK_LM_TILE_K)
     {
-        SparkLmExpertTileBodyAllWarps<GROUP_SIZE>(
+        SparkLmExpertTileBodyAllWarps<GROUP_SIZE,ACTIVATION_CODEC>(
             weight_format,
             weight_payload,
             weight_scale,
@@ -2095,7 +2089,7 @@ static __device__ void SparkLmExpertTileDispatch(uint32_t weight_format, const v
     }
     else
     {
-        SparkLmExpertTileBodySoftwarePipelined<GROUP_SIZE>(
+        SparkLmExpertTileBodySoftwarePipelined<GROUP_SIZE,ACTIVATION_CODEC>(
             weight_format,
             weight_payload,
             weight_scale,
@@ -2111,10 +2105,10 @@ static __device__ void SparkLmExpertTileDispatch(uint32_t weight_format, const v
 #endif
 }
 
-template <uint32_t GROUP_SIZE>
+template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE>
 static __global__ void SparkLmExpertTileKernel(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension)
 {
-	SparkLmExpertTileDispatch<GROUP_SIZE>(weight_format,weight_payload,weight_scale,input_bf16,input_row_map,output_bf16,slot_count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
+	SparkLmExpertTileDispatch<GROUP_SIZE,ACTIVATION_CODEC>(weight_format,weight_payload,weight_scale,input_bf16,input_row_map,output_bf16,slot_count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
 }
 
 /*
@@ -2437,7 +2431,7 @@ static inline cudaError_t SparkLmValidateLinearContract(uint32_t weight_format, 
 // and the next model generation may well introduce one. Non-aligned widths
 // therefore take the scalar path, which carries explicit scalar tails and
 // handles arbitrary dimensions exactly.
-template <uint32_t GROUP_SIZE>
+template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE>
 static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
 	uint32_t m_blocks = (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
@@ -2445,6 +2439,10 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 	cudaError_t contract = SparkLmValidateLinearContract(weight_format,row_count,input_dimension);
 	if ( contract != cudaSuccess )
 		return(contract);
+	if ( SparkActivationCodecIsKnown(ACTIVATION_CODEC) == 0u )
+		return(cudaErrorInvalidValue);
+	if ( ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE && (input_dimension % SparkActivationCodecGroupSize(ACTIVATION_CODEC)) != 0u )
+		return(cudaErrorInvalidValue);
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
 		(weight_scale == 0 || (input_dimension % 128u) != 0u ||
 			(output_dimension % 128u) != 0u) )
@@ -2453,7 +2451,7 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 	{
 		dim3 scalar_grid(row_count,(output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
 		uint32_t shared_bytes = input_dimension * (uint32_t)sizeof(float);
-		SparkLmLinearKernel<GROUP_SIZE><<<scalar_grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,output_bf16,row_count,input_dimension,output_dimension);
+		SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC><<<scalar_grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,output_bf16,row_count,input_dimension,output_dimension);
 		return(cudaGetLastError());
 	}
 	// B >= TILE: the tensor tile spans BOTH the read-once (B<=128) and the
@@ -2468,7 +2466,7 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 	// M-blocks. A future in-block M-chunk loop, if B256+ profiling demands
 	// it, changes the tile body, not this dispatcher.
 	dim3 tile_grid(m_blocks,n_tiles);
-	SparkLmExpertTileKernel<GROUP_SIZE><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,0,output_bf16,row_count,input_dimension,output_dimension);
+	SparkLmExpertTileKernel<GROUP_SIZE,ACTIVATION_CODEC><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,0,output_bf16,row_count,input_dimension,output_dimension);
 	return(cudaGetLastError());
 }
 

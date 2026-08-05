@@ -47,9 +47,19 @@ static void SparkTestByteGeometry(void)
 	assert(SparkWeightCodecPayloadBytes(SPARK_WEIGHT_CODEC_NONE,1u,1u) == 0u);
 }
 
+static void SparkTestActivationCodecs(void)
+{
+	assert(SparkActivationCodecIsKnown(SPARK_ACTIVATION_CODEC_NONE) != 0u);
+	assert(SparkActivationCodecIsKnown(SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0) != 0u);
+	assert(SparkActivationCodecIsKnown(UINT32_MAX) == 0u);
+	assert(SparkActivationCodecGroupSize(SPARK_ACTIVATION_CODEC_NONE) == 0u);
+	assert(SparkActivationCodecGroupSize(SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0) == 128u);
+}
+
 int main(void)
 {
 	SparkTestCodecCases();
 	SparkTestByteGeometry();
+	SparkTestActivationCodecs();
 	return(0);
 }

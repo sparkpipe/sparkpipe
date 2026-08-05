@@ -34,6 +34,13 @@ WEIGHT_CODEC_MACROS = {
     "nvfp4_e2m1": "SPARK_WEIGHT_CODEC_NVFP4_E2M1",
     "mxfp4_e2m1": "SPARK_WEIGHT_CODEC_MXFP4_E2M1",
 }
+ACTIVATION_CODEC_MACROS = {
+    ("fp8_e4m3", "ue8m0"): "SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0",
+}
+OUTPUT_ACTIVATION_CODEC_MACROS = {
+    "bf16": "SPARK_ACTIVATION_CODEC_NONE",
+    "fp8_e4m3": "SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0",
+}
 
 
 def require_equal(actual: Any, expected: Any, description: str) -> None:
@@ -61,6 +68,9 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
     require_equal(precision["non_expert_linear_weight_codec"], "fp8_e4m3", f"{variant} non-expert codec")
     require_equal(precision["non_expert_linear_weight_format"], "fp8_e4m3_block_128x128", f"{variant} non-expert precision")
     require_equal(precision["kv_cache_codec"], "bf16", f"{variant} KV cache codec")
+    require_equal(precision["dynamic_activation_format"], "fp8_e4m3", f"{variant} activation format")
+    require_equal(precision["output_composition_activation_format"], "bf16", f"{variant} output-composition activation format")
+    require_equal(precision["scale_format"], "ue8m0", f"{variant} activation scale format")
     require_equal(contract["qualification"]["cuda_target"], "sm_121a", f"{variant} CUDA target")
     require_equal(contract["qualification"]["production_ready"], False, f"{variant} readiness")
     if variant == "flash":
@@ -176,16 +186,16 @@ def render_header(variant: str, contract: dict[str, Any], description_sha256: st
             f"#define {prefix}_EXPERT_WEIGHT_CODEC {WEIGHT_CODEC_MACROS[precision['routed_expert_weight_codec']]}",
             f"#define {prefix}_NON_EXPERT_WEIGHT_CODEC {WEIGHT_CODEC_MACROS[precision['non_expert_linear_weight_codec']]}",
             f"#define {prefix}_KV_CACHE_CODEC {WEIGHT_CODEC_MACROS[precision['kv_cache_codec']]}",
+            f"#define {prefix}_ACTIVATION_CODEC {ACTIVATION_CODEC_MACROS[(precision['dynamic_activation_format'], precision['scale_format'])]}",
+            f"#define {prefix}_OUTPUT_COMPOSITION_ACTIVATION_CODEC {OUTPUT_ACTIVATION_CODEC_MACROS[precision['output_composition_activation_format']]}",
             f"#define {prefix}_CSA_COMPRESS_RATIO 4u",
             f"#define {prefix}_HCA_COMPRESS_RATIO 128u",
             f"#define {prefix}_ROPE_BETA_FAST 32u",
             f"#define {prefix}_ROPE_BETA_SLOW 1u",
             f"#define {prefix}_KV_QUANT_BLOCK 64u",
-            f"#define {prefix}_ACT_QUANT_BLOCK 128u",
             f"#define {prefix}_FP4_QUANT_BLOCK 32u",
             f"#define {prefix}_FP8_MAX 448.0f",
             f"#define {prefix}_FP4_MAX 6.0f",
-            f"#define {prefix}_QUANT_AMAX_FLOOR 1e-4f",
             f"#define {prefix}_CSA_OVERLAP_FACTOR 2u",
             f"#define {prefix}_BF16_ELEMENT_BYTES 2u",
             f"#define {prefix}_HC_MIX_ROWS ((2u + {prefix}_HC_STREAM_COUNT) * {prefix}_HC_STREAM_COUNT)",
@@ -210,6 +220,8 @@ def render_header(variant: str, contract: dict[str, Any], description_sha256: st
             f"#define {prefix}_EXPERT_WEIGHT_CODEC {WEIGHT_CODEC_MACROS[precision['routed_expert_weight_codec']]}",
             f"#define {prefix}_NON_EXPERT_WEIGHT_CODEC {WEIGHT_CODEC_MACROS[precision['non_expert_linear_weight_codec']]}",
             f"#define {prefix}_KV_CACHE_CODEC {WEIGHT_CODEC_MACROS[precision['kv_cache_codec']]}",
+            f"#define {prefix}_ACTIVATION_CODEC {ACTIVATION_CODEC_MACROS[(precision['dynamic_activation_format'], precision['scale_format'])]}",
+            f"#define {prefix}_OUTPUT_COMPOSITION_ACTIVATION_CODEC {OUTPUT_ACTIVATION_CODEC_MACROS[precision['output_composition_activation_format']]}",
             "",
         ])
     array_name = "SparkDsv4ModelCompressionRatios" if variant == "flash" else f"SparkDsv4{variant.title()}CompressionRatios"
@@ -302,7 +314,9 @@ def render_flash_model_description(contract: dict[str, Any]) -> str:
                 "expert_stored_bits": 4,
                 "expert_scale_encoding": "e8m0",
                 "expert_scale_group_size": 32,
-                "expert_activation_codec": "bf16",
+                "activation_codec": f"{precision['dynamic_activation_format']}_{precision['scale_format']}",
+                "output_composition_activation_codec": precision["output_composition_activation_format"],
+                "expert_activation_codec": f"{precision['dynamic_activation_format']}_{precision['scale_format']}",
                 "kv_cache_codec": precision["kv_cache_codec"],
                 "accumulator_codec": "fp32",
                 "aot_codec_specialization": True,
@@ -346,6 +360,8 @@ def render_flash_model_description(contract: dict[str, Any]) -> str:
                     "configuration": {
                         "linear_weight_codec": precision["non_expert_linear_weight_codec"],
                         "expert_weight_codec": precision["routed_expert_weight_codec"],
+                        "activation_codec": f"{precision['dynamic_activation_format']}_{precision['scale_format']}",
+                        "output_composition_activation_codec": precision["output_composition_activation_format"],
                         "kv_cache_codec": precision["kv_cache_codec"],
                         "runtime_backend_selection": "forbidden",
                         "runtime_precision_selection": "forbidden",

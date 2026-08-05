@@ -73,6 +73,17 @@ int main(void)
 	shape_for(&shape, 128u, 4u, 128u);
 	LmLaunchPlanBuild(&shape, 48u, &plan);
 	expect(plan.swizzle_span == 64u, "4-bit, 128-element tile is 64 bytes -> 64-byte span");
+	{
+		const uint32_t expected_128[8] = {0u,1u,2u,3u,4u,5u,6u,7u};
+		const uint32_t expected_64[8] = {0u,0u,1u,1u,2u,2u,3u,3u};
+		const uint32_t expected_32[8] = {0u,0u,0u,0u,1u,1u,1u,1u};
+		uint32_t row,matched = 1u;
+		for (row = 0u; row < 8u; row++)
+			matched &= (LmSwizzleRowSelector(row,128u,128u) == expected_128[row])
+				&& (LmSwizzleRowSelector(row,64u,64u) == expected_64[row])
+				&& (LmSwizzleRowSelector(row,32u,32u) == expected_32[row]);
+		expect(matched != 0u, "32/64/128-byte TMA selectors follow 128-byte sectors");
+	}
 
 	printf("\nshared memory is dynamic, so it may exceed the 48 KB static cap\n");
 	shape_for(&shape, 1024u, 16u, 64u);

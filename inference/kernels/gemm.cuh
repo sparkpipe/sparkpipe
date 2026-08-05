@@ -237,7 +237,7 @@ static __device__ __forceinline__ void LmGemmZero(float (*acc)[4], uint32_t coun
 //
 // Not static: a model's unity.cu names this in an explicit instantiation, and
 // explicit instantiation of an internal symbol is ill-formed.
-template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uint32_t WARPS, bool INDIRECT_A = false>
+template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uint32_t WARPS, bool INDIRECT_A = false, uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE>
 __global__ __launch_bounds__(WARPS * LM_WARP_LANES, 1)
 void LmGemmKernel(
     __grid_constant__ const LmGemmArguments args,
@@ -274,8 +274,10 @@ void LmGemmKernel(
     static_assert(
         TILE_K % FormatA::kMmaK == 0u,
         "tile depth is not a whole number of MMA steps");
-	static_assert(!INDIRECT_A || FormatA::kScaleGroup == 0u,
-		"indirect activation staging currently requires unscaled activations");
+	static_assert(ACTIVATION_CODEC <= SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0,
+		"unknown activation codec");
+	static_assert((!INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE) || FormatA::kScaleGroup == 0u,
+		"manual activation staging requires unscaled stored activations");
     extern __shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t lm_shared[];
     const uint32_t a_bytes =
         LmTileBytes(TILE_M, TILE_K, FormatA::kStoredBits);
@@ -338,11 +340,12 @@ void LmGemmKernel(
              stage + 1u < STAGES && stage < k_tiles;
              ++stage)
         {
-			if constexpr ( INDIRECT_A )
-				LmPipelineProduceIndirectA<FormatA>(&geometry_a,&geometry_b,&tensor_map_b,
-					(const uint8_t *)args.activation_bytes,args.source_row_map,
-					stage_a[stage],stage_b[stage],&barrier[stage],row_base,row_limit,
-					args.source_row_count,args.input_dimension,neuron_base,stage,group);
+				if constexpr ( INDIRECT_A || ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE )
+					LmPipelineProduceManualA<FormatA,TILE_M,TILE_K,ACTIVATION_CODEC>(&geometry_a,&geometry_b,&tensor_map_b,
+						(const uint8_t *)args.activation_bytes,args.source_row_map,
+						stage_a[stage],stage_b[stage],&barrier[stage],row_base,row_limit,
+						INDIRECT_A ? args.source_row_count : args.group_row_offset[args.group_count],
+						args.input_dimension,neuron_base,stage,group,grouped);
 			else
 				LmPipelineProduce(&geometry_a,&geometry_b,&tensor_map_a,&tensor_map_b,
 					stage_a[stage],stage_b[stage],&barrier[stage],row_base,neuron_base,
@@ -354,12 +357,12 @@ void LmGemmKernel(
             ahead = LmPipelineAhead(k, STAGES);
             if (ahead < k_tiles)
             {
-				if constexpr ( INDIRECT_A )
-					LmPipelineProduceIndirectA<FormatA>(&geometry_a,&geometry_b,&tensor_map_b,
+				if constexpr ( INDIRECT_A || ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE )
+					LmPipelineProduceManualA<FormatA,TILE_M,TILE_K,ACTIVATION_CODEC>(&geometry_a,&geometry_b,&tensor_map_b,
 						(const uint8_t *)args.activation_bytes,args.source_row_map,
 						stage_a[ahead % STAGES],stage_b[ahead % STAGES],&barrier[ahead % STAGES],
-						row_base,row_limit,args.source_row_count,args.input_dimension,
-						neuron_base,ahead,group);
+						row_base,row_limit,INDIRECT_A ? args.source_row_count : args.group_row_offset[args.group_count],args.input_dimension,
+						neuron_base,ahead,group,grouped);
 				else
 					LmPipelineProduce(&geometry_a,&geometry_b,&tensor_map_a,&tensor_map_b,
 						stage_a[ahead % STAGES],stage_b[ahead % STAGES],&barrier[ahead % STAGES],
@@ -368,7 +371,7 @@ void LmGemmKernel(
             LmMbarrierWait(
                 &barrier[stage],
                 (phase >> stage) & 1u);
-			if constexpr ( INDIRECT_A )
+			if constexpr ( INDIRECT_A || ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE )
 				__syncthreads();
             phase ^= 1u << stage;
             LmGemmConsume<

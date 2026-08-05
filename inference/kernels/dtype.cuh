@@ -89,15 +89,14 @@ static __device__ __forceinline__ float2 LmLoadBf16Pair(const void *base, uint64
 
 // -- e4m3 --------------------------------------------------------------------
 
-// The x2 form packs two values; encoding one puts it in the high byte because
-// the second source operand becomes the low half. Callers that have a pair
-// should use LmFloatPairToE4m3 and halve the instruction count.
+// The x2 form maps the second source operand to the low byte. Callers that
+// have a pair should use LmFloatPairToE4m3 and halve the instruction count.
 static __device__ __forceinline__ uint8_t LmFloatToE4m3(float value)
 {
 	uint16_t encoded;
 	asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;\n"
 		: "=h"(encoded) : "f"(0.0f), "f"(value));
-	return((uint8_t)(encoded >> 8u));
+	return((uint8_t)encoded);
 }
 
 static __device__ __forceinline__ uint16_t LmFloatPairToE4m3(float low, float high)

@@ -364,10 +364,9 @@ static __device__ __forceinline__ void LmMmaBf16(float accumulator[4], const uin
 
 // -- shared-memory swizzle ---------------------------------------------------
 //
-// 128-byte swizzle: within a row, the 16-byte chunk at index c lives at
-// c ^ (row % 8). It must match the swizzle encoded in the TMA descriptor or the
-// kernel reads real data from the wrong place with no error anywhere. The
-// descriptor side asserts the same constant.
+// Within a row, the 16-byte chunk at index c is xor'd with the row's 128-byte
+// sector selector. It must match the swizzle encoded in the TMA descriptor or
+// the kernel reads real data from the wrong place with no error anywhere.
 //
 // Justified by a count rather than by assertion: without it a 32-lane fragment
 // load puts 16 lanes on one bank; with it, 4.
@@ -381,9 +380,9 @@ static __device__ __forceinline__ void LmMmaBf16(float accumulator[4], const uin
 //
 // A 32-byte span still permutes two chunks and still removes most of the
 // conflict; it is a smaller win, not the absence of one.
-static __device__ __forceinline__ uint32_t LmSwizzleChunk(uint32_t chunk, uint32_t row, uint32_t span_bytes)
+static __device__ __forceinline__ uint32_t LmSwizzleChunk(uint32_t chunk, uint32_t row, uint32_t row_pitch_bytes, uint32_t span_bytes)
 {
-	return(chunk ^ (row % (span_bytes / LM_SWIZZLE_CHUNK_BYTES)));
+	return(chunk ^ LmSwizzleRowSelector(row,row_pitch_bytes,span_bytes));
 }
 
 // Byte offset of one operand register inside a swizzled row-major tile. Every
@@ -391,7 +390,7 @@ static __device__ __forceinline__ uint32_t LmSwizzleChunk(uint32_t chunk, uint32
 // exactly one place.
 static __device__ __forceinline__ uint32_t LmSwizzledOffset(uint32_t row, uint32_t byte_in_row, uint32_t row_pitch_bytes, uint32_t span_bytes)
 {
-	uint32_t chunk = LmSwizzleChunk(byte_in_row / LM_SWIZZLE_CHUNK_BYTES,row,span_bytes);
+	uint32_t chunk = LmSwizzleChunk(byte_in_row / LM_SWIZZLE_CHUNK_BYTES,row,row_pitch_bytes,span_bytes);
 	return((row * row_pitch_bytes) + (chunk * LM_SWIZZLE_CHUNK_BYTES)
 		+ (byte_in_row % LM_SWIZZLE_CHUNK_BYTES));
 }
