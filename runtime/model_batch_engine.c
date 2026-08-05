@@ -1156,3 +1156,9 @@ SparkStatus SparkModelBatchEngineGetView(
 	status = SparkModelPipelineClientGetView(engine->pipeline,&view->pipeline);
 	return(status);
 }
+
+const SparkModelServingAdapterDescriptor *SparkModelBatchEngineGetAdapterDescriptor(
+	const SparkModelBatchEngine *engine)
+{
+	return(engine != 0 ? engine->adapter_descriptor : 0);
+}

@@ -1,5 +1,5 @@
 {
-  "file_count": 693,
+  "file_count": 694,
   "files": [
     {
       "path": ".gitattributes",
@@ -28,8 +28,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "d6ff0c841f603b1309a927293b4752b642009ce70cbbf7ac9c8ab0d30851ae8d",
-      "size_bytes": 41734
+      "sha256": "8d8a5498da4e95511df390e1a27a07985997b39b2d8250b7b1f242750d1758c4",
+      "size_bytes": 42106
     },
     {
       "path": "PROPOSED_IMPROVEMENTS_README.md",
@@ -1078,8 +1078,8 @@
     },
     {
       "path": "include/sparkpipe/spark_model_batch_engine.h",
-      "sha256": "22b05412fa64c00d939ecf0b543e7fbd795ed79ac9c3c552d1d1e95635536175",
-      "size_bytes": 4746
+      "sha256": "72f5ae6d40af205cde410caa3ea6217016708f1e21ece77544d244fc3f0090c8",
+      "size_bytes": 4870
     },
     {
       "path": "include/sparkpipe/spark_model_description.h",
@@ -1743,8 +1743,8 @@
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h",
-      "sha256": "c0af8c4e8b2d61adcf032016bac71b23a7f1a308b234b418460403cd2ebd11e2",
-      "size_bytes": 3525
+      "sha256": "49f25c129e5e2e85117076a17325930490ce7833859087364b4aa5a5cd11da04",
+      "size_bytes": 3594
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c",
@@ -1790,6 +1790,11 @@
       "path": "node/memlink_tool.c",
       "sha256": "dfeab721761f4c2df40eea3c88f49a9c84c482cc3db567ed46c42d7dde797526",
       "size_bytes": 44361
+    },
+    {
+      "path": "node/model_batch.c",
+      "sha256": "82cc39a51ce6433eaf4fd7a0f5b07c274c9ca6e4d2b77a5c60810da73bdd8c13",
+      "size_bytes": 18902
     },
     {
       "path": "node/model_residentd.c",
@@ -2048,8 +2053,8 @@
     },
     {
       "path": "runtime/model_batch_engine.c",
-      "sha256": "ba5c86d50408785c11c59e21096cc670073cc8ee3ed480ff9cfdf78e2f38f760",
-      "size_bytes": 44827
+      "sha256": "8c5f1da115426595cef5c064d4761b14daff15ca89bb9e46a0bd18c6eba6f02a",
+      "size_bytes": 45010
     },
     {
       "path": "runtime/model_pipeline_client.c",
@@ -2873,8 +2878,8 @@
     },
     {
       "path": "tests/test_model_pipeline_client.c",
-      "sha256": "26d8bb096111c353f1b5203cd643657775132e1e1f3267808de43bd66b297932",
-      "size_bytes": 31125
+      "sha256": "c5379210c5968825c2079334d5349212aff1514fdff24c5c5ac34fb246698e98",
+      "size_bytes": 33709
     },
     {
       "path": "tests/test_model_resident_deployment.c",
@@ -3470,5 +3475,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6420363
+  "total_bytes": 6442597
 }

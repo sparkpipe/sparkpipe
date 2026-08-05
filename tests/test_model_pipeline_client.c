@@ -21,6 +21,9 @@
 #ifndef TEST_MODEL_SERVING_ADAPTER_PATH
 #define TEST_MODEL_SERVING_ADAPTER_PATH ""
 #endif
+#ifndef TEST_MODEL_BATCH_PATH
+#define TEST_MODEL_BATCH_PATH ""
+#endif
 #ifndef TEST_MODEL_RESIDENT_TRANSPORT_PATH
 #define TEST_MODEL_RESIDENT_TRANSPORT_PATH ""
 #endif
@@ -620,6 +623,64 @@ static void TestModelBatchEngineShutdown(
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
 }
 
+static uint32_t TestModelBatchCountText(const char *text,const char *needle)
+{
+	uint32_t count;
+	const char *cursor;
+	count = 0u;
+	cursor = text;
+	while ( (cursor=strstr(cursor,needle)) != 0 )
+	{
+		count++;
+		cursor += strlen(needle);
+	}
+	return(count);
+}
+
+static void TestModelBatchProcess(const char *deployment_path)
+{
+	char batch_path[108],output_path[108],output[16384];
+	FILE *file;
+	pid_t child;
+	size_t bytes;
+	int32_t child_status;
+	assert(snprintf(batch_path,sizeof(batch_path),"/tmp/sparkpipe-model-batch-%ld.json",(long)getpid()) > 0);
+	assert(snprintf(output_path,sizeof(output_path),"/tmp/sparkpipe-model-batch-%ld.ndjson",(long)getpid()) > 0);
+	file = fopen(batch_path,"wb");
+	assert(file != 0);
+	assert(fputs("{\"schema_version\":1,\"connect_timeout_ms\":100,\"request_capacity\":2,\"max_context_tokens\":16,\"max_prefill_rows_per_submission\":4,\"maximum_messages_per_rank_per_progress\":8,\"maximum_new_submissions_per_progress\":4,\"stop_token_ids\":[],\"requests\":[{\"request_id\":3101,\"sequence_id\":4101,\"priority\":10,\"output_token_budget\":2,\"prompt_token_ids\":[11,12]},{\"request_id\":3102,\"sequence_id\":4102,\"priority\":10,\"output_token_budget\":1,\"prompt_token_ids\":[21]}]}\n",file) != EOF);
+	assert(fclose(file) == 0);
+	child = fork();
+	assert(child >= 0);
+	if ( child == 0 )
+	{
+		if ( freopen(output_path,"wb",stdout) == 0 )
+			_exit(120);
+		execl(TEST_MODEL_BATCH_PATH,TEST_MODEL_BATCH_PATH,"--deployment",deployment_path,"--batch",batch_path,(char *)0);
+		_exit(121);
+	}
+	assert(waitpid(child,&child_status,0) == child);
+	if ( WIFSIGNALED(child_status) )
+		fprintf(stderr,"sparkpipe_model_batch terminated by signal %d\n",WTERMSIG(child_status));
+	else if ( !WIFEXITED(child_status) )
+		fprintf(stderr,"sparkpipe_model_batch returned unknown wait status %d\n",child_status);
+	assert(WIFEXITED(child_status));
+	assert(WEXITSTATUS(child_status) == 0);
+	file = fopen(output_path,"rb");
+	assert(file != 0);
+	bytes = fread(output,1u,sizeof(output) - 1u,file);
+	assert(feof(file));
+	assert(fclose(file) == 0);
+	output[bytes] = '\0';
+	assert(TestModelBatchCountText(output,"\"event\":\"ready\"") == 1u);
+	assert(TestModelBatchCountText(output,"\"event\":\"accepted\"") == 2u);
+	assert(TestModelBatchCountText(output,"\"event\":\"token\"") == 3u);
+	assert(TestModelBatchCountText(output,"\"event\":\"completed\"") == 2u);
+	assert(TestModelBatchCountText(output,"\"event\":\"error\"") == 0u);
+	unlink(output_path);
+	unlink(batch_path);
+}
+
 int main(void)
 {
 	SparkModelResidentDeployment deployment;
@@ -783,6 +844,7 @@ int main(void)
 	SparkModelPipelineClientDestroy(pipeline);
 	TestModelBatchEngineRun(&deployment);
 	TestModelBatchEngineShutdown(&deployment);
+	TestModelBatchProcess(deployment_path);
 	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
 	{
 		assert(kill(children[rank],SIGTERM) == 0);

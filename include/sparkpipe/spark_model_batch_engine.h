@@ -137,6 +137,8 @@ SparkStatus SparkModelBatchEngineGetPollDescriptors(
 SparkStatus SparkModelBatchEngineGetView(
 	const SparkModelBatchEngine *engine,
 	SparkModelBatchEngineView *view);
+const SparkModelServingAdapterDescriptor *SparkModelBatchEngineGetAdapterDescriptor(
+	const SparkModelBatchEngine *engine);
 
 #ifdef __cplusplus
 }

@@ -122,5 +122,13 @@ typedef struct SparkGlm52CudaWave
 	uint32_t multiprocessor_count;
 } SparkGlm52CudaWave;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int32_t SparkGlm52LaunchCudaWave(const SparkGlm52CudaWave *wave);
 int32_t SparkGlm52ConfigureCudaModule(uint32_t *multiprocessor_count);
+
+#ifdef __cplusplus
+}
+#endif
