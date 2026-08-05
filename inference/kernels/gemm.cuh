@@ -63,6 +63,9 @@ struct LmGemmArguments
 	// The caller provides group_count + 1 words of device scratch; the launcher
 	// prices them for the launch it is about to make.
 	uint32_t *group_tile_prefix;
+	const void *activation_bytes;
+	const uint32_t *source_row_map;
+	uint32_t source_row_count;
 	void *output_bf16;
 	void *output_f32;
 	// Optional second life for the result: the epilogue ADDS it into this
@@ -234,7 +237,7 @@ static __device__ __forceinline__ void LmGemmZero(float (*acc)[4], uint32_t coun
 //
 // Not static: a model's unity.cu names this in an explicit instantiation, and
 // explicit instantiation of an internal symbol is ill-formed.
-template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uint32_t WARPS>
+template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uint32_t WARPS, bool INDIRECT_A = false>
 __global__ __launch_bounds__(WARPS * LM_WARP_LANES, 1)
 void LmGemmKernel(
     __grid_constant__ const LmGemmArguments args,
@@ -245,11 +248,11 @@ void LmGemmKernel(
     bool grouped)
 {
     static_assert(
-        LmTileKIsSwizzleable(TILE_K, FormatA::kStoredBits),
-        "the activation row pitch is not swizzleable");
+        LmTileKIsTmaLoadable(TILE_K,FormatA::kStoredBits,FormatA::kTmaSwizzle),
+        "the activation row pitch is not TMA-loadable");
     static_assert(
-        LmTileKIsSwizzleable(TILE_K, FormatB::kStoredBits),
-        "the weight row pitch is not swizzleable");
+        LmTileKIsTmaLoadable(TILE_K,FormatB::kStoredBits,FormatB::kTmaSwizzle),
+        "the weight row pitch is not TMA-loadable");
     static_assert(
         LmPipelineSharedBytesSplit(
             TILE_M,
@@ -271,6 +274,8 @@ void LmGemmKernel(
     static_assert(
         TILE_K % FormatA::kMmaK == 0u,
         "tile depth is not a whole number of MMA steps");
+	static_assert(!INDIRECT_A || FormatA::kScaleGroup == 0u,
+		"indirect activation staging currently requires unscaled activations");
     extern __shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t lm_shared[];
     const uint32_t a_bytes =
         LmTileBytes(TILE_M, TILE_K, FormatA::kStoredBits);
@@ -333,19 +338,15 @@ void LmGemmKernel(
              stage + 1u < STAGES && stage < k_tiles;
              ++stage)
         {
-            LmPipelineProduce(
-                &geometry_a,
-                &geometry_b,
-                &tensor_map_a,
-                &tensor_map_b,
-                stage_a[stage],
-                stage_b[stage],
-                &barrier[stage],
-                row_base,
-                neuron_base,
-                stage,
-                group,
-                grouped);
+			if constexpr ( INDIRECT_A )
+				LmPipelineProduceIndirectA<FormatA>(&geometry_a,&geometry_b,&tensor_map_b,
+					(const uint8_t *)args.activation_bytes,args.source_row_map,
+					stage_a[stage],stage_b[stage],&barrier[stage],row_base,row_limit,
+					args.source_row_count,args.input_dimension,neuron_base,stage,group);
+			else
+				LmPipelineProduce(&geometry_a,&geometry_b,&tensor_map_a,&tensor_map_b,
+					stage_a[stage],stage_b[stage],&barrier[stage],row_base,neuron_base,
+					stage,group,grouped);
         }
         for (k = 0u; k < k_tiles; ++k)
         {
@@ -353,23 +354,22 @@ void LmGemmKernel(
             ahead = LmPipelineAhead(k, STAGES);
             if (ahead < k_tiles)
             {
-                LmPipelineProduce(
-                    &geometry_a,
-                    &geometry_b,
-                    &tensor_map_a,
-                    &tensor_map_b,
-                    stage_a[ahead % STAGES],
-                    stage_b[ahead % STAGES],
-                    &barrier[ahead % STAGES],
-                    row_base,
-                    neuron_base,
-                    ahead,
-                    group,
-                    grouped);
+				if constexpr ( INDIRECT_A )
+					LmPipelineProduceIndirectA<FormatA>(&geometry_a,&geometry_b,&tensor_map_b,
+						(const uint8_t *)args.activation_bytes,args.source_row_map,
+						stage_a[ahead % STAGES],stage_b[ahead % STAGES],&barrier[ahead % STAGES],
+						row_base,row_limit,args.source_row_count,args.input_dimension,
+						neuron_base,ahead,group);
+				else
+					LmPipelineProduce(&geometry_a,&geometry_b,&tensor_map_a,&tensor_map_b,
+						stage_a[ahead % STAGES],stage_b[ahead % STAGES],&barrier[ahead % STAGES],
+						row_base,neuron_base,ahead,group,grouped);
             }
             LmMbarrierWait(
                 &barrier[stage],
                 (phase >> stage) & 1u);
+			if constexpr ( INDIRECT_A )
+				__syncthreads();
             phase ^= 1u << stage;
             LmGemmConsume<
                 FormatA,

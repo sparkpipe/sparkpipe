@@ -4,12 +4,13 @@
 
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_weight_codec.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 9u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 10u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -76,6 +77,9 @@ typedef struct SparkModelServingAdapterDescriptor
 	uint32_t boundary_format;
 	uint32_t boundary_element_count;
 	uint32_t boundary_element_bytes;
+	uint32_t linear_weight_codec;
+	uint32_t expert_weight_codec;
+	uint32_t kv_cache_codec;
 	uint32_t max_inflight_submission_count;
 	uint32_t max_active_sequence_count;
 	uint32_t max_input_row_count;
@@ -89,7 +93,9 @@ typedef struct SparkModelServingAdapterDescriptor
 	const char *driver_program_name;
 	const char *artifact_sha256;
 	uint32_t stage_layer_counts[SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT];
-	uint32_t reserved[4];
+	uint32_t boundary_sideband_kinds[SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT];
+	uint32_t boundary_sideband_bytes_per_sequence[SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT];
+	uint32_t reserved[1];
 } SparkModelServingAdapterDescriptor;
 
 typedef struct SparkModelServingRuntimeLimits
@@ -148,8 +154,12 @@ typedef struct SparkModelServingSubmission
 	const void *model_extension;
 	const void *hidden_input_address;
 	uint64_t hidden_input_bytes;
+	const void *boundary_sideband_input_address;
+	uint64_t boundary_sideband_input_bytes;
 	void *hidden_output_address;
 	uint64_t hidden_output_bytes;
+	void *boundary_sideband_output_address;
+	uint64_t boundary_sideband_output_bytes;
 	SparkModelDriverResidencyToken residency;
 } SparkModelServingSubmission;
 

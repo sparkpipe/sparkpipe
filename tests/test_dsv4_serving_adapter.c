@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -48,6 +49,7 @@ int main(void)
 	SparkModelServingSubmission submission;
 	SparkModelServingLane lanes[2];
 	TestDsv4ServingState test_state;
+	SparkStatus initialize_status;
 	void *adapter_state;
 	void *hidden_input;
 	uint32_t token_ids[4],row_lane_indices[4];
@@ -75,7 +77,7 @@ int main(void)
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	configuration.runtime_root = runtime_root;
 	configuration.node_id = "spark12";
-	configuration.node_target = "cuda.sm121.dsv4.resident_decode_stage.bf16";
+	configuration.node_target = SPARK_DSV4_MODEL_MODULE_TARGET;
 	configuration.adapter_configuration_path = TEST_DSV4_SERVING_CONFIG_PATH;
 	configuration.driver_shared_object_path = TEST_DSV4_SERVING_DRIVER_PATH;
 	configuration.driver_program_name = "resident_decode";
@@ -83,7 +85,10 @@ int main(void)
 	configuration.completion_function = TestDsv4ServingCompletion;
 	configuration.completion_context = &test_state;
 	adapter_state = 0;
-	assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
+	initialize_status = library.adapter_interface.initialize(&configuration,&adapter_state);
+	if ( initialize_status != SPARK_STATUS_OK )
+		fprintf(stderr,"DSV4 adapter initialize status=%d\n",(int)initialize_status);
+	assert(initialize_status == SPARK_STATUS_OK);
 	memset(lanes,0,sizeof(lanes));
 	lanes[0].request_id = 900u;
 	lanes[0].request_generation = 1u;

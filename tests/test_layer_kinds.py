@@ -43,30 +43,26 @@ KIND_VALUE = {
 # A model with more than one layer kind needs a driver that chooses between
 # them. glm5_2 has one (bind.cu); the rest do not, so their entry points have no
 # caller and their LAYER_KIND selector is read by nothing.
-NO_DRIVER = {
-    "deepseek_v4": "three kinds and one entry point; a driver would have "
-                   "nothing to dispatch to",
-    "deepseek_v4_pro": "Pro has sparse and high-compression schedules but no "
-                       "shipping execution module or dispatcher yet",
-}
+NO_DRIVER = {}
 
-KNOWN_INCOMPLETE = {
-    ("deepseek_v4", "LM_LAYER_WINDOW"):
-        "first two layers are pure sliding window; no windowed entry point "
-        "exists, only Dsv4LayerAttentionFp8 which attends over everything",
-    ("deepseek_v4", "LM_LAYER_SPARSE"):
-        "CSA needs the indexer to select top-512 and pass selected_positions. "
-        "LmSparseScoreKernel and LmTopkGather exist and nothing calls them",
-    ("deepseek_v4", "LM_LAYER_COMPRESSED"):
-        "HCA is CSA at compression 128 with the other rope theta. Same missing "
-        "call, plus DSV4_COMPRESS_ROPE_THETA is unreachable without it",
-    ("deepseek_v4_pro", "LM_LAYER_SPARSE"):
-        "Pro CSA needs a Pro-sized indexer, top-1024 selection and an explicit "
-        "Pro execution module",
-    ("deepseek_v4_pro", "LM_LAYER_COMPRESSED"):
-        "Pro HCA needs the compression-128 state, Pro geometry and an explicit "
-        "Pro execution module",
-}
+KNOWN_INCOMPLETE = {}
+
+
+def validate_dsv4_module():
+    header = (ROOT / "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h").read_text()
+    module = (ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c").read_text()
+    ratios = {int(value) for value in re.findall(r"\b(0|4|128)u\b", header[header.index("SparkDsv4ModelCompressionRatios"):])}
+    if ratios != {0, 4, 128}:
+        return "contract does not expose exactly SWA, CSA, and HCA"
+    for needle in (
+        "SparkDsv4ModelLayerKind(layer_index)",
+        "kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA",
+        "kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA",
+        "SparkDsv4LaunchSparseAttn",
+    ):
+        if needle not in module:
+            return f"active module does not dispatch {needle}"
+    return None
 
 
 def selector_kinds(model):
@@ -156,6 +152,12 @@ def driver_dispatches(model):
 
 def main():
     failures = 0
+    dsv4_problem = validate_dsv4_module()
+    if dsv4_problem is None:
+        print("  ok   dsv4: 43 layers, kinds [swa, csa, hca]")
+    else:
+        failures += 1
+        print(f"  FAIL dsv4: {dsv4_problem}")
     for model in sorted(p.name for p in LLMS.iterdir() if p.is_dir()):
         kinds, count = selector_kinds(model)
         if kinds is None:

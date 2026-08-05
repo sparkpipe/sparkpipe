@@ -134,6 +134,8 @@ SparkStatus SparkModelResidentIpcInitializeHelloAck(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( copy_status != SPARK_STATUS_OK )
 		return(copy_status);
+	if ( rank_index >= descriptor->stage_count || stage_index >= descriptor->stage_count )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(ack,0,sizeof(*ack));
 	SparkModelResidentIpcInitializeHeader(&ack->header,SPARK_MODEL_RESIDENT_IPC_KIND_HELLO_ACK,SPARK_MODEL_RESIDENT_IPC_HELLO_ACK_BYTES,SPARK_MODEL_RESIDENT_IPC_HELLO_ACK_BYTES,message_id);
 	ack->status = (uint32_t)status;
@@ -147,6 +149,19 @@ SparkStatus SparkModelResidentIpcInitializeHelloAck(
 	ack->boundary_format = descriptor->boundary_format;
 	ack->boundary_element_count = descriptor->boundary_element_count;
 	ack->boundary_element_bytes = descriptor->boundary_element_bytes;
+	ack->linear_weight_codec = descriptor->linear_weight_codec;
+	ack->expert_weight_codec = descriptor->expert_weight_codec;
+	ack->kv_cache_codec = descriptor->kv_cache_codec;
+	if ( stage_index != 0u )
+	{
+		ack->input_sideband_kind = descriptor->boundary_sideband_kinds[stage_index - 1u];
+		ack->input_sideband_bytes_per_sequence = descriptor->boundary_sideband_bytes_per_sequence[stage_index - 1u];
+	}
+	if ( stage_index + 1u < descriptor->stage_count )
+	{
+		ack->output_sideband_kind = descriptor->boundary_sideband_kinds[stage_index];
+		ack->output_sideband_bytes_per_sequence = descriptor->boundary_sideband_bytes_per_sequence[stage_index];
+	}
 	copy_status = SparkModelResidentIpcCopyText(ack->adapter_id,sizeof(ack->adapter_id),descriptor->adapter_id);
 	if ( copy_status == SPARK_STATUS_OK )
 		copy_status = SparkModelResidentIpcCopyText(ack->model_id,sizeof(ack->model_id),descriptor->model_id);
@@ -173,7 +188,11 @@ SparkStatus SparkModelResidentIpcValidateHelloAck(
 	status = SparkModelServingAdapterValidateRuntimeLimits(descriptor,runtime_limits);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( ack->status > SPARK_STATUS_UNSUPPORTED || ack->header.message_id != message_id || ack->rank_index != rank_index || ack->stage_index != stage_index || ack->adapter_capability_flags != descriptor->capability_flags || ack->max_inflight_submission_count != runtime_limits->max_inflight_submission_count || ack->max_active_sequence_count != runtime_limits->max_active_sequence_count || ack->max_input_row_count != runtime_limits->max_input_row_count || ack->resident_sequence_capacity != runtime_limits->resident_sequence_capacity || ack->boundary_format != descriptor->boundary_format || ack->boundary_element_count != descriptor->boundary_element_count || ack->boundary_element_bytes != descriptor->boundary_element_bytes )
+	if ( rank_index >= descriptor->stage_count || stage_index >= descriptor->stage_count )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( ack->status > SPARK_STATUS_UNSUPPORTED || ack->header.message_id != message_id || ack->rank_index != rank_index || ack->stage_index != stage_index || ack->adapter_capability_flags != descriptor->capability_flags || ack->max_inflight_submission_count != runtime_limits->max_inflight_submission_count || ack->max_active_sequence_count != runtime_limits->max_active_sequence_count || ack->max_input_row_count != runtime_limits->max_input_row_count || ack->resident_sequence_capacity != runtime_limits->resident_sequence_capacity || ack->boundary_format != descriptor->boundary_format || ack->boundary_element_count != descriptor->boundary_element_count || ack->boundary_element_bytes != descriptor->boundary_element_bytes || ack->linear_weight_codec != descriptor->linear_weight_codec || ack->expert_weight_codec != descriptor->expert_weight_codec || ack->kv_cache_codec != descriptor->kv_cache_codec )
+		return(SPARK_STATUS_TARGET_MISMATCH);
+	if ( ack->input_sideband_kind != (stage_index != 0u ? descriptor->boundary_sideband_kinds[stage_index - 1u] : 0u) || ack->input_sideband_bytes_per_sequence != (stage_index != 0u ? descriptor->boundary_sideband_bytes_per_sequence[stage_index - 1u] : 0u) || ack->output_sideband_kind != (stage_index + 1u < descriptor->stage_count ? descriptor->boundary_sideband_kinds[stage_index] : 0u) || ack->output_sideband_bytes_per_sequence != (stage_index + 1u < descriptor->stage_count ? descriptor->boundary_sideband_bytes_per_sequence[stage_index] : 0u) )
 		return(SPARK_STATUS_TARGET_MISMATCH);
 	if ( SparkModelResidentIpcTextMatches(ack->adapter_id,sizeof(ack->adapter_id),descriptor->adapter_id) == 0u || SparkModelResidentIpcTextMatches(ack->model_id,sizeof(ack->model_id),descriptor->model_id) == 0u || SparkModelResidentIpcTextMatches(ack->model_revision,sizeof(ack->model_revision),descriptor->model_revision) == 0u || SparkModelResidentIpcTextMatches(ack->artifact_sha256,sizeof(ack->artifact_sha256),descriptor->artifact_sha256) == 0u )
 		return(SPARK_STATUS_TARGET_MISMATCH);
@@ -343,7 +362,7 @@ static SparkStatus SparkModelResidentIpcEncodeSubmissionKind(
 	uint8_t *bytes;
 	uint32_t message_bytes,offset;
 	SparkStatus status;
-	if ( submission == 0 || message_id == 0u || message_buffer == 0 || message_bytes_out == 0 || (message_kind != SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT && message_kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE) || submission->lanes == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || (submission->row_count != 0u && (submission->token_ids == 0 || submission->row_lane_indices == 0 || submission->row_positions == 0 || submission->row_sequence_ids == 0)) || (submission->model_extension_bytes != 0u && submission->model_extension == 0) )
+	if ( submission == 0 || message_id == 0u || message_buffer == 0 || message_bytes_out == 0 || (message_kind != SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT && message_kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE) || submission->lanes == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u || (submission->row_count != 0u && (submission->token_ids == 0 || submission->row_lane_indices == 0 || submission->row_positions == 0 || submission->row_sequence_ids == 0)) || (submission->model_extension_bytes != 0u && submission->model_extension == 0) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,submission->row_count,submission->model_extension_bytes,&message_bytes);
 	if ( status != SPARK_STATUS_OK || message_capacity < message_bytes )

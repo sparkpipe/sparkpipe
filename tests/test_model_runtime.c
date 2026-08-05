@@ -3,7 +3,6 @@
 #include <string.h>
 
 #include "sparkpipe/spark_dsv4_runtime_contract.h"
-#include "sparkpipe/spark_glm52_runtime_contract.h"
 #include "sparkpipe/spark_k3_runtime_contract.h"
 #include "sparkpipe/spark_model_runtime.h"
 #include "sparkpipe/spark_qwen36_runtime_contract.h"
@@ -280,8 +279,6 @@ int main(void)
     const TestContractCase contract_cases[] =
     {
         {"kimi-k3",SparkK3RuntimeContract,SparkK3RuntimeValidateContract},
-        {"glm-5.2",SparkGlm52RuntimeContract,
-            SparkGlm52RuntimeValidateContract},
         {"qwen-3.6-27b",SparkQwen36RuntimeContract,
             SparkQwen36RuntimeValidateContract},
         {"deepseek-v4-flash",SparkDsv4FlashRuntimeContract,

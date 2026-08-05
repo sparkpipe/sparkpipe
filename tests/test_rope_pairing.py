@@ -23,11 +23,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # model -> (pairing, source of the claim)
 EXPECTED = {
-    "deepseek_v4": ("LM_ROPE_INTERLEAVED",
+    "dsv4_resident_decode_stage": ("LM_ROPE_INTERLEAVED",
                     "DeepSeek-V4 paper and reference: RoPE encoded as interleaved "
                     "pairs, view_as_complex style, for both the main attention and "
                     "the compressor sub-module"),
-    "glm5_2": ("LM_ROPE_HALF_SPLIT", "half-split, the tree's original convention"),
+    "glm5_2": ("LM_ROPE_INTERLEAVED",
+                "zai-org/GLM-5.2 config: rope_interleave and "
+                "indexer_rope_interleave are true"),
     "qwen_3_6": ("LM_ROPE_HALF_SPLIT", "Qwen3.6 partial rotary over the head suffix"),
     "mimo_2_5": ("LM_ROPE_HALF_SPLIT", "MiMo 2.5"),
     # K3 applies NO rope. modeling_kimi_linear.py sets rotary_emb = None, asserts
@@ -46,6 +48,12 @@ def pairings_used(model):
     arguments. A default argument means half-split, which is what the kernel
     declares."""
     found = set()
+    if model == "dsv4_resident_decode_stage":
+        source = ROOT / "modules" / model / "source" / "spark_dsv4_resident_decode_stage_cuda.cu"
+        text = source.read_text()
+        if "(head_dim - rope_dim) + 2u * pair" in text:
+            found.add("LM_ROPE_INTERLEAVED")
+        return found
     for name in ("unity.cu", "layer.cuh"):
         path = ROOT / "inference" / "llms" / model / name
         if not path.exists():

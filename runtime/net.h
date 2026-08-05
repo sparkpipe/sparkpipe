@@ -12,10 +12,8 @@
 // Two variants deliberately did NOT fold in, because they are different
 // functions wearing the same name rather than copies:
 //
-//   node/memlink_tool.c   resolves through getaddrinfo, so it accepts a host
-//                         name and both address families
-//   api/gateway/http_server.c  takes the gateway config struct rather than an
-//                         address and port
+//   node/memlink_tool.c resolves through getaddrinfo, so it accepts a host
+//                       name and both address families.
 //
 // Error codes are unique per site across the whole header so a return value
 // identifies the call that produced it.

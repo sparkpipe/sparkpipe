@@ -4,9 +4,6 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "sparkpipe/spark_stage_plan.h"
-#include "sparkpipe/spark_ring_node_context_builder.h"
-#include "sparkpipe/spark_ring_runtime.h"
 #include "sparkpipe/spark_model_description.h"
 
 static void SparkTestEnsureBuildDirectory(void)
@@ -52,109 +49,6 @@ static void SparkTestFirmwareDemoDescription(void)
     SparkModelDescriptionDestroy(&description);
 }
 
-static void SparkTestGlm52PrecisionDescription(void)
-{
-    SparkModelDescription description;
-    const SparkModelStageDescription *resident_stage;
-    const SparkModelProgramDescription *decode_program;
-    const char *configuration_json;
-    char error_buffer[1024];
-
-    SparkModelDescriptionReset(&description);
-    assert(SparkLoadModelDescription(
-               "examples/model_descriptions/glm52_resident_decode_stage_firmware.json",
-               &description,
-               error_buffer,
-               sizeof(error_buffer)) == SPARK_STATUS_OK);
-    assert(strcmp(
-               description.model_revision,
-               "fp8-experts-bf16-rest-sm121a-v1") == 0);
-
-    resident_stage = SparkFindModelStage(&description, "resident_decode");
-    assert(resident_stage != 0);
-    decode_program = SparkFindModelProgram(resident_stage, "decode");
-    assert(decode_program != 0);
-    assert(decode_program->max_inflight == 1u);
-    assert(decode_program->operation_count == 1u);
-    assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE) != 0u);
-    assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_JIT_KV_CACHE) == 0u);
-    assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_HOST_STAGING) == 0u);
-    assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT) != 0u);
-    assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT) != 0u);
-    assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT) != 0u);
-    assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL) == 0u);
-    assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_VALIDATED_LATENCY) == 0u);
-    assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_DEVICE_MEMCPY) == 0u);
-    assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_PRIVATE_EXPERT_QUEUES) == 0u);
-    assert(decode_program->scheduling.max_active_slots ==
-        SPARK_STAGE_PLAN_MAX_BATCH_BUCKET *
-            SPARK_RING_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE);
-    assert(decode_program->scheduling.max_new_tokens == 7u);
-    assert(decode_program->scheduling.max_resident_sequences ==
-        SPARK_RING_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT);
-    assert(decode_program->scheduling.private_queue_count == 1u);
-    assert(decode_program->scheduling.validated_latency_ns == 0u);
-    assert(decode_program->scheduling.host_staging_bytes_per_submit_ceiling == 0u);
-
-    assert(strstr(description.metadata_json,
-        "glm52_fp8_experts_bf16_rest") != 0);
-    assert(strstr(description.metadata_json,
-        "routed_expert_weight_format") != 0);
-    assert(strstr(description.metadata_json,
-        "fp8_e4m3") != 0);
-    assert(strstr(description.metadata_json,
-        "routed_expert_activation_format") != 0);
-    assert(strstr(description.metadata_json,
-        "non_expert_weight_format") != 0);
-    assert(strstr(description.metadata_json,
-        "runtime_precision_selection") != 0);
-    assert(strstr(description.metadata_json,
-        "forbidden") != 0);
-    assert(strstr(description.metadata_json,
-        "production_ready") != 0);
-
-    configuration_json = decode_program->operations[0].configuration_json;
-    assert(strstr(configuration_json,
-        "required_arch") != 0);
-    assert(strstr(configuration_json,
-        "sm_121a") != 0);
-    assert(strstr(configuration_json,
-        "spark.glm52.sm121.required_decode_stage.fp8_experts_bf16_rest.v1") != 0);
-    assert(strstr(configuration_json,
-        "precision_contract") != 0);
-    assert(strstr(configuration_json,
-        "glm52_fp8_experts_bf16_rest") != 0);
-    assert(strstr(configuration_json,
-        "Glm52GemmBf16") != 0);
-    assert(strstr(configuration_json,
-        "Glm52GemmFp8ExpertWeightBf16Activation") != 0);
-    assert(strstr(configuration_json,
-        "Glm52LayerMoeFp8ExpertWeightBf16Activation") != 0);
-    assert(strstr(configuration_json,
-        "routed_expert_weight_dtype") != 0);
-    assert(strstr(configuration_json,
-        "F8_E4M3") != 0);
-    assert(strstr(configuration_json,
-        "routed_expert_activation_dtype") != 0);
-    assert(strstr(configuration_json,
-        "BF16") != 0);
-    assert(strstr(configuration_json,
-        "runtime_backend_selection") != 0);
-    assert(strstr(configuration_json,
-        "fallback_allowed") != 0);
-    SparkModelDescriptionDestroy(&description);
-}
-
 static void SparkTestDuplicateProgramRejected(void)
 {
     SparkModelDescription description;
@@ -185,7 +79,6 @@ static void SparkTestDuplicateProgramRejected(void)
 int main(void)
 {
     SparkTestFirmwareDemoDescription();
-    SparkTestGlm52PrecisionDescription();
     SparkTestDuplicateProgramRejected();
     return 0;
 }

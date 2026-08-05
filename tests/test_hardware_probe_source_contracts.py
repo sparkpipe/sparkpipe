@@ -91,6 +91,32 @@ def main() -> int:
             "CUDA 13 gate does not compile the GB10 probe")
     require("tools/hardware/spark_nvme_characterize.cu" in gate,
             "CUDA 13 gate does not compile the NVMe-to-GPU probe")
+    require(
+        "modules/dsv4_resident_decode_stage/source/"
+        "spark_dsv4_resident_decode_stage_cuda.cu" in gate,
+        "CUDA 13 gate does not compile the DSV4 resident module",
+    )
+    require(
+        "modules/glm52_resident_decode_stage/source/"
+        "spark_glm52_resident_decode_stage_cuda.cu" in gate,
+        "CUDA 13 gate does not compile the GLM resident module",
+    )
+    require(
+        "glm_codecs=(int6 int7 int8 fp8 nvfp4 mxfp4)" in gate,
+        "CUDA 13 gate does not qualify every selectable GLM expert codec",
+    )
+    require(
+        "--print-build-identity" in gate,
+        "CUDA 13 gate does not consume canonical package build identity",
+    )
+    require(
+        "inference/llms/glm5_2" not in gate,
+        "CUDA 13 gate still compiles the removed GLM inference path",
+    )
+    require(
+        "inference/llms/deepseek_v4" not in gate,
+        "CUDA 13 gate still compiles the removed DSV4 inference path",
+    )
 
     run([
         "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",

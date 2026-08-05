@@ -1,4 +1,6 @@
 {
+  "model_id": "zai-org/GLM-5.2",
+  "model_revision": "b4734de4facf877f85769a911abafc5283eab3d9",
   "dense_intermediate_dimension": 12288,
   "dsa_index_head_count": 32,
   "dsa_index_head_dimension": 128,

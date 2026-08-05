@@ -32,6 +32,11 @@ static int32_t LmTensorMapSwizzleEnum(uint32_t swizzle_bytes, CUtensorMapSwizzle
 {
 	if ( out == 0 )
 		return(LM_TM_ENCODE_ERR_NULL);
+	if ( swizzle_bytes == 0u )
+	{
+		*out = CU_TENSOR_MAP_SWIZZLE_NONE;
+		return(LM_TM_ENCODE_OK);
+	}
 	if ( swizzle_bytes == 128u )
 	{
 		*out = CU_TENSOR_MAP_SWIZZLE_128B;

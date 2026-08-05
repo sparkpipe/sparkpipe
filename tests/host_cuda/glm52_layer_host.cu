@@ -1,6 +1,6 @@
 // Run the real GLM 5.2 layer on a CPU: one attention, one MoE, one dense MLP
-// in both gate/up forms, the head, and the bind-time gate/up contiguity
-// decision - the code that ships, end to end, two rows.
+// in both gate/up forms and the head - the code that ships, end to end, two
+// rows.
 //
 // The glm5_2 driver had no harness at all: the per-kernel tests cover kernels,
 // and the python contracts read the launch sites, but nothing EXECUTED the
@@ -13,7 +13,7 @@
 // honouring the output row stride and column offset - so the whole stream is
 // closed-form arithmetic the checker recomputes: the norm chain, the rope
 // rotations, the slot layout written directly by the kv projections, the
-// attention softmax over four positions, the counting sort, the gather, and
+// attention softmax over four positions, the indirect routed-row read, and
 // the final norm over hidden + residual. Everything else is the shipping
 // kernel.
 
@@ -45,8 +45,11 @@ std::vector<LmRecordedGemm> lm_recorded_gemms;
 #include "inference/kernels/kv.cuh"
 #undef __CUDACC__
 
-#include "inference/llms/glm5_2/layer.cuh"
-#include "inference/llms/glm5_2/bind.cu"
+#include "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
+
+#ifndef EXPERT_CODEC
+#error "EXPERT_CODEC must name the exact GLM 5.2 routed-expert codec"
+#endif
 
 #define ROWS 2u
 #define PACKED (ROWS * GLM52_TOP_K)
@@ -62,15 +65,19 @@ std::vector<LmRecordedGemm> lm_recorded_gemms;
 static uint16_t hidden[ROWS * GLM52_HIDDEN];
 static uint16_t residual[ROWS * GLM52_HIDDEN];
 static uint16_t normed[ROWS * GLM52_HIDDEN];
+static uint16_t q_compressed[ROWS * GLM52_QUERY_A_DIM];
+static uint16_t q_b[ROWS * GLM52_ATTN_HEADS *
+    (GLM52_QK_NOPE_DIM + GLM52_ROPE_DIM)];
 static uint16_t query_latent[ROWS * GLM52_ATTN_HEADS * GLM52_LATENT];
 static uint16_t query_rope[ROWS * GLM52_ATTN_HEADS * GLM52_ROPE_DIM];
 static uint16_t kv_slot[ROWS * GLM52_LATENT_ROW];
 static uint16_t attention_latent[ROWS * GLM52_ATTN_HEADS * GLM52_LATENT];
+static uint16_t attention_value[ROWS * GLM52_ATTN_HEADS * GLM52_VALUE_DIM];
 static uint16_t attention_out[ROWS * GLM52_HIDDEN];
 static uint16_t gate_up[PACKED * GLM52_GATE_UP_DIM];
 static uint16_t intermediate[PACKED * GLM52_EXPERT_INTERMEDIATE];
 static uint16_t expert_out[PACKED * GLM52_HIDDEN];
-static uint16_t gather_check[PACKED * GLM52_HIDDEN];
+static uint16_t shared_out[ROWS * GLM52_HIDDEN];
 static float router_logits[ROWS * GLM52_EXPERTS];
 static uint32_t route_expert[PACKED];
 static float route_weight[PACKED];
@@ -94,15 +101,21 @@ static uint32_t positions[ROWS];
 static LmKvAccessError kv_access_error;
 
 static uint16_t attn_norm_w[GLM52_HIDDEN];
+static uint16_t q_a_norm_w[GLM52_QUERY_A_DIM];
+static uint16_t kv_a_norm_w[GLM52_LATENT];
 static uint16_t mlp_norm_w[GLM52_HIDDEN];
 static uint16_t head_norm_w[GLM52_HIDDEN];
 static uint16_t head_weight[HEAD_VOCAB * GLM52_HIDDEN];
 
 // Distinct addresses, never read: the recorder logs the pointer, so each
 // weight must be its own buffer for the gemm log to name it.
-static uint16_t w_q_latent[8], w_q_rope[8], w_k_rope[8], w_kv_latent[8];
+static uint16_t w_q_a[8], w_q_b[8], w_kv_a[8];
+static uint16_t w_kv_b_key[GLM52_ATTN_HEADS * GLM52_LATENT * GLM52_QK_NOPE_DIM];
+static uint16_t w_kv_b_value[GLM52_ATTN_HEADS * GLM52_VALUE_DIM * GLM52_LATENT];
 static uint16_t w_o[8], w_router[8], w_down[8], w_e1[8], w_e2[8];
+static uint16_t w_shared_gate_up[8], w_shared_down[8];
 static float s_e1[8], s_e2[8];
+static float router_correction_bias[GLM52_EXPERTS];
 
 static uint32_t seed = 13579u;
 static float NextRandom(void)
@@ -159,25 +172,30 @@ static void EmitF32(const char *tag, const float *values, uint64_t count)
 static const char *PointerName(const void *pointer)
 {
     if (pointer == normed) return "normed";
+    if (pointer == q_compressed) return "q_compressed";
+    if (pointer == q_b) return "q_b";
     if (pointer == query_latent) return "query_latent";
     if (pointer == query_rope) return "query_rope";
     if (pointer == kv_slot) return "kv_slot";
     if (pointer == attention_latent) return "attention_latent";
+    if (pointer == attention_value) return "attention_value";
     if (pointer == attention_out) return "attention_out";
     if (pointer == gate_up) return "gate_up";
     if (pointer == intermediate) return "intermediate";
     if (pointer == expert_out) return "expert_out";
+    if (pointer == shared_out) return "shared_out";
     if (pointer == hidden) return "hidden";
     if (pointer == router_logits) return "router_logits";
-    if (pointer == w_q_latent) return "w_q_latent";
-    if (pointer == w_q_rope) return "w_q_rope";
-    if (pointer == w_k_rope) return "w_k_rope";
-    if (pointer == w_kv_latent) return "w_kv_latent";
+    if (pointer == w_q_a) return "w_q_a";
+    if (pointer == w_q_b) return "w_q_b";
+    if (pointer == w_kv_a) return "w_kv_a";
     if (pointer == w_o) return "w_o";
     if (pointer == w_router) return "w_router";
     if (pointer == w_down) return "w_down";
     if (pointer == w_e1) return "w_e1";
     if (pointer == w_e2) return "w_e2";
+    if (pointer == w_shared_gate_up) return "w_shared_gate_up";
+    if (pointer == w_shared_down) return "w_shared_down";
     return "unknown";
 }
 
@@ -187,10 +205,11 @@ static void EmitGemmLog(uint32_t begin, const char *phase)
     for (index = begin; index < lm_recorded_gemms.size(); ++index)
     {
         const LmRecordedGemm *record = &lm_recorded_gemms[index];
-        printf("gemm %s %u K %u N %u rows %u grouped %u act %s w %s dst %s\n",
+        printf("gemm %s %u K %u N %u rows %u grouped %u indirect %u act %s w %s dst %s\n",
             phase, index + 1u, record->input_dimension,
             record->output_dimension, record->packed_rows,
-            record->grouped ? 1u : 0u, PointerName(record->activation),
+            record->grouped ? 1u : 0u, record->indirect ? 1u : 0u,
+            PointerName(record->activation),
             PointerName(record->weight), PointerName(record->output));
     }
 }
@@ -217,6 +236,10 @@ int main(void)
     FillRandom(hidden, ROWS * GLM52_HIDDEN);
     FillRandom(residual, ROWS * GLM52_HIDDEN);
     FillNormWeight(attn_norm_w, GLM52_HIDDEN);
+    for (index = 0u; index < GLM52_QUERY_A_DIM; ++index)
+        q_a_norm_w[index] = LmFloatToBf16(1.0f);
+    for (index = 0u; index < GLM52_LATENT; ++index)
+        kv_a_norm_w[index] = LmFloatToBf16(1.0f);
     FillNormWeight(mlp_norm_w, GLM52_HIDDEN);
     FillNormWeight(head_norm_w, GLM52_HIDDEN);
     FillRandom(head_weight, (uint64_t)HEAD_VOCAB * GLM52_HIDDEN);
@@ -249,30 +272,39 @@ int main(void)
     buffers.dense_row_offset = dense_row_offset;
     buffers.dense_tile_prefix = dense_tile_prefix;
     buffers.attn_norm_weight = attn_norm_w;
-    buffers.absorbed.query_latent_weight = w_q_latent;
-    buffers.absorbed.query_rope_weight = w_q_rope;
-    buffers.absorbed.key_rope_weight = w_k_rope;
-    buffers.absorbed.kv_latent_weight = w_kv_latent;
-    buffers.use_absorbed = true;
+    buffers.q_a_weight = w_q_a;
+    buffers.q_a_norm_weight = q_a_norm_w;
+    buffers.q_b_weight = w_q_b;
+    buffers.kv_a_weight = w_kv_a;
+    buffers.kv_a_norm_weight = kv_a_norm_w;
+    buffers.kv_b_key_transposed_weight = w_kv_b_key;
+    buffers.kv_b_value_weight = w_kv_b_value;
     buffers.qk_scale = QK_SCALE;
     buffers.output_weight = w_o;
     buffers.mlp_norm_weight = mlp_norm_w;
     buffers.router_weight = w_router;
+    buffers.router_correction_bias = router_correction_bias;
     buffers.expert_w1_weight = w_e1;
     buffers.expert_w1_scale = s_e1;
     buffers.expert_w2_weight = w_e2;
     buffers.expert_w2_scale = s_e2;
+    buffers.shared_gate_up_weight = w_shared_gate_up;
+    buffers.shared_down_weight = w_shared_down;
     buffers.hidden_bf16 = hidden;
     buffers.residual_bf16 = residual;
     buffers.normed_bf16 = normed;
-    buffers.projected.query_latent_bf16 = query_latent;
-    buffers.projected.query_rope_bf16 = query_rope;
+    buffers.q_compressed_bf16 = q_compressed;
+    buffers.q_bf16 = q_b;
+    buffers.query_latent_bf16 = query_latent;
+    buffers.query_rope_bf16 = query_rope;
     buffers.kv_slot_bf16 = kv_slot;
     buffers.attention_latent_bf16 = attention_latent;
+    buffers.attention_value_bf16 = attention_value;
     buffers.attention_out_bf16 = attention_out;
     buffers.gate_up_bf16 = gate_up;
     buffers.intermediate_bf16 = intermediate;
     buffers.expert_out_bf16 = expert_out;
+    buffers.shared_out_bf16 = shared_out;
     buffers.router_logits = router_logits;
     buffers.route_expert = route_expert;
     buffers.route_weight = route_weight;
@@ -301,7 +333,7 @@ int main(void)
     printf("routedscale %.9g\n", (double)GLM52_ROUTED_SCALE);
     printf("eps %.9g\n", (double)GLM52_RMS_EPSILON);
 
-    status = Glm52LayerAttention(&buffers, ROWS, CONTEXT, 0u, 48u, 0);
+    status = Glm52LayerAttention(&buffers, ROWS, CONTEXT, 3u, 48u, 0);
     printf("status attention %d\n", (int)status);
     EmitGemmLog(0u, "attention");
     Emit("normed1", normed, ROWS * GLM52_HIDDEN);
@@ -363,9 +395,10 @@ int main(void)
         Emit("smallattn", test_out, 2u * 8u);
     }
 
-    status = Glm52LayerMoe(&buffers, ROWS, PACKED, 48u, 0);
+    status = Glm52LayerMoe<EXPERT_CODEC>(
+        &buffers, ROWS, PACKED, 48u, 0);
     printf("status moe %d\n", (int)status);
-    EmitGemmLog(5u, "moe");
+    EmitGemmLog(4u, "moe");
     Emit("normed2", normed, ROWS * GLM52_HIDDEN);
     EmitU32("routeexpert", route_expert, PACKED);
     EmitF32("routeweight", route_weight, PACKED);
@@ -374,25 +407,18 @@ int main(void)
     EmitU32("groupoffset", group_row_offset, GLM52_EXPERTS + 1u);
     EmitU32("tileup", group_tile_prefix_w1, GLM52_EXPERTS + 1u);
     EmitU32("tiledown", group_tile_prefix_w2, GLM52_EXPERTS + 1u);
-    EmitSample("inter", intermediate, PACKED, GLM52_EXPERT_INTERMEDIATE, 173u);
+    EmitSample("intershared", intermediate, ROWS,
+        GLM52_EXPERT_INTERMEDIATE, 173u);
+    EmitSample("interrouted", intermediate +
+        (ROWS * GLM52_EXPERT_INTERMEDIATE), PACKED - ROWS,
+        GLM52_EXPERT_INTERMEDIATE, 173u);
     Emit("hidden2", hidden, ROWS * GLM52_HIDDEN);
 
-    // The gather is unobservable after w2 overwrote its destination, so rerun
-    // it over the emitted route tables - same kernel, same arguments the layer
-    // passed - and check the mapping itself.
-    LM_HOST_LAUNCH(
-        dim3(
-            (GLM52_HIDDEN + GLM52_LAYER_THREADS - 1u) / GLM52_LAYER_THREADS,
-            PACKED),
-        (LmGatherRowsKernel<GLM52_LAYER_THREADS>(
-            normed, route_source_token, gather_check, PACKED, GLM52_HIDDEN)));
-    EmitSample("gather", gather_check, PACKED, GLM52_HIDDEN, 97u);
-
-    // The dense MLP twice: once with the bind-time contiguity fact set, once
-    // without. The poison fill turns a half-written gate_up into a failure
+    // The dense MLP twice: once with one contiguous gate/up tensor, once with
+    // two tensors. The poison fill turns a half-written gate_up into a failure
     // rather than a stale read.
-    buffers.dense_gate_weight = w_q_latent;
-    buffers.dense_up_weight = w_q_rope;
+    buffers.dense_gate_weight = w_q_a;
+    buffers.dense_up_weight = w_q_b;
     buffers.dense_down_weight = w_down;
     buffers.dense_gate_up_fused = 1u;
     poison = LmFloatToBf16(-7.0f);
@@ -401,7 +427,7 @@ int main(void)
         gate_up[index] = poison;
     status = Glm52LayerDenseMlp(&buffers, ROWS, 48u, 0);
     printf("status densefused %d\n", (int)status);
-    EmitGemmLog(8u, "densefused");
+    EmitGemmLog(9u, "densefused");
     printf("poison %u\n",
         CountPoison(gate_up, ROWS * GLM52_DENSE_INTERMEDIATE * 2u, poison));
     EmitSample("gateup", gate_up, ROWS, GLM52_DENSE_INTERMEDIATE * 2u, 997u);
@@ -411,7 +437,7 @@ int main(void)
         gate_up[index] = poison;
     status = Glm52LayerDenseMlp(&buffers, ROWS, 48u, 0);
     printf("status densetwo %d\n", (int)status);
-    EmitGemmLog(10u, "densetwo");
+    EmitGemmLog(11u, "densetwo");
     printf("poison %u\n",
         CountPoison(gate_up, ROWS * GLM52_DENSE_INTERMEDIATE * 2u, poison));
     EmitSample("gateup2", gate_up, ROWS, GLM52_DENSE_INTERMEDIATE * 2u, 997u);
@@ -422,39 +448,6 @@ int main(void)
     Emit("normed3", normed, ROWS * GLM52_HIDDEN);
     EmitU32("token", output_token, ROWS);
     EmitF32("score", output_score, ROWS);
-
-    // The bind-time decision itself: contiguous gate/up rows set the fusion
-    // flag, anything else clears it. The up pointer is fabricated arithmetic
-    // the layer never dereferences - the recorder logs pointers, not bytes.
-    {
-        SparkResidentDecodeStageNodeContext node;
-        Glm52LayerBuffers bound;
-        uintptr_t gate_address;
-
-        memset(&node, 0, sizeof(node));
-        memset(&bound, 0, sizeof(bound));
-        node.layer_index = 0u;
-        node.attention_norm_weight_bf16 = attn_norm_w;
-        node.post_attention_norm_weight_bf16 = mlp_norm_w;
-        node.attention_output_weight_bf16 = w_o;
-        node.qk_scale = QK_SCALE;
-        node.query_latent_weight_bf16 = w_q_latent;
-        node.query_rope_weight_bf16 = w_q_rope;
-        node.key_rope_weight_bf16 = w_k_rope;
-        node.kv_latent_weight_bf16 = w_kv_latent;
-        node.dense_gate_weight_bf16 = w_q_latent;
-        node.dense_down_weight_bf16 = w_down;
-        gate_address = (uintptr_t)w_q_latent;
-        node.dense_up_weight_bf16 = (const void *)(gate_address +
-            ((uintptr_t)GLM52_DENSE_INTERMEDIATE * GLM52_HIDDEN * 2u));
-        status = Glm52BindLayer(&node, 0u, &buffers, &bound);
-        printf("status bind %d\n", (int)status);
-        printf("bindfused %u\n", bound.dense_gate_up_fused);
-        node.dense_up_weight_bf16 = (const void *)(gate_address + 16u);
-        status = Glm52BindLayer(&node, 0u, &buffers, &bound);
-        printf("status bind2 %d\n", (int)status);
-        printf("bindfused2 %u\n", bound.dense_gate_up_fused);
-    }
 
     printf("done\n");
     return 0;

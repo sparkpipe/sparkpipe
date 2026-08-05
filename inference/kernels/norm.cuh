@@ -113,6 +113,35 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 			LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
 }
 
+// LayerNorm with learned weight and bias. DSA index keys use LayerNorm rather
+// than RMSNorm, so sharing the RMS implementation here would preserve shapes
+// while changing every sparse-attention score.
+template<uint32_t THREADS, class Weight>
+__global__ __launch_bounds__(THREADS, 1)
+void LmLayerNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, const Weight *__restrict__ bias, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint32_t row_stride, float epsilon)
+{
+	extern __shared__ float lm_norm_shared[];
+	float *row = lm_norm_shared;
+	float *reduction = lm_norm_shared + dimension;
+	uint64_t base = (uint64_t)blockIdx.x * row_stride;
+	uint32_t index;
+	float value,total = 0.0f,total_squared = 0.0f,mean,variance,inverse;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		value = LmBf16ToFloat(input_bf16[base + index]);
+		row[index] = value;
+		total += value;
+		total_squared += value * value;
+	}
+	total = LmBlockSum<THREADS>(total,reduction);
+	total_squared = LmBlockSum<THREADS>(total_squared,reduction);
+	mean = total / (float)dimension;
+	variance = fmaxf((total_squared / (float)dimension) - (mean * mean),0.0f);
+	inverse = rsqrtf(variance + epsilon);
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+		output_bf16[base + index] = LmFloatToBf16(((row[index] - mean) * inverse * LmScalarToFloat(weight[index])) + LmScalarToFloat(bias[index]));
+}
+
 // SiLU(gate) * up.
 //
 // gate and up arrive interleaved per row, gate first, because that is how a

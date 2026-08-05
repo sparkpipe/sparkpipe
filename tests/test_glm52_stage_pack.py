@@ -3,214 +3,118 @@
 from __future__ import annotations
 
 import importlib.util
-import json
+import importlib.machinery
 from pathlib import Path
-import struct
-import tempfile
+import sys
+import types
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+PACKER = ROOT / "tools/glm52_stagepack.py"
+CODECS = ("int6", "int7", "int8", "fp8", "nvfp4", "mxfp4")
 
 
-def load_stage_pack_module():
-    repository = Path(__file__).resolve().parents[1]
-    tool_path = repository / "runtime" / "pack" / "stage_pack.py"
+def load_packer():
+    if importlib.util.find_spec("torch") is None:
+        torch_stub = types.ModuleType("torch")
+        torch_stub.__spec__ = importlib.machinery.ModuleSpec("torch", loader=None)
+        torch_stub.Tensor = object
+        sys.modules["torch"] = torch_stub
+    if importlib.util.find_spec("safetensors") is None:
+        safetensors_stub = types.ModuleType("safetensors")
+        safetensors_stub.__spec__ = importlib.machinery.ModuleSpec(
+            "safetensors", loader=None
+        )
+        safetensors_stub.safe_open = None
+        sys.modules["safetensors"] = safetensors_stub
     specification = importlib.util.spec_from_file_location(
-        "sparkpipe_glm52_stage_pack",
-        tool_path,
+        "sparkpipe_glm52_stagepack", PACKER
     )
     if specification is None or specification.loader is None:
-        raise RuntimeError("failed to load GLM-5.2 stage-pack tool")
+        raise RuntimeError("failed to load GLM stage-pack tool")
     module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
     specification.loader.exec_module(module)
     return module
 
 
-def write_safetensors(
-    path: Path,
-    tensors: dict[str, tuple[str, list[int], bytes]],
-) -> None:
-    offset = 0
-    header: dict[str, object] = {}
-    payload = bytearray()
-    for name, (dtype, shape, body) in tensors.items():
-        header[name] = {
-            "dtype": dtype,
-            "shape": shape,
-            "data_offsets": [offset, offset + len(body)],
-        }
-        payload.extend(body)
-        offset += len(body)
-    header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
-    path.write_bytes(struct.pack("<Q", len(header_bytes)) + header_bytes + payload)
-
-
-def write_model(model_dir: Path, tensors: dict[str, tuple[str, list[int], bytes]]) -> None:
-    model_dir.mkdir()
-    shard_name = "model-00001-of-00001.safetensors"
-    write_safetensors(model_dir / shard_name, tensors)
-    index = {
-        "metadata": {
-            "total_size": sum(len(item[2]) for item in tensors.values()),
-        },
-        "weight_map": {name: shard_name for name in tensors},
-    }
-    (model_dir / "model.safetensors.index.json").write_text(
-        json.dumps(index),
-        encoding="utf-8",
-    )
-
-
-def make_arguments(
-    model_dir: Path,
-    output_dir: Path,
-    model_quantization: str,
-    stages: str,
-    *,
-    mtp_only: bool = False,
-):
-    return type(
-        "Arguments",
-        (),
-        {
-            "model_dir": model_dir,
-            "output_dir": output_dir,
-            "model_quantization": model_quantization,
-            "stages": stages,
-            "reuse": False,
-            "mtp_only": mtp_only,
-        },
-    )()
+def unpack_subbyte(payload: bytes, bits: int, rows: int, columns: int) -> np.ndarray:
+    packed = np.frombuffer(payload, dtype=np.uint8).reshape(rows, columns // 8, bits)
+    words = np.zeros((rows, columns // 8), dtype=np.uint64)
+    for byte_index in range(bits):
+        words |= packed[:, :, byte_index].astype(np.uint64) << (8 * byte_index)
+    codes = np.empty((rows, columns), dtype=np.uint8)
+    mask = (1 << bits) - 1
+    for code_index in range(8):
+        codes[:, code_index::8] = ((words >> (bits * code_index)) & mask).astype(np.uint8)
+    return codes
 
 
 def main() -> int:
-    module = load_stage_pack_module()
-    with tempfile.TemporaryDirectory() as temporary_directory:
-        root = Path(temporary_directory)
-        model_dir = root / "bf16-model"
-        tensors = {
-            "model.embed_tokens.weight": ("BF16", [4, 2], b"abcdefghijklmnop"),
-            "model.layers.18.input_layernorm.weight": ("BF16", [4], b"12345678"),
-            "model.layers.18.self_attn.q_proj.weight": ("BF16", [2, 2], b"QWERASDF"),
-            "model.layers.18.mlp.experts.0.gate_proj.weight": ("U8", [2, 2], b"DROP"),
-            "model.layers.78.enorm.weight": ("BF16", [4], b"MTPENORM"),
-            "model.layers.78.self_attn.indexer.k_norm.weight": ("BF16", [4], b"MTPINDEX"),
-            "model.layers.78.mlp.experts.0.gate_proj.weight": ("U8", [2, 2], b"SKIP"),
-            "model.norm.weight": ("BF16", [4], b"abcdefgh"),
-            "lm_head.weight": ("BF16", [8, 2], b"ABCDEFGHIJKLMNOP"),
-        }
-        write_model(model_dir, tensors)
+    module = load_packer()
+    assert tuple(module.CODECS) == CODECS
+    for codec in CODECS:
+        records = module.records_for_stage(3, codec)
+        file_bytes = module.size_records(records, codec)
+        expert_records = [
+            record for record in records
+            if record.payload_type == module.PAYLOAD_PACKED_WEIGHT
+        ]
+        assert len(expert_records) == 12
+        assert all(record.codec == module.CODECS[codec][0] for record in expert_records)
+        assert all(record.scale_encoding == module.CODECS[codec][3]
+                   for record in expert_records)
+        assert all(record.payload_offset % module.ALIGNMENT == 0 for record in records)
+        assert all(record.scale_offset % module.ALIGNMENT == 0 for record in expert_records)
+        assert file_bytes > max(record.scale_offset + record.scale_bytes
+                                for record in expert_records)
+        assert all(record.codec == module.CODEC_BF16
+                   for record in records if record.payload_type == module.PAYLOAD_BF16)
 
-        output_dir = root / "fp8-stagepacks"
-        result = module.build_stage_packs(
-            make_arguments(
-                model_dir,
-                output_dir,
-                module.MODEL_QUANTIZATION_FP8,
-                "0,3,12",
-            )
+        header = module.pack_header(
+            3,
+            module.CODECS[codec][0],
+            "test-revision",
+            bytes.fromhex("11" * 32),
+            bytes.fromhex("22" * 32),
+            bytes.fromhex("33" * 32),
+            len(records),
+            file_bytes,
         )
-        assert result["format"] == module.FORMAT
-        assert result["non_expert_weight_dtype"] == "BF16"
-        index = json.loads(
-            (output_dir / module.INDEX_FILE).read_text(encoding="utf-8")
+        fields = module.HEADER.unpack(header)
+        assert fields[0:5] == (
+            module.MAGIC,
+            module.FORMAT_VERSION,
+            module.HEADER_BYTES,
+            module.ENTRY_BYTES,
+            module.CODEC_ABI_VERSION,
         )
-        tensor_map = index["tensor_map"]
-        assert index["model_quantization"] == module.MODEL_QUANTIZATION_FP8
-        assert index["non_expert_weight_dtype"] == "BF16"
-        assert tensor_map["model.layers.18.self_attn.q_proj.weight"]["dtype"] == "BF16"
-        assert "model.layers.18.mlp.experts.0.gate_proj.weight" not in tensor_map
-        assert "model.layers.78.self_attn.indexer.k_norm.weight" not in tensor_map
-        assert "model.layers.78.mlp.experts.0.gate_proj.weight" not in tensor_map
-        assert module.MTP_EMBEDDING_ALIAS in tensor_map
-        assert tensor_map["model.embed_tokens.weight"]["file"] == "stage_00_non_moe.spstage"
-        assert tensor_map["model.layers.18.input_layernorm.weight"]["file"] == "stage_03_non_moe.spstage"
-        assert tensor_map["lm_head.weight"]["file"] == "stage_12_non_moe.spstage"
-        assert tensor_map[module.MTP_EMBEDDING_ALIAS]["file"] == "stage_12_non_moe.spstage"
+        assert fields[8] == 3
+        assert fields[16] == module.CODECS[codec][0]
+        assert fields[22].split(b"\0", 1)[0] == b"test-revision"
+        assert fields[23:26] == (bytes.fromhex("11" * 32),
+                                 bytes.fromhex("22" * 32),
+                                 bytes.fromhex("33" * 32))
 
-        supplement_dir = root / "supplement"
-        supplement_dir.mkdir()
-        (supplement_dir / "stage_12_non_moe.spstage").write_bytes(b"base")
-        (supplement_dir / module.INDEX_FILE).write_text(
-            json.dumps(
-                {
-                    "format": module.FORMAT,
-                    "model_quantization": module.MODEL_QUANTIZATION_FP8,
-                    "topology": "ring_fixed6",
-                    "stage_count": module.STAGE_COUNT,
-                    "layers_per_stage": module.LAYERS_PER_STAGE,
-                    "tensor_map": {},
-                    "stages": {"12": {"file": "stage_12_non_moe.spstage"}},
-                }
-            ),
-            encoding="utf-8",
-        )
-        module.build_stage_packs(
-            make_arguments(
-                model_dir,
-                supplement_dir,
-                module.MODEL_QUANTIZATION_FP8,
-                "12",
-                mtp_only=True,
-            )
-        )
-        supplement_index = json.loads(
-            (supplement_dir / module.INDEX_FILE).read_text(encoding="utf-8")
-        )
-        assert (supplement_dir / module.MTP_STAGE_FILE).stat().st_size > 0
-        assert supplement_index["supplements"]["mtp"]["layer"] == 78
-        assert supplement_index["tensor_map"]["model.layers.78.enorm.weight"]["file"] == module.MTP_STAGE_FILE
-        assert supplement_index["tensor_map"][module.MTP_EMBEDDING_ALIAS]["file"] == module.MTP_STAGE_FILE
+    rows, columns = 3, 256
+    for bits in (6, 7):
+        mask = (1 << bits) - 1
+        codes = (np.arange(rows * columns, dtype=np.uint16) * 29 & mask)
+        codes = codes.astype(np.uint8).reshape(rows, columns)
+        payload = module.pack_subbyte(codes, bits)
+        assert len(payload) == rows * columns * bits // 8
+        assert np.array_equal(unpack_subbyte(payload, bits, rows, columns), codes)
 
-        for quantization in (
-            module.MODEL_QUANTIZATION_W8,
-            module.MODEL_QUANTIZATION_NVFP4,
-        ):
-            quantized_output = root / f"{quantization}-stagepacks"
-            quantized_result = module.build_stage_packs(
-                make_arguments(
-                    model_dir,
-                    quantized_output,
-                    quantization,
-                    "3",
-                )
-            )
-            quantized_index = json.loads(
-                (quantized_output / module.INDEX_FILE).read_text(encoding="utf-8")
-            )
-            assert quantized_result["non_expert_weight_dtype"] == "BF16"
-            assert quantized_index["model_quantization"] == quantization
-            assert quantized_index["non_expert_weight_dtype"] == "BF16"
-            assert quantized_index["tensor_map"][
-                "model.layers.18.self_attn.q_proj.weight"
-            ]["dtype"] == "BF16"
-
-        bad_model_dir = root / "non-bf16-model"
-        bad_tensors = dict(tensors)
-        bad_tensors["model.layers.18.self_attn.q_proj.weight"] = (
-            "U8",
-            [2, 2],
-            b"QWER",
-        )
-        write_model(bad_model_dir, bad_tensors)
-        for quantization in (
-            module.MODEL_QUANTIZATION_FP8,
-            module.MODEL_QUANTIZATION_W8,
-            module.MODEL_QUANTIZATION_NVFP4,
-        ):
-            try:
-                module.build_stage_packs(
-                    make_arguments(
-                        bad_model_dir,
-                        root / f"bad-{quantization}",
-                        quantization,
-                        "3",
-                    )
-                )
-            except module.StagePackFailure as error:
-                assert "must be BF16" in str(error)
-            else:
-                raise AssertionError(
-                    f"{quantization} stage pack accepted a non-BF16 non-expert weight"
-                )
-    print("PASS GLM-5.2 stage-pack precision contract")
+    scale_values = np.concatenate((
+        np.array((0.0, 2.0 ** -9, 2.0 ** -6), dtype=np.float32),
+        np.linspace(0.01, 448.0, 1000, dtype=np.float32),
+    ))
+    scale_codes, decoded_scales = module.encode_e4m3_round_up(scale_values)
+    assert np.all(decoded_scales >= scale_values)
+    assert np.all(scale_codes <= 126)
+    assert decoded_scales[-1] == 448.0
+    print("PASS GLM stage-pack geometry for six codecs and bit-exact packed layouts")
     return 0
 
 

@@ -146,7 +146,7 @@ Relevant implementation:
 - `inference/kernels/topk.cuh`
 - `inference/kernels/route.cuh`
 - `inference/llms/kimi_k3/layer.cuh`
-- `inference/llms/glm5_2/layer.cuh`
+- `modules/glm52_resident_decode_stage/source/cuda/layer.cuh`
 - `inference/llms/deepseek_v4/layer.cuh`
 - `inference/llms/mimo_2_5/layer.cuh`
 - `model-families/glm52/include/sparkpipe/spark_glm52_expert_queue.h`

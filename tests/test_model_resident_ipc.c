@@ -14,6 +14,9 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
 	descriptor->boundary_element_count = 32u;
 	descriptor->boundary_element_bytes = 2u;
+	descriptor->linear_weight_codec = SPARK_WEIGHT_CODEC_BF16;
+	descriptor->expert_weight_codec = SPARK_WEIGHT_CODEC_INT8;
+	descriptor->kv_cache_codec = SPARK_WEIGHT_CODEC_BF16;
 	descriptor->max_inflight_submission_count = 4u;
 	descriptor->max_active_sequence_count = 32u;
 	descriptor->max_input_row_count = 32u;
@@ -26,6 +29,8 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 	descriptor->stage_layer_counts[0] = 2u;
 	descriptor->stage_layer_counts[1] = 2u;
+	descriptor->boundary_sideband_kinds[0] = 1u;
+	descriptor->boundary_sideband_bytes_per_sequence[0] = 8192u;
 }
 
 static void TestHello(void)
@@ -54,6 +59,12 @@ static void TestHello(void)
 	assert(ack.max_input_row_count == 16u);
 	assert(ack.resident_sequence_capacity == 64u);
 	assert(ack.boundary_format == SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16);
+	assert(ack.linear_weight_codec == SPARK_WEIGHT_CODEC_BF16);
+	assert(ack.expert_weight_codec == SPARK_WEIGHT_CODEC_INT8);
+	assert(ack.kv_cache_codec == SPARK_WEIGHT_CODEC_BF16);
+	assert(ack.input_sideband_kind == 1u);
+	assert(ack.input_sideband_bytes_per_sequence == 8192u);
+	assert(ack.output_sideband_kind == 0u);
 	ack.boundary_element_count++;
 	assert(SparkModelResidentIpcValidateHelloAck(&ack,sizeof(ack),7u,1u,1u,&descriptor,&limits) == SPARK_STATUS_TARGET_MISMATCH);
 }
@@ -168,6 +179,11 @@ static void TestSubmissionRoundTrip(void)
 	assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
 	submission.hidden_input_address = 0;
 	submission.hidden_input_bytes = 0u;
+	submission.boundary_sideband_input_address = buffer;
+	submission.boundary_sideband_input_bytes = sizeof(buffer);
+	assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.boundary_sideband_input_address = 0;
+	submission.boundary_sideband_input_bytes = 0u;
 	wire = (SparkModelResidentIpcSubmit *)buffer;
 	wire->row_positions_offset++;
 	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_SCHEMA_ERROR);

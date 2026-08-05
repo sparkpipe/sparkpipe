@@ -24,7 +24,7 @@
       "rank_index": 0,
       "stage_index": 0,
       "runtime_root": "/home/spark0/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark0",
       "adapter_configuration_path": "config/stage-00.json",
       "control_endpoint": {"kind": "tcp", "host": "spark0", "port": 18080}
@@ -33,7 +33,7 @@
       "rank_index": 1,
       "stage_index": 1,
       "runtime_root": "/home/spark1/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark1",
       "adapter_configuration_path": "config/stage-01.json",
       "control_endpoint": {"kind": "tcp", "host": "spark1", "port": 18080}
@@ -42,7 +42,7 @@
       "rank_index": 2,
       "stage_index": 2,
       "runtime_root": "/home/spark2/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark2",
       "adapter_configuration_path": "config/stage-02.json",
       "control_endpoint": {"kind": "tcp", "host": "spark2", "port": 18080}
@@ -51,7 +51,7 @@
       "rank_index": 3,
       "stage_index": 3,
       "runtime_root": "/home/spark3/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark3",
       "adapter_configuration_path": "config/stage-03.json",
       "control_endpoint": {"kind": "tcp", "host": "spark3", "port": 18080}
@@ -60,7 +60,7 @@
       "rank_index": 4,
       "stage_index": 4,
       "runtime_root": "/home/spark4/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark4",
       "adapter_configuration_path": "config/stage-04.json",
       "control_endpoint": {"kind": "tcp", "host": "spark4", "port": 18080}
@@ -69,7 +69,7 @@
       "rank_index": 5,
       "stage_index": 5,
       "runtime_root": "/home/spark5/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark5",
       "adapter_configuration_path": "config/stage-05.json",
       "control_endpoint": {"kind": "tcp", "host": "spark5", "port": 18080}
@@ -78,7 +78,7 @@
       "rank_index": 6,
       "stage_index": 6,
       "runtime_root": "/home/spark6/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark6",
       "adapter_configuration_path": "config/stage-06.json",
       "control_endpoint": {"kind": "tcp", "host": "spark6", "port": 18080}
@@ -87,7 +87,7 @@
       "rank_index": 7,
       "stage_index": 7,
       "runtime_root": "/home/spark7/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark7",
       "adapter_configuration_path": "config/stage-07.json",
       "control_endpoint": {"kind": "tcp", "host": "spark7", "port": 18080}
@@ -96,7 +96,7 @@
       "rank_index": 8,
       "stage_index": 8,
       "runtime_root": "/home/spark8/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark8",
       "adapter_configuration_path": "config/stage-08.json",
       "control_endpoint": {"kind": "tcp", "host": "spark8", "port": 18080}
@@ -105,7 +105,7 @@
       "rank_index": 9,
       "stage_index": 9,
       "runtime_root": "/home/spark9/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark9",
       "adapter_configuration_path": "config/stage-09.json",
       "control_endpoint": {"kind": "tcp", "host": "spark9", "port": 18080}
@@ -114,7 +114,7 @@
       "rank_index": 10,
       "stage_index": 10,
       "runtime_root": "/home/sparka/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "sparka",
       "adapter_configuration_path": "config/stage-10.json",
       "control_endpoint": {"kind": "tcp", "host": "sparka", "port": 18080}
@@ -123,7 +123,7 @@
       "rank_index": 11,
       "stage_index": 11,
       "runtime_root": "/home/sparkb/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "sparkb",
       "adapter_configuration_path": "config/stage-11.json",
       "control_endpoint": {"kind": "tcp", "host": "sparkb", "port": 18080}
@@ -132,7 +132,7 @@
       "rank_index": 12,
       "stage_index": 12,
       "runtime_root": "/home/sparkc/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
-      "node_target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "sparkc",
       "adapter_configuration_path": "config/stage-12.json",
       "control_endpoint": {"kind": "tcp", "host": "sparkc", "port": 18080}

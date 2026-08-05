@@ -25,6 +25,9 @@ endif
 ifndef RUNTIME_CONFIGURATION
 $(error RUNTIME_CONFIGURATION must be defined before including resident_decode_stage_rules.mk)
 endif
+ifndef MODULE_COMPILE_FLAGS
+$(error MODULE_COMPILE_FLAGS must be defined before including resident_decode_stage_rules.mk)
+endif
 
 REPOSITORY_ROOT ?= $(abspath ../..)
 CC ?= cc
@@ -69,12 +72,12 @@ $(BUILD_DIRECTORY):
 define SPARK_STAGE_HOST_SOURCE_RULE
 $(BUILD_DIRECTORY)/$(subst /,_,$(basename $(1))).o: $(1) | $(BUILD_DIRECTORY)
 	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC -fvisibility=hidden $(MODULE_INCLUDE_FLAGS) \
-		-I"$(CUDA_HOME)/include" -include $(MODEL_HEADER) -MMD -MP -c "$$<" -o "$$@"
+		$(MODULE_COMPILE_FLAGS) -I"$(CUDA_HOME)/include" -include $(MODEL_HEADER) -MMD -MP -c "$$<" -o "$$@"
 endef
 $(foreach source,$(MODULE_HOST_SOURCES),$(eval $(call SPARK_STAGE_HOST_SOURCE_RULE,$(source))))
 
 $(MODULE_CUDA_OBJECT): $(MODULE_CUDA_SOURCE) | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) $(MODULE_INCLUDE_FLAGS) -include $(MODEL_HEADER) \
+	$(NVCC) $(NVCCFLAGS) $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) -include $(MODEL_HEADER) \
 		-Xcompiler -Wall,-Wextra,-fPIC,-fvisibility=hidden -MMD -MP -c "$<" -o "$@"
 
 $(MODULE_ARCHIVE): $(MODULE_HOST_OBJECTS) $(MODULE_CUDA_OBJECT)
@@ -95,7 +98,7 @@ contract:
 	@set -e; \
 	for source in $(MODULE_HOST_SOURCES); do \
 		$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fsyntax-only -I"$(REPOSITORY_ROOT)/tests/cuda_stub" \
-			$(MODULE_INCLUDE_FLAGS) -include $(MODEL_HEADER) $$source; \
+			$(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) -include $(MODEL_HEADER) $$source; \
 	done
 
 archive: require_cuda_target $(MODULE_ARCHIVE)

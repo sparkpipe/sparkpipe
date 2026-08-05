@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "cuda_target": "sm_121a",
   "qualification_policy": {
     "host_contracts_required": true,
@@ -29,11 +29,18 @@
       "production_ready": false
     },
     {
-      "id": "glm52_fp8_experts_bf16_rest",
+      "id": "glm52_codec_matrix_experts_bf16_rest",
       "model_family": "glm52",
-      "model_id": "zai-org/GLM-5.2-FP8",
+      "model_id": "zai-org/GLM-5.2",
       "contract": "model_contracts/glm52.json",
-      "routed_expert_weight_format": "fp8_e4m3",
+      "routed_expert_weight_formats": [
+        "int6_block_f32",
+        "int7_block_f32",
+        "int8_block_f32",
+        "fp8_e4m3_block_f32",
+        "nvfp4_e2m1_ue4m3_global_f32",
+        "mxfp4_e2m1_e8m0"
+      ],
       "routed_expert_activation_format": "bf16",
       "non_expert_weight_format": "bf16",
       "non_expert_activation_format": "bf16",
@@ -72,7 +79,7 @@
       "model_family": "dsv4_flash",
       "model_id": "deepseek-ai/DeepSeek-V4-Flash",
       "contract": "model_contracts/dsv4_flash_authoritative.json",
-      "routed_expert_weight_format": "checkpoint_fp4",
+      "routed_expert_weight_codec": "mxfp4_e2m1",
       "routed_expert_activation_format": "fp8_e4m3_dynamic",
       "non_expert_weight_format": "fp8_e4m3_block_128x128",
       "non_expert_activation_format": "fp8_e4m3_dynamic",
@@ -94,7 +101,7 @@
       "model_family": "dsv4_pro",
       "model_id": "deepseek-ai/DeepSeek-V4-Pro",
       "contract": "model_contracts/dsv4_pro_authoritative.json",
-      "routed_expert_weight_format": "checkpoint_fp4",
+      "routed_expert_weight_codec": "mxfp4_e2m1",
       "routed_expert_activation_format": "fp8_e4m3_dynamic",
       "non_expert_weight_format": "fp8_e4m3_block_128x128",
       "non_expert_activation_format": "fp8_e4m3_dynamic",

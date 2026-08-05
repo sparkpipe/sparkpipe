@@ -1,146 +1,87 @@
 #!/usr/bin/env python3
-"""DSv4 driver source contracts: the audit numbers must match the code.
+"""Pin DSV4 Flash to its one authoritative contract and active module."""
 
-The layer driver's header comment carries exact attention weight bytes and the
-Pro launch budget is written into deepseek_v4_pro/unity.cu. Both are claims
-about config geometry, and claims drift: this gate recomputes every figure
-from inference/llms/deepseek_v4/config.h and model_contracts/dsv4_pro.json and
-requires the recomputed decimal to appear in the comment, so editing a config
-without re-auditing the comment fails here.
-
-It also pins the two structural facts the 2026-08-01 audit established:
-
-  - the KV latent GEMM reuses the low-rank path's quantised input instead of
-    re-quantising the normed rows (one launch and one full hidden re-read per
-    layer per token), guarded by an explicit input_dimension check;
-  - the per-function launch counts, because launch tax is 18-49% of the
-    50 tok/s Pro budget and every added launch is a regression.
-"""
 import json
-import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def read(relative: str) -> str:
-    return (ROOT / relative).read_text(encoding="utf-8")
+	return (ROOT / relative).read_text(encoding="utf-8")
 
 
 def require(text: str, needle: str, label: str) -> None:
-    if needle not in text:
-        raise SystemExit(f"missing {label}: {needle}")
+	if needle not in text:
+		raise SystemExit(f"missing {label}: {needle}")
 
 
-def define(text: str, name: str) -> int:
-    match = re.search(rf"#define {name} (\d+)u\b", text)
-    if not match:
-        raise SystemExit(f"missing #define {name}")
-    return int(match.group(1))
+def reject(text: str, needle: str, label: str) -> None:
+	if needle in text:
+		raise SystemExit(f"forbidden {label}: {needle}")
 
 
 def function_body(text: str, name: str) -> str:
-    start = text.index(f"static int32_t {name}(")
-    brace = text.index("{", start)
-    depth, index = 1, brace + 1
-    while depth:
-        if text[index] == "{":
-            depth += 1
-        elif text[index] == "}":
-            depth -= 1
-        index += 1
-    return text[brace:index]
+	start = text.index(name)
+	brace = text.index("{", start)
+	depth = 1
+	index = brace + 1
+	while depth != 0:
+		if text[index] == "{":
+			depth += 1
+		elif text[index] == "}":
+			depth -= 1
+		index += 1
+	return text[brace:index]
 
 
 def main() -> None:
-    layer = read("inference/llms/deepseek_v4/layer.cuh")
-    flat = re.sub(r"\s+", " ", layer)
-    config = read("inference/llms/deepseek_v4/config.h")
-    pro = json.loads(read("model_contracts/dsv4_pro.json"))
-
-    # -- exact attention weight bytes, recomputed from geometry ---------------
-    hidden = define(config, "DSV4_HIDDEN")
-    heads = define(config, "DSV4_ATTN_HEADS")
-    head_dim = define(config, "DSV4_HEAD_DIM")
-    rope_dim = define(config, "DSV4_ROPE_DIM")
-    query_rank = define(config, "DSV4_QUERY_LORA_RANK")
-    flash_per_layer = (
-        hidden * query_rank
-        + query_rank * heads * head_dim
-        + hidden * (head_dim + rope_dim)
-        + heads * head_dim * hidden
-    )
-    require(layer, str(flash_per_layer), "Flash per-layer attention weights")
-
-    pm = pro["model"]
-    p_hidden = pm["hidden_dimension"]
-    p_q_dim = pm["attention_head_count"] * pm["head_dimension"]
-    p_coded = (
-        p_hidden * pm["query_lora_rank"]
-        + pm["query_lora_rank"] * p_q_dim
-        + p_hidden * (pm["head_dimension"] + pm["qk_rope_head_dimension"])
-        + p_q_dim * p_hidden
-    )
-    require(layer, str(p_coded), "Pro as-coded per-layer attention weights")
-    groups = pm["output_group_count"]
-    rank = pm["output_lora_rank"]
-    o_lowrank = groups * ((p_q_dim // groups) * rank + rank * p_hidden)
-    require(layer, str(o_lowrank), "Pro contract grouped low-rank o_proj")
-    require(
-        layer,
-        str(p_coded - p_q_dim * p_hidden + o_lowrank),
-        "Pro contract per-layer attention total",
-    )
-
-    # -- the KV latent GEMM reuses the low-rank quantised input ----------------
-    require(
-        flat,
-        "b->query_scratch.input_codes,b->kv_latent_weight",
-        "KV latent GEMM activation reuse",
-    )
-    require(
-        flat,
-        "b->query.input_dimension != DSV4_HIDDEN",
-        "reuse contract guard",
-    )
-    attention = function_body(layer, "Dsv4LayerAttention")
-    quantises = attention.count("LM_LAUNCH((LmQuantiseRowsKernel")
-    if quantises != 1:
-        raise SystemExit(
-            f"attention path runs {quantises} quantise launches, expected 1 "
-            "(the normed-rows quantise rides the low-rank path)"
-        )
-
-    # -- launch-count budget, the 50 tok/s Pro lever ---------------------------
-    moe = function_body(layer, "Dsv4LayerMoe")
-    a_launches = attention.count("LM_LAUNCH(")
-    a_gemms = len(re.findall(r"LmGemmLaunch(?:Asymmetric)?<", attention))
-    m_launches = moe.count("LM_LAUNCH(")
-    m_gemms = len(re.findall(r"LmGemmLaunch(?:Asymmetric)?<", moe))
-    m_routes = moe.count("LmRouteBuild<")
-    # LmLowRankProject expands to five launches: quantise, GEMM, norm,
-    # quantise, GEMM. Three attention LM_LAUNCH sites sit inside the sparse
-    # branch. Dense layer = (a_launches - 3) + a_gemms + 5 + m_*; sparse adds 3.
-    dense = (a_launches - 3) + a_gemms + 5 + m_launches + m_gemms + m_routes
-    sparse = dense + 3
-    if (dense, sparse) != (29, 32):
-        raise SystemExit(
-            f"layer launch budget moved: dense {dense}, sparse {sparse} "
-            "(audited at 29/32 on 2026-08-01; update deepseek_v4_pro/unity.cu "
-            "and this gate together if the change is deliberate)"
-        )
-
-    # -- audit flags that must not be silently dropped -------------------------
-    require(layer, "65,535", "sparse-score grid.y limit note")
-    require(layer, "key graphs on both", "graph-capture shape key note")
-    require(layer, "WINDOW:", "sparse window-clamp semantics flag")
-    require(layer, "SPAN:", "query rope per-head span flag")
-    require(layer, "WIDTH:", "query row-width flag")
-    pro_unity = read("inference/llms/deepseek_v4_pro/unity.cu")
-    require(pro_unity, "LAUNCH BUDGET", "Pro launch-budget audit note")
-
-    print("PASS DSv4 driver source contracts")
+	legacy = (
+		"inference/llms/deepseek_v4",
+		"inference/llms/deepseek_v4_pro",
+		"model-families/dsv4/include/sparkpipe/spark_dsv4_flash_model.h",
+	)
+	for relative in legacy:
+		if (ROOT / relative).exists():
+			raise SystemExit(f"obsolete DSV4 implementation remains: {relative}")
+	contract = json.loads(read("model_contracts/dsv4_flash_authoritative.json"))
+	if contract["source_revision"] != "60d8d70770c6776ff598c94bb586a859a38244f1":
+		raise SystemExit("DSV4 Flash source revision is not exact")
+	if contract["precision"]["routed_expert_weight_codec"] != "mxfp4_e2m1":
+		raise SystemExit("DSV4 Flash package does not declare its exact expert codec")
+	header = read("model-families/dsv4/include/sparkpipe/spark_dsv4_model.h")
+	module = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c")
+	cuda = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu")
+	stagepack = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_stagepack_format.h")
+	adapter = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c")
+	require(header, "Generated from the exact source revision", "generated model contract")
+	require(header, "SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1", "package expert codec")
+	require(header, "SPARK_DSV4_MODEL_LAYER_KIND_INVALID UINT32_MAX", "invalid layer sentinel")
+	reject(header, "return(SPARK_DSV4_MODEL_LAYER_KIND_SWA);\n}", "out-of-range SWA fallback")
+	require(module, "SparkDsv4ModelLayerKind(layer_index)", "model-owned layer dispatch")
+	require(module, "kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA", "CSA indexer dispatch")
+	require(module, "kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA", "compressed attention dispatch")
+	require(module, "SparkDsv4LaunchSparseAttn", "sparse attention execution")
+	require(module, "SparkDsv4LaunchHcSplitSinkhorn", "inference mHC Sinkhorn")
+	require(cuda, "SparkDsv4RopeKernel", "checkpoint interleaved RoPE")
+	require(cuda, "SparkDsv4LaunchIndexerScore", "lightning indexer")
+	require(cuda, "SparkDsv4BuildAttentionIndicesKernel", "device attention-index assembly")
+	require(cuda, "SparkDsv4CacheScatterKernel", "device KV cache scatter")
+	require(stagepack, "SPARK_DSV4_STAGEPACK_WEIGHT_FP4_E2M1", "checkpoint MXFP4 expert payload")
+	require(adapter, ".expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC", "adapter codec binding")
+	moe = function_body(module, "SparkDsv4ModuleRunMoeRouted(")
+	if moe.count("SparkDsv4LaunchExpertUp(") != 2 or moe.count("SparkDsv4LaunchExpertDown(") != 1:
+		raise SystemExit("DSV4 routed MoE must issue exactly W1, W3, and W2 grouped GEMMs")
+	require(cuda, "LmWeightCodec<SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC>::Format", "compile-time package codec")
+	require(cuda, "LmGemmWeightOnlyIndirectLaunch<SparkDsv4ExpertWeightFormat", "indirect grouped expert up GEMM")
+	require(cuda, "LmGemmWeightOnlyLaunch<SparkDsv4ExpertWeightFormat", "grouped expert down GEMM")
+	reject(cuda, "SparkLmExpertTileAllKernel", "legacy runtime-format expert kernel")
+	reject(moe, "cudaStreamSynchronize", "routed MoE synchronization")
+	reject(moe, "for (expert", "per-expert host dispatch")
+	reject(module, "SparkDsv4ModuleHostTopkFill", "host-built attention indices")
+	reject(module, "host_topk_indices", "resident host attention-index matrix")
+	print("PASS DSV4 active-module source contracts")
 
 
 if __name__ == "__main__":
-    main()
+	main()

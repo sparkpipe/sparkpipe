@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 9u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 10u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -63,6 +63,13 @@ typedef struct SparkModelResidentIpcHelloAck
 	uint32_t boundary_format;
 	uint32_t boundary_element_count;
 	uint32_t boundary_element_bytes;
+	uint32_t linear_weight_codec;
+	uint32_t expert_weight_codec;
+	uint32_t kv_cache_codec;
+	uint32_t input_sideband_kind;
+	uint32_t input_sideband_bytes_per_sequence;
+	uint32_t output_sideband_kind;
+	uint32_t output_sideband_bytes_per_sequence;
 	char adapter_id[SPARK_MODEL_RESIDENT_IPC_ID_BYTES];
 	char model_id[SPARK_MODEL_RESIDENT_IPC_ID_BYTES];
 	char model_revision[SPARK_MODEL_RESIDENT_IPC_REVISION_BYTES];

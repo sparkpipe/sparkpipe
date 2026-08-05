@@ -691,7 +691,7 @@ docs/BANDWIDTH_LEDGER.md:84-89). Verdict stands: architectural; exact
 sampling admits no cheat. Mitigations already in-tree: DSpark amortises one
 head read across accepted tokens (ledger S7), and the restricted-vocab form
 is exact where a grammar applies (`GLM52_RESTRICTED_VOCAB`,
-inference/llms/glm5_2/config.h:27-30; `K3Head` already takes `token_ids`,
+modules/glm52_resident_decode_stage/source/cuda/config.h:27-30; `K3Head` already takes `token_ids`,
 layer.cuh:758).
 
 ### D9. MoE gather double-touch

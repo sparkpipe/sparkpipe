@@ -36,6 +36,8 @@
 #define LM_TM_MAX_RANK 3u
 #define LM_TM_BITS_BF16 16u
 #define LM_TM_BITS_FP8 8u
+#define LM_TM_BITS_INT7 7u
+#define LM_TM_BITS_INT6 6u
 #define LM_TM_BITS_NVFP4 4u
 
 // Unique negative codes so a rejection names its own site.
@@ -111,6 +113,8 @@ static int32_t LmTensorMapPlanBuild(
     }
     if (request->element_bits != LM_TM_BITS_BF16 &&
         request->element_bits != LM_TM_BITS_FP8 &&
+        request->element_bits != LM_TM_BITS_INT7 &&
+        request->element_bits != LM_TM_BITS_INT6 &&
         request->element_bits != LM_TM_BITS_NVFP4)
     {
         return LM_TM_ERR_BITS;
@@ -135,13 +139,16 @@ static int32_t LmTensorMapPlanBuild(
     box_column_bytes = (uint32_t)LmTensorMapBytes(
         request->box_columns,
         request->element_bits);
-    swizzle_bytes = LmTensorMapBoxSwizzleBytes(box_column_bytes);
+    swizzle_bytes = request->element_bits == LM_TM_BITS_INT6 ||
+        request->element_bits == LM_TM_BITS_INT7 ? 0u :
+        LmTensorMapBoxSwizzleBytes(box_column_bytes);
 
     if ((column_bytes % LM_TM_ALIGNMENT) != 0u)
     {
         return LM_TM_ERR_ROW_SWIZZLE;
     }
-    if (swizzle_bytes == 0u)
+    if (swizzle_bytes == 0u && request->element_bits != LM_TM_BITS_INT6 &&
+        request->element_bits != LM_TM_BITS_INT7)
     {
         return LM_TM_ERR_BOX_ALIGN;
     }

@@ -54,34 +54,8 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     runtime/work_transaction.c
 
 SPARKPIPE_GLM52_SOURCES := \
-    api/compat_api.c \
-    api/http_gateway.c \
-    api/request.c \
-    api/service.c \
-    api/serving_engine.c \
-    cache/kv_cache.c \
-    cache/prefix_cache.c \
-    serving/spark_batch_sequence_table.c \
-    text/chat_template.c \
-    serving/spark_cuda_resident_ipc.c \
-    model-families/glm52/src/spark_glm52_expert_queue.c \
-    serving/spark_ring_node_context_builder.c \
-    serving/spark_production_topology.c \
-    text/prompt_pipeline.c \
-    serving/spark_row_allocator.c \
-    serving/spark_service_backend.c \
-    serving/spark_tp_shard.c \
-    model-families/glm52/src/spark_glm52_shape_config.c \
-    text/prompt.c \
-    model-families/glm52/src/spark_glm52_tp_shard.c \
-    modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c \
-    modules/glm52_dspark_draft_backend/source/spark_glm52_request_model.c \
-    node/rank_runtime.c \
-    runtime/pack/stagepack.c \
-    scheduler/long_context.c \
-    scheduler/scheduler.c \
-    scheduler/stage_plan.c \
-    scheduler/work_control.c
+	model-families/glm52/src/spark_glm52_chat_template.c \
+	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c
 
 SPARKPIPE_QWEN36_SOURCES := \
     model-families/qwen36/src/spark_qwen36_work_control.c

@@ -25,6 +25,7 @@ struct LmFp8
 {
 	// What memory holds, and therefore what crosses the bus.
 	static constexpr uint32_t kStoredBits = 8u;
+	static constexpr bool kTmaSwizzle = true;
 	// The K tile this format needs, in ELEMENTS. It is a property of the
 	// stored width, not a free choice: the row pitch must be a whole swizzle
 	// span in BYTES, so 8 bits needs 128 elements and 7 needs 256. Hardcoding

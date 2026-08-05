@@ -103,6 +103,13 @@ def test_geometry_hash_invalidation():
           "survive it (otherwise every MoE tune would orphan live KV)")
     check(rebuilt["content_hash"] != tp16["content_hash"],
           "expert count changes the recipe; the content-hash must move")
+    glm52 = build("glm52","PP",13)
+    check(glm52["kv_geometry"]["layout"] == "mla_compressed_bf16" and
+          glm52["kv_geometry"]["kv_element_bits"] == 16,
+          "GLM 5.2 recipes must carry the package BF16 KV contract")
+    check(glm52["pp"]["cut_rules"]["source"] ==
+          "tools/generate_recipe.py",
+          "PP recipes must name their live placement implementation")
 
 
 def test_tp_shard_coverage():

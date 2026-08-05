@@ -74,6 +74,9 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
 	descriptor->boundary_element_count = 16384u;
 	descriptor->boundary_element_bytes = 2u;
+	descriptor->linear_weight_codec = SPARK_WEIGHT_CODEC_BF16;
+	descriptor->expert_weight_codec = SPARK_WEIGHT_CODEC_INT8;
+	descriptor->kv_cache_codec = SPARK_WEIGHT_CODEC_BF16;
 	descriptor->max_inflight_submission_count = 4u;
 	descriptor->max_active_sequence_count = 128u;
 	descriptor->max_input_row_count = 256u;

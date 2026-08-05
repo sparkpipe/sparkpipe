@@ -28,7 +28,7 @@ def main() -> int:
     )
     ratios = contract["attention"]["compression_ratios"]
 
-    assert pack.HEADER_STRUCT.size == 64
+    assert pack.HEADER_STRUCT.size == 80
     assert pack.ENTRY_STRUCT.size == 40
     assert pack.WEIGHT_FP4 == 3
     assert pack.WEIGHT_FP8 == 4

@@ -67,7 +67,7 @@
       "production_required": true,
       "consumers": [
         "inference/kernels/gqa.cuh",
-        "inference/llms/glm5_2/layer.cuh"
+        "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
       ],
       "decision": {
         "policy_path": "hardware.gb10.sparse_memory",
@@ -85,7 +85,7 @@
       "probe": "cuda_characterize",
       "production_required": true,
       "consumers": [
-        "node/backend.c",
+        "node/model_residentd.c",
         "ring/transport/rdma.cu"
       ],
       "decision": {
@@ -126,7 +126,7 @@
       "production_required": true,
       "consumers": [
         "ring/transport/rdma.cu",
-        "inference/stage/dispatch.cu"
+        "include/sparkpipe/spark_model_driver.h"
       ],
       "decision": {
         "policy_path": "hardware.gb10.copy",
@@ -163,8 +163,8 @@
       "probe": "cuda_characterize",
       "production_required": true,
       "consumers": [
-        "inference/stage/graph_replay.h",
-        "inference/stage/dispatch.cu"
+        "src/spark_driver_loader.c",
+        "include/sparkpipe/spark_model_driver.h"
       ],
       "decision": {
         "policy_path": "hardware.gb10.graph",
@@ -184,7 +184,7 @@
       "probe": "cuda_characterize",
       "production_required": true,
       "consumers": [
-        "inference/stage/dispatch.cu",
+        "include/sparkpipe/spark_model_driver.h",
         "ring/transport/rdma.cu"
       ],
       "decision": {
@@ -205,7 +205,7 @@
       "probe": "cuda_characterize",
       "production_required": true,
       "consumers": [
-        "scheduler/scheduler.c",
+        "runtime/model_batch_engine.c",
         "ring/transport/rdma.cu"
       ],
       "decision": {
@@ -267,7 +267,7 @@
       "probe": "cuda_characterize",
       "production_required": true,
       "consumers": [
-        "scheduler/scheduler.c",
+        "runtime/model_batch_engine.c",
         "tools/perf_estimate.py"
       ],
       "decision": {
@@ -437,7 +437,7 @@
       "production_required": true,
       "consumers": [
         "ring/transport/hidden_transport.c",
-        "node/rank_daemon.c"
+        "node/model_residentd.c"
       ],
       "decision": {
         "policy_path": "network.tcp",
@@ -542,7 +542,7 @@
       "production_required": true,
       "consumers": [
         "ring/transport/rdma.cu",
-        "node/rank_daemon.c"
+        "node/model_residentd.c"
       ],
       "decision": {
         "policy_path": "network.progress",
@@ -583,7 +583,7 @@
       "production_required": true,
       "consumers": [
         "ring/transport/fabric_topology.c",
-        "node/rank_daemon.c"
+        "node/model_residentd.c"
       ],
       "decision": {
         "policy_path": "topology.ring",
@@ -602,7 +602,7 @@
       "production_required": true,
       "consumers": [
         "ring/transport/fabric_topology.c",
-        "node/rank_daemon.c"
+        "node/model_residentd.c"
       ],
       "decision": {
         "policy_path": "topology.single_switch",
@@ -620,7 +620,7 @@
       "probe": "topology_characterize",
       "production_required": true,
       "consumers": [
-        "scheduler/scheduler.c",
+        "runtime/pipeline_runtime.c",
         "ring/transport/fabric_topology.c"
       ],
       "decision": {
@@ -643,7 +643,7 @@
       "production_required": true,
       "consumers": [
         "ring/distributed_work.c",
-        "node/backend.c"
+        "node/model_residentd.c"
       ],
       "decision": {
         "policy_path": "topology.transport_window",
@@ -665,7 +665,7 @@
       "production_required": true,
       "consumers": [
         "ring/transport/fabric_topology.c",
-        "scheduler/scheduler.c"
+        "runtime/pipeline_runtime.c"
       ],
       "decision": {
         "policy_path": "topology.stage_placement",

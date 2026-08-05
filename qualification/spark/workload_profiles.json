@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "profile_kind": "spark_hardware_workload_profiles",
   "batch_sizes": [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024],
   "context_buckets": [2048, 16384, 65536, 262144, 1048576],
@@ -21,14 +21,21 @@
       "pipeline_payload_bytes_per_row": 14336
     },
     {
-      "id": "glm52_fp8_experts_bf16_rest",
+      "id": "glm52_codec_matrix_experts_bf16_rest",
       "family": "glm52",
       "hidden_dimension": 6144,
       "attention_head_count": 64,
       "kv_head_count": 1,
       "moe_expert_count": 256,
       "moe_top_k": 8,
-      "expert_weight_format": "fp8_e4m3",
+      "expert_weight_formats": [
+        "int6_block_f32",
+        "int7_block_f32",
+        "int8_block_f32",
+        "fp8_e4m3_block_f32",
+        "nvfp4_e2m1_ue4m3_global_f32",
+        "mxfp4_e2m1_e8m0"
+      ],
       "expert_activation_format": "bf16",
       "non_expert_format": "bf16",
       "kernel_roles": ["gqa", "moe", "dense", "dsa"],

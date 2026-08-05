@@ -10,9 +10,8 @@
 // one recipe's packs and loading the other's. What does NOT change is the KV
 // content. The attention cache here is MLA latent KV, and the latent vector
 // for a (layer, token) is defined by the model's math, not by the topology:
-// the sharder's own contract notes the latent projections are head-agnostic
-// and replicate, which is what makes the latent cache identical on every
-// rank under TP (include/sparkpipe/spark_tp_shard.h:23-26). Under PP each
+// the package's offline shard recipe marks the latent projections replicated,
+// which is what makes the latent cache identical on every rank under TP. Under PP each
 // stage holds the same latent vectors for its own layers. So a switch
 // re-shards KV residency but never invalidates KV content, and this module's
 // entire key scheme exists to keep that true on the NVMe tier.

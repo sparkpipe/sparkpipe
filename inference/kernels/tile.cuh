@@ -168,6 +168,60 @@ static __device__ __forceinline__ void LmPipelineProduce(
 		LmTmaLoad2d(stage_b,tensor_map_b,barrier,(int32_t)k_byte_b,(int32_t)neuron_base);
 }
 
+template<class FormatA>
+static __device__ __forceinline__ void LmPipelineProduceIndirectA(
+	const LmTileGeometry *a,
+	const LmTileGeometry *b,
+	const void *tensor_map_b,
+	const uint8_t *activation_bytes,
+	const uint32_t *source_row_map,
+	void *stage_a,
+	void *stage_b,
+	uint64_t *barrier,
+	uint32_t row_base,
+	uint32_t row_limit,
+	uint32_t source_row_count,
+	uint32_t input_dimension,
+	uint32_t neuron_base,
+	uint32_t k_tile,
+	uint32_t group_index)
+{
+	const uint32_t row_pitch = LmTileBytes(1u,a->depth,a->element_bits);
+	const uint32_t chunk_count = row_pitch / LM_SWIZZLE_CHUNK_BYTES;
+	uint32_t index,local_row,chunk,packed_row,source_row,destination_offset;
+	uint64_t source_offset;
+	const uint4 *source;
+	uint4 *destination;
+	static_assert(FormatA::kStoredBits % 8u == 0u,
+		"indirect activation staging requires byte-addressable rows");
+	static_assert(LmTileBytes(1u,FormatA::kTileK,FormatA::kStoredBits) % LM_SWIZZLE_CHUNK_BYTES == 0u,
+		"indirect activation staging requires complete 16-byte chunks");
+	if ( threadIdx.x == 0u )
+	{
+		LmMbarrierArriveExpect(barrier,LmTileBytes(b->rows,b->depth,b->element_bits));
+		LmTmaLoad3d(stage_b,tensor_map_b,barrier,
+			(int32_t)(k_tile * LmTileBytes(1u,b->depth,b->element_bits)),
+			(int32_t)neuron_base,(int32_t)group_index);
+	}
+	for (index=threadIdx.x; index<a->rows * chunk_count; index+=blockDim.x)
+	{
+		local_row = index / chunk_count;
+		chunk = index % chunk_count;
+		packed_row = row_base + local_row < row_limit ? row_base + local_row : row_base;
+		source_row = source_row_map[packed_row];
+		if ( source_row >= source_row_count )
+			asm volatile("trap;\n");
+		source_offset = ((source_row * input_dimension * FormatA::kStoredBits) / 8u)
+			+ (k_tile * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
+		destination_offset = FormatA::kTmaSwizzle
+			? LmSwizzledOffset(local_row,chunk * LM_SWIZZLE_CHUNK_BYTES,row_pitch,LmSwizzleSpanFor(row_pitch))
+			: (local_row * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
+		source = (const uint4 *)(activation_bytes + source_offset);
+		destination = (uint4 *)((uint8_t *)stage_a + destination_offset);
+		*destination = *source;
+	}
+}
+
 // -- grouped tile scheduling -------------------------------------------------
 //
 // Tile index to group, by binary search over a prefix the route build wrote.

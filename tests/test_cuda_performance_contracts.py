@@ -214,30 +214,87 @@ def validate_quantizer_writes() -> None:
 
 
 def validate_model_precision_contracts() -> None:
-    glm = read("inference/llms/glm5_2/layer.cuh")
+    glm = read(
+        "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
+    )
+    glm_unity = read(
+        "modules/glm52_resident_decode_stage/source/cuda/unity.cu"
+    )
+    glm_codec = read("inference/kernels/weight_codec.cuh")
+    glm_module = read(
+        "modules/glm52_resident_decode_stage/source/"
+        "spark_glm52_resident_decode_stage_module.c"
+    )
     k3 = read("inference/llms/kimi_k3/layer.cuh")
     qwen_bind = read("inference/llms/qwen_3_6/bind.cu")
-    dsv4 = read("inference/llms/deepseek_v4/layer.cuh")
-    dsv4_unity = read("inference/llms/deepseek_v4/unity.cu")
-    dsv4_pro = read("inference/llms/deepseek_v4_pro/unity.cu")
+    dsv4 = read(
+        "modules/dsv4_resident_decode_stage/source/"
+        "spark_dsv4_resident_decode_stage_module.c"
+    )
+    dsv4_cuda = read(
+        "modules/dsv4_resident_decode_stage/source/"
+        "spark_dsv4_resident_decode_stage_cuda.cu"
+    )
+    dsv4_model = read(
+        "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h"
+    )
 
-    require(glm, "LmGemmWeightOnlyLaunch<\n        LmFp8,", "GLM FP8 expert weights")
+    require(
+        glm,
+        "LmGemmWeightOnlyIndirectLaunch<\n        ExpertFormat,",
+        "GLM package-selected expert weights",
+    )
+    require(
+        glm,
+        "typename LmWeightCodec<ExpertCodec>::Format",
+        "GLM compile-time expert codec",
+    )
+    require(
+        glm_unity,
+        '#error "GLM52_EXPERT_WEIGHT_CODEC must name the exact package expert codec"',
+        "GLM explicit codec build gate",
+    )
+    require(
+        glm_module,
+        "context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC",
+        "GLM package/module codec equality",
+    )
+    for codec in (
+        "INT6",
+        "INT7",
+        "INT8",
+        "FP8_E4M3",
+        "NVFP4_E2M1",
+        "MXFP4_E2M1",
+    ):
+        require(
+            glm_codec,
+            f"LM_WEIGHT_CODEC(SPARK_WEIGHT_CODEC_{codec},",
+            f"generic {codec} weight codec",
+        )
     require(glm, "LmGemmLaunch<\n        LmBf16Format,", "GLM BF16 non-expert execution")
     forbid(glm, "LmQuantiseRowsKernel", "GLM BF16 activation path")
+    forbid(glm, "LmGatherRowsKernel", "GLM materialized expert activation gather")
+    glm_cuda = read(
+        "modules/glm52_resident_decode_stage/source/"
+        "spark_glm52_resident_decode_stage_cuda.cu"
+    )
+    forbid(glm_cuda, "expert_weight_codec", "GLM CUDA runtime codec selection")
 
     require(k3, "LmGemmWeightOnlyLaunch<", "K3 BF16-activation/MXFP4-weight experts")
     require(k3, "LmScaleTensorBlockUe8m0(", "K3 MXFP4 scale plane")
     require(qwen_bind, "Qwen36LaunchSlice<LmBf16Format>", "Qwen 3.6 BF16 entry point")
 
-    require(dsv4, "Dsv4Fp8ActivationScale(", "DSV4 dynamic FP8 activation scale")
-    require(dsv4, "Dsv4Fp8WeightScale(", "DSV4 non-expert FP8 weight scale")
-    require(dsv4, "Dsv4CheckpointFp4WeightScale(", "DSV4 checkpoint FP4 expert scale")
-    require(dsv4, "LmGemmLaunchAsymmetric<", "DSV4 FP8-activation/FP4-weight expert GEMM")
-    require(dsv4_unity, "Dsv4LayerMoeCheckpointFp4", "DSV4 Flash mixed-precision export")
-    require(dsv4_unity, "LmGemmKernel<LmFp8, LmMxfp4", "DSV4 Flash mixed GEMM instantiation")
-    require(dsv4_pro, "LmGemmKernel<\n    LmFp8,\n    LmMxfp4,", "DSV4 Pro mixed GEMM instantiation")
-    forbid(dsv4, "(const float *)b->packed_scale", "DSV4 stale activation-scale cast")
-    forbid(dsv4, "(const float *)b->expert_w", "DSV4 stale expert-scale cast")
+    require(dsv4_model, "SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3", "DSV4 FP8 linear codec")
+    require(dsv4_model, "SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1", "DSV4 MXFP4 expert codec")
+    require(dsv4_model, "SPARK_DSV4_MODEL_KV_CACHE_CODEC SPARK_WEIGHT_CODEC_BF16", "DSV4 BF16 KV codec")
+    require(dsv4, "SparkDsv4LaunchExpertUp", "DSV4 grouped expert execution")
+    require(dsv4_cuda, "LmWeightCodec<SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC>::Format", "DSV4 package-selected expert codec")
+    require(dsv4_cuda, "LmGemmWeightOnlyIndirectLaunch<SparkDsv4ExpertWeightFormat", "DSV4 indirect grouped up GEMM")
+    require(dsv4_cuda, "LmGemmWeightOnlyLaunch<SparkDsv4ExpertWeightFormat", "DSV4 grouped down GEMM")
+    forbid(dsv4_cuda, "SparkLmExpertTileAllKernel", "DSV4 runtime-format expert kernel")
+    require(dsv4_cuda, "SparkDsv4LaunchQuantSim", "DSV4 checkpoint activation quantization")
+    forbid(dsv4, "inference/llms/deepseek_v4", "DSV4 legacy driver dependency")
 
 
 
@@ -261,10 +318,11 @@ def validate_k3_exact_replay() -> None:
 
 def validate_grouped_moe_contract() -> None:
     route = read("inference/kernels/route.cuh")
-    queue_header = read(
-        "model-families/glm52/include/sparkpipe/spark_glm52_expert_queue.h"
+    gemm = read("inference/kernels/gemm.cuh")
+    runtime = read("runtime/gemm.cuh")
+    glm = read(
+        "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
     )
-    queue_source = read("model-families/glm52/src/spark_glm52_expert_queue.c")
 
     require(route, "packed_rows != expected_packed_rows", "route cardinality validation")
     require(route, "LmLaunchGroupedTileM(rows,top_k,EXPERTS)", "token-priced grouped tile")
@@ -273,20 +331,68 @@ def validate_grouped_moe_contract() -> None:
     # what the gather4 GEMM wave builds against.
     require(route, "ROUTE ROW INDIRECTION CONSUMER CONTRACT", "route row indirection contract")
     require(route, "LmRouteSourceRow", "named route indirection mapping")
-    require(queue_header, "SPARK_GLM52_EXPERT_QUEUE_MODE_SEALED_BATCH", "sealed expert batch mode")
-    require(queue_header, "SparkGlm52ExpertQueueSealLayer", "sealed layer API")
-    require(queue_source, "queue->layer_sealed[layer_index]", "sealed layer state")
+    require(gemm, "const uint32_t *source_row_map;", "GEMM source-row map")
+    require(gemm, "LmPipelineProduceIndirectA<FormatA>", "GEMM direct indexed activation stage")
+    require(runtime, "LmGemmWeightOnlyIndirectLaunch(", "weight-only indirect launcher")
+    require(glm, "gemm.source_row_map = buffers->route_source_token;", "GLM route-to-GEMM binding")
+    forbid(glm, "LmGatherRowsKernel", "GLM gathered activation buffer")
 
 
 def validate_stream_ordered_dispatch() -> None:
-    dispatch = read("inference/stage/dispatch.cu")
+    module = read(
+        "modules/glm52_resident_decode_stage/source/"
+        "spark_glm52_resident_decode_stage_module.c"
+    )
+    cuda = read(
+        "modules/glm52_resident_decode_stage/source/"
+        "spark_glm52_resident_decode_stage_cuda.cu"
+    )
+    adapter = read(
+        "modules/glm52_resident_decode_stage/source/"
+        "spark_glm52_serving_adapter.c"
+    )
 
-    require(dispatch, "cudaLaunchHostFunc(", "stream-ordered stage completion")
-    require(dispatch, "GLM52_STAGE_SLICE_DEBUG_SYNC", "debug-only synchronization gate")
-    require(dispatch, "SparkResidentDecodeStageBackendQuiesce", "explicit quiesce boundary")
-    # D10: the decode step's launch count, not its kernels, is the B1 cost.
-    require(dispatch, "SparkResidentDecodeStageGraphSubmit(", "decode step graph capture/replay")
-    require(dispatch, "cudaStreamBeginCapture(", "stage-side graph capture")
+    require(module, "cudaHostAlloc(", "persistent pinned request metadata")
+    require(module, "cudaLaunchHostFunc(", "stream-ordered stage completion")
+    require(module, "SparkStageModuleSlotRelease", "callback-owned slot release")
+    require(module, "host_callback_completion_count", "callback completion telemetry")
+    require(
+        adapter,
+        "SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION",
+        "external completion adapter contract",
+    )
+    forbid(cuda, "cudaStreamSynchronize(", "successful CUDA wave synchronization")
+    if module.count("cudaStreamSynchronize(") != 2:
+        raise AssertionError(
+            "GLM host module synchronization must be limited to failed-enqueue "
+            "cleanup and teardown"
+        )
+
+    dsv4_module = read(
+        "modules/dsv4_resident_decode_stage/source/"
+        "spark_dsv4_resident_decode_stage_module.c"
+    )
+    dsv4_adapter = read(
+        "modules/dsv4_resident_decode_stage/source/"
+        "spark_dsv4_serving_adapter.c"
+    )
+    require(dsv4_module, "cudaHostAlloc(", "DSV4 pinned output staging")
+    require(dsv4_module, "cudaLaunchHostFunc(", "DSV4 stream-ordered completion")
+    require(dsv4_module, "SparkStageModuleSlotRelease", "DSV4 callback slot release")
+    require(dsv4_module, "host_callback_completion_count", "DSV4 callback telemetry")
+    require(dsv4_module, "SparkDsv4LaunchBuildAttentionIndices", "DSV4 device index assembly")
+    require(dsv4_module, "SparkDsv4LaunchCacheScatter", "DSV4 batched cache scatter")
+    forbid(dsv4_module, "host_topk_indices", "DSV4 host top-k matrix")
+    require(
+        dsv4_adapter,
+        "SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION",
+        "DSV4 external completion adapter contract",
+    )
+    if dsv4_module.count("cudaStreamSynchronize(") != 4:
+        raise AssertionError(
+            "DSV4 synchronization must be limited to three initialization "
+            "gates and failed-enqueue cleanup"
+        )
 
 
 def validate_head_selection_contract() -> None:

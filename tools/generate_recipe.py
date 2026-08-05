@@ -13,26 +13,20 @@ orphans the old entries instead of misreading them.
 
 Reuse, per the tree's DRY law, instead of parallel machinery:
 
-- the PP stage placement mirrors scheduler/stage_plan.c: the same cut rules
-  (contiguous cover, the dense prefix whole in stage zero, at most
-  SPARK_STAGE_PLAN_MAX_ROUTED_LAYERS_PER_STAGE routed layers per stage, the
-  final-token stage last) and the same balancing DP (minimize the maximum
-  segment cost, first-best tie-break), fed here by an analytic per-layer
-  cost because measured profiles exist only for glm52 on the 13-ring. The
-  cost model is an ESTIMATE for placement only - it is marked NOT_MEASURED
-  in every recipe and never reaches a kernel.
-- the k3 TP shard table is built FROM tools/k3_shard.py's own
-  classification sets, which tests/test_k3_shard_table.py already holds in
-  lockstep with the C table the loader uses; this generator cannot drift
-  from the slicer without that gate going red first.
-- the glm52 TP shard table mirrors SparkGlm52TpShardClassifyTensor
-  (model-families/glm52/src/spark_glm52_tp_shard.c), including its hole:
-  routed expert tensors classify UNKNOWN at the engine today, so the recipe
-  says so (ENGINE_UNCLASSIFIED, stagepack/EP-owned) instead of inventing a
-  split the engine would refuse.
+- this generator owns the deterministic PP placement algorithm used by recipe
+  artifacts: contiguous cover, the dense prefix whole in stage zero, bounded
+  routed layers per stage, final-token work on the last stage, and a minimax
+  balancing DP with a first-best tie-break. Its analytic per-layer cost is an
+  ESTIMATE for placement only. It is marked NOT_MEASURED in every recipe and
+  never reaches a kernel or the model-resident runtime.
+- the k3 TP shard table is built from tools/k3_shard.py's own classification
+  sets. tests/test_recipe_generation.py walks those sets against every recipe,
+  so the planning table cannot drift from the offline pack slicer.
+- the glm52 TP shard table is derived here from the model contract. Routed
+  expert tensors remain package-owned, so the planning recipe records them as
+  PACKAGE_OWNED instead of inventing a split outside the stage pack.
 
-Shard classes use the engine's vocabulary (include/sparkpipe/
-spark_tp_shard.h): REPLICATED, OUTPUT_DIM_HEADS, OUTPUT_DIM,
+Shard classes use the recipe vocabulary: REPLICATED, OUTPUT_DIM_HEADS, OUTPUT_DIM,
 INPUT_DIM_HEADS, INPUT_DIM, CONCAT_OUTPUT. A class whose split extent does
 not divide the degree on whole rows / head blocks / quantization groups is
 not failed here (the engine owns refusal) - the recipe marks it replicated
@@ -61,12 +55,10 @@ DEFAULT_TOPOLOGY = (ROOT / "examples" / "topologies" /
                     "dual_switch_16node_production.json")
 
 HASH_CHARS = 16
-# SPARK_STAGE_PLAN_MAX_ROUTED_LAYERS_PER_STAGE (include/sparkpipe/
-# spark_stage_plan.h). Stage plans above SPARK_STAGE_PLAN_MAX_STAGE_COUNT
-# (13, the current ring) are emittable recipes but need the engine constant
-# lifted before the 16-node ring can load them - see the recipe note.
+# The routed-layer cap is a recipe-placement bound, not a runtime default. The
+# model-resident ABI supports at most 16 stages.
 MAX_ROUTED_PER_STAGE = 8
-ENGINE_MAX_STAGE_COUNT = 13
+ENGINE_MAX_STAGE_COUNT = 16
 DEFAULT_DEGREES = (16, 13)
 DATAFILE_RE = re.compile(r"^[a-z0-9]+\.(?:TP|PP)\d+\.[0-9a-f]{16}\.json$")
 
@@ -249,7 +241,7 @@ def adapt_glm52(c):
     layer_costs = [attn + (dense_mlp if i < first_routed else routed_mlp)
                    for i in range(layers)]
     kv_geometry = {
-        "layout": "mla_compressed_fp8_e4m3",
+        "layout": "mla_compressed_bf16",
         "layer_count": layers,
         "latent_dimension": latent,
         "qk_nope_head_dimension": nope,
@@ -258,7 +250,7 @@ def adapt_glm52(c):
         "head_count": heads,
         "rope_theta": c["rope_theta"],
         "rope_interleave": c["rope_interleave"],
-        "kv_element_bits": 8,
+        "kv_element_bits": 16,
         "dsa_index_head_count": c["dsa_index_head_count"],
         "dsa_index_head_dimension": c["dsa_index_head_dimension"],
         "dsa_rope_interleave": c["dsa_rope_interleave"],
@@ -272,8 +264,7 @@ def adapt_glm52(c):
                 "instances_per_model": instances, "head_count": head_count}
 
     shard_classes = [
-        # The first three entries and the replicated list mirror
-        # SparkGlm52TpShardClassifyTensor one for one.
+        # The first three entries are the architecture's head-parallel forms.
         cls("heads_out:q_b", ["self_attn.q_b_proj.weight"],
             "OUTPUT_DIM_HEADS", "output_heads", "per_layer",
             heads * (nope + rope), head_count=heads),
@@ -679,9 +670,8 @@ def rank_table(resolved, degree, node_names):
 
 
 # ---------------------------------------------------------------------------
-# PP: scheduler/stage_plan.c's cut rules and balancing DP, mirrored. The
-# tie-break is the C one - strictly-better candidates replace, so the
-# earliest split of equal cost wins.
+# PP recipe placement. Strictly-better candidates replace, so the earliest
+# split of equal cost wins deterministically.
 # ---------------------------------------------------------------------------
 
 def routed_in_range(first, count, first_routed, layer_count):
@@ -832,21 +822,21 @@ def build_recipe(tag, contract_rel, contract_text_sha, contract, geometry,
         costs = [s["cost"] for s in stage_entries]
         body["pp"] = {
             "cost_model": "analytic_active_params_v1",
-            "cost_model_status": "NOT_MEASURED - placement estimate only; "
-                                 "measured profiles exist today only for "
-                                 "glm52 on the 13-ring (scheduler/stage_plan.c)",
+            "cost_model_status": "NOT_MEASURED - analytic placement "
+                                 "estimate only",
             "cut_rules": {
                 "contiguous_cover": True,
                 "dense_prefix_whole_in_stage_zero": True,
                 "max_routed_layers_per_stage": MAX_ROUTED_PER_STAGE,
                 "final_token_stage": "last",
-                "source": "scheduler/stage_plan.c",
+                "source": "tools/generate_recipe.py",
             },
             "engine_stage_cap": ENGINE_MAX_STAGE_COUNT,
             "engine_cap_note": None if degree <= ENGINE_MAX_STAGE_COUNT else
-                f"{degree} stages exceed SPARK_STAGE_PLAN_MAX_STAGE_COUNT "
+                f"{degree} stages exceed "
+                f"SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT "
                 f"({ENGINE_MAX_STAGE_COUNT}); the engine constant must be "
-                f"lifted before the 16-node ring loads this plan",
+                f"lifted before this topology loads the plan",
             "stages": stage_entries,
             "balance": {"max_stage_cost": max(costs),
                         "min_stage_cost": min(costs),

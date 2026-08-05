@@ -61,16 +61,13 @@ def main() -> int:
     common = sources.split("SPARKPIPE_MODEL_COMMON_SOURCES :=", 1)[1].split(
         "SPARKPIPE_GLM52_SOURCES :=", 1
     )[0]
-    legacy = sources.split("SPARKPIPE_GLM52_SOURCES :=", 1)[1].split(
-        "SPARKPIPE_QWEN36_SOURCES :=", 1
-    )[0]
     require(
         "scheduler/stage_plan.c" not in common,
         "model-neutral runtime still links the legacy routed-layer planner",
     )
     require(
-        "scheduler/stage_plan.c" in legacy,
-        "legacy stage planner is not confined to its owning model path",
+        "scheduler/stage_plan.c" not in sources,
+        "deleted legacy stage planner is still linked by a model path",
     )
     serving_header = (
         ROOT / "include/sparkpipe/spark_model_serving_adapter.h"
@@ -387,7 +384,7 @@ def main() -> int:
         "DSV4 module retains a silent graph-selection path",
     )
     require(
-        "SparkDsv4ModuleExecutePrefillWave" in module
+        "SparkDsv4ModuleRunPrefillWave" in module
         and "SparkDsv4ModulePrefillWaveRowCount" in module
         and "SparkDsv4ValidateRoundMajorPrefillRows" in module,
         "DSV4 prefill discards cross-request batching",
@@ -436,11 +433,10 @@ def main() -> int:
         "DSV4 configuration source is not typed",
     )
     require(
-        runtime_contract["model_driver_abi"] == 7
-        and runtime_contract["firmware_host_services_abi"] == 2
-        and runtime_contract["model_serving_adapter_abi"] == 9
-        and runtime_contract["execution_stream"].startswith("one resident-owned"),
-        "DSV4 description does not bind the generalized stream contract",
+        runtime_contract["completion"] == "external"
+        and runtime_contract["runtime_backend_selection"] == "forbidden"
+        and runtime_contract["runtime_precision_selection"] == "forbidden",
+        "DSV4 description does not bind the generalized execution contract",
     )
     require(
         description["stages"][0]["programs"][0]["max_inflight"] == 4,
@@ -451,10 +447,15 @@ def main() -> int:
         / "modules/dsv4_resident_decode_stage/source/"
         "spark_dsv4_serving_adapter.c"
     ).read_text(encoding="utf-8")
+    model_header = (
+        ROOT
+        / "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h"
+    ).read_text(encoding="utf-8")
     description_sha256 = hashlib.sha256(description_path.read_bytes()).hexdigest()
     require(
-        description_sha256 in adapter,
-        "DSV4 adapter is not bound to the exact model description",
+        description_sha256 in model_header
+        and "SPARK_DSV4_MODEL_DESCRIPTION_SHA256" in adapter,
+        "DSV4 generated contract and adapter are not bound to the model description",
     )
     require(
         "resident_row_lane_indices[row] = "
@@ -464,6 +465,11 @@ def main() -> int:
     require(
         "SparkDsv4ValidateRoundMajorPrefillRows" in adapter,
         "DSV4 adapter does not fail closed on non-wavefront prefill order",
+    )
+    require(
+        "SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION" in adapter
+        and "cudaLaunchHostFunc" in module,
+        "DSV4 does not use stream-ordered external completion",
     )
     require(
         "SparkResolveRuntimePath" in adapter,
@@ -499,6 +505,13 @@ def main() -> int:
             / "examples/deployments/dsv4_flash_pp13_host_rdma.json"
         ).read_text(encoding="utf-8")
     )
+    dsv4_description = json.loads(
+        (
+            ROOT
+            / "examples/model_descriptions/dsv4_resident_decode_stage_firmware.json"
+        ).read_text(encoding="utf-8")
+    )
+    dsv4_target = dsv4_description["stages"][0]["target"]
     expected_hosts = [f"spark{rank}" for rank in range(10)] + [
         "sparka",
         "sparkb",
@@ -517,6 +530,11 @@ def main() -> int:
             )
         ),
         "DSV4 deployment does not use explicit hosts and node-local release roots",
+    )
+    require(
+        all(node["node_target"] == dsv4_target
+            for node in deployment_example["nodes"]),
+        "DSV4 deployment target drifts from the generated AOT package",
     )
 
     fixture_adapter = (

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_PIPELINE_RUNTIME_ABI_VERSION 5u
+#define SPARK_PIPELINE_RUNTIME_ABI_VERSION 6u
 #define SPARK_PIPELINE_RUNTIME_HOST_BYTES 64u
 #define SPARK_PIPELINE_RUNTIME_ROUTE_BYTES 160u
 #define SPARK_PIPELINE_RUNTIME_MODULE_ID_BYTES 160u
@@ -55,11 +55,18 @@ typedef struct SparkPipelineRuntimeRankPlan
 	uint32_t boundary_format;
 	uint32_t boundary_element_count;
 	uint32_t boundary_element_bytes;
+	uint32_t input_sideband_kind;
+	uint32_t input_sideband_bytes_per_sequence;
+	uint32_t output_sideband_kind;
+	uint32_t output_sideband_bytes_per_sequence;
 	uint32_t transport_capability_flags;
 	uint32_t transport_control_port_base;
 	uint32_t reserved0;
-	uint64_t bytes_per_sequence;
-	uint64_t max_packet_bytes;
+	uint64_t boundary_bytes_per_sequence;
+	uint64_t input_packet_bytes_per_sequence;
+	uint64_t output_packet_bytes_per_sequence;
+	uint64_t input_max_packet_bytes;
+	uint64_t output_max_packet_bytes;
 	char host_name[SPARK_PIPELINE_RUNTIME_HOST_BYTES];
 	char previous_host_name[SPARK_PIPELINE_RUNTIME_HOST_BYTES];
 	char next_host_name[SPARK_PIPELINE_RUNTIME_HOST_BYTES];

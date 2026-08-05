@@ -175,10 +175,19 @@ static __device__ __forceinline__ float LmUe8m0ToFloat(uint8_t value)
 	return(LmBf16ToFloat((uint16_t)(widened & 0xffffu)));
 }
 
-// UE4M3 has no hardware conversion instruction, so it is built from the bit
-// layout directly: four exponent bits biased by 7, three mantissa bits, no
-// sign. Saturating at both ends rather than wrapping, because a wrapped scale
-// turns a large activation into a small one and the error is unbounded.
+static __device__ __forceinline__ uint32_t LmRoundPositiveToNearestEven(
+	float value)
+{
+	uint32_t lower = (uint32_t)value;
+	float remainder = value - (float)lower;
+	return(lower + (remainder > 0.5f ||
+		(remainder == 0.5f && (lower & 1u) != 0u) ? 1u : 0u));
+}
+
+// UE4M3 is positive E4M3FN. It has no native conversion instruction: encode
+// the exact positive E4M3 bit layout, including subnormals, ties-to-even, and
+// the 448 finite maximum. The invalid 0x7f payload saturates on decode so a
+// corrupt scale cannot inject a NaN into every value in its block.
 static __device__ __forceinline__ uint8_t LmFloatToUe4m3(float value)
 {
 	int32_t exponent;
@@ -186,29 +195,36 @@ static __device__ __forceinline__ uint8_t LmFloatToUe4m3(float value)
 	uint32_t biased,mantissa;
 	if ( !(value > 0.0f) )
 		return(0u);
+	if ( !(value < LM_E4M3_MAX) )
+		return(0x7eu);
+	if ( value < 0.015625f )
+	{
+		mantissa = LmRoundPositiveToNearestEven(value * 512.0f);
+		return((uint8_t)(mantissa > 8u ? 8u : mantissa));
+	}
 	normalized = frexpf(value,&exponent) * 2.0f;
-	exponent = exponent - 1;
-	biased = (uint32_t)(exponent + 7);
-	if ( (int32_t)biased <= 0 )
-		return(1u);
-	if ( biased > 15u )
-		return(0x7fu);
-	mantissa = (uint32_t)((normalized - 1.0f) * 8.0f + 0.5f);
-	if ( mantissa > 7u )
+	biased = (uint32_t)(exponent + 6);
+	mantissa = LmRoundPositiveToNearestEven((normalized - 1.0f) * 8.0f);
+	if ( mantissa == 8u )
 	{
 		mantissa = 0u;
-		biased = biased + 1u;
-		if ( biased > 15u )
-			return(0x7fu);
+		biased += 1u;
 	}
+	if ( biased > 15u || (biased == 15u && mantissa > 6u) )
+		return(0x7eu);
 	return((uint8_t)((biased << 3u) | mantissa));
 }
 
 static __device__ __forceinline__ float LmUe4m3ToFloat(uint8_t value)
 {
-	uint32_t biased = (uint32_t)(value >> 3u),mantissa = (uint32_t)(value & 7u);
+	uint32_t biased,mantissa;
+	value &= 0x7fu;
+	biased = (uint32_t)value >> 3u;
+	mantissa = (uint32_t)value & 7u;
 	if ( biased == 0u )
-		return(0.0f);
+		return(ldexpf((float)mantissa,-9));
+	if ( biased == 15u && mantissa == 7u )
+		return(LM_E4M3_MAX);
 	return(ldexpf(1.0f + ((float)mantissa / 8.0f),(int32_t)biased - 7));
 }
 

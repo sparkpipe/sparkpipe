@@ -464,7 +464,7 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 	uint8_t *message;
 	uint32_t index,message_bytes;
 	SparkStatus status;
-	if ( client == 0 || client->connected == 0u || submission == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u )
+	if ( client == 0 || client->connected == 0u || submission == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(client->adapter_descriptor,&client->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )

@@ -1,11 +1,12 @@
 MODULE_FAMILY := dsv4
-MODULE_IDENTIFIER := spark.dsv4.resident_decode_stage.bf16.h4096.l43.e256.k6.v1
-MODULE_TARGET := cuda.sm121.dsv4.resident_decode_stage.bf16
+MODULE_IDENTIFIER := spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.v2
+MODULE_TARGET := cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16
 MODEL_HEADER := ../../model-families/dsv4/include/sparkpipe/spark_dsv4_model.h
 MODULE_ENTRY_PREFIX := SparkDsv4ResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_dsv4_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := source/spark_dsv4_stage_runner.c
 MODULE_CUDA_SOURCE := source/spark_dsv4_resident_decode_stage_cuda.cu
+MODULE_COMPILE_FLAGS := -DSPARK_DSV4_MODULE_BUILD=1
 
 # Keep the module graph relative to this directory. The checkout path contains
 # spaces on the development Mac, so absolute source lists are not shell-safe.
@@ -17,7 +18,8 @@ MODULE_INCLUDE_FLAGS := \
 	-I../../model-families/common/include \
 	-I../../model-families/dsv4/include \
 	-I../../modules/dsv4_resident_decode_stage/include \
-	-I../../modules/dsv4_resident_decode_stage/source
+	-I../../modules/dsv4_resident_decode_stage/source \
+	-I../..
 
 STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/dsv4_stage.dsv4sp
 STAGE_COUNT ?= 1

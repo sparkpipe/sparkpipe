@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import json
 import pathlib
 import re
 import sys
@@ -7,7 +6,13 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
-from glm52_model_contract import load_model_contract, render_c_header
+from glm52_model_contract import (
+    CODECS,
+    description_path,
+    load_model_contract,
+    render_c_header,
+    render_model_description,
+)
 
 SOURCE_SUFFIXES = {".c", ".cu", ".h", ".py"}
 SKIP_PARTS = {".git", "__pycache__", "build", "docs", "tests", "third_party"}
@@ -75,32 +80,6 @@ NON_GLM_MODEL_PREFIXES = (
     "tools/generate_k3_contract.py",
     "tools/generate_dsv4_contracts.py",
 )
-REQUIRED_SYMBOLIC_DEFINES = {
-    "node/backend.c": {
-        "SPARK_RING_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY":
-            "SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT",
-        "SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_CAPACITY":
-            "SPARK_RING_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY",
-        "SPARK_RING_SERVICE_BACKEND_DEFAULT_LOGICAL_BLOCK_COUNT":
-            "SPARK_RING_SERVICE_BACKEND_GPU_BLOCK_COUNT",
-    },
-    "include/sparkpipe/spark_ring_runtime.h": {
-        "SPARK_RING_RUNTIME_STAGE_COUNT":
-            "SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT",
-        "SPARK_RING_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE":
-            "SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES",
-        "SPARK_RING_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE":
-            "SPARK_GLM52_MODEL_DSA_SELECTED_INDEX_BYTES",
-    },
-    "include/sparkpipe/spark_production_topology.h": {
-        "SPARK_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT":
-            "SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER",
-        "SPARK_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT":
-            "SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT",
-        "SPARK_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET":
-            "SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET",
-    },
-}
 SIZE_ARGUMENTS_BY_CALL = {
     "cudaHostAlloc": (1,),
     "cudaMalloc": (1,),
@@ -286,27 +265,10 @@ def main():
         "spark_glm52_sm121_flashinfer_b12x_moe.h")
     if module_header.exists():
         violations.append("B12x public ABI header has a duplicate module copy")
-    final_event_definitions = []
-    final_event_pattern = re.compile(
-        r"typedef\s+struct\s+SparkRingRuntimeFinalEvent\s*\{")
-    for path in source_paths():
-        text = path.read_text(errors="replace")
-        for match in final_event_pattern.finditer(text):
-            final_event_definitions.append(str(path.relative_to(ROOT)))
-    if final_event_definitions != [
-            "include/sparkpipe/spark_ring_runtime.h"]:
-        violations.append(
-            "RING final-event wire type is not single-source: " +
-            ", ".join(final_event_definitions))
     model_contract = load_model_contract(ROOT)
     model_header = ROOT / "model-families/glm52/include/sparkpipe/spark_glm52_model.h"
     if model_header.read_text() != render_c_header(model_contract):
         violations.append("generated GLM-5.2 C model contract is stale")
-    fp8_header = ROOT / (
-        "modules/glm52_resident_decode_stage/include/sparkpipe/"
-        "spark_glm52_resident_decode_stage_fp8_moe_plan.h")
-    if "fields[" in fp8_header.read_text():
-        violations.append("FP8 MoE wire header uses anonymous indexed fields")
     all_source_text = "\n".join(
         path.read_text(errors="replace") for path in source_paths()
         if path.suffix in {".c", ".cu", ".h"})
@@ -314,90 +276,11 @@ def main():
         violations.append("DSA score tile rows have a duplicate prefill constant")
     if "dsa_prefill_scores_f32" in all_source_text:
         violations.append("DSA score storage retains a prefill-only ABI field")
-    backend_text = (
-        ROOT / "node/backend.c").read_text()
-    if re.search(
-            r"message->control_generation\s*=\s*"
-            r"(?:state->session_id_base|transaction_packet\.control_generation)"
-            r"\s*;",
-            backend_text) is None:
-        violations.append("attached decode IPC omits the gateway generation")
-    if re.search(
-            r"if \(state->mtp_enabled != 0u\)\s*"
-            r"request_api_configuration\.configuration_flags \|=\s*"
-            r"SPARK_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT \|\s*"
-            r"SPARK_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;",
-            backend_text) is None:
-        violations.append("MTP backend does not force MTP request scheduling")
-    residentd_text = (
-        ROOT / "node/residentd.c").read_text()
-    if re.search(
-            r"packet->control_generation\s*=\s*"
-            r"message->control_generation\s*;",
-            residentd_text) is None:
-        violations.append("resident decode drops the attached control generation")
-    if re.search(
-            r"kv_logical_block_capacity\s*<\s*"
-            r"SPARK_RING_SERVICE_BACKEND_GPU_BLOCK_COUNT",
-            backend_text):
-        violations.append(
-            "attached KV geometry is coupled to the local compile-time pool")
-    if re.search(
-            r"cuda_resident_socket_path\s*!=\s*0\s*&&\s*"
-            r"configuration->kv_logical_block_capacity\s*==\s*0u",
-            backend_text) is None:
-        violations.append("attached KV geometry can silently default")
-    service_pump = backend_text.find(
-        "service_status = SparkServicePump(")
-    release_pump = backend_text.find(
-        "release_status = SparkRingServiceBackendPumpSequenceReleases(",
-        service_pump)
-    work_flush = backend_text.find(
-        "work_status = SparkRingServiceBackendPumpWorkOutput(",
-        release_pump)
-    if (service_pump < 0 or release_pump < 0 or work_flush < 0 or
-            "SparkGlm52RingServiceBackendDrainSequenceReleases" in backend_text):
-        violations.append(
-            "service pump does not progress sequence releases without a global drain")
-    model_description_path = ROOT / (
-        "examples/model_descriptions/glm52_resident_decode_stage_firmware.json")
-    model_description = json.loads(model_description_path.read_text())
-    geometry = model_description["metadata"]["hf_config_geometry"]
-    expected_geometry = {
-        "hidden_size": model_contract["hidden_dimension"],
-        "num_attention_heads": model_contract["head_count"],
-        "kv_lora_rank": model_contract["latent_dimension"],
-        "qk_rope_head_dim": model_contract["rope_dimension"],
-        "index_topk": model_contract["dsa_selected_token_count"],
-        "num_hidden_layers": model_contract["layer_count"],
-        "vocab_size": model_contract["output_vocab_count"],
-        "n_routed_experts": model_contract["moe_expert_count"],
-        "num_experts_per_tok": model_contract["moe_top_k"],
-        "qk_nope_head_dim": model_contract["qk_nope_head_dimension"],
-        "qk_head_dim": (
-            model_contract["qk_nope_head_dimension"] +
-            model_contract["rope_dimension"]),
-        "v_head_dim": model_contract["value_head_dimension"],
-        "rope_theta": model_contract["rope_theta"],
-        "rope_interleave": model_contract["rope_interleave"],
-        "indexer_rope_interleave": model_contract["dsa_rope_interleave"],
-        "rms_norm_eps": model_contract["rms_norm_epsilon"],
-        "routed_scaling_factor": model_contract["moe_routed_scaling_factor"],
-    }
-    for key, expected in expected_geometry.items():
-        if geometry.get(key) != expected:
-            violations.append(
-                f"GLM model description {key} disagrees with model contract")
-    for relative, definitions in REQUIRED_SYMBOLIC_DEFINES.items():
-        text = (ROOT / relative).read_text()
-        for name, source_name in definitions.items():
-            pattern = re.compile(
-                rf"#define\s+{re.escape(name)}\s+(?:\\\s*)?"
-                rf"{re.escape(source_name)}\b",
-                re.S)
-            if pattern.search(text) is None:
-                violations.append(
-                    f"{relative}: {name} does not alias {source_name}")
+    for codec in CODECS:
+        path = description_path(ROOT,codec)
+        if not path.is_file() or path.read_text() != render_model_description(
+                model_contract,codec):
+            violations.append(f"generated GLM-5.2 {codec} description is stale")
     if violations:
         raise SystemExit("\n".join(violations))
 

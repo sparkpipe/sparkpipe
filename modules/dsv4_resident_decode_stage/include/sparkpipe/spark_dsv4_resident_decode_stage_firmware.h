@@ -32,9 +32,11 @@ extern "C" {
  * window ring is 128 slots regardless, the compressed stream max_seq/ratio
  * slots, the indexer stream max_seq/4; the paged migration is scheduled
  * with the family PP pass and changes only the module, not this contract.
+ * Every accepted frame completes externally from one stream-ordered host
+ * callback; submit never synchronizes a successful CUDA frame.
  */
 
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 2u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 3u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION 1u
@@ -62,8 +64,9 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 	uint32_t resident_sequence_capacity;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
-	uint32_t reserved0;
-	uint32_t reserved1;
+	uint32_t linear_weight_codec;
+	uint32_t expert_weight_codec;
+	uint32_t kv_cache_codec;
 	const char *stage_pack_path;
 } SparkDsv4ResidentDecodeStageNodeContext;
 
@@ -77,7 +80,7 @@ typedef struct SparkDsv4LinearView
 	uint32_t rows;
 	uint32_t columns;
 	const void *payload;
-	const uint8_t *scale_e8m0;
+	const void *scale_data;
 } SparkDsv4LinearView;
 
 typedef struct SparkDsv4CompressorWeights

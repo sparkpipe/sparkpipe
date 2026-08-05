@@ -38,6 +38,7 @@ static __device__ __forceinline__ float LmE8m0ToFloat(uint8_t code)
 struct LmMxfp4
 {
 	static constexpr uint32_t kStoredBits = 4u;
+	static constexpr bool kTmaSwizzle = true;
 	// Same K tile as NVFP4: the row pitch must be a whole swizzle span in
 	// bytes, and that follows from the stored width, which is identical.
 	static constexpr uint32_t kTileK = 128u;

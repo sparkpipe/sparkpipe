@@ -53,12 +53,13 @@ static __device__ __forceinline__ void LmRopePair(float *low, float *high, float
 // the other is fluent and positionally wrong - the failure the comment above
 // describes, now selectable instead of assumed.
 //
-// Half-split pairs i with i + rope_dim/2. GLM 5.2, Qwen 3.6 and MiMo 2.5 want
-// this and it stays the default, so no existing call site changes.
+// Half-split pairs i with i + rope_dim/2. Qwen 3.6 and MiMo 2.5 use this
+// convention and it stays the default, so existing call sites remain explicit
+// only when their checkpoint differs.
 //
-// Interleaved pairs 2i with 2i+1, the view_as_complex layout. DeepSeek V4
-// encodes its released checkpoint this way, for both the main attention and the
-// compressor sub-module.
+// Interleaved pairs 2i with 2i+1, the view_as_complex layout. DeepSeek V4 and
+// GLM 5.2 encode their released checkpoints this way; GLM declares the same
+// convention separately for its MLA and DSA indexer.
 enum LmRopePairing
 {
 	LM_ROPE_HALF_SPLIT = 0,
@@ -92,6 +93,25 @@ void LmRopeKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__
 	for (index = threadIdx.x; index < half; index += THREADS)
 		LmRopeRotate<PAIRING>(rows_bf16,base,index,half,
 			position * __powf(theta,-2.0f * (float)index / (float)rope_dim));
+}
+
+// RoPE over one slice of every head. A single-row RoPE kernel cannot express
+// an index query laid out as [row, head, head_dim] without either duplicating
+// positions or launching once per head from the host.
+template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
+__global__ __launch_bounds__(THREADS, 1)
+void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t head_count, uint32_t head_dimension, uint32_t rope_offset, uint32_t rope_dimension, float theta)
+{
+	uint32_t row = blockIdx.x,head = blockIdx.y,half = rope_dimension / 2u,index;
+	uint64_t base;
+	float position;
+	if ( head >= head_count )
+		return;
+	base = (((uint64_t)row * head_count) + head) * head_dimension + rope_offset;
+	position = (float)positions[row];
+	for (index = threadIdx.x; index < half; index += THREADS)
+		LmRopeRotate<PAIRING>(rows_bf16,base,index,half,
+			position * __powf(theta,-2.0f * (float)index / (float)rope_dimension));
 }
 
 // -- latent-absorbed decode attention ------------------------------------------
@@ -375,6 +395,63 @@ void LmSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, LmKvView
 	}
 	if ( threadIdx.x == 0u )
 		scores[((uint64_t)row * gridDim.y) + position] = total;
+}
+
+// DSA score with a separate index-key cache and a learned per-head mixture.
+// Position is blockIdx.x so million-token contexts do not hit CUDA's 65,535
+// blockIdx.y ceiling. row_position makes the same launch causal for prefill.
+template<class Geometry, uint32_t THREADS, uint32_t INDEX_DIM>
+__global__ __launch_bounds__(THREADS, 1)
+void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, const uint16_t *__restrict__ head_weight_bf16, LmKvView index_cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t index_heads, float qk_scale, float *__restrict__ scores)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint32_t position = blockIdx.x,row = blockIdx.y,sequence,head,index;
+	const uint8_t *slot;
+	float total = 0.0f,partial;
+	if ( scores == 0 )
+		return;
+	if ( threadIdx.x == 0u )
+		scores[((uint64_t)row * gridDim.x) + position] = -INFINITY;
+	if ( sequence_of_row == 0 || context_length == 0 || index_query_bf16 == 0
+		|| head_weight_bf16 == 0 || !LmKvViewIsConfigured(index_cache) )
+	{
+		LmKvReportRequiredAccessFailure(
+			index_cache,
+			LM_KV_ACCESS_ERROR_INVALID_VIEW,
+			LM_KV_ACCESS_READ,
+			row,
+			0xffffffffu,
+			position,
+			0xffffffffu);
+		return;
+	}
+	sequence = sequence_of_row[row];
+	if ( sequence >= index_cache.sequence_count )
+	{
+		LmKvReportRequiredAccessFailure(
+			index_cache,
+			LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
+			LM_KV_ACCESS_READ,
+			row,
+			sequence,
+			position,
+			0xffffffffu);
+		return;
+	}
+	if ( position >= context_length[sequence] || (row_position != 0 && position > row_position[row]) )
+		return;
+	slot = LmKvSlotRequired<Geometry>(index_cache,sequence,position,row,LM_KV_ACCESS_READ);
+	if ( slot == 0 )
+		return;
+	for (head = 0u; head < index_heads; head++)
+	{
+		partial = 0.0f;
+		for (index = threadIdx.x; index < INDEX_DIM; index += THREADS)
+			partial += LmBf16ToFloat(index_query_bf16[(((uint64_t)row * index_heads) + head) * INDEX_DIM + index]) * LmBf16ToFloat(((const uint16_t *)slot)[index]);
+		total += LmBlockSum<THREADS>(partial,reduction) * LmBf16ToFloat(head_weight_bf16[((uint64_t)row * index_heads) + head]);
+	}
+	if ( threadIdx.x == 0u )
+		scores[((uint64_t)row * gridDim.x) + position] = total * qk_scale;
 }
 
 // -- YaRN rope ------------------------------------------------------------------

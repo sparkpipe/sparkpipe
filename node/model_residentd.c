@@ -508,9 +508,9 @@ static SparkStatus SparkModelResidentdAllocateCuda(
 	for (index=0u; status == SPARK_STATUS_OK && index<runtime->route_capacity; index++)
 	{
 		if ( (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u )
-			status = SparkModelResidentdAllocateBoundary(&runtime->slots[index].input,memory_mode,runtime->rank_plan.max_packet_bytes);
+			status = SparkModelResidentdAllocateBoundary(&runtime->slots[index].input,memory_mode,runtime->rank_plan.input_max_packet_bytes);
 		if ( status == SPARK_STATUS_OK && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u )
-			status = SparkModelResidentdAllocateBoundary(&runtime->slots[index].output,memory_mode,runtime->rank_plan.max_packet_bytes);
+			status = SparkModelResidentdAllocateBoundary(&runtime->slots[index].output,memory_mode,runtime->rank_plan.output_max_packet_bytes);
 	}
 	return(status);
 }
@@ -1103,7 +1103,10 @@ static void SparkModelResidentdInitializePacket(
 	SparkModelResidentdRuntime *runtime,
 	SparkHiddenTransportPacket *packet,
 	const SparkModelServingSubmission *submission,
-	const void *hidden_bf16)
+	const void *hidden_bf16,
+	const void *sideband_payload,
+	uint32_t sideband_kind,
+	uint32_t sideband_bytes_per_sequence)
 {
 	memset(packet,0,sizeof(*packet));
 	packet->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
@@ -1112,11 +1115,29 @@ static void SparkModelResidentdInitializePacket(
 		SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER;
 	packet->active_sequence_count = submission->row_count;
 	packet->hidden_dimension = runtime->rank_plan.boundary_element_count;
-	packet->bytes_per_sequence = (uint32_t)runtime->rank_plan.bytes_per_sequence;
+	packet->bytes_per_sequence = (uint32_t)runtime->rank_plan.boundary_bytes_per_sequence;
 	packet->sequence_id = submission->submission_id;
 	packet->token_index = submission->dispatch_generation;
 	packet->hidden_bf16 = hidden_bf16;
 	packet->cuda_stream = runtime->execution_stream;
+	if ( sideband_bytes_per_sequence != 0u )
+	{
+		packet->flags |= SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
+		packet->sideband_payload = sideband_payload;
+		packet->sideband_kind = sideband_kind;
+		packet->sideband_bytes_per_sequence = sideband_bytes_per_sequence;
+	}
+}
+
+static void *SparkModelResidentdSidebandAddress(
+	const SparkModelResidentdBoundary *boundary,
+	const SparkPipelineRuntimeRankPlan *rank_plan)
+{
+	uint64_t primary_capacity;
+	if ( boundary == 0 || rank_plan == 0 || boundary->cuda_address == 0 )
+		return(0);
+	primary_capacity = rank_plan->boundary_bytes_per_sequence * rank_plan->max_input_row_count;
+	return((uint8_t *)boundary->cuda_address + primary_capacity);
 }
 
 static SparkStatus SparkModelResidentdBindRoute(
@@ -1127,7 +1148,8 @@ static SparkStatus SparkModelResidentdBindRoute(
 	uint32_t decision_required)
 {
 	SparkModelResidentdSlot *slot;
-	uint64_t hidden_bytes;
+	uint64_t hidden_bytes,input_sideband_bytes,output_sideband_bytes;
+	void *input_sideband_address,*output_sideband_address;
 	SparkStatus status;
 	if ( runtime == 0 || route == 0 || message == 0 || message_bytes > runtime->route_message_capacity || route->slot_index >= runtime->route_capacity )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1137,8 +1159,10 @@ static SparkStatus SparkModelResidentdBindRoute(
 	status = SparkModelResidentIpcDecodeSubmission(slot->message,message_bytes,&route->submission);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterValidateRuntimeSubmission(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&route->submission);
-	hidden_bytes = status == SPARK_STATUS_OK ? (uint64_t)route->submission.row_count * runtime->rank_plan.bytes_per_sequence : 0u;
-	if ( status == SPARK_STATUS_OK && hidden_bytes > runtime->rank_plan.max_packet_bytes )
+	hidden_bytes = status == SPARK_STATUS_OK ? (uint64_t)route->submission.row_count * runtime->rank_plan.boundary_bytes_per_sequence : 0u;
+	input_sideband_bytes = status == SPARK_STATUS_OK ? (uint64_t)route->submission.row_count * runtime->rank_plan.input_sideband_bytes_per_sequence : 0u;
+	output_sideband_bytes = status == SPARK_STATUS_OK ? (uint64_t)route->submission.row_count * runtime->rank_plan.output_sideband_bytes_per_sequence : 0u;
+	if ( status == SPARK_STATUS_OK && (hidden_bytes + input_sideband_bytes > runtime->rank_plan.input_max_packet_bytes || hidden_bytes + output_sideband_bytes > runtime->rank_plan.output_max_packet_bytes) )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -1150,18 +1174,24 @@ static SparkStatus SparkModelResidentdBindRoute(
 		return(status);
 	if ( route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u )
 	{
+		input_sideband_address = runtime->rank_plan.input_sideband_bytes_per_sequence != 0u ? SparkModelResidentdSidebandAddress(&slot->input,&runtime->rank_plan) : 0;
 		route->submission.hidden_input_address = slot->input.cuda_address;
 		route->submission.hidden_input_bytes = hidden_bytes;
-		SparkModelResidentdInitializePacket(runtime,&route->input_packet,&route->submission,slot->input.cuda_address);
+		route->submission.boundary_sideband_input_address = input_sideband_address;
+		route->submission.boundary_sideband_input_bytes = input_sideband_bytes;
+		SparkModelResidentdInitializePacket(runtime,&route->input_packet,&route->submission,slot->input.cuda_address,input_sideband_address,runtime->rank_plan.input_sideband_kind,runtime->rank_plan.input_sideband_bytes_per_sequence);
 		route->ready_state = SPARK_MODEL_RESIDENTD_ROUTE_READY_INPUT;
 	}
 	else
 		route->ready_state = SPARK_MODEL_RESIDENTD_ROUTE_READY_ADAPTER;
 	if ( route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u )
 	{
+		output_sideband_address = runtime->rank_plan.output_sideband_bytes_per_sequence != 0u ? SparkModelResidentdSidebandAddress(&slot->output,&runtime->rank_plan) : 0;
 		route->submission.hidden_output_address = slot->output.cuda_address;
 		route->submission.hidden_output_bytes = hidden_bytes;
-		SparkModelResidentdInitializePacket(runtime,&route->output_packet,&route->submission,slot->output.cuda_address);
+		route->submission.boundary_sideband_output_address = output_sideband_address;
+		route->submission.boundary_sideband_output_bytes = output_sideband_bytes;
+		SparkModelResidentdInitializePacket(runtime,&route->output_packet,&route->submission,slot->output.cuda_address,output_sideband_address,runtime->rank_plan.output_sideband_kind,runtime->rank_plan.output_sideband_bytes_per_sequence);
 	}
 	route->decision_required = decision_required;
 	route->state = decision_required != 0u ? SPARK_MODEL_RESIDENTD_ROUTE_RESERVED : route->ready_state;
@@ -1386,7 +1416,7 @@ static uint32_t SparkModelResidentdTransportCompletionMatches(
 	uint64_t transfer_bytes;
 	if ( completion == 0 || packet == 0 )
 		return(0u);
-	transfer_bytes = (uint64_t)packet->active_sequence_count * packet->bytes_per_sequence;
+	transfer_bytes = (uint64_t)packet->active_sequence_count * ((uint64_t)packet->bytes_per_sequence + packet->sideband_bytes_per_sequence);
 	return(completion->sequence_id == packet->sequence_id && completion->token_index == packet->token_index && completion->active_sequence_count == packet->active_sequence_count && completion->transfer_bytes == transfer_bytes ? 1u : 0u);
 }
 

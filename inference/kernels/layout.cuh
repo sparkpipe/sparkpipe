@@ -45,6 +45,12 @@ static __host__ __device__ constexpr bool LmTileKIsSwizzleable(uint32_t tile_k, 
 		&& LmSwizzleSpanFor(LmTileBytes(1u,tile_k,element_bits)) != 0u);
 }
 
+static __host__ __device__ constexpr bool LmTileKIsTmaLoadable(uint32_t tile_k, uint32_t element_bits, bool swizzled)
+{
+	return(((tile_k * element_bits) % 8u) == 0u
+		&& (swizzled == false || LmTileKIsSwizzleable(tile_k,element_bits)));
+}
+
 static __host__ __device__ constexpr uint32_t LmTileSwizzleSpan(uint32_t tile_k, uint32_t element_bits)
 {
 	return(LmSwizzleSpanFor(LmTileBytes(1u,tile_k,element_bits)));

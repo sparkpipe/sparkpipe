@@ -29,7 +29,7 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( (descriptor->capability_flags & ~SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES) != 0u || descriptor->stage_count == 0u || descriptor->stage_count > SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT || descriptor->layer_count == 0u || descriptor->layer_count > SPARK_MODEL_SERVING_ADAPTER_MAX_LAYER_COUNT )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( descriptor->boundary_format != SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 || descriptor->boundary_element_count == 0u || descriptor->boundary_element_bytes != sizeof(uint16_t) || descriptor->max_inflight_submission_count == 0u || descriptor->max_inflight_submission_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT || descriptor->max_active_sequence_count == 0u || descriptor->max_active_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || descriptor->max_input_row_count < descriptor->max_active_sequence_count || descriptor->max_input_row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || descriptor->max_resident_sequence_count < descriptor->max_active_sequence_count || descriptor->max_resident_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT || descriptor->max_output_token_count == 0u || descriptor->max_output_token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT )
+	if ( descriptor->boundary_format != SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 || descriptor->boundary_element_count == 0u || descriptor->boundary_element_bytes != sizeof(uint16_t) || SparkWeightCodecIsKnown(descriptor->linear_weight_codec) == 0u || SparkWeightCodecIsKnown(descriptor->expert_weight_codec) == 0u || SparkWeightCodecIsKnown(descriptor->kv_cache_codec) == 0u || descriptor->max_inflight_submission_count == 0u || descriptor->max_inflight_submission_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT || descriptor->max_active_sequence_count == 0u || descriptor->max_active_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || descriptor->max_input_row_count < descriptor->max_active_sequence_count || descriptor->max_input_row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || descriptor->max_resident_sequence_count < descriptor->max_active_sequence_count || descriptor->max_resident_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT || descriptor->max_output_token_count == 0u || descriptor->max_output_token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION) != 0u) != (descriptor->max_speculative_token_count != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -41,7 +41,7 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkModelServingAdapterTextIsPresent(descriptor->adapter_id) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->model_id) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->model_revision) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->driver_program_name) == 0u || SparkModelServingAdapterSha256IsValid(descriptor->artifact_sha256) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	for (index=0u; index<4u; index++)
+	for (index=0u; index<1u; index++)
 		if ( descriptor->reserved[index] != 0u )
 			return(SPARK_STATUS_ABI_MISMATCH);
 	total = 0u;
@@ -49,10 +49,14 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 	{
 		if ( descriptor->stage_layer_counts[index] == 0u )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( index + 1u < descriptor->stage_count && ((descriptor->boundary_sideband_kinds[index] != 0u) != (descriptor->boundary_sideband_bytes_per_sequence[index] != 0u)) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( index + 1u == descriptor->stage_count && (descriptor->boundary_sideband_kinds[index] != 0u || descriptor->boundary_sideband_bytes_per_sequence[index] != 0u) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
 		total += descriptor->stage_layer_counts[index];
 	}
 	for (; index<SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT; index++)
-		if ( descriptor->stage_layer_counts[index] != 0u )
+		if ( descriptor->stage_layer_counts[index] != 0u || descriptor->boundary_sideband_kinds[index] != 0u || descriptor->boundary_sideband_bytes_per_sequence[index] != 0u )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(total == descriptor->layer_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 }
@@ -155,11 +159,11 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 		return(SPARK_STATUS_UNSUPPORTED);
 	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (submission->hidden_input_address != 0) != (submission->hidden_input_bytes != 0u) || (submission->hidden_output_address != 0) != (submission->hidden_output_bytes != 0u) )
+	if ( (submission->hidden_input_address != 0) != (submission->hidden_input_bytes != 0u) || (submission->boundary_sideband_input_address != 0) != (submission->boundary_sideband_input_bytes != 0u) || (submission->hidden_output_address != 0) != (submission->hidden_output_bytes != 0u) || (submission->boundary_sideband_output_address != 0) != (submission->boundary_sideband_output_bytes != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
-		if ( submission->row_count != 0u || submission->token_count != 0u || submission->new_token_count != 0u )
+		if ( submission->row_count != 0u || submission->token_count != 0u || submission->new_token_count != 0u || submission->hidden_input_address != 0 || submission->boundary_sideband_input_address != 0 || submission->hidden_output_address != 0 || submission->boundary_sideband_output_address != 0 )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		return(SparkModelServingAdapterValidateRows(submission,0u,descriptor->max_resident_sequence_count));
 	}

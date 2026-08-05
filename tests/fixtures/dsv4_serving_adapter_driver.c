@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_dsv4_model.h"
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
@@ -32,7 +33,7 @@ static const SparkModelDriverProgramProfile TestDsv4ServingDriverProfile =
 static const SparkModelDriverProgramDescriptor TestDsv4ServingDriverProgram =
 {
 	.program_id = 1u,
-	.flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
+	.flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION | SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
 	.max_inflight = 4u,
 	.name = "resident_decode",
 	.profile = &TestDsv4ServingDriverProfile,
@@ -43,11 +44,11 @@ static const SparkModelDriverDescriptor TestDsv4ServingDriverDescriptor =
 {
 	.abi_version = SPARK_MODEL_DRIVER_ABI_VERSION,
 	.descriptor_bytes = sizeof(SparkModelDriverDescriptor),
-	.model_id = "deepseek.v4.resident-decode-stage-firmware",
-	.model_revision = "h4096-l43-dsa-e256k6-hash3-v129280-v1",
+	.model_id = SPARK_DSV4_MODEL_DRIVER_MODEL_ID,
+	.model_revision = SPARK_DSV4_MODEL_DRIVER_REVISION,
 	.stage_name = "dsv4_resident_decode_stage",
-	.target = "cuda.sm121.dsv4.resident_decode_stage.bf16",
-	.model_description_sha256 = "416016550257d9c0e1bdbf3105704fd5dfb6e5f527bc50562bc1a425250047cd",
+	.target = SPARK_DSV4_MODEL_MODULE_TARGET,
+	.model_description_sha256 = SPARK_DSV4_MODEL_DESCRIPTION_SHA256,
 	.compiled_program_sha256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 	.program_count = 1u,
 	.module_instance_count = 1u,

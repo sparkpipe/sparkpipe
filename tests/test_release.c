@@ -165,7 +165,7 @@ static void SparkTestReleaseExampleResidentDeployment(void)
         SPARK_TEST_RELEASE_ROOT "/example/sparkpipe.json",
         &manifest) == SPARK_STATUS_OK);
     assert(manifest.max_active_sequence_count == 512u);
-    assert(manifest.role_count == 3u);
+    assert(manifest.role_count == 1u);
     SparkReleaseNodeIdentityInitialize(&identity);
     assert(SparkCopyString(identity.host,sizeof(identity.host),"spark8") == SPARK_STATUS_OK);
     identity.rank = 8u;
@@ -173,33 +173,24 @@ static void SparkTestReleaseExampleResidentDeployment(void)
     identity.rank_count = 13u;
     assert(SparkReleaseManifestFindRoleForNode(
         &manifest,&identity,0,&role) == SPARK_STATUS_OK);
-    assert(strcmp(role->name,"ring_cuda_residentd") == 0);
+    assert(strcmp(role->name,"model_resident") == 0);
     assert(SparkReleaseManifestFindRoleForNode(
-        &manifest,&identity,"ring_rank_daemon",&role) == SPARK_STATUS_OK);
-    assert(role->explicit_host_count == 12u);
+        &manifest,&identity,"model_resident",&role) == SPARK_STATUS_OK);
     assert(SparkReleaseResolveRole(&manifest,&identity,role,&resolved_role) == SPARK_STATUS_OK);
-    assert(strstr(resolved_role.command,"/home/spark8/sparkpipe_runtime/bin/sparkpipe_glm52_ring_rank_daemon") != 0);
-    assert(strcmp(resolved_role.arguments[1],"8") == 0);
-    assert(strstr(resolved_role.arguments[3],"/home/spark8/sparkpipe_state/cuda_resident_rank8.sock") != 0);
-    assert(strcmp(resolved_role.arguments[5],"512") == 0);
-    assert(SparkReleaseManifestFindRoleForNode(
-        &manifest,&identity,"ring_cuda_residentd",&role) == SPARK_STATUS_OK);
-    assert(SparkReleaseResolveRole(&manifest,&identity,role,&resolved_role) == SPARK_STATUS_OK);
-    assert(strstr(resolved_role.arguments[11],
-        "libhidden_transport_spark_host_rdma_verbs.so") != 0);
+    assert(strstr(resolved_role.command,
+        "/home/spark8/sparkpipe_runtime/bin/sparkpipe_model_residentd") != 0);
     assert(strstr(SparkTestReleaseArgumentValue(
-        &resolved_role,"--kv-nvme-path"),"kv_rank8.jit") != 0);
+        &resolved_role,"--deployment"),
+        "/home/spark8/sparkpipe_runtime/config/model_resident.json") != 0);
     assert(strcmp(SparkTestReleaseArgumentValue(
-        &resolved_role,"--kv-nvme-blocks"),"1048576") == 0);
-    assert(strcmp(SparkTestReleaseArgumentValue(
-        &resolved_role,"--kv-nvme-batch-blocks"),"128") == 0);
+        &resolved_role,"--rank-index"),"8") == 0);
     SparkReleaseNodeIdentityInitialize(&identity);
     assert(SparkCopyString(identity.host,sizeof(identity.host),"spark0") == SPARK_STATUS_OK);
     identity.rank = 0u;
     identity.rank_is_set = 1u;
     identity.rank_count = 13u;
     assert(SparkReleaseManifestFindRoleForNode(
-        &manifest,&identity,"ring_rank_daemon",&role) == SPARK_STATUS_NOT_FOUND);
+        &manifest,&identity,"model_resident",&role) == SPARK_STATUS_OK);
 }
 
 int main(void)

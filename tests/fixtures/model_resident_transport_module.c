@@ -80,7 +80,7 @@ static SparkStatus TestModelResidentTransportQueue(
 	completion->active_sequence_count = packet->active_sequence_count;
 	completion->sequence_id = packet->sequence_id;
 	completion->token_index = packet->token_index;
-	completion->transfer_bytes = (uint64_t)packet->active_sequence_count * packet->bytes_per_sequence;
+	completion->transfer_bytes = (uint64_t)packet->active_sequence_count * ((uint64_t)packet->bytes_per_sequence + packet->sideband_bytes_per_sequence);
 	state->completion_delays[tail] = 1u;
 	state->completion_count++;
 	return(SPARK_STATUS_OK);
@@ -117,6 +117,9 @@ static SparkStatus TestModelResidentTransportReceive(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	bytes = (uint64_t)packet->active_sequence_count * packet->bytes_per_sequence;
 	memset((void *)packet->hidden_bf16,0x2c,(size_t)bytes);
+	bytes = (uint64_t)packet->active_sequence_count * packet->sideband_bytes_per_sequence;
+	if ( bytes != 0u )
+		memset((void *)packet->sideband_payload,0x5a,(size_t)bytes);
 	return(TestModelResidentTransportQueue(state,packet,SPARK_STATUS_OK));
 }
 
@@ -126,7 +129,7 @@ static SparkStatus TestModelResidentTransportSend(
 {
 	TestModelResidentTransport *state;
 	state = (TestModelResidentTransport *)transport_state;
-	if ( state == 0 || packet == 0 || packet->hidden_bf16 == 0 )
+	if ( state == 0 || packet == 0 || packet->hidden_bf16 == 0 || (packet->sideband_bytes_per_sequence != 0u && (packet->sideband_payload == 0 || ((const uint8_t *)packet->sideband_payload)[0] == 0u)) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(TestModelResidentTransportQueue(state,packet,((const uint8_t *)packet->hidden_bf16)[0] != 0u ? SPARK_STATUS_OK : SPARK_STATUS_VALIDATION_FAILED));
 }

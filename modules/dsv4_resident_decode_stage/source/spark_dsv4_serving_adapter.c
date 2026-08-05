@@ -11,21 +11,18 @@
 
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash.serving-adapter.pp13.v1"
-#define SPARK_DSV4_SERVING_MODEL_ID "deepseek-ai/DeepSeek-V4-Flash"
-#define SPARK_DSV4_SERVING_MODEL_REVISION \
-	"60d8d70770c6776ff598c94bb586a859a38244f1"
-#define SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256 \
-	"416016550257d9c0e1bdbf3105704fd5dfb6e5f527bc50562bc1a425250047cd"
-#define SPARK_DSV4_SERVING_DRIVER_MODEL_ID \
-	"deepseek.v4.resident-decode-stage-firmware"
-#define SPARK_DSV4_SERVING_DRIVER_MODEL_REVISION \
-	"h4096-l43-dsa-e256k6-hash3-v129280-v1"
+#define SPARK_DSV4_SERVING_MODEL_ID SPARK_DSV4_MODEL_ID
+#define SPARK_DSV4_SERVING_MODEL_REVISION SPARK_DSV4_MODEL_SOURCE_REVISION
+#define SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256 SPARK_DSV4_MODEL_DESCRIPTION_SHA256
+#define SPARK_DSV4_SERVING_DRIVER_MODEL_ID SPARK_DSV4_MODEL_DRIVER_MODEL_ID
+#define SPARK_DSV4_SERVING_DRIVER_MODEL_REVISION SPARK_DSV4_MODEL_DRIVER_REVISION
 #define SPARK_DSV4_SERVING_DRIVER_STAGE_NAME "dsv4_resident_decode_stage"
 #define SPARK_DSV4_SERVING_PROGRAM_NAME "resident_decode"
 #define SPARK_DSV4_SERVING_STAGE_COUNT 13u
 #define SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX 4u
 #define SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS \
-	(SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | \
+	(SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | \
@@ -95,6 +92,9 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS,
 	.boundary_element_bytes = SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,
+	.linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC,
+	.expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC,
+	.kv_cache_codec = SPARK_DSV4_MODEL_KV_CACHE_CODEC,
 	.max_inflight_submission_count = SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX,
 	.max_active_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_input_row_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
@@ -430,6 +430,9 @@ static void SparkDsv4ServingInitializeNodeContext(
 	state->node_context.resident_sequence_capacity = state->resident_sequence_capacity;
 	state->node_context.pipeline_slot_count = state->pipeline_slot_count;
 	state->node_context.max_sequence_positions = max_sequence_positions;
+	state->node_context.linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC;
+	state->node_context.expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC;
+	state->node_context.kv_cache_codec = SPARK_DSV4_MODEL_KV_CACHE_CODEC;
 	state->node_context.stage_pack_path = state->stage_pack_path;
 }
 
@@ -483,6 +486,8 @@ static SparkStatus SparkDsv4ServingValidateSubmission(
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkDsv4ServingDescriptor,&state->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	if ( submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkDsv4ServingValidateRowOrder(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);

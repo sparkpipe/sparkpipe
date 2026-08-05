@@ -1,33 +1,15 @@
 #pragma once
 
-#include "sparkpipe/spark_request_api.h"
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_status.h"
 
-// MTP policy tuning: glm model economics, consumed by the request-model seam
-#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_SCALE 1000ull
-#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_PRIOR_SAMPLE_COUNT \
-    SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT
-#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_PRIOR_COMMITTED_TOKEN_COUNT \
-    (SPARK_MODEL_MTP_TREE_MAX_COMMITTED_TOKEN_COUNT / 2u)
-/* An MTP cycle pays for the draft-chain dispatches in addition to the
- * verify dispatch. The measured-plan cost model only sees batched
- * weight streaming, so it undercounts the serialized draft work on the
- * final rank. Calibrated against the 2026-07-17 B1 A/B (plain 3.89
- * tok/s vs MTP 3.47 tok/s): re-measure per release and adjust. */
-#define SPARK_GLM52_REQUEST_API_MTP_DRAFT_CHAIN_WORK_MULTIPLIER 2u
-/* MTP must beat plain decode by this margin before new drafts are
- * budgeted; without hysteresis the scheduler oscillates between
- * drafting and plain decode around the break-even point. */
-#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_MARGIN_SCALE 1250ull
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_GLM52_DSPARK_ABI_VERSION SPARK_REQUEST_MODEL_ABI_VERSION
+#define SPARK_GLM52_DSPARK_ABI_VERSION 3u
 #define SPARK_GLM52_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52DsparkSpeculatorConfiguration))
 #define SPARK_GLM52_DSPARK_DESCRIPTOR_BYTES \
@@ -100,8 +82,8 @@ extern "C" {
 #define SPARK_GLM52_DSPARK_DRAFT_RESULT_KNOWN_FLAGS \
     SPARK_GLM52_DSPARK_DRAFT_RESULT_FLAG_CONFIDENCE_TRUNCATED
 
-#define SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_ACCEPTED_ALL SPARK_REQUEST_MODEL_VERIFY_RESULT_FLAG_ACCEPTED_ALL
-#define SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_REJECTED SPARK_REQUEST_MODEL_VERIFY_RESULT_FLAG_REJECTED
+#define SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_ACCEPTED_ALL UINT32_C(0x00000001)
+#define SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_REJECTED UINT32_C(0x00000002)
 #define SPARK_GLM52_DSPARK_VERIFY_RESULT_KNOWN_FLAGS \
     (SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_ACCEPTED_ALL | \
      SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_REJECTED)
@@ -168,9 +150,27 @@ typedef struct SparkGlm52DsparkDraftRequest
     uint64_t tap_generation;
 } SparkGlm52DsparkDraftRequest;
 
-typedef SparkRequestModelDraftResult SparkGlm52DsparkDraftResult;
+typedef struct SparkGlm52DsparkDraftResult
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t flags;
+	uint32_t token_count;
+	uint32_t confidence_milli[SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+	uint32_t token_ids[SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+} SparkGlm52DsparkDraftResult;
 
-typedef SparkRequestModelVerifyResult SparkGlm52DsparkVerifyResult;
+typedef struct SparkGlm52DsparkVerifyResult
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t flags;
+	uint32_t proposed_token_count;
+	uint32_t accepted_draft_token_count;
+	uint32_t committed_token_count;
+	uint32_t fallback_token_id;
+	uint32_t reserved;
+} SparkGlm52DsparkVerifyResult;
 
 typedef SparkStatus (*SparkGlm52DsparkDraftFunction)(
     void *context,
@@ -288,23 +288,6 @@ SparkStatus SparkGlm52DsparkResolveVerifierTokens(
 SparkStatus SparkGlm52DsparkCancelSequence(
     SparkGlm52DsparkSpeculator *speculator,
     uint64_t sequence_id);
-
-// MTP policy tuning: glm model economics, consumed by the request-model seam
-#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_SCALE 1000ull
-#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_PRIOR_SAMPLE_COUNT \
-    SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT
-#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_PRIOR_COMMITTED_TOKEN_COUNT \
-    (SPARK_MODEL_MTP_TREE_MAX_COMMITTED_TOKEN_COUNT / 2u)
-/* An MTP cycle pays for the draft-chain dispatches in addition to the
- * verify dispatch. The measured-plan cost model only sees batched
- * weight streaming, so it undercounts the serialized draft work on the
- * final rank. Calibrated against the 2026-07-17 B1 A/B (plain 3.89
- * tok/s vs MTP 3.47 tok/s): re-measure per release and adjust. */
-#define SPARK_GLM52_REQUEST_API_MTP_DRAFT_CHAIN_WORK_MULTIPLIER 2u
-/* MTP must beat plain decode by this margin before new drafts are
- * budgeted; without hysteresis the scheduler oscillates between
- * drafting and plain decode around the break-even point. */
-#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_MARGIN_SCALE 1250ull
 
 #ifdef __cplusplus
 }

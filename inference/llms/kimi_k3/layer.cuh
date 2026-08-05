@@ -456,7 +456,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	//   * tools/k3_pack.py emits them interleaved with the conv weights,
 	//     decay_up, the bias and the scale tensors - not adjacent, in either
 	//     the full pack or a sharded one.
-	//   * the TP tables (spark_k3_tp_shard_table.h, tools/k3_shard.py) class
+	//   * the offline TP table (tools/k3_shard.py) class
 	//     q/k/v/beta OUTPUT_DIM_HEADS but decay_down/gate_down REPLICATED -
 	//     one fused tensor cannot carry two shard classes, so per rank the
 	//     six slices would not even be the same columns of one parent.

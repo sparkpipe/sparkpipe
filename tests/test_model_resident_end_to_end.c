@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "fixtures/model_resident_deployment_fixture.h"
+#include "sparkpipe/spark_dsv4_model.h"
 #include "sparkpipe/spark_model_resident_client.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 
@@ -263,7 +264,7 @@ static void TestModelResidentWriteDeployment(
 	fixture.driver_program_name = "resident_decode";
 	fixture.transport_shared_object_path = TEST_MODEL_RESIDENT_TRANSPORT_PATH;
 	fixture.transport_mode = "host-rdma";
-	fixture.node_target = "cuda.sm121.dsv4.resident_decode_stage.bf16";
+	fixture.node_target = SPARK_DSV4_MODEL_MODULE_TARGET;
 	fixture.adapter_configuration_path = TEST_DSV4_SERVING_CONFIG_PATH;
 	fixture.runtime_roots = runtime_roots;
 	fixture.transport_hosts = TestModelResidentTransportHosts;

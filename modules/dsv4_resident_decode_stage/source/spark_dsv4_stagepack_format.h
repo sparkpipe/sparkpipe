@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "sparkpipe/spark_weight_codec.h"
+
 /*
  * DeepSeek V4 stage pack format, one table for BOTH variants: this header
  * deliberately includes NO model header. A translation unit selects Flash
@@ -27,7 +29,7 @@
  */
 
 #define SPARK_DSV4_STAGEPACK_MAGIC 0x34565344u
-#define SPARK_DSV4_STAGEPACK_FORMAT_VERSION 1u
+#define SPARK_DSV4_STAGEPACK_FORMAT_VERSION 2u
 #define SPARK_DSV4_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_DSV4_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
 #define SPARK_DSV4_STAGEPACK_HEADER_BYTES ((uint32_t)sizeof(SparkDsv4StagePackHeader))
@@ -108,6 +110,10 @@ typedef struct SparkDsv4StagePackHeader
 	uint32_t format_version;
 	uint32_t header_bytes;
 	uint32_t directory_entry_bytes;
+	uint32_t codec_abi_version;
+	uint32_t linear_weight_codec;
+	uint32_t expert_weight_codec;
+	uint32_t kv_cache_codec;
 	uint32_t tensor_count;
 	uint32_t first_layer_index;
 	uint32_t layer_count;
@@ -338,6 +344,10 @@ static inline void SparkDsv4StagePackExpectedGeometry(SparkDsv4StagePackHeader *
 	header->format_version = SPARK_DSV4_STAGEPACK_FORMAT_VERSION;
 	header->header_bytes = SPARK_DSV4_STAGEPACK_HEADER_BYTES;
 	header->directory_entry_bytes = SPARK_DSV4_STAGEPACK_ENTRY_BYTES;
+	header->codec_abi_version = SPARK_WEIGHT_CODEC_ABI_VERSION;
+	header->linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC;
+	header->expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC;
+	header->kv_cache_codec = SPARK_DSV4_MODEL_KV_CACHE_CODEC;
 	header->tensor_count = SparkDsv4StagePackExpectedTensorCount(first_layer_index,layer_count);
 	header->first_layer_index = first_layer_index;
 	header->layer_count = layer_count;
@@ -361,31 +371,40 @@ static inline int32_t SparkDsv4StagePackCompareGeometry(const SparkDsv4StagePack
 		return(-3);
 	if ( file_header->directory_entry_bytes != expected->directory_entry_bytes )
 		return(-4);
-	if ( file_header->tensor_count != expected->tensor_count )
+	if ( file_header->codec_abi_version != expected->codec_abi_version )
 		return(-5);
-	if ( file_header->first_layer_index != expected->first_layer_index )
+	if ( file_header->linear_weight_codec != expected->linear_weight_codec )
 		return(-6);
-	if ( file_header->layer_count != expected->layer_count )
+	if ( file_header->expert_weight_codec != expected->expert_weight_codec )
 		return(-7);
-	if ( file_header->total_layer_count != expected->total_layer_count )
+	if ( file_header->kv_cache_codec != expected->kv_cache_codec )
 		return(-8);
-	if ( file_header->hidden_dimension != expected->hidden_dimension )
+	if ( file_header->tensor_count != expected->tensor_count )
 		return(-9);
-	if ( file_header->vocab_count != expected->vocab_count )
+	if ( file_header->first_layer_index != expected->first_layer_index )
 		return(-10);
-	if ( file_header->routed_expert_count != expected->routed_expert_count )
+	if ( file_header->layer_count != expected->layer_count )
 		return(-11);
-	if ( file_header->mtp_layer_count != expected->mtp_layer_count )
+	if ( file_header->total_layer_count != expected->total_layer_count )
 		return(-12);
+	if ( file_header->hidden_dimension != expected->hidden_dimension )
+		return(-13);
+	if ( file_header->vocab_count != expected->vocab_count )
+		return(-14);
+	if ( file_header->routed_expert_count != expected->routed_expert_count )
+		return(-15);
+	if ( file_header->mtp_layer_count != expected->mtp_layer_count )
+		return(-16);
 	return(0);
 }
 
 static inline const char *SparkDsv4StagePackGeometryFieldName(int32_t compare_code)
 {
-	static const char *names[12] =
+	static const char *names[16] =
 	{
-		"magic","format_version","header_bytes","directory_entry_bytes","tensor_count","first_layer_index",
-		"layer_count","total_layer_count","hidden_dimension","vocab_count","routed_expert_count","mtp_layer_count"
+		"magic","format_version","header_bytes","directory_entry_bytes","codec_abi_version","linear_weight_codec",
+		"expert_weight_codec","kv_cache_codec","tensor_count","first_layer_index","layer_count","total_layer_count",
+		"hidden_dimension","vocab_count","routed_expert_count","mtp_layer_count"
 	};
-	return(compare_code <= -1 && compare_code >= -12 ? names[(-compare_code) - 1] : "unknown");
+	return(compare_code <= -1 && compare_code >= -16 ? names[(-compare_code) - 1] : "unknown");
 }

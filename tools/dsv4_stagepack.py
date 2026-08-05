@@ -90,9 +90,19 @@ KIND_MTP_HC_HEAD_SCALE = 48
 GLOBAL_LAYER = 0xFFFFFFFF
 MTP_LAYER = 0xFFFFFFFE
 
-HEADER_STRUCT = struct.Struct("<12I2Q")
+HEADER_STRUCT = struct.Struct("<16I2Q")
 ENTRY_STRUCT = struct.Struct("<6I2Q")
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+CODEC_ABI_VERSION = 1
+CODEC_IDS = {
+    "bf16": 1,
+    "int6": 2,
+    "int7": 3,
+    "int8": 4,
+    "fp8_e4m3": 5,
+    "nvfp4_e2m1": 6,
+    "mxfp4_e2m1": 7,
+}
 FP8_BLOCK = 128
 FP4_BLOCK = 32
 FP4_EXPERTS = 256
@@ -557,9 +567,10 @@ def make_directory(records: Sequence[Record]) -> Tuple[List[DirectoryEntry], int
 
 
 def pack_header(records: Sequence[Record], first_layer: int, layer_count: int,
-                file_bytes: int) -> bytes:
+                file_bytes: int, codecs: Tuple[int, int, int]) -> bytes:
     return HEADER_STRUCT.pack(
         0x34565344, FORMAT_VERSION, HEADER_STRUCT.size, ENTRY_STRUCT.size,
+        CODEC_ABI_VERSION, *codecs,
         len(records), first_layer, layer_count, 43, 4096, 129280, 256, 1,
         HEADER_STRUCT.size, file_bytes,
     )
@@ -574,14 +585,15 @@ def pack_entry(entry: DirectoryEntry) -> bytes:
 
 
 def build_pack(source: SafetensorSource, output_path: Path, records: Sequence[Record],
-               first_layer: int, layer_count: int) -> Dict[str, object]:
+               first_layer: int, layer_count: int,
+               codecs: Tuple[int, int, int]) -> Dict[str, object]:
     entries, file_bytes = make_directory(records)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
             prefix=f".{output_path.name}.", suffix=".tmp",
             dir=output_path.parent, delete=False) as temporary:
         temp_path = Path(temporary.name)
-        temporary.write(pack_header(records, first_layer, layer_count, file_bytes))
+        temporary.write(pack_header(records, first_layer, layer_count, file_bytes, codecs))
         for entry in entries:
             temporary.write(pack_entry(entry))
         for entry in entries:
@@ -608,8 +620,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", required=True, type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--first-layer", type=int, default=0)
-    parser.add_argument("--layer-count", type=int, default=43)
+    parser.add_argument("--first-layer", type=int, required=True)
+    parser.add_argument("--layer-count", type=int, required=True)
     parser.add_argument("--inspect", action="store_true")
     parser.add_argument("--contract", type=Path, default=CONTRACT_PATH)
     return parser.parse_args(argv)
@@ -622,6 +634,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         contract = load_contract(args.contract)
+        precision = contract.get("precision")
+        if not isinstance(precision, dict):
+            raise PackFailure("contract precision section is malformed")
+        codec_names = (
+            precision.get("non_expert_linear_weight_codec"),
+            precision.get("routed_expert_weight_codec"),
+            precision.get("kv_cache_codec"),
+        )
+        if any(not isinstance(name, str) or name not in CODEC_IDS for name in codec_names):
+            raise PackFailure(f"contract contains an unsupported codec tuple: {codec_names}")
+        codecs = tuple(CODEC_IDS[name] for name in codec_names)
         with SafetensorSource(args.model_dir) as source:
             records = build_records(contract, args.first_layer, args.layer_count)
             validate_records(source, records)
@@ -631,11 +654,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "layer_count": args.layer_count,
                 "tensor_count": len(records),
                 "file_bytes": file_bytes,
+                "linear_weight_codec": codec_names[0],
+                "expert_weight_codec": codec_names[1],
+                "kv_cache_codec": codec_names[2],
                 "source_index_sha256": sha256_file(args.model_dir / SOURCE_INDEX_NAME),
                 "validated": True,
             }
             if not args.inspect:
-                result.update(build_pack(source, args.output, records, args.first_layer, args.layer_count))
+                result.update(build_pack(source,args.output,records,args.first_layer,args.layer_count,codecs))
             print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except (OSError, PackFailure, json.JSONDecodeError, struct.error) as error:

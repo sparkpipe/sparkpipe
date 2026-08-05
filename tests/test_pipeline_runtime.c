@@ -16,6 +16,9 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
 	descriptor->boundary_element_count = 16384u;
 	descriptor->boundary_element_bytes = 2u;
+	descriptor->linear_weight_codec = SPARK_WEIGHT_CODEC_BF16;
+	descriptor->expert_weight_codec = SPARK_WEIGHT_CODEC_INT8;
+	descriptor->kv_cache_codec = SPARK_WEIGHT_CODEC_BF16;
 	descriptor->max_inflight_submission_count = 4u;
 	descriptor->max_active_sequence_count = 128u;
 	descriptor->max_input_row_count = 128u;
@@ -28,6 +31,8 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 	for (index=0u; index<13u; index++)
 		descriptor->stage_layer_counts[index] = layers[index];
+	descriptor->boundary_sideband_kinds[0] = 1u;
+	descriptor->boundary_sideband_bytes_per_sequence[0] = 8192u;
 }
 
 static void TestBuildNode(
@@ -66,12 +71,17 @@ int main(void)
 	assert(rank_plan.layer_count == 3u);
 	assert(strcmp(rank_plan.host_name,"node-alpha") == 0);
 	assert(strcmp(rank_plan.next_host_name,"node-beta") == 0);
-	assert(rank_plan.bytes_per_sequence == 32768u);
+	assert(rank_plan.boundary_bytes_per_sequence == 32768u);
+	assert(rank_plan.output_sideband_kind == 1u);
+	assert(rank_plan.output_sideband_bytes_per_sequence == 8192u);
+	assert(rank_plan.output_packet_bytes_per_sequence == 40960u);
 	assert(rank_plan.max_active_sequence_count == 64u);
 	assert(rank_plan.max_input_row_count == 128u);
-	assert(rank_plan.max_packet_bytes == 4194304u);
+	assert(rank_plan.output_max_packet_bytes == 5242880u);
 	assert(SparkPipelineRuntimeBuildOutputEndpoint(&descriptor,&rank_plan,&endpoint) == SPARK_STATUS_OK);
 	assert(endpoint.max_active_sequence_count == 128u);
+	assert(endpoint.bytes_per_sequence == 32768u);
+	assert(endpoint.max_packet_bytes == 5242880u);
 	assert(endpoint.configuration_flags == SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION);
 	assert(endpoint.local_rank_index == 0u);
 	assert(endpoint.source_rank_index == 0u);

@@ -17,7 +17,7 @@ EXPECTED_FAMILIES = {
 
 def main() -> int:
     document = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert document["schema_version"] == 1
+    assert document["schema_version"] == 2
     assert document["cuda_target"] == "sm_121a"
     targets = document["targets"]
     assert len(targets) == len(EXPECTED_FAMILIES)
@@ -35,11 +35,18 @@ def main() -> int:
     by_family = {target["model_family"]: target for target in targets}
     assert by_family["k3"]["routed_expert_weight_format"] == "mxfp4_e2m1"
     assert by_family["k3"]["routed_expert_activation_format"] == "bf16"
-    assert by_family["glm52"]["routed_expert_weight_format"] == "fp8_e4m3"
+    assert by_family["glm52"]["routed_expert_weight_formats"] == [
+        "int6_block_f32",
+        "int7_block_f32",
+        "int8_block_f32",
+        "fp8_e4m3_block_f32",
+        "nvfp4_e2m1_ue4m3_global_f32",
+        "mxfp4_e2m1_e8m0",
+    ]
     assert by_family["glm52"]["non_expert_weight_format"] == "bf16"
     assert by_family["qwen36"]["non_expert_weight_format"] == "bf16"
-    assert by_family["dsv4_flash"]["routed_expert_weight_format"] == "checkpoint_fp4"
-    assert by_family["dsv4_pro"]["routed_expert_weight_format"] == "checkpoint_fp4"
+    assert by_family["dsv4_flash"]["routed_expert_weight_codec"] == "mxfp4_e2m1"
+    assert by_family["dsv4_pro"]["routed_expert_weight_codec"] == "mxfp4_e2m1"
     assert by_family["dsv4_flash"]["non_expert_weight_format"] == "fp8_e4m3_block_128x128"
     assert by_family["dsv4_pro"]["non_expert_weight_format"] == "fp8_e4m3_block_128x128"
     print("PASS mandatory model target contract")

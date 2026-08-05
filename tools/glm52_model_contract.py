@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -11,6 +12,46 @@ from typing import Any, Dict
 
 CONTRACT_RELATIVE_PATH = Path("model_contracts/glm52.json")
 HEADER_RELATIVE_PATH = Path("model-families/glm52/include/sparkpipe/spark_glm52_model.h")
+DESCRIPTION_DIRECTORY = Path("examples/model_descriptions")
+DESCRIPTION_NAME = "glm52_resident_decode_stage_{codec}_firmware.json"
+CODECS = {
+    "int6": {
+        "id": 2,
+        "stored_bits": 6,
+        "scale_encoding": "f32",
+        "scale_group_size": 32,
+    },
+    "int7": {
+        "id": 3,
+        "stored_bits": 7,
+        "scale_encoding": "f32",
+        "scale_group_size": 128,
+    },
+    "int8": {
+        "id": 4,
+        "stored_bits": 8,
+        "scale_encoding": "f32",
+        "scale_group_size": 128,
+    },
+    "fp8": {
+        "id": 5,
+        "stored_bits": 8,
+        "scale_encoding": "f32",
+        "scale_group_size": 128,
+    },
+    "nvfp4": {
+        "id": 6,
+        "stored_bits": 4,
+        "scale_encoding": "ue4m3_f32_global",
+        "scale_group_size": 16,
+    },
+    "mxfp4": {
+        "id": 7,
+        "stored_bits": 4,
+        "scale_encoding": "e8m0",
+        "scale_group_size": 32,
+    },
+}
 INTEGER_MACROS = {
     "SPARK_GLM52_MODEL_HIDDEN_DIMENSION": "hidden_dimension",
     "SPARK_GLM52_MODEL_LAYER_COUNT": "layer_count",
@@ -92,6 +133,12 @@ def repository_root() -> Path:
 def load_model_contract(root: Path | None = None) -> Dict[str, Any]:
     base = repository_root() if root is None else root
     contract = json.loads((base / CONTRACT_RELATIVE_PATH).read_text())
+    if contract.get("model_id") != "zai-org/GLM-5.2":
+        raise ValueError("invalid GLM-5.2 model id")
+    revision = contract.get("model_revision")
+    if (not isinstance(revision, str) or len(revision) != 40 or
+            any(character not in "0123456789abcdef" for character in revision)):
+        raise ValueError("invalid GLM-5.2 source revision")
     for key in INTEGER_MACROS.values():
         if not isinstance(contract.get(key), int) or contract[key] <= 0:
             raise ValueError(f"invalid GLM-5.2 model contract field: {key}")
@@ -217,6 +264,9 @@ def render_c_header(contract: Dict[str, Any]) -> str:
         "\t(SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION)",
         "#define SPARK_GLM52_MODEL_QUERY_ROPE_PROJECTION_DIMENSION \\",
         "\t(SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_ROPE_DIMENSION)",
+        "#define SPARK_GLM52_MODEL_MOE_ROUTED_GATE_UP_DIMENSION \\",
+        "\t(SPARK_GLM52_MODEL_MOE_TOP_K * SPARK_GLM52_MODEL_MOE_W1_COMPONENT_COUNT * \\",
+        "\t SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION)",
         "#define SPARK_GLM52_MODEL_FP8_SCALE_EXTENT(dimension) \\",
         "\t(((dimension) + SPARK_GLM52_MODEL_FP8_SCALE_BLOCK - 1u) / \\",
         "\t SPARK_GLM52_MODEL_FP8_SCALE_BLOCK)",
@@ -232,18 +282,147 @@ def render_c_header(contract: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def description_path(root: Path, codec: str) -> Path:
+    return root / DESCRIPTION_DIRECTORY / DESCRIPTION_NAME.format(codec=codec)
+
+
+def render_model_description(contract: Dict[str, Any], codec: str) -> str:
+    codec_contract = CODECS[codec]
+    model_revision = contract["model_revision"]
+    target = f"cuda.sm121.glm52.resident_decode_stage.bf16.expert_{codec}"
+    module = (
+        "spark.glm52.resident_decode_stage.bf16."
+        f"expert_{codec}.h6144.l78.e256.k8.v2"
+    )
+    description = {
+        "schema_version": 1,
+        "model": {
+            "id": "zai.glm-5.2.resident-decode-stage-firmware",
+            "revision": model_revision,
+        },
+        "metadata": {
+            "architecture": "glm52_resident_decode_stage",
+            "source_model": {
+                "id": contract["model_id"],
+                "revision": model_revision,
+            },
+            "purpose": (
+                "GLM 5.2 resident firmware with BF16 non-expert weights, "
+                f"{codec} routed-expert weights, BF16 KV cache and FP32 accumulation"
+            ),
+            "qualification": {
+                "status": "NOT_MEASURED",
+                "production_ready": False,
+                "gpu_numerical_correctness": "NOT_MEASURED",
+                "gpu_latency": "NOT_MEASURED",
+                "gpu_throughput": "NOT_MEASURED",
+            },
+            "precision_contract": {
+                "linear_weight_codec": "bf16",
+                "expert_weight_codec": codec,
+                "expert_weight_codec_id": codec_contract["id"],
+                "expert_stored_bits": codec_contract["stored_bits"],
+                "expert_scale_encoding": codec_contract["scale_encoding"],
+                "expert_scale_group_size": codec_contract["scale_group_size"],
+                "expert_activation_codec": "bf16",
+                "kv_cache_codec": "bf16",
+                "accumulator_codec": "fp32",
+                "aot_codec_specialization": True,
+                "runtime_precision_selection": "forbidden",
+                "fallback_allowed": False,
+            },
+            "module_geometry": {
+                "hidden_dimension": contract["hidden_dimension"],
+                "layer_count": contract["layer_count"],
+                "heads": contract["head_count"],
+                "latent_dimension": contract["latent_dimension"],
+                "rope_dimension": contract["rope_dimension"],
+                "selected_tokens": contract["dsa_selected_token_count"],
+                "moe_expert_count": contract["moe_expert_count"],
+                "moe_top_k": contract["moe_top_k"],
+                "moe_intermediate_dimension": contract["moe_intermediate_dimension"],
+                "output_vocab_count": contract["output_vocab_count"],
+            },
+            "runtime_contract": {
+                "required_environment": [],
+                "configuration_source": "typed model-owned serving adapter configuration",
+                "runtime_backend_selection": "forbidden",
+                "fallback_allowed": False,
+            },
+        },
+        "stages": [{
+            "name": "glm52_resident_decode_stage",
+            "target": target,
+            "programs": [{
+                "name": "resident_decode",
+                "id": 1,
+                "max_inflight": 4,
+                "completion": "external",
+                "operations": [{
+                    "name": "glm52_resident_decode_stage",
+                    "module": module,
+                    "configuration": {
+                        "expert_weight_codec": codec,
+                        "runtime_backend_selection": "forbidden",
+                        "fallback_allowed": False,
+                    },
+                }],
+                "scheduling": {
+                    "flags": [
+                        "stream_ordered",
+                        "driver_owns_resident_state",
+                        "driver_owns_kv_cache",
+                        "fixed_firmware",
+                        "requires_hidden_transport",
+                        "no_file_transport",
+                        "no_shell_transport",
+                        "bulk_prefill",
+                    ],
+                    "max_active_slots": 1024,
+                    "max_new_tokens": 65536,
+                    "max_resident_sequences": 1024,
+                    "max_sequence_tokens": contract["maximum_context_tokens"],
+                    "target_latency_ns": 0,
+                    "validated_latency_ns": 0,
+                    "resident_weight_bytes": 0,
+                    "resident_kv_bytes": 0,
+                    "static_workspace_bytes": 0,
+                    "device_memcpy_bytes_per_submit_ceiling": 0,
+                    "host_staging_bytes_per_submit_ceiling": 0,
+                    "private_queue_count": 0,
+                },
+            }],
+        }],
+    }
+    return json.dumps(description, indent=2, sort_keys=True) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--print-build-identity", choices=CODECS)
     args = parser.parse_args()
     root = repository_root()
-    expected = render_c_header(load_model_contract(root))
+    contract = load_model_contract(root)
+    if args.print_build_identity is not None:
+        description = render_model_description(
+            contract,args.print_build_identity).encode("utf-8")
+        print(contract["model_revision"],hashlib.sha256(description).hexdigest())
+        return 0
+    expected = render_c_header(contract)
     header_path = root / HEADER_RELATIVE_PATH
     if args.check:
         if header_path.read_text() != expected:
             raise SystemExit("GLM-5.2 generated C model contract is stale")
+        for codec in CODECS:
+            path = description_path(root,codec)
+            if not path.is_file() or path.read_text() != render_model_description(contract,codec):
+                raise SystemExit(f"GLM-5.2 {codec} model description is stale")
     else:
         header_path.write_text(expected)
+        for codec in CODECS:
+            description_path(root,codec).write_text(
+                render_model_description(contract,codec),encoding="utf-8")
     return 0
 
 

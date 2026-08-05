@@ -1,4 +1,4 @@
-#include "inference/llms/glm5_2/config.h"
+#include "modules/glm52_resident_decode_stage/source/cuda/config.h"
 #include <stdio.h>
 int main(void){
   /* every derived value cross-checked against the old header's constants */

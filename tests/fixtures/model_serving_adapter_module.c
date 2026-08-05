@@ -25,6 +25,9 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = 64u,
 	.boundary_element_bytes = 2u,
+	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
+	.expert_weight_codec = SPARK_WEIGHT_CODEC_INT8,
+	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 4u,
 	.max_active_sequence_count = 32u,
 	.max_input_row_count = 256u,
@@ -37,7 +40,9 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.model_revision = "test-revision",
 	.driver_program_name = "resident_decode",
 	.artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-	.stage_layer_counts = {2u,3u,2u}
+	.stage_layer_counts = {2u,3u,2u},
+	.boundary_sideband_kinds = {1u,0u,0u},
+	.boundary_sideband_bytes_per_sequence = {16u,0u,0u}
 };
 
 static SparkStatus TestModelServingValidateConfiguration(
@@ -89,16 +94,23 @@ static SparkStatus TestModelServingValidateBoundaries(
 	const SparkModelServingSubmission *submission)
 {
 	uint64_t required_bytes;
+	uint64_t input_sideband_bytes,output_sideband_bytes;
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
-		return(submission->hidden_input_address == 0 && submission->hidden_output_address == 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+		return(submission->hidden_input_address == 0 && submission->boundary_sideband_input_address == 0 && submission->hidden_output_address == 0 && submission->boundary_sideband_output_address == 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 	required_bytes = (uint64_t)submission->row_count * TestModelServingDescriptor.boundary_element_count * TestModelServingDescriptor.boundary_element_bytes;
+	input_sideband_bytes = state->stage_index != 0u ? (uint64_t)submission->row_count * TestModelServingDescriptor.boundary_sideband_bytes_per_sequence[state->stage_index - 1u] : 0u;
+	output_sideband_bytes = state->stage_index + 1u < TestModelServingDescriptor.stage_count ? (uint64_t)submission->row_count * TestModelServingDescriptor.boundary_sideband_bytes_per_sequence[state->stage_index] : 0u;
 	if ( state->stage_index == 0u && submission->hidden_input_address != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->stage_index != 0u && (submission->hidden_input_address == 0 || submission->hidden_input_bytes != required_bytes) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (submission->boundary_sideband_input_address != 0) != (input_sideband_bytes != 0u) || submission->boundary_sideband_input_bytes != input_sideband_bytes )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->stage_index + 1u == TestModelServingDescriptor.stage_count && submission->hidden_output_address != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->stage_index + 1u < TestModelServingDescriptor.stage_count && (submission->hidden_output_address == 0 || submission->hidden_output_bytes != required_bytes) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (submission->boundary_sideband_output_address != 0) != (output_sideband_bytes != 0u) || submission->boundary_sideband_output_bytes != output_sideband_bytes )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
@@ -179,6 +191,8 @@ static SparkStatus TestModelServingSubmit(
 		else
 			memset(submission->hidden_output_address,0x2c,(size_t)submission->hidden_output_bytes);
 	}
+	if ( submission->boundary_sideband_output_address != 0 )
+		memset(submission->boundary_sideband_output_address,0x5a,(size_t)submission->boundary_sideband_output_bytes);
 	TestModelServingBuildCompletion(state,submission,&completion);
 	state->completed_count++;
 	state->completion_function(state->completion_context,&completion);

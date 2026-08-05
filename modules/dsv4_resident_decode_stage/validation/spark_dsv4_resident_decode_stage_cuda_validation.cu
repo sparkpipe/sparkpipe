@@ -64,6 +64,9 @@ static void SparkDsv4ValidationInitializeConfiguration(
     node_context->resident_sequence_capacity = 1u;
     node_context->pipeline_slot_count = 1u;
     node_context->max_sequence_positions = 4096u;
+	node_context->linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC;
+	node_context->expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC;
+	node_context->kv_cache_codec = SPARK_DSV4_MODEL_KV_CACHE_CODEC;
     node_context->stage_pack_path = stage_pack_path;
     host_services->node_context = node_context;
 }

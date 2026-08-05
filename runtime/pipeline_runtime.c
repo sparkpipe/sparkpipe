@@ -38,25 +38,29 @@ static SparkStatus SparkPipelineRuntimeInitializeEndpoint(
 	uint32_t sink_rank_index,
 	const char *source_host,
 	const char *sink_host,
-	const char *route_name)
+	const char *route_name,
+	uint32_t sideband_bytes_per_sequence,
+	uint64_t max_packet_bytes)
 {
 	memset(endpoint,0,sizeof(*endpoint));
 	endpoint->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
 	endpoint->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES;
 	endpoint->capability_flags = rank_plan->transport_capability_flags;
 	endpoint->hidden_dimension = rank_plan->boundary_element_count;
-	endpoint->bytes_per_sequence = (uint32_t)rank_plan->bytes_per_sequence;
+	endpoint->bytes_per_sequence = (uint32_t)rank_plan->boundary_bytes_per_sequence;
 	endpoint->max_active_sequence_count = rank_plan->max_input_row_count;
 	endpoint->configuration_flags = SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION;
 	endpoint->local_rank_index = rank_plan->rank_index;
 	endpoint->source_rank_index = source_rank_index;
 	endpoint->sink_rank_index = sink_rank_index;
 	endpoint->control_port_base = rank_plan->transport_control_port_base;
-	endpoint->max_packet_bytes = rank_plan->max_packet_bytes;
+	endpoint->max_packet_bytes = max_packet_bytes;
 	endpoint->transport_module_id = rank_plan->transport_module_id;
 	endpoint->route_name = route_name;
 	endpoint->source_host = source_host;
 	endpoint->sink_host = sink_host;
+	if ( endpoint->max_packet_bytes != ((uint64_t)endpoint->bytes_per_sequence + sideband_bytes_per_sequence) * endpoint->max_active_sequence_count )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkHiddenTransportValidateEndpoint(endpoint));
 }
 
@@ -113,12 +117,20 @@ SparkStatus SparkPipelineRuntimeBuildLinearRankPlan(
 	SparkPipelineRuntimeRankPlan *rank_plan)
 {
 	SparkStatus status;
-	uint64_t bytes_per_sequence;
+	uint64_t boundary_bytes_per_sequence,input_packet_bytes_per_sequence,output_packet_bytes_per_sequence;
 	status = SparkModelServingAdapterValidateDescriptor(descriptor);
 	if ( status != SPARK_STATUS_OK || node == 0 || rank_plan == 0 || transport_module_id == 0 || transport_module_id[0] == '\0' || node->abi_version != SPARK_PIPELINE_RUNTIME_ABI_VERSION || node->descriptor_bytes != SPARK_PIPELINE_RUNTIME_LINEAR_NODE_BYTES || node->rank_index >= descriptor->stage_count || node->stage_index >= descriptor->stage_count || node->stage_count != descriptor->stage_count || node->reserved0 != 0u || node->host_name == 0 || node->host_name[0] == '\0' || SparkPipelineRuntimeNeighborIsValid(node->stage_index,node->stage_count,node->rank_index,node->previous_rank_index,node->previous_host_name,1u) == 0u || SparkPipelineRuntimeNeighborIsValid(node->stage_index,node->stage_count,node->rank_index,node->next_rank_index,node->next_host_name,0u) == 0u || max_active_sequence_count == 0u || max_active_sequence_count > descriptor->max_active_sequence_count || max_input_row_count == 0u || max_input_row_count > descriptor->max_input_row_count || max_input_row_count < max_active_sequence_count || transport_control_port_base == 0u || transport_control_port_base > UINT16_MAX - (descriptor->stage_count - 1u) || descriptor->boundary_format != SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 || descriptor->boundary_element_bytes != SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
-	bytes_per_sequence = (uint64_t)descriptor->boundary_element_count * descriptor->boundary_element_bytes;
-	if ( bytes_per_sequence > UINT32_MAX )
+	boundary_bytes_per_sequence = (uint64_t)descriptor->boundary_element_count * descriptor->boundary_element_bytes;
+	if ( boundary_bytes_per_sequence > UINT32_MAX )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	input_packet_bytes_per_sequence = boundary_bytes_per_sequence;
+	output_packet_bytes_per_sequence = boundary_bytes_per_sequence;
+	if ( node->stage_index != 0u )
+		input_packet_bytes_per_sequence += descriptor->boundary_sideband_bytes_per_sequence[node->stage_index - 1u];
+	if ( node->stage_index + 1u < descriptor->stage_count )
+		output_packet_bytes_per_sequence += descriptor->boundary_sideband_bytes_per_sequence[node->stage_index];
+	if ( input_packet_bytes_per_sequence < boundary_bytes_per_sequence || output_packet_bytes_per_sequence < boundary_bytes_per_sequence )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memset(rank_plan,0,sizeof(*rank_plan));
 	rank_plan->abi_version = SPARK_PIPELINE_RUNTIME_ABI_VERSION;
@@ -134,10 +146,23 @@ SparkStatus SparkPipelineRuntimeBuildLinearRankPlan(
 	rank_plan->boundary_format = descriptor->boundary_format;
 	rank_plan->boundary_element_count = descriptor->boundary_element_count;
 	rank_plan->boundary_element_bytes = descriptor->boundary_element_bytes;
+	if ( node->stage_index != 0u )
+	{
+		rank_plan->input_sideband_kind = descriptor->boundary_sideband_kinds[node->stage_index - 1u];
+		rank_plan->input_sideband_bytes_per_sequence = descriptor->boundary_sideband_bytes_per_sequence[node->stage_index - 1u];
+	}
+	if ( node->stage_index + 1u < descriptor->stage_count )
+	{
+		rank_plan->output_sideband_kind = descriptor->boundary_sideband_kinds[node->stage_index];
+		rank_plan->output_sideband_bytes_per_sequence = descriptor->boundary_sideband_bytes_per_sequence[node->stage_index];
+	}
 	rank_plan->transport_capability_flags = transport_capability_flags;
 	rank_plan->transport_control_port_base = transport_control_port_base;
-	rank_plan->bytes_per_sequence = bytes_per_sequence;
-	rank_plan->max_packet_bytes = bytes_per_sequence * max_input_row_count;
+	rank_plan->boundary_bytes_per_sequence = boundary_bytes_per_sequence;
+	rank_plan->input_packet_bytes_per_sequence = input_packet_bytes_per_sequence;
+	rank_plan->output_packet_bytes_per_sequence = output_packet_bytes_per_sequence;
+	rank_plan->input_max_packet_bytes = input_packet_bytes_per_sequence * max_input_row_count;
+	rank_plan->output_max_packet_bytes = output_packet_bytes_per_sequence * max_input_row_count;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkPipelineRuntimeCopyText(rank_plan->transport_module_id,sizeof(rank_plan->transport_module_id),transport_module_id);
 	if ( status == SPARK_STATUS_OK )
@@ -174,7 +199,11 @@ SparkStatus SparkPipelineRuntimeValidateRankPlan(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( SparkPipelineRuntimeTextBufferIsValid(rank_plan->transport_module_id,sizeof(rank_plan->transport_module_id),1u) == 0u || SparkPipelineRuntimeTextBufferIsValid(rank_plan->host_name,sizeof(rank_plan->host_name),1u) == 0u || SparkPipelineRuntimeTextBufferIsValid(rank_plan->previous_host_name,sizeof(rank_plan->previous_host_name),rank_plan->stage_index != 0u) == 0u || SparkPipelineRuntimeTextBufferIsValid(rank_plan->next_host_name,sizeof(rank_plan->next_host_name),rank_plan->stage_index + 1u < rank_plan->stage_count) == 0u || SparkPipelineRuntimeTextBufferIsValid(rank_plan->input_route_name,sizeof(rank_plan->input_route_name),rank_plan->stage_index != 0u) == 0u || SparkPipelineRuntimeTextBufferIsValid(rank_plan->output_route_name,sizeof(rank_plan->output_route_name),rank_plan->stage_index + 1u < rank_plan->stage_count) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( rank_plan->rank_index >= descriptor->stage_count || rank_plan->stage_index >= descriptor->stage_count || rank_plan->stage_count != descriptor->stage_count || (rank_plan->flags & ~SPARK_PIPELINE_RUNTIME_RANK_KNOWN_FLAGS) != 0u || rank_plan->reserved0 != 0u || rank_plan->boundary_format != descriptor->boundary_format || rank_plan->boundary_element_count != descriptor->boundary_element_count || rank_plan->boundary_element_bytes != descriptor->boundary_element_bytes || rank_plan->max_active_sequence_count == 0u || rank_plan->max_active_sequence_count > descriptor->max_active_sequence_count || rank_plan->max_input_row_count < rank_plan->max_active_sequence_count || rank_plan->max_input_row_count > descriptor->max_input_row_count || rank_plan->transport_control_port_base == 0u || rank_plan->transport_control_port_base > UINT16_MAX - (rank_plan->stage_count - 1u) || rank_plan->bytes_per_sequence != (uint64_t)descriptor->boundary_element_count * descriptor->boundary_element_bytes || rank_plan->max_packet_bytes != rank_plan->bytes_per_sequence * rank_plan->max_input_row_count )
+	if ( rank_plan->rank_index >= descriptor->stage_count || rank_plan->stage_index >= descriptor->stage_count || rank_plan->stage_count != descriptor->stage_count || (rank_plan->flags & ~SPARK_PIPELINE_RUNTIME_RANK_KNOWN_FLAGS) != 0u || rank_plan->reserved0 != 0u || rank_plan->boundary_format != descriptor->boundary_format || rank_plan->boundary_element_count != descriptor->boundary_element_count || rank_plan->boundary_element_bytes != descriptor->boundary_element_bytes || rank_plan->max_active_sequence_count == 0u || rank_plan->max_active_sequence_count > descriptor->max_active_sequence_count || rank_plan->max_input_row_count < rank_plan->max_active_sequence_count || rank_plan->max_input_row_count > descriptor->max_input_row_count || rank_plan->transport_control_port_base == 0u || rank_plan->transport_control_port_base > UINT16_MAX - (rank_plan->stage_count - 1u) || rank_plan->boundary_bytes_per_sequence != (uint64_t)descriptor->boundary_element_count * descriptor->boundary_element_bytes )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( rank_plan->input_sideband_kind != (rank_plan->stage_index != 0u ? descriptor->boundary_sideband_kinds[rank_plan->stage_index - 1u] : 0u) || rank_plan->input_sideband_bytes_per_sequence != (rank_plan->stage_index != 0u ? descriptor->boundary_sideband_bytes_per_sequence[rank_plan->stage_index - 1u] : 0u) || rank_plan->output_sideband_kind != (rank_plan->stage_index + 1u < rank_plan->stage_count ? descriptor->boundary_sideband_kinds[rank_plan->stage_index] : 0u) || rank_plan->output_sideband_bytes_per_sequence != (rank_plan->stage_index + 1u < rank_plan->stage_count ? descriptor->boundary_sideband_bytes_per_sequence[rank_plan->stage_index] : 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( rank_plan->input_packet_bytes_per_sequence != rank_plan->boundary_bytes_per_sequence + rank_plan->input_sideband_bytes_per_sequence || rank_plan->output_packet_bytes_per_sequence != rank_plan->boundary_bytes_per_sequence + rank_plan->output_sideband_bytes_per_sequence || rank_plan->input_max_packet_bytes != rank_plan->input_packet_bytes_per_sequence * rank_plan->max_input_row_count || rank_plan->output_max_packet_bytes != rank_plan->output_packet_bytes_per_sequence * rank_plan->max_input_row_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkPipelineRuntimeNeighborIsValid(rank_plan->stage_index,rank_plan->stage_count,rank_plan->rank_index,rank_plan->previous_rank_index,rank_plan->stage_index != 0u ? rank_plan->previous_host_name : 0,1u) == 0u || SparkPipelineRuntimeNeighborIsValid(rank_plan->stage_index,rank_plan->stage_count,rank_plan->rank_index,rank_plan->next_rank_index,rank_plan->stage_index + 1u < rank_plan->stage_count ? rank_plan->next_host_name : 0,0u) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -200,11 +229,11 @@ static SparkStatus SparkPipelineRuntimeBuildEndpoint(
 	{
 		if ( (rank_plan->flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) == 0u )
 			return(SPARK_STATUS_NOT_FOUND);
-		return(SparkPipelineRuntimeInitializeEndpoint(endpoint,rank_plan,rank_plan->previous_rank_index,rank_plan->rank_index,rank_plan->previous_host_name,rank_plan->host_name,rank_plan->input_route_name));
+		return(SparkPipelineRuntimeInitializeEndpoint(endpoint,rank_plan,rank_plan->previous_rank_index,rank_plan->rank_index,rank_plan->previous_host_name,rank_plan->host_name,rank_plan->input_route_name,rank_plan->input_sideband_bytes_per_sequence,rank_plan->input_max_packet_bytes));
 	}
 	if ( (rank_plan->flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u )
 		return(SPARK_STATUS_NOT_FOUND);
-	return(SparkPipelineRuntimeInitializeEndpoint(endpoint,rank_plan,rank_plan->rank_index,rank_plan->next_rank_index,rank_plan->host_name,rank_plan->next_host_name,rank_plan->output_route_name));
+	return(SparkPipelineRuntimeInitializeEndpoint(endpoint,rank_plan,rank_plan->rank_index,rank_plan->next_rank_index,rank_plan->host_name,rank_plan->next_host_name,rank_plan->output_route_name,rank_plan->output_sideband_bytes_per_sequence,rank_plan->output_max_packet_bytes));
 }
 
 SparkStatus SparkPipelineRuntimeBuildInputEndpoint(

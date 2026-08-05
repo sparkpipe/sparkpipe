@@ -529,16 +529,24 @@ void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__res
 //
 // So attention stays in the latent, this brings it back to v-space, and the
 // gate and output projection use the checkpoint's tensors unchanged.
-template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM>
+template<
+	uint32_t THREADS,
+	uint32_t IN_DIM,
+	uint32_t OUT_DIM,
+	uint32_t INPUT_HEAD_DIM = IN_DIM,
+	uint32_t INPUT_OFFSET = 0u>
 __global__ __launch_bounds__(THREADS, 1)
 void LmPerHeadProjectKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t heads, uint32_t rows)
 {
 	__shared__ float shared_input[IN_DIM];
 	uint32_t row = blockIdx.x,head = blockIdx.y,index;
 	uint64_t input_base,weight_base,output_base;
+	static_assert(INPUT_OFFSET + IN_DIM <= INPUT_HEAD_DIM,
+		"per-head input slice exceeds its source head");
 	if ( row >= rows || head >= heads )
 		return;
-	input_base = (((uint64_t)row * heads) + head) * IN_DIM;
+	input_base = ((((uint64_t)row * heads) + head) * INPUT_HEAD_DIM)
+		+ INPUT_OFFSET;
 	weight_base = (uint64_t)head * OUT_DIM * IN_DIM;
 	output_base = (((uint64_t)row * heads) + head) * OUT_DIM;
 	for (index = threadIdx.x; index < IN_DIM; index += THREADS)
@@ -555,5 +563,50 @@ void LmPerHeadProjectKernel(const uint16_t *__restrict__ input_bf16, const uint1
 			total += shared_input[element]
 				* LmBf16ToFloat(weight_bf16[weight_base + (index * IN_DIM) + element]);
 		output_bf16[output_base + index] = LmFloatToBf16(total);
+	}
+}
+
+// Extract and rotate one positional slice from every packed query head.
+// Keeping this as one launch avoids materialising the no-PE slice: the key
+// projection above reads it in place through INPUT_HEAD_DIM/INPUT_OFFSET.
+template<
+	uint32_t THREADS,
+	LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
+__global__ __launch_bounds__(THREADS, 1)
+void LmExtractRopePerHeadKernel(
+	const uint16_t *__restrict__ input_bf16,
+	uint16_t *__restrict__ output_bf16,
+	const uint32_t *__restrict__ positions,
+	uint32_t heads,
+	uint32_t input_head_dimension,
+	uint32_t input_offset,
+	uint32_t rope_dimension,
+	float theta)
+{
+	uint32_t row = blockIdx.x,head = blockIdx.y,index;
+	uint32_t half = rope_dimension / 2u;
+	uint64_t input_base,output_base;
+	float position;
+	if ( head >= heads || input_offset > input_head_dimension ||
+		rope_dimension > input_head_dimension - input_offset )
+		return;
+	input_base = ((((uint64_t)row * heads) + head) * input_head_dimension)
+		+ input_offset;
+	output_base = (((uint64_t)row * heads) + head) * rope_dimension;
+	position = (float)positions[row];
+	for (index = threadIdx.x; index < half; index += THREADS)
+	{
+		uint32_t low_offset,high_offset;
+		float low,high,angle;
+		low_offset = PAIRING == LM_ROPE_INTERLEAVED ? index * 2u : index;
+		high_offset = PAIRING == LM_ROPE_INTERLEAVED
+			? (index * 2u) + 1u : half + index;
+		low = LmBf16ToFloat(input_bf16[input_base + low_offset]);
+		high = LmBf16ToFloat(input_bf16[input_base + high_offset]);
+		angle = position * __powf(
+			theta,-2.0f * (float)index / (float)rope_dimension);
+		LmRopePair(&low,&high,angle);
+		output_bf16[output_base + low_offset] = LmFloatToBf16(low);
+		output_bf16[output_base + high_offset] = LmFloatToBf16(high);
 	}
 }
