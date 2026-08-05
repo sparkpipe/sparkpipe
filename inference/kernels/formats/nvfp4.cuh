@@ -23,9 +23,9 @@
 // Two adjacent E2M1 nibbles share a byte when the index is even, which is the
 // common case for a register pair: k is always even for the low half because
 // LmMma16OperandBK returns 2*(lane%4) + 8*reg.
-static __device__ __forceinline__ float2 LmNvfp4Pair(const uint8_t *base, uint32_t k)
+static __device__ __forceinline__ float2 LmNvfp4Pair(uint8_t packed)
 {
-	return(LmE2m1PairToFloat(base[k >> 1u]));
+	return(LmE2m1PairToFloat(packed));
 }
 
 struct LmNvfp4
@@ -57,7 +57,7 @@ struct LmNvfp4
 	}
 	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float scale)
 	{
-		float2 pair = LmNvfp4Pair(tile + LmSwizzledOffset(row,0u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes)),k);
+		float2 pair = LmNvfp4Pair(tile[LmSwizzledOffset(row,k >> 1u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes))]);
 		return(LmPackBf16Pair(pair.x * scale,pair.y * scale));
 	}
 };

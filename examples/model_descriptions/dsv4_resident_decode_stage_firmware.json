@@ -17,8 +17,9 @@
     },
     "precision_contract": {
       "accumulator_codec": "fp32",
+      "activation_codec": "fp8_e4m3_ue8m0",
       "aot_codec_specialization": true,
-      "expert_activation_codec": "bf16",
+      "expert_activation_codec": "fp8_e4m3_ue8m0",
       "expert_scale_encoding": "e8m0",
       "expert_scale_group_size": 32,
       "expert_stored_bits": 4,
@@ -27,6 +28,7 @@
       "fallback_allowed": false,
       "kv_cache_codec": "bf16",
       "linear_weight_codec": "fp8_e4m3",
+      "output_composition_activation_codec": "bf16",
       "runtime_precision_selection": "forbidden"
     },
     "purpose": "DeepSeek V4 Flash resident firmware with checkpoint FP8 non-expert weights, MXFP4 routed-expert weights, BF16 KV cache and FP32 accumulation",
@@ -67,10 +69,12 @@
           "operations": [
             {
               "configuration": {
+                "activation_codec": "fp8_e4m3_ue8m0",
                 "expert_weight_codec": "mxfp4_e2m1",
                 "fallback_allowed": false,
                 "kv_cache_codec": "bf16",
                 "linear_weight_codec": "fp8_e4m3",
+                "output_composition_activation_codec": "bf16",
                 "runtime_backend_selection": "forbidden",
                 "runtime_precision_selection": "forbidden"
               },

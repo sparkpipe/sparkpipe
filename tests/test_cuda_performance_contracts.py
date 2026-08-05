@@ -332,11 +332,25 @@ def validate_grouped_moe_contract() -> None:
     require(route, "ROUTE ROW INDIRECTION CONSUMER CONTRACT", "route row indirection contract")
     require(route, "LmRouteSourceRow", "named route indirection mapping")
     require(gemm, "const uint32_t *source_row_map;", "GEMM source-row map")
-    require(gemm, "LmPipelineProduceIndirectA<FormatA>", "GEMM direct indexed activation stage")
+    require(gemm, "LmPipelineProduceManualA<FormatA", "GEMM indexed/codec activation stage")
     require(runtime, "LmGemmWeightOnlyIndirectLaunch(", "weight-only indirect launcher")
-    require(runtime, "if constexpr ( !INDIRECT_A )", "indirect GEMM skips unused activation map")
+    require(runtime, "if constexpr ( !INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE )", "manual-A GEMM skips unused activation map")
     require(glm, "gemm.source_row_map = buffers->route_source_token;", "GLM route-to-GEMM binding")
     forbid(glm, "LmGatherRowsKernel", "GLM gathered activation buffer")
+
+
+def validate_fragment_swizzle_contract() -> None:
+    byte_offsets = {
+        "bf16": "k * 2u",
+        "fp8": "k",
+        "int8": "k",
+        "nvfp4": "k >> 1u",
+        "mxfp4": "k >> 1u",
+    }
+    for name, byte_offset in byte_offsets.items():
+        source = read(f"inference/kernels/formats/{name}.cuh")
+        require(source, f"LmSwizzledOffset(row,{byte_offset},", f"{name} fragment byte swizzle")
+        forbid(source, "LmSwizzledOffset(row,0u,", f"{name} row-base-only swizzle")
 
 
 def validate_stream_ordered_dispatch() -> None:
@@ -421,6 +435,7 @@ def main() -> int:
     validate_k3_exact_replay()
     validate_model_precision_contracts()
     validate_grouped_moe_contract()
+    validate_fragment_swizzle_contract()
     validate_stream_ordered_dispatch()
     validate_head_selection_contract()
     print(

@@ -45,9 +45,10 @@ template<
     uint32_t TILE_M,
     uint32_t TILE_N,
     uint32_t TILE_K,
-    uint32_t STAGES,
-    uint32_t WARPS,
-	bool INDIRECT_A = false>
+	uint32_t STAGES,
+	uint32_t WARPS,
+	bool INDIRECT_A = false,
+	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE>
 static cudaError_t LmGemmOptIn(uint32_t shared_bytes)
 {
     static std::mutex grant_mutex;
@@ -74,9 +75,10 @@ static cudaError_t LmGemmOptIn(uint32_t shared_bytes)
                 TILE_M,
                 TILE_N,
                 TILE_K,
-                STAGES,
-                WARPS,
-				INDIRECT_A>,
+				STAGES,
+				WARPS,
+					INDIRECT_A,
+					ACTIVATION_CODEC>,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)shared_bytes);
         if (status == cudaSuccess)
@@ -91,9 +93,10 @@ template<
     uint32_t TILE_M,
     uint32_t TILE_N,
     uint32_t TILE_K,
-    uint32_t STAGES,
-    uint32_t WARPS,
-	bool INDIRECT_A = false>
+	uint32_t STAGES,
+	uint32_t WARPS,
+	bool INDIRECT_A = false,
+	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE>
 static cudaError_t LmGemmLaunchTile(
     const LmGemmArguments &args,
     const CUtensorMap &activation_map,
@@ -122,9 +125,10 @@ static cudaError_t LmGemmLaunchTile(
         TILE_M,
         TILE_N,
         TILE_K,
-        STAGES,
-        WARPS,
-		INDIRECT_A>(shared);
+			STAGES,
+			WARPS,
+			INDIRECT_A,
+			ACTIVATION_CODEC>(shared);
     if (status != cudaSuccess)
         return status;
     LmGemmKernel<
@@ -133,9 +137,10 @@ static cudaError_t LmGemmLaunchTile(
         TILE_M,
         TILE_N,
         TILE_K,
-        STAGES,
-        WARPS,
-		INDIRECT_A>
+		STAGES,
+		WARPS,
+			INDIRECT_A,
+			ACTIVATION_CODEC>
         <<<plan.grid_blocks, plan.block_threads, shared, stream>>>(
             args,
             activation_map,
@@ -200,9 +205,10 @@ template<
     class FormatB,
     uint32_t TILE_N,
     uint32_t TILE_K,
-    uint32_t STAGES,
-    uint32_t WARPS,
-	bool INDIRECT_A = false>
+	uint32_t STAGES,
+	uint32_t WARPS,
+	bool INDIRECT_A = false,
+	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE>
 static int32_t LmGemmLaunchAsymmetric(
     LmGemmArguments *args,
     const void *activation_bytes,
@@ -300,6 +306,9 @@ static int32_t LmGemmLaunchAsymmetric(
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
+	if ( ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE &&
+		(input_dimension % SparkActivationCodecGroupSize(ACTIVATION_CODEC)) != 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
 
     memset(&shape, 0, sizeof(shape));
     shape.tokens = tokens;
@@ -317,7 +326,7 @@ static int32_t LmGemmLaunchAsymmetric(
         return status;
 
     memset(&activation_map, 0, sizeof(activation_map));
-    if constexpr ( !INDIRECT_A )
+	if constexpr ( !INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE )
     {
         status = LmGemmEncodeActivationMap(
             &activation_map,
@@ -376,9 +385,10 @@ static int32_t LmGemmLaunchAsymmetric(
                 16u,
                 TILE_N,
                 TILE_K,
-                STAGES,
-                WARPS,
-				INDIRECT_A>(
+					STAGES,
+					WARPS,
+					INDIRECT_A,
+					ACTIVATION_CODEC>(
                     *args,
                     activation_map,
                     weight_map,
@@ -396,9 +406,10 @@ static int32_t LmGemmLaunchAsymmetric(
                 32u,
                 TILE_N,
                 TILE_K,
-                STAGES,
-                WARPS,
-				INDIRECT_A>(
+					STAGES,
+					WARPS,
+					INDIRECT_A,
+					ACTIVATION_CODEC>(
                     *args,
                     activation_map,
                     weight_map,
@@ -416,9 +427,10 @@ static int32_t LmGemmLaunchAsymmetric(
                 64u,
                 TILE_N,
                 TILE_K,
-                STAGES,
-                WARPS,
-				INDIRECT_A>(
+					STAGES,
+					WARPS,
+					INDIRECT_A,
+					ACTIVATION_CODEC>(
                     *args,
                     activation_map,
                     weight_map,
@@ -436,10 +448,11 @@ static int32_t LmGemmLaunchAsymmetric(
 
 template<
     class WeightFormat,
-    uint32_t TILE_N,
-    uint32_t STAGES,
-    uint32_t WARPS,
-	bool INDIRECT_A>
+	uint32_t TILE_N,
+	uint32_t STAGES,
+	uint32_t WARPS,
+	bool INDIRECT_A,
+	uint32_t ACTIVATION_CODEC>
 static int32_t LmGemmWeightOnlyLaunchMode(
     LmGemmArguments *args,
     const void *activation_bf16,
@@ -468,9 +481,10 @@ static int32_t LmGemmWeightOnlyLaunchMode(
         WeightFormat,
         TILE_N,
         tile_k,
-        STAGES,
-        WARPS,
-		INDIRECT_A>(
+		STAGES,
+		WARPS,
+			INDIRECT_A,
+			ACTIVATION_CODEC>(
             args,
             activation_bf16,
             weight_bytes,
@@ -489,7 +503,8 @@ template<
 	class WeightFormat,
 	uint32_t TILE_N,
 	uint32_t STAGES,
-	uint32_t WARPS>
+	uint32_t WARPS,
+	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE>
 static int32_t LmGemmWeightOnlyLaunch(
 	LmGemmArguments *args,
 	const void *activation_bf16,
@@ -504,7 +519,7 @@ static int32_t LmGemmWeightOnlyLaunch(
 	bool grouped,
 	cudaStream_t stream)
 {
-	return(LmGemmWeightOnlyLaunchMode<WeightFormat,TILE_N,STAGES,WARPS,false>(
+	return(LmGemmWeightOnlyLaunchMode<WeightFormat,TILE_N,STAGES,WARPS,false,ACTIVATION_CODEC>(
 		args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,group_count,
 		input_dimension,output_dimension,multiprocessors,grouped,stream));
 }
@@ -513,7 +528,8 @@ template<
 	class WeightFormat,
 	uint32_t TILE_N,
 	uint32_t STAGES,
-	uint32_t WARPS>
+	uint32_t WARPS,
+	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE>
 static int32_t LmGemmWeightOnlyIndirectLaunch(
 	LmGemmArguments *args,
 	const void *activation_bf16,
@@ -527,7 +543,7 @@ static int32_t LmGemmWeightOnlyIndirectLaunch(
 	uint32_t multiprocessors,
 	cudaStream_t stream)
 {
-	return(LmGemmWeightOnlyLaunchMode<WeightFormat,TILE_N,STAGES,WARPS,true>(
+	return(LmGemmWeightOnlyLaunchMode<WeightFormat,TILE_N,STAGES,WARPS,true,ACTIVATION_CODEC>(
 		args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,group_count,
 		input_dimension,output_dimension,multiprocessors,true,stream));
 }

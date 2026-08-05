@@ -29,6 +29,22 @@ typedef enum SparkWeightCodec
 	SPARK_WEIGHT_CODEC_MXFP4_E2M1 = 7
 } SparkWeightCodec;
 
+typedef enum SparkActivationCodec
+{
+	SPARK_ACTIVATION_CODEC_NONE = 0,
+	SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 = 1
+} SparkActivationCodec;
+
+static inline uint32_t SparkActivationCodecIsKnown(uint32_t codec)
+{
+	return(codec <= SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 ? 1u : 0u);
+}
+
+static inline uint32_t SparkActivationCodecGroupSize(uint32_t codec)
+{
+	return(codec == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 ? 128u : 0u);
+}
+
 static inline uint32_t SparkWeightCodecIsKnown(uint32_t codec)
 {
 	return(codec >= SPARK_WEIGHT_CODEC_BF16 && codec <= SPARK_WEIGHT_CODEC_MXFP4_E2M1 ? 1u : 0u);

@@ -12,16 +12,21 @@
 #include "sparkpipe/spark_dsv4_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
+#define SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES 2u
+#define SPARK_DSV4_DRIVER_CUDA_SMOKE_PROMPT_TOKENS 9u
+#define SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS 18u
+
 typedef struct SparkDsv4DriverCudaSmokeState
 {
 	cudaStream_t execution_stream;
-	uint16_t hidden_bf16[SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS];
+	uint16_t hidden_bf16[SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS];
 	uint16_t *hidden_input_device;
 	uint16_t *hidden_output_device;
 	uint32_t receive_count;
 	uint32_t send_count;
 	uint32_t nonzero_hidden_count;
-	uint32_t output_token_id;
+	uint32_t mismatch_count;
+	uint32_t output_token_ids[SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS];
 	uint32_t completion_count;
 	SparkModelDriverCompletion completion;
 } SparkDsv4DriverCudaSmokeState;
@@ -80,8 +85,9 @@ static int SparkDsv4DriverCudaSmokeRun(
 	SparkModelDriverRuntimeSnapshot snapshot;
 	const SparkModelDriverProgramDescriptor *program;
 	const char *stage_pack_path;
-	uint32_t token_id = 10397u;
-	uint32_t lane_index = 0u;
+	const uint32_t prompt_token_ids[SPARK_DSV4_DRIVER_CUDA_SMOKE_PROMPT_TOKENS] = {0u,128803u,19905u,418u,9045u,28u,20370u,128804u,128822u};
+	uint32_t token_ids[SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS],lane_indices[SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS];
+	uint64_t positions[SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS],sequence_ids[SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS];
 	uint32_t stage_index;
 	uint32_t stage_count;
 	uint32_t first_layer_index;
@@ -89,17 +95,24 @@ static int SparkDsv4DriverCudaSmokeRun(
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
-	uint32_t element;
+	uint32_t element,lane,row,wave;
 	uint64_t hidden_input_bytes;
-	uint64_t sequence_id = 1u;
-	uint64_t position = 0u;
 	cudaError_t input_error;
 	char error_buffer[1024];
 	SparkStatus status;
 	int result = 1;
 
 	memset(&state,0,sizeof(state));
-	state.output_token_id = UINT32_MAX;
+	for (row=0u; row<SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS; row++)
+	{
+		lane = row % SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES;
+		wave = row / SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES;
+		token_ids[row] = prompt_token_ids[wave];
+		lane_indices[row] = lane;
+		positions[row] = wave;
+		sequence_ids[row] = lane + 1u;
+		state.output_token_ids[row] = UINT32_MAX;
+	}
 	input_error = cudaStreamCreateWithFlags(
 		&state.execution_stream,cudaStreamNonBlocking);
 	if ( input_error != cudaSuccess )
@@ -129,7 +142,7 @@ static int SparkDsv4DriverCudaSmokeRun(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4DriverCudaSmokeReadUnsigned("SPARK_DSV4_STAGE_LAYER_COUNT",1u,SPARK_DSV4_MODEL_LAYER_COUNT,SPARK_DSV4_MODEL_LAYER_COUNT,&layer_count);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4DriverCudaSmokeReadUnsigned("SPARK_DSV4_STAGE_MAX_ACTIVE_SEQUENCES",1u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,1u,&max_active_sequence_count);
+		status = SparkDsv4DriverCudaSmokeReadUnsigned("SPARK_DSV4_STAGE_MAX_ACTIVE_SEQUENCES",SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES,&max_active_sequence_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4DriverCudaSmokeReadUnsigned("SPARK_DSV4_STAGE_PIPELINE_SLOTS",1u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,2u,&pipeline_slot_count);
 	if ( status == SPARK_STATUS_OK )
@@ -140,11 +153,11 @@ static int SparkDsv4DriverCudaSmokeRun(
 		fprintf(stderr,"dsv4_driver_smoke node_context=invalid\n");
 		goto done;
 	}
-	hidden_input_bytes = (uint64_t)SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
+	hidden_input_bytes = (uint64_t)SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
 		SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 	if ( stage_index != 0u )
 	{
-		for (element=0u; element<SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS; element++)
+		for (element=0u; element<SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS; element++)
 			state.hidden_bf16[element] = UINT16_C(0x3f80);
 		input_error = cudaMalloc(
 			(void **)&state.hidden_input_device,hidden_input_bytes);
@@ -226,8 +239,8 @@ static int SparkDsv4DriverCudaSmokeRun(
 		runner_configuration.flags |= SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY;
 	runner_configuration.stage_index = stage_index;
 	runner_configuration.stage_count = stage_count;
-	runner_configuration.max_active_sequence_count = 1u;
-	runner_configuration.max_input_row_count = 1u;
+	runner_configuration.max_active_sequence_count = SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES;
+	runner_configuration.max_input_row_count = SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS;
 	runner_configuration.driver_interface = driver.interface;
 	runner_configuration.driver_instance = driver_instance;
 	runner_configuration.program = program;
@@ -243,20 +256,20 @@ static int SparkDsv4DriverCudaSmokeRun(
 	dispatch.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES;
 	dispatch.flags = SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL;
 	dispatch.request_id = 91u;
-	dispatch.sequence_id = sequence_id;
-	dispatch.active_sequence_count = 1u;
-	dispatch.new_token_count = 1u;
-	dispatch.row_count = 1u;
-	dispatch.lane_count = 1u;
-	dispatch.token_ids = &token_id;
-	dispatch.row_lane_indices = &lane_index;
-	dispatch.row_positions = &position;
-	dispatch.row_sequence_ids = &sequence_id;
+	dispatch.sequence_id = sequence_ids[0];
+	dispatch.active_sequence_count = SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES;
+	dispatch.new_token_count = SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS;
+	dispatch.row_count = SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS;
+	dispatch.lane_count = SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES;
+	dispatch.token_ids = token_ids;
+	dispatch.row_lane_indices = lane_indices;
+	dispatch.row_positions = positions;
+	dispatch.row_sequence_ids = sequence_ids;
 	dispatch.hidden_input_bf16 = stage_index != 0u ? state.hidden_input_device : 0;
 	dispatch.hidden_input_bytes = stage_index != 0u ? hidden_input_bytes : 0u;
 	dispatch.hidden_output_bf16 = stage_index + 1u < stage_count ? state.hidden_output_device : 0;
 	dispatch.hidden_output_bytes = stage_index + 1u < stage_count ? hidden_input_bytes : 0u;
-	dispatch.output_token_ids = stage_index + 1u == stage_count ? &state.output_token_id : 0;
+	dispatch.output_token_ids = stage_index + 1u == stage_count ? state.output_token_ids : 0;
 	dispatch.completion_function = SparkDsv4DriverCudaSmokeCompletion;
 	dispatch.completion_context = &state;
 	status = SparkDsv4StageRunnerSubmit(&runner,&dispatch);
@@ -274,20 +287,27 @@ static int SparkDsv4DriverCudaSmokeRun(
 		else
 		{
 			state.send_count = 1u;
-			for (element=0u; element<SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS; element++)
+			for (element=0u; element<SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS; element++)
 				if ( state.hidden_bf16[element] != 0u )
 					state.nonzero_hidden_count++;
+			for (wave=0u; wave<SPARK_DSV4_DRIVER_CUDA_SMOKE_PROMPT_TOKENS; wave++)
+				for (element=0u; element<SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS; element++)
+					state.mismatch_count += state.hidden_bf16[((uint64_t)wave * SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS) + element] != state.hidden_bf16[((uint64_t)(wave * SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES + 1u) * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS) + element] ? 1u : 0u;
 		}
 	}
+	if ( status == SPARK_STATUS_OK && stage_index + 1u == stage_count )
+		for (wave=0u; wave<SPARK_DSV4_DRIVER_CUDA_SMOKE_PROMPT_TOKENS; wave++)
+			state.mismatch_count += state.output_token_ids[wave * SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES] != state.output_token_ids[wave * SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES + 1u] ? 1u : 0u;
 	if ( status != SPARK_STATUS_OK || state.completion_count != 1u ||
 		state.completion.status != SPARK_STATUS_OK ||
 		state.send_count != (stage_index + 1u < stage_count ? 1u : 0u) ||
 		state.receive_count != (stage_index != 0u ? 1u : 0u) ||
 		(stage_index + 1u < stage_count && state.nonzero_hidden_count == 0u) ||
-		(stage_index + 1u == stage_count && state.output_token_id >= SPARK_DSV4_MODEL_VOCAB_COUNT) ||
+		state.mismatch_count != 0u ||
+		(stage_index + 1u == stage_count && state.output_token_ids[0] >= SPARK_DSV4_MODEL_VOCAB_COUNT) ||
 		runner.stats.submitted_count != 1u )
 	{
-		fprintf(stderr,"dsv4_driver_smoke execute=%s completion=%u status=%s sends=%u nonzero=%u output_token=%u\n",SparkStatusToString(status),state.completion_count,SparkStatusToString(state.completion.status),state.send_count,state.nonzero_hidden_count,state.output_token_id);
+		fprintf(stderr,"dsv4_driver_smoke execute=%s completion=%u status=%s sends=%u nonzero=%u mismatches=%u output_token=%u\n",SparkStatusToString(status),state.completion_count,SparkStatusToString(state.completion.status),state.send_count,state.nonzero_hidden_count,state.mismatch_count,state.output_token_ids[0]);
 		goto destroy;
 	}
 	status = driver.interface->snapshot(driver_instance,program->program_id,&snapshot);
@@ -297,7 +317,7 @@ static int SparkDsv4DriverCudaSmokeRun(
 		fprintf(stderr,"dsv4_driver_smoke snapshot=%s submitted=%llu completed=%llu active=%u\n",SparkStatusToString(status),(unsigned long long)snapshot.submitted_count,(unsigned long long)snapshot.completed_count,snapshot.active_submission_count);
 		goto destroy;
 	}
-	printf("dsv4_driver_cuda_smoke PASS sends=%u nonzero_hidden=%u output_token=%u submitted=%llu completed=%llu\n",state.send_count,state.nonzero_hidden_count,state.output_token_id,(unsigned long long)snapshot.submitted_count,(unsigned long long)snapshot.completed_count);
+	printf("dsv4_driver_cuda_smoke PASS sends=%u nonzero_hidden=%u mismatches=%u output_token=%u submitted=%llu completed=%llu\n",state.send_count,state.nonzero_hidden_count,state.mismatch_count,state.output_token_ids[0],(unsigned long long)snapshot.submitted_count,(unsigned long long)snapshot.completed_count);
 	result = 0;
 destroy:
 	driver.interface->destroy(driver_instance);

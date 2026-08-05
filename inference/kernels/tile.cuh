@@ -30,6 +30,7 @@
 // it was produced, no stage refilled before consumption, wait parity matching
 // the per-stage completion count.
 
+#include "inference/kernels/activation.cuh"
 #include "inference/kernels/layout.cuh"
 #include "inference/kernels/mma.cuh"
 #include "inference/kernels/tma.cuh"
@@ -168,8 +169,8 @@ static __device__ __forceinline__ void LmPipelineProduce(
 		LmTmaLoad2d(stage_b,tensor_map_b,barrier,(int32_t)k_byte_b,(int32_t)neuron_base);
 }
 
-template<class FormatA>
-static __device__ __forceinline__ void LmPipelineProduceIndirectA(
+template<class FormatA,uint32_t TILE_ROWS,uint32_t TILE_K,uint32_t ACTIVATION_CODEC>
+static __device__ __forceinline__ void LmPipelineProduceManualA(
 	const LmTileGeometry *a,
 	const LmTileGeometry *b,
 	const void *tensor_map_b,
@@ -184,7 +185,8 @@ static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 	uint32_t input_dimension,
 	uint32_t neuron_base,
 	uint32_t k_tile,
-	uint32_t group_index)
+	uint32_t group_index,
+	bool grouped)
 {
 	const uint32_t row_pitch = LmTileBytes(1u,a->depth,a->element_bits);
 	const uint32_t chunk_count = row_pitch / LM_SWIZZLE_CHUNK_BYTES;
@@ -199,27 +201,40 @@ static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 	if ( threadIdx.x == 0u )
 	{
 		LmMbarrierArriveExpect(barrier,LmTileBytes(b->rows,b->depth,b->element_bits));
-		LmTmaLoad3d(stage_b,tensor_map_b,barrier,
-			(int32_t)(k_tile * LmTileBytes(1u,b->depth,b->element_bits)),
-			(int32_t)neuron_base,(int32_t)group_index);
+		if ( grouped )
+			LmTmaLoad3d(stage_b,tensor_map_b,barrier,
+				(int32_t)(k_tile * LmTileBytes(1u,b->depth,b->element_bits)),
+				(int32_t)neuron_base,(int32_t)group_index);
+		else
+			LmTmaLoad2d(stage_b,tensor_map_b,barrier,
+				(int32_t)(k_tile * LmTileBytes(1u,b->depth,b->element_bits)),
+				(int32_t)neuron_base);
 	}
-	for (index=threadIdx.x; index<a->rows * chunk_count; index+=blockDim.x)
+	if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 )
 	{
-		local_row = index / chunk_count;
-		chunk = index % chunk_count;
-		packed_row = row_base + local_row < row_limit ? row_base + local_row : row_base;
-		source_row = source_row_map[packed_row];
-		if ( source_row >= source_row_count )
-			asm volatile("trap;\n");
-		source_offset = ((source_row * input_dimension * FormatA::kStoredBits) / 8u)
-			+ (k_tile * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
-		destination_offset = FormatA::kTmaSwizzle
-			? LmSwizzledOffset(local_row,chunk * LM_SWIZZLE_CHUNK_BYTES,row_pitch,LmSwizzleSpanFor(row_pitch))
-			: (local_row * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
-		source = (const uint4 *)(activation_bytes + source_offset);
-		destination = (uint4 *)((uint8_t *)stage_a + destination_offset);
-		*destination = *source;
+		static_assert(FormatA::kStoredBits == 16u,"FP8 QDQ source must be BF16");
+		LmActivationStageFp8Qdq<TILE_ROWS,TILE_K,FormatA::kTmaSwizzle,ACTIVATION_CODEC>(
+			activation_bytes,source_row_map,source_row_count,row_base,row_limit,
+			k_tile * TILE_K,input_dimension,stage_a,0u,blockDim.x / 32u);
 	}
+	else
+		for (index=threadIdx.x; index<a->rows * chunk_count; index+=blockDim.x)
+		{
+			local_row = index / chunk_count;
+			chunk = index % chunk_count;
+			packed_row = row_base + local_row < row_limit ? row_base + local_row : row_base;
+			source_row = source_row_map != 0 ? source_row_map[packed_row] : packed_row;
+			if ( source_row >= source_row_count )
+				asm volatile("trap;\n");
+			source_offset = ((source_row * input_dimension * FormatA::kStoredBits) / 8u)
+				+ (k_tile * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
+			destination_offset = FormatA::kTmaSwizzle
+				? LmSwizzledOffset(local_row,chunk * LM_SWIZZLE_CHUNK_BYTES,row_pitch,LmSwizzleSpanFor(row_pitch))
+				: (local_row * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
+			source = (const uint4 *)(activation_bytes + source_offset);
+			destination = (uint4 *)((uint8_t *)stage_a + destination_offset);
+			*destination = *source;
+		}
 }
 
 // -- grouped tile scheduling -------------------------------------------------
