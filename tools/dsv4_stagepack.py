@@ -616,15 +616,77 @@ def build_pack(source: SafetensorSource, output_path: Path, records: Sequence[Re
     }
 
 
+def verify_pack(pack_path: Path, contract: Mapping[str, object],
+                codecs: Tuple[int, int, int], include_sha256: bool) -> Dict[str, object]:
+    try:
+        file_bytes = pack_path.stat().st_size
+        with pack_path.open("rb") as file:
+            header_raw = file.read(HEADER_STRUCT.size)
+            if len(header_raw) != HEADER_STRUCT.size:
+                raise PackFailure(f"short stage-pack header: {pack_path}")
+            header = HEADER_STRUCT.unpack(header_raw)
+            tensor_count = header[8]
+            if tensor_count == 0 or tensor_count > 4096:
+                raise PackFailure(f"invalid stage-pack tensor count: {tensor_count}")
+            directory_raw = file.read(tensor_count * ENTRY_STRUCT.size)
+            if len(directory_raw) != tensor_count * ENTRY_STRUCT.size:
+                raise PackFailure(f"short stage-pack directory: {pack_path}")
+    except OSError as error:
+        raise PackFailure(f"cannot read stage pack: {pack_path}") from error
+    first_layer = header[9]
+    layer_count = header[10]
+    records = build_records(contract, first_layer, layer_count)
+    entries, expected_file_bytes = make_directory(records)
+    expected_header = HEADER_STRUCT.unpack(pack_header(
+        records, first_layer, layer_count, expected_file_bytes, codecs))
+    if header != expected_header:
+        raise PackFailure("stage-pack header does not match the model contract")
+    if file_bytes != expected_file_bytes:
+        raise PackFailure(
+            f"stage-pack size mismatch: header={expected_file_bytes} file={file_bytes}")
+    for index, entry in enumerate(entries):
+        start = index * ENTRY_STRUCT.size
+        actual = directory_raw[start:start + ENTRY_STRUCT.size]
+        expected = pack_entry(entry)
+        if actual != expected:
+            raise PackFailure(f"stage-pack directory mismatch at entry {index}")
+    result: Dict[str, object] = {
+        "file": str(pack_path),
+        "bytes": file_bytes,
+        "first_layer": first_layer,
+        "layer_count": layer_count,
+        "tensor_count": tensor_count,
+        "linear_weight_codec_id": codecs[0],
+        "expert_weight_codec_id": codecs[1],
+        "kv_cache_codec_id": codecs[2],
+        "contract_source_revision": contract.get("source_revision"),
+        "validated": True,
+    }
+    if include_sha256:
+        result["sha256"] = sha256_file(pack_path)
+    return result
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-dir", required=True, type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--model-dir", type=Path)
+    source.add_argument("--verify-pack", type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--first-layer", type=int, required=True)
-    parser.add_argument("--layer-count", type=int, required=True)
+    parser.add_argument("--first-layer", type=int)
+    parser.add_argument("--layer-count", type=int)
     parser.add_argument("--inspect", action="store_true")
+    parser.add_argument("--sha256", action="store_true")
     parser.add_argument("--contract", type=Path, default=CONTRACT_PATH)
-    return parser.parse_args(argv)
+    arguments = parser.parse_args(argv)
+    if arguments.verify_pack is not None:
+        if arguments.output is not None or arguments.inspect or arguments.first_layer is not None or arguments.layer_count is not None:
+            parser.error("--verify-pack does not accept source-pack arguments")
+    elif arguments.first_layer is None or arguments.layer_count is None:
+        parser.error("--model-dir requires --first-layer and --layer-count")
+    elif arguments.sha256:
+        parser.error("--sha256 requires --verify-pack")
+    return arguments
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -645,6 +707,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if any(not isinstance(name, str) or name not in CODEC_IDS for name in codec_names):
             raise PackFailure(f"contract contains an unsupported codec tuple: {codec_names}")
         codecs = tuple(CODEC_IDS[name] for name in codec_names)
+        if args.verify_pack is not None:
+            print(json.dumps(verify_pack(
+                args.verify_pack, contract, codecs, args.sha256),
+                indent=2, sort_keys=True))
+            return 0
         with SafetensorSource(args.model_dir) as source:
             records = build_records(contract, args.first_layer, args.layer_count)
             validate_records(source, records)

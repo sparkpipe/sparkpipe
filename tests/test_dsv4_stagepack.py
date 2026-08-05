@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +66,35 @@ def main() -> int:
     assert entries[-1].payload_offset + entries[-1].record.payload_bytes + entries[-1].record.scale_bytes == file_bytes
     for previous, current in zip(entries, entries[1:]):
         assert previous.payload_offset + previous.record.payload_bytes + previous.record.scale_bytes == current.payload_offset
+
+    codec_names = (
+        contract["precision"]["non_expert_linear_weight_codec"],
+        contract["precision"]["routed_expert_weight_codec"],
+        contract["precision"]["kv_cache_codec"],
+    )
+    codecs = tuple(pack.CODEC_IDS[name] for name in codec_names)
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "stage.spstage"
+        with path.open("wb") as file:
+            file.write(pack.pack_header(
+                final_stage, 40, 3, file_bytes, codecs))
+            for entry in entries:
+                file.write(pack.pack_entry(entry))
+            file.truncate(file_bytes)
+        result = pack.verify_pack(path, contract, codecs, False)
+        assert result["validated"] is True
+        assert result["first_layer"] == 40
+        assert result["layer_count"] == 3
+        assert result["expert_weight_codec_id"] == pack.CODEC_IDS["mxfp4_e2m1"]
+        with path.open("r+b") as file:
+            file.seek(pack.HEADER_STRUCT.size + 20)
+            file.write(b"\1")
+        try:
+            pack.verify_pack(path, contract, codecs, False)
+        except pack.PackFailure:
+            pass
+        else:
+            raise AssertionError("corrupt stage-pack directory was accepted")
 
     print("PASS DSV4 stagepack source and wire contracts")
     return 0

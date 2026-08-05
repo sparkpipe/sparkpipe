@@ -198,6 +198,7 @@ PYTHON_TESTS := \
 	tests/test_dsv4_driver_source_contracts.py \
 	tests/test_dsv4_module_host_syntax.py \
 	tests/test_dsv4_stage_source.py \
+	tests/test_dsv4_stagepack.py \
 	tests/test_expert_grouping.py \
 	tests/test_production_selection_contract.py \
 	tests/test_gemm_k_alignment.py \

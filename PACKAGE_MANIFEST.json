@@ -28,8 +28,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "1bbd9967ce7855e558219bf18abde8f4a784b704ab9ee69e26a530e7326caeed",
-      "size_bytes": 42220
+      "sha256": "7bc6a05ca4a8829c01c6b0f26ef2460fd45b8326983fff853cded5026c9e1dfe",
+      "size_bytes": 42252
     },
     {
       "path": "PROPOSED_IMPROVEMENTS_README.md",
@@ -2508,8 +2508,8 @@
     },
     {
       "path": "tests/test_dsv4_stagepack.py",
-      "sha256": "26a864291f0e0c5b563ffc71a8b33c3937742b8bab5be4d7f4500e1e16994018",
-      "size_bytes": 2501
+      "sha256": "d94a07b35a940bdb168161f6c90705f0b34b7f343625bacb8a4e7f475e25d26c",
+      "size_bytes": 3754
     },
     {
       "path": "tests/test_expert_grouping.py",
@@ -3123,8 +3123,8 @@
     },
     {
       "path": "tools/dsv4_stagepack.py",
-      "sha256": "daf39a7235d79b69531ae324009cdb5e74038dd3ac2c493916baa5ffce7d7c2d",
-      "size_bytes": 27808
+      "sha256": "df6ec27ced24de91012b306ebeb14c4faf5f14410fb642b573d9da1c2c0d0367",
+      "size_bytes": 31075
     },
     {
       "path": "tools/gates.sh",
@@ -3425,5 +3425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6363901
+  "total_bytes": 6368453
 }
