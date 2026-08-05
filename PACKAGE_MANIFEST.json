@@ -3373,8 +3373,8 @@
     },
     {
       "path": "tools/sparkpipe_dsv4_driver_cuda_smoke.c",
-      "sha256": "01db5266b219c75a3a210cc42170ce727a8013a4f8c155ccb77670ee7df68105",
-      "size_bytes": 12507
+      "sha256": "4795b96984e14d461d0bfaca0b91d1fee77e9d3bec1eff3fd95227fe3dcb7e6c",
+      "size_bytes": 12874
     },
     {
       "path": "tools/sparkpipe_glm52_tokenize.c",
@@ -3425,5 +3425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6376417
+  "total_bytes": 6376784
 }
