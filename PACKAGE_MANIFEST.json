@@ -1728,8 +1728,8 @@
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "de12174304f0d09df6677ec38d079c486a85f699129cac6295a85fe39c1d90f4",
-      "size_bytes": 32939
+      "sha256": "1357ab68717c263ae5ab625309a941442507bc9400226bd7c3a57b2eb3c7406c",
+      "size_bytes": 32921
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/cuda/unity.cu",
@@ -2438,8 +2438,8 @@
     },
     {
       "path": "tests/host_cuda/shim/runtime/gemm.cuh",
-      "sha256": "e15fe18133aef364c8993766bf3917d78c8c4176647bf6bcb07ea9ca530bbe0c",
-      "size_bytes": 5679
+      "sha256": "bec06a77bbd35451144adff6bbf5ac43b325351bd12439720339ed84a33db7e3",
+      "size_bytes": 5658
     },
     {
       "path": "tests/host_cuda/shim/runtime/launch.h",
@@ -3475,5 +3475,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6442597
+  "total_bytes": 6442558
 }

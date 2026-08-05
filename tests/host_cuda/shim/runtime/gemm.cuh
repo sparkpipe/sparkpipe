@@ -165,7 +165,6 @@ static int32_t LmGemmWeightOnlyIndirectLaunch(
     uint32_t input_dimension,
     uint32_t output_dimension,
     uint32_t multiprocessors,
-    bool grouped,
     cudaStream_t stream)
 {
     if (args == 0 || args->source_row_map == 0 ||
@@ -174,7 +173,7 @@ static int32_t LmGemmWeightOnlyIndirectLaunch(
     args->activation_bytes = activation_bf16;
     return LmGemmWeightOnlyLaunch<WeightFormat,TILE_N,STAGES,WARPS>(
         args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,
-        group_count,input_dimension,output_dimension,multiprocessors,grouped,
+        group_count,input_dimension,output_dimension,multiprocessors,true,
         stream);
 }
 

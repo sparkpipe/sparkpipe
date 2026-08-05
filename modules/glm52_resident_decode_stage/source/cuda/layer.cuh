@@ -887,7 +887,6 @@ static int32_t Glm52LayerMoe(
             GLM52_HIDDEN,
             GLM52_GATE_UP_DIM,
             multiprocessors,
-            true,
             stream);
     if (status != LM_LAUNCH_OK)
     {
