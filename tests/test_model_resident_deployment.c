@@ -71,6 +71,7 @@ int main(void)
 	assert(node != 0);
 	assert(strcmp(node->transport_host,"sparkc") == 0);
 	assert(strcmp(node->runtime_root,"/home/sparkc/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1") == 0);
+	assert(strcmp(node->adapter_configuration_path,"config/dsv4_flash_stage.json") == 0);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	return(0);
 }
