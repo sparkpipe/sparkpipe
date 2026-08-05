@@ -451,6 +451,11 @@ def main() -> int:
         ROOT
         / "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h"
     ).read_text(encoding="utf-8")
+    firmware_header = (
+        ROOT
+        / "modules/dsv4_resident_decode_stage/include/sparkpipe/"
+        "spark_dsv4_resident_decode_stage_firmware.h"
+    ).read_text(encoding="utf-8")
     description_sha256 = hashlib.sha256(description_path.read_bytes()).hexdigest()
     require(
         description_sha256 in model_header
@@ -485,6 +490,11 @@ def main() -> int:
         "allow_unqualified_execution" not in adapter
         and "ALLOW_UNQUALIFIED" not in adapter,
         "DSV4 production adapter exposes a qualification bypass",
+    )
+    require(
+        "ALLOW_UNQUALIFIED" not in module
+        and "NODE_CONTEXT_FLAG_ALLOW_UNQUALIFIED" not in firmware_header,
+        "DSV4 module exposes a runtime qualification bypass",
     )
     for config_name in (
         "dsv4_serving_adapter_config.json",

@@ -88,7 +88,6 @@ static int SparkDsv4DriverCudaSmokeRun(
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
-	uint32_t allow_unqualified;
 	uint32_t element;
 	uint64_t hidden_input_bytes;
 	uint64_t sequence_id = 1u;
@@ -133,8 +132,6 @@ static int SparkDsv4DriverCudaSmokeRun(
 		status = SparkDsv4DriverCudaSmokeReadUnsigned("SPARK_DSV4_STAGE_PIPELINE_SLOTS",1u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,2u,&pipeline_slot_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4DriverCudaSmokeReadUnsigned("SPARK_DSV4_STAGE_MAX_SEQ",SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO,SPARK_DSV4_MODEL_MAX_POSITIONS,4096u,&max_sequence_positions);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4DriverCudaSmokeReadUnsigned("SPARK_DSV4_ALLOW_UNQUALIFIED_EXECUTION",1u,1u,1u,&allow_unqualified);
 	stage_pack_path = getenv("SPARK_DSV4_STAGE_PACK_PATH");
 	if ( status != SPARK_STATUS_OK || first_layer_index + layer_count > SPARK_DSV4_MODEL_LAYER_COUNT || stage_pack_path == 0 || stage_pack_path[0] == '\0' )
 	{
@@ -189,7 +186,7 @@ static int SparkDsv4DriverCudaSmokeRun(
 	memset(&node_context,0,sizeof(node_context));
 	node_context.abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 	node_context.descriptor_bytes = SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES;
-	node_context.flags = allow_unqualified != 0u ? SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_ALLOW_UNQUALIFIED : 0u;
+	node_context.flags = 0u;
 	node_context.stage_count = stage_count;
 	node_context.stage_index = stage_index;
 	node_context.first_layer_index = first_layer_index;

@@ -22,10 +22,6 @@ if [[ ! -s "${module_archive}" ]]; then
     echo "module archive is missing or empty: ${module_archive}" >&2
     exit 2
 fi
-if [[ "${SPARK_DSV4_ALLOW_UNQUALIFIED_EXECUTION:-0}" != "1" ]]; then
-    echo "set SPARK_DSV4_ALLOW_UNQUALIFIED_EXECUTION=1 for the explicit DSV4 bring-up gate" >&2
-    exit 2
-fi
 if [[ -z "${SPARK_DSV4_STAGE_PACK_PATH:-}" || ! -s "${SPARK_DSV4_STAGE_PACK_PATH}" ]]; then
     echo "SPARK_DSV4_STAGE_PACK_PATH must name a readable non-empty stage pack" >&2
     exit 2

@@ -55,8 +55,7 @@ static void SparkDsv4ValidationInitializeConfiguration(
         SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
     node_context->descriptor_bytes =
         SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES;
-    node_context->flags =
-        SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_ALLOW_UNQUALIFIED;
+    node_context->flags = 0u;
     node_context->stage_count = 2u;
     node_context->stage_index = 0u;
     node_context->first_layer_index = 0u;

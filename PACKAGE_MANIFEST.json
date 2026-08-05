@@ -1553,13 +1553,13 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/Makefile",
-      "sha256": "b5e167efb139afb01fdfefeb69c57084dc321be37bd10cbfbc993903836f61c4",
-      "size_bytes": 2252
+      "sha256": "d64874d0d3cc75e157c80eb9e5dd65aa380db6cef02838405a446bd650ce0cd1",
+      "size_bytes": 2146
     },
     {
       "path": "modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h",
-      "sha256": "7f4a3c5ded592ac0305856c20f4ab5263066d9870beb5bef631de12dce4727c3",
-      "size_bytes": 10120
+      "sha256": "78dc60e47f99e06b40d7b88b906e8164cce2cc39026a4b8277e86771dcfdd6a8",
+      "size_bytes": 9959
     },
     {
       "path": "modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_runner.h",
@@ -1578,8 +1578,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c",
-      "sha256": "55989fdd39d560350fa7a2e4ade1b73c52cc8543bc401cf4e7dc1670e2da4a0b",
-      "size_bytes": 111471
+      "sha256": "8c250e3e67333bf3f8436021bdfd2c464ef8643a160830bf5666f1348ff3c0dc",
+      "size_bytes": 111324
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c",
@@ -1598,13 +1598,13 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu",
-      "sha256": "26853675a7b5f2915e6f64d347963bf4bcfca88b5859ce6559b768a6ab7a3d0b",
-      "size_bytes": 9434
+      "sha256": "95c0414199510d57a1c0852d276def30d04b86d4972077c3842d5a702d517be1",
+      "size_bytes": 9360
     },
     {
       "path": "modules/dsv4_resident_decode_stage/validation/validate_dsv4_resident_decode_stage_cuda.sh",
-      "sha256": "c63d01393293851f3efb8e7b735f9e7fb04bbadf196ee017d28ba5ac99d1d166",
-      "size_bytes": 2298
+      "sha256": "fa063b64ce66abb56699fc0680afdfb28010b22a9e8286392252523d479607ca",
+      "size_bytes": 2119
     },
     {
       "path": "modules/glm52_dspark_draft_backend/Makefile",
@@ -2853,8 +2853,8 @@
     },
     {
       "path": "tests/test_model_serving_architecture.py",
-      "sha256": "9f61837a5871179ce9efe4104c401e63cd13694b22bbd0885da7737dc791f944",
-      "size_bytes": 23683
+      "sha256": "cfd37370c0a3b412b550869d42689fbe7b9584ae31ab5da26852c67fc457671b",
+      "size_bytes": 24071
     },
     {
       "path": "tests/test_module_library.c",
@@ -3373,8 +3373,8 @@
     },
     {
       "path": "tools/sparkpipe_dsv4_driver_cuda_smoke.c",
-      "sha256": "ff384f415e3afb781c76d6b1120ac80899c60389546ddf0f315f867c4c831270",
-      "size_bytes": 12570
+      "sha256": "4f4eb8a0999a2134248925df991894b512ea239a728d9ba7edc8cdf4e3981487",
+      "size_bytes": 12291
     },
     {
       "path": "tools/sparkpipe_glm52_tokenize.c",
@@ -3425,5 +3425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6368453
+  "total_bytes": 6367895
 }
