@@ -2413,6 +2413,8 @@ static SparkStatus SparkHiddenSparkHostRdmaCreatePendingReceive(
         return status;
     }
     *receive_out = receive;
+    /* Advertising the registered destination accepts the receive. Poll
+     * owns finalization after the peer signals transfer completion. */
     return SPARK_STATUS_OK;
 }
 
@@ -2450,7 +2452,7 @@ static SparkStatus SparkHiddenSparkHostRdmaPreparePendingReceive(
             return status;
     }
     *receive_out = receive;
-    return receive->complete != 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY;
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaFinalizePendingReceive(
@@ -2512,9 +2514,7 @@ static SparkStatus SparkHiddenSparkHostRdmaPostReceive(
         return status;
     status = SparkHiddenSparkHostRdmaPreparePendingReceive(
         state,packet,&receive);
-    if (status != SPARK_STATUS_OK)
-        return status;
-    return SparkHiddenSparkHostRdmaFinalizePendingReceive(state,receive);
+    return status;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaPostDoorbellReceiveBatch(
@@ -2625,7 +2625,6 @@ static SparkStatus SparkHiddenSparkHostRdmaPostReceiveBatch(
     SparkHiddenSparkHostRdmaPendingReceive *receives[
         SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT];
     SparkHiddenSparkHostRdmaState *state;
-    SparkStatus result_status;
     SparkStatus status;
     uint64_t receive_mask;
     uint32_t packet_index;
@@ -2671,25 +2670,7 @@ static SparkStatus SparkHiddenSparkHostRdmaPostReceiveBatch(
         return status;
     status = SparkHiddenSparkHostRdmaAdvertiseReceiveBatch(
         state,receives,packet_count);
-    if (status != SPARK_STATUS_OK)
-        return status;
-    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
-    {
-        if (receives[packet_index]->complete == 0u)
-            return SPARK_STATUS_BUSY;
-    }
-    if (SparkHiddenSparkHostRdmaCompletionQueueHasRoom(
-            state,packet_count) == 0u)
-        return SPARK_STATUS_BUSY;
-    result_status = SPARK_STATUS_OK;
-    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
-    {
-        status = SparkHiddenSparkHostRdmaFinalizePendingReceive(
-            state,receives[packet_index]);
-        if (status != SPARK_STATUS_OK && result_status == SPARK_STATUS_OK)
-            result_status = status;
-    }
-    return result_status;
+    return status;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaBuildLaneWrite(
@@ -3135,7 +3116,9 @@ static SparkStatus SparkHiddenSparkHostRdmaPrepareInflightSend(
         remote_receive->used = 0u;
         goto fail_send;
     }
-    return SPARK_STATUS_BUSY;
+    /* Posted WRs accept the packet. The source registration and remote
+     * receive slot stay pinned until poll retires every signaled lane. */
+    return SPARK_STATUS_OK;
 
 fail_send:
     SparkHiddenSparkHostRdmaReleaseSendRegions(state,send);
@@ -3537,7 +3520,7 @@ static SparkStatus SparkHiddenSparkHostRdmaStartSendBatch(
             SparkHiddenSparkHostRdmaMarkBatchPostFailed(
                 prepared,packet_count,status);
             state->asynchronous_send_count += packet_count;
-            return SPARK_STATUS_BUSY;
+            return SPARK_STATUS_OK;
         }
     }
     if (batch->posted_lane_mask == 0u)
@@ -3547,7 +3530,7 @@ static SparkStatus SparkHiddenSparkHostRdmaStartSendBatch(
         return SPARK_STATUS_INTERNAL_ERROR;
     }
     state->asynchronous_send_count += packet_count;
-    return SPARK_STATUS_BUSY;
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaFinalizeSendBatch(
@@ -3680,6 +3663,31 @@ static SparkStatus SparkHiddenSparkHostRdmaRetireCompletedSends(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkHiddenSparkHostRdmaRetireCompletedReceives(
+    SparkHiddenSparkHostRdmaState *state)
+{
+    SparkStatus status;
+    uint32_t receive_index;
+
+    if (state == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    for (receive_index = 0u;
+         receive_index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT;
+         ++receive_index)
+    {
+        if (state->pending_receives[receive_index].active == 0u ||
+            state->pending_receives[receive_index].complete == 0u)
+            continue;
+        status = SparkHiddenSparkHostRdmaFinalizePendingReceive(
+            state,&state->pending_receives[receive_index]);
+        if (status == SPARK_STATUS_BUSY)
+            return SPARK_STATUS_OK;
+        if (status != SPARK_STATUS_OK)
+            return status;
+    }
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkHiddenSparkHostRdmaPoll(
     void *transport_state,
     SparkHiddenTransportCompletion *completion)
@@ -3694,6 +3702,9 @@ static SparkStatus SparkHiddenSparkHostRdmaPoll(
     if (status != SPARK_STATUS_OK)
         return status;
     status = SparkHiddenSparkHostRdmaRetireCompletedSends(state);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkHiddenSparkHostRdmaRetireCompletedReceives(state);
     if (status != SPARK_STATUS_OK)
         return status;
     return SparkHiddenTransportCompletionQueuePop(
