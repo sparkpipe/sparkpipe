@@ -99,11 +99,7 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchBoundaries(
 	const SparkDsv4StageRunnerDispatch *dispatch)
 {
 	uint64_t hidden_bytes;
-    if (runner->owns_embedding == 0u && dispatch->token_ids != 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    if (runner->owns_embedding != 0u && dispatch->token_ids == 0)
+    if (dispatch->token_ids == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -215,15 +211,12 @@ static void SparkDsv4StageRunnerBuildFrame(
     memset(buffers, 0,
         sizeof(*buffers) * SPARK_DSV4_STAGE_RUNNER_MAX_DRIVER_BUFFERS);
     buffer_count = 0u;
-    if (runner->owns_embedding != 0u)
-    {
-        buffers[buffer_count].slot = buffer_count;
-        buffers[buffer_count].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
-        buffers[buffer_count].address = (void *)dispatch->token_ids;
-        buffers[buffer_count].bytes =
-            (uint64_t)dispatch->row_count * sizeof(uint32_t);
-        buffer_count += 1u;
-    }
+    buffers[buffer_count].slot = buffer_count;
+    buffers[buffer_count].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
+    buffers[buffer_count].address = (void *)dispatch->token_ids;
+    buffers[buffer_count].bytes =
+        (uint64_t)dispatch->row_count * sizeof(uint32_t);
+    buffer_count += 1u;
     if (runner->owns_final_head != 0u)
     {
         output_buffer_index = buffer_count;
