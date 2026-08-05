@@ -137,9 +137,11 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 	}
 	else
 	{
-		if ( frame->buffer_count != 1u )
+		if ( frame->buffer_count != 2u || frame->buffers[0].slot != 0u || frame->buffers[0].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_READ || frame->buffers[0].address == 0 || frame->buffers[0].bytes < (uint64_t)row_count * sizeof(uint32_t) || frame->buffers[1].slot != 1u || frame->buffers[1].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || frame->buffers[1].address == 0 || frame->buffers[1].bytes < (uint64_t)row_count * sizeof(uint32_t) )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
-		tokens = (uint32_t *)frame->buffers[0].address;
+		if ( context->prefill_batch != 0 && context->prefill_batch->token_ids != frame->buffers[0].address )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		tokens = (uint32_t *)frame->buffers[1].address;
 		for (row=0u; row<row_count; row++)
 			tokens[row] = 4200u + row;
 	}

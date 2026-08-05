@@ -524,7 +524,7 @@ static SparkStatus SparkDsv4ServingSubmit(
 	dispatch.new_token_count = submission->new_token_count;
 	dispatch.row_count = submission->row_count;
 	dispatch.lane_count = submission->lane_count;
-	dispatch.token_ids = state->stage_index == 0u ? submission->token_ids : 0;
+	dispatch.token_ids = submission->token_ids;
 	dispatch.row_lane_indices = pending->resident_row_lane_indices;
 	dispatch.row_positions = submission->row_positions;
 	dispatch.row_sequence_ids = submission->row_sequence_ids;

@@ -12,6 +12,7 @@ typedef struct SparkDsv4RunnerTestState
 	uint32_t last_buffer_count;
 	uint32_t prefill_row_count;
 	uint32_t invalid_admission;
+	uint32_t expect_hidden_input;
 	void *last_execution_stream;
 	const uint32_t *prefill_token_ids;
 } SparkDsv4RunnerTestState;
@@ -57,8 +58,17 @@ static SparkStatus SparkDsv4RunnerTestSubmit(
 	state->last_execution_stream = frame->execution_stream;
     assert((context->flags &
         SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_BATCH_VIEW) != 0u);
-    assert((context->flags &
-        SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER) != 0u);
+	assert((context->flags &
+		SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER) != 0u);
+	if ( state->expect_hidden_input != 0u )
+	{
+		assert((context->flags &
+			SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_BUFFER) != 0u);
+		assert(context->hidden_input_bf16 != 0);
+		assert(context->hidden_input_bytes ==
+			SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
+			SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES);
+	}
     assert(context->hidden_output_bf16 != 0);
     assert(context->hidden_output_bytes ==
         SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
@@ -190,6 +200,60 @@ static void SparkDsv4RunnerTestIntermediateRequiresInput(void)
         SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkDsv4RunnerTestIntermediateTokenRouting(void)
+{
+	SparkDsv4StageRunner runner;
+	SparkDsv4StageRunnerConfiguration configuration;
+	SparkDsv4StageRunnerDispatch dispatch;
+	uint16_t hidden_input[SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS];
+	uint16_t hidden_output[SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS];
+	uint32_t token_id,lane;
+	uint64_t position,sequence;
+	memset(&TestState,0,sizeof(TestState));
+	TestState.expect_hidden_input = 1u;
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES;
+	configuration.flags = SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_ADMISSION |
+		SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY |
+		SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY;
+	configuration.stage_index = 1u;
+	configuration.stage_count = 13u;
+	configuration.max_active_sequence_count = 1u;
+	configuration.max_input_row_count = 1u;
+	configuration.driver_interface = &TestInterface;
+	configuration.driver_instance = &TestState;
+	configuration.program = &TestProgram;
+	configuration.execution_stream = (void *)(uintptr_t)1u;
+	assert(SparkDsv4StageRunnerInitialize(&runner,&configuration) == SPARK_STATUS_OK);
+	token_id = 10397u;
+	lane = 0u;
+	position = 0u;
+	sequence = 1u;
+	memset(&dispatch,0,sizeof(dispatch));
+	dispatch.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
+	dispatch.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES;
+	dispatch.flags = SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL;
+	dispatch.request_id = 1u;
+	dispatch.sequence_id = sequence;
+	dispatch.active_sequence_count = 1u;
+	dispatch.new_token_count = 1u;
+	dispatch.row_count = 1u;
+	dispatch.lane_count = 1u;
+	dispatch.token_ids = &token_id;
+	dispatch.row_lane_indices = &lane;
+	dispatch.row_positions = &position;
+	dispatch.row_sequence_ids = &sequence;
+	dispatch.hidden_input_bf16 = hidden_input;
+	dispatch.hidden_input_bytes = sizeof(hidden_input);
+	dispatch.hidden_output_bf16 = hidden_output;
+	dispatch.hidden_output_bytes = sizeof(hidden_output);
+	assert(SparkDsv4StageRunnerSubmit(&runner,&dispatch) == SPARK_STATUS_OK);
+	assert(TestState.submit_count == 1u);
+	assert(TestState.last_buffer_count == 1u);
+	assert(TestState.prefill_token_ids == &token_id);
+}
+
 static void SparkDsv4RunnerTestRoundMajorPrefill(void)
 {
 	uint32_t round_major[6] = {7u,3u,11u,3u,11u,3u};
@@ -203,8 +267,9 @@ static void SparkDsv4RunnerTestRoundMajorPrefill(void)
 
 int main(void)
 {
-    SparkDsv4RunnerTestPrefillMapping();
-    SparkDsv4RunnerTestIntermediateRequiresInput();
+	SparkDsv4RunnerTestPrefillMapping();
+	SparkDsv4RunnerTestIntermediateRequiresInput();
+	SparkDsv4RunnerTestIntermediateTokenRouting();
 	SparkDsv4RunnerTestRoundMajorPrefill();
     return 0;
 }

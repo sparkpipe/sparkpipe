@@ -190,12 +190,9 @@ static void SparkDsv4ValidationBuildFrame(
 	if ( frame->hidden_output_bf16 != 0 )
 		frame->context.flags |= SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER;
 	buffer_count = 0u;
-	if ( node_context->first_layer_index == 0u )
-	{
-		frame->buffers[buffer_count].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
-		frame->buffers[buffer_count].address = &frame->token_id;
-		frame->buffers[buffer_count++].bytes = sizeof(frame->token_id);
-	}
+	frame->buffers[buffer_count].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
+	frame->buffers[buffer_count].address = &frame->token_id;
+	frame->buffers[buffer_count++].bytes = sizeof(frame->token_id);
 	if ( node_context->first_layer_index + node_context->layer_count == SPARK_DSV4_MODEL_LAYER_COUNT )
 	{
 		frame->buffers[buffer_count].slot = 1u;

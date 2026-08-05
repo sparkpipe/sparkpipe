@@ -239,15 +239,14 @@ static int SparkDsv4DriverCudaSmokeRun(
 	memset(&dispatch,0,sizeof(dispatch));
 	dispatch.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
 	dispatch.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES;
-	dispatch.flags = stage_index == 0u ?
-		SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL : 0u;
+	dispatch.flags = SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL;
 	dispatch.request_id = 91u;
 	dispatch.sequence_id = sequence_id;
 	dispatch.active_sequence_count = 1u;
 	dispatch.new_token_count = 1u;
 	dispatch.row_count = 1u;
 	dispatch.lane_count = 1u;
-	dispatch.token_ids = stage_index == 0u ? &token_id : 0;
+	dispatch.token_ids = &token_id;
 	dispatch.row_lane_indices = &lane_index;
 	dispatch.row_positions = &position;
 	dispatch.row_sequence_ids = &sequence_id;

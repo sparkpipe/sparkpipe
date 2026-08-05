@@ -922,7 +922,7 @@ static SparkStatus SparkDsv4ModuleValidateFrameContext(
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_BATCH_VIEW;
 	const SparkDsv4ResidentDecodeStageFrameContext *context;
 	uint32_t decode_view,prefill_view,needs_input,needs_output;
-	if ( frame->buffer_count != state->owns_embedding + state->owns_final_head ||
+	if ( frame->buffer_count != 1u + state->owns_final_head ||
 		(frame->buffer_count != 0u && frame->buffers == 0) || frame->user_context == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	context = (const SparkDsv4ResidentDecodeStageFrameContext *)frame->user_context;
@@ -1001,17 +1001,14 @@ static SparkStatus SparkDsv4ModuleValidateTokenBuffers(
 	uint64_t bytes;
 	SparkStatus status;
 	bytes = (uint64_t)row_count * sizeof(uint32_t);
-	if ( state->owns_embedding != 0u )
-	{
-		status = SparkModelDriverValidateBuffer(frame,0u,0u,SPARK_MODEL_DRIVER_BUFFER_FLAG_READ,bytes);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-		if ( is_prefill != 0u && frame->buffers[0].address != prefill->token_ids )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-	}
+	status = SparkModelDriverValidateBuffer(frame,0u,0u,SPARK_MODEL_DRIVER_BUFFER_FLAG_READ,bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( is_prefill != 0u && frame->buffers[0].address != prefill->token_ids )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->owns_final_head == 0u )
 		return(SPARK_STATUS_OK);
-	output_index = state->owns_embedding != 0u ? 1u : 0u;
+	output_index = 1u;
 	return(SparkModelDriverValidateBuffer(frame,output_index,1u,
 		SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE,bytes));
 }
@@ -1183,16 +1180,16 @@ static SparkStatus SparkDsv4ModuleStageRows(
 	uint64_t metadata_bytes;
 	uint32_t row,lane;
 	cudaError_t error;
-	if ( batch->row_count == 0u || batch->row_count > state->resident_sequence_capacity || (state->owns_embedding != 0u && token_ids == 0) )
+	if ( batch->row_count == 0u || batch->row_count > state->resident_sequence_capacity || token_ids == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(lane_used,0,sizeof(lane_used));
 	for (row = 0; row < batch->row_count; row++)
 	{
 		lane = batch->row_lane_indices[row];
-		if ( lane >= state->resident_sequence_capacity || lane_used[lane] != 0u || batch->row_positions[row] >= state->max_sequence_positions || (state->owns_embedding != 0u && token_ids[row] >= SPARK_DSV4_MODEL_VOCAB_COUNT) )
+		if ( lane >= state->resident_sequence_capacity || lane_used[lane] != 0u || batch->row_positions[row] >= state->max_sequence_positions || token_ids[row] >= SPARK_DSV4_MODEL_VOCAB_COUNT )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		lane_used[lane] = 1u;
-		slot->host_input_token_ids[row] = state->owns_embedding != 0u ? token_ids[row] : 0u;
+		slot->host_input_token_ids[row] = token_ids[row];
 		slot->host_row_lane_indices[row] = lane;
 		slot->host_row_positions[row] = batch->row_positions[row];
 		slot->host_row_emit_positions[row] = batch->row_positions[row] + 1u >= SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO ? batch->row_positions[row] + 1u - SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO : 0u;
@@ -1556,7 +1553,7 @@ static SparkStatus SparkDsv4ModuleRunPrefillWave(
 		wave_context.hidden_output_bf16 = (uint8_t *)context->hidden_output_bf16 + (uint64_t)first_row * row_bytes;
 	wave_context.hidden_input_bytes = wave_context.hidden_input_bf16 != 0 ? (uint64_t)row_count * row_bytes : 0u;
 	wave_context.hidden_output_bytes = wave_context.hidden_output_bf16 != 0 ? (uint64_t)row_count * row_bytes : 0u;
-	return(SparkDsv4ModuleRunWave(state,slot,&wave_context,&batch,state->owns_embedding != 0u ? prefill->token_ids + first_row : 0,first_row));
+	return(SparkDsv4ModuleRunWave(state,slot,&wave_context,&batch,prefill->token_ids + first_row,first_row));
 }
 
 static SparkStatus SparkDsv4ModuleRunFrameWaves(
@@ -1571,7 +1568,7 @@ static SparkStatus SparkDsv4ModuleRunFrameWaves(
 	SparkStatus status;
 	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u )
 	{
-		token_ids = state->owns_embedding != 0u ? (const uint32_t *)frame->buffers[0].address : 0;
+		token_ids = (const uint32_t *)frame->buffers[0].address;
 		return(SparkDsv4ModuleRunWave(state,slot,context,context->decode_batch,token_ids,0u));
 	}
 	prefill = context->prefill_batch;
