@@ -29,11 +29,11 @@ lanes by receive slot keeps that per-packet ordering while letting
 independent small frames use the full QP set instead of queueing
 behind lane 0.
 
-The sender waits for its local send completion before returning. The current
-node-context builder owns one mapped output buffer per boundary, so returning
-earlier would allow the next model invocation to overwrite bytes still being
-read by the NIC. Overlap requires multiple owned boundary slots and belongs in a
-separate change.
+The transport returns `OK` once the send work request owns the packet and emits
+one completion only after every posted write completes. The resident route keeps
+its mapped output slot pinned between those events, so the next model invocation
+cannot overwrite bytes still being read by the NIC. `BUSY` means no send was
+accepted and the same packet must be retried.
 
 The module does not advertise native batch submission. Its former batch
 callbacks only looped over scalar sends, and every scalar send waits for local

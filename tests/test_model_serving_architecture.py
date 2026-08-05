@@ -186,6 +186,14 @@ def main() -> int:
         and 'endpoint->sink_host' in rdma,
         "explicit RDMA topology is inferred from host naming",
     )
+    require(
+        "SparkHiddenSparkHostRdmaRetireCompletedReceives" in rdma
+        and "return receive->complete != 0u ? SPARK_STATUS_OK"
+        not in rdma
+        and "return SparkHiddenSparkHostRdmaFinalizePendingReceive(state,receive);"
+        not in rdma,
+        "RDMA keeps accepted receive work in caller retry state",
+    )
     pipeline_header = (
         ROOT / "include/sparkpipe/spark_model_pipeline_client.h"
     ).read_text(encoding="utf-8")
