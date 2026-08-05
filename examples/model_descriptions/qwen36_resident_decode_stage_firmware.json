@@ -67,7 +67,8 @@
     },
     "runtime_contract": {
       "firmware_module_abi": 4,
-      "model_driver_abi": 6,
+      "firmware_host_services_abi": 2,
+      "model_driver_abi": 7,
       "completion": "submit_return",
       "fallback_allowed": false,
       "runtime_backend_selection": "forbidden",

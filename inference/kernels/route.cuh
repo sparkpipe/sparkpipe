@@ -17,22 +17,15 @@
 
 // ROUTE ROW INDIRECTION CONSUMER CONTRACT
 //
-// Does the grouped GEMM read activation rows through route_source_token
-// directly? TODAY, NO. LmGemmArguments carries group_row_offset and
-// group_tile_prefix but no row map, and the A-operand stage is a plain TMA
-// 2D box load (LmPipelineProduce in tile.cuh), which needs its rows
-// contiguous. That contiguity is the whole reason LmGatherRowsKernel exists:
-// it expands rows x hidden activations into packed_rows x hidden purely so
-// the box load sees a dense tensor - a full write plus a full re-read of
-// packed_rows x hidden x 2 bytes (235 MB per routed projection at
-// B1024/top-8 over a 7164-wide latent) spent moving bytes the GEMM was
-// about to read from their original addresses.
+// The grouped weight-only GEMM reads activation rows through
+// route_source_token directly. Expert weights retain their TMA pipeline while
+// the CTA cooperatively stages each indexed BF16 activation row into the same
+// swizzled shared tile consumed by MMA. No packed activation tensor is written,
+// and no host sees the route.
 //
 // The producer side of the indirect form is ALREADY COMPLETE - this kernel
 // writes everything an indirect consumer needs, which is why the contract
-// can be stated exactly. A grouped GEMM with row indirection (Blackwell's
-// TMA tile::gather4 loads four A rows by index; CUTLASS's SM100 grouped
-// kernels use it for exactly this) consumes the arrays as follows:
+// can be stated exactly. The indirect consumer uses the arrays as follows:
 //
 //   - Packed row p of expert group g spans
 //     p in [group_row_offset[g], group_row_offset[g + 1]), contiguous and
@@ -47,13 +40,12 @@
 //     guarantees that, and this kernel neither checks nor needs it.
 //   - Order within a group is atomic-arrival order. An indirect consumer
 //     must not assume sorted, unique-across-groups, or stable order.
-//   - RAGGED TAIL. gather4 moves rows in fours and TILE_M is a multiple of
-//     four, but a group's last tile covers [row_base, row_base + TILE_M)
-//     while valid indices end at row_limit = group_row_offset[g + 1). The
-//     consumer reads indices only for p < row_limit and CLAMPS the tail
-//     fours to a live row (row_base works); the stores for those rows are
-//     already dropped by the GEMM's row_limit check, so a clamped duplicate
-//     load is dead traffic, never wrong output. Reading an index past
+//   - RAGGED TAIL. A group's last tile covers
+//     [row_base, row_base + TILE_M) while valid indices end at row_limit =
+//     group_row_offset[g + 1). The consumer reads indices only for
+//     p < row_limit and CLAMPS the tail to row_base; the stores for those rows
+//     are already dropped by the GEMM's row_limit check, so a duplicate load
+//     is dead traffic, never wrong output. Reading an index past
 //     row_limit instead of clamping is a wild TMA gather - the array's next
 //     bytes are another group's indices, in-range but wrong, and nothing
 //     faults.

@@ -24,7 +24,7 @@ GLM-5.2 is no longer part of the neutral archive or include closure. The build e
 
 ### ABI and validation
 
-- Model-driver ABI 6.
+- Model-driver ABI 7 with a versioned create request and resident-owned execution stream.
 - Firmware-module ABI 4 with sized descriptors and reserved-field validation.
 - Module-record schema 4 binds the validator executable SHA-256.
 - Generated multi-operation admission and snapshot aggregation is conservative.

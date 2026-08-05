@@ -7,7 +7,7 @@ This audit covers the DSV4, K3, MiMo 2.5, and Qwen 3.6 resident-stage modules. I
 All four drivers now:
 
 - initialize through firmware-module ABI 4 and validate descriptor sizes and reserved fields;
-- expose model-driver ABI 6 descriptors;
+- expose model-driver ABI 7 descriptors and versioned create requests;
 - reject unknown frame and admission flags;
 - reject the generic dispatch-ticket flag and never use `driver_dispatch_slot` as a persistent model lane;
 - validate exact stage-dependent host buffers;
@@ -25,7 +25,7 @@ The lane-release correction is material. Earlier DSV4, MiMo, and Qwen error path
 
 ### Contract now enforced
 
-- Decode frames only.
+- Decode frames and round-major prefill wavefronts.
 - Exact row count, lane arrays, sequence IDs, and positions.
 - Stage-position buffer ownership.
 - Required hidden transport for non-edge stages.
@@ -34,7 +34,8 @@ The lane-release correction is material. Earlier DSV4, MiMo, and Qwen error path
 
 ### Deliberately unavailable
 
-- Prefill execution.
+- Causal bulk-prefill execution within one sequence. Cross-request prefill rows
+  execute together as a CUDA wave rather than as serialized B1 submissions.
 - MTP execution.
 - CUDA graph path as a qualified feature.
 

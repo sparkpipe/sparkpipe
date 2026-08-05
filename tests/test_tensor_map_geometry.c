@@ -54,6 +54,18 @@ int32_t main(void)
     expect(plan.box_dimension[0] == 128u, "FP8 box is 128 bytes wide");
     expect(plan.swizzle_bytes == 128u, "FP8 box uses 128-byte swizzle");
 
+    printf("\nINT6 expert tile\n");
+    status = build(128u, 6144u, 1u, 16u, 128u, LM_TM_BITS_INT6, &plan);
+    expect(status == LM_TM_OK, "INT6 TILE_K=128 builds");
+    expect(plan.box_dimension[0] == 96u, "INT6 box is 96 bytes wide");
+    expect(plan.swizzle_bytes == 0u, "INT6 box uses explicit unswizzled TMA");
+
+    printf("\nINT7 expert tile\n");
+    status = build(128u, 6144u, 1u, 16u, 256u, LM_TM_BITS_INT7, &plan);
+    expect(status == LM_TM_OK, "INT7 TILE_K=256 builds");
+    expect(plan.box_dimension[0] == 224u, "INT7 box is 224 bytes wide");
+    expect(plan.swizzle_bytes == 0u, "INT7 box uses explicit unswizzled TMA");
+
     printf("\nFP4 expert tile\n");
     status = build(4096u, 6144u, 256u, 128u, 128u,
         LM_TM_BITS_NVFP4, &plan);
@@ -73,7 +85,7 @@ int32_t main(void)
     expect(plan.swizzle_bytes == 128u, "BF16 box uses 128-byte swizzle");
 
     printf("\nrejections\n");
-    expect(build(128u, 6144u, 1u, 16u, 128u, 6u, &plan) ==
+    expect(build(128u, 6144u, 1u, 16u, 128u, 5u, &plan) ==
         LM_TM_ERR_BITS, "unsupported packed width rejected");
     expect(build(128u, 6145u, 1u, 16u, 128u,
         LM_TM_BITS_NVFP4, &plan) == LM_TM_ERR_ODD_COLUMNS,
@@ -85,8 +97,11 @@ int32_t main(void)
         LM_TM_BITS_FP8, &plan) == LM_TM_ERR_ROW_SWIZZLE,
         "global row stride must remain 16-byte aligned");
     expect(build(8u, 6144u, 1u, 16u, 128u,
+        LM_TM_BITS_FP8, &plan) == LM_TM_OK,
+        "ragged row tail uses TMA out-of-bounds zero fill");
+    expect(build(128u, 64u, 1u, 16u, 128u,
         LM_TM_BITS_FP8, &plan) == LM_TM_ERR_BOX_EXCEEDS,
-        "box taller than tensor rejected");
+        "K tile wider than tensor rejected");
 
     printf("\n%s (%d failing checks)\n",
         failures == 0 ? "PASS" : "FAIL", failures);

@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_HIDDEN_TRANSPORT_ABI_VERSION 3u
+#define SPARK_HIDDEN_TRANSPORT_ABI_VERSION 4u
 #define SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportInterface))
 #define SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES \
@@ -57,6 +57,11 @@ extern "C" {
 
 #define SPARK_HIDDEN_TRANSPORT_POLL_READ 0x00000001u
 #define SPARK_HIDDEN_TRANSPORT_POLL_WRITE 0x00000002u
+
+#define SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION \
+    0x00000001u
+#define SPARK_HIDDEN_TRANSPORT_ENDPOINT_KNOWN_FLAGS \
+    SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION
 
 #define SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS \
     (SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_CONNECTION | \
@@ -135,10 +140,18 @@ typedef struct SparkHiddenTransportEndpoint
     uint32_t hidden_dimension;
     uint32_t bytes_per_sequence;
     uint32_t max_active_sequence_count;
+    uint32_t configuration_flags;
+    uint32_t local_rank_index;
+    uint32_t source_rank_index;
+    uint32_t sink_rank_index;
+    uint32_t control_port_base;
+    uint32_t reserved0;
     uint64_t max_packet_bytes;
     uint64_t validated_latency_ns;
     const char *transport_module_id;
     const char *route_name;
+    const char *source_host;
+    const char *sink_host;
 } SparkHiddenTransportEndpoint;
 
 typedef struct SparkHiddenTransportPacket

@@ -30,14 +30,9 @@ def main() -> None:
             "K3_ROUTED_SCALE",
         ),
         "glm52": (
-            "inference/llms/glm5_2/layer.cuh",
+            "modules/glm52_resident_decode_stage/source/cuda/layer.cuh",
             "LM_TOPK_SCORE_SIGMOID",
             "GLM52_ROUTED_SCALE",
-        ),
-        "dsv4": (
-            "inference/llms/deepseek_v4/layer.cuh",
-            "LM_TOPK_SCORE_SQRT_SOFTPLUS",
-            "DSV4_ROUTED_SCALE",
         ),
         "mimo25": (
             "inference/llms/mimo_2_5/layer.cuh",
@@ -59,26 +54,43 @@ def main() -> None:
     require(k3, "b->expert_w1_weight,packed_rows,rows,", "K3 W1 token count")
     require(k3, "b->expert_w2_weight,packed_rows,rows,", "K3 W2 token count")
 
-    dsv4 = read("inference/llms/deepseek_v4/layer.cuh")
+    dsv4 = read(
+        "modules/dsv4_resident_decode_stage/source/"
+        "spark_dsv4_resident_decode_stage_module.c"
+    )
+    dsv4_cuda = read(
+        "modules/dsv4_resident_decode_stage/source/"
+        "spark_dsv4_resident_decode_stage_cuda.cu"
+    )
     mimo = read("inference/llms/mimo_2_5/layer.cuh")
-    require(dsv4, "float *router_logits;", "DSV4 FP32 router output")
+    require(dsv4, "float *moe_scores_f32;", "DSV4 FP32 router output")
+    require(dsv4, "SparkDsv4LaunchMoeRoute", "DSV4 device grouping")
+    require(dsv4, "SparkDsv4LaunchExpertUp", "DSV4 indirect grouped expert up")
+    require(dsv4, "SparkDsv4LaunchExpertDown", "DSV4 grouped expert down")
+    require(dsv4_cuda, "sqrtf(SparkLmSoftplus(accumulator))", "DSV4 sqrt-softplus router")
+    require(dsv4, "SPARK_DSV4_MODEL_ROUTED_SCALING_FACTOR", "DSV4 router scale")
     require(mimo, "float *router_logits;", "MiMo FP32 router output")
-    reject(dsv4, "(uint32_t *)b->head_candidate_score", "DSV4 scratch alias")
+    reject(dsv4, "for (expert", "DSV4 per-expert host loop")
 
     model = read("tests/studies/sparkpipe_glm52_batchplane_model.c")
     require(model, "expert_sweeps_per_active_expert = 1.0", "one expert sweep model")
     require(model, "replay/chunk expert-sweep multiplier: 1.0", "removed replay multiplier")
     reject(model, "BP_LAYERS * (BP_EXPERTS", "old queue-depth divisor")
 
-    queue_header = read(
-        "model-families/glm52/include/sparkpipe/spark_glm52_expert_queue.h"
-    )
-    queue_source = read(
-        "model-families/glm52/src/spark_glm52_expert_queue.c"
-    )
-    require(queue_header, "SPARK_GLM52_EXPERT_QUEUE_MODE_SEALED_BATCH", "sealed mode")
-    require(queue_header, "SparkGlm52ExpertQueueSealLayer", "seal API")
-    require(queue_source, "queue->layer_sealed[layer_index]", "sealed layer state")
+    glm = read("modules/glm52_resident_decode_stage/source/cuda/layer.cuh")
+    require(glm, "source_row_map = buffers->route_source_token",
+            "GLM routed source-row map")
+    require(glm, "LmGemmWeightOnlyIndirectLaunch<",
+            "GLM indirect routed W1")
+    require(glm, "LmGemmWeightOnlyLaunch<",
+            "GLM packed routed W2")
+    reject(glm, "LmGatherRowsKernel", "GLM gathered routed activation")
+    for relative in (
+        "model-families/glm52/include/sparkpipe/spark_glm52_expert_queue.h",
+        "model-families/glm52/src/spark_glm52_expert_queue.c",
+    ):
+        if (ROOT / relative).exists():
+            raise SystemExit(f"forbidden legacy GLM expert queue: {relative}")
 
     print("PASS grouped-MoE source contracts")
 

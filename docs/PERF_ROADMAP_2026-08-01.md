@@ -667,8 +667,7 @@ The RDMA transport negotiates every payload with a control round trip:
 at rdma.cu:2061. That is one extra network RTT (~29 us floor) before every
 payload write on every hop — ~0.35 ms/token across 12 hops at B1, worse per
 prefill chunk. The fix is already written down twice: pre-advertise
-persistent receive slots (docs/PHASE4_REMAINING_WORK.md:131-133,
-docs/PHASE3_REMAINING_WORK.md:48). Effort: low-medium. Certainty: high.
+persistent receive slots. Effort: low-medium. Certainty: high.
 
 ### D7. Per-packet malloc
 
@@ -691,7 +690,7 @@ docs/BANDWIDTH_LEDGER.md:84-89). Verdict stands: architectural; exact
 sampling admits no cheat. Mitigations already in-tree: DSpark amortises one
 head read across accepted tokens (ledger S7), and the restricted-vocab form
 is exact where a grammar applies (`GLM52_RESTRICTED_VOCAB`,
-inference/llms/glm5_2/config.h:27-30; `K3Head` already takes `token_ids`,
+modules/glm52_resident_decode_stage/source/cuda/config.h:27-30; `K3Head` already takes `token_ids`,
 layer.cuh:758).
 
 ### D9. MoE gather double-touch

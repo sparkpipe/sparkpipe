@@ -48,7 +48,7 @@ SparkStatus SparkStageKvClientOpen(SparkStageKvClient *client, const char *modul
 }
 
 // <family>/<model_fp>/<layout_fp>/r<rank>/s<sequence>/b<block> - the same
-// binding scheme the glm52 tier proved: a model or layout change can never
+// binding scheme used by every tier: a model or layout change can never
 // consume old KV, and rank scoping keeps stages from crossing streams.
 int32_t SparkStageKvClientFormatKey(char *key, uint32_t key_capacity, uint64_t model_fingerprint, uint64_t cache_layout_fingerprint, uint32_t rank_index, uint64_t sequence_id, uint32_t logical_block)
 {

@@ -88,7 +88,7 @@ interleaved pairs, `2i` with `2i+1`, to match the released checkpoint. Both are
 "rope"; they are different rotations and the output is wrong rather than
 degraded.
 
-Half-split is presumably right for glm5_2, so this is a mode on the kernel or a
+GLM 5.2 declares interleaved pairing for both MLA and its DSA indexer, so this is a mode on the kernel or a
 permutation at pack time — not a change to the default.
 
 ### 3. Dual rope theta per layer kind — dsv4 both

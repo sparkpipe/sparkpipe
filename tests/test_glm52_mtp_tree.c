@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "sparkpipe/spark_mtp_tree.h"
+#include "sparkpipe/spark_glm52_mtp_tree.h"
 
 typedef struct LegacyMtpTreeResolution
 {

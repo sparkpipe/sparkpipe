@@ -58,7 +58,7 @@
   },
   "generated": {
     "compression_ratio_interpretation": "first layer_count entries are backbone layers; final entry is the one declared MTP layer",
-    "header": "model-families/dsv4/include/sparkpipe/spark_dsv4_flash_model.h",
+    "header": "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h",
     "variant": "flash"
   },
   "hyper_connections": {
@@ -97,9 +97,11 @@
   "precision": {
     "accumulator_format": "fp32",
     "dynamic_activation_format": "fp8_e4m3",
+    "kv_cache_codec": "bf16",
+    "non_expert_linear_weight_codec": "fp8_e4m3",
     "non_expert_linear_weight_format": "fp8_e4m3_block_128x128",
     "residual_norm_storage_format": "bf16",
-    "routed_expert_weight_format": "checkpoint_fp4",
+    "routed_expert_weight_codec": "mxfp4_e2m1",
     "scale_format": "ue8m0"
   },
   "qualification": {
@@ -108,5 +110,5 @@
     "status": "NOT_MEASURED"
   },
   "schema_version": 1,
-  "source_revision": "official Hugging Face config observed 2026-07-31"
+  "source_revision": "60d8d70770c6776ff598c94bb586a859a38244f1"
 }

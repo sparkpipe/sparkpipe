@@ -3,8 +3,8 @@
 
 The per-kernel tests and the launch-site contracts passed while the layer
 itself had no harness at all. This one runs Glm52LayerAttention,
-Glm52LayerMoe, Glm52LayerDenseMlp in both gate/up forms, Glm52Head, and the
-bind-time gate/up contiguity decision - the shipping code, unmodified - and
+Glm52LayerMoe, Glm52LayerDenseMlp in both gate/up forms, and Glm52Head - the
+shipping code, unmodified - and
 replays the whole stream closed-form:
 
     the recorder GEMM writes 0.125 * call index, so every projection output
@@ -13,7 +13,7 @@ replays the whole stream closed-form:
     at [0,512), rotated rope at [512,576) - the join the layer used to need
     is gone, and a reintroduced join or a swapped offset disagrees here), the
     attention softmax over four positions, the counting sort and its tile
-    tables, the gather, the finalize, and the head's norm over the folded
+    tables, the indirect routed-row read, the finalize, and the head's norm over the folded
     hidden + residual stream.
 """
 import math
@@ -23,9 +23,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+from host_cuda_compiler import host_cuda_cxx
+
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "glm52_layer_host.cu"
 BINARY = Path("/tmp") / "lm_glm52_layer_host"
+CODECS = (
+    "SPARK_WEIGHT_CODEC_INT6",
+    "SPARK_WEIGHT_CODEC_INT7",
+    "SPARK_WEIGHT_CODEC_INT8",
+    "SPARK_WEIGHT_CODEC_FP8_E4M3",
+    "SPARK_WEIGHT_CODEC_NVFP4_E2M1",
+    "SPARK_WEIGHT_CODEC_MXFP4_E2M1",
+)
 
 ROWS, HIDDEN, HEADS = 2, 6144, 64
 LATENT, ROPE, LATENT_ROW = 512, 64, 576
@@ -76,9 +86,10 @@ def rope_rotate(values, position, theta):
     for index in range(half):
         angle = position * theta ** (-2.0 * index / len(values))
         c, s = math.cos(angle), math.sin(angle)
-        a, b = values[index], values[half + index]
-        out[index] = bf16(a * c - b * s)
-        out[half + index] = bf16(a * s + b * c)
+        low, high = index * 2, index * 2 + 1
+        a, b = values[low], values[high]
+        out[low] = bf16(a * c - b * s)
+        out[high] = bf16(a * s + b * c)
     return out
 
 
@@ -103,40 +114,47 @@ def exact(name, want, got, failures):
 
 
 def main():
-    build = subprocess.run(
-        ["g++", "-std=c++17", "-O1", *INCLUDES,
-         "-x", "c++", str(SOURCE), "-o", str(BINARY)],
-        capture_output=True, text=True)
-    if build.returncode != 0:
-        errors = [l for l in build.stderr.split("\n") if "error" in l]
-        print("FAIL host build:", (errors or [build.stderr])[0][:240])
+    outputs = []
+    for codec in CODECS:
+        build = subprocess.run(
+            [host_cuda_cxx(), "-std=c++17", "-O1",
+             f"-DEXPERT_CODEC={codec}", *INCLUDES,
+             "-x", "c++", str(SOURCE), "-o", str(BINARY)],
+            capture_output=True, text=True)
+        if build.returncode != 0:
+            errors = [line for line in build.stderr.split("\n")
+                      if "error" in line]
+            print(f"FAIL {codec} host build:",
+                  (errors or [build.stderr])[0][:240])
+            return 1
+        run = subprocess.run([str(BINARY)], capture_output=True, text=True)
+        if run.returncode != 0 or "done" not in run.stdout:
+            print(f"FAIL {codec} layer faulted (returncode {run.returncode})")
+            print(run.stdout[-400:])
+            return 1
+        outputs.append(run.stdout)
+    if any(output != outputs[0] for output in outputs[1:]):
+        print("FAIL expert codec specializations changed the model execution contract")
         return 1
-    run = subprocess.run([str(BINARY)], capture_output=True, text=True)
-    if run.returncode != 0 or "done" not in run.stdout:
-        print(f"FAIL the layer faulted (returncode {run.returncode})")
-        print(run.stdout[-400:])
-        return 1
+    output = outputs[0]
 
     series = {}
     gemms = []
     scalars = {}
     poisons = []
-    for line in run.stdout.split("\n"):
+    for line in output.split("\n"):
         match = re.match(r"gemm (\w+) (\d+) K (\d+) N (\d+) rows (\d+) "
-                         r"grouped (\d+) act (\w+) w (\w+) dst (\w+)", line)
+                         r"grouped (\d+) indirect (\d+) act (\w+) w (\w+) dst (\w+)", line)
         if match:
             gemms.append((match.group(1), int(match.group(2)),
                           int(match.group(3)), int(match.group(4)),
                           int(match.group(5)), int(match.group(6)),
-                          match.group(7), match.group(8), match.group(9)))
+                          int(match.group(7)), match.group(8),
+                          match.group(9), match.group(10)))
             continue
         match = re.match(r"status (\w+) (\S+)$", line)
         if match:
             scalars[f"status {match.group(1)}"] = match.group(2)
-            continue
-        match = re.match(r"(bindfused2?) (\d+)$", line)
-        if match:
-            scalars[match.group(1)] = match.group(2)
             continue
         match = re.match(r"poison (\d+)$", line)
         if match:
@@ -151,32 +169,43 @@ def main():
             series.setdefault(match.group(1), []).append(float(match.group(2)))
 
     failures = 0
-    for phase in ("attention", "moe", "densefused", "densetwo", "head",
-                  "bind", "bind2"):
+    for phase in ("attention", "moe", "densefused", "densetwo", "head"):
         if scalars.get(f"status {phase}") != "0":
             print(f"  FAIL {phase} returned {scalars.get(f'status {phase}')}")
             failures += 1
-    failures = exact("bind fused flag", [1], [int(scalars["bindfused"])], failures)
-    failures = exact("bind non-contiguous flag", [0],
-                     [int(scalars["bindfused2"])], failures)
     failures = exact("gate/up poison", [0, 0], poisons, failures)
 
     # The gemm log IS the launch sequence: shapes, grouping, routing of every
     # weight and destination.
     want_gemms = [
-        ("attention", 1, HIDDEN, HEADS * LATENT, ROWS, 0, "normed", "w_q_latent", "query_latent"),
-        ("attention", 2, HIDDEN, HEADS * ROPE, ROWS, 0, "normed", "w_q_rope", "query_rope"),
-        ("attention", 3, HIDDEN, ROPE, ROWS, 0, "normed", "w_k_rope", "kv_slot"),
-        ("attention", 4, HIDDEN, LATENT, ROWS, 0, "normed", "w_kv_latent", "kv_slot"),
-        ("attention", 5, HEADS * LATENT, HIDDEN, ROWS, 0, "attention_latent", "w_o", "attention_out"),
-        ("moe", 6, HIDDEN, EXPERTS, ROWS, 0, "normed", "w_router", "router_logits"),
-        ("moe", 7, HIDDEN, GATE_UP, PACKED, 1, "expert_out", "w_e1", "gate_up"),
-        ("moe", 8, INTER, HIDDEN, PACKED, 1, "intermediate", "w_e2", "expert_out"),
-        ("densefused", 9, HIDDEN, 2 * DENSE_INTER, ROWS, 0, "normed", "w_q_latent", "gate_up"),
-        ("densefused", 10, DENSE_INTER, HIDDEN, ROWS, 0, "intermediate", "w_down", "hidden"),
-        ("densetwo", 11, HIDDEN, DENSE_INTER, ROWS, 0, "normed", "w_q_latent", "gate_up"),
-        ("densetwo", 12, HIDDEN, DENSE_INTER, ROWS, 0, "normed", "w_q_rope", "gate_up"),
-        ("densetwo", 13, DENSE_INTER, HIDDEN, ROWS, 0, "intermediate", "w_down", "hidden"),
+        ("attention", 1, HIDDEN, 2048, ROWS, 0, 0,
+         "normed", "w_q_a", "q_compressed"),
+        ("attention", 2, 2048, HEADS * (192 + ROPE), ROWS, 0, 0,
+         "q_compressed", "w_q_b", "q_b"),
+        ("attention", 3, HIDDEN, LATENT_ROW, ROWS, 0, 0,
+         "normed", "w_kv_a", "kv_slot"),
+        ("attention", 4, HEADS * 256, HIDDEN, ROWS, 0, 0,
+         "attention_value", "w_o", "attention_out"),
+        ("moe", 5, HIDDEN, EXPERTS, ROWS, 0, 0,
+         "normed", "w_router", "router_logits"),
+        ("moe", 6, HIDDEN, GATE_UP, PACKED, 1, 1,
+         "normed", "w_e1", "gate_up"),
+        ("moe", 7, INTER, HIDDEN, PACKED, 1, 0,
+         "intermediate", "w_e2", "expert_out"),
+        ("moe", 8, HIDDEN, GATE_UP, ROWS, 0, 0,
+         "normed", "w_shared_gate_up", "gate_up"),
+        ("moe", 9, INTER, HIDDEN, ROWS, 0, 0,
+         "intermediate", "w_shared_down", "shared_out"),
+        ("densefused", 10, HIDDEN, 2 * DENSE_INTER, ROWS, 0, 0,
+         "normed", "w_q_a", "gate_up"),
+        ("densefused", 11, DENSE_INTER, HIDDEN, ROWS, 0, 0,
+         "intermediate", "w_down", "hidden"),
+        ("densetwo", 12, HIDDEN, DENSE_INTER, ROWS, 0, 0,
+         "normed", "w_q_a", "gate_up"),
+        ("densetwo", 13, HIDDEN, DENSE_INTER, ROWS, 0, 0,
+         "normed", "w_q_b", "gate_up"),
+        ("densetwo", 14, DENSE_INTER, HIDDEN, ROWS, 0, 0,
+         "intermediate", "w_down", "hidden"),
     ]
     failures = exact("gemm sequence", want_gemms, gemms, failures)
 
@@ -192,7 +221,7 @@ def main():
 
     qk_scale, theta = scalars["qkscale"], scalars["theta"]
     routed_scale, eps = scalars["routedscale"], scalars["eps"]
-    value = [0.0] + [0.125 * index for index in range(1, 14)]
+    value = [0.0] + [0.125 * index for index in range(1, 15)]
 
     def row_of(values, row, width):
         return values[row * width:(row + 1) * width]
@@ -209,7 +238,9 @@ def main():
 
     kvslot = []
     for row in range(ROWS):
-        kvslot.append([bf16(value[4])] * LATENT +
+        latent = rms_norm([bf16(value[3])] * LATENT,
+                          [bf16(1.0)] * LATENT, eps)
+        kvslot.append(latent +
                       rope_rotate([bf16(value[3])] * ROPE, POSITION, theta))
     failures = compare("kv slot layout", [x for r in kvslot for x in r],
                        series["kvslot"], failures, 2e-2)
@@ -243,7 +274,7 @@ def main():
     # MoE: the second norm folds the attention output into the stream.
     res2, normed2 = [], []
     for row in range(ROWS):
-        stream = [value[5] + r for r in res1[row]]
+        stream = [value[4] + r for r in res1[row]]
         res2.append([bf16(x) for x in stream])
         normed2.append(rms_norm(stream, mlp_w, eps))
     failures = compare("normed2", [x for r in normed2 for x in r],
@@ -296,42 +327,43 @@ def main():
     failures = exact("w2 tile prefix", down_prefix,
                      [int(x) for x in series["tiledown"]], failures)
 
-    # w1 output is one constant, so the silu is one constant; the finalize is
-    # the renormalised weights summing the constant w2 output.
-    gate = value[7]
-    silu = bf16((gate / (1.0 + math.exp(-gate))) * gate)
-    failures = compare("expert silu", [silu] * len(series["inter"]),
-                       series["inter"], failures, 2e-2)
-    hidden2 = [bf16(sum(routed_scale / TOP_K * value[8]
-                        for _ in range(TOP_K)))] * (ROWS * HIDDEN)
+    # Routed W2 consumes all packed SiLU rows, then the shared expert reuses only
+    # the first ROWS rows. The untouched tail lets the fixture check both paths.
+    routed_gate = value[6]
+    routed_silu = bf16((routed_gate / (1.0 + math.exp(-routed_gate))) *
+                       routed_gate)
+    failures = compare("routed expert silu",
+                       [routed_silu] * len(series["interrouted"]),
+                       series["interrouted"], failures, 2e-2)
+    shared_gate = value[8]
+    shared_silu = bf16((shared_gate / (1.0 + math.exp(-shared_gate))) *
+                       shared_gate)
+    failures = compare("shared expert silu",
+                       [shared_silu] * len(series["intershared"]),
+                       series["intershared"], failures, 2e-2)
+    routed = bf16(sum(routed_scale / TOP_K * value[7]
+                      for _ in range(TOP_K)))
+    hidden2 = [bf16(routed + value[9])] * (ROWS * HIDDEN)
     failures = compare("finalized hidden", hidden2, series["hidden2"],
                        failures, 1e-3)
-
-    # The gather, re-run over the emitted tables: packed row p must be the
-    # normed row its source token names.
-    want_gather = []
-    for packed in range(PACKED):
-        source_row = normed2[source[packed]]
-        want_gather.extend(source_row[0::97])
-    failures = compare("gather", want_gather, series["gather"], failures, 1e-6)
 
     # Dense MLP twice: the fused form's single gemm wrote both halves (the
     # poison fill proves no half was skipped), the two-launch form wrote gate
     # then up. Each phase's norm folds the attention output into the stream
     # again, so the second phase's residual sits on top of the first's.
-    res3 = [[bf16(value[5] + r) for r in res2[row]] for row in range(ROWS)]
-    res3 = [[bf16(value[5] + r) for r in res3[row]] for row in range(ROWS)]
+    res3 = [[bf16(value[4] + r) for r in res2[row]] for row in range(ROWS)]
+    res3 = [[bf16(value[4] + r) for r in res3[row]] for row in range(ROWS)]
     half = DENSE_INTER
     for index, sample_value in enumerate(series["gateup"]):
         element = (index % ((half * 2 + 996) // 997)) * 997
-        want = value[9]
+        want = value[10]
         if abs(sample_value - want) > 1e-3:
             print(f"  FAIL fused gate/up sample {index}: {sample_value} != {want}")
             failures += 1
             break
     for index, sample_value in enumerate(series["gateup2"]):
         element = (index % ((half * 2 + 996) // 997)) * 997
-        want = value[11] if element < half else value[12]
+        want = value[12] if element < half else value[13]
         if abs(sample_value - want) > 1e-3:
             print(f"  FAIL two-launch gate/up at element {element}: "
                   f"{sample_value} != {want}")
@@ -341,7 +373,7 @@ def main():
     # The head: final norm over hidden + residual - the fold the layer used to
     # skip - then a real argmax against the replayed head weight.
     for row in range(ROWS):
-        stream = [value[13] + r for r in res3[row]]
+        stream = [value[14] + r for r in res3[row]]
         normed3 = rms_norm(stream, head_w_norm, eps)
         scores = [sum(n * w for n, w in zip(normed3,
                       head_weight[t * HIDDEN:(t + 1) * HIDDEN]))
@@ -352,16 +384,17 @@ def main():
             print(f"  FAIL head token row {row}: {got_token} != {want_token}")
             failures += 1
     failures = compare("head normed", [x for r in range(ROWS)
-                       for x in rms_norm([value[13] + rr for rr in res3[r]],
+                       for x in rms_norm([value[14] + rr for rr in res3[r]],
                                           head_w_norm, eps)],
                        series["normed3"], failures, 2e-2)
 
     if failures:
         print(f"\n{failures} failures")
         return 1
-    print(f"\nrows {ROWS}  context {CONTEXT}  gemms {len(gemms)}")
+    print(f"\nrows {ROWS}  context {CONTEXT}  gemms {len(gemms)}  "
+          f"codecs {len(CODECS)}")
     print("the layer carries the reference stream: slot written directly by "
-          "the kv projections, route/gather/finalize consistent, the head "
+          "the kv projections, routed W1 is indirect, finalize is consistent, the head "
           "norms hidden + residual")
     return 0
 

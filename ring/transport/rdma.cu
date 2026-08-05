@@ -3852,6 +3852,75 @@ static void SparkHiddenSparkHostRdmaDestroyState(SparkHiddenSparkHostRdmaState *
     free(state);
 }
 
+static SparkStatus SparkHiddenSparkHostRdmaConfigureRoute(
+    SparkHiddenSparkHostRdmaState *state,
+    const SparkHiddenTransportEndpoint *endpoint)
+{
+    SparkStatus status;
+    uint32_t local_rank;
+    const char *rank_text;
+    int written;
+
+    if ((endpoint->configuration_flags &
+            SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION) != 0u)
+    {
+        if (endpoint->local_rank_index > (uint32_t)INT32_MAX ||
+            endpoint->source_rank_index > (uint32_t)INT32_MAX ||
+            endpoint->sink_rank_index > (uint32_t)INT32_MAX ||
+            endpoint->control_port_base == 0u ||
+            endpoint->control_port_base >
+                65535u - endpoint->sink_rank_index)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        state->local_rank = (int32_t)endpoint->local_rank_index;
+        state->source_rank = (int32_t)endpoint->source_rank_index;
+        state->sink_rank = (int32_t)endpoint->sink_rank_index;
+        state->control_port_base = endpoint->control_port_base;
+        written = snprintf(state->source_host,sizeof(state->source_host),"%s",
+            endpoint->source_host);
+        if (written < 0 || (uint32_t)written >= sizeof(state->source_host))
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        written = snprintf(state->sink_host,sizeof(state->sink_host),"%s",
+            endpoint->sink_host);
+        if (written < 0 || (uint32_t)written >= sizeof(state->sink_host))
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        state->is_sender = state->local_rank == state->source_rank ? 1u : 0u;
+        return SPARK_STATUS_OK;
+    }
+    status = SparkHiddenSparkHostRdmaParseUintEnv(
+        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_CONTROL_PORT_BASE",
+        SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_CONTROL_PORT_BASE,
+        &state->control_port_base);
+    rank_text = getenv("SPARKPIPE_RING_TRANSPORT_RANK");
+    if (status != SPARK_STATUS_OK || rank_text == 0 || rank_text[0] == '\0')
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenSparkHostRdmaParseUintEnv(
+        "SPARKPIPE_RING_TRANSPORT_RANK", 0u, &local_rank);
+    if (status != SPARK_STATUS_OK || local_rank > (uint32_t)INT32_MAX ||
+        state->control_port_base == 0u ||
+        state->control_port_base >
+            65535u - (SPARK_HIDDEN_SPARK_HOST_RDMA_SPARK_COUNT - 1u))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    state->local_rank = (int32_t)local_rank;
+    status = SparkHiddenSparkHostRdmaParseRoute(endpoint->route_name,
+        state->source_host,state->sink_host);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    state->source_rank = SparkHiddenSparkHostRdmaRankFromHost(state->source_host);
+    state->sink_rank = SparkHiddenSparkHostRdmaRankFromHost(state->sink_host);
+    if (state->source_rank < 0 || state->sink_rank < 0)
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    state->is_sender = state->local_rank == state->source_rank ? 1u : 0u;
+    if (state->is_sender == 0u && state->local_rank != state->sink_rank)
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkHiddenSparkHostRdmaInitialize(
     const SparkHiddenTransportEndpoint *endpoint,
     void **transport_state)
@@ -3860,9 +3929,7 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
     SparkStatus status;
     uint32_t config_value;
     uint32_t lane_count;
-    uint32_t local_rank;
     uint32_t receive_index;
-    const char *rank_text;
 
     if (endpoint == 0 || transport_state == 0)
     {
@@ -3919,14 +3986,8 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     state->lane_count = lane_count;
-    status = SparkHiddenSparkHostRdmaParseUintEnv(
-        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_CONTROL_PORT_BASE",
-        SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_CONTROL_PORT_BASE,
-        &state->control_port_base);
-    if (status != SPARK_STATUS_OK ||
-        state->control_port_base == 0u ||
-        state->control_port_base >
-            65535u - (SPARK_HIDDEN_SPARK_HOST_RDMA_SPARK_COUNT - 1u))
+    status = SparkHiddenSparkHostRdmaConfigureRoute(state, endpoint);
+    if (status != SPARK_STATUS_OK)
     {
         SparkHiddenSparkHostRdmaDestroyState(state);
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -3960,37 +4021,6 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
         SparkHiddenSparkHostRdmaDestroyState(state);
         return status;
     }
-    rank_text = getenv("SPARKPIPE_RING_TRANSPORT_RANK");
-    if (rank_text == 0 || rank_text[0] == '\0')
-    {
-        SparkHiddenSparkHostRdmaDestroyState(state);
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    status = SparkHiddenSparkHostRdmaParseUintEnv(
-        "SPARKPIPE_RING_TRANSPORT_RANK",
-        0u,
-        &local_rank);
-    if (status != SPARK_STATUS_OK || local_rank > (uint32_t)INT32_MAX)
-    {
-        SparkHiddenSparkHostRdmaDestroyState(state);
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    state->local_rank = (int32_t)local_rank;
-    status = SparkHiddenSparkHostRdmaParseRoute(endpoint->route_name,
-        state->source_host, state->sink_host);
-    if (status != SPARK_STATUS_OK)
-    {
-        SparkHiddenSparkHostRdmaDestroyState(state);
-        return status;
-    }
-    state->source_rank = SparkHiddenSparkHostRdmaRankFromHost(state->source_host);
-    state->sink_rank = SparkHiddenSparkHostRdmaRankFromHost(state->sink_host);
-    if (state->source_rank < 0 || state->sink_rank < 0)
-    {
-        SparkHiddenSparkHostRdmaDestroyState(state);
-        return SPARK_STATUS_ROUTE_NOT_FOUND;
-    }
-    state->is_sender = state->local_rank == state->source_rank ? 1u : 0u;
     if (state->is_sender == 0u && state->local_rank != state->sink_rank)
     {
         SparkHiddenSparkHostRdmaDestroyState(state);

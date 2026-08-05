@@ -1,8 +1,8 @@
 # LLM device-driver interface
 
-This document defines the boundary between the neutral SparkPipe scheduler and a model-specific resident firmware driver. It describes the current implementation: model-driver ABI **6**, firmware-module ABI **4**, and immutable module-record schema **4**.
+This document defines the boundary between the neutral SparkPipe scheduler and a model-specific resident firmware driver. It describes the current implementation: model-driver ABI **7**, firmware-module ABI **4**, firmware-host-services ABI **2**, and immutable module-record schema **4**.
 
-SparkPipe is not a universal tensor runtime. The neutral layer owns package loading, route selection, admission comparison, inflight accounting, completion retirement, and aggregate operational counters. A model driver owns model geometry, resident weights, KV layout, sequence lanes, stage-local streams, CUDA graphs, transport handoff, MoE policy, speculation state, token selection, and all other model-specific execution details.
+SparkPipe is not a universal tensor runtime. The neutral layer owns package loading, route selection, admission comparison, inflight accounting, completion retirement, CUDA-stream lifetime, hidden transport, prompt chunking, decode batching, and aggregate operational counters. A model driver owns model geometry, resident weights, KV layout, sequence lanes, CUDA graphs, MoE policy, speculation state, token selection, and all other model-specific execution details. It executes on the resident-owned stream and receives resident-owned boundary buffers; it does not create pipeline transport or private execution streams.
 
 ## Physical ownership
 
@@ -19,14 +19,14 @@ The core/compiler/runtime compilation closure must not require any model-family 
 
 ## ABI objects
 
-### Model-driver ABI 6
+### Model-driver ABI 7
 
 The generated or hand-authored driver exports `SparkModelDriverGetInterface` and a `SparkModelDriverInterface` whose `abi_version` is `SPARK_MODEL_DRIVER_ABI_VERSION`.
 
 The interface provides:
 
 ```text
-create       bind an instance to a deployment-owned node context
+create       validate a sized request and bind an instance to a node context and execution stream
 admit        report whether one exact frame shape can be accepted now
 snapshot     expose neutral aggregate counters
 submit       execute one published program through its program descriptor
@@ -34,20 +34,20 @@ destroy      release a quiescent instance
 completion   return externally complete work when the program owns completion
 ```
 
-Every descriptor carrying `descriptor_bytes` must be validated before fields added by the current ABI are read. Reserved fields must be zero. Unknown flags are rejected rather than ignored.
+Every descriptor carrying `descriptor_bytes` must be validated before fields added by the current ABI are read. The create request itself is versioned and exact-sized. Reserved fields must be zero. Unknown flags are rejected rather than ignored.
 
 ### Firmware-module ABI 4
 
 Each operation is initialized with:
 
 - `SparkFirmwareModuleConfiguration`, including ABI, descriptor size, operation index, model/stage/program/operation identities, and immutable configuration JSON;
-- `SparkFirmwareModuleHostServices`, including completion and wake callbacks, node identity, node target, and the opaque node context.
+- `SparkFirmwareModuleHostServices`, including completion and wake callbacks, node identity, node target, the opaque node context, and the resident-owned execution stream.
 
 Every module initializer must call `SparkFirmwareModuleValidateInitialization`. The helper clears the returned module state, validates both descriptor sizes and ABI versions, and rejects nonzero reserved fields.
 
 ## Node and frame contexts
 
-`SparkModelDriverCreateRequest.node_context` is opaque to SparkPipe. A deployment may use it to bind streams, transport sessions, resident allocations, graph slots, and fixed capacities.
+`SparkModelDriverCreateRequest.node_context` is model-specific and opaque to SparkPipe. It may bind resident allocations, model graph slots, and fixed capacities. Stream and hidden-transport ownership are separate neutral runtime resources and must not be hidden in this object.
 
 `SparkModelDriverFrame.user_context` is model-specific. Persistent model identities—such as sequence lane, KV block table, prefill ranges, GDN snapshots, or MTP draft state—belong there or in model-specific views reachable from it.
 
@@ -64,7 +64,7 @@ A model module must validate, before any transfer or kernel launch:
 - overflow-safe minimum byte size;
 - whether the stage actually owns embedding input or final-head output.
 
-Intermediate pipeline stages must not require artificial host token buffers. Hidden-state transport remains model-owned and is passed through the model-specific frame context.
+Intermediate pipeline stages must not require artificial host token buffers. Hidden-state transport remains resident-owned; only the exact input and output boundary pointers are passed through the model-specific frame context.
 
 ## Shared model-runtime transport
 
@@ -138,9 +138,24 @@ Snapshots expose aggregate neutral counters only. Generated multi-operation driv
 
 A snapshot must not expose model-specific page tables, expert queues, CUDA stream identities, graph nodes, or sequence-lane internals.
 
+## Request-level execution
+
+`SparkModelBatchEngine` is the neutral request-level owner above the pipeline
+client. It receives token IDs, not model frames. It packs prefill rows and decode
+lanes up to manifest limits, keeps each request on one persistent sequence slot,
+and correlates every distributed completion before advancing request state. All
+hot-path arrays are allocated during connect. Explicit-release adapters receive
+a pipeline-wide release transaction before a slot is reused; position-zero
+adapters receive a new request generation and may rebind only at position zero.
+
+Tokenizers, chat templates, and HTTP compatibility parsers remain application or
+family components. They are not device-driver entry points and cannot select an
+alternate model implementation. The GLM service backend is one such application
+and is not linked into the neutral runtime library.
+
 ## Destruction
 
-The caller must stop new work and quiesce the driver before destroy. The shared resident-stage helper performs a bounded wait for slot release. Because the public destroy function is `void`, a module that cannot prove quiescence returns without freeing resident state rather than causing use-after-free. This deliberate leak-on-unsafe-destroy behavior is safer than freeing live CUDA or transport resources, but it is not a substitute for deployment-level quiescence.
+The model-serving adapter ABI requires a `quiesce` entry point. The neutral resident closes admission, polls that hook to an absolute monotonic deadline, synchronizes its one execution stream, closes transport sessions, and only then destroys and unloads the adapter. The adapter must stop accepting submissions as soon as quiescence begins and return `OK` only when no callback or model work can reference adapter-owned state. Because the public driver destroy function remains `void`, a module that cannot prove quiescence preserves live state rather than causing use-after-free.
 
 ## Qualification and publication
 

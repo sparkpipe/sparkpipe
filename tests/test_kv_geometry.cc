@@ -8,7 +8,7 @@
 #define __device__
 #define __forceinline__ inline
 #include "inference/kernels/kv.cuh"
-#include "inference/llms/glm5_2/config.h"
+#include "modules/glm52_resident_decode_stage/source/cuda/config.h"
 
 using Glm52Kv    = LmKvLatent<GLM52_KV_BITS, GLM52_LATENT, GLM52_ROPE_DIM, GLM52_KV_PAGE_SLOTS>;
 using Mimo25Full = LmKvHeads<16u, 4u, 128u, 64u>;

@@ -104,7 +104,14 @@ def validate_workloads() -> None:
 
     expected = {
         "k3": (7168, 96, 96, 896, 16, "mxfp4_e2m1", "bf16", "bf16"),
-        "glm52": (6144, 64, 1, 256, 8, "fp8_e4m3", "bf16", "bf16"),
+        "glm52": (6144, 64, 1, 256, 8, (
+            "int6_block_f32",
+            "int7_block_f32",
+            "int8_block_f32",
+            "fp8_e4m3_block_f32",
+            "nvfp4_e2m1_ue4m3_global_f32",
+            "mxfp4_e2m1_e8m0",
+        ), "bf16", "bf16"),
         "qwen36": (5120, 24, 4, 0, 0, "none", "bf16", "bf16"),
         "dsv4_flash": (4096, 64, 1, 256, 6, "fp4_native", "checkpoint_native", "fp8_e4m3"),
         "dsv4_pro": (7168, 128, 1, 384, 6, "fp4_native", "checkpoint_native", "fp8_e4m3"),
@@ -117,7 +124,9 @@ def validate_workloads() -> None:
             model.get("kv_head_count"),
             model.get("moe_expert_count"),
             model.get("moe_top_k"),
-            model.get("expert_weight_format"),
+            (tuple(model["expert_weight_formats"])
+             if "expert_weight_formats" in model
+             else model.get("expert_weight_format")),
             model.get("expert_activation_format"),
             model.get("non_expert_format"),
         )

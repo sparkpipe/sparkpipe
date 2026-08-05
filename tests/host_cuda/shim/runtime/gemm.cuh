@@ -18,6 +18,7 @@ struct LmRecordedGemm
     uint32_t output_dimension;
     uint32_t packed_rows;
     bool grouped;
+    bool indirect;
 };
 
 extern std::vector<LmRecordedGemm> lm_recorded_gemms;
@@ -58,6 +59,7 @@ static int32_t LmGemmLaunchAsymmetric(
     record.output_dimension = output_dimension;
     record.packed_rows = packed_rows;
     record.grouped = grouped;
+    record.indirect = args->source_row_map != 0;
     lm_recorded_gemms.push_back(record);
 
     for (row = 0u; row < packed_rows; ++row)
@@ -145,6 +147,34 @@ static int32_t LmGemmWeightOnlyLaunch(
             multiprocessors,
             grouped,
             stream);
+}
+
+template<
+    class WeightFormat,
+    uint32_t TILE_N,
+    uint32_t STAGES,
+    uint32_t WARPS>
+static int32_t LmGemmWeightOnlyIndirectLaunch(
+    LmGemmArguments *args,
+    const void *activation_bf16,
+    const void *weight_bytes,
+    uint32_t packed_rows,
+    uint32_t tokens,
+    uint32_t top_k,
+    uint32_t group_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    if (args == 0 || args->source_row_map == 0 ||
+        args->source_row_count != tokens)
+        return LM_LAUNCH_ERR_SHAPE;
+    args->activation_bytes = activation_bf16;
+    return LmGemmWeightOnlyLaunch<WeightFormat,TILE_N,STAGES,WARPS>(
+        args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,
+        group_count,input_dimension,output_dimension,multiprocessors,true,
+        stream);
 }
 
 template<

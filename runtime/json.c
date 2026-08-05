@@ -582,6 +582,48 @@ int32_t SparkJsonFindObjectMember(const SparkJsonDocument *document, int32_t obj
     return -1;
 }
 
+SparkStatus SparkJsonValidateObjectMembersExact(const SparkJsonDocument *document, int32_t object_token_index, const char *const *member_names, uint32_t member_count)
+{
+    int32_t key_token_index;
+    uint32_t matched_count;
+
+    if (!SparkJsonTokenIsType(document, object_token_index, SPARK_JSON_TOKEN_OBJECT) || member_names == 0 || member_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (member_count > UINT32_MAX / 2u || document->tokens[object_token_index].child_count != member_count * 2u)
+    {
+        return SPARK_STATUS_SCHEMA_ERROR;
+    }
+    key_token_index = SparkJsonFindNextDirectChild(document, object_token_index, object_token_index);
+    matched_count = 0u;
+    while (key_token_index >= 0)
+    {
+        int32_t value_token_index;
+        uint32_t member_index;
+
+        value_token_index = SparkJsonFindNextDirectChild(document, object_token_index, key_token_index);
+        if (!SparkJsonTokenIsType(document, key_token_index, SPARK_JSON_TOKEN_STRING) || value_token_index < 0)
+        {
+            return SPARK_STATUS_SCHEMA_ERROR;
+        }
+        for (member_index = 0u; member_index < member_count; ++member_index)
+        {
+            if (member_names[member_index] != 0 && SparkJsonStringEquals(document, key_token_index, member_names[member_index]))
+            {
+                break;
+            }
+        }
+        if (member_index == member_count || SparkJsonFindObjectMember(document, object_token_index, member_names[member_index]) != value_token_index)
+        {
+            return SPARK_STATUS_SCHEMA_ERROR;
+        }
+        matched_count += 1u;
+        key_token_index = SparkJsonFindNextDirectChild(document, object_token_index, value_token_index);
+    }
+    return matched_count == member_count ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR;
+}
+
 uint32_t SparkJsonGetArrayElementCount(const SparkJsonDocument *document, int32_t array_token_index)
 {
     if (!SparkJsonTokenIsType(document, array_token_index, SPARK_JSON_TOKEN_ARRAY))

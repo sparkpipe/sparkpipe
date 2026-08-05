@@ -1,26 +1,17 @@
 {
   "schema_version": 1,
   "generation": 1,
-  "release_id": "glm52-fp8-production",
-  "git_commit": "replace-with-main-hash",
+  "release_id": "model-resident-production-001",
+  "git_commit": "0000000000000000000000000000000000000000",
   "install_root": "/home/{host}/sparkpipe_runtime",
   "state_root": "/home/{host}/sparkpipe_state",
   "rank_count": 13,
+  "max_active_sequence_count": 128,
   "poll_interval_ms": 1000,
   "stop_grace_ms": 5000,
   "files": [
     {
-      "path": "bin/sparkpipe_glm52_http_gateway",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "executable": true
-    },
-    {
-      "path": "bin/sparkpipe_glm52_ring_rank_daemon",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "executable": true
-    },
-    {
-      "path": "bin/sparkpipe_glm52_cuda_residentd",
+      "path": "bin/sparkpipe_model_residentd",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "executable": true,
       "resident_reload_boundary": true
@@ -31,17 +22,9 @@
       "executable": true
     },
     {
-      "path": "lib/libglm52_ring_service_backend.so",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-    },
-    {
-      "path": "lib/libglm52_ring_node_context_builder.so",
+      "path": "lib/model_serving_adapter.so",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "resident_reload_boundary": true
-    },
-    {
-      "path": "lib/libhidden_transport_spark_host_rdma_verbs.so",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     {
       "path": "lib/model_driver.so",
@@ -49,132 +32,29 @@
       "resident_reload_boundary": true
     },
     {
-      "path": "lib/runtime_libs/libcute_dsl_runtime.so",
+      "path": "lib/hidden_transport.so",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     {
-      "path": "lib/runtime_libs/libtvm_ffi.so",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-    },
-    {
-      "path": "tokenizer/tokenizer.json",
+      "path": "config/model_resident.json",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "restart_on_change": false
+      "restart_on_change": true
     }
   ],
   "roles": [
     {
-      "name": "spark0_gateway",
-      "selector": "spark0",
-      "command": "bin/sparkpipe_glm52_http_gateway",
+      "name": "model_resident",
+      "selector": "rank",
+      "command": "bin/sparkpipe_model_residentd",
       "argv": [
-        "--bind",
-        "0.0.0.0",
-        "--port",
-        "18080",
-        "--require-service-backend",
-        "--service-backend-so",
-        "{install_root}/lib/libglm52_ring_service_backend.so",
-        "--model-quantization",
-        "fp8",
-        "--moe-pack-root",
-        "{install_root}/packs/fp8",
-        "--stagepack-root",
-        "{install_root}/packs/stage",
-        "--transport-so",
-        "{install_root}/lib/libhidden_transport_spark_host_rdma_verbs.so",
-        "--driver-so",
-        "{install_root}/lib/model_driver.so",
-        "--program",
-        "decode",
-        "--node-target",
-        "cuda.sm121.glm52.resident_decode_stage.bf16",
-        "--node-context-builder-so",
-        "{install_root}/lib/libglm52_ring_node_context_builder.so",
-        "--embedding-pack",
-        "{install_root}/packs/embedding.sp",
-        "--tokenizer",
-        "{install_root}/tokenizer/tokenizer.json",
-        "--max-active",
-        "1024",
-        "--cuda-resident-socket",
-        "{state_root}/cuda_resident_rank0.sock",
-        "--kv-logical-blocks",
-        "1048576",
-        "--mtp",
-        "--port-base",
-        "52100"
+        "--deployment",
+        "{install_root}/config/model_resident.json",
+        "--rank-index",
+        "{rank}"
       ],
       "env": [
         "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs"
       ]
-    },
-    {
-      "name": "ring_cuda_residentd",
-      "selector": "rank",
-      "command": "bin/sparkpipe_glm52_cuda_residentd",
-      "allow_resident_pack_cache": true,
-      "restart_on_update": false,
-      "argv": [
-        "--rank",
-        "{rank}",
-        "--socket",
-        "{state_root}/cuda_resident_rank{rank}.sock",
-        "--model-quantization",
-        "fp8",
-        "--moe-pack-root",
-        "{install_root}/packs/fp8",
-        "--stagepack-root",
-        "{install_root}/packs/stage",
-        "--transport-so",
-        "{install_root}/lib/libhidden_transport_spark_host_rdma_verbs.so",
-        "--driver-so",
-        "{install_root}/lib/model_driver.so",
-        "--program",
-        "decode",
-        "--node-target",
-        "cuda.sm121.glm52.resident_decode_stage.bf16",
-        "--node-context-builder-so",
-        "{install_root}/lib/libglm52_ring_node_context_builder.so",
-        "--embedding-pack",
-        "{install_root}/packs/embedding.sp",
-        "--max-active",
-        "1024",
-        "--kv-nvme-path",
-        "{state_root}/kv_rank{rank}.jit",
-        "--kv-nvme-blocks",
-        "1048576",
-        "--kv-nvme-batch-blocks",
-        "128",
-        "--mtp",
-        "--port-base",
-        "52100"
-      ],
-      "env": [
-        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs"
-      ]
-    },
-    {
-      "name": "ring_rank_daemon",
-      "selector": "rank",
-      "command": "bin/sparkpipe_glm52_ring_rank_daemon",
-      "allow_resident_pack_cache": false,
-      "argv": [
-        "--rank",
-        "{rank}",
-        "--cuda-resident-socket",
-        "{state_root}/cuda_resident_rank{rank}.sock",
-        "--max-active",
-        "1024",
-        "--port-base",
-        "52100",
-        "--final-event-return-host",
-        "spark0"
-      ],
-      "env": [
-        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs"
-      ],
-      "restart_on_update": true
     }
   ]
 }

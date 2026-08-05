@@ -1,149 +1,110 @@
 {
-  "schema_version": 1,
-  "model": {
-    "id": "deepseek.v4.resident-decode-stage-firmware",
-    "revision": "h4096-l43-dsa-e256k6-hash3-v129280-v1"
-  },
   "metadata": {
     "architecture": "dsv4_resident_decode_stage",
-    "purpose": "resident decode-stage firmware for DeepSeek V4: DSA sparse attention with lightning indexer top-512 selection, compressed rope, LoRA query and grouped output projections, 256-expert MoE with three hash-routed layers, screened exact full-vocabulary head",
-    "provenance": {
-      "status": "implemented driver, codex/model-driver-family (PR #491)",
-      "disclosed_source": [
-        "hugging face model config"
-      ]
-    },
     "module_geometry": {
+      "attention_head_count": 64,
+      "expert_intermediate_dimension": 2048,
+      "experts_per_token": 6,
+      "head_dimension": 512,
       "hidden_dimension": 4096,
-      "layer_count": 43,
-      "attn_query_head_count": 64,
-      "attn_kv_head_count": 1,
-      "attn_head_dimension": 512,
-      "attn_rope_dimension": 64,
-      "query_lora_rank": 1024,
-      "output_lora_rank": 1024,
-      "output_group_count": 8,
-      "sliding_window_tokens": 128,
-      "csa_compress_ratio": 4,
-      "hca_compress_ratio": 128,
       "index_head_count": 64,
       "index_head_dimension": 128,
       "index_top_k": 512,
+      "layer_count": 43,
       "routed_expert_count": 256,
-      "shared_expert_count": 1,
-      "experts_per_token": 6,
-      "expert_intermediate_dimension": 2048,
-      "hash_routed_layer_count": 3,
-      "routed_scaling_factor": 1.5,
-      "vocab_count": 129280,
-      "head_screen_cap": 4096
+      "sliding_window_tokens": 128,
+      "vocab_count": 129280
     },
-    "hf_config_geometry": {
-      "hidden_size": 4096,
-      "num_hidden_layers": 43,
-      "vocab_size": 129280,
-      "num_attention_heads": 64,
-      "num_key_value_heads": 1,
-      "head_dim": 512,
-      "qk_rope_head_dim": 64,
-      "rope_theta": 10000.0,
-      "compress_rope_theta": 160000.0,
-      "rope_scaling": {
-        "factor": 16,
-        "original_max_position_embeddings": 65536
-      },
-      "q_lora_rank": 1024,
-      "o_lora_rank": 1024,
-      "o_groups": 8,
-      "sliding_window": 128,
-      "compress_ratios": [
-        4,
-        128
-      ],
-      "index_n_heads": 64,
-      "index_head_dim": 128,
-      "index_topk": 512,
-      "n_routed_experts": 256,
-      "n_shared_experts": 1,
-      "num_experts_per_tok": 6,
-      "moe_intermediate_size": 2048,
-      "num_hash_layers": 3,
-      "routed_scaling_factor": 1.5,
-      "rms_norm_eps": 1e-06,
-      "max_position_embeddings": 1048576
+    "precision_contract": {
+      "accumulator_codec": "fp32",
+      "aot_codec_specialization": true,
+      "expert_activation_codec": "bf16",
+      "expert_scale_encoding": "e8m0",
+      "expert_scale_group_size": 32,
+      "expert_stored_bits": 4,
+      "expert_weight_codec": "mxfp4_e2m1",
+      "expert_weight_codec_id": 7,
+      "fallback_allowed": false,
+      "kv_cache_codec": "bf16",
+      "linear_weight_codec": "fp8_e4m3",
+      "runtime_precision_selection": "forbidden"
     },
+    "purpose": "DeepSeek V4 Flash resident firmware with checkpoint FP8 non-expert weights, MXFP4 routed-expert weights, BF16 KV cache and FP32 accumulation",
     "qualification": {
-      "status": "NOT_MEASURED",
-      "production_ready": false,
-      "gpu_numerical_correctness": "NOT_MEASURED",
       "gpu_latency": "NOT_MEASURED",
+      "gpu_numerical_correctness": "NOT_MEASURED",
       "gpu_throughput": "NOT_MEASURED",
-      "controlled_bring_up_only": true
+      "production_ready": false,
+      "status": "NOT_MEASURED"
     },
     "runtime_contract": {
-      "firmware_module_abi": 4,
-      "model_driver_abi": 6,
-      "completion": "submit_return",
+      "completion": "external",
+      "configuration_source": "typed model-owned serving adapter configuration",
       "fallback_allowed": false,
+      "required_environment": [],
       "runtime_backend_selection": "forbidden",
-      "model_frame_context": "SparkDsv4ResidentDecodeStageFrameContext",
-      "driver_dispatch_slot_semantics": "advisory scheduler ticket only; this module rejects DRIVER_DISPATCH_SLOT_VALID",
-      "configuration_source": "strict process environment pending migration into immutable module configuration JSON",
-      "required_environment": [
-        "SPARK_DSV4_ALLOW_UNQUALIFIED_EXECUTION",
-        "SPARK_DSV4_STAGE_PACK_PATH",
-        "SPARK_DSV4_STAGE_COUNT",
-        "SPARK_DSV4_STAGE_INDEX",
-        "SPARK_DSV4_STAGE_FIRST_LAYER",
-        "SPARK_DSV4_STAGE_LAYER_COUNT",
-        "SPARK_DSV4_STAGE_MAX_ACTIVE_SEQUENCES",
-        "SPARK_DSV4_STAGE_MAX_SEQ",
-        "SPARK_DSV4_STAGE_PIPELINE_SLOTS",
-        "SPARK_DSV4_STAGE_MTP",
-        "SPARK_DSV4_STAGE_GRAPHS"
-      ],
-      "notes": [
-        "decode only; prefill and MTP execution fail closed until qualified",
-        "lane identities are carried by the model-specific decode batch, never by driver_dispatch_slot",
-        "host token input is required only on the embedding stage and host token output only on the head stage"
-      ]
+      "runtime_precision_selection": "forbidden"
+    },
+    "source_model": {
+      "id": "deepseek-ai/DeepSeek-V4-Flash",
+      "revision": "60d8d70770c6776ff598c94bb586a859a38244f1"
     }
   },
+  "model": {
+    "id": "deepseek.v4.flash.resident-decode-stage-firmware",
+    "revision": "h4096-l43-dsa-e256k6-hash3-v129280-v2"
+  },
+  "schema_version": 1,
   "stages": [
     {
       "name": "dsv4_resident_decode_stage",
-      "target": "cuda.sm121.dsv4.resident_decode_stage.bf16",
       "programs": [
         {
-          "name": "resident_decode",
+          "completion": "external",
           "id": 1,
-          "max_inflight": 1,
-          "completion": "submit_return",
+          "max_inflight": 4,
+          "name": "resident_decode",
+          "operations": [
+            {
+              "configuration": {
+                "expert_weight_codec": "mxfp4_e2m1",
+                "fallback_allowed": false,
+                "kv_cache_codec": "bf16",
+                "linear_weight_codec": "fp8_e4m3",
+                "runtime_backend_selection": "forbidden",
+                "runtime_precision_selection": "forbidden"
+              },
+              "module": "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.v2",
+              "name": "dsv4_resident_decode_stage"
+            }
+          ],
           "scheduling": {
+            "device_memcpy_bytes_per_submit_ceiling": 0,
             "flags": [
               "stream_ordered",
+              "external_completion",
               "driver_owns_resident_state",
               "driver_owns_kv_cache",
               "fixed_firmware",
               "requires_hidden_transport",
               "no_file_transport",
               "no_shell_transport"
-            ]
-          },
-          "operations": [
-            {
-              "name": "dsv4_resident_decode_stage",
-              "module": "spark.dsv4.resident_decode_stage.bf16.h4096.l43.e256.k6.v1",
-              "configuration": {
-                "qualification_status": "NOT_MEASURED",
-                "production_ready": false,
-                "fallback_allowed": false,
-                "runtime_backend_selection": "forbidden"
-              }
-            }
-          ]
+            ],
+            "host_staging_bytes_per_submit_ceiling": 0,
+            "max_active_slots": 128,
+            "max_new_tokens": 65536,
+            "max_resident_sequences": 128,
+            "max_sequence_tokens": 1048576,
+            "private_queue_count": 0,
+            "resident_kv_bytes": 0,
+            "resident_weight_bytes": 0,
+            "static_workspace_bytes": 0,
+            "target_latency_ns": 0,
+            "validated_latency_ns": 0
+          }
         }
-      ]
+      ],
+      "target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16"
     }
   ]
 }

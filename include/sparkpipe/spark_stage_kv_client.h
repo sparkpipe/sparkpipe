@@ -25,7 +25,7 @@ extern "C" {
  * logical block, so a model or layout change can never consume stale KV.
  * The residency DECISION - which packets prefetch when, against which work
  * queue - belongs to the runtime work-control layer exactly as it does for
- * glm52; this client is the provider plumbing that layer drives.
+ * any model; this client is the provider plumbing that layer drives.
  */
 
 typedef struct SparkStageKvClient

@@ -207,6 +207,29 @@ static void SparkTestHiddenTransportValidatesEndpointAndPacket(void)
     assert(SparkHiddenTransportValidateEndpoint(&endpoint) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     endpoint.bytes_per_sequence = SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES;
+    endpoint.local_rank_index = 1u;
+    assert(SparkHiddenTransportValidateEndpoint(&endpoint) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    endpoint.configuration_flags =
+        SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION;
+    endpoint.source_rank_index = 0u;
+    endpoint.sink_rank_index = 1u;
+    endpoint.control_port_base = 59000u;
+    endpoint.source_host = "node-alpha";
+    endpoint.sink_host = "node-beta";
+    assert(SparkHiddenTransportValidateEndpoint(&endpoint) == SPARK_STATUS_OK);
+    endpoint.source_rank_index = 1u;
+    assert(SparkHiddenTransportValidateEndpoint(&endpoint) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    endpoint.source_rank_index = 0u;
+    endpoint.sink_host = "0.0.0.0";
+    assert(SparkHiddenTransportValidateEndpoint(&endpoint) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    endpoint.sink_host = "node-beta";
+    endpoint.reserved0 = 1u;
+    assert(SparkHiddenTransportValidateEndpoint(&endpoint) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    endpoint.reserved0 = 0u;
 
     SparkTestInitializePacket(&packet, &endpoint, hidden_payload, 7u);
     assert(SparkHiddenTransportValidatePacket(&endpoint, &packet) ==

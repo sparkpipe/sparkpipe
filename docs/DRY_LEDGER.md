@@ -85,7 +85,7 @@ seams get interfaces instead of renames:
 `spark_glm52_kv_cache.h` geometry half, `spark_glm52_dspark.h` (drafter
 wiring; the TREE it drives is generic mtp_tree), stagepack tensor tables,
 chat template data, `spark_glm52_model.h`, everything in
-`inference/llms/glm5_2/`.
+`modules/glm52_resident_decode_stage/source/cuda/`.
 
 ## Dead, deleted (this commit)
 

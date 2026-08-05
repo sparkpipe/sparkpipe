@@ -10,6 +10,9 @@ struct LmGemmArguments
     uint32_t prefix_built;
     const uint32_t *group_row_offset;
     uint32_t *group_tile_prefix;
+    const void *activation_bytes;
+    const uint32_t *source_row_map;
+    uint32_t source_row_count;
     void *output_bf16;
     void *output_f32;
     void *accumulate_bf16;

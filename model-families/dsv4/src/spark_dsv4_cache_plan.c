@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "sparkpipe/spark_dsv4_flash_model.h"
+#include "sparkpipe/spark_dsv4_model.h"
 #include "sparkpipe/spark_dsv4_pro_model.h"
 
 typedef struct SparkDsv4ModelCacheGeometry
@@ -178,13 +178,13 @@ static SparkStatus SparkDsv4ResolveModelGeometry(
     switch (model_variant)
     {
         case SPARK_DSV4_MODEL_VARIANT_FLASH:
-            geometry->backbone_layer_count = SPARK_DSV4_FLASH_LAYER_COUNT;
-            geometry->mtp_layer_count = SPARK_DSV4_FLASH_MTP_LAYER_COUNT;
-            geometry->head_dimension = SPARK_DSV4_FLASH_HEAD_DIMENSION;
-            geometry->rope_dimension = SPARK_DSV4_FLASH_QK_ROPE_HEAD_DIMENSION;
-            geometry->index_head_dimension = SPARK_DSV4_FLASH_INDEX_HEAD_DIMENSION;
-            geometry->sliding_window_tokens = SPARK_DSV4_FLASH_SLIDING_WINDOW_TOKENS;
-            geometry->maximum_context_tokens = SPARK_DSV4_FLASH_MAXIMUM_CONTEXT_TOKENS;
+            geometry->backbone_layer_count = SPARK_DSV4_MODEL_LAYER_COUNT;
+            geometry->mtp_layer_count = SPARK_DSV4_MODEL_MTP_LAYER_COUNT;
+            geometry->head_dimension = SPARK_DSV4_MODEL_HEAD_DIMENSION;
+            geometry->rope_dimension = SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION;
+            geometry->index_head_dimension = SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION;
+            geometry->sliding_window_tokens = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS;
+            geometry->maximum_context_tokens = SPARK_DSV4_MODEL_MAX_POSITIONS;
             return(SPARK_STATUS_OK);
         case SPARK_DSV4_MODEL_VARIANT_PRO:
             geometry->backbone_layer_count = SPARK_DSV4_PRO_LAYER_COUNT;
@@ -208,8 +208,8 @@ static uint16_t SparkDsv4CompressionRatioForLayer(
     if (model_variant == SPARK_DSV4_MODEL_VARIANT_FLASH)
     {
         return(is_mtp_layer != 0u
-            ? SparkDsv4FlashMtpCompressionRatio()
-            : SparkDsv4FlashBackboneCompressionRatio(absolute_layer_index));
+            ? SparkDsv4ModelMtpCompressionRatio()
+            : SparkDsv4ModelBackboneCompressionRatio(absolute_layer_index));
     }
     if (model_variant == SPARK_DSV4_MODEL_VARIANT_PRO)
     {

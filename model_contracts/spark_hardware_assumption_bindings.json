@@ -63,7 +63,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "inference/llms/glm5_2/layer.cuh"
+          "path": "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
         }
       ],
       "fallback": "forbidden",
@@ -77,7 +77,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "node/backend.c"
+          "path": "node/model_residentd.c"
         },
         {
           "binding_mode": "generated_policy",
@@ -117,7 +117,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "inference/stage/dispatch.cu"
+          "path": "include/sparkpipe/spark_model_driver.h"
         }
       ],
       "fallback": "forbidden",
@@ -149,11 +149,11 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "inference/stage/graph_replay.h"
+          "path": "src/spark_driver_loader.c"
         },
         {
           "binding_mode": "generated_policy",
-          "path": "inference/stage/dispatch.cu"
+          "path": "include/sparkpipe/spark_model_driver.h"
         }
       ],
       "fallback": "forbidden",
@@ -167,7 +167,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "inference/stage/dispatch.cu"
+          "path": "include/sparkpipe/spark_model_driver.h"
         },
         {
           "binding_mode": "generated_policy",
@@ -185,7 +185,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "scheduler/scheduler.c"
+          "path": "runtime/model_batch_engine.c"
         },
         {
           "binding_mode": "generated_policy",
@@ -239,7 +239,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "scheduler/scheduler.c"
+          "path": "runtime/model_batch_engine.c"
         },
         {
           "binding_mode": "generated_policy",
@@ -391,7 +391,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "node/rank_daemon.c"
+          "path": "node/model_residentd.c"
         }
       ],
       "fallback": "forbidden",
@@ -469,7 +469,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "node/rank_daemon.c"
+          "path": "node/model_residentd.c"
         }
       ],
       "fallback": "forbidden",
@@ -505,7 +505,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "node/rank_daemon.c"
+          "path": "node/model_residentd.c"
         }
       ],
       "fallback": "forbidden",
@@ -523,7 +523,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "node/rank_daemon.c"
+          "path": "node/model_residentd.c"
         }
       ],
       "fallback": "forbidden",
@@ -537,7 +537,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "scheduler/scheduler.c"
+          "path": "runtime/pipeline_runtime.c"
         },
         {
           "binding_mode": "generated_policy",
@@ -559,7 +559,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "node/backend.c"
+          "path": "node/model_residentd.c"
         }
       ],
       "fallback": "forbidden",
@@ -577,7 +577,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "scheduler/scheduler.c"
+          "path": "runtime/pipeline_runtime.c"
         }
       ],
       "fallback": "forbidden",

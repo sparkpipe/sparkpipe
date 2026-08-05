@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_driver_compiler.h"
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_model_driver.h"
+#include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_module_abi.h"
 #include "test_support.h"
 
@@ -132,6 +133,9 @@ int main(void)
     assert(strstr(generated_source, "SparkTestDoubleExecute(instance->operation_1_state, frame)") != 0);
     assert(strstr(generated_source, "instance->host_services.wake_function = request->wake_function") != 0);
     assert(strstr(generated_source, "instance->host_services.wake_context = request->wake_context") != 0);
+    assert(strstr(generated_source, "SparkModelDriverCreateRequestIsValid(request)") != 0);
+    assert(strstr(generated_source, "instance->host_services.execution_stream = request->execution_stream") != 0);
+    assert(strstr(generated_source, "SparkGeneratedAdmissionDecisionIsValid") == 0);
     assert(strstr(generated_source, "if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u && request->new_token_count > 7u)") != 0);
     assert(strstr(generated_source, "SparkResolveValidatedModule") == 0);
     assert(strstr(generated_source, "for (") == 0);
@@ -158,12 +162,16 @@ int main(void)
     assert(program != 0);
 
     memset(&completion_state, 0, sizeof(completion_state));
-    memset(&create_request, 0, sizeof(create_request));
+    SparkModelDriverInitializeCreateRequest(&create_request);
     create_request.node_id = "cpu0";
     create_request.node_target = "host.cpu";
     create_request.completion_function = SparkTestCompletion;
     create_request.completion_context = &completion_state;
     driver_instance = 0;
+    create_request.abi_version -= 1u;
+    assert(loaded_driver.interface->create(&create_request, &driver_instance) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(driver_instance == 0);
+    create_request.abi_version = SPARK_MODEL_DRIVER_ABI_VERSION;
     assert(loaded_driver.interface->create(&create_request, &driver_instance) == SPARK_STATUS_OK);
     assert(driver_instance != 0);
 
@@ -341,7 +349,7 @@ int main(void)
     program = SparkFindLoadedModelDriverProgram(&loaded_driver, "decode");
     assert(program != 0);
     memset(&completion_state, 0, sizeof(completion_state));
-    memset(&create_request, 0, sizeof(create_request));
+    SparkModelDriverInitializeCreateRequest(&create_request);
     create_request.node_id = "cpu0";
     create_request.node_target = "host.cpu";
     create_request.completion_function = SparkTestCompletion;

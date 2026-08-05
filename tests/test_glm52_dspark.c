@@ -77,7 +77,7 @@ static void SparkTestDsparkInitializesSpeculator(
         &configuration) == SPARK_STATUS_OK);
 }
 
-static void SparkTestDsparkModelContractRejectsNonFp8Verifier(void)
+static void SparkTestDsparkModelContractRejectsNonBf16VerifierTaps(void)
 {
     SparkGlm52DsparkModelContract model_contract;
 
@@ -247,7 +247,7 @@ static void SparkTestDsparkResolvesVerifierTokens(void)
 
 int main(void)
 {
-    SparkTestDsparkModelContractRejectsNonFp8Verifier();
+    SparkTestDsparkModelContractRejectsNonBf16VerifierTaps();
     SparkTestDsparkDefaultTapPlanMatchesGlm52Ring();
     SparkTestDsparkDraftLifecycleWithConfidenceTruncation();
     SparkTestDsparkResolvesVerifierTokens();

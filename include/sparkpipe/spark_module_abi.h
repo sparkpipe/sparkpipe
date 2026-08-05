@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_SPARK_MODULE_ABI_H
-#define SPARKPIPE_SPARK_MODULE_ABI_H
+#pragma once
 
 #include <stdint.h>
 
@@ -10,7 +9,7 @@ extern "C" {
 #endif
 
 #define SPARK_FIRMWARE_MODULE_ABI_VERSION 4u
-#define SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION 1u
+#define SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION 2u
 
 typedef struct SparkFirmwareModuleConfiguration
 {
@@ -39,7 +38,8 @@ typedef struct SparkFirmwareModuleHostServices
     const char *node_id;
     const char *node_target;
     void *node_context;
-    uint64_t reserved[2];
+    void *execution_stream;
+    uint64_t reserved[1];
 } SparkFirmwareModuleHostServices;
 
 static inline SparkStatus SparkFirmwareModuleValidateInitialization(
@@ -58,8 +58,7 @@ static inline SparkStatus SparkFirmwareModuleValidateInitialization(
         configuration->reserved1 != 0u ||
         host_services->abi_version != SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION ||
         host_services->descriptor_bytes < sizeof(*host_services) ||
-        host_services->reserved[0] != 0u ||
-        host_services->reserved[1] != 0u)
+        host_services->reserved[0] != 0u)
     {
         return SPARK_STATUS_ABI_MISMATCH;
     }
@@ -89,6 +88,5 @@ typedef void (*SparkFirmwareModuleDestroyFunction)(void *module_state);
 
 #ifdef __cplusplus
 }
-#endif
 
 #endif

@@ -10,6 +10,10 @@ int main(void)
     static const char ValidJson[] =
         "{\"name\":\"firmware\\nmodel\",\"unicode\":\"\\u03bb\",\"values\":[1,true,{\"x\":7}]}";
     static const char InvalidJson[] = "{\"value\":1,}";
+    static const char DuplicateJson[] = "{\"name\":1,\"name\":2,\"values\":[]}";
+    static const char UnknownJson[] = "{\"name\":1,\"values\":[],\"stale\":true}";
+    static const char *const ExactMembers[] = {"name", "unicode", "values"};
+    static const char *const ShortMembers[] = {"name", "values"};
     static const char ExpectedAbcSha256[] = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     SparkJsonDocument document;
     int32_t root_token;
@@ -23,6 +27,8 @@ int main(void)
     assert(SparkJsonParseText(ValidJson, strlen(ValidJson), &document) == SPARK_STATUS_OK);
     root_token = SparkJsonGetRootToken(&document);
     assert(SparkJsonTokenIsType(&document, root_token, SPARK_JSON_TOKEN_OBJECT));
+    assert(SparkJsonValidateObjectMembersExact(&document, root_token, ExactMembers, 3u) == SPARK_STATUS_OK);
+    assert(SparkJsonValidateObjectMembersExact(&document, root_token, ShortMembers, 2u) == SPARK_STATUS_SCHEMA_ERROR);
 
     name_token = SparkJsonFindObjectMember(&document, root_token, "name");
     assert(SparkJsonCopyString(&document, name_token, &decoded_text) == SPARK_STATUS_OK);
@@ -40,6 +46,18 @@ int main(void)
 
     SparkJsonDocumentReset(&document);
     assert(SparkJsonParseText(InvalidJson, strlen(InvalidJson), &document) == SPARK_STATUS_PARSE_ERROR);
+    SparkJsonDocumentDestroy(&document);
+
+    SparkJsonDocumentReset(&document);
+    assert(SparkJsonParseText(DuplicateJson, strlen(DuplicateJson), &document) == SPARK_STATUS_OK);
+    root_token = SparkJsonGetRootToken(&document);
+    assert(SparkJsonValidateObjectMembersExact(&document, root_token, ShortMembers, 2u) == SPARK_STATUS_SCHEMA_ERROR);
+    SparkJsonDocumentDestroy(&document);
+
+    SparkJsonDocumentReset(&document);
+    assert(SparkJsonParseText(UnknownJson, strlen(UnknownJson), &document) == SPARK_STATUS_OK);
+    root_token = SparkJsonGetRootToken(&document);
+    assert(SparkJsonValidateObjectMembersExact(&document, root_token, ShortMembers, 2u) == SPARK_STATUS_SCHEMA_ERROR);
     SparkJsonDocumentDestroy(&document);
 
     assert(SparkSha256Bytes("abc", 3u, sha256) == SPARK_STATUS_OK);

@@ -12,6 +12,7 @@
 struct LmBf16Format
 {
 	static constexpr uint32_t kStoredBits = 16u;
+	static constexpr bool kTmaSwizzle = true;
 	// The K tile this format needs, in ELEMENTS. It is a property of the
 	// stored width, not a free choice: a BF16 K tile of 64 elements is exactly
 	// one 128-byte TMA swizzle span. Hardcoding

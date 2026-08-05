@@ -63,16 +63,6 @@ static void SparkTestCopyExecutable(
     assert(chmod(destination_path, S_IRUSR | S_IWUSR | S_IXUSR) == 0);
 }
 
-static void SparkTestAppendExecutableByte(const char *path)
-{
-    FILE *file;
-
-    file = fopen(path, "ab");
-    assert(file != 0);
-    assert(fputc(0, file) != EOF);
-    assert(fclose(file) == 0);
-}
-
 int main(void)
 {
     static const char LibraryRoot[] = "build/test_module_library_store";
@@ -273,7 +263,8 @@ int main(void)
                validator_identity_second_report.validator_sha256) == 0);
     assert(SparkTestReadCounter(ValidatorIdentityCounterPath) == 1u);
 
-    SparkTestAppendExecutableByte(ValidatorCopyPath);
+    modified_request.validator_path =
+        "build/test_module_validator_identity_changed";
     assert(SparkPublishValidatedModule(
                &modified_request,
                &validator_identity_changed_report,
