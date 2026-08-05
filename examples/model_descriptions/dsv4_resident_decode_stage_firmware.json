@@ -82,7 +82,6 @@
             "device_memcpy_bytes_per_submit_ceiling": 0,
             "flags": [
               "stream_ordered",
-              "external_completion",
               "driver_owns_resident_state",
               "driver_owns_kv_cache",
               "fixed_firmware",

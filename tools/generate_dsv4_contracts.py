@@ -355,7 +355,6 @@ def render_flash_model_description(contract: dict[str, Any]) -> str:
                 "scheduling": {
                     "flags": [
                         "stream_ordered",
-                        "external_completion",
                         "driver_owns_resident_state",
                         "driver_owns_kv_cache",
                         "fixed_firmware",

@@ -728,8 +728,8 @@
     },
     {
       "path": "examples/model_descriptions/dsv4_resident_decode_stage_firmware.json",
-      "sha256": "8b15d299924ddc212b4952a09b686ea7808451b23ca9cc5db945bf78dd925feb",
-      "size_bytes": 3772
+      "sha256": "a31f973f5d44db223b14826d217bad18adaabb4444d9823036d550282ffe6d71",
+      "size_bytes": 3735
     },
     {
       "path": "examples/model_descriptions/firmware_demo.json",
@@ -1398,7 +1398,7 @@
     },
     {
       "path": "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h",
-      "sha256": "749ac7b8c7949287c7ac026e0a5875f4171dcdd45882abdea03444e5e3a086b3",
+      "sha256": "aa4bdb51f255528961636d11aacfcd38a6ae06fcf468d2bf3dd1c81d2e511ae8",
       "size_bytes": 5184
     },
     {
@@ -2808,8 +2808,8 @@
     },
     {
       "path": "tests/test_model_description.c",
-      "sha256": "4711b0b2d63c2a93694bb117fd3da0d442602ef0670cf1486376273663b0595a",
-      "size_bytes": 2873
+      "sha256": "643ed28dd57fc026a2fad5e1561bef76ee7462f245ee68fdfe70b5ccbbf9aa46",
+      "size_bytes": 3823
     },
     {
       "path": "tests/test_model_driver_contracts.py",
@@ -3133,8 +3133,8 @@
     },
     {
       "path": "tools/generate_dsv4_contracts.py",
-      "sha256": "7ac0140d1706a90ba5e54d88b3e3b01a57303357d70fd785011459f59add4aba",
-      "size_bytes": 20814
+      "sha256": "854f0b34df07c0f0191051fb27ca50a776b1e019107ed83a78a2b9cb4c1e2ef1",
+      "size_bytes": 20767
     },
     {
       "path": "tools/generate_k3_contract.py",
@@ -3425,5 +3425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6374875
+  "total_bytes": 6375741
 }
