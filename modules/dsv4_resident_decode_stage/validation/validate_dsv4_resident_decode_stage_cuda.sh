@@ -56,6 +56,7 @@ make -C "${repository_root}" \
     "${repository_root}/build/libsparkpipe_runtime.a" \
     "${repository_root}/build/libsparkpipe_core.a" \
     -L"${CUDA_HOME:-/usr/local/cuda}/lib64" \
+	-lcuda \
     -lcudart \
     -ldl \
     -lm \

@@ -95,6 +95,7 @@ def main() -> None:
 	require(validator, "frame->frame.completion_function = SparkDsv4ValidationCompletion", "validator external completion")
 	reject(validator, "node_context->stage_count = 2u", "hardcoded validator topology")
 	reject(validator + validator_script + module, "ALLOW_UNQUALIFIED", "runtime qualification bypass")
+	require(validator_script, "-lcuda", "CUDA Driver API validator link")
 	print("PASS DSV4 active-module source contracts")
 
 
