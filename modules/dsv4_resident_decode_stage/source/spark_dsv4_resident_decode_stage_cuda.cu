@@ -6,6 +6,7 @@
 #include "runtime/gemm.cuh"
 
 #include <math.h>
+#include <stdio.h>
 
 #define SPARK_DSV4_ROUTER_SORT_CAPACITY 512u
 #define SPARK_DSV4_EXPERT_TILE_N 128u
@@ -1613,14 +1614,17 @@ extern "C" cudaError_t SparkDsv4LaunchValidateTid2Eid(cudaStream_t stream, const
 	return(cudaGetLastError());
 }
 
-static cudaError_t SparkDsv4GemmStatus(int32_t status)
+static cudaError_t SparkDsv4GemmStatus(const char *site, int32_t status)
 {
-	return(status == LM_LAUNCH_OK ? cudaSuccess : cudaErrorInvalidValue);
+	if ( status == LM_LAUNCH_OK )
+		return(cudaSuccess);
+	fprintf(stderr,"dsv4_stage gemm_error site=%s status=%d\n",site,status);
+	return(cudaErrorInvalidValue);
 }
 
 extern "C" cudaError_t SparkDsv4LaunchMoeRoute(cudaStream_t stream, const uint32_t *route_expert, uint32_t rows, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2)
 {
-	return(SparkDsv4GemmStatus(LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_EXPERT_TILE_N,group_tile_prefix_w1,group_tile_prefix_w2,stream)));
+	return(SparkDsv4GemmStatus("route",LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_EXPERT_TILE_N,group_tile_prefix_w1,group_tile_prefix_w2,stream)));
 }
 
 static void SparkDsv4ExpertGemmArguments(LmGemmArguments *arguments, const SparkDsv4LinearView *stacked, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t output_dimension)
@@ -1642,7 +1646,7 @@ extern "C" cudaError_t SparkDsv4LaunchExpertUp(cudaStream_t stream, const SparkD
 	arguments.source_row_map = route_source_token;
 	arguments.source_row_count = rows;
 	status = LmGemmWeightOnlyIndirectLaunch<SparkDsv4ExpertWeightFormat,SPARK_DSV4_EXPERT_TILE_N,SPARK_DSV4_EXPERT_STAGES,SPARK_DSV4_EXPERT_WARPS>(&arguments,input_bf16,stacked->payload,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,rows,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,multiprocessor_count,stream);
-	return(SparkDsv4GemmStatus(status));
+	return(SparkDsv4GemmStatus("expert_up",status));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchExpertDown(cudaStream_t stream, const SparkDsv4LinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t multiprocessor_count)
@@ -1651,7 +1655,7 @@ extern "C" cudaError_t SparkDsv4LaunchExpertDown(cudaStream_t stream, const Spar
 	int32_t status;
 	SparkDsv4ExpertGemmArguments(&arguments,stacked,group_row_offset,group_tile_prefix,output_bf16,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
 	status = LmGemmWeightOnlyLaunch<SparkDsv4ExpertWeightFormat,SPARK_DSV4_EXPERT_TILE_N,SPARK_DSV4_EXPERT_STAGES,SPARK_DSV4_EXPERT_WARPS>(&arguments,input_bf16,stacked->payload,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,rows,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,multiprocessor_count,true,stream);
-	return(SparkDsv4GemmStatus(status));
+	return(SparkDsv4GemmStatus("expert_down",status));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count)
