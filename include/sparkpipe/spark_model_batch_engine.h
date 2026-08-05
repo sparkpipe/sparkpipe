@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 1u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 2u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 
@@ -57,6 +57,7 @@ typedef struct SparkModelBatchEngineConfiguration
 	uint32_t stop_token_count;
 	uint32_t stop_token_ids[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
 	const SparkModelResidentDeployment *deployment;
+	const char *runtime_root;
 	SparkModelBatchEventFunction event_function;
 	void *event_context;
 } SparkModelBatchEngineConfiguration;
