@@ -14,6 +14,8 @@ SPECIFICATION = (
     "dsv4_flash_pp13_host_rdma.spec.json")
 DEPLOYMENT = (
     ROOT / "examples" / "deployments" / "dsv4_flash_pp13_host_rdma.json")
+STAGE_CONFIGURATION = (
+    ROOT / "examples" / "deployments" / "dsv4_flash_stage.json")
 
 
 def load_module():
@@ -37,6 +39,22 @@ def main() -> int:
     specification = module.load_specification(SPECIFICATION)
     rendered = module.render_deployment(module.build_deployment(specification))
     assert rendered == DEPLOYMENT.read_text(encoding="utf-8")
+    deployment = module.build_deployment(specification)
+    assert deployment["adapter"]["shared_object_path"] == (
+        "lib/model_serving_adapter.so")
+    assert deployment["transport"]["shared_object_path"] == (
+        "lib/hidden_transport.so")
+    assert {node["adapter_configuration_path"]
+            for node in deployment["nodes"]} == {
+                "config/dsv4_flash_stage.json"}
+    stage_configuration = module.load_specification(STAGE_CONFIGURATION)
+    assert stage_configuration == {
+        "schema_version": 3,
+        "model_revision":
+            "60d8d70770c6776ff598c94bb586a859a38244f1",
+        "stage_pack_path": "packs/dsv4_flash_stage.spstage",
+        "max_sequence_positions": 4096,
+    }
     source = TOOL.read_text(encoding="utf-8").lower()
     for forbidden in ("glm", "dsv", "codec", "int8", "fp8", "mxfp4"):
         assert forbidden not in source
@@ -47,7 +65,7 @@ def main() -> int:
     assert all(node["node_target"] == "cuda.test.package.selected.target"
                for node in deployment["nodes"])
     assert deployment["nodes"][12]["adapter_configuration_path"] == (
-        "config/stage-12.json")
+        "config/dsv4_flash_stage.json")
     invalid = copy.deepcopy(specification)
     invalid["runtime_limits"]["max_active_sequences"] = 129
     expect_failure(module, invalid, "inconsistent capacities accepted")

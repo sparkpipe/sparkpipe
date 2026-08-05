@@ -1,5 +1,5 @@
 {
-  "file_count": 684,
+  "file_count": 685,
   "files": [
     {
       "path": ".gitattributes",
@@ -718,13 +718,18 @@
     },
     {
       "path": "examples/deployments/dsv4_flash_pp13_host_rdma.json",
-      "sha256": "da1e52d3f2a21083f36b10460646fa91e0f1e41cebb8b763b2e171501180ffc6",
-      "size_bytes": 6834
+      "sha256": "3e7e0c99d8186aad8e07a17bc413937ba9bd4897b77af358ad10c3bf82535883",
+      "size_bytes": 6911
     },
     {
       "path": "examples/deployments/dsv4_flash_pp13_host_rdma.spec.json",
-      "sha256": "471d8cda47e16c08c4ccd504a67cd58bbc0736e4931943cc7add94d1cc2d16e6",
-      "size_bytes": 1284
+      "sha256": "a3b42b58620ebef820056907b030c4a701bcbcad7782f79bad0ba4aacba1fa2e",
+      "size_bytes": 1257
+    },
+    {
+      "path": "examples/deployments/dsv4_flash_stage.json",
+      "sha256": "88ca1b4bbba31ddd587da8e2ad9b1c2d3e9967872b799356f21e53aa4fb0060b",
+      "size_bytes": 179
     },
     {
       "path": "examples/model_descriptions/dsv4_resident_decode_stage_firmware.json",
@@ -2533,8 +2538,8 @@
     },
     {
       "path": "tests/test_generate_model_resident_deployment.py",
-      "sha256": "3ebc07fec2e046a9870c4ff7aeed41f1d53ca74b658436c9b600c8a54b7e272a",
-      "size_bytes": 2614
+      "sha256": "9e1bd27194e6b256d07b51332c14766d419d6da620274ecbc63e72416ef80d35",
+      "size_bytes": 3436
     },
     {
       "path": "tests/test_glm52_dspark.c",
@@ -2828,8 +2833,8 @@
     },
     {
       "path": "tests/test_model_resident_deployment.c",
-      "sha256": "dd13996c5df7ebf0bac110fe1fcf262f9d26ce5047aaf252c625ad15908130b2",
-      "size_bytes": 4097
+      "sha256": "08f5fdc78474ccd3c42ba59596950f5736cad7bea006aaecce1488b6d1e94715",
+      "size_bytes": 4365
     },
     {
       "path": "tests/test_model_resident_end_to_end.c",
@@ -3425,5 +3430,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6376784
+  "total_bytes": 6378103
 }

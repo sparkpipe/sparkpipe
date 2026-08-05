@@ -2,14 +2,14 @@
   "schema_version": 1,
   "coordinator_rank_index": 0,
   "adapter": {
-    "shared_object_path": "lib/libdsv4_serving_adapter.so"
+    "shared_object_path": "lib/model_serving_adapter.so"
   },
   "driver": {
     "shared_object_path": "lib/model_driver.so",
     "program_name": "resident_decode"
   },
   "transport": {
-    "shared_object_path": "lib/libhidden_transport_spark_host_rdma_verbs.so",
+    "shared_object_path": "lib/hidden_transport.so",
     "mode": "host-rdma",
     "control_port_base": 59000
   },
@@ -38,7 +38,7 @@
     "stage_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     "runtime_root_template": "/home/{host}/sparkpipe_runtime/releases/dsv4-flash-ga-60d8d70770c6776ff598c94bb586a859a38244f1",
     "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
-    "adapter_configuration_path_template": "config/stage-{stage_02}.json",
+    "adapter_configuration_path_template": "config/dsv4_flash_stage.json",
     "control_endpoint": {
       "kind": "tcp",
       "host_template": "{host}",
