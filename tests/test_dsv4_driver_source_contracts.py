@@ -54,6 +54,8 @@ def main() -> None:
 	cuda = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu")
 	stagepack = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_stagepack_format.h")
 	adapter = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c")
+	validator = read("modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu")
+	validator_script = read("modules/dsv4_resident_decode_stage/validation/validate_dsv4_resident_decode_stage_cuda.sh")
 	require(header, "Generated from the exact source revision", "generated model contract")
 	require(header, "SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1", "package expert codec")
 	require(header, "SPARK_DSV4_MODEL_LAYER_KIND_INVALID UINT32_MAX", "invalid layer sentinel")
@@ -80,6 +82,19 @@ def main() -> None:
 	reject(moe, "for (expert", "per-expert host dispatch")
 	reject(module, "SparkDsv4ModuleHostTopkFill", "host-built attention indices")
 	reject(module, "host_topk_indices", "resident host attention-index matrix")
+	for name in (
+		"SPARK_DSV4_STAGE_COUNT",
+		"SPARK_DSV4_STAGE_INDEX",
+		"SPARK_DSV4_STAGE_FIRST_LAYER",
+		"SPARK_DSV4_STAGE_LAYER_COUNT",
+		"SPARK_DSV4_STAGE_MAX_ACTIVE_SEQUENCES",
+		"SPARK_DSV4_STAGE_MAX_SEQ",
+		"SPARK_DSV4_STAGE_PIPELINE_SLOTS",
+	):
+		require(validator, name, "stage-specific CUDA validation configuration")
+	require(validator, "frame->frame.completion_function = SparkDsv4ValidationCompletion", "validator external completion")
+	reject(validator, "node_context->stage_count = 2u", "hardcoded validator topology")
+	reject(validator + validator_script + module, "ALLOW_UNQUALIFIED", "runtime qualification bypass")
 	print("PASS DSV4 active-module source contracts")
 
 
