@@ -28,8 +28,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "8d8a5498da4e95511df390e1a27a07985997b39b2d8250b7b1f242750d1758c4",
-      "size_bytes": 42106
+      "sha256": "7dd2ce8e189c6649f41e0a1f5158236652f04e4cdb9fc660912c42b33f37d877",
+      "size_bytes": 42168
     },
     {
       "path": "PROPOSED_IMPROVEMENTS_README.md",
@@ -1798,8 +1798,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "c656d6f08f7dd3c253c8116e3b1f875b122d610f9b1b2a16a0e36efc1011c890",
-      "size_bytes": 75058
+      "sha256": "5c051815b5ed91e7ebd4cac24848b85b6271cb70ecd362a258571fc5da34c8fb",
+      "size_bytes": 75103
     },
     {
       "path": "qualification/spark/configs/ring_13node_handoff/index.json",
@@ -3475,5 +3475,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 6442558
+  "total_bytes": 6442665
 }

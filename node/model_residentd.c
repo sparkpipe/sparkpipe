@@ -562,11 +562,15 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 static void SparkModelResidentdWake(void *wake_context)
 {
 	SparkModelResidentdRuntime *runtime;
+	ssize_t written;
 	uint8_t value;
 	runtime = (SparkModelResidentdRuntime *)wake_context;
 	value = 1u;
 	if ( runtime != 0 && runtime->wake_write_fd >= 0 )
-		(void)write(runtime->wake_write_fd,&value,sizeof(value));
+	{
+		written = write(runtime->wake_write_fd,&value,sizeof(value));
+		(void)written;
+	}
 }
 
 static SparkModelResidentdRoute *SparkModelResidentdFindRoute(
