@@ -192,15 +192,23 @@ def main() -> int:
     pipeline_client = (ROOT / "runtime/model_pipeline_client.c").read_text(
         encoding="utf-8"
     )
+    model_batch = (ROOT / "node/model_batch.c").read_text(encoding="utf-8")
     client = (ROOT / "runtime/model_resident_client.c").read_text(
         encoding="utf-8"
     )
     require(
         "const SparkModelResidentDeployment *deployment" in pipeline_header
+        and "const char *runtime_root" in pipeline_header
+        and "SparkResolveRuntimePath(configuration->runtime_root" in pipeline_client
         and "rank_endpoints" not in pipeline_header
         and "configuration->runtime_limits" not in pipeline_client
         and "configuration->rank_endpoints" not in pipeline_client,
         "pipeline client retains a second deployment configuration source",
+    )
+    require(
+        'strcmp(argv[index],"--runtime-root")' in model_batch
+        and "--deployment PATH --runtime-root PATH --batch PATH" in model_batch,
+        "batch client does not require its local packaged runtime root",
     )
     require(
         "SparkModelResidentClientPrepare" in pipeline_client

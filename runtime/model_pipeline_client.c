@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "spark_filesystem.h"
+
 typedef struct SparkModelPipelineTransaction
 {
 	uint32_t active;
@@ -326,7 +328,7 @@ static SparkStatus SparkModelPipelineClientValidateConfiguration(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->abi_version != SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_PIPELINE_CLIENT_CONFIGURATION_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( configuration->deployment == 0 || configuration->connect_timeout_ms == 0u || configuration->completion_function == 0 )
+	if ( configuration->deployment == 0 || configuration->runtime_root == 0 || configuration->connect_timeout_ms == 0u || configuration->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
@@ -335,11 +337,9 @@ static SparkStatus SparkModelPipelineClientInitializeState(
 	const SparkModelPipelineClientConfiguration *configuration,
 	SparkModelPipelineClient *pipeline)
 {
-	const SparkModelResidentDeploymentNode *node;
 	char adapter_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 	SparkStatus status;
-	node = SparkModelResidentDeploymentFindRank(configuration->deployment,configuration->deployment->coordinator_rank_index);
-	status = node != 0 ? SparkModelResidentDeploymentResolvePath(node,configuration->deployment->adapter_shared_object_path,adapter_path,sizeof(adapter_path)) : SPARK_STATUS_SCHEMA_ERROR;
+	status = SparkResolveRuntimePath(configuration->runtime_root,configuration->deployment->adapter_shared_object_path,adapter_path,sizeof(adapter_path));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterLoadInterfaceFromSharedObject(adapter_path,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&pipeline->adapter_library);
 	if ( status == SPARK_STATUS_OK )

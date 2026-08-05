@@ -417,21 +417,25 @@ static int32_t SparkModelBatchParseArguments(
 	int32_t argc,
 	char **argv,
 	const char **deployment_path,
+	const char **runtime_root,
 	const char **batch_path)
 {
 	int32_t index;
 	*deployment_path = 0;
+	*runtime_root = 0;
 	*batch_path = 0;
 	for (index=1; index<argc; index++)
 	{
 		if ( strcmp(argv[index],"--deployment") == 0 && index + 1 < argc )
 			*deployment_path = argv[++index];
+		else if ( strcmp(argv[index],"--runtime-root") == 0 && index + 1 < argc )
+			*runtime_root = argv[++index];
 		else if ( strcmp(argv[index],"--batch") == 0 && index + 1 < argc )
 			*batch_path = argv[++index];
 		else
 			return(-1);
 	}
-	return(*deployment_path != 0 && *batch_path != 0 ? 0 : -2);
+	return(*deployment_path != 0 && *runtime_root != 0 && *batch_path != 0 ? 0 : -2);
 }
 
 int main(int argc,char **argv)
@@ -441,11 +445,11 @@ int main(int argc,char **argv)
 	SparkModelBatchEngine *engine;
 	SparkModelBatchFile file;
 	SparkModelBatchOutput output;
-	const char *deployment_path,*batch_path;
+	const char *deployment_path,*runtime_root,*batch_path;
 	SparkStatus status,destroy_status;
-	if ( SparkModelBatchParseArguments(argc,argv,&deployment_path,&batch_path) < 0 )
+	if ( SparkModelBatchParseArguments(argc,argv,&deployment_path,&runtime_root,&batch_path) < 0 )
 	{
-		fprintf(stderr,"usage: sparkpipe_model_batch --deployment PATH --batch PATH\n");
+		fprintf(stderr,"usage: sparkpipe_model_batch --deployment PATH --runtime-root PATH --batch PATH\n");
 		return(2);
 	}
 	memset(&output,0,sizeof(output));
@@ -460,6 +464,7 @@ int main(int argc,char **argv)
 		file.engine.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 		file.engine.descriptor_bytes = SPARK_MODEL_BATCH_ENGINE_CONFIGURATION_BYTES;
 		file.engine.deployment = &deployment;
+		file.engine.runtime_root = runtime_root;
 		file.engine.event_function = SparkModelBatchWriteEvent;
 		file.engine.event_context = &output;
 		status = SparkModelBatchEngineConnect(&file.engine,&engine);

@@ -137,6 +137,7 @@ Use a strict pretokenized batch document and run:
 ```sh
 bin/sparkpipe_model_batch \
     --deployment config/model_resident.json \
+    --runtime-root "$PWD" \
     --batch qualification-batch.json > results.jsonl
 ```
 

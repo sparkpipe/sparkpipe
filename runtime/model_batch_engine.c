@@ -479,7 +479,7 @@ static SparkStatus SparkModelBatchValidateConfiguration(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->abi_version != SPARK_MODEL_BATCH_ENGINE_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_BATCH_ENGINE_CONFIGURATION_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( configuration->flags != 0u || configuration->connect_timeout_ms == 0u || configuration->request_capacity == 0u || configuration->max_context_tokens < 2u || configuration->max_prefill_rows_per_submission == 0u || configuration->maximum_messages_per_rank_per_progress == 0u || configuration->stop_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT || configuration->deployment == 0 || configuration->event_function == 0 )
+	if ( configuration->flags != 0u || configuration->connect_timeout_ms == 0u || configuration->request_capacity == 0u || configuration->max_context_tokens < 2u || configuration->max_prefill_rows_per_submission == 0u || configuration->maximum_messages_per_rank_per_progress == 0u || configuration->stop_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT || configuration->deployment == 0 || configuration->runtime_root == 0 || configuration->event_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	for (left=0u; left<configuration->stop_token_count; left++)
 		for (right=left + 1u; right<configuration->stop_token_count; right++)
@@ -530,6 +530,7 @@ static SparkStatus SparkModelBatchConnectPipeline(
 	pipeline_configuration.descriptor_bytes = SPARK_MODEL_PIPELINE_CLIENT_CONFIGURATION_BYTES;
 	pipeline_configuration.connect_timeout_ms = configuration->connect_timeout_ms;
 	pipeline_configuration.deployment = configuration->deployment;
+	pipeline_configuration.runtime_root = configuration->runtime_root;
 	pipeline_configuration.submit_result_function = SparkModelBatchSubmitResult;
 	pipeline_configuration.submit_result_context = engine;
 	pipeline_configuration.completion_function = SparkModelBatchCompletion;

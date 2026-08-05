@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION 5u
+#define SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION 6u
 
 typedef struct SparkModelPipelineClient SparkModelPipelineClient;
 
@@ -26,6 +26,7 @@ typedef struct SparkModelPipelineClientConfiguration
 	uint32_t connect_timeout_ms;
 	uint32_t reserved0;
 	const SparkModelResidentDeployment *deployment;
+	const char *runtime_root;
 	SparkModelResidentSubmitResultFunction submit_result_function;
 	void *submit_result_context;
 	SparkModelServingCompletionFunction completion_function;

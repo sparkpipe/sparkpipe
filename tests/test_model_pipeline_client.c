@@ -321,11 +321,14 @@ static SparkModelPipelineClient *TestModelPipelineConnect(
 	struct timespec delay;
 	SparkStatus status;
 	uint32_t attempt;
+	char runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION;
 	configuration.descriptor_bytes = SPARK_MODEL_PIPELINE_CLIENT_CONFIGURATION_BYTES;
 	configuration.connect_timeout_ms = 100u;
 	configuration.deployment = deployment;
+	configuration.runtime_root = runtime_root;
 	configuration.submit_result_function = TestModelPipelineResult;
 	configuration.submit_result_context = state;
 	configuration.completion_function = TestModelPipelineCompletion;
@@ -341,6 +344,30 @@ static SparkModelPipelineClient *TestModelPipelineConnect(
 	}
 	assert(pipeline != 0);
 	return(pipeline);
+}
+
+static void TestModelPipelineRejectMissingClientRuntimeRoot(
+	const SparkModelResidentDeployment *deployment,
+	TestModelPipelineState *state)
+{
+	SparkModelPipelineClientConfiguration configuration;
+	SparkModelPipelineClient *pipeline;
+	char runtime_root[108];
+	assert(snprintf(runtime_root,sizeof(runtime_root),"/tmp/sparkpipe-missing-client-root-%ld",(long)getpid()) > 0);
+	rmdir(runtime_root);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_MODEL_PIPELINE_CLIENT_CONFIGURATION_BYTES;
+	configuration.connect_timeout_ms = 100u;
+	configuration.deployment = deployment;
+	configuration.runtime_root = runtime_root;
+	configuration.submit_result_function = TestModelPipelineResult;
+	configuration.submit_result_context = state;
+	configuration.completion_function = TestModelPipelineCompletion;
+	configuration.completion_context = state;
+	pipeline = 0;
+	assert(SparkModelPipelineClientConnect(&configuration,&pipeline) == SPARK_STATUS_NOT_FOUND);
+	assert(pipeline == 0);
 }
 
 static void TestModelPipelineWaitForCompletion(
@@ -428,6 +455,8 @@ static SparkModelBatchEngine *TestModelBatchConnect(
 {
 	SparkModelBatchEngineConfiguration configuration;
 	SparkModelBatchEngine *engine;
+	char runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	configuration.descriptor_bytes = SPARK_MODEL_BATCH_ENGINE_CONFIGURATION_BYTES;
@@ -439,6 +468,7 @@ static SparkModelBatchEngine *TestModelBatchConnect(
 	configuration.stop_token_count = stop_token_count;
 	configuration.stop_token_ids[0] = stop_token_id;
 	configuration.deployment = deployment;
+	configuration.runtime_root = runtime_root;
 	configuration.event_function = TestModelBatchEvent;
 	configuration.event_context = state;
 	engine = 0;
@@ -639,13 +669,14 @@ static uint32_t TestModelBatchCountText(const char *text,const char *needle)
 
 static void TestModelBatchProcess(const char *deployment_path)
 {
-	char batch_path[108],output_path[108],output[16384];
+	char batch_path[108],output_path[108],output[16384],runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 	FILE *file;
 	pid_t child;
 	size_t bytes;
 	int32_t child_status;
 	assert(snprintf(batch_path,sizeof(batch_path),"/tmp/sparkpipe-model-batch-%ld.json",(long)getpid()) > 0);
 	assert(snprintf(output_path,sizeof(output_path),"/tmp/sparkpipe-model-batch-%ld.ndjson",(long)getpid()) > 0);
+	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	file = fopen(batch_path,"wb");
 	assert(file != 0);
 	assert(fputs("{\"schema_version\":1,\"connect_timeout_ms\":100,\"request_capacity\":2,\"max_context_tokens\":16,\"max_prefill_rows_per_submission\":4,\"maximum_messages_per_rank_per_progress\":8,\"maximum_new_submissions_per_progress\":4,\"stop_token_ids\":[],\"requests\":[{\"request_id\":3101,\"sequence_id\":4101,\"priority\":10,\"output_token_budget\":2,\"prompt_token_ids\":[11,12]},{\"request_id\":3102,\"sequence_id\":4102,\"priority\":10,\"output_token_budget\":1,\"prompt_token_ids\":[21]}]}\n",file) != EOF);
@@ -656,7 +687,7 @@ static void TestModelBatchProcess(const char *deployment_path)
 	{
 		if ( freopen(output_path,"wb",stdout) == 0 )
 			_exit(120);
-		execl(TEST_MODEL_BATCH_PATH,TEST_MODEL_BATCH_PATH,"--deployment",deployment_path,"--batch",batch_path,(char *)0);
+		execl(TEST_MODEL_BATCH_PATH,TEST_MODEL_BATCH_PATH,"--deployment",deployment_path,"--runtime-root",runtime_root,"--batch",batch_path,(char *)0);
 		_exit(121);
 	}
 	assert(waitpid(child,&child_status,0) == child);
@@ -720,6 +751,7 @@ int main(void)
 	assert(SparkModelResidentDeploymentLoad(deployment_path,&deployment) == SPARK_STATUS_OK);
 	assert(SparkModelResidentDeploymentFindRank(&deployment,1u)->stage_index == 2u);
 	assert(SparkModelResidentDeploymentFindStage(&deployment,1u)->rank_index == 2u);
+	TestModelPipelineRejectMissingClientRuntimeRoot(&deployment,&state);
 	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
 		children[rank] = TestModelPipelineStartResident(deployment_path,rank);
 	TestModelPipelineWaitForSockets(paths);
