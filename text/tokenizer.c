@@ -949,6 +949,7 @@ static SparkStatus SparkTokenizerParseAddedTokens(
         int32_t special_token_index;
         bool is_special;
         uint32_t token_id;
+        uint32_t content_bytes;
         char *content;
 
         if (!SparkJsonTokenIsType(document, token_object_index, SPARK_JSON_TOKEN_OBJECT))
@@ -964,7 +965,7 @@ static SparkStatus SparkTokenizerParseAddedTokens(
         {
             return SPARK_STATUS_PARSE_ERROR;
         }
-        if (!is_special || id_token_index < 0 || content_token_index < 0)
+        if (id_token_index < 0 || content_token_index < 0)
         {
             continue;
         }
@@ -973,12 +974,23 @@ static SparkStatus SparkTokenizerParseAddedTokens(
         {
             return SPARK_STATUS_PARSE_ERROR;
         }
+        content_bytes = (uint32_t)strlen(content);
+        if (content_bytes == 0u)
+        {
+            free(content);
+            return SPARK_STATUS_SCHEMA_ERROR;
+        }
         tokenizer->special_tokens[special_count].text = content;
-        tokenizer->special_tokens[special_count].text_bytes = (uint32_t)strlen(content);
+        tokenizer->special_tokens[special_count].text_bytes = content_bytes;
         tokenizer->special_tokens[special_count].token_id = token_id;
+        tokenizer->special_tokens[special_count].is_special = is_special ? 1u : 0u;
         special_count += 1u;
+        tokenizer->special_token_count = special_count;
+        if (token_id > tokenizer->maximum_token_id)
+        {
+            tokenizer->maximum_token_id = token_id;
+        }
     }
-    tokenizer->special_token_count = special_count;
     return SPARK_STATUS_OK;
 }
 
@@ -1293,6 +1305,7 @@ SparkStatus SparkTokenizerFindTokenId(
     uint32_t *token_id_out)
 {
     SparkTokenizerStringEntry *entry;
+    uint32_t special_index;
 
     if (tokenizer == 0 || text == 0 || token_id_out == 0 ||
         tokenizer->abi_version != SPARK_TOKENIZER_ABI_VERSION ||
@@ -1309,6 +1322,20 @@ SparkStatus SparkTokenizerFindTokenId(
         text_bytes);
     if (entry == 0)
     {
+        for (special_index = 0u;
+             special_index < tokenizer->special_token_count;
+             ++special_index)
+        {
+            const SparkTokenizerSpecialToken *special_token;
+
+            special_token = &tokenizer->special_tokens[special_index];
+            if (special_token->text_bytes == text_bytes &&
+                memcmp(special_token->text, text, text_bytes) == 0)
+            {
+                *token_id_out = special_token->token_id;
+                return SPARK_STATUS_OK;
+            }
+        }
         return SPARK_STATUS_NOT_FOUND;
     }
     *token_id_out = entry->value;
@@ -1368,10 +1395,6 @@ SparkStatus SparkTokenizerLoadHuggingFaceJson(
     }
 
     status = SparkTokenizerParseVocabulary(tokenizer, &document, vocabulary_token_index);
-    if (status == SPARK_STATUS_OK)
-    {
-        status = SparkTokenizerBuildReverseVocabulary(tokenizer);
-    }
 
     tokenizer->has_unk_token = 0u;
     tokenizer->unk_token_id = 0u;
@@ -1412,6 +1435,10 @@ SparkStatus SparkTokenizerLoadHuggingFaceJson(
     if (status == SPARK_STATUS_OK)
     {
         status = SparkTokenizerParseAddedTokens(tokenizer, &document, added_tokens_token_index);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkTokenizerBuildReverseVocabulary(tokenizer);
     }
     if (status != SPARK_STATUS_OK)
     {
@@ -1589,6 +1616,7 @@ SparkStatus SparkTokenizerSaveCompiledFile(
 
         special_token = &tokenizer->special_tokens[index];
         status = SparkTokenizerBinaryWriteUInt32(file, special_token->token_id);
+        if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryWriteUInt32(file, special_token->is_special);
         if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryWriteUInt32(file, special_token->text_bytes);
         if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryWriteBytes(file, special_token->text, special_token->text_bytes);
     }
@@ -1632,7 +1660,8 @@ SparkStatus SparkTokenizerLoadCompiledFile(
     status = SparkTokenizerBinaryReadUInt64(file, &magic);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &version);
     if (status != SPARK_STATUS_OK || magic != SPARK_TOKENIZER_COMPILED_FILE_MAGIC ||
-        version != SPARK_TOKENIZER_COMPILED_FILE_VERSION)
+        (version != SPARK_TOKENIZER_COMPILED_FILE_VERSION &&
+         version != SPARK_TOKENIZER_COMPILED_FILE_LEGACY_VERSION))
     {
         fclose(file);
         SparkTokenizerDestroy(tokenizer);
@@ -1683,7 +1712,6 @@ SparkStatus SparkTokenizerLoadCompiledFile(
             free(text);
         }
     }
-    if (status == SPARK_STATUS_OK) status = SparkTokenizerBuildReverseVocabulary(tokenizer);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBuildByteTokenTable(tokenizer);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerAllocateMergePairTable(tokenizer, fast_merge_pair_count);
     for (index = 0u; status == SPARK_STATUS_OK && index < fast_merge_pair_count; ++index)
@@ -1718,19 +1746,33 @@ SparkStatus SparkTokenizerLoadCompiledFile(
     for (index = 0u; status == SPARK_STATUS_OK && index < special_token_count; ++index)
     {
         uint32_t token_id;
+        uint32_t is_special;
         uint32_t text_bytes;
         char *text;
 
         status = SparkTokenizerBinaryReadUInt32(file, &token_id);
+        is_special = 1u;
+        if (status == SPARK_STATUS_OK &&
+            version >= SPARK_TOKENIZER_COMPILED_FILE_VERSION)
+        {
+            status = SparkTokenizerBinaryReadUInt32(file, &is_special);
+            if (status == SPARK_STATUS_OK && is_special > 1u)
+            {
+                status = SPARK_STATUS_SCHEMA_ERROR;
+            }
+        }
         if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &text_bytes);
+        if (status == SPARK_STATUS_OK && text_bytes == 0u) status = SPARK_STATUS_SCHEMA_ERROR;
         if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadAllocatedBytes(file, text_bytes, &text);
         if (status == SPARK_STATUS_OK)
         {
             tokenizer->special_tokens[index].token_id = token_id;
+            tokenizer->special_tokens[index].is_special = is_special;
             tokenizer->special_tokens[index].text_bytes = text_bytes;
             tokenizer->special_tokens[index].text = text;
         }
     }
+    if (status == SPARK_STATUS_OK) status = SparkTokenizerBuildReverseVocabulary(tokenizer);
 
     if (fclose(file) != 0 && status == SPARK_STATUS_OK)
     {
@@ -1771,6 +1813,7 @@ static uint32_t SparkTokenizerFindSpecialTokenAt(
     const SparkTokenizer *tokenizer,
     const char *text,
     uint32_t remaining_text_bytes,
+    uint32_t match_special_tokens,
     uint32_t *token_id_out,
     uint32_t *matched_text_bytes_out)
 {
@@ -1787,7 +1830,8 @@ static uint32_t SparkTokenizerFindSpecialTokenAt(
         const SparkTokenizerSpecialToken *special_token;
 
         special_token = &tokenizer->special_tokens[special_token_index];
-        if (special_token->text_bytes <= remaining_text_bytes &&
+        if ((special_token->is_special == 0u || match_special_tokens != 0u) &&
+            special_token->text_bytes <= remaining_text_bytes &&
             memcmp(text, special_token->text, special_token->text_bytes) == 0)
         {
             *token_id_out = special_token->token_id;
@@ -2494,11 +2538,11 @@ SparkStatus SparkTokenizerEncodeUtf8WithWorkspace(
         uint32_t special_token_id;
         uint32_t matched_text_bytes;
 
-        if ((encode_flags & SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_SPECIAL_TOKEN_MATCH) == 0u &&
-            SparkTokenizerFindSpecialTokenAt(
+        if (SparkTokenizerFindSpecialTokenAt(
                 tokenizer,
                 text + position,
                 text_bytes - position,
+                (encode_flags & SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_SPECIAL_TOKEN_MATCH) == 0u,
                 &special_token_id,
                 &matched_text_bytes))
         {
@@ -2819,7 +2863,7 @@ SparkStatus SparkTokenizerEncodeBatchUtf8Configured(
         configuration->worker_count);
 }
 
-static uint32_t SparkTokenizerTokenIdIsSpecial(
+static const SparkTokenizerSpecialToken *SparkTokenizerFindAddedTokenById(
     const SparkTokenizer *tokenizer,
     uint32_t token_id)
 {
@@ -2827,7 +2871,7 @@ static uint32_t SparkTokenizerTokenIdIsSpecial(
 
     if (tokenizer == 0)
     {
-        return 0u;
+        return 0;
     }
     for (special_index = 0u;
          special_index < tokenizer->special_token_count;
@@ -2835,10 +2879,30 @@ static uint32_t SparkTokenizerTokenIdIsSpecial(
     {
         if (tokenizer->special_tokens[special_index].token_id == token_id)
         {
-            return 1u;
+            return &tokenizer->special_tokens[special_index];
         }
     }
-    return 0u;
+    return 0;
+}
+
+static SparkStatus SparkTokenizerAppendRawTokenText(
+    const char *token_text,
+    uint32_t token_text_bytes,
+    char *text,
+    uint32_t text_capacity,
+    uint32_t *text_bytes_inout)
+{
+    if (token_text == 0 || text == 0 || text_bytes_inout == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((uint64_t)*text_bytes_inout + token_text_bytes + 1u > text_capacity)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    memcpy(text + *text_bytes_inout, token_text, token_text_bytes);
+    *text_bytes_inout += token_text_bytes;
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkTokenizerDecodeOneTokenText(
@@ -2917,12 +2981,28 @@ SparkStatus SparkTokenizerDecodeTokenIds(
     {
         uint32_t token_id;
         const char *token_text;
+        const SparkTokenizerSpecialToken *added_token;
         uint32_t token_text_bytes;
 
         token_id = token_ids[token_index];
+        added_token = SparkTokenizerFindAddedTokenById(tokenizer, token_id);
         if ((decode_flags & SPARK_TOKENIZER_DECODE_FLAG_SKIP_SPECIAL_TOKENS) != 0u &&
-            SparkTokenizerTokenIdIsSpecial(tokenizer, token_id) != 0u)
+            added_token != 0 && added_token->is_special != 0u)
         {
+            continue;
+        }
+        if (added_token != 0)
+        {
+            status = SparkTokenizerAppendRawTokenText(
+                added_token->text,
+                added_token->text_bytes,
+                text,
+                text_capacity,
+                &text_bytes);
+            if (status != SPARK_STATUS_OK)
+            {
+                return status;
+            }
             continue;
         }
         if (token_id > tokenizer->maximum_token_id ||

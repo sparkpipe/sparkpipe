@@ -40,7 +40,8 @@ extern "C" {
 #define SPARK_TOKENIZER_BYTE_COUNT 256u
 #define SPARK_TOKENIZER_MAX_PARALLEL_WORKER_COUNT 16u
 #define SPARK_TOKENIZER_COMPILED_FILE_MAGIC 0x314b4f54535053ull
-#define SPARK_TOKENIZER_COMPILED_FILE_VERSION 1u
+#define SPARK_TOKENIZER_COMPILED_FILE_VERSION 2u
+#define SPARK_TOKENIZER_COMPILED_FILE_LEGACY_VERSION 1u
 
 #define SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_SPECIAL_TOKEN_MATCH 0x00000001u
 #define SPARK_TOKENIZER_ENCODE_FLAG_ADD_PREFIX_SPACE 0x00000002u
@@ -68,7 +69,7 @@ typedef struct SparkTokenizerSpecialToken
     char *text;
     uint32_t text_bytes;
     uint32_t token_id;
-    uint32_t reserved0;
+    uint32_t is_special;
 } SparkTokenizerSpecialToken;
 
 typedef struct SparkTokenizerFastMergePair
