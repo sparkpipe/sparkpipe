@@ -274,6 +274,19 @@ static int TestRejectsModifiedContract(
         "family validator rejects a modified precision contract");
 }
 
+static int TestDsv4GaBaselineExcludesDspark(void)
+{
+    SparkModelRuntimeContract contract;
+
+    contract = SparkDsv4FlashRuntimeContract();
+    return TestExpect(strcmp(contract.contract_id,
+            "deepseek-v4-flash-0731-ga-baseline-mixed-v2") == 0,
+            "DSV4 GA baseline contract identity") &&
+        TestExpect((contract.required_operation_mask &
+            SPARK_MODEL_RUNTIME_OPERATION_MULTI_TOKEN_PREDICTION) == 0u,
+            "DSV4 GA baseline excludes DSpark");
+}
+
 int main(void)
 {
     const TestContractCase contract_cases[] =
@@ -299,7 +312,8 @@ int main(void)
         }
     }
     if (!TestFailureCancels(&contract_cases[0u]) ||
-        !TestRejectsModifiedContract(&contract_cases[1u]))
+        !TestRejectsModifiedContract(&contract_cases[1u]) ||
+        !TestDsv4GaBaselineExcludesDspark())
     {
         return 1;
     }

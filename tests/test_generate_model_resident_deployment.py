@@ -51,7 +51,7 @@ def main() -> int:
     assert stage_configuration == {
         "schema_version": 3,
         "model_revision":
-            "60d8d70770c6776ff598c94bb586a859a38244f1",
+            "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
         "stage_pack_path": "packs/dsv4_flash_stage.spstage",
         "max_sequence_positions": 4096,
     }

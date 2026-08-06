@@ -77,7 +77,7 @@
     {
       "id": "dsv4_flash_native_mixed_precision",
       "model_family": "dsv4_flash",
-      "model_id": "deepseek-ai/DeepSeek-V4-Flash",
+      "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
       "contract": "model_contracts/dsv4_flash_authoritative.json",
       "routed_expert_weight_codec": "mxfp4_e2m1",
       "routed_expert_activation_format": "fp8_e4m3_dynamic",
@@ -91,7 +91,7 @@
         "hyper_connections_x4",
         "hash_moe_bootstrap",
         "shared_expert",
-        "mtp",
+        "baseline_decode_without_speculation",
         "pipeline_parallel"
       ],
       "production_ready": false

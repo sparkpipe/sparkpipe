@@ -21,13 +21,16 @@ extern "C" {
  * head reduction do. Stage 0 expands the embedding into four identical
  * streams; the last stage's head reduction is the only exit.
  *
- * Version 2 executes DECODE batches (one token per lane per frame) across
+ * Version 3 executes GA baseline DECODE batches (one token per lane per
+ * frame) across
  * all three attention kinds, both router paths, and the full mHC
  * machinery. Prefill rows are round-major: one row per live lane is executed
  * together, then the next row for those lanes. This preserves each sequence's
  * state dependency without throwing away cross-request CUDA batching. A future
  * causal bulk-prefill kernel can replace the wavefront without changing the
- * boundary contract. MTP execution remains refused until its pass lands.
+ * boundary contract. GA DSpark execution remains refused, its three
+ * checkpoint layers are excluded from baseline packs, and serving reports
+ * zero speculative-token capacity.
  * Caches are dense per lane, bounded by SPARK_DSV4_STAGE_MAX_SEQ: the
  * window ring is 128 slots regardless, the compressed stream max_seq/ratio
  * slots, the indexer stream max_seq/4; the paged migration is scheduled

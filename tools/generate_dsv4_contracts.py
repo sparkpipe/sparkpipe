@@ -10,8 +10,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 FLASH_DESCRIPTION_PATH = ROOT / "examples" / "model_descriptions" / "dsv4_resident_decode_stage_firmware.json"
 FLASH_DRIVER_MODEL_ID = "deepseek.v4.flash.resident-decode-stage-firmware"
-FLASH_DRIVER_REVISION = "h4096-l43-dsa-e256k6-hash3-v129280-v2"
-FLASH_MODULE_ID = "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.v2"
+FLASH_DRIVER_REVISION = "h4096-l43-dsa-e256k6-hash3-v129280-ga0731-v3"
+FLASH_MODULE_ID = "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.v3"
 FLASH_MODULE_TARGET = "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16"
 CONTRACTS = {
     "flash": (
@@ -48,6 +48,37 @@ def require_equal(actual: Any, expected: Any, description: str) -> None:
         raise ValueError(f"{description}: expected {expected!r}, got {actual!r}")
 
 
+def validate_flash_source_files(contract: dict[str, Any]) -> None:
+    source_files = contract["source_files"]
+    index_name = "model.safetensors.index.json"
+    shard_names = [
+        f"model-{index:05d}-of-00048.safetensors" for index in range(1, 49)
+    ]
+    require_equal(
+        sorted(source_files), sorted([index_name] + shard_names),
+        "Flash pinned source filenames")
+    for name in [index_name] + shard_names:
+        entry = source_files[name]
+        if not isinstance(entry.get("bytes"), int) or entry["bytes"] <= 0:
+            raise ValueError(f"Flash source file byte count is invalid: {name}")
+        digest = entry.get("sha256")
+        if (not isinstance(digest, str) or len(digest) != 64 or
+                any(character not in "0123456789abcdef" for character in digest)):
+            raise ValueError(f"Flash source file SHA-256 is invalid: {name}")
+    require_equal(source_files[index_name]["bytes"], 5602871, "Flash source index bytes")
+    require_equal(
+        source_files[index_name]["sha256"], contract["source_index_sha256"],
+        "Flash source index file hash")
+    require_equal(contract["source_shard_count"], len(shard_names), "Flash source shard count")
+    require_equal(
+        sum(source_files[name]["bytes"] for name in shard_names),
+        contract["source_shard_bytes"], "Flash physical source shard bytes")
+    require_equal(contract["source_shard_bytes"], 166886535336, "Flash source shard bytes")
+    require_equal(
+        contract["source_indexed_payload_bytes"], 166878536440,
+        "Flash indexed source payload bytes")
+
+
 def validate_contract(variant: str, contract: dict[str, Any]) -> None:
     model = contract["model"]
     attention = contract["attention"]
@@ -55,11 +86,16 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
     moe = contract["moe"]
     precision = contract["precision"]
     ratios = attention["compression_ratios"]
+    source_auxiliary_layer_count = contract.get("dspark", {}).get(
+        "layer_count", model["mtp_layer_count"])
 
     require_equal(contract["schema_version"], 1, f"{variant} schema version")
     require_equal(contract["architecture"], "DeepseekV4ForCausalLM", f"{variant} architecture")
-    require_equal(model["mtp_layer_count"], 1, f"{variant} MTP layer count")
-    require_equal(len(ratios), model["layer_count"] + model["mtp_layer_count"], f"{variant} compression-ratio count")
+    expected_mtp_layer_count = 0 if variant == "flash" else 1
+    packed_mtp_layer_count = contract.get("runtime", {}).get(
+        "packed_mtp_layer_count", model["mtp_layer_count"])
+    require_equal(model["mtp_layer_count"], expected_mtp_layer_count, f"{variant} MTP layer count")
+    require_equal(len(ratios), model["layer_count"] + source_auxiliary_layer_count, f"{variant} compression-ratio count")
     require_equal(moe["experts_per_token"], 6, f"{variant} top-k")
     require_equal(moe["shared_expert_count"], 1, f"{variant} shared experts")
     require_equal(moe["hash_routed_layer_count"], 3, f"{variant} hash-routed layers")
@@ -74,13 +110,29 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
     require_equal(contract["qualification"]["cuda_target"], "sm_121a", f"{variant} CUDA target")
     require_equal(contract["qualification"]["production_ready"], False, f"{variant} readiness")
     if variant == "flash":
-        require_equal(contract["source_revision"], "60d8d70770c6776ff598c94bb586a859a38244f1", "Flash source revision")
+        require_equal(contract["model_id"], "deepseek-ai/DeepSeek-V4-Flash-0731", "Flash source model")
+        require_equal(contract["source_revision"], "7872f01b1d1fe23eabc4c98b48bffcef5a386062", "Flash source revision")
+        require_equal(packed_mtp_layer_count, 0, "Flash packed MTP layer count")
+        require_equal(contract["runtime"]["speculative_decoding"], "disabled", "Flash speculative decoding")
+        require_equal(contract["dspark"]["checkpoint_namespace"], "mtp", "Flash DSpark checkpoint namespace")
+        require_equal(contract["dspark"]["layer_count"], 3, "Flash DSpark layer count")
+        require_equal(contract["dspark"]["block_size"], 5, "Flash DSpark block size")
+        require_equal(contract["dspark"]["noise_token_id"], 128799, "Flash DSpark noise token")
+        require_equal(contract["dspark"]["target_layer_ids"], [40, 41, 42], "Flash DSpark target layers")
+        require_equal(contract["dspark"]["markov_rank"], 256, "Flash DSpark Markov rank")
+        require_equal(contract["dspark"]["tensor_counts"], [1568, 1565, 1572], "Flash DSpark tensor counts")
+        require_equal(contract["dspark"]["packed"], False, "Flash DSpark packing")
+        require_equal(contract["dspark"]["execution_supported"], False, "Flash DSpark execution")
+        require_equal(contract["source_index_sha256"], "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b", "Flash source index hash")
+        require_equal(contract["source_tensor_count"], 72317, "Flash source tensor count")
+        validate_flash_source_files(contract)
         require_equal(model["hidden_dimension"], 4096, "Flash hidden dimension")
         require_equal(model["layer_count"], 43, "Flash layer count")
         require_equal(model["attention_head_count"], 64, "Flash attention heads")
         require_equal(moe["routed_expert_count"], 256, "Flash routed experts")
         require_equal(attention["index_top_k"], 512, "Flash index top-k")
         require_equal(ratios[:2], [0, 0], "Flash bootstrap attention layers")
+        require_equal(ratios[-3:], [0, 0, 0], "Flash DSpark attention layers")
     elif variant == "pro":
         require_equal(model["hidden_dimension"], 7168, "Pro hidden dimension")
         require_equal(model["layer_count"], 61, "Pro layer count")
@@ -111,6 +163,9 @@ def render_header(variant: str, contract: dict[str, Any], description_sha256: st
     moe = contract["moe"]
     precision = contract["precision"]
     ratios = attention["compression_ratios"]
+    packed_mtp_layer_count = contract.get("runtime", {}).get(
+        "packed_mtp_layer_count", model["mtp_layer_count"])
+    rendered_ratios = ratios[:model["layer_count"] + packed_mtp_layer_count]
     prefix = macro_prefix(variant)
     common_defines = [
         ("HIDDEN_DIMENSION", model["hidden_dimension"]),
@@ -133,6 +188,7 @@ def render_header(variant: str, contract: dict[str, Any], description_sha256: st
     ]
     if variant == "flash":
         defines = common_defines + [
+            ("CHECKPOINT_DSPARK_LAYER_COUNT", contract["dspark"]["layer_count"]),
             ("MAX_POSITIONS", model["maximum_context_tokens"]),
             ("ATTN_QUERY_HEAD_COUNT", model["attention_head_count"]),
             ("ATTN_KV_HEAD_COUNT", model["kv_head_count"]),
@@ -225,10 +281,10 @@ def render_header(variant: str, contract: dict[str, Any], description_sha256: st
             "",
         ])
     array_name = "SparkDsv4ModelCompressionRatios" if variant == "flash" else f"SparkDsv4{variant.title()}CompressionRatios"
-    lines.extend([f"static const uint16_t {array_name}[{len(ratios)}u] =", "{"])
-    for offset in range(0, len(ratios), 12):
-        group = ratios[offset:offset + 12]
-        lines.append("    " + ", ".join(f"{value}u" for value in group) + ("," if offset + 12 < len(ratios) else ""))
+    lines.extend([f"static const uint16_t {array_name}[{len(rendered_ratios)}u] =", "{"])
+    for offset in range(0, len(rendered_ratios), 12):
+        group = rendered_ratios[offset:offset + 12]
+        lines.append("    " + ", ".join(f"{value}u" for value in group) + ("," if offset + 12 < len(rendered_ratios) else ""))
     function_prefix = "SparkDsv4Model" if variant == "flash" else f"SparkDsv4{variant.title()}"
     lines.extend([
         "};",
@@ -240,9 +296,12 @@ def render_header(variant: str, contract: dict[str, Any], description_sha256: st
         f"\treturn({array_name}[layer_index]);",
         "}",
         "",
+    ])
+    lines.extend([
         f"static inline uint16_t {function_prefix}MtpCompressionRatio(void)",
         "{",
-        f"\treturn({array_name}[{prefix}_LAYER_COUNT]);",
+        ("\treturn(UINT16_MAX);" if packed_mtp_layer_count == 0 else
+         f"\treturn({array_name}[{prefix}_LAYER_COUNT]);"),
         "}",
         "",
     ])
@@ -273,7 +332,11 @@ def render_normalized_contract(variant: str, contract: dict[str, Any]) -> str:
     result["generated"] = {
         "variant": variant,
         "header": f"model-families/dsv4/include/sparkpipe/{header_name}",
-        "compression_ratio_interpretation": "first layer_count entries are backbone layers; final entry is the one declared MTP layer",
+        "compression_ratio_interpretation": (
+            "first layer_count entries are backbone layers; the following dspark.layer_count entries are checkpoint DSpark layers excluded from runtime"
+            if variant == "flash" else
+            "first layer_count entries are backbone layers; final entry is the one declared MTP layer"
+        ),
     }
     return json.dumps(result, indent=2, sort_keys=True) + "\n"
 
@@ -336,6 +399,8 @@ def render_flash_model_description(contract: dict[str, Any]) -> str:
                 "experts_per_token": moe["experts_per_token"],
                 "expert_intermediate_dimension": moe["expert_intermediate_dimension"],
                 "vocab_count": model["vocabulary_size"],
+                "checkpoint_dspark_layer_count": contract["dspark"]["layer_count"],
+                "packed_dspark_layer_count": contract["runtime"]["packed_mtp_layer_count"],
             },
             "runtime_contract": {
                 "required_environment": [],
@@ -344,6 +409,8 @@ def render_flash_model_description(contract: dict[str, Any]) -> str:
                 "runtime_precision_selection": "forbidden",
                 "fallback_allowed": False,
                 "completion": "external",
+                "speculative_decoding": contract["runtime"]["speculative_decoding"],
+                "speculative_decoding_reason": contract["runtime"]["speculative_decoding_reason"],
             },
         },
         "stages": [{

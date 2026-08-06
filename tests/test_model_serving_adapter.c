@@ -84,7 +84,7 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->max_output_token_count = 1u;
 	descriptor->resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO;
 	descriptor->adapter_id = "spark.dsv4.flash.serving.v1";
-	descriptor->model_id = "deepseek-ai/DeepSeek-V4-Flash";
+	descriptor->model_id = "deepseek-ai/DeepSeek-V4-Flash-0731";
 	descriptor->model_revision = "fixture";
 	descriptor->driver_program_name = "resident_decode";
 	descriptor->artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

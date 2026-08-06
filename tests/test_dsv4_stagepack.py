@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -31,21 +32,27 @@ def main() -> int:
 
     assert pack.HEADER_STRUCT.size == 80
     assert pack.ENTRY_STRUCT.size == 40
+    assert pack.FORMAT_VERSION == 3
     assert pack.WEIGHT_FP4 == 3
     assert pack.WEIGHT_FP8 == 4
-    assert pack.layer_kind(ratios, pack.MTP_LAYER) == 0
+    assert contract["dspark"]["layer_count"] == 3
+    assert contract["model"]["mtp_layer_count"] == 0
+    assert contract["runtime"]["packed_mtp_layer_count"] == 0
 
     full = pack.build_records(contract, 0, 43)
     expected = sum(
         24 + (4 if ratios[layer] != 0 else 0) + (6 if ratios[layer] == 4 else 0)
         for layer in range(43)
-    ) + 1 + 13 + 24
+    ) + 1 + 5
     assert len(full) == expected
 
-    final_stage = pack.build_records(contract, 40, 3)
-    assert any(record.kind == pack.KIND_EMBEDDING for record in final_stage)
-    assert final_stage[-1].layer == pack.MTP_LAYER
-    assert sum(record.kind == pack.KIND_GATE_BIAS for record in final_stage) == 4
+    final_stage = pack.build_records(contract, 41, 2)
+    assert not any(record.kind == pack.KIND_EMBEDDING for record in final_stage)
+    assert len(final_stage) == 67
+    assert all(record.layer != pack.MTP_LAYER for record in final_stage)
+    assert all("mtp." not in name for record in final_stage
+               for name in record.source_names + record.scale_names)
+    assert sum(record.kind == pack.KIND_GATE_BIAS for record in final_stage) == 2
 
     fp8_scales = pack.expand_fp8_scale(
         MemorySource(bytes(range(4))), "scale", 256, 256
@@ -62,6 +69,7 @@ def main() -> int:
     assert expert.scale_bytes == 256 * 2048 * (4096 // 32)
 
     entries, file_bytes = pack.make_directory(final_stage)
+    assert file_bytes == 8219895692
     assert entries[0].payload_offset == pack.HEADER_STRUCT.size + pack.ENTRY_STRUCT.size * len(entries)
     assert entries[-1].payload_offset + entries[-1].record.payload_bytes + entries[-1].record.scale_bytes == file_bytes
     for previous, current in zip(entries, entries[1:]):
@@ -74,17 +82,54 @@ def main() -> int:
     )
     codecs = tuple(pack.CODEC_IDS[name] for name in codec_names)
     with tempfile.TemporaryDirectory() as temporary:
-        path = Path(temporary) / "stage.spstage"
+        root = Path(temporary)
+        path = root / "stage.spstage"
+        source_root = root / "source"
+        source_root.mkdir()
+        index_bytes = b'{"weight_map":{}}\n'
+        (source_root / pack.SOURCE_INDEX_NAME).write_bytes(index_bytes)
+        identity_contract = {
+            "source_index_sha256": hashlib.sha256(index_bytes).hexdigest()
+        }
+        assert pack.validate_source_identity(source_root, identity_contract) == (
+            identity_contract["source_index_sha256"])
+        try:
+            pack.validate_source_identity(
+                source_root, {"source_index_sha256": "0" * 64})
+        except pack.PackFailure:
+            pass
+        else:
+            raise AssertionError("wrong checkpoint index hash was accepted")
+        fragment_bytes = b"stage fragment"
+        fragment_name = "model-00001-of-00001.safetensors"
+        (source_root / fragment_name).write_bytes(fragment_bytes)
+        (source_root / pack.SOURCE_INDEX_NAME).write_bytes(
+            b'{"weight_map":{"x":"model-00001-of-00001.safetensors"}}\n')
+        (source_root / pack.STAGE_SOURCE_MANIFEST_NAME).write_text(json.dumps({
+            "source_index_sha256": identity_contract["source_index_sha256"],
+            "fragment": fragment_name,
+            "fragment_sha256": hashlib.sha256(fragment_bytes).hexdigest(),
+        }), encoding="utf-8")
+        assert pack.validate_source_identity(source_root, identity_contract) == (
+            identity_contract["source_index_sha256"])
+        (source_root / fragment_name).write_bytes(b"corrupt")
+        try:
+            pack.validate_source_identity(source_root, identity_contract)
+        except pack.PackFailure:
+            pass
+        else:
+            raise AssertionError("corrupt stage fragment was accepted")
         with path.open("wb") as file:
             file.write(pack.pack_header(
-                final_stage, 40, 3, file_bytes, codecs))
+                final_stage, 41, 2, file_bytes, codecs))
             for entry in entries:
                 file.write(pack.pack_entry(entry))
             file.truncate(file_bytes)
         result = pack.verify_pack(path, contract, codecs, False)
         assert result["validated"] is True
-        assert result["first_layer"] == 40
-        assert result["layer_count"] == 3
+        assert result["first_layer"] == 41
+        assert result["layer_count"] == 2
+        assert pack.HEADER_STRUCT.unpack(path.read_bytes()[:pack.HEADER_STRUCT.size])[15] == 0
         assert result["expert_weight_codec_id"] == pack.CODEC_IDS["mxfp4_e2m1"]
         assert pack.main(["--verify-pack", str(path)]) == 0
         with path.open("r+b") as file:

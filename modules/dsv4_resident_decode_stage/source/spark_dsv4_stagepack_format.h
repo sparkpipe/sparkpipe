@@ -20,16 +20,15 @@
  * the entry beside their payload exactly as in the qwen36 format: fp8
  * weights carry one e8m0 byte per 128-column block per row, fp4 experts
  * one e8m0 byte per 32-column block per row. The hash router's tid2eid
- * table is a u32 tensor like any other. The MTP layer reuses the per-layer
- * kinds at the reserved marker (window-only attention, score-routed MoE -
- * compress_ratios[n_layers] == 0 pins both); only its eight globals are
- * new kinds. On a multi-stage split the head pack carries an embedding
- * copy: the MTP draft chain embeds its own tokens and the vocab is untied
- * - the lesson qwen36 format v2 learned, adopted here from day one.
+ * table is a u32 tensor like any other. MTP kinds remain reserved for a
+ * future native DSpark implementation. Flash GA baseline packs set
+ * mtp_layer_count to zero and carry no mtp.* tensors; all three checkpoint
+ * DSpark layers are excluded. The GA head pack therefore carries no old
+ * MTP-only embedding copy; the embedding stays solely on stage zero.
  */
 
 #define SPARK_DSV4_STAGEPACK_MAGIC 0x34565344u
-#define SPARK_DSV4_STAGEPACK_FORMAT_VERSION 2u
+#define SPARK_DSV4_STAGEPACK_FORMAT_VERSION 3u
 #define SPARK_DSV4_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_DSV4_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
 #define SPARK_DSV4_STAGEPACK_HEADER_BYTES ((uint32_t)sizeof(SparkDsv4StagePackHeader))
@@ -156,7 +155,9 @@ static inline uint32_t SparkDsv4StagePackLayerIsHashRouted(uint32_t layer_index)
 
 static inline uint32_t SparkDsv4StagePackLayerKind(uint32_t layer_index)
 {
-	return(layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER ? SPARK_DSV4_MODEL_MTP_LAYER_KIND : SparkDsv4ModelLayerKind(layer_index));
+	if ( layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER )
+		return(SPARK_DSV4_MODEL_MTP_LAYER_COUNT == 1u ? SPARK_DSV4_MODEL_MTP_LAYER_KIND : SPARK_DSV4_MODEL_LAYER_KIND_INVALID);
+	return(SparkDsv4ModelLayerKind(layer_index));
 }
 
 // Shapes for kinds whose geometry is layer-independent. Kinds that vary
@@ -333,7 +334,11 @@ static inline uint32_t SparkDsv4StagePackExpectedTensorCount(uint32_t first_laye
 	if ( first_layer_index == 0u )
 		tensors += 1u;
 	if ( first_layer_index + layer_count == SPARK_DSV4_MODEL_LAYER_COUNT )
-		tensors += 5u + 8u + SparkDsv4StagePackLayerTensorCount(SPARK_DSV4_STAGEPACK_MTP_LAYER) + (first_layer_index != 0u ? 1u : 0u);
+	{
+		tensors += 5u;
+		if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
+			tensors += 8u + SparkDsv4StagePackLayerTensorCount(SPARK_DSV4_STAGEPACK_MTP_LAYER) + (first_layer_index != 0u ? 1u : 0u);
+	}
 	return(tensors);
 }
 

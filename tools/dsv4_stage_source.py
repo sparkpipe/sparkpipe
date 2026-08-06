@@ -23,18 +23,21 @@ from typing import Iterable, List, Mapping, Sequence
 from tools.dsv4_stagepack import (
     CONTRACT_PATH,
     SOURCE_INDEX_NAME,
+    STAGE_SOURCE_MANIFEST_NAME,
+    STAGE_SOURCE_MANIFEST_FORMAT,
     PackFailure,
     SafetensorSource,
     build_records,
     load_contract,
     sha256_file,
+    validate_source_identity,
     validate_records,
 )
 
 
 FRAGMENT_NAME = "model-00001-of-00001.safetensors"
 FRAGMENT_INDEX_NAME = "model.safetensors.index.json"
-FRAGMENT_MANIFEST_NAME = "dsv4_stage_source.json"
+FRAGMENT_MANIFEST_NAME = STAGE_SOURCE_MANIFEST_NAME
 PP13_RANGES = (
     (0, 3), (3, 3), (6, 3), (9, 3), (12, 3), (15, 3), (18, 3),
     (21, 4), (25, 4), (29, 4), (33, 4), (37, 4), (41, 2),
@@ -178,13 +181,14 @@ def write_stage_fragment(source: SafetensorSource, records: Sequence[object],
 
 def write_stage_shards(source: SafetensorSource, records: Sequence[object],
                        output_dir: Path, first_layer: int,
-                       layer_count: int) -> Mapping[str, object]:
+                       layer_count: int,
+                       contract: Mapping[str, object]) -> Mapping[str, object]:
     """Copy only required original shards and write a reduced source index."""
     output_dir.mkdir(parents=True, exist_ok=True)
     names = ordered_tensor_names(records)
     shards = sorted({source.weight_map[name] for name in names})
     manifest = write_stage_shard_index(
-        source, records, output_dir, first_layer, layer_count
+        source, records, output_dir, first_layer, layer_count, contract
     )
     copied_bytes = 0
     for shard in shards:
@@ -198,7 +202,8 @@ def write_stage_shards(source: SafetensorSource, records: Sequence[object],
 
 def write_stage_shard_index(source: SafetensorSource, records: Sequence[object],
                             output_dir: Path, first_layer: int,
-                            layer_count: int) -> Mapping[str, object]:
+                            layer_count: int,
+                            contract: Mapping[str, object]) -> Mapping[str, object]:
     """Write the reduced index before shards are transferred independently."""
     output_dir.mkdir(parents=True, exist_ok=True)
     names = ordered_tensor_names(records)
@@ -211,10 +216,25 @@ def write_stage_shard_index(source: SafetensorSource, records: Sequence[object],
         "weight_map": {name: source.weight_map[name] for name in names},
     }
     _write_json_atomic(output_dir / FRAGMENT_INDEX_NAME, index)
+    source_files = contract.get("source_files")
+    if not isinstance(source_files, dict):
+        raise PackFailure("shard staging requires pinned source file identities")
+    files = []
+    for shard in shards:
+        entry = source_files.get(shard)
+        if not isinstance(entry, dict):
+            raise PackFailure(f"source shard is not pinned by the contract: {shard}")
+        files.append({
+            "name": shard,
+            "bytes": entry.get("bytes"),
+            "sha256": entry.get("sha256"),
+        })
     manifest = {
-        "format": "sparkpipe.dsv4.stage-source.v1",
+        "format": STAGE_SOURCE_MANIFEST_FORMAT,
         "source_mode": "shards",
         "source_files_present": False,
+        "source_model_id": contract.get("model_id"),
+        "source_revision": contract.get("source_revision"),
         "first_layer": first_layer,
         "layer_count": layer_count,
         "tensor_count": len(names),
@@ -222,6 +242,8 @@ def write_stage_shard_index(source: SafetensorSource, records: Sequence[object],
         "source_shard_bytes": source_shard_bytes,
         "source_shards": shards,
         "source_index_sha256": sha256_file(source.model_dir / SOURCE_INDEX_NAME),
+        "reduced_index_sha256": sha256_file(output_dir / FRAGMENT_INDEX_NAME),
+        "files": files,
     }
     _write_json_atomic(output_dir / FRAGMENT_MANIFEST_NAME, manifest)
     return manifest
@@ -260,8 +282,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         contract = load_contract(args.contract)
         ranges = selected_ranges(args)
+        if (not args.inspect and args.source_mode == "fragment" and
+                isinstance(contract.get("source_files"), dict)):
+            raise PackFailure(
+                "transformed fragment staging is forbidden for a pinned checkpoint; "
+                "use --source-mode shards")
         if args.index_only and args.source_mode != "shards":
             raise PackFailure("--index-only requires --source-mode shards")
+        validate_source_identity(args.model_dir, contract)
         with SafetensorSource(args.model_dir) as source:
             results = []
             for stage_index, first_layer, layer_count in ranges:
@@ -277,7 +305,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if args.index_only:
                     output_dir = args.output_root / f"stage_{stage_index:02d}"
                     stage_info = {**stage_info, **write_stage_shard_index(
-                        source, records, output_dir, first_layer, layer_count
+                        source, records, output_dir, first_layer, layer_count,
+                        contract
                     )}
                 elif not args.inspect:
                     output_dir = args.output_root / f"stage_{stage_index:02d}"
@@ -286,9 +315,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                         if args.source_mode == "shards"
                         else write_stage_fragment
                     )
-                    stage_info = {**stage_info, **writer(
-                        source, records, output_dir, first_layer, layer_count
-                    )}
+                    if writer == write_stage_shards:
+                        staged = writer(
+                            source, records, output_dir, first_layer,
+                            layer_count, contract)
+                    else:
+                        staged = writer(
+                            source, records, output_dir, first_layer, layer_count)
+                    stage_info = {**stage_info, **staged}
                     print(
                         f"staged source stage={stage_index} "
                         f"shards={stage_info.get('source_shard_count', 0)} "
