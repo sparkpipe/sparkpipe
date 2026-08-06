@@ -1,5 +1,5 @@
 MODULE_FAMILY := dsv4
-MODULE_IDENTIFIER := spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.v2
+MODULE_IDENTIFIER := spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.v3
 MODULE_TARGET := cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16
 MODEL_HEADER := ../../model-families/dsv4/include/sparkpipe/spark_dsv4_model.h
 MODULE_ENTRY_PREFIX := SparkDsv4ResidentDecodeStage

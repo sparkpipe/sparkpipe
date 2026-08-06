@@ -14,7 +14,7 @@ the datafile's first field; contract file names are provenance, not names.
 ```text
 tag      authoritative contract
 k3       model_contracts/k3_authoritative.json
-dsv4     model_contracts/dsv4_flash_authoritative.json   (DeepSeek-V4-Flash)
+dsv4     model_contracts/dsv4_flash_authoritative.json   (DeepSeek-V4-Flash-0731 GA)
 dsv4pro  model_contracts/dsv4_pro_authoritative.json     (DeepSeek-V4-Pro)
 glm52    model_contracts/glm52.json
 qwen36   model_contracts/qwen36_authoritative.json

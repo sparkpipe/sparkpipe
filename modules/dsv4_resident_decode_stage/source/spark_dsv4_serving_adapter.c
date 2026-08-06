@@ -10,7 +10,7 @@
 #include "sparkpipe/spark_model_driver_support.h"
 
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
-	"spark.dsv4.flash.serving-adapter.pp13.v1"
+	"spark.dsv4.flash-0731.serving-adapter.pp13.v2"
 #define SPARK_DSV4_SERVING_MODEL_ID SPARK_DSV4_MODEL_ID
 #define SPARK_DSV4_SERVING_MODEL_REVISION SPARK_DSV4_MODEL_SOURCE_REVISION
 #define SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256 SPARK_DSV4_MODEL_DESCRIPTION_SHA256

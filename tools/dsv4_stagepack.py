@@ -30,6 +30,8 @@ from typing import BinaryIO, Dict, Iterable, List, Mapping, Sequence, Tuple
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "model_contracts" / "dsv4_flash.json"
 SOURCE_INDEX_NAME = "model.safetensors.index.json"
+STAGE_SOURCE_MANIFEST_NAME = "dsv4_stage_source.json"
+STAGE_SOURCE_MANIFEST_FORMAT = "sparkpipe.dsv4.stage-source.v2"
 
 WEIGHT_BF16 = 0
 WEIGHT_F32 = 1
@@ -92,7 +94,7 @@ MTP_LAYER = 0xFFFFFFFE
 
 HEADER_STRUCT = struct.Struct("<16I2Q")
 ENTRY_STRUCT = struct.Struct("<6I2Q")
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 CODEC_ABI_VERSION = 1
 CODEC_IDS = {
     "bf16": 1,
@@ -182,6 +184,185 @@ def sha256_file(path: Path) -> str:
             if not chunk:
                 return digest.hexdigest()
             digest.update(chunk)
+
+
+def record_tensor_names(records: Iterable[Record]) -> List[str]:
+    names: List[str] = []
+    seen = set()
+    for record in records:
+        for name in record.source_names + record.scale_names:
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+    return names
+
+
+def _load_source_index(index_path: Path) -> Mapping[str, object]:
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    if not isinstance(index, dict) or not isinstance(index.get("weight_map"), dict):
+        raise PackFailure(f"malformed safetensors index: {index_path}")
+    return index
+
+
+def _source_files(contract: Mapping[str, object]) -> Mapping[str, object] | None:
+    source_files = contract.get("source_files")
+    if source_files is None:
+        return None
+    if not isinstance(source_files, dict):
+        raise PackFailure("contract source_files section is malformed")
+    return source_files
+
+
+def _validate_file(path: Path, name: str, entry: object) -> None:
+    if not isinstance(entry, dict):
+        raise PackFailure(f"source file contract is malformed: {name}")
+    expected_bytes = entry.get("bytes")
+    expected_sha256 = entry.get("sha256")
+    if (not isinstance(expected_bytes, int) or expected_bytes <= 0 or
+            not isinstance(expected_sha256, str) or len(expected_sha256) != 64 or
+            any(character not in "0123456789abcdef" for character in expected_sha256)):
+        raise PackFailure(f"source file contract is malformed: {name}")
+    if path.is_symlink() or not path.is_file():
+        raise PackFailure(f"source file is missing or not regular: {name}")
+    actual_bytes = path.stat().st_size
+    if actual_bytes != expected_bytes:
+        raise PackFailure(
+            f"source file byte count mismatch for {name}: "
+            f"expected {expected_bytes}, got {actual_bytes}")
+    actual_sha256 = sha256_file(path)
+    if actual_sha256 != expected_sha256:
+        raise PackFailure(
+            f"source file SHA-256 mismatch for {name}: "
+            f"expected {expected_sha256}, got {actual_sha256}")
+
+
+def _validate_full_source(model_dir: Path, contract: Mapping[str, object],
+                          source_files: Mapping[str, object]) -> None:
+    index_name = SOURCE_INDEX_NAME
+    shard_names = sorted(name for name in source_files if name != index_name)
+    local_shards = sorted(path.name for path in model_dir.glob("*.safetensors"))
+    if local_shards != shard_names:
+        raise PackFailure(
+            f"source shard set mismatch: expected {shard_names}, got {local_shards}")
+    incomplete = sorted(
+        str(path.relative_to(model_dir)) for path in model_dir.rglob("*")
+        if path.is_file() and path.name.endswith((".part", ".incomplete")))
+    if incomplete:
+        raise PackFailure(f"source checkpoint has incomplete files: {incomplete}")
+    for name in (index_name, *shard_names):
+        _validate_file(model_dir / name, name, source_files.get(name))
+    index = _load_source_index(model_dir / index_name)
+    weight_map = index["weight_map"]
+    metadata = index.get("metadata")
+    if len(weight_map) != contract.get("source_tensor_count"):
+        raise PackFailure("source index tensor count does not match the pinned contract")
+    if (not isinstance(metadata, dict) or
+            metadata.get("total_size") != contract.get("source_indexed_payload_bytes")):
+        raise PackFailure("source index payload bytes do not match the pinned contract")
+    if sorted(set(weight_map.values())) != shard_names:
+        raise PackFailure("source index shard set does not match the pinned contract")
+
+
+def _manifest_files(source_files: Mapping[str, object],
+                    shard_names: Sequence[str]) -> List[Mapping[str, object]]:
+    files: List[Mapping[str, object]] = []
+    for name in shard_names:
+        entry = source_files.get(name)
+        if not isinstance(entry, dict):
+            raise PackFailure(f"source shard is not pinned by the contract: {name}")
+        files.append({
+            "name": name,
+            "bytes": entry.get("bytes"),
+            "sha256": entry.get("sha256"),
+        })
+    return files
+
+
+def _validate_reduced_source(model_dir: Path, contract: Mapping[str, object],
+                             source_files: Mapping[str, object],
+                             records: Sequence[Record] | None,
+                             first_layer: int | None,
+                             layer_count: int | None) -> None:
+    if records is None or first_layer is None or layer_count is None:
+        raise PackFailure("reduced stage source validation requires the exact layer slice")
+    index_path = model_dir / SOURCE_INDEX_NAME
+    actual_index_sha256 = sha256_file(index_path)
+    index = _load_source_index(index_path)
+    weight_map = index["weight_map"]
+    expected_names = record_tensor_names(records)
+    if set(weight_map) != set(expected_names):
+        raise PackFailure("reduced source index tensor set does not match the stage")
+    shard_names = sorted(set(str(name) for name in weight_map.values()))
+    expected_files = _manifest_files(source_files, shard_names)
+    try:
+        manifest = json.loads(
+            (model_dir / STAGE_SOURCE_MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise PackFailure("reduced stage source manifest is missing or malformed") from error
+    expected_fields = {
+        "format": STAGE_SOURCE_MANIFEST_FORMAT,
+        "source_mode": "shards",
+        "source_files_present": True,
+        "source_model_id": contract.get("model_id"),
+        "source_revision": contract.get("source_revision"),
+        "source_index_sha256": contract.get("source_index_sha256"),
+        "reduced_index_sha256": actual_index_sha256,
+        "first_layer": first_layer,
+        "layer_count": layer_count,
+        "tensor_count": len(expected_names),
+        "source_shard_count": len(shard_names),
+        "source_shard_bytes": sum(
+            int(source_files[name]["bytes"]) for name in shard_names),
+        "source_shards": shard_names,
+        "files": expected_files,
+    }
+    for key, expected in expected_fields.items():
+        if manifest.get(key) != expected:
+            raise PackFailure(f"reduced stage source manifest mismatch: {key}")
+    local_shards = sorted(path.name for path in model_dir.glob("*.safetensors"))
+    if local_shards != shard_names:
+        raise PackFailure("reduced stage source shard set does not match its index")
+    for name in shard_names:
+        _validate_file(model_dir / name, name, source_files[name])
+
+
+def _validate_legacy_source_identity(model_dir: Path,
+                                     contract: Mapping[str, object],
+                                     actual: str, expected: object) -> str:
+    if expected is None or actual == expected:
+        return actual
+    manifest_path = model_dir / STAGE_SOURCE_MANIFEST_NAME
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise PackFailure(
+            f"source index SHA-256 mismatch: expected {expected}, got {actual}") from error
+    fragment = manifest.get("fragment")
+    fragment_sha256 = manifest.get("fragment_sha256")
+    if (manifest.get("source_index_sha256") != expected or
+            not isinstance(fragment, str) or Path(fragment).name != fragment or
+            not isinstance(fragment_sha256, str) or
+            sha256_file(model_dir / fragment) != fragment_sha256):
+        raise PackFailure("stage source is not bound to the exact checkpoint index")
+    return str(expected)
+
+
+def validate_source_identity(model_dir: Path, contract: Mapping[str, object],
+                             records: Sequence[Record] | None = None,
+                             first_layer: int | None = None,
+                             layer_count: int | None = None) -> str:
+    index_path = model_dir / SOURCE_INDEX_NAME
+    actual = sha256_file(index_path)
+    expected = contract.get("source_index_sha256")
+    source_files = _source_files(contract)
+    if source_files is None:
+        return _validate_legacy_source_identity(model_dir, contract, actual, expected)
+    if actual == expected:
+        _validate_full_source(model_dir, contract, source_files)
+    else:
+        _validate_reduced_source(
+            model_dir, contract, source_files, records, first_layer, layer_count)
+    return str(expected)
 
 
 def align_up(value: int, alignment: int = 8) -> int:
@@ -420,10 +601,24 @@ def build_records(contract: Mapping[str, object], first_layer: int, layer_count:
     if not isinstance(model, dict):
         raise PackFailure("contract model section is malformed")
     total_layers = int(model["layer_count"])
+    mtp_layer_count = int(model["mtp_layer_count"])
+    dspark = contract.get("dspark", {})
+    if not isinstance(dspark, dict):
+        raise PackFailure("contract DSpark section is malformed")
+    source_auxiliary_layer_count = int(dspark.get(
+        "layer_count", mtp_layer_count))
+    runtime = contract.get("runtime", {})
+    if not isinstance(runtime, dict):
+        raise PackFailure("contract runtime section is malformed")
+    packed_mtp_layer_count = int(runtime.get(
+        "packed_mtp_layer_count", mtp_layer_count))
+    if packed_mtp_layer_count not in (0, 1):
+        raise PackFailure(
+            f"unsupported packed MTP layer count: {packed_mtp_layer_count}")
     if first_layer < 0 or layer_count <= 0 or first_layer + layer_count > total_layers:
         raise PackFailure(f"invalid layer slice {first_layer}+{layer_count}")
     ratios = contract["attention"]["compression_ratios"]
-    if not isinstance(ratios, list) or len(ratios) != total_layers + 1:
+    if not isinstance(ratios, list) or len(ratios) != total_layers + source_auxiliary_layer_count:
         raise PackFailure("contract compression ratio table is malformed")
     records: List[Record] = []
     if first_layer == 0:
@@ -432,7 +627,7 @@ def build_records(contract: Mapping[str, object], first_layer: int, layer_count:
     for layer in range(first_layer, first_layer + layer_count):
         add_layer_records(records, ratios, layer)
     if first_layer + layer_count == total_layers:
-        if first_layer != 0:
+        if first_layer != 0 and packed_mtp_layer_count != 0:
             add_record(records, KIND_EMBEDDING, GLOBAL_LAYER, WEIGHT_BF16, 129280, 4096,
                        ("embed.weight",))
         add_record(records, KIND_FINAL_NORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
@@ -445,23 +640,24 @@ def build_records(contract: Mapping[str, object], first_layer: int, layer_count:
                    ("hc_head_base",))
         add_record(records, KIND_HC_HEAD_SCALE, GLOBAL_LAYER, WEIGHT_F32, 1, 1,
                    ("hc_head_scale",))
-        add_record(records, KIND_MTP_E_PROJ, GLOBAL_LAYER, WEIGHT_FP8, 4096, 4096,
-                   ("mtp.0.e_proj.weight",), ("mtp.0.e_proj.scale",))
-        add_record(records, KIND_MTP_H_PROJ, GLOBAL_LAYER, WEIGHT_FP8, 4096, 4096,
-                   ("mtp.0.h_proj.weight",), ("mtp.0.h_proj.scale",))
-        add_record(records, KIND_MTP_ENORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
-                   ("mtp.0.enorm.weight",))
-        add_record(records, KIND_MTP_HNORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
-                   ("mtp.0.hnorm.weight",))
-        add_record(records, KIND_MTP_FINAL_NORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
-                   ("mtp.0.norm.weight",))
-        add_record(records, KIND_MTP_HC_HEAD_FN, GLOBAL_LAYER, WEIGHT_F32, 4, 16384,
-                   ("mtp.0.hc_head_fn",))
-        add_record(records, KIND_MTP_HC_HEAD_BASE, GLOBAL_LAYER, WEIGHT_F32, 1, 4,
-                   ("mtp.0.hc_head_base",))
-        add_record(records, KIND_MTP_HC_HEAD_SCALE, GLOBAL_LAYER, WEIGHT_F32, 1, 1,
-                   ("mtp.0.hc_head_scale",))
-        add_layer_records(records, ratios, MTP_LAYER)
+        if packed_mtp_layer_count != 0:
+            add_record(records, KIND_MTP_E_PROJ, GLOBAL_LAYER, WEIGHT_FP8, 4096, 4096,
+                       ("mtp.0.e_proj.weight",), ("mtp.0.e_proj.scale",))
+            add_record(records, KIND_MTP_H_PROJ, GLOBAL_LAYER, WEIGHT_FP8, 4096, 4096,
+                       ("mtp.0.h_proj.weight",), ("mtp.0.h_proj.scale",))
+            add_record(records, KIND_MTP_ENORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
+                       ("mtp.0.enorm.weight",))
+            add_record(records, KIND_MTP_HNORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
+                       ("mtp.0.hnorm.weight",))
+            add_record(records, KIND_MTP_FINAL_NORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
+                       ("mtp.0.norm.weight",))
+            add_record(records, KIND_MTP_HC_HEAD_FN, GLOBAL_LAYER, WEIGHT_F32, 4, 16384,
+                       ("mtp.0.hc_head_fn",))
+            add_record(records, KIND_MTP_HC_HEAD_BASE, GLOBAL_LAYER, WEIGHT_F32, 1, 4,
+                       ("mtp.0.hc_head_base",))
+            add_record(records, KIND_MTP_HC_HEAD_SCALE, GLOBAL_LAYER, WEIGHT_F32, 1, 1,
+                       ("mtp.0.hc_head_scale",))
+            add_layer_records(records, ratios, MTP_LAYER)
     return records
 
 
@@ -568,10 +764,13 @@ def make_directory(records: Sequence[Record]) -> Tuple[List[DirectoryEntry], int
 
 def pack_header(records: Sequence[Record], first_layer: int, layer_count: int,
                 file_bytes: int, codecs: Tuple[int, int, int]) -> bytes:
+    packed_mtp_layer_count = int(any(
+        record.layer == MTP_LAYER for record in records))
     return HEADER_STRUCT.pack(
         0x34565344, FORMAT_VERSION, HEADER_STRUCT.size, ENTRY_STRUCT.size,
         CODEC_ABI_VERSION, *codecs,
-        len(records), first_layer, layer_count, 43, 4096, 129280, 256, 1,
+        len(records), first_layer, layer_count, 43, 4096, 129280, 256,
+        packed_mtp_layer_count,
         HEADER_STRUCT.size, file_bytes,
     )
 
@@ -714,6 +913,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         with SafetensorSource(args.model_dir) as source:
             records = build_records(contract, args.first_layer, args.layer_count)
+            source_index_sha256 = validate_source_identity(
+                args.model_dir, contract, records,
+                args.first_layer, args.layer_count)
             validate_records(source, records)
             entries, file_bytes = make_directory(records)
             result: Dict[str, object] = {
@@ -724,7 +926,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "linear_weight_codec": codec_names[0],
                 "expert_weight_codec": codec_names[1],
                 "kv_cache_codec": codec_names[2],
-                "source_index_sha256": sha256_file(args.model_dir / SOURCE_INDEX_NAME),
+                "source_index_sha256": source_index_sha256,
                 "validated": True,
             }
             if not args.inspect:

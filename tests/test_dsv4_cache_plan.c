@@ -95,10 +95,10 @@ static void SparkTestFlashUsesExactAttentionClassReservations(void)
         &configuration,
         SPARK_DSV4_MODEL_VARIANT_FLASH);
     configuration.backbone_layer_count = 43u;
-    configuration.include_mtp_layer = 1u;
+    configuration.include_mtp_layer = 0u;
     assert(SparkDsv4CachePlanBuild(&configuration, &plan) == SPARK_STATUS_OK);
-    assert(plan.planned_layer_count == 44u);
-    assert(plan.sliding_layer_count == 3u);
+    assert(plan.planned_layer_count == 43u);
+    assert(plan.sliding_layer_count == 2u);
     assert(plan.compressed_sparse_layer_count == 21u);
     assert(plan.heavily_compressed_layer_count == 20u);
     assert(plan.total_arena_bytes < plan.worst_class_total_arena_bytes);
@@ -138,6 +138,9 @@ static void SparkTestFlashUsesExactAttentionClassReservations(void)
         hca_plan->compressor_state_sequence_stride_bytes);
 
     SparkTestValidateArenaPlacement(&plan);
+    configuration.include_mtp_layer = 1u;
+    assert(SparkDsv4CachePlanBuild(&configuration, &plan) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestProUsesItsOwnLayerSchedule(void)

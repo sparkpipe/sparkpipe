@@ -30,8 +30,9 @@
  * all live sequences at one prompt step share the same CUDA launch while
  * preserving each sequence's state dependency. A causal bulk-prefill kernel
  * can replace the wavefront after separate qualification.
- * MTP execution remains refused until its pass lands; the MTP tensors load
- * and verify so the pack contract is already final.
+ * GA DSpark execution remains refused until a native pass lands. Baseline
+ * stage packs exclude all three checkpoint DSpark layers and expose no
+ * speculative-token capability.
  *
  * The hash router pins to token ids, which exist only where the embedding
  * lives: a slice that starts inside the hash range without owning the
@@ -339,7 +340,7 @@ static SparkStatus SparkDsv4ModuleValidateEntry(SparkDsv4ModuleState *state, con
 	SparkDsv4StagePackTensorShape shape;
 	uint64_t payload_bytes,scale_bytes;
 	uint32_t global = entry->layer_index == SPARK_DSV4_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
-	uint32_t in_slice = entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER || (entry->layer_index >= state->first_layer_index && entry->layer_index < state->first_layer_index + state->layer_count) ? 1u : 0u;
+	uint32_t in_slice = (entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER && SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u) || (entry->layer_index >= state->first_layer_index && entry->layer_index < state->first_layer_index + state->layer_count) ? 1u : 0u;
 	if ( entry->tensor_kind >= SPARK_DSV4_STAGEPACK_TENSOR_KIND_COUNT || (global == 0u && in_slice == 0u) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if ( SparkDsv4StagePackResolvedShape(entry->tensor_kind,global != 0u ? 0u : entry->layer_index,global,&shape) < 0 )
@@ -515,16 +516,21 @@ static SparkStatus SparkDsv4ModuleVerifyCoverage(SparkDsv4ModuleState *state)
 			fprintf(stderr,"%s pack_layer_coverage layer=%u seen=%llx\n",SPARK_DSV4_MODULE_TAG,layer,(unsigned long long)state->layer_seen_bits[layer]);
 			return(SPARK_STATUS_VALIDATION_FAILED);
 		}
-	if ( state->owns_embedding != 0u || state->owns_final_head != 0u )
+	if ( state->owns_embedding != 0u || (state->owns_final_head != 0u && SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u) )
 		expected_globals |= 1ull << SPARK_DSV4_STAGEPACK_TENSOR_EMBEDDING;
 	if ( state->owns_final_head != 0u )
 	{
-		for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_FINAL_NORM; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE; tensor++)
+		for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_FINAL_NORM; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_SCALE; tensor++)
 			expected_globals |= 1ull << tensor;
-		if ( state->mtp_seen_bits != SparkDsv4ModuleExpectedLayerBits(SPARK_DSV4_STAGEPACK_MTP_LAYER) )
+		if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
 		{
-			fprintf(stderr,"%s pack_mtp_coverage seen=%llx\n",SPARK_DSV4_MODULE_TAG,(unsigned long long)state->mtp_seen_bits);
-			return(SPARK_STATUS_VALIDATION_FAILED);
+			for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_MTP_E_PROJ; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE; tensor++)
+				expected_globals |= 1ull << tensor;
+			if ( state->mtp_seen_bits != SparkDsv4ModuleExpectedLayerBits(SPARK_DSV4_STAGEPACK_MTP_LAYER) )
+			{
+				fprintf(stderr,"%s pack_mtp_coverage seen=%llx\n",SPARK_DSV4_MODULE_TAG,(unsigned long long)state->mtp_seen_bits);
+				return(SPARK_STATUS_VALIDATION_FAILED);
+			}
 		}
 	}
 	if ( state->global_seen_bits != expected_globals )

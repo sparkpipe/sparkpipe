@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pin DSV4 Flash to its one authoritative contract and active module."""
+"""Pin DSV4 Flash GA to its authoritative native-driver contract."""
 
 import json
 from pathlib import Path
@@ -45,8 +45,16 @@ def main() -> None:
 		if (ROOT / relative).exists():
 			raise SystemExit(f"obsolete DSV4 implementation remains: {relative}")
 	contract = json.loads(read("model_contracts/dsv4_flash_authoritative.json"))
-	if contract["source_revision"] != "60d8d70770c6776ff598c94bb586a859a38244f1":
+	if contract["model_id"] != "deepseek-ai/DeepSeek-V4-Flash-0731":
+		raise SystemExit("DSV4 Flash source model is not GA")
+	if contract["source_revision"] != "7872f01b1d1fe23eabc4c98b48bffcef5a386062":
 		raise SystemExit("DSV4 Flash source revision is not exact")
+	if contract["model"]["mtp_layer_count"] != 0:
+		raise SystemExit("DSV4 Flash GA baseline MTP layer count is not zero")
+	if contract["dspark"]["layer_count"] != 3:
+		raise SystemExit("DSV4 Flash GA checkpoint DSpark count is not exact")
+	if contract["runtime"]["packed_mtp_layer_count"] != 0:
+		raise SystemExit("DSV4 Flash GA baseline must not pack DSpark tensors")
 	if contract["precision"]["routed_expert_weight_codec"] != "mxfp4_e2m1":
 		raise SystemExit("DSV4 Flash package does not declare its exact expert codec")
 	if (contract["precision"]["dynamic_activation_format"], contract["precision"]["scale_format"]) != ("fp8_e4m3", "ue8m0"):
@@ -96,6 +104,11 @@ def main() -> None:
 	reject(module, "cudaMemsetAsync(state->compress_score_state_f32 + offset,0", "zero compressor score reset")
 	reject(module, "cudaMemsetAsync(state->index_score_state_f32 + offset,0", "zero indexer score reset")
 	require(stagepack, "SPARK_DSV4_STAGEPACK_WEIGHT_FP4_E2M1", "checkpoint MXFP4 expert payload")
+	require(header, "SPARK_DSV4_MODEL_MTP_LAYER_COUNT 0u", "zero runtime MTP layers")
+	require(header, "SPARK_DSV4_MODEL_CHECKPOINT_DSPARK_LAYER_COUNT 3u", "checkpoint DSpark layers")
+	require(stagepack, "SPARK_DSV4_STAGEPACK_FORMAT_VERSION 3u", "GA stage-pack format")
+	reject(module, "spark_glm", "GLM driver coupling")
+	reject(adapter, "spark_glm", "GLM adapter coupling")
 	require(adapter, ".expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC", "adapter codec binding")
 	require(adapter, "dispatch.token_ids = submission->token_ids;", "all-stage token routing input")
 	require(runner, "buffers[buffer_count].address = (void *)dispatch->token_ids;", "all-stage token driver buffer")

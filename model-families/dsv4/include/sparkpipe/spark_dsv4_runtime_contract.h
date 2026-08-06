@@ -7,7 +7,8 @@
 
 static inline SparkModelRuntimeContract SparkDsv4RuntimeContractBase(
     const char *contract_id,
-    uint64_t attention_operation_mask)
+    uint64_t attention_operation_mask,
+    uint64_t auxiliary_operation_mask)
 {
     SparkModelRuntimeContract contract;
 
@@ -29,7 +30,7 @@ static inline SparkModelRuntimeContract SparkDsv4RuntimeContractBase(
         SPARK_MODEL_RUNTIME_OPERATION_HYPER_CONNECTION |
         SPARK_MODEL_RUNTIME_OPERATION_HASH_ROUTED_MOE |
         SPARK_MODEL_RUNTIME_OPERATION_GROUPED_MOE |
-        SPARK_MODEL_RUNTIME_OPERATION_MULTI_TOKEN_PREDICTION |
+        auxiliary_operation_mask |
         SPARK_MODEL_RUNTIME_OPERATION_OUTPUT_HEAD;
     return contract;
 }
@@ -37,10 +38,11 @@ static inline SparkModelRuntimeContract SparkDsv4RuntimeContractBase(
 static inline SparkModelRuntimeContract SparkDsv4FlashRuntimeContract(void)
 {
     return SparkDsv4RuntimeContractBase(
-        "deepseek-v4-flash-checkpoint-mixed-v1",
+        "deepseek-v4-flash-0731-ga-baseline-mixed-v2",
         SPARK_MODEL_RUNTIME_OPERATION_SLIDING_ATTENTION |
         SPARK_MODEL_RUNTIME_OPERATION_COMPRESSED_SPARSE_ATTENTION |
-        SPARK_MODEL_RUNTIME_OPERATION_HIERARCHICAL_COMPRESSED_ATTENTION);
+        SPARK_MODEL_RUNTIME_OPERATION_HIERARCHICAL_COMPRESSED_ATTENTION,
+        0u);
 }
 
 static inline SparkModelRuntimeContract SparkDsv4ProRuntimeContract(void)
@@ -48,7 +50,8 @@ static inline SparkModelRuntimeContract SparkDsv4ProRuntimeContract(void)
     return SparkDsv4RuntimeContractBase(
         "deepseek-v4-pro-checkpoint-mixed-v1",
         SPARK_MODEL_RUNTIME_OPERATION_COMPRESSED_SPARSE_ATTENTION |
-        SPARK_MODEL_RUNTIME_OPERATION_HIERARCHICAL_COMPRESSED_ATTENTION);
+        SPARK_MODEL_RUNTIME_OPERATION_HIERARCHICAL_COMPRESSED_ATTENTION,
+        SPARK_MODEL_RUNTIME_OPERATION_MULTI_TOKEN_PREDICTION);
 }
 
 static inline SparkStatus SparkDsv4FlashRuntimeValidateContract(

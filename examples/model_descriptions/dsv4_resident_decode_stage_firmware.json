@@ -3,6 +3,7 @@
     "architecture": "dsv4_resident_decode_stage",
     "module_geometry": {
       "attention_head_count": 64,
+      "checkpoint_dspark_layer_count": 3,
       "expert_intermediate_dimension": 2048,
       "experts_per_token": 6,
       "head_dimension": 512,
@@ -11,6 +12,7 @@
       "index_head_dimension": 128,
       "index_top_k": 512,
       "layer_count": 43,
+      "packed_dspark_layer_count": 0,
       "routed_expert_count": 256,
       "sliding_window_tokens": 128,
       "vocab_count": 129280
@@ -45,16 +47,18 @@
       "fallback_allowed": false,
       "required_environment": [],
       "runtime_backend_selection": "forbidden",
-      "runtime_precision_selection": "forbidden"
+      "runtime_precision_selection": "forbidden",
+      "speculative_decoding": "disabled",
+      "speculative_decoding_reason": "GA DSpark layers are checkpoint-declared but not implemented by the native DSV4 driver"
     },
     "source_model": {
-      "id": "deepseek-ai/DeepSeek-V4-Flash",
-      "revision": "60d8d70770c6776ff598c94bb586a859a38244f1"
+      "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
     }
   },
   "model": {
     "id": "deepseek.v4.flash.resident-decode-stage-firmware",
-    "revision": "h4096-l43-dsa-e256k6-hash3-v129280-v2"
+    "revision": "h4096-l43-dsa-e256k6-hash3-v129280-ga0731-v3"
   },
   "schema_version": 1,
   "stages": [
@@ -78,7 +82,7 @@
                 "runtime_backend_selection": "forbidden",
                 "runtime_precision_selection": "forbidden"
               },
-              "module": "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.v2",
+              "module": "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.v3",
               "name": "dsv4_resident_decode_stage"
             }
           ],
