@@ -2027,7 +2027,7 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
                 output_bf16,
                 ((uint64_t)slot * output_dimension) + neuron,
                 tile_output[
-                    entry / SPARK_LM_TILE][entry % SPARK_LM_TILE_N]);
+                    entry / SPARK_LM_TILE_N][entry % SPARK_LM_TILE_N]);
         }
     }
 }

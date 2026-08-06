@@ -9,10 +9,12 @@
 #include "sparkpipe/spark_dsv4_model.h"
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 
+#define SPARK_DSV4_VALIDATION_ROW_COUNT 8u
+
 typedef struct SparkDsv4ValidationCapture
 {
-	uint16_t hidden[SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS];
-	uint32_t output_token_id;
+	uint16_t hidden[SPARK_DSV4_VALIDATION_ROW_COUNT * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS];
+	uint32_t output_token_ids[SPARK_DSV4_VALIDATION_ROW_COUNT];
 	uint32_t output_count;
 	uint32_t nonzero_count;
 	uint32_t completion_count;
@@ -27,10 +29,10 @@ typedef struct SparkDsv4ValidationFrame
 	SparkModelDriverFrame frame;
 	void *hidden_input_bf16;
 	void *hidden_output_bf16;
-	uint32_t token_id;
-	uint32_t lane;
-	uint64_t position;
-	uint64_t sequence_id;
+	uint32_t token_ids[SPARK_DSV4_VALIDATION_ROW_COUNT];
+	uint32_t lanes[SPARK_DSV4_VALIDATION_ROW_COUNT];
+	uint64_t positions[SPARK_DSV4_VALIDATION_ROW_COUNT];
+	uint64_t sequence_ids[SPARK_DSV4_VALIDATION_ROW_COUNT];
 } SparkDsv4ValidationFrame;
 
 static int SparkDsv4ValidationRequire(int condition,const char *message)
@@ -73,7 +75,7 @@ static int SparkDsv4ValidationLoadNodeContext(
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_INDEX",0u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT - 1u,&context->stage_index) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_FIRST_LAYER",0u,SPARK_DSV4_MODEL_LAYER_COUNT - 1u,&context->first_layer_index) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_LAYER_COUNT",1u,SPARK_DSV4_MODEL_LAYER_COUNT,&context->layer_count) != 0 ||
-		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_MAX_ACTIVE_SEQUENCES",1u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&context->resident_sequence_capacity) != 0 ||
+		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_MAX_ACTIVE_SEQUENCES",SPARK_DSV4_VALIDATION_ROW_COUNT,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&context->resident_sequence_capacity) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_PIPELINE_SLOTS",1u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&context->pipeline_slot_count) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_MAX_SEQ",SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO,SPARK_DSV4_MODEL_MAX_POSITIONS,&context->max_sequence_positions) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_MTP",0u,0u,&mtp_layer_count) != 0 ||
@@ -144,7 +146,7 @@ static int SparkDsv4ValidationInitializeBoundaries(
 	hidden_bytes = sizeof(capture->hidden);
 	if ( node_context->stage_index != 0u )
 	{
-		for (element=0u; element<SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS; element++)
+		for (element=0u; element<SPARK_DSV4_VALIDATION_ROW_COUNT * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS; element++)
 			capture->hidden[element] = UINT16_C(0x3f80);
 		error = cudaMalloc(&frame->hidden_input_bf16,hidden_bytes);
 		if ( error == cudaSuccess )
@@ -166,17 +168,22 @@ static void SparkDsv4ValidationBuildFrame(
 	SparkDsv4ValidationCapture *capture,
 	SparkDsv4ValidationFrame *frame)
 {
-	uint32_t buffer_count;
+	uint32_t buffer_count,row;
 	uint64_t hidden_bytes;
 	hidden_bytes = sizeof(capture->hidden);
-	frame->token_id = 10397u;
-	frame->sequence_id = 1u;
+	for (row=0u; row<SPARK_DSV4_VALIDATION_ROW_COUNT; row++)
+	{
+		frame->token_ids[row] = 10397u + row;
+		frame->lanes[row] = row;
+		frame->positions[row] = 0u;
+		frame->sequence_ids[row] = (uint64_t)row + 1u;
+	}
 	frame->batch.abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION;
 	frame->batch.descriptor_bytes = sizeof(frame->batch);
-	frame->batch.row_count = 1u;
-	frame->batch.row_lane_indices = &frame->lane;
-	frame->batch.row_positions = &frame->position;
-	frame->batch.row_sequence_ids = &frame->sequence_id;
+	frame->batch.row_count = SPARK_DSV4_VALIDATION_ROW_COUNT;
+	frame->batch.row_lane_indices = frame->lanes;
+	frame->batch.row_positions = frame->positions;
+	frame->batch.row_sequence_ids = frame->sequence_ids;
 	frame->context.abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	frame->context.descriptor_bytes = sizeof(frame->context);
 	frame->context.flags = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW;
@@ -191,19 +198,19 @@ static void SparkDsv4ValidationBuildFrame(
 		frame->context.flags |= SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER;
 	buffer_count = 0u;
 	frame->buffers[buffer_count].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
-	frame->buffers[buffer_count].address = &frame->token_id;
-	frame->buffers[buffer_count++].bytes = sizeof(frame->token_id);
+	frame->buffers[buffer_count].address = frame->token_ids;
+	frame->buffers[buffer_count++].bytes = sizeof(frame->token_ids);
 	if ( node_context->first_layer_index + node_context->layer_count == SPARK_DSV4_MODEL_LAYER_COUNT )
 	{
 		frame->buffers[buffer_count].slot = 1u;
 		frame->buffers[buffer_count].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
-		frame->buffers[buffer_count].address = &capture->output_token_id;
-		frame->buffers[buffer_count++].bytes = sizeof(capture->output_token_id);
+		frame->buffers[buffer_count].address = capture->output_token_ids;
+		frame->buffers[buffer_count++].bytes = sizeof(capture->output_token_ids);
 	}
 	frame->frame.request_id = 1u;
-	frame->frame.sequence_id = frame->sequence_id;
-	frame->frame.active_slot_count = 1u;
-	frame->frame.new_token_count = 1u;
+	frame->frame.sequence_id = 1u;
+	frame->frame.active_slot_count = SPARK_DSV4_VALIDATION_ROW_COUNT;
+	frame->frame.new_token_count = SPARK_DSV4_VALIDATION_ROW_COUNT;
 	frame->frame.program_id = 1u;
 	frame->frame.execution_stream = (void *)cudaStreamPerThread;
 	frame->frame.buffers = buffer_count != 0u ? frame->buffers : 0;
@@ -224,7 +231,8 @@ static int SparkDsv4ValidationRunFrame(
 	SparkStatus status;
 	memset(&frame,0,sizeof(frame));
 	memset(capture,0,sizeof(*capture));
-	capture->output_token_id = UINT32_MAX;
+	for (element=0u; element<SPARK_DSV4_VALIDATION_ROW_COUNT; element++)
+		capture->output_token_ids[element] = UINT32_MAX;
 	if ( SparkDsv4ValidationInitializeBoundaries(node_context,capture,&frame) != 0 )
 	{
 		SparkDsv4ValidationDestroyFrame(&frame);
@@ -236,20 +244,23 @@ static int SparkDsv4ValidationRunFrame(
 	if ( status == SPARK_STATUS_OK && error == cudaSuccess && frame.hidden_output_bf16 != 0 )
 		error = cudaMemcpy(capture->hidden,frame.hidden_output_bf16,sizeof(capture->hidden),cudaMemcpyDeviceToHost);
 	if ( error == cudaSuccess && frame.hidden_output_bf16 != 0 )
-		for (element=0u; element<SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS; element++)
+		for (element=0u; element<SPARK_DSV4_VALIDATION_ROW_COUNT * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS; element++)
 			capture->nonzero_count += capture->hidden[element] != 0u ? 1u : 0u;
-	capture->output_count = error == cudaSuccess ? 1u : 0u;
+	capture->output_count = error == cudaSuccess ? SPARK_DSV4_VALIDATION_ROW_COUNT : 0u;
 	SparkDsv4ValidationDestroyFrame(&frame);
 	if ( status != SPARK_STATUS_OK || error != cudaSuccess )
 	{
 		fprintf(stderr,"dsv4_validation execute=%s cuda=%s\n",SparkStatusToString(status),cudaGetErrorString(error));
 		return(1);
 	}
-	if ( SparkDsv4ValidationRequire(capture->completion_count == 1u && capture->completion.status == SPARK_STATUS_OK,"completion") != 0 || SparkDsv4ValidationRequire(capture->output_count == 1u,"output_count") != 0 )
+	if ( SparkDsv4ValidationRequire(capture->completion_count == 1u && capture->completion.status == SPARK_STATUS_OK,"completion") != 0 || SparkDsv4ValidationRequire(capture->output_count == SPARK_DSV4_VALIDATION_ROW_COUNT,"output_count") != 0 )
 		return(1);
 	if ( node_context->stage_index + 1u < node_context->stage_count )
 		return(SparkDsv4ValidationRequire(capture->nonzero_count > 0u,"hidden_output_nonzero"));
-	return(SparkDsv4ValidationRequire(capture->output_token_id < SPARK_DSV4_MODEL_VOCAB_COUNT,"output_token_range"));
+	for (element=0u; element<SPARK_DSV4_VALIDATION_ROW_COUNT; element++)
+		if ( SparkDsv4ValidationRequire(capture->output_token_ids[element] < SPARK_DSV4_MODEL_VOCAB_COUNT,"output_token_range") != 0 )
+			return(1);
+	return(0);
 }
 
 static int SparkDsv4ValidationAdmit(void *module_state)
@@ -262,8 +273,8 @@ static int SparkDsv4ValidationAdmit(void *module_state)
 	request.program_id = 1u;
 	request.request_id = 1u;
 	request.sequence_id = 1u;
-	request.active_slot_count = 1u;
-	request.new_token_count = 1u;
+	request.active_slot_count = SPARK_DSV4_VALIDATION_ROW_COUNT;
+	request.new_token_count = SPARK_DSV4_VALIDATION_ROW_COUNT;
 	memset(&decision,0,sizeof(decision));
 	decision.descriptor_bytes = sizeof(decision);
 	status = SparkDsv4ResidentDecodeStageAdmit(module_state,&request,&decision);
@@ -316,6 +327,6 @@ int main(int argument_count,char **arguments)
 		fprintf(stderr,"dsv4_validation snapshot=%s submitted=%llu completed=%llu active=%u\n",SparkStatusToString(status),(unsigned long long)snapshot.submitted_count,(unsigned long long)snapshot.completed_count,snapshot.active_submission_count);
 		return(1);
 	}
-	printf("dsv4_validation PASS config=%s stage=%u slice=%u+%u nonzero_hidden=%u output_token=%u\n",arguments[1],node_context.stage_index,node_context.first_layer_index,node_context.layer_count,capture.nonzero_count,capture.output_token_id);
+	printf("dsv4_validation PASS config=%s stage=%u slice=%u+%u rows=%u nonzero_hidden=%u output_token=%u\n",arguments[1],node_context.stage_index,node_context.first_layer_index,node_context.layer_count,(unsigned)SPARK_DSV4_VALIDATION_ROW_COUNT,capture.nonzero_count,capture.output_token_ids[0]);
 	return(0);
 }

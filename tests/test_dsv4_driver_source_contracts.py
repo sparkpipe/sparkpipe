@@ -78,6 +78,8 @@ def main() -> None:
 	require(dtype, "return((uint8_t)encoded);", "scalar E4M3 low-byte result")
 	require(activation, "LmActivationStageFp8Qdq", "shared in-tile activation codec")
 	require(common, "SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC>", "dense activation codec propagation")
+	require(common, "entry / SPARK_LM_TILE_N][entry % SPARK_LM_TILE_N]", "software-pipelined output tile row stride")
+	reject(common, "entry / SPARK_LM_TILE][entry % SPARK_LM_TILE_N]", "software-pipelined output tile row alias")
 	require(header, "SPARK_DSV4_MODEL_LAYER_KIND_INVALID UINT32_MAX", "invalid layer sentinel")
 	reject(header, "return(SPARK_DSV4_MODEL_LAYER_KIND_SWA);\n}", "out-of-range SWA fallback")
 	require(module, "SparkDsv4ModelLayerKind(layer_index)", "model-owned layer dispatch")
@@ -99,6 +101,8 @@ def main() -> None:
 	require(cuda, "scores[element] = -INFINITY;", "negative-infinity compressor score reset")
 	require(cuda, "if ( row_lane_indices[previous] == lane )", "single compressor CTA per lane")
 	require(cuda, "for (; row<row_count; row++)", "ordered same-lane compressor rows")
+	require(module, "channels = weights->overlap * cache_width;", "HCA single-width compressor channels")
+	require(module, "overlapped = weights->overlap > 1u ? 1u : 0u;", "CSA-only compressor overlap")
 	require(module, "SparkDsv4LaunchResetCompressorState(stream,state->compress_kv_state_f32 + offset,state->compress_score_state_f32 + offset,state->compress_state_lane_stride)", "compressor state reset")
 	require(module, "SparkDsv4LaunchResetCompressorState(stream,state->index_kv_state_f32 + offset,state->index_score_state_f32 + offset,state->index_state_lane_stride)", "indexer state reset")
 	reject(module, "cudaMemsetAsync(state->compress_score_state_f32 + offset,0", "zero compressor score reset")
@@ -140,6 +144,9 @@ def main() -> None:
 		"SPARK_DSV4_STAGE_PIPELINE_SLOTS",
 	):
 		require(validator, name, "stage-specific CUDA validation configuration")
+	require(validator, "#define SPARK_DSV4_VALIDATION_ROW_COUNT 8u", "B8 CUDA validation width")
+	require(validator, "frame->batch.row_count = SPARK_DSV4_VALIDATION_ROW_COUNT;", "B8 CUDA decode batch")
+	require(validator, "frame->lanes[row] = row;", "B8 CUDA distinct resident lanes")
 	require(validator, "frame->frame.completion_function = SparkDsv4ValidationCompletion", "validator external completion")
 	require(driver_smoke, "node_context.linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC", "driver smoke linear codec binding")
 	require(driver_smoke, "node_context.expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC", "driver smoke expert codec binding")
