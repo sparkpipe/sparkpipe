@@ -586,9 +586,9 @@ static __device__ __forceinline__ float SparkDsv4PoolOverlapChannel(const float 
  * keeps different lanes parallel without racing a lane's recurrent state.
  * State layout per lane: [coff*ratio slots][coff*d ch] f32.
  */
-static __global__ void SparkDsv4CompressStepKernel(const float *kv_f32, const float *score_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlap, uint32_t width, void *emit_bf16, uint32_t *emitted)
+static __global__ void SparkDsv4CompressStepKernel(const float *kv_f32, const float *score_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlapped, uint32_t width, void *emit_bf16, uint32_t *emitted)
 {
-	uint32_t row = blockIdx.x,coff = overlap != 0u ? 2u : 1u,channels = coff * width,channel;
+	uint32_t row = blockIdx.x,coff = overlapped != 0u ? 2u : 1u,channels = coff * width,channel;
 	uint32_t slot,boundary,lane,previous;
 	uint64_t state_base;
 	float *kv_state,*score_state;
@@ -610,8 +610,8 @@ static __global__ void SparkDsv4CompressStepKernel(const float *kv_f32, const fl
 		boundary = (row_positions[row] + 1u) % ratio == 0u ? 1u : 0u;
 		for (channel=threadIdx.x; channel<channels; channel+=blockDim.x)
 		{
-			kv_state[((overlap != 0u ? ratio : 0u) + slot) * channels + channel] = kv_f32[(uint64_t)row * channels + channel];
-			score_state[((overlap != 0u ? ratio : 0u) + slot) * channels + channel] = score_f32[(uint64_t)row * channels + channel];
+			kv_state[((overlapped != 0u ? ratio : 0u) + slot) * channels + channel] = kv_f32[(uint64_t)row * channels + channel];
+			score_state[((overlapped != 0u ? ratio : 0u) + slot) * channels + channel] = score_f32[(uint64_t)row * channels + channel];
 		}
 		__syncthreads();
 		if ( threadIdx.x == 0u )
@@ -620,11 +620,11 @@ static __global__ void SparkDsv4CompressStepKernel(const float *kv_f32, const fl
 		{
 			pooled = 0.0f;
 			if ( boundary != 0u )
-				pooled = overlap != 0u ? SparkDsv4PoolOverlapChannel(kv_state,score_state,ratio,channels,width,channel) : SparkDsv4PoolChannel(kv_state,score_state,ratio,channels,channel);
+				pooled = overlapped != 0u ? SparkDsv4PoolOverlapChannel(kv_state,score_state,ratio,channels,width,channel) : SparkDsv4PoolChannel(kv_state,score_state,ratio,channels,channel);
 			SparkLmFloatToBf16(emit_bf16,(uint64_t)row * width + channel,pooled);
 		}
 		__syncthreads();
-		if ( overlap != 0u && boundary != 0u )
+		if ( overlapped != 0u && boundary != 0u )
 			for (channel=threadIdx.x; channel<ratio * channels; channel+=blockDim.x)
 			{
 				kv_state[channel] = kv_state[ratio * channels + channel];
@@ -1564,9 +1564,11 @@ extern "C" cudaError_t SparkDsv4LaunchApeAdd(cudaStream_t stream, float *score_f
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream, const float *kv_f32, const float *score_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlap, uint32_t width, void *emit_bf16, uint32_t *emitted)
+extern "C" cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream, const float *kv_f32, const float *score_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlapped, uint32_t width, void *emit_bf16, uint32_t *emitted)
 {
-	SparkDsv4CompressStepKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(kv_f32,score_f32,kv_state_f32,score_state_f32,state_lane_stride,row_lane_indices,row_positions,row_count,ratio,overlap,width,emit_bf16,emitted);
+	if ( overlapped > 1u )
+		return(cudaErrorInvalidValue);
+	SparkDsv4CompressStepKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(kv_f32,score_f32,kv_state_f32,score_state_f32,state_lane_stride,row_lane_indices,row_positions,row_count,ratio,overlapped,width,emit_bf16,emitted);
 	return(cudaGetLastError());
 }
 

@@ -217,7 +217,7 @@ extern cudaError_t SparkDsv4LaunchHadamard(cudaStream_t stream, void *data_bf16,
 extern cudaError_t SparkDsv4LaunchSparseAttn(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_lane_indices, const int32_t *topk_idxs, uint32_t topk, const float *sink_f32, float scale, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dim);
 extern cudaError_t SparkDsv4LaunchWiden(cudaStream_t stream, const void *input_bf16, float *output_f32, uint32_t row_count, uint32_t width, float scale);
 extern cudaError_t SparkDsv4LaunchApeAdd(cudaStream_t stream, float *score_f32, const float *ape_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t channels);
-extern cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream, const float *kv_f32, const float *score_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlap, uint32_t width, void *emit_bf16, uint32_t *emitted);
+extern cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream, const float *kv_f32, const float *score_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlapped, uint32_t width, void *emit_bf16, uint32_t *emitted);
 extern cudaError_t SparkDsv4LaunchResetCompressorState(cudaStream_t stream, float *kv, float *scores, uint64_t element_count);
 extern cudaError_t SparkDsv4LaunchCacheScatter(cudaStream_t stream, const void *source_bf16, const uint32_t *emitted, void *cache_bf16, uint64_t cache_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t width, uint64_t base_slot, uint32_t ratio, uint32_t ring_slots);
 extern cudaError_t SparkDsv4LaunchBuildAttentionIndices(cudaStream_t stream, const uint64_t *row_positions, int32_t *indices, uint32_t *slot_counts, uint32_t row_count, uint32_t column_count, uint32_t index_slot_capacity, uint32_t layer_kind);
@@ -1268,9 +1268,13 @@ static cudaError_t SparkDsv4ModuleHcEnter(SparkDsv4ModuleSlot *slot, const void 
 static cudaError_t SparkDsv4ModuleRunCompressor(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4CompressorWeights *weights, float *kv_state, float *score_state, uint64_t state_stride, void *cache_base, uint64_t cache_lane_stride, uint64_t cache_slot_offset, uint32_t cache_width, uint32_t rotate, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
-	uint32_t channels = (weights->overlap != 0u ? 2u : 1u) * cache_width;
+	uint32_t channels,overlapped;
 	uint64_t ratio = weights->ratio;
 	cudaError_t error;
+	if ( weights->overlap != 1u && weights->overlap != SPARK_DSV4_MODEL_CSA_OVERLAP_FACTOR )
+		return(cudaErrorInvalidValue);
+	channels = weights->overlap * cache_width;
+	overlapped = weights->overlap > 1u ? 1u : 0u;
 	error = SparkDsv4LaunchLinear(stream,&weights->wkv,slot->normalized_bf16,slot->compress_kv_bf16,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchLinear(stream,&weights->wgate,slot->normalized_bf16,slot->compress_score_bf16,rows);
@@ -1281,7 +1285,7 @@ static cudaError_t SparkDsv4ModuleRunCompressor(SparkDsv4ModuleState *state, Spa
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchApeAdd(stream,slot->compress_score_f32,weights->ape_f32,slot->row_positions,rows,(uint32_t)ratio,channels);
 	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchCompressStep(stream,slot->compress_kv_f32,slot->compress_score_f32,kv_state,score_state,state_stride,slot->row_lane_indices,slot->row_positions,rows,(uint32_t)ratio,weights->overlap,cache_width,slot->emit_bf16,slot->emitted_u32);
+		error = SparkDsv4LaunchCompressStep(stream,slot->compress_kv_f32,slot->compress_score_f32,kv_state,score_state,state_stride,slot->row_lane_indices,slot->row_positions,rows,(uint32_t)ratio,overlapped,cache_width,slot->emit_bf16,slot->emitted_u32);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchRmsNorm(stream,slot->emit_bf16,weights->norm_weight_bf16,slot->emit_bf16,rows,cache_width,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
