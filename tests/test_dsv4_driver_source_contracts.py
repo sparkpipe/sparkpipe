@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pin DSV4 Flash GA to its authoritative native-driver contract."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -71,6 +72,9 @@ def main() -> None:
 	runner = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c")
 	validator = read("modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu")
 	validator_script = read("modules/dsv4_resident_decode_stage/validation/validate_dsv4_resident_decode_stage_cuda.sh")
+	module_makefile = read("modules/dsv4_resident_decode_stage/Makefile")
+	fixture_verifier = read("tools/verify_dsv4_ga_reference_fixture.py")
+	fixture_generator = read("tools/generate_dsv4_ga_reference_fixture.sh")
 	driver_smoke = read("tools/sparkpipe_dsv4_driver_cuda_smoke.c")
 	require(header, "Generated from the exact source revision", "generated model contract")
 	require(header, "SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1", "package expert codec")
@@ -160,6 +164,38 @@ def main() -> None:
 	reject(validator, "node_context->stage_count = 2u", "hardcoded validator topology")
 	reject(validator + validator_script + module, "ALLOW_UNQUALIFIED", "runtime qualification bypass")
 	require(validator_script, "-lcuda", "CUDA Driver API validator link")
+	require(validator_script, "qualification/dsv4/reference_vectors/ga_stage0_compsec076_p128", "retained GA stage-0 fixture")
+	require(validator_script, '"${SPARK_DSV4_STAGE_INDEX:-}" == "0"', "reference stage index gate")
+	require(validator_script, '"${SPARK_DSV4_STAGE_FIRST_LAYER:-}" == "0"', "reference first-layer gate")
+	require(validator_script, '"${SPARK_DSV4_STAGE_LAYER_COUNT:-}" == "3"', "reference layer-count gate")
+	require(validator_script, "unset SPARK_DSV4_REFERENCE_TOKEN_PATH", "caller-independent reference token selection")
+	require(validator_script, "unset SPARK_DSV4_REFERENCE_OUTPUT_PATH", "caller-independent reference output selection")
+	require(validator_script, 'python3 "${reference_verifier}"', "strict reference fixture verification")
+	require(validator_script, 'export SPARK_DSV4_REFERENCE_TOKEN_PATH="${reference_fixture_directory}/prompt_tokens.u32le"', "verified reference token export")
+	require(validator_script, 'export SPARK_DSV4_REFERENCE_OUTPUT_PATH="${reference_fixture_directory}/after_layer_2.bf16le"', "verified reference output export")
+	require(validator_script, "SPARK_DSV4_REFERENCE_MANIFEST_SHA256", "pinned reference manifest input")
+	require(validator, "mode->use_reference != exact_reference_slice", "C-side exact stage-0 reference enforcement")
+	require(validator, "SPARK_DSV4_VALIDATION_REFERENCE_MAX_ROW_RELATIVE_L2", "true per-row reference guard")
+	require(module_makefile, "override DSV4_GA_STAGE0_REFERENCE_MANIFEST_SHA256 :=", "retained reference digest binding")
+	require(module_makefile, "SPARK_DSV4_REFERENCE_MANIFEST_SHA256=$(DSV4_GA_STAGE0_REFERENCE_MANIFEST_SHA256)", "reference digest runtime configuration")
+	require(module_makefile, "SPARK_DSV4_CUDA_VALIDATOR_SHA256=$(DSV4_CUDA_VALIDATOR_SHA256)", "CUDA validator digest configuration")
+	require(module_makefile, "SPARK_DSV4_REFERENCE_VERIFIER_SHA256=$(DSV4_REFERENCE_VERIFIER_SHA256)", "reference verifier digest configuration")
+	require(validator_script, 'require_source_digest "${SPARK_DSV4_CUDA_VALIDATOR_SHA256:-}"', "CUDA validator source binding")
+	require(validator_script, 'require_source_digest "${SPARK_DSV4_REFERENCE_VERIFIER_SHA256:-}"', "reference verifier source binding")
+	digest_line = next(line for line in module_makefile.splitlines() if line.startswith("override DSV4_GA_STAGE0_REFERENCE_MANIFEST_SHA256 :="))
+	pinned_digest = digest_line.split(":=", 1)[1].strip()
+	fixture_manifest = ROOT / "qualification/dsv4/reference_vectors/ga_stage0_compsec076_p128/manifest.json"
+	if fixture_manifest.is_file():
+		actual_digest = hashlib.sha256(fixture_manifest.read_bytes()).hexdigest()
+		if pinned_digest != actual_digest:
+			raise SystemExit("DSV4 retained reference manifest digest is not exact")
+	elif pinned_digest != "":
+		raise SystemExit("DSV4 reference digest is pinned without a retained fixture")
+	require(fixture_verifier, 'REVISION = "7872f01b1d1fe23eabc4c98b48bffcef5a386062"', "fixture GA revision")
+	require(fixture_verifier, 'VECTOR_PATH = "after_layer_2.bf16le"', "fixture final stage-0 vector")
+	require(fixture_verifier, "fixture directory entries are not exact", "closed fixture inventory")
+	require(fixture_generator, "for run in first second", "fresh-process reference reproduction")
+	require(fixture_generator, 'cmp "${scratch_directory}/first/${artifact}"', "byte-exact reference reproduction gate")
 	print("PASS DSV4 active-module source contracts")
 
 
