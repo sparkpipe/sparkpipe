@@ -535,6 +535,8 @@ static SparkStatus SparkModelBatchConnectPipeline(
 	pipeline_configuration.submit_result_context = engine;
 	pipeline_configuration.completion_function = SparkModelBatchCompletion;
 	pipeline_configuration.completion_context = engine;
+	pipeline_configuration.stage_completion_function = configuration->stage_completion_function;
+	pipeline_configuration.stage_completion_context = configuration->stage_completion_context;
 	return(SparkModelPipelineClientConnect(&pipeline_configuration,&engine->pipeline));
 }
 
