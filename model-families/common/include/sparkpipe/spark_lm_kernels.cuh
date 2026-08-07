@@ -701,6 +701,7 @@ static __device__ void SparkLmAttnBlockScalarMax(float local_maximum, float *scr
  * stage's dominant memory stream.
  */
 #define SPARK_LM_HEAD_SCREEN_CAP 4096u
+#define SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT 128u
 
 // Rounding slack for the SCREEN only: the certified e_n bound covers
 // the fp4 weight error, this covers the bf16 store of the coarse logit
@@ -816,68 +817,93 @@ static __global__ void SparkLmHeadScreenKernel(const void *hidden_bf16, const vo
 		candidate_counts[row] = shared_cursor;
 }
 
-// Exact bf16 argmax over either the screened candidate list or, when
-// candidate_ids is null, the full range - the overflow fallback. A row
-// runs in exactly one of the two launches: candidate mode owns counts
-// within the cap, full mode owns rows past it.
-static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_ids, const uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t hidden_dimension, uint32_t candidate_count)
+static __device__ void SparkLmHeadStageHidden(const void *hidden_bf16, float *hidden_shared, uint32_t row, uint32_t hidden_dimension)
 {
-    extern __shared__ float rescore_shared[];
-    float *hidden_shared = rescore_shared;
-    __shared__ float best_score[SPARK_LM_CTA_WARPS];
-    __shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS];
-    uint32_t row = blockIdx.x;
-    uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
-    uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
-    uint32_t count;
-    uint32_t bound;
-    uint32_t slot;
-    uint32_t neuron;
-    uint32_t element;
-    float running_best = -3.0e38f;
-    float score;
-    uint32_t running_candidate = UINT32_MAX;
-    float2 stage_pair;
-    uint32_t use_screened_candidates;
+	uint32_t element;
+	float2 pair;
+	for (element=threadIdx.x; element<(hidden_dimension >> 1u); element+=blockDim.x)
+	{
+		pair = SparkLmLoadBf16Pair(hidden_bf16,(((uint64_t)row * hidden_dimension) >> 1u) + element);
+		hidden_shared[element << 1u] = pair.x;
+		hidden_shared[(element << 1u) + 1u] = pair.y;
+	}
+	__syncthreads();
+}
 
-    if (row >= row_count)
-    {
-        return;
-    }
-    count = candidate_counts[row];
-    use_screened_candidates = count <= SPARK_LM_HEAD_SCREEN_CAP ? 1u : 0u;
-    bound = use_screened_candidates != 0u ? count : candidate_count;
-    for (element = threadIdx.x; element < (hidden_dimension >> 1u); element += blockDim.x)
-    {
-        stage_pair = SparkLmLoadBf16Pair(
-            hidden_bf16,
-            (((uint64_t)row * hidden_dimension) >> 1u) + element);
-        hidden_shared[element << 1u] = stage_pair.x;
-        hidden_shared[(element << 1u) + 1u] = stage_pair.y;
-    }
-    __syncthreads();
+static __device__ void SparkLmHeadExactArgmaxRange(const float *hidden_shared, const void *head_weight_bf16, const uint32_t *candidate_ids, uint32_t first_slot, uint32_t slot_count, uint32_t hidden_dimension, float *best_score, uint32_t *best_candidate)
+{
+	uint32_t end_slot = first_slot + slot_count,lane = threadIdx.x % SPARK_LM_WARP_LANES,neuron,slot,warp = threadIdx.x / SPARK_LM_WARP_LANES;
+	uint32_t running_candidate = UINT32_MAX;
+	float running_best = -3.0e38f,score;
+	for (slot=first_slot + warp; slot<end_slot; slot+=SPARK_LM_CTA_WARPS)
+	{
+		neuron = candidate_ids != 0 ? candidate_ids[slot] : slot;
+		score = SparkLmWarpReduceSum(SparkLmDotRowBf16(hidden_shared,head_weight_bf16,neuron,hidden_dimension,lane));
+		score = __shfl_sync(0xffffffffu,score,0);
+		if ( lane == 0u && (score > running_best || (score == running_best && neuron < running_candidate)) )
+		{
+			running_best = score;
+			running_candidate = neuron;
+		}
+	}
+	SparkLmArgmaxReduce(running_best,running_candidate,best_score,best_candidate);
+}
 
-    for (slot = warp; slot < bound; slot += SPARK_LM_CTA_WARPS)
-    {
-        neuron = use_screened_candidates != 0u
-            ? candidate_ids[((uint64_t)row * SPARK_LM_HEAD_SCREEN_CAP) + slot]
-            : slot;
-        score = SparkLmWarpReduceSum(
-            SparkLmDotRowBf16(hidden_shared, head_weight_bf16, neuron, hidden_dimension, lane));
-        score = __shfl_sync(0xffffffffu, score, 0);
-        if (lane == 0u &&
-            (score > running_best ||
-             (score == running_best && neuron < running_candidate)))
-        {
-            running_best = score;
-            running_candidate = neuron;
-        }
-    }
-    SparkLmArgmaxReduce(running_best, running_candidate, best_score, best_candidate);
-    if (threadIdx.x == 0u)
-    {
-        output_token_ids[row] = best_candidate[0];
-    }
+// Overflow rows retain exact bf16 scoring, but stripe the vocabulary over
+// enough CTAs to use the GPU instead of assigning the full scan to one SM.
+static __global__ void SparkLmHeadFallbackRescoreKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_counts, float *partial_scores, uint32_t *partial_candidates, uint32_t row_count, uint32_t hidden_dimension, uint32_t candidate_count)
+{
+	extern __shared__ float hidden_shared[];
+	__shared__ float best_score[SPARK_LM_CTA_WARPS];
+	__shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS];
+	uint32_t chunk = blockIdx.y,end_slot,first_slot,row = blockIdx.x;
+	uint64_t partial;
+	if ( row >= row_count || candidate_counts[row] <= SPARK_LM_HEAD_SCREEN_CAP )
+		return;
+	first_slot = (uint32_t)(((uint64_t)candidate_count * chunk) / SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT);
+	end_slot = (uint32_t)(((uint64_t)candidate_count * (chunk + 1u)) / SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT);
+	SparkLmHeadStageHidden(hidden_bf16,hidden_shared,row,hidden_dimension);
+	SparkLmHeadExactArgmaxRange(hidden_shared,head_weight_bf16,0,first_slot,end_slot - first_slot,hidden_dimension,best_score,best_candidate);
+	if ( threadIdx.x == 0u )
+	{
+		partial = ((uint64_t)row * SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT) + chunk;
+		partial_scores[partial] = best_score[0];
+		partial_candidates[partial] = best_candidate[0];
+	}
+}
+
+// Screened rows rescore their compact list. Overflow rows reduce the exact
+// chunk winners with the same score and lower-token tie rule.
+static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_ids, const uint32_t *candidate_counts, const float *partial_scores, const uint32_t *partial_candidates, uint32_t *output_token_ids, uint32_t row_count, uint32_t hidden_dimension)
+{
+	extern __shared__ float hidden_shared[];
+	__shared__ float best_score[SPARK_LM_CTA_WARPS];
+	__shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS];
+	uint32_t count,partial,row = blockIdx.x,running_candidate = UINT32_MAX;
+	float running_best = -3.0e38f,score;
+	if ( row >= row_count )
+		return;
+	count = candidate_counts[row];
+	if ( count <= SPARK_LM_HEAD_SCREEN_CAP )
+	{
+		SparkLmHeadStageHidden(hidden_bf16,hidden_shared,row,hidden_dimension);
+		SparkLmHeadExactArgmaxRange(hidden_shared,head_weight_bf16,candidate_ids + ((uint64_t)row * SPARK_LM_HEAD_SCREEN_CAP),0u,count,hidden_dimension,best_score,best_candidate);
+	}
+	else
+	{
+		for (partial=threadIdx.x; partial<SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT; partial+=blockDim.x)
+		{
+			score = partial_scores[((uint64_t)row * SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT) + partial];
+			if ( score > running_best || (score == running_best && partial_candidates[((uint64_t)row * SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT) + partial] < running_candidate) )
+			{
+				running_best = score;
+				running_candidate = partial_candidates[((uint64_t)row * SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT) + partial];
+			}
+		}
+		SparkLmArgmaxReduce(running_best,running_candidate,best_score,best_candidate);
+	}
+	if ( threadIdx.x == 0u )
+		output_token_ids[row] = best_candidate[0];
 }
 
 
@@ -2324,6 +2350,9 @@ static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmax(cudaStream_t strea
     dim3 tile_grid(
         (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,
         (candidate_count + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
+    dim3 fallback_grid(row_count,SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT);
+    float *partial_scores = (float *)logits_bf16;
+    uint32_t *partial_candidates = (uint32_t *)(partial_scores + ((uint64_t)row_count * SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT));
     uint32_t rescore_shared_bytes = hidden_dimension * (uint32_t)sizeof(float);
 
     SparkLmExpertTileKernel<SPARK_LM_HEAD_SHADOW_GROUP><<<
@@ -2349,6 +2378,19 @@ static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmax(cudaStream_t strea
         row_count,
         candidate_count,
         hidden_dimension);
+    SparkLmHeadFallbackRescoreKernel<<<
+        fallback_grid,
+        SPARK_LM_CTA_THREADS,
+        rescore_shared_bytes,
+        stream>>>(
+            hidden_bf16,
+            head_weight_bf16,
+            candidate_counts,
+            partial_scores,
+            partial_candidates,
+            row_count,
+            hidden_dimension,
+            candidate_count);
     SparkLmHeadRescoreArgmaxKernel<<<
         row_count,
         SPARK_LM_CTA_THREADS,
@@ -2358,10 +2400,11 @@ static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmax(cudaStream_t strea
             head_weight_bf16,
             candidate_ids,
             candidate_counts,
+            partial_scores,
+            partial_candidates,
             output_token_ids,
             row_count,
-            hidden_dimension,
-            candidate_count);
+            hidden_dimension);
     return cudaGetLastError();
 }
 
