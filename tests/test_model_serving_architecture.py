@@ -455,8 +455,8 @@ def main() -> int:
         "DSV4 description does not bind the generalized execution contract",
     )
     require(
-        description["stages"][0]["programs"][0]["max_inflight"] == 4,
-        "DSV4 driver capacity disagrees with its four-slot serving adapter",
+        description["stages"][0]["programs"][0]["max_inflight"] == 13,
+        "DSV4 driver capacity disagrees with its PP13 serving adapter",
     )
     adapter = (
         ROOT

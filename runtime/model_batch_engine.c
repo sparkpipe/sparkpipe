@@ -738,11 +738,23 @@ static uint32_t SparkModelBatchSelectRequests(
 	SparkModelBatchEngine *engine,
 	uint32_t work_kind)
 {
-	uint32_t selected,index,slot,state,row_limit;
+	uint32_t available,index,lane_limit,queued,selected,slot,state,row_limit;
 	selected = 0u;
+	queued = 0u;
 	state = SparkModelBatchStateForWork(work_kind);
+	for (index=0u; index<engine->request_capacity; index++)
+		if ( engine->requests[index].state == state )
+			queued++;
+	available = engine->submission_capacity - engine->inflight_submission_count;
+	if ( queued == 0u || available == 0u )
+		return(0u);
+	lane_limit = (queued / available) + (queued % available != 0u ? 1u : 0u);
 	row_limit = work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? engine->max_prefill_rows : engine->max_active_sequence_count;
-	for (index=0u; index<engine->request_capacity && selected<engine->max_active_sequence_count && selected<row_limit; index++)
+	if ( lane_limit > engine->max_active_sequence_count )
+		lane_limit = engine->max_active_sequence_count;
+	if ( lane_limit > row_limit )
+		lane_limit = row_limit;
+	for (index=0u; index<engine->request_capacity && selected<lane_limit; index++)
 	{
 		slot = (engine->next_request_scan + index) % engine->request_capacity;
 		if ( engine->requests[slot].state == state )

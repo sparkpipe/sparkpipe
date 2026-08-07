@@ -463,7 +463,7 @@ static SparkModelBatchEngine *TestModelBatchConnect(
 	configuration.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	configuration.descriptor_bytes = SPARK_MODEL_BATCH_ENGINE_CONFIGURATION_BYTES;
 	configuration.connect_timeout_ms = 100u;
-	configuration.request_capacity = 2u;
+	configuration.request_capacity = 3u;
 	configuration.max_context_tokens = 16u;
 	configuration.max_prefill_rows_per_submission = max_prefill_rows;
 	configuration.maximum_messages_per_rank_per_progress = 8u;
@@ -562,37 +562,59 @@ static void TestModelBatchEngineRun(
 	const SparkModelResidentDeployment *deployment)
 {
 	SparkModelBatchEngineView view;
-	SparkModelBatchRequestHandle cancelled,first,third;
+	SparkModelBatchRequestHandle cancelled,first,reused,third;
 	SparkModelBatchEngine *engine;
 	TestModelBatchState state;
+	uint32_t first_tokens,second_tokens,third_tokens,token_index;
 	uint32_t prompt_a[3] = {11u,12u,13u};
 	uint32_t prompt_b[2] = {21u,22u};
 	uint32_t prompt_c[1] = {31u};
+	uint32_t prompt_long[15] = {41u,42u,43u,44u,45u,46u,47u,48u,49u,50u,51u,52u,53u,54u,55u};
 	memset(&state,0,sizeof(state));
 	engine = TestModelBatchConnect(deployment,&state,0u,0u,4u);
 	first = TestModelBatchSubmit(engine,1001u,2001u,prompt_a,3u,2u);
 	(void)TestModelBatchSubmit(engine,1002u,2002u,prompt_b,2u,2u);
-	TestModelBatchWaitIdle(engine,2u);
-	assert(state.accepted_count == 2u);
-	assert(state.token_count == 4u);
-	assert(state.token_request_ids[0] == 1002u);
-	assert(state.completed_count == 2u);
-	assert(state.cancelled_count == 0u);
-	assert(state.error_count == 0u);
-	third = TestModelBatchSubmit(engine,1003u,2003u,prompt_c,1u,1u);
-	assert(third != first);
+	third = TestModelBatchSubmit(engine,1003u,2003u,prompt_long,15u,1u);
+	assert(SparkModelBatchEngineProgress(engine,2u) == SPARK_STATUS_OK);
+	assert(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK);
+	assert(view.inflight_submission_count == 2u);
 	TestModelBatchWaitIdle(engine,3u);
 	assert(state.accepted_count == 3u);
 	assert(state.token_count == 5u);
+	assert(state.token_request_ids[0] == 1002u);
+	first_tokens = 0u;
+	second_tokens = 0u;
+	third_tokens = 0u;
+	for (token_index=0u; token_index<state.token_count; token_index++)
+	{
+		if ( state.token_request_ids[token_index] == 1001u )
+			first_tokens++;
+		else if ( state.token_request_ids[token_index] == 1002u )
+			second_tokens++;
+		else if ( state.token_request_ids[token_index] == 1003u )
+			third_tokens++;
+	}
+	assert(first_tokens == 2u);
+	assert(second_tokens == 2u);
+	assert(third_tokens == 1u);
 	assert(state.completed_count == 3u);
+	assert(state.cancelled_count == 0u);
+	assert(state.error_count == 0u);
+	assert(third != first);
+	reused = TestModelBatchSubmit(engine,1004u,2004u,prompt_c,1u,1u);
+	assert(reused != first);
+	TestModelBatchWaitIdle(engine,4u);
+	assert(state.accepted_count == 4u);
+	assert(state.token_count == 6u);
+	assert(state.completed_count == 4u);
 	assert(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK);
 	assert(view.live_request_count == 0u);
 	assert(view.failed_status == SPARK_STATUS_OK);
 	assert(view.pipeline.active_transaction_count == 0u);
 	assert(view.pipeline.submitted_count >= 7u);
-	cancelled = TestModelBatchSubmit(engine,1004u,2004u,prompt_c,1u,4u);
+	cancelled = TestModelBatchSubmit(engine,1005u,2005u,prompt_c,1u,4u);
 	assert(SparkModelBatchEngineCancel(engine,cancelled) == SPARK_STATUS_OK);
-	assert(state.accepted_count == 4u);
+	assert(state.accepted_count == 5u);
 	assert(state.cancelled_count == 1u);
 	assert(SparkModelBatchEngineCancel(engine,cancelled) == SPARK_STATUS_NOT_FOUND);
 	assert(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK);

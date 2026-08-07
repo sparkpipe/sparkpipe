@@ -68,7 +68,7 @@
         {
           "completion": "external",
           "id": 1,
-          "max_inflight": 4,
+          "max_inflight": 13,
           "name": "resident_decode",
           "operations": [
             {

@@ -419,7 +419,7 @@ def render_flash_model_description(contract: dict[str, Any]) -> str:
             "programs": [{
                 "name": "resident_decode",
                 "id": 1,
-                "max_inflight": 4,
+                "max_inflight": 13,
                 "completion": "external",
                 "operations": [{
                     "name": "dsv4_resident_decode_stage",
