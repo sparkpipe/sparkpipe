@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 2u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 3u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 
@@ -60,6 +60,8 @@ typedef struct SparkModelBatchEngineConfiguration
 	const char *runtime_root;
 	SparkModelBatchEventFunction event_function;
 	void *event_context;
+	SparkModelPipelineStageCompletionFunction stage_completion_function;
+	void *stage_completion_context;
 } SparkModelBatchEngineConfiguration;
 
 typedef struct SparkModelBatchSubmitRequest

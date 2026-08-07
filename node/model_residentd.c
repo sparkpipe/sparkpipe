@@ -29,6 +29,13 @@
 #define SPARK_MODEL_RESIDENTD_PROGRESS_STEPS 64u
 #define SPARK_MODEL_RESIDENTD_QUIESCE_TIMEOUT_NS UINT64_C(5000000000)
 #define SPARK_MODEL_RESIDENTD_QUIESCE_POLL_NS 1000000L
+#define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ROUTE 1u
+#define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_RESIDENCY 2u
+#define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_IDENTITY 3u
+#define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ACCEPTED_TOKENS 4u
+#define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATE 5u
+#define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATUS 6u
+#define SPARK_MODEL_RESIDENTD_FAILURE_DEACTIVATE_ROUTE 7u
 
 typedef struct SparkModelResidentdConfiguration
 {
@@ -182,11 +189,30 @@ typedef struct SparkModelResidentdRuntime
 	int32_t wake_read_fd;
 	int32_t wake_write_fd;
 	uint32_t control_endpoint_kind;
-	atomic_uint failed;
+	uint32_t failed_reason;
+	uint32_t failed_route_state;
+	uint32_t failed_work_kind;
+	uint64_t failed_submission_id;
+	atomic_uint failed_status;
 	pthread_mutex_t mutex;
 } SparkModelResidentdRuntime;
 
 static volatile sig_atomic_t SparkModelResidentdStop;
+
+static void SparkModelResidentdFailLocked(
+	SparkModelResidentdRuntime *runtime,
+	SparkStatus status,
+	uint32_t reason,
+	const SparkModelResidentdRoute *route)
+{
+	if ( atomic_load(&runtime->failed_status) != SPARK_STATUS_OK )
+		return;
+	runtime->failed_reason = reason;
+	runtime->failed_route_state = route != 0 ? route->state : 0u;
+	runtime->failed_work_kind = route != 0 ? route->submission.work_kind : 0u;
+	runtime->failed_submission_id = route != 0 ? route->submission_id : 0u;
+	atomic_store(&runtime->failed_status,(uint32_t)status);
+}
 
 static void SparkModelResidentdSignal(int32_t signal_number)
 {
@@ -781,22 +807,40 @@ static void SparkModelResidentdCompletion(
 	SparkModelResidentdRuntime *runtime;
 	SparkModelResidentdRoute *route;
 	SparkStatus status;
+	uint32_t failure_reason;
 	runtime = (SparkModelResidentdRuntime *)completion_context;
 	if ( runtime == 0 || completion == 0 )
 		return;
 	pthread_mutex_lock(&runtime->mutex);
-	route = completion != 0 ? SparkModelResidentdFindRoute(runtime,completion->submission_id) : 0;
-	status = completion == 0 ? SPARK_STATUS_INVALID_ARGUMENT : route == 0 ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_OK;
+	route = SparkModelResidentdFindRoute(runtime,completion->submission_id);
+	status = route == 0 ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_OK;
+	failure_reason = route == 0 ? SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ROUTE : 0u;
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkModelServingAdapterValidateCompletionResidency(runtime->adapter_library.adapter_interface.descriptor,&route->submission.residency,completion);
+		if ( status != SPARK_STATUS_OK )
+			failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_RESIDENCY;
+	}
 	if ( status == SPARK_STATUS_OK && (route->request_id != completion->request_id || route->sequence_id != completion->sequence_id || route->sequence_position != completion->sequence_position || route->submission.control_generation != completion->control_generation || route->submission.transaction_id != completion->transaction_id || route->submission.dispatch_generation != completion->dispatch_generation || route->submission.request_generation != completion->request_generation || route->submission.step_generation != completion->step_generation) )
+	{
 		status = SPARK_STATUS_SCHEMA_ERROR;
+		failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_IDENTITY;
+	}
 	if ( status == SPARK_STATUS_OK && completion->accepted_token_count > route->submission.new_token_count )
+	{
 		status = SPARK_STATUS_SCHEMA_ERROR;
+		failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ACCEPTED_TOKENS;
+	}
 	if ( status == SPARK_STATUS_OK && route->state != SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER )
+	{
 		status = SPARK_STATUS_SCHEMA_ERROR;
+		failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATE;
+	}
 	if ( status == SPARK_STATUS_OK && completion->status != SPARK_STATUS_OK )
+	{
 		status = (SparkStatus)completion->status;
+		failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATUS;
+	}
 	if ( route != 0 && status == SPARK_STATUS_OK )
 	{
 		route->completion = *completion;
@@ -805,7 +849,7 @@ static void SparkModelResidentdCompletion(
 			SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
 	}
 	if ( status != SPARK_STATUS_OK )
-		atomic_store(&runtime->failed,1u);
+		SparkModelResidentdFailLocked(runtime,status,failure_reason,route);
 	pthread_mutex_unlock(&runtime->mutex);
 	SparkModelResidentdWake(runtime);
 }
@@ -842,7 +886,7 @@ static void SparkModelResidentdResetRuntime(SparkModelResidentdRuntime *runtime)
 	runtime->wake_read_fd = -1;
 	runtime->wake_write_fd = -1;
 	runtime->client.fd = -1;
-	atomic_init(&runtime->failed,0u);
+	atomic_init(&runtime->failed_status,SPARK_STATUS_OK);
 	pthread_mutex_init(&runtime->mutex,0);
 }
 
@@ -918,6 +962,7 @@ static SparkStatus SparkModelResidentdInitialize(
 static void SparkModelResidentdCloseClientLocked(
 	SparkModelResidentdRuntime *runtime)
 {
+	SparkStatus status;
 	uint32_t index;
 	if ( runtime->client.fd >= 0 )
 		close(runtime->client.fd);
@@ -936,8 +981,9 @@ static void SparkModelResidentdCloseClientLocked(
 			{
 				if ( runtime->routes[index].state == SPARK_MODEL_RESIDENTD_ROUTE_RESERVED )
 				{
-					if ( SparkModelResidentdDeactivateRouteLocked(runtime,&runtime->routes[index]) != SPARK_STATUS_OK )
-						atomic_store(&runtime->failed,1u);
+					status = SparkModelResidentdDeactivateRouteLocked(runtime,&runtime->routes[index]);
+					if ( status != SPARK_STATUS_OK )
+						SparkModelResidentdFailLocked(runtime,status,SPARK_MODEL_RESIDENTD_FAILURE_DEACTIVATE_ROUTE,&runtime->routes[index]);
 				}
 				else
 					runtime->routes[index].abandoned = 1u;
@@ -1747,9 +1793,10 @@ static SparkStatus SparkModelResidentdRun(SparkModelResidentdRuntime *runtime)
 	uint32_t count;
 	SparkStatus status;
 	SparkStatus client_status;
+	uint32_t failed_status;
 	int32_t poll_status;
 	status = SPARK_STATUS_OK;
-	while ( SparkModelResidentdStop == 0 && atomic_load(&runtime->failed) == 0u && status == SPARK_STATUS_OK )
+	while ( SparkModelResidentdStop == 0 && atomic_load(&runtime->failed_status) == SPARK_STATUS_OK && status == SPARK_STATUS_OK )
 	{
 		status = SparkModelResidentdBuildPollFds(runtime,fds,sizeof(fds) / sizeof(fds[0]),&count);
 		if ( status != SPARK_STATUS_OK )
@@ -1778,7 +1825,8 @@ static SparkStatus SparkModelResidentdRun(SparkModelResidentdRuntime *runtime)
 		if ( status == SPARK_STATUS_OK )
 			status = SparkModelResidentdProgress(runtime);
 	}
-	return(atomic_load(&runtime->failed) != 0u && status == SPARK_STATUS_OK ? SPARK_STATUS_INTERNAL_ERROR : status);
+	failed_status = atomic_load(&runtime->failed_status);
+	return(failed_status != SPARK_STATUS_OK && status == SPARK_STATUS_OK ? (SparkStatus)failed_status : status);
 }
 
 int main(int argument_count,char **arguments)
@@ -1812,6 +1860,8 @@ int main(int argument_count,char **arguments)
 			printf("model_residentd ready rank=%u stage=%u inflight=%u active=%u rows=%u resident=%u adapter=%s model=%s revision=%s tcp=%s:%u\n",runtime.rank_plan.rank_index,runtime.rank_plan.stage_index,runtime.runtime_limits.max_inflight_submission_count,runtime.runtime_limits.max_active_sequence_count,runtime.runtime_limits.max_input_row_count,runtime.runtime_limits.resident_sequence_capacity,runtime.adapter_library.adapter_interface.descriptor->adapter_id,runtime.adapter_library.adapter_interface.descriptor->model_id,runtime.adapter_library.adapter_interface.descriptor->model_revision,configuration.listen_address,configuration.listen_port);
 		fflush(stdout);
 		status = SparkModelResidentdRun(&runtime);
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr,"model_residentd run=%s status=%u rank=%u stage=%u reason=%u submission=%llu kind=%u route_state=%u\n",SparkStatusToString(status),(uint32_t)status,runtime.rank_plan.rank_index,runtime.rank_plan.stage_index,runtime.failed_reason,(unsigned long long)runtime.failed_submission_id,runtime.failed_work_kind,runtime.failed_route_state);
 	}
 	else
 		fprintf(stderr,"model_residentd initialize=%s\n",SparkStatusToString(status));

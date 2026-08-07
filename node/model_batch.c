@@ -10,6 +10,7 @@
 
 #define SPARK_MODEL_BATCH_FILE_SCHEMA_VERSION 1u
 #define SPARK_MODEL_BATCH_POLL_TIMEOUT_MS 10
+#define SPARK_MODEL_BATCH_STAGE_PROFILE_EVENT_CAPACITY_MAX 1048576u
 
 typedef struct SparkModelBatchFileRequest
 {
@@ -30,6 +31,10 @@ typedef struct SparkModelBatchOutput
 	uint32_t terminal_count;
 	uint32_t error_count;
 	uint32_t write_failed;
+	uint32_t stage_completion_count;
+	uint32_t stage_completion_capacity;
+	uint32_t dropped_stage_completion_count;
+	SparkModelPipelineStageCompletion *stage_completions;
 } SparkModelBatchOutput;
 
 static const char *const SparkModelBatchFileMembers[] =
@@ -319,6 +324,56 @@ static void SparkModelBatchWriteEvent(
 		output->error_count++;
 }
 
+static void SparkModelBatchRecordStageCompletion(
+	void *completion_context,
+	const SparkModelPipelineStageCompletion *completion)
+{
+	SparkModelBatchOutput *output;
+	output = (SparkModelBatchOutput *)completion_context;
+	if ( output->stage_completion_count == output->stage_completion_capacity )
+	{
+		output->dropped_stage_completion_count++;
+		return;
+	}
+	output->stage_completions[output->stage_completion_count++] = *completion;
+}
+
+static SparkStatus SparkModelBatchInitializeStageProfile(
+	const SparkModelBatchFile *file,
+	uint32_t stage_count,
+	SparkModelBatchOutput *output)
+{
+	uint64_t event_capacity,submission_capacity;
+	uint32_t index;
+	submission_capacity = 0u;
+	for (index=0u; index<file->request_count; index++)
+		submission_capacity += (uint64_t)file->requests[index].request.prompt_token_count + file->requests[index].request.output_token_budget + 1u;
+	event_capacity = submission_capacity * stage_count;
+	if ( event_capacity > SPARK_MODEL_BATCH_STAGE_PROFILE_EVENT_CAPACITY_MAX )
+		event_capacity = SPARK_MODEL_BATCH_STAGE_PROFILE_EVENT_CAPACITY_MAX;
+	if ( event_capacity == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	output->stage_completion_capacity = (uint32_t)event_capacity;
+	output->stage_completions = (SparkModelPipelineStageCompletion *)calloc(output->stage_completion_capacity,sizeof(output->stage_completions[0]));
+	return(output->stage_completions != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
+}
+
+static int32_t SparkModelBatchWriteStageProfile(
+	const SparkModelBatchOutput *output)
+{
+	const SparkModelPipelineStageCompletion *completion;
+	uint32_t index;
+	for (index=0u; index<output->stage_completion_count; index++)
+	{
+		completion = &output->stage_completions[index];
+		if ( fprintf(stderr,"sparkpipe_stage_profile submission=%llu stage=%u kind=%u lanes=%u rows=%u status=%u flags=%u queue_ns=%llu service_ns=%llu elapsed_ns=%llu device_bytes=%llu host_bytes=%llu\n",(unsigned long long)completion->submission_id,completion->stage_index,completion->work_kind,completion->active_sequence_count,completion->row_count,completion->status,completion->flags,(unsigned long long)completion->queue_delay_ns,(unsigned long long)completion->service_time_ns,(unsigned long long)completion->client_elapsed_ns,(unsigned long long)completion->device_memcpy_bytes,(unsigned long long)completion->host_staging_bytes) < 0 )
+			return(-1);
+	}
+	if ( fprintf(stderr,"sparkpipe_stage_profile_summary events=%u dropped=%u\n",output->stage_completion_count,output->dropped_stage_completion_count) < 0 )
+		return(-2);
+	return(fflush(stderr) == 0 ? 0 : -3);
+}
+
 static int32_t SparkModelBatchWriteJsonString(const char *text)
 {
 	const uint8_t *cursor;
@@ -418,12 +473,14 @@ static int32_t SparkModelBatchParseArguments(
 	char **argv,
 	const char **deployment_path,
 	const char **runtime_root,
-	const char **batch_path)
+	const char **batch_path,
+	uint32_t *profile_stages)
 {
 	int32_t index;
 	*deployment_path = 0;
 	*runtime_root = 0;
 	*batch_path = 0;
+	*profile_stages = 0u;
 	for (index=1; index<argc; index++)
 	{
 		if ( strcmp(argv[index],"--deployment") == 0 && index + 1 < argc )
@@ -432,6 +489,8 @@ static int32_t SparkModelBatchParseArguments(
 			*runtime_root = argv[++index];
 		else if ( strcmp(argv[index],"--batch") == 0 && index + 1 < argc )
 			*batch_path = argv[++index];
+		else if ( strcmp(argv[index],"--profile-stages") == 0 )
+			*profile_stages = 1u;
 		else
 			return(-1);
 	}
@@ -443,22 +502,27 @@ int main(int argc,char **argv)
 	const SparkModelServingAdapterDescriptor *descriptor;
 	SparkModelResidentDeployment deployment;
 	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView failure_view;
 	SparkModelBatchFile file;
 	SparkModelBatchOutput output;
 	const char *deployment_path,*runtime_root,*batch_path;
+	uint32_t failed_stage_index,profile_stages;
 	SparkStatus status,destroy_status;
-	if ( SparkModelBatchParseArguments(argc,argv,&deployment_path,&runtime_root,&batch_path) < 0 )
+	if ( SparkModelBatchParseArguments(argc,argv,&deployment_path,&runtime_root,&batch_path,&profile_stages) < 0 )
 	{
-		fprintf(stderr,"usage: sparkpipe_model_batch --deployment PATH --runtime-root PATH --batch PATH\n");
+		fprintf(stderr,"usage: sparkpipe_model_batch --deployment PATH --runtime-root PATH --batch PATH [--profile-stages]\n");
 		return(2);
 	}
 	memset(&output,0,sizeof(output));
 	memset(&file,0,sizeof(file));
+	failed_stage_index = SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX;
 	engine = 0;
 	SparkModelResidentDeploymentReset(&deployment);
 	status = SparkModelResidentDeploymentLoad(deployment_path,&deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchLoadFile(batch_path,&file);
+	if ( status == SPARK_STATUS_OK && profile_stages != 0u )
+		status = SparkModelBatchInitializeStageProfile(&file,deployment.node_count,&output);
 	if ( status == SPARK_STATUS_OK )
 	{
 		file.engine.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
@@ -467,6 +531,11 @@ int main(int argc,char **argv)
 		file.engine.runtime_root = runtime_root;
 		file.engine.event_function = SparkModelBatchWriteEvent;
 		file.engine.event_context = &output;
+		if ( profile_stages != 0u )
+		{
+			file.engine.stage_completion_function = SparkModelBatchRecordStageCompletion;
+			file.engine.stage_completion_context = &output;
+		}
 		status = SparkModelBatchEngineConnect(&file.engine,&engine);
 	}
 	descriptor = status == SPARK_STATUS_OK ? SparkModelBatchEngineGetAdapterDescriptor(engine) : 0;
@@ -476,13 +545,20 @@ int main(int argc,char **argv)
 		status = SparkModelBatchSubmitAll(engine,&file);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchRun(engine,&file,&output);
+	if ( status != SPARK_STATUS_OK && engine != 0 && SparkModelBatchEngineGetView(engine,&failure_view) == SPARK_STATUS_OK )
+		failed_stage_index = failure_view.pipeline.failed_stage_index;
 	destroy_status = SparkModelBatchEngineDestroy(engine);
 	if ( status == SPARK_STATUS_OK && destroy_status != SPARK_STATUS_OK )
 		status = destroy_status;
+	if ( profile_stages != 0u && output.stage_completions != 0 && SparkModelBatchWriteStageProfile(&output) < 0 && status == SPARK_STATUS_OK )
+		status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK && output.error_count != 0u )
 		status = SPARK_STATUS_INVALID_ARGUMENT;
+	if ( status != SPARK_STATUS_OK && failed_stage_index != SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX )
+		fprintf(stderr,"sparkpipe_model_batch_failure status=%u stage=%u\n",status,failed_stage_index);
 	fprintf(stderr,"sparkpipe_model_batch_status=%u terminal=%u requests=%u\n",status,output.terminal_count,file.request_count);
 	SparkModelBatchFileDestroy(&file);
 	SparkModelResidentDeploymentDestroy(&deployment);
+	free(output.stage_completions);
 	return(status == SPARK_STATUS_OK ? 0 : 1);
 }

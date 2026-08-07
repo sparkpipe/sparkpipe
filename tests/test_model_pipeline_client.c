@@ -45,6 +45,8 @@ typedef struct TestModelPipelineState
 	uint64_t result_submission_ids[9];
 	SparkStatus result_statuses[9];
 	SparkModelServingCompletion completions[9];
+	uint32_t stage_completion_count;
+	SparkModelPipelineStageCompletion stage_completions[27];
 	SparkModelPipelineClient *pipeline;
 	const SparkModelServingSubmission *callback_submission;
 } TestModelPipelineState;
@@ -117,6 +119,51 @@ static void TestModelPipelineCompletion(
 		state->callback_submitted = 1u;
 		state->callback_submit_status = SparkModelPipelineClientSubmit(state->pipeline,state->callback_submission);
 	}
+}
+
+static void TestModelPipelineStageCompletion(
+	void *completion_context,
+	const SparkModelPipelineStageCompletion *completion)
+{
+	TestModelPipelineState *state;
+	state = (TestModelPipelineState *)completion_context;
+	assert(completion != 0);
+	assert(completion->abi_version == SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION);
+	assert(completion->descriptor_bytes == SPARK_MODEL_PIPELINE_STAGE_COMPLETION_BYTES);
+	assert(completion->flags == SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_ELAPSED_VALID);
+	assert(state->stage_completion_count < 27u);
+	state->stage_completions[state->stage_completion_count++] = *completion;
+}
+
+static const SparkModelPipelineStageCompletion *TestModelPipelineFindStageCompletion(
+	const TestModelPipelineState *state,
+	uint64_t submission_id,
+	uint32_t stage_index)
+{
+	uint32_t index;
+	for (index=0u; index<state->stage_completion_count; index++)
+		if ( state->stage_completions[index].submission_id == submission_id && state->stage_completions[index].stage_index == stage_index )
+			return(&state->stage_completions[index]);
+	return(0);
+}
+
+static void TestModelPipelineAssertStageCompletion(
+	const TestModelPipelineState *state,
+	const SparkModelServingSubmission *submission,
+	uint32_t stage_index)
+{
+	const SparkModelPipelineStageCompletion *completion;
+	completion = TestModelPipelineFindStageCompletion(state,submission->submission_id,stage_index);
+	assert(completion != 0);
+	assert(completion->work_kind == submission->work_kind);
+	assert(completion->active_sequence_count == submission->active_sequence_count);
+	assert(completion->row_count == submission->row_count);
+	assert(completion->status == SPARK_STATUS_OK);
+	assert(completion->queue_delay_ns == stage_index + 1u);
+	assert(completion->service_time_ns == (uint64_t)(stage_index + 1u) * 10u);
+	assert(completion->device_memcpy_bytes == (uint64_t)(stage_index + 1u) * 100u);
+	assert(completion->host_staging_bytes == (uint64_t)(stage_index + 1u) * 1000u);
+	assert(completion->client_elapsed_ns != 0u);
 }
 
 static pid_t TestModelPipelineStartResident(
@@ -335,6 +382,8 @@ static SparkModelPipelineClient *TestModelPipelineConnect(
 	configuration.submit_result_context = state;
 	configuration.completion_function = TestModelPipelineCompletion;
 	configuration.completion_context = state;
+	configuration.stage_completion_function = TestModelPipelineStageCompletion;
+	configuration.stage_completion_context = state;
 	delay.tv_sec = 0;
 	delay.tv_nsec = 10000000;
 	pipeline = 0;
@@ -692,16 +741,18 @@ static uint32_t TestModelBatchCountText(const char *text,const char *needle)
 	return(count);
 }
 
-static void TestModelBatchProcess(const char *deployment_path)
+static void TestModelBatchProcess(
+	const char *deployment_path,
+	uint32_t profile_stages)
 {
 	char batch_path[108],output_path[108],stderr_path[108],output[16384],runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 	FILE *file;
 	pid_t child;
 	size_t bytes;
 	int32_t child_status;
-	assert(snprintf(batch_path,sizeof(batch_path),"/tmp/sparkpipe-model-batch-%ld.json",(long)getpid()) > 0);
-	assert(snprintf(output_path,sizeof(output_path),"/tmp/sparkpipe-model-batch-%ld.ndjson",(long)getpid()) > 0);
-	assert(snprintf(stderr_path,sizeof(stderr_path),"/tmp/sparkpipe-model-batch-%ld.stderr",(long)getpid()) > 0);
+	assert(snprintf(batch_path,sizeof(batch_path),"/tmp/sparkpipe-model-batch-%ld-%u.json",(long)getpid(),profile_stages) > 0);
+	assert(snprintf(output_path,sizeof(output_path),"/tmp/sparkpipe-model-batch-%ld-%u.ndjson",(long)getpid(),profile_stages) > 0);
+	assert(snprintf(stderr_path,sizeof(stderr_path),"/tmp/sparkpipe-model-batch-%ld-%u.stderr",(long)getpid(),profile_stages) > 0);
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	file = fopen(batch_path,"wb");
 	assert(file != 0);
@@ -715,7 +766,10 @@ static void TestModelBatchProcess(const char *deployment_path)
 			_exit(120);
 		if ( freopen(stderr_path,"wb",stderr) == 0 )
 			_exit(121);
-		execl(TEST_MODEL_BATCH_PATH,TEST_MODEL_BATCH_PATH,"--deployment",deployment_path,"--runtime-root",runtime_root,"--batch",batch_path,(char *)0);
+		if ( profile_stages != 0u )
+			execl(TEST_MODEL_BATCH_PATH,TEST_MODEL_BATCH_PATH,"--deployment",deployment_path,"--runtime-root",runtime_root,"--batch",batch_path,"--profile-stages",(char *)0);
+		else
+			execl(TEST_MODEL_BATCH_PATH,TEST_MODEL_BATCH_PATH,"--deployment",deployment_path,"--runtime-root",runtime_root,"--batch",batch_path,(char *)0);
 		_exit(122);
 	}
 	assert(waitpid(child,&child_status,0) == child);
@@ -742,7 +796,15 @@ static void TestModelBatchProcess(const char *deployment_path)
 	assert(feof(file));
 	assert(fclose(file) == 0);
 	output[bytes] = '\0';
-	assert(strcmp(output,"sparkpipe_model_batch_status=0 terminal=2 requests=2\n") == 0);
+	if ( profile_stages != 0u )
+	{
+		assert(TestModelBatchCountText(output,"sparkpipe_stage_profile submission=") != 0u);
+		assert(TestModelBatchCountText(output,"sparkpipe_stage_profile_summary events=") == 1u);
+		assert(TestModelBatchCountText(output,"dropped=0\n") == 1u);
+		assert(TestModelBatchCountText(output,"sparkpipe_model_batch_status=0 terminal=2 requests=2\n") == 1u);
+	}
+	else
+		assert(strcmp(output,"sparkpipe_model_batch_status=0 terminal=2 requests=2\n") == 0);
 	unlink(stderr_path);
 	unlink(output_path);
 	unlink(batch_path);
@@ -764,7 +826,7 @@ int main(void)
 	char deployment_path[108];
 	char paths[TEST_MODEL_PIPELINE_RANK_COUNT][108];
 	pid_t children[TEST_MODEL_PIPELINE_RANK_COUNT];
-	uint32_t descriptor_count,rank,tcp_port;
+	uint32_t descriptor_count,rank,submission_index,tcp_port;
 	int32_t child_status;
 	tcp_port = 30000u + ((uint32_t)getpid() % 20000u);
 	memset(&state,0,sizeof(state));
@@ -793,6 +855,8 @@ int main(void)
 	TestModelPipelineWaitForSockets(paths);
 	pipeline = TestModelPipelineConnect(&deployment,&state);
 	state.pipeline = pipeline;
+	assert(SparkModelPipelineClientGetView(pipeline,&view) == SPARK_STATUS_OK);
+	assert(view.failed_stage_index == SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX);
 	assert(SparkModelPipelineClientGetPollDescriptors(pipeline,poll_descriptors,TEST_MODEL_PIPELINE_RANK_COUNT,&descriptor_count) == SPARK_STATUS_OK);
 	assert(descriptor_count == TEST_MODEL_PIPELINE_RANK_COUNT);
 	TestModelPipelineBuildSubmission(&submissions[0],lanes[0],tokens[0],row_lanes[0],positions[0],sequences[0],501u);
@@ -802,6 +866,10 @@ int main(void)
 	assert(SparkModelPipelineClientSubmit(pipeline,&submissions[0]) == SPARK_STATUS_OK);
 	assert(SparkModelPipelineClientSubmit(pipeline,&submissions[1]) == SPARK_STATUS_OK);
 	TestModelPipelineWaitForCompletion(pipeline,&state,3u);
+	assert(state.stage_completion_count == 9u);
+	for (submission_index=0u; submission_index<3u; submission_index++)
+		for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
+			TestModelPipelineAssertStageCompletion(&state,&submissions[submission_index],rank);
 	assert(state.callback_submitted == 1u);
 	assert(state.callback_submit_status == SPARK_STATUS_OK);
 	assert(state.result_count == 3u);
@@ -905,6 +973,7 @@ int main(void)
 	assert(SparkModelPipelineClientGetView(pipeline,&view) == SPARK_STATUS_OK);
 	assert(view.active_transaction_count == 0u);
 	assert(view.failed_status == SPARK_STATUS_SCHEMA_ERROR);
+	assert(view.failed_stage_index == 2u);
 	assert(view.submitted_count == 9u);
 	assert(view.admitted_count == 6u);
 	assert(view.rejected_count == 3u);
@@ -912,7 +981,8 @@ int main(void)
 	SparkModelPipelineClientDestroy(pipeline);
 	TestModelBatchEngineRun(&deployment);
 	TestModelBatchEngineShutdown(&deployment);
-	TestModelBatchProcess(deployment_path);
+	TestModelBatchProcess(deployment_path,0u);
+	TestModelBatchProcess(deployment_path,1u);
 	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
 	{
 		assert(kill(children[rank],SIGTERM) == 0);

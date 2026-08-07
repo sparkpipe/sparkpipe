@@ -158,6 +158,10 @@ static void TestModelServingBuildCompletion(
 	completion->request_generation = submission->request_generation;
 	completion->step_generation = submission->step_generation;
 	completion->residency = submission->residency;
+	completion->queue_delay_ns = state->stage_index + 1u;
+	completion->service_time_ns = (uint64_t)(state->stage_index + 1u) * 10u;
+	completion->device_memcpy_bytes = (uint64_t)(state->stage_index + 1u) * 100u;
+	completion->host_staging_bytes = (uint64_t)(state->stage_index + 1u) * 1000u;
 	if ( state->stage_index + 1u != TestModelServingDescriptor.stage_count || submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE || submission->model_extension_kind == 88u )
 		return;
 	completion->completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
