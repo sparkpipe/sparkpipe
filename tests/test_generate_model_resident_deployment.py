@@ -40,6 +40,12 @@ def main() -> int:
     rendered = module.render_deployment(module.build_deployment(specification))
     assert rendered == DEPLOYMENT.read_text(encoding="utf-8")
     deployment = module.build_deployment(specification)
+    assert deployment["runtime_limits"] == {
+        "max_inflight_submissions": 4,
+        "max_active_sequences": 24,
+        "max_input_rows": 128,
+        "resident_sequence_capacity": 128,
+    }
     assert deployment["adapter"]["shared_object_path"] == (
         "lib/model_serving_adapter.so")
     assert deployment["transport"]["shared_object_path"] == (

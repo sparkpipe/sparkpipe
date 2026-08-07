@@ -1518,7 +1518,8 @@ static SparkStatus SparkDsv4ModuleRunWave(
 	SparkDsv4ModuleSlot *slot,
 	const SparkDsv4ResidentDecodeStageFrameContext *context,
 	const SparkDsv4DecodeBatchView *batch,
-	uint32_t output_offset)
+	uint32_t output_offset,
+	uint32_t finish)
 {
 	const void *input_streams_bf16;
 	void *output_streams_bf16;
@@ -1529,7 +1530,7 @@ static SparkStatus SparkDsv4ModuleRunWave(
 		output_streams_bf16 = state->owns_final_head != 0u ? slot->streams_bf16 : context->hidden_output_bf16;
 		status = SparkDsv4ModuleRunLayers(state,slot,input_streams_bf16,output_streams_bf16,batch->row_count);
 	}
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && finish != 0u )
 		status = SparkDsv4ModuleFinish(state,slot,state->owns_final_head != 0u ? slot->host_output_token_ids + output_offset : 0,batch->row_count);
 	return(status);
 }
@@ -1551,6 +1552,24 @@ static uint32_t SparkDsv4ModulePrefillWaveRowCount(
 		prefill->active_sequence_count,prefill->row_lane_indices,first_row));
 }
 
+static uint32_t SparkDsv4ModulePrefillWaveNeedsHead(
+	const SparkDsv4PrefillBatchView *prefill,
+	uint32_t first_row,
+	uint32_t row_count)
+{
+	uint32_t end,later,row;
+	end = first_row + row_count;
+	for (row=first_row; row<end; row++)
+	{
+		for (later=end; later<prefill->row_count; later++)
+			if ( prefill->row_lane_indices[later] == prefill->row_lane_indices[row] )
+				break;
+		if ( later == prefill->row_count )
+			return(1u);
+	}
+	return(0u);
+}
+
 static SparkStatus SparkDsv4ModuleRunPrefillWave(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -1562,6 +1581,7 @@ static SparkStatus SparkDsv4ModuleRunPrefillWave(
 	SparkDsv4ResidentDecodeStageFrameContext wave_context;
 	SparkDsv4DecodeBatchView batch;
 	uint64_t row_bytes;
+	uint32_t finish;
 	SparkStatus status;
 	prefill = context->prefill_batch;
 	row_bytes = (uint64_t)SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
@@ -1579,8 +1599,9 @@ static SparkStatus SparkDsv4ModuleRunPrefillWave(
 		wave_context.hidden_output_bf16 = (uint8_t *)context->hidden_output_bf16 + (uint64_t)first_row * row_bytes;
 	wave_context.hidden_input_bytes = wave_context.hidden_input_bf16 != 0 ? (uint64_t)row_count * row_bytes : 0u;
 	wave_context.hidden_output_bytes = wave_context.hidden_output_bf16 != 0 ? (uint64_t)row_count * row_bytes : 0u;
+	finish = state->owns_final_head == 0u || SparkDsv4ModulePrefillWaveNeedsHead(prefill,first_row,row_count) != 0u;
 	SparkDsv4ModuleMoveMetadata(slot,(int32_t)first_row);
-	status = SparkDsv4ModuleRunWave(state,slot,&wave_context,&batch,first_row);
+	status = SparkDsv4ModuleRunWave(state,slot,&wave_context,&batch,first_row,finish);
 	SparkDsv4ModuleMoveMetadata(slot,-(int32_t)first_row);
 	return(status);
 }
@@ -1595,7 +1616,7 @@ static SparkStatus SparkDsv4ModuleRunFrameWaves(
 	uint32_t row,wave_rows;
 	SparkStatus status;
 	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u )
-		return(SparkDsv4ModuleRunWave(state,slot,context,context->decode_batch,0u));
+		return(SparkDsv4ModuleRunWave(state,slot,context,context->decode_batch,0u,1u));
 	prefill = context->prefill_batch;
 	status = SPARK_STATUS_OK;
 	for (row=0u; status==SPARK_STATUS_OK && row<prefill->row_count; row+=wave_rows)

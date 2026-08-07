@@ -90,6 +90,8 @@ def main() -> None:
 	require(module, "metadata_rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT", "frame-sized metadata ownership")
 	require(module, "cudaMemcpy2DAsync(slot->input_token_ids", "single frame metadata staging")
 	require(module, "SparkDsv4ModuleStageFrameRows(state,slot,frame,context)", "metadata staged before wave dispatch")
+	require(module, "SparkDsv4ModulePrefillWaveNeedsHead", "prefill final-head wave pruning")
+	require(module, "status == SPARK_STATUS_OK && finish != 0u", "prefill final-head skip gate")
 	require(cuda, "SparkDsv4RopeKernel", "checkpoint interleaved RoPE")
 	require(cuda, "LmE4m3ToFloat(LmFloatToE4m3(value))", "shared exact E4M3 quantize-dequantize")
 	reject(cuda, "SparkDsv4EncodeE4m3", "duplicate DSV4 E4M3 codec")
