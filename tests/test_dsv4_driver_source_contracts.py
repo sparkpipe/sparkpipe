@@ -116,6 +116,7 @@ def main() -> None:
 	require(stagepack, "SPARK_DSV4_STAGEPACK_FORMAT_VERSION 3u", "GA stage-pack format")
 	reject(module, "spark_glm", "GLM driver coupling")
 	reject(adapter, "spark_glm", "GLM adapter coupling")
+	require(adapter, "SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION", "asynchronous adapter completion capability")
 	require(adapter, ".expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC", "adapter codec binding")
 	require(adapter, "dispatch.token_ids = submission->token_ids;", "all-stage token routing input")
 	require(runner, "buffers[buffer_count].address = (void *)dispatch->token_ids;", "all-stage token driver buffer")

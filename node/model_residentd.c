@@ -174,6 +174,7 @@ typedef struct SparkModelResidentdRuntime
 	uint8_t *route_messages;
 	uint32_t route_capacity;
 	uint32_t route_message_capacity;
+	uint32_t next_adapter_route;
 	SparkModelResidentdMemoryMode memory_mode;
 	cudaStream_t execution_stream;
 	cudaStream_t transport_stream;
@@ -1578,7 +1579,8 @@ static SparkStatus SparkModelResidentdPostTransport(
 
 static SparkStatus SparkModelResidentdProgressRoute(
 	SparkModelResidentdRuntime *runtime,
-	SparkModelResidentdRoute *route)
+	SparkModelResidentdRoute *route,
+	uint32_t *adapter_submitted)
 {
 	SparkStatus status;
 	uint32_t state,step;
@@ -1596,11 +1598,15 @@ static SparkStatus SparkModelResidentdProgressRoute(
 		}
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_ADAPTER )
 		{
+			if ( adapter_submitted == 0 || *adapter_submitted != 0u )
+				return(SPARK_STATUS_OK);
 			status = SparkModelResidentdSubmitAdapter(runtime,route);
 			if ( status == SPARK_STATUS_BUSY )
 				return(SPARK_STATUS_OK);
 			if ( status != SPARK_STATUS_OK )
 				return(status);
+			*adapter_submitted = 1u;
+			SparkModelResidentdWake(runtime);
 			continue;
 		}
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_OUTPUT )
@@ -1616,13 +1622,21 @@ static SparkStatus SparkModelResidentdProgressRoute(
 }
 
 static SparkStatus SparkModelResidentdProgressRoutes(
-	SparkModelResidentdRuntime *runtime)
+	SparkModelResidentdRuntime *runtime,
+	uint32_t allow_adapter)
 {
 	SparkStatus status;
-	uint32_t index;
+	uint32_t adapter_submitted,index,offset,start;
 	status = SPARK_STATUS_OK;
-	for (index=0u; status == SPARK_STATUS_OK && index<runtime->route_capacity; index++)
-		status = SparkModelResidentdProgressRoute(runtime,&runtime->routes[index]);
+	adapter_submitted = 0u;
+	start = allow_adapter != 0u ? runtime->next_adapter_route : 0u;
+	for (offset=0u; status == SPARK_STATUS_OK && offset<runtime->route_capacity && adapter_submitted == 0u; offset++)
+	{
+		index = (start + offset) % runtime->route_capacity;
+		status = SparkModelResidentdProgressRoute(runtime,&runtime->routes[index],allow_adapter != 0u ? &adapter_submitted : 0);
+		if ( adapter_submitted != 0u )
+			runtime->next_adapter_route = (index + 1u) % runtime->route_capacity;
+	}
 	return(status);
 }
 
@@ -1633,13 +1647,21 @@ static SparkStatus SparkModelResidentdProgress(SparkModelResidentdRuntime *runti
 	if ( status == SPARK_STATUS_BUSY )
 		status = SPARK_STATUS_OK;
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdProgressRoutes(runtime);
+		status = SparkModelResidentdProgressRoutes(runtime,0u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->input_transport,1u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->output_transport,0u);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdProgressRoutes(runtime);
+		status = SparkModelResidentdProgressRoutes(runtime,0u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentdProgressRoutes(runtime,1u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentdProgressTransport(runtime,runtime->input_transport,1u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentdProgressTransport(runtime,runtime->output_transport,0u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentdProgressRoutes(runtime,0u);
 	return(status);
 }
 

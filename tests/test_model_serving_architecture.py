@@ -372,6 +372,38 @@ def main() -> int:
         and "cudaStreamDestroy(runtime->transport_stream)" in resident,
         "resident does not isolate model execution from stream-ordered transport",
     )
+    drain_routes = "status = SparkModelResidentdProgressRoutes(runtime,0u);"
+    submit_route = "status = SparkModelResidentdProgressRoutes(runtime,1u);"
+    poll_input = "status = SparkModelResidentdProgressTransport(runtime,runtime->input_transport,1u);"
+    poll_output = "status = SparkModelResidentdProgressTransport(runtime,runtime->output_transport,0u);"
+    drain_before = resident.index(drain_routes)
+    poll_input_before = resident.index(poll_input, drain_before + 1)
+    poll_output_before = resident.index(poll_output, poll_input_before + 1)
+    drain_middle = resident.index(drain_routes, poll_output_before + 1)
+    submit_one = resident.index(submit_route, drain_middle + 1)
+    poll_input_after = resident.index(poll_input, submit_one + 1)
+    poll_output_after = resident.index(poll_output, poll_input_after + 1)
+    drain_after = resident.index(drain_routes, poll_output_after + 1)
+    require(
+        drain_before < poll_input_before < poll_output_before < drain_middle
+        < submit_one < poll_input_after < poll_output_after < drain_after
+        and resident.count(drain_routes) == 3
+        and resident.count(submit_route) == 1
+        and resident.count(poll_input) == 2
+        and resident.count(poll_output) == 2
+        and "uint32_t next_adapter_route;" in resident
+        and "start = allow_adapter != 0u ? runtime->next_adapter_route : 0u;"
+        in resident
+        and "adapter_submitted == 0u" in resident
+        and "adapter_submitted = 0u;" in resident
+        and "allow_adapter != 0u ? &adapter_submitted : 0"
+        in resident
+        and "if ( adapter_submitted == 0 || *adapter_submitted != 0u )\n\t\t\t\treturn(SPARK_STATUS_OK);"
+        in resident
+        and "if ( status == SPARK_STATUS_BUSY )\n\t\t\t\treturn(SPARK_STATUS_OK);\n\t\t\tif ( status != SPARK_STATUS_OK )\n\t\t\t\treturn(status);\n\t\t\t*adapter_submitted = 1u;\n\t\t\tSparkModelResidentdWake(runtime);"
+        in resident,
+        "resident reactor does not bound adapter work between transport polls",
+    )
     require(
         "SparkModelResidentdClaimResidentSlotsLocked" in resident
         and "SparkModelResidentdReleaseResidentSlotsLocked" in resident
