@@ -338,6 +338,11 @@ static void SparkModelPipelineClientReportStageCompletion(
 	stage_completion.device_memcpy_bytes = completion->device_memcpy_bytes;
 	stage_completion.host_staging_bytes = completion->host_staging_bytes;
 	completed_time_ns = SparkModelPipelineClientMonotonicNanoseconds();
+	if ( completed_time_ns != 0u )
+	{
+		stage_completion.flags |= SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_COMPLETION_TIME_VALID;
+		stage_completion.client_completion_time_ns = completed_time_ns;
+	}
 	if ( transaction->submitted_time_ns != 0u && completed_time_ns >= transaction->submitted_time_ns )
 	{
 		stage_completion.flags |= SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_ELAPSED_VALID;

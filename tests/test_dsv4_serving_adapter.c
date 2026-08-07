@@ -62,6 +62,7 @@ int main(void)
 	assert(library.adapter_interface.descriptor->max_speculative_token_count == 0u);
 	assert(library.adapter_interface.descriptor->max_inflight_submission_count == 13u);
 	assert(library.adapter_interface.descriptor->stage_count == 13u);
+	assert(library.adapter_interface.descriptor->minimum_efficient_submission_row_count == 16u);
 	hidden_input_bytes = 4u * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 	hidden_input = calloc(1u,(size_t)hidden_input_bytes);
 	assert(hidden_input != 0);

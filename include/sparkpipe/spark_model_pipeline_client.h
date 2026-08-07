@@ -9,12 +9,15 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION 7u
+#define SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION 8u
 #define SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX UINT32_MAX
 #define SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_ELAPSED_VALID \
 	UINT32_C(0x00000001)
+#define SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_COMPLETION_TIME_VALID \
+	UINT32_C(0x00000002)
 #define SPARK_MODEL_PIPELINE_STAGE_COMPLETION_KNOWN_FLAGS \
-	SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_ELAPSED_VALID
+	(SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_ELAPSED_VALID | \
+	 SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_COMPLETION_TIME_VALID)
 
 typedef struct SparkModelPipelineClient SparkModelPipelineClient;
 
@@ -34,6 +37,7 @@ typedef struct SparkModelPipelineStageCompletion
 	uint64_t device_memcpy_bytes;
 	uint64_t host_staging_bytes;
 	uint64_t client_elapsed_ns;
+	uint64_t client_completion_time_ns;
 } SparkModelPipelineStageCompletion;
 
 typedef void (*SparkModelPipelineStageCompletionFunction)(

@@ -42,7 +42,8 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	.stage_layer_counts = {2u,3u,2u},
 	.boundary_sideband_kinds = {1u,0u,0u},
-	.boundary_sideband_bytes_per_sequence = {16u,0u,0u}
+	.boundary_sideband_bytes_per_sequence = {16u,0u,0u},
+	.minimum_efficient_submission_row_count = 16u
 };
 
 static SparkStatus TestModelServingValidateConfiguration(

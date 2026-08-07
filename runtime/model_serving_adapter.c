@@ -39,11 +39,10 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( descriptor->resident_sequence_slot_reuse == SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( descriptor->minimum_efficient_submission_row_count > descriptor->max_input_row_count )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkModelServingAdapterTextIsPresent(descriptor->adapter_id) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->model_id) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->model_revision) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->driver_program_name) == 0u || SparkModelServingAdapterSha256IsValid(descriptor->artifact_sha256) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	for (index=0u; index<1u; index++)
-		if ( descriptor->reserved[index] != 0u )
-			return(SPARK_STATUS_ABI_MISMATCH);
 	total = 0u;
 	for (index=0u; index<descriptor->stage_count; index++)
 	{

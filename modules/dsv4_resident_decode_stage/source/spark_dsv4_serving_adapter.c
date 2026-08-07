@@ -108,7 +108,8 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 	.model_revision = SPARK_DSV4_SERVING_MODEL_REVISION,
 	.driver_program_name = SPARK_DSV4_SERVING_PROGRAM_NAME,
 	.artifact_sha256 = SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256,
-	.stage_layer_counts = {3u,3u,3u,3u,3u,3u,3u,4u,4u,4u,4u,4u,2u}
+	.stage_layer_counts = {3u,3u,3u,3u,3u,3u,3u,4u,4u,4u,4u,4u,2u},
+	.minimum_efficient_submission_row_count = 16u
 };
 
 static int32_t SparkDsv4ServingJsonMember(

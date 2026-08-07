@@ -83,6 +83,7 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->max_resident_sequence_count = 512u;
 	descriptor->max_output_token_count = 1u;
 	descriptor->resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO;
+	descriptor->minimum_efficient_submission_row_count = 16u;
 	descriptor->adapter_id = "spark.dsv4.flash.serving.v1";
 	descriptor->model_id = "deepseek-ai/DeepSeek-V4-Flash-0731";
 	descriptor->model_revision = "fixture";
@@ -97,6 +98,9 @@ static void TestDescriptor(void)
 	SparkModelServingAdapterDescriptor descriptor;
 	TestBuildDescriptor(&descriptor);
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
+	descriptor.minimum_efficient_submission_row_count = descriptor.max_input_row_count + 1u;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
+	TestBuildDescriptor(&descriptor);
 	descriptor.stage_layer_counts[12] = 1u;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
 	TestBuildDescriptor(&descriptor);
