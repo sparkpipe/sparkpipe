@@ -10,6 +10,14 @@
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 
 #define SPARK_DSV4_VALIDATION_ROW_COUNT 8u
+#define SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT 2u
+#define SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION 64u
+#define SPARK_DSV4_VALIDATION_HEAD_SCREENED_VOCAB 257u
+#define SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB (SPARK_DSV4_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP + 17u)
+
+extern "C" cudaError_t SparkDsv4LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
+extern "C" cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
+extern "C" cudaError_t SparkDsv4LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
 
 typedef struct SparkDsv4ValidationCapture
 {
@@ -35,12 +43,128 @@ typedef struct SparkDsv4ValidationFrame
 	uint64_t sequence_ids[SPARK_DSV4_VALIDATION_ROW_COUNT];
 } SparkDsv4ValidationFrame;
 
+typedef struct SparkDsv4ValidationHeadBuffers
+{
+	void *hidden_bf16;
+	void *head_bf16;
+	uint8_t *shadow_payload;
+	uint8_t *shadow_scale;
+	float *error_norm;
+	void *logits_bf16;
+	uint32_t *candidate_ids;
+	uint32_t *candidate_counts;
+	uint32_t *screened_output;
+	uint32_t *reference_output;
+} SparkDsv4ValidationHeadBuffers;
+
 static int SparkDsv4ValidationRequire(int condition,const char *message)
 {
 	if ( condition != 0 )
 		return(0);
 	fprintf(stderr,"dsv4_validation failure=%s\n",message);
 	return(1);
+}
+
+static void SparkDsv4ValidationHeadDestroy(SparkDsv4ValidationHeadBuffers *buffers)
+{
+	if ( buffers->hidden_bf16 != 0 )
+		cudaFree(buffers->hidden_bf16);
+	if ( buffers->head_bf16 != 0 )
+		cudaFree(buffers->head_bf16);
+	if ( buffers->shadow_payload != 0 )
+		cudaFree(buffers->shadow_payload);
+	if ( buffers->shadow_scale != 0 )
+		cudaFree(buffers->shadow_scale);
+	if ( buffers->error_norm != 0 )
+		cudaFree(buffers->error_norm);
+	if ( buffers->logits_bf16 != 0 )
+		cudaFree(buffers->logits_bf16);
+	if ( buffers->candidate_ids != 0 )
+		cudaFree(buffers->candidate_ids);
+	if ( buffers->candidate_counts != 0 )
+		cudaFree(buffers->candidate_counts);
+	if ( buffers->screened_output != 0 )
+		cudaFree(buffers->screened_output);
+	if ( buffers->reference_output != 0 )
+		cudaFree(buffers->reference_output);
+	memset(buffers,0,sizeof(*buffers));
+}
+
+static int SparkDsv4ValidationHeadAllocate(SparkDsv4ValidationHeadBuffers *buffers)
+{
+	uint64_t head_elements = (uint64_t)SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB * SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION;
+	cudaError_t error;
+	memset(buffers,0,sizeof(*buffers));
+	error = cudaMalloc(&buffers->hidden_bf16,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT * SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION * sizeof(uint16_t));
+	if ( error == cudaSuccess ) error = cudaMalloc(&buffers->head_bf16,head_elements * sizeof(uint16_t));
+	if ( error == cudaSuccess ) error = cudaMalloc((void **)&buffers->shadow_payload,head_elements / 2u);
+	if ( error == cudaSuccess ) error = cudaMalloc((void **)&buffers->shadow_scale,SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB * (SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION / 32u));
+	if ( error == cudaSuccess ) error = cudaMalloc((void **)&buffers->error_norm,SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB * sizeof(float));
+	if ( error == cudaSuccess ) error = cudaMalloc(&buffers->logits_bf16,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT * SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB * sizeof(uint16_t));
+	if ( error == cudaSuccess ) error = cudaMalloc((void **)&buffers->candidate_ids,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT * SPARK_DSV4_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP * sizeof(uint32_t));
+	if ( error == cudaSuccess ) error = cudaMalloc((void **)&buffers->candidate_counts,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT * sizeof(uint32_t));
+	if ( error == cudaSuccess ) error = cudaMalloc((void **)&buffers->screened_output,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT * sizeof(uint32_t));
+	if ( error == cudaSuccess ) error = cudaMalloc((void **)&buffers->reference_output,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT * sizeof(uint32_t));
+	return(error == cudaSuccess ? 0 : 1);
+}
+
+static void SparkDsv4ValidationHeadInputs(uint16_t *hidden, uint16_t *head, uint32_t candidate_count, uint32_t overflow)
+{
+	uint32_t tie = overflow != 0u ? SPARK_DSV4_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP + 2u : 200u;
+	memset(hidden,0,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT * SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION * sizeof(uint16_t));
+	memset(head,0,(uint64_t)candidate_count * SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION * sizeof(uint16_t));
+	hidden[0] = UINT16_C(0x3f80);
+	hidden[SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION + 1u] = UINT16_C(0x3f80);
+	head[17u * SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION] = UINT16_C(0x4100);
+	head[tie * SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION] = UINT16_C(0x4100);
+	head[((uint64_t)(candidate_count - 1u) * SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION) + 1u] = UINT16_C(0x4140);
+}
+
+static int SparkDsv4ValidationHeadRunCase(SparkDsv4ValidationHeadBuffers *buffers, uint16_t *head, float *errors, uint32_t candidate_count, uint32_t overflow)
+{
+	uint16_t hidden[SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT * SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION];
+	uint32_t counts[SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT],reference[SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT],screened[SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT];
+	uint32_t index;
+	cudaError_t error;
+	SparkDsv4ValidationHeadInputs(hidden,head,candidate_count,overflow);
+	error = cudaMemcpy(buffers->hidden_bf16,hidden,sizeof(hidden),cudaMemcpyHostToDevice);
+	if ( error == cudaSuccess ) error = cudaMemcpy(buffers->head_bf16,head,(uint64_t)candidate_count * SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	if ( error == cudaSuccess ) error = SparkDsv4LaunchHeadShadowQuantize(cudaStreamPerThread,buffers->head_bf16,buffers->shadow_payload,buffers->shadow_scale,buffers->error_norm,candidate_count,SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION);
+	if ( overflow != 0u )
+	{
+		for (index=0u; index<candidate_count; index++) errors[index] = 1.0e6f;
+		if ( error == cudaSuccess ) error = cudaMemcpyAsync(buffers->error_norm,errors,(uint64_t)candidate_count * sizeof(float),cudaMemcpyHostToDevice,cudaStreamPerThread);
+	}
+	if ( error == cudaSuccess ) error = cudaMemsetAsync(buffers->screened_output,0xff,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT * sizeof(uint32_t),cudaStreamPerThread);
+	if ( error == cudaSuccess ) error = cudaMemsetAsync(buffers->reference_output,0xff,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT * sizeof(uint32_t),cudaStreamPerThread);
+	if ( error == cudaSuccess ) error = SparkDsv4LaunchHeadArgmax(cudaStreamPerThread,buffers->hidden_bf16,buffers->head_bf16,0,buffers->reference_output,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT,candidate_count,SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION);
+	if ( error == cudaSuccess ) error = SparkDsv4LaunchHeadScreenedArgmax(cudaStreamPerThread,buffers->hidden_bf16,buffers->head_bf16,buffers->shadow_payload,buffers->shadow_scale,buffers->error_norm,buffers->logits_bf16,buffers->candidate_ids,buffers->candidate_counts,buffers->screened_output,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT,candidate_count,SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION);
+	if ( error == cudaSuccess ) error = cudaStreamSynchronize(cudaStreamPerThread);
+	if ( error == cudaSuccess ) error = cudaMemcpy(counts,buffers->candidate_counts,sizeof(counts),cudaMemcpyDeviceToHost);
+	if ( error == cudaSuccess ) error = cudaMemcpy(reference,buffers->reference_output,sizeof(reference),cudaMemcpyDeviceToHost);
+	if ( error == cudaSuccess ) error = cudaMemcpy(screened,buffers->screened_output,sizeof(screened),cudaMemcpyDeviceToHost);
+	if ( SparkDsv4ValidationRequire(error == cudaSuccess,"head_cuda") != 0 ) return(1);
+	if ( SparkDsv4ValidationRequire((overflow != 0u && counts[0] == candidate_count && counts[1] == candidate_count) || (overflow == 0u && counts[0] == 2u && counts[1] == 1u),"head_screen_branch") != 0 ) return(1);
+	if ( SparkDsv4ValidationRequire(screened[0] == 17u && screened[1] == candidate_count - 1u,"head_expected_tokens") != 0 ) return(1);
+	return(SparkDsv4ValidationRequire(screened[0] == reference[0] && screened[1] == reference[1],"head_reference_parity"));
+}
+
+static int SparkDsv4ValidationHead(void)
+{
+	SparkDsv4ValidationHeadBuffers buffers;
+	uint16_t *head;
+	float *errors;
+	int result;
+	memset(&buffers,0,sizeof(buffers));
+	head = (uint16_t *)calloc((uint64_t)SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB * SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION,sizeof(uint16_t));
+	errors = (float *)calloc(SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB,sizeof(float));
+	result = head == 0 || errors == 0 || SparkDsv4ValidationHeadAllocate(&buffers) != 0;
+	if ( result == 0 ) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,SPARK_DSV4_VALIDATION_HEAD_SCREENED_VOCAB,0u);
+	if ( result == 0 ) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB,1u);
+	SparkDsv4ValidationHeadDestroy(&buffers);
+	free(errors);
+	free(head);
+	return(result);
 }
 
 static int SparkDsv4ValidationReadUnsigned(
@@ -300,6 +424,8 @@ int main(int argument_count,char **arguments)
 		fprintf(stderr,"usage: %s VALIDATION_CONFIGURATION_SHA256\n",arguments[0]);
 		return(2);
 	}
+	if ( SparkDsv4ValidationHead() != 0 )
+		return(1);
 	if ( SparkDsv4ValidationLoadNodeContext(&node_context) != 0 )
 	{
 		fprintf(stderr,"dsv4_validation configuration=invalid\n");
