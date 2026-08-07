@@ -176,6 +176,7 @@ typedef struct SparkModelResidentdRuntime
 	uint32_t route_message_capacity;
 	SparkModelResidentdMemoryMode memory_mode;
 	cudaStream_t execution_stream;
+	cudaStream_t transport_stream;
 	int32_t listen_fd;
 	int32_t wake_read_fd;
 	int32_t wake_write_fd;
@@ -503,6 +504,8 @@ static SparkStatus SparkModelResidentdAllocateCuda(
 	uint32_t index;
 	runtime->memory_mode = memory_mode;
 	if ( cudaStreamCreateWithFlags(&runtime->execution_stream,cudaStreamNonBlocking) != cudaSuccess )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	if ( cudaStreamCreateWithFlags(&runtime->transport_stream,cudaStreamNonBlocking) != cudaSuccess )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	status = SPARK_STATUS_OK;
 	for (index=0u; status == SPARK_STATUS_OK && index<runtime->route_capacity; index++)
@@ -989,6 +992,8 @@ static SparkStatus SparkModelResidentdQuiesceAdapter(
 	}
 	if ( runtime->execution_stream != 0 && cudaStreamSynchronize(runtime->execution_stream) != cudaSuccess )
 		return(SPARK_STATUS_INTERNAL_ERROR);
+	if ( runtime->transport_stream != 0 && cudaStreamSynchronize(runtime->transport_stream) != cudaSuccess )
+		return(SPARK_STATUS_INTERNAL_ERROR);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1028,6 +1033,8 @@ static void SparkModelResidentdDestroy(
 		}
 	if ( runtime->execution_stream != 0 )
 		(void)cudaStreamDestroy(runtime->execution_stream);
+	if ( runtime->transport_stream != 0 )
+		(void)cudaStreamDestroy(runtime->transport_stream);
 	if ( runtime->wake_read_fd >= 0 )
 		close(runtime->wake_read_fd);
 	if ( runtime->wake_write_fd >= 0 )
@@ -1123,7 +1130,7 @@ static void SparkModelResidentdInitializePacket(
 	packet->sequence_id = submission->submission_id;
 	packet->token_index = submission->dispatch_generation;
 	packet->hidden_bf16 = hidden_bf16;
-	packet->cuda_stream = runtime->execution_stream;
+	packet->cuda_stream = runtime->transport_stream;
 	if ( sideband_bytes_per_sequence != 0u )
 	{
 		packet->flags |= SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;

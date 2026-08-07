@@ -361,6 +361,18 @@ def main() -> int:
         "resident teardown does not quiesce CUDA and transport before unload",
     )
     require(
+        "cudaStream_t execution_stream;" in resident
+        and "cudaStream_t transport_stream;" in resident
+        and "adapter_configuration.execution_stream = runtime->execution_stream"
+        in resident
+        and "packet->cuda_stream = runtime->transport_stream" in resident
+        and "cudaStreamCreateWithFlags(&runtime->transport_stream,cudaStreamNonBlocking)"
+        in resident
+        and "cudaStreamSynchronize(runtime->transport_stream)" in resident
+        and "cudaStreamDestroy(runtime->transport_stream)" in resident,
+        "resident does not isolate model execution from stream-ordered transport",
+    )
+    require(
         "SparkModelResidentdClaimResidentSlotsLocked" in resident
         and "SparkModelResidentdReleaseResidentSlotsLocked" in resident
         and "SparkModelResidentdCompleteResidentSlotsLocked" in resident
