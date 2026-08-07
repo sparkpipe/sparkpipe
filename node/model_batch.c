@@ -481,8 +481,7 @@ int main(int argc,char **argv)
 		status = destroy_status;
 	if ( status == SPARK_STATUS_OK && output.error_count != 0u )
 		status = SPARK_STATUS_INVALID_ARGUMENT;
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"sparkpipe_model_batch_status=%u terminal=%u requests=%u\n",status,output.terminal_count,file.request_count);
+	fprintf(stderr,"sparkpipe_model_batch_status=%u terminal=%u requests=%u\n",status,output.terminal_count,file.request_count);
 	SparkModelBatchFileDestroy(&file);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	return(status == SPARK_STATUS_OK ? 0 : 1);
