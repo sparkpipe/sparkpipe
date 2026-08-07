@@ -194,6 +194,15 @@ def main() -> int:
         not in rdma,
         "RDMA keeps accepted receive work in caller retry state",
     )
+    doorbell_completion = rdma.split(
+        "static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion", 1
+    )[1].split("static SparkHiddenSparkHostRdmaInflightSend", 1)[0]
+    require(
+        "receive_credit_index" in doorbell_completion
+        and "SparkHiddenSparkHostRdmaDoorbellLane(state," in doorbell_completion
+        and "work_completion->wr_id !=" not in doorbell_completion,
+        "RDMA binds FIFO doorbell receive credits to logical receive order",
+    )
     pipeline_header = (
         ROOT / "include/sparkpipe/spark_model_pipeline_client.h"
     ).read_text(encoding="utf-8")

@@ -1873,6 +1873,7 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
     const struct ibv_wc *work_completion)
 {
     SparkHiddenSparkHostRdmaPendingReceive *receive;
+    uint64_t receive_credit_index;
     uint32_t receive_index;
 
     if (state == 0 || work_completion == 0 ||
@@ -1881,11 +1882,18 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    /* FIFO receive WQEs are lane credits; immediate data owns identity. */
     receive_index = ntohl(work_completion->imm_data);
+    receive_credit_index = work_completion->wr_id &
+        ~SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE;
     if (receive_index >= SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT ||
-        work_completion->wr_id !=
-            (SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE |
-             (uint64_t)receive_index))
+        (work_completion->wr_id &
+            SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE) == 0u ||
+        receive_credit_index >=
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT ||
+        SparkHiddenSparkHostRdmaDoorbellLane(state,
+            (uint32_t)receive_credit_index) !=
+        SparkHiddenSparkHostRdmaDoorbellLane(state,receive_index))
     {
         return SPARK_STATUS_IO_ERROR;
     }
