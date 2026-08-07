@@ -757,19 +757,27 @@ static uint32_t SparkModelBatchAssignPrefillCounts(
 	SparkModelBatchEngine *engine,
 	uint32_t lane_count)
 {
-	uint32_t lane,remaining_rows;
+	uint32_t assigned,lane,remaining_prompt,remaining_rows;
 	remaining_rows = engine->max_prefill_rows - lane_count;
 	for (lane=0u; lane<lane_count; lane++)
 		engine->scratch_prefill_counts[lane] = 1u;
-	for (lane=0u; lane<lane_count && remaining_rows!=0u; lane++)
+	while ( remaining_rows != 0u )
 	{
 		SparkModelBatchRequestState *request;
-		uint32_t remaining_prompt,extra;
-		request = &engine->requests[engine->scratch_request_slots[lane]];
-		remaining_prompt = request->prompt_token_count - request->computed_prompt_token_count;
-		extra = remaining_prompt - 1u < remaining_rows ? remaining_prompt - 1u : remaining_rows;
-		engine->scratch_prefill_counts[lane] += extra;
-		remaining_rows -= extra;
+		assigned = 0u;
+		for (lane=0u; lane<lane_count && remaining_rows!=0u; lane++)
+		{
+			request = &engine->requests[engine->scratch_request_slots[lane]];
+			remaining_prompt = request->prompt_token_count - request->computed_prompt_token_count;
+			if ( engine->scratch_prefill_counts[lane] < remaining_prompt )
+			{
+				engine->scratch_prefill_counts[lane]++;
+				remaining_rows--;
+				assigned++;
+			}
+		}
+		if ( assigned == 0u )
+			break;
 	}
 	return(engine->max_prefill_rows - remaining_rows);
 }

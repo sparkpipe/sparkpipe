@@ -58,6 +58,7 @@ typedef struct TestModelBatchState
 	uint32_t error_count;
 	uint32_t stop_token_count;
 	uint32_t token_ids[8];
+	uint64_t token_request_ids[8];
 } TestModelBatchState;
 
 static void TestModelBatchEvent(
@@ -74,6 +75,7 @@ static void TestModelBatchEvent(
 	else if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN )
 	{
 		assert(state->token_count < 8u);
+		state->token_request_ids[state->token_count] = event->request_id;
 		state->token_ids[state->token_count++] = event->token_id;
 		if ( (event->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) != 0u )
 			state->stop_token_count++;
@@ -573,6 +575,7 @@ static void TestModelBatchEngineRun(
 	TestModelBatchWaitIdle(engine,2u);
 	assert(state.accepted_count == 2u);
 	assert(state.token_count == 4u);
+	assert(state.token_request_ids[0] == 1002u);
 	assert(state.completed_count == 2u);
 	assert(state.cancelled_count == 0u);
 	assert(state.error_count == 0u);
