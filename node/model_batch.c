@@ -366,7 +366,7 @@ static int32_t SparkModelBatchWriteStageProfile(
 	for (index=0u; index<output->stage_completion_count; index++)
 	{
 		completion = &output->stage_completions[index];
-		if ( fprintf(stderr,"sparkpipe_stage_profile submission=%llu stage=%u kind=%u lanes=%u rows=%u status=%u flags=%u queue_ns=%llu service_ns=%llu elapsed_ns=%llu device_bytes=%llu host_bytes=%llu\n",(unsigned long long)completion->submission_id,completion->stage_index,completion->work_kind,completion->active_sequence_count,completion->row_count,completion->status,completion->flags,(unsigned long long)completion->queue_delay_ns,(unsigned long long)completion->service_time_ns,(unsigned long long)completion->client_elapsed_ns,(unsigned long long)completion->device_memcpy_bytes,(unsigned long long)completion->host_staging_bytes) < 0 )
+		if ( fprintf(stderr,"sparkpipe_stage_profile submission=%llu stage=%u kind=%u lanes=%u rows=%u status=%u flags=%u queue_ns=%llu service_ns=%llu elapsed_ns=%llu completion_ns=%llu device_bytes=%llu host_bytes=%llu\n",(unsigned long long)completion->submission_id,completion->stage_index,completion->work_kind,completion->active_sequence_count,completion->row_count,completion->status,completion->flags,(unsigned long long)completion->queue_delay_ns,(unsigned long long)completion->service_time_ns,(unsigned long long)completion->client_elapsed_ns,(unsigned long long)completion->client_completion_time_ns,(unsigned long long)completion->device_memcpy_bytes,(unsigned long long)completion->host_staging_bytes) < 0 )
 			return(-1);
 	}
 	if ( fprintf(stderr,"sparkpipe_stage_profile_summary events=%u dropped=%u\n",output->stage_completion_count,output->dropped_stage_completion_count) < 0 )
@@ -543,6 +543,8 @@ int main(int argc,char **argv)
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchSubmitAll(engine,&file);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelBatchEngineCloseAdmission(engine);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchRun(engine,&file,&output);
 	if ( status != SPARK_STATUS_OK && engine != 0 && SparkModelBatchEngineGetView(engine,&failure_view) == SPARK_STATUS_OK )

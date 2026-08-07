@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 10u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 11u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -95,7 +95,8 @@ typedef struct SparkModelServingAdapterDescriptor
 	uint32_t stage_layer_counts[SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT];
 	uint32_t boundary_sideband_kinds[SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT];
 	uint32_t boundary_sideband_bytes_per_sequence[SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT];
-	uint32_t reserved[1];
+	/* Target-owned scheduler floor; zero means every nonempty submission is efficient. */
+	uint32_t minimum_efficient_submission_row_count;
 } SparkModelServingAdapterDescriptor;
 
 typedef struct SparkModelServingRuntimeLimits

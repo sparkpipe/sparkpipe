@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "fixtures/model_resident_deployment_fixture.h"
+#include "runtime/model_batch_scheduler.h"
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_model_pipeline_client.h"
 
@@ -59,9 +60,96 @@ typedef struct TestModelBatchState
 	uint32_t cancelled_count;
 	uint32_t error_count;
 	uint32_t stop_token_count;
-	uint32_t token_ids[8];
-	uint64_t token_request_ids[8];
+	uint32_t token_ids[32];
+	uint64_t token_request_ids[32];
+	uint64_t first_prefill_submission_id;
+	uint32_t first_prefill_lane_count;
+	uint32_t first_prefill_row_count;
 } TestModelBatchState;
+
+static void TestModelBatchSchedulerWidths(
+	uint32_t total,
+	const uint32_t *expected,
+	uint32_t expected_count)
+{
+	uint32_t index,width;
+	for (index=0u; index<expected_count; index++)
+	{
+		width = SparkModelBatchSchedulerPlanGroupSize(total,24u,16u);
+		assert(width == expected[index]);
+		assert(width <= total);
+		total -= width;
+	}
+	assert(total == 0u);
+}
+
+static void TestModelBatchSchedulerKinds(void)
+{
+	uint32_t bypass[4] = {0u},minimum[4] = {0u,16u,16u,1u},queued[4] = {0u,16u,16u,1u};
+	uint32_t index,next;
+	next = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,1u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,1u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_DECODE);
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,1u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_RELEASE);
+	memset(bypass,0,sizeof(bypass));
+	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 1u;
+	queued[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 16u;
+	queued[SPARK_MODEL_SERVING_WORK_KIND_RELEASE] = 1u;
+	next = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,1u,1u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_DECODE);
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,1u,1u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_RELEASE);
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,1u,1u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
+	memset(bypass,0,sizeof(bypass));
+	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 1u;
+	queued[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 16u;
+	queued[SPARK_MODEL_SERVING_WORK_KIND_RELEASE] = 1u;
+	next = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	for (index=0u; index<14u; index++)
+		assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,1u,13u,&next,bypass) != SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,1u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
+	memset(queued,0,sizeof(queued));
+	memset(bypass,0,sizeof(bypass));
+	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 1u;
+	next = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	for (index=0u; index<13u; index++)
+		assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,1u,13u,&next,bypass) == 0u);
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,1u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
+	bypass[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 0u;
+	next = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,0u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
+	bypass[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 0u;
+	next = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,0u,0u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
+	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 14u;
+	bypass[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 0u;
+	next = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,0u,0u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
+	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 0u;
+	queued[SPARK_MODEL_SERVING_WORK_KIND_RELEASE] = 1u;
+	bypass[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 12u;
+	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,1u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_RELEASE);
+	assert(bypass[SPARK_MODEL_SERVING_WORK_KIND_DECODE] == 0u);
+}
+
+static void TestModelBatchSchedulerPolicy(void)
+{
+	static const uint32_t b14[] = {14u};
+	static const uint32_t b17[] = {17u};
+	static const uint32_t b31[] = {24u,7u};
+	static const uint32_t b64[] = {24u,24u,16u};
+	static const uint32_t b92[] = {24u,24u,24u,20u};
+	static const uint32_t b128[] = {24u,24u,24u,24u,16u,16u};
+	TestModelBatchSchedulerWidths(14u,b14,1u);
+	TestModelBatchSchedulerWidths(17u,b17,1u);
+	TestModelBatchSchedulerWidths(31u,b31,2u);
+	TestModelBatchSchedulerWidths(64u,b64,3u);
+	TestModelBatchSchedulerWidths(92u,b92,4u);
+	TestModelBatchSchedulerWidths(128u,b128,6u);
+	assert(SparkModelBatchSchedulerPlanGroupSize(136u,128u,16u) == 120u);
+	assert(SparkModelBatchSchedulerPlanGroupSize(31u,128u,16u) == 31u);
+	assert(SparkModelBatchSchedulerPlanGroupSize(2176u,128u,16u) == 128u);
+	TestModelBatchSchedulerKinds();
+}
 
 static void TestModelBatchEvent(
 	void *event_context,
@@ -76,7 +164,7 @@ static void TestModelBatchEvent(
 		state->accepted_count++;
 	else if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN )
 	{
-		assert(state->token_count < 8u);
+		assert(state->token_count < 32u);
 		state->token_request_ids[state->token_count] = event->request_id;
 		state->token_ids[state->token_count++] = event->token_id;
 		if ( (event->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) != 0u )
@@ -90,6 +178,20 @@ static void TestModelBatchEvent(
 		state->error_count++;
 	else
 		assert(0 && "unknown model batch event");
+}
+
+static void TestModelBatchStageCompletion(
+	void *completion_context,
+	const SparkModelPipelineStageCompletion *completion)
+{
+	TestModelBatchState *state;
+	state = (TestModelBatchState *)completion_context;
+	if ( completion->stage_index == 0u && completion->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && (state->first_prefill_submission_id == 0u || completion->submission_id < state->first_prefill_submission_id) )
+	{
+		state->first_prefill_submission_id = completion->submission_id;
+		state->first_prefill_lane_count = completion->active_sequence_count;
+		state->first_prefill_row_count = completion->row_count;
+	}
 }
 
 static void TestModelPipelineResult(
@@ -130,7 +232,7 @@ static void TestModelPipelineStageCompletion(
 	assert(completion != 0);
 	assert(completion->abi_version == SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION);
 	assert(completion->descriptor_bytes == SPARK_MODEL_PIPELINE_STAGE_COMPLETION_BYTES);
-	assert(completion->flags == SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_ELAPSED_VALID);
+	assert(completion->flags == (SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_ELAPSED_VALID | SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_COMPLETION_TIME_VALID));
 	assert(state->stage_completion_count < 27u);
 	state->stage_completions[state->stage_completion_count++] = *completion;
 }
@@ -164,6 +266,7 @@ static void TestModelPipelineAssertStageCompletion(
 	assert(completion->device_memcpy_bytes == (uint64_t)(stage_index + 1u) * 100u);
 	assert(completion->host_staging_bytes == (uint64_t)(stage_index + 1u) * 1000u);
 	assert(completion->client_elapsed_ns != 0u);
+	assert(completion->client_completion_time_ns >= completion->client_elapsed_ns);
 }
 
 static pid_t TestModelPipelineStartResident(
@@ -220,12 +323,12 @@ static void TestModelPipelineBuildSubmission(
 	lanes[0].request_generation = 1u;
 	lanes[0].step_generation = submission_id + 3000u;
 	lanes[0].sequence_id = 100u;
-	lanes[0].resident_sequence_slot = 7u;
+	lanes[0].resident_sequence_slot = 31u;
 	lanes[1].request_id = 901u;
 	lanes[1].request_generation = 1u;
 	lanes[1].step_generation = submission_id + 3000u;
 	lanes[1].sequence_id = 101u;
-	lanes[1].resident_sequence_slot = 3u;
+	lanes[1].resident_sequence_slot = 30u;
 	tokens[0] = 11u;
 	tokens[1] = 12u;
 	row_lanes[0] = 0u;
@@ -277,7 +380,7 @@ static void TestModelPipelineBuildPrefill(
 	lanes[0].request_generation = 1u;
 	lanes[0].step_generation = submission_id + 3000u;
 	lanes[0].sequence_id = 200u;
-	lanes[0].resident_sequence_slot = 5u;
+	lanes[0].resident_sequence_slot = 29u;
 	for (row=0u; row<4u; row++)
 	{
 		tokens[row] = 21u + row;
@@ -323,7 +426,7 @@ static void TestModelPipelineBuildRelease(
 	lane->request_generation = 1u;
 	lane->step_generation = submission_id + 3000u;
 	lane->sequence_id = 200u;
-	lane->resident_sequence_slot = 5u;
+	lane->resident_sequence_slot = 29u;
 	memset(submission,0,sizeof(*submission));
 	submission->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	submission->descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
@@ -488,21 +591,22 @@ static void TestModelPipelineWriteDeployment(
 	fixture.runtime_limits.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	fixture.runtime_limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
 	fixture.runtime_limits.max_inflight_submission_count = 2u;
-	fixture.runtime_limits.max_active_sequence_count = 2u;
-	fixture.runtime_limits.max_input_row_count = 4u;
-	fixture.runtime_limits.resident_sequence_capacity = 8u;
+	fixture.runtime_limits.max_active_sequence_count = 16u;
+	fixture.runtime_limits.max_input_row_count = 32u;
+	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.control_port_base = 59000u;
 	fixture.node_count = TEST_MODEL_PIPELINE_RANK_COUNT;
 	fixture.coordinator_rank_index = 0u;
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);
 }
 
-static SparkModelBatchEngine *TestModelBatchConnect(
+static SparkModelBatchEngine *TestModelBatchConnectCapacity(
 	const SparkModelResidentDeployment *deployment,
 	TestModelBatchState *state,
 	uint32_t stop_token_count,
 	uint32_t stop_token_id,
-	uint32_t max_prefill_rows)
+	uint32_t max_prefill_rows,
+	uint32_t request_capacity)
 {
 	SparkModelBatchEngineConfiguration configuration;
 	SparkModelBatchEngine *engine;
@@ -512,7 +616,7 @@ static SparkModelBatchEngine *TestModelBatchConnect(
 	configuration.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	configuration.descriptor_bytes = SPARK_MODEL_BATCH_ENGINE_CONFIGURATION_BYTES;
 	configuration.connect_timeout_ms = 100u;
-	configuration.request_capacity = 3u;
+	configuration.request_capacity = request_capacity;
 	configuration.max_context_tokens = 16u;
 	configuration.max_prefill_rows_per_submission = max_prefill_rows;
 	configuration.maximum_messages_per_rank_per_progress = 8u;
@@ -522,10 +626,48 @@ static SparkModelBatchEngine *TestModelBatchConnect(
 	configuration.runtime_root = runtime_root;
 	configuration.event_function = TestModelBatchEvent;
 	configuration.event_context = state;
+	configuration.stage_completion_function = TestModelBatchStageCompletion;
+	configuration.stage_completion_context = state;
 	engine = 0;
 	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK);
 	assert(engine != 0);
 	return(engine);
+}
+
+static SparkModelBatchEngine *TestModelBatchConnect(
+	const SparkModelResidentDeployment *deployment,
+	TestModelBatchState *state,
+	uint32_t stop_token_count,
+	uint32_t stop_token_id,
+	uint32_t max_prefill_rows)
+{
+	return(TestModelBatchConnectCapacity(deployment,state,stop_token_count,stop_token_id,max_prefill_rows,3u));
+}
+
+static SparkModelBatchRequestHandle TestModelBatchSubmitPriority(
+	SparkModelBatchEngine *engine,
+	uint64_t request_id,
+	uint64_t sequence_id,
+	const uint32_t *tokens,
+	uint32_t token_count,
+	uint32_t output_budget,
+	uint32_t priority)
+{
+	SparkModelBatchSubmitRequest request;
+	SparkModelBatchRequestHandle handle;
+	memset(&request,0,sizeof(request));
+	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	request.descriptor_bytes = SPARK_MODEL_BATCH_SUBMIT_REQUEST_BYTES;
+	request.priority = priority;
+	request.output_token_budget = output_budget;
+	request.request_id = request_id;
+	request.sequence_id = sequence_id;
+	request.prompt_token_ids = tokens;
+	request.prompt_token_count = token_count;
+	handle = 0u;
+	assert(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK);
+	assert(handle != SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE);
+	return(handle);
 }
 
 static SparkModelBatchRequestHandle TestModelBatchSubmit(
@@ -536,21 +678,7 @@ static SparkModelBatchRequestHandle TestModelBatchSubmit(
 	uint32_t token_count,
 	uint32_t output_budget)
 {
-	SparkModelBatchSubmitRequest request;
-	SparkModelBatchRequestHandle handle;
-	memset(&request,0,sizeof(request));
-	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
-	request.descriptor_bytes = SPARK_MODEL_BATCH_SUBMIT_REQUEST_BYTES;
-	request.priority = 10u;
-	request.output_token_budget = output_budget;
-	request.request_id = request_id;
-	request.sequence_id = sequence_id;
-	request.prompt_token_ids = tokens;
-	request.prompt_token_count = token_count;
-	handle = 0u;
-	assert(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK);
-	assert(handle != SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE);
-	return(handle);
+	return(TestModelBatchSubmitPriority(engine,request_id,sequence_id,tokens,token_count,output_budget,10u));
 }
 
 static void TestModelBatchWaitIdle(
@@ -626,11 +754,11 @@ static void TestModelBatchEngineRun(
 	third = TestModelBatchSubmit(engine,1003u,2003u,prompt_long,15u,1u);
 	assert(SparkModelBatchEngineProgress(engine,2u) == SPARK_STATUS_OK);
 	assert(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK);
-	assert(view.inflight_submission_count == 2u);
+	assert(view.inflight_submission_count == 1u);
 	TestModelBatchWaitIdle(engine,3u);
 	assert(state.accepted_count == 3u);
 	assert(state.token_count == 5u);
-	assert(state.token_request_ids[0] == 1002u);
+	assert(state.token_request_ids[0] == 1001u);
 	first_tokens = 0u;
 	second_tokens = 0u;
 	third_tokens = 0u;
@@ -649,6 +777,8 @@ static void TestModelBatchEngineRun(
 	assert(state.completed_count == 3u);
 	assert(state.cancelled_count == 0u);
 	assert(state.error_count == 0u);
+	assert(state.first_prefill_lane_count == 3u);
+	assert(state.first_prefill_row_count == 4u);
 	assert(third != first);
 	reused = TestModelBatchSubmit(engine,1004u,2004u,prompt_c,1u,1u);
 	assert(reused != first);
@@ -712,6 +842,9 @@ static void TestModelBatchEngineShutdown(
 	engine = TestModelBatchConnect(deployment,&state,0u,0u,4u);
 	(void)TestModelBatchSubmit(engine,1101u,2101u,prompt,1u,4u);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_BUSY);
+	assert(SparkModelBatchEngineProgress(engine,1u) == SPARK_STATUS_OK);
+	assert(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK);
+	assert(view.inflight_submission_count == 1u);
 	TestModelBatchWaitForToken(engine,&state);
 	assert(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK);
 	assert(view.inflight_submission_count == 1u);
@@ -724,6 +857,56 @@ static void TestModelBatchEngineShutdown(
 	assert(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK);
 	assert(view.admission_open == 0u);
 	assert(view.pipeline.submitted_count == 3u);
+	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+}
+
+static void TestModelBatchEnginePriority(
+	const SparkModelResidentDeployment *deployment)
+{
+	SparkModelBatchRequestHandle high;
+	SparkModelBatchEngine *engine;
+	TestModelBatchState state;
+	uint32_t index,prompt[1] = {41u};
+	memset(&state,0,sizeof(state));
+	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,17u);
+	for (index=0u; index<16u; index++)
+		(void)TestModelBatchSubmitPriority(engine,1201u + index,2201u + index,prompt,1u,1u,1u);
+	high = TestModelBatchSubmitPriority(engine,1299u,2299u,prompt,1u,1u,100u);
+	assert(SparkModelBatchEngineProgress(engine,1u) == SPARK_STATUS_OK);
+	assert(SparkModelBatchEngineCancel(engine,high) == SPARK_STATUS_PENDING);
+	assert(SparkModelBatchEngineCloseAdmission(engine) == SPARK_STATUS_OK);
+	TestModelBatchWaitIdle(engine,16u);
+	assert(state.accepted_count == 17u);
+	assert(state.token_count == 17u);
+	assert(state.first_prefill_lane_count == 16u);
+	assert(state.first_prefill_row_count == 16u);
+	assert(state.completed_count == 16u);
+	assert(state.cancelled_count == 1u);
+	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+}
+
+static void TestModelBatchEngineAggregatePrefill(
+	const SparkModelResidentDeployment *deployment)
+{
+	SparkModelBatchEngine *engine;
+	TestModelBatchState state;
+	uint32_t lane,prompts[16][2];
+	memset(&state,0,sizeof(state));
+	for (lane=0u; lane<16u; lane++)
+	{
+		prompts[lane][0] = 100u + lane;
+		prompts[lane][1] = 200u + lane;
+	}
+	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,16u);
+	for (lane=0u; lane<16u; lane++)
+		(void)TestModelBatchSubmit(engine,1300u + lane,2300u + lane,prompts[lane],lane == 0u ? 1u : 2u,1u);
+	TestModelBatchWaitIdle(engine,16u);
+	assert(state.first_prefill_lane_count == 16u);
+	assert(state.first_prefill_row_count == 31u);
+	assert(state.accepted_count == 16u);
+	assert(state.token_count == 16u);
+	assert(state.completed_count == 16u);
+	assert(state.error_count == 0u);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
 }
 
@@ -799,6 +982,7 @@ static void TestModelBatchProcess(
 	if ( profile_stages != 0u )
 	{
 		assert(TestModelBatchCountText(output,"sparkpipe_stage_profile submission=") != 0u);
+		assert(TestModelBatchCountText(output," completion_ns=") != 0u);
 		assert(TestModelBatchCountText(output,"sparkpipe_stage_profile_summary events=") == 1u);
 		assert(TestModelBatchCountText(output,"dropped=0\n") == 1u);
 		assert(TestModelBatchCountText(output,"sparkpipe_model_batch_status=0 terminal=2 requests=2\n") == 1u);
@@ -828,6 +1012,7 @@ int main(void)
 	pid_t children[TEST_MODEL_PIPELINE_RANK_COUNT];
 	uint32_t descriptor_count,rank,submission_index,tcp_port;
 	int32_t child_status;
+	TestModelBatchSchedulerPolicy();
 	tcp_port = 30000u + ((uint32_t)getpid() % 20000u);
 	memset(&state,0,sizeof(state));
 	memset(endpoints,0,sizeof(endpoints));
@@ -980,6 +1165,8 @@ int main(void)
 	assert(view.completed_count == 9u);
 	SparkModelPipelineClientDestroy(pipeline);
 	TestModelBatchEngineRun(&deployment);
+	TestModelBatchEnginePriority(&deployment);
+	TestModelBatchEngineAggregatePrefill(&deployment);
 	TestModelBatchEngineShutdown(&deployment);
 	TestModelBatchProcess(deployment_path,0u);
 	TestModelBatchProcess(deployment_path,1u);
