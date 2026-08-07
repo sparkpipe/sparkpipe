@@ -12,7 +12,26 @@ script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 module_directory="$(cd "${script_directory}/.." && pwd)"
 repository_root="$(cd "${module_directory}/../.." && pwd)"
 validation_directory="$(mktemp -d)"
+reference_fixture_directory="${repository_root}/qualification/dsv4/reference_vectors/ga_stage0_compsec076_p128"
+reference_verifier="${repository_root}/tools/verify_dsv4_ga_reference_fixture.py"
+cuda_validator="${script_directory}/spark_dsv4_resident_decode_stage_cuda_validation.cu"
 trap 'rm -rf "${validation_directory}"' EXIT
+
+require_source_digest() {
+    local expected="$1"
+    local path="$2"
+    local label="$3"
+    local actual remainder
+    if [[ ! "${expected}" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "${label} expected SHA-256 is invalid" >&2
+        exit 2
+    fi
+    read -r actual remainder < <(sha256sum "${path}")
+    if [[ "${actual}" != "${expected}" ]]; then
+        echo "${label} SHA-256 mismatch" >&2
+        exit 2
+    fi
+}
 
 if [[ ! "${configuration_hash}" =~ ^[0-9a-f]{64}$ ]]; then
     echo "validation configuration must be a lowercase SHA-256 digest" >&2
@@ -25,6 +44,24 @@ fi
 if [[ -z "${SPARK_DSV4_STAGE_PACK_PATH:-}" || ! -s "${SPARK_DSV4_STAGE_PACK_PATH}" ]]; then
     echo "SPARK_DSV4_STAGE_PACK_PATH must name a readable non-empty stage pack" >&2
     exit 2
+fi
+require_source_digest "${SPARK_DSV4_CUDA_VALIDATOR_SHA256:-}" "${cuda_validator}" "DSV4 CUDA validator"
+require_source_digest "${SPARK_DSV4_REFERENCE_VERIFIER_SHA256:-}" "${reference_verifier}" "DSV4 reference verifier"
+
+unset SPARK_DSV4_REFERENCE_TOKEN_PATH
+unset SPARK_DSV4_REFERENCE_OUTPUT_PATH
+if [[ "${SPARK_DSV4_STAGE_INDEX:-}" == "0" &&
+      "${SPARK_DSV4_STAGE_FIRST_LAYER:-}" == "0" &&
+      "${SPARK_DSV4_STAGE_LAYER_COUNT:-}" == "3" ]]; then
+    if [[ ! "${SPARK_DSV4_REFERENCE_MANIFEST_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "stage-0 validation requires its retained reference manifest SHA-256" >&2
+        exit 2
+    fi
+    python3 "${reference_verifier}" \
+        "${reference_fixture_directory}" \
+        "${SPARK_DSV4_REFERENCE_MANIFEST_SHA256}"
+    export SPARK_DSV4_REFERENCE_TOKEN_PATH="${reference_fixture_directory}/prompt_tokens.u32le"
+    export SPARK_DSV4_REFERENCE_OUTPUT_PATH="${reference_fixture_directory}/after_layer_2.bf16le"
 fi
 
 nvcc_path="${NVCC:-nvcc}"
@@ -51,7 +88,7 @@ make -C "${repository_root}" \
     -I"${repository_root}/model-families/dsv4/include" \
     -I"${module_directory}/include" \
     -I"${module_directory}/source" \
-    "${script_directory}/spark_dsv4_resident_decode_stage_cuda_validation.cu" \
+    "${cuda_validator}" \
     "${module_archive}" \
     "${repository_root}/build/libsparkpipe_runtime.a" \
     "${repository_root}/build/libsparkpipe_core.a" \

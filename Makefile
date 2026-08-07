@@ -198,6 +198,7 @@ PYTHON_TESTS := \
 	tests/test_dry_law.py \
 	tests/test_dsv4_contracts.py \
 	tests/test_dsv4_driver_source_contracts.py \
+	tests/test_dsv4_ga_reference_fixture.py \
 	tests/test_dsv4_module_host_syntax.py \
 	tests/test_dsv4_stage_source.py \
 	tests/test_dsv4_stagepack.py \
