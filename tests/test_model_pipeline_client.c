@@ -694,13 +694,14 @@ static uint32_t TestModelBatchCountText(const char *text,const char *needle)
 
 static void TestModelBatchProcess(const char *deployment_path)
 {
-	char batch_path[108],output_path[108],output[16384],runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	char batch_path[108],output_path[108],stderr_path[108],output[16384],runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 	FILE *file;
 	pid_t child;
 	size_t bytes;
 	int32_t child_status;
 	assert(snprintf(batch_path,sizeof(batch_path),"/tmp/sparkpipe-model-batch-%ld.json",(long)getpid()) > 0);
 	assert(snprintf(output_path,sizeof(output_path),"/tmp/sparkpipe-model-batch-%ld.ndjson",(long)getpid()) > 0);
+	assert(snprintf(stderr_path,sizeof(stderr_path),"/tmp/sparkpipe-model-batch-%ld.stderr",(long)getpid()) > 0);
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	file = fopen(batch_path,"wb");
 	assert(file != 0);
@@ -712,8 +713,10 @@ static void TestModelBatchProcess(const char *deployment_path)
 	{
 		if ( freopen(output_path,"wb",stdout) == 0 )
 			_exit(120);
+		if ( freopen(stderr_path,"wb",stderr) == 0 )
+			_exit(121);
 		execl(TEST_MODEL_BATCH_PATH,TEST_MODEL_BATCH_PATH,"--deployment",deployment_path,"--runtime-root",runtime_root,"--batch",batch_path,(char *)0);
-		_exit(121);
+		_exit(122);
 	}
 	assert(waitpid(child,&child_status,0) == child);
 	if ( WIFSIGNALED(child_status) )
@@ -733,6 +736,14 @@ static void TestModelBatchProcess(const char *deployment_path)
 	assert(TestModelBatchCountText(output,"\"event\":\"token\"") == 3u);
 	assert(TestModelBatchCountText(output,"\"event\":\"completed\"") == 2u);
 	assert(TestModelBatchCountText(output,"\"event\":\"error\"") == 0u);
+	file = fopen(stderr_path,"rb");
+	assert(file != 0);
+	bytes = fread(output,1u,sizeof(output) - 1u,file);
+	assert(feof(file));
+	assert(fclose(file) == 0);
+	output[bytes] = '\0';
+	assert(strcmp(output,"sparkpipe_model_batch_status=0 terminal=2 requests=2\n") == 0);
+	unlink(stderr_path);
 	unlink(output_path);
 	unlink(batch_path);
 }
