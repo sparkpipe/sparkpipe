@@ -41,7 +41,7 @@ def main() -> int:
     assert rendered == DEPLOYMENT.read_text(encoding="utf-8")
     deployment = module.build_deployment(specification)
     assert deployment["runtime_limits"] == {
-        "max_inflight_submissions": 4,
+        "max_inflight_submissions": 13,
         "max_active_sequences": 24,
         "max_input_rows": 128,
         "resident_sequence_capacity": 128,

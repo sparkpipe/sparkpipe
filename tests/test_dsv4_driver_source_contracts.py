@@ -64,6 +64,7 @@ def main() -> None:
 	activation = read("inference/kernels/activation.cuh")
 	common = read("model-families/common/include/sparkpipe/spark_lm_kernels.cuh")
 	module = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c")
+	firmware = read("modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h")
 	cuda = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu")
 	stagepack = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_stagepack_format.h")
 	adapter = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c")
@@ -146,6 +147,8 @@ def main() -> None:
 		"SPARK_DSV4_STAGE_PIPELINE_SLOTS",
 	):
 		require(validator, name, "stage-specific CUDA validation configuration")
+	require(firmware, "SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 13u", "PP13 module slot capacity")
+	require(adapter, "SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT", "PP13 adapter slot capacity")
 	require(validator, "#define SPARK_DSV4_VALIDATION_ROW_COUNT 8u", "B8 CUDA validation width")
 	require(validator, "frame->batch.row_count = SPARK_DSV4_VALIDATION_ROW_COUNT;", "B8 CUDA decode batch")
 	require(validator, "frame->lanes[row] = row;", "B8 CUDA distinct resident lanes")

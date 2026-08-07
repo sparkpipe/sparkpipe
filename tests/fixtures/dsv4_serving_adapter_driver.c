@@ -23,7 +23,7 @@ static const SparkModelDriverProgramProfile TestDsv4ServingDriverProfile =
 {
 	.descriptor_bytes = sizeof(SparkModelDriverProgramProfile),
 	.profile_flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
-	.max_inflight = 4u,
+	.max_inflight = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
 	.max_active_slots = 128u,
 	.max_new_tokens = 128u,
 	.max_resident_sequences = 128u,
@@ -34,7 +34,7 @@ static const SparkModelDriverProgramDescriptor TestDsv4ServingDriverProgram =
 {
 	.program_id = 1u,
 	.flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION | SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
-	.max_inflight = 4u,
+	.max_inflight = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
 	.name = "resident_decode",
 	.profile = &TestDsv4ServingDriverProfile,
 	.submit = TestDsv4ServingDriverSubmit
@@ -92,7 +92,7 @@ static SparkStatus TestDsv4ServingDriverAdmit(
 	decision->descriptor_bytes = sizeof(*decision);
 	decision->accepted = 1u;
 	decision->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
-	decision->available_dispatch_slot_count = 4u;
+	decision->available_dispatch_slot_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT;
 	return(SPARK_STATUS_OK);
 }
 
@@ -171,7 +171,7 @@ static SparkStatus TestDsv4ServingDriverSnapshot(
 	memset(snapshot,0,sizeof(*snapshot));
 	snapshot->descriptor_bytes = sizeof(*snapshot);
 	snapshot->program_id = program_id;
-	snapshot->available_dispatch_slot_count = 4u;
+	snapshot->available_dispatch_slot_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT;
 	snapshot->submitted_count = driver->submitted_count;
 	snapshot->completed_count = driver->completed_count;
 	return(SPARK_STATUS_OK);

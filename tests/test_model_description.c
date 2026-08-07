@@ -66,6 +66,7 @@ static void SparkTestDsv4Description(void)
     assert(stage != 0);
     program = SparkFindModelProgram(stage, "resident_decode");
     assert(program != 0);
+    assert(program->max_inflight == 13u);
     assert(program->completion_mode == SPARK_MODEL_PROGRAM_COMPLETION_EXTERNAL);
     assert((program->scheduling.flags & SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION) == 0u);
     SparkModelDescriptionDestroy(&description);
