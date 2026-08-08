@@ -18,6 +18,17 @@ comparable all-time record because the recovered project runs below used
 different fixture revisions, inference protocols, quantizations, and execution
 topologies.
 
+## Locally audited DeepSeek API run
+
+| Model | Execution | GPQA | SuperGPQA | AIME2025 | COMPSEC | Overall | Receipt |
+|---|---|---:|---:|---:|---:|---:|---|
+| `deepseek-v4-flash` | DeepSeek API, thinking disabled, temperature 0, 4,096-token completion cap, 92-way concurrency | 17/25 | 21/25 | 15/25 | 17/17 | **70/92** | [`REPORT.md`](runs/deepseek-v4-flash-api-20260808/REPORT.md) |
+
+This run completed all 92 requests without API errors and used the exact
+prepared `standard4096-suite` prompts. It is a locally audited API comparison,
+not the highest retained score; the complete receipt and parameters are in the
+[run report](runs/deepseek-v4-flash-api-20260808/REPORT.md).
+
 For context, a separately published DeepSeek V4 Flash 4Expert Q4_K run reports
 80/92 (AIME 20/25, GPQA 22/25, SuperGPQA 22/25, COMPSEC 16/17). SparkPipe does
 not retain that run's responses, and it is not treated as a locally audited
