@@ -11,10 +11,13 @@ typedef struct SparkDsv4RunnerTestState
     uint32_t last_frame_flags;
 	uint32_t last_buffer_count;
 	uint32_t prefill_row_count;
+	uint32_t prefill_emit_count;
 	uint32_t invalid_admission;
 	uint32_t expect_hidden_input;
 	void *last_execution_stream;
 	const uint32_t *prefill_token_ids;
+	const uint32_t *prefill_emit_rows;
+	const uint32_t *prefill_emit_lanes;
 } SparkDsv4RunnerTestState;
 
 static SparkDsv4RunnerTestState TestState;
@@ -75,7 +78,10 @@ static SparkStatus SparkDsv4RunnerTestSubmit(
         SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES);
     assert(context->prefill_batch != 0);
     state->prefill_row_count = context->prefill_batch->row_count;
+	state->prefill_emit_count = context->prefill_batch->emit_count;
     state->prefill_token_ids = context->prefill_batch->token_ids;
+	state->prefill_emit_rows = context->prefill_batch->emit_row_indices;
+	state->prefill_emit_lanes = context->prefill_batch->emit_lane_indices;
     return SPARK_STATUS_OK;
 }
 
@@ -163,6 +169,9 @@ static void SparkDsv4RunnerTestPrefillMapping(void)
     dispatch.row_lane_indices = &lane;
     dispatch.row_positions = &position;
     dispatch.row_sequence_ids = &sequence;
+	dispatch.emit_count = 1u;
+	dispatch.emit_row_indices = &lane;
+	dispatch.emit_lane_indices = &lane;
     dispatch.hidden_output_bf16 = hidden_output;
     dispatch.hidden_output_bytes = sizeof(hidden_output);
     assert(SparkDsv4StageRunnerSubmit(&runner, &dispatch) ==
@@ -173,7 +182,10 @@ static void SparkDsv4RunnerTestPrefillMapping(void)
 	assert(TestState.last_buffer_count == 1u);
 	assert(TestState.last_execution_stream == configuration.execution_stream);
     assert(TestState.prefill_row_count == 1u);
+	assert(TestState.prefill_emit_count == 1u);
     assert(TestState.prefill_token_ids == &token_id);
+	assert(TestState.prefill_emit_rows == &lane);
+	assert(TestState.prefill_emit_lanes == &lane);
 	TestState.invalid_admission = 1u;
 	assert(SparkDsv4StageRunnerSubmit(&runner, &dispatch) ==
 		SPARK_STATUS_ABI_MISMATCH);

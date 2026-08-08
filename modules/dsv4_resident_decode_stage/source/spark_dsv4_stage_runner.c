@@ -50,6 +50,29 @@ static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkDsv4StageRunnerValidateEmitRows(
+	const SparkDsv4StageRunnerDispatch *dispatch,
+	uint32_t is_prefill)
+{
+	uint8_t seen[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
+	uint32_t index,lane,previous,row;
+	if ( is_prefill == 0u )
+		return(dispatch->emit_count == 0u && dispatch->emit_row_indices == 0 && dispatch->emit_lane_indices == 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+	if ( dispatch->emit_count > dispatch->active_sequence_count || ((dispatch->emit_count != 0u) != (dispatch->emit_row_indices != 0)) || ((dispatch->emit_count != 0u) != (dispatch->emit_lane_indices != 0)) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	previous = UINT32_MAX;
+	for (index=0u; index<dispatch->emit_count; index++)
+	{
+		row = dispatch->emit_row_indices[index];
+		lane = dispatch->emit_lane_indices[index];
+		if ( row >= dispatch->row_count || lane >= dispatch->active_sequence_count || seen[lane] != 0u || (index != 0u && row <= previous) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		seen[lane] = 1u;
+		previous = row;
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkDsv4StageRunnerValidateDispatchShape(
     const SparkDsv4StageRunner *runner,
     const SparkDsv4StageRunnerDispatch *dispatch)
@@ -91,7 +114,7 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchShape(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-	return SPARK_STATUS_OK;
+	return SparkDsv4StageRunnerValidateEmitRows(dispatch,is_prefill);
 }
 
 static SparkStatus SparkDsv4StageRunnerValidateDispatchBoundaries(
@@ -188,12 +211,15 @@ static void SparkDsv4StageRunnerBuildFrame(
         prefill_batch->abi_version =
             SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION;
         prefill_batch->descriptor_bytes = (uint32_t)sizeof(*prefill_batch);
-        prefill_batch->row_count = dispatch->row_count;
+		prefill_batch->row_count = dispatch->row_count;
 		prefill_batch->active_sequence_count = dispatch->active_sequence_count;
-        prefill_batch->token_ids = dispatch->token_ids;
+		prefill_batch->emit_count = dispatch->emit_count;
+		prefill_batch->token_ids = dispatch->token_ids;
         prefill_batch->row_lane_indices = dispatch->row_lane_indices;
         prefill_batch->row_positions = dispatch->row_positions;
-        prefill_batch->row_sequence_ids = dispatch->row_sequence_ids;
+		prefill_batch->row_sequence_ids = dispatch->row_sequence_ids;
+		prefill_batch->emit_row_indices = dispatch->emit_row_indices;
+		prefill_batch->emit_lane_indices = dispatch->emit_lane_indices;
         context->prefill_batch = prefill_batch;
     }
     else
@@ -222,9 +248,9 @@ static void SparkDsv4StageRunnerBuildFrame(
         output_buffer_index = buffer_count;
         buffers[output_buffer_index].slot = output_buffer_index;
         buffers[output_buffer_index].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
-        buffers[output_buffer_index].address = dispatch->output_token_ids;
-        buffers[output_buffer_index].bytes =
-            (uint64_t)dispatch->row_count * sizeof(uint32_t);
+		buffers[output_buffer_index].address = dispatch->output_token_ids;
+		buffers[output_buffer_index].bytes =
+			(uint64_t)dispatch->active_sequence_count * sizeof(uint32_t);
         buffer_count += 1u;
     }
     memset(frame, 0, sizeof(*frame));

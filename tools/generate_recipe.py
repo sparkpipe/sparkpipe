@@ -16,9 +16,12 @@ Reuse, per the tree's DRY law, instead of parallel machinery:
 - this generator owns the deterministic PP placement algorithm used by recipe
   artifacts: contiguous cover, the dense prefix whole in stage zero, bounded
   routed layers per stage, final-token work on the last stage, and a minimax
-  balancing DP with a first-best tie-break. Its analytic per-layer cost is an
-  ESTIMATE for placement only. It is marked NOT_MEASURED in every recipe and
-  never reaches a kernel or the model-resident runtime.
+  balancing DP with a first-best tie-break. An optional measured stage profile
+  supplies relative stage capacity so faster ranks can receive more
+  contiguous layers; it changes placement artifacts only and never reaches a
+  kernel or the model-resident runtime. Its analytic per-layer cost is an
+  ESTIMATE for placement only. It is marked NOT_MEASURED in every recipe
+  without a profile.
 - the k3 TP shard table is built from tools/k3_shard.py's own classification
   sets. tests/test_recipe_generation.py walks those sets against every recipe,
   so the planning table cannot drift from the offline pack slicer.
@@ -692,12 +695,29 @@ def range_valid(first, count, first_routed, layer_count):
             MAX_ROUTED_PER_STAGE)
 
 
+def _validate_stage_capacity(stage_capacity, stage_count):
+    if stage_capacity is None:
+        return [1.0] * stage_count
+    if len(stage_capacity) != stage_count:
+        raise RecipeFailure(
+            f"stage capacity profile has {len(stage_capacity)} entries, "
+            f"expected {stage_count}")
+    normalized = []
+    for capacity in stage_capacity:
+        if not isinstance(capacity, (int, float)) or capacity <= 0:
+            raise RecipeFailure("stage capacity must be positive")
+        normalized.append(float(capacity))
+    return normalized
+
+
 def build_balanced_stages(layer_costs, first_routed, stage_count,
-                          final_extra):
+                          final_extra, stage_capacity=None):
     layers = len(layer_costs)
     if stage_count == 0 or stage_count > layers:
         raise RecipeFailure(
             f"{stage_count} stages over {layers} layers is not placeable")
+    weighted = stage_capacity is not None
+    stage_capacity = _validate_stage_capacity(stage_capacity, stage_count)
     prefix = [0]
     for cost in layer_costs:
         if cost <= 0:
@@ -716,7 +736,9 @@ def build_balanced_stages(layer_costs, first_routed, stage_count,
                 segment = prefix[layer] - prefix[cut]
                 if stage == stage_count:
                     segment += final_extra
-                candidate = max(best[stage - 1][cut], segment)
+                candidate_segment = (segment / stage_capacity[stage - 1]
+                                     if weighted else segment)
+                candidate = max(best[stage - 1][cut], candidate_segment)
                 if best[stage][layer] is None or candidate < best[stage][layer]:
                     best[stage][layer] = candidate
                     split[stage][layer] = cut
@@ -768,7 +790,8 @@ def load_topology(topology_path, degree):
 
 
 def build_recipe(tag, contract_rel, contract_text_sha, contract, geometry,
-                 strategy, degree, topology):
+                 strategy, degree, topology, stage_capacity=None,
+                 stage_capacity_profile_sha256=None):
     family = MODELS[tag]["family"]
     g_hash = geometry_hash(family, geometry["kv_geometry"])
     body = {
@@ -795,9 +818,10 @@ def build_recipe(tag, contract_rel, contract_text_sha, contract, geometry,
             "ranks": rank_table(resolved, degree, topology["node_names"]),
         }
     else:
+        placement_capacity = _validate_stage_capacity(stage_capacity, degree)
         stages, optimum = build_balanced_stages(
             geometry["layer_costs"], geometry["first_routed_layer"], degree,
-            geometry["final_stage_extra_cost"])
+            geometry["final_stage_extra_cost"], stage_capacity)
         prefix = [0]
         for cost in geometry["layer_costs"]:
             prefix.append(prefix[-1] + cost)
@@ -819,11 +843,18 @@ def build_recipe(tag, contract_rel, contract_text_sha, contract, geometry,
                                      geometry["first_routed_layer"]),
                 "cost": cost,
             })
+            if stage_capacity is not None:
+                stage_entries[-1]["normalized_cost"] = (
+                    cost / placement_capacity[index])
         costs = [s["cost"] for s in stage_entries]
+        effective_costs = [cost / placement_capacity[index]
+                           for index, cost in enumerate(costs)]
         body["pp"] = {
             "cost_model": "analytic_active_params_v1",
-            "cost_model_status": "NOT_MEASURED - analytic placement "
-                                 "estimate only",
+            "cost_model_status": (
+                "MEASURED_STAGE_CAPACITY + analytic placement estimate"
+                if stage_capacity is not None else
+                "NOT_MEASURED - analytic placement estimate only"),
             "cut_rules": {
                 "contiguous_cover": True,
                 "dense_prefix_whole_in_stage_zero": True,
@@ -838,10 +869,21 @@ def build_recipe(tag, contract_rel, contract_text_sha, contract, geometry,
                 f"({ENGINE_MAX_STAGE_COUNT}); the engine constant must be "
                 f"lifted before this topology loads the plan",
             "stages": stage_entries,
-            "balance": {"max_stage_cost": max(costs),
-                        "min_stage_cost": min(costs),
+            "balance": {"max_stage_cost": max(effective_costs)
+                        if stage_capacity is not None else max(costs),
+                        "min_stage_cost": min(effective_costs)
+                        if stage_capacity is not None else min(costs),
                         "optimum_max_cost": optimum},
         }
+        if stage_capacity is not None:
+            body["pp"]["balance"]["stage_capacity"] = placement_capacity
+        if stage_capacity_profile_sha256 is not None:
+            body["pp"]["placement_profile"] = {
+                "kind": "stage_capacity_v1",
+                "sha256": stage_capacity_profile_sha256,
+                "semantics": "capacity relative to one unit; higher is "
+                              "faster",
+            }
     body["content_hash"] = short_hash(body)
     body["datafile"] = f"{tag}.{strategy}{degree}.{body['content_hash']}.json"
     return body
@@ -861,7 +903,30 @@ def managed_files(out_dir, tags):
     return files
 
 
-def generate_set(tags, strategies, degrees, topology_path):
+def load_stage_profile(path, stage_count):
+    path = Path(path)
+    profile = json.loads(path.read_text(encoding="utf-8"))
+    if profile.get("schema_version") != 1:
+        raise RecipeFailure("stage capacity profile has an unknown schema")
+    if profile.get("kind") == "sparkpipe.stage_profile":
+        stage_time_ns = profile.get("stage_time_ns")
+        if (not isinstance(stage_time_ns, list) or not stage_time_ns or
+                any(not isinstance(value, (int, float)) or value <= 0
+                    for value in stage_time_ns)):
+            raise RecipeFailure("stage profile must contain positive times")
+        reference = sum(stage_time_ns) / len(stage_time_ns)
+        capacities = [reference / value for value in stage_time_ns]
+    elif profile.get("kind") == "sparkpipe.stage_capacity_profile":
+        capacities = profile.get("stage_capacity")
+        if not isinstance(capacities, list):
+            raise RecipeFailure("stage capacity profile must contain a list")
+    else:
+        raise RecipeFailure("stage capacity profile has an unknown kind")
+    return _validate_stage_capacity(capacities, stage_count), file_sha256(path)
+
+
+def generate_set(tags, strategies, degrees, topology_path,
+                 stage_profile_path=None):
     expected = {}
     for tag in tags:
         spec = MODELS[tag]
@@ -873,10 +938,16 @@ def generate_set(tags, strategies, degrees, topology_path):
         geometry = spec["adapter"](contract)
         for degree in degrees:
             topology = load_topology(topology_path, degree)
+            stage_capacity = None
+            profile_sha256 = None
+            if stage_profile_path is not None and "PP" in strategies:
+                stage_capacity, profile_sha256 = load_stage_profile(
+                    stage_profile_path, degree)
             for strategy in strategies:
                 recipe = build_recipe(tag, contract_rel,
                                       file_sha256(contract_path), contract,
-                                      geometry, strategy, degree, topology)
+                                      geometry, strategy, degree, topology,
+                                      stage_capacity, profile_sha256)
                 expected[recipe["datafile"]] = render(recipe)
     return expected
 
@@ -896,6 +967,10 @@ def main():
     parser.add_argument("--check", action="store_true",
                         help="verify the committed set is current; write "
                              "nothing")
+    parser.add_argument("--stage-profile", "--stage-capacity-profile",
+                        dest="stage_profile", type=Path,
+                        help="optional generic PP placement profile; use "
+                             "stage_time_ns or relative stage_capacity")
     args = parser.parse_args()
 
     tags = args.model or sorted(MODELS)
@@ -903,7 +978,8 @@ def main():
     degrees = args.nodes or list(DEFAULT_DEGREES)
     topology_path = args.topology if args.topology.exists() else None
 
-    expected = generate_set(tags, strategies, degrees, topology_path)
+    expected = generate_set(tags, strategies, degrees, topology_path,
+                            args.stage_profile)
     if args.check:
         actual = managed_files(args.out_dir, tags)
         stale = sorted(set(actual) ^ set(expected))

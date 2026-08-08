@@ -150,6 +150,7 @@ typedef struct SparkModelResidentdRoute
 	uint64_t sequence_id;
 	uint64_t sequence_position;
 	uint64_t client_generation;
+	uint64_t adapter_submit_time_ns;
 	SparkModelServingSubmission submission;
 	SparkHiddenTransportPacket input_packet;
 	SparkHiddenTransportPacket output_packet;
@@ -198,6 +199,8 @@ typedef struct SparkModelResidentdRuntime
 } SparkModelResidentdRuntime;
 
 static volatile sig_atomic_t SparkModelResidentdStop;
+
+static uint64_t SparkModelResidentdMonotonicTimeNs(void);
 
 static void SparkModelResidentdFailLocked(
 	SparkModelResidentdRuntime *runtime,
@@ -807,6 +810,7 @@ static void SparkModelResidentdCompletion(
 	SparkModelResidentdRuntime *runtime;
 	SparkModelResidentdRoute *route;
 	SparkStatus status;
+	uint64_t completed_time_ns;
 	uint32_t failure_reason;
 	runtime = (SparkModelResidentdRuntime *)completion_context;
 	if ( runtime == 0 || completion == 0 )
@@ -844,6 +848,12 @@ static void SparkModelResidentdCompletion(
 	if ( route != 0 && status == SPARK_STATUS_OK )
 	{
 		route->completion = *completion;
+		if ( route->completion.service_time_ns == 0u && route->adapter_submit_time_ns != 0u )
+		{
+			completed_time_ns = SparkModelResidentdMonotonicTimeNs();
+			if ( completed_time_ns >= route->adapter_submit_time_ns )
+				route->completion.service_time_ns = completed_time_ns - route->adapter_submit_time_ns;
+		}
 		route->state = route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ?
 			SPARK_MODEL_RESIDENTD_ROUTE_READY_OUTPUT :
 			SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
@@ -1571,6 +1581,7 @@ static SparkStatus SparkModelResidentdSubmitAdapter(
 		return(SPARK_STATUS_OK);
 	}
 	route->state = SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER;
+	route->adapter_submit_time_ns = SparkModelResidentdMonotonicTimeNs();
 	pthread_mutex_unlock(&runtime->mutex);
 	status = runtime->adapter_library.adapter_interface.submit(runtime->adapter_state,&route->submission);
 	pthread_mutex_lock(&runtime->mutex);
@@ -1579,6 +1590,7 @@ static SparkStatus SparkModelResidentdSubmitAdapter(
 	if ( status == SPARK_STATUS_BUSY && state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER )
 	{
 		route->state = SPARK_MODEL_RESIDENTD_ROUTE_READY_ADAPTER;
+		route->adapter_submit_time_ns = 0u;
 		result = SPARK_STATUS_BUSY;
 	}
 	else if ( status == SPARK_STATUS_BUSY )

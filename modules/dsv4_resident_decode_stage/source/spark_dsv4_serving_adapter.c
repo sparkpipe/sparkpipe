@@ -46,6 +46,8 @@ typedef struct SparkDsv4ServingPending
 	uint32_t row_count;
 	uint32_t lane_count;
 	uint32_t active_sequence_count;
+	uint32_t work_kind;
+	uint32_t emit_count;
 	uint64_t submission_id;
 	uint64_t request_id;
 	uint64_t sequence_id;
@@ -56,6 +58,8 @@ typedef struct SparkDsv4ServingPending
 	uint64_t request_generation;
 	uint64_t step_generation;
 	uint32_t last_row_by_lane[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t emit_row_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t emit_lane_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_row_lane_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t output_token_ids[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 } SparkDsv4ServingPending;
@@ -202,23 +206,31 @@ static SparkStatus SparkDsv4ServingValidateRowOrder(
 	return(SparkDsv4ValidateRoundMajorPrefillRows(submission->row_count,submission->active_sequence_count,submission->row_lane_indices));
 }
 
-static SparkDsv4ServingPending *SparkDsv4ServingReservePending(
+static SparkStatus SparkDsv4ServingReservePending(
 	SparkDsv4ServingAdapterState *state,
-	const SparkModelServingSubmission *submission)
+	const SparkModelServingSubmission *submission,
+	SparkDsv4ServingPending **pending_out)
 {
 	SparkDsv4ServingPending *pending;
 	uint32_t index,row;
+	SparkStatus status;
+	if ( pending_out == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*pending_out = 0;
 	for (index=0u; index<state->pipeline_slot_count; index++)
 	{
 		pending = &state->pending[index];
 		if ( pending->active == 0u )
 		{
 			memset(pending,0,sizeof(*pending));
+			status = SparkModelServingAdapterSelectEmitRows(submission,pending->emit_row_indices,pending->emit_lane_indices,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&pending->emit_count);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
 			pending->owner = state;
-			pending->active = 1u;
 			pending->row_count = submission->row_count;
 			pending->lane_count = submission->lane_count;
 			pending->active_sequence_count = submission->active_sequence_count;
+			pending->work_kind = submission->work_kind;
 			pending->submission_id = submission->submission_id;
 			pending->request_id = submission->request_id;
 			pending->sequence_id = submission->sequence_id;
@@ -235,10 +247,12 @@ static SparkDsv4ServingPending *SparkDsv4ServingReservePending(
 				pending->last_row_by_lane[lane] = row;
 				pending->resident_row_lane_indices[row] = submission->lanes[lane].resident_sequence_slot;
 			}
-			return(pending);
+			pending->active = 1u;
+			*pending_out = pending;
+			return(SPARK_STATUS_OK);
 		}
 	}
-	return(0);
+	return(SPARK_STATUS_BUSY);
 }
 
 static void SparkDsv4ServingOrphanDriverCompletion(
@@ -293,7 +307,7 @@ static void SparkDsv4ServingDriverCompletion(
 		completion.token_count = pending->active_sequence_count;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 		for (index=0u; index<completion.token_count; index++)
-			completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index]];
+			completion.token_ids[index] = pending->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? pending->output_token_ids[index] : pending->output_token_ids[pending->last_row_by_lane[index]];
 	}
 	pending->active = 0u;
 	state->completion_function(state->completion_context,&completion);
@@ -480,6 +494,7 @@ static SparkStatus SparkDsv4ServingValidateSubmission(
 {
 	SparkDsv4ServingAdapterState *state;
 	SparkStatus status;
+	uint32_t emit_count;
 	state = (SparkDsv4ServingAdapterState *)adapter_state;
 	if ( state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -493,6 +508,9 @@ static SparkStatus SparkDsv4ServingValidateSubmission(
 	status = SparkDsv4ServingValidateRowOrder(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	status = SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count);
+	if ( status != SPARK_STATUS_OK || (submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && emit_count != submission->active_sequence_count) )
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
 	if ( submission->model_extension_bytes != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
 	return(SPARK_STATUS_OK);
@@ -510,9 +528,9 @@ static SparkStatus SparkDsv4ServingSubmit(
 	status = SparkDsv4ServingValidateSubmission(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	pending = SparkDsv4ServingReservePending(state,submission);
-	if ( pending == 0 )
-		return(SPARK_STATUS_BUSY);
+	status = SparkDsv4ServingReservePending(state,submission,&pending);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	memset(&dispatch,0,sizeof(dispatch));
 	dispatch.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
 	dispatch.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES;
@@ -530,6 +548,15 @@ static SparkStatus SparkDsv4ServingSubmit(
 	dispatch.row_lane_indices = pending->resident_row_lane_indices;
 	dispatch.row_positions = submission->row_positions;
 	dispatch.row_sequence_ids = submission->row_sequence_ids;
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+	{
+		dispatch.emit_count = pending->emit_count;
+		if ( pending->emit_count != 0u )
+		{
+			dispatch.emit_row_indices = pending->emit_row_indices;
+			dispatch.emit_lane_indices = pending->emit_lane_indices;
+		}
+	}
 	dispatch.output_token_ids = pending->output_token_ids;
 	dispatch.hidden_input_bf16 = submission->hidden_input_address;
 	dispatch.hidden_input_bytes = submission->hidden_input_bytes;

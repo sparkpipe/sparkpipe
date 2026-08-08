@@ -117,6 +117,7 @@ static void TestSubmissionRoundTrip(void)
 	lanes[0].step_generation = 1u;
 	lanes[0].sequence_id = 31u;
 	lanes[0].resident_sequence_slot = 7u;
+	lanes[0].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	lanes[1].request_id = 22u;
 	lanes[1].request_generation = 1u;
 	lanes[1].step_generation = 1u;
@@ -166,6 +167,7 @@ static void TestSubmissionRoundTrip(void)
 	assert(decoded.submission_id == 44u);
 	assert(decoded.lane_count == 2u);
 	assert(decoded.lanes[1].sequence_id == 32u);
+	assert(decoded.lanes[0].flags == SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN);
 	assert(decoded.token_ids[1] == 101u);
 	assert(decoded.row_positions[0] == 9u);
 	assert(((const uint8_t *)decoded.model_extension)[2] == 6u);

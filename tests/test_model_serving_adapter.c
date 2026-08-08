@@ -306,6 +306,67 @@ static void TestRuntimeSubmissionValidation(void)
 	assert(SparkModelServingAdapterValidateRuntimeSubmission(&descriptor,&limits,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void TestEmitRowSelection(void)
+{
+	static SparkModelServingLane lanes[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+	static uint32_t row_lanes[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT * 2u];
+	static uint32_t emit_rows[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+	static uint32_t emit_lanes[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+	static uint64_t row_positions[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT * 2u];
+	static uint64_t row_sequences[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT * 2u];
+	SparkModelServingSubmission submission;
+	uint32_t emit_count,lane,row;
+	memset(&submission,0,sizeof(submission));
+	memset(lanes,0,sizeof(lanes));
+	for (lane=0u; lane<SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
+	{
+		lanes[lane].sequence_id = 1000u + lane;
+		lanes[lane].context_token_count = lane == 0u ? 1u : 2u;
+		row_lanes[lane] = lane;
+		row_positions[lane] = 0u;
+		row_sequences[lane] = lanes[lane].sequence_id;
+	}
+	lanes[0].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	row = SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT;
+	for (lane=1u; lane<SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
+	{
+		row_lanes[row] = lane;
+		row_positions[row] = 1u;
+		row_sequences[row] = lanes[lane].sequence_id;
+		row++;
+	}
+	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission.active_sequence_count = SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT;
+	submission.lane_count = SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT;
+	submission.row_count = row;
+	submission.lanes = lanes;
+	submission.row_lane_indices = row_lanes;
+	submission.row_positions = row_positions;
+	submission.row_sequence_ids = row_sequences;
+	assert(SparkModelServingAdapterSelectEmitRows(&submission,emit_rows,emit_lanes,SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT,&emit_count) == SPARK_STATUS_OK);
+	assert(emit_count == 1u);
+	assert(emit_rows[0] == 0u);
+	assert(emit_lanes[0] == 0u);
+	for (lane=0u; lane<SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
+		lanes[lane].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	assert(SparkModelServingAdapterSelectEmitRows(&submission,emit_rows,emit_lanes,SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT - 1u,&emit_count) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(emit_count == 0u);
+	assert(SparkModelServingAdapterSelectEmitRows(&submission,emit_rows,emit_lanes,SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT,&emit_count) == SPARK_STATUS_OK);
+	assert(emit_count == SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT);
+	assert(emit_rows[0] == 0u && emit_lanes[0] == 0u);
+	assert(emit_rows[1] == SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT && emit_lanes[1] == 1u);
+	assert(emit_rows[emit_count - 1u] == row - 1u);
+	assert(SparkModelServingAdapterSelectEmitRows(&submission,0,0,0u,&emit_count) == SPARK_STATUS_OK);
+	assert(emit_count == SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT);
+	lanes[7].flags |= UINT32_C(0x80000000);
+	assert(SparkModelServingAdapterSelectEmitRows(&submission,emit_rows,emit_lanes,SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT,&emit_count) == SPARK_STATUS_INVALID_ARGUMENT);
+	lanes[7].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	row_positions[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT + 6u] = 2u;
+	assert(SparkModelServingAdapterSelectEmitRows(&submission,emit_rows,emit_lanes,SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT,&emit_count) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 static void TestCompletionValidation(void)
 {
 	SparkModelServingAdapterDescriptor descriptor;
@@ -348,6 +409,7 @@ int main(void)
 	TestInterfaceValidation();
 	TestSubmissionValidation();
 	TestRuntimeSubmissionValidation();
+	TestEmitRowSelection();
 	TestCompletionValidation();
 	TestDynamicLoader();
 	return(0);

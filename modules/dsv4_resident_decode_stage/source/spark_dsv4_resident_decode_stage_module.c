@@ -132,6 +132,7 @@ typedef struct SparkDsv4AsyncCompletion
 	uint32_t slot_index;
 	uint32_t lane_count;
 	uint32_t row_count;
+	uint32_t emitted_token_count;
 	uint32_t lane_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_sequence_ids[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_next_positions[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -212,6 +213,8 @@ extern cudaError_t SparkDsv4LaunchEmbeddingGather(cudaStream_t stream, const uin
 extern cudaError_t SparkDsv4LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkDsv4LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
+extern cudaError_t SparkDsv4LaunchGatherHeadRows(cudaStream_t stream, const void *source_bf16, const uint32_t *source_row_indices, void *destination_bf16, uint32_t row_count, uint32_t row_width);
+extern cudaError_t SparkDsv4LaunchScatterHeadTokens(cudaStream_t stream, const uint32_t *source, const uint32_t *destination_lane_indices, uint32_t *destination, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchQuantSim(cudaStream_t stream, void *data_bf16, uint32_t row_count, uint32_t row_stride, uint32_t width, uint32_t block, uint32_t fp4);
 extern cudaError_t SparkDsv4LaunchRope(cudaStream_t stream, void *data_bf16, const float *freqs_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t head_count, uint32_t head_dim, uint32_t rope_dim, uint32_t inverse);
 extern cudaError_t SparkDsv4LaunchQueryHeadRms(cudaStream_t stream, void *data_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dim, float epsilon);
@@ -958,20 +961,40 @@ static SparkStatus SparkDsv4ModuleValidateDecodeView(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkDsv4ModuleValidatePrefillEmitShape(
+	const SparkDsv4PrefillBatchView *prefill)
+{
+	uint8_t seen[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
+	uint32_t index,lane,previous,row;
+	if ( prefill->emit_count > prefill->active_sequence_count || ((prefill->emit_count != 0u) != (prefill->emit_row_indices != 0)) || ((prefill->emit_count != 0u) != (prefill->emit_lane_indices != 0)) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	previous = UINT32_MAX;
+	for (index=0u; index<prefill->emit_count; index++)
+	{
+		row = prefill->emit_row_indices[index];
+		lane = prefill->emit_lane_indices[index];
+		if ( row >= prefill->row_count || lane >= prefill->active_sequence_count || seen[lane] != 0u || (index != 0u && row <= previous) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		seen[lane] = 1u;
+		previous = row;
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkDsv4ModuleValidatePrefillView(
 	const SparkModelDriverFrame *frame,
 	const SparkDsv4PrefillBatchView *prefill)
 {
 	if ( prefill == 0 ||
 		prefill->abi_version != SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION ||
-		prefill->descriptor_bytes < (uint32_t)sizeof(*prefill) ||
+		prefill->descriptor_bytes < (uint32_t)sizeof(*prefill) || prefill->reserved0 != 0u ||
 		prefill->row_count != frame->new_token_count ||
 		prefill->active_sequence_count != frame->active_slot_count ||
+		prefill->row_count < prefill->active_sequence_count ||
 		prefill->token_ids == 0 || prefill->row_lane_indices == 0 ||
 		prefill->row_positions == 0 || prefill->row_sequence_ids == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SparkDsv4ValidateRoundMajorPrefillRows(
-		prefill->row_count,prefill->active_sequence_count,prefill->row_lane_indices));
+	return(SparkDsv4ModuleValidatePrefillEmitShape(prefill));
 }
 
 static SparkStatus SparkDsv4ModuleValidateBoundaryBuffers(
@@ -1011,8 +1034,8 @@ static SparkStatus SparkDsv4ModuleValidateTokenBuffers(
 	if ( state->owns_final_head == 0u )
 		return(SPARK_STATUS_OK);
 	output_index = 1u;
-	return(SparkModelDriverValidateBuffer(frame,output_index,1u,
-		SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE,bytes));
+	bytes = (uint64_t)frame->active_slot_count * sizeof(uint32_t);
+	return(SparkModelDriverValidateBuffer(frame,output_index,1u,SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE,bytes));
 }
 
 static SparkStatus SparkDsv4ModuleValidateFrame(
@@ -1063,6 +1086,34 @@ static SparkStatus SparkDsv4ModuleCollectFrameLaneIndices(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkDsv4ModuleClaimedLaneOrdinal(
+	void *context,
+	uint32_t lane_id,
+	uint32_t *ordinal_out)
+{
+	SparkDsv4ModuleState *state;
+	state = (SparkDsv4ModuleState *)context;
+	if ( state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkStageModuleIndexClaimOrdinal(state->lane_states,state->resident_sequence_capacity,lane_id,ordinal_out));
+}
+
+static SparkStatus SparkDsv4ModuleValidateClaimedPrefillEmitRows(
+	const SparkDsv4PrefillBatchView *prefill,
+	const uint32_t *last_rows)
+{
+	uint32_t index,lane;
+	if ( prefill == 0 || last_rows == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (index=0u; index<prefill->emit_count; index++)
+	{
+		lane = prefill->emit_lane_indices[index];
+		if ( lane >= prefill->active_sequence_count || prefill->emit_row_indices[index] != last_rows[lane] )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkDsv4ModuleValidateFrameContinuity(
 	SparkDsv4ModuleState *state,
 	const SparkModelDriverFrame *frame,
@@ -1075,6 +1126,8 @@ static SparkStatus SparkDsv4ModuleValidateFrameContinuity(
 	const uint32_t *row_lanes;
 	const uint64_t *row_positions,*row_sequences;
 	uint8_t touched[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
+	uint32_t occurrences[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t last_rows[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t lane,lane_count,ordinal,row,row_count;
 	uint64_t position,sequence;
 	SparkStatus status;
@@ -1087,6 +1140,12 @@ static SparkStatus SparkDsv4ModuleValidateFrameContinuity(
 		row_lanes = context->prefill_batch->row_lane_indices;
 		row_positions = context->prefill_batch->row_positions;
 		row_sequences = context->prefill_batch->row_sequence_ids;
+		status = SparkRowLayoutValidateRoundMajor(row_count,lane_count,row_lanes,SparkDsv4ModuleClaimedLaneOrdinal,state,occurrences,last_rows);
+		if ( status != SPARK_STATUS_OK )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		status = SparkDsv4ModuleValidateClaimedPrefillEmitRows(context->prefill_batch,last_rows);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
 	}
 	else
 	{
@@ -1115,24 +1174,6 @@ static SparkStatus SparkDsv4ModuleValidateFrameContinuity(
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	return(SPARK_STATUS_OK);
-}
-
-typedef struct SparkDsv4ClaimedContinuityContext
-{
-	SparkDsv4ModuleState *state;
-	const SparkModelDriverFrame *frame;
-	const SparkDsv4ResidentDecodeStageFrameContext *frame_context;
-	const uint32_t *lane_indices;
-	uint64_t *lane_sequence_ids;
-	uint64_t *lane_next_positions;
-	uint8_t *lane_requires_reset;
-} SparkDsv4ClaimedContinuityContext;
-
-static SparkStatus SparkDsv4ModulePrepareClaimedContinuity(void *prepare_context)
-{
-	SparkDsv4ClaimedContinuityContext *context;
-	context = (SparkDsv4ClaimedContinuityContext *)prepare_context;
-	return(SparkDsv4ModuleValidateFrameContinuity(context->state,context->frame,context->frame_context,context->lane_indices,context->lane_sequence_ids,context->lane_next_positions,context->lane_requires_reset));
 }
 
 static cudaError_t SparkDsv4ModuleResetCompressLaneState(
@@ -1371,9 +1412,12 @@ static cudaError_t SparkDsv4ModuleRunOutputGroup(SparkDsv4ModuleSlot *slot, cons
 	return(SparkDsv4LaunchStridedLinear((cudaStream_t)slot->cuda_stream,&view,payload,scale,slot->attn_out_bf16,SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,group * SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION,slot->o_ranks_bf16,(uint64_t)SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT * SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,group * SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,rows));
 }
 
-static uint32_t SparkDsv4ModulePrefillWaveRowCount(const SparkDsv4PrefillBatchView *prefill, uint32_t first_row)
+static uint32_t SparkDsv4ModulePrefillWaveRowCount(
+	SparkDsv4ModuleState *state,
+	const SparkDsv4PrefillBatchView *prefill,
+	uint32_t first_row)
 {
-	return(SparkDsv4RoundMajorPrefillWaveRowCount(prefill->row_count,prefill->active_sequence_count,prefill->row_lane_indices,first_row));
+	return(SparkRowLayoutRoundMajorWaveRowCount(first_row,prefill->row_count,prefill->row_lane_indices,SparkDsv4ModuleClaimedLaneOrdinal,state));
 }
 
 static cudaError_t SparkDsv4ModuleRunAttentionRows(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, void *cache, uint64_t lane_stride, const float *sink_f32, uint32_t first_row, uint32_t rows)
@@ -1400,7 +1444,7 @@ static cudaError_t SparkDsv4ModuleRunCausalAttention(SparkDsv4ModuleState *state
 	error = cudaSuccess;
 	for (row=0u; error==cudaSuccess && row<rows; row+=wave_rows)
 	{
-		wave_rows = SparkDsv4ModulePrefillWaveRowCount(prefill,row);
+		wave_rows = SparkDsv4ModulePrefillWaveRowCount(state,prefill,row);
 		if ( wave_rows == 0u )
 			return(cudaErrorInvalidValue);
 		error = SparkDsv4ModuleRunAttentionRows(state,slot,cache,lane_stride,sink_f32,row,wave_rows);
@@ -1548,19 +1592,18 @@ static SparkStatus SparkDsv4ModuleRunLayers(SparkDsv4ModuleState *state, SparkDs
 	return(status);
 }
 
-static uint32_t SparkDsv4ModulePrefillWaveNeedsHead(const SparkDsv4PrefillBatchView *prefill, uint32_t first_row, uint32_t row_count)
+static cudaError_t SparkDsv4ModuleProjectHead(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const void *streams_bf16, uint32_t *output_token_ids, uint32_t rows)
 {
-	uint32_t end,later,row;
-	end = first_row + row_count;
-	for (row=first_row; row<end; row++)
-	{
-		for (later=end; later<prefill->row_count; later++)
-			if ( prefill->row_lane_indices[later] == prefill->row_lane_indices[row] )
-				break;
-		if ( later == prefill->row_count )
-			return(1u);
-	}
-	return(0u);
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error;
+	error = SparkDsv4LaunchHcMix(stream,streams_bf16,state->hc_head_fn_f32,slot->mixes_f32,rows,SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS,SPARK_DSV4_MODEL_HC_STREAM_COUNT,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkDsv4LaunchHcHeadReduce(stream,streams_bf16,slot->mixes_f32,state->hc_head_scale_value,state->hc_head_base_f32,SPARK_DSV4_MODEL_HC_EPSILON,slot->reduced_bf16,rows,SPARK_DSV4_MODEL_HC_STREAM_COUNT,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
+	if ( error == cudaSuccess )
+		error = SparkDsv4LaunchRmsNorm(stream,slot->reduced_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkDsv4LaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,output_token_ids,rows,SPARK_DSV4_MODEL_VOCAB_COUNT,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
+	return(error);
 }
 
 static SparkStatus SparkDsv4ModuleFinish(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const void *streams_bf16, uint32_t *host_output_tokens, uint32_t rows)
@@ -1571,35 +1614,31 @@ static SparkStatus SparkDsv4ModuleFinish(SparkDsv4ModuleState *state, SparkDsv4M
 	{
 		if ( streams_bf16 == 0 || host_output_tokens == 0 )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
-		error = SparkDsv4LaunchHcMix(stream,streams_bf16,state->hc_head_fn_f32,slot->mixes_f32,rows,SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS,SPARK_DSV4_MODEL_HC_STREAM_COUNT,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
-		if ( error == cudaSuccess )
-			error = SparkDsv4LaunchHcHeadReduce(stream,streams_bf16,slot->mixes_f32,state->hc_head_scale_value,state->hc_head_base_f32,SPARK_DSV4_MODEL_HC_EPSILON,slot->reduced_bf16,rows,SPARK_DSV4_MODEL_HC_STREAM_COUNT,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
-		if ( error == cudaSuccess )
-			error = SparkDsv4LaunchRmsNorm(stream,slot->reduced_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
-		if ( error == cudaSuccess )
-			error = SparkDsv4LaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->output_token_ids,rows,SPARK_DSV4_MODEL_VOCAB_COUNT,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
+		error = SparkDsv4ModuleProjectHead(state,slot,streams_bf16,slot->output_token_ids,rows);
 		if ( error == cudaSuccess )
 			error = cudaMemcpyAsync(host_output_tokens,slot->output_token_ids,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 	}
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"head"));
 }
 
-static SparkStatus SparkDsv4ModuleRunPrefillHeads(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4PrefillBatchView *prefill)
+static SparkStatus SparkDsv4ModuleRunPrefillHead(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4PrefillBatchView *prefill)
 {
-	uint32_t row,wave_rows;
-	uint64_t row_offset;
-	SparkStatus status = SPARK_STATUS_OK;
-	for (row=0u; status==SPARK_STATUS_OK && row<prefill->row_count; row+=wave_rows)
-	{
-		wave_rows = SparkDsv4ModulePrefillWaveRowCount(prefill,row);
-		if ( wave_rows == 0u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( SparkDsv4ModulePrefillWaveNeedsHead(prefill,row,wave_rows) == 0u )
-			continue;
-		row_offset = SparkDsv4PrefillRowElementOffset(row,SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS);
-		status = SparkDsv4ModuleFinish(state,slot,(const uint8_t *)slot->streams_bf16 + row_offset * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,slot->host_output_token_ids + row,wave_rows);
-	}
-	return(status);
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error;
+	error = cudaMemsetAsync(slot->output_token_ids,0,(uint64_t)prefill->active_sequence_count * sizeof(uint32_t),stream);
+	if ( error == cudaSuccess && prefill->emit_count != 0u )
+		error = cudaMemcpyAsync(slot->emitted_u32,prefill->emit_row_indices,(uint64_t)prefill->emit_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess && prefill->emit_count != 0u )
+		error = cudaMemcpyAsync(slot->row_lane_indices,prefill->emit_lane_indices,(uint64_t)prefill->emit_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess && prefill->emit_count != 0u )
+		error = SparkDsv4LaunchGatherHeadRows(stream,slot->streams_bf16,slot->emitted_u32,slot->residual_bf16,prefill->emit_count,SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS);
+	if ( error == cudaSuccess && prefill->emit_count != 0u )
+		error = SparkDsv4ModuleProjectHead(state,slot,slot->residual_bf16,slot->slot_counts,prefill->emit_count);
+	if ( error == cudaSuccess && prefill->emit_count != 0u )
+		error = SparkDsv4LaunchScatterHeadTokens(stream,slot->slot_counts,slot->row_lane_indices,slot->output_token_ids,prefill->emit_count);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->host_output_token_ids,slot->output_token_ids,(uint64_t)prefill->active_sequence_count * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"prefill_head"));
 }
 
 static SparkStatus SparkDsv4ModuleRunFrame(
@@ -1622,7 +1661,7 @@ static SparkStatus SparkDsv4ModuleRunFrame(
 		status = SparkDsv4ModuleRunLayers(state,slot,input_streams_bf16,output_streams_bf16,prefill,rows);
 	}
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u && prefill != 0 )
-		status = SparkDsv4ModuleRunPrefillHeads(state,slot,prefill);
+		status = SparkDsv4ModuleRunPrefillHead(state,slot,prefill);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u && prefill == 0 )
 		status = SparkDsv4ModuleFinish(state,slot,slot->streams_bf16,slot->host_output_token_ids,rows);
 	return(status);
@@ -1634,6 +1673,7 @@ static void SparkDsv4ModulePrepareAsync(
 	uint32_t slot_index,
 	uint32_t lane_count,
 	uint32_t row_count,
+	uint32_t emitted_token_count,
 	const uint32_t *lane_indices,
 	const uint64_t *lane_sequence_ids,
 	const uint64_t *lane_next_positions)
@@ -1648,6 +1688,7 @@ static void SparkDsv4ModulePrepareAsync(
 	async->slot_index = slot_index;
 	async->lane_count = lane_count;
 	async->row_count = row_count;
+	async->emitted_token_count = emitted_token_count;
 	for (index=0u; index<lane_count; index++)
 	{
 		async->lane_indices[index] = lane_indices[index];
@@ -1663,8 +1704,8 @@ static void SparkDsv4ModulePrepareAsync(
 	async->completion.accepted_token_count = frame->new_token_count;
 	async->completion.status = SPARK_STATUS_OK;
 	async->completion.residency = frame->residency;
-	async->completion.host_staging_bytes = (uint64_t)row_count * (sizeof(uint32_t) * (2u + state->owns_embedding + state->owns_final_head) + sizeof(uint64_t) * 3u);
-	async->completion.device_memcpy_bytes = async->completion.host_staging_bytes;
+	async->completion.host_staging_bytes = (uint64_t)row_count * (sizeof(uint32_t) * (2u + state->owns_embedding) + sizeof(uint64_t) * 3u) + (uint64_t)lane_count * sizeof(uint32_t) * state->owns_final_head;
+	async->completion.device_memcpy_bytes = async->completion.host_staging_bytes + ((state->owns_final_head != 0u && (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u) ? (uint64_t)emitted_token_count * 2u * sizeof(uint32_t) : 0u);
 }
 
 static void CUDART_CB SparkDsv4ModuleCompleteAsync(void *context)
@@ -1679,7 +1720,7 @@ static void CUDART_CB SparkDsv4ModuleCompleteAsync(void *context)
 	if ( async->completion.status == SPARK_STATUS_OK )
 	{
 		if ( async->output_token_destination != 0 )
-			memcpy(async->output_token_destination,state->slots[async->slot_index].host_output_token_ids,(uint64_t)async->row_count * sizeof(uint32_t));
+			memcpy(async->output_token_destination,state->slots[async->slot_index].host_output_token_ids,(uint64_t)async->lane_count * sizeof(uint32_t));
 		for (index=0u; index<async->lane_count; index++)
 		{
 			lane = async->lane_indices[index];
@@ -1687,7 +1728,7 @@ static void CUDART_CB SparkDsv4ModuleCompleteAsync(void *context)
 			state->lane_next_positions[lane] = async->lane_next_positions[index];
 		}
 		atomic_fetch_add_explicit(&state->completed_count,1u,memory_order_relaxed);
-		atomic_fetch_add_explicit(&state->tokens_emitted,async->row_count,memory_order_relaxed);
+		atomic_fetch_add_explicit(&state->tokens_emitted,async->emitted_token_count,memory_order_relaxed);
 	}
 	else
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
@@ -1718,29 +1759,28 @@ static SparkStatus SparkDsv4ModuleExecuteFrame(
 	SparkModelDriverFrame *frame,
 	const SparkDsv4ResidentDecodeStageFrameContext *context)
 {
-	SparkDsv4ClaimedContinuityContext continuity;
 	uint32_t lane_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_sequence_ids[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_next_positions[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint8_t lane_requires_reset[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkDsv4ModuleSlot *slot;
-	uint32_t index,lane_count,row_count,slot_index;
+	uint32_t emitted_token_count,index,lane_count,row_count,slot_index;
 	SparkStatus status;
 	lane_count = frame->active_slot_count;
 	row_count = frame->new_token_count;
+	emitted_token_count = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? context->prefill_batch->emit_count : lane_count;
 	status = SparkDsv4ModuleCollectFrameLaneIndices(state,frame,context,lane_indices);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	continuity.state = state;
-	continuity.frame = frame;
-	continuity.frame_context = context;
-	continuity.lane_indices = lane_indices;
-	continuity.lane_sequence_ids = lane_sequence_ids;
-	continuity.lane_next_positions = lane_next_positions;
-	continuity.lane_requires_reset = lane_requires_reset;
-	status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states,state->resident_sequence_capacity,lane_indices,lane_count,SparkDsv4ModulePrepareClaimedContinuity,&continuity);
+	status = SparkStageModuleIndexSetClaim(state->lane_states,state->resident_sequence_capacity,lane_indices,lane_count);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	status = SparkDsv4ModuleValidateFrameContinuity(state,frame,context,lane_indices,lane_sequence_ids,lane_next_positions,lane_requires_reset);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,lane_indices,lane_count);
+		return(status);
+	}
 	slot_index = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	status = SparkStageModuleSlotClaim(state->slot_states,state->pipeline_slot_count,&slot_index);
 	if ( status != SPARK_STATUS_OK )
@@ -1750,7 +1790,7 @@ static SparkStatus SparkDsv4ModuleExecuteFrame(
 	}
 	slot = &state->slots[slot_index];
 	slot->cuda_stream = frame->execution_stream;
-	SparkDsv4ModulePrepareAsync(state,frame,slot_index,lane_count,row_count,lane_indices,lane_sequence_ids,lane_next_positions);
+	SparkDsv4ModulePrepareAsync(state,frame,slot_index,lane_count,row_count,emitted_token_count,lane_indices,lane_sequence_ids,lane_next_positions);
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
 	for (index=0u; status==SPARK_STATUS_OK && index<lane_count; index++)
 		if ( lane_requires_reset[index] != 0u )

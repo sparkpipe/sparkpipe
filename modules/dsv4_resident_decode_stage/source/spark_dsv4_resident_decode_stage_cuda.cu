@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_lm_kernels.cuh"
+#include "sparkpipe/spark_row_compaction.cuh"
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 #include "spark_dsv4_stagepack_format.h"
 #include "inference/kernels/route.cuh"
@@ -1410,6 +1411,16 @@ extern "C" cudaError_t SparkDsv4LaunchHeadArgmax(cudaStream_t stream, const void
 {
 	SparkLmHeadArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,head_weight_bf16,token_ids,output_token_ids,row_count,hidden_dimension,candidate_count);
 	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchGatherHeadRows(cudaStream_t stream, const void *source_bf16, const uint32_t *source_row_indices, void *destination_bf16, uint32_t row_count, uint32_t row_width)
+{
+	return(SparkLaunchGatherBf16Rows(stream,source_bf16,source_row_indices,destination_bf16,row_count,row_width));
+}
+
+extern "C" cudaError_t SparkDsv4LaunchScatterHeadTokens(cudaStream_t stream, const uint32_t *source, const uint32_t *destination_lane_indices, uint32_t *destination, uint32_t row_count)
+{
+	return(SparkLaunchScatterU32Rows(stream,source,destination_lane_indices,destination,row_count));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchQuantSim(cudaStream_t stream, void *data_bf16, uint32_t row_count, uint32_t row_stride, uint32_t width, uint32_t block, uint32_t fp4)

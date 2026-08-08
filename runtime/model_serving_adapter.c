@@ -112,11 +112,12 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 	memset(seen_slots,0,sizeof(seen_slots));
 	for (lane=0u; lane<submission->lane_count; lane++)
 	{
-		if ( submission->lanes[lane].reserved0 != 0u )
+		if ( (submission->lanes[lane].flags & ~SPARK_MODEL_SERVING_LANE_KNOWN_FLAGS) != 0u ||
+			(submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE && submission->lanes[lane].flags != 0u) )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( lane >= submission->active_sequence_count )
 		{
-			if ( submission->lanes[lane].request_id != 0u || submission->lanes[lane].request_generation != 0u || submission->lanes[lane].step_generation != 0u || submission->lanes[lane].sequence_id != 0u || submission->lanes[lane].sequence_position != 0u || submission->lanes[lane].resident_sequence_slot != SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT || submission->lanes[lane].context_token_count != 0u || submission->lanes[lane].input_token_id != 0u )
+			if ( submission->lanes[lane].request_id != 0u || submission->lanes[lane].request_generation != 0u || submission->lanes[lane].step_generation != 0u || submission->lanes[lane].sequence_id != 0u || submission->lanes[lane].sequence_position != 0u || submission->lanes[lane].resident_sequence_slot != SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT || submission->lanes[lane].context_token_count != 0u || submission->lanes[lane].input_token_id != 0u || submission->lanes[lane].flags != 0u )
 				return(SPARK_STATUS_INVALID_ARGUMENT);
 			continue;
 		}
@@ -135,6 +136,85 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 	for (lane=0u; require_live_rows != 0u && lane<submission->active_sequence_count; lane++)
 		if ( seen[lane] == 0u )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkModelServingAdapterFindLastRows(
+	const SparkModelServingSubmission *submission,
+	uint32_t *last_rows)
+{
+	uint8_t seen[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t last_positions[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t lane,row;
+	if ( submission == 0 || last_rows == 0 || submission->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || submission->descriptor_bytes != SPARK_MODEL_SERVING_SUBMISSION_BYTES || (submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE) || submission->active_sequence_count == 0u || submission->active_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || submission->lane_count < submission->active_sequence_count || submission->lane_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || submission->row_count < submission->active_sequence_count || submission->row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || submission->lanes == 0 || submission->row_lane_indices == 0 || submission->row_positions == 0 || submission->row_sequence_ids == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(seen,0,sizeof(seen));
+	for (lane=0u; lane<submission->lane_count; lane++)
+	{
+		if ( (submission->lanes[lane].flags & ~SPARK_MODEL_SERVING_LANE_KNOWN_FLAGS) != 0u ||
+			(lane >= submission->active_sequence_count && submission->lanes[lane].flags != 0u) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( lane >= submission->active_sequence_count )
+			continue;
+		if ( submission->lanes[lane].sequence_id == 0u || submission->lanes[lane].context_token_count == 0u )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		last_rows[lane] = UINT32_MAX;
+	}
+	for (row=0u; row<submission->row_count; row++)
+	{
+		lane = submission->row_lane_indices[row];
+		if ( lane >= submission->active_sequence_count || submission->row_sequence_ids[row] != submission->lanes[lane].sequence_id )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( seen[lane] == 0u && submission->row_positions[row] != submission->lanes[lane].sequence_position )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( seen[lane] != 0u && (last_positions[lane] == UINT64_MAX || submission->row_positions[row] != last_positions[lane] + 1u) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		seen[lane] = 1u;
+		last_positions[lane] = submission->row_positions[row];
+		last_rows[lane] = row;
+	}
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+		if ( seen[lane] == 0u || last_positions[lane] == UINT64_MAX || last_positions[lane] + 1u != submission->lanes[lane].context_token_count )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelServingAdapterSelectEmitRows(
+	const SparkModelServingSubmission *submission,
+	uint32_t *emit_row_indices,
+	uint32_t *emit_lane_indices,
+	uint32_t emit_capacity,
+	uint32_t *emit_count_out)
+{
+	uint32_t last_rows[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t count,lane,row;
+	SparkStatus status;
+	if ( emit_count_out == 0 || ((emit_row_indices == 0) != (emit_lane_indices == 0)) || (emit_row_indices == 0 && emit_capacity != 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*emit_count_out = 0u;
+	status = SparkModelServingAdapterFindLastRows(submission,last_rows);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	count = 0u;
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+		count += (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u ? 1u : 0u;
+	if ( emit_row_indices != 0 && count > emit_capacity )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( emit_row_indices != 0 )
+	{
+		count = 0u;
+		for (row=0u; row<submission->row_count; row++)
+		{
+			lane = submission->row_lane_indices[row];
+			if ( last_rows[lane] == row && (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u )
+			{
+				emit_row_indices[count] = row;
+				emit_lane_indices[count] = lane;
+				count++;
+			}
+		}
+	}
+	*emit_count_out = count;
 	return(SPARK_STATUS_OK);
 }
 

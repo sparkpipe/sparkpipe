@@ -42,7 +42,7 @@ extern "C" {
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 3u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION 1u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION 2u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION 1u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT 16u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP 4096u
@@ -168,10 +168,14 @@ typedef struct SparkDsv4PrefillBatchView
 	uint32_t descriptor_bytes;
 	uint32_t row_count;
 	uint32_t active_sequence_count;
+	uint32_t emit_count;
+	uint32_t reserved0;
 	const uint32_t *token_ids;
 	const uint32_t *row_lane_indices;
 	const uint64_t *row_positions;
 	const uint64_t *row_sequence_ids;
+	const uint32_t *emit_row_indices;
+	const uint32_t *emit_lane_indices;
 } SparkDsv4PrefillBatchView;
 
 #if defined(__CUDACC__)

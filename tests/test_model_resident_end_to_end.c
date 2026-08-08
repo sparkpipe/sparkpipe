@@ -122,11 +122,15 @@ static void TestModelResidentBuildSubmission(
 	lanes[0].step_generation = 1u;
 	lanes[0].sequence_id = 100u;
 	lanes[0].resident_sequence_slot = 7u;
+	lanes[0].context_token_count = 1u;
+	lanes[0].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	lanes[1].request_id = 901u;
 	lanes[1].request_generation = 1u;
 	lanes[1].step_generation = 1u;
 	lanes[1].sequence_id = 101u;
 	lanes[1].resident_sequence_slot = 3u;
+	lanes[1].context_token_count = 1u;
+	lanes[1].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	tokens[0] = 11u;
 	tokens[1] = 12u;
 	row_lanes[0] = 0u;
@@ -178,6 +182,8 @@ static void TestModelResidentBuildPrefill(
 	lanes[0].step_generation = 2u;
 	lanes[0].sequence_id = 200u;
 	lanes[0].resident_sequence_slot = 5u;
+	lanes[0].context_token_count = 4u;
+	lanes[0].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	for (row=0u; row<4u; row++)
 	{
 		tokens[row] = 21u + row;
