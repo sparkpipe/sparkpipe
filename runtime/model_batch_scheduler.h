@@ -6,6 +6,12 @@ uint32_t SparkModelBatchSchedulerPlanGroupSize(
 	uint32_t queued,
 	uint32_t maximum_group_size,
 	uint32_t minimum_efficient_group_size);
+uint32_t SparkModelBatchSchedulerPlanMixedLaneCount(
+	const uint32_t queued_by_kind[4],
+	const uint32_t maximum_by_kind[4],
+	const uint32_t inflight_by_kind[4],
+	uint32_t selected_kind,
+	uint32_t submission_capacity);
 /* Tail bypasses count scheduler scans while inflight work guarantees a wakeup. */
 uint32_t SparkModelBatchSchedulerChooseWorkKind(
 	const uint32_t queued_by_kind[4],

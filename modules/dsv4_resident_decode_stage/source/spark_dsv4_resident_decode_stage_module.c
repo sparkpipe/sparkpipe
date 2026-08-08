@@ -14,6 +14,7 @@
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "spark_dsv4_lane_continuity.h"
 #include "spark_dsv4_stagepack_format.h"
 
 /*
@@ -1100,20 +1101,8 @@ static SparkStatus SparkDsv4ModuleValidateFrameContinuity(
 		position = row_positions[row];
 		if ( ordinal == lane_count || sequence == 0u || position >= state->max_sequence_positions )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( lane_sequence_ids[ordinal] == sequence )
-		{
-			if ( position != lane_next_positions[ordinal] )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-		}
-		else
-		{
-			if ( touched[ordinal] != 0u || position != 0u )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-			lane_requires_reset[ordinal] = 1u;
-			lane_sequence_ids[ordinal] = sequence;
-		}
-		lane_next_positions[ordinal] = position + 1u;
-		touched[ordinal] = 1u;
+		if ( SparkDsv4AdvanceLaneContinuity(sequence,position,&lane_sequence_ids[ordinal],&lane_next_positions[ordinal],&touched[ordinal],&lane_requires_reset[ordinal]) != SPARK_STATUS_OK )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	return(SPARK_STATUS_OK);
 }
