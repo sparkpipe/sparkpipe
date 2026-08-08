@@ -88,10 +88,10 @@ def main():
             offsets[current] = int(match.group(2))
             caches[current] = int(match.group(3))
             continue
-        match = re.match(r"gemm (\d+) layer (\d+) dest (\w+)", line)
+        match = re.match(r"gemm (\d+) layer (\d+) dest (\w+) wgt (\w+)", line)
         if match:
             per_layer[int(match.group(2))]["gemms"].append(
-                (int(match.group(1)), match.group(3)))
+                (int(match.group(1)), match.group(3), match.group(4)))
             continue
         match = re.match(r"(\w+) ([\d.eE+\-]+)$", line)
         if match:
@@ -120,9 +120,26 @@ def main():
     bank = [list(embedding)]
     for l in range(LAYERS):
         gemms = per_layer[l]["gemms"]
-        a = 0.125 * next(i for i, d in gemms if d == "attention_out")
-        hidden_writes = [i for i, d in gemms if d == "hidden"]
-        shared_writes = [i for i, d in gemms if d == "shared_out"]
+        # PACK V2 CONSUMPTION, PER KDA LAYER: the six projection GEMMs that
+        # read the normed input are exactly two wide ones, bound through
+        # K3BindLayer to the two fused pack tensors. Any other projection
+        # destination or weight here is the six-launch block come back.
+        if l % 4 != 3:
+            fused = [(d, w) for _, d, w in gemms if d.startswith("fused_")]
+            if fused != [("fused_qkvb", "qkvb"),
+                         ("fused_decay_gate", "decay_gate")]:
+                print(f"  FAIL layer {l}: fused projection GEMMs are "
+                      f"{fused}, not qkv|beta and decay|gate once each")
+                failures += 1
+            stale = [d for _, d, _ in gemms
+                     if d in ("query", "key", "value", "beta")]
+            if stale:
+                print(f"  FAIL layer {l}: projections write {stale} directly; "
+                      f"the sections come from the split, not a GEMM")
+                failures += 1
+        a = 0.125 * next(i for i, d, _ in gemms if d == "attention_out")
+        hidden_writes = [i for i, d, _ in gemms if d == "hidden"]
+        shared_writes = [i for i, d, _ in gemms if d == "shared_out"]
         m = 0.125 * (hidden_writes[-1] + sum(shared_writes))
         boundary = (l % BLOCK) == 0
         if boundary and l > 0:

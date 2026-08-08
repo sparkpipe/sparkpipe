@@ -670,6 +670,172 @@ static int32_t verify_bf16_atom(void)
 	return((bad == 0 && gap == 0) ? 0 : -1);
 }
 
+// -- Indirect A staging: row map, tail clamp, box equivalence ----------------
+// LmPipelineProduceIndirectA (tile.cuh) stages packed A row p from source row
+// source_row_map[clamp(p)] with one bulk copy per 16-byte swizzle chunk
+// instead of one TMA box. The numerics-identical claim is a BYTE claim: for
+// every live row the staged tile must equal what gather-plus-box stages,
+// because the fragment loads and the accumulate order downstream are shared
+// code. Both stagings are address arithmetic over a tagged source, so a host
+// can check them directly - the poisoned indices past row_limit included,
+// since the clamp is the difference between dead traffic and a wild copy.
+//
+// The pipeline protocol needs no new check here: the indirect produce
+// declares the same a_bytes + b_bytes through the same helper and completes
+// through the same complete_tx count, so the schedule and parity models above
+// cover both paths by construction.
+#define IND_SOURCE_ROWS 40u
+#define IND_ROW_PITCH 128u /* BF16 at kTileK 64: one 128-byte swizzle span */
+#define IND_CHUNK_BYTES 16u
+#define IND_K_TILES 3u
+#define IND_SOURCE_PITCH (IND_ROW_PITCH * IND_K_TILES)
+#define IND_MAX_TILE_M 64u
+#define IND_MAX_PACKED (2u * IND_MAX_TILE_M)
+#define IND_POISON 0xffffffffu
+
+static uint8_t ind_gathered[IND_MAX_TILE_M * IND_ROW_PITCH];
+static uint8_t ind_staged_box[IND_MAX_TILE_M * IND_ROW_PITCH];
+static uint8_t ind_staged_ind[IND_MAX_TILE_M * IND_ROW_PITCH];
+static uint8_t ind_writes[IND_MAX_TILE_M * IND_ROW_PITCH];
+static uint32_t ind_row_index[IND_MAX_PACKED];
+
+static uint8_t ind_tag(uint32_t source_row, uint32_t byte_in_row)
+{
+	return((uint8_t)(source_row * 61u + byte_in_row * 7u + 1u));
+}
+
+// The kernel's formulas, transcribed from tile.cuh and gemm.cuh - checked,
+// not trusted. The consume side (scale_a follows the source row) clamps by
+// the same rule, so one function stands for both.
+static uint32_t indirect_clamped_row(uint32_t row_base, uint32_t row_limit, uint32_t local_row)
+{
+	uint32_t packed = row_base + local_row;
+	return(packed >= row_limit ? row_base : packed);
+}
+
+// One staging of the model. With apply_clamp=0 the clamp is removed, which
+// must be CAUGHT by the poison check - a clamp that nothing detects is not a
+// verified clamp. Returns the number of defects seen.
+static int32_t indirect_stage_model(uint32_t tile_m, uint32_t row_base, uint32_t row_limit, uint32_t k_tile, int32_t apply_clamp)
+{
+	uint32_t r,c,x,packed,source_row,chunks,dst,errors = 0;
+	chunks = IND_ROW_PITCH / IND_CHUNK_BYTES;
+	memset(ind_staged_ind,0,tile_m * IND_ROW_PITCH);
+	memset(ind_writes,0,tile_m * IND_ROW_PITCH);
+	for (r = 0u; r < tile_m; ++r)
+		for (c = 0u; c < chunks; ++c)
+		{
+			packed = row_base + r;
+			if ( apply_clamp != 0 )
+				packed = indirect_clamped_row(row_base,row_limit,r);
+			source_row = ind_row_index[packed];
+			// the poison guard: an index past row_limit is the next group's
+			// business, and past the array's end it is a wild address
+			if ( packed >= row_limit && packed != row_base )
+				errors++;
+			if ( source_row >= IND_SOURCE_ROWS )
+				errors++;
+			source_row %= IND_SOURCE_ROWS;
+			dst = (r * IND_ROW_PITCH)
+				+ (swizzle_chunk(c,r) * IND_CHUNK_BYTES);
+			for (x = 0u; x < IND_CHUNK_BYTES; ++x)
+			{
+				ind_staged_ind[dst + x] =
+					ind_tag(source_row,(k_tile * IND_ROW_PITCH) + (c * IND_CHUNK_BYTES) + x);
+				ind_writes[dst + x]++;
+			}
+		}
+	// every staged byte written exactly once: the chunk decomposition is a
+	// permutation of the tile, or the fragments read unwritten memory
+	for (r = 0u; r < tile_m * IND_ROW_PITCH; ++r)
+		if ( ind_writes[r] != 1u )
+			errors++;
+	return((int32_t)errors);
+}
+
+static int32_t verify_indirect_staging(void)
+{
+	uint32_t tile_m,valid,row_base,row_limit,k_tile,r,x,src_row;
+	uint32_t tile_ms[3] = { 16u, 32u, 64u };
+	int32_t errors,total = 0,unclamped_caught = 0,control_misses = 0;
+	for (tile_m = 0u; tile_m < 3u; ++tile_m)
+		for (valid = 1u; valid <= tile_ms[tile_m]; valid = valid * 2u + 1u)
+			for (row_base = 0u; row_base <= 5u; row_base += 5u)
+				for (k_tile = 0u; k_tile < IND_K_TILES; ++k_tile)
+				{
+					row_limit = row_base + valid;
+					if ( row_limit > IND_MAX_PACKED )
+						continue;
+					// live indices in range, everything at or past row_limit
+					// poisoned: the next group's bytes are not this tile's
+					for (x = 0u; x < IND_MAX_PACKED; ++x)
+						ind_row_index[x] = x < row_limit
+							? ((x * 17u + 5u) % IND_SOURCE_ROWS)
+							: IND_POISON;
+					// REFERENCE: the old dataflow. Gather the live rows into a
+					// packed buffer (what LmGatherRowsKernel materialises),
+					// then stage it the way the TMA box does - one swizzled
+					// 128-byte span per row, chunk c landing at c ^ (r % 8).
+					memset(ind_gathered,0,sizeof(ind_gathered));
+					memset(ind_staged_box,0,sizeof(ind_staged_box));
+					for (r = 0u; r < valid; ++r)
+						for (x = 0u; x < IND_ROW_PITCH; ++x)
+						{
+							src_row = ind_row_index[row_base + r];
+							ind_gathered[(r * IND_ROW_PITCH) + x] =
+								ind_tag(src_row,(k_tile * IND_ROW_PITCH) + x);
+						}
+					for (r = 0u; r < valid; ++r)
+						for (x = 0u; x < IND_ROW_PITCH; ++x)
+							ind_staged_box[(r * IND_ROW_PITCH)
+								+ (swizzle_chunk(x / IND_CHUNK_BYTES,r) * IND_CHUNK_BYTES)
+								+ (x % IND_CHUNK_BYTES)] =
+								ind_gathered[(r * IND_ROW_PITCH) + x];
+					// KERNEL MODEL: chunked staging through the index.
+					errors = indirect_stage_model(tile_ms[tile_m],row_base,row_limit,k_tile,1);
+					if ( errors != 0 )
+						printf("  tile_m=%u valid=%u base=%u k=%u: %d staging defects\n",
+							tile_ms[tile_m],valid,row_base,k_tile,errors);
+					total += errors;
+					// live rows: byte-identical to gather-plus-box, which is
+					// the numerics-identical property stated as bytes
+					for (r = 0u; r < valid; ++r)
+						for (x = 0u; x < IND_ROW_PITCH; ++x)
+							if ( ind_staged_ind[(r * IND_ROW_PITCH) + x]
+								!= ind_staged_box[(r * IND_ROW_PITCH) + x] )
+								total++;
+					// tail rows: the clamp duplicated row_base's source row.
+					// Dead traffic - the stores are dropped - but the clamp
+					// itself is checked, not assumed. The staged row is
+					// swizzled, so the expected tag lands at the swizzled
+					// position, same as the box reference.
+					for (r = valid; r < tile_ms[tile_m]; ++r)
+						for (x = 0u; x < IND_ROW_PITCH; ++x)
+							if ( ind_staged_ind[(r * IND_ROW_PITCH)
+								+ (swizzle_chunk(x / IND_CHUNK_BYTES,r) * IND_CHUNK_BYTES)
+								+ (x % IND_CHUNK_BYTES)]
+								!= ind_tag(ind_row_index[row_base],(k_tile * IND_ROW_PITCH) + x) )
+								total++;
+					// removing the clamp MUST trip the poison guard, or the
+					// guard verifies nothing
+					if ( valid < tile_ms[tile_m] )
+					{
+						if ( indirect_stage_model(tile_ms[tile_m],row_base,row_limit,k_tile,0) != 0 )
+							unclamped_caught++;
+						else
+							control_misses++;
+					}
+				}
+	printf("  indirect staging vs gather+box: tile_m {16,32,64} x ragged tails x k tiles, defects=%d\n",total);
+	printf("  unclamped-tail poison control: %d ragged configurations caught\n",unclamped_caught);
+	if ( unclamped_caught == 0 || control_misses != 0 )
+	{
+		printf("  POISON CONTROL FAILED (%d misses) - the clamp is verified by nothing\n",control_misses);
+		total++;
+	}
+	return(total);
+}
+
 int32_t main(void)
 {
 	int32_t failures = 0;
@@ -696,6 +862,8 @@ int32_t main(void)
 	failures += verify_bf16_atom() != 0;
 	failures += verify_pipeline_matrix() != 0;
 	failures += verify_pipeline_persistent_matrix() != 0;
+	printf("\nindirect A staging (route row-indirection consumer contract)\n");
+	failures += verify_indirect_staging() != 0;
 	printf("\n%s (%d failing checks)\n",failures == 0 ? "PASS" : "FAIL",failures);
 	return(failures == 0 ? 0 : 1);
 }

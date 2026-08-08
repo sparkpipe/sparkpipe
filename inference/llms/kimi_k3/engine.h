@@ -15,8 +15,10 @@
 //
 // CONTINUOUS BATCHING IS THE POLICY, NOT A MODE. Every step carries every
 // decoding sequence (one row each) and then spends whatever row budget
-// remains on the oldest prefilling sequence's next chunk. A decode-only step
-// and a prefill-only step are both just this rule with one side empty.
+// remains on the oldest prefilling sequence's next chunk - except every
+// K3_ENGINE_PREFILL_PERIOD-th pass, which plans the oldest prefiller first
+// so full decode lanes cannot starve it forever (K3-010). A decode-only
+// step and a prefill-only step are both just this rule with one side empty.
 //
 // Storage is the caller's, sized by the two capacity numbers in K3EngineInit,
 // because a serving process knows its memory and a header does not. No malloc
@@ -36,12 +38,20 @@
 // What a sequence is doing. VERIFY is DSpark's lane: a drafted block planned
 // as a run the layer executes with commit off, so the state never learns what
 // the sampler later rejects. The planner treats it as prefill-shaped rows
-// whose tokens came from the drafter rather than the user.
+// whose tokens came from the drafter rather than the user. There is no DONE:
+// a finished request's record returns to FREE in the same commit that frees
+// its slot (K3-007) - the tokens already sit in the caller's output, and a
+// record held past completion leaked capacity until no request could submit.
 #define K3_SEQ_FREE      0u
 #define K3_SEQ_QUEUED    1u
 #define K3_SEQ_PREFILL   2u
 #define K3_SEQ_DECODE    3u
-#define K3_SEQ_DONE      4u
+
+// Prefill fairness period (K3-010): decode rows are planned first, so a
+// deployment with slot_capacity >= row_budget would crowd the oldest
+// prefiller out of every pass forever. Every Nth planning pass the oldest
+// prefiller cuts ahead and the decode lanes take what budget remains.
+#define K3_ENGINE_PREFILL_PERIOD 4u
 
 struct K3EngineRequest
 {
@@ -83,6 +93,11 @@ struct K3EngineStep
 	// is per slice call: mixing a committed decode with an uncommitted draft
 	// in one call would either advance a draft or drop a token.
 	uint32_t verify;
+	// Generation of the plan that produced this step (K3-008): the commit
+	// path refuses any step that is not the latest uncommitted plan, so a
+	// stale or duplicated commit fails closed instead of indexing through a
+	// slot that may have changed hands since the plan was made.
+	uint32_t epoch;
 };
 
 #define K3_ENGINE_NO_LOGITS 0xffffffffu
@@ -95,6 +110,11 @@ struct K3Engine
 	uint32_t row_budget;
 	uint64_t next_id;
 	uint32_t *slot_request;
+	// Plan generations: plan_epoch stamps every planned step, committed_epoch
+	// remembers the newest one already committed. A commit whose epoch is not
+	// the latest plan, or is one already committed, is stale or duplicated.
+	uint32_t plan_epoch;
+	uint32_t committed_epoch;
 };
 
 static int32_t K3EngineInit(struct K3Engine *engine, struct K3EngineRequest *request_storage, uint32_t request_capacity, uint32_t *slot_storage, uint32_t slot_capacity, uint32_t row_budget)
@@ -183,7 +203,10 @@ static void K3EngineAdmit(struct K3Engine *engine)
 		if ( oldest == 0 )
 			return;
 		oldest->slot = slot;
-		oldest->state = K3_SEQ_PREFILL;
+		// A one-token prompt has nothing to prefill (K3-006): its single
+		// token is the decode row that predicts the first new token, so it
+		// starts in DECODE rather than opening with a zero-row chunk.
+		oldest->state = oldest->prompt_length == 1u ? K3_SEQ_DECODE : K3_SEQ_PREFILL;
 		engine->slot_request[slot] = (uint32_t)(oldest - engine->requests);
 	}
 }
@@ -194,7 +217,7 @@ static void K3EngineAdmit(struct K3Engine *engine)
 // reaches the prompt's end asks for logits.
 static uint32_t K3EnginePlanSequence(const struct K3EngineRequest *request, struct K3EngineStep *step, uint32_t budget)
 {
-	uint32_t sequence = step->sequences,base = step->rows,count,index,position;
+	uint32_t sequence = step->sequences,base = step->rows,count,index,position,context;
 	if ( request->state == K3_SEQ_DECODE )
 	{
 		count = 1u;
@@ -204,6 +227,7 @@ static uint32_t K3EnginePlanSequence(const struct K3EngineRequest *request, stru
 			: request->output[request->generated - 1u];
 		step->position[base] = position;
 		step->logits_row[sequence] = base;
+		context = position + 1u;
 	}
 	else
 	{
@@ -219,26 +243,31 @@ static uint32_t K3EnginePlanSequence(const struct K3EngineRequest *request, stru
 			step->position[base + index] = request->prefilled + index;
 		}
 		step->logits_row[sequence] = K3_ENGINE_NO_LOGITS;
-		position = request->prefilled + count - 1u;
+		// The stored context is the rows landed plus this chunk, counted
+		// directly: deriving it as last position + 1 underflowed to
+		// UINT32_MAX whenever the chunk was empty (K3-006).
+		context = request->prefilled + count;
 	}
 	for (index = 0u; index < count; ++index)
 		step->sequence_of_row[base + index] = request->slot;
 	step->sequence_row_begin[sequence + 1u] = base + count;
 	step->slot[sequence] = request->slot;
 	step->request_id[sequence] = request->id;
-	step->context_length[sequence] = position + 1u;
+	step->context_length[sequence] = context;
 	step->rows = base + count;
 	step->sequences = sequence + 1u;
 	return(count);
 }
 
 // Plan one step: admit, then every decoding sequence, then the oldest
-// prefilling sequence's next chunk into whatever budget remains. Returns the
+// prefilling sequence's next chunk into whatever budget remains - except
+// every K3_ENGINE_PREFILL_PERIOD-th pass, where the oldest prefiller is
+// planned first so full decode lanes cannot starve it (K3-010). Returns the
 // row count; zero means nothing to do.
 static int32_t K3EnginePlanStep(struct K3Engine *engine, struct K3EngineStep *step)
 {
 	struct K3EngineRequest *request,*oldest;
-	uint32_t index;
+	uint32_t index,prefill_first;
 	if ( engine == 0 || step == 0 )
 		return(K3_ENGINE_ERR_NULL);
 	K3EngineAdmit(engine);
@@ -246,6 +275,7 @@ static int32_t K3EnginePlanStep(struct K3Engine *engine, struct K3EngineStep *st
 	step->sequences = 0u;
 	step->verify = 0u;
 	step->sequence_row_begin[0] = 0u;
+	step->epoch = ++engine->plan_epoch;
 	// Verify first, alone: the run is the last committed token plus the
 	// drafts at ascending positions, and the whole step runs with commit off.
 	for (index = 0u; index < engine->request_capacity; ++index)
@@ -279,12 +309,6 @@ static int32_t K3EnginePlanStep(struct K3Engine *engine, struct K3EngineStep *st
 	}
 	if ( step->verify != 0u )
 		return((int32_t)step->rows);
-	for (index = 0u; index < engine->request_capacity; ++index)
-	{
-		request = &engine->requests[index];
-		if ( request->state == K3_SEQ_DECODE && step->rows < engine->row_budget )
-			K3EnginePlanSequence(request,step,1u);
-	}
 	oldest = 0;
 	for (index = 0u; index < engine->request_capacity; ++index)
 	{
@@ -293,9 +317,55 @@ static int32_t K3EnginePlanStep(struct K3Engine *engine, struct K3EngineStep *st
 			&& (oldest == 0 || request->id < oldest->id) )
 			oldest = request;
 	}
-	if ( oldest != 0 && step->rows < engine->row_budget )
+	// K3-010: with decode rows planned ahead of prefill, enough decoding
+	// sequences would consume the whole budget every pass and the oldest
+	// prefiller would never advance. Every Nth pass it cuts ahead instead.
+	prefill_first = oldest != 0
+		&& engine->plan_epoch % K3_ENGINE_PREFILL_PERIOD == 1u;
+	if ( prefill_first != 0u )
+		K3EnginePlanSequence(oldest,step,engine->row_budget);
+	for (index = 0u; index < engine->request_capacity; ++index)
+	{
+		request = &engine->requests[index];
+		if ( request->state == K3_SEQ_DECODE && step->rows < engine->row_budget )
+			K3EnginePlanSequence(request,step,1u);
+	}
+	if ( oldest != 0 && prefill_first == 0u && step->rows < engine->row_budget )
 		K3EnginePlanSequence(oldest,step,engine->row_budget - step->rows);
 	return((int32_t)step->rows);
+}
+
+// Resolve the request a planned sequence commits against, checking every
+// link in the slot-to-request chain (K3-008): the step must be the latest
+// uncommitted plan, the slot must be in bounds and occupied, and the
+// occupant must be the very request the plan named - a record recycled since
+// the plan carries a different id, so the generation check is the identity
+// check. Any doubt fails closed with no request resolved.
+static struct K3EngineRequest *K3EngineCommitRequest(struct K3Engine *engine, const struct K3EngineStep *step, uint32_t sequence)
+{
+	struct K3EngineRequest *request;
+	uint32_t slot;
+	if ( step->epoch != engine->plan_epoch
+		|| step->epoch == engine->committed_epoch )
+		return(0);
+	slot = step->slot[sequence];
+	if ( slot >= engine->slot_capacity
+		|| engine->slot_request[slot] == 0xffffffffu )
+		return(0);
+	request = &engine->requests[engine->slot_request[slot]];
+	if ( request->id != step->request_id[sequence] || request->slot != slot )
+		return(0);
+	return(request);
+}
+
+// A finished request frees its slot AND its record in the same commit
+// (K3-007): the tokens already sit in the caller's output array, so nothing
+// is lost, and a record held past completion leaked capacity until
+// sequential requests exhausted it.
+static void K3EngineFinishRequest(struct K3Engine *engine, struct K3EngineRequest *request)
+{
+	request->state = K3_SEQ_FREE;
+	engine->slot_request[request->slot] = 0xffffffffu;
 }
 
 // Commit the step: sampled[sequence] must hold a token for every sequence
@@ -310,7 +380,9 @@ static int32_t K3EngineCommitStep(struct K3Engine *engine, const struct K3Engine
 		return(K3_ENGINE_ERR_NULL);
 	for (sequence = 0u; sequence < step->sequences; ++sequence)
 	{
-		request = &engine->requests[engine->slot_request[step->slot[sequence]]];
+		request = K3EngineCommitRequest(engine,step,sequence);
+		if ( request == 0 )
+			return(K3_ENGINE_ERR_STATE);
 		if ( request->state == K3_SEQ_PREFILL )
 		{
 			request->prefilled += step->sequence_row_begin[sequence + 1u]
@@ -326,11 +398,9 @@ static int32_t K3EngineCommitStep(struct K3Engine *engine, const struct K3Engine
 		token = sampled[sequence];
 		request->output[request->generated++] = token;
 		if ( token == eos_token || request->generated >= request->max_new )
-		{
-			request->state = K3_SEQ_DONE;
-			engine->slot_request[request->slot] = 0xffffffffu;
-		}
+			K3EngineFinishRequest(engine,request);
 	}
+	engine->committed_epoch = step->epoch;
 	return(K3_ENGINE_OK);
 }
 
@@ -341,25 +411,41 @@ static int32_t K3EngineCommitStep(struct K3Engine *engine, const struct K3Engine
 static int32_t K3EngineCommitVerify(struct K3Engine *engine, const struct K3EngineStep *step, const uint32_t *accepted, const uint32_t *bonus, uint32_t eos_token)
 {
 	struct K3EngineRequest *request;
-	uint32_t sequence,r,token;
+	uint32_t sequence,r,token,ended;
 	if ( engine == 0 || step == 0 || accepted == 0 || bonus == 0 || step->verify == 0u )
 		return(K3_ENGINE_ERR_NULL);
 	for (sequence = 0u; sequence < step->sequences; ++sequence)
 	{
-		request = &engine->requests[engine->slot_request[step->slot[sequence]]];
+		request = K3EngineCommitRequest(engine,step,sequence);
+		if ( request == 0 )
+			return(K3_ENGINE_ERR_STATE);
 		if ( request->state != K3_SEQ_DECODE || accepted[sequence] > request->draft_count )
 			return(K3_ENGINE_ERR_STATE);
+		// An accepted draft can itself be EOS (K3-009): emit tokens up to
+		// and including it, then stop - the drafts past it and the bonus
+		// belong to a sequence that is already over.
+		ended = 0u;
 		for (r = 0u; r < accepted[sequence] && request->generated < request->max_new; ++r)
-			request->output[request->generated++] = request->draft[r];
-		token = bonus[sequence];
-		if ( request->generated < request->max_new )
-			request->output[request->generated++] = token;
-		request->draft_count = 0u;
-		if ( token == eos_token || request->generated >= request->max_new )
 		{
-			request->state = K3_SEQ_DONE;
-			engine->slot_request[request->slot] = 0xffffffffu;
+			token = request->draft[r];
+			request->output[request->generated++] = token;
+			if ( token == eos_token )
+			{
+				ended = 1u;
+				break;
+			}
 		}
+		if ( ended == 0u && request->generated < request->max_new )
+		{
+			token = bonus[sequence];
+			request->output[request->generated++] = token;
+			if ( token == eos_token )
+				ended = 1u;
+		}
+		request->draft_count = 0u;
+		if ( ended != 0u || request->generated >= request->max_new )
+			K3EngineFinishRequest(engine,request);
 	}
+	engine->committed_epoch = step->epoch;
 	return(K3_ENGINE_OK);
 }

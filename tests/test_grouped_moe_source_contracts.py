@@ -53,6 +53,16 @@ def main() -> None:
     k3 = read("inference/llms/kimi_k3/layer.cuh")
     require(k3, "b->expert_w1_weight,packed_rows,rows,", "K3 W1 token count")
     require(k3, "b->expert_w2_weight,packed_rows,rows,", "K3 W2 token count")
+    # K3 consumes the indirect form (route.cuh's contract), so the gather and
+    # its packed copy are deleted. The deletion comment narrates what stood
+    # here, so the rejects read the code with comments stripped.
+    k3_code = "\n".join(line.split("//")[0] for line in k3.split("\n"))
+    require(k3, "gemm.source_row_map = b->route_source_token;",
+            "K3 W1 route-map A rows")
+    require(k3, "LmGemmWeightOnlyIndirectLaunch<",
+            "K3 indirect routed W1")
+    reject(k3_code, "LmGatherRowsKernel", "K3 gathered routed activation")
+    reject(k3_code, "route_gather_bf16", "K3 packed activation copy")
 
     dsv4 = read(
         "modules/dsv4_resident_decode_stage/source/"
@@ -91,6 +101,32 @@ def main() -> None:
     ):
         if (ROOT / relative).exists():
             raise SystemExit(f"forbidden legacy GLM expert queue: {relative}")
+
+    # -- the kernel half of the gather deletion (route.cuh's contract) --------
+    # These pins hold what the drivers wire against: the row-map words, the
+    # ragged-tail clamp, source-following scales, and byte-identical barrier
+    # accounting between the TMA and the indirect staging paths.
+    gemm = read("inference/kernels/gemm.cuh")
+    tile = read("inference/kernels/tile.cuh")
+    tma = read("inference/kernels/tma.cuh")
+    require(gemm, "const uint32_t *source_row_map;", "indirect-A row map word")
+    require(gemm, "LmRouteSourceRow(source_row_map",
+            "scale follows the source row")
+    require(tile, "LmPipelineProduceIndirectA(", "indirect A staging path")
+    require(tile,
+            "row_base + local_row < row_limit ? row_base + local_row : row_base",
+            "ragged tail clamp")
+    require(tile, "LmRouteSourceRow(source_row_map,packed_row)",
+            "staged row through the route map")
+    require(tma, "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes",
+            "tx-accounted bulk chunk copy")
+    # both staging paths declare the same bytes through the one helper, or the
+    # barrier's expected count can drift between them and deadlock one path
+    produce = tile[tile.index("static __device__ __forceinline__ void LmPipelineProduce("):]
+    indirect = tile[tile.index("LmPipelineProduceIndirectA("):]
+    for name, body in (("dense", produce), ("indirect", indirect)):
+        require(body[:body.index("\n}\n")], "LmPipelineProduceWeight(",
+                f"{name} path shares the expect+weight helper")
 
     print("PASS grouped-MoE source contracts")
 

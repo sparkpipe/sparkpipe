@@ -322,11 +322,14 @@
 //
 // So this is an ADMISSION-TIME option (README.md:81-84 prices the pool both
 // ways), never the default, and it is gated three ways: the consumer flag is
-// K3LayerBuffers::kda_state_bf16, the layer FAILS CLOSED on it while
-// LmDeltaRuleKernel hardwires four-byte addressing (its head offset is
-// KEY_DIM * VALUE_DIM * 4u, its shared tile and pool traffic are float), and
+// K3LayerBuffers::kda_state_bf16, the layer FAILS CLOSED on it while no
+// launch site selects the uint16_t State instantiation (the default
+// instantiation's shared tile and pool traffic are float), and
 // tests/test_k3_driver_contracts.py refuses a tree where the flag can launch.
-// The kernel-side contract that lifts the gate is written at the flag.
+// The kernel variant exists - linear_attn.cuh's State template parameter,
+// host-gated by tests/test_kda_bf16_state.py - so what lifts the gate now is
+// the launch-site selection plus on-device numerics receipts, written at the
+// flag.
 #define K3_KDA_STATE_ELEMENT_BYTES_BF16 2u
 #define K3_KDA_STATE_SLOT_BYTES_BF16 \
 	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM \

@@ -65,13 +65,17 @@ def main():
     # the expert GEMMs must be WEIGHT-ONLY launches of the Format: BF16
     # activations against the quantised stream, E8M0 decoded in the load. A
     # symmetric LmGemmLaunch<Format> would quantise the activations again, so
-    # its count outside the helper must be zero, not two.
+    # its count outside the helper must be zero, not two. w1 is the INDIRECT
+    # weight-only launch - A rows staged through route_source_token, the
+    # gather deleted (roadmap D9) - and w2 the packed one, one of each.
     helper = re.search(r"static int32_t K3Project\b.*?\n\}", text, re.S)
     outside = text.replace(helper.group(0), "") if helper else text
     expert_gemms = len(re.findall(r"LmGemmWeightOnlyLaunch<\s*Format", outside))
-    if expert_gemms != 2:
-        print(f"  FAIL {expert_gemms} weight-only expert GEMMs take Format, "
-              f"expected 2")
+    indirect_gemms = len(re.findall(r"LmGemmWeightOnlyIndirectLaunch<\s*Format", outside))
+    if expert_gemms != 1 or indirect_gemms != 1:
+        print(f"  FAIL {expert_gemms} packed and {indirect_gemms} indirect "
+              f"weight-only expert GEMMs take Format, expected one of each "
+              f"(w1 indirect through the route map, w2 packed)")
         failures += 1
     symmetric = len(re.findall(r"LmGemmLaunch<\s*Format", outside))
     if symmetric != 0:
@@ -82,11 +86,14 @@ def main():
         print("  FAIL an activation quantiser still exists in the layer; the "
               "recipe has no place for one")
         failures += 1
-    # and the route expansion must be the BF16 gather, or the first expert GEMM
-    # reads rows that were never expanded
-    if "LmGatherRowsKernel" not in text:
-        print("  FAIL the route expansion gather is missing; the quantiser "
-              "used to do it implicitly")
+    # and the route expansion gather must be GONE: the first expert GEMM
+    # stages its A rows through route_source_token directly, so the packed
+    # copy is a double-touch the indirect launch retired. The deletion
+    # comment narrates the old dataflow, so this reads the code only.
+    code = "\n".join(line.split("//")[0] for line in text.split("\n"))
+    if "LmGatherRowsKernel" in code:
+        print("  FAIL the route expansion gather survived; the indirect-A "
+              "w1 launch reads the un-gathered latent through the route map")
         failures += 1
     # and Format must be the checkpoint's, not something else 4-bit
     bind = BIND.read_text()

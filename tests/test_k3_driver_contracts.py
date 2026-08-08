@@ -21,9 +21,20 @@ the kind that compiles while it rots:
      and bind sources must never name a synchronising or copying CUDA call
      outside a comment.
 
-The gather/indirect-A contract (roadmap D9) is a comment plus one structural
-fact: the packed-row-to-source-token map the indirect GEMM would consume is
-the same one the gather consumes today, so the gate holds them paired.
+The gather/indirect-A contract (roadmap D9) is LANDED: the w1 expert GEMM
+reads A rows through route_source_token, so the gather launch, its buffer and
+its recipe-gate check are gone together and the gate now holds the deletion.
+
+  3. THE PACK V2 BIND IS THE ONLY BIND. The pack emits fused
+     kda_qkv_beta_weight and kda_decay_gate_down_weight per KDA layer and
+     interleaved expert weight+scale streams; the V1 per-projection tensors
+     do not exist. So the stale fields must be gone from both structs, the
+     bind must propagate the two fused tensors and the interleave flag, the
+     KDA projection block must be exactly two wide GEMMs on the normed input
+     (six became two: the launch count drops by four per KDA layer) plus the
+     one section split, and the MoE must refuse the interleaved stream until
+     the grouped GEMM learns the 17-row cell - LmScaleTensor cannot address
+     scales co-tiled with payload, so no scale plane call may survive.
 """
 import re
 import sys
@@ -47,6 +58,22 @@ def defines(path):
         except Exception:
             pass
     return values
+
+
+def function_body(text, name):
+    """One top-level function body, braces balanced."""
+    match = re.search(r"static int32_t " + name + r"\(", text)
+    if match is None:
+        return ""
+    index = text.find("{", match.end())
+    depth, cursor = 1, index + 1
+    while cursor < len(text) and depth:
+        if text[cursor] == "{":
+            depth += 1
+        elif text[cursor] == "}":
+            depth -= 1
+        cursor += 1
+    return text[index:cursor]
 
 
 def main():
@@ -117,25 +144,83 @@ def main():
                       f"(roadmap D10)")
                 failures += 1
 
-    # -- the indirect-A contract: the gather and its removal map stay paired --
-    gather = re.search(r"LmGatherRowsKernel<K3_LAYER_THREADS>.*?"
-                       r"route_source_token.*?"
-                       r"route_gather_bf16", layer, re.S)
-    if gather is None:
-        print("  FAIL the gather no longer reads route_source_token into "
-              "route_gather_bf16; that map is also the consumer-side "
-              "contract for the indirect-A grouped GEMM (roadmap D9)")
+    # -- the indirect-A contract, LANDED: the gather is gone, the map feeds ---
+    #    the w1 GEMM directly -------------------------------------------------
+    if re.search(r"LmGatherRowsKernel|route_gather_bf16",
+                 re.sub(r"//[^\n]*", "", layer)):
+        print("  FAIL the route gather survived; the grouped GEMM stages A "
+              "rows through route_source_token (route.cuh's contract), so the "
+              "packed copy is a double-touch the kernel made dead (D9)")
         failures += 1
-    if "activation_row_index" not in layer:
-        print("  FAIL the indirect-A contract comment is gone; the double-"
-              "touch fix is specified there for the GEMM's owner")
+    moe = function_body(re.sub(r"//[^\n]*", "", layer), "K3LayerLatentMoe")
+    if "gemm.source_row_map = b->route_source_token;" not in moe:
+        print("  FAIL the w1 launch does not read A rows through "
+              "route_source_token; the map the route build writes is exactly "
+              "the indirect-A consumer contract")
+        failures += 1
+    if "LmGemmWeightOnlyIndirectLaunch<" not in moe:
+        print("  FAIL the w1 expert GEMM is not the indirect launch; without "
+              "INDIRECT_A the source_row_map word is refused by the launcher")
+        failures += 1
+
+    # -- pack V2: the V1 projection fields are gone, the fused ones bind ------
+    for stale in ("kda_q_weight", "kda_q_scale", "kda_k_weight", "kda_k_scale",
+                  "kda_v_weight", "kda_v_scale", "kda_beta_weight",
+                  "kda_decay_down_weight", "kda_gate_down_weight",
+                  "expert_w1_scale", "expert_w2_scale"):
+        for name, text in (("layer.cuh", layer), ("slice.cuh", slice_)):
+            if re.search(r"\b" + stale + r"\b", text):
+                print(f"  FAIL {name} still names {stale}; pack V2 does not "
+                      f"emit it - the fused tensors are the only bind")
+                failures += 1
+    for field in ("kda_qkv_beta_weight", "kda_decay_gate_down_weight"):
+        if f"const void *{field};" not in layer:
+            print(f"  FAIL K3LayerBuffers lost {field}")
+            failures += 1
+        if f"buffers->{field} = weights->{field};" not in slice_:
+            print(f"  FAIL the bind no longer propagates {field}; a layer "
+                  f"would project through a stale pointer")
+            failures += 1
+    if "buffers->expert_interleave = weights->expert_interleave;" not in slice_:
+        print("  FAIL the bind no longer propagates the interleave flag; an "
+              "interleaved pack would launch instead of refusing")
+        failures += 1
+
+    # -- the KDA projection block: two wide GEMMs plus one section split ------
+    kda = function_body(re.sub(r"//[^\n]*", "", layer), "K3LayerKda")
+    wide = len(re.findall(r"K3Project<\w+>\(b,b->normed_bf16", kda))
+    if wide != 2:
+        print(f"  FAIL {wide} projection GEMMs read normed_bf16 in K3LayerKda; "
+              f"pack V2 fuses the six into exactly two wide ones, so the "
+              f"launch count drops by four per KDA layer")
+        failures += 1
+    if kda.count("LM_LAUNCH((K3SplitFusedProjectionsKernel<K3_LAYER_THREADS>)") != 1:
+        print("  FAIL the fused projections lost their section split; every "
+              "consumer reads dense rows, so the wide GEMM needs the split")
+        failures += 1
+    for scratch in ("fused_qkvb_bf16", "fused_decay_gate_bf16",
+                    "gate_latent_bf16"):
+        if f"uint16_t *{scratch};" not in layer:
+            print(f"  FAIL K3LayerBuffers lost the {scratch} wide scratch")
+            failures += 1
+
+    # -- the interleaved expert stream fails closed ---------------------------
+    if "expert_interleave != 0u" not in moe:
+        print("  FAIL K3LayerLatentMoe does not refuse the interleave flag; "
+              "the grouped GEMM cannot read the 17-row cell, so launching "
+              "would read scale bytes as payload")
+        failures += 1
+    if "LmScaleTensorBlockUe8m0" in re.sub(r"//[^\n]*", "", layer):
+        print("  FAIL a far-plane scale descriptor survives; pack V2 co-tiles "
+              "the scales with the payload and no LmScaleTensor can address "
+              "them - the descriptor is None until the kernels wave lands")
         failures += 1
 
     if failures:
         print(f"\nFAIL ({failures})")
         return 1
     print("\nthe bf16 state option is wired, refused, and off; the layer "
-          "path captures; the gather keeps its removal contract")
+          "path captures; the gather is deleted and the map feeds the GEMM")
     return 0
 
 

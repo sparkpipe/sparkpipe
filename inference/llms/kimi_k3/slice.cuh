@@ -36,21 +36,23 @@ struct K3LayerWeights
 	const void *attn_norm_weight;
 	const void *mlp_norm_weight;
 
-	const void *kda_q_weight;
-	const void *kda_q_scale;
-	const void *kda_k_weight;
-	const void *kda_k_scale;
-	const void *kda_v_weight;
-	const void *kda_v_scale;
+	// KDA, PACK V2 (docs/K3_PACK_FORMAT_V2.md). The six projections that read
+	// the normed input are TWO tensors: kda_qkv_beta_weight fuses q|k|v|beta
+	// head-major (per-head widths 128/128/128/1), kda_decay_gate_down_weight
+	// fuses decay_down|gate_down replicated across TP. The V1 per-projection
+	// tensors no longer exist in the pack, so they no longer exist here. The
+	// layer derives the section offsets from K3_KDA_*_FUSED_ROWS in
+	// generated_config.h - the constants the packer validates against - and
+	// asserts the tiling at compile time; bind stays pointer arithmetic and
+	// no manifest JSON is parsed anywhere on this path.
+	const void *kda_qkv_beta_weight;
+	const void *kda_decay_gate_down_weight;
 	const float *kda_q_conv_weight;
 	const float *kda_k_conv_weight;
 	const float *kda_v_conv_weight;
-	const void *kda_decay_down_weight;
 	const void *kda_decay_up_weight;
 	const float *kda_decay_bias;
 	const float *kda_head_log_scale;
-	const void *kda_beta_weight;
-	const void *kda_gate_down_weight;
 	const void *kda_gate_up_weight;
 	const float *kda_out_norm_weight;
 	const void *kda_out_weight;
@@ -78,9 +80,15 @@ struct K3LayerWeights
 	const void *routed_up_scale;
 	const void *routed_norm_weight;
 	const void *expert_w1_weight;
-	const void *expert_w1_scale;
 	const void *expert_w2_weight;
-	const void *expert_w2_scale;
+	// PACK V2 INTERLEAVES THE EXPERT SCALES INTO THE WEIGHT STREAM
+	// (mxfp4_ws_interleaved_v1), so the scale fields are gone and the two
+	// weight pointers address the 17-row-cell grid. A V2 pack ALWAYS
+	// interleaves, so the loader sets the flag; the MoE layer refuses it
+	// until the grouped GEMM learns the cell - the refusal and the
+	// kernels-wave contract that lifts it are in K3LayerLatentMoe. The zero
+	// path exists for the host recorders, which bind no weights at all.
+	uint32_t expert_interleave;
 	const void *shared_w1_weight;
 	const void *shared_w1_scale;
 	const void *shared_w2_weight;
@@ -129,9 +137,10 @@ struct K3SliceState
 	uint32_t sequences;
 	// THE ALLOCATOR'S HALF OF THE BF16 STATE OPTION. Nonzero strides the
 	// state pool at K3_KDA_STATE_SLOT_BYTES_BF16 and hands the flag to the
-	// layer, which today refuses it - the pool is sized and bound honestly
-	// for the day the delta kernel can store bf16, and no step can launch
-	// against it before then. The numerics contract is in config.h.
+	// layer, which still refuses it - the kernel's uint16_t State variant
+	// exists and is host-gated, but no launch site selects it yet, and no
+	// step can launch against the half-width pool before one does. The
+	// numerics contract is in config.h.
 	uint32_t kda_state_bf16;
 };
 
@@ -161,21 +170,14 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 {
 	buffers->attn_norm_weight = weights->attn_norm_weight;
 	buffers->mlp_norm_weight = weights->mlp_norm_weight;
-	buffers->kda_q_weight = weights->kda_q_weight;
-	buffers->kda_q_scale = weights->kda_q_scale;
-	buffers->kda_k_weight = weights->kda_k_weight;
-	buffers->kda_k_scale = weights->kda_k_scale;
-	buffers->kda_v_weight = weights->kda_v_weight;
-	buffers->kda_v_scale = weights->kda_v_scale;
+	buffers->kda_qkv_beta_weight = weights->kda_qkv_beta_weight;
+	buffers->kda_decay_gate_down_weight = weights->kda_decay_gate_down_weight;
 	buffers->kda_q_conv_weight = weights->kda_q_conv_weight;
 	buffers->kda_k_conv_weight = weights->kda_k_conv_weight;
 	buffers->kda_v_conv_weight = weights->kda_v_conv_weight;
-	buffers->kda_decay_down_weight = weights->kda_decay_down_weight;
 	buffers->kda_decay_up_weight = weights->kda_decay_up_weight;
 	buffers->kda_decay_bias = weights->kda_decay_bias;
 	buffers->kda_head_log_scale = weights->kda_head_log_scale;
-	buffers->kda_beta_weight = weights->kda_beta_weight;
-	buffers->kda_gate_down_weight = weights->kda_gate_down_weight;
 	buffers->kda_gate_up_weight = weights->kda_gate_up_weight;
 	buffers->kda_out_norm_weight = weights->kda_out_norm_weight;
 	buffers->kda_out_weight = weights->kda_out_weight;
@@ -201,9 +203,8 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->routed_up_scale = weights->routed_up_scale;
 	buffers->routed_norm_weight = weights->routed_norm_weight;
 	buffers->expert_w1_weight = weights->expert_w1_weight;
-	buffers->expert_w1_scale = weights->expert_w1_scale;
 	buffers->expert_w2_weight = weights->expert_w2_weight;
-	buffers->expert_w2_scale = weights->expert_w2_scale;
+	buffers->expert_interleave = weights->expert_interleave;
 	buffers->shared_w1_weight = weights->shared_w1_weight;
 	buffers->shared_w1_scale = weights->shared_w1_scale;
 	buffers->shared_w2_weight = weights->shared_w2_weight;

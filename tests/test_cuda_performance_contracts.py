@@ -282,7 +282,14 @@ def validate_model_precision_contracts() -> None:
     forbid(glm_cuda, "expert_weight_codec", "GLM CUDA runtime codec selection")
 
     require(k3, "LmGemmWeightOnlyLaunch<", "K3 BF16-activation/MXFP4-weight experts")
-    require(k3, "LmScaleTensorBlockUe8m0(", "K3 MXFP4 scale plane")
+    # Pack V2 co-tiles the expert E8M0 scales with the payload
+    # (mxfp4_ws_interleaved_v1), so no far-plane LmScaleTensor can address
+    # them: the descriptor is None and the layer refuses the interleaved
+    # stream until the grouped GEMM learns the 17-row cell.
+    require(k3, "b->expert_interleave != 0u",
+            "K3 interleaved expert stream fails closed")
+    forbid(strip_comments_and_literals(k3), "LmScaleTensorBlockUe8m0(",
+           "K3 far-plane scale descriptor over an interleaved stream")
     require(qwen_bind, "Qwen36LaunchSlice<LmBf16Format>", "Qwen 3.6 BF16 entry point")
 
     require(dsv4_model, "SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3", "DSV4 FP8 linear codec")

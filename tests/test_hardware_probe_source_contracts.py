@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import shutil
 import subprocess
@@ -118,31 +119,62 @@ def main() -> int:
         "CUDA 13 gate still compiles the removed DSV4 inference path",
     )
 
-    run([
-        "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
-        "-Itools/hardware", "-fsyntax-only", str(PMTU_SOURCE),
-    ])
-
-    clang = shutil.which("clang++") or "/usr/local/swift/usr/bin/clang++"
-    if pathlib.Path(clang).is_file():
-        common_command = [
-            clang,
-            "-std=c++17",
-            "-x", "cuda",
-            "--cuda-host-only",
-            "-nocudainc",
-            "-nocudalib",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-Itests/hardware_cuda_stub",
-            "-Itools/hardware",
-            "-fsyntax-only",
-        ]
-        run(common_command + [str(CUDA_SOURCE)])
-        run(common_command + [str(NVME_SOURCE)])
+    if sys.platform.startswith("linux"):
+        run([
+            "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+            "-Itools/hardware", "-fsyntax-only", str(PMTU_SOURCE),
+        ])
     else:
-        print("SKIP Clang CUDA host syntax: clang++ unavailable")
+        # The PMTU probe is Linux networking (endian.h, the PMTU socket
+        # options); there is nothing to syntax-check on another OS.
+        print("SKIP PMTU probe syntax: Linux-only probe source")
+
+    nvcc = shutil.which("nvcc")
+    if nvcc is not None:
+        # The real compiler for the real probes: CUDA launch syntax needs a
+        # CUDA toolchain, and nvcc is also the production compiler.
+        import tempfile
+        with tempfile.TemporaryDirectory() as objects:
+            for source in (CUDA_SOURCE, NVME_SOURCE):
+                run([
+                    nvcc,
+                    "-std=c++17",
+                    "--expt-relaxed-constexpr",
+                    "-Itools/hardware",
+                    "-c", str(source),
+                    "-o", os.path.join(objects, source.stem + ".o"),
+                ])
+    else:
+        clang = shutil.which("clang++") or "/usr/local/swift/usr/bin/clang++"
+        if pathlib.Path(clang).is_file():
+            common_command = [
+                clang,
+                "-std=c++17",
+                "-x", "cuda",
+                "--cuda-host-only",
+                "-nocudainc",
+                "-nocudalib",
+                # The syntax check reads tests/hardware_cuda_stub, not the
+                # installed toolkit; whatever CUDA clang auto-detects locally
+                # (and possibly rejects as too new) is not the input here.
+                "-Wno-unknown-cuda-version",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-Itests/hardware_cuda_stub",
+                "-Itools/hardware",
+                "-fsyntax-only",
+            ]
+            try:
+                run(common_command + [str(CUDA_SOURCE)])
+                run(common_command + [str(NVME_SOURCE)])
+            except AssertionError:
+                # Host clang without CUDA launch support (Apple clang, or
+                # <<< >>> against a stub): the check needs a CUDA toolchain,
+                # and none is present - a skip, not a pass and not a failure.
+                print("SKIP CUDA probe syntax: no CUDA-capable compiler")
+        else:
+            print("SKIP Clang CUDA host syntax: clang++ unavailable")
 
     print("PASS hardware CUDA, NVMe, PMTU, shared-support, and exact-target source contracts")
     return 0

@@ -18,10 +18,14 @@
 // ROUTE ROW INDIRECTION CONSUMER CONTRACT
 //
 // The grouped weight-only GEMM reads activation rows through
-// route_source_token directly. Expert weights retain their TMA pipeline while
-// the CTA cooperatively stages each indexed BF16 activation row into the same
-// swizzled shared tile consumed by MMA. No packed activation tensor is written,
-// and no host sees the route.
+// route_source_token directly, and the K3 driver consumes it that way: the
+// w1 launch sets source_row_map = route_source_token with the UN-gathered
+// latent as the source, so no packed activation tensor is written and no
+// host sees the route - LmGatherRowsKernel, its buffer, and its recipe-gate
+// check are deleted together. Expert weights retain their TMA pipeline while
+// the CTA stages each indexed BF16 activation row into the same swizzled
+// shared tile consumed by MMA, one complete_tx-accounted bulk copy per
+// 16-byte swizzle chunk (LmPipelineProduceIndirectA, tile.cuh).
 //
 // The producer side of the indirect form is ALREADY COMPLETE - this kernel
 // writes everything an indirect consumer needs, which is why the contract
@@ -54,7 +58,8 @@
 //     route_source_token[p], not by p. The BF16-activation MoE paths carry
 //     LmScaleTensorNone here and are unaffected; a quantized-activation
 //     consumer that forgets this applies another token's scale and nothing
-//     faults.
+//     faults. The kernel implements this in LmGemmConsume, and the launcher
+//     validates scale_a against the source row count on an indirect launch.
 //   - LIFETIME. The next step's route build rewrites these arrays on the
 //     same stream, so any consumer on that stream is ordered for free. A
 //     consumer on another stream, or a CUDA graph that captured the build
