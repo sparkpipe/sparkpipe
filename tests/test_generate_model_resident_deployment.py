@@ -59,7 +59,7 @@ def main() -> int:
         "model_revision":
             "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
         "stage_pack_path": "packs/dsv4_flash_stage.spstage",
-        "max_sequence_positions": 4736,
+        "max_sequence_positions": 4096,
     }
     source = TOOL.read_text(encoding="utf-8").lower()
     for forbidden in ("glm", "dsv", "codec", "int8", "fp8", "mxfp4"):
