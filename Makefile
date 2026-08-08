@@ -183,6 +183,7 @@ TEST_NAMES := \
     test_module_library \
     test_driver_compiler \
     test_orchestrator \
+    test_dsv4_lane_continuity \
     test_dsv4_stage_runner \
     test_tensor_map_geometry \
     test_weight_codec \
@@ -682,6 +683,9 @@ build/test_orchestrator: tests/test_orchestrator.c $(TEST_SUPPORT_OBJECT) $(TEST
 
 build/test_dsv4_stage_runner: tests/test_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_runner.h modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(COMMON_LIBRARY) $(MODEL_COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) tests/test_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(COMMON_LIBRARY) $(MODEL_COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv4_lane_continuity: tests/test_dsv4_lane_continuity.c modules/dsv4_resident_decode_stage/source/spark_dsv4_lane_continuity.h
+	$(CC) $(CPPFLAGS) -Imodules/dsv4_resident_decode_stage/source $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_weight_codec: tests/test_weight_codec.c include/sparkpipe/spark_weight_codec.h
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
