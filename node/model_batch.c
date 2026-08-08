@@ -424,7 +424,8 @@ static SparkStatus SparkModelBatchSubmitAll(
 
 static int32_t SparkModelBatchPoll(
 	const SparkModelResidentClientPollDescriptor *descriptors,
-	uint32_t descriptor_count)
+	uint32_t descriptor_count,
+	int32_t timeout_ms)
 {
 	struct pollfd poll_descriptors[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
 	uint32_t index;
@@ -439,7 +440,7 @@ static int32_t SparkModelBatchPoll(
 		if ( (descriptors[index].events & SPARK_MODEL_RESIDENT_CLIENT_POLL_WRITE) != 0u )
 			poll_descriptors[index].events |= POLLOUT;
 	}
-	status = poll(poll_descriptors,descriptor_count,SPARK_MODEL_BATCH_POLL_TIMEOUT_MS);
+	status = poll(poll_descriptors,descriptor_count,timeout_ms);
 	return(status >= 0 || errno == EINTR ? 0 : -1);
 }
 
@@ -449,16 +450,23 @@ static SparkStatus SparkModelBatchRun(
 	const SparkModelBatchOutput *output)
 {
 	SparkModelResidentClientPollDescriptor descriptors[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
-	SparkModelBatchEngineView view;
-	uint32_t descriptor_count;
+	SparkModelBatchEngineView view,before;
+	uint32_t descriptor_count,work_done;
 	SparkStatus status;
 	status = SPARK_STATUS_OK;
+	work_done = 0u;
 	while ( status == SPARK_STATUS_OK && output->terminal_count<file->request_count && output->write_failed == 0u )
 	{
-		status = SparkModelBatchEngineProgress(engine,file->maximum_new_submissions_per_progress);
+		status = SparkModelBatchEngineGetView(engine,&before);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkModelBatchEngineProgress(engine,file->maximum_new_submissions_per_progress);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkModelBatchEngineGetView(engine,&view);
+		if ( status == SPARK_STATUS_OK )
+			work_done = memcmp(&before,&view,sizeof(view)) != 0 ? 1u : 0u;
 		if ( status == SPARK_STATUS_OK )
 			status = SparkModelBatchEngineGetPollDescriptors(engine,descriptors,SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT,&descriptor_count);
-		if ( status == SPARK_STATUS_OK && SparkModelBatchPoll(descriptors,descriptor_count) < 0 )
+		if ( status == SPARK_STATUS_OK && SparkModelBatchPoll(descriptors,descriptor_count,work_done != 0u ? 0 : SPARK_MODEL_BATCH_POLL_TIMEOUT_MS) < 0 )
 			status = SPARK_STATUS_IO_ERROR;
 	}
 	if ( status == SPARK_STATUS_OK )

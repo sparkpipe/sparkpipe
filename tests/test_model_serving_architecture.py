@@ -403,15 +403,17 @@ def main() -> int:
         and "uint32_t next_adapter_route;" in resident
         and "start = allow_adapter != 0u ? runtime->next_adapter_route : 0u;"
         in resident
-        and "adapter_submitted == 0u" in resident
+        and "for (offset=0u; status == SPARK_STATUS_OK && offset<runtime->route_capacity; offset++)"
+        in resident
         and "adapter_submitted = 0u;" in resident
         and "allow_adapter != 0u ? &adapter_submitted : 0"
         in resident
-        and "if ( adapter_submitted == 0 || *adapter_submitted != 0u )\n\t\t\t\treturn(SPARK_STATUS_OK);"
+        and "*adapter_submitted != 0u" not in resident
+        and "if ( adapter_submitted == 0 )\n\t\t\t\treturn(SPARK_STATUS_OK);"
         in resident
-        and "if ( status == SPARK_STATUS_BUSY )\n\t\t\t\treturn(SPARK_STATUS_OK);\n\t\t\tif ( status != SPARK_STATUS_OK )\n\t\t\t\treturn(status);\n\t\t\t*adapter_submitted = 1u;\n\t\t\tSparkModelResidentdWake(runtime);"
+        and "if ( status == SPARK_STATUS_BUSY )\n\t\t\t\treturn(SPARK_STATUS_OK);\n\t\t\tif ( status != SPARK_STATUS_OK )\n\t\t\t\treturn(status);\n\t\t\t*adapter_submitted = 1u;\n\t\t\truntime->pass_work_done = 1u;\n\t\t\tSparkModelResidentdWake(runtime);"
         in resident,
-        "resident reactor does not bound adapter work between transport polls",
+        "resident reactor does not drain adapter work between transport polls",
     )
     require(
         "SparkModelResidentdClaimResidentSlotsLocked" in resident
