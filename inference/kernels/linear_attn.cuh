@@ -115,6 +115,43 @@ void LmBoundedDecayKernel(const uint16_t *__restrict__ logit_bf16, const float *
 			channel_bias[(head * KEY_DIM) + index],head_log_scale[head],minimum_log_decay);
 }
 
+// Qwen 3.6's gate producer, one block per (row, head). The reference form is
+// the UNBOUNDED negative-softplus mapping the bounded kernel above argues
+// against for the chunkwise path - g = -exp(A_h) * softplus(z + dt_bias),
+// retention = exp(g) - with the write gate beta = sigmoid(W_beta x). The
+// per-token delta rule never inverts a cumulative decay, which is where the
+// bound matters, so the decode recurrence takes the reference's mapping as
+// it stands.
+//
+// Both logits are PER HEAD SCALARS - one per value head from two 48-row
+// projections of the hidden state, not a per-channel vector - so the
+// retention written here is one value repeated across the head's KEY_DIM
+// channels: the "per-head caller passes a vector with every channel equal"
+// case the delta rule's gate layout names. A_log and dt_bias are the
+// checkpoint's own per-head fp32 tensors, and the bias is added in fp32
+// after the bf16 upcast, the same ordering argument LmBoundedDecay carries.
+template<uint32_t THREADS, uint32_t KEY_DIM>
+__global__ __launch_bounds__(THREADS, 1)
+void LmGdnGateKernel(const uint16_t *__restrict__ decay_logit_bf16, const uint16_t *__restrict__ beta_logit_bf16, const float *__restrict__ head_log_scale, const float *__restrict__ head_bias, float *__restrict__ retention, float *__restrict__ write_gate, uint32_t heads, uint32_t rows)
+{
+	uint32_t row = blockIdx.x,head = blockIdx.y,index;
+	uint64_t scalar;
+	float shifted,softplus,factor;
+	if ( row >= rows || head >= heads )
+		return;
+	scalar = ((uint64_t)row * heads) + head;
+	shifted = LmBf16ToFloat(decay_logit_bf16[scalar]) + head_bias[head];
+	softplus = shifted > 20.0f ? shifted : __logf(1.0f + __expf(shifted));
+	factor = __expf(-__expf(head_log_scale[head]) * softplus);
+	for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
+		retention[(scalar * KEY_DIM) + index] = factor;
+	if ( threadIdx.x == 0u )
+	{
+		float beta_logit = LmBf16ToFloat(beta_logit_bf16[scalar]);
+		write_gate[scalar] = 1.0f / (1.0f + __expf(-beta_logit));
+	}
+}
+
 // L2-normalise each head's vector. KDA normalises q and k after the convolution
 // and before the recurrence; without it the delta rule's k k^T term is not a
 // projection and the state grows without bound.

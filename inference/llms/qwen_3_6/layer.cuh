@@ -49,10 +49,14 @@ static_assert(Qwen36FullKv::kSlotBytes == QWEN36_KV_HEADS * (QWEN36_HEAD_DIM + Q
 #define QWEN36_HEAD_TILE 1024u
 
 // Full attention widths. Query heads and KV heads differ, so the fused
-// projection is query + key + value at the KV count, not three equal thirds.
+// projection is query|gate + key + value at the KV count, not three equal
+// thirds: the checkpoint's query projection fuses the per-head output gate
+// (config.h, attn_output_gate), so the query section is two Q_DIM wide -
+// 256 query rows then 256 gate rows per head.
 #define QWEN36_Q_DIM (QWEN36_ATTN_HEADS * QWEN36_HEAD_DIM)
 #define QWEN36_KV_DIM (QWEN36_KV_HEADS * QWEN36_HEAD_DIM)
-#define QWEN36_ATTN_QKV_DIM (QWEN36_Q_DIM + (2u * QWEN36_KV_DIM))
+#define QWEN36_ATTN_QG_DIM (2u * QWEN36_Q_DIM)
+#define QWEN36_ATTN_QKV_DIM (QWEN36_ATTN_QG_DIM + (2u * QWEN36_KV_DIM))
 
 // Gated DeltaNet widths. 48 value heads over 16 key heads is three value heads
 // sharing each key head, which is the ratio the delta rule kernel takes rather
@@ -66,6 +70,8 @@ static_assert(QWEN36_GDN_VALUE_HEADS % QWEN36_GDN_KEY_HEADS == 0u,
 	"value heads share key heads in whole groups");
 static_assert(QWEN36_ATTN_QKV_DIM == QWEN36_QKV_DIM,
 	"config and layer must agree on the fused projection width");
+static_assert(QWEN36_ATTN_OUTPUT_GATE == 1u,
+	"the layer applies the attention output gate; an ungated config is a different model");
 
 // The state pool, one slot per sequence, sized from the sum of the per-value
 // -head states and the convolution window. Below the width defines because
@@ -89,6 +95,15 @@ struct Qwen36LayerBuffers
 	const void *gdn_conv_weight;
 	const void *gdn_out_weight;
 	const void *gdn_out_scale;
+	// The GDN gate projections and their per-head fp32 tensors: beta and
+	// decay are 48-row projections of the hidden state, A_log the per-head
+	// log-scale and dt_bias the per-head bias of the decay mapping.
+	const void *gdn_beta_weight;
+	const void *gdn_beta_scale;
+	const void *gdn_decay_weight;
+	const void *gdn_decay_scale;
+	const float *gdn_a_log;
+	const float *gdn_dt_bias;
 	const void *mlp_norm_weight;
 	const void *dense_gate_up_weight;
 	const void *dense_gate_up_scale;
@@ -99,7 +114,9 @@ struct Qwen36LayerBuffers
 	uint16_t *residual_bf16;
 	uint16_t *normed_bf16;
 	uint16_t *fused_qkv_bf16;
+	uint16_t *query_gate_bf16;
 	uint16_t *query_bf16;
+	uint16_t *attn_gate_bf16;
 	uint16_t *key_bf16;
 	uint16_t *value_bf16;
 	uint16_t *attention_out_bf16;
@@ -112,17 +129,20 @@ struct Qwen36LayerBuffers
 	// window lives in the same slot - QWEN36_GDN_STATE_BYTES is their sum.
 	// The state is per VALUE head (config.h carries why), so the delta rule
 	// consumes q and k repeated three ways; the expanded rows are scratch
-	// sized rows x 48 x 128 each. The gates are per (row, value head,
-	// channel) and per (row, value head): gdn_forget_gate is rows x 48 x 128
-	// f32 and gdn_write_gate rows x 48 f32 - but see config.h's third known
-	// gap: nothing in this driver produces them yet.
+	// sized rows x 48 x 128 each. The gates are produced in-layer now:
+	// the beta and decay logits are rows x 48 bf16 scratch, and
+	// LmGdnGateKernel writes gdn_forget_gate (rows x 48 x 128 f32, one
+	// retention factor per channel, all equal within a head) and
+	// gdn_write_gate (rows x 48 f32) from them.
 	uint8_t *gdn_state_pool;
 	uint16_t *gdn_conv_window;
 	uint16_t *gdn_query_expanded_bf16;
 	uint16_t *gdn_key_expanded_bf16;
+	uint16_t *gdn_beta_logit_bf16;
+	uint16_t *gdn_decay_logit_bf16;
 	const uint32_t *gdn_state_index;
-	const float *gdn_forget_gate;
-	const float *gdn_write_gate;
+	float *gdn_forget_gate;
+	float *gdn_write_gate;
 
 	LmKvView cache;
 	const uint32_t *sequence_of_row;
@@ -214,13 +234,17 @@ static int32_t Qwen36LayerAttention(const Qwen36LayerBuffers *b, uint32_t rows, 
 		QWEN36_HIDDEN,QWEN36_ATTN_QKV_DIM,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	layout.query_dimension = QWEN36_Q_DIM;
+	layout.query_dimension = QWEN36_ATTN_QG_DIM;
 	layout.key_dimension = QWEN36_KV_DIM;
 	layout.value_dimension = QWEN36_KV_DIM;
 	layout.rope_dimension = QWEN36_ROPE_DIM;
 	layout.head_dimension = QWEN36_HEAD_DIM;
+	// The query section is per-head query|gate fused; the split lifts it
+	// whole and the second split de-interleaves the two halves.
 	LM_LAUNCH((LmSplitQkvKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
-		b->fused_qkv_bf16,layout,b->query_bf16,b->key_bf16,b->value_bf16,rows,1.0f);
+		b->fused_qkv_bf16,layout,b->query_gate_bf16,b->key_bf16,b->value_bf16,rows,1.0f);
+	LM_LAUNCH((LmSplitQueryGateKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
+		b->query_gate_bf16,b->query_bf16,b->attn_gate_bf16,QWEN36_ATTN_HEADS,QWEN36_HEAD_DIM,rows);
 	// Partial rotary: rope covers the last 64 of each 256-wide head, so this
 	// is per head. Rotating the row tail would rotate one head and leave 23.
 	// ("First 64" said an earlier comment here; the kernel rotates the suffix
@@ -241,6 +265,11 @@ static int32_t Qwen36LayerAttention(const Qwen36LayerBuffers *b, uint32_t rows, 
 		b->cache,b->key_bf16,b->value_bf16,b->sequence_of_row,b->positions,rows);
 	LM_LAUNCH((LmGqaAttentionDecodeKernel<Geometry,QWEN36_LAYER_THREADS,QWEN36_KV_HEADS,QWEN36_HEAD_DIM,QWEN36_HEAD_DIM>), dim3(rows,QWEN36_ATTN_HEADS), QWEN36_LAYER_THREADS, 0, stream,
 		b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,QWEN36_ATTN_HEADS,QWEN36_QK_SCALE,b->attention_out_bf16,0);
+	// The reference's attention is GATED: sigmoid of the gate half of the
+	// fused query projection, elementwise on the attended values, after
+	// attention and before the output projection.
+	LM_LAUNCH((LmOutputGateKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
+		b->attention_out_bf16,b->attn_gate_bf16,QWEN36_Q_DIM);
 	activation = Qwen36PrepareInput<Format>(
 		b,b->attention_out_bf16,rows,QWEN36_Q_DIM,&gemm.scale_a,stream);
 	gemm.scale_b = Qwen36WeightScale<Format>(
@@ -277,6 +306,30 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 		QWEN36_HIDDEN,QWEN36_GDN_QKV_DIM,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	// The forget and write gates: beta and decay are separate 48-row
+	// projections of the same normed input (the checkpoint's fused in_proj_ba
+	// arrives split, the layout the stage pack carries), and LmGdnGateKernel
+	// turns the logits into the retention factors and write strengths the
+	// delta rule consumes - beta = sigmoid(b), log decay
+	// g = -exp(A_log) * softplus(a + dt_bias), per value head.
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->gdn_beta_scale,QWEN36_GDN_VALUE_HEADS,QWEN36_HIDDEN);
+	gemm.output_bf16 = b->gdn_beta_logit_bf16;
+	status = LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
+		&gemm,activation,b->gdn_beta_weight,rows,rows,1u,1u,
+		QWEN36_HIDDEN,QWEN36_GDN_VALUE_HEADS,sms,false,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->gdn_decay_scale,QWEN36_GDN_VALUE_HEADS,QWEN36_HIDDEN);
+	gemm.output_bf16 = b->gdn_decay_logit_bf16;
+	status = LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
+		&gemm,activation,b->gdn_decay_weight,rows,rows,1u,1u,
+		QWEN36_HIDDEN,QWEN36_GDN_VALUE_HEADS,sms,false,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH((LmGdnGateKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM>), dim3(rows,QWEN36_GDN_VALUE_HEADS), QWEN36_LAYER_THREADS, 0, stream,
+		b->gdn_decay_logit_bf16,b->gdn_beta_logit_bf16,b->gdn_a_log,b->gdn_dt_bias,b->gdn_forget_gate,b->gdn_write_gate,QWEN36_GDN_VALUE_HEADS,rows);
 	// No rope on this path: position enters through the recurrence, not a
 	// rotation, so rope_dimension is zero rather than unset.
 	layout.query_dimension = QWEN36_GDN_QK_DIM;
@@ -326,9 +379,8 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 		return(status);
 	// 48 heads at value_heads_per_key 1: the output is the full 6144 the
 	// output projection reads, every value head's state advances, and the
-	// forget and write gates are per value head - which is also the
-	// granularity the reference computes them at, so the gate producer the
-	// known gap names has exactly one layout to target.
+	// forget and write gates are per value head - the granularity
+	// LmGdnGateKernel above produces them at.
 	LM_LAUNCH((LmDeltaRuleKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>), dim3(rows,QWEN36_GDN_VALUE_HEADS), QWEN36_LAYER_THREADS, (uint32_t)(QWEN36_GDN_KEY_DIM * QWEN36_GDN_VALUE_DIM * sizeof(float)), stream,
 		b->gdn_state_pool,QWEN36_GDN_STATE_BYTES,b->gdn_state_index,0,0,b->gdn_query_expanded_bf16,b->gdn_key_expanded_bf16,b->value_bf16, b->gdn_forget_gate,b->gdn_write_gate,b->attention_out_bf16, QWEN36_GDN_VALUE_HEADS,1u,rows,1u);
 	activation = Qwen36PrepareInput<Format>(

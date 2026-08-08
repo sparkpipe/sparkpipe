@@ -7,9 +7,7 @@
     "host_geometry": "model-families/qwen36/include/sparkpipe/spark_qwen36_model.h (held in lockstep with the firmware config by the family conformance gate)",
     "variant_note": "the 27B with the dense FFN; the 35B-A3B shares the name prefix and is a different model (hidden 2048, 40 layers, 256 experts) - layer.cuh implements the dense path only",
     "known_gaps": [
-      "attn_output_gate is true in the reference config; Qwen36LayerAttention does not apply the gate",
-      "mrope_interleaved sections [11,11,10] degenerate to plain rope for text-only decode; multimodal input is not this path",
-      "the GDN forget and write gates have no producer in the driver; the recurrent layers read whatever the gate buffers hold"
+      "mrope_interleaved sections [11,11,10] degenerate to plain rope for text-only decode; multimodal input is not this path"
     ],
     "precision_policy": "all weights and activations BF16, GEMM accumulation and GDN recurrent state FP32"
   },

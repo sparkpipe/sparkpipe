@@ -42,6 +42,15 @@ struct Qwen36LayerWeights
 	const void *gdn_conv_weight;
 	const void *gdn_out_weight;
 	const void *gdn_out_scale;
+	// The gate producers: beta and decay are 48-row projections (the
+	// checkpoint's fused in_proj_ba, split), A_log and dt_bias the per-head
+	// fp32 tensors of the decay mapping.
+	const void *gdn_beta_weight;
+	const void *gdn_beta_scale;
+	const void *gdn_decay_weight;
+	const void *gdn_decay_scale;
+	const float *gdn_a_log;
+	const float *gdn_dt_bias;
 	const void *dense_gate_up_weight;
 	const void *dense_gate_up_scale;
 	const void *dense_down_weight;
@@ -64,6 +73,12 @@ static void Qwen36BindLayer(const Qwen36LayerWeights *weights, Qwen36LayerBuffer
 	buffers->gdn_conv_weight = weights->gdn_conv_weight;
 	buffers->gdn_out_weight = weights->gdn_out_weight;
 	buffers->gdn_out_scale = weights->gdn_out_scale;
+	buffers->gdn_beta_weight = weights->gdn_beta_weight;
+	buffers->gdn_beta_scale = weights->gdn_beta_scale;
+	buffers->gdn_decay_weight = weights->gdn_decay_weight;
+	buffers->gdn_decay_scale = weights->gdn_decay_scale;
+	buffers->gdn_a_log = weights->gdn_a_log;
+	buffers->gdn_dt_bias = weights->gdn_dt_bias;
 	buffers->dense_gate_up_weight = weights->dense_gate_up_weight;
 	buffers->dense_gate_up_scale = weights->dense_gate_up_scale;
 	buffers->dense_down_weight = weights->dense_down_weight;
