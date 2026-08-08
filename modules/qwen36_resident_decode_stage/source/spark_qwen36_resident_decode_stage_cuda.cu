@@ -1173,10 +1173,22 @@ extern "C" cudaError_t SparkQwen36ConfigureCudaKernels(void)
     {
         return status;
     }
-    return cudaFuncSetAttribute(
+    status = cudaFuncSetAttribute(
         SparkQwen36ChunkStepKernel,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         (int)SPARK_QWEN36_CUDA_GDN_CHUNK_SHARED_BYTES);
+    if (status != cudaSuccess)
+    {
+        return status;
+    }
+    /* The scalar Linear path stages the input row in dynamic shared memory,
+     * input_dimension floats deep; the FFN down projection reads the
+     * 17408-wide intermediate, which is past the 48KB static ceiling and
+     * must be opted in like the GDN kernels above. */
+    return cudaFuncSetAttribute(
+        (const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        (int)(SPARK_QWEN36_MODEL_FFN_INTERMEDIATE_DIMENSION * sizeof(float)));
 }
 
 extern "C" cudaError_t SparkQwen36LaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
