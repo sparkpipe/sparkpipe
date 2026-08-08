@@ -184,6 +184,7 @@ TEST_NAMES := \
     test_driver_compiler \
     test_orchestrator \
     test_dsv4_lane_continuity \
+	test_dsv4_pool_layout \
     test_dsv4_stage_runner \
     test_tensor_map_geometry \
     test_weight_codec \
@@ -686,6 +687,9 @@ build/test_dsv4_stage_runner: tests/test_dsv4_stage_runner.c modules/dsv4_reside
 
 build/test_dsv4_lane_continuity: tests/test_dsv4_lane_continuity.c modules/dsv4_resident_decode_stage/source/spark_dsv4_lane_continuity.h
 	$(CC) $(CPPFLAGS) -Imodules/dsv4_resident_decode_stage/source $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv4_pool_layout: tests/test_dsv4_pool_layout.c modules/dsv4_resident_decode_stage/source/spark_dsv4_pool_layout.h
+	$(CC) $(DSV4_INCLUDE_FLAGS) -Imodules/dsv4_resident_decode_stage/source $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_weight_codec: tests/test_weight_codec.c include/sparkpipe/spark_weight_codec.h
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
