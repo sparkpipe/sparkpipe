@@ -193,6 +193,7 @@ TEST_NAMES := \
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
 	tests/test_api_stress.py \
+	tests/test_batch_variants.py \
 	tests/test_code_size.py \
 	tests/test_config_coverage.py \
 	tests/test_cuda_performance_contracts.py \
@@ -237,6 +238,7 @@ PYTHON_TESTS := \
 	tests/test_k3_quant_recipe.py \
 	tests/test_k3_shard.py \
 	tests/test_k3_slice_host.py \
+	tests/test_kda_bf16_state.py \
 	tests/test_kda_decay.py \
 	tests/test_kda_host.py \
 	tests/test_kv_failure_host.py \
@@ -292,6 +294,8 @@ TEST_MODEL_RESIDENT_TRANSPORT_MODULE := \
 TEST_VALIDATOR := build/test_module_validator
 TEST_VALIDATOR_CHANGED := build/test_module_validator_identity_changed
 .PHONY: all clean test tools hardware_tools hardware_cuda_tools hardware_handoff runtime_completion_tests demo FORCE \
+    cuda_glm52_resident_decode_stage_variants \
+    cuda_dsv4_resident_decode_stage_variants \
     glm52_resident_decode_stage_contract \
     glm52_resident_decode_stage_archive \
     glm52_resident_decode_stage_publish \
@@ -726,6 +730,20 @@ glm52_resident_decode_stage_archive:
 	$(MAKE) -C modules/glm52_resident_decode_stage archive \
 		EXPERT_CODEC='$(EXPERT_CODEC)' MODEL_REVISION='$(MODEL_REVISION)' \
 		CONTRACT_SHA256='$(CONTRACT_SHA256)' NVCC='$(NVCC)' CUDA_ARCH='$(CUDA_ARCH)'
+
+# The batch-variant sets: one archive per power-of-two bucket from each
+# module Makefile's variants target, compiled from the single
+# SPARK_MODULE_BATCH_VARIANT_RULES template in
+# modules/resident_decode_stage_rules.mk. Trim a set with the family's
+# MODULE_BATCH_VARIANT_BUCKETS, never by editing a variant.
+cuda_glm52_resident_decode_stage_variants:
+	$(MAKE) -C modules/glm52_resident_decode_stage variants \
+		EXPERT_CODEC='$(EXPERT_CODEC)' MODEL_REVISION='$(MODEL_REVISION)' \
+		CONTRACT_SHA256='$(CONTRACT_SHA256)' NVCC='$(NVCC)' CUDA_ARCH='$(CUDA_ARCH)'
+
+cuda_dsv4_resident_decode_stage_variants:
+	$(MAKE) -C modules/dsv4_resident_decode_stage variants \
+		NVCC='$(NVCC)' CUDA_ARCH='$(CUDA_ARCH)'
 
 glm52_resident_decode_stage_publish:
 	$(MAKE) -C modules/glm52_resident_decode_stage publish \

@@ -33,7 +33,13 @@ GLM52_EXPERT_CODEC_ID := 7
 endif
 
 MODULE_FAMILY := glm52
-MODULE_IDENTIFIER := spark.glm52.resident_decode_stage.bf16.expert_$(EXPERT_CODEC).h6144.l78.e256.k8.v2
+MODULE_IDENTIFIER_PREFIX := spark.glm52.resident_decode_stage.bf16.expert_$(EXPERT_CODEC).h6144.l78.e256.k8
+MODULE_IDENTIFIER_SUFFIX := v2
+MODULE_IDENTIFIER := $(MODULE_IDENTIFIER_PREFIX).$(MODULE_IDENTIFIER_SUFFIX)
+# The batch-variant ladder: one archive per power of two, emitted by
+# resident_decode_stage_rules.mk from the single template there. Trim for
+# local iteration here, never by editing a variant.
+MODULE_BATCH_VARIANT_BUCKETS ?= 1 2 4 8 16 32 64 128 256 512 1024
 MODULE_TARGET := cuda.sm121.glm52.resident_decode_stage.bf16.expert_$(EXPERT_CODEC)
 MODEL_HEADER := ../../model-families/glm52/include/sparkpipe/spark_glm52_model.h
 MODULE_ENTRY_PREFIX := SparkGlm52ResidentDecodeStage

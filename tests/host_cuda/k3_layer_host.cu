@@ -81,7 +81,6 @@ static uint16_t hidden[ROWS * K3_HIDDEN];
 static uint16_t normed[ROWS * K3_HIDDEN], attention_out[ROWS * K3_HIDDEN];
 static uint16_t shared_out[ROWS * K3_HIDDEN];
 static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
-static uint16_t route_gather[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
 static uint16_t gate_up[ROUTES * K3_SHARED_INTERMEDIATE * 2u];
 static uint16_t intermediate[ROUTES * K3_SHARED_INTERMEDIATE];
 static uint16_t norm_weight[K3_HIDDEN];
@@ -112,7 +111,6 @@ int main(void)
 	b.hidden_bf16 = hidden; b.normed_bf16 = normed;
 	b.attention_out_bf16 = attention_out; b.shared_out_bf16 = shared_out;
 	b.latent_bf16 = latent; b.gate_up_bf16 = gate_up;
-	b.route_gather_bf16 = route_gather;
 	b.intermediate_bf16 = intermediate;
 	b.mlp_norm_weight = norm_weight; b.routed_norm_weight = norm_weight;
 	b.router_logits = router_logits; b.router_bias = router_bias;
@@ -122,6 +120,17 @@ int main(void)
 	b.group_tile_prefix_w2 = group_tiles_down;
 	dense_offsets[0] = 0u; dense_offsets[1] = ROWS;
 	b.dense_row_offset = dense_offsets; b.dense_tile_prefix = dense_tiles;
+
+	// THE INTERLEAVED EXPERT STREAM MUST BE REFUSED. Pack V2 interleaves the
+	// expert scales into the weight stream and the grouped GEMM cannot read
+	// that grid yet, so the layer fails closed on the flag rather than run
+	// scales-as-payload. The recorder path below binds no weights and leaves
+	// the flag clear, which is the only way through today.
+	b.expert_interleave = 1u;
+	printf("interleave_refused %d\n",
+		K3LayerLatentMoe<LmHostRecorderFormat>(&b, ROWS, ROUTES, 1u, 0)
+			== LM_LAUNCH_ERR_SHAPE ? 1 : 0);
+	b.expert_interleave = 0u;
 
 	// bisect the fault: report before each launch the layer makes
 	printf("start\n"); fflush(stdout);
@@ -137,9 +146,9 @@ int main(void)
 			: g.output == (void *)latent ? "latent"
 			: g.output == (void *)gate_up ? "gate_up"
 			: g.output == (void *)router_logits ? "router_logits" : "other";
-		printf("gemm %zu dest %s in %u out %u rows %u grouped %d\n",
+		printf("gemm %zu dest %s in %u out %u rows %u grouped %d ind %d\n",
 			i, name, g.input_dimension, g.output_dimension,
-			g.packed_rows, g.grouped ? 1 : 0);
+			g.packed_rows, g.grouped ? 1 : 0, g.indirect ? 1 : 0);
 	}
 	// Every GEMM writes a value derived from its own index, so the final hidden
 	// tells you which GEMM last touched it - and whether an addition happened.

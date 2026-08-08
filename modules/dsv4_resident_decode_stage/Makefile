@@ -1,5 +1,11 @@
 MODULE_FAMILY := dsv4
-MODULE_IDENTIFIER := spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.v3
+MODULE_IDENTIFIER_PREFIX := spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731
+MODULE_IDENTIFIER_SUFFIX := v3
+MODULE_IDENTIFIER := $(MODULE_IDENTIFIER_PREFIX).$(MODULE_IDENTIFIER_SUFFIX)
+# The batch-variant ladder: one archive per power of two, emitted by
+# resident_decode_stage_rules.mk from the single template there. Trim for
+# local iteration here, never by editing a variant.
+MODULE_BATCH_VARIANT_BUCKETS ?= 1 2 4 8 16 32 64 128 256 512 1024
 MODULE_TARGET := cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16
 MODEL_HEADER := ../../model-families/dsv4/include/sparkpipe/spark_dsv4_model.h
 MODULE_ENTRY_PREFIX := SparkDsv4ResidentDecodeStage

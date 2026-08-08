@@ -179,10 +179,37 @@ struct LmReplayStep
 	const float *write_gate;
 };
 
+// The commit store is the ONLY place the recurrent state leaves fp32, in both
+// kernels below, and this is its whole implementation: the identity for an
+// fp32 pool, dtype.cuh's round-to-nearest-even for a bf16 one. The load
+// direction needs no new code - LmScalarToFloat already upcasts both element
+// types. Two overloads rather than a runtime branch, so the rounding rule
+// lives in exactly one place and the fp32 path compiles to exactly what it
+// was. A plain truncation here would bias every committed element toward
+// zero and compound inside a recurrence that never renormalises.
+static __device__ __forceinline__ void LmStoreState(float *slot, float value)
+{
+	*slot = value;
+}
+
+static __device__ __forceinline__ void LmStoreState(uint16_t *slot, float value)
+{
+	*slot = LmFloatToBf16(value);
+}
+
 // Advance the committed state through the accepted prefix, in place. One block
 // per (row, head); the recurrence over steps is serial by nature and the work
 // inside a step is the same flat pass the decode kernel uses.
-template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM>
+//
+// THE POOL ELEMENT TYPE IS THE DECODE KERNEL'S State. Under State = uint16_t
+// every step's read upcasts and every step's write re-rounds - the same two
+// conversion points a serial decode commit crosses, once per step, which is
+// exactly what keeps the fold byte-exact against the decode path it stands
+// in for. A fold that deferred the rounding to the end of the prefix would
+// drift from serial decode by one bf16 rounding per accepted token - the
+// "outputs look correct while the state quietly drifts" failure above, one
+// ulp at a time.
+template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class State = float>
 __global__ __launch_bounds__(THREADS, 1)
 void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const LmReplayStep *__restrict__ steps, const uint32_t *__restrict__ accepted_length, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t rows)
 {
@@ -190,7 +217,7 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 	__shared__ float fold_reduction[THREADS / LM_WARP_LANES];
 	__shared__ float shared_predicted[VALUE_DIM];
 	uint32_t row = blockIdx.x,head = blockIdx.y,step,index,flat;
-	float *state;
+	State *state;
 	float key_inverse;
 	if ( row >= rows || head >= key_heads )
 		return;
@@ -209,8 +236,10 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 	// qwen's KV heads before it.
 	//
 	// slot_bytes now comes from the caller, which reads it from the model's
-	// config, and the element size follows from the same place.
-	state = (float *)(state_pool + ((uint64_t)state_index[row]
+	// config, and the element size follows from the same place: State is
+	// float for the contract slot, uint16_t for the admission-time bf16
+	// option, and the two are never mixed in one launch.
+	state = (State *)(state_pool + ((uint64_t)state_index[row]
 		* slot_bytes)) + ((uint64_t)head * KEY_DIM * VALUE_DIM);
 	for (step = 0u; step < accepted_length[row]; ++step)
 	{
@@ -245,7 +274,7 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 			float total = 0.0f;
 			uint32_t channel;
 			for (channel = 0u; channel < KEY_DIM; ++channel)
-				total += state[(channel * VALUE_DIM) + index]
+				total += LmScalarToFloat(state[(channel * VALUE_DIM) + index])
 					* shared_key[channel] * input->retention[head_key + channel];
 			shared_predicted[index] = total;
 		}
@@ -254,9 +283,9 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 		{
 			uint32_t channel = flat / VALUE_DIM,element = flat % VALUE_DIM;
 			float v = LmBf16ToFloat(input->value_bf16[head_value + element]);
-			state[flat] = (
-				(input->retention[head_key + channel] * state[flat])
-				+ (beta * (v - shared_predicted[element]) * shared_key[channel]));
+			LmStoreState(&state[flat],(
+				(input->retention[head_key + channel] * LmScalarToFloat(state[flat]))
+				+ (beta * (v - shared_predicted[element]) * shared_key[channel])));
 		}
 		__syncthreads();
 	}
@@ -268,7 +297,7 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 // value heads share each key head's state slice. The state is indexed by key
 // head and the value offset selects within it, which is why value_heads_per_key
 // is a parameter rather than assumed to be one.
-template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM>
+template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class State = float>
 __global__ __launch_bounds__(THREADS, 1)
 void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit)
 {
@@ -279,18 +308,34 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 	// global slot again only if commit says the run really happened. Decode is
 	// a run of one - a null sequence_row_begin means row i IS sequence i - and
 	// a run of T is bit-identical to T decode calls, because the state lives in
-	// shared memory at exactly the BF16 width the slot stores between calls.
-	// That equivalence is a gate, not a comment.
+	// shared memory at exactly the width the slot stores between calls.
+	// That equivalence is a gate, not a comment - and it is stated for
+	// State = float; what the bf16-state option keeps and signs away is
+	// written at the commit store below.
 	//
 	// Verify is the third caller: DSpark scores a drafted block by running it
 	// forward, and a draft must not advance what the sequence remembers.
 	// commit == 0 computes every output and abandons the state.
-	// THE STATE IS FP32, IN SHARED AND IN THE POOL. The contract
-	// (K3_KDA_STATE_ELEMENT_BYTES = 4) always said so; this kernel held it
-	// bf16, which both halved the precision of a recurrence that compounds
-	// per token and mis-strode slabs sized for four-byte elements. 64 KB
-	// per head-block exceeds the static shared limit, so the tile is
-	// dynamic - the launch passes KEY_DIM * VALUE_DIM * 4 bytes.
+	// THE SHARED TILE IS FP32 WHATEVER THE POOL HOLDS. The contract
+	// (K3_KDA_STATE_ELEMENT_BYTES = 4) makes float the default State; the
+	// admission-time half-width option (config.h's
+	// K3_KDA_STATE_SLOT_BYTES_BF16) instantiates State = uint16_t and halves
+	// the pool stream. Either way the slot is upcast into this same fp32
+	// tile on the way in, the recurrence below runs in fp32 exactly as
+	// today - bit-identical per-step math given the same fp32 input state -
+	// and the ONLY rounding is LmStoreState's round-to-nearest-even on the
+	// commit store. Verify (commit == 0) never stores, so it stays
+	// dtype-neutral.
+	//
+	// What the bf16 option signs away: a committed multi-row RUN rounds
+	// once, at its end, so under bf16 a run is no longer bit-identical to
+	// its decode steps. Serial decode, verify and the replay fold still
+	// agree byte for byte under bf16, because they convert at the same two
+	// points once per committed step: the load and the commit store.
+	//
+	// 64 KB per head-block exceeds the static shared limit, so the tile is
+	// dynamic - the launch passes KEY_DIM * VALUE_DIM * 4 bytes at either
+	// State, because the tile stays fp32.
 	extern __shared__ float state_s[];
 	__shared__ float shared_key[KEY_DIM];
 	__shared__ float shared_query[KEY_DIM];
@@ -301,7 +346,7 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 	__shared__ float norm_reduction[2u * (THREADS / LM_WARP_LANES)];
 	__shared__ float shared_predicted[VALUE_DIM];
 	uint32_t sequence = blockIdx.x,head = blockIdx.y,index,element,row,begin,end,flat;
-	float *state;
+	State *state;
 	float beta,key_inverse,query_inverse;
 	if ( sequence >= sequences || head >= key_heads )
 		return;
@@ -310,12 +355,14 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 	if ( sequence_row_count != 0 )
 		end = begin + sequence_row_count[sequence];
 	// One slot per sequence, never paged: the state does not grow, so its
-	// address is the sequence's slot base plus this head's slice.
-	state = (float *)(state_pool
+	// address is the sequence's slot base plus this head's slice, at the
+	// pool's own element width - slot_bytes and State come from the same
+	// config, as in the fold.
+	state = (State *)(state_pool
 		+ ((uint64_t)state_index[sequence] * slot_bytes)
-		+ ((uint64_t)head * KEY_DIM * VALUE_DIM * 4u));
+		+ ((uint64_t)head * KEY_DIM * VALUE_DIM * sizeof(State)));
 	for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
-		state_s[flat] = state[flat];
+		state_s[flat] = LmScalarToFloat(state[flat]);
 	for (row = begin; row < end; ++row)
 	{
 		// PER HEAD PER CHANNEL. This read was one scalar per head, which cannot
@@ -414,8 +461,11 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 	}
 	if ( commit == 0u )
 		return;
+	// The one rounding the bf16-state option adds: round-to-nearest-even, on
+	// the commit store, and nowhere else in the kernel. An uncommitted run
+	// never reaches this line, which is why verify is dtype-neutral.
 	for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
-		state[flat] = state_s[flat];
+		LmStoreState(&state[flat],state_s[flat]);
 }
 
 // Short causal convolution over the last KERNEL tokens, per channel.

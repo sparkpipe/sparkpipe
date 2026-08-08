@@ -926,7 +926,13 @@ static void SparkGlm52PrepareAsyncCompletion(
 	async->lane_count = batch->active_sequence_count;
 	async->row_count = batch->row_count;
 	async->output_token_destination = state->owns_final_head != 0u ? (uint32_t *)frame->buffers[0].address : 0;
-	for (lane=0u; lane<batch->active_sequence_count; lane++)
+	// The compiled bucket is the hard ceiling at the copy, not just upstream
+	// of it: SparkGlm52ValidateFrame rejects an active_sequence_count above
+	// resident_sequence_capacity and ModuleConfigure bounds that capacity by
+	// MAX_ACTIVE_SEQUENCE_COUNT, but a tight variant build (b8 lane tables)
+	// prices a broken invariant as a heap overflow the compiler can see, so
+	// the loop names the ceiling itself.
+	for (lane=0u; lane<batch->active_sequence_count && lane<SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
 	{
 		async->lane_indices[lane] = batch->row_resident_slots[lane];
 		async->lane_bound[lane] = lane_bound[lane];

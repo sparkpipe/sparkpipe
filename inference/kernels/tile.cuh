@@ -33,6 +33,7 @@
 #include "inference/kernels/activation.cuh"
 #include "inference/kernels/layout.cuh"
 #include "inference/kernels/mma.cuh"
+#include "inference/kernels/route.cuh"
 #include "inference/kernels/tma.cuh"
 #include <stdint.h>
 
@@ -120,10 +121,11 @@ static __device__ void LmPipelineRelease(uint64_t *barrier)
 
 // -- staging -----------------------------------------------------------------
 //
-// One elected thread issues both boxes and declares their total. The expected
-// byte count must equal the sum of everything issued into the stage or the
-// barrier never flips, so it is derived here from the same LmTileBytes the host
-// sizes shared memory with rather than passed in.
+// The weight half is always one elected thread issuing one box; the activation
+// half is one box on the dense path and a per-row-indexed set of bulk chunk
+// copies on the indirect path. Both declare the same byte total through
+// LmPipelineProduceWeight, because the expected count must equal the sum of
+// everything issued into the stage or the barrier never flips.
 
 struct LmTileGeometry
 {
@@ -131,6 +133,40 @@ struct LmTileGeometry
 	uint32_t depth;
 	uint32_t element_bits;
 };
+
+// Thread 0's half of a produce, shared by both A-staging paths: declare the
+// stage's total bytes and issue the weight box. The expected byte count must
+// equal the sum of everything issued into the stage or the barrier never
+// flips, so it is derived here from the same LmTileBytes the host sizes shared
+// memory with rather than passed in - and it is the SAME total on the indirect
+// path, where the A bytes arrive as per-chunk bulk copies instead of one box.
+//
+// Weights are expert-major, so one rank-3 descriptor covers every expert and
+// the third coordinate selects. A dense GEMM is the same tensor with one
+// group, which is why there is no separate dense staging path. The weight side
+// never has a row indirection - experts own their weight slices outright - so
+// this half stays a tensor box on every path.
+static __device__ __forceinline__ void LmPipelineProduceWeight(
+    const LmTileGeometry *a,
+    const LmTileGeometry *b,
+    const void *tensor_map_b,
+    void *stage_b,
+    uint64_t *barrier,
+    uint32_t k_byte_b,
+    uint32_t neuron_base,
+    uint32_t group_index,
+    bool grouped)
+{
+	if ( threadIdx.x != 0u )
+		return;
+	LmMbarrierArriveExpect(barrier,
+		LmTileBytes(a->rows,a->depth,a->element_bits)
+		+ LmTileBytes(b->rows,b->depth,b->element_bits));
+	if ( grouped )
+		LmTmaLoad3d(stage_b,tensor_map_b,barrier,(int32_t)k_byte_b,(int32_t)neuron_base,(int32_t)group_index);
+	else
+		LmTmaLoad2d(stage_b,tensor_map_b,barrier,(int32_t)k_byte_b,(int32_t)neuron_base);
+}
 
 static __device__ __forceinline__ void LmPipelineProduce(
     const LmTileGeometry *a,
@@ -154,21 +190,100 @@ static __device__ __forceinline__ void LmPipelineProduce(
 	// the K TILE INDEX and each operand prices its own stride.
 	uint32_t k_byte_a = k_tile * LmTileBytes(1u,a->depth,a->element_bits);
 	uint32_t k_byte_b = k_tile * LmTileBytes(1u,b->depth,b->element_bits);
+	LmPipelineProduceWeight(a,b,tensor_map_b,stage_b,barrier,k_byte_b,neuron_base,group_index,grouped);
 	if ( threadIdx.x != 0u )
 		return;
-	LmMbarrierArriveExpect(barrier,
-		LmTileBytes(a->rows,a->depth,a->element_bits)
-		+ LmTileBytes(b->rows,b->depth,b->element_bits));
 	LmTmaLoad2d(stage_a,tensor_map_a,barrier,(int32_t)k_byte_a,(int32_t)row_base);
-	// Weights are expert-major, so one rank-3 descriptor covers every expert and
-	// the third coordinate selects. A dense GEMM is the same tensor with one
-	// group, which is why there is no separate dense staging path.
-	if ( grouped )
-		LmTmaLoad3d(stage_b,tensor_map_b,barrier,(int32_t)k_byte_b,(int32_t)neuron_base,(int32_t)group_index);
-	else
-		LmTmaLoad2d(stage_b,tensor_map_b,barrier,(int32_t)k_byte_b,(int32_t)neuron_base);
 }
 
+// INDIRECT A STAGING - the MoE gather deletion, route.cuh's consumer contract.
+//
+// A TMA box is affine: the rows it lands are a fixed coordinate window, so a
+// per-row indirection can never be a box. When LmGemmArguments carries a
+// source_row_map, packed A row p is staged from row
+// LmRouteSourceRow(source_row_map, p) of the UN-gathered source tensor
+// instead, one cp.async.bulk per 16-byte swizzle chunk - the chunk is the
+// largest span the row's swizzle permutation leaves contiguous, so it is the
+// granularity the staged layout forces. Every chunk is complete_tx-accounted
+// against the same barrier and thread 0 declares the same a_bytes + b_bytes
+// total through the same helper, so the barrier protocol - one barrier per
+// stage, one ArriveExpect, phase-parity waits, the produce-ahead schedule - is
+// IDENTICAL to the TMA path above. Only the copy engine changed, which is the
+// roadmap's open hardware question (D9: bulk-16B vs per-thread cp.async
+// occupancy), and the variant exists so that question is measured rather than
+// guessed.
+//
+// Threads issue chunks round-robin, consecutive threads on consecutive chunks
+// of one source row, so the global side coalesces. A chunk may complete before
+// thread 0's expect lands; the mbarrier transaction count is signed and the
+// phase completes only when the arrival AND a zero count meet, so issue order
+// between the expect and the copies does not matter.
+//
+// RAGGED TAIL, per the contract: the group's last tile covers
+// [row_base, row_base + TILE_M) but valid indices end at row_limit, and the
+// bytes past row_limit are the NEXT group's indices - in range and wrong.
+// Tail rows clamp to row_base, a live row; their stores are already dropped by
+// the GEMM's row_limit check, so the duplicate load is dead traffic, never
+// wrong output. The trap is the other half of that guard: a mapped row past
+// source_row_count means the route build wrote past its own arrays, and a
+// wild bulk copy faults or, worse, does not.
+template<class FormatA>
+static __device__ __forceinline__ void LmPipelineProduceIndirectA(
+	const LmTileGeometry *a,
+	const LmTileGeometry *b,
+	const void *tensor_map_b,
+	const uint8_t *activation_bytes,
+	const uint32_t *source_row_map,
+	uint32_t source_row_count,
+	uint32_t input_dimension,
+	void *stage_a,
+	void *stage_b,
+	uint64_t *barrier,
+	uint32_t row_base,
+	uint32_t row_limit,
+	uint32_t neuron_base,
+	uint32_t k_tile,
+	uint32_t group_index,
+	bool grouped)
+{
+	const uint32_t row_pitch = LmTileBytes(1u,a->depth,a->element_bits);
+	const uint32_t chunk_count = row_pitch / LM_SWIZZLE_CHUNK_BYTES;
+	uint32_t index,local_row,chunk,packed_row,source_row,destination_offset;
+	uint64_t source_offset;
+	static_assert(FormatA::kStoredBits % 8u == 0u,
+		"indirect activation staging requires byte-addressable rows");
+	static_assert(LmTileBytes(1u,FormatA::kTileK,FormatA::kStoredBits) % LM_SWIZZLE_CHUNK_BYTES == 0u,
+		"indirect activation staging requires complete 16-byte chunks");
+	LmPipelineProduceWeight(a,b,tensor_map_b,stage_b,barrier,
+		k_tile * LmTileBytes(1u,b->depth,b->element_bits),neuron_base,group_index,grouped);
+	for (index=threadIdx.x; index<a->rows * chunk_count; index+=blockDim.x)
+	{
+		local_row = index / chunk_count;
+		chunk = index % chunk_count;
+		packed_row = row_base + local_row < row_limit ? row_base + local_row : row_base;
+		source_row = LmRouteSourceRow(source_row_map,packed_row);
+		if ( source_row >= source_row_count )
+			asm volatile("trap;\n");
+		source_offset = ((uint64_t)source_row * ((input_dimension * FormatA::kStoredBits) / 8u))
+			+ (k_tile * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
+		destination_offset = FormatA::kTmaSwizzle
+			? LmSwizzledOffset(local_row,chunk * LM_SWIZZLE_CHUNK_BYTES,row_pitch,LmSwizzleSpanFor(row_pitch))
+			: (local_row * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
+		LmTmaLoadBulk1d(
+			(uint8_t *)stage_a + destination_offset,
+			activation_bytes + source_offset,
+			barrier,
+			LM_SWIZZLE_CHUNK_BYTES);
+	}
+}
+
+// ACTIVATION-CODEC STAGING. The A rows are staged BF16, quantised and
+// dequantised into the codec's codes in shared by LmActivationStageFp8Qdq,
+// optionally through the same route map the indirect path reads. The copies
+// are plain shared stores, so the barrier declares and tracks ONLY the weight
+// box and the caller owes a __syncthreads after the wait - the codec-free
+// indirect path is LmPipelineProduceIndirectA above, whose bulk copies are
+// complete_tx-accounted and need no such sync.
 template<class FormatA,uint32_t TILE_ROWS,uint32_t TILE_K,uint32_t ACTIVATION_CODEC>
 static __device__ __forceinline__ void LmPipelineProduceManualA(
 	const LmTileGeometry *a,
@@ -188,12 +303,8 @@ static __device__ __forceinline__ void LmPipelineProduceManualA(
 	uint32_t group_index,
 	bool grouped)
 {
-	const uint32_t row_pitch = LmTileBytes(1u,a->depth,a->element_bits);
-	const uint32_t chunk_count = row_pitch / LM_SWIZZLE_CHUNK_BYTES;
-	uint32_t index,local_row,chunk,packed_row,source_row,destination_offset;
-	uint64_t source_offset;
-	const uint4 *source;
-	uint4 *destination;
+	static_assert(ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE,
+		"the codec-free indirect path is LmPipelineProduceIndirectA");
 	static_assert(FormatA::kStoredBits % 8u == 0u,
 		"indirect activation staging requires byte-addressable rows");
 	static_assert(LmTileBytes(1u,FormatA::kTileK,FormatA::kStoredBits) % LM_SWIZZLE_CHUNK_BYTES == 0u,
@@ -217,24 +328,6 @@ static __device__ __forceinline__ void LmPipelineProduceManualA(
 			activation_bytes,source_row_map,source_row_count,row_base,row_limit,
 			k_tile * TILE_K,input_dimension,stage_a,0u,blockDim.x / 32u);
 	}
-	else
-		for (index=threadIdx.x; index<a->rows * chunk_count; index+=blockDim.x)
-		{
-			local_row = index / chunk_count;
-			chunk = index % chunk_count;
-			packed_row = row_base + local_row < row_limit ? row_base + local_row : row_base;
-			source_row = source_row_map != 0 ? source_row_map[packed_row] : packed_row;
-			if ( source_row >= source_row_count )
-				asm volatile("trap;\n");
-			source_offset = ((source_row * input_dimension * FormatA::kStoredBits) / 8u)
-				+ (k_tile * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
-			destination_offset = FormatA::kTmaSwizzle
-				? LmSwizzledOffset(local_row,chunk * LM_SWIZZLE_CHUNK_BYTES,row_pitch,LmSwizzleSpanFor(row_pitch))
-				: (local_row * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
-			source = (const uint4 *)(activation_bytes + source_offset);
-			destination = (uint4 *)((uint8_t *)stage_a + destination_offset);
-			*destination = *source;
-		}
 }
 
 // -- grouped tile scheduling -------------------------------------------------

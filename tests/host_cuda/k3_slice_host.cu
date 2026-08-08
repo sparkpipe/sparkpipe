@@ -73,7 +73,14 @@ static uint16_t query[ROWS * K3_MLA_Q_DIM], key[ROWS * K3_KDA_QK_DIM];
 static uint16_t value[ROWS * K3_KDA_V_DIM], gate[ROWS * K3_KDA_V_DIM];
 static uint16_t decay_logit[ROWS * K3_KDA_QK_DIM];
 static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
-static uint16_t route_gather[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
+// The pack-V2 wide scratches the two fused GEMMs land in, plus the gate
+// bottleneck's hold across the delta rule. The recorder never reads weight
+// CONTENT - pointer identity is what proves the bind propagated the fused
+// tensors - so the two weight stand-ins are one row each.
+static uint16_t fused_qkvb[ROWS * K3_KDA_QKVB_FUSED_ROWS];
+static uint16_t fused_decay_gate[ROWS * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS];
+static uint16_t gate_latent[ROWS * K3_KDA_KEY_DIM];
+static uint16_t qkvb_weight[K3_HIDDEN], decay_gate_weight[K3_HIDDEN];
 static uint16_t aux_slab[K3_DSPARK_AUX_LAYER_COUNT * ROWS * K3_HIDDEN];
 static uint16_t aux_reference[ROWS * K3_HIDDEN];
 static uint16_t kv_slot[ROWS * K3_MLA_KV_A_DIM];
@@ -127,6 +134,8 @@ static const char *GemmName(const void *output)
 		: output == (void *)shared_out ? "shared_out"
 		: output == (void *)attention_out ? "attention_out"
 		: output == (void *)latent ? "latent"
+		: output == (void *)fused_qkvb ? "fused_qkvb"
+		: output == (void *)fused_decay_gate ? "fused_decay_gate"
 		: output == (void *)query ? "query"
 		: output == (void *)key ? "key"
 		: output == (void *)value ? "value"
@@ -136,6 +145,16 @@ static const char *GemmName(const void *output)
 		: output == (void *)kv_slot ? "kv_slot"
 		: output == (void *)gate_up ? "gate_up"
 		: output == (void *)router_logits ? "router"
+		: "other";
+}
+
+// The weight a recorded GEMM consumed, named the same way. The two fused KDA
+// tensors are the pack-V2 bind contract; a KDA layer recording any other
+// weight against normed_bf16 is the six-launch block come back.
+static const char *WeightName(const void *weight)
+{
+	return weight == (const void *)qkvb_weight ? "qkvb"
+		: weight == (const void *)decay_gate_weight ? "decay_gate"
 		: "other";
 }
 
@@ -188,6 +207,8 @@ int main(void)
 		w->routed_norm_weight = ones_weight;
 		w->mla_q_norm_weight = ones_weight; w->mla_kv_a_norm_weight = ones_weight;
 		w->kda_out_norm_weight = ones_f32;
+		w->kda_qkv_beta_weight = qkvb_weight;
+		w->kda_decay_gate_down_weight = decay_gate_weight;
 		w->kda_q_conv_weight = conv_weight; w->kda_k_conv_weight = conv_weight;
 		w->kda_v_conv_weight = conv_weight;
 		w->kda_decay_bias = decay_bias; w->kda_head_log_scale = head_log_scale;
@@ -197,10 +218,11 @@ int main(void)
 	}
 	b.hidden_bf16 = hidden; b.normed_bf16 = normed;
 	b.attention_out_bf16 = attention_out; b.shared_out_bf16 = shared_out;
+	b.fused_qkvb_bf16 = fused_qkvb; b.fused_decay_gate_bf16 = fused_decay_gate;
+	b.gate_latent_bf16 = gate_latent;
 	b.query_bf16 = query; b.key_bf16 = key; b.value_bf16 = value;
 	b.gate_bf16 = gate; b.decay_logit_bf16 = decay_logit;
 	b.latent_bf16 = latent; b.kv_slot_bf16 = kv_slot;
-	b.route_gather_bf16 = route_gather;
 	b.gate_up_bf16 = gate_up; b.intermediate_bf16 = intermediate;
 	b.attnres_bank_bf16 = bank; b.attnres_partial_bf16 = partial;
 	b.attnres_out_weight = attn_query_weight;
@@ -312,8 +334,9 @@ int main(void)
 				? (uint32_t)(b.cache.pool == kv_pool[layer / 4u] ? layer / 4u : 999u)
 				: 998u);
 		for (; logged < lm_recorded_gemms.size(); ++logged)
-			printf("gemm %u layer %u dest %s\n", logged + 1u, layer,
-				GemmName(lm_recorded_gemms[logged].output));
+			printf("gemm %u layer %u dest %s wgt %s\n", logged + 1u, layer,
+				GemmName(lm_recorded_gemms[logged].output),
+				WeightName(lm_recorded_gemms[logged].weight));
 		Emit("partial", partial, ROWS * K3_HIDDEN);
 		Emit("stream", hidden, ROWS * K3_HIDDEN);
 		Emit("normed", normed, ROWS * K3_HIDDEN);

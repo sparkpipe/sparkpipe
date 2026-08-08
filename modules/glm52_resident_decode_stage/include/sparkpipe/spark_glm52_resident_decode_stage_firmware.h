@@ -6,6 +6,11 @@
 #include "sparkpipe/spark_module_abi.h"
 #include "sparkpipe/spark_weight_codec.h"
 
+// The batch-variant tuning header: the active-sequence ceiling below IS the
+// compiled bucket, so a variant build's lane tables shrink to the tight fit.
+// The unflagged build is b1024, the ceiling this stage has always had.
+#include "sparkpipe/spark_glm52_batch_tuning.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,7 +20,8 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT 13u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE 6u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT 1024u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT \
+	SPARK_BATCH_BUCKET
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 65536u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 4u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT \

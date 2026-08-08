@@ -47,13 +47,23 @@ def main():
     gemms = []
     for line in run.stdout.split("\n"):
         match = re.match(r"gemm \d+ dest (\w+) in (\d+) out (\d+) rows (\d+) "
-                         r"grouped (\d)", line)
+                         r"grouped (\d) ind (\d)", line)
         if match:
             gemms.append(dict(dest=match.group(1), inp=int(match.group(2)),
                               out=int(match.group(3)), rows=int(match.group(4)),
-                              grouped=match.group(5) == "1"))
+                              grouped=match.group(5) == "1",
+                              indirect=match.group(6) == "1"))
     values = dict(re.findall(r"(\w+)\[0\] ([\d.\-]+)", run.stdout))
     failures = 0
+
+    # pack V2 interleaves the expert scales into the weight stream; the
+    # grouped GEMM cannot read that grid yet, so the layer must fail closed
+    # on the flag (the kernels-wave contract is in K3LayerLatentMoe).
+    refused = re.search(r"interleave_refused (\d)", run.stdout)
+    if refused is None or refused.group(1) != "1":
+        print("  FAIL the layer did not refuse the interleaved expert stream; "
+              "scales co-tiled with payload would be read as weights")
+        failures += 1
 
     destinations = [g["dest"] for g in gemms]
     if "shared_out" not in destinations:
@@ -89,6 +99,20 @@ def main():
             print(f"  FAIL an expert GEMM sees {g['rows']} rows; "
                   f"routes should be rows * top_k")
             failures += 1
+    # THE GATHER DELETION, OBSERVED: the w1 expert GEMM (the wide one, gate|up
+    # out) must arrive INDIRECT - A rows read through route_source_token, no
+    # packed activation copy - and the w2 must not be (its input is the SiTU
+    # output, already expert-major).
+    wide = [g for g in grouped if g["out"] == max(x["out"] for x in grouped)]
+    down = [g for g in grouped if g["out"] != max(x["out"] for x in grouped)]
+    if len(wide) != 1 or not wide[0]["indirect"]:
+        print("  FAIL the w1 expert GEMM did not come in indirect; the route "
+              "gather double-touch is back (roadmap D9)")
+        failures += 1
+    if len(down) != 1 or down[0]["indirect"]:
+        print("  FAIL the w2 expert GEMM is indirect; its A rows are the "
+              "packed SiTU output, which has no route-map meaning")
+        failures += 1
     router = gemms[0]
     if router["inp"] != 7168:
         print(f"  FAIL the router reads {router['inp']}, not the full hidden")

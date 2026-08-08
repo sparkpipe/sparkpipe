@@ -27,6 +27,13 @@
 // a one-instruction tile fetch into a per-thread address computation loop and
 // nothing would report the change. lm/lm_dtype.cuh remains available as
 // an explicit, separately selected staging path.
+//
+// LmTmaLoadBulk1d is NOT that fallback. It is the same mbarrier-transaction
+// machinery with a linear address instead of a tensor map, and it exists for
+// exactly one job: the indirect-A grouped GEMM (route.cuh's consumer contract),
+// where each staged A row comes from an index the affine box coordinates cannot
+// express. Completion is still complete_tx against the stage barrier, so the
+// pipeline's arrive/expect/parity protocol cannot tell the two paths apart.
 
 #include <cuda_runtime.h>
 #include <stdint.h>
@@ -131,6 +138,22 @@ static __device__ __forceinline__ void LmTmaLoad3d(void *shared_destination, con
 	asm volatile("cp.async.bulk.tensor.3d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4, %5}], [%2];\n"
 		:: "r"(LmTmaSharedAddress(shared_destination)), "l"(tensor_map),
 		   "r"(LmTmaSharedAddress(barrier)), "r"(coordinate_0), "r"(coordinate_1), "r"(coordinate_2)
+		: "memory");
+}
+
+// Bulk-copy BYTES from a linear global address into shared, completion counted
+// against the same mbarrier transaction total a tensor box would use. This is
+// the staging primitive for rows a tensor map cannot address: an indirect A
+// row lives at base + index[p] * pitch, and the 16-byte swizzle chunk is the
+// largest span whose destination is not permuted by the row's own swizzle, so
+// one of these moves one chunk. Unlike the tensor forms there is no hardware
+// bounds check and no zero fill - the caller clamps every index into a live
+// row, because a wild one faults instead of padding.
+static __device__ __forceinline__ void LmTmaLoadBulk1d(void *shared_destination, const void *global_source, uint64_t *barrier, uint32_t bytes)
+{
+	asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];\n"
+		:: "r"(LmTmaSharedAddress(shared_destination)), "l"(global_source),
+		   "r"(bytes), "r"(LmTmaSharedAddress(barrier))
 		: "memory");
 }
 
