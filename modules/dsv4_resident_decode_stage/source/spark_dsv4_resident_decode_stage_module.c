@@ -631,12 +631,12 @@ static SparkStatus SparkDsv4ModuleUploadFreqs(SparkDsv4ModuleState *state)
 }
 
 /*
- * Cache pools. Every layer holds a lane block of window + compressed slots
- * of head_dim bf16 in one contiguous run - the reference's [win | stream]
- * layout, so the attention indices address one base. Compressor states are
- * sized for the WORST class on the stage (HCA's 128x512 doubled) and
- * strided uniformly per (layer ordinal, lane); the indexer keeps its own
- * rotated cache and small overlap state per CSA ordinal.
+ * Cache pools. Each layer holds only the slots required by its attention
+ * class: SWA keeps the local window, HCA keeps its compressed stream, and
+ * CSA keeps both. Per-layer offsets preserve the reference's contiguous
+ * [window | stream] addressing while compressor state uses the matching
+ * class footprint. The indexer keeps its rotated cache and small overlap
+ * state per CSA ordinal.
  */
 // One-time MXFP4 shadow of the lm_head plus per-neuron certified error
 // norms, the mimo25 screened-head pattern; head stage only, built

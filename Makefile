@@ -201,6 +201,7 @@ PYTHON_TESTS := \
 	tests/test_dsv4_driver_source_contracts.py \
 	tests/test_dsv4_ga_reference_fixture.py \
 	tests/test_dsv4_module_host_syntax.py \
+	tests/test_dsv4_pool_layout.py \
 	tests/test_dsv4_stage_source.py \
 	tests/test_dsv4_stagepack.py \
 	tests/test_expert_grouping.py \
