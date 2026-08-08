@@ -25,6 +25,12 @@ extern "C" {
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT 4096u
 #define SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT UINT32_MAX
 
+/*
+ * Mark the final prefill row for a lane as token-producing. Intermediate
+ * prefill chunks leave this clear; every active decode lane sets it. The
+ * completion remains lane-indexed; consumers ignore the zero placeholder for
+ * unmarked prefill lanes.
+ */
 #define SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN UINT32_C(0x00000001)
 #define SPARK_MODEL_SERVING_LANE_KNOWN_FLAGS \
 	SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN

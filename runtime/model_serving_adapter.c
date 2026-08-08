@@ -113,7 +113,8 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 	for (lane=0u; lane<submission->lane_count; lane++)
 	{
 		if ( (submission->lanes[lane].flags & ~SPARK_MODEL_SERVING_LANE_KNOWN_FLAGS) != 0u ||
-			(submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE && submission->lanes[lane].flags != 0u) )
+			(submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE && submission->lanes[lane].flags != 0u) ||
+			(submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && lane < submission->active_sequence_count && (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) == 0u) )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( lane >= submission->active_sequence_count )
 		{

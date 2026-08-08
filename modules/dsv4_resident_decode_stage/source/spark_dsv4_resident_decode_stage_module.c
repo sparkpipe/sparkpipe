@@ -13,6 +13,7 @@
 
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "spark_dsv4_lane_continuity.h"
 #include "spark_dsv4_pool_layout.h"

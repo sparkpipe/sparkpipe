@@ -8,6 +8,7 @@
 #include "sparkpipe/spark_dsv4_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#include "sparkpipe/spark_row_layout.h"
 
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.pp13.v2"
@@ -186,8 +187,11 @@ static SparkStatus SparkDsv4ServingValidateRowOrder(
 	const SparkDsv4ServingAdapterState *state,
 	const SparkModelServingSubmission *submission)
 {
+	SparkRowLayoutDenseLaneContext dense;
 	uint8_t seen[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t last_position[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t occurrences[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t last_rows[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t lane,row;
 	for (row=0u; row<submission->row_count; row++)
 		if ( submission->row_positions[row] >= state->node_context.max_sequence_positions )
@@ -203,7 +207,8 @@ static SparkStatus SparkDsv4ServingValidateRowOrder(
 		seen[lane] = 1u;
 		last_position[lane] = submission->row_positions[row];
 	}
-	return(SparkDsv4ValidateRoundMajorPrefillRows(submission->row_count,submission->active_sequence_count,submission->row_lane_indices));
+	dense.lane_count = submission->active_sequence_count;
+	return(SparkRowLayoutValidateRoundMajor(submission->row_count,submission->active_sequence_count,submission->row_lane_indices,SparkRowLayoutDenseLaneOrdinal,&dense,occurrences,last_rows));
 }
 
 static SparkStatus SparkDsv4ServingReservePending(
@@ -394,6 +399,7 @@ static SparkStatus SparkDsv4ServingInitializeRunner(
 	runner_configuration.stage_count = SPARK_DSV4_SERVING_STAGE_COUNT;
 	runner_configuration.max_active_sequence_count = state->max_active_sequence_count;
 	runner_configuration.max_input_row_count = state->max_input_row_count;
+	runner_configuration.resident_sequence_capacity = state->resident_sequence_capacity;
 	runner_configuration.driver_interface = state->driver.interface;
 	runner_configuration.driver_instance = state->driver_instance;
 	runner_configuration.program = state->program;
@@ -488,14 +494,11 @@ static SparkStatus SparkDsv4ServingInitialize(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkDsv4ServingValidateSubmission(
-	void *adapter_state,
+static SparkStatus SparkDsv4ServingValidateSubmissionBase(
+	SparkDsv4ServingAdapterState *state,
 	const SparkModelServingSubmission *submission)
 {
-	SparkDsv4ServingAdapterState *state;
 	SparkStatus status;
-	uint32_t emit_count;
-	state = (SparkDsv4ServingAdapterState *)adapter_state;
 	if ( state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->quiescing != 0u )
@@ -508,12 +511,23 @@ static SparkStatus SparkDsv4ServingValidateSubmission(
 	status = SparkDsv4ServingValidateRowOrder(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	status = SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count);
-	if ( status != SPARK_STATUS_OK || (submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && emit_count != submission->active_sequence_count) )
-		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
 	if ( submission->model_extension_bytes != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDsv4ServingValidateSubmission(
+	void *adapter_state,
+	const SparkModelServingSubmission *submission)
+{
+	SparkDsv4ServingAdapterState *state;
+	uint32_t emit_count;
+	SparkStatus status;
+	state = (SparkDsv4ServingAdapterState *)adapter_state;
+	status = SparkDsv4ServingValidateSubmissionBase(state,submission);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	return(SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count));
 }
 
 static SparkStatus SparkDsv4ServingSubmit(
@@ -525,7 +539,7 @@ static SparkStatus SparkDsv4ServingSubmit(
 	SparkDsv4StageRunnerDispatch dispatch;
 	SparkStatus status;
 	state = (SparkDsv4ServingAdapterState *)adapter_state;
-	status = SparkDsv4ServingValidateSubmission(state,submission);
+	status = SparkDsv4ServingValidateSubmissionBase(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	status = SparkDsv4ServingReservePending(state,submission,&pending);

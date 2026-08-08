@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_dsv4_resident_decode_stage_runner.h"
+#include "sparkpipe/spark_row_layout.h"
 
 typedef struct SparkDsv4RunnerTestState
 {
@@ -149,6 +150,7 @@ static void SparkDsv4RunnerTestPrefillMapping(void)
     configuration.stage_count = 13u;
 	configuration.max_active_sequence_count = 1u;
 	configuration.max_input_row_count = 1u;
+	configuration.resident_sequence_capacity = 1u;
     configuration.driver_interface = &TestInterface;
     configuration.driver_instance = &TestState;
     configuration.program = &TestProgram;
@@ -205,6 +207,7 @@ static void SparkDsv4RunnerTestIntermediateRequiresInput(void)
     configuration.stage_count = 13u;
 	configuration.max_active_sequence_count = 1u;
 	configuration.max_input_row_count = 1u;
+	configuration.resident_sequence_capacity = 1u;
     configuration.driver_interface = &TestInterface;
     configuration.driver_instance = &TestState;
     configuration.program = &TestProgram;
@@ -233,6 +236,7 @@ static void SparkDsv4RunnerTestIntermediateTokenRouting(void)
 	configuration.stage_count = 13u;
 	configuration.max_active_sequence_count = 1u;
 	configuration.max_input_row_count = 1u;
+	configuration.resident_sequence_capacity = 1u;
 	configuration.driver_interface = &TestInterface;
 	configuration.driver_instance = &TestState;
 	configuration.program = &TestProgram;
@@ -270,11 +274,60 @@ static void SparkDsv4RunnerTestRoundMajorPrefill(void)
 {
 	uint32_t round_major[6] = {7u,3u,11u,3u,11u,3u};
 	uint32_t lane_major[6] = {7u,7u,3u,3u,3u,11u};
-	assert(SparkDsv4ValidateRoundMajorPrefillRows(6u,3u,round_major) == SPARK_STATUS_OK);
-	assert(SparkDsv4ValidateRoundMajorPrefillRows(6u,3u,lane_major) == SPARK_STATUS_INVALID_ARGUMENT);
-	assert(SparkDsv4RoundMajorPrefillWaveRowCount(6u,3u,round_major,0u) == 3u);
-	assert(SparkDsv4RoundMajorPrefillWaveRowCount(6u,3u,round_major,3u) == 2u);
-	assert(SparkDsv4RoundMajorPrefillWaveRowCount(6u,3u,round_major,5u) == 1u);
+	uint32_t ordinals[12],occurrences[3],last_rows[3];
+	SparkRowLayoutDirectLaneContext direct;
+	assert(SparkRowLayoutDirectLaneMapInitialize(&direct,ordinals,12u,round_major,3u) == SPARK_STATUS_OK);
+	assert(SparkRowLayoutValidateRoundMajor(6u,3u,round_major,SparkRowLayoutDirectLaneOrdinal,&direct,occurrences,last_rows) == SPARK_STATUS_OK);
+	assert(SparkRowLayoutValidateRoundMajor(6u,3u,lane_major,SparkRowLayoutDirectLaneOrdinal,&direct,occurrences,last_rows) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkRowLayoutRoundMajorWaveRowCount(0u,6u,round_major,SparkRowLayoutDirectLaneOrdinal,&direct) == 3u);
+	assert(SparkRowLayoutRoundMajorWaveRowCount(3u,6u,round_major,SparkRowLayoutDirectLaneOrdinal,&direct) == 2u);
+	assert(SparkRowLayoutRoundMajorWaveRowCount(5u,6u,round_major,SparkRowLayoutDirectLaneOrdinal,&direct) == 1u);
+}
+
+static void SparkDsv4RunnerTestRejectsNonFinalEmitRow(void)
+{
+	SparkDsv4StageRunner runner;
+	SparkDsv4StageRunnerConfiguration configuration;
+	SparkDsv4StageRunnerDispatch dispatch;
+	uint32_t token_ids[2] = {1u,2u},row_lanes[2] = {0u,0u},emit_row = 0u,emit_lane = 0u;
+	uint64_t positions[2] = {0u,1u},sequences[2] = {1u,1u};
+	uint16_t hidden_output;
+	memset(&TestState,0,sizeof(TestState));
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES;
+	configuration.flags = SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_ADMISSION | SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY;
+	configuration.stage_index = 0u;
+	configuration.stage_count = 13u;
+	configuration.max_active_sequence_count = 1u;
+	configuration.max_input_row_count = 2u;
+	configuration.resident_sequence_capacity = 1u;
+	configuration.driver_interface = &TestInterface;
+	configuration.driver_instance = &TestState;
+	configuration.program = &TestProgram;
+	configuration.execution_stream = (void *)(uintptr_t)1u;
+	assert(SparkDsv4StageRunnerInitialize(&runner,&configuration) == SPARK_STATUS_OK);
+	memset(&dispatch,0,sizeof(dispatch));
+	dispatch.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
+	dispatch.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES;
+	dispatch.flags = SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL;
+	dispatch.request_id = 1u;
+	dispatch.sequence_id = 1u;
+	dispatch.active_sequence_count = 1u;
+	dispatch.new_token_count = 2u;
+	dispatch.row_count = 2u;
+	dispatch.lane_count = 1u;
+	dispatch.token_ids = token_ids;
+	dispatch.row_lane_indices = row_lanes;
+	dispatch.row_positions = positions;
+	dispatch.row_sequence_ids = sequences;
+	dispatch.emit_count = 1u;
+	dispatch.emit_row_indices = &emit_row;
+	dispatch.emit_lane_indices = &emit_lane;
+	dispatch.hidden_output_bf16 = &hidden_output;
+	dispatch.hidden_output_bytes = (uint64_t)2u * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	assert(SparkDsv4StageRunnerSubmit(&runner,&dispatch) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(TestState.admit_count == 0u && TestState.submit_count == 0u);
 }
 
 static uint32_t SparkDsv4RunnerRingSum(const uint32_t *ring, uint32_t lane, uint64_t position)
@@ -291,6 +344,8 @@ static void SparkDsv4RunnerTestCausalBulkWaves(void)
 	uint32_t serial_ring[8] = {1u,2u,3u,0u,10u,20u,30u,0u},wave_ring[8],bulk_ring[8];
 	uint32_t serial_out[4],wave_out[4],bulk_out[4],first,wave,row;
 	uint64_t positions[4] = {3u,3u,4u,4u};
+	SparkRowLayoutDenseLaneContext dense;
+	dense.lane_count = 2u;
 	memcpy(wave_ring,serial_ring,sizeof(serial_ring));
 	memcpy(bulk_ring,serial_ring,sizeof(serial_ring));
 	for (row=0u; row<4u; row++)
@@ -303,7 +358,7 @@ static void SparkDsv4RunnerTestCausalBulkWaves(void)
 		bulk_out[row] = SparkDsv4RunnerRingSum(bulk_ring,lanes[row],positions[row]);
 	for (first=0u; first<4u; first+=wave)
 	{
-		wave = SparkDsv4RoundMajorPrefillWaveRowCount(4u,2u,lanes,first);
+		wave = SparkRowLayoutRoundMajorWaveRowCount(first,4u,lanes,SparkRowLayoutDenseLaneOrdinal,&dense);
 		for (row=first; row<first+wave; row++)
 			wave_ring[lanes[row] * 4u + positions[row] % 4u] = values[row];
 		for (row=first; row<first+wave; row++)
@@ -334,6 +389,7 @@ int main(void)
 	SparkDsv4RunnerTestIntermediateRequiresInput();
 	SparkDsv4RunnerTestIntermediateTokenRouting();
 	SparkDsv4RunnerTestRoundMajorPrefill();
+	SparkDsv4RunnerTestRejectsNonFinalEmitRow();
 	SparkDsv4RunnerTestCausalBulkWaves();
 	SparkDsv4RunnerTestPrefillOffsets();
     return 0;

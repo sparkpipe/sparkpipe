@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_model_serving_adapter.h"
+#include "sparkpipe/spark_row_layout.h"
 
 #ifndef TEST_MODEL_SERVING_ADAPTER_MODULE_PATH
 #define TEST_MODEL_SERVING_ADAPTER_MODULE_PATH ""
@@ -253,11 +254,13 @@ static void TestRuntimeSubmissionValidation(void)
 	lanes[0].step_generation = 1u;
 	lanes[0].sequence_id = 100u;
 	lanes[0].resident_sequence_slot = 7u;
+	lanes[0].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	lanes[1].request_id = 11u;
 	lanes[1].request_generation = 1u;
 	lanes[1].step_generation = 1u;
 	lanes[1].sequence_id = 101u;
 	lanes[1].resident_sequence_slot = 3u;
+	lanes[1].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	token_ids[0] = 20u;
 	token_ids[1] = 21u;
 	row_lanes[0] = 0u;
@@ -289,6 +292,9 @@ static void TestRuntimeSubmissionValidation(void)
 	submission.row_positions = row_positions;
 	submission.row_sequence_ids = row_sequences;
 	assert(SparkModelServingAdapterValidateRuntimeSubmission(&descriptor,&limits,&submission) == SPARK_STATUS_OK);
+	lanes[1].flags = 0u;
+	assert(SparkModelServingAdapterValidateRuntimeSubmission(&descriptor,&limits,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lanes[1].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	lanes[1].resident_sequence_slot = 7u;
 	assert(SparkModelServingAdapterValidateRuntimeSubmission(&descriptor,&limits,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	lanes[1].resident_sequence_slot = 3u;
@@ -367,6 +373,28 @@ static void TestEmitRowSelection(void)
 	assert(SparkModelServingAdapterSelectEmitRows(&submission,emit_rows,emit_lanes,SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT,&emit_count) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void TestMaximumRoundMajorRowLayout(void)
+{
+	static uint32_t row_lanes[SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT];
+	static uint32_t occurrences[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+	static uint32_t last_rows[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+	SparkRowLayoutDenseLaneContext dense;
+	uint32_t lane,row;
+	dense.lane_count = SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT;
+	for (lane=0u; lane<dense.lane_count; lane++)
+		row_lanes[lane] = lane;
+	for (row=dense.lane_count; row<SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT; row++)
+		row_lanes[row] = 0u;
+	assert(SparkRowLayoutValidateRoundMajor(SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT,dense.lane_count,row_lanes,SparkRowLayoutDenseLaneOrdinal,&dense,occurrences,last_rows) == SPARK_STATUS_OK);
+	assert(occurrences[0] == SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT - dense.lane_count + 1u);
+	assert(last_rows[0] == SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT - 1u);
+	assert(last_rows[dense.lane_count - 1u] == dense.lane_count - 1u);
+	assert(SparkRowLayoutRoundMajorWaveRowCount(0u,SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT,row_lanes,SparkRowLayoutDenseLaneOrdinal,&dense) == dense.lane_count);
+	assert(SparkRowLayoutRoundMajorWaveRowCount(dense.lane_count,SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT,row_lanes,SparkRowLayoutDenseLaneOrdinal,&dense) == 1u);
+	row_lanes[0] = 1u;
+	assert(SparkRowLayoutValidateRoundMajor(SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT,dense.lane_count,row_lanes,SparkRowLayoutDenseLaneOrdinal,&dense,occurrences,last_rows) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 static void TestCompletionValidation(void)
 {
 	SparkModelServingAdapterDescriptor descriptor;
@@ -410,6 +438,7 @@ int main(void)
 	TestSubmissionValidation();
 	TestRuntimeSubmissionValidation();
 	TestEmitRowSelection();
+	TestMaximumRoundMajorRowLayout();
 	TestCompletionValidation();
 	TestDynamicLoader();
 	return(0);

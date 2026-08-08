@@ -457,7 +457,7 @@ def main() -> int:
         and "SparkDsv4ModulePrefillWaveRowCount" in module
         and "SparkDsv4ModuleRunFrame(" in module
         and "SparkDsv4ModuleRunFrameWaves" not in module
-        and "SparkDsv4ValidateRoundMajorPrefillRows" in module,
+        and "SparkRowLayoutValidateRoundMajor" in module,
         "DSV4 prefill does not bulk dense work around causal attention waves",
     )
     require(
@@ -539,7 +539,7 @@ def main() -> int:
         "DSV4 adapter does not translate batch lanes to persistent KV slots",
     )
     require(
-        "SparkDsv4ValidateRoundMajorPrefillRows" in adapter,
+        "SparkRowLayoutValidateRoundMajor" in adapter,
         "DSV4 adapter does not fail closed on non-wavefront prefill order",
     )
     require(

@@ -2,8 +2,17 @@
 
 #include "sparkpipe/spark_dsv4_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#include "sparkpipe/spark_model_serving_adapter.h"
+#include "sparkpipe/spark_row_layout.h"
 
 #define SPARK_DSV4_STAGE_RUNNER_MAX_DRIVER_BUFFERS 2u
+
+static _Thread_local uint32_t SparkDsv4StageRunnerLaneOrdinals[
+	SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT];
+static _Thread_local uint32_t SparkDsv4StageRunnerOccurrences[
+	SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+static _Thread_local uint32_t SparkDsv4StageRunnerLastRows[
+	SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 
 static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
     const SparkDsv4StageRunnerConfiguration *configuration)
@@ -24,6 +33,9 @@ static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
 		configuration->max_input_row_count < configuration->max_active_sequence_count ||
 		configuration->max_input_row_count >
 			SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT ||
+		configuration->resident_sequence_capacity < configuration->max_active_sequence_count ||
+		configuration->resident_sequence_capacity >
+			SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT ||
         configuration->driver_interface == 0 ||
         configuration->driver_instance == 0 ||
         configuration->program == 0 ||
@@ -47,7 +59,19 @@ static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    return SPARK_STATUS_OK;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkDsv4StageRunnerValidatePrefillRows(
+	const SparkDsv4StageRunner *runner,
+	const SparkDsv4StageRunnerDispatch *dispatch)
+{
+	SparkRowLayoutDirectLaneContext direct;
+	SparkStatus status;
+	status = SparkRowLayoutDirectLaneMapInitialize(&direct,SparkDsv4StageRunnerLaneOrdinals,runner->resident_sequence_capacity,dispatch->row_lane_indices,dispatch->active_sequence_count);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	return(SparkRowLayoutValidateRoundMajor(dispatch->row_count,dispatch->active_sequence_count,dispatch->row_lane_indices,SparkRowLayoutDirectLaneOrdinal,&direct,SparkDsv4StageRunnerOccurrences,SparkDsv4StageRunnerLastRows));
 }
 
 static SparkStatus SparkDsv4StageRunnerValidateEmitRows(
@@ -65,7 +89,7 @@ static SparkStatus SparkDsv4StageRunnerValidateEmitRows(
 	{
 		row = dispatch->emit_row_indices[index];
 		lane = dispatch->emit_lane_indices[index];
-		if ( row >= dispatch->row_count || lane >= dispatch->active_sequence_count || seen[lane] != 0u || (index != 0u && row <= previous) )
+		if ( row >= dispatch->row_count || lane >= dispatch->active_sequence_count || seen[lane] != 0u || (index != 0u && row <= previous) || row != SparkDsv4StageRunnerLastRows[lane] )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		seen[lane] = 1u;
 		previous = row;
@@ -98,13 +122,10 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchShape(
     }
     is_prefill = (dispatch->flags &
         SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u ? 1u : 0u;
-    if (is_prefill != 0u)
-    {
-        if (dispatch->new_token_count != dispatch->row_count ||
-            SparkDsv4ValidateRoundMajorPrefillRows(
-                dispatch->row_count,
-                dispatch->active_sequence_count,
-                dispatch->row_lane_indices) != SPARK_STATUS_OK)
+	if (is_prefill != 0u)
+	{
+		if (dispatch->new_token_count != dispatch->row_count ||
+			SparkDsv4StageRunnerValidatePrefillRows(runner,dispatch) != SPARK_STATUS_OK)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -349,6 +370,7 @@ SparkStatus SparkDsv4StageRunnerInitialize(
 	runner->max_active_sequence_count =
 		configuration->max_active_sequence_count;
 	runner->max_input_row_count = configuration->max_input_row_count;
+	runner->resident_sequence_capacity = configuration->resident_sequence_capacity;
     runner->owns_embedding = configuration->stage_index == 0u ? 1u : 0u;
     runner->owns_final_head = configuration->stage_index + 1u ==
         configuration->stage_count ? 1u : 0u;

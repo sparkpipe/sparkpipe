@@ -364,6 +364,7 @@ static void TestModelResidentRunCase(
 	assert(state.completion.residency.word1 == 601u);
 	assert(state.completion.residency.generation == 701u);
 	assert(state.completion.residency.owner == 13u);
+	assert(state.completion.service_time_ns != 0u);
 	assert(state.completion.completion_flags == (expect_tokens != 0u ? SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS : 0u));
 	assert(state.completion.token_count == (expect_tokens != 0u ? 2u : 0u));
 	if ( expect_tokens != 0u )

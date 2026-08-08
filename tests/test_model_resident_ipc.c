@@ -123,6 +123,7 @@ static void TestSubmissionRoundTrip(void)
 	lanes[1].step_generation = 1u;
 	lanes[1].sequence_id = 32u;
 	lanes[1].resident_sequence_slot = 11u;
+	lanes[1].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	tokens[0] = 100u;
 	tokens[1] = 101u;
 	row_lanes[0] = 0u;
@@ -173,6 +174,10 @@ static void TestSubmissionRoundTrip(void)
 	assert(((const uint8_t *)decoded.model_extension)[2] == 6u);
 	assert(memcmp(&decoded.residency,&submission.residency,
 		sizeof(decoded.residency)) == 0);
+	wire = (SparkModelResidentIpcSubmit *)buffer;
+	wire->header.abi_version--;
+	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_ABI_MISMATCH);
+	wire->header.abi_version = SPARK_MODEL_RESIDENT_IPC_ABI_VERSION;
 	assert(SparkModelResidentIpcEncodePreparation(&submission,6u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
 	assert(((const SparkModelResidentIpcHeader *)buffer)->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE);
 	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_OK);

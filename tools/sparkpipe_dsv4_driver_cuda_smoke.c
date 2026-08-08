@@ -243,6 +243,7 @@ static int SparkDsv4DriverCudaSmokeRun(
 	runner_configuration.stage_count = stage_count;
 	runner_configuration.max_active_sequence_count = SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES;
 	runner_configuration.max_input_row_count = SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS;
+	runner_configuration.resident_sequence_capacity = SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES;
 	runner_configuration.driver_interface = driver.interface;
 	runner_configuration.driver_instance = driver_instance;
 	runner_configuration.program = program;
