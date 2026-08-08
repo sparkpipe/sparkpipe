@@ -32,12 +32,15 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
 
+/* cuda_graph_count is the one optional member (a deployment's decode-step
+ * CUDA graph opt-in); it stays last so the exact-member check can clip it. */
 static const char *const SparkDsv4ServingConfigurationMembers[] =
 {
 	"schema_version",
 	"model_revision",
 	"stage_pack_path",
-	"max_sequence_positions"
+	"max_sequence_positions",
+	"cuda_graph_count"
 };
 
 typedef struct SparkDsv4ServingPending
@@ -140,11 +143,12 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 	const char *path,
 	const char *runtime_root,
 	SparkDsv4ServingAdapterState *state,
-	uint32_t *max_sequence_positions)
+	uint32_t *max_sequence_positions,
+	uint32_t *cuda_graph_count)
 {
 	SparkJsonDocument document;
 	int32_t root,token;
-	uint32_t schema_version;
+	uint32_t schema_version,member_count;
 	char *relative_stage_pack_path;
 	SparkStatus status;
 	relative_stage_pack_path = 0;
@@ -153,8 +157,11 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 	root = status == SPARK_STATUS_OK ? SparkJsonGetRootToken(&document) : -1;
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(&document,root,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	member_count = (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembers) / sizeof(SparkDsv4ServingConfigurationMembers[0]));
+	if ( status == SPARK_STATUS_OK && SparkDsv4ServingJsonMember(&document,root,"cuda_graph_count") < 0 )
+		member_count -= 1u;
 	if ( status == SPARK_STATUS_OK )
-		status = SparkJsonValidateObjectMembersExact(&document,root,SparkDsv4ServingConfigurationMembers,(uint32_t)(sizeof(SparkDsv4ServingConfigurationMembers) / sizeof(SparkDsv4ServingConfigurationMembers[0])));
+		status = SparkJsonValidateObjectMembersExact(&document,root,SparkDsv4ServingConfigurationMembers,member_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ServingJsonUnsigned(&document,root,"schema_version",&schema_version);
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_DSV4_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
@@ -167,6 +174,12 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 		status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(&document,token,&relative_stage_pack_path);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ServingJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
+	*cuda_graph_count = 0u;
+	token = status == SPARK_STATUS_OK ? SparkDsv4ServingJsonMember(&document,root,"cuda_graph_count") : -1;
+	if ( status == SPARK_STATUS_OK && token >= 0 )
+		status = SparkJsonGetUInt32(&document,token,cuda_graph_count);
+	if ( status == SPARK_STATUS_OK && *cuda_graph_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT )
+		status = SPARK_STATUS_SCHEMA_ERROR;
 	SparkJsonDocumentDestroy(&document);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
@@ -441,7 +454,8 @@ static void SparkDsv4ServingInitializeState(
 
 static void SparkDsv4ServingInitializeNodeContext(
 	SparkDsv4ServingAdapterState *state,
-	uint32_t max_sequence_positions)
+	uint32_t max_sequence_positions,
+	uint32_t cuda_graph_count)
 {
 	state->node_context.abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 	state->node_context.descriptor_bytes = SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES;
@@ -455,9 +469,8 @@ static void SparkDsv4ServingInitializeNodeContext(
 	state->node_context.linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC;
 	state->node_context.expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC;
 	state->node_context.kv_cache_codec = SPARK_DSV4_MODEL_KV_CACHE_CODEC;
-	/* Serving stays eager until a deployment opts into capture; the GPU
-	 * validator is the qualification path that raises this above zero. */
-	state->node_context.cuda_graph_count = 0u;
+	/* Zero keeps the eager decode path; the deployment opts into capture. */
+	state->node_context.cuda_graph_count = cuda_graph_count;
 	state->node_context.stage_pack_path = state->stage_pack_path;
 }
 
@@ -466,7 +479,7 @@ static SparkStatus SparkDsv4ServingInitialize(
 	void **adapter_state)
 {
 	SparkDsv4ServingAdapterState *state;
-	uint32_t max_sequence_positions;
+	uint32_t max_sequence_positions,cuda_graph_count;
 	SparkStatus status;
 	if ( adapter_state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -478,12 +491,12 @@ static SparkStatus SparkDsv4ServingInitialize(
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	SparkDsv4ServingInitializeState(state,configuration);
-	status = SparkDsv4ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions);
+	status = SparkDsv4ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&cuda_graph_count);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
-		SparkDsv4ServingInitializeNodeContext(state,max_sequence_positions);
+		SparkDsv4ServingInitializeNodeContext(state,max_sequence_positions,cuda_graph_count);
 		status = SparkDsv4ServingLoadDriver(state,configuration);
 	}
 	if ( status == SPARK_STATUS_OK )

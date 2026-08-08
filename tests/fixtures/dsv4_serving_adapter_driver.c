@@ -11,6 +11,7 @@ typedef struct TestDsv4ServingDriver
 	SparkModelDriverCompletionFunction completion_function;
 	void *completion_context;
 	uint32_t stage_index;
+	uint32_t cuda_graph_count;
 	uint64_t submitted_count;
 	uint64_t completed_count;
 } TestDsv4ServingDriver;
@@ -72,6 +73,7 @@ static SparkStatus TestDsv4ServingDriverCreate(
 	driver->completion_function = request->completion_function;
 	driver->completion_context = request->completion_context;
 	driver->stage_index = context->stage_index;
+	driver->cuda_graph_count = context->cuda_graph_count;
 	*driver_instance = driver;
 	return(SPARK_STATUS_OK);
 }
@@ -181,6 +183,9 @@ static SparkStatus TestDsv4ServingDriverSnapshot(
 	snapshot->available_dispatch_slot_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT;
 	snapshot->submitted_count = driver->submitted_count;
 	snapshot->completed_count = driver->completed_count;
+	/* Observation channel for the adapter test's graph opt-in assertions:
+	 * kv_token_capacity is otherwise unused by this fixture. */
+	snapshot->kv_token_capacity = driver->cuda_graph_count;
 	return(SPARK_STATUS_OK);
 }
 
