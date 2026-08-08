@@ -1,7 +1,7 @@
 MODULE_FAMILY := qwen36
 MODULE_IDENTIFIER := spark.qwen36.resident_decode_stage.bf16.h5120.l64.gdn48.mtp1.v1
 MODULE_TARGET := cuda.sm121.qwen36.resident_decode_stage.bf16
-MODEL_HEADER := sparkpipe/spark_qwen36_model.h
+MODEL_HEADER := ../../model-families/qwen36/include/sparkpipe/spark_qwen36_model.h
 MODULE_ENTRY_PREFIX := SparkQwen36ResidentDecodeStage
 MODULE_HOST_SOURCE := $(CURDIR)/source/spark_qwen36_resident_decode_stage_module.c
 MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_qwen36_resident_decode_stage_cuda.cu
