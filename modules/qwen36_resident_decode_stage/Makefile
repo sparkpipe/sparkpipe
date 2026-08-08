@@ -13,6 +13,16 @@ MODULE_ADDITIONAL_HOST_SOURCES = \
 # The rewritten rules.mk requires a non-empty MODULE_COMPILE_FLAGS; mirror the
 # dsv4 convention so a future module-build define has a home.
 MODULE_COMPILE_FLAGS := -DSPARK_QWEN36_MODULE_BUILD=1
+# spark_lm_kernels.cuh reaches inference/kernels/*.cuh by repo-root-relative
+# path; the default flags in rules.mk stop at the family include trees.
+# Recursive assignment: REPOSITORY_ROOT is only set inside rules.mk.
+MODULE_INCLUDE_FLAGS = \
+	-I"$(REPOSITORY_ROOT)/include" \
+	-I"$(REPOSITORY_ROOT)/model-families/common/include" \
+	-I"$(REPOSITORY_ROOT)/model-families/qwen36/include" \
+	-I"$(REPOSITORY_ROOT)/modules/qwen36_resident_decode_stage/include" \
+	-I"$(REPOSITORY_ROOT)/modules/qwen36_resident_decode_stage/source" \
+	-I"$(REPOSITORY_ROOT)"
 
 STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/qwen36_stage.qwen36sp
 STAGE_COUNT ?= 1
@@ -30,6 +40,8 @@ KV_SOCKET_PATH ?= none
 KV_POOL_BYTES ?= 0
 KV_WORKER_COUNT ?= 0
 ALLOW_UNQUALIFIED_EXECUTION ?= 0
+override QWEN36_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_qwen36_resident_decode_stage_cuda_validation.cu | awk '{print $$1}')
+override QWEN36_CPU_ORACLE_SHA256 := $(shell sha256sum validation/spark_qwen36_reference.c | awk '{print $$1}')
 
 RUNTIME_CONFIGURATION := \
 	SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION=$(ALLOW_UNQUALIFIED_EXECUTION) \
@@ -47,6 +59,10 @@ RUNTIME_CONFIGURATION := \
 	SPARK_QWEN36_STAGE_KV_SERVICE=$(KV_SERVICE_ADDRESS) \
 	SPARK_QWEN36_STAGE_KV_SOCKET=$(KV_SOCKET_PATH) \
 	SPARK_QWEN36_STAGE_KV_POOL_BYTES=$(KV_POOL_BYTES) \
-	SPARK_QWEN36_STAGE_KV_WORKERS=$(KV_WORKER_COUNT)
+	SPARK_QWEN36_STAGE_KV_WORKERS=$(KV_WORKER_COUNT) \
+	SPARK_QWEN36_CUDA_VALIDATOR_SHA256=$(QWEN36_CUDA_VALIDATOR_SHA256) \
+	SPARK_QWEN36_CPU_ORACLE_SHA256=$(QWEN36_CPU_ORACLE_SHA256)
+
+GPU_VALIDATOR := validation/validate_qwen36_resident_decode_stage_cuda.sh
 
 include ../resident_decode_stage_rules.mk

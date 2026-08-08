@@ -28,13 +28,42 @@ default.
 | SPARK_QWEN36_STAGE_KV_BLOCKS | paged KV physical blocks (64 tokens each) |
 | SPARK_QWEN36_STAGE_KV_STORE | literal `none`, or the Mooncake provider .so; a path additionally requires SPARK_QWEN36_STAGE_KV_SERVICE, _KV_SOCKET, _KV_POOL_BYTES, _KV_WORKERS |
 
+## Hardware validation (sm_121a, dsv4 flow)
+
+`make validate` with the validator wired like dsv4's: the module Makefile
+pins SHA-256 of the validator and the CPU oracle into the recipe hash, and
+`validation/validate_qwen36_resident_decode_stage_cuda.sh` rebuilds the
+archives, compiles `validation/spark_qwen36_resident_decode_stage_cuda_validation.cu`
+against the module archive and runs it on device. The validator is two
+tiers: per-kernel checks (decay/beta, conv update, one GDN decode step,
+gated norm, one paged full-attention decode, a two-chunk GDN walk) against
+the `spark_qwen36_reference.c` formulas, then a module tier that loads the
+configured stage pack through Initialize/Execute and drives prefill-then-decode
+on two lanes with a capture transport, checking decode-vs-prefill agreement
+and fresh-instance determinism. It requires a mid-pipeline stage-0 slice
+(STAGE_COUNT >= 2, FIRST_LAYER 0, 4 <= LAYER_COUNT < 64),
+MAX_ACTIVE_SEQUENCES=8 and ALLOW_UNQUALIFIED_EXECUTION=1, e.g.:
+
+```
+make validate NVCC=/usr/local/cuda/bin/nvcc \
+  STAGE_PACK_PATH=/path/stage0.qwen36sp STAGE_COUNT=13 STAGE_INDEX=0 \
+  STAGE_FIRST_LAYER=0 STAGE_LAYER_COUNT=5 MAX_ACTIVE_SEQUENCES=8 \
+  KV_BLOCK_COUNT=8 ALLOW_UNQUALIFIED_EXECUTION=1
+```
+
+Run green on a GB10 against both the synthetic slice pack and the real
+PP13 stage-0 pack (2026-08-08): every kernel check lands at the bf16
+quantization floor (relative_l2 ~1.7e-3, cosine ~0.9999986), the decode
+recurrent step and the warm-prefill chunk walk agree bit for bit, and a
+fresh instance reproduces the decode hidden bit for bit.
+
 ## Bring-up sequence on a sparkring node
 
 1. `qwen36_pack_synthesize --output /nvme/q36.pack --first-layer F --layer-count N` (add `--bf16` to skip MXFP4; whole stack is 50.9 GiB bf16, 866 tensors).
 2. Set the environment for the same slice, `SPARK_QWEN36_STAGE_KV_STORE=none`, and Initialize: the ready line reports the slice, layer split and resident GiB. A wrong pack fails naming the exact geometry field.
 3. One decode frame, one row, stage_count 1: token in, argmax token out.
 4. 512-row microbatch; then two carried dispatches per lane against one, which must agree bitwise (the oracle proved the math; this proves the plumbing).
-5. First on-device oracle: the GDN step kernel against the CPU recurrence in `validation/spark_qwen36_reference.c` at real head dims.
+5. ~~First on-device oracle~~ DONE: `make validate` (above) runs every kernel against the CPU oracles and the module end to end on device.
 6. Multi-stage: two processes, slices F..k and k..64, hidden transport between them; middle frames must carry both transport flags or they are refused.
 7. Enable the Mooncake tier by pointing SPARK_QWEN36_STAGE_KV_STORE at the provider; keys are fingerprinted against the slice geometry and cache layout, so a rebuilt pack cannot read stale KV.
 

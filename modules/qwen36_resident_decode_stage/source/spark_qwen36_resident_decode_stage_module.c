@@ -619,11 +619,16 @@ static cudaError_t SparkQwen36ModuleRunGdnCoreDecode(SparkQwen36ModuleState *sta
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
-	error = SparkQwen36LaunchConvUpdate(stream,slot->qkv_bf16,weights,slot->conv_out_bf16,&state->gdn_pool,slot->row_lane_indices,rows,ordinal);
+	/* Cold flags are per-frame (the slot's uploaded row_cold), not pool
+	 * state: hand the kernels a per-call pool view so concurrent slots never
+	 * race the shared pool's pointer. */
+	SparkQwen36GdnStatePool pool = state->gdn_pool;
+	pool.state_cold_by_row = slot->row_cold;
+	error = SparkQwen36LaunchConvUpdate(stream,slot->qkv_bf16,weights,slot->conv_out_bf16,&pool,slot->row_lane_indices,rows,ordinal);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchDecayBeta(stream,slot->decay_pre_bf16,slot->beta_pre_bf16,weights,slot->log_decay_f32,slot->beta_f32,rows);
 	if ( error == cudaSuccess )
-		error = SparkQwen36LaunchGdnStep(stream,slot->conv_out_bf16,slot->log_decay_f32,slot->beta_f32,&state->gdn_pool,slot->core_bf16,slot->row_lane_indices,rows,ordinal);
+		error = SparkQwen36LaunchGdnStep(stream,slot->conv_out_bf16,slot->log_decay_f32,slot->beta_f32,&pool,slot->core_bf16,slot->row_lane_indices,rows,ordinal);
 	return(error);
 }
 
