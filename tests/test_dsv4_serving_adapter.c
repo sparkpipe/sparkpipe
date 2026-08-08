@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include "sparkpipe/spark_dsv4_model.h"
+#include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
 
 #ifndef TEST_DSV4_SERVING_ADAPTER_PATH
@@ -21,6 +22,12 @@
 #endif
 #ifndef TEST_DSV4_SERVING_ABSOLUTE_CONFIG_PATH
 #define TEST_DSV4_SERVING_ABSOLUTE_CONFIG_PATH ""
+#endif
+#ifndef TEST_DSV4_SERVING_GRAPHS_CONFIG_PATH
+#define TEST_DSV4_SERVING_GRAPHS_CONFIG_PATH ""
+#endif
+#ifndef TEST_DSV4_SERVING_GRAPHS_OVERRUN_CONFIG_PATH
+#define TEST_DSV4_SERVING_GRAPHS_OVERRUN_CONFIG_PATH ""
 #endif
 
 typedef struct TestDsv4ServingState
@@ -247,6 +254,8 @@ int main(void)
 	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) == SPARK_STATUS_OK);
 	assert(snapshot.submitted_count == 4u);
 	assert(snapshot.completed_count == 4u);
+	/* No cuda_graph_count in the stage configuration: the driver saw 0. */
+	assert(snapshot.kv_token_capacity == 0u);
 	assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.validate_submission(adapter_state,&submission) == SPARK_STATUS_BUSY);
@@ -261,6 +270,17 @@ int main(void)
 	assert(adapter_state == 0);
 	configuration.adapter_configuration_path = TEST_DSV4_SERVING_ABSOLUTE_CONFIG_PATH;
 	assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(adapter_state == 0);
+	configuration.adapter_configuration_path = TEST_DSV4_SERVING_GRAPHS_CONFIG_PATH;
+	adapter_state = 0;
+	assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
+	assert(adapter_state != 0);
+	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) == SPARK_STATUS_OK);
+	assert(snapshot.kv_token_capacity == SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT);
+	library.adapter_interface.destroy(adapter_state);
+	configuration.adapter_configuration_path = TEST_DSV4_SERVING_GRAPHS_OVERRUN_CONFIG_PATH;
+	adapter_state = 0;
+	assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(adapter_state == 0);
 	SparkModelServingAdapterUnloadInterface(&library);
 	free(hidden_input);
