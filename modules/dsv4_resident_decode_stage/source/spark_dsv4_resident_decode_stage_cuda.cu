@@ -683,7 +683,7 @@ static __global__ void SparkDsv4BuildAttentionIndicesKernel(
 	for (column=threadIdx.x; column<column_count; column+=blockDim.x)
 	{
 		if ( column < window )
-			indices[(uint64_t)row * column_count + column] = (int32_t)column;
+			indices[(uint64_t)row * column_count + column] = (int32_t)SparkDsv4AttentionWindowSlot(position,column,SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS);
 		else if ( layer_kind == SPARK_DSV4_MODEL_LAYER_KIND_HCA && column < window + compressed )
 			indices[(uint64_t)row * column_count + column] = (int32_t)(SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS + column - window);
 		else
