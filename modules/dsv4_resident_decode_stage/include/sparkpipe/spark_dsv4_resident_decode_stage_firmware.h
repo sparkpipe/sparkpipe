@@ -46,7 +46,7 @@ extern "C" {
  * callback; submit never synchronizes a successful CUDA frame.
  */
 
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 3u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 4u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION 2u
@@ -58,6 +58,7 @@ extern "C" {
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 128u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 13u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT 61u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT 64u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS UINT32_C(0)
 
 typedef struct SparkDsv4ResidentDecodeStageNodeContext
@@ -75,6 +76,13 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 	uint32_t linear_weight_codec;
 	uint32_t expert_weight_codec;
 	uint32_t kv_cache_codec;
+	/*
+	 * Decode-step CUDA graph cache size, 0 disables capture and preserves the
+	 * eager launch path exactly. Captured shapes are the fixed (pipeline slot,
+	 * lane count) pairs actually submitted; a full cache or any capture
+	 * failure falls back to eager launches, never to a wrong sequence.
+	 */
+	uint32_t cuda_graph_count;
 	const char *stage_pack_path;
 } SparkDsv4ResidentDecodeStageNodeContext;
 

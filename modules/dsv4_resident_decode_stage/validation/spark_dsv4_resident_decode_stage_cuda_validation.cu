@@ -290,8 +290,9 @@ static int SparkDsv4ValidationLoadNodeContext(
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_PIPELINE_SLOTS",1u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&context->pipeline_slot_count) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_MAX_SEQ",SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO,SPARK_DSV4_MODEL_MAX_POSITIONS,&context->max_sequence_positions) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_MTP",0u,0u,&mtp_layer_count) != 0 ||
-		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_GRAPHS",0u,0u,&cuda_graph_count) != 0 )
+		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_GRAPHS",0u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT,&cuda_graph_count) != 0 )
 		return(1);
+	context->cuda_graph_count = cuda_graph_count;
 	context->linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC;
 	context->expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC;
 	context->kv_cache_codec = SPARK_DSV4_MODEL_KV_CACHE_CODEC;

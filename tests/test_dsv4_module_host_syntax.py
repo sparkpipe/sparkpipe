@@ -25,6 +25,7 @@ def main() -> int:
         "-Wextra",
         "-Werror",
         "-fsyntax-only",
+        "-I.",
         "-Iinclude",
         "-Isrc",
         "-Itests/cuda_stub",
