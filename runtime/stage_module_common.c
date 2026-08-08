@@ -620,7 +620,6 @@ SparkStatus SparkStageModuleIndexSetClaim(
     uint32_t index_count)
 {
     uint32_t claimed_count;
-    uint32_t previous_index;
 
     if (index_states == 0 || indices == 0 || index_capacity == 0u ||
         index_count == 0u || index_count > index_capacity)
@@ -632,6 +631,8 @@ SparkStatus SparkStageModuleIndexSetClaim(
     {
         unsigned int expected_state;
         uint32_t index;
+        uint32_t previous_index;
+        SparkStatus status;
 
         index = indices[claimed_count];
         if (index >= index_capacity)
@@ -643,36 +644,93 @@ SparkStatus SparkStageModuleIndexSetClaim(
                 claimed_count);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        for (previous_index = 0u; previous_index < claimed_count; previous_index++)
-        {
-            if (indices[previous_index] == index)
-            {
-                SparkStageModuleIndexSetRelease(
-                    index_states,
-                    index_capacity,
-                    indices,
-                    claimed_count);
-                return SPARK_STATUS_INVALID_ARGUMENT;
-            }
-        }
-
         expected_state = SPARK_STAGE_MODULE_SLOT_FREE;
         if (!atomic_compare_exchange_strong_explicit(
                 &index_states[index],
                 &expected_state,
-                SPARK_STAGE_MODULE_SLOT_CLAIMED,
+                claimed_count + 1u,
                 memory_order_acquire,
                 memory_order_relaxed))
         {
+            status = SPARK_STATUS_BUSY;
+            for (previous_index = 0u; previous_index < claimed_count; previous_index++)
+            {
+                if (indices[previous_index] == index)
+                {
+                    status = SPARK_STATUS_INVALID_ARGUMENT;
+                    break;
+                }
+            }
             SparkStageModuleIndexSetRelease(
                 index_states,
                 index_capacity,
                 indices,
                 claimed_count);
-            return SPARK_STATUS_BUSY;
+            return status;
         }
     }
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkStageModuleIndexClaimOrdinal(
+    const atomic_uint *index_states,
+    uint32_t index_capacity,
+    uint32_t index,
+    uint32_t *ordinal_out)
+{
+    unsigned int claim;
+
+    if (index_states == 0 || ordinal_out == 0 || index >= index_capacity)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *ordinal_out = UINT32_MAX;
+    claim = atomic_load_explicit(&index_states[index], memory_order_acquire);
+    if (claim == SPARK_STAGE_MODULE_SLOT_FREE)
+    {
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    if (claim > index_capacity)
+    {
+        return SPARK_STATUS_SCHEMA_ERROR;
+    }
+    *ordinal_out = claim - 1u;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkStageModuleIndexSetClaimAndPrepare(
+    atomic_uint *index_states,
+    uint32_t index_capacity,
+    const uint32_t *indices,
+    uint32_t index_count,
+    SparkStageModuleClaimedIndexPrepareFunction prepare_function,
+    void *prepare_context)
+{
+    SparkStatus status;
+
+    if (prepare_function == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkStageModuleIndexSetClaim(
+        index_states,
+        index_capacity,
+        indices,
+        index_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = prepare_function(prepare_context);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkStageModuleIndexSetRelease(
+            index_states,
+            index_capacity,
+            indices,
+            index_count);
+    }
+    return status;
 }
 
 void SparkStageModuleIndexSetRelease(
@@ -801,4 +859,27 @@ void SparkStageModuleSlotRelease(
         &slot_states[slot_index],
         SPARK_STAGE_MODULE_SLOT_FREE,
         memory_order_release);
+}
+
+void SparkStageModuleCompleteAndReleaseClaims(
+    SparkModelDriverCompletionFunction completion_function,
+    void *completion_context,
+    const SparkModelDriverCompletion *completion,
+    atomic_uint *index_states,
+    uint32_t index_capacity,
+    const uint32_t *indices,
+    uint32_t index_count,
+    atomic_uint *slot_states,
+    uint32_t slot_index)
+{
+    if (completion_function != 0)
+    {
+        completion_function(completion_context, completion);
+    }
+    SparkStageModuleIndexSetRelease(
+        index_states,
+        index_capacity,
+        indices,
+        index_count);
+    SparkStageModuleSlotRelease(slot_states, slot_index);
 }
