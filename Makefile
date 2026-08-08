@@ -264,6 +264,7 @@ PYTHON_TESTS := \
 	tests/test_python_syntax.py \
 	tests/test_qwen36_bf16_contract.py \
 	tests/test_qwen36_layer_host.py \
+	tests/test_qwen36_stagepack.py \
 	tests/test_recipe_generation.py \
 	tests/test_release_assemble.py \
 	tests/test_rope_pairing.py \

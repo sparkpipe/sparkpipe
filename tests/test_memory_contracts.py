@@ -79,6 +79,7 @@ NON_GLM_MODEL_PREFIXES = (
     "inference/llms/qwen_3_6/",
     "tools/generate_k3_contract.py",
     "tools/generate_dsv4_contracts.py",
+    "tools/qwen36_stagepack.py",
 )
 SIZE_ARGUMENTS_BY_CALL = {
     "cudaHostAlloc": (1,),
