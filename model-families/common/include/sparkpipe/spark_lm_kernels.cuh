@@ -702,6 +702,8 @@ static __device__ void SparkLmAttnBlockScalarMax(float local_maximum, float *scr
  */
 #define SPARK_LM_HEAD_SCREEN_CAP 4096u
 #define SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT 128u
+#define SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX 4u
+#define SPARK_LM_HEAD_FALLBACK_SHARED_BYTES 32768u
 
 // Rounding slack for the SCREEN only: the certified e_n bound covers
 // the fp4 weight error, this covers the bf16 store of the coarse logit
@@ -849,6 +851,65 @@ static __device__ void SparkLmHeadExactArgmaxRange(const float *hidden_shared, c
 	SparkLmArgmaxReduce(running_best,running_candidate,best_score,best_candidate);
 }
 
+static __device__ void SparkLmHeadStageHiddenGroup(const void *hidden_bf16, uint32_t *hidden_shared_pairs, uint32_t first_row, uint32_t group_row_count, uint32_t hidden_dimension)
+{
+	uint32_t group_pair,pair,pairs_per_row,row;
+	uint64_t source_pair;
+	pairs_per_row = hidden_dimension >> 1u;
+	for (group_pair=threadIdx.x; group_pair<group_row_count * pairs_per_row; group_pair+=blockDim.x)
+	{
+		row = group_pair / pairs_per_row;
+		pair = group_pair - (row * pairs_per_row);
+		source_pair = ((((uint64_t)first_row + row) * hidden_dimension) >> 1u) + pair;
+		hidden_shared_pairs[group_pair] = __ldg(((const uint32_t *)hidden_bf16) + source_pair);
+	}
+	__syncthreads();
+}
+
+static __device__ __forceinline__ float2 SparkLmHeadLoadSharedBf16Pair(const uint32_t *hidden_shared_pairs, uint32_t pair)
+{
+	uint32_t raw = hidden_shared_pairs[pair];
+	return(__bfloat1622float2(*(const __nv_bfloat162 *)&raw));
+}
+
+static __device__ __forceinline__ void SparkLmHeadExactArgmaxRowGroup(const uint32_t *hidden_shared_pairs, const void *head_weight_bf16, uint32_t overflow_mask, uint32_t first_slot, uint32_t slot_count, uint32_t group_row_count, uint32_t hidden_dimension, float *running_best, uint32_t *running_candidate)
+{
+	uint32_t end_slot = first_slot + slot_count,lane = threadIdx.x % SPARK_LM_WARP_LANES,neuron,pair,pair_count,row,slot,warp = threadIdx.x / SPARK_LM_WARP_LANES;
+	float accumulator[SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX],score;
+	float2 hidden_pair,weight_pair;
+	pair_count = hidden_dimension >> 1u;
+	for (slot=first_slot + warp; slot<end_slot; slot+=SPARK_LM_CTA_WARPS)
+	{
+		neuron = slot;
+		#pragma unroll
+		for (row=0u; row<SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX; row++) accumulator[row] = 0.0f;
+		#pragma unroll 4
+		for (pair=lane; pair<pair_count; pair+=SPARK_LM_WARP_LANES)
+		{
+			weight_pair = SparkLmLoadBf16Pair(head_weight_bf16,(((uint64_t)neuron * hidden_dimension) >> 1u) + pair);
+			#pragma unroll
+			for (row=0u; row<SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX; row++)
+			{
+				if ( row >= group_row_count || (overflow_mask & (1u << row)) == 0u ) continue;
+				hidden_pair = SparkLmHeadLoadSharedBf16Pair(hidden_shared_pairs,(row * pair_count) + pair);
+				accumulator[row] = fmaf(hidden_pair.x,weight_pair.x,accumulator[row]);
+				accumulator[row] = fmaf(hidden_pair.y,weight_pair.y,accumulator[row]);
+			}
+		}
+		#pragma unroll
+		for (row=0u; row<SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX; row++)
+		{
+			score = SparkLmWarpReduceSum(accumulator[row]);
+			score = __shfl_sync(0xffffffffu,score,0);
+			if ( lane == 0u && row < group_row_count && (overflow_mask & (1u << row)) != 0u && (score > running_best[row] || (score == running_best[row] && neuron < running_candidate[row])) )
+			{
+				running_best[row] = score;
+				running_candidate[row] = neuron;
+			}
+		}
+	}
+}
+
 // Overflow rows retain exact bf16 scoring, but stripe the vocabulary over
 // enough CTAs to use the GPU instead of assigning the full scan to one SM.
 static __global__ void SparkLmHeadFallbackRescoreKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_counts, float *partial_scores, uint32_t *partial_candidates, uint32_t row_count, uint32_t hidden_dimension, uint32_t candidate_count)
@@ -869,6 +930,49 @@ static __global__ void SparkLmHeadFallbackRescoreKernel(const void *hidden_bf16,
 		partial = ((uint64_t)row * SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT) + chunk;
 		partial_scores[partial] = best_score[0];
 		partial_candidates[partial] = best_candidate[0];
+	}
+}
+
+// Wider batches group rows so each exact bf16 weight pair feeds several
+// independent dot products. Per-row FMA and warp-reduction order is unchanged.
+static __global__ void SparkLmHeadGroupedFallbackRescoreKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_counts, float *partial_scores, uint32_t *partial_candidates, uint32_t row_count, uint32_t hidden_dimension, uint32_t candidate_count, uint32_t rows_per_group)
+{
+	extern __shared__ uint32_t hidden_shared_pairs[];
+	__shared__ float best_score[SPARK_LM_CTA_WARPS];
+	__shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS],overflow_mask;
+	uint32_t chunk = blockIdx.y,end_slot,first_row = blockIdx.x * rows_per_group,first_slot,group_row_count,row;
+	float running_best[SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX];
+	uint32_t running_candidate[SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX];
+	if ( first_row >= row_count ) return;
+	group_row_count = row_count - first_row < rows_per_group ? row_count - first_row : rows_per_group;
+	if ( threadIdx.x == 0u )
+	{
+		overflow_mask = 0u;
+		for (row=0u; row<group_row_count; row++)
+			if ( candidate_counts[first_row + row] > SPARK_LM_HEAD_SCREEN_CAP ) overflow_mask |= 1u << row;
+	}
+	__syncthreads();
+	if ( overflow_mask == 0u ) return;
+	SparkLmHeadStageHiddenGroup(hidden_bf16,hidden_shared_pairs,first_row,group_row_count,hidden_dimension);
+	first_slot = (uint32_t)(((uint64_t)candidate_count * chunk) / SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT);
+	end_slot = (uint32_t)(((uint64_t)candidate_count * (chunk + 1u)) / SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT);
+	#pragma unroll
+	for (row=0u; row<SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX; row++)
+	{
+		running_best[row] = -3.0e38f;
+		running_candidate[row] = UINT32_MAX;
+	}
+	SparkLmHeadExactArgmaxRowGroup(hidden_shared_pairs,head_weight_bf16,overflow_mask,first_slot,end_slot - first_slot,group_row_count,hidden_dimension,running_best,running_candidate);
+	#pragma unroll
+	for (row=0u; row<SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX; row++)
+	{
+		SparkLmArgmaxReduce(running_best[row],running_candidate[row],best_score,best_candidate);
+		if ( threadIdx.x == 0u && row < group_row_count && (overflow_mask & (1u << row)) != 0u )
+		{
+			uint64_t partial = ((uint64_t)(first_row + row) * SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT) + chunk;
+			partial_scores[partial] = best_score[0];
+			partial_candidates[partial] = best_candidate[0];
+		}
 	}
 }
 
@@ -2353,7 +2457,10 @@ static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmax(cudaStream_t strea
     dim3 fallback_grid(row_count,SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT);
     float *partial_scores = (float *)logits_bf16;
     uint32_t *partial_candidates = (uint32_t *)(partial_scores + ((uint64_t)row_count * SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT));
+    uint32_t grouped_rows = SPARK_LM_HEAD_FALLBACK_SHARED_BYTES / (hidden_dimension * (uint32_t)sizeof(uint16_t));
     uint32_t rescore_shared_bytes = hidden_dimension * (uint32_t)sizeof(float);
+	grouped_rows = grouped_rows > SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX ? SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX : grouped_rows;
+	grouped_rows = grouped_rows > row_count ? row_count : grouped_rows;
 
     SparkLmExpertTileKernel<SPARK_LM_HEAD_SHADOW_GROUP><<<
         tile_grid,
@@ -2378,19 +2485,16 @@ static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmax(cudaStream_t strea
         row_count,
         candidate_count,
         hidden_dimension);
-    SparkLmHeadFallbackRescoreKernel<<<
-        fallback_grid,
-        SPARK_LM_CTA_THREADS,
-        rescore_shared_bytes,
-        stream>>>(
-            hidden_bf16,
-            head_weight_bf16,
-            candidate_counts,
-            partial_scores,
-            partial_candidates,
-            row_count,
-            hidden_dimension,
-            candidate_count);
+	if ( grouped_rows <= 1u || (hidden_dimension & 1u) != 0u )
+	{
+		SparkLmHeadFallbackRescoreKernel<<<fallback_grid,SPARK_LM_CTA_THREADS,rescore_shared_bytes,stream>>>(hidden_bf16,head_weight_bf16,candidate_counts,partial_scores,partial_candidates,row_count,hidden_dimension,candidate_count);
+	}
+	else
+	{
+		dim3 grouped_grid((row_count + grouped_rows - 1u) / grouped_rows,SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT);
+		uint32_t grouped_shared_bytes = grouped_rows * hidden_dimension * (uint32_t)sizeof(uint16_t);
+		SparkLmHeadGroupedFallbackRescoreKernel<<<grouped_grid,SPARK_LM_CTA_THREADS,grouped_shared_bytes,stream>>>(hidden_bf16,head_weight_bf16,candidate_counts,partial_scores,partial_candidates,row_count,hidden_dimension,candidate_count,grouped_rows);
+	}
     SparkLmHeadRescoreArgmaxKernel<<<
         row_count,
         SPARK_LM_CTA_THREADS,
