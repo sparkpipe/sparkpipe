@@ -116,7 +116,15 @@ publishes atomically. Do not hand-edit the assembled manifest.
 
 Install all ranks from the same release generation. Before launch, verify the
 installed manifest, adapter, driver, transport, deployment, and rank-local
-stage-pack hashes. Do not start a second resident beside an existing GPU owner.
+stage-pack hashes.
+
+Multiple models may share one GPU when they fit: two small-model residents may
+coexist on a rank when their combined weight, KV, and arena budgets stay within
+an explicit per-rank memory budget, each with its own deployment, control
+endpoints, and runtime root. Two large models never share a GPU. A resident
+that would exceed the budgeted footprint is a failed launch, not a negotiation.
+Never start a second instance of the same model's resident beside its existing
+GPU owner.
 
 The release role invokes:
 
