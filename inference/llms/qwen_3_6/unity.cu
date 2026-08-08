@@ -36,11 +36,17 @@ template __global__ void LmFusedResidualRmsNormKernel<QWEN36_THREADS,uint16_t>(c
 template __global__ void LmSiluMulKernel<QWEN36_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmRopePerHeadKernel<QWEN36_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
 template __global__ void LmSplitQkvKernel<QWEN36_THREADS>(const uint16_t *, LmQkvLayout, uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
+// The gated attention path: the query|gate de-interleave and the output gate.
+template __global__ void LmSplitQueryGateKernel<QWEN36_THREADS>(const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t);
+template __global__ void LmOutputGateKernel<QWEN36_THREADS>(uint16_t *, const uint16_t *, uint32_t);
 // The linear layers. 48 of 64, with a fixed state instead of a growing cache.
 //
 // The state and the convolution window share one non-growing slot, which is why
 // QWEN36_GDN_STATE_BYTES is their sum and kernels/kv.cuh sizes the pool from it.
 template __global__ void LmDeltaRuleKernel<QWEN36_THREADS, QWEN36_GDN_KEY_DIM, QWEN36_GDN_VALUE_DIM>(uint8_t *, uint32_t, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t, uint32_t);
+// The GDN gate producer: beta and decay logits to retention factors and
+// write strengths, per value head.
+template __global__ void LmGdnGateKernel<QWEN36_THREADS, QWEN36_GDN_KEY_DIM>(const uint16_t *, const uint16_t *, const float *, const float *, float *, float *, uint32_t, uint32_t);
 template __global__ void LmCausalConvKernel<QWEN36_THREADS, QWEN36_GDN_CONV_KERNEL, LM_CONV_SWISH,uint16_t>(uint16_t *, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmExpandHeadsKernel<QWEN36_THREADS>(const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t, uint32_t);
 // Per-head KV: the pack store and the GQA decode, not the MLA latent pair -

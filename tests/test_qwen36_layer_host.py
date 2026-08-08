@@ -10,9 +10,11 @@ kernel did exactly what it was told. This checks the wiring:
 
   attention   the cache slot holds this step's K and V, in the [K|V] layout,
               over a poisoned pool, and attending over them returns the value
-  recurrent   both GEMM widths, all 48 value-head state slices advanced to
-              the reference value, the window committed on all 10240 channels,
-              and the canaries past both pools intact
+  recurrent   the four GEMM widths (in, beta, decay, out), the produced
+              forget and write gates against their closed forms, all 48
+              value-head state slices advanced to the reference value, the
+              window committed on all 10240 channels, and the canaries past
+              both pools intact
   expansion   head h of the expanded row is source head h / 3, with values
               that discriminate (uniform projections cannot see a bad mapping)
   mlp         the two GEMM widths and a nonzero gated activation
@@ -78,7 +80,7 @@ def main():
             print(f"  FAIL {label}")
             failures += 1
 
-    check(gemms["attn_gemm"] == [(5120, 8192), (6144, 5120)],
+    check(gemms["attn_gemm"] == [(5120, 14336), (6144, 5120)],
           f"attention projection widths: {gemms['attn_gemm']}")
     check(values.get("slot_kv_maxdiff") == 0.0,
           f"cache slot does not hold this step's K and V "
@@ -86,15 +88,29 @@ def main():
     check(values.get("attn_maxdiff") == 0.0,
           f"attention over the stored slot is not the stored value "
           f"(maxdiff {values.get('attn_maxdiff')})")
+    check(values.get("attn_gate_c0") == 0.125 and values.get("attn_query_c0") == 0.125,
+          f"query|gate de-interleave is wrong "
+          f"(query {values.get('attn_query_c0')}, gate {values.get('attn_gate_c0')})")
 
-    check(gemms["gdn_gemm"] == [(5120, 10240), (6144, 5120)],
+    check(gemms["gdn_gemm"] == [(5120, 10240), (5120, 48), (5120, 48), (6144, 5120)],
           f"recurrent projection widths: {gemms['gdn_gemm']}")
+    # The gate producer: beta is sigmoid of the beta projection's recorded
+    # output (second GEMM of the section, 0.25) and the retention
+    # exp(-softplus(0.375)) with zeroed A_log and dt_bias (third GEMM).
+    beta = 1.0 / (1.0 + math.exp(-0.25))
+    retention = math.exp(-math.log1p(math.exp(0.375)))
+    check(abs(values.get("gdn_beta", 0.0) - beta) < 1e-6,
+          f"write gate is not sigmoid(beta logit) "
+          f"(expected {beta:.6g}, got {values.get('gdn_beta')})")
+    check(abs(values.get("gdn_retention", 0.0) - retention) < 1e-6,
+          f"forget gate is not exp(-softplus(decay logit)) "
+          f"(expected {retention:.6g}, got {values.get('gdn_retention')})")
     # One decode step from a zero state: S = beta * v k^T with unit q and k,
     # so every element of every value-head slice is beta * v * k_elem. The
     # harness prints the convolved value c0; the norm is the kernel's own.
     c0 = values.get("conv_c0", 0.0)
     k_elem = c0 / math.sqrt(128.0 * c0 * c0 + 1e-6)
-    expected = 0.25 * c0 * k_elem
+    expected = beta * c0 * k_elem
     for head in ("state_h0", "state_h47"):
         got = values.get(head, [])
         check(len(got) == 8 and all(abs(g - expected) < 1e-6 for g in got),

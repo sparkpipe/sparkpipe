@@ -487,6 +487,34 @@ void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layou
 				* value_scale);
 }
 
+// Split a fused per-head query|gate row into its two halves.
+//
+// Qwen 3.6's attention query projection carries the output gate INSIDE the
+// query section: each head's 2 * head_dimension rows are head_dimension of
+// query then head_dimension of gate (config.h, attn_output_gate). The query
+// half feeds RoPE and attention, the gate half LmOutputGateKernel after
+// attention, and both consumers want contiguous heads - which is why this is
+// a copy and not a stride, the same argument LmSplitQkvKernel carries.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSplitQueryGateKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ gate_bf16, uint32_t heads, uint32_t head_dimension, uint32_t rows)
+{
+	uint32_t row = blockIdx.x,index,head,element;
+	uint64_t fused_base = (uint64_t)row * heads * 2u * head_dimension;
+	uint64_t half_base = (uint64_t)row * heads * head_dimension;
+	if ( row >= rows )
+		return;
+	for (index = threadIdx.x; index < heads * head_dimension; index += THREADS)
+	{
+		head = index / head_dimension;
+		element = index % head_dimension;
+		query_bf16[half_base + index] =
+			fused_bf16[fused_base + (head * 2u * head_dimension) + element];
+		gate_bf16[half_base + index] =
+			fused_bf16[fused_base + (head * 2u * head_dimension) + head_dimension + element];
+	}
+}
+
 // RoPE over the rotated suffix of every head in a packed multi-head row.
 //
 // A fused query row is heads x head_dimension with the rope part at the end of

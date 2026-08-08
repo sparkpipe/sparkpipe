@@ -14,21 +14,20 @@
 // implements the dense path and would be wrong for A3B, so the variant is named
 // here rather than left to whoever reads the weights.
 //
-// THREE KNOWN GAPS, all real and none implemented:
-//   the reference calls the full-attention path GATED attention. config sets
-//   attn_output_gate true. Qwen36LayerAttention does not apply the gate.
+// ONE KNOWN GAP, real and not implemented:
 //   the reference sets mrope_interleaved with sections [11,11,10]. LmRopePerHead
 //   applies plain rope. For text-only decode the sections degenerate to the
 //   standard rotation, so this is correct until an image or video enters.
-//   the GDN forget and write gates have no producer. LmDeltaRuleKernel reads
-//   gdn_forget_gate and gdn_write_gate per (row, head, channel), and no
-//   projection or activation anywhere in this driver writes them - the
-//   reference derives both from a small beta/alpha projection of the hidden
-//   state plus learned bias and per-head log-scale tensors, none of which are
-//   in Qwen36LayerWeights. Until those tensors are bound and computed the
-//   recurrent layers read whatever the gate buffers hold. The shapes are not
-//   in any in-repo contract, so this is named here rather than guessed at:
-//   lineage inference about exactly this path has been wrong twice already.
+//
+// Two former gaps are closed. The attention output gate is applied:
+// attn_output_gate is true in the reference config, the query projection's
+// fused per-head gate half is split out by LmSplitQueryGateKernel and
+// LmOutputGateKernel applies sigmoid(gate) to the attended values before the
+// output projection. And the GDN forget and write gates have a producer:
+// beta and decay arrive as separate 48-row projections (the checkpoint's
+// fused in_proj_ba, split), and LmGdnGateKernel computes
+// beta = sigmoid(b) and g = -exp(A_log) * softplus(a + dt_bias) per value
+// head from the checkpoint's A_log and dt_bias tensors.
 //
 // Gated DeltaNet on 48 of 64 layers, full attention on the other 16, in a fixed
 // period. Same shape as K3 - a recurrent state for most layers and a KV cache
@@ -61,7 +60,9 @@
 #define QWEN36_ROPE_THETA 10000000.0f          /* CONFIG rope_theta */
 #define QWEN36_QK_SCALE 0.0625f                /* 1 / sqrt(256) */
 #define QWEN36_ATTN_OUTPUT_GATE 1u             /* CONFIG attn_output_gate */
-#define QWEN36_QKV_DIM ((QWEN36_ATTN_HEADS + (2u * QWEN36_KV_HEADS)) * QWEN36_HEAD_DIM)
+// The fused projection is query|gate + key + value: the gate doubles the
+// query section (256 query rows then 256 gate rows per head).
+#define QWEN36_QKV_DIM (((2u * QWEN36_ATTN_HEADS) + (2u * QWEN36_KV_HEADS)) * QWEN36_HEAD_DIM)
 
 #define QWEN36_GDN_KEY_HEADS 16u               /* CONFIG linear_num_key_heads */
 #define QWEN36_GDN_VALUE_HEADS 48u             /* CONFIG linear_num_value_heads */

@@ -55,8 +55,10 @@ std::vector<LmRecordedGemm> lm_recorded_gemms;
 static uint16_t hidden[ROWS * QWEN36_HIDDEN];
 static uint16_t residual[ROWS * QWEN36_HIDDEN];
 static uint16_t normed[ROWS * QWEN36_HIDDEN];
-static uint16_t fused_qkv[ROWS * QWEN36_GDN_QKV_DIM];
+static uint16_t fused_qkv[ROWS * QWEN36_ATTN_QKV_DIM];
+static uint16_t query_gate[ROWS * QWEN36_ATTN_QG_DIM];
 static uint16_t query[ROWS * QWEN36_Q_DIM];
+static uint16_t attn_gate[ROWS * QWEN36_Q_DIM];
 static uint16_t key[ROWS * QWEN36_GDN_QK_DIM];
 static uint16_t value[ROWS * QWEN36_GDN_V_DIM];
 static uint16_t expanded_q[ROWS * QWEN36_GDN_V_DIM];
@@ -66,6 +68,10 @@ static uint16_t gate_up[ROWS * QWEN36_FFN_INTERMEDIATE * 2u];
 static uint16_t intermediate[ROWS * QWEN36_FFN_INTERMEDIATE];
 static uint16_t norm_weight[QWEN36_HIDDEN];
 static uint16_t conv_weight[QWEN36_GDN_QKV_DIM * QWEN36_GDN_CONV_KERNEL];
+static uint16_t beta_logit[ROWS * QWEN36_GDN_VALUE_HEADS];
+static uint16_t decay_logit[ROWS * QWEN36_GDN_VALUE_HEADS];
+static float a_log[QWEN36_GDN_VALUE_HEADS];
+static float dt_bias[QWEN36_GDN_VALUE_HEADS];
 static float forget_gate[ROWS * QWEN36_GDN_VALUE_HEADS * QWEN36_GDN_KEY_DIM];
 static float write_gate[ROWS * QWEN36_GDN_VALUE_HEADS];
 static uint32_t state_index[ROWS];
@@ -103,10 +109,14 @@ int main(void)
 		hidden[index] = LmFloatToBf16(0.01f * (float)(index % 17u));
 	for (index = 0u; index < QWEN36_GDN_QKV_DIM * QWEN36_GDN_CONV_KERNEL; ++index)
 		conv_weight[index] = LmFloatToBf16(0.25f);
-	for (index = 0u; index < ROWS * QWEN36_GDN_VALUE_HEADS * QWEN36_GDN_KEY_DIM; ++index)
-		forget_gate[index] = 0.9f;
-	for (index = 0u; index < ROWS * QWEN36_GDN_VALUE_HEADS; ++index)
-		write_gate[index] = 0.25f;
+	// The gate mapping's per-head tensors: log-scale zero and bias zero, so
+	// the retention is exp(-softplus(logit)) and beta sigmoid(logit) of
+	// whatever the GEMM recorder wrote - values python computes closed-form.
+	for (index = 0u; index < QWEN36_GDN_VALUE_HEADS; ++index)
+	{
+		a_log[index] = 0.0f;
+		dt_bias[index] = 0.0f;
+	}
 	memset(state_pool, 0, ROWS * QWEN36_GDN_STATE_BYTES);
 	memset(state_pool + ROWS * QWEN36_GDN_STATE_BYTES, CANARY_BYTE, CANARY_BYTES);
 	memset(conv_window, 0,
@@ -129,13 +139,18 @@ int main(void)
 
 	b.hidden_bf16 = hidden; b.residual_bf16 = residual;
 	b.normed_bf16 = normed; b.fused_qkv_bf16 = fused_qkv;
-	b.query_bf16 = query; b.key_bf16 = key; b.value_bf16 = value;
+	b.query_gate_bf16 = query_gate; b.query_bf16 = query;
+	b.attn_gate_bf16 = attn_gate;
+	b.key_bf16 = key; b.value_bf16 = value;
 	b.gdn_query_expanded_bf16 = expanded_q;
 	b.gdn_key_expanded_bf16 = expanded_k;
 	b.attention_out_bf16 = attention_out;
 	b.gate_up_bf16 = gate_up; b.intermediate_bf16 = intermediate;
 	b.attn_norm_weight = norm_weight; b.mlp_norm_weight = norm_weight;
 	b.gdn_conv_weight = conv_weight;
+	b.gdn_beta_weight = conv_weight; b.gdn_decay_weight = conv_weight;
+	b.gdn_a_log = a_log; b.gdn_dt_bias = dt_bias;
+	b.gdn_beta_logit_bf16 = beta_logit; b.gdn_decay_logit_bf16 = decay_logit;
 	b.gdn_state_pool = state_pool; b.gdn_conv_window = conv_window;
 	b.gdn_state_index = state_index;
 	b.gdn_forget_gate = forget_gate; b.gdn_write_gate = write_gate;
@@ -191,6 +206,10 @@ int main(void)
 		}
 		printf("attn_maxdiff %.9g\n", (double)maxdiff);
 	}
+	// The gate half of the fused query projection, de-interleaved: the GEMM
+	// recorder's constant throughout, anything else a split-layout slip.
+	printf("attn_gate_c0 %.9g\n", (double)LmBf16ToFloat(attn_gate[0]));
+	printf("attn_query_c0 %.9g\n", (double)LmBf16ToFloat(query[0]));
 
 	// -- recurrent layer ------------------------------------------------------
 	lm_recorded_gemms.clear();
@@ -207,6 +226,11 @@ int main(void)
 	// The convolved key as the reference's input: python computes the state
 	// from exactly this value, so swish and bf16 rounding appear once.
 	printf("conv_c0 %.9g\n", (double)LmBf16ToFloat(key[0]));
+	// The produced gates, sequence 0 head 0: beta is sigmoid of the beta
+	// GEMM's recorded output, the retention exp(-softplus(decay logit)) with
+	// the harness's zeroed A_log and dt_bias. Python holds the closed forms.
+	printf("gdn_beta %.9g\n", (double)write_gate[0]);
+	printf("gdn_retention %.9g\n", (double)forget_gate[0]);
 	// Head 0 and head 47 of sequence 0's state: the first and last of the 48
 	// value-head slices. A 16-slice recurrence leaves head 47 at zero.
 	{
