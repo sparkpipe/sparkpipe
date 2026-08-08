@@ -1,10 +1,12 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <assert.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -616,6 +618,28 @@ static SparkStatus TestModelPipelineWaitForFailure(
 	return(status);
 }
 
+static uint32_t TestModelPipelineProbeFreeTcpPort(void)
+{
+	struct sockaddr_in address;
+	socklen_t address_length;
+	int32_t fd;
+	uint32_t port;
+	port = 0u;
+	fd = socket(AF_INET,SOCK_STREAM,0);
+	if ( fd >= 0 )
+	{
+		memset(&address,0,sizeof(address));
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(0x7f000001u);
+		address.sin_port = htons(0u);
+		address_length = (socklen_t)sizeof(address);
+		if ( bind(fd,(const struct sockaddr *)&address,(socklen_t)sizeof(address)) == 0 && getsockname(fd,(struct sockaddr *)&address,&address_length) == 0 )
+			port = (uint32_t)ntohs(address.sin_port);
+		close(fd);
+	}
+	return(port);
+}
+
 static void TestModelPipelineWriteDeployment(
 	const char *path,
 	const SparkModelResidentEndpoint *endpoints)
@@ -651,7 +675,9 @@ static void TestModelPipelineWriteDeployment(
 	fixture.runtime_limits.max_active_sequence_count = 16u;
 	fixture.runtime_limits.max_input_row_count = 32u;
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
-	fixture.control_port_base = 59000u;
+	fixture.control_port_base = TestModelPipelineProbeFreeTcpPort();
+	if ( fixture.control_port_base == 0u || fixture.control_port_base > UINT16_MAX - (TEST_MODEL_PIPELINE_RANK_COUNT - 1u) )
+		fixture.control_port_base = 59000u;
 	fixture.node_count = TEST_MODEL_PIPELINE_RANK_COUNT;
 	fixture.coordinator_rank_index = 0u;
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);
@@ -1133,7 +1159,9 @@ int main(void)
 	pid_t children[TEST_MODEL_PIPELINE_RANK_COUNT];
 	uint32_t descriptor_count,rank,submission_index,tcp_port;
 	TestModelBatchSchedulerPolicy();
-	tcp_port = 30000u + ((uint32_t)getpid() % 20000u);
+	tcp_port = TestModelPipelineProbeFreeTcpPort();
+	if ( tcp_port == 0u )
+		tcp_port = 30000u + ((uint32_t)getpid() % 20000u);
 	memset(&state,0,sizeof(state));
 	memset(endpoints,0,sizeof(endpoints));
 	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
