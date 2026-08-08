@@ -135,7 +135,7 @@
 // The shared experts are NOT in the latent space and take the pre-projection
 // hidden at intermediate moe_intermediate * num_shared = 3072 * 2 = 6144.
 //
-// KDA DOES NOT FIT LmDeltaRuleKernel AS IT STANDS. The projections:
+// KDA'S PROJECTIONS, AT THE MODEL'S SHAPES:
 //
 //     q_proj, k_proj, v_proj   hidden -> heads * head_dim = 12288, each with its
 //                              OWN short convolution, each with a SiLU
@@ -149,10 +149,16 @@
 //     dt_bias                  per channel
 //     lower bound              -5.0 clamp on the gate
 //
-// linear_attn.cuh reads forget_gate[(row * key_heads) + head] - ONE SCALAR PER
-// HEAD. KDA's forget gate is head_dim wide per head. The kernel cannot express
-// this model's decay, and widening that argument is the first piece of K3 work
-// that changes a shared kernel rather than adding one.
+// THE KERNEL FIT IS DONE, and this paragraph is the record of what it took.
+// linear_attn.cuh once read forget_gate[(row * key_heads) + head] - ONE
+// SCALAR PER HEAD - while KDA's forget gate is head_dim wide per head, which
+// the kernel then could not express. Widening that argument was the first
+// piece of K3 work that changed a shared kernel rather than adding one: the
+// delta rule now reads the gate PER HEAD PER CHANNEL
+// (linear_attn.cuh:405-410), and LmBoundedDecay (linear_attn.cuh:94-116)
+// maps the low-rank projection's logits to per-channel retention factors
+// under this model's -5.0 floor. Qwen 3.6's gated DeltaNet takes the same
+// width with every channel equal, so the one kernel serves both.
 //
 // Three separate convolutions with SiLU, not one; LmCausalConvKernel has
 // no activation. The final decay arithmetic combining g, A_log and dt_bias lives
