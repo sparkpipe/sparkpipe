@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <cuda_runtime.h>
+
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_qwen36_model.h"
@@ -35,7 +37,11 @@ typedef struct TestQwen36ServingDriver
 	uint32_t kv_block_count;
 	uint64_t submitted_count;
 	uint64_t completed_count;
-	uint16_t capture[TEST_QWEN36_DRIVER_CAPTURE_ROWS * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION];
+	/* Device memory: on a CUDA host the adapter's transport shim moves
+	 * hidden rows with real device-to-device copies, so the patterned
+	 * stage-0 payload must live on device too. The cuda stub makes this a
+	 * plain malloc on hosts without CUDA. */
+	void *capture;
 } TestQwen36ServingDriver;
 
 static SparkStatus TestQwen36ServingDriverSubmit(
@@ -116,6 +122,11 @@ static SparkStatus TestQwen36ServingDriverCreate(
 	driver = (TestQwen36ServingDriver *)calloc(1u,sizeof(*driver));
 	if ( driver == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( cudaMalloc(&driver->capture,(size_t)(TEST_QWEN36_DRIVER_CAPTURE_ROWS * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES)) != cudaSuccess )
+	{
+		free(driver);
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	driver->completion_function = request->completion_function;
 	driver->completion_context = request->completion_context;
 	driver->stage_index = stage_index;
@@ -126,7 +137,12 @@ static SparkStatus TestQwen36ServingDriverCreate(
 
 static void TestQwen36ServingDriverDestroy(void *driver_instance)
 {
-	free(driver_instance);
+	TestQwen36ServingDriver *driver;
+	driver = (TestQwen36ServingDriver *)driver_instance;
+	if ( driver == 0 )
+		return;
+	(void)cudaFree(driver->capture);
+	free(driver);
 }
 
 static SparkStatus TestQwen36ServingDriverAdmit(
@@ -186,7 +202,11 @@ static SparkStatus TestQwen36ServingDriverSubmit(
 			return(SPARK_STATUS_IO_ERROR);
 		if ( context->hidden_input_packet.active_sequence_count != rows || context->hidden_input_packet.hidden_dimension != SPARK_QWEN36_MODEL_HIDDEN_DIMENSION || context->hidden_input_packet.hidden_bf16 == 0 )
 			return(SPARK_STATUS_VALIDATION_FAILED);
-		memcpy(driver->capture,context->hidden_input_packet.hidden_bf16,(size_t)hidden_bytes);
+		/* Echo the received packet unchanged. The pointer is the adapter's
+		 * device-side gather (or the submission boundary itself); a host
+		 * copy out of it is exactly what segfaults a CUDA host. */
+		if ( cudaMemcpy(driver->capture,context->hidden_input_packet.hidden_bf16,(size_t)hidden_bytes,cudaMemcpyDeviceToDevice) != cudaSuccess )
+			return(SPARK_STATUS_IO_ERROR);
 	}
 	else
 	{
@@ -194,7 +214,8 @@ static SparkStatus TestQwen36ServingDriverSubmit(
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( frame->buffer_count == 0u || frame->buffers[0].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_READ || frame->buffers[0].address == 0 || frame->buffers[0].bytes < (uint64_t)rows * sizeof(uint32_t) )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
-		memset(driver->capture,0x5a,(size_t)hidden_bytes);
+		if ( cudaMemset(driver->capture,0x5a,(size_t)hidden_bytes) != cudaSuccess )
+			return(SPARK_STATUS_IO_ERROR);
 	}
 	if ( driver->stage_index + 1u == TEST_QWEN36_DRIVER_STAGE_COUNT )
 	{
