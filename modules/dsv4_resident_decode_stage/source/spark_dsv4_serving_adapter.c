@@ -455,6 +455,9 @@ static void SparkDsv4ServingInitializeNodeContext(
 	state->node_context.linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC;
 	state->node_context.expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC;
 	state->node_context.kv_cache_codec = SPARK_DSV4_MODEL_KV_CACHE_CODEC;
+	/* Serving stays eager until a deployment opts into capture; the GPU
+	 * validator is the qualification path that raises this above zero. */
+	state->node_context.cuda_graph_count = 0u;
 	state->node_context.stage_pack_path = state->stage_pack_path;
 }
 

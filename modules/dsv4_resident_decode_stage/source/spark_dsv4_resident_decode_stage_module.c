@@ -19,6 +19,8 @@
 #include "spark_dsv4_pool_layout.h"
 #include "spark_dsv4_stagepack_format.h"
 
+#include "inference/kernels/graph.cuh"
+
 /*
  * DeepSeek V4 resident decode stage host module, PP-Nx native, one variant
  * per build through the -include'd model header.
@@ -192,6 +194,21 @@ struct SparkDsv4ModuleState
 	float *index_score_state_f32;
 	uint64_t index_state_lane_stride;
 	uint64_t resident_state_bytes;
+	/*
+	 * Decode-step graph cache: fixed storage, keyed by (pipeline slot, lane
+	 * count) - the only launch-shape inputs a decode frame carries. Everything
+	 * else a frame varies (token ids, lane indices, positions, boundary
+	 * addresses) reaches the kernels through per-slot pinned staging and
+	 * device arrays the recorded copies re-read on every replay, or is bounced
+	 * through the slot's own stream buffer outside the graph. graph_sealed
+	 * latches the first capture failure so an overflowed or refused cache
+	 * stops paying capture attempts; replays of already-captured shapes
+	 * continue.
+	 */
+	uint32_t graph_capacity;
+	uint32_t graph_sealed;
+	LmGraphCache graph_cache;
+	LmGraphEntry graph_entries[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT];
 	SparkDsv4ModuleSlot slots[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkDsv4AsyncCompletion completions[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -258,7 +275,7 @@ static SparkStatus SparkDsv4ModuleConfigure(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( (context->flags & ~SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS) != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( context->stage_count == 0u || context->stage_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT || context->layer_count == 0u || context->layer_count > SPARK_DSV4_MODEL_LAYER_COUNT - context->first_layer_index || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || context->max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS || context->linear_weight_codec != SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC || context->expert_weight_codec != SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC || context->kv_cache_codec != SPARK_DSV4_MODEL_KV_CACHE_CODEC || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' )
+	if ( context->stage_count == 0u || context->stage_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT || context->layer_count == 0u || context->layer_count > SPARK_DSV4_MODEL_LAYER_COUNT - context->first_layer_index || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->cuda_graph_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT || context->max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || context->max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS || context->linear_weight_codec != SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC || context->expert_weight_codec != SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC || context->kv_cache_codec != SPARK_DSV4_MODEL_KV_CACHE_CODEC || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	state->stage_count = context->stage_count;
 	state->stage_index = context->stage_index;
@@ -267,6 +284,7 @@ static SparkStatus SparkDsv4ModuleConfigure(
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
 	state->max_sequence_positions = context->max_sequence_positions;
+	state->graph_capacity = context->cuda_graph_count;
 	state->execution_stream = host_services->execution_stream;
 	state->mtp_armed = 0u;
 	*pack_path_out = context->stage_pack_path;
@@ -1231,7 +1249,8 @@ static SparkStatus SparkDsv4ModuleResetLaneState(
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"lane_state_reset"));
 }
 
-static SparkStatus SparkDsv4ModuleStageRows(
+// The host half of staging: validate and refill the slot's pinned buffers.
+static SparkStatus SparkDsv4ModuleStageRowValues(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
 	const uint32_t *token_ids,
@@ -1239,11 +1258,7 @@ static SparkStatus SparkDsv4ModuleStageRows(
 	const uint64_t *row_positions,
 	uint32_t row_count)
 {
-	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
-	uint64_t pitch32 = (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint32_t);
-	uint64_t pitch64 = (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint64_t);
 	uint32_t row,lane;
-	cudaError_t error;
 	if ( row_count == 0u || row_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || token_ids == 0 || row_lane_indices == 0 || row_positions == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	for (row = 0; row < row_count; row++)
@@ -1257,10 +1272,39 @@ static SparkStatus SparkDsv4ModuleStageRows(
 		slot->host_row_emit_positions[row] = row_positions[row] + 1u >= SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO ? row_positions[row] + 1u - SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO : 0u;
 		slot->host_row_emit_positions_hca[row] = row_positions[row] + 1u >= SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO ? row_positions[row] + 1u - SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO : 0u;
 	}
+	return(SPARK_STATUS_OK);
+}
+
+// The H2D half of staging, split from the host fill so a graph capture can
+// record exactly these two copies: the pinned source buffers are per-slot
+// fixed, so a replay re-reads whatever the current frame's fill left there.
+static SparkStatus SparkDsv4ModuleStageRowCopies(SparkDsv4ModuleSlot *slot, uint32_t row_count)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint64_t pitch32 = (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint32_t);
+	uint64_t pitch64 = (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint64_t);
+	cudaError_t error;
+	if ( row_count == 0u || row_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	error = cudaMemcpy2DAsync(slot->input_token_ids,pitch32,slot->host_input_token_ids,pitch32,(uint64_t)row_count * sizeof(uint32_t),2u,cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
 		error = cudaMemcpy2DAsync(slot->row_positions,pitch64,slot->host_row_positions,pitch64,(uint64_t)row_count * sizeof(uint64_t),3u,cudaMemcpyHostToDevice,stream);
-	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"stage_rows"));
+	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"stage_row_copies"));
+}
+
+static SparkStatus SparkDsv4ModuleStageRows(
+	SparkDsv4ModuleState *state,
+	SparkDsv4ModuleSlot *slot,
+	const uint32_t *token_ids,
+	const uint32_t *row_lane_indices,
+	const uint64_t *row_positions,
+	uint32_t row_count)
+{
+	SparkStatus status;
+	status = SparkDsv4ModuleStageRowValues(state,slot,token_ids,row_lane_indices,row_positions,row_count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ModuleStageRowCopies(slot,row_count);
+	return(status);
 }
 
 static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkModelDriverFrame *frame, const SparkDsv4ResidentDecodeStageFrameContext *context)
@@ -1668,6 +1712,117 @@ static SparkStatus SparkDsv4ModuleRunFrame(
 	return(status);
 }
 
+/*
+ * Decode-step CUDA graphs, per docs/PERF_ROADMAP_2026-08-01.md D10/D1: the
+ * eager step costs hundreds of driver launches and at cohort width 1 the GPU
+ * idles between them. A decode frame's launch SHAPE depends only on the
+ * pipeline slot (every buffer above is per-slot fixed) and the lane count
+ * (every grid derives from rows), so one recording per (slot, rows) pair
+ * replays every later frame of that shape: token ids, lane indices, and
+ * positions ride the slot's pinned staging through the two recorded H2D
+ * copies, and the caches are indexed on device. The stage has no
+ * position-dependent host branch - the topk column count and the window
+ * ring are capacity constants - so no context term belongs in the key.
+ *
+ * The frame's boundary buffers are the one remaining per-frame address:
+ * rather than key on daemon pointers, the graphed step bounces the hidden
+ * input into the slot's own stream buffer ahead of the graph and bounces the
+ * last stage's output back after it, one contiguous D2D copy each way, so
+ * the recording only ever names module-owned addresses.
+ *
+ * Fail-closed: any capture or replay-launch failure runs the step eagerly;
+ * a replay never substitutes for a shape it was not recorded from.
+ */
+static SparkStatus SparkDsv4ModuleBounceBoundary(void *destination, const void *source, uint32_t rows, cudaStream_t stream, const char *site)
+{
+	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaMemcpyAsync(destination,source,(uint64_t)rows * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,cudaMemcpyDeviceToDevice,stream),site));
+}
+
+// The exact launch sequence a decode graph records; also the eager fallback
+// body, so capture and eager can never drift apart.
+static SparkStatus SparkDsv4ModuleRunCapturedDecode(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, uint32_t rows)
+{
+	const void *input_streams_bf16;
+	SparkStatus status;
+	input_streams_bf16 = slot->streams_bf16;
+	status = SparkDsv4ModuleStageRowCopies(slot,rows);
+	if ( status == SPARK_STATUS_OK && state->owns_embedding != 0u )
+		status = SparkDsv4ModuleBeginStreams(state,slot,0,rows,&input_streams_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ModuleRunLayers(state,slot,input_streams_bf16,slot->streams_bf16,0,rows);
+	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
+		status = SparkDsv4ModuleFinish(state,slot,slot->streams_bf16,slot->host_output_token_ids,rows);
+	return(status);
+}
+
+static SparkStatus SparkDsv4ModuleCaptureDecode(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const LmGraphKey *key, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	LmGraphEntry *entry;
+	SparkStatus status;
+	if ( LmGraphBeginCapture(stream) != LM_GRAPH_OK )
+	{
+		state->graph_sealed = 1u;
+		return(SparkDsv4ModuleRunCapturedDecode(state,slot,rows));
+	}
+	status = SparkDsv4ModuleRunCapturedDecode(state,slot,rows);
+	if ( status == SPARK_STATUS_OK && LmGraphEndCapture(&state->graph_cache,key,stream) == LM_GRAPH_OK )
+	{
+		// Captured work only recorded; replay it so this frame executes.
+		if ( LmGraphReplay(&state->graph_cache,key,stream) == LM_GRAPH_OK )
+			return(SPARK_STATUS_OK);
+		state->graph_sealed = 1u;
+		return(SparkDsv4ModuleRunCapturedDecode(state,slot,rows));
+	}
+	// The attempt failed. If EndCapture still instantiated a recording made
+	// with a failed launch inside, that recording has a hole: retire the
+	// entry rather than risk replaying a short sequence.
+	entry = LmGraphFind(&state->graph_cache,key);
+	if ( entry != 0 && status != SPARK_STATUS_OK )
+	{
+		(void)cudaGraphExecDestroy(entry->executable);
+		entry->live = 0;
+	}
+	state->graph_sealed = 1u;
+	return(SparkDsv4ModuleRunCapturedDecode(state,slot,rows));
+}
+
+static SparkStatus SparkDsv4ModuleRunGraphedDecode(
+	SparkDsv4ModuleState *state,
+	SparkDsv4ModuleSlot *slot,
+	uint32_t slot_index,
+	SparkModelDriverFrame *frame,
+	const SparkDsv4ResidentDecodeStageFrameContext *context,
+	uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	LmGraphKey key;
+	SparkStatus status;
+	int32_t graph_status;
+	// The pinned-staging fill is host work the recording cannot contain, and
+	// the recorded copies read it at replay time: it runs every frame, first.
+	status = SparkDsv4ModuleStageRowValues(state,slot,(const uint32_t *)frame->buffers[0].address,context->decode_batch->row_lane_indices,context->decode_batch->row_positions,rows);
+	if ( status == SPARK_STATUS_OK && state->owns_embedding == 0u )
+		status = SparkDsv4ModuleBounceBoundary(slot->streams_bf16,context->hidden_input_bf16,rows,stream,"graph_boundary_in");
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	key.rows = rows;
+	key.layer_kind = slot_index;
+	key.format = 0u;
+	key.sparse = 0u;
+	key.context_bucket = LmGraphContextBucket(state->max_sequence_positions,SPARK_DSV4_MODEL_MAX_POSITIONS);
+	graph_status = LmGraphReplay(&state->graph_cache,&key,stream);
+	if ( graph_status == LM_GRAPH_OK )
+		status = SPARK_STATUS_OK;
+	else if ( graph_status == LM_GRAPH_ERR_SHAPE && state->graph_sealed == 0u )
+		status = SparkDsv4ModuleCaptureDecode(state,slot,&key,rows);
+	else
+		status = SparkDsv4ModuleRunCapturedDecode(state,slot,rows);
+	if ( status == SPARK_STATUS_OK && state->owns_final_head == 0u )
+		status = SparkDsv4ModuleBounceBoundary(context->hidden_output_bf16,slot->streams_bf16,rows,stream,"graph_boundary_out");
+	return(status);
+}
+
 static void SparkDsv4ModulePrepareAsync(
 	SparkDsv4ModuleState *state,
 	SparkModelDriverFrame *frame,
@@ -1797,9 +1952,16 @@ static SparkStatus SparkDsv4ModuleExecuteFrame(
 		if ( lane_requires_reset[index] != 0u )
 			status = SparkDsv4ModuleResetLaneState(state,slot,lane_indices[index]);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4ModuleStageFrameRows(state,slot,frame,context);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4ModuleRunFrame(state,slot,frame,context);
+	{
+		if ( state->graph_capacity != 0u && (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u )
+			status = SparkDsv4ModuleRunGraphedDecode(state,slot,slot_index,frame,context,row_count);
+		else
+		{
+			status = SparkDsv4ModuleStageFrameRows(state,slot,frame,context);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkDsv4ModuleRunFrame(state,slot,frame,context);
+		}
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleEnqueueAsync(state,slot,slot_index);
 	if ( status != SPARK_STATUS_OK )
@@ -1959,6 +2121,11 @@ void SparkDsv4ResidentDecodeStageDestroy(void *module_state)
 		if ( state->slots[slot_index].host_staging != 0 )
 			(void)cudaFreeHost(state->slots[slot_index].host_staging);
 	}
+	for (slot_index = 0u; slot_index < state->graph_capacity; ++slot_index)
+	{
+		if ( state->graph_entries[slot_index].live != 0 )
+			(void)cudaGraphExecDestroy(state->graph_entries[slot_index].executable);
+	}
     SparkStageModuleLedgerRelease(&state->ledger);
     free(state);
 }
@@ -2015,17 +2182,18 @@ static SparkStatus SparkDsv4ModulePrepareState(
 		status = SparkDsv4ModuleFinalizeLoad(state);
 	for (slot_index=0u; status==SPARK_STATUS_OK && slot_index<state->pipeline_slot_count; slot_index++)
 		status = SparkDsv4ModuleAllocateSlot(state,&state->slots[slot_index]);
+	LmGraphCacheInitialise(&state->graph_cache,state->graph_entries,state->graph_capacity);
 	return(status);
 }
 
 static void SparkDsv4ModuleReportReady(const SparkDsv4ModuleState *state)
 {
 	fprintf(stderr,
-		"%s ready stage=%u/%u slice=%u+%u compress=%u csa=%u lanes=%u max_seq=%u state_gib=%.3f device_gib=%.1f\n",
+		"%s ready stage=%u/%u slice=%u+%u compress=%u csa=%u lanes=%u max_seq=%u graphs=%u state_gib=%.3f device_gib=%.1f\n",
 		SPARK_DSV4_MODULE_TAG,state->stage_index,state->stage_count,
 		state->first_layer_index,state->layer_count,state->compress_layer_count,
 		state->csa_layer_count,state->resident_sequence_capacity,
-		state->max_sequence_positions,(double)state->resident_state_bytes /
+		state->max_sequence_positions,state->graph_capacity,(double)state->resident_state_bytes /
 		(1024.0 * 1024.0 * 1024.0),(double)state->ledger.device_bytes_resident /
 		(1024.0 * 1024.0 * 1024.0));
 }

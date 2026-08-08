@@ -156,7 +156,7 @@ static int32_t LmGraphEndCapture(LmGraphCache *cache, const LmGraphKey *key, cud
 		cudaGraphDestroy(graph);
 		return(LM_GRAPH_ERR_FULL);
 	}
-	if ( cudaGraphInstantiate(&entry->executable,graph,0,0,0) != cudaSuccess )
+	if ( cudaGraphInstantiate(&entry->executable,graph,0ull) != cudaSuccess )
 	{
 		cudaGraphDestroy(graph);
 		return(LM_GRAPH_ERR_CAPTURE);
