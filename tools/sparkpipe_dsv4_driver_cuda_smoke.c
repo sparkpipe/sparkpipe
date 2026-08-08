@@ -87,6 +87,8 @@ static int SparkDsv4DriverCudaSmokeRun(
 	const char *stage_pack_path;
 	const uint32_t prompt_token_ids[SPARK_DSV4_DRIVER_CUDA_SMOKE_PROMPT_TOKENS] = {0u,128803u,19905u,418u,9045u,28u,20370u,128804u,128822u};
 	uint32_t token_ids[SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS],lane_indices[SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS];
+	uint32_t emit_rows[SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES] = {16u,17u};
+	uint32_t emit_lanes[SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES] = {0u,1u};
 	uint64_t positions[SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS],sequence_ids[SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS];
 	uint32_t stage_index;
 	uint32_t stage_count;
@@ -241,6 +243,7 @@ static int SparkDsv4DriverCudaSmokeRun(
 	runner_configuration.stage_count = stage_count;
 	runner_configuration.max_active_sequence_count = SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES;
 	runner_configuration.max_input_row_count = SPARK_DSV4_DRIVER_CUDA_SMOKE_ROWS;
+	runner_configuration.resident_sequence_capacity = SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES;
 	runner_configuration.driver_interface = driver.interface;
 	runner_configuration.driver_instance = driver_instance;
 	runner_configuration.program = program;
@@ -265,6 +268,9 @@ static int SparkDsv4DriverCudaSmokeRun(
 	dispatch.row_lane_indices = lane_indices;
 	dispatch.row_positions = positions;
 	dispatch.row_sequence_ids = sequence_ids;
+	dispatch.emit_count = SPARK_DSV4_DRIVER_CUDA_SMOKE_LANES;
+	dispatch.emit_row_indices = emit_rows;
+	dispatch.emit_lane_indices = emit_lanes;
 	dispatch.hidden_input_bf16 = stage_index != 0u ? state.hidden_input_device : 0;
 	dispatch.hidden_input_bytes = stage_index != 0u ? hidden_input_bytes : 0u;
 	dispatch.hidden_output_bf16 = stage_index + 1u < stage_count ? state.hidden_output_device : 0;

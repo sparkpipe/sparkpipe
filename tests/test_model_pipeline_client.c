@@ -378,11 +378,13 @@ static void TestModelPipelineBuildSubmission(
 	lanes[0].step_generation = submission_id + 3000u;
 	lanes[0].sequence_id = 100u;
 	lanes[0].resident_sequence_slot = 31u;
+	lanes[0].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	lanes[1].request_id = 901u;
 	lanes[1].request_generation = 1u;
 	lanes[1].step_generation = submission_id + 3000u;
 	lanes[1].sequence_id = 101u;
 	lanes[1].resident_sequence_slot = 30u;
+	lanes[1].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	tokens[0] = 11u;
 	tokens[1] = 12u;
 	row_lanes[0] = 0u;
@@ -435,6 +437,7 @@ static void TestModelPipelineBuildPrefill(
 	lanes[0].step_generation = submission_id + 3000u;
 	lanes[0].sequence_id = 200u;
 	lanes[0].resident_sequence_slot = 29u;
+	lanes[0].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	for (row=0u; row<4u; row++)
 	{
 		tokens[row] = 21u + row;

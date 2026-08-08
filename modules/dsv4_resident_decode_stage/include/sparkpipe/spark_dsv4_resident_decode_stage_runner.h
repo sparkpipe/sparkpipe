@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_DSV4_STAGE_RUNNER_ABI_VERSION 1u
+#define SPARK_DSV4_STAGE_RUNNER_ABI_VERSION 3u
 #define SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES \
     ((uint32_t)sizeof(SparkDsv4StageRunnerConfiguration))
 #define SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES \
@@ -42,6 +42,7 @@ typedef struct SparkDsv4StageRunnerConfiguration
 	uint32_t stage_count;
 	uint32_t max_active_sequence_count;
 	uint32_t max_input_row_count;
+	uint32_t resident_sequence_capacity;
     const SparkModelDriverInterface *driver_interface;
     void *driver_instance;
     const SparkModelDriverProgramDescriptor *program;
@@ -63,10 +64,13 @@ typedef struct SparkDsv4StageRunnerDispatch
     uint32_t row_count;
     uint32_t lane_count;
     const uint32_t *token_ids;
-    const uint32_t *row_lane_indices;
-    const uint64_t *row_positions;
-    const uint64_t *row_sequence_ids;
-    uint32_t *output_token_ids;
+	const uint32_t *row_lane_indices;
+	const uint64_t *row_positions;
+	const uint64_t *row_sequence_ids;
+	uint32_t emit_count;
+	const uint32_t *emit_row_indices;
+	const uint32_t *emit_lane_indices;
+	uint32_t *output_token_ids;
     const void *hidden_input_bf16;
     uint64_t hidden_input_bytes;
     void *hidden_output_bf16;
@@ -97,6 +101,7 @@ typedef struct SparkDsv4StageRunner
 	uint32_t stage_count;
 	uint32_t max_active_sequence_count;
 	uint32_t max_input_row_count;
+	uint32_t resident_sequence_capacity;
 	uint32_t owns_embedding;
     uint32_t owns_final_head;
     const SparkModelDriverInterface *driver_interface;

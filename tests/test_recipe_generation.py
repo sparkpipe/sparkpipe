@@ -296,6 +296,32 @@ def test_pp_stage_rules_and_balance():
                   f"stages")
 
 
+def test_weighted_pp_placement():
+    stages, optimum = gr.build_balanced_stages(
+        [10] * 12, 12, 4, 0, [1.0, 2.0, 1.0, 1.0])
+    check([(stage["first_layer_index"], stage["layer_count"])
+           for stage in stages] == [(0, 2), (2, 5), (7, 2), (9, 3)],
+          "weighted PP placement must give extra work to the faster stage")
+    check(optimum == 30.0,
+          "weighted PP placement must report normalized minimax cost")
+    try:
+        gr.build_balanced_stages([1] * 4, 4, 2, 0, [1.0])
+    except gr.RecipeFailure:
+        pass
+    else:
+        check(False, "weighted PP placement must reject a short profile")
+    capacity = [1.0] * 13
+    for index in (4, 5, 6, 7):
+        capacity[index] = 1.3
+    capacity[-1] = 2.0 / 3.0
+    stages, _ = gr.build_balanced_stages([10] * 43, 0, 13, 15, capacity)
+    sizes = [stage["layer_count"] for stage in stages]
+    check(sizes[-1] == 1,
+          "a slow terminal stage must retain only the final layer")
+    check(sizes[6] == 5 and sizes[7] == 5,
+          "faster interior stages must absorb the shifted work")
+
+
 def test_check_pattern_and_stale_detection():
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
@@ -331,6 +357,7 @@ def main():
     test_geometry_hash_invalidation()
     test_tp_shard_coverage()
     test_pp_stage_rules_and_balance()
+    test_weighted_pp_placement()
     test_check_pattern_and_stale_detection()
     if FAILURES:
         print(f"\n{len(FAILURES)} recipe-generation checks failed")

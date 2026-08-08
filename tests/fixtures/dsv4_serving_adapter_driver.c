@@ -105,7 +105,7 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 	SparkModelDriverCompletion completion;
 	const uint32_t *row_slots;
 	const uint64_t *row_sequences;
-	uint32_t *tokens,row,row_count;
+	uint32_t *tokens,emit,row,row_count;
 	uint64_t hidden_bytes;
 	driver = (TestDsv4ServingDriver *)driver_instance;
 	if ( driver == 0 || frame == 0 || frame->user_context == 0 )
@@ -137,13 +137,20 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 	}
 	else
 	{
-		if ( frame->buffer_count != 2u || frame->buffers[0].slot != 0u || frame->buffers[0].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_READ || frame->buffers[0].address == 0 || frame->buffers[0].bytes < (uint64_t)row_count * sizeof(uint32_t) || frame->buffers[1].slot != 1u || frame->buffers[1].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || frame->buffers[1].address == 0 || frame->buffers[1].bytes < (uint64_t)row_count * sizeof(uint32_t) )
+		if ( frame->buffer_count != 2u || frame->buffers[0].slot != 0u || frame->buffers[0].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_READ || frame->buffers[0].address == 0 || frame->buffers[0].bytes < (uint64_t)row_count * sizeof(uint32_t) || frame->buffers[1].slot != 1u || frame->buffers[1].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || frame->buffers[1].address == 0 || frame->buffers[1].bytes < (uint64_t)frame->active_slot_count * sizeof(uint32_t) )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( context->prefill_batch != 0 && context->prefill_batch->token_ids != frame->buffers[0].address )
 			return(SPARK_STATUS_SCHEMA_ERROR);
 		tokens = (uint32_t *)frame->buffers[1].address;
-		for (row=0u; row<row_count; row++)
-			tokens[row] = 4200u + row;
+		memset(tokens,0,(size_t)frame->active_slot_count * sizeof(uint32_t));
+		if ( context->prefill_batch != 0 )
+		{
+			for (emit=0u; emit<context->prefill_batch->emit_count; emit++)
+				tokens[context->prefill_batch->emit_lane_indices[emit]] = 4200u + context->prefill_batch->emit_row_indices[emit];
+		}
+		else
+			for (row=0u; row<row_count; row++)
+				tokens[row] = 4200u + row;
 	}
 	driver->submitted_count++;
 	driver->completed_count++;

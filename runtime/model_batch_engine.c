@@ -1126,7 +1126,8 @@ static void SparkModelBatchInitializeLane(
 	uint32_t request_slot,
 	uint64_t sequence_position,
 	uint32_t context_token_count,
-	uint32_t input_token_id)
+	uint32_t input_token_id,
+	uint32_t flags)
 {
 	SparkModelBatchRequestState *request;
 	request = &engine->requests[request_slot];
@@ -1139,6 +1140,7 @@ static void SparkModelBatchInitializeLane(
 	lane->resident_sequence_slot = request->resident_sequence_slot;
 	lane->context_token_count = context_token_count;
 	lane->input_token_id = input_token_id;
+	lane->flags = flags;
 }
 
 static void SparkModelBatchBuildPrefillRows(
@@ -1155,7 +1157,7 @@ static void SparkModelBatchBuildPrefillRows(
 		slot = engine->scratch_request_slots[lane];
 		request = &engine->requests[slot];
 		tokens = SparkModelBatchRequestTokens(engine,slot);
-		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,request->computed_prompt_token_count,request->computed_prompt_token_count + engine->scratch_prefill_counts[lane],tokens[request->computed_prompt_token_count]);
+		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,request->computed_prompt_token_count,request->computed_prompt_token_count + engine->scratch_prefill_counts[lane],tokens[request->computed_prompt_token_count],request->computed_prompt_token_count + engine->scratch_prefill_counts[lane] == request->prompt_token_count ? SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN : 0u);
 		if ( engine->scratch_prefill_counts[lane] > maximum )
 			maximum = engine->scratch_prefill_counts[lane];
 	}
@@ -1195,7 +1197,7 @@ static void SparkModelBatchBuildDecodeRows(
 		request = &engine->requests[slot];
 		tokens = SparkModelBatchRequestTokens(engine,slot);
 		position = request->prompt_token_count + request->generated_token_count - 1u;
-		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,position,position + 1u,tokens[position]);
+		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,position,position + 1u,tokens[position],SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN);
 		engine->scratch_token_ids[lane] = tokens[position];
 		engine->scratch_row_lane_indices[lane] = lane;
 		engine->scratch_row_positions[lane] = position;
@@ -1217,7 +1219,7 @@ static void SparkModelBatchBuildReleaseLanes(
 		slot = engine->scratch_request_slots[lane];
 		request = &engine->requests[slot];
 		position = request->prompt_token_count + request->generated_token_count;
-		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,position,position,0u);
+		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,position,position,0u,0u);
 	}
 }
 

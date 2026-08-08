@@ -168,7 +168,7 @@ static void TestModelServingBuildCompletion(
 	completion->completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 	completion->token_count = submission->active_sequence_count;
 	for (lane=0u; lane<completion->token_count; lane++)
-		completion->token_ids[lane] = (submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? 4203u : 4200u) + lane;
+		completion->token_ids[lane] = (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u ? (submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? 4203u : 4200u) + lane : 0u;
 }
 
 static SparkStatus TestModelServingSubmit(
