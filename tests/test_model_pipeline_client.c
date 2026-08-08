@@ -74,11 +74,11 @@ typedef struct TestModelBatchState
 
 static void TestModelBatchSchedulerMixedLanes(uint32_t total,uint32_t kind,const uint32_t *expected,uint32_t expected_count)
 {
-	uint32_t index,inflight[4] = {0u},maximum[4] = {0u,24u,24u,24u},queued[4] = {0u},width;
+	uint32_t index,inflight[4] = {0u},maximum[4] = {0u,24u,24u,24u},minimum[4] = {0u},queued[4] = {0u},width;
 	for (index=0u; index<expected_count; index++)
 	{
 		queued[kind] = total;
-		width = SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,kind,13u);
+		width = SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,minimum,inflight,kind,13u);
 		assert(width == expected[index]);
 		total -= width;
 		inflight[kind]++;
@@ -140,7 +140,7 @@ static void TestModelBatchSchedulerPolicy(void)
 	static const uint32_t b17[] = {2u,2u,2u,2u,1u,1u,1u,1u,1u,1u,1u,1u,1u};
 	static const uint32_t b92[] = {8u,7u,7u,7u,7u,7u,7u,7u,7u,7u,7u,7u,7u};
 	static const uint32_t b104[] = {8u,8u,8u,8u,8u,8u,8u,8u,8u,8u,8u,8u,8u};
-	uint32_t bypass[4] = {0u},inflight[4] = {0u},maximum[4] = {0u,24u,24u,24u},minimum[4] = {0u,16u,16u,1u},next,queued[4] = {0u};
+	uint32_t bypass[4] = {0u},floors[4] = {0u},inflight[4] = {0u},maximum[4] = {0u,24u,24u,24u},minimum[4] = {0u,16u,16u,1u},next,queued[4] = {0u};
 	TestModelBatchSchedulerMixedLanes(14u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b14,13u);
 	TestModelBatchSchedulerMixedLanes(17u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b17,13u);
 	TestModelBatchSchedulerMixedLanes(92u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b92,13u);
@@ -148,28 +148,28 @@ static void TestModelBatchSchedulerPolicy(void)
 	TestModelBatchSchedulerMixedLanes(104u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b104,13u);
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 3u;
 	maximum[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 4u;
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,2u) == 2u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,floors,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,2u) == 2u);
 	maximum[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 24u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 0u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 92u;
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 8u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,floors,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 8u);
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 128u;
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 10u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,floors,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 10u);
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 92u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 92u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_RELEASE] = 92u;
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 19u);
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_DECODE,13u) == 23u);
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_RELEASE,13u) == 24u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,floors,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 19u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,floors,inflight,SPARK_MODEL_SERVING_WORK_KIND_DECODE,13u) == 23u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,floors,inflight,SPARK_MODEL_SERVING_WORK_KIND_RELEASE,13u) == 24u);
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 1024u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 0u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_RELEASE] = 0u;
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 24u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,floors,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 24u);
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 48u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 72u;
 	inflight[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 10u;
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 0u);
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_DECODE,13u) == 24u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,floors,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 0u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,floors,inflight,SPARK_MODEL_SERVING_WORK_KIND_DECODE,13u) == 24u);
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 0u;
 	next = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
 	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,10u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_DECODE);
