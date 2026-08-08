@@ -25,6 +25,9 @@ typedef struct SparkStageModuleLedger
     uint64_t device_bytes_resident;
 } SparkStageModuleLedger;
 
+typedef SparkStatus (*SparkStageModuleClaimedIndexPrepareFunction)(
+    void *prepare_context);
+
 SparkStatus SparkStageModuleCudaStatus(
     const char *module_tag,
     cudaError_t error,
@@ -91,6 +94,19 @@ SparkStatus SparkStageModuleIndexSetClaim(
     uint32_t index_capacity,
     const uint32_t *indices,
     uint32_t index_count);
+SparkStatus SparkStageModuleIndexClaimOrdinal(
+    const atomic_uint *index_states,
+    uint32_t index_capacity,
+    uint32_t index,
+    uint32_t *ordinal_out);
+/* Prepare runs after every index is claimed; failure releases the full set. */
+SparkStatus SparkStageModuleIndexSetClaimAndPrepare(
+    atomic_uint *index_states,
+    uint32_t index_capacity,
+    const uint32_t *indices,
+    uint32_t index_count,
+    SparkStageModuleClaimedIndexPrepareFunction prepare_function,
+    void *prepare_context);
 void SparkStageModuleIndexSetRelease(
     atomic_uint *index_states,
     uint32_t index_capacity,
@@ -111,6 +127,17 @@ SparkStatus SparkStageModuleWaitForSlots(
     uint32_t slot_count,
     uint64_t timeout_nanoseconds);
 void SparkStageModuleSlotRelease(
+    atomic_uint *slot_states,
+    uint32_t slot_index);
+/* The callback runs under both claims; the dispatch slot is released last. */
+void SparkStageModuleCompleteAndReleaseClaims(
+    SparkModelDriverCompletionFunction completion_function,
+    void *completion_context,
+    const SparkModelDriverCompletion *completion,
+    atomic_uint *index_states,
+    uint32_t index_capacity,
+    const uint32_t *indices,
+    uint32_t index_count,
     atomic_uint *slot_states,
     uint32_t slot_index);
 

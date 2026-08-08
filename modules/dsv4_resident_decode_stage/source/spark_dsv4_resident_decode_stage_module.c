@@ -1041,11 +1041,33 @@ static SparkStatus SparkDsv4ModuleValidateFrame(
 	return(status);
 }
 
+static SparkStatus SparkDsv4ModuleCollectFrameLaneIndices(
+	const SparkDsv4ModuleState *state,
+	const SparkModelDriverFrame *frame,
+	const SparkDsv4ResidentDecodeStageFrameContext *context,
+	uint32_t *lane_indices)
+{
+	const uint32_t *row_lanes;
+	uint32_t lane,lane_count,ordinal;
+	if ( state == 0 || frame == 0 || context == 0 || lane_indices == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	row_lanes = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? context->prefill_batch->row_lane_indices : context->decode_batch->row_lane_indices;
+	lane_count = frame->active_slot_count;
+	for (ordinal=0u; ordinal<lane_count; ordinal++)
+	{
+		lane = row_lanes[ordinal];
+		if ( lane >= state->resident_sequence_capacity )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		lane_indices[ordinal] = lane;
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkDsv4ModuleValidateFrameContinuity(
 	SparkDsv4ModuleState *state,
 	const SparkModelDriverFrame *frame,
 	const SparkDsv4ResidentDecodeStageFrameContext *context,
-	uint32_t *lane_indices,
+	const uint32_t *lane_indices,
 	uint64_t *lane_sequence_ids,
 	uint64_t *lane_next_positions,
 	uint8_t *lane_requires_reset)
@@ -1053,8 +1075,9 @@ static SparkStatus SparkDsv4ModuleValidateFrameContinuity(
 	const uint32_t *row_lanes;
 	const uint64_t *row_positions,*row_sequences;
 	uint8_t touched[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint32_t lane,lane_count,ordinal,previous,row,row_count;
+	uint32_t lane,lane_count,ordinal,row,row_count;
 	uint64_t position,sequence;
+	SparkStatus status;
 	if ( state == 0 || frame == 0 || context == 0 || lane_indices == 0 || lane_sequence_ids == 0 || lane_next_positions == 0 || lane_requires_reset == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u )
@@ -1075,13 +1098,7 @@ static SparkStatus SparkDsv4ModuleValidateFrameContinuity(
 	}
 	for (ordinal=0u; ordinal<lane_count; ordinal++)
 	{
-		lane = row_lanes[ordinal];
-		if ( lane >= state->resident_sequence_capacity )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		for (previous=0u; previous<ordinal; previous++)
-			if ( lane_indices[previous] == lane )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-		lane_indices[ordinal] = lane;
+		lane = lane_indices[ordinal];
 		lane_sequence_ids[ordinal] = state->lane_sequence_ids[lane];
 		lane_next_positions[ordinal] = state->lane_next_positions[lane];
 		lane_requires_reset[ordinal] = 0u;
@@ -1089,16 +1106,33 @@ static SparkStatus SparkDsv4ModuleValidateFrameContinuity(
 	for (row=0u; row<row_count; row++)
 	{
 		lane = row_lanes[row];
-		for (ordinal=0u; ordinal<lane_count && lane_indices[ordinal]!=lane; ordinal++)
-			;
+		status = SparkStageModuleIndexClaimOrdinal(state->lane_states,state->resident_sequence_capacity,lane,&ordinal);
 		sequence = row_sequences[row];
 		position = row_positions[row];
-		if ( ordinal == lane_count || sequence == 0u || position >= state->max_sequence_positions )
+		if ( status != SPARK_STATUS_OK || ordinal >= lane_count || lane_indices[ordinal] != lane || sequence == 0u || position >= state->max_sequence_positions )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( SparkDsv4AdvanceLaneContinuity(sequence,position,&lane_sequence_ids[ordinal],&lane_next_positions[ordinal],&touched[ordinal],&lane_requires_reset[ordinal]) != SPARK_STATUS_OK )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	return(SPARK_STATUS_OK);
+}
+
+typedef struct SparkDsv4ClaimedContinuityContext
+{
+	SparkDsv4ModuleState *state;
+	const SparkModelDriverFrame *frame;
+	const SparkDsv4ResidentDecodeStageFrameContext *frame_context;
+	const uint32_t *lane_indices;
+	uint64_t *lane_sequence_ids;
+	uint64_t *lane_next_positions;
+	uint8_t *lane_requires_reset;
+} SparkDsv4ClaimedContinuityContext;
+
+static SparkStatus SparkDsv4ModulePrepareClaimedContinuity(void *prepare_context)
+{
+	SparkDsv4ClaimedContinuityContext *context;
+	context = (SparkDsv4ClaimedContinuityContext *)prepare_context;
+	return(SparkDsv4ModuleValidateFrameContinuity(context->state,context->frame,context->frame_context,context->lane_indices,context->lane_sequence_ids,context->lane_next_positions,context->lane_requires_reset));
 }
 
 static cudaError_t SparkDsv4ModuleResetCompressLaneState(
@@ -1637,8 +1671,6 @@ static void CUDART_CB SparkDsv4ModuleCompleteAsync(void *context)
 {
 	SparkDsv4AsyncCompletion *async;
 	SparkDsv4ModuleState *state;
-	SparkModelDriverCompletionFunction completion_function;
-	void *completion_context;
 	uint32_t index,lane;
 	async = (SparkDsv4AsyncCompletion *)context;
 	state = async != 0 ? async->state : 0;
@@ -1659,13 +1691,8 @@ static void CUDART_CB SparkDsv4ModuleCompleteAsync(void *context)
 	}
 	else
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
-	SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count);
-	SparkStageModuleSlotRelease(state->slot_states,async->slot_index);
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
-	completion_function = async->completion_function;
-	completion_context = async->completion_context;
-	if ( completion_function != 0 )
-		completion_function(completion_context,&async->completion);
+	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
 }
 
 static SparkStatus SparkDsv4ModuleEnqueueAsync(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, uint32_t slot_index)
@@ -1691,6 +1718,7 @@ static SparkStatus SparkDsv4ModuleExecuteFrame(
 	SparkModelDriverFrame *frame,
 	const SparkDsv4ResidentDecodeStageFrameContext *context)
 {
+	SparkDsv4ClaimedContinuityContext continuity;
 	uint32_t lane_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_sequence_ids[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_next_positions[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -1700,10 +1728,17 @@ static SparkStatus SparkDsv4ModuleExecuteFrame(
 	SparkStatus status;
 	lane_count = frame->active_slot_count;
 	row_count = frame->new_token_count;
-	status = SparkDsv4ModuleValidateFrameContinuity(state,frame,context,lane_indices,lane_sequence_ids,lane_next_positions,lane_requires_reset);
+	status = SparkDsv4ModuleCollectFrameLaneIndices(state,frame,context,lane_indices);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	status = SparkStageModuleIndexSetClaim(state->lane_states,state->resident_sequence_capacity,lane_indices,lane_count);
+	continuity.state = state;
+	continuity.frame = frame;
+	continuity.frame_context = context;
+	continuity.lane_indices = lane_indices;
+	continuity.lane_sequence_ids = lane_sequence_ids;
+	continuity.lane_next_positions = lane_next_positions;
+	continuity.lane_requires_reset = lane_requires_reset;
+	status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states,state->resident_sequence_capacity,lane_indices,lane_count,SparkDsv4ModulePrepareClaimedContinuity,&continuity);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	slot_index = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;

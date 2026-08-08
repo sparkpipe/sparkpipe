@@ -718,6 +718,7 @@ static SparkStatus SparkGlm52ValidateSequenceContinuity(
 	uint8_t touched[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
 	uint64_t position,sequence;
 	uint32_t lane,row,slot;
+	SparkStatus status;
 	for (lane=0u; lane<batch->active_sequence_count; lane++)
 	{
 		slot = batch->row_resident_slots[lane];
@@ -730,11 +731,10 @@ static SparkStatus SparkGlm52ValidateSequenceContinuity(
 	for (row=0u; row<batch->row_count; row++)
 	{
 		slot = batch->row_resident_slots[row];
-		for (lane=0u; lane<batch->active_sequence_count && batch->row_resident_slots[lane]!=slot; lane++)
-			;
+		status = SparkStageModuleIndexClaimOrdinal(state->lane_states,state->resident_sequence_capacity,slot,&lane);
 		position = batch->row_positions[row];
 		sequence = batch->row_sequence_ids[row];
-		if ( lane == batch->active_sequence_count || position >= state->max_sequence_positions )
+		if ( status != SPARK_STATUS_OK || lane >= batch->active_sequence_count || batch->row_resident_slots[lane] != slot || position >= state->max_sequence_positions )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 		if ( position == 0u )
 		{
@@ -753,6 +753,22 @@ static SparkStatus SparkGlm52ValidateSequenceContinuity(
 		touched[lane] = 1u;
 	}
 	return(SPARK_STATUS_OK);
+}
+
+typedef struct SparkGlm52ClaimedContinuityContext
+{
+	const SparkGlm52ModuleState *state;
+	const SparkGlm52ResidentDecodeStageBatchView *batch;
+	uint8_t *bound;
+	uint64_t *sequence_ids;
+	uint64_t *next_positions;
+} SparkGlm52ClaimedContinuityContext;
+
+static SparkStatus SparkGlm52PrepareClaimedContinuity(void *prepare_context)
+{
+	SparkGlm52ClaimedContinuityContext *context;
+	context = (SparkGlm52ClaimedContinuityContext *)prepare_context;
+	return(SparkGlm52ValidateSequenceContinuity(context->state,context->batch,context->bound,context->sequence_ids,context->next_positions));
 }
 
 static SparkStatus SparkGlm52ValidateFrameBuffers(
@@ -934,8 +950,6 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 	SparkGlm52AsyncCompletion *async;
 	SparkGlm52ModuleState *state;
 	SparkGlm52ExecutionSlot *slot;
-	SparkModelDriverCompletionFunction completion_function;
-	void *completion_context;
 	uint32_t lane,resident;
 	async = (SparkGlm52AsyncCompletion *)context;
 	state = async != 0 ? async->state : 0;
@@ -963,13 +977,8 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 			atomic_store_explicit(&state->lane_bound[async->lane_indices[lane]],0u,memory_order_release);
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	}
-	SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count);
-	SparkStageModuleSlotRelease(state->slot_states,async->slot_index);
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
-	completion_function = async->completion_function;
-	completion_context = async->completion_context;
-	if ( completion_function != 0 )
-		completion_function(completion_context,&async->completion);
+	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
 }
 
 static SparkStatus SparkGlm52EnqueueAsyncCompletion(
@@ -1002,6 +1011,7 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	const SparkGlm52ResidentDecodeStageFrameContext *context)
 {
 	const SparkGlm52ResidentDecodeStageBatchView *batch;
+	SparkGlm52ClaimedContinuityContext continuity;
 	SparkGlm52ExecutionSlot *slot;
 	uint8_t simulated_bound[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t simulated_sequence[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -1010,15 +1020,14 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	SparkStatus status;
 	cudaError_t error;
 	batch = context->batch;
-	status = SparkStageModuleIndexSetClaim(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
+	continuity.state = state;
+	continuity.batch = batch;
+	continuity.bound = simulated_bound;
+	continuity.sequence_ids = simulated_sequence;
+	continuity.next_positions = simulated_next;
+	status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count,SparkGlm52PrepareClaimedContinuity,&continuity);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	status = SparkGlm52ValidateSequenceContinuity(state,batch,simulated_bound,simulated_sequence,simulated_next);
-	if ( status != SPARK_STATUS_OK )
-	{
-		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
-		return(status);
-	}
 	slot_index = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	status = SparkStageModuleSlotClaim(state->slot_states,state->pipeline_slot_count,&slot_index);
 	if ( status != SPARK_STATUS_OK )
