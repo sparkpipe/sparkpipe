@@ -183,7 +183,6 @@ typedef struct SparkModelResidentdRuntime
 	uint32_t route_capacity;
 	uint32_t route_message_capacity;
 	uint32_t next_adapter_route;
-	uint32_t pass_work_done;
 	SparkModelResidentdMemoryMode memory_mode;
 	cudaStream_t execution_stream;
 	cudaStream_t transport_stream;
@@ -1502,16 +1501,12 @@ static SparkStatus SparkModelResidentdFinishRoute(
 		status = SparkModelResidentdCompleteResidentSlotsLocked(runtime,route);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkModelResidentdDeactivateRouteLocked(runtime,route);
-		if ( status == SPARK_STATUS_OK )
-			runtime->pass_work_done = 1u;
 	}
 	else if ( route->result_queued == 0u )
 		status = SPARK_STATUS_INTERNAL_ERROR;
 	else
 	{
 		status = SparkModelResidentdQueueCompletionLocked(runtime,route);
-		if ( status == SPARK_STATUS_OK )
-			runtime->pass_work_done = 1u;
 		if ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
 			status = SPARK_STATUS_OK;
 	}
@@ -1569,7 +1564,6 @@ static SparkStatus SparkModelResidentdProgressTransport(
 		pthread_mutex_unlock(&runtime->mutex);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
-		runtime->pass_work_done = 1u;
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -1658,13 +1652,11 @@ static SparkStatus SparkModelResidentdProgressRoute(
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_INPUT )
 		{
 			status = SparkModelResidentdPostTransport(runtime,route,1u);
-			if ( status == SPARK_STATUS_OK )
-				runtime->pass_work_done = 1u;
 			return(status == SPARK_STATUS_OK || status == SPARK_STATUS_BUSY ? SPARK_STATUS_OK : status);
 		}
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_ADAPTER )
 		{
-			if ( adapter_submitted == 0 )
+			if ( adapter_submitted == 0 || *adapter_submitted != 0u )
 				return(SPARK_STATUS_OK);
 			status = SparkModelResidentdSubmitAdapter(runtime,route);
 			if ( status == SPARK_STATUS_BUSY )
@@ -1672,15 +1664,12 @@ static SparkStatus SparkModelResidentdProgressRoute(
 			if ( status != SPARK_STATUS_OK )
 				return(status);
 			*adapter_submitted = 1u;
-			runtime->pass_work_done = 1u;
 			SparkModelResidentdWake(runtime);
 			continue;
 		}
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_OUTPUT )
 		{
 			status = SparkModelResidentdPostTransport(runtime,route,0u);
-			if ( status == SPARK_STATUS_OK )
-				runtime->pass_work_done = 1u;
 			return(status == SPARK_STATUS_OK || status == SPARK_STATUS_BUSY ? SPARK_STATUS_OK : status);
 		}
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION )
@@ -1697,11 +1686,11 @@ static SparkStatus SparkModelResidentdProgressRoutes(
 	SparkStatus status;
 	uint32_t adapter_submitted,index,offset,start;
 	status = SPARK_STATUS_OK;
+	adapter_submitted = 0u;
 	start = allow_adapter != 0u ? runtime->next_adapter_route : 0u;
-	for (offset=0u; status == SPARK_STATUS_OK && offset<runtime->route_capacity; offset++)
+	for (offset=0u; status == SPARK_STATUS_OK && offset<runtime->route_capacity && adapter_submitted == 0u; offset++)
 	{
 		index = (start + offset) % runtime->route_capacity;
-		adapter_submitted = 0u;
 		status = SparkModelResidentdProgressRoute(runtime,&runtime->routes[index],allow_adapter != 0u ? &adapter_submitted : 0);
 		if ( adapter_submitted != 0u )
 			runtime->next_adapter_route = (index + 1u) % runtime->route_capacity;
@@ -1824,7 +1813,7 @@ static SparkStatus SparkModelResidentdRun(SparkModelResidentdRuntime *runtime)
 		status = SparkModelResidentdBuildPollFds(runtime,fds,sizeof(fds) / sizeof(fds[0]),&count);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		poll_status = poll(fds,count,runtime->pass_work_done != 0u ? 0 : SparkModelResidentdPollTimeoutMs(runtime));
+		poll_status = poll(fds,count,SparkModelResidentdPollTimeoutMs(runtime));
 		if ( poll_status < 0 && errno != EINTR )
 			status = SPARK_STATUS_IO_ERROR;
 		if ( poll_status > 0 && (fds[0].revents & POLLIN) != 0 )
@@ -1845,7 +1834,6 @@ static SparkStatus SparkModelResidentdRun(SparkModelResidentdRuntime *runtime)
 			SparkModelResidentdCloseClient(runtime);
 		if ( poll_status > 0 && (fds[2].revents & POLLIN) != 0 )
 			SparkModelResidentdDrainWake(runtime);
-		runtime->pass_work_done = 0u;
 		if ( status == SPARK_STATUS_OK )
 			status = SparkModelResidentdProgress(runtime);
 	}
