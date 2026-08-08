@@ -58,9 +58,18 @@
       "tie_word_embeddings": false
     },
     "qualification": {
-      "status": "NOT_MEASURED",
+      "status": "GPU_VALIDATED",
       "production_ready": false,
-      "gpu_numerical_correctness": "NOT_MEASURED",
+      "gpu_numerical_correctness": {
+        "validator": "modules/qwen36_resident_decode_stage/validation/validate_qwen36_resident_decode_stage_cuda.sh",
+        "device": "GB10 sm_121a",
+        "stage_pack": "real PP13 stage-0 pack from Qwen/Qwen3.6-27B bf16",
+        "relative_l2": 1.69e-3,
+        "cosine": 0.9999986,
+        "decode_vs_prefill_l2": 0,
+        "fresh_instance_determinism": "bit_exact",
+        "validated": "2026-08-08"
+      },
       "gpu_latency": "NOT_MEASURED",
       "gpu_throughput": "NOT_MEASURED",
       "controlled_bring_up_only": true
@@ -108,7 +117,7 @@
         {
           "name": "resident_decode",
           "id": 1,
-          "max_inflight": 1,
+          "max_inflight": 4,
           "completion": "submit_return",
           "scheduling": {
             "flags": [
@@ -119,14 +128,18 @@
               "requires_hidden_transport",
               "no_file_transport",
               "no_shell_transport"
-            ]
+            ],
+            "max_active_slots": 512,
+            "max_new_tokens": 512,
+            "max_resident_sequences": 512,
+            "max_sequence_tokens": 8192
           },
           "operations": [
             {
               "name": "qwen36_resident_decode_stage",
               "module": "spark.qwen36.resident_decode_stage.bf16.h5120.l64.gdn48.mtp1.v1",
               "configuration": {
-                "qualification_status": "NOT_MEASURED",
+                "qualification_status": "GPU_VALIDATED",
                 "production_ready": false,
                 "fallback_allowed": false,
                 "runtime_backend_selection": "forbidden"

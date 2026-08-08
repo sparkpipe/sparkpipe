@@ -67,6 +67,30 @@ fresh instance reproduces the decode hidden bit for bit.
 6. Multi-stage: two processes, slices F..k and k..64, hidden transport between them; middle frames must carry both transport flags or they are refused.
 7. Enable the Mooncake tier by pointing SPARK_QWEN36_STAGE_KV_STORE at the provider; keys are fingerprinted against the slice geometry and cache layout, so a rebuilt pack cannot read stale KV.
 
+## Serving adapter
+
+`source/spark_qwen36_serving_adapter.c` is the
+`SparkModelServingAdapterInterface` face of the compiled driver, mirroring
+the glm52/dsv4 adapters (adapter id `spark.qwen36.serving-adapter.pp13.v1`,
+PP13 layer split 5x9,6,5,6,2). Because this module is configured through the
+strict process environment rather than a node context, the adapter derives
+the whole slice environment from its own schema-version-3 JSON
+(`stage_pack_path`, `max_sequence_positions` capped at 8192 by the owner's
+KV-limit decision, `model_revision`) plus the negotiated runtime limits and
+sets it before driver create; the KV pool is sized from the positions cap so
+a conforming deployment cannot exhaust blocks. The adapter also owns the two
+things the frame contract delegates to the caller: the paged KV block table
+(free-stack allocator, host mirrors the module proves coverage against,
+device mirrors uploaded per submit) and the hidden transport shim that
+gathers wave-major prefill rows into per-lane frames and scatters the frame
+outputs back (decode rows are already contiguous). Prefill submissions are
+split into one-lane frames capped at max_active_sequence_count positions;
+completion is submit_return synchronous.
+
+`tests/test_qwen36_serving_adapter.c` drives it through a fixture driver
+that emulates the compiled driver's env consumption, transport callbacks and
+head emission.
+
 ## Gates already run (container, no GPU)
 
 Both translation units compile warning-free (nvcc sm_121a, cc -Werror);

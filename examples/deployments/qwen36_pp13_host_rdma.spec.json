@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "coordinator_rank_index": 0,
+  "adapter": {
+    "shared_object_path": "lib/model_serving_adapter.so"
+  },
+  "driver": {
+    "shared_object_path": "lib/model_driver.so",
+    "program_name": "resident_decode"
+  },
+  "transport": {
+    "shared_object_path": "lib/hidden_transport.so",
+    "mode": "host-rdma",
+    "control_port_base": 59000
+  },
+  "runtime_limits": {
+    "max_inflight_submissions": 2,
+    "max_active_sequences": 64,
+    "max_input_rows": 128,
+    "resident_sequence_capacity": 64
+  },
+  "topology": {
+    "rank_hosts": [
+      "spark0",
+      "spark1",
+      "spark2",
+      "spark3",
+      "spark4",
+      "spark5",
+      "spark6",
+      "spark7",
+      "spark8",
+      "spark9",
+      "sparka",
+      "sparkb",
+      "sparkc"
+    ],
+    "stage_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    "runtime_root_template": "/home/{host}/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+    "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
+    "adapter_configuration_path_template": "config/qwen36_flash_stage.json",
+    "control_endpoint": {
+      "kind": "tcp",
+      "host_template": "{host}",
+      "port": 18080
+    }
+  }
+}
