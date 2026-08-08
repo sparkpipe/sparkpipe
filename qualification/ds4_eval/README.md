@@ -29,6 +29,12 @@ prepared `standard4096-suite` prompts. It is a locally audited API comparison,
 not the highest retained score; the complete receipt and parameters are in the
 [run report](runs/deepseek-v4-flash-api-20260808/REPORT.md).
 
+This is not an apples-to-apples quantization comparison with the local
+SparkPipe stage pack. The local DSV4 contract uses 4-bit MXFP4/E2M1 routed
+expert weights, FP8 E4M3 non-expert linear weights and activations, BF16 KV,
+and FP32 accumulation. The hosted API fingerprint includes `fp8_kvcache`, but
+that provider metadata does not disclose the precision of every hosted weight.
+
 For context, a separately published DeepSeek V4 Flash 4Expert Q4_K run reports
 80/92 (AIME 20/25, GPQA 22/25, SuperGPQA 22/25, COMPSEC 16/17). SparkPipe does
 not retain that run's responses, and it is not treated as a locally audited

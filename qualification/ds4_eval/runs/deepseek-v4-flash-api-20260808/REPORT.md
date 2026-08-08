@@ -37,6 +37,16 @@ All 92 requests completed without transport or API errors. The run used
 measured API request rate was 2.956 requests/second; this is an API-wave timing
 receipt, not a SparkPipe inference-throughput claim.
 
+## Quantization comparability
+
+This hosted result is not an apples-to-apples quantization comparison with the
+local SparkPipe stage pack. The local DSV4 precision contract uses 4-bit
+MXFP4/E2M1 routed expert weights, FP8 E4M3 non-expert linear weights and
+activations, BF16 KV, and FP32 accumulation. The API system fingerprint
+includes `fp8_kvcache`, but that provider metadata does not disclose the
+precision of every hosted weight. Treat this score as a high-level API
+behavior reference, not as a direct local-vs-hosted quantization parity result.
+
 ## Receipt
 
 The redacted per-case response receipt remains outside the repository at:
