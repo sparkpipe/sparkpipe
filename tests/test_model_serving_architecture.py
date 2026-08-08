@@ -453,10 +453,12 @@ def main() -> int:
         "DSV4 module retains a silent graph-selection path",
     )
     require(
-        "SparkDsv4ModuleRunPrefillWave" in module
+        "SparkDsv4ModuleRunCausalAttention" in module
         and "SparkDsv4ModulePrefillWaveRowCount" in module
+        and "SparkDsv4ModuleRunFrame(" in module
+        and "SparkDsv4ModuleRunFrameWaves" not in module
         and "SparkDsv4ValidateRoundMajorPrefillRows" in module,
-        "DSV4 prefill discards cross-request batching",
+        "DSV4 prefill does not bulk dense work around causal attention waves",
     )
     require(
         "cudaStreamCreate" not in module

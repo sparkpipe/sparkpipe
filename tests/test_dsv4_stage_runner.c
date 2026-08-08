@@ -265,11 +265,64 @@ static void SparkDsv4RunnerTestRoundMajorPrefill(void)
 	assert(SparkDsv4RoundMajorPrefillWaveRowCount(6u,3u,round_major,5u) == 1u);
 }
 
+static uint32_t SparkDsv4RunnerRingSum(const uint32_t *ring, uint32_t lane, uint64_t position)
+{
+	uint32_t column,sum = 0u;
+	for (column=0u; column<4u; column++)
+		sum += ring[lane * 4u + SparkDsv4AttentionWindowSlot(position,column,4u)];
+	return(sum);
+}
+
+static void SparkDsv4RunnerTestCausalBulkWaves(void)
+{
+	uint32_t lanes[4] = {0u,1u,0u,1u},values[4] = {4u,40u,5u,50u};
+	uint32_t serial_ring[8] = {1u,2u,3u,0u,10u,20u,30u,0u},wave_ring[8],bulk_ring[8];
+	uint32_t serial_out[4],wave_out[4],bulk_out[4],first,wave,row;
+	uint64_t positions[4] = {3u,3u,4u,4u};
+	memcpy(wave_ring,serial_ring,sizeof(serial_ring));
+	memcpy(bulk_ring,serial_ring,sizeof(serial_ring));
+	for (row=0u; row<4u; row++)
+	{
+		serial_ring[lanes[row] * 4u + positions[row] % 4u] = values[row];
+		serial_out[row] = SparkDsv4RunnerRingSum(serial_ring,lanes[row],positions[row]);
+		bulk_ring[lanes[row] * 4u + positions[row] % 4u] = values[row];
+	}
+	for (row=0u; row<4u; row++)
+		bulk_out[row] = SparkDsv4RunnerRingSum(bulk_ring,lanes[row],positions[row]);
+	for (first=0u; first<4u; first+=wave)
+	{
+		wave = SparkDsv4RoundMajorPrefillWaveRowCount(4u,2u,lanes,first);
+		for (row=first; row<first+wave; row++)
+			wave_ring[lanes[row] * 4u + positions[row] % 4u] = values[row];
+		for (row=first; row<first+wave; row++)
+			wave_out[row] = SparkDsv4RunnerRingSum(wave_ring,lanes[row],positions[row]);
+	}
+	assert(memcmp(serial_out,wave_out,sizeof(serial_out)) == 0);
+	assert(bulk_out[0] != serial_out[0] && bulk_out[1] != serial_out[1]);
+}
+
+static void SparkDsv4RunnerTestPrefillOffsets(void)
+{
+	assert(SparkDsv4PrefillRowElementOffset(0u,512u) == 0u);
+	assert(SparkDsv4PrefillRowElementOffset(3u,512u) == 1536u);
+	assert(SparkDsv4PrefillRowElementOffset(UINT32_MAX,UINT32_MAX) > UINT32_MAX);
+	assert(SparkDsv4AttentionWindowSlot(127u,0u,128u) == 0u);
+	assert(SparkDsv4AttentionWindowSlot(127u,127u,128u) == 127u);
+	assert(SparkDsv4AttentionWindowSlot(128u,0u,128u) == 1u);
+	assert(SparkDsv4AttentionWindowSlot(128u,127u,128u) == 0u);
+	assert(SparkDsv4AttentionWindowSlot(129u,0u,128u) == 2u);
+	assert(SparkDsv4AttentionWindowSlot(129u,126u,128u) == 0u);
+	assert(SparkDsv4AttentionWindowSlot(129u,127u,128u) == 1u);
+	assert(SparkDsv4AttentionWindowSlot(0u,0u,0u) == UINT32_MAX);
+}
+
 int main(void)
 {
 	SparkDsv4RunnerTestPrefillMapping();
 	SparkDsv4RunnerTestIntermediateRequiresInput();
 	SparkDsv4RunnerTestIntermediateTokenRouting();
 	SparkDsv4RunnerTestRoundMajorPrefill();
+	SparkDsv4RunnerTestCausalBulkWaves();
+	SparkDsv4RunnerTestPrefillOffsets();
     return 0;
 }

@@ -24,11 +24,11 @@ extern "C" {
  * Version 3 executes GA baseline DECODE batches (one token per lane per
  * frame) across
  * all three attention kinds, both router paths, and the full mHC
- * machinery. Prefill rows are round-major: one row per live lane is executed
- * together, then the next row for those lanes. This preserves each sequence's
- * state dependency without throwing away cross-request CUDA batching. A future
- * causal bulk-prefill kernel can replace the wavefront without changing the
- * boundary contract. GA DSpark execution remains refused, its three
+ * machinery. Prefill dense work executes every frame row together. Only the
+ * short-window cache publication and sparse attention stay round-major: one
+ * row per live lane, followed immediately by that row's attention. This keeps
+ * the 128-slot ring causal while batching projections, compression, mHC, and
+ * MoE across the whole frame. GA DSpark execution remains refused, its three
  * checkpoint layers are excluded from baseline packs, and serving reports
  * zero speculative-token capacity.
  * Caches are dense per lane, bounded by SPARK_DSV4_STAGE_MAX_SEQ: the
@@ -173,6 +173,34 @@ typedef struct SparkDsv4PrefillBatchView
 	const uint64_t *row_positions;
 	const uint64_t *row_sequence_ids;
 } SparkDsv4PrefillBatchView;
+
+#if defined(__CUDACC__)
+#define SPARK_DSV4_RESIDENT_HOST_DEVICE __host__ __device__
+#else
+#define SPARK_DSV4_RESIDENT_HOST_DEVICE
+#endif
+
+static SPARK_DSV4_RESIDENT_HOST_DEVICE inline uint32_t SparkDsv4AttentionWindowSlot(
+	uint64_t position,
+	uint32_t column,
+	uint32_t window_token_count)
+{
+	uint32_t first;
+	if ( window_token_count == 0u || column >= window_token_count )
+		return(UINT32_MAX);
+	first = position + 1u < window_token_count ? 0u :
+		(uint32_t)(((position % window_token_count) + 1u) % window_token_count);
+	return((first + column) % window_token_count);
+}
+
+#undef SPARK_DSV4_RESIDENT_HOST_DEVICE
+
+static inline uint64_t SparkDsv4PrefillRowElementOffset(
+	uint32_t first_row,
+	uint32_t row_element_count)
+{
+	return((uint64_t)first_row * row_element_count);
+}
 
 static inline SparkStatus SparkDsv4ValidateRoundMajorPrefillRows(
 	uint32_t row_count,
