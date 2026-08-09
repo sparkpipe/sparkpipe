@@ -676,6 +676,126 @@ static void SparkTestTokenizerPieceCacheMatchesUncached(void)
     SparkTokenizerDestroy(&tokenizer);
 }
 
+/* GPT-4o/qwen pre-tokenizer mode: loading a tokenizer.json whose Split
+ * pattern is the qwen regex must switch the splitter to qwen semantics
+ * (single-digit \p{N}, prefix-absorbing letter runs), which the legacy GPT-2
+ * run-splitter gets observably wrong. */
+#define SPARK_TEST_QWEN_TOKEN_UNKNOWN 0u
+#define SPARK_TEST_QWEN_TOKEN_1 10u
+#define SPARK_TEST_QWEN_TOKEN_2 11u
+#define SPARK_TEST_QWEN_TOKEN_3 12u
+#define SPARK_TEST_QWEN_TOKEN_12 13u
+#define SPARK_TEST_QWEN_TOKEN_123 14u
+#define SPARK_TEST_QWEN_TOKEN_LBRACKET 20u
+#define SPARK_TEST_QWEN_TOKEN_A 21u
+#define SPARK_TEST_QWEN_TOKEN_B 22u
+#define SPARK_TEST_QWEN_TOKEN_AB 23u
+#define SPARK_TEST_QWEN_TOKEN_LBRACKET_AB 24u
+
+static const char *SparkTestQwenTokenizerJsonPath(void)
+{
+    return "build/test_tokenizer_qwen_byte_bpe.json";
+}
+
+static void SparkTestQwenTokenizerWriteFixtureJson(void)
+{
+    FILE *file;
+
+    file = fopen(SparkTestQwenTokenizerJsonPath(), "wb");
+    assert(file != 0);
+    fprintf(file,
+        "{\n"
+        "  \"model\": {\n"
+        "    \"type\": \"BPE\",\n"
+        "    \"unk_token\": \"<unk>\",\n"
+        "    \"byte_fallback\": false,\n"
+        "    \"vocab\": {\n"
+        "      \"<unk>\": %u,\n"
+        "      \"1\": %u,\n"
+        "      \"2\": %u,\n"
+        "      \"3\": %u,\n"
+        "      \"12\": %u,\n"
+        "      \"123\": %u,\n"
+        "      \"[\": %u,\n"
+        "      \"a\": %u,\n"
+        "      \"b\": %u,\n"
+        "      \"ab\": %u,\n"
+        "      \"[ab\": %u\n"
+        "    },\n"
+        "    \"merges\": [\n"
+        "      \"1 2\",\n"
+        "      \"12 3\",\n"
+        "      \"a b\",\n"
+        "      \"[ ab\"\n"
+        "    ]\n"
+        "  },\n"
+        "  \"pre_tokenizer\": {\n"
+        "    \"type\": \"Sequence\",\n"
+        "    \"pretokenizers\": [\n"
+        "      {\"type\": \"Split\", \"pattern\": {\"Regex\": \"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?[\\\\p{L}\\\\p{M}]+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{M}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+\"}, \"behavior\": \"Isolated\", \"invert\": false},\n"
+        "      {\"type\": \"ByteLevel\", \"add_prefix_space\": false, \"trim_offsets\": false, \"use_regex\": false}\n"
+        "    ]\n"
+        "  },\n"
+        "  \"added_tokens\": [\n"
+        "  ]\n"
+        "}\n",
+        SPARK_TEST_QWEN_TOKEN_UNKNOWN,
+        SPARK_TEST_QWEN_TOKEN_1,
+        SPARK_TEST_QWEN_TOKEN_2,
+        SPARK_TEST_QWEN_TOKEN_3,
+        SPARK_TEST_QWEN_TOKEN_12,
+        SPARK_TEST_QWEN_TOKEN_123,
+        SPARK_TEST_QWEN_TOKEN_LBRACKET,
+        SPARK_TEST_QWEN_TOKEN_A,
+        SPARK_TEST_QWEN_TOKEN_B,
+        SPARK_TEST_QWEN_TOKEN_AB,
+        SPARK_TEST_QWEN_TOKEN_LBRACKET_AB);
+    assert(fclose(file) == 0);
+}
+
+static void SparkTestQwenTokenizerPretokenizesWithQwenSemantics(void)
+{
+    SparkTokenizer tokenizer;
+    SparkTokenizerEncoding encoding;
+    SparkTokenizerHuggingFaceJsonConfiguration configuration;
+    uint32_t token_ids[16u];
+
+    SparkTestQwenTokenizerWriteFixtureJson();
+    SparkTokenizerReset(&tokenizer);
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    configuration.descriptor_bytes =
+        SPARK_TOKENIZER_HF_JSON_CONFIGURATION_DESCRIPTOR_BYTES;
+    configuration.tokenizer_json_path = SparkTestQwenTokenizerJsonPath();
+    assert(SparkTokenizerLoadHuggingFaceJson(&tokenizer, &configuration) ==
+        SPARK_STATUS_OK);
+
+    /* \p{N} is a single digit in the qwen pattern, so a digit run splits per
+     * digit and no merge fires; the legacy splitter would emit "123". */
+    memset(token_ids, 0, sizeof(token_ids));
+    SparkTokenizerEncodingReset(&encoding);
+    encoding.token_capacity = 16u;
+    encoding.token_ids = token_ids;
+    assert(SparkTokenizerEncodeUtf8(&tokenizer, "123", 3u, 0u, &encoding) == SPARK_STATUS_OK);
+    assert(encoding.token_count == 3u);
+    assert(token_ids[0u] == SPARK_TEST_QWEN_TOKEN_1);
+    assert(token_ids[1u] == SPARK_TEST_QWEN_TOKEN_2);
+    assert(token_ids[2u] == SPARK_TEST_QWEN_TOKEN_3);
+
+    /* A letter run absorbs one leading non-letter non-digit prefix byte, so
+     * "[ab" is a single piece and merges to one token; the legacy splitter
+     * would emit "[" then "ab". */
+    memset(token_ids, 0, sizeof(token_ids));
+    SparkTokenizerEncodingReset(&encoding);
+    encoding.token_capacity = 16u;
+    encoding.token_ids = token_ids;
+    assert(SparkTokenizerEncodeUtf8(&tokenizer, "[ab", 3u, 0u, &encoding) == SPARK_STATUS_OK);
+    assert(encoding.token_count == 1u);
+    assert(token_ids[0u] == SPARK_TEST_QWEN_TOKEN_LBRACKET_AB);
+
+    SparkTokenizerDestroy(&tokenizer);
+}
+
 int main(void)
 {
     SparkTestTokenizerPieceCacheMatchesUncached();
@@ -687,5 +807,6 @@ int main(void)
     SparkTestTokenizerLoadsLegacyCompiledFile();
     SparkTestTokenizerRejectsEmptyAddedTokens();
     SparkTestTokenizerLoadsLargeMergeArrayWithoutIndexedArrayWalk();
+    SparkTestQwenTokenizerPretokenizesWithQwenSemantics();
     return 0;
 }

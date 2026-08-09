@@ -1342,6 +1342,74 @@ SparkStatus SparkTokenizerFindTokenId(
     return SPARK_STATUS_OK;
 }
 
+/* The GPT-4o-style Split/Regex pre-tokenizer pattern. It differs from the
+ * legacy GPT-2 run-splitter in three observable ways: \p{N} is a single
+ * digit, a letter run absorbs one leading non-letter non-digit prefix byte,
+ * and whitespace splits anchor on newlines and the end of the text. */
+static const char SPARK_TOKENIZER_EXTENDED_SPLIT_PATTERN[] =
+    "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+
+static uint32_t SparkTokenizerJsonSplitElementIsExtended(
+    const SparkJsonDocument *document,
+    int32_t element_token_index)
+{
+    int32_t type_token_index;
+    int32_t pattern_token_index;
+    if (!SparkJsonTokenIsType(document,element_token_index,SPARK_JSON_TOKEN_OBJECT))
+    {
+        return 0u;
+    }
+    type_token_index = SparkJsonFindObjectMember(document,element_token_index,"type");
+    if (type_token_index < 0 ||
+        !SparkJsonStringEquals(document,type_token_index,"Split"))
+    {
+        return 0u;
+    }
+    pattern_token_index = SparkJsonFindObjectMember(document,element_token_index,"pattern");
+    if (pattern_token_index < 0)
+    {
+        return 0u;
+    }
+    if (SparkJsonTokenIsType(document,pattern_token_index,SPARK_JSON_TOKEN_OBJECT))
+    {
+        pattern_token_index = SparkJsonFindObjectMember(document,pattern_token_index,"Regex");
+    }
+    return(pattern_token_index >= 0 &&
+        SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_EXTENDED_SPLIT_PATTERN) ? 1u : 0u);
+}
+
+static uint32_t SparkTokenizerJsonHasExtendedSplitPattern(
+    const SparkJsonDocument *document,
+    int32_t pre_tokenizer_token_index)
+{
+    int32_t elements_token_index;
+    uint32_t element_count;
+    uint32_t element_index;
+    if (pre_tokenizer_token_index < 0)
+    {
+        return 0u;
+    }
+    if (SparkTokenizerJsonSplitElementIsExtended(document,pre_tokenizer_token_index) != 0u)
+    {
+        return 1u;
+    }
+    elements_token_index = SparkJsonFindObjectMember(document,pre_tokenizer_token_index,"pretokenizers");
+    if (elements_token_index < 0 ||
+        !SparkJsonTokenIsType(document,elements_token_index,SPARK_JSON_TOKEN_ARRAY))
+    {
+        return 0u;
+    }
+    element_count = SparkJsonGetArrayElementCount(document,elements_token_index);
+    for (element_index = 0u; element_index < element_count; element_index++)
+    {
+        if (SparkTokenizerJsonSplitElementIsExtended(document,SparkJsonGetArrayElement(document,elements_token_index,element_index)) != 0u)
+        {
+            return 1u;
+        }
+    }
+    return 0u;
+}
+
 SparkStatus SparkTokenizerLoadHuggingFaceJson(
     SparkTokenizer *tokenizer,
     const SparkTokenizerHuggingFaceJsonConfiguration *configuration)
@@ -1473,6 +1541,12 @@ SparkStatus SparkTokenizerLoadHuggingFaceJson(
     }
     tokenizer->add_prefix_space = add_prefix_space ? 1u : 0u;
     tokenizer->byte_level_use_regex = use_regex ? 1u : 0u;
+    /* A Split pretokenizer always applies, independent of the ByteLevel
+     * use_regex flag (which only shapes the byte-level alphabet). */
+    if (SparkTokenizerJsonHasExtendedSplitPattern(&document,pre_tokenizer_token_index) != 0u)
+    {
+        tokenizer->byte_level_use_regex = 2u;
+    }
     SparkTokenizerSortSpecialTokens(tokenizer);
     SparkJsonDocumentDestroy(&document);
     return SPARK_STATUS_OK;
@@ -2414,6 +2488,111 @@ static uint32_t SparkTokenizerFindNextRegexPiece(
     return *piece_bytes_out != 0u;
 }
 
+/* GPT-4o-style split, one case per alternation branch in pattern order. Byte
+ * classes come from the GPT-2 table, so every UTF-8 multibyte character is a
+ * "letter" here: exact for ASCII text, and the same approximation the legacy
+ * splitter already makes for non-ASCII text. */
+static uint32_t SparkTokenizerFindNextExtendedPiece(
+    const char *text,
+    uint32_t text_bytes,
+    uint32_t position,
+    uint32_t *piece_start_out,
+    uint32_t *piece_bytes_out)
+{
+    uint8_t class_id;
+    uint32_t scan_position;
+    uint32_t piece_bytes;
+    uint32_t last_newline;
+
+    if (text == 0 || piece_start_out == 0 || piece_bytes_out == 0 || position >= text_bytes)
+    {
+        return 0u;
+    }
+    *piece_start_out = position;
+    *piece_bytes_out = 0u;
+
+    /* '(s|t|re|ve|m|ll|d) */
+    if (SparkTokenizerMatchesContraction(text, text_bytes, position, &piece_bytes))
+    {
+        *piece_bytes_out = piece_bytes;
+        return 1u;
+    }
+
+    class_id = g_spark_tokenizer_byte_class[(uint8_t)text[position]];
+
+    /* [^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+ : a letter run, optionally absorbing one
+     * leading byte that is not CR/LF, not a letter, and not a digit. */
+    if (class_id == 2u)
+    {
+        scan_position = SparkTokenizerScanClassRun(text, text_bytes, position, 2u);
+        *piece_bytes_out = scan_position - position;
+        return 1u;
+    }
+    if (text[position] != '\r' && text[position] != '\n' && class_id != 3u &&
+        position + 1u < text_bytes &&
+        g_spark_tokenizer_byte_class[(uint8_t)text[position + 1u]] == 2u)
+    {
+        scan_position = SparkTokenizerScanClassRun(text, text_bytes, position + 1u, 2u);
+        *piece_bytes_out = scan_position - position;
+        return 1u;
+    }
+
+    /* \p{N} : exactly one digit. */
+    if (class_id == 3u)
+    {
+        *piece_bytes_out = 1u;
+        return 1u;
+    }
+
+    /*  ?[^\s\p{L}\p{M}\p{N}]+[\r\n]* : a punctuation run with an optional
+     * single leading ASCII space, keeping trailing newlines. */
+    if (class_id == 4u ||
+        (text[position] == ' ' && position + 1u < text_bytes &&
+         g_spark_tokenizer_byte_class[(uint8_t)text[position + 1u]] == 4u))
+    {
+        scan_position = text[position] == ' ' ? position + 1u : position;
+        scan_position = SparkTokenizerScanClassRun(text, text_bytes, scan_position, 4u);
+        while (scan_position < text_bytes &&
+            (text[scan_position] == '\r' || text[scan_position] == '\n'))
+        {
+            scan_position += 1u;
+        }
+        *piece_bytes_out = scan_position - position;
+        return 1u;
+    }
+
+    /* \s*[\r\n]+ | \s+(?!\S) | \s+ : whitespace. The newline branch wins
+     * whenever the run contains CR/LF, anchoring the piece on the last one.
+     * Otherwise \s+(?!\S) backtracks off any whitespace followed by a
+     * non-space: at end of text it is the whole run, mid-text it keeps all
+     * but the last whitespace (which the next piece may absorb as a prefix);
+     * a lone mid-text space falls through to \s+. */
+    if (class_id == 1u)
+    {
+        scan_position = SparkTokenizerScanClassRun(text, text_bytes, position, 1u);
+        last_newline = scan_position;
+        while (last_newline > position &&
+            text[last_newline - 1u] != '\r' && text[last_newline - 1u] != '\n')
+        {
+            last_newline -= 1u;
+        }
+        if (last_newline > position)
+        {
+            *piece_bytes_out = last_newline - position;
+            return 1u;
+        }
+        if (scan_position < text_bytes && scan_position - position > 1u)
+        {
+            *piece_bytes_out = scan_position - position - 1u;
+            return 1u;
+        }
+        *piece_bytes_out = scan_position - position;
+        return 1u;
+    }
+
+    return 0u;
+}
+
 static SparkStatus SparkTokenizerEncodeRegularSegmentWithWorkspace(
     const SparkTokenizer *tokenizer,
     const char *text,
@@ -2441,7 +2620,9 @@ static SparkStatus SparkTokenizerEncodeRegularSegmentWithWorkspace(
         uint32_t piece_start;
         uint32_t piece_bytes;
 
-        if (!SparkTokenizerFindNextRegexPiece(text, text_bytes, position, &piece_start, &piece_bytes))
+        if (tokenizer->byte_level_use_regex == 2u
+            ? !SparkTokenizerFindNextExtendedPiece(text, text_bytes, position, &piece_start, &piece_bytes)
+            : !SparkTokenizerFindNextRegexPiece(text, text_bytes, position, &piece_start, &piece_bytes))
         {
             return SPARK_STATUS_PARSE_ERROR;
         }
