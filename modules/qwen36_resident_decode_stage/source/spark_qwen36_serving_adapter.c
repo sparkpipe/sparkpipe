@@ -19,11 +19,11 @@
  *   and a caller-owned paged KV block table with device and host mirrors.
  *   The adapter supplies both: a per-frame transport shim that lands the
  *   submission's hidden boundary in the module's expected contiguity (decode
- *   rows are already contiguous; a multi-lane prefill is wave-major, so each
- *   lane's chunk is gathered with a strided copy, and the frame's output is
- *   scattered back the same way), and a block allocator over the module's KV
- *   pool with the host mirror the module proves coverage against before
- *   every launch.
+ *   rows are already contiguous; a multi-lane prefill is round-major across
+ *   lanes, so each lane frame's rows are gathered by explicit flat row index
+ *   and the frame's output is scattered back the same way), and a block
+ *   allocator over the module's KV pool with the host mirror the module
+ *   proves coverage against before every launch.
  *
  * Prefill frames are one lane per frame capped at max_active_sequence_count
  * positions, so a multi-lane or over-cap prefill submission is split into a
@@ -112,6 +112,7 @@ typedef struct SparkQwen36ServingPending
 	uint32_t last_row_by_lane[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_slots[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t frame_row_slots[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t frame_row_flats[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t output_token_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t frame_output_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t frame_token_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -119,18 +120,19 @@ typedef struct SparkQwen36ServingPending
 
 /* Per-frame transport shim state. The module calls post_receive/send through
  * the frame context; the shim moves the submission boundary into the frame's
- * expected contiguity. pitch is the byte distance between consecutive frame
- * rows in the submission buffer: contiguous for decode and single-lane
- * prefill, active_sequence_count rows for wave-major multi-lane prefill. */
+ * expected contiguity. Decode rows are contiguous. Prefill frames are one
+ * lane each while the submission boundary is round-major across lanes, so a
+ * lane's rows sit at irregular flat offsets whenever lane lengths differ;
+ * the row maps give each frame row's flat index in the submission buffer
+ * (NULL means the frame rows are contiguous from the base). */
 typedef struct SparkQwen36ServingTransportShim
 {
 	const void *input_base;
-	uint64_t input_pitch;
+	const uint32_t *input_row_map;
 	uint32_t input_rows;
 	void *input_scratch;
 	void *output_base;
-	uint64_t output_pitch;
-	uint32_t output_ordinal;
+	const uint32_t *output_row_map;
 	void *execution_stream;
 } SparkQwen36ServingTransportShim;
 
@@ -617,13 +619,17 @@ static SparkStatus SparkQwen36ServingPostReceive(
 {
 	SparkQwen36ServingTransportShim *shim;
 	const void *source;
+	uint32_t row;
 	shim = (SparkQwen36ServingTransportShim *)transport_session;
 	if ( shim == 0 || packet == 0 || shim->input_base == 0 || shim->input_rows == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	source = shim->input_base;
-	if ( shim->input_pitch != SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES )
+	if ( shim->input_row_map != 0 )
 	{
-		if ( cudaMemcpy2DAsync(shim->input_scratch,SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,shim->input_base,(size_t)shim->input_pitch,SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,shim->input_rows,cudaMemcpyDeviceToDevice,(cudaStream_t)shim->execution_stream) != cudaSuccess || cudaStreamSynchronize((cudaStream_t)shim->execution_stream) != cudaSuccess )
+		for (row=0u; row<shim->input_rows; row++)
+			if ( cudaMemcpyAsync((uint8_t *)shim->input_scratch + ((uint64_t)row * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES),(const uint8_t *)shim->input_base + ((uint64_t)shim->input_row_map[row] * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES),SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,(cudaStream_t)shim->execution_stream) != cudaSuccess )
+				return(SPARK_STATUS_IO_ERROR);
+		if ( cudaStreamSynchronize((cudaStream_t)shim->execution_stream) != cudaSuccess )
 			return(SPARK_STATUS_IO_ERROR);
 		source = shim->input_scratch;
 	}
@@ -644,21 +650,18 @@ static SparkStatus SparkQwen36ServingSend(
 	const SparkHiddenTransportPacket *packet)
 {
 	SparkQwen36ServingTransportShim *shim;
-	uint8_t *destination;
+	uint32_t row;
 	shim = (SparkQwen36ServingTransportShim *)transport_session;
 	if ( shim == 0 || packet == 0 || packet->hidden_bf16 == 0 || shim->output_base == 0 || packet->active_sequence_count == 0u || packet->hidden_dimension != SPARK_QWEN36_MODEL_HIDDEN_DIMENSION )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	destination = (uint8_t *)shim->output_base + ((uint64_t)shim->output_ordinal * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES);
-	if ( shim->output_pitch == SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES )
+	if ( shim->output_row_map != 0 )
 	{
-		if ( cudaMemcpyAsync(destination,packet->hidden_bf16,(uint64_t)packet->active_sequence_count * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,(cudaStream_t)packet->cuda_stream) != cudaSuccess )
-			return(SPARK_STATUS_IO_ERROR);
+		for (row=0u; row<packet->active_sequence_count; row++)
+			if ( cudaMemcpyAsync((uint8_t *)shim->output_base + ((uint64_t)shim->output_row_map[row] * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES),(const uint8_t *)packet->hidden_bf16 + ((uint64_t)row * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES),SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,(cudaStream_t)packet->cuda_stream) != cudaSuccess )
+				return(SPARK_STATUS_IO_ERROR);
 	}
-	else
-	{
-		if ( cudaMemcpy2DAsync(destination,(size_t)shim->output_pitch,packet->hidden_bf16,SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,packet->active_sequence_count,cudaMemcpyDeviceToDevice,(cudaStream_t)packet->cuda_stream) != cudaSuccess )
-			return(SPARK_STATUS_IO_ERROR);
-	}
+	else if ( cudaMemcpyAsync(shim->output_base,packet->hidden_bf16,(uint64_t)packet->active_sequence_count * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,(cudaStream_t)packet->cuda_stream) != cudaSuccess )
+		return(SPARK_STATUS_IO_ERROR);
 	return(cudaStreamSynchronize((cudaStream_t)packet->cuda_stream) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
 }
 
@@ -680,7 +683,7 @@ static void SparkQwen36ServingBuildFrame(
 	uint64_t base_position;
 	uint32_t row;
 	slot = prefill != 0u ? pending->resident_slots[lane] : 0u;
-	base_position = prefill != 0u ? submission->row_positions[wave_base * submission->active_sequence_count + lane] : 0u;
+	base_position = 0u;
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);
@@ -706,20 +709,31 @@ static void SparkQwen36ServingBuildFrame(
 	state->shim.output_base = submission->hidden_output_address;
 	if ( prefill != 0u )
 	{
-		if ( submission->hidden_input_address != 0 )
-			state->shim.input_base = (const uint8_t *)submission->hidden_input_address + ((uint64_t)(wave_base * submission->active_sequence_count + lane) * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES);
-		state->shim.input_pitch = (uint64_t)submission->active_sequence_count * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES;
-		state->shim.output_base = submission->hidden_output_address;
-		state->shim.output_pitch = (uint64_t)submission->active_sequence_count * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES;
-		state->shim.output_ordinal = wave_base * submission->active_sequence_count + lane;
-		for (row=0u; row<frame_rows; row++)
-			pending->frame_token_ids[row] = submission->token_ids[(wave_base + row) * submission->active_sequence_count + lane];
+		/* Round-major submissions interleave lanes by wave, so with unequal
+		 * lane lengths a lane's rows sit at irregular flat offsets; gather
+		 * the lane's rows by explicit flat index instead of a fixed pitch. */
+		uint32_t lane_row,flat;
+		lane_row = 0u;
+		for (flat=0u; flat<submission->row_count; flat++)
+		{
+			if ( submission->row_lane_indices[flat] != lane )
+				continue;
+			if ( lane_row >= wave_base && lane_row < wave_base + frame_rows )
+			{
+				pending->frame_row_flats[lane_row - wave_base] = flat;
+				pending->frame_token_ids[lane_row - wave_base] = submission->token_ids[flat];
+			}
+			lane_row++;
+		}
+		state->shim.input_row_map = pending->frame_row_flats;
+		state->shim.output_row_map = pending->frame_row_flats;
+		base_position = submission->row_positions[pending->frame_row_flats[0]];
 		prefill_view->abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION;
 		prefill_view->descriptor_bytes = sizeof(*prefill_view);
 		prefill_view->lane_index = slot;
 		prefill_view->token_count = frame_rows;
 		prefill_view->base_position = base_position;
-		prefill_view->sequence_id = submission->row_sequence_ids[wave_base * submission->active_sequence_count + lane];
+		prefill_view->sequence_id = submission->row_sequence_ids[pending->frame_row_flats[0]];
 		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW;
 		context->prefill_frame = prefill_view;
 	}
@@ -728,9 +742,8 @@ static void SparkQwen36ServingBuildFrame(
 		for (row=0u; row<frame_rows; row++)
 			pending->frame_row_slots[row] = pending->resident_slots[submission->row_lane_indices[row]];
 		memcpy(pending->frame_token_ids,submission->token_ids,(size_t)frame_rows * sizeof(uint32_t));
-		state->shim.input_pitch = SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES;
-		state->shim.output_pitch = SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES;
-		state->shim.output_ordinal = 0u;
+		state->shim.input_row_map = 0;
+		state->shim.output_row_map = 0;
 		decode_batch->abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION;
 		decode_batch->descriptor_bytes = sizeof(*decode_batch);
 		decode_batch->row_count = frame_rows;

@@ -323,6 +323,44 @@ int main(void)
 	lanes[1].context_token_count = 2u;
 	assert(library.adapter_interface.validate_submission(stage_five_state,&submission) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.submit(stage_five_state,&submission) == SPARK_STATUS_CAPACITY_EXCEEDED);
+
+	/* Unequal lane lengths: round-major prefill rows sit at irregular flat
+	 * offsets; every row must still round-trip to its own flat slot. */
+	submission.hidden_input_address = hidden_input;
+	submission.hidden_input_bytes = hidden_bytes;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission.submission_id = 90u;
+	submission.new_token_count = 4u;
+	submission.row_count = 4u;
+	submission.token_count = 4u;
+	row_lane_indices[0] = 0u;
+	row_lane_indices[1] = 1u;
+	row_lane_indices[2] = 1u;
+	row_lane_indices[3] = 1u;
+	row_positions[0] = 0u;
+	row_positions[1] = 0u;
+	row_positions[2] = 1u;
+	row_positions[3] = 2u;
+	row_sequence_ids[0] = 100u;
+	row_sequence_ids[1] = 101u;
+	row_sequence_ids[2] = 101u;
+	row_sequence_ids[3] = 101u;
+	lanes[0].sequence_position = 0u;
+	lanes[1].sequence_position = 0u;
+	lanes[0].context_token_count = 1u;
+	lanes[1].context_token_count = 3u;
+	lanes[0].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	lanes[1].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	for (byte=0u; byte<hidden_bytes; byte++)
+		hidden_staging[byte] = (uint8_t)(byte * 97u + 3u);
+	assert(cudaMemcpy(hidden_input,hidden_staging,(size_t)hidden_bytes,cudaMemcpyHostToDevice) == cudaSuccess);
+	assert(cudaMemset(hidden_output,0,(size_t)hidden_bytes) == cudaSuccess);
+	assert(library.adapter_interface.validate_submission(stage_five_state,&submission) == SPARK_STATUS_OK);
+	assert(library.adapter_interface.submit(stage_five_state,&submission) == SPARK_STATUS_OK);
+	assert(test_state.completion_count == 6u);
+	assert(cudaMemcpy(hidden_staging,hidden_output,(size_t)(4u * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES),cudaMemcpyDeviceToHost) == cudaSuccess);
+	for (byte=0u; byte<4u * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES; byte++)
+		assert(hidden_staging[byte] == (uint8_t)(byte * 97u + 3u));
 	library.adapter_interface.destroy(stage_five_state);
 
 	/* Embedding stage: token ids in, patterned hidden out, no input boundary. */
@@ -334,7 +372,7 @@ int main(void)
 	submission.submission_id = 82u;
 	assert(cudaMemset(hidden_output,0,(size_t)hidden_bytes) == cudaSuccess);
 	assert(library.adapter_interface.submit(stage_zero_state,&submission) == SPARK_STATUS_OK);
-	assert(test_state.completion_count == 6u);
+	assert(test_state.completion_count == 7u);
 	assert(cudaMemcpy(hidden_staging,hidden_output,(size_t)(2u * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES),cudaMemcpyDeviceToHost) == cudaSuccess);
 	for (byte=0u; byte<2u * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES; byte++)
 		assert(hidden_staging[byte] == 0x5au);
