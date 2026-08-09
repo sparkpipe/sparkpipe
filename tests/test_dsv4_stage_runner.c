@@ -104,7 +104,7 @@ static const SparkModelDriverProgramProfile TestProfile =
     1u,
     1u,
     1u,
-    1u,
+    SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT,
     128u,
     0u,
     0u,
@@ -127,6 +127,27 @@ static const SparkModelDriverProgramDescriptor TestProgram =
     &TestProfile,
     SparkDsv4RunnerTestSubmit
 };
+
+static void SparkDsv4RunnerTestResidentCapacity(void)
+{
+	SparkDsv4StageRunner runner;
+	SparkDsv4StageRunnerConfiguration configuration;
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES;
+	configuration.flags = SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_ADMISSION | SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY;
+	configuration.stage_count = 13u;
+	configuration.max_active_sequence_count = 1u;
+	configuration.max_input_row_count = 1u;
+	configuration.resident_sequence_capacity = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT;
+	configuration.driver_interface = &TestInterface;
+	configuration.driver_instance = &TestState;
+	configuration.program = &TestProgram;
+	configuration.execution_stream = (void *)(uintptr_t)1u;
+	assert(SparkDsv4StageRunnerInitialize(&runner,&configuration) == SPARK_STATUS_OK);
+	configuration.resident_sequence_capacity++;
+	assert(SparkDsv4StageRunnerInitialize(&runner,&configuration) == SPARK_STATUS_INVALID_ARGUMENT);
+}
 
 static void SparkDsv4RunnerTestPrefillMapping(void)
 {
@@ -385,6 +406,7 @@ static void SparkDsv4RunnerTestPrefillOffsets(void)
 
 int main(void)
 {
+	SparkDsv4RunnerTestResidentCapacity();
 	SparkDsv4RunnerTestPrefillMapping();
 	SparkDsv4RunnerTestIntermediateRequiresInput();
 	SparkDsv4RunnerTestIntermediateTokenRouting();

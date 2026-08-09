@@ -4,11 +4,9 @@
 
 #include "sparkpipe/spark_module_abi.h"
 
-// The batch-variant tuning header: the active-sequence ceiling below IS the
-// compiled bucket (capped at the lane-table size), so a variant build's lane
-// tables shrink to the tight fit. Model-free like this header, so the
-// Flash/Pro selection above is untouched; the unflagged build is b1024, the
-// 128-lane ceiling this stage has always had.
+// The batch-variant tuning header controls only the per-submit compute width.
+// Resident lane state has its own ceiling so the scheduler can keep more
+// sequences bound than one CUDA submission can process.
 #include "sparkpipe/spark_dsv4_batch_tuning.h"
 
 #ifdef __cplusplus
@@ -56,6 +54,7 @@ extern "C" {
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT \
 	SPARK_DSV4_BATCH_TUNING_SEQUENCE_CEILING
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 128u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT 1024u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 13u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT 61u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT 64u

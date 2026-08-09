@@ -11,6 +11,7 @@ typedef struct TestDsv4ServingDriver
 	SparkModelDriverCompletionFunction completion_function;
 	void *completion_context;
 	uint32_t stage_index;
+	uint32_t resident_sequence_capacity;
 	uint32_t cuda_graph_count;
 	uint64_t submitted_count;
 	uint64_t completed_count;
@@ -25,9 +26,9 @@ static const SparkModelDriverProgramProfile TestDsv4ServingDriverProfile =
 	.descriptor_bytes = sizeof(SparkModelDriverProgramProfile),
 	.profile_flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
 	.max_inflight = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
-	.max_active_slots = 128u,
-	.max_new_tokens = 128u,
-	.max_resident_sequences = 128u,
+	.max_active_slots = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+	.max_new_tokens = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
+	.max_resident_sequences = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT,
 	.max_sequence_tokens = 1048576u
 };
 
@@ -73,6 +74,7 @@ static SparkStatus TestDsv4ServingDriverCreate(
 	driver->completion_function = request->completion_function;
 	driver->completion_context = request->completion_context;
 	driver->stage_index = context->stage_index;
+	driver->resident_sequence_capacity = context->resident_sequence_capacity;
 	driver->cuda_graph_count = context->cuda_graph_count;
 	*driver_instance = driver;
 	return(SPARK_STATUS_OK);
@@ -121,7 +123,7 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 	for (row=0u; row<row_count; row++)
 	{
 		uint32_t expected_slot;
-		expected_slot = row_sequences[row] == 100u ? 7u : row_sequences[row] == 101u ? 3u : row_sequences[row] == 200u ? 5u : UINT32_MAX;
+		expected_slot = row_sequences[row] == 100u ? driver->resident_sequence_capacity - 1u : row_sequences[row] == 101u ? 3u : row_sequences[row] == 200u ? 5u : UINT32_MAX;
 		if ( row_slots[row] != expected_slot )
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}

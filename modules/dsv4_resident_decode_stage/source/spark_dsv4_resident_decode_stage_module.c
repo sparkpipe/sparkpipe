@@ -212,9 +212,9 @@ struct SparkDsv4ModuleState
 	SparkDsv4ModuleSlot slots[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkDsv4AsyncCompletion completions[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
-	atomic_uint lane_states[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint64_t lane_sequence_ids[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint64_t lane_next_positions[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	atomic_uint lane_states[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT];
+	uint64_t lane_sequence_ids[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT];
+	uint64_t lane_next_positions[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT];
 	atomic_ullong submitted_count;
 	atomic_ullong completed_count;
 	atomic_ullong rejected_count;
@@ -275,7 +275,7 @@ static SparkStatus SparkDsv4ModuleConfigure(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( (context->flags & ~SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS) != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( context->stage_count == 0u || context->stage_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT || context->layer_count == 0u || context->layer_count > SPARK_DSV4_MODEL_LAYER_COUNT - context->first_layer_index || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->cuda_graph_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT || context->max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || context->max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS || context->linear_weight_codec != SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC || context->expert_weight_codec != SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC || context->kv_cache_codec != SPARK_DSV4_MODEL_KV_CACHE_CODEC || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' )
+	if ( context->stage_count == 0u || context->stage_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT || context->layer_count == 0u || context->layer_count > SPARK_DSV4_MODEL_LAYER_COUNT - context->first_layer_index || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->cuda_graph_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT || context->max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || context->max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS || context->linear_weight_codec != SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC || context->expert_weight_codec != SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC || context->kv_cache_codec != SPARK_DSV4_MODEL_KV_CACHE_CODEC || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	state->stage_count = context->stage_count;
 	state->stage_index = context->stage_index;
@@ -759,7 +759,7 @@ static SparkStatus SparkDsv4ModuleAllocatePools(SparkDsv4ModuleState *state)
 static SparkStatus SparkDsv4ModuleAllocateSlotSmall(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot)
 {
 	uint8_t *device_cursor,*host_cursor;
-	uint32_t rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,head_rows = state->resident_sequence_capacity,metadata_rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
+	uint32_t rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,head_rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,metadata_rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
 	uint64_t metadata_bytes = (uint64_t)metadata_rows * (2u * sizeof(uint32_t) + 3u * sizeof(uint64_t));
 	uint64_t host_bytes = metadata_bytes + (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint32_t);
 	SparkStatus status;
@@ -854,7 +854,7 @@ static SparkStatus SparkDsv4ModuleAllocateSlotWide(SparkDsv4ModuleState *state, 
 
 static SparkStatus SparkDsv4ModuleAllocateSlotTail(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot)
 {
-	uint64_t rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,head_rows = state->resident_sequence_capacity,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION,bf16 = SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	uint64_t rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,head_rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION,bf16 = SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 	SparkStatus status;
 	status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_INDEX_DIMENSION * bf16,&slot->index_q_bf16);
 	if ( status == SPARK_STATUS_OK )

@@ -35,7 +35,7 @@ static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
 			SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT ||
 		configuration->resident_sequence_capacity < configuration->max_active_sequence_count ||
 		configuration->resident_sequence_capacity >
-			SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT ||
+			SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT ||
         configuration->driver_interface == 0 ||
         configuration->driver_instance == 0 ||
         configuration->program == 0 ||
