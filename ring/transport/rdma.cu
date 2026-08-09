@@ -774,16 +774,38 @@ static const char *SparkHiddenSparkHostRdmaDefaultDeviceName(
     return 0;
 }
 
+static int SparkHiddenSparkHostRdmaPortIsActive(
+    struct ibv_device *device,
+    uint8_t verbs_port)
+{
+    struct ibv_context *probe;
+    struct ibv_port_attr port_attributes;
+    int active;
+
+    probe = ibv_open_device(device);
+    if (probe == 0)
+    {
+        return 0;
+    }
+    memset(&port_attributes, 0, sizeof(port_attributes));
+    active = ibv_query_port(probe, verbs_port, &port_attributes) == 0 &&
+        port_attributes.state == IBV_PORT_ACTIVE;
+    (void)ibv_close_device(probe);
+    return active;
+}
+
 static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(SparkHiddenSparkHostRdmaState *state)
 {
     struct ibv_device **devices;
     struct ibv_device *selected_device;
     const char *requested_name;
+    uint32_t allow_fallback;
     int count;
     int index;
     struct ibv_port_attr port_attributes;
 
     requested_name = getenv("SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_DEVICE");
+    allow_fallback = 0u;
     if (requested_name == 0 || requested_name[0] == '\0')
     {
         requested_name = SparkHiddenSparkHostRdmaDefaultDeviceName(state);
@@ -791,6 +813,7 @@ static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(SparkHiddenSparkHostR
         {
             return SPARK_STATUS_ROUTE_NOT_FOUND;
         }
+        allow_fallback = 1u;
     }
     devices = ibv_get_device_list(&count);
     if (devices == 0 || count <= 0)
@@ -800,10 +823,33 @@ static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(SparkHiddenSparkHostR
     selected_device = 0;
     for (index = 0; index < count; ++index)
     {
-        if (strcmp(ibv_get_device_name(devices[index]), requested_name) == 0)
+        if (strcmp(ibv_get_device_name(devices[index]), requested_name) == 0 &&
+            SparkHiddenSparkHostRdmaPortIsActive(devices[index], state->verbs_port))
         {
             selected_device = devices[index];
             break;
+        }
+    }
+    /* A named-but-dark port used to be selected anyway and the bring-up
+     * failed later with opaque verbs errors (ENOSPC/io_error). When the
+     * default mapping's port is down - for example mid-migration to a new
+     * fabric - any other device with an active port is a legal peer path;
+     * an explicit env request is still honored exactly, never substituted. */
+    if (selected_device == 0 && allow_fallback != 0u)
+    {
+        for (index = 0; index < count; ++index)
+        {
+            if (strcmp(ibv_get_device_name(devices[index]), requested_name) != 0 &&
+                SparkHiddenSparkHostRdmaPortIsActive(devices[index], state->verbs_port))
+            {
+                fprintf(stderr,
+                    "hidden_spark_rdma_device_fallback route=%s requested=%s selected=%s\n",
+                    state->endpoint.route_name,
+                    requested_name,
+                    ibv_get_device_name(devices[index]));
+                selected_device = devices[index];
+                break;
+            }
         }
     }
     if (selected_device != 0)
