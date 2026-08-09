@@ -107,7 +107,7 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 	.max_inflight_submission_count = SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX,
 	.max_active_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_input_row_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
-	.max_resident_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+	.max_resident_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = 0u,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
@@ -380,7 +380,7 @@ static SparkStatus SparkDsv4ServingLoadDriver(
 	state->program = SparkFindLoadedModelDriverProgram(&state->driver,configuration->driver_program_name);
 	if ( state->program == 0 )
 		return(SPARK_STATUS_NOT_FOUND);
-	if ( (state->program->flags & SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS) != SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS || state->program->max_inflight < state->pipeline_slot_count || state->program->profile->max_active_slots < state->resident_sequence_capacity || state->program->profile->max_new_tokens < state->max_input_row_count )
+	if ( state->driver.interface->admit == 0 || state->program->submit == 0 || SparkModelDriverProgramSupportsRuntimeLimits(state->program,SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS,state->pipeline_slot_count,state->max_active_sequence_count,state->max_input_row_count,state->resident_sequence_capacity) == 0u )
 		return(SPARK_STATUS_TARGET_MISMATCH);
 	SparkModelDriverInitializeCreateRequest(&request);
 	request.node_id = configuration->node_id;

@@ -36,7 +36,7 @@
 #define SPARK_DSV4_MODEL_HC_SINKHORN_ITERATIONS 20u
 #define SPARK_DSV4_MODEL_DRIVER_MODEL_ID "deepseek.v4.flash.resident-decode-stage-firmware"
 #define SPARK_DSV4_MODEL_DRIVER_REVISION "h4096-l43-dsa-e256k6-hash3-v129280-ga0731-v3"
-#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256 "8a95c64a04d2271ab561a0005bbb779cbfeed272a93880602191e38bd2d19388"
+#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256 "73094c086a25f12c72c945a3cb9d81eb0e33b694ff293d3fa936ca37d48be686"
 #define SPARK_DSV4_MODEL_MODULE_ID "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.v3"
 #define SPARK_DSV4_MODEL_MODULE_TARGET "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16"
 #define SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION SPARK_DSV4_MODEL_HEAD_DIMENSION

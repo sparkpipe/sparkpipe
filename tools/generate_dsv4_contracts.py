@@ -447,7 +447,7 @@ def render_flash_model_description(contract: dict[str, Any]) -> str:
                     ],
                     "max_active_slots": 128,
                     "max_new_tokens": 65536,
-                    "max_resident_sequences": 128,
+                    "max_resident_sequences": 1024,
                     "max_sequence_tokens": model["maximum_context_tokens"],
                     "target_latency_ns": 0,
                     "validated_latency_ns": 0,

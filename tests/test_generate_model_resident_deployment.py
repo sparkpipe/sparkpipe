@@ -42,9 +42,9 @@ def main() -> int:
     deployment = module.build_deployment(specification)
     assert deployment["runtime_limits"] == {
         "max_inflight_submissions": 13,
-        "max_active_sequences": 24,
+        "max_active_sequences": 128,
         "max_input_rows": 128,
-        "resident_sequence_capacity": 128,
+        "resident_sequence_capacity": 1024,
     }
     assert deployment["adapter"]["shared_object_path"] == (
         "lib/model_serving_adapter.so")

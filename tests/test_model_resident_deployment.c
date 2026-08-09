@@ -66,9 +66,9 @@ int main(void)
 	assert(SparkModelResidentDeploymentLoad("examples/deployments/dsv4_flash_pp13_host_rdma.json",&deployment) == SPARK_STATUS_OK);
 	assert(deployment.node_count == 13u);
 	assert(deployment.runtime_limits.max_inflight_submission_count == 13u);
-	assert(deployment.runtime_limits.max_active_sequence_count == 24u);
+	assert(deployment.runtime_limits.max_active_sequence_count == 128u);
 	assert(deployment.runtime_limits.max_input_row_count == 128u);
-	assert(deployment.runtime_limits.resident_sequence_capacity == 128u);
+	assert(deployment.runtime_limits.resident_sequence_capacity == 1024u);
 	assert(strcmp(deployment.adapter_shared_object_path,"lib/model_serving_adapter.so") == 0);
 	assert(strcmp(deployment.transport_shared_object_path,"lib/hidden_transport.so") == 0);
 	node = SparkModelResidentDeploymentFindRank(&deployment,12u);

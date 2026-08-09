@@ -373,7 +373,7 @@ static SparkStatus SparkGlm52ServingLoadDriver(
 	state->program = SparkFindLoadedModelDriverProgram(&state->driver,configuration->driver_program_name);
 	if ( state->program == 0 )
 		return(SPARK_STATUS_NOT_FOUND);
-	if ( state->driver.interface->admit == 0 || state->program->submit == 0 || (state->program->flags & SPARK_GLM52_SERVING_REQUIRED_PROGRAM_FLAGS) != SPARK_GLM52_SERVING_REQUIRED_PROGRAM_FLAGS || state->program->max_inflight < state->pipeline_slot_count || state->program->profile == 0 || state->program->profile->max_active_slots < state->resident_sequence_capacity || state->program->profile->max_new_tokens < state->max_input_row_count )
+	if ( state->driver.interface->admit == 0 || state->program->submit == 0 || SparkModelDriverProgramSupportsRuntimeLimits(state->program,SPARK_GLM52_SERVING_REQUIRED_PROGRAM_FLAGS,state->pipeline_slot_count,state->max_active_sequence_count,state->max_input_row_count,state->resident_sequence_capacity) == 0u )
 		return(SPARK_STATUS_TARGET_MISMATCH);
 	SparkModelDriverInitializeCreateRequest(&request);
 	request.node_id = configuration->node_id;

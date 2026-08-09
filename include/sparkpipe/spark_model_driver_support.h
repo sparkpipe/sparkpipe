@@ -49,6 +49,33 @@ static inline uint32_t SparkModelDriverRangeFitsWithinCapacity(
     return range_length <= capacity - range_start ? 1u : 0u;
 }
 
+static inline uint32_t SparkModelDriverProgramSupportsRuntimeLimits(
+    const SparkModelDriverProgramDescriptor *program,
+    uint32_t required_flags,
+    uint32_t max_inflight,
+    uint32_t max_active_slots,
+    uint32_t max_new_tokens,
+    uint32_t max_resident_sequences)
+{
+    const SparkModelDriverProgramProfile *profile;
+    if (program == 0 || program->profile == 0 ||
+        program->profile->descriptor_bytes < sizeof(*program->profile) ||
+        (program->flags & required_flags) != required_flags)
+    {
+        return 0u;
+    }
+    profile = program->profile;
+    if (program->max_inflight < max_inflight ||
+        profile->max_inflight < max_inflight ||
+        profile->max_active_slots < max_active_slots ||
+        profile->max_new_tokens < max_new_tokens ||
+        profile->max_resident_sequences < max_resident_sequences)
+    {
+        return 0u;
+    }
+    return 1u;
+}
+
 static inline void SparkModelDriverInitializeAdmissionDecision(
     SparkModelDriverAdmissionDecision *decision)
 {
