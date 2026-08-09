@@ -226,7 +226,7 @@ struct SparkDsv4ModuleState
 extern cudaError_t SparkDsv4ConfigureCudaKernels(uint32_t *multiprocessor_count);
 extern cudaError_t SparkDsv4LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
-extern cudaError_t SparkDsv4LaunchStridedLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *payload, const uint8_t *scale, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t row_count);
+extern cudaError_t SparkDsv4LaunchStridedLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *payload, const uint8_t *scale, uint64_t weight_payload_group_stride_bytes, uint64_t weight_scale_group_stride_bytes, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, uint32_t input_group_stride, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t output_group_stride, uint32_t group_count, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t hidden_dimension);
 extern cudaError_t SparkDsv4LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkDsv4LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
@@ -1442,19 +1442,19 @@ static cudaError_t SparkDsv4ModuleStageTopk(SparkDsv4ModuleState *state, SparkDs
 	return(SparkDsv4LaunchBuildAttentionIndices((cudaStream_t)slot->cuda_stream,slot->row_positions,slot->topk_idxs,slot->slot_counts,rows,state->topk_column_count,state->index_slot_capacity,layer_kind));
 }
 
-// One o-composition group: wo_a's block against the group's slice of the
-// attention output, ranks landing at the group's offset - block-diagonal
-// through the strided kernel.
-static cudaError_t SparkDsv4ModuleRunOutputGroup(SparkDsv4ModuleSlot *slot, const SparkDsv4LayerWeights *layer, uint32_t group, uint32_t rows)
+/*
+ * All o-composition groups in one launch: grid.z walks wo_a's contiguous
+ * group blocks against each group's slice of the attention output, ranks
+ * landing at the group's offset - block-diagonal through the strided kernel.
+ */
+static cudaError_t SparkDsv4ModuleRunOutputComposition(SparkDsv4ModuleSlot *slot, const SparkDsv4LayerWeights *layer, uint32_t rows)
 {
 	SparkDsv4LinearView view = layer->attn.wo_a;
-	uint64_t payload_bytes = SparkDsv4StagePackPayloadBytes(view.weight_format,SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION);
-	uint64_t scale_bytes = SparkDsv4StagePackScaleBytes(view.weight_format,SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION);
-	const uint8_t *payload = (const uint8_t *)view.payload + (uint64_t)group * payload_bytes;
-	const uint8_t *scale = view.scale_data != 0 ? (const uint8_t *)view.scale_data + (uint64_t)group * scale_bytes : 0;
+	uint64_t payload_stride = SparkDsv4StagePackPayloadBytes(view.weight_format,SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION);
+	uint64_t scale_stride = SparkDsv4StagePackScaleBytes(view.weight_format,SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION);
 	view.rows = SPARK_DSV4_MODEL_OUTPUT_LORA_RANK;
 	view.columns = SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION;
-	return(SparkDsv4LaunchStridedLinear((cudaStream_t)slot->cuda_stream,&view,payload,scale,slot->attn_out_bf16,SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,group * SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION,slot->o_ranks_bf16,(uint64_t)SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT * SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,group * SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,rows));
+	return(SparkDsv4LaunchStridedLinear((cudaStream_t)slot->cuda_stream,&view,view.payload,(const uint8_t *)view.scale_data,payload_stride,scale_stride,slot->attn_out_bf16,SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,0u,SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION,slot->o_ranks_bf16,(uint64_t)SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT * SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,0u,SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT,rows));
 }
 
 static uint32_t SparkDsv4ModulePrefillWaveRowCount(
@@ -1500,7 +1500,7 @@ static cudaError_t SparkDsv4ModuleRunCausalAttention(SparkDsv4ModuleState *state
 static cudaError_t SparkDsv4ModuleRunAttention(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4LayerWeights *layer, const SparkDsv4PrefillBatchView *prefill, uint32_t layer_index, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
-	uint32_t kind = SparkDsv4ModelLayerKind(layer_index),group;
+	uint32_t kind = SparkDsv4ModelLayerKind(layer_index);
 	const float *freqs = kind == SPARK_DSV4_MODEL_LAYER_KIND_SWA ? state->base_freqs_f32 : state->compress_freqs_f32;
 	uint64_t state_offset = state->compress_state_offset_by_layer[layer_index];
 	uint64_t state_stride = state->compress_state_lane_stride_by_layer[layer_index];
@@ -1534,8 +1534,8 @@ static cudaError_t SparkDsv4ModuleRunAttention(SparkDsv4ModuleState *state, Spar
 		error = SparkDsv4ModuleRunCausalAttention(state,slot,prefill,cache,lane_stride,layer->attn.sink_f32,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchRope(stream,slot->attn_out_bf16,freqs,slot->row_positions,rows,SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,1u);
-	for (group = 0; error == cudaSuccess && group < SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT; group++)
-		error = SparkDsv4ModuleRunOutputGroup(slot,layer,group,rows);
+	if ( error == cudaSuccess )
+		error = SparkDsv4ModuleRunOutputComposition(slot,layer,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchLinear(stream,&layer->attn.wo_b,slot->o_ranks_bf16,slot->delta_bf16,rows);
 	return(error);

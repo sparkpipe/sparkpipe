@@ -11,7 +11,7 @@
 
 #define SPARK_DSV4_ROUTER_SORT_CAPACITY 512u
 #define SPARK_DSV4_EXPERT_TILE_N 128u
-#define SPARK_DSV4_EXPERT_STAGES 2u
+#define SPARK_DSV4_EXPERT_STAGES 4u
 #define SPARK_DSV4_EXPERT_WARPS 8u
 
 using SparkDsv4ExpertWeightFormat =
@@ -1299,17 +1299,21 @@ static __global__ void SparkDsv4HcHeadReduceKernel(const void *streams_bf16, con
 
 /*
  * Grouped linear with strided input rows: the o composition reads group g
- * of each row's heads*head_dim output (row stride the full width, input
- * slice group_dim wide at g*group_dim) against wo_a's group block. Same
- * dot helpers as the flat linear; the stride is the only difference.
+ * (grid.z) of each row's heads*head_dim output (row stride the full width,
+ * input slice group_dim wide at g*group_dim) against wo_a's group block.
+ * Same dot helpers as the flat linear; the stride is the only difference.
  */
 template<uint32_t ACTIVATION_CODEC>
-static __global__ void SparkDsv4StridedLinearKernel(uint32_t weight_format, const void *weight_payload, const uint8_t *weight_scale_e8m0, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+static __global__ void SparkDsv4StridedLinearKernel(uint32_t weight_format, const void *weight_payload, const uint8_t *weight_scale_e8m0, uint64_t weight_payload_group_stride_bytes, uint64_t weight_scale_group_stride_bytes, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, uint32_t input_group_stride, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t output_group_stride, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
 	extern __shared__ float strided_shared[];
-	uint32_t row = blockIdx.x,neuron_base = blockIdx.y * SPARK_LM_CTA_WARPS;
+	uint32_t row = blockIdx.x,neuron_base = blockIdx.y * SPARK_LM_CTA_WARPS,group = blockIdx.z;
+	const uint8_t *group_payload = (const uint8_t *)weight_payload + (uint64_t)group * weight_payload_group_stride_bytes;
+	const uint8_t *group_scale = weight_scale_e8m0 != 0 ? weight_scale_e8m0 + (uint64_t)group * weight_scale_group_stride_bytes : 0;
 	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES,neuron,element;
 	float accumulator;
+	input_offset += group * input_group_stride;
+	output_offset += group * output_group_stride;
 	if ( row >= row_count )
 		return;
 	for (element = threadIdx.x; element < input_dimension; element += blockDim.x)
@@ -1324,11 +1328,11 @@ static __global__ void SparkDsv4StridedLinearKernel(uint32_t weight_format, cons
 	if ( neuron >= output_dimension )
 		return;
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
-		accumulator = SparkLmDotRowBf16(strided_shared,weight_payload,neuron,input_dimension,lane);
+		accumulator = SparkLmDotRowBf16(strided_shared,group_payload,neuron,input_dimension,lane);
 	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
-		accumulator = SparkLmDotRowFp8<128u>(strided_shared,weight_payload,weight_scale_e8m0,neuron,input_dimension,lane);
+		accumulator = SparkLmDotRowFp8<128u>(strided_shared,group_payload,group_scale,neuron,input_dimension,lane);
 	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 )
-		accumulator = SparkLmDotRowMxfp4<32u>(strided_shared,weight_payload,weight_scale_e8m0,neuron,input_dimension,lane);
+		accumulator = SparkLmDotRowMxfp4<32u>(strided_shared,group_payload,group_scale,neuron,input_dimension,lane);
 	else
 		return;
 	accumulator = SparkLmWarpReduceSum(accumulator);
@@ -1375,15 +1379,15 @@ extern "C" cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv
 	return(cudaErrorInvalidValue);
 }
 
-extern "C" cudaError_t SparkDsv4LaunchStridedLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *payload, const uint8_t *scale, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t row_count)
+extern "C" cudaError_t SparkDsv4LaunchStridedLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *payload, const uint8_t *scale, uint64_t weight_payload_group_stride_bytes, uint64_t weight_scale_group_stride_bytes, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, uint32_t input_group_stride, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t output_group_stride, uint32_t group_count, uint32_t row_count)
 {
-	dim3 grid(row_count,(view->rows + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
+	dim3 grid(row_count,(view->rows + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS,group_count);
 	uint32_t shared_bytes = view->columns * (uint32_t)sizeof(float);
 	if ( view->weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && view->weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && view->weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 )
 		return(cudaErrorInvalidValue);
 	if ( SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE && (view->columns % SparkActivationCodecGroupSize(SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC)) != 0u )
 		return(cudaErrorInvalidValue);
-	SparkDsv4StridedLinearKernel<SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC><<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(view->weight_format,payload,scale,input_bf16,input_row_stride,input_offset,output_bf16,output_row_stride,output_offset,row_count,view->columns,view->rows);
+	SparkDsv4StridedLinearKernel<SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC><<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(view->weight_format,payload,scale,weight_payload_group_stride_bytes,weight_scale_group_stride_bytes,input_bf16,input_row_stride,input_offset,input_group_stride,output_bf16,output_row_stride,output_offset,output_group_stride,row_count,view->columns,view->rows);
 	return(cudaGetLastError());
 }
 
