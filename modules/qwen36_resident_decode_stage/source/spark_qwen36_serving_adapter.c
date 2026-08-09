@@ -351,6 +351,10 @@ static SparkStatus SparkQwen36ServingValidateRowOrder(
 	return(row == submission->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+/* Hidden boundary pointers exist only after the resident commits a route:
+ * the wire submission validate_submission sees always has them absent (the
+ * serving header documents this), so this check is meaningful only from
+ * submit, never from validate_submission. */
 static SparkStatus SparkQwen36ServingValidateBoundaries(
 	const SparkQwen36ServingState *state,
 	const SparkModelServingSubmission *submission)
@@ -359,8 +363,6 @@ static SparkStatus SparkQwen36ServingValidateBoundaries(
 	boundary_bytes = (uint64_t)submission->row_count * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES;
 	if ( (state->stage_index != 0u && (submission->hidden_input_address == 0 || submission->hidden_input_bytes < boundary_bytes)) || (state->stage_index == 0u && (submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u)) || (state->stage_index + 1u < SPARK_QWEN36_SERVING_STAGE_COUNT && (submission->hidden_output_address == 0 || submission->hidden_output_bytes < boundary_bytes)) || (state->stage_index + 1u == SPARK_QWEN36_SERVING_STAGE_COUNT && (submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u)) )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 
@@ -376,9 +378,8 @@ static SparkStatus SparkQwen36ServingValidateSubmissionBase(
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkQwen36ServingDescriptor,&state->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	status = SparkQwen36ServingValidateBoundaries(state,submission);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
+	if ( submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkQwen36ServingValidateRowOrder(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -887,6 +888,8 @@ static SparkStatus SparkQwen36ServingSubmit(
 	SparkStatus status;
 	state = (SparkQwen36ServingState *)adapter_state;
 	status = SparkQwen36ServingValidateSubmissionBase(state,submission);
+	if ( status == SPARK_STATUS_OK && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		status = SparkQwen36ServingValidateBoundaries(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	pending = SparkQwen36ServingReservePending(state,submission);
