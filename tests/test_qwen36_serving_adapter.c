@@ -314,7 +314,15 @@ int main(void)
 		assert(hidden_staging[byte] == (uint8_t)(byte * 131u + 7u));
 	submission.hidden_input_address = 0;
 	submission.hidden_input_bytes = 0u;
-	assert(library.adapter_interface.validate_submission(stage_five_state,&submission) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	/* Wire submissions never carry hidden boundary pointers (they are
+	 * attached only when the resident commits a route), so validation must
+	 * accept their absence; the boundary check lives in submit. */
+	lanes[0].sequence_position = 1u;
+	lanes[1].sequence_position = 1u;
+	lanes[0].context_token_count = 2u;
+	lanes[1].context_token_count = 2u;
+	assert(library.adapter_interface.validate_submission(stage_five_state,&submission) == SPARK_STATUS_OK);
+	assert(library.adapter_interface.submit(stage_five_state,&submission) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	library.adapter_interface.destroy(stage_five_state);
 
 	/* Embedding stage: token ids in, patterned hidden out, no input boundary. */
