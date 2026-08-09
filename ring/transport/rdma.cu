@@ -58,6 +58,12 @@
     (SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT * \
      SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_WR_PER_PACKET)
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS 50u
+/* Bounded control-plane bring-up: the receiver accept() and the sender
+ * connect retry used to wait for the peer forever, which is how one failed
+ * rank wedged every later rank at 0% CPU with no diagnostic. The timeout is
+ * per transport session open, env-overridable for slow fabrics. */
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_DEFAULT_MS 120000u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_ENV "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_MS"
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES 64u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_DEVICE_NAME_BYTES 32u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_SPARK_COUNT 13u
@@ -624,10 +630,26 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
     struct addrinfo hints;
     struct addrinfo *result;
     struct addrinfo *entry;
+    struct pollfd listen_poll;
     char port_text[16u];
+    uint64_t deadline_ns;
+    uint64_t now_ns;
+    uint32_t timeout_ms;
     int fd;
+    int poll_result;
     const char *host;
+    SparkStatus status;
 
+    status = SparkHiddenSparkHostRdmaParseUintEnv(
+        SPARK_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_ENV,
+        SPARK_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_DEFAULT_MS,
+        &timeout_ms);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    deadline_ns = SparkHiddenSparkHostRdmaMonotonicNs() +
+        (uint64_t)timeout_ms * 1000000ull;
     if (state->is_sender == 0u)
     {
         state->listen_fd = SparkHiddenSparkHostRdmaListen(
@@ -635,6 +657,32 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
         if (state->listen_fd < 0)
         {
             return SPARK_STATUS_ROUTE_NOT_FOUND;
+        }
+        for (;;)
+        {
+            now_ns = SparkHiddenSparkHostRdmaMonotonicNs();
+            if (now_ns >= deadline_ns)
+            {
+                fprintf(stderr,
+                    "hidden_spark_rdma_open_timeout route=%s role=receiver port=%u waited_ms=%u\n",
+                    state->endpoint.route_name,
+                    state->control_port_base + (uint32_t)state->sink_rank,
+                    timeout_ms);
+                return SPARK_STATUS_BUSY;
+            }
+            memset(&listen_poll, 0, sizeof(listen_poll));
+            listen_poll.fd = state->listen_fd;
+            listen_poll.events = POLLIN;
+            poll_result = poll(&listen_poll, 1,
+                (int)(((deadline_ns - now_ns) + 999999ull) / 1000000ull));
+            if (poll_result > 0)
+            {
+                break;
+            }
+            if (poll_result < 0 && errno != EINTR)
+            {
+                return SPARK_STATUS_IO_ERROR;
+            }
         }
         fd = accept(state->listen_fd, 0, 0);
         if (fd < 0)
@@ -658,31 +706,44 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
         if (getaddrinfo(host, port_text, &hints, &result) != 0 || result == 0)
         {
             (void)poll(0, 0, SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS);
-            continue;
         }
-        for (entry = result; entry != 0 && state->control_fd < 0;
-             entry = entry->ai_next)
+        else
         {
-            fd = socket(entry->ai_family, entry->ai_socktype,
-                entry->ai_protocol);
-            if (fd < 0)
+            for (entry = result; entry != 0 && state->control_fd < 0;
+                 entry = entry->ai_next)
             {
-                continue;
+                fd = socket(entry->ai_family, entry->ai_socktype,
+                    entry->ai_protocol);
+                if (fd < 0)
+                {
+                    continue;
+                }
+                if (connect(fd, entry->ai_addr, entry->ai_addrlen) == 0)
+                {
+                    state->control_fd = fd;
+                    SparkHiddenSparkHostRdmaConfigureSocket(state->control_fd);
+                }
+                else
+                {
+                    (void)close(fd);
+                }
             }
-            if (connect(fd, entry->ai_addr, entry->ai_addrlen) == 0)
+            freeaddrinfo(result);
+            if (state->control_fd < 0)
             {
-                state->control_fd = fd;
-                SparkHiddenSparkHostRdmaConfigureSocket(state->control_fd);
-            }
-            else
-            {
-                (void)close(fd);
+                (void)poll(0, 0, SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS);
             }
         }
-        freeaddrinfo(result);
-        if (state->control_fd < 0)
+        if (state->control_fd < 0 &&
+            SparkHiddenSparkHostRdmaMonotonicNs() >= deadline_ns)
         {
-            (void)poll(0, 0, SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS);
+            fprintf(stderr,
+                "hidden_spark_rdma_open_timeout route=%s role=sender host=%s port=%u waited_ms=%u\n",
+                state->endpoint.route_name,
+                host,
+                state->control_port_base + (uint32_t)state->sink_rank,
+                timeout_ms);
+            return SPARK_STATUS_BUSY;
         }
     }
     return SPARK_STATUS_OK;
