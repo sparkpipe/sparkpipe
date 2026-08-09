@@ -345,7 +345,7 @@ def probe_source(bucket):
     source = PROBE_TEMPLATE
     source = source.replace("EXPECTED_COMPILED_BUCKET", f"{bucket}u")
     source = source.replace("EXPECTED_SEQUENCE_CEILING",
-                            f"{min(bucket, 128)}u")
+                            f"{bucket}u")
     source = source.replace("EXPECTED_BUCKET_ID", str(bucket))
     source = source.replace("EXPECTED_TILE_M", f"{EXPECTED_TILE_M[bucket]}u")
     source = source.replace('"GLM52_PREFIX', f'"{GLM52_ID_PREFIX}')

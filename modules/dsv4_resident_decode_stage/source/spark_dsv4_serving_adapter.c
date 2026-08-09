@@ -52,6 +52,7 @@ typedef struct SparkDsv4ServingPending
 	uint32_t active_sequence_count;
 	uint32_t work_kind;
 	uint32_t emit_count;
+	uint32_t cache_lane_count;
 	uint64_t submission_id;
 	uint64_t request_id;
 	uint64_t sequence_id;
@@ -66,6 +67,7 @@ typedef struct SparkDsv4ServingPending
 	uint32_t emit_lane_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_row_lane_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t output_token_ids[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	SparkModelDriverCacheLane cache_lanes[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 } SparkDsv4ServingPending;
 
 typedef struct SparkDsv4ServingAdapterState
@@ -91,11 +93,14 @@ typedef struct SparkDsv4ServingAdapterState
 	SparkDsv4ServingPending pending[SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX];
 } SparkDsv4ServingAdapterState;
 
+static _Thread_local SparkModelDriverCacheLane SparkDsv4ServingPrefetchLanes[
+	SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+
 static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV,
 	.stage_count = SPARK_DSV4_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_DSV4_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -110,14 +115,16 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 	.max_resident_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = 0u,
-	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
+	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE,
 	.adapter_id = SPARK_DSV4_SERVING_ADAPTER_ID,
 	.model_id = SPARK_DSV4_SERVING_MODEL_ID,
 	.model_revision = SPARK_DSV4_SERVING_MODEL_REVISION,
 	.driver_program_name = SPARK_DSV4_SERVING_PROGRAM_NAME,
 	.artifact_sha256 = SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256,
 	.stage_layer_counts = {3u,3u,3u,3u,3u,3u,3u,4u,4u,4u,4u,4u,2u},
-	.minimum_efficient_submission_row_count = 16u
+	.minimum_efficient_submission_row_count = 16u,
+	.cache_block_token_count =
+		SPARK_DSV4_RESIDENT_DECODE_STAGE_CACHE_BLOCK_TOKENS
 };
 
 static int32_t SparkDsv4ServingJsonMember(
@@ -209,6 +216,8 @@ static SparkStatus SparkDsv4ServingValidateRowOrder(
 	for (row=0u; row<submission->row_count; row++)
 		if ( submission->row_positions[row] >= state->node_context.max_sequence_positions )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		return(SPARK_STATUS_OK);
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 		return(submission->row_count == submission->active_sequence_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 	memset(seen,0,sizeof(seen));
@@ -241,7 +250,10 @@ static SparkStatus SparkDsv4ServingReservePending(
 		if ( pending->active == 0u )
 		{
 			memset(pending,0,sizeof(*pending));
-			status = SparkModelServingAdapterSelectEmitRows(submission,pending->emit_row_indices,pending->emit_lane_indices,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&pending->emit_count);
+			status = SparkModelServingAdapterBuildDriverCacheLanes(submission,pending->cache_lanes,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&pending->cache_lane_count);
+			if ( status == SPARK_STATUS_OK &&
+				submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+				status = SparkModelServingAdapterSelectEmitRows(submission,pending->emit_row_indices,pending->emit_lane_indices,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&pending->emit_count);
 			if ( status != SPARK_STATUS_OK )
 				return(status);
 			pending->owner = state;
@@ -320,7 +332,9 @@ static void SparkDsv4ServingDriverCompletion(
 	completion.host_staging_bytes = driver_completion->host_staging_bytes;
 	if ( matches == 0u )
 		state->orphan_completion_count++;
-	if ( state->stage_index + 1u == SPARK_DSV4_SERVING_STAGE_COUNT && completion.status == SPARK_STATUS_OK )
+	if ( state->stage_index + 1u == SPARK_DSV4_SERVING_STAGE_COUNT &&
+		pending->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE &&
+		completion.status == SPARK_STATUS_OK )
 	{
 		completion.token_count = pending->active_sequence_count;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
@@ -386,6 +400,13 @@ static SparkStatus SparkDsv4ServingLoadDriver(
 	request.node_id = configuration->node_id;
 	request.node_target = configuration->node_target;
 	request.node_context = &state->node_context;
+	request.kv_logical_page_capacity =
+		configuration->runtime_limits.kv_logical_page_capacity;
+	request.kv_physical_page_capacity =
+		configuration->runtime_limits.kv_physical_page_capacity;
+	request.kv_backing_directory = configuration->kv_backing_directory;
+	request.kv_backing_maximum_bytes =
+		configuration->kv_backing_maximum_bytes;
 	request.execution_stream = configuration->execution_stream;
 	request.completion_function = SparkDsv4ServingOrphanDriverCompletion;
 	request.completion_context = state;
@@ -543,7 +564,111 @@ static SparkStatus SparkDsv4ServingValidateSubmission(
 	status = SparkDsv4ServingValidateSubmissionBase(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		return(SPARK_STATUS_OK);
 	return(SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count));
+}
+
+static void SparkDsv4ServingBuildCacheAdmission(
+	const SparkDsv4ServingAdapterState *state,
+	const SparkModelServingSubmission *submission,
+	const SparkModelDriverCacheLane *cache_lanes,
+	uint32_t admission_flags,
+	SparkModelDriverAdmissionRequest *request)
+{
+	memset(request,0,sizeof(*request));
+	request->descriptor_bytes = sizeof(*request);
+	request->program_id = state->program->program_id;
+	request->request_id = submission->request_id;
+	request->sequence_id = submission->sequence_id;
+	request->sequence_position = submission->sequence_position;
+	request->deadline_time_ns = submission->deadline_time_ns;
+	request->active_slot_count = submission->active_sequence_count;
+	request->new_token_count = submission->new_token_count;
+	request->priority = submission->priority;
+	request->frame_flags = submission->work_kind ==
+		SPARK_MODEL_SERVING_WORK_KIND_PREFILL ?
+		SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL :
+		submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE ?
+		SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE : 0u;
+	request->admission_flags = admission_flags;
+	request->cache_lane_count = submission->active_sequence_count;
+	request->cache_lanes = cache_lanes;
+	request->residency = submission->residency;
+}
+
+static SparkStatus SparkDsv4ServingPrefetch(
+	void *adapter_state,
+	const SparkModelServingSubmission *submissions,
+	uint32_t submission_count)
+{
+	SparkDsv4ServingAdapterState *state;
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	uint32_t cache_lane_count,index;
+	SparkStatus status;
+	state = (SparkDsv4ServingAdapterState *)adapter_state;
+	if ( state == 0 || submissions == 0 || submission_count == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SPARK_STATUS_OK;
+	for (index=0u; status==SPARK_STATUS_OK && index<submission_count; index++)
+	{
+		status = SparkDsv4ServingValidateSubmissionBase(state,&submissions[index]);
+		if ( status == SPARK_STATUS_OK && submissions[index].work_kind ==
+			SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+			continue;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkModelServingAdapterBuildDriverCacheLanes(
+				&submissions[index],SparkDsv4ServingPrefetchLanes,
+				SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+				&cache_lane_count);
+		if ( status == SPARK_STATUS_OK )
+		{
+			SparkDsv4ServingBuildCacheAdmission(state,&submissions[index],
+				SparkDsv4ServingPrefetchLanes,
+				SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE,&request);
+			status = SparkModelDriverEvaluateAdmission(state->driver.interface,
+				state->driver_instance,&request,&decision);
+		}
+	}
+	return(status);
+}
+
+static SparkStatus SparkDsv4ServingSubmitRelease(
+	SparkDsv4ServingAdapterState *state,
+	const SparkModelServingSubmission *submission,
+	SparkDsv4ServingPending *pending)
+{
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	SparkModelDriverFrame frame;
+	SparkStatus status;
+	SparkDsv4ServingBuildCacheAdmission(state,submission,pending->cache_lanes,
+		0u,&request);
+	status = SparkModelDriverEvaluateAdmission(state->driver.interface,
+		state->driver_instance,&request,&decision);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&frame,0,sizeof(frame));
+	frame.request_id = submission->request_id;
+	frame.sequence_id = submission->sequence_id;
+	frame.sequence_position = submission->sequence_position;
+	frame.deadline_time_ns = submission->deadline_time_ns;
+	frame.active_slot_count = submission->active_sequence_count;
+	frame.priority = submission->priority;
+	frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
+	frame.driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
+	frame.program_id = state->program->program_id;
+	frame.execution_stream = state->runner.execution_stream;
+	frame.cache_lane_count = pending->cache_lane_count;
+	frame.cache_lanes = pending->cache_lanes;
+	frame.residency = submission->residency;
+	frame.completion_function = SparkDsv4ServingDriverCompletion;
+	frame.completion_context = pending;
+	status = SparkModelDriverApplyAdmissionDecision(&decision,&frame);
+	if ( status == SPARK_STATUS_OK )
+		status = state->program->submit(state->driver_instance,&frame);
+	return(status);
 }
 
 static SparkStatus SparkDsv4ServingSubmit(
@@ -561,6 +686,13 @@ static SparkStatus SparkDsv4ServingSubmit(
 	status = SparkDsv4ServingReservePending(state,submission,&pending);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	{
+		status = SparkDsv4ServingSubmitRelease(state,submission,pending);
+		if ( status != SPARK_STATUS_OK )
+			pending->active = 0u;
+		return(status);
+	}
 	memset(&dispatch,0,sizeof(dispatch));
 	dispatch.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
 	dispatch.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES;
@@ -574,6 +706,8 @@ static SparkStatus SparkDsv4ServingSubmit(
 	dispatch.new_token_count = submission->new_token_count;
 	dispatch.row_count = submission->row_count;
 	dispatch.lane_count = submission->lane_count;
+	dispatch.cache_lane_count = pending->cache_lane_count;
+	dispatch.cache_lanes = pending->cache_lanes;
 	dispatch.token_ids = submission->token_ids;
 	dispatch.row_lane_indices = pending->resident_row_lane_indices;
 	dispatch.row_positions = submission->row_positions;
@@ -682,6 +816,7 @@ static const SparkModelServingAdapterInterface SparkDsv4ServingInterface =
 	.destroy = SparkDsv4ServingDestroy,
 	.validate_submission = SparkDsv4ServingValidateSubmission,
 	.submit = SparkDsv4ServingSubmit,
+	.prefetch = SparkDsv4ServingPrefetch,
 	.progress = SparkDsv4ServingProgress,
 	.quiesce = SparkDsv4ServingQuiesce,
 	.snapshot = SparkDsv4ServingSnapshot

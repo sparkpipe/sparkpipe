@@ -12,7 +12,7 @@
 // tests/test_k3_kv_geometry.py - the serving tier and the kernel tier
 // must agree about the model or refuse to build a cache at all.
 
-#define SPARK_K3_KV_LAYOUT SPARK_KV_CACHE_LAYOUT_MLA_COMPRESSED
+#define SPARK_K3_KV_LAYOUT SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE
 #define SPARK_K3_KV_MLA_LAYER_COUNT 24u
 #define SPARK_K3_KV_KDA_LAYER_COUNT 69u
 #define SPARK_K3_KV_LATENT_DIMENSION 512u
@@ -51,10 +51,10 @@ static inline void SparkK3KvFillCapacityRequest(SparkKvCacheCapacityRequest *req
 	request->layout = SPARK_K3_KV_LAYOUT;
 	request->layer_count = SPARK_K3_KV_MLA_LAYER_COUNT;
 	request->head_count = 0u;
-	request->qk_nope_head_dimension = 0u;
+	request->query_key_head_dimension = 0u;
 	request->value_head_dimension = 0u;
-	request->latent_dimension = SPARK_K3_KV_LATENT_DIMENSION;
-	request->rope_dimension = SPARK_K3_KV_ROPE_DIMENSION;
+	request->compressed_dimension = SPARK_K3_KV_LATENT_DIMENSION;
+	request->position_dimension = SPARK_K3_KV_ROPE_DIMENSION;
 	request->bytes_per_scalar = SPARK_K3_KV_BYTES_PER_SCALAR;
 	request->index_key_layer_count = SPARK_K3_KV_INDEX_KEY_LAYER_COUNT;
 	request->index_key_dimension = SPARK_K3_KV_INDEX_KEY_DIMENSION;

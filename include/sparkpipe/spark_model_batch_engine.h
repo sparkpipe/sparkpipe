@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 3u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 5u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 
@@ -87,6 +87,10 @@ typedef struct SparkModelBatchEngineView
 	uint32_t queued_prefill_count;
 	uint32_t ready_decode_count;
 	uint32_t inflight_submission_count;
+	uint32_t inflight_kv_lane_count;
+	uint32_t inflight_kv_page_count;
+	uint32_t kv_physical_page_capacity;
+	uint32_t kv_logical_page_capacity;
 	uint32_t failed_status;
 	uint64_t submitted_request_count;
 	uint64_t completed_request_count;

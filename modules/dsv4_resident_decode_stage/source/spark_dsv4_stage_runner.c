@@ -97,6 +97,20 @@ static SparkStatus SparkDsv4StageRunnerValidateEmitRows(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkDsv4StageRunnerValidateCacheLanes(
+	const SparkDsv4StageRunnerDispatch *dispatch)
+{
+	uint32_t lane;
+	if ( dispatch->cache_lane_count == 0u )
+		return(SPARK_STATUS_OK);
+	for (lane=0u; lane<dispatch->cache_lane_count; lane++)
+		if ( SparkModelDriverCacheLaneIsValid(&dispatch->cache_lanes[lane]) == 0u ||
+			dispatch->cache_lanes[lane].resident_sequence_slot !=
+			dispatch->row_lane_indices[lane] )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkDsv4StageRunnerValidateDispatchShape(
     const SparkDsv4StageRunner *runner,
     const SparkDsv4StageRunnerDispatch *dispatch)
@@ -112,6 +126,10 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchShape(
 		dispatch->row_count > runner->max_input_row_count ||
         dispatch->lane_count == 0u ||
         dispatch->lane_count > runner->max_active_sequence_count ||
+		dispatch->reserved0 != 0u ||
+		((dispatch->cache_lane_count != 0u) != (dispatch->cache_lanes != 0)) ||
+		(dispatch->cache_lane_count != 0u &&
+		 dispatch->cache_lane_count != dispatch->active_sequence_count) ||
         dispatch->row_lane_indices == 0 ||
         dispatch->row_positions == 0 ||
         dispatch->row_sequence_ids == 0 ||
@@ -135,6 +153,8 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchShape(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+	if ( SparkDsv4StageRunnerValidateCacheLanes(dispatch) != SPARK_STATUS_OK )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return SparkDsv4StageRunnerValidateEmitRows(dispatch,is_prefill);
 }
 
@@ -289,6 +309,8 @@ static void SparkDsv4StageRunnerBuildFrame(
 	frame->execution_stream = runner->execution_stream;
     frame->buffers = buffers;
     frame->buffer_count = buffer_count;
+	frame->cache_lane_count = dispatch->cache_lane_count;
+	frame->cache_lanes = dispatch->cache_lanes;
     frame->user_context = context;
     frame->residency = dispatch->residency;
     frame->completion_function = dispatch->completion_function;
@@ -320,6 +342,8 @@ static SparkStatus SparkDsv4StageRunnerAdmit(
     request.new_token_count = dispatch->new_token_count;
     request.priority = dispatch->priority;
     request.frame_flags = frame->flags;
+	request.cache_lane_count = dispatch->cache_lane_count;
+	request.cache_lanes = dispatch->cache_lanes;
     request.residency = dispatch->residency;
 	SparkModelDriverInitializeAdmissionDecision(&decision);
     status = runner->driver_interface->admit(

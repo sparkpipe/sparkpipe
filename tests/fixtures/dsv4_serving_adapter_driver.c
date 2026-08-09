@@ -109,10 +109,35 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 	SparkModelDriverCompletion completion;
 	const uint32_t *row_slots;
 	const uint64_t *row_sequences;
-	uint32_t *tokens,emit,row,row_count;
+	uint32_t *tokens,emit,lane,row,row_count;
 	uint64_t hidden_bytes;
 	driver = (TestDsv4ServingDriver *)driver_instance;
-	if ( driver == 0 || frame == 0 || frame->user_context == 0 )
+	if ( driver == 0 || frame == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
+	{
+		if ( frame->flags != SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE ||
+			frame->new_token_count != 0u || frame->user_context != 0 ||
+			frame->cache_lane_count != frame->active_slot_count ||
+			frame->cache_lanes == 0 )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		for (lane=0u; lane<frame->cache_lane_count; lane++)
+			if ( frame->cache_lanes[lane].flags !=
+				SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE )
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+		driver->submitted_count++;
+		driver->completed_count++;
+		memset(&completion,0,sizeof(completion));
+		completion.request_id = frame->request_id;
+		completion.sequence_id = frame->sequence_id;
+		completion.sequence_position = frame->sequence_position;
+		completion.program_id = frame->program_id;
+		completion.residency = frame->residency;
+		completion.status = SPARK_STATUS_OK;
+		frame->completion_function(frame->completion_context,&completion);
+		return(SPARK_STATUS_OK);
+	}
+	if ( frame->user_context == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	context = (SparkDsv4ResidentDecodeStageFrameContext *)frame->user_context;
 	row_count = context->decode_batch != 0 ? context->decode_batch->row_count : context->prefill_batch != 0 ? context->prefill_batch->row_count : 0u;

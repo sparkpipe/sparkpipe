@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 #define SPARK_FIRMWARE_MODULE_ABI_VERSION 4u
-#define SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION 2u
+#define SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION 4u
 
 typedef struct SparkFirmwareModuleConfiguration
 {
@@ -38,6 +38,10 @@ typedef struct SparkFirmwareModuleHostServices
     const char *node_id;
     const char *node_target;
     void *node_context;
+    uint32_t kv_logical_page_capacity;
+    uint32_t kv_physical_page_capacity;
+    const char *kv_backing_directory;
+    uint64_t kv_backing_maximum_bytes;
     void *execution_stream;
     uint64_t reserved[1];
 } SparkFirmwareModuleHostServices;
@@ -61,6 +65,13 @@ static inline SparkStatus SparkFirmwareModuleValidateInitialization(
         host_services->reserved[0] != 0u)
     {
         return SPARK_STATUS_ABI_MISMATCH;
+    }
+    if (((host_services->kv_logical_page_capacity == 0u) !=
+         (host_services->kv_physical_page_capacity == 0u)) ||
+        host_services->kv_physical_page_capacity >
+            host_services->kv_logical_page_capacity)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     return SPARK_STATUS_OK;
 }

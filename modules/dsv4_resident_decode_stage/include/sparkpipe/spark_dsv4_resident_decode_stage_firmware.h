@@ -13,6 +13,8 @@
 extern "C" {
 #endif
 
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_CACHE_BLOCK_TOKENS 128u
+
 /*
  * DeepSeek V4 resident decode stage. This header deliberately includes NO
  * model header: the translation unit picks Flash or Pro by including its
@@ -36,15 +38,15 @@ extern "C" {
  * MoE across the whole frame. GA DSpark execution remains refused, its three
  * checkpoint layers are excluded from baseline packs, and serving reports
  * zero speculative-token capacity.
- * Caches are dense per lane, bounded by SPARK_DSV4_STAGE_MAX_SEQ: the
- * window ring is 128 slots regardless, the compressed stream max_seq/ratio
- * slots, the indexer stream max_seq/4; the paged migration is scheduled
- * with the family PP pass and changes only the module, not this contract.
+ * DSV4 defines the bytes and offsets within a 128-token cache page. The
+ * model-neutral cache runtime owns logical pages, residency, prefix sharing,
+ * prefetch, and eviction; this device contract owns only DSV4 page geometry
+ * and the CUDA addresses used by its kernels.
  * Every accepted frame completes externally from one stream-ordered host
  * callback; submit never synchronizes a successful CUDA frame.
  */
 
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 4u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 7u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION 2u
@@ -53,8 +55,10 @@ extern "C" {
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP 4096u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT \
 	SPARK_DSV4_BATCH_TUNING_SEQUENCE_CEILING
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 128u
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT 1024u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 1024u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT 16384u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PHYSICAL_PAGE_COUNT 16384u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LOGICAL_PAGE_COUNT 1048576u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 13u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT 61u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT 64u

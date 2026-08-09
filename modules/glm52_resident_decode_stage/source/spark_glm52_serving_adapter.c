@@ -379,6 +379,13 @@ static SparkStatus SparkGlm52ServingLoadDriver(
 	request.node_id = configuration->node_id;
 	request.node_target = configuration->node_target;
 	request.node_context = &state->node_context;
+	request.kv_logical_page_capacity =
+		configuration->runtime_limits.kv_logical_page_capacity;
+	request.kv_physical_page_capacity =
+		configuration->runtime_limits.kv_physical_page_capacity;
+	request.kv_backing_directory = configuration->kv_backing_directory;
+	request.kv_backing_maximum_bytes =
+		configuration->kv_backing_maximum_bytes;
 	request.execution_stream = configuration->execution_stream;
 	request.completion_function = SparkGlm52ServingOrphanDriverCompletion;
 	request.completion_context = state;

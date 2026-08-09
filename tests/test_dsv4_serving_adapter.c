@@ -68,10 +68,16 @@ int main(void)
 	assert(strcmp(library.adapter_interface.descriptor->model_id,"deepseek-ai/DeepSeek-V4-Flash-0731") == 0);
 	assert(library.adapter_interface.descriptor->max_speculative_token_count == 0u);
 	assert(library.adapter_interface.descriptor->max_inflight_submission_count == 13u);
-	assert(library.adapter_interface.descriptor->max_active_sequence_count == 128u);
-	assert(library.adapter_interface.descriptor->max_resident_sequence_count == 1024u);
+	assert(library.adapter_interface.descriptor->max_active_sequence_count ==
+		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT);
+	assert(library.adapter_interface.descriptor->max_resident_sequence_count ==
+		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT);
 	assert(library.adapter_interface.descriptor->stage_count == 13u);
 	assert(library.adapter_interface.descriptor->minimum_efficient_submission_row_count == 16u);
+	assert(library.adapter_interface.descriptor->resident_sequence_slot_reuse ==
+		SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE);
+	assert(library.adapter_interface.descriptor->cache_block_token_count ==
+		SPARK_DSV4_RESIDENT_DECODE_STAGE_CACHE_BLOCK_TOKENS);
 	hidden_input_bytes = 4u * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 	hidden_input = calloc(1u,(size_t)hidden_input_bytes);
 	assert(hidden_input != 0);
@@ -86,6 +92,8 @@ int main(void)
 	configuration.runtime_limits.max_active_sequence_count = 2u;
 	configuration.runtime_limits.max_input_row_count = 4u;
 	configuration.runtime_limits.resident_sequence_capacity = 1024u;
+	configuration.runtime_limits.kv_logical_page_capacity = 16384u;
+	configuration.runtime_limits.kv_physical_page_capacity = 1024u;
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	configuration.runtime_root = runtime_root;
 	configuration.node_id = "spark12";
@@ -153,6 +161,8 @@ int main(void)
 	submission.hidden_input_address = hidden_input;
 	submission.hidden_input_bytes = hidden_input_bytes;
 	assert(library.adapter_interface.validate_submission(adapter_state,&submission) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterPrepareSubmission(&library.adapter_interface,
+		adapter_state,&submission) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_OK);
 	assert(test_state.completion_count == 1u);
 	assert(test_state.completion.submission_id == 77u);
@@ -253,9 +263,30 @@ int main(void)
 	assert(library.adapter_interface.validate_submission(adapter_state,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	assert(test_state.completion_count == 4u);
+	lanes[0].flags = 0u;
+	lanes[1].flags = 0u;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
+	submission.submission_id = 82u;
+	submission.transaction_id = 1082u;
+	submission.dispatch_generation = 2082u;
+	submission.step_generation = 3082u;
+	submission.new_token_count = 0u;
+	submission.row_count = 0u;
+	submission.token_count = 0u;
+	submission.token_ids = 0;
+	submission.row_lane_indices = 0;
+	submission.row_positions = 0;
+	submission.row_sequence_ids = 0;
+	submission.hidden_input_address = 0;
+	submission.hidden_input_bytes = 0u;
+	assert(library.adapter_interface.validate_submission(adapter_state,&submission) == SPARK_STATUS_OK);
+	assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_OK);
+	assert(test_state.completion_count == 5u);
+	assert(test_state.completion.submission_id == 82u);
+	assert(test_state.completion.token_count == 0u);
 	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) == SPARK_STATUS_OK);
-	assert(snapshot.submitted_count == 4u);
-	assert(snapshot.completed_count == 4u);
+	assert(snapshot.submitted_count == 5u);
+	assert(snapshot.completed_count == 5u);
 	/* No cuda_graph_count in the stage configuration: the driver saw 0. */
 	assert(snapshot.kv_token_capacity == 0u);
 	assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);

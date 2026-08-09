@@ -79,12 +79,20 @@ static int32_t TestModelResidentWriteNode(
 		status = -4;
 	if ( status == 0 )
 		status = TestModelResidentWriteText(stream,fixture->adapter_configuration_path);
-	if ( status == 0 && fputs(",\"control_endpoint\":",stream) == EOF )
+	if ( status == 0 && fputs(",\"kv_backing_directory\":",stream) == EOF )
 		status = -5;
+	if ( status == 0 )
+		status = fixture->kv_backing_directory != 0 ?
+			TestModelResidentWriteText(stream,fixture->kv_backing_directory) :
+			(fputs("null",stream) == EOF ? -6 : 0);
+	if ( status == 0 && fprintf(stream,
+		",\"kv_backing_maximum_bytes\":%llu,\"control_endpoint\":",
+		(unsigned long long)fixture->kv_backing_maximum_bytes) < 0 )
+		status = -7;
 	if ( status == 0 )
 		status = TestModelResidentWriteEndpoint(stream,&fixture->control_endpoints[rank]);
 	if ( status == 0 && fputc('}',stream) == EOF )
-		status = -6;
+		status = -8;
 	return(status);
 }
 
@@ -94,7 +102,7 @@ static int32_t TestModelResidentWriteBody(
 {
 	int32_t status;
 	uint32_t rank;
-	status = fprintf(stream,"{\"schema_version\":1,\"coordinator_rank_index\":%u,\"adapter\":{\"shared_object_path\":",fixture->coordinator_rank_index) < 0 ? -1 : 0;
+	status = fprintf(stream,"{\"schema_version\":2,\"coordinator_rank_index\":%u,\"adapter\":{\"shared_object_path\":",fixture->coordinator_rank_index) < 0 ? -1 : 0;
 	if ( status == 0 )
 		status = TestModelResidentWriteText(stream,fixture->adapter_shared_object_path);
 	if ( status == 0 && fputs("},\"driver\":{\"shared_object_path\":",stream) == EOF )
@@ -113,7 +121,7 @@ static int32_t TestModelResidentWriteBody(
 		status = -5;
 	if ( status == 0 )
 		status = TestModelResidentWriteText(stream,fixture->transport_mode);
-	if ( status == 0 && fprintf(stream,",\"control_port_base\":%u},\"runtime_limits\":{\"max_inflight_submissions\":%u,\"max_active_sequences\":%u,\"max_input_rows\":%u,\"resident_sequence_capacity\":%u},\"nodes\":[",fixture->control_port_base,fixture->runtime_limits.max_inflight_submission_count,fixture->runtime_limits.max_active_sequence_count,fixture->runtime_limits.max_input_row_count,fixture->runtime_limits.resident_sequence_capacity) < 0 )
+	if ( status == 0 && fprintf(stream,",\"control_port_base\":%u},\"runtime_limits\":{\"max_inflight_submissions\":%u,\"max_active_sequences\":%u,\"max_input_rows\":%u,\"resident_sequence_capacity\":%u,\"kv_logical_page_capacity\":%u,\"kv_physical_page_capacity\":%u},\"nodes\":[",fixture->control_port_base,fixture->runtime_limits.max_inflight_submission_count,fixture->runtime_limits.max_active_sequence_count,fixture->runtime_limits.max_input_row_count,fixture->runtime_limits.resident_sequence_capacity,fixture->runtime_limits.kv_logical_page_capacity,fixture->runtime_limits.kv_physical_page_capacity) < 0 )
 		status = -6;
 	for (rank=0u; status==0 && rank<fixture->node_count; rank++)
 		status = TestModelResidentWriteNode(stream,fixture,rank);

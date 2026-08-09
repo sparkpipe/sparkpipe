@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "coordinator_rank_index": 0,
   "adapter": {
     "shared_object_path": "lib/model_serving_adapter.so"
@@ -15,9 +15,11 @@
   },
   "runtime_limits": {
     "max_inflight_submissions": 13,
-    "max_active_sequences": 128,
-    "max_input_rows": 128,
-    "resident_sequence_capacity": 1024
+    "max_active_sequences": 1024,
+    "max_input_rows": 1024,
+    "resident_sequence_capacity": 16384,
+    "kv_logical_page_capacity": 1048576,
+    "kv_physical_page_capacity": 16384
   },
   "nodes": [
     {
@@ -27,6 +29,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark0",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark0",
@@ -40,6 +44,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark1",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark1",
@@ -53,6 +59,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark2",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark2",
@@ -66,6 +74,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark3",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark3",
@@ -79,6 +89,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark4",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark4",
@@ -92,6 +104,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark5",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark5",
@@ -105,6 +119,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark6",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark6",
@@ -118,6 +134,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark7",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark7",
@@ -131,6 +149,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark8",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark8",
@@ -144,6 +164,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "spark9",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark9",
@@ -157,6 +179,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "sparka",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "sparka",
@@ -170,6 +194,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "sparkb",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "sparkb",
@@ -183,6 +209,8 @@
       "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
       "transport_host": "sparkc",
       "adapter_configuration_path": "config/dsv4_flash_stage.json",
+      "kv_backing_directory": "/fast-local-nvme/sparkpipe-kv",
+      "kv_backing_maximum_bytes": 0,
       "control_endpoint": {
         "kind": "tcp",
         "host": "sparkc",

@@ -276,7 +276,9 @@ static int SparkDsv4ValidationReadUnsigned(
 }
 
 static int SparkDsv4ValidationLoadNodeContext(
-	SparkDsv4ResidentDecodeStageNodeContext *context)
+	SparkDsv4ResidentDecodeStageNodeContext *context,
+	uint32_t *logical_page_capacity,
+	uint32_t *physical_page_capacity)
 {
 	uint32_t mtp_layer_count,cuda_graph_count;
 	memset(context,0,sizeof(*context));
@@ -289,6 +291,8 @@ static int SparkDsv4ValidationLoadNodeContext(
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_MAX_ACTIVE_SEQUENCES",SPARK_DSV4_VALIDATION_ROW_COUNT,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&context->resident_sequence_capacity) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_PIPELINE_SLOTS",1u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&context->pipeline_slot_count) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_MAX_SEQ",SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO,SPARK_DSV4_MODEL_MAX_POSITIONS,&context->max_sequence_positions) != 0 ||
+		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_LOGICAL_PAGES",1u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LOGICAL_PAGE_COUNT,logical_page_capacity) != 0 ||
+		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_PHYSICAL_PAGES",1u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PHYSICAL_PAGE_COUNT,physical_page_capacity) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_MTP",0u,0u,&mtp_layer_count) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_GRAPHS",0u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT,&cuda_graph_count) != 0 )
 		return(1);
@@ -305,7 +309,9 @@ static int SparkDsv4ValidationLoadNodeContext(
 static void SparkDsv4ValidationInitializeConfiguration(
 	SparkFirmwareModuleConfiguration *configuration,
 	SparkFirmwareModuleHostServices *host_services,
-	SparkDsv4ResidentDecodeStageNodeContext *node_context)
+	SparkDsv4ResidentDecodeStageNodeContext *node_context,
+	uint32_t logical_page_capacity,
+	uint32_t physical_page_capacity)
 {
 	memset(configuration,0,sizeof(*configuration));
 	configuration->abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
@@ -324,6 +330,8 @@ static void SparkDsv4ValidationInitializeConfiguration(
 	host_services->node_target = SPARK_DSV4_MODEL_MODULE_TARGET;
 	host_services->execution_stream = (void *)cudaStreamPerThread;
 	host_services->node_context = node_context;
+	host_services->kv_logical_page_capacity = logical_page_capacity;
+	host_services->kv_physical_page_capacity = physical_page_capacity;
 }
 
 static void SparkDsv4ValidationCompletion(
@@ -819,6 +827,7 @@ int main(int argument_count,char **arguments)
 	SparkDsv4ValidationMode mode;
 	void *module_state;
 	int32_t snapshot_result;
+	uint32_t logical_page_capacity,physical_page_capacity;
 	SparkStatus status;
 	if ( argument_count != 2 )
 	{
@@ -827,12 +836,14 @@ int main(int argument_count,char **arguments)
 	}
 	if ( SparkDsv4ValidationHead() != 0 )
 		return(1);
-	if ( SparkDsv4ValidationLoadNodeContext(&node_context) != 0 )
+	if ( SparkDsv4ValidationLoadNodeContext(&node_context,
+		&logical_page_capacity,&physical_page_capacity) != 0 )
 	{
 		fprintf(stderr,"dsv4_validation configuration=invalid\n");
 		return(1);
 	}
-	SparkDsv4ValidationInitializeConfiguration(&configuration,&host_services,&node_context);
+	SparkDsv4ValidationInitializeConfiguration(&configuration,&host_services,
+		&node_context,logical_page_capacity,physical_page_capacity);
 	if ( SparkDsv4ValidationLoadMode(&mode) != 0 || SparkDsv4ValidationRequireMode(&node_context,&mode) != 0 )
 		return(1);
 	module_state = 0;

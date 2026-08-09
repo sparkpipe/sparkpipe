@@ -72,6 +72,8 @@ typedef struct SparkModelResidentClientView
 	uint32_t max_active_sequence_count;
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;
+	uint32_t kv_logical_page_capacity;
+	uint32_t kv_physical_page_capacity;
 	uint32_t prepared_submission_count;
 	uint64_t submitted_count;
 	uint64_t prepared_count;

@@ -281,6 +281,8 @@ static void TestModelResidentWriteDeployment(
 	fixture.runtime_limits.max_active_sequence_count = 2u;
 	fixture.runtime_limits.max_input_row_count = 4u;
 	fixture.runtime_limits.resident_sequence_capacity = 8u;
+	fixture.runtime_limits.kv_logical_page_capacity = 16u;
+	fixture.runtime_limits.kv_physical_page_capacity = 8u;
 	fixture.control_port_base = 59000u;
 	fixture.node_count = TEST_MODEL_RESIDENT_RANK_COUNT;
 	fixture.coordinator_rank_index = 0u;
@@ -403,6 +405,8 @@ static void TestModelResidentRunCase(
 	assert(view.max_active_sequence_count == 2u);
 	assert(view.max_input_row_count == 4u);
 	assert(view.resident_sequence_capacity == 8u);
+	assert(view.kv_logical_page_capacity == 16u);
+	assert(view.kv_physical_page_capacity == 8u);
 	assert(view.submitted_count == 4u);
 	assert(view.admitted_count == 2u);
 	assert(view.rejected_count == 2u);

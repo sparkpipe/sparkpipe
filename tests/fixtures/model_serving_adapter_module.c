@@ -19,7 +19,7 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV,
 	.stage_count = 3u,
 	.layer_count = 7u,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -43,7 +43,8 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.stage_layer_counts = {2u,3u,2u},
 	.boundary_sideband_kinds = {1u,0u,0u},
 	.boundary_sideband_bytes_per_sequence = {16u,0u,0u},
-	.minimum_efficient_submission_row_count = 16u
+	.minimum_efficient_submission_row_count = 16u,
+	.cache_block_token_count = 4u
 };
 
 static SparkStatus TestModelServingValidateConfiguration(
@@ -204,6 +205,16 @@ static SparkStatus TestModelServingSubmit(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus TestModelServingPrefetch(
+	void *adapter_state,
+	const SparkModelServingSubmission *submissions,
+	uint32_t submission_count)
+{
+	if ( adapter_state == 0 || submissions == 0 || submission_count != 1u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(TestModelServingValidateSubmission(adapter_state,submissions));
+}
+
 static SparkStatus TestModelServingProgress(
 	void *adapter_state,
 	uint32_t maximum_step_count)
@@ -250,6 +261,7 @@ static const SparkModelServingAdapterInterface TestModelServingInterface =
 	.destroy = TestModelServingDestroy,
 	.validate_submission = TestModelServingValidateSubmission,
 	.submit = TestModelServingSubmit,
+	.prefetch = TestModelServingPrefetch,
 	.progress = TestModelServingProgress,
 	.quiesce = TestModelServingQuiesce,
 	.snapshot = TestModelServingSnapshot

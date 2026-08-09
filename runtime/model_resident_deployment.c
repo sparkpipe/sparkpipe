@@ -27,12 +27,14 @@ static const char *const SparkModelResidentDeploymentTransportMembers[] =
 static const char *const SparkModelResidentDeploymentRuntimeMembers[] =
 {
 	"max_inflight_submissions","max_active_sequences","max_input_rows",
-	"resident_sequence_capacity"
+	"resident_sequence_capacity","kv_logical_page_capacity",
+	"kv_physical_page_capacity"
 };
 static const char *const SparkModelResidentDeploymentNodeMembers[] =
 {
 	"rank_index","stage_index","runtime_root","node_target","transport_host",
-	"adapter_configuration_path","control_endpoint"
+	"adapter_configuration_path","kv_backing_directory",
+	"kv_backing_maximum_bytes","control_endpoint"
 };
 static const char *const SparkModelResidentDeploymentUnixMembers[] =
 {
@@ -83,6 +85,45 @@ static SparkStatus SparkModelResidentDeploymentUnsigned(
 	return(token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt32(document,token,value));
 }
 
+static SparkStatus SparkModelResidentDeploymentUnsigned64(
+	const SparkJsonDocument *document,
+	int32_t object,
+	const char *name,
+	uint64_t *value)
+{
+	int32_t token;
+	token = SparkModelResidentDeploymentMember(document,object,name);
+	return(token < 0 ? SPARK_STATUS_SCHEMA_ERROR :
+		SparkJsonGetUInt64(document,token,value));
+}
+
+static SparkStatus SparkModelResidentDeploymentNullableString(
+	const SparkJsonDocument *document,
+	int32_t object,
+	const char *name,
+	char **value)
+{
+	char *raw;
+	uint32_t raw_bytes;
+	int32_t token;
+	SparkStatus status;
+	if ( value == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*value = 0;
+	token = SparkModelResidentDeploymentMember(document,object,name);
+	if ( token < 0 )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_STRING) )
+		return(SparkJsonCopyString(document,token,value));
+	status = SparkJsonCopyRawValue(document,token,&raw,&raw_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = raw_bytes == 4u && strcmp(raw,"null") == 0 ?
+		SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR;
+	free(raw);
+	return(status);
+}
+
 static SparkStatus SparkModelResidentDeploymentParseEndpoint(
 	const SparkJsonDocument *document,
 	int32_t object,
@@ -129,7 +170,7 @@ static SparkStatus SparkModelResidentDeploymentParseNode(
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentNodeMembers,7u);
+	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentNodeMembers,9u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentUnsigned(document,object,"rank_index",&node->rank_index);
 	if ( status == SPARK_STATUS_OK )
@@ -142,6 +183,12 @@ static SparkStatus SparkModelResidentDeploymentParseNode(
 		status = SparkModelResidentDeploymentString(document,object,"transport_host",&node->transport_host);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentString(document,object,"adapter_configuration_path",&node->adapter_configuration_path);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentNullableString(document,object,
+			"kv_backing_directory",&node->kv_backing_directory);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentUnsigned64(document,object,
+			"kv_backing_maximum_bytes",&node->kv_backing_maximum_bytes);
 	endpoint = status == SPARK_STATUS_OK ? SparkModelResidentDeploymentMember(document,object,"control_endpoint") : -1;
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(document,endpoint,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
@@ -157,7 +204,7 @@ static SparkStatus SparkModelResidentDeploymentParseRuntime(
 	memset(limits,0,sizeof(*limits));
 	limits->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	limits->descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
-	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentRuntimeMembers,4u);
+	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentRuntimeMembers,6u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentUnsigned(document,object,"max_inflight_submissions",&limits->max_inflight_submission_count);
 	if ( status == SPARK_STATUS_OK )
@@ -166,6 +213,12 @@ static SparkStatus SparkModelResidentDeploymentParseRuntime(
 		status = SparkModelResidentDeploymentUnsigned(document,object,"max_input_rows",&limits->max_input_row_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentUnsigned(document,object,"resident_sequence_capacity",&limits->resident_sequence_capacity);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentUnsigned(document,object,
+			"kv_logical_page_capacity",&limits->kv_logical_page_capacity);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentUnsigned(document,object,
+			"kv_physical_page_capacity",&limits->kv_physical_page_capacity);
 	return(status);
 }
 
@@ -271,6 +324,16 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 	memset(stages,0,sizeof(stages));
 	if ( deployment->runtime_limits.max_inflight_submission_count == 0u || deployment->runtime_limits.max_inflight_submission_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT || deployment->runtime_limits.max_active_sequence_count == 0u || deployment->runtime_limits.max_active_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || deployment->runtime_limits.max_input_row_count < deployment->runtime_limits.max_active_sequence_count || deployment->runtime_limits.max_input_row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || deployment->runtime_limits.resident_sequence_capacity < deployment->runtime_limits.max_active_sequence_count || deployment->runtime_limits.resident_sequence_capacity > SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (deployment->runtime_limits.kv_logical_page_capacity == 0u) !=
+		(deployment->runtime_limits.kv_physical_page_capacity == 0u) ||
+		(deployment->runtime_limits.kv_physical_page_capacity != 0u &&
+		 (deployment->runtime_limits.kv_physical_page_capacity <
+		  deployment->runtime_limits.max_active_sequence_count ||
+		  deployment->runtime_limits.kv_logical_page_capacity <
+		  deployment->runtime_limits.resident_sequence_capacity ||
+		  deployment->runtime_limits.kv_physical_page_capacity >
+		  deployment->runtime_limits.kv_logical_page_capacity)) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( strcmp(deployment->transport_mode,"host-rdma") != 0 && strcmp(deployment->transport_mode,"gpudirect-rdma") != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( deployment->transport_control_port_base == 0u || deployment->transport_control_port_base > UINT16_MAX - (deployment->node_count - 1u) )
@@ -281,7 +344,7 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 		node = &deployment->nodes[index];
 		if ( node->rank_index >= deployment->node_count || node->stage_index >= deployment->node_count || ranks[node->rank_index] != 0u || stages[node->stage_index] != 0u )
 			return(SPARK_STATUS_SCHEMA_ERROR);
-		if ( !SparkPathIsNormalized(node->runtime_root,true) || SparkModelResidentDeploymentHasText(node->node_target) == 0u || SparkModelResidentDeploymentHasText(node->transport_host) == 0u || !SparkPathIsNormalized(node->adapter_configuration_path,false) || SparkModelResidentEndpointValidate(&node->control_endpoint) != SPARK_STATUS_OK )
+		if ( !SparkPathIsNormalized(node->runtime_root,true) || SparkModelResidentDeploymentHasText(node->node_target) == 0u || SparkModelResidentDeploymentHasText(node->transport_host) == 0u || !SparkPathIsNormalized(node->adapter_configuration_path,false) || (node->kv_backing_directory == 0 && node->kv_backing_maximum_bytes != 0u) || (node->kv_backing_directory != 0 && !SparkPathIsNormalized(node->kv_backing_directory,true)) || SparkModelResidentEndpointValidate(&node->control_endpoint) != SPARK_STATUS_OK )
 			return(SPARK_STATUS_SCHEMA_ERROR);
 		if ( strcmp(node->transport_host,"0.0.0.0") == 0 || strcmp(node->transport_host,"::") == 0 || strcmp(node->transport_host,"*") == 0 )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -323,6 +386,7 @@ void SparkModelResidentDeploymentDestroy(
 		free(deployment->nodes[index].node_target);
 		free(deployment->nodes[index].transport_host);
 		free(deployment->nodes[index].adapter_configuration_path);
+		free(deployment->nodes[index].kv_backing_directory);
 		free((void *)deployment->nodes[index].control_endpoint.unix_socket_path);
 		free((void *)deployment->nodes[index].control_endpoint.tcp_host);
 	}
