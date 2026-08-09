@@ -1,0 +1,11 @@
+{
+  "format": "ds4-eval-api-receipt-integrity-v1",
+  "files": {
+    "REPORT.md": "c670db2d039e5b4737f89cf5fb55450feb07910708c3511168e561c78d23cc57",
+    "summary.json": "b8f460f5d299c8ee59fadaee88de73a39edc9bdeb87f25ab0e0cd483b74ce4fc"
+  },
+  "external_receipt": {
+    "path": "/private/tmp/ds4_api_92_no_thinking_4096_20260808_r2/results.jsonl",
+    "sha256": "51132398130046fc61678c1e15a52f1fd664c62d512dc6a20db4eb94a443ede7"
+  }
+}
