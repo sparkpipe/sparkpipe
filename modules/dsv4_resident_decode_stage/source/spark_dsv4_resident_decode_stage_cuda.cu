@@ -1767,10 +1767,22 @@ static void SparkDsv4ExpertGemmArguments(LmGemmArguments *arguments, const Spark
 	arguments->output_bf16 = output_bf16;
 }
 
+static cudaError_t SparkDsv4LaunchGroupedScalarExpert(cudaStream_t stream, const SparkDsv4LinearView *stacked, const void *input_bf16, const uint32_t *source_row_map, uint32_t source_row_count, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessor_count)
+{
+	uint64_t payload_stride,scale_stride;
+	if ( stacked == 0 || stacked->payload == 0 || (stacked->scale_data == 0) || stacked->weight_format != SPARK_DSV4_STAGEPACK_WEIGHT_FP4_E2M1 || stacked->columns != input_dimension || stacked->rows != SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT * output_dimension )
+		return(cudaErrorInvalidValue);
+	payload_stride = ((uint64_t)output_dimension * input_dimension) / 2u;
+	scale_stride = (uint64_t)output_dimension * (input_dimension / SparkDsv4ExpertWeightFormat::kScaleGroup);
+	return(SparkLmHostLaunchGroupedScalarLinear<SparkDsv4ExpertWeightFormat::kScaleGroup,SPARK_DSV4_MODEL_ACTIVATION_CODEC>(stream,stacked->weight_format,stacked->payload,(const uint8_t *)stacked->scale_data,payload_stride,scale_stride,input_bf16,source_row_map,source_row_count,group_row_offset,group_tile_prefix,output_bf16,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,input_dimension,output_dimension,multiprocessor_count));
+}
+
 extern "C" cudaError_t SparkDsv4LaunchExpertUp(cudaStream_t stream, const SparkDsv4LinearView *stacked, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t multiprocessor_count)
 {
 	LmGemmArguments arguments;
 	int32_t status;
+	if ( rows == 1u )
+		return(SparkDsv4LaunchGroupedScalarExpert(stream,stacked,input_bf16,route_source_token,rows,group_row_offset,group_tile_prefix,output_bf16,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,multiprocessor_count));
 	SparkDsv4ExpertGemmArguments(&arguments,stacked,group_row_offset,group_tile_prefix,output_bf16,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION);
 	arguments.source_row_map = route_source_token;
 	arguments.source_row_count = rows;
@@ -1782,6 +1794,8 @@ extern "C" cudaError_t SparkDsv4LaunchExpertDown(cudaStream_t stream, const Spar
 {
 	LmGemmArguments arguments;
 	int32_t status;
+	if ( rows == 1u )
+		return(SparkDsv4LaunchGroupedScalarExpert(stream,stacked,input_bf16,0,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,group_row_offset,group_tile_prefix,output_bf16,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,multiprocessor_count));
 	SparkDsv4ExpertGemmArguments(&arguments,stacked,group_row_offset,group_tile_prefix,output_bf16,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
 	status = LmGemmWeightOnlyLaunch<SparkDsv4ExpertWeightFormat,SPARK_DSV4_EXPERT_TILE_N,SPARK_DSV4_EXPERT_STAGES,SPARK_DSV4_EXPERT_WARPS,SPARK_DSV4_MODEL_ACTIVATION_CODEC>(&arguments,input_bf16,stacked->payload,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,rows,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,multiprocessor_count,true,stream);
 	return(SparkDsv4GemmStatus("expert_down",status));

@@ -2242,6 +2242,91 @@ static __global__ void SparkLmExpertTileKernel(uint32_t weight_format, const voi
 }
 
 /*
+ * One-row grouped expert tile: the tensor-core path is deliberately M=16,
+ * so a B1 group still pads fifteen rows and performs the same weight tile
+ * work.  This path keeps the route grouping and the device prefix, but makes
+ * one CTA own a complete 128-neuron tile.  It stages the source activation
+ * once, then has its eight warps walk the sixteen scalar neurons in that tile.
+ * The result is exact with the scalar linear arithmetic and avoids reloading
+ * the same activation once per eight-neuron sub-tile.
+ */
+static __device__ __forceinline__ uint32_t SparkLmGroupedScalarGroupOfTile(const uint32_t *group_tile_prefix, uint32_t group_count, uint32_t tile_index)
+{
+	uint32_t low = 0u,high = group_count,middle;
+	while ( low + 1u < high )
+	{
+		middle = (low + high) >> 1u;
+		if ( group_tile_prefix[middle] <= tile_index )
+			low = middle;
+		else
+			high = middle;
+	}
+	return(low);
+}
+
+template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE>
+static __global__ void SparkLmGroupedScalarLinearKernel(uint32_t weight_format, const void *payload_base, const uint8_t *scale_base, uint64_t payload_group_stride_bytes, uint64_t scale_group_stride_bytes, const void *input_bf16, const uint32_t *source_row_map, uint32_t source_row_count, const uint32_t *group_row_offset, const uint32_t *group_tile_prefix, void *output_bf16, uint32_t group_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	extern __shared__ float shared_input[];
+	const uint32_t subtile_count = (SPARK_LM_TILE_N + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS;
+	uint32_t task,group,in_group,neuron_tiles,row_tile,neuron_tile,row_base,row_limit,local_row,row,source_row,element,subtile,neuron,warp,lane;
+	const void *group_payload;
+	const uint8_t *group_scale;
+	float accumulator;
+	for (task = blockIdx.x; task < group_tile_prefix[group_count]; task += gridDim.x)
+	{
+		group = SparkLmGroupedScalarGroupOfTile(group_tile_prefix,group_count,task);
+		in_group = task - group_tile_prefix[group];
+		neuron_tiles = (output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N;
+		row_tile = in_group / neuron_tiles;
+		neuron_tile = in_group % neuron_tiles;
+		row_base = group_row_offset[group] + row_tile * SPARK_LM_TILE;
+		row_limit = group_row_offset[group + 1u];
+		group_payload = (const uint8_t *)payload_base + ((uint64_t)group * payload_group_stride_bytes);
+		group_scale = scale_base != 0 ? scale_base + ((uint64_t)group * scale_group_stride_bytes) : 0;
+		for (local_row = 0u; local_row < SPARK_LM_TILE && row_base + local_row < row_limit; local_row++)
+		{
+			row = row_base + local_row;
+			source_row = source_row_map != 0 ? source_row_map[row] : row;
+			if ( source_row >= source_row_count )
+			{
+				asm volatile("trap;\n");
+				return;
+			}
+			for (element = threadIdx.x; element < input_dimension; element += blockDim.x)
+				shared_input[element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)source_row * input_dimension) + element);
+			__syncthreads();
+			if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 )
+			{
+				LmActivationFp8QdqFloatRow<ACTIVATION_CODEC>(shared_input,input_dimension);
+				__syncthreads();
+			}
+			warp = threadIdx.x / SPARK_LM_WARP_LANES;
+			lane = threadIdx.x % SPARK_LM_WARP_LANES;
+			for (subtile = 0u; subtile < subtile_count; subtile++)
+			{
+				neuron = (neuron_tile * SPARK_LM_TILE_N) + (subtile * SPARK_LM_CTA_WARPS) + warp;
+				if ( neuron < output_dimension )
+				{
+					if ( weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
+						accumulator = SparkLmDotRowBf16(shared_input,group_payload,neuron,input_dimension,lane);
+					else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
+						accumulator = SparkLmDotRowFp8<GROUP_SIZE>(shared_input,group_payload,group_scale,neuron,input_dimension,lane);
+					else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+						accumulator = SparkLmDotRowFp8F32<128u>(shared_input,group_payload,(const float *)group_scale,neuron,input_dimension,lane);
+					else
+						accumulator = SparkLmDotRowMxfp4<GROUP_SIZE>(shared_input,group_payload,group_scale,neuron,input_dimension,lane);
+					accumulator = SparkLmWarpReduceSum(accumulator);
+					if ( lane == 0u )
+						SparkLmFloatToBf16(output_bf16,((uint64_t)row * output_dimension) + neuron,accumulator);
+				}
+			}
+			__syncthreads();
+		}
+	}
+}
+
+/*
  * All-expert tile: gridDim.z spans the routed expert table, the group
  * offsets live on DEVICE, and empty or out-of-range tiles exit in a few
  * cycles - the whole routed w1/w3/w2 phase becomes ONE launch with no
@@ -2462,20 +2547,52 @@ static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmax(cudaStream_t strea
 	grouped_rows = grouped_rows > SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX ? SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX : grouped_rows;
 	grouped_rows = grouped_rows > row_count ? row_count : grouped_rows;
 
-    SparkLmExpertTileKernel<SPARK_LM_HEAD_SHADOW_GROUP><<<
-        tile_grid,
-        SPARK_LM_CTA_THREADS,
-        0u,
-        stream>>>(
-            SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,
-            shadow_payload,
-            shadow_scale,
-            hidden_bf16,
-            0,
-            logits_bf16,
-            row_count,
-            hidden_dimension,
-            candidate_count);
+	/*
+	 * A 16-row tensor tile wastes fifteen rows for B1.  The wasted WMMA
+	 * arithmetic is especially expensive for the full vocabulary head: the
+	 * shadow projection has 129K output rows, so the tiny-batch path should
+	 * use the scalar one-warp-per-neuron launcher already used by dense
+	 * projections.  It reads each shadow row once and keeps the exact screen
+	 * and rescore stages unchanged.  The tile path remains the batched path.
+	 */
+	if ( row_count < SPARK_LM_TILE )
+	{
+		dim3 shadow_grid(
+			row_count,
+			(candidate_count + SPARK_LM_CTA_WARPS - 1u) /
+			SPARK_LM_CTA_WARPS);
+		uint32_t shadow_shared_bytes = hidden_dimension * (uint32_t)sizeof(float);
+		SparkLmLinearKernel<SPARK_LM_HEAD_SHADOW_GROUP><<<
+			shadow_grid,
+			SPARK_LM_CTA_THREADS,
+			shadow_shared_bytes,
+			stream>>>(
+			SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,
+			shadow_payload,
+			shadow_scale,
+			hidden_bf16,
+			logits_bf16,
+			row_count,
+			hidden_dimension,
+			candidate_count);
+	}
+	else
+	{
+		SparkLmExpertTileKernel<SPARK_LM_HEAD_SHADOW_GROUP><<<
+			tile_grid,
+			SPARK_LM_CTA_THREADS,
+			0u,
+			stream>>>(
+				SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,
+				shadow_payload,
+				shadow_scale,
+				hidden_bf16,
+				0,
+				logits_bf16,
+				row_count,
+				hidden_dimension,
+				candidate_count);
+	}
     SparkLmHeadScreenKernel<<<row_count, SPARK_LM_CTA_THREADS, 0u, stream>>>(
         hidden_bf16,
         logits_bf16,
@@ -2568,6 +2685,30 @@ static inline cudaError_t SparkLmValidateLinearContract(uint32_t weight_format, 
 		return(cudaErrorInvalidValue);
 	}
 	return(cudaSuccess);
+}
+
+template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE>
+static inline cudaError_t SparkLmHostLaunchGroupedScalarLinear(cudaStream_t stream, uint32_t weight_format, const void *payload_base, const uint8_t *scale_base, uint64_t payload_group_stride_bytes, uint64_t scale_group_stride_bytes, const void *input_bf16, const uint32_t *source_row_map, uint32_t source_row_count, const uint32_t *group_row_offset, const uint32_t *group_tile_prefix, void *output_bf16, uint32_t group_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessor_count)
+{
+	uint32_t block_count,neuron_tiles;
+	size_t shared_bytes;
+	if ( payload_base == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || source_row_count == 0u || group_count == 0u || input_dimension == 0u || output_dimension == 0u || multiprocessor_count == 0u || payload_group_stride_bytes == 0u || (source_row_map == 0 && source_row_count == 0u) )
+		return(cudaErrorInvalidValue);
+	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+		return(cudaErrorInvalidValue);
+	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && (scale_base == 0 || scale_group_stride_bytes == 0u) )
+		return(cudaErrorInvalidValue);
+	if ( SparkActivationCodecIsKnown(ACTIVATION_CODEC) == 0u || (ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE && (input_dimension % SparkActivationCodecGroupSize(ACTIVATION_CODEC)) != 0u) )
+		return(cudaErrorInvalidValue);
+	neuron_tiles = (output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N;
+	if ( neuron_tiles == 0u )
+		return(cudaErrorInvalidValue);
+	block_count = multiprocessor_count * 2u;
+	if ( block_count == 0u )
+		block_count = 1u;
+	shared_bytes = (size_t)input_dimension * sizeof(float);
+	SparkLmGroupedScalarLinearKernel<GROUP_SIZE,ACTIVATION_CODEC><<<block_count,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,payload_base,scale_base,payload_group_stride_bytes,scale_group_stride_bytes,input_bf16,source_row_map,source_row_count,group_row_offset,group_tile_prefix,output_bf16,group_count,input_dimension,output_dimension);
+	return(cudaGetLastError());
 }
 
 // The tile also REQUIRES input_dimension to be a multiple of the K tile. Its
