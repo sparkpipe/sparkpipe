@@ -348,6 +348,130 @@ static SparkStatus SparkTpCollectiveReceiveAllUntil(
     return SPARK_STATUS_OK;
 }
 
+/*
+ * Exchange both directions while the socket is full duplex.  The previous
+ * send-then-receive ordering made one rank wait for the peer to finish its
+ * receive before it could send its own payload.  That is harmless for the
+ * small protocol headers, but it serialises the two wire directions for
+ * every all-reduce step and can fill a TCP send buffer for a larger batch.
+ * Keeping one progress loop for the two directions preserves the exact
+ * operation ordering while allowing the fabric and the peer to drain both
+ * directions at once.
+ */
+static SparkStatus SparkTpCollectiveExchangeDuplex(
+    int32_t socket_descriptor,
+    const void *send_data,
+    uint64_t send_bytes,
+    void *receive_data,
+    uint64_t receive_bytes,
+    uint64_t deadline_milli)
+{
+    const uint8_t *source_bytes;
+    uint8_t *destination_bytes;
+    uint64_t sent_bytes;
+    uint64_t received_bytes;
+
+    if (socket_descriptor < 0 ||
+        (send_data == NULL && send_bytes != 0u) ||
+        (receive_data == NULL && receive_bytes != 0u))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    source_bytes = (const uint8_t *)send_data;
+    destination_bytes = (uint8_t *)receive_data;
+    sent_bytes = 0u;
+    received_bytes = 0u;
+    while (sent_bytes < send_bytes || received_bytes < receive_bytes)
+    {
+        uint64_t remaining_bytes;
+        size_t transfer_bytes;
+        ssize_t transfer_result;
+        short requested_events;
+        short returned_events;
+        uint32_t made_progress;
+        int send_flags;
+
+        made_progress = 0u;
+        if (sent_bytes < send_bytes)
+        {
+            remaining_bytes = send_bytes - sent_bytes;
+            transfer_bytes = (size_t)((remaining_bytes >
+                SPARK_TP_COLLECTIVE_IO_CHUNK_BYTES) ?
+                SPARK_TP_COLLECTIVE_IO_CHUNK_BYTES : remaining_bytes);
+#ifdef MSG_NOSIGNAL
+            send_flags = MSG_NOSIGNAL;
+#else
+            send_flags = 0;
+#endif
+            transfer_result = send(
+                socket_descriptor,
+                source_bytes + (size_t)sent_bytes,
+                transfer_bytes,
+                send_flags);
+            if (transfer_result > 0)
+            {
+                sent_bytes += (uint64_t)transfer_result;
+                made_progress = 1u;
+            }
+            else if (transfer_result == 0 ||
+                (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK))
+            {
+                return SPARK_STATUS_IO_ERROR;
+            }
+        }
+
+        if (received_bytes < receive_bytes)
+        {
+            remaining_bytes = receive_bytes - received_bytes;
+            transfer_bytes = (size_t)((remaining_bytes >
+                SPARK_TP_COLLECTIVE_IO_CHUNK_BYTES) ?
+                SPARK_TP_COLLECTIVE_IO_CHUNK_BYTES : remaining_bytes);
+            transfer_result = recv(
+                socket_descriptor,
+                destination_bytes + (size_t)received_bytes,
+                transfer_bytes,
+                0);
+            if (transfer_result > 0)
+            {
+                received_bytes += (uint64_t)transfer_result;
+                made_progress = 1u;
+            }
+            else if (transfer_result == 0 ||
+                (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK))
+            {
+                return SPARK_STATUS_IO_ERROR;
+            }
+        }
+
+        if (made_progress != 0u)
+        {
+            continue;
+        }
+
+        requested_events = 0;
+        if (sent_bytes < send_bytes)
+        {
+            requested_events |= POLLOUT;
+        }
+        if (received_bytes < receive_bytes)
+        {
+            requested_events |= POLLIN;
+        }
+        if (SparkTpCollectivePollSocket(
+                socket_descriptor,
+                requested_events,
+                deadline_milli,
+                &returned_events) != SPARK_STATUS_OK ||
+            (returned_events & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+        {
+            return SPARK_STATUS_IO_ERROR;
+        }
+    }
+
+    return SPARK_STATUS_OK;
+}
+
 static void SparkTpCollectiveReset(SparkTpCollective *collective)
 {
     uint32_t step_index;
@@ -1359,38 +1483,13 @@ static SparkStatus SparkTpCollectiveAllReduceSum(
             return SparkTpCollectiveFail(collective, status);
         }
 
-        if (collective->tp_rank < partner_rank)
-        {
-            status = SparkTpCollectiveSendAllUntil(
-                step_socket,
-                values,
-                buffer_bytes,
-                deadline_milli);
-            if (status == SPARK_STATUS_OK)
-            {
-                status = SparkTpCollectiveReceiveAllUntil(
-                    step_socket,
-                    scratch,
-                    buffer_bytes,
-                    deadline_milli);
-            }
-        }
-        else
-        {
-            status = SparkTpCollectiveReceiveAllUntil(
-                step_socket,
-                scratch,
-                buffer_bytes,
-                deadline_milli);
-            if (status == SPARK_STATUS_OK)
-            {
-                status = SparkTpCollectiveSendAllUntil(
-                    step_socket,
-                    values,
-                    buffer_bytes,
-                    deadline_milli);
-            }
-        }
+        status = SparkTpCollectiveExchangeDuplex(
+            step_socket,
+            values,
+            buffer_bytes,
+            scratch,
+            buffer_bytes,
+            deadline_milli);
 
         if (status != SPARK_STATUS_OK)
         {
