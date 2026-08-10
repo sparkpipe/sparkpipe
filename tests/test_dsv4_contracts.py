@@ -42,6 +42,20 @@ def main() -> int:
     header = (ROOT / "model-families" / "dsv4" / "include" / "sparkpipe" /
               "spark_dsv4_model.h").read_text(encoding="utf-8")
     assert "SparkDsv4ModelCompressionRatios[43u]" in header
+    description = json.loads(
+        (ROOT / "examples" / "model_descriptions" /
+         "dsv4_resident_decode_stage_firmware.json").read_text(encoding="utf-8")
+    )
+    scheduling = description["stages"][0]["programs"][0]["scheduling"]
+    assert scheduling["max_active_slots"] == 1024
+    assert scheduling["max_resident_sequences"] == 16384
+    deployment = json.loads(
+        (ROOT / "examples" / "deployments" /
+         "dsv4_flash_pp13_host_rdma.spec.json").read_text(encoding="utf-8")
+    )
+    limits = deployment["runtime_limits"]
+    assert scheduling["max_active_slots"] >= limits["max_active_sequences"]
+    assert scheduling["max_resident_sequences"] >= limits["resident_sequence_capacity"]
     assert pro["attention"]["compression_ratios"][-1] == 0
     assert flash["qualification"]["cuda_target"] == "sm_121a"
     assert pro["qualification"]["cuda_target"] == "sm_121a"
