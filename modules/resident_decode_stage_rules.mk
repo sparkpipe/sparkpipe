@@ -37,7 +37,7 @@ CUDA_HOME ?= /usr/local/cuda
 CUDA_ARCH ?= sm_121a
 CUDA_COMPUTE_ARCH ?= $(subst sm_,compute_,$(CUDA_ARCH))
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3
-MODULE_POSIX_FLAGS := -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
+MODULE_POSIX_FLAGS := -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
 NVCCFLAGS ?= -std=c++17 -O3 --expt-relaxed-constexpr -lineinfo -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
 MODULE_LIBRARY_ROOT ?= $(REPOSITORY_ROOT)/build/module_library
 GPU_VALIDATOR ?=

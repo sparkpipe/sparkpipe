@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 

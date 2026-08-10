@@ -65,6 +65,13 @@ def main() -> int:
             "REPOSITORY_ROOT := $(abspath" not in text,
             f"{makefile.relative_to(ROOT)} embeds a space-unsafe target root",
         )
+    module_rules = (ROOT / "modules/resident_decode_stage_rules.mk").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "MODULE_POSIX_FLAGS := -D_GNU_SOURCE" in module_rules,
+        "forced model headers hide GNU production APIs from module sources",
+    )
 
     sources = (ROOT / "sources.mk").read_text(encoding="utf-8")
     common = sources.split("SPARKPIPE_MODEL_COMMON_SOURCES :=", 1)[1].split(

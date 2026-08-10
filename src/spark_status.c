@@ -80,6 +80,10 @@ const char *SparkStatusToString(SparkStatus status)
         {
             return "pending";
         }
+        case SPARK_STATUS_UNSUPPORTED:
+        {
+            return "unsupported";
+        }
         default:
         {
             return "unknown_status";

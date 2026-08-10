@@ -4,6 +4,7 @@ AR ?= ar
 NVCC ?= nvcc
 CUDA_HOME ?= /usr/local/cuda
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3 -g -pthread
+CFLAGS += -D_GNU_SOURCE
 CXXFLAGS ?= -std=c++20 -Wall -Wextra -Werror -O3 -g -pthread
 CORE_INCLUDE_FLAGS := -I. -Iinclude -Isrc
 # stage_module_common.c reaches <cuda_runtime.h> through spark_stage_module_common.h.
@@ -154,6 +155,7 @@ TOOL_NAMES := \
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
 TEST_NAMES := \
+	test_status \
     test_gemm_descriptor_cache \
     test_launch \
     test_arena \
@@ -591,6 +593,9 @@ $(TEST_VALIDATOR_CHANGED): tests/fixtures/module_validator.c | build
 
 build/test_arena: tests/test_arena.c runtime/arena.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_arena.c $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_status: tests/test_status.c $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_status.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_work_transaction: tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
