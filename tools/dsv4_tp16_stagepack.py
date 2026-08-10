@@ -49,6 +49,7 @@ KIND_EXPERTS_W3 = 21
 KIND_SHARED_W1 = 22
 KIND_SHARED_W2 = 23
 KIND_SHARED_W3 = 24
+KIND_EMBEDDING = 35
 KIND_FINAL_NORM = 36
 KIND_LM_HEAD = 37
 KIND_HC_HEAD_FN = 38
@@ -142,10 +143,12 @@ def shard_shape(kind: int, rank: int, rows: int, columns: int) -> Tuple[List[int
 
 
 def selected_global(kind: int, rank: int) -> bool:
-    if rank == TP_DEGREE - 1:
-        return True
-    return kind not in (KIND_FINAL_NORM, KIND_LM_HEAD, KIND_HC_HEAD_FN,
-                        KIND_HC_HEAD_BASE, KIND_HC_HEAD_SCALE)
+    if kind == KIND_EMBEDDING:  # embedding is owned by TP rank zero
+        return rank == 0
+    if kind in (KIND_FINAL_NORM, KIND_LM_HEAD, KIND_HC_HEAD_FN,
+                KIND_HC_HEAD_BASE, KIND_HC_HEAD_SCALE):
+        return rank == TP_DEGREE - 1
+    return True
 
 
 def sha256_file(path: Path) -> str:

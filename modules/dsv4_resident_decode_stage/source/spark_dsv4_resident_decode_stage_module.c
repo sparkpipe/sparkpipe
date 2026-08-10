@@ -795,6 +795,12 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 	if ( status == SPARK_STATUS_OK )
 	{
 		SparkDsv4StagePackExpectedGeometry(&expected,state->first_layer_index,state->layer_count);
+		if ( state->tp_degree == SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE )
+			expected.tensor_count = SparkDsv4StagePackExpectedTensorCountForOwnership(
+				state->first_layer_index,
+				state->layer_count,
+				state->owns_embedding,
+				state->owns_final_head);
 		compare = SparkDsv4StagePackCompareGeometry(&header,&expected);
 		if ( compare != 0 )
 		{

@@ -326,20 +326,33 @@ static inline uint32_t SparkDsv4StagePackLayerTensorCount(uint32_t layer_index)
 	return(tensors);
 }
 
-static inline uint32_t SparkDsv4StagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
+static inline uint32_t SparkDsv4StagePackExpectedTensorCountForOwnership(
+	uint32_t first_layer_index,
+	uint32_t layer_count,
+	uint32_t include_embedding,
+	uint32_t include_final_globals)
 {
 	uint32_t layer,tensors = 0u;
 	for (layer = first_layer_index; layer < first_layer_index + layer_count; layer++)
 		tensors += SparkDsv4StagePackLayerTensorCount(layer);
-	if ( first_layer_index == 0u )
+	if ( include_embedding != 0u )
 		tensors += 1u;
-	if ( first_layer_index + layer_count == SPARK_DSV4_MODEL_LAYER_COUNT )
+	if ( include_final_globals != 0u )
 	{
 		tensors += 5u;
 		if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
-			tensors += 8u + SparkDsv4StagePackLayerTensorCount(SPARK_DSV4_STAGEPACK_MTP_LAYER) + (first_layer_index != 0u ? 1u : 0u);
+			tensors += 8u + SparkDsv4StagePackLayerTensorCount(SPARK_DSV4_STAGEPACK_MTP_LAYER) + (include_embedding == 0u ? 1u : 0u);
 	}
 	return(tensors);
+}
+
+static inline uint32_t SparkDsv4StagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
+{
+	return(SparkDsv4StagePackExpectedTensorCountForOwnership(
+		first_layer_index,
+		layer_count,
+		first_layer_index == 0u ? 1u : 0u,
+		first_layer_index + layer_count == SPARK_DSV4_MODEL_LAYER_COUNT ? 1u : 0u));
 }
 
 static inline void SparkDsv4StagePackExpectedGeometry(SparkDsv4StagePackHeader *header, uint32_t first_layer_index, uint32_t layer_count)
