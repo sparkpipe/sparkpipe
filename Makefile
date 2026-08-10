@@ -4,6 +4,7 @@ AR ?= ar
 NVCC ?= nvcc
 CUDA_HOME ?= /usr/local/cuda
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3 -g -pthread
+CFLAGS += -D_GNU_SOURCE
 CXXFLAGS ?= -std=c++20 -Wall -Wextra -Werror -O3 -g -pthread
 CORE_INCLUDE_FLAGS := -I. -Iinclude -Isrc
 # stage_module_common.c reaches <cuda_runtime.h> through spark_stage_module_common.h.
