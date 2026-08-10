@@ -19,6 +19,7 @@ REQUIRED_RELEASE_FILES = {
     "lib/hidden_transport.so",
     "config/model_resident.json",
 }
+MODEL_RESIDENT_CONFIGURATION = "config/model_resident.json"
 
 
 def load_node_layout():
@@ -46,6 +47,25 @@ def apply_node_layout(manifest,dataset):
     manifest["install_root"] = sparkdata + "/" + dataset
     manifest["state_root"] = (
         sparkdata + "/.layout/sparkpipe_state/" + dataset)
+
+
+def apply_deployment_contract(root,manifest):
+    path = os.path.join(root,MODEL_RESIDENT_CONFIGURATION)
+    try:
+        with open(path,"r",encoding="utf-8") as source:
+            deployment = json.load(source)
+    except (OSError,json.JSONDecodeError) as error:
+        raise SystemExit("packaged model_resident deployment is invalid") from error
+    limits = deployment.get("runtime_limits")
+    nodes = deployment.get("nodes")
+    max_active = limits.get("max_active_sequences") if isinstance(limits,dict) else None
+    if (not isinstance(max_active,int) or isinstance(max_active,bool)
+            or max_active < 1 or max_active > 0xffffffff):
+        raise SystemExit("packaged deployment max_active_sequences is invalid")
+    if not isinstance(nodes,list) or len(nodes) < 1 or len(nodes) > 0xffffffff:
+        raise SystemExit("packaged deployment nodes are invalid")
+    manifest["max_active_sequence_count"] = max_active
+    manifest["rank_count"] = len(nodes)
 
 
 def sha256(path):
@@ -223,6 +243,7 @@ def main():
         validate_template(manifest)
         apply_node_layout(manifest,arguments.install_dataset)
         apply_replacements(temporary,manifest,arguments.replace)
+        apply_deployment_contract(temporary,manifest)
         manifest["release_id"] = arguments.release_id
         manifest["git_commit"] = arguments.git_commit
         manifest["generation"] = int(

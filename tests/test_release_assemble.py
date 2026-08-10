@@ -31,7 +31,13 @@ def make_template(root,roles=None):
     for relative in REQUIRED_FILES:
         path = template / relative
         path.parent.mkdir(parents=True,exist_ok=True)
-        path.write_bytes(("old:" + relative).encode())
+        if relative == "config/model_resident.json":
+            path.write_text(json.dumps({
+                "runtime_limits": {"max_active_sequences": 1024},
+                "nodes": [{"rank_index": index} for index in range(13)],
+            }),encoding="utf-8")
+        else:
+            path.write_bytes(("old:" + relative).encode())
     manifest = {
         "schema_version": 1,
         "release_id": "old",
@@ -39,7 +45,7 @@ def make_template(root,roles=None):
         "git_commit": "0" * 40,
         "install_root": "/home/{host}/sparkpipe_runtime",
         "state_root": "/home/{host}/sparkpipe_state",
-        "rank_count": 13,
+        "rank_count": 1,
         "max_active_sequence_count": 128,
         "poll_interval_ms": 1000,
         "stop_grace_ms": 5000,
@@ -99,6 +105,8 @@ def main():
         assert result["state_root"] == (
             "/home/{host}/sparkdata/.layout/sparkpipe_state/"
             "dsv4_flash.fp8.pp13")
+        assert result["max_active_sequence_count"] == 1024
+        assert result["rank_count"] == 13
         assert result["generation"] > 20260000000000
         assert len(result["roles"]) == 1
         role = result["roles"][0]
@@ -133,6 +141,24 @@ def main():
         assert duplicate.returncode != 0
         assert "replacement occurs more than once" in duplicate.stderr
         assert list(root.glob("duplicate.assembling.*")) == []
+
+        invalid_deployment = root / "invalid-model-resident.json"
+        invalid_deployment.write_text(
+            json.dumps({"runtime_limits":{"max_active_sequences":0},"nodes":[]}),
+            encoding="utf-8")
+        invalid = run_tool(
+            tool,
+            "--template",str(template),
+            "--output",str(root / "invalid-deployment"),
+            "--release-id","invalid-deployment",
+            "--git-commit",COMMIT,
+            "--install-dataset","dsv4_flash.fp8.pp13",
+            "--replace","config/model_resident.json=" + str(invalid_deployment),
+            check=False,
+        )
+        assert invalid.returncode != 0
+        assert "max_active_sequences is invalid" in invalid.stderr
+        assert list(root.glob("invalid-deployment.assembling.*")) == []
 
         bad_commit = run_tool(
             tool,
