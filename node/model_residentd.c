@@ -1700,6 +1700,8 @@ static SparkStatus SparkModelResidentdSubmitAdapter(
 	route->adapter_submit_time_ns = SparkModelResidentdMonotonicTimeNs();
 	pthread_mutex_unlock(&runtime->mutex);
 	status = runtime->adapter_library.adapter_interface.submit(runtime->adapter_state,&route->submission);
+	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
+		fprintf(stderr,"model_residentd adapter_submit status=%s rank=%u stage=%u submission=%llu kind=%u rows=%u lanes=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(unsigned long long)route->submission.submission_id,route->submission.work_kind,route->submission.row_count,route->submission.active_sequence_count);
 	pthread_mutex_lock(&runtime->mutex);
 	state = route->state;
 	result = SPARK_STATUS_OK;
@@ -1822,20 +1824,36 @@ static SparkStatus SparkModelResidentdProgress(SparkModelResidentdRuntime *runti
 		status = SPARK_STATUS_OK;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressRoutes(runtime,0u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=routes-pre status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->input_transport,1u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=input-transport-pre status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->output_transport,0u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=output-transport-pre status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressRoutes(runtime,0u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=routes-mid status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressRoutes(runtime,1u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=routes-adapter status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->input_transport,1u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=input-transport-post status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->output_transport,0u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=output-transport-post status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressRoutes(runtime,0u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=routes-final status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	return(status);
 }
 
