@@ -38,10 +38,10 @@
       "sparkc"
     ],
     "stage_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-    "runtime_root_template": "/home/{host}/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+    "runtime_dataset": "qwen3.6_27b.bf16.pp13",
     "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
     "adapter_configuration_path_template": "config/qwen36_flash_stage.json",
-    "kv_backing_directory_template": null,
+    "kv_backing_dataset": null,
     "kv_backing_maximum_bytes": 0,
     "control_endpoint": {
       "kind": "tcp",

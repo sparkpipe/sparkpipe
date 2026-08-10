@@ -82,7 +82,7 @@ On an SM121 Spark, rebuild the CUDA module with the normal production archives. 
 
 ```sh
 --max-active 1024 \
---kv-nvme-path /fast-local-nvme/kv_rankN.cache \
+--kv-nvme-path /home/sparkN/kvcache/glm52/pp13.bf16/kv_rankN.cache \
 --kv-nvme-blocks 1048576 \
 --kv-nvme-batch-blocks 32
 ```

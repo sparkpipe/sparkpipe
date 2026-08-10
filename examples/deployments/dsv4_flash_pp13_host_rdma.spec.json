@@ -38,11 +38,11 @@
       "sparkc"
     ],
     "stage_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-    "runtime_root_template": "/home/{host}/sparkpipe_runtime",
+    "runtime_dataset": "dsv4_flash.fp8.pp13",
     "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
     "adapter_configuration_path_template": "config/dsv4_flash_stage.json",
-    "kv_backing_directory_template": "/fast-local-nvme/sparkpipe-kv",
-    "kv_backing_maximum_bytes": 0,
+    "kv_backing_dataset": "dsv4_flash/pp13.bf16",
+    "kv_backing_maximum_bytes": 274877906944,
     "control_endpoint": {
       "kind": "tcp",
       "host_template": "{host}",

@@ -408,8 +408,6 @@ void SparkReleaseManifestInitialize(SparkReleaseManifest *manifest)
     manifest->rank_count = 13u;
     manifest->poll_interval_ms = SPARK_RELEASE_DEFAULT_POLL_INTERVAL_MS;
     manifest->stop_grace_ms = SPARK_RELEASE_DEFAULT_STOP_GRACE_MS;
-    SparkReleaseCopyStringField(manifest->install_root,sizeof(manifest->install_root),"/home/{host}/sparkpipe_runtime");
-    SparkReleaseCopyStringField(manifest->state_root,sizeof(manifest->state_root),"/home/{host}/sparkpipe_state");
 }
 
 void SparkReleaseNodeIdentityInitialize(SparkReleaseNodeIdentity *identity)
@@ -477,9 +475,15 @@ SparkStatus SparkReleaseManifestParseText(
     if (status != SPARK_STATUS_OK) goto cleanup;
     status = SparkReleaseCopyOptionalJsonString(&document,root_token_index,"git_commit",manifest->git_commit,sizeof(manifest->git_commit),"");
     if (status != SPARK_STATUS_OK) goto cleanup;
-    status = SparkReleaseCopyOptionalJsonString(&document,root_token_index,"install_root",manifest->install_root,sizeof(manifest->install_root),manifest->install_root);
+    token_index = SparkJsonFindObjectMember(&document,root_token_index,
+        "install_root");
+    status = SparkReleaseCopyJsonString(&document,token_index,
+        manifest->install_root,sizeof(manifest->install_root));
     if (status != SPARK_STATUS_OK) goto cleanup;
-    status = SparkReleaseCopyOptionalJsonString(&document,root_token_index,"state_root",manifest->state_root,sizeof(manifest->state_root),manifest->state_root);
+    token_index = SparkJsonFindObjectMember(&document,root_token_index,
+        "state_root");
+    status = SparkReleaseCopyJsonString(&document,token_index,
+        manifest->state_root,sizeof(manifest->state_root));
     if (status != SPARK_STATUS_OK) goto cleanup;
     status = SparkReleaseGetOptionalU32(&document,root_token_index,"rank_count",13u,&manifest->rank_count);
     if (status != SPARK_STATUS_OK) goto cleanup;
@@ -1133,8 +1137,8 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "  \"generation\": 1,\n"
         "  \"release_id\": \"model-resident-production-001\",\n"
         "  \"git_commit\": \"replace-with-main-hash\",\n"
-        "  \"install_root\": \"/home/{host}/sparkpipe_runtime\",\n"
-        "  \"state_root\": \"/home/{host}/sparkpipe_state\",\n"
+        "  \"install_root\": \"/home/{host}/sparkdata/example.pp13\",\n"
+        "  \"state_root\": \"/home/{host}/sparkdata/.layout/sparkpipe_state/example.pp13\",\n"
         "  \"rank_count\": 13,\n"
         "  \"max_active_sequence_count\": 512,\n"
         "  \"poll_interval_ms\": 1000,\n"

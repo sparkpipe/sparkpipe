@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_release.h"
@@ -191,10 +192,10 @@ static void SparkTestReleaseExampleResidentDeployment(void)
         &manifest,&identity,"model_resident",&role) == SPARK_STATUS_OK);
     assert(SparkReleaseResolveRole(&manifest,&identity,role,&resolved_role) == SPARK_STATUS_OK);
     assert(strstr(resolved_role.command,
-        "/home/spark8/sparkpipe_runtime/bin/sparkpipe_model_residentd") != 0);
+        "/home/spark8/sparkdata/example.pp13/bin/sparkpipe_model_residentd") != 0);
     assert(strstr(SparkTestReleaseArgumentValue(
         &resolved_role,"--deployment"),
-        "/home/spark8/sparkpipe_runtime/config/model_resident.json") != 0);
+        "/home/spark8/sparkdata/example.pp13/config/model_resident.json") != 0);
     assert(strcmp(SparkTestReleaseArgumentValue(
         &resolved_role,"--rank-index"),"8") == 0);
     SparkReleaseNodeIdentityInitialize(&identity);
@@ -206,9 +207,22 @@ static void SparkTestReleaseExampleResidentDeployment(void)
         &manifest,&identity,"model_resident",&role) == SPARK_STATUS_OK);
 }
 
+static void SparkTestReleaseRejectsSymlinkDirectories(void)
+{
+    assert(SparkRemoveDirectoryTree(SPARK_TEST_RELEASE_ROOT) == SPARK_STATUS_OK);
+    assert(SparkCreateDirectories(SPARK_TEST_RELEASE_ROOT "/real") ==
+        SPARK_STATUS_OK);
+    assert(SparkPathIsRealDirectoryTree(SPARK_TEST_RELEASE_ROOT "/real"));
+    assert(symlink("real",SPARK_TEST_RELEASE_ROOT "/link") == 0);
+    assert(!SparkPathIsRealDirectoryTree(SPARK_TEST_RELEASE_ROOT "/link"));
+    assert(SparkCreateDirectories(SPARK_TEST_RELEASE_ROOT "/link/child") ==
+        SPARK_STATUS_IO_ERROR);
+}
+
 int main(void)
 {
     SparkTestReleaseParseResolveAndSync();
     SparkTestReleaseExampleResidentDeployment();
+    SparkTestReleaseRejectsSymlinkDirectories();
     return 0;
 }

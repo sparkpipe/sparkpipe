@@ -25,7 +25,7 @@
     {
       "rank_index": 0,
       "stage_index": 0,
-      "runtime_root": "/home/spark0/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/spark0/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "spark0",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -40,7 +40,7 @@
     {
       "rank_index": 1,
       "stage_index": 1,
-      "runtime_root": "/home/spark1/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/spark1/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "spark1",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -55,7 +55,7 @@
     {
       "rank_index": 2,
       "stage_index": 2,
-      "runtime_root": "/home/spark2/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/spark2/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "spark2",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -70,7 +70,7 @@
     {
       "rank_index": 3,
       "stage_index": 3,
-      "runtime_root": "/home/spark3/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/spark3/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "spark3",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -85,7 +85,7 @@
     {
       "rank_index": 4,
       "stage_index": 4,
-      "runtime_root": "/home/spark4/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/spark4/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "spark4",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -100,7 +100,7 @@
     {
       "rank_index": 5,
       "stage_index": 5,
-      "runtime_root": "/home/spark5/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/spark5/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "spark5",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -115,7 +115,7 @@
     {
       "rank_index": 6,
       "stage_index": 6,
-      "runtime_root": "/home/spark6/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/spark6/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "spark6",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -130,7 +130,7 @@
     {
       "rank_index": 7,
       "stage_index": 7,
-      "runtime_root": "/home/spark7/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/spark7/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "spark7",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -145,7 +145,7 @@
     {
       "rank_index": 8,
       "stage_index": 8,
-      "runtime_root": "/home/spark8/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/spark8/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "spark8",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -160,7 +160,7 @@
     {
       "rank_index": 9,
       "stage_index": 9,
-      "runtime_root": "/home/spark9/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/spark9/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "spark9",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -175,7 +175,7 @@
     {
       "rank_index": 10,
       "stage_index": 10,
-      "runtime_root": "/home/sparka/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/sparka/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "sparka",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -190,7 +190,7 @@
     {
       "rank_index": 11,
       "stage_index": 11,
-      "runtime_root": "/home/sparkb/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/sparkb/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "sparkb",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
@@ -205,7 +205,7 @@
     {
       "rank_index": 12,
       "stage_index": 12,
-      "runtime_root": "/home/sparkc/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
+      "runtime_root": "/home/sparkc/sparkdata/qwen3.6_27b.bf16.pp13",
       "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
       "transport_host": "sparkc",
       "adapter_configuration_path": "config/qwen36_flash_stage.json",
