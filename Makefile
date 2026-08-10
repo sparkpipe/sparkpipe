@@ -154,6 +154,7 @@ TOOL_NAMES := \
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
 TEST_NAMES := \
+	test_status \
     test_gemm_descriptor_cache \
     test_launch \
     test_arena \
@@ -591,6 +592,9 @@ $(TEST_VALIDATOR_CHANGED): tests/fixtures/module_validator.c | build
 
 build/test_arena: tests/test_arena.c runtime/arena.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_arena.c $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_status: tests/test_status.c $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_status.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_work_transaction: tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

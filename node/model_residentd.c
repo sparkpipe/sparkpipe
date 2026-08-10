@@ -199,6 +199,7 @@ typedef struct SparkModelResidentdRuntime
 	uint32_t failed_route_state;
 	uint32_t failed_work_kind;
 	uint64_t failed_submission_id;
+	const char *initialize_phase;
 	atomic_uint failed_status;
 	pthread_mutex_t mutex;
 } SparkModelResidentdRuntime;
@@ -965,6 +966,85 @@ static SparkStatus SparkModelResidentdBuildRankPlan(
 	return(SparkPipelineRuntimeBuildLinearRankPlan(runtime->adapter_library.adapter_interface.descriptor,&linear_node,runtime->runtime_limits.max_active_sequence_count,runtime->runtime_limits.max_input_row_count,transport_capabilities,configuration->port_base,transport_module_id,&runtime->rank_plan));
 }
 
+static SparkStatus SparkModelResidentdInitializePlan(
+	SparkModelResidentdRuntime *runtime,
+	const SparkModelResidentdConfiguration *configuration,
+	uint32_t *transport_capabilities,
+	const char **transport_module_id,
+	SparkModelResidentdMemoryMode *memory_mode)
+{
+	SparkStatus status;
+	runtime->initialize_phase = "adapter_load";
+	status = SparkModelServingAdapterLoadInterfaceFromSharedObject(configuration->adapter_path,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&runtime->adapter_library);
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "deployment_validation";
+		status = SparkModelResidentDeploymentValidateForAdapter(configuration->deployment,runtime->adapter_library.adapter_interface.descriptor);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "runtime_limits";
+		status = SparkModelResidentdInitializeLimits(runtime,configuration);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "transport_contract";
+		status = SparkModelResidentdTransportContract(configuration->transport_mode,transport_capabilities,transport_module_id,memory_mode);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "rank_plan";
+		status = SparkModelResidentdBuildRankPlan(runtime,configuration,*transport_capabilities,*transport_module_id);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "transport_load";
+		status = SparkHiddenTransportLoadInterfaceFromSharedObject(configuration->transport_path,*transport_capabilities,&runtime->transport_library);
+	}
+	return(status);
+}
+
+static SparkStatus SparkModelResidentdInitializeResources(
+	SparkModelResidentdRuntime *runtime,
+	const SparkModelResidentdConfiguration *configuration,
+	uint32_t transport_capabilities,
+	SparkModelResidentdMemoryMode memory_mode)
+{
+	SparkStatus status;
+	status = SPARK_STATUS_OK;
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "transport_open";
+		status = SparkModelResidentdOpenTransports(runtime,transport_capabilities);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "host_storage";
+		status = SparkModelResidentdAllocateHostStorage(runtime);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "cuda_storage";
+		status = SparkModelResidentdAllocateCuda(runtime,memory_mode);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "wake_pipe";
+		status = SparkModelResidentdOpenWakePipe(runtime);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "adapter_initialize";
+		status = SparkModelResidentdInitializeAdapter(runtime,configuration);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "control_listener";
+		status = SparkModelResidentdOpenControlListener(runtime,configuration);
+	}
+	return(status);
+}
+
 static SparkStatus SparkModelResidentdInitialize(
 	SparkModelResidentdRuntime *runtime,
 	const SparkModelResidentdConfiguration *configuration)
@@ -974,29 +1054,9 @@ static SparkStatus SparkModelResidentdInitialize(
 	SparkModelResidentdMemoryMode memory_mode;
 	SparkStatus status;
 	SparkModelResidentdResetRuntime(runtime);
-	status = SparkModelServingAdapterLoadInterfaceFromSharedObject(configuration->adapter_path,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&runtime->adapter_library);
+	status = SparkModelResidentdInitializePlan(runtime,configuration,&transport_capabilities,&transport_module_id,&memory_mode);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentDeploymentValidateForAdapter(configuration->deployment,runtime->adapter_library.adapter_interface.descriptor);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdInitializeLimits(runtime,configuration);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdTransportContract(configuration->transport_mode,&transport_capabilities,&transport_module_id,&memory_mode);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdBuildRankPlan(runtime,configuration,transport_capabilities,transport_module_id);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkHiddenTransportLoadInterfaceFromSharedObject(configuration->transport_path,transport_capabilities,&runtime->transport_library);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdOpenTransports(runtime,transport_capabilities);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdAllocateHostStorage(runtime);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdAllocateCuda(runtime,memory_mode);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdOpenWakePipe(runtime);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdInitializeAdapter(runtime,configuration);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdOpenControlListener(runtime,configuration);
+		status = SparkModelResidentdInitializeResources(runtime,configuration,transport_capabilities,memory_mode);
 	return(status);
 }
 
@@ -1909,7 +1969,7 @@ int main(int argument_count,char **arguments)
 			fprintf(stderr,"model_residentd run=%s status=%u rank=%u stage=%u reason=%u submission=%llu kind=%u route_state=%u\n",SparkStatusToString(status),(uint32_t)status,runtime.rank_plan.rank_index,runtime.rank_plan.stage_index,runtime.failed_reason,(unsigned long long)runtime.failed_submission_id,runtime.failed_work_kind,runtime.failed_route_state);
 	}
 	else
-		fprintf(stderr,"model_residentd initialize=%s\n",SparkStatusToString(status));
+		fprintf(stderr,"model_residentd initialize=%s status=%u phase=%s rank=%u stage=%u\n",SparkStatusToString(status),(uint32_t)status,runtime.initialize_phase != 0 ? runtime.initialize_phase : "reset",configuration.rank_index,configuration.stage_index);
 	SparkModelResidentdDestroy(&runtime,&configuration);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	return(status == SPARK_STATUS_OK ? 0 : 1);
