@@ -6,11 +6,36 @@
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
+#if TEST_DSV4_SERVING_TP16
+#define TEST_DSV4_SERVING_STAGE_COUNT 16u
+#define TEST_DSV4_SERVING_PROGRAM_FLAGS \
+	(SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
+#else
+#define TEST_DSV4_SERVING_STAGE_COUNT 13u
+#define TEST_DSV4_SERVING_PROGRAM_FLAGS \
+	(SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
+#endif
+
 typedef struct TestDsv4ServingDriver
 {
 	SparkModelDriverCompletionFunction completion_function;
 	void *completion_context;
 	uint32_t stage_index;
+	uint32_t stage_count;
+	uint32_t parallel;
 	uint32_t resident_sequence_capacity;
 	uint32_t cuda_graph_count;
 	uint64_t submitted_count;
@@ -24,7 +49,7 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 static const SparkModelDriverProgramProfile TestDsv4ServingDriverProfile =
 {
 	.descriptor_bytes = sizeof(SparkModelDriverProgramProfile),
-	.profile_flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
+	.profile_flags = TEST_DSV4_SERVING_PROGRAM_FLAGS & ~SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION,
 	.max_inflight = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
 	.max_active_slots = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_new_tokens = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
@@ -35,7 +60,7 @@ static const SparkModelDriverProgramProfile TestDsv4ServingDriverProfile =
 static const SparkModelDriverProgramDescriptor TestDsv4ServingDriverProgram =
 {
 	.program_id = 1u,
-	.flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION | SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
+	.flags = TEST_DSV4_SERVING_PROGRAM_FLAGS,
 	.max_inflight = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
 	.name = "resident_decode",
 	.profile = &TestDsv4ServingDriverProfile,
@@ -66,7 +91,7 @@ static SparkStatus TestDsv4ServingDriverCreate(
 	if ( SparkModelDriverCreateRequestIsValid(request) == 0u || driver_instance == 0 || request->node_context == 0 || request->execution_stream == 0 || request->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	context = (const SparkDsv4ResidentDecodeStageNodeContext *)request->node_context;
-	if ( context->abi_version != SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION || context->descriptor_bytes != SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES || context->stage_count != 13u || context->stage_index >= context->stage_count || context->layer_count == 0u || context->stage_pack_path == 0 )
+	if ( context->abi_version != SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION || context->descriptor_bytes != SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES || context->stage_count != TEST_DSV4_SERVING_STAGE_COUNT || context->stage_index >= context->stage_count || context->layer_count == 0u || context->stage_pack_path == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	driver = (TestDsv4ServingDriver *)calloc(1u,sizeof(*driver));
 	if ( driver == 0 )
@@ -74,6 +99,8 @@ static SparkStatus TestDsv4ServingDriverCreate(
 	driver->completion_function = request->completion_function;
 	driver->completion_context = request->completion_context;
 	driver->stage_index = context->stage_index;
+	driver->stage_count = context->stage_count;
+	driver->parallel = (context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL) != 0u ? 1u : 0u;
 	driver->resident_sequence_capacity = context->resident_sequence_capacity;
 	driver->cuda_graph_count = context->cuda_graph_count;
 	*driver_instance = driver;
@@ -153,9 +180,9 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	hidden_bytes = (uint64_t)row_count * 16384u * sizeof(uint16_t);
-	if ( driver->stage_index != 0u && (context->hidden_input_bf16 == 0 || context->hidden_input_bytes < hidden_bytes) )
+	if ( driver->parallel == 0u && driver->stage_index != 0u && (context->hidden_input_bf16 == 0 || context->hidden_input_bytes < hidden_bytes) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( driver->stage_index + 1u < 13u )
+	if ( driver->parallel == 0u && driver->stage_index + 1u < driver->stage_count )
 	{
 		if ( context->hidden_output_bf16 == 0 || context->hidden_output_bytes < hidden_bytes )
 			return(SPARK_STATUS_INVALID_ARGUMENT);

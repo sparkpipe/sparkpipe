@@ -413,7 +413,7 @@ static SparkStatus SparkModelPipelineClientInitializeState(
 	SparkStatus status;
 	status = SparkResolveRuntimePath(configuration->runtime_root,configuration->deployment->adapter_shared_object_path,adapter_path,sizeof(adapter_path));
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelServingAdapterLoadInterfaceFromSharedObject(adapter_path,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&pipeline->adapter_library);
+		status = SparkModelServingAdapterLoadInterfaceFromSharedObject(adapter_path,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE,&pipeline->adapter_library);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentValidateForAdapter(configuration->deployment,pipeline->adapter_library.adapter_interface.descriptor);
 	if ( status != SPARK_STATUS_OK )

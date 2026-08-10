@@ -55,14 +55,32 @@ static void TestBuildNode(
 	node->next_rank_index = next_rank_index;
 	node->host_name = host;
 	node->previous_host_name = previous;
-	node->next_host_name = next;
+	 node->next_host_name = next;
+}
+
+static void TestBuildFanoutDescriptor(SparkModelServingAdapterDescriptor *descriptor)
+{
+	uint32_t index;
+	TestBuildDescriptor(descriptor);
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT;
+	descriptor->stage_count = 16u;
+	memset(descriptor->stage_layer_counts,0,sizeof(descriptor->stage_layer_counts));
+	for (index=0u; index<13u; index++)
+		descriptor->stage_layer_counts[index] = 3u;
+	descriptor->stage_layer_counts[13] = 2u;
+	descriptor->stage_layer_counts[14] = 1u;
+	descriptor->stage_layer_counts[15] = 1u;
+	descriptor->boundary_sideband_kinds[0] = 0u;
+	descriptor->boundary_sideband_bytes_per_sequence[0] = 0u;
 }
 
 int main(void)
 {
 	SparkModelServingAdapterDescriptor descriptor;
+	SparkModelServingAdapterDescriptor fanout_descriptor;
 	SparkHiddenTransportEndpoint endpoint;
 	SparkPipelineRuntimeLinearNode node;
+	SparkPipelineRuntimeFanoutNode fanout_node;
 	SparkPipelineRuntimeRankPlan copied_plan,rank_plan;
 	TestBuildDescriptor(&descriptor);
 	TestBuildNode(&node,0u,0u,SPARK_PIPELINE_RUNTIME_NO_RANK,2u,"node-alpha",0,"node-beta");
@@ -108,5 +126,24 @@ int main(void)
 	assert(SparkPipelineRuntimeValidateRankPlan(&descriptor,&rank_plan) == SPARK_STATUS_OK);
 	TestBuildNode(&node,0u,0u,SPARK_PIPELINE_RUNTIME_NO_RANK,2u,"node-alpha",0,"node-beta");
 	assert(SparkPipelineRuntimeBuildLinearRankPlan(&descriptor,&node,64u,32u,SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS,59000u,SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID,&rank_plan) == SPARK_STATUS_INVALID_ARGUMENT);
+	TestBuildFanoutDescriptor(&fanout_descriptor);
+	memset(&fanout_node,0,sizeof(fanout_node));
+	fanout_node.abi_version = SPARK_PIPELINE_RUNTIME_ABI_VERSION;
+	fanout_node.descriptor_bytes = SPARK_PIPELINE_RUNTIME_FANOUT_NODE_BYTES;
+	fanout_node.rank_index = 15u;
+	fanout_node.stage_index = 15u;
+	fanout_node.stage_count = 16u;
+	fanout_node.host_name = "tp-rank-15";
+	assert(SparkPipelineRuntimeBuildFanoutRankPlan(&fanout_descriptor,&fanout_node,1u,1u,0u,&rank_plan) == SPARK_STATUS_OK);
+	assert((rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT) != 0u);
+	assert((rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_FINAL_STAGE) != 0u);
+	assert((rank_plan.flags & (SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS | SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT)) == 0u);
+	assert(rank_plan.first_layer_index == 0u);
+	assert(rank_plan.layer_count == 43u);
+	assert(rank_plan.input_packet_bytes_per_sequence == 0u);
+	assert(rank_plan.output_packet_bytes_per_sequence == 0u);
+	assert(SparkPipelineRuntimeBuildInputEndpoint(&fanout_descriptor,&rank_plan,&endpoint) == SPARK_STATUS_NOT_FOUND);
+	assert(SparkPipelineRuntimeBuildOutputEndpoint(&fanout_descriptor,&rank_plan,&endpoint) == SPARK_STATUS_NOT_FOUND);
+	assert(SparkPipelineRuntimeValidateRankPlan(&fanout_descriptor,&rank_plan) == SPARK_STATUS_OK);
 	return(0);
 }
