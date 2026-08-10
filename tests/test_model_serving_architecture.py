@@ -21,6 +21,10 @@ NEUTRAL_FILES = (
     "include/sparkpipe/spark_model_resident_client.h",
     "include/sparkpipe/spark_model_pipeline_client.h",
     "include/sparkpipe/spark_model_batch_engine.h",
+    "include/sparkpipe/spark_kv_cache.h",
+    "include/sparkpipe/spark_kv_page_cache.h",
+    "include/sparkpipe/spark_kv_page_store.h",
+    "include/sparkpipe/spark_prefix_cache.h",
     "include/sparkpipe/spark_pipeline_runtime.h",
     "runtime/model_serving_adapter.c",
     "runtime/model_resident_ipc.c",
@@ -29,11 +33,16 @@ NEUTRAL_FILES = (
     "runtime/model_resident_client.c",
     "runtime/model_pipeline_client.c",
     "runtime/model_batch_engine.c",
+    "runtime/model_batch_scheduler.h",
     "runtime/pipeline_runtime.c",
+    "cache/kv_cache.c",
+    "cache/kv_page_cache.c",
+    "cache/kv_page_store.c",
+    "cache/prefix_cache.c",
     "node/model_residentd.c",
 )
 MODEL_TOKEN = re.compile(
-    r"glm(?:52)?|dsv4|deepseek|qwen|kimi|mimo|dspark|mtp|moe",
+    r"glm(?:52)?|dsv4|deepseek|qwen|kimi|mimo|dspark|mtp|moe|\bmla\b",
     re.IGNORECASE,
 )
 
@@ -111,8 +120,8 @@ def main() -> int:
         "resident acknowledges work before enforcing configured runtime limits",
     )
     require(
-        "adapter_interface.validate_submission" in resident
-        and resident.index("adapter_interface.validate_submission")
+        "SparkModelServingAdapterPrepareSubmission" in resident
+        and resident.index("SparkModelServingAdapterPrepareSubmission")
         < resident.index("route = SparkModelResidentdReserveRoute"),
         "model-owned preflight does not run before route reservation",
     )
@@ -253,6 +262,15 @@ def main() -> int:
         "neutral request engine imports a model application or hidden mode",
     )
     require(
+        "SparkModelBatchSchedulerPlanCacheBoundLaneCount" in batch_engine
+        and "SparkModelBatchSchedulerCacheDemandFits" in batch_engine
+        and "SparkModelBatchCacheDemandAdditional" in batch_engine
+        and "request->cache_published_identity" in batch_engine
+        and "engine->kv_physical_page_capacity" in batch_engine
+        and "engine->inflight_kv_page_count" in batch_engine,
+        "neutral scheduler does not account for shared-prefix KV page demand",
+    )
+    require(
         "runtime/model_batch_engine.c" in sources.split(
             "SPARKPIPE_MODEL_COMMON_SOURCES :=", 1
         )[0],
@@ -313,6 +331,14 @@ def main() -> int:
         "const char *runtime_root" in adapter_header,
         "model adapters do not receive the manifest runtime root",
     )
+    require(
+        "uint32_t kv_logical_page_capacity;" in adapter_header
+        and "uint32_t kv_physical_page_capacity;" in adapter_header
+        and '"kv_logical_page_capacity"' in deployment_source
+        and '"kv_physical_page_capacity"' in deployment_source
+        and "runtime_limits->kv_physical_page_capacity" in serving_source,
+        "KV page capacity policy is not a validated neutral runtime limit",
+    )
     driver_header = (ROOT / "include/sparkpipe/spark_model_driver.h").read_text(
         encoding="utf-8"
     )
@@ -338,6 +364,17 @@ def main() -> int:
         in driver_compiler
         and "SparkModelDriverCreateRequestIsValid(request)" in driver_compiler,
         "generated drivers do not validate or forward the resident stream",
+    )
+    require(
+        "uint32_t kv_logical_page_capacity;" in driver_header
+        and "uint32_t kv_physical_page_capacity;" in driver_header
+        and "uint32_t kv_logical_page_capacity;" in module_abi
+        and "uint32_t kv_physical_page_capacity;" in module_abi
+        and "host_services.kv_logical_page_capacity = request->kv_logical_page_capacity"
+        in driver_compiler
+        and "host_services.kv_physical_page_capacity = request->kv_physical_page_capacity"
+        in driver_compiler,
+        "generated driver boundary does not forward neutral KV page budgets",
     )
 
     require(
@@ -461,11 +498,13 @@ def main() -> int:
         "DSV4 prefill does not bulk dense work around causal attention waves",
     )
     require(
-        "cudaStreamCreate" not in module
+        "cudaStreamCreate(" not in module
+        and module.count("cudaStreamCreateWithFlags") == 1
+        and "kv_page_store_stream" in module
         and "cudaDeviceSynchronize" not in module
         and "state->execution_stream = host_services->execution_stream" in module
         and "state->execution_stream != frame->execution_stream" in module,
-        "DSV4 module does not exclusively use the resident-owned CUDA stream",
+        "DSV4 execution stream and isolated KV transfer stream are not separated",
     )
     stage_runner = (
         ROOT
@@ -537,6 +576,34 @@ def main() -> int:
         "resident_row_lane_indices[row] = "
         "submission->lanes[lane].resident_sequence_slot" in adapter,
         "DSV4 adapter does not translate batch lanes to persistent KV slots",
+    )
+    require(
+        "request.kv_logical_page_capacity =" in adapter
+        and "request.kv_physical_page_capacity =" in adapter
+        and "state->logical_page_capacity = host_services->kv_logical_page_capacity"
+        in module
+        and "state->physical_page_capacity = host_services->kv_physical_page_capacity"
+        in module,
+        "DSV4 device layer does not consume neutral KV page budgets",
+    )
+    deployment_header = (
+        ROOT / "include/sparkpipe/spark_model_resident_deployment.h"
+    ).read_text(encoding="utf-8")
+    require(
+        "char *kv_backing_directory;" in deployment_header
+        and "uint64_t kv_backing_maximum_bytes;" in deployment_header
+        and "configuration->kv_backing_directory = node->kv_backing_directory"
+        in resident
+        and "getenv(" not in resident,
+        "KV backing policy is not owned by the typed generic deployment",
+    )
+    require(
+        "node_context.logical_page_capacity" not in adapter
+        and "node_context.physical_page_capacity" not in adapter
+        and "physical_page_capacity = state->max_active_sequence_count" not in adapter
+        and "uint32_t logical_page_capacity;" not in firmware_header
+        and "uint32_t physical_page_capacity;" not in firmware_header,
+        "DSV4 adapter or node context owns generic cache sizing policy",
     )
     require(
         "SparkRowLayoutValidateRoundMajor" in adapter,

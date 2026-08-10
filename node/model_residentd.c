@@ -53,6 +53,8 @@ typedef struct SparkModelResidentdConfiguration
 	const char *transport_host;
 	const char *previous_transport_host;
 	const char *next_transport_host;
+	const char *kv_backing_directory;
+	uint64_t kv_backing_maximum_bytes;
 	uint32_t rank_index;
 	uint32_t stage_index;
 	uint32_t previous_rank_index;
@@ -61,6 +63,8 @@ typedef struct SparkModelResidentdConfiguration
 	uint32_t max_active_sequence_count;
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;
+	uint32_t kv_logical_page_capacity;
+	uint32_t kv_physical_page_capacity;
 	uint32_t port_base;
 	uint32_t listen_port;
 } SparkModelResidentdConfiguration;
@@ -314,6 +318,8 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 	configuration->transport_host = node->transport_host;
 	configuration->previous_transport_host = previous != 0 ? previous->transport_host : 0;
 	configuration->next_transport_host = next != 0 ? next->transport_host : 0;
+	configuration->kv_backing_directory = node->kv_backing_directory;
+	configuration->kv_backing_maximum_bytes = node->kv_backing_maximum_bytes;
 	configuration->rank_index = node->rank_index;
 	configuration->stage_index = node->stage_index;
 	configuration->previous_rank_index = previous != 0 ? previous->rank_index : SPARK_PIPELINE_RUNTIME_NO_RANK;
@@ -322,6 +328,10 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 	configuration->max_active_sequence_count = deployment->runtime_limits.max_active_sequence_count;
 	configuration->max_input_row_count = deployment->runtime_limits.max_input_row_count;
 	configuration->resident_sequence_capacity = deployment->runtime_limits.resident_sequence_capacity;
+	configuration->kv_logical_page_capacity =
+		deployment->runtime_limits.kv_logical_page_capacity;
+	configuration->kv_physical_page_capacity =
+		deployment->runtime_limits.kv_physical_page_capacity;
 	configuration->port_base = deployment->transport_control_port_base;
 	return(SPARK_STATUS_OK);
 }
@@ -881,6 +891,10 @@ static SparkStatus SparkModelResidentdInitializeAdapter(
 	adapter_configuration.adapter_configuration_path = configuration->adapter_configuration_path;
 	adapter_configuration.driver_shared_object_path = configuration->driver_path;
 	adapter_configuration.driver_program_name = configuration->driver_program_name;
+	adapter_configuration.kv_backing_directory =
+		configuration->kv_backing_directory;
+	adapter_configuration.kv_backing_maximum_bytes =
+		configuration->kv_backing_maximum_bytes;
 	adapter_configuration.execution_stream = runtime->execution_stream;
 	adapter_configuration.completion_function = SparkModelResidentdCompletion;
 	adapter_configuration.completion_context = runtime;
@@ -910,6 +924,10 @@ static SparkStatus SparkModelResidentdInitializeLimits(
 	runtime->runtime_limits.max_active_sequence_count = configuration->max_active_sequence_count;
 	runtime->runtime_limits.max_input_row_count = configuration->max_input_row_count;
 	runtime->runtime_limits.resident_sequence_capacity = configuration->resident_sequence_capacity;
+	runtime->runtime_limits.kv_logical_page_capacity =
+		configuration->kv_logical_page_capacity;
+	runtime->runtime_limits.kv_physical_page_capacity =
+		configuration->kv_physical_page_capacity;
 	return(SparkModelServingAdapterValidateRuntimeLimits(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits));
 }
 
@@ -1327,10 +1345,10 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	status = SparkModelResidentIpcDecodeSubmission(message,message_bytes,&submission);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterValidateRuntimeSubmission(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&submission);
-	if ( status == SPARK_STATUS_OK )
-		status = runtime->adapter_library.adapter_interface.validate_submission(runtime->adapter_state,&submission);
 	if ( status == SPARK_STATUS_OK && submission.submission_id <= runtime->client.last_submission_id )
 		status = submission.submission_id == runtime->client.last_submission_id ? SPARK_STATUS_DUPLICATE : SPARK_STATUS_INVALID_ARGUMENT;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelServingAdapterPrepareSubmission(&runtime->adapter_library.adapter_interface,runtime->adapter_state,&submission);
 	route = 0;
 	if ( status == SPARK_STATUS_OK )
 	{

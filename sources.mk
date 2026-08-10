@@ -47,6 +47,10 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     ring/transport/memlink.c \
     ring/transport/tp_collective.c \
     text/tokenizer.c \
+    cache/kv_cache.c \
+	cache/kv_page_cache.c \
+	cache/kv_page_store.c \
+    cache/prefix_cache.c \
     cache/store/kv_store.c \
     cache/store/stage_kv_client.c \
     cache/nvme_tier.c \

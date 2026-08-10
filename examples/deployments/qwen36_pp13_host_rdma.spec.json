@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "coordinator_rank_index": 0,
   "adapter": {
     "shared_object_path": "lib/model_serving_adapter.so"
@@ -17,7 +17,9 @@
     "max_inflight_submissions": 2,
     "max_active_sequences": 64,
     "max_input_rows": 128,
-    "resident_sequence_capacity": 64
+    "resident_sequence_capacity": 64,
+    "kv_logical_page_capacity": 0,
+    "kv_physical_page_capacity": 0
   },
   "topology": {
     "rank_hosts": [
@@ -39,6 +41,8 @@
     "runtime_root_template": "/home/{host}/sparkpipe_runtime/releases/qwen36-27b-pp13-bf16-h5120-l64-gdn48-mtp1-v1",
     "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
     "adapter_configuration_path_template": "config/qwen36_flash_stage.json",
+    "kv_backing_directory_template": null,
+    "kv_backing_maximum_bytes": 0,
     "control_endpoint": {
       "kind": "tcp",
       "host_template": "{host}",

@@ -42,14 +42,21 @@ def main() -> int:
     deployment = module.build_deployment(specification)
     assert deployment["runtime_limits"] == {
         "max_inflight_submissions": 13,
-        "max_active_sequences": 128,
-        "max_input_rows": 128,
-        "resident_sequence_capacity": 1024,
+        "max_active_sequences": 1024,
+        "max_input_rows": 1024,
+        "resident_sequence_capacity": 16384,
+        "kv_logical_page_capacity": 1048576,
+        "kv_physical_page_capacity": 16384,
     }
     assert deployment["adapter"]["shared_object_path"] == (
         "lib/model_serving_adapter.so")
     assert deployment["transport"]["shared_object_path"] == (
         "lib/hidden_transport.so")
+    assert {node["kv_backing_directory"]
+            for node in deployment["nodes"]} == {
+                "/fast-local-nvme/sparkpipe-kv"}
+    assert {node["kv_backing_maximum_bytes"]
+            for node in deployment["nodes"]} == {0}
     assert {node["adapter_configuration_path"]
             for node in deployment["nodes"]} == {
                 "config/dsv4_flash_stage.json"}
@@ -74,7 +81,7 @@ def main() -> int:
     assert deployment["nodes"][12]["adapter_configuration_path"] == (
         "config/dsv4_flash_stage.json")
     invalid = copy.deepcopy(specification)
-    invalid["runtime_limits"]["max_active_sequences"] = 129
+    invalid["runtime_limits"]["kv_physical_page_capacity"] = 1023
     expect_failure(module, invalid, "inconsistent capacities accepted")
     invalid = copy.deepcopy(specification)
     invalid["topology"]["stage_indices"][12] = 11

@@ -31,6 +31,7 @@ typedef enum cudaStreamCaptureMode
 #define cudaSuccess 0
 #define cudaErrorInvalidValue 1
 #define cudaErrorMemoryAllocation 2
+#define cudaErrorNotReady 34
 #define cudaStreamDefault 0u
 #define cudaStreamNonBlocking 1u
 #define cudaHostAllocDefault 0u
@@ -75,6 +76,7 @@ cudaError_t cudaStreamCreateWithFlags(
     cudaStream_t *stream,
     unsigned int flags);
 cudaError_t cudaStreamDestroy(cudaStream_t stream);
+cudaError_t cudaStreamQuery(cudaStream_t stream);
 cudaError_t cudaStreamSynchronize(cudaStream_t stream);
 cudaError_t cudaDeviceSynchronize(void);
 cudaError_t cudaLaunchHostFunc(

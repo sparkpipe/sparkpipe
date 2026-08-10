@@ -29,6 +29,8 @@ RUNTIME_KEYS = {
     "max_active_sequences",
     "max_input_rows",
     "resident_sequence_capacity",
+    "kv_logical_page_capacity",
+    "kv_physical_page_capacity",
 }
 TOPOLOGY_KEYS = {
     "rank_hosts",
@@ -36,6 +38,8 @@ TOPOLOGY_KEYS = {
     "runtime_root_template",
     "node_target",
     "adapter_configuration_path_template",
+    "kv_backing_directory_template",
+    "kv_backing_maximum_bytes",
     "control_endpoint",
 }
 TCP_ENDPOINT_KEYS = {"kind", "host_template", "port"}
@@ -138,8 +142,19 @@ def validate_common(specification: dict[str, Any]) -> None:
                          "runtime_limits.max_input_rows", 1, 65535)
     resident = integer_value(limits["resident_sequence_capacity"],
                              "runtime_limits.resident_sequence_capacity", 1, 65535)
+    logical_pages = integer_value(limits["kv_logical_page_capacity"],
+                                  "runtime_limits.kv_logical_page_capacity",
+                                  0, 4294967295)
+    physical_pages = integer_value(limits["kv_physical_page_capacity"],
+                                   "runtime_limits.kv_physical_page_capacity",
+                                   0, 4294967295)
     if inflight > resident or active > rows or active > resident:
         raise DeploymentError("runtime_limits capacities are inconsistent")
+    if ((logical_pages == 0) != (physical_pages == 0) or
+            (physical_pages != 0 and
+             (physical_pages < active or logical_pages < resident or
+              physical_pages > logical_pages))):
+        raise DeploymentError("runtime_limits KV page capacities are inconsistent")
 
 
 def build_endpoint(template: dict[str, Any], host: str, rank: int,
@@ -169,8 +184,8 @@ def build_endpoint(template: dict[str, Any], host: str, rank: int,
 
 def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
     exact_object(specification, ROOT_KEYS, "deployment specification")
-    if specification["schema_version"] != 1:
-        raise DeploymentError("schema_version must be 1")
+    if specification["schema_version"] != 2:
+        raise DeploymentError("schema_version must be 2")
     validate_common(specification)
     topology = exact_object(specification["topology"], TOPOLOGY_KEYS, "topology")
     hosts = topology["rank_hosts"]
@@ -198,6 +213,16 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
     adapter_template = text_value(
         topology["adapter_configuration_path_template"],
         "topology.adapter_configuration_path_template")
+    backing_template = topology["kv_backing_directory_template"]
+    if backing_template is not None:
+        backing_template = text_value(
+            backing_template,"topology.kv_backing_directory_template")
+    backing_maximum_bytes = integer_value(
+        topology["kv_backing_maximum_bytes"],
+        "topology.kv_backing_maximum_bytes",0,9223372036854775807)
+    if backing_template is None and backing_maximum_bytes != 0:
+        raise DeploymentError(
+            "topology KV backing bytes require a directory template")
     node_target = text_value(topology["node_target"], "topology.node_target")
     endpoint_value = topology["control_endpoint"]
     if not isinstance(endpoint_value, dict):
@@ -217,6 +242,10 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
             adapter_template, host, rank, stage,
             "topology.adapter_configuration_path_template"), False,
             "rendered adapter configuration path")
+        backing_path = None if backing_template is None else normalized_path(
+            render_template(backing_template,host,rank,stage,
+                            "topology.kv_backing_directory_template"),
+            True,"rendered KV backing directory")
         nodes.append({
             "rank_index": rank,
             "stage_index": stage,
@@ -224,6 +253,8 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
             "node_target": node_target,
             "transport_host": host,
             "adapter_configuration_path": adapter_path,
+            "kv_backing_directory": backing_path,
+            "kv_backing_maximum_bytes": backing_maximum_bytes,
             "control_endpoint": build_endpoint(
                 endpoint_template, host, rank, stage),
         })
@@ -232,7 +263,7 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
     if len(set(endpoints)) != len(endpoints):
         raise DeploymentError("rendered control endpoints must be unique")
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "coordinator_rank_index": coordinator,
         "adapter": copy.deepcopy(specification["adapter"]),
         "driver": copy.deepcopy(specification["driver"]),

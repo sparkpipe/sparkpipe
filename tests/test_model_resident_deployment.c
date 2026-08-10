@@ -48,6 +48,8 @@ int main(void)
 	assert(node != 0);
 	assert(node->stage_index == 2u);
 	assert(strcmp(node->transport_host,"spark1") == 0);
+	assert(node->kv_backing_directory == 0);
+	assert(node->kv_backing_maximum_bytes == 0u);
 	assert(node->control_endpoint.kind == SPARK_MODEL_RESIDENT_ENDPOINT_KIND_UNIX);
 	assert(strcmp(node->control_endpoint.unix_socket_path,"/tmp/test-model-resident-1.sock") == 0);
 	assert(SparkModelResidentDeploymentResolvePath(node,deployment.driver_shared_object_path,path,sizeof(path)) == SPARK_STATUS_OK);
@@ -66,9 +68,11 @@ int main(void)
 	assert(SparkModelResidentDeploymentLoad("examples/deployments/dsv4_flash_pp13_host_rdma.json",&deployment) == SPARK_STATUS_OK);
 	assert(deployment.node_count == 13u);
 	assert(deployment.runtime_limits.max_inflight_submission_count == 13u);
-	assert(deployment.runtime_limits.max_active_sequence_count == 128u);
-	assert(deployment.runtime_limits.max_input_row_count == 128u);
-	assert(deployment.runtime_limits.resident_sequence_capacity == 1024u);
+	assert(deployment.runtime_limits.max_active_sequence_count == 1024u);
+	assert(deployment.runtime_limits.max_input_row_count == 1024u);
+	assert(deployment.runtime_limits.resident_sequence_capacity == 16384u);
+	assert(deployment.runtime_limits.kv_logical_page_capacity == 1048576u);
+	assert(deployment.runtime_limits.kv_physical_page_capacity == 16384u);
 	assert(strcmp(deployment.adapter_shared_object_path,"lib/model_serving_adapter.so") == 0);
 	assert(strcmp(deployment.transport_shared_object_path,"lib/hidden_transport.so") == 0);
 	node = SparkModelResidentDeploymentFindRank(&deployment,12u);
@@ -76,6 +80,9 @@ int main(void)
 	assert(strcmp(node->transport_host,"sparkc") == 0);
 	assert(strcmp(node->runtime_root,"/home/sparkc/sparkpipe_runtime") == 0);
 	assert(strcmp(node->adapter_configuration_path,"config/dsv4_flash_stage.json") == 0);
+	assert(strcmp(node->kv_backing_directory,
+		"/fast-local-nvme/sparkpipe-kv") == 0);
+	assert(node->kv_backing_maximum_bytes == 0u);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	return(0);
 }

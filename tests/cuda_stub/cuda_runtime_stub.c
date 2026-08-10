@@ -117,6 +117,12 @@ cudaError_t cudaStreamDestroy(cudaStream_t stream)
     return cudaSuccess;
 }
 
+cudaError_t cudaStreamQuery(cudaStream_t stream)
+{
+    (void)stream;
+    return cudaSuccess;
+}
+
 cudaError_t cudaStreamSynchronize(cudaStream_t stream)
 {
     (void)stream;

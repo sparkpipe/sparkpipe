@@ -107,12 +107,12 @@
 #define SPARK_DSV4_BATCH_TUNING_MODULE_ID SPARK_DSV4_BATCH_VARIANT_MODULE_ID_B1024
 #endif
 
-// THE ACTIVE-SEQUENCE CEILING THE FIRMWARE SIZES ITS LANE TABLES BY. The
-// stage's lane tables were sized for 128 resident sequences, so buckets
-// above b128 cannot shrink them further; the smaller buckets still cut them
-// to the tight fit, and every bucket reprices the grouped tile below.
+// THE ACTIVE-SEQUENCE CEILING THE FIRMWARE SIZES ITS COMPUTE WORKSPACE BY.
+// Resident sequence ownership is independent of this batch bucket, and the
+// paged KV pool is independently memory-budgeted. Every compiled bucket now
+// executes its advertised width; a b1024 module is not a renamed b128.
 #define SPARK_DSV4_BATCH_TUNING_SEQUENCE_CEILING \
-	(SPARK_BATCH_BUCKET <= 128u ? SPARK_BATCH_BUCKET : 128u)
+	SPARK_BATCH_BUCKET
 
 // THE GROUPED TILE HEIGHT AT THE BUCKET CEILING. Derived, not tabulated, the
 // glm52 rule applied to dsv4's geometry: the mean group holds

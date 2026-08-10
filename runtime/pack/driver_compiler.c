@@ -585,6 +585,10 @@ static void SparkWriteGeneratedCreate(FILE *file, const SparkDriverBuildImage *d
     fputs("    instance->host_services.node_id = request->node_id;\n", file);
     fputs("    instance->host_services.node_target = request->node_target;\n", file);
     fputs("    instance->host_services.node_context = request->node_context;\n", file);
+    fputs("    instance->host_services.kv_logical_page_capacity = request->kv_logical_page_capacity;\n", file);
+    fputs("    instance->host_services.kv_physical_page_capacity = request->kv_physical_page_capacity;\n", file);
+    fputs("    instance->host_services.kv_backing_directory = request->kv_backing_directory;\n", file);
+    fputs("    instance->host_services.kv_backing_maximum_bytes = request->kv_backing_maximum_bytes;\n", file);
     fputs("    instance->host_services.execution_stream = request->execution_stream;\n", file);
     fputs("    status = SPARK_STATUS_OK;\n", file);
 
@@ -792,7 +796,7 @@ static void SparkWriteGeneratedAdmitFunction(
     SparkWriteGeneratedAdmissionHelpers(file);
     fputs("static SparkStatus SparkGeneratedDriverAdmit(void *driver_instance, const SparkModelDriverAdmissionRequest *request, SparkModelDriverAdmissionDecision *decision)\n{\n", file);
     fputs("    SparkGeneratedDriverInstance *instance;\n\n", file);
-    fputs("    if (driver_instance == 0 || request == 0 || decision == 0 || request->descriptor_bytes < sizeof(*request))\n    {\n", file);
+    fputs("    if (driver_instance == 0 || decision == 0 || SparkModelDriverAdmissionRequestIsValid(request) == 0u)\n    {\n", file);
     fputs("        return SPARK_STATUS_INVALID_ARGUMENT;\n    }\n", file);
     fputs("    instance = (SparkGeneratedDriverInstance *)driver_instance;\n", file);
     fputs("    SparkGeneratedInitializeAdmissionDecision(decision);\n", file);

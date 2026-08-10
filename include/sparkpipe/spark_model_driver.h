@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 7u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 10u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
@@ -40,6 +40,17 @@ extern "C" {
 #define SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE 0x00000002u
 #define SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID 0x00000001u
 #define SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL 0x00000002u
+#define SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE 0x00000004u
+#define SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE 0x00000001u
+#define SPARK_MODEL_DRIVER_ADMISSION_KNOWN_FLAGS \
+    SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE
+#define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX 0x00000001u
+#define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH 0x00000002u
+#define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE 0x00000004u
+#define SPARK_MODEL_DRIVER_CACHE_LANE_KNOWN_FLAGS \
+    (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX | \
+     SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | \
+     SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE)
 #define SPARK_MODEL_DRIVER_SCALAR_COUNT 8u
 #define SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT UINT32_MAX
 
@@ -64,6 +75,30 @@ typedef struct SparkModelDriverResidencyToken
     uint64_t generation;
     uint64_t owner;
 } SparkModelDriverResidencyToken;
+
+typedef struct SparkModelDriverCacheIdentity
+{
+    uint8_t sha256[32];
+} SparkModelDriverCacheIdentity;
+
+/*
+ * Model-neutral cache intent. Admission prepares or verifies the requested
+ * mappings; model drivers alone translate them into physical page layouts.
+ * A prepare admission is idempotent and must not publish or release state.
+ */
+typedef struct SparkModelDriverCacheLane
+{
+    uint64_t sequence_id;
+    uint64_t sequence_position;
+    uint32_t resident_sequence_slot;
+    uint32_t context_token_count;
+    uint32_t prefix_token_count;
+    uint32_t publish_token_count;
+    uint32_t flags;
+    uint32_t reserved;
+    SparkModelDriverCacheIdentity prefix_identity;
+    SparkModelDriverCacheIdentity publish_identity;
+} SparkModelDriverCacheLane;
 
 typedef struct SparkModelDriverCompletion
 {
@@ -108,6 +143,9 @@ typedef struct SparkModelDriverFrame
     SparkModelDriverBuffer *buffers;
     uint32_t buffer_count;
     uint32_t reserved;
+    uint32_t cache_lane_count;
+    uint32_t reserved1;
+    const SparkModelDriverCacheLane *cache_lanes;
     uint64_t scalar[SPARK_MODEL_DRIVER_SCALAR_COUNT];
     SparkModelDriverResidencyToken residency;
     void *user_context;
@@ -157,6 +195,9 @@ typedef struct SparkModelDriverAdmissionRequest
     uint32_t new_token_count;
     uint32_t priority;
     uint32_t frame_flags;
+    uint32_t admission_flags;
+    uint32_t cache_lane_count;
+    const SparkModelDriverCacheLane *cache_lanes;
     SparkModelDriverResidencyToken residency;
 } SparkModelDriverAdmissionRequest;
 
@@ -210,12 +251,16 @@ typedef struct SparkModelDriverCreateRequest
     const char *node_id;
     const char *node_target;
     void *node_context;
+    uint32_t kv_logical_page_capacity;
+    uint32_t kv_physical_page_capacity;
+    const char *kv_backing_directory;
+    uint64_t kv_backing_maximum_bytes;
     void *execution_stream;
     SparkModelDriverCompletionFunction completion_function;
     void *completion_context;
     SparkModelDriverWakeFunction wake_function;
     void *wake_context;
-    uint64_t reserved[2];
+    uint64_t reserved[1];
 } SparkModelDriverCreateRequest;
 
 typedef SparkStatus (*SparkModelDriverProgramSubmitFunction)(void *driver_instance, SparkModelDriverFrame *frame);

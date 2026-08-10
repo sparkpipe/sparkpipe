@@ -30,7 +30,15 @@ static inline uint32_t SparkModelDriverCreateRequestIsValid(
         request->flags != 0u || request->reserved0 != 0u ||
         request->node_id == 0 || request->node_id[0] == '\0' ||
         request->node_target == 0 || request->node_target[0] == '\0' ||
-        request->reserved[0] != 0u || request->reserved[1] != 0u)
+        ((request->kv_logical_page_capacity == 0u) !=
+         (request->kv_physical_page_capacity == 0u)) ||
+        request->kv_physical_page_capacity >
+            request->kv_logical_page_capacity ||
+        (request->kv_backing_directory == 0 &&
+         request->kv_backing_maximum_bytes != 0u) ||
+        (request->kv_backing_directory != 0 &&
+         request->kv_backing_directory[0] == '\0') ||
+        request->reserved[0] != 0u)
     {
         return 0u;
     }
@@ -47,6 +55,79 @@ static inline uint32_t SparkModelDriverRangeFitsWithinCapacity(
         return 0u;
     }
     return range_length <= capacity - range_start ? 1u : 0u;
+}
+
+static inline uint32_t SparkModelDriverCacheIdentityIsPresent(
+    const SparkModelDriverCacheIdentity *identity)
+{
+    uint32_t index;
+    uint8_t present;
+    if (identity == 0)
+        return 0u;
+    present = 0u;
+    for (index = 0u; index < sizeof(identity->sha256); index++)
+        present |= identity->sha256[index];
+    return present != 0u ? 1u : 0u;
+}
+
+static inline uint32_t SparkModelDriverCacheLaneIsValid(
+    const SparkModelDriverCacheLane *lane)
+{
+    uint32_t prefix_present,publish_present,releasing;
+    if (lane == 0 || lane->sequence_id == 0u ||
+        lane->resident_sequence_slot == SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT ||
+        lane->reserved != 0u ||
+        (lane->flags & ~SPARK_MODEL_DRIVER_CACHE_LANE_KNOWN_FLAGS) != 0u)
+        return 0u;
+    prefix_present = SparkModelDriverCacheIdentityIsPresent(
+        &lane->prefix_identity);
+    publish_present = SparkModelDriverCacheIdentityIsPresent(
+        &lane->publish_identity);
+    releasing = (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE) != 0u;
+    if (releasing != 0u)
+        return lane->flags == SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE &&
+            lane->prefix_token_count == 0u && lane->publish_token_count == 0u &&
+            prefix_present == 0u && publish_present == 0u ? 1u : 0u;
+    if (lane->sequence_position > lane->context_token_count ||
+        ((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) != 0u) !=
+            (lane->prefix_token_count != 0u) ||
+        ((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) != 0u) !=
+            (prefix_present != 0u) ||
+        lane->prefix_token_count > lane->sequence_position ||
+        ((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) != 0u) !=
+            (lane->publish_token_count != 0u) ||
+        ((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) != 0u) !=
+            (publish_present != 0u) ||
+        (lane->publish_token_count != 0u &&
+         (lane->publish_token_count <= lane->prefix_token_count ||
+          lane->publish_token_count > lane->context_token_count)))
+        return 0u;
+    return 1u;
+}
+
+static inline uint32_t SparkModelDriverAdmissionRequestIsValid(
+    const SparkModelDriverAdmissionRequest *request)
+{
+    uint32_t index,releasing;
+    if (request == 0 || request->descriptor_bytes < sizeof(*request) ||
+        (request->admission_flags & ~SPARK_MODEL_DRIVER_ADMISSION_KNOWN_FLAGS) != 0u ||
+        ((request->cache_lane_count != 0u) != (request->cache_lanes != 0)) ||
+        (request->cache_lane_count != 0u &&
+         request->cache_lane_count != request->active_slot_count) ||
+        ((request->admission_flags &
+          SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) != 0u &&
+         request->cache_lane_count == 0u))
+        return 0u;
+    releasing = (request->frame_flags &
+        SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u ? 1u : 0u;
+    for (index = 0u; index < request->cache_lane_count; index++)
+    {
+        if (SparkModelDriverCacheLaneIsValid(&request->cache_lanes[index]) == 0u ||
+            releasing != ((request->cache_lanes[index].flags &
+                SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE) != 0u))
+            return 0u;
+    }
+    return 1u;
 }
 
 static inline uint32_t SparkModelDriverProgramSupportsRuntimeLimits(
@@ -132,6 +213,41 @@ static inline uint32_t SparkModelDriverAdmissionDecisionIsValid(
         decision->driver_dispatch_generation == 0u)
         return 0u;
     return 1u;
+}
+
+static inline SparkStatus SparkModelDriverAdmissionDecisionStatus(
+    const SparkModelDriverAdmissionDecision *decision)
+{
+    if (SparkModelDriverAdmissionDecisionIsValid(decision) == 0u)
+        return SPARK_STATUS_ABI_MISMATCH;
+    if (decision->accepted != 0u)
+        return SPARK_STATUS_OK;
+    if (decision->rejection_reason == SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY ||
+        decision->rejection_reason == SPARK_MODEL_DRIVER_ADMISSION_REJECTED_DEADLINE)
+        return SPARK_STATUS_BUSY;
+    if (decision->rejection_reason ==
+        SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE)
+        return SPARK_STATUS_UNSUPPORTED;
+    return SPARK_STATUS_CAPACITY_EXCEEDED;
+}
+
+static inline SparkStatus SparkModelDriverEvaluateAdmission(
+    const SparkModelDriverInterface *driver_interface,
+    void *driver_instance,
+    const SparkModelDriverAdmissionRequest *request,
+    SparkModelDriverAdmissionDecision *decision)
+{
+    SparkStatus status;
+    if (driver_interface == 0 || driver_interface->admit == 0 ||
+        driver_instance == 0 ||
+        SparkModelDriverAdmissionRequestIsValid(request) == 0u ||
+        decision == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    SparkModelDriverInitializeAdmissionDecision(decision);
+    status = driver_interface->admit(driver_instance,request,decision);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    return SparkModelDriverAdmissionDecisionStatus(decision);
 }
 
 static inline SparkStatus SparkModelDriverApplyAdmissionDecision(

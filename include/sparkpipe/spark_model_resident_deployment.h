@@ -9,8 +9,8 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_DEPLOYMENT_ABI_VERSION 1u
-#define SPARK_MODEL_RESIDENT_DEPLOYMENT_SCHEMA_VERSION 1u
+#define SPARK_MODEL_RESIDENT_DEPLOYMENT_ABI_VERSION 2u
+#define SPARK_MODEL_RESIDENT_DEPLOYMENT_SCHEMA_VERSION 2u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT \
 	SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES 4096u
@@ -23,6 +23,8 @@ typedef struct SparkModelResidentDeploymentNode
 	char *node_target;
 	char *transport_host;
 	char *adapter_configuration_path;
+	char *kv_backing_directory;
+	uint64_t kv_backing_maximum_bytes;
 	SparkModelResidentEndpoint control_endpoint;
 } SparkModelResidentDeploymentNode;
 

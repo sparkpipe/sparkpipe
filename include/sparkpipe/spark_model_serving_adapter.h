@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 12u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 16u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -22,7 +22,8 @@ extern "C" {
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT \
 	SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT 64u
-#define SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT 4096u
+#define SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT 16384u
+#define SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_TOKEN_COUNT 256u
 #define SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT UINT32_MAX
 
 /*
@@ -32,8 +33,12 @@ extern "C" {
  * unmarked prefill lanes.
  */
 #define SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN UINT32_C(0x00000001)
+#define SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX UINT32_C(0x00000002)
+#define SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH UINT32_C(0x00000004)
 #define SPARK_MODEL_SERVING_LANE_KNOWN_FLAGS \
-	SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN
+	(SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN | \
+	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | \
+	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH)
 
 #define SPARK_MODEL_SERVING_SLOT_REUSE_NONE 0u
 #define SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE 1u
@@ -107,6 +112,9 @@ typedef struct SparkModelServingAdapterDescriptor
 	uint32_t boundary_sideband_bytes_per_sequence[SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT];
 	/* Target-owned scheduler floor; zero means every nonempty submission is efficient. */
 	uint32_t minimum_efficient_submission_row_count;
+	/* Zero disables content-addressed prefix reuse for this adapter. */
+	uint32_t cache_block_token_count;
+	uint32_t reserved0;
 } SparkModelServingAdapterDescriptor;
 
 typedef struct SparkModelServingRuntimeLimits
@@ -117,8 +125,19 @@ typedef struct SparkModelServingRuntimeLimits
 	uint32_t max_active_sequence_count;
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;
+	/*
+	 * Model-neutral page budgets. The runtime and scheduler own these limits;
+	 * a JIT-KV driver only maps each page into its model-specific byte layout.
+	 */
+	uint32_t kv_logical_page_capacity;
+	uint32_t kv_physical_page_capacity;
 	uint32_t reserved[4];
 } SparkModelServingRuntimeLimits;
+
+typedef struct SparkModelServingCacheIdentity
+{
+	uint8_t sha256[32];
+} SparkModelServingCacheIdentity;
 
 typedef struct SparkModelServingLane
 {
@@ -131,6 +150,10 @@ typedef struct SparkModelServingLane
 	uint32_t context_token_count;
 	uint32_t input_token_id;
 	uint32_t flags;
+	uint32_t cache_prefix_token_count;
+	uint32_t cache_publish_token_count;
+	SparkModelServingCacheIdentity cache_prefix_identity;
+	SparkModelServingCacheIdentity cache_publish_identity;
 } SparkModelServingLane;
 
 typedef struct SparkModelServingSubmission
@@ -219,6 +242,8 @@ typedef struct SparkModelServingAdapterConfiguration
 	const char *adapter_configuration_path;
 	const char *driver_shared_object_path;
 	const char *driver_program_name;
+	const char *kv_backing_directory;
+	uint64_t kv_backing_maximum_bytes;
 	void *execution_stream;
 	SparkModelServingCompletionFunction completion_function;
 	void *completion_context;
@@ -250,9 +275,13 @@ typedef SparkStatus (*SparkModelServingAdapterValidateSubmissionFunction)(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission);
 /*
- * validate_submission is the side-effect-free PREPARE hook. Resident-owned
- * hidden boundary pointers are intentionally absent until every rank commits.
- * submit begins execution and may complete synchronously through the callback.
+ * validate_submission is side-effect free. During distributed PREPARE the
+ * resident calls optional prefetch after validation and before reserving the
+ * route. Prefetch must be idempotent by sequence/cache identity: OK means the
+ * work is ready or queued, while BUSY asks the coordinator to retry under
+ * pressure. Resident-owned hidden boundary pointers are intentionally absent
+ * until every rank commits. Submit may return BUSY while queued cache work
+ * finishes; the resident retries it without exposing that wait to the caller.
  */
 typedef SparkStatus (*SparkModelServingAdapterSubmitFunction)(
 	void *adapter_state,
@@ -337,6 +366,15 @@ SparkStatus SparkModelServingAdapterValidateRuntimeSubmission(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingRuntimeLimits *runtime_limits,
 	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelServingAdapterPrepareSubmission(
+	const SparkModelServingAdapterInterface *adapter_interface,
+	void *adapter_state,
+	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelServingAdapterBuildDriverCacheLanes(
+	const SparkModelServingSubmission *submission,
+	SparkModelDriverCacheLane *cache_lanes,
+	uint32_t cache_lane_capacity,
+	uint32_t *cache_lane_count_out);
 SparkStatus SparkModelServingAdapterSelectEmitRows(
 	const SparkModelServingSubmission *submission,
 	uint32_t *emit_row_indices,

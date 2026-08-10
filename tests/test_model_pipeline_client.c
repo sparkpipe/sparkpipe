@@ -72,6 +72,7 @@ typedef struct TestModelBatchState
 	uint32_t submission_count;
 	uint32_t submission_work_kinds[TEST_MODEL_BATCH_CAPTURED_SUBMISSION_COUNT];
 	uint32_t submission_lane_counts[TEST_MODEL_BATCH_CAPTURED_SUBMISSION_COUNT];
+	uint32_t submission_row_counts[TEST_MODEL_BATCH_CAPTURED_SUBMISSION_COUNT];
 } TestModelBatchState;
 
 static void TestModelBatchSchedulerMixedLanes(uint32_t total,uint32_t kind,const uint32_t *expected,uint32_t expected_count)
@@ -136,6 +137,55 @@ static void TestModelBatchSchedulerKinds(void)
 	assert(bypass[SPARK_MODEL_SERVING_WORK_KIND_DECODE] == 0u);
 }
 
+static void TestModelBatchSchedulerCacheCapacity(void)
+{
+	uint32_t additional,available,inflight,iteration,maximum,physical,planned,seed,slot;
+	assert(SparkModelBatchSchedulerPlanCacheBoundLaneCount(1024u,0u,0u) ==
+		1024u);
+	inflight = 0u;
+	for (slot=0u; slot<13u; slot++)
+	{
+		planned = SparkModelBatchSchedulerPlanCacheBoundLaneCount(1024u,
+			16384u,inflight);
+		assert(planned == 1024u);
+		inflight += planned;
+	}
+	assert(inflight == 13312u);
+	assert(16384u - inflight >= 2048u);
+	inflight = 0u;
+	for (slot=0u; slot<4u; slot++)
+	{
+		planned = SparkModelBatchSchedulerPlanCacheBoundLaneCount(1024u,
+			4096u,inflight);
+		assert(planned == 1024u);
+		inflight += planned;
+	}
+	assert(SparkModelBatchSchedulerPlanCacheBoundLaneCount(1024u,4096u,
+		inflight) == 0u);
+	seed = UINT32_C(0x7f4a7c15);
+	for (iteration=0u; iteration<100000u; iteration++)
+	{
+		seed = (seed * UINT32_C(1664525)) + UINT32_C(1013904223);
+		maximum = (seed % 1024u) + 1u;
+		seed = (seed * UINT32_C(1664525)) + UINT32_C(1013904223);
+		physical = seed % 16385u;
+		seed = (seed * UINT32_C(1664525)) + UINT32_C(1013904223);
+		inflight = seed % 20000u;
+		planned = SparkModelBatchSchedulerPlanCacheBoundLaneCount(maximum,
+			physical,inflight);
+		available = physical != 0u && inflight < physical ?
+			physical - inflight : 0u;
+		assert(planned <= maximum);
+		assert(physical == 0u ? planned == maximum : planned <= available);
+		assert(physical == 0u || inflight < physical || planned == 0u);
+		seed = (seed * UINT32_C(1664525)) + UINT32_C(1013904223);
+		additional = seed % 20000u;
+		assert(SparkModelBatchSchedulerCacheDemandFits(physical,inflight,
+			additional) == (physical == 0u ||
+			(inflight <= physical && additional <= physical - inflight)));
+	}
+}
+
 static void TestModelBatchSchedulerPolicy(void)
 {
 	static const uint32_t b14[] = {2u,1u,1u,1u,1u,1u,1u,1u,1u,1u,1u,1u,1u};
@@ -179,6 +229,7 @@ static void TestModelBatchSchedulerPolicy(void)
 	assert(SparkModelBatchSchedulerPlanGroupSize(31u,128u,16u) == 31u);
 	assert(SparkModelBatchSchedulerPlanGroupSize(2176u,128u,16u) == 128u);
 	TestModelBatchSchedulerKinds();
+	TestModelBatchSchedulerCacheCapacity();
 }
 
 static void TestModelBatchEvent(
@@ -224,6 +275,7 @@ static void TestModelBatchStageCompletion(
 		assert(state->submission_count < TEST_MODEL_BATCH_CAPTURED_SUBMISSION_COUNT);
 		state->submission_work_kinds[state->submission_count] = completion->work_kind;
 		state->submission_lane_counts[state->submission_count] = completion->active_sequence_count;
+		state->submission_row_counts[state->submission_count] = completion->row_count;
 		state->submission_count++;
 	}
 	if ( completion->stage_index == 0u && completion->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && (state->first_prefill_submission_id == 0u || completion->submission_id < state->first_prefill_submission_id) )
@@ -675,6 +727,8 @@ static void TestModelPipelineWriteDeployment(
 	fixture.runtime_limits.max_active_sequence_count = 16u;
 	fixture.runtime_limits.max_input_row_count = 32u;
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
+	fixture.runtime_limits.kv_logical_page_capacity = 128u;
+	fixture.runtime_limits.kv_physical_page_capacity = 32u;
 	fixture.control_port_base = TestModelPipelineProbeFreeTcpPort();
 	if ( fixture.control_port_base == 0u || fixture.control_port_base > UINT16_MAX - (TEST_MODEL_PIPELINE_RANK_COUNT - 1u) )
 		fixture.control_port_base = 59000u;
@@ -769,14 +823,21 @@ static void TestModelBatchWaitIdle(
 	uint32_t completed_count)
 {
 	SparkModelBatchEngineView view;
+	SparkStatus status;
 	struct timespec delay;
 	uint32_t attempt;
 	delay.tv_sec = 0;
 	delay.tv_nsec = 1000000;
 	for (attempt=0u; attempt<10000u; attempt++)
 	{
-		assert(SparkModelBatchEngineProgress(engine,4u) == SPARK_STATUS_OK);
+		status = SparkModelBatchEngineProgress(engine,4u);
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr,"batch wait failed status=%u attempt=%u completed=%u\n",
+				(uint32_t)status,attempt,completed_count);
+		assert(status == SPARK_STATUS_OK);
 		assert(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK);
+		assert(view.kv_physical_page_capacity == 0u ||
+			view.inflight_kv_page_count <= view.kv_physical_page_capacity);
 		if ( view.live_request_count == 0u && view.completed_request_count == completed_count )
 			return;
 		nanosleep(&delay,0);
@@ -1057,6 +1118,56 @@ static void TestModelBatchEngineDeepQueue(
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
 }
 
+static void TestModelBatchEnginePrefixReuse(
+	const SparkModelResidentDeployment *deployment)
+{
+	SparkModelBatchEngine *engine;
+	TestModelBatchState state;
+	uint32_t index,second_prefill,prompt[9] = {11u,12u,13u,14u,15u,16u,17u,18u,19u};
+	memset(&state,0,sizeof(state));
+	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,16u,2u);
+	(void)TestModelBatchSubmit(engine,3001u,4001u,prompt,9u,1u);
+	TestModelBatchWaitIdle(engine,1u);
+	second_prefill = UINT32_MAX;
+	(void)TestModelBatchSubmit(engine,3002u,4002u,prompt,9u,1u);
+	assert(SparkModelBatchEngineCloseAdmission(engine) == SPARK_STATUS_OK);
+	TestModelBatchWaitIdle(engine,2u);
+	for (index=0u; index<state.submission_count; index++)
+		if ( state.submission_work_kinds[index] == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+			second_prefill = index;
+	assert(second_prefill != UINT32_MAX);
+	assert(state.submission_row_counts[second_prefill] == 1u);
+	assert(state.completed_count == 2u);
+	assert(state.error_count == 0u);
+	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+}
+
+static void TestModelBatchEngineCachePageBudget(
+	const SparkModelResidentDeployment *deployment)
+{
+	SparkModelBatchEngine *engine;
+	TestModelBatchState state;
+	uint32_t found_capacity_tail,index,lane;
+	uint32_t prompt[13] = {11u,12u,13u,14u,15u,16u,17u,18u,19u,20u,21u,22u,23u};
+	memset(&state,0,sizeof(state));
+	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,32u);
+	for (lane=0u; lane<32u; lane++)
+		(void)TestModelBatchSubmit(engine,5001u + lane,6001u + lane,prompt,
+			13u,1u);
+	assert(SparkModelBatchEngineCloseAdmission(engine) == SPARK_STATUS_OK);
+	TestModelBatchWaitIdle(engine,32u);
+	found_capacity_tail = 0u;
+	for (index=0u; index<state.submission_count; index++)
+		if ( state.submission_work_kinds[index] ==
+			SPARK_MODEL_SERVING_WORK_KIND_PREFILL &&
+			state.submission_lane_counts[index] == 15u )
+			found_capacity_tail = 1u;
+	assert(found_capacity_tail != 0u);
+	assert(state.completed_count == 32u);
+	assert(state.error_count == 0u);
+	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+}
+
 static uint32_t TestModelBatchCountText(const char *text,const char *needle)
 {
 	uint32_t count;
@@ -1321,6 +1432,8 @@ int main(void)
 	TestModelBatchEngineAggregatePrefill(&deployment);
 	TestModelBatchEngineResidentQueue(&deployment);
 	TestModelBatchEngineDeepQueue(&deployment);
+	TestModelBatchEnginePrefixReuse(&deployment);
+	TestModelBatchEngineCachePageBudget(&deployment);
 	TestModelBatchEngineShutdown(&deployment);
 	TestModelBatchProcess(deployment_path,0u);
 	TestModelBatchProcess(deployment_path,1u);

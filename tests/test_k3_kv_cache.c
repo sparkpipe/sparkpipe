@@ -37,7 +37,7 @@ static void K3TestEstimatorPricesTheLatentArena(void)
 		SPARK_K3_KV_BYTES_PER_SCALAR;
 	assert(estimate.attention_bytes_per_token_per_layer ==
 		expected_token_layer_bytes);
-	assert(estimate.dsa_index_bytes_per_token == 0u);
+	assert(estimate.index_key_bytes_per_token == 0u);
 	assert(estimate.block_count_per_context ==
 		K3_TEST_CONTEXT_TOKENS / K3_TEST_BLOCK_TOKENS);
 	assert(estimate.contexts_per_rank > 0u);
@@ -52,12 +52,14 @@ static void K3TestArenaPagesLatentTokens(void)
 	SparkKvCacheBlock blocks[8u];
 	SparkKvCacheConfiguration configuration;
 	SparkKvCacheBlockView view;
+	uint32_t resident_owners[8u];
 	uint32_t block_index;
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
 	configuration.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
-	configuration.physical_block_count = 8u;
+	configuration.logical_block_count = 8u;
 	configuration.block_token_count = K3_TEST_BLOCK_TOKENS;
+	configuration.resident_block_capacity = 8u;
 	configuration.layer_count = SPARK_K3_KV_MLA_LAYER_COUNT;
 	configuration.kv_head_count = 1u;
 	configuration.head_dim =
@@ -66,9 +68,12 @@ static void K3TestArenaPagesLatentTokens(void)
 	configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
 	configuration.value_device_base = (void *)(uintptr_t)0x100000000ull;
 	configuration.blocks = blocks;
+	configuration.resident_slot_logical_block_indices = resident_owners;
 	assert(SparkKvCacheArenaInitialize(&arena,&configuration) ==
 		SPARK_STATUS_OK);
 	assert(SparkKvCacheArenaAcquireBlock(&arena,&block_index) == SPARK_STATUS_OK);
+	assert(SparkKvCacheArenaMarkBlockResident(&arena,block_index) ==
+		SPARK_STATUS_OK);
 	memset(&view,0,sizeof(view));
 	assert(SparkKvCacheArenaResolveBlock(&arena,block_index,&view) ==
 		SPARK_STATUS_OK);

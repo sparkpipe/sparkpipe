@@ -58,6 +58,8 @@ static void TestHello(void)
 	assert(ack.max_active_sequence_count == 8u);
 	assert(ack.max_input_row_count == 16u);
 	assert(ack.resident_sequence_capacity == 64u);
+	assert(ack.kv_logical_page_capacity == 0u);
+	assert(ack.kv_physical_page_capacity == 0u);
 	assert(ack.boundary_format == SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16);
 	assert(ack.linear_weight_codec == SPARK_WEIGHT_CODEC_BF16);
 	assert(ack.expert_weight_codec == SPARK_WEIGHT_CODEC_INT8);

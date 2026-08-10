@@ -1,6 +1,7 @@
 #include "sparkpipe/spark_lm_kernels.cuh"
 #include "sparkpipe/spark_row_compaction.cuh"
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
+#include "spark_dsv4_pool_layout.h"
 #include "spark_dsv4_stagepack_format.h"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/weight_codec.cuh"
@@ -29,17 +30,6 @@ static_assert(SPARK_DSV4_MODEL_HIDDEN_DIMENSION % SparkDsv4ExpertWeightFormat::k
 	"DSV4 hidden width must contain complete expert codec scale groups");
 static_assert(SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION % SparkDsv4ExpertWeightFormat::kScaleGroup == 0u,
 	"DSV4 expert width must contain complete expert codec scale groups");
-
-static __global__ void SparkDsv4ResetCompressorStateKernel(float *kv, float *scores, uint64_t element_count)
-{
-	uint64_t element = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	uint64_t stride = (uint64_t)gridDim.x * blockDim.x;
-	for (; element<element_count; element+=stride)
-	{
-		kv[element] = 0.0f;
-		scores[element] = -INFINITY;
-	}
-}
 
 /*
  * DeepSeek V4 device kernels. The variant model header arrives via the
@@ -196,6 +186,10 @@ static __global__ void SparkDsv4SparseAttnKernel(
     const void *kv_cache_bf16,
     uint64_t lane_stride_elements,
     const uint32_t *row_lane_indices,
+    const uint32_t *row_page_table_indices,
+    const uint32_t *physical_page_table,
+    uint32_t page_table_stride,
+    uint32_t compressed_entries_per_page,
     const int32_t *topk_idxs,
     uint32_t topk,
     const float *sink_f32,
@@ -232,7 +226,7 @@ static __global__ void SparkDsv4SparseAttnKernel(
     uint32_t element_index;
     uint32_t selected_slot;
     uint32_t pairs_per_lane;
-    uint64_t kv_base;
+    uint32_t page_ordinal;
 
     row = blockIdx.x;
     first_head = blockIdx.y * heads_per_cta;
@@ -287,7 +281,7 @@ static __global__ void SparkDsv4SparseAttnKernel(
     }
     __syncthreads();
 
-    kv_base = (uint64_t)row_lane_indices[row] * lane_stride_elements;
+    page_ordinal = row_page_table_indices[row];
     for (selected_slot = warp_index;
          selected_slot < topk;
          selected_slot += SPARK_LM_CTA_WARPS)
@@ -303,10 +297,31 @@ static __global__ void SparkDsv4SparseAttnKernel(
             float rescale[heads_per_cta];
             float weight[heads_per_cta];
             float2 selected_values[maximum_pairs_per_lane];
+            uint32_t local_cache_index;
+            uint32_t physical_page;
             uint64_t cache_vector_base;
 
-            cache_vector_base =
-                kv_base + ((uint64_t)(uint32_t)cache_index * head_dim);
+            local_cache_index = (uint32_t)cache_index;
+            physical_page = row_lane_indices[row];
+            if (local_cache_index >= SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS)
+            {
+                uint32_t compressed_index;
+                uint32_t source_page;
+
+                if (compressed_entries_per_page == 0u)
+                {
+                    continue;
+                }
+                compressed_index = local_cache_index -
+                    SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS;
+                source_page = compressed_index / compressed_entries_per_page;
+                local_cache_index = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS +
+                    (compressed_index % compressed_entries_per_page);
+                physical_page = physical_page_table[
+                    ((uint64_t)page_ordinal * page_table_stride) + source_page];
+            }
+            cache_vector_base = ((uint64_t)physical_page *
+                lane_stride_elements) + ((uint64_t)local_cache_index * head_dim);
             for (local_head = 0u;
                  local_head < heads_per_cta;
                  ++local_head)
@@ -654,11 +669,55 @@ static __global__ void SparkDsv4CacheScatterKernel(
 	if ( row >= row_count || (ratio != 0u && emitted[row] == 0u) )
 		return;
 	position = row_positions[row];
-	slot = ratio != 0u ? base_slot + (position / ratio) : position % ring_slots;
+	slot = ratio != 0u ? base_slot + ((position % ring_slots) / ratio) : position % ring_slots;
 	destination = (uint64_t)row_lane_indices[row] * cache_lane_stride + slot * width;
 	source = (uint64_t)row * width;
 	for (element=threadIdx.x; element<width; element+=blockDim.x)
 		cache_bf16[destination + element] = source_bf16[source + element];
+}
+
+static __global__ void SparkDsv4InitializePagesKernel(
+	uint32_t *page_pool,
+	uint64_t page_stride_words,
+	const uint32_t *page_indices,
+	const uint32_t *parent_page_indices,
+	uint32_t page_count,
+	const SparkDsv4PagedScoreSpan *score_spans,
+	uint32_t score_span_count)
+{
+	float *score_base;
+	uint32_t page,parent,span_index;
+	uint64_t destination,source,word;
+	if ( blockIdx.x >= page_count )
+		return;
+	page = page_indices[blockIdx.x];
+	if ( page == UINT32_MAX )
+		return;
+	parent = parent_page_indices[blockIdx.x];
+	destination = (uint64_t)page * page_stride_words;
+	source = (uint64_t)parent * page_stride_words;
+	for (word=threadIdx.x; word<page_stride_words; word+=blockDim.x)
+		page_pool[destination + word] = parent == UINT32_MAX ? 0u : page_pool[source + word];
+	__syncthreads();
+	if ( parent != UINT32_MAX )
+		return;
+	score_base = (float *)(page_pool + destination);
+	for (span_index=0u; span_index<score_span_count; span_index++)
+		for (word=threadIdx.x; word<score_spans[span_index].element_count;
+			word+=blockDim.x)
+			score_base[score_spans[span_index].offset_words + word] = -INFINITY;
+}
+
+static __global__ void SparkDsv4UpdatePageTableKernel(
+	uint32_t *page_table,
+	const uint32_t *update_indices,
+	const uint32_t *update_values,
+	uint32_t update_count)
+{
+	uint32_t update;
+	update = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( update < update_count )
+		page_table[update_indices[update]] = update_values[update];
 }
 
 static __global__ void SparkDsv4BuildAttentionIndicesKernel(
@@ -854,7 +913,7 @@ static __global__ void SparkDsv4AccumAddKernel(void *destination_bf16, const voi
 
 // The indexer score: relu(q_h . kv) per head times the projected head
 // weight, summed over heads - one warp per slot, lanes over dims.
-static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_lane_indices, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)
+static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t entries_per_page, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)
 {
     static const uint32_t maximum_pairs_per_lane =
         SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION /
@@ -868,6 +927,7 @@ static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const voi
     uint32_t pair_index;
     uint32_t value_pair_index;
     uint32_t bounded_slot_count;
+    uint32_t physical_page;
     uint32_t query_element;
     uint64_t q_base;
     uint64_t kv_base;
@@ -913,8 +973,11 @@ static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const voi
         return;
     }
 
-    kv_base = ((uint64_t)row_lane_indices[row] * lane_stride_elements) +
-        ((uint64_t)slot * head_dim);
+    physical_page = physical_page_table[
+        ((uint64_t)row_page_table_indices[row] * page_table_stride) +
+        (slot / entries_per_page)];
+    kv_base = ((uint64_t)physical_page * lane_stride_elements) +
+        ((uint64_t)(slot % entries_per_page) * head_dim);
     #pragma unroll
     for (pair_index = 0u;
          pair_index < maximum_pairs_per_lane;
@@ -1512,6 +1575,10 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
     const void *kv_cache_bf16,
     uint64_t lane_stride_elements,
     const uint32_t *row_lane_indices,
+    const uint32_t *row_page_table_indices,
+    const uint32_t *physical_page_table,
+    uint32_t page_table_stride,
+    uint32_t compressed_entries_per_page,
     const int32_t *topk_idxs,
     uint32_t topk,
     const float *sink_f32,
@@ -1526,7 +1593,9 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
     size_t shared_bytes;
 
     if (q_bf16 == 0 || kv_cache_bf16 == 0 ||
-        row_lane_indices == 0 || topk_idxs == 0 || out_bf16 == 0 ||
+        row_lane_indices == 0 || row_page_table_indices == 0 ||
+        physical_page_table == 0 || page_table_stride == 0u ||
+        topk_idxs == 0 || out_bf16 == 0 ||
         topk == 0u || row_count == 0u || head_count == 0u ||
         head_dim == 0u || head_dim > SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION ||
         (head_dim & 1u) != 0u)
@@ -1546,6 +1615,10 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
         kv_cache_bf16,
         lane_stride_elements,
         row_lane_indices,
+        row_page_table_indices,
+        physical_page_table,
+        page_table_stride,
+        compressed_entries_per_page,
         topk_idxs,
         topk,
         sink_f32,
@@ -1560,16 +1633,6 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
 extern "C" cudaError_t SparkDsv4LaunchWiden(cudaStream_t stream, const void *input_bf16, float *output_f32, uint32_t row_count, uint32_t width, float scale)
 {
 	SparkDsv4WidenKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(input_bf16,output_f32,row_count,width,scale);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkDsv4LaunchResetCompressorState(cudaStream_t stream, float *kv, float *scores, uint64_t element_count)
-{
-	uint32_t blocks;
-	if ( kv == 0 || scores == 0 || element_count == 0u )
-		return(cudaErrorInvalidValue);
-	blocks = (uint32_t)((element_count + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS);
-	SparkDsv4ResetCompressorStateKernel<<<blocks,SPARK_LM_CTA_THREADS,0,stream>>>(kv,scores,element_count);
 	return(cudaGetLastError());
 }
 
@@ -1589,9 +1652,27 @@ extern "C" cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream, const fl
 
 extern "C" cudaError_t SparkDsv4LaunchCacheScatter(cudaStream_t stream, const void *source_bf16, const uint32_t *emitted, void *cache_bf16, uint64_t cache_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t width, uint64_t base_slot, uint32_t ratio, uint32_t ring_slots)
 {
-	if ( source_bf16 == 0 || cache_bf16 == 0 || row_lane_indices == 0 || row_positions == 0 || row_count == 0u || width == 0u || (ratio == 0u && ring_slots == 0u) || (ratio != 0u && emitted == 0) )
+	if ( source_bf16 == 0 || cache_bf16 == 0 || row_lane_indices == 0 || row_positions == 0 || row_count == 0u || width == 0u || ring_slots == 0u || (ratio != 0u && (emitted == 0 || ring_slots % ratio != 0u)) )
 		return(cudaErrorInvalidValue);
 	SparkDsv4CacheScatterKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>((const uint16_t *)source_bf16,emitted,(uint16_t *)cache_bf16,cache_lane_stride,row_lane_indices,row_positions,row_count,width,base_slot,ratio,ring_slots);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchInitializePages(cudaStream_t stream, void *page_pool, uint64_t page_stride_bytes, const uint32_t *page_indices, const uint32_t *parent_page_indices, uint32_t page_count, const SparkDsv4PagedScoreSpan *score_spans, uint32_t score_span_count)
+{
+	if ( page_pool == 0 || page_indices == 0 || parent_page_indices == 0 || page_count == 0u || page_stride_bytes == 0u || page_stride_bytes % sizeof(uint32_t) != 0u || (score_span_count != 0u && score_spans == 0) )
+		return(cudaErrorInvalidValue);
+	SparkDsv4InitializePagesKernel<<<page_count,SPARK_LM_CTA_THREADS,0,stream>>>((uint32_t *)page_pool,page_stride_bytes / sizeof(uint32_t),page_indices,parent_page_indices,page_count,score_spans,score_span_count);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchUpdatePageTable(cudaStream_t stream, uint32_t *page_table, const uint32_t *update_indices, const uint32_t *update_values, uint32_t update_count)
+{
+	uint32_t blocks;
+	if ( page_table == 0 || update_indices == 0 || update_values == 0 || update_count == 0u )
+		return(cudaErrorInvalidValue);
+	blocks = (update_count + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS;
+	SparkDsv4UpdatePageTableKernel<<<blocks,SPARK_LM_CTA_THREADS,0,stream>>>(page_table,update_indices,update_values,update_count);
 	return(cudaGetLastError());
 }
 
@@ -1717,7 +1798,7 @@ extern "C" cudaError_t SparkDsv4LaunchAccumAdd(cudaStream_t stream, void *destin
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_lane_indices, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)
+extern "C" cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t entries_per_page, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)
 {
     dim3 grid(
         row_count,
@@ -1725,7 +1806,9 @@ extern "C" cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const vo
     size_t shared_memory_bytes;
 
     if (q_bf16 == 0 || kv_cache_bf16 == 0 ||
-        row_lane_indices == 0 || slot_counts == 0 ||
+        row_page_table_indices == 0 || physical_page_table == 0 ||
+        page_table_stride == 0u || entries_per_page == 0u ||
+        slot_counts == 0 ||
         head_weights_f32 == 0 || scores_f32 == 0 || row_count == 0u ||
         max_slots == 0u || head_count == 0u || head_dim == 0u ||
         head_dim > SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION ||
@@ -1743,7 +1826,10 @@ extern "C" cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const vo
             q_bf16,
             kv_cache_bf16,
             lane_stride_elements,
-            row_lane_indices,
+            row_page_table_indices,
+            physical_page_table,
+            page_table_stride,
+            entries_per_page,
             slot_counts,
             head_weights_f32,
             scores_f32,

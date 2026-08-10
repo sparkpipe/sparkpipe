@@ -818,6 +818,10 @@ SparkStatus SparkModelResidentClientGetView(
 	view->max_active_sequence_count = client->runtime_limits.max_active_sequence_count;
 	view->max_input_row_count = client->runtime_limits.max_input_row_count;
 	view->resident_sequence_capacity = client->runtime_limits.resident_sequence_capacity;
+	view->kv_logical_page_capacity =
+		client->runtime_limits.kv_logical_page_capacity;
+	view->kv_physical_page_capacity =
+		client->runtime_limits.kv_physical_page_capacity;
 	view->prepared_submission_count = client->prepared_count;
 	view->submitted_count = client->submitted_count;
 	view->prepared_count = client->prepared_total;

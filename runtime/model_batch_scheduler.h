@@ -6,6 +6,14 @@ uint32_t SparkModelBatchSchedulerPlanGroupSize(
 	uint32_t queued,
 	uint32_t maximum_group_size,
 	uint32_t minimum_efficient_group_size);
+uint32_t SparkModelBatchSchedulerPlanCacheBoundLaneCount(
+	uint32_t maximum_lane_count,
+	uint32_t physical_page_capacity,
+	uint32_t inflight_page_count);
+uint32_t SparkModelBatchSchedulerCacheDemandFits(
+	uint32_t physical_page_capacity,
+	uint32_t used_page_count,
+	uint32_t additional_page_count);
 uint32_t SparkModelBatchSchedulerPlanMixedLaneCount(
 	const uint32_t queued_by_kind[4],
 	const uint32_t maximum_by_kind[4],

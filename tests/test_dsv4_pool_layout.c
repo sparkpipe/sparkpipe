@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "spark_dsv4_pool_layout.h"
 
@@ -109,10 +110,35 @@ static void SparkDsv4TestIndexerLaneBounds(void)
 	assert(last_lane + state_stride == (uint64_t)SPARK_DSV4_TEST_RESIDENT * state_stride);
 }
 
+static void SparkDsv4TestPagedLayoutIsOneBackingRecordPerPage(void)
+{
+	SparkDsv4PagedPoolLayout layout;
+	const SparkDsv4PagedLayerLayout *swa,*csa,*hca;
+	assert(SparkDsv4PagedPoolBuildLayout(0u,4u,&layout) == 0);
+	assert(layout.block_token_count == 128u);
+	assert(layout.page_stride_bytes != 0u);
+	assert(layout.page_stride_bytes % SPARK_DSV4_PAGED_POOL_ALIGNMENT_BYTES == 0u);
+	swa = &layout.layers[0u];
+	csa = &layout.layers[2u];
+	hca = &layout.layers[3u];
+	assert(swa->attention_entry_capacity == 128u);
+	assert(swa->compressor_kv_offset_bytes == 0u);
+	assert(csa->attention_entry_capacity == 160u);
+	assert(csa->index_entry_capacity == 32u);
+	assert(csa->compressor_kv_offset_bytes != 0u);
+	assert(csa->index_cache_offset_bytes != 0u);
+	assert(hca->attention_entry_capacity == 129u);
+	assert(hca->index_entry_capacity == 0u);
+	assert(hca->compressor_kv_offset_bytes != 0u);
+	assert(hca->index_cache_offset_bytes == 0u);
+	assert(hca->compressor_score_offset_bytes < layout.page_stride_bytes);
+}
+
 int main(void)
 {
 	SparkDsv4TestMixedLayout();
 	SparkDsv4TestStagePartition();
 	SparkDsv4TestIndexerLaneBounds();
+	SparkDsv4TestPagedLayoutIsOneBackingRecordPerPage();
 	return(0);
 }
