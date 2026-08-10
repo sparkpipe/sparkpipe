@@ -2462,20 +2462,52 @@ static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmax(cudaStream_t strea
 	grouped_rows = grouped_rows > SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX ? SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX : grouped_rows;
 	grouped_rows = grouped_rows > row_count ? row_count : grouped_rows;
 
-    SparkLmExpertTileKernel<SPARK_LM_HEAD_SHADOW_GROUP><<<
-        tile_grid,
-        SPARK_LM_CTA_THREADS,
-        0u,
-        stream>>>(
-            SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,
-            shadow_payload,
-            shadow_scale,
-            hidden_bf16,
-            0,
-            logits_bf16,
-            row_count,
-            hidden_dimension,
-            candidate_count);
+	/*
+	 * A 16-row tensor tile wastes fifteen rows for B1.  The wasted WMMA
+	 * arithmetic is especially expensive for the full vocabulary head: the
+	 * shadow projection has 129K output rows, so the tiny-batch path should
+	 * use the scalar one-warp-per-neuron launcher already used by dense
+	 * projections.  It reads each shadow row once and keeps the exact screen
+	 * and rescore stages unchanged.  The tile path remains the batched path.
+	 */
+	if ( row_count < SPARK_LM_TILE )
+	{
+		dim3 shadow_grid(
+			row_count,
+			(candidate_count + SPARK_LM_CTA_WARPS - 1u) /
+			SPARK_LM_CTA_WARPS);
+		uint32_t shadow_shared_bytes = hidden_dimension * (uint32_t)sizeof(float);
+		SparkLmLinearKernel<SPARK_LM_HEAD_SHADOW_GROUP><<<
+			shadow_grid,
+			SPARK_LM_CTA_THREADS,
+			shadow_shared_bytes,
+			stream>>>(
+			SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,
+			shadow_payload,
+			shadow_scale,
+			hidden_bf16,
+			logits_bf16,
+			row_count,
+			hidden_dimension,
+			candidate_count);
+	}
+	else
+	{
+		SparkLmExpertTileKernel<SPARK_LM_HEAD_SHADOW_GROUP><<<
+			tile_grid,
+			SPARK_LM_CTA_THREADS,
+			0u,
+			stream>>>(
+				SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,
+				shadow_payload,
+				shadow_scale,
+				hidden_bf16,
+				0,
+				logits_bf16,
+				row_count,
+				hidden_dimension,
+				candidate_count);
+	}
     SparkLmHeadScreenKernel<<<row_count, SPARK_LM_CTA_THREADS, 0u, stream>>>(
         hidden_bf16,
         logits_bf16,
