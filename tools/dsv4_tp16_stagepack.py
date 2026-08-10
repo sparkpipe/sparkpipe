@@ -270,15 +270,72 @@ def shard_pack(input_path: Path, output_path: Path, rank: int) -> dict:
             "validated": True}
 
 
+def verify_sharded_pack(input_path: Path, output_path: Path, rank: int) -> dict:
+    """Verify output directory geometry against the full source directory."""
+    if rank < 0 or rank >= TP_DEGREE:
+        raise PackFailure("rank must be in [0,15]")
+    with input_path.open("rb") as source:
+        source_header = HEADER.unpack(source.read(HEADER.size))
+        if source_header[0] != MAGIC or source_header[1] != VERSION:
+            raise PackFailure("input is not a DSV4 stage pack")
+        source_entries = [ENTRY.unpack(source.read(ENTRY.size))
+                          for _ in range(source_header[8])]
+    expected = {}
+    for entry in source_entries:
+        try:
+            planned, _, _, _ = plan_entry(entry, rank)
+        except PackFailure as error:
+            if str(error) == "filtered":
+                continue
+            raise
+        expected[(entry[0], entry[1])] = planned
+    file_bytes = output_path.stat().st_size
+    with output_path.open("rb") as output:
+        output_header = HEADER.unpack(output.read(HEADER.size))
+        if output_header[0] != MAGIC or output_header[1] != VERSION:
+            raise PackFailure("output is not a DSV4 stage pack")
+        output_entries = [ENTRY.unpack(output.read(ENTRY.size))
+                          for _ in range(output_header[8])]
+    if output_header[9] != 0 or output_header[10] != 43:
+        raise PackFailure("output does not cover the complete model")
+    if output_header[16] != HEADER.size or output_header[17] != file_bytes:
+        raise PackFailure("output header size fields are inconsistent")
+    if output_header[8] != len(expected) or len(output_entries) != len(expected):
+        raise PackFailure("output tensor count does not match source sharding")
+    for index, actual in enumerate(output_entries):
+        key = (actual[0], actual[1])
+        if key not in expected:
+            raise PackFailure(f"unexpected output tensor kind={key[0]} layer={key[1]}")
+        if actual[:6] != expected[key][:6]:
+            raise PackFailure(f"output shape mismatch kind={key[0]} layer={key[1]}")
+        if index != 0 and output_entries[index - 1][6] >= actual[6]:
+            raise PackFailure("output payload directory is not ordered")
+        payload = payload_bytes(actual[2], actual[3], actual[4])
+        scales = scale_bytes(actual[2], actual[3], actual[4])
+        if actual[6] < HEADER.size + ENTRY.size * output_header[8] or actual[6] + payload > file_bytes:
+            raise PackFailure(f"output payload bounds invalid kind={key[0]} layer={key[1]}")
+        if scales and (actual[7] != actual[6] + payload or actual[7] + scales > file_bytes):
+            raise PackFailure(f"output scale bounds invalid kind={key[0]} layer={key[1]}")
+        if not scales and actual[7] != 0:
+            raise PackFailure(f"unexpected scale offset kind={key[0]} layer={key[1]}")
+    if set((entry[0], entry[1]) for entry in output_entries) != set(expected):
+        raise PackFailure("output tensor key set differs from source sharding")
+    return {"file": str(output_path), "rank": rank, "tp_degree": TP_DEGREE,
+            "bytes": file_bytes, "tensor_count": len(output_entries),
+            "validated": True}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-pack", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--rank", type=int, required=True)
+    parser.add_argument("--verify-output", action="store_true")
     args = parser.parse_args(argv)
     try:
-        print(json.dumps(shard_pack(args.input_pack, args.output, args.rank),
-                         indent=2, sort_keys=True))
+        result = (verify_sharded_pack(args.input_pack,args.output,args.rank)
+                  if args.verify_output else shard_pack(args.input_pack,args.output,args.rank))
+        print(json.dumps(result, indent=2, sort_keys=True))
     except (OSError, PackFailure, struct.error) as error:
         print(f"dsv4_tp16_stagepack: {error}")
         return 1
