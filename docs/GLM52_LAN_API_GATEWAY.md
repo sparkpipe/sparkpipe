@@ -43,15 +43,15 @@ Management LAN:
 build/sparkpipe_glm52_http_gateway \
     --bind <spark0-management-lan-ip> \
     --port 8080 \
-    --api-key-file /home/spark0/sparkpipe_runtime/API_KEY \
-    --service-backend-so /home/spark0/sparkpipe_runtime/libglm52_pp13_service_backend.so \
+    --api-key-file /home/spark0/.config/sparkpipe/API_KEY \
+    --service-backend-so /home/spark0/sparkdata/glm52.fp8.pp13/lib/libglm52_pp13_service_backend.so \
     --model-quantization fp8 \
-    --moe-pack-root /srv/sparkpipe/packs/glm52/fp8_pp13 \
-    --transport-so /home/spark0/sparkpipe_runtime/libspark_hidden_transport.so \
-    --driver-so /home/spark0/sparkpipe_runtime/model_driver.so \
+    --moe-pack-root /home/spark0/sparkdata/glm52.fp8.pp13/packs/moe \
+    --transport-so /home/spark0/sparkdata/glm52.fp8.pp13/lib/hidden_transport.so \
+    --driver-so /home/spark0/sparkdata/glm52.fp8.pp13/lib/model_driver.so \
     --program glm52.pp13.rank.production \
     --node-target cuda.sm121.glm52.pp13.fp8 \
-    --tokenizer /srv/sparkpipe/packs/glm52/tokenizer.sptok \
+    --tokenizer /home/spark0/sparkdata/glm52.fp8.pp13/tokenizer/tokenizer.sptok \
     --max-active 1024 \
     --port-base 52100
 ```

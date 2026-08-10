@@ -20,6 +20,7 @@
 
 #include <cuda_runtime_api.h>
 
+#include "spark_filesystem.h"
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "sparkpipe/spark_model_resident_ipc.h"
@@ -333,6 +334,18 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 	configuration->kv_physical_page_capacity =
 		deployment->runtime_limits.kv_physical_page_capacity;
 	configuration->port_base = deployment->transport_control_port_base;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkModelResidentdValidateDirectories(
+	const SparkModelResidentdConfiguration *configuration)
+{
+	if ( configuration == 0 ||
+		!SparkPathIsRealDirectoryTree(configuration->runtime_root) )
+		return(SPARK_STATUS_IO_ERROR);
+	if ( configuration->kv_backing_directory != 0 &&
+		!SparkPathIsRealDirectoryTree(configuration->kv_backing_directory) )
+		return(SPARK_STATUS_IO_ERROR);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1872,6 +1885,8 @@ int main(int argument_count,char **arguments)
 		status = SparkModelResidentDeploymentLoad(launch.deployment_path,&deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdBuildConfiguration(&deployment,launch.rank_index,&configuration);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentdValidateDirectories(&configuration);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkModelResidentdUsage(arguments[0]);

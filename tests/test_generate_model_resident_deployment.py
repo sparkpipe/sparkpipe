@@ -54,9 +54,13 @@ def main() -> int:
         "lib/hidden_transport.so")
     assert {node["kv_backing_directory"]
             for node in deployment["nodes"]} == {
-                "/fast-local-nvme/sparkpipe-kv"}
+                f"/home/{host}/kvcache/dsv4_flash/pp13.bf16"
+                for host in (
+                    "spark0", "spark1", "spark2", "spark3", "spark4",
+                    "spark5", "spark6", "spark7", "spark8", "spark9",
+                    "sparka", "sparkb", "sparkc")}
     assert {node["kv_backing_maximum_bytes"]
-            for node in deployment["nodes"]} == {0}
+            for node in deployment["nodes"]} == {274877906944}
     assert {node["adapter_configuration_path"]
             for node in deployment["nodes"]} == {
                 "config/dsv4_flash_stage.json"}
@@ -87,8 +91,11 @@ def main() -> int:
     invalid["topology"]["stage_indices"][12] = 11
     expect_failure(module, invalid, "duplicate stage accepted")
     invalid = copy.deepcopy(specification)
-    invalid["topology"]["runtime_root_template"] = "/tmp/{unknown}"
-    expect_failure(module, invalid, "unknown placeholder accepted")
+    invalid["topology"]["runtime_dataset"] = "nested/model"
+    expect_failure(module, invalid, "nested runtime dataset accepted")
+    invalid = copy.deepcopy(specification)
+    invalid["topology"]["kv_backing_dataset"] = "flat-name"
+    expect_failure(module, invalid, "malformed cache dataset accepted")
     invalid = copy.deepcopy(specification)
     invalid["expert_weight_codec"] = "int8"
     expect_failure(module, invalid, "model-specific root member accepted")

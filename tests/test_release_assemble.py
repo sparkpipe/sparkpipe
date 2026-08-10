@@ -85,6 +85,7 @@ def main():
             "--output",str(output),
             "--release-id","dsv4-flash-production",
             "--git-commit",COMMIT,
+            "--install-dataset","dsv4_flash.fp8.pp13",
             "--role-env-unset","model_resident=KEEP",
             "--role-env","model_resident=CUDA_MODULE_LOADING=EAGER",
             "--replace","lib/model_driver.so=" + str(replacement),
@@ -93,6 +94,11 @@ def main():
             (output / "sparkpipe.json").read_text(encoding="utf-8"))
         assert result["release_id"] == "dsv4-flash-production"
         assert result["git_commit"] == COMMIT
+        assert result["install_root"] == (
+            "/home/{host}/sparkdata/dsv4_flash.fp8.pp13")
+        assert result["state_root"] == (
+            "/home/{host}/sparkdata/.layout/sparkpipe_state/"
+            "dsv4_flash.fp8.pp13")
         assert result["generation"] > 20260000000000
         assert len(result["roles"]) == 1
         role = result["roles"][0]
@@ -119,6 +125,7 @@ def main():
             "--output",str(root / "duplicate"),
             "--release-id","duplicate",
             "--git-commit",COMMIT,
+            "--install-dataset","dsv4_flash.fp8.pp13",
             "--replace","lib/model_driver.so=" + str(replacement),
             "--replace","lib/model_driver.so=" + str(replacement),
             check=False,
@@ -133,6 +140,7 @@ def main():
             "--output",str(root / "bad-commit"),
             "--release-id","bad-commit",
             "--git-commit","abc123",
+            "--install-dataset","dsv4_flash.fp8.pp13",
             check=False,
         )
         assert bad_commit.returncode != 0
@@ -150,6 +158,7 @@ def main():
             "--output",str(root / "old-output"),
             "--release-id","old",
             "--git-commit",COMMIT,
+            "--install-dataset","dsv4_flash.fp8.pp13",
             check=False,
         )
         assert old_result.returncode != 0

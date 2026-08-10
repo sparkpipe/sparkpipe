@@ -78,11 +78,12 @@ int main(void)
 	node = SparkModelResidentDeploymentFindRank(&deployment,12u);
 	assert(node != 0);
 	assert(strcmp(node->transport_host,"sparkc") == 0);
-	assert(strcmp(node->runtime_root,"/home/sparkc/sparkpipe_runtime") == 0);
+	assert(strcmp(node->runtime_root,
+		"/home/sparkc/sparkdata/dsv4_flash.fp8.pp13") == 0);
 	assert(strcmp(node->adapter_configuration_path,"config/dsv4_flash_stage.json") == 0);
 	assert(strcmp(node->kv_backing_directory,
-		"/fast-local-nvme/sparkpipe-kv") == 0);
-	assert(node->kv_backing_maximum_bytes == 0u);
+		"/home/sparkc/kvcache/dsv4_flash/pp13.bf16") == 0);
+	assert(node->kv_backing_maximum_bytes == UINT64_C(274877906944));
 	SparkModelResidentDeploymentDestroy(&deployment);
 	return(0);
 }

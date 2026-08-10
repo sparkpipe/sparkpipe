@@ -292,6 +292,8 @@ static void SparkTestKvPageStoreWritesDirtyOnceAndRestores(void)
 	configuration.logical_page_capacity = SPARK_TEST_LOGICAL_BLOCK_COUNT;
 	configuration.transfer_capacity = SPARK_TEST_RESIDENT_SLOT_COUNT;
 	configuration.page_bytes = SPARK_TEST_BLOCK_BYTES;
+	configuration.maximum_backing_bytes =
+		2u * SPARK_TEST_BLOCK_BYTES;
 	configuration.backing_path = path;
 	configuration.staging_address = staging;
 	configuration.staging_bytes = sizeof(staging);
@@ -337,6 +339,12 @@ static void SparkTestKvPageStoreWritesDirtyOnceAndRestores(void)
 	assert(memcmp(fixture.device + (uint64_t)slot * SPARK_TEST_BLOCK_BYTES,
 		expected,sizeof(expected)) == 0);
 	assert(store.write_count == 2u && store.read_count == 1u);
+	assert(store.backing_page_count == 2u);
+	assert(SparkKvPageStoreWriteback(&store,block2,
+		fixture.blocks[block2].resident_slot_index,
+		fixture.blocks[block2].generation,
+		fixture.blocks[block2].key_device_address,SPARK_TEST_BLOCK_BYTES,
+		0u,0u) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	assert(SparkKvCacheArenaMarkBlockNonResident(&fixture.arena,block0) ==
 		SPARK_STATUS_OK);
 	assert(store.write_count == 2u);

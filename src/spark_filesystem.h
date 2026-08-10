@@ -14,6 +14,7 @@ SparkStatus SparkWriteEntireFile(const char *path, const void *data, size_t data
 SparkStatus SparkWriteEntireFileAtomically(const char *path, const void *data, size_t data_bytes);
 SparkStatus SparkCopyFile(const char *source_path, const char *destination_path);
 SparkStatus SparkCreateDirectories(const char *path);
+bool SparkPathIsRealDirectoryTree(const char *path);
 SparkStatus SparkRemoveDirectoryTree(const char *path);
 SparkStatus SparkJoinPath(const char *left, const char *right, char *path, uint32_t path_bytes);
 bool SparkPathIsNormalized(const char *path, bool absolute);

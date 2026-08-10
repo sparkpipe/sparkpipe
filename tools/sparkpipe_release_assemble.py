@@ -8,6 +8,8 @@ import os
 import shutil
 
 
+NODE_LAYOUT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),"spark_node_layout.json")
 MODEL_RESIDENT_ROLE = "model_resident"
 MODEL_RESIDENT_COMMAND = "bin/sparkpipe_model_residentd"
 REQUIRED_RELEASE_FILES = {
@@ -17,6 +19,33 @@ REQUIRED_RELEASE_FILES = {
     "lib/hidden_transport.so",
     "config/model_resident.json",
 }
+
+
+def load_node_layout():
+    with open(NODE_LAYOUT_PATH,"r",encoding="utf-8") as source:
+        layout = json.load(source)
+    if (set(layout) != {"schema_version","node_root_template","roots"}
+            or layout["schema_version"] != 1
+            or set(layout["roots"]) != {
+                "sparkdata","srcdata","extnvme","kvcache"}):
+        raise SystemExit("node layout schema is invalid")
+    node_root = layout["node_root_template"]
+    if (not isinstance(node_root,str) or node_root != "/home/{host}"
+            or any(not isinstance(value,str) or "/" in value or value == ""
+                   for value in layout["roots"].values())):
+        raise SystemExit("node layout paths are invalid")
+    return layout
+
+
+def apply_node_layout(manifest,dataset):
+    if (not isinstance(dataset,str) or dataset == ""
+            or "/" in dataset or os.path.normpath(dataset) != dataset):
+        raise SystemExit("install dataset must be one directory name")
+    layout = load_node_layout()
+    sparkdata = layout["node_root_template"] + "/" + layout["roots"]["sparkdata"]
+    manifest["install_root"] = sparkdata + "/" + dataset
+    manifest["state_root"] = (
+        sparkdata + "/.layout/sparkpipe_state/" + dataset)
 
 
 def sha256(path):
@@ -167,6 +196,7 @@ def parse_arguments():
     parser.add_argument("--output",required=True)
     parser.add_argument("--release-id",required=True)
     parser.add_argument("--git-commit",required=True)
+    parser.add_argument("--install-dataset",required=True)
     parser.add_argument("--role-env",action="append",default=[])
     parser.add_argument("--role-env-unset",action="append",default=[])
     parser.add_argument("--replace",action="append",default=[])
@@ -191,6 +221,7 @@ def main():
         with open(manifest_path,"r",encoding="utf-8") as source:
             manifest = json.load(source)
         validate_template(manifest)
+        apply_node_layout(manifest,arguments.install_dataset)
         apply_replacements(temporary,manifest,arguments.replace)
         manifest["release_id"] = arguments.release_id
         manifest["git_commit"] = arguments.git_commit

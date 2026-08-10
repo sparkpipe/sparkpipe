@@ -16,6 +16,14 @@
 
 #define SPARK_FILE_COPY_BUFFER_BYTES 65536u
 
+static bool SparkPathIsRealDirectory(const char *path)
+{
+    struct stat status;
+
+    return path != 0 && lstat(path,&status) == 0 &&
+        S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode);
+}
+
 void SparkSetError(char *error_buffer, uint32_t error_buffer_bytes, const char *format, ...)
 {
     va_list arguments;
@@ -230,6 +238,10 @@ SparkStatus SparkCreateDirectories(const char *path)
             {
                 return SPARK_STATUS_IO_ERROR;
             }
+            if (!SparkPathIsRealDirectory(mutable_path))
+            {
+                return SPARK_STATUS_IO_ERROR;
+            }
             mutable_path[character_index] = '/';
         }
     }
@@ -237,7 +249,41 @@ SparkStatus SparkCreateDirectories(const char *path)
     {
         return SPARK_STATUS_IO_ERROR;
     }
-    return SPARK_STATUS_OK;
+    return SparkPathIsRealDirectory(mutable_path) ?
+        SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+}
+
+bool SparkPathIsRealDirectoryTree(const char *path)
+{
+    char mutable_path[SPARK_INTERNAL_PATH_BYTES];
+    size_t path_length;
+    size_t character_index;
+
+    if (path == 0 || !SparkPathIsNormalized(path,path[0] == '/'))
+    {
+        return false;
+    }
+    path_length = strlen(path);
+    if (path_length >= sizeof(mutable_path))
+    {
+        return false;
+    }
+    memcpy(mutable_path,path,path_length + 1u);
+    for (character_index = path[0] == '/' ? 1u : 0u;
+         character_index < path_length; ++character_index)
+    {
+        if (mutable_path[character_index] != '/')
+        {
+            continue;
+        }
+        mutable_path[character_index] = '\0';
+        if (!SparkPathIsRealDirectory(mutable_path))
+        {
+            return false;
+        }
+        mutable_path[character_index] = '/';
+    }
+    return SparkPathIsRealDirectory(mutable_path);
 }
 
 SparkStatus SparkRemoveDirectoryTree(const char *path)

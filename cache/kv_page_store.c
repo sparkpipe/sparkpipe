@@ -17,6 +17,9 @@
 #define SPARK_KV_PAGE_STORE_JOB_QUEUED 1u
 #define SPARK_KV_PAGE_STORE_JOB_ACTIVE 2u
 #define SPARK_KV_PAGE_STORE_JOB_COMPLETE 3u
+#define SPARK_KV_PAGE_STORE_PAGE_INVALID 0u
+#define SPARK_KV_PAGE_STORE_PAGE_VALID 1u
+#define SPARK_KV_PAGE_STORE_PAGE_RESERVED 2u
 
 typedef struct SparkKvPageStoreJob
 {
@@ -30,7 +33,7 @@ typedef struct SparkKvPageStoreJob
 	uint64_t key_bytes;
 	uint64_t value_bytes;
 	SparkStatus terminal_status;
-	uint32_t reserved0;
+	uint32_t reserves_backing_page;
 	SparkKvCachePrefetchBlock prefetch_block;
 }
 SparkKvPageStoreJob;
@@ -116,8 +119,8 @@ static uint32_t SparkKvPageStoreConfigurationIsValid(
 	if ( required_bytes / configuration->logical_page_capacity !=
 		configuration->page_bytes || required_bytes > INT64_MAX )
 		return(0u);
-	return(configuration->maximum_backing_bytes == 0u ||
-		required_bytes <= configuration->maximum_backing_bytes ? 1u : 0u);
+	return(configuration->maximum_backing_bytes >=
+		configuration->page_bytes ? 1u : 0u);
 }
 
 static uint32_t SparkKvPageStoreIsValid(const SparkKvPageStore *store)
@@ -126,8 +129,10 @@ static uint32_t SparkKvPageStoreIsValid(const SparkKvPageStore *store)
 		store->abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION &&
 		store->descriptor_bytes == SPARK_KV_PAGE_STORE_BYTES &&
 		store->logical_page_capacity != 0u && store->transfer_capacity != 0u &&
-		store->reserved0 == 0u && store->reserved1 == 0u &&
+		store->reserved0 == 0u &&
+		store->backing_page_count <= store->logical_page_capacity &&
 		store->page_bytes != 0u &&
+		store->maximum_backing_bytes >= store->page_bytes &&
 		store->file_descriptor >= 0 && store->staging_address != 0 &&
 		store->staging_bytes >= store->page_bytes && store->worker_state != 0 &&
 		store->generations != 0 && store->valid_pages != 0 ? 1u : 0u);
@@ -306,9 +311,17 @@ static void SparkKvPageStoreRecordJob(
 		job->direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
 	{
 		store->generations[job->logical_page_index] = job->generation;
-		store->valid_pages[job->logical_page_index] = 1u;
+		store->valid_pages[job->logical_page_index] =
+			SPARK_KV_PAGE_STORE_PAGE_VALID;
 		store->write_count++;
 		store->write_bytes += store->page_bytes;
+	}
+	else if ( job->direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST &&
+		job->reserves_backing_page != 0u )
+	{
+		store->valid_pages[job->logical_page_index] =
+			SPARK_KV_PAGE_STORE_PAGE_INVALID;
+		store->backing_page_count--;
 	}
 	else if ( status == SPARK_STATUS_OK )
 	{
@@ -518,6 +531,20 @@ SparkStatus SparkKvPageStoreWriteback(
 		(void)pthread_mutex_unlock(&worker->mutex);
 		return(status);
 	}
+	if ( store->valid_pages[logical_page_index] ==
+		SPARK_KV_PAGE_STORE_PAGE_RESERVED )
+	{
+		(void)pthread_mutex_unlock(&worker->mutex);
+		return(SPARK_STATUS_BUSY);
+	}
+	if ( store->valid_pages[logical_page_index] ==
+		SPARK_KV_PAGE_STORE_PAGE_INVALID &&
+		store->backing_page_count >=
+		store->maximum_backing_bytes / store->page_bytes )
+	{
+		(void)pthread_mutex_unlock(&worker->mutex);
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	job = SparkKvPageStoreFindFreeJob(worker);
 	if ( job == 0 )
 	{
@@ -532,6 +559,14 @@ SparkStatus SparkKvPageStoreWriteback(
 	job->value_device_address = value_device_address;
 	job->key_bytes = key_bytes;
 	job->value_bytes = value_bytes;
+	if ( store->valid_pages[logical_page_index] ==
+		SPARK_KV_PAGE_STORE_PAGE_INVALID )
+	{
+		job->reserves_backing_page = 1u;
+		store->valid_pages[logical_page_index] =
+			SPARK_KV_PAGE_STORE_PAGE_RESERVED;
+		store->backing_page_count++;
+	}
 	SparkKvPageStoreQueueJob(worker,job);
 	(void)pthread_mutex_unlock(&worker->mutex);
 	return(SPARK_STATUS_BUSY);
@@ -651,7 +686,8 @@ SparkStatus SparkKvPageStorePrefetch(
 	if ( pthread_mutex_lock(&worker->mutex) != 0 )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	backing_valid = (view.flags & SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) != 0u &&
-		store->valid_pages[logical_page_index] != 0u &&
+		store->valid_pages[logical_page_index] ==
+			SPARK_KV_PAGE_STORE_PAGE_VALID &&
 		store->generations[logical_page_index] == view.generation ? 1u : 0u;
 	job = SparkKvPageStoreFindJob(worker,
 		SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,logical_page_index,view.generation);

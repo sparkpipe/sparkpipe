@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_STORE_ABI_VERSION 2u
+#define SPARK_KV_PAGE_STORE_ABI_VERSION 3u
 #define SPARK_KV_PAGE_STORE_PATH_BYTES 1024u
 #define SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES \
 	((uint32_t)sizeof(SparkKvPageStoreConfiguration))
@@ -65,7 +65,7 @@ typedef struct SparkKvPageStore
 	uint64_t page_bytes;
 	uint64_t maximum_backing_bytes;
 	int32_t file_descriptor;
-	uint32_t reserved1;
+	uint32_t backing_page_count;
 	void *staging_address;
 	uint64_t staging_bytes;
 	SparkKvPageStoreCopyFunction copy_function;

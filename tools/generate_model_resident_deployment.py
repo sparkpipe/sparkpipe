@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
+NODE_LAYOUT_PATH = Path(__file__).with_name("spark_node_layout.json")
 ROOT_KEYS = {
     "schema_version",
     "coordinator_rank_index",
@@ -35,13 +36,15 @@ RUNTIME_KEYS = {
 TOPOLOGY_KEYS = {
     "rank_hosts",
     "stage_indices",
-    "runtime_root_template",
+    "runtime_dataset",
     "node_target",
     "adapter_configuration_path_template",
-    "kv_backing_directory_template",
+    "kv_backing_dataset",
     "kv_backing_maximum_bytes",
     "control_endpoint",
 }
+NODE_LAYOUT_KEYS = {"schema_version", "node_root_template", "roots"}
+NODE_LAYOUT_ROOT_KEYS = {"sparkdata", "srcdata", "extnvme", "kvcache"}
 TCP_ENDPOINT_KEYS = {"kind", "host_template", "port"}
 UNIX_ENDPOINT_KEYS = {"kind", "path_template"}
 PLACEHOLDERS = ("{host}", "{rank}", "{rank_02}", "{stage}", "{stage_02}")
@@ -93,6 +96,50 @@ def normalized_path(value: str, absolute: bool, where: str) -> str:
         kind = "absolute" if absolute else "relative"
         raise DeploymentError(f"{where} must be a normalized {kind} path")
     return value
+
+
+def dataset_name(value: Any, where: str) -> str:
+    value = normalized_path(text_value(value, where), False, where)
+    if "/" in value:
+        raise DeploymentError(f"{where} must be one directory name")
+    return value
+
+
+def cache_dataset_name(value: Any, where: str) -> str:
+    value = normalized_path(text_value(value, where), False, where)
+    parts = value.split("/")
+    if len(parts) != 2 or "." not in parts[1]:
+        raise DeploymentError(
+            f"{where} must be model/topology.format")
+    return value
+
+
+def load_node_layout() -> dict[str, Any]:
+    layout = exact_object(load_specification(NODE_LAYOUT_PATH),
+                          NODE_LAYOUT_KEYS, "node layout")
+    if layout["schema_version"] != 1:
+        raise DeploymentError("node layout schema_version must be 1")
+    text_value(layout["node_root_template"],
+               "node layout node_root_template")
+    roots = exact_object(layout["roots"], NODE_LAYOUT_ROOT_KEYS,
+                         "node layout roots")
+    for name in NODE_LAYOUT_ROOT_KEYS:
+        root = normalized_path(text_value(
+            roots[name], f"node layout roots.{name}"), False,
+            f"node layout roots.{name}")
+        if "/" in root:
+            raise DeploymentError(
+                f"node layout roots.{name} must be one directory name")
+    return layout
+
+
+def node_roots(layout: dict[str, Any], host: str, rank: int,
+               stage: int) -> dict[str, str]:
+    node_root = normalized_path(render_template(
+        layout["node_root_template"], host, rank, stage,
+        "node layout node_root_template"), True, "rendered node root")
+    return {name: posixpath.join(node_root, relative)
+            for name, relative in layout["roots"].items()}
 
 
 def render_template(template: str, host: str, rank: int, stage: int,
@@ -187,6 +234,7 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
     if specification["schema_version"] != 2:
         raise DeploymentError("schema_version must be 2")
     validate_common(specification)
+    layout = load_node_layout()
     topology = exact_object(specification["topology"], TOPOLOGY_KEYS, "topology")
     hosts = topology["rank_hosts"]
     stages = topology["stage_indices"]
@@ -208,21 +256,24 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
     coordinator = integer_value(
         specification["coordinator_rank_index"], "coordinator_rank_index", 0,
         len(hosts) - 1)
-    runtime_template = text_value(
-        topology["runtime_root_template"], "topology.runtime_root_template")
+    runtime_dataset = dataset_name(
+        topology["runtime_dataset"], "topology.runtime_dataset")
     adapter_template = text_value(
         topology["adapter_configuration_path_template"],
         "topology.adapter_configuration_path_template")
-    backing_template = topology["kv_backing_directory_template"]
-    if backing_template is not None:
-        backing_template = text_value(
-            backing_template,"topology.kv_backing_directory_template")
+    backing_dataset = topology["kv_backing_dataset"]
+    if backing_dataset is not None:
+        backing_dataset = cache_dataset_name(
+            backing_dataset,"topology.kv_backing_dataset")
     backing_maximum_bytes = integer_value(
         topology["kv_backing_maximum_bytes"],
         "topology.kv_backing_maximum_bytes",0,9223372036854775807)
-    if backing_template is None and backing_maximum_bytes != 0:
+    if backing_dataset is None and backing_maximum_bytes != 0:
         raise DeploymentError(
-            "topology KV backing bytes require a directory template")
+            "topology KV backing bytes require a cache dataset")
+    if backing_dataset is not None and backing_maximum_bytes == 0:
+        raise DeploymentError(
+            "topology KV cache dataset requires a finite byte limit")
     node_target = text_value(topology["node_target"], "topology.node_target")
     endpoint_value = topology["control_endpoint"]
     if not isinstance(endpoint_value, dict):
@@ -235,17 +286,14 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
     nodes = []
     for rank, host in enumerate(hosts):
         stage = stages[rank]
-        runtime_root = normalized_path(render_template(
-            runtime_template, host, rank, stage,
-            "topology.runtime_root_template"), True, "rendered runtime root")
+        roots = node_roots(layout,host,rank,stage)
+        runtime_root = posixpath.join(roots["sparkdata"],runtime_dataset)
         adapter_path = normalized_path(render_template(
             adapter_template, host, rank, stage,
             "topology.adapter_configuration_path_template"), False,
             "rendered adapter configuration path")
-        backing_path = None if backing_template is None else normalized_path(
-            render_template(backing_template,host,rank,stage,
-                            "topology.kv_backing_directory_template"),
-            True,"rendered KV backing directory")
+        backing_path = None if backing_dataset is None else posixpath.join(
+            roots["kvcache"],backing_dataset)
         nodes.append({
             "rank_index": rank,
             "stage_index": stage,
