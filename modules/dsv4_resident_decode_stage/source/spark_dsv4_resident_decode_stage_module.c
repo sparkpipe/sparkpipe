@@ -1893,6 +1893,9 @@ static SparkStatus SparkDsv4ModuleAllReduceHidden(
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	element_count = (uint64_t)rows * SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
 	bytes = element_count * sizeof(uint16_t);
+	error = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_reduce_pre"));
 	error = cudaMemcpy(state->tp_reduce_values_bf16,device_bf16,bytes,cudaMemcpyDeviceToHost);
 	if ( error != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_reduce_download"));
