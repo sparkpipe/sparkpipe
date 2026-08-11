@@ -27,7 +27,7 @@ static uint32_t SparkModelServingAdapterSha256IsValid(const char *sha256)
 SparkStatus SparkModelServingAdapterValidateDescriptor(
 	const SparkModelServingAdapterDescriptor *descriptor)
 {
-	uint32_t index,total;
+	uint32_t index,total,parallel;
 	if ( descriptor == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( descriptor->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || descriptor->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES )
@@ -56,6 +56,8 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkModelServingAdapterTextIsPresent(descriptor->adapter_id) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->model_id) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->model_revision) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->driver_program_name) == 0u || SparkModelServingAdapterSha256IsValid(descriptor->artifact_sha256) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	parallel = (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u ? 1u : 0u;
 	total = 0u;
 	for (index=0u; index<descriptor->stage_count; index++)
 	{
@@ -70,7 +72,16 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 	for (; index<SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT; index++)
 		if ( descriptor->stage_layer_counts[index] != 0u || descriptor->boundary_sideband_kinds[index] != 0u || descriptor->boundary_sideband_bytes_per_sequence[index] != 0u )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(total == descriptor->layer_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+	if ( total == descriptor->layer_count )
+		return(SPARK_STATUS_OK);
+	if ( parallel != 0u )
+	{
+		for (index=0u; index<descriptor->stage_count; index++)
+			if ( descriptor->stage_layer_counts[index] != descriptor->layer_count )
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+		return(SPARK_STATUS_OK);
+	}
+	return(SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 SparkStatus SparkModelServingAdapterValidateRuntimeLimits(
