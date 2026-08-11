@@ -145,6 +145,9 @@ typedef struct SparkDsv4ServingAdapterState
 	uint32_t tp_operation_timeout_milli;
 	uint64_t tp_collective_identifier;
 	char tp_peer_hosts[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT][SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES];
+	char tp_transport_path[SPARK_INTERNAL_PATH_BYTES];
+	char tp_local_host[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES];
+	uint32_t tp_transport_control_port_base;
 	uint32_t quiescing;
 	SparkModelServingRuntimeLimits runtime_limits;
 	uint64_t orphan_completion_count;
@@ -616,6 +619,7 @@ static void SparkDsv4ServingInitializeState(
 	SparkDsv4ServingAdapterState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
+	SparkStatus status;
 	state->stage_index = configuration->stage_index;
 	state->pipeline_slot_count = configuration->runtime_limits.max_inflight_submission_count;
 	state->max_active_sequence_count = configuration->runtime_limits.max_active_sequence_count;
@@ -626,6 +630,11 @@ static void SparkDsv4ServingInitializeState(
 	state->completion_context = configuration->completion_context;
 	state->wake_function = configuration->wake_function;
 	state->wake_context = configuration->wake_context;
+	status = SparkCopyString(state->tp_local_host,
+		SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES,
+		configuration->node_id);
+	if ( status != SPARK_STATUS_OK )
+		state->tp_local_host[0] = '\0';
 }
 
 static void SparkDsv4ServingInitializeNodeContext(
@@ -666,6 +675,9 @@ static void SparkDsv4ServingInitializeNodeContext(
 		state->node_context.tp_operation_timeout_milli = state->tp_operation_timeout_milli;
 		state->node_context.tp_collective_identifier = state->tp_collective_identifier;
 		memcpy(state->node_context.tp_peer_hosts,state->tp_peer_hosts,sizeof(state->tp_peer_hosts));
+		state->node_context.tp_local_host = state->tp_local_host;
+		state->node_context.tp_transport_module_path = state->tp_transport_path;
+		state->node_context.tp_transport_control_port_base = state->tp_transport_control_port_base;
 	}
 	/* Zero keeps the eager decode path; the deployment opts into capture. */
 	state->node_context.cuda_graph_count = cuda_graph_count;
@@ -690,6 +702,30 @@ static SparkStatus SparkDsv4ServingInitialize(
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	SparkDsv4ServingInitializeState(state,configuration);
 	status = SparkDsv4ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&cuda_graph_count);
+	if ( status == SPARK_STATUS_OK && SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
+	{
+		status = SparkResolveRuntimePath(configuration->runtime_root,
+			"lib/hidden_transport.so",state->tp_transport_path,
+			sizeof(state->tp_transport_path));
+		if ( status == SPARK_STATUS_OK )
+		{
+			uint32_t rank_index;
+			uint32_t control_port_base = state->tp_peer_ports[0];
+			if ( control_port_base == 0u )
+				status = SPARK_STATUS_SCHEMA_ERROR;
+			for (rank_index=0u;
+				status == SPARK_STATUS_OK && rank_index < SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT;
+				rank_index++)
+			{
+				if ( control_port_base > UINT16_MAX - rank_index ||
+					state->tp_peer_ports[rank_index] !=
+					(uint16_t)(control_port_base + rank_index) )
+					status = SPARK_STATUS_SCHEMA_ERROR;
+			}
+			if ( status == SPARK_STATUS_OK )
+				state->tp_transport_control_port_base = control_port_base;
+		}
+	}
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )

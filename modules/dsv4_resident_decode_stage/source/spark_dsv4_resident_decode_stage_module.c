@@ -19,7 +19,7 @@
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_stage_module_common.h"
-#include "sparkpipe/spark_tp_collective.h"
+#include "sparkpipe/spark_tp_device_collective.h"
 #include "spark_dsv4_lane_continuity.h"
 #include "spark_dsv4_paged_cache.h"
 #include "spark_dsv4_pool_layout.h"
@@ -178,10 +178,11 @@ struct SparkDsv4ModuleState
 	uint32_t tp_degree;
 	uint32_t tp_rank;
 	uint64_t tp_configuration_hash;
-	SparkTpCollective tp_collective;
-	uint32_t tp_collective_initialized;
-	uint16_t *tp_reduce_values_bf16;
-	uint16_t *tp_reduce_scratch_bf16;
+	SparkTpDeviceCollective tp_device_collective;
+	uint32_t tp_device_collective_initialized;
+	void *tp_gather_bf16;
+	void *tp_exchange_send_bf16;
+	void *tp_exchange_receive_bf16;
 	uint32_t resident_sequence_capacity;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
@@ -331,54 +332,49 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	SparkDsv4ModuleState *state,
 	const SparkDsv4ResidentDecodeStageNodeContext *context)
 {
-	SparkTpCollectiveConfig configuration;
-	uint64_t element_count,buffer_bytes;
-	uint32_t step,peer_rank;
+	SparkTpDeviceCollectiveConfig configuration;
+	uint32_t rank;
 	SparkStatus status;
 	if ( state == 0 || context == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree == 1u )
 		return(SPARK_STATUS_OK);
 	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_TP_COLLECTIVE_ABI_VERSION;
+	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	configuration.tp_degree = state->tp_degree;
 	configuration.tp_rank = state->tp_rank;
-	configuration.listen_port = context->tp_listen_port;
+	configuration.local_hidden_dimension =
+		SPARK_DSV4_MODEL_HIDDEN_DIMENSION / state->tp_degree;
+	configuration.max_active_sequence_count =
+		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
 	configuration.connect_timeout_milli = context->tp_connect_timeout_milli;
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
+	configuration.control_port_base = context->tp_transport_control_port_base;
 	configuration.collective_identifier = context->tp_collective_identifier;
-	if ( configuration.listen_port == 0u || configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.collective_identifier == 0u )
+	configuration.transport_module_path = context->tp_transport_module_path;
+	configuration.local_host = context->tp_local_host;
+	if ( configuration.connect_timeout_milli == 0u ||
+		configuration.operation_timeout_milli == 0u ||
+		configuration.control_port_base == 0u ||
+		configuration.collective_identifier == 0u ||
+		configuration.transport_module_path == 0 ||
+		configuration.local_host == 0 ||
+		configuration.transport_module_path[0] == '\0' ||
+		configuration.local_host[0] == '\0' )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	for (step=0u; step<SPARK_TP_COLLECTIVE_MAX_STEPS; step++)
+	for (rank=0u; rank<SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; rank++)
 	{
-		peer_rank = state->tp_rank ^ (1u << step);
-		if ( peer_rank >= state->tp_degree || context->tp_peer_ports[peer_rank] == 0u || context->tp_peer_hosts[peer_rank][0] == '\0' )
+		if ( rank >= state->tp_degree && context->tp_peer_hosts[rank][0] != '\0' )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
-		memcpy(configuration.peers[step].host_name,context->tp_peer_hosts[peer_rank],SPARK_TP_COLLECTIVE_HOST_NAME_BYTES);
-		configuration.peers[step].port = context->tp_peer_ports[peer_rank];
+		if ( rank < state->tp_degree && context->tp_peer_hosts[rank][0] == '\0' )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		configuration.rank_hosts[rank] = context->tp_peer_hosts[rank];
 	}
-	status = SparkTpCollectiveCreate(&configuration,&state->tp_collective);
+	status = SparkTpDeviceCollectiveCreate(
+		&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	state->tp_collective_initialized = 1u;
-	element_count = (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
-	buffer_bytes = element_count * sizeof(uint16_t);
-	if ( cudaHostAlloc((void **)&state->tp_reduce_values_bf16,(size_t)buffer_bytes,cudaHostAllocPortable) != cudaSuccess )
-		state->tp_reduce_values_bf16 = 0;
-	if ( state->tp_reduce_values_bf16 != 0 && cudaHostAlloc((void **)&state->tp_reduce_scratch_bf16,(size_t)buffer_bytes,cudaHostAllocPortable) != cudaSuccess )
-		state->tp_reduce_scratch_bf16 = 0;
-	if ( state->tp_reduce_values_bf16 == 0 || state->tp_reduce_scratch_bf16 == 0 )
-	{
-		if ( state->tp_reduce_values_bf16 != 0 )
-			(void)cudaFreeHost(state->tp_reduce_values_bf16);
-		if ( state->tp_reduce_scratch_bf16 != 0 )
-			(void)cudaFreeHost(state->tp_reduce_scratch_bf16);
-		state->tp_reduce_values_bf16 = 0;
-		state->tp_reduce_scratch_bf16 = 0;
-		SparkTpCollectiveDestroy(&state->tp_collective);
-		state->tp_collective_initialized = 0u;
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	}
+	state->tp_device_collective_initialized = 1u;
 	return(SPARK_STATUS_OK);
 }
 
@@ -403,6 +399,12 @@ static SparkStatus SparkDsv4ModuleConfigure(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	parallel = (context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL) != 0u ? 1u : 0u;
 	if ( context->stage_count == 0u || context->stage_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT || context->layer_count == 0u || context->layer_count > SPARK_DSV4_MODEL_LAYER_COUNT - context->first_layer_index || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->cuda_graph_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT || context->max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || context->max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS || context->linear_weight_codec != SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC || context->expert_weight_codec != SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC || context->kv_cache_codec != SPARK_DSV4_MODEL_KV_CACHE_CODEC || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || (parallel == 0u && (context->tp_degree != 1u || context->tp_rank != 0u || context->tp_configuration_hash != 0u)) || (parallel != 0u && (context->tp_degree != SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE || context->stage_count != SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE || context->stage_index != context->tp_rank)) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( parallel != 0u && (context->tp_local_host == 0 ||
+		context->tp_transport_module_path == 0 ||
+		context->tp_local_host[0] == '\0' ||
+		context->tp_transport_module_path[0] == '\0' ||
+		context->tp_transport_control_port_base == 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&shape,0,sizeof(shape));
 	shape.abi_version = SPARK_DSV4_PARALLEL_SHAPE_ABI_VERSION;
@@ -1894,13 +1896,15 @@ static cudaError_t SparkDsv4ModuleRunOutputComposition(SparkDsv4ModuleState *sta
 	return(SparkDsv4LaunchStridedLinear((cudaStream_t)slot->cuda_stream,&view,view.payload,(const uint8_t *)view.scale_data,payload_stride,scale_stride,slot->attn_out_bf16,query_dimension,0u,view.columns,slot->o_ranks_bf16,(uint64_t)group_count * SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,0u,SPARK_DSV4_MODEL_OUTPUT_LORA_RANK,group_count,rows));
 }
 
-static SparkStatus SparkDsv4ModuleAllReduceHidden(
+static SparkStatus SparkDsv4ModuleGatherHidden(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
 	void *device_bf16,
 	uint32_t rows)
 {
-	uint64_t element_count,bytes;
+	uint8_t *gather_base,*local_source,*destination,*send_buffer,*receive_buffer;
+	uint64_t local_bytes,full_bytes,block_bytes;
+	uint32_t block_count,block_start,partner_start,rank;
 	cudaStream_t stream;
 	cudaError_t error;
 	SparkStatus status;
@@ -1908,21 +1912,93 @@ static SparkStatus SparkDsv4ModuleAllReduceHidden(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree == 1u )
 		return(SPARK_STATUS_OK);
-	if ( state->tp_collective_initialized == 0u || state->tp_reduce_values_bf16 == 0 || state->tp_reduce_scratch_bf16 == 0 )
+	if ( state->tp_device_collective_initialized == 0u ||
+		state->tp_gather_bf16 == 0 || state->tp_exchange_send_bf16 == 0 ||
+		state->tp_exchange_receive_bf16 == 0 )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	element_count = (uint64_t)rows * SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
-	bytes = element_count * sizeof(uint16_t);
+	local_bytes = ((uint64_t)SPARK_DSV4_MODEL_HIDDEN_DIMENSION /
+		state->tp_degree) * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	full_bytes = (uint64_t)SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
+		SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	gather_base = (uint8_t *)state->tp_gather_bf16;
+	local_source = (uint8_t *)device_bf16 +
+		(uint64_t)state->tp_rank * local_bytes;
+	send_buffer = (uint8_t *)state->tp_exchange_send_bf16;
+	receive_buffer = (uint8_t *)state->tp_exchange_receive_bf16;
 	stream = (cudaStream_t)slot->cuda_stream;
-	error = cudaMemcpyAsync(state->tp_reduce_values_bf16,device_bf16,bytes,cudaMemcpyDeviceToHost,stream);
-	if ( error == cudaSuccess )
-		error = cudaStreamSynchronize(stream);
+	error = cudaMemcpy2DAsync(
+		gather_base + (uint64_t)state->tp_rank * local_bytes,
+		(size_t)full_bytes,
+		local_source,
+		(size_t)full_bytes,
+		(size_t)local_bytes,
+		rows,
+		cudaMemcpyDeviceToDevice,
+		stream);
 	if ( error != cudaSuccess )
-		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_reduce_download"));
-	status = SparkTpCollectiveAllReduceSumBf16(&state->tp_collective,state->tp_reduce_values_bf16,element_count,state->tp_reduce_scratch_bf16);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	error = cudaMemcpyAsync(device_bf16,state->tp_reduce_values_bf16,bytes,cudaMemcpyHostToDevice,stream);
-	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_reduce_upload"));
+		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_gather_pack"));
+	block_start = state->tp_rank;
+	for (block_count=1u; block_count<state->tp_degree; block_count<<=1u)
+	{
+		uint32_t step = 0u;
+		uint32_t count = block_count;
+		block_bytes = (uint64_t)block_count * local_bytes;
+		while ( count > 1u )
+		{
+			count >>= 1u;
+			step++;
+		}
+		block_start = (state->tp_rank >> step) << step;
+		partner_start = block_start ^ block_count;
+		error = cudaMemcpy2DAsync(
+			send_buffer,
+			(size_t)block_bytes,
+			gather_base + (uint64_t)block_start * local_bytes,
+			(size_t)full_bytes,
+			(size_t)block_bytes,
+			rows,
+			cudaMemcpyDeviceToDevice,
+			stream);
+		if ( error != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_gather_pack_step"));
+		status = SparkTpDeviceCollectiveExchangeBf16(
+			&state->tp_device_collective,
+			send_buffer,
+			receive_buffer,
+			rows,
+			block_count * state->tp_device_collective.local_hidden_dimension,
+			step,
+			(void *)stream);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		error = cudaMemcpy2DAsync(
+			gather_base + (uint64_t)partner_start * local_bytes,
+			(size_t)full_bytes,
+			receive_buffer,
+			(size_t)block_bytes,
+			(size_t)block_bytes,
+			rows,
+			cudaMemcpyDeviceToDevice,
+			stream);
+		if ( error != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_gather_unpack_step"));
+	}
+	for (rank=0u; rank<state->tp_degree; rank++)
+	{
+		destination = (uint8_t *)device_bf16 + (uint64_t)rank * local_bytes;
+		error = cudaMemcpy2DAsync(
+			destination,
+			(size_t)full_bytes,
+			gather_base + (uint64_t)rank * local_bytes,
+			(size_t)full_bytes,
+			(size_t)local_bytes,
+			rows,
+			cudaMemcpyDeviceToDevice,
+			stream);
+		if ( error != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_gather_unpack"));
+	}
+	return(SPARK_STATUS_OK);
 }
 
 static uint32_t SparkDsv4ModulePrefillWaveRowCount(
@@ -2095,7 +2171,7 @@ static SparkStatus SparkDsv4ModuleRunLayer(SparkDsv4ModuleState *state, SparkDsv
 		error = SparkDsv4ModuleRunAttention(state,slot,layer,prefill,layer_index,rows);
 	if ( error == cudaSuccess )
 	{
-		status = SparkDsv4ModuleAllReduceHidden(state,slot,slot->delta_bf16,rows);
+		status = SparkDsv4ModuleGatherHidden(state,slot,slot->delta_bf16,rows);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
@@ -2111,7 +2187,7 @@ static SparkStatus SparkDsv4ModuleRunLayer(SparkDsv4ModuleState *state, SparkDsv
 	status = SparkDsv4ModuleRunMoe(state,slot,layer,layer_index,rows);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	status = SparkDsv4ModuleAllReduceHidden(state,slot,slot->ffn_accum_bf16,rows);
+	status = SparkDsv4ModuleGatherHidden(state,slot,slot->ffn_accum_bf16,rows);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	error = SparkDsv4LaunchHcPost(stream,slot->ffn_accum_bf16,slot->residual_bf16,slot->post_f32,slot->comb_f32,output_streams_bf16,rows,SPARK_DSV4_MODEL_HC_STREAM_COUNT,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
@@ -3079,17 +3155,14 @@ void SparkDsv4ResidentDecodeStageDestroy(void *module_state)
 		(void)cudaFreeHost(state->kv_page_store_staging);
 		state->kv_page_store_staging = 0;
 	}
-	if ( state->tp_collective_initialized != 0u )
+	if ( state->tp_device_collective_initialized != 0u )
 	{
-		SparkTpCollectiveDestroy(&state->tp_collective);
-		state->tp_collective_initialized = 0u;
+		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+		state->tp_device_collective_initialized = 0u;
 	}
-	if ( state->tp_reduce_values_bf16 != 0 )
-		(void)cudaFreeHost(state->tp_reduce_values_bf16);
-	if ( state->tp_reduce_scratch_bf16 != 0 )
-		(void)cudaFreeHost(state->tp_reduce_scratch_bf16);
-	state->tp_reduce_values_bf16 = 0;
-	state->tp_reduce_scratch_bf16 = 0;
+	state->tp_gather_bf16 = 0;
+	state->tp_exchange_send_bf16 = 0;
+	state->tp_exchange_receive_bf16 = 0;
 	SparkDsv4PagedCacheDestroyHost(&state->paged_cache);
 	if ( state->cache_mutex_initialized != 0u )
 	{
@@ -3155,6 +3228,21 @@ static SparkStatus SparkDsv4ModulePrepareState(
 		status = SparkDsv4ModuleUploadFreqs(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleAllocatePools(state);
+	if ( status == SPARK_STATUS_OK && state->tp_device_collective_initialized != 0u )
+	{
+		uint64_t exchange_bytes;
+		exchange_bytes = (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT *
+			SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
+			SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+		status = SparkStageModuleDeviceAllocate(
+			&state->ledger,exchange_bytes,&state->tp_gather_bf16);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(
+			&state->ledger,exchange_bytes,&state->tp_exchange_send_bf16);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(
+			&state->ledger,exchange_bytes,&state->tp_exchange_receive_bf16);
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleFinalizeLoad(state);
 	for (slot_index=0u; status==SPARK_STATUS_OK && slot_index<state->pipeline_slot_count; slot_index++)

@@ -1,0 +1,84 @@
+#pragma once
+
+#include <stdint.h>
+
+#include "sparkpipe/spark_hidden_transport.h"
+#include "sparkpipe/spark_status.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
+#define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 4u
+#define SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES 64u
+
+typedef struct SparkTpDeviceCollectiveConfig
+{
+    uint32_t abi_version;
+    uint32_t tp_degree;
+    uint32_t tp_rank;
+    uint32_t local_hidden_dimension;
+    uint32_t max_active_sequence_count;
+    uint32_t connect_timeout_milli;
+    uint32_t operation_timeout_milli;
+    uint32_t control_port_base;
+    uint64_t collective_identifier;
+    const char *transport_module_path;
+    const char *local_host;
+    const char *rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
+} SparkTpDeviceCollectiveConfig;
+
+typedef struct SparkTpDeviceCollective
+{
+    uint32_t abi_version;
+    uint32_t tp_degree;
+    uint32_t tp_rank;
+    uint32_t step_count;
+    uint32_t local_hidden_dimension;
+    uint32_t max_active_sequence_count;
+    uint32_t operation_timeout_milli;
+    uint32_t failed;
+    uint64_t collective_identifier;
+    uint64_t next_operation_sequence;
+    SparkHiddenTransportDynamicLibrary transport_library;
+    SparkHiddenTransportSession *send_sessions[
+        SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    SparkHiddenTransportSession *receive_sessions[
+        SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    uint32_t step_hidden_dimensions[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    char send_route_names[
+        SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS]
+        [SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES];
+    char receive_route_names[
+        SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS]
+        [SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES];
+} SparkTpDeviceCollective;
+
+/* Opens one bidirectional GPUDirect-RDMA session pair per recursive-doubling
+ * step. The rank_hosts array is the complete TP group in rank order. No
+ * transport fallback is selected here: the shared object must advertise the
+ * GPUDirect-RDMA, device-pointer, stream-ordered capabilities. */
+SparkStatus SparkTpDeviceCollectiveCreate(
+    const SparkTpDeviceCollectiveConfig *config,
+    SparkTpDeviceCollective *collective_out);
+
+/* Exchanges one already-contiguous rank block with its butterfly partner.
+ * send_device and receive_device are device pointers laid out as
+ * active_sequence_count rows of hidden_dimension BF16 elements. The caller
+ * owns the contiguous exchange buffers and chooses the current block. */
+SparkStatus SparkTpDeviceCollectiveExchangeBf16(
+    SparkTpDeviceCollective *collective,
+    const void *send_device,
+    void *receive_device,
+    uint32_t active_sequence_count,
+    uint32_t hidden_dimension,
+    uint32_t step_index,
+    void *cuda_stream);
+
+void SparkTpDeviceCollectiveDestroy(SparkTpDeviceCollective *collective);
+
+#ifdef __cplusplus
+}
+#endif
