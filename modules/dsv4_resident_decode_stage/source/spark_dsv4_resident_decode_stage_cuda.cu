@@ -752,25 +752,28 @@ static __global__ void SparkDsv4BuildAttentionIndicesKernel(
 }
 
 // The gate scores: linear against the router weight in fp32 with
-// sqrtsoftplus applied - one warp per expert, activations shared.
+// sqrtsoftplus applied.  B1 used to put all 256 experts behind one warp
+// loop per row.  Keep the shared activation broadcast, but make the expert
+// tile the grid-y axis so every warp owns one expert and the launch exposes
+// the full SM parallelism without changing the arithmetic.
 static __global__ void SparkDsv4GateScoresKernel(const void *weight_bf16, const void *input_bf16, float *scores_f32, uint32_t row_count, uint32_t input_dimension, uint32_t expert_count)
 {
 	extern __shared__ float gate_shared[];
 	uint32_t row = blockIdx.x,warp_count = blockDim.x / SPARK_LM_WARP_LANES;
-	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES,expert,element;
+	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	uint32_t expert = blockIdx.y * warp_count + warp,element;
 	float accumulator;
 	if ( row >= row_count )
 		return;
 	for (element = threadIdx.x; element < input_dimension; element += blockDim.x)
 		gate_shared[element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + element);
 	__syncthreads();
-	for (expert = warp; expert < expert_count; expert += warp_count)
-	{
-		accumulator = SparkLmDotRowBf16(gate_shared,weight_bf16,expert,input_dimension,lane);
-		accumulator = SparkLmWarpReduceSum(accumulator);
-		if ( lane == 0u )
-			scores_f32[((uint64_t)row * expert_count) + expert] = sqrtf(SparkLmSoftplus(accumulator));
-	}
+	if ( expert >= expert_count )
+		return;
+	accumulator = SparkLmDotRowBf16(gate_shared,weight_bf16,expert,input_dimension,lane);
+	accumulator = SparkLmWarpReduceSum(accumulator);
+	if ( lane == 0u )
+		scores_f32[((uint64_t)row * expert_count) + expert] = sqrtf(SparkLmSoftplus(accumulator));
 }
 
 /*
@@ -1686,7 +1689,8 @@ extern "C" cudaError_t SparkDsv4LaunchBuildAttentionIndices(cudaStream_t stream,
 
 extern "C" cudaError_t SparkDsv4LaunchGateScores(cudaStream_t stream, const SparkDsv4LinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count)
 {
-	SparkDsv4GateScoresKernel<<<row_count,SPARK_LM_CTA_THREADS,gate->columns * (uint32_t)sizeof(float),stream>>>(gate->payload,input_bf16,scores_f32,row_count,gate->columns,gate->rows);
+	dim3 grid(row_count,(gate->rows + (SPARK_LM_CTA_THREADS / SPARK_LM_WARP_LANES) - 1u) / (SPARK_LM_CTA_THREADS / SPARK_LM_WARP_LANES));
+	SparkDsv4GateScoresKernel<<<grid,SPARK_LM_CTA_THREADS,gate->columns * (uint32_t)sizeof(float),stream>>>(gate->payload,input_bf16,scores_f32,row_count,gate->columns,gate->rows);
 	return(cudaGetLastError());
 }
 
