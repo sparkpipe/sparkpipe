@@ -1883,6 +1883,7 @@ static SparkStatus SparkDsv4ModuleAllReduceHidden(
 	uint32_t rows)
 {
 	uint64_t element_count,bytes;
+	cudaStream_t stream;
 	cudaError_t error;
 	SparkStatus status;
 	if ( state == 0 || slot == 0 || device_bf16 == 0 || rows == 0u || rows > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT )
@@ -1893,16 +1894,16 @@ static SparkStatus SparkDsv4ModuleAllReduceHidden(
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	element_count = (uint64_t)rows * SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
 	bytes = element_count * sizeof(uint16_t);
-	error = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
-	if ( error != cudaSuccess )
-		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_reduce_pre"));
-	error = cudaMemcpy(state->tp_reduce_values_bf16,device_bf16,bytes,cudaMemcpyDeviceToHost);
+	stream = (cudaStream_t)slot->cuda_stream;
+	error = cudaMemcpyAsync(state->tp_reduce_values_bf16,device_bf16,bytes,cudaMemcpyDeviceToHost,stream);
+	if ( error == cudaSuccess )
+		error = cudaStreamSynchronize(stream);
 	if ( error != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_reduce_download"));
 	status = SparkTpCollectiveAllReduceSumBf16(&state->tp_collective,state->tp_reduce_values_bf16,element_count,state->tp_reduce_scratch_bf16);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	error = cudaMemcpy(device_bf16,state->tp_reduce_values_bf16,bytes,cudaMemcpyHostToDevice);
+	error = cudaMemcpyAsync(device_bf16,state->tp_reduce_values_bf16,bytes,cudaMemcpyHostToDevice,stream);
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_reduce_upload"));
 }
 
