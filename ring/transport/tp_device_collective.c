@@ -222,32 +222,7 @@ static SparkStatus SparkTpDeviceCollectiveOpenStep(
     partner_rank = config->tp_rank ^ (1u << step_index);
     source_rank = config->tp_rank;
     sink_rank = partner_rank;
-    memset(&endpoint, 0, sizeof(endpoint));
-    status = SparkTpDeviceCollectiveBuildEndpoint(
-        config,
-        collective,
-        step_index,
-        source_rank,
-        sink_rank,
-        collective->step_hidden_dimensions[step_index],
-        collective->send_route_names[step_index],
-        &endpoint);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkHiddenTransportOpen(
-        &endpoint,
-        &collective->transport_library.transport_interface,
-        collective->memory_mode ==
-                SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
-            SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS :
-            SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS,
-        &collective->send_sessions[step_index]);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
+    /* Symmetric peers must publish receive listeners before send connects. */
     memset(&endpoint, 0, sizeof(endpoint));
     status = SparkTpDeviceCollectiveBuildEndpoint(
         config,
@@ -270,6 +245,32 @@ static SparkStatus SparkTpDeviceCollectiveOpenStep(
             SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS :
             SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS,
         &collective->receive_sessions[step_index]);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    memset(&endpoint, 0, sizeof(endpoint));
+    status = SparkTpDeviceCollectiveBuildEndpoint(
+        config,
+        collective,
+        step_index,
+        source_rank,
+        sink_rank,
+        collective->step_hidden_dimensions[step_index],
+        collective->send_route_names[step_index],
+        &endpoint);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkHiddenTransportOpen(
+        &endpoint,
+        &collective->transport_library.transport_interface,
+        collective->memory_mode ==
+                SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS :
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS,
+        &collective->send_sessions[step_index]);
     return status;
 }
 
