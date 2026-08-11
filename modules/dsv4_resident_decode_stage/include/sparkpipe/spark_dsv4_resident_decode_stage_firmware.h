@@ -46,7 +46,7 @@ extern "C" {
  * callback; submit never synchronizes a successful CUDA frame.
  */
 
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 7u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 9u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION 2u
@@ -62,7 +62,11 @@ extern "C" {
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 13u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT 61u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT 64u
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS UINT32_C(0)
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT 16u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES 64u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL UINT32_C(0x00000001)
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS \
+	SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL
 
 typedef struct SparkDsv4ResidentDecodeStageNodeContext
 {
@@ -79,6 +83,18 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 	uint32_t linear_weight_codec;
 	uint32_t expert_weight_codec;
 	uint32_t kv_cache_codec;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
+	uint64_t tp_configuration_hash;
+	uint16_t tp_listen_port;
+	uint16_t tp_peer_ports[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT];
+	uint32_t tp_connect_timeout_milli;
+	uint32_t tp_operation_timeout_milli;
+	uint64_t tp_collective_identifier;
+	char tp_peer_hosts[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT][SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES];
+	const char *tp_local_host;
+	const char *tp_transport_module_path;
+	uint32_t tp_transport_control_port_base;
 	/*
 	 * Decode-step CUDA graph cache size, 0 disables capture and preserves the
 	 * eager launch path exactly. Captured shapes are the fixed (pipeline slot,

@@ -188,30 +188,30 @@ static void TestModelBatchSchedulerCacheCapacity(void)
 
 static void TestModelBatchSchedulerPolicy(void)
 {
-	static const uint32_t b14[] = {2u,1u,1u,1u,1u,1u,1u,1u,1u,1u,1u,1u,1u};
-	static const uint32_t b17[] = {2u,2u,2u,2u,1u,1u,1u,1u,1u,1u,1u,1u,1u};
-	static const uint32_t b92[] = {8u,7u,7u,7u,7u,7u,7u,7u,7u,7u,7u,7u,7u};
-	static const uint32_t b104[] = {8u,8u,8u,8u,8u,8u,8u,8u,8u,8u,8u,8u,8u};
+	static const uint32_t b14[] = {14u};
+	static const uint32_t b17[] = {17u};
+	static const uint32_t b92[] = {24u,24u,24u,20u};
+	static const uint32_t b104[] = {24u,24u,24u,24u,8u};
 	uint32_t bypass[4] = {0u},inflight[4] = {0u},maximum[4] = {0u,24u,24u,24u},minimum[4] = {0u,16u,16u,1u},next,queued[4] = {0u};
-	TestModelBatchSchedulerMixedLanes(14u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b14,13u);
-	TestModelBatchSchedulerMixedLanes(17u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b17,13u);
-	TestModelBatchSchedulerMixedLanes(92u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b92,13u);
-	TestModelBatchSchedulerMixedLanes(92u,SPARK_MODEL_SERVING_WORK_KIND_DECODE,b92,13u);
-	TestModelBatchSchedulerMixedLanes(104u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b104,13u);
+	TestModelBatchSchedulerMixedLanes(14u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b14,1u);
+	TestModelBatchSchedulerMixedLanes(17u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b17,1u);
+	TestModelBatchSchedulerMixedLanes(92u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b92,4u);
+	TestModelBatchSchedulerMixedLanes(92u,SPARK_MODEL_SERVING_WORK_KIND_DECODE,b92,4u);
+	TestModelBatchSchedulerMixedLanes(104u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,b104,5u);
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 3u;
 	maximum[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 4u;
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,2u) == 2u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,2u) == 3u);
 	maximum[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 24u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 0u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 92u;
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 8u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 24u);
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 128u;
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 10u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 24u);
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 92u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 92u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_RELEASE] = 92u;
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 19u);
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_DECODE,13u) == 23u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 24u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_DECODE,13u) == 24u);
 	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_RELEASE,13u) == 24u);
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 1024u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 0u;
@@ -220,8 +220,10 @@ static void TestModelBatchSchedulerPolicy(void)
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 48u;
 	queued[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 72u;
 	inflight[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 10u;
-	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 0u);
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 24u);
 	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_DECODE,13u) == 24u);
+	inflight[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 13u;
+	assert(SparkModelBatchSchedulerPlanMixedLaneCount(queued,maximum,inflight,SPARK_MODEL_SERVING_WORK_KIND_PREFILL,13u) == 0u);
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 0u;
 	next = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
 	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,10u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_DECODE);
@@ -898,7 +900,7 @@ static void TestModelBatchEngineRun(
 	third = TestModelBatchSubmit(engine,1003u,2003u,prompt_long,15u,1u);
 	assert(SparkModelBatchEngineProgress(engine,2u) == SPARK_STATUS_OK);
 	assert(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK);
-	assert(view.inflight_submission_count == 2u);
+	assert(view.inflight_submission_count == 1u);
 	TestModelBatchWaitIdle(engine,3u);
 	assert(state.accepted_count == 3u);
 	assert(state.token_count == 5u);
@@ -920,7 +922,7 @@ static void TestModelBatchEngineRun(
 	assert(state.completed_count == 3u);
 	assert(state.cancelled_count == 0u);
 	assert(state.error_count == 0u);
-	assert(state.first_prefill_lane_count == 2u);
+	assert(state.first_prefill_lane_count == 3u);
 	assert(state.first_prefill_row_count == 4u);
 	assert(third != first);
 	reused = TestModelBatchSubmit(engine,1004u,2004u,prompt_c,1u,1u);
@@ -1021,8 +1023,8 @@ static void TestModelBatchEnginePriority(
 	TestModelBatchWaitIdle(engine,16u);
 	assert(state.accepted_count == 17u);
 	assert(state.token_count == 17u);
-	assert(state.first_prefill_lane_count == 9u);
-	assert(state.first_prefill_row_count == 9u);
+	assert(state.first_prefill_lane_count == 16u);
+	assert(state.first_prefill_row_count == 16u);
 	assert(state.completed_count == 16u);
 	assert(state.cancelled_count == 1u);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
@@ -1044,8 +1046,8 @@ static void TestModelBatchEngineAggregatePrefill(
 	for (lane=0u; lane<16u; lane++)
 		(void)TestModelBatchSubmit(engine,1300u + lane,2300u + lane,prompts[lane],lane == 0u ? 1u : 2u,1u);
 	TestModelBatchWaitIdle(engine,16u);
-	assert(state.first_prefill_lane_count == 8u);
-	assert(state.first_prefill_row_count == 15u);
+	assert(state.first_prefill_lane_count == 16u);
+	assert(state.first_prefill_row_count == 31u);
 	assert(state.accepted_count == 16u);
 	assert(state.token_count == 16u);
 	assert(state.completed_count == 16u);

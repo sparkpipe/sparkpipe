@@ -284,6 +284,8 @@ static int SparkDsv4ValidationLoadNodeContext(
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES;
+	context->tp_degree = 1u;
+	context->tp_rank = 0u;
 	if ( SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_COUNT",1u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT,&context->stage_count) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_INDEX",0u,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT - 1u,&context->stage_index) != 0 ||
 		SparkDsv4ValidationReadUnsigned("SPARK_DSV4_STAGE_FIRST_LAYER",0u,SPARK_DSV4_MODEL_LAYER_COUNT - 1u,&context->first_layer_index) != 0 ||

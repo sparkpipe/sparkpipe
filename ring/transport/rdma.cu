@@ -799,66 +799,82 @@ static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(SparkHiddenSparkHostR
     struct ibv_device **devices;
     struct ibv_device *selected_device;
     const char *requested_name;
-    uint32_t allow_fallback;
+    const char *default_name;
+    uint32_t explicit_name;
+    uint32_t active_count;
     int count;
     int index;
     struct ibv_port_attr port_attributes;
 
     requested_name = getenv("SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_DEVICE");
-    allow_fallback = 0u;
-    if (requested_name == 0 || requested_name[0] == '\0')
-    {
-        requested_name = SparkHiddenSparkHostRdmaDefaultDeviceName(state);
-        if (requested_name == 0)
-        {
-            return SPARK_STATUS_ROUTE_NOT_FOUND;
-        }
-        allow_fallback = 1u;
-    }
+    explicit_name = requested_name != 0 && requested_name[0] != '\0';
+    default_name = SparkHiddenSparkHostRdmaDefaultDeviceName(state);
     devices = ibv_get_device_list(&count);
     if (devices == 0 || count <= 0)
     {
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     selected_device = 0;
+    active_count = 0u;
     for (index = 0; index < count; ++index)
     {
-        if (strcmp(ibv_get_device_name(devices[index]), requested_name) == 0 &&
-            SparkHiddenSparkHostRdmaPortIsActive(devices[index], state->verbs_port))
+        if (SparkHiddenSparkHostRdmaPortIsActive(
+                devices[index], state->verbs_port) == 0)
+        {
+            continue;
+        }
+        active_count += 1u;
+        if (explicit_name != 0u &&
+            strcmp(ibv_get_device_name(devices[index]), requested_name) == 0)
         {
             selected_device = devices[index];
-            break;
         }
     }
-    /* A named-but-dark port used to be selected anyway and the bring-up
-     * failed later with opaque verbs errors (ENOSPC/io_error). When the
-     * default mapping's port is down - for example mid-migration to a new
-     * fabric - any other device with an active port is a legal peer path;
-     * an explicit env request is still honored exactly, never substituted. */
-    if (selected_device == 0 && allow_fallback != 0u)
+#if SPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT
+    if (explicit_name == 0u && active_count != 1u)
+    {
+        ibv_free_device_list(devices);
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
+#endif
+    if (explicit_name == 0u && active_count == 1u)
     {
         for (index = 0; index < count; ++index)
         {
-            if (strcmp(ibv_get_device_name(devices[index]), requested_name) != 0 &&
-                SparkHiddenSparkHostRdmaPortIsActive(devices[index], state->verbs_port))
+            if (SparkHiddenSparkHostRdmaPortIsActive(
+                    devices[index], state->verbs_port) != 0)
             {
                 fprintf(stderr,
-                    "hidden_spark_rdma_device_fallback route=%s requested=%s selected=%s\n",
+                    "hidden_spark_rdma_device_discovered route=%s selected=%s\n",
                     state->endpoint.route_name,
-                    requested_name,
                     ibv_get_device_name(devices[index]));
                 selected_device = devices[index];
                 break;
             }
         }
     }
-    if (selected_device != 0)
+    if (explicit_name == 0u && selected_device == 0 && default_name != 0)
     {
-        (void)snprintf(state->verbs_device_name,
-            sizeof(state->verbs_device_name), "%s",
-            ibv_get_device_name(selected_device));
-        state->verbs_context = ibv_open_device(selected_device);
+        for (index = 0; index < count; ++index)
+        {
+            if (strcmp(ibv_get_device_name(devices[index]), default_name) == 0 &&
+                SparkHiddenSparkHostRdmaPortIsActive(
+                    devices[index], state->verbs_port) != 0)
+            {
+                selected_device = devices[index];
+                break;
+            }
+        }
     }
+    if (selected_device == 0)
+    {
+        ibv_free_device_list(devices);
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
+    (void)snprintf(state->verbs_device_name,
+        sizeof(state->verbs_device_name), "%s",
+        ibv_get_device_name(selected_device));
+    state->verbs_context = ibv_open_device(selected_device);
     ibv_free_device_list(devices);
     if (state->verbs_context == 0)
     {

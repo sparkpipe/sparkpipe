@@ -209,53 +209,18 @@ uint32_t SparkModelBatchSchedulerPlanMixedLaneCount(
 	uint32_t selected_kind,
 	uint32_t submission_capacity)
 {
-	uint32_t best_width,candidate,inflight,kind,last_kind,new_slots[4] = {0u},required,used,width;
+	uint32_t inflight,kind;
 	if ( queued_by_kind == 0 || maximum_by_kind == 0 || inflight_by_kind == 0 || selected_kind < SPARK_MODEL_SERVING_WORK_KIND_PREFILL || selected_kind > SPARK_MODEL_SERVING_WORK_KIND_RELEASE || queued_by_kind[selected_kind] == 0u || maximum_by_kind[selected_kind] == 0u || submission_capacity == 0u )
 		return(0u);
 	inflight = 0u;
-	required = 0u;
 	for (kind=SPARK_MODEL_SERVING_WORK_KIND_PREFILL; kind<=SPARK_MODEL_SERVING_WORK_KIND_RELEASE; kind++)
 	{
 		inflight += inflight_by_kind[kind];
-		if ( queued_by_kind[kind] == 0u )
-			continue;
-		if ( maximum_by_kind[kind] == 0u )
-			return(0u);
-		new_slots[kind] = (queued_by_kind[kind] / maximum_by_kind[kind]) + (queued_by_kind[kind] % maximum_by_kind[kind] != 0u ? 1u : 0u);
-		required += new_slots[kind];
 	}
 	if ( inflight >= submission_capacity )
 		return(0u);
-	if ( required > submission_capacity - inflight )
-		memset(new_slots,0,sizeof(new_slots));
-	used = new_slots[1] + new_slots[2] + new_slots[3];
-	last_kind = required <= submission_capacity - inflight ? SPARK_MODEL_SERVING_WORK_KIND_DECODE : SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
-	while ( used < submission_capacity - inflight )
-	{
-		candidate = 0u;
-		best_width = 0u;
-		for (kind=SPARK_MODEL_SERVING_WORK_KIND_PREFILL; kind<=last_kind; kind++)
-		{
-			if ( new_slots[kind] >= queued_by_kind[kind] )
-				continue;
-			width = (queued_by_kind[kind] / (inflight_by_kind[kind] + new_slots[kind] + 1u)) + (queued_by_kind[kind] % (inflight_by_kind[kind] + new_slots[kind] + 1u) != 0u ? 1u : 0u);
-			if ( candidate == 0u || width > best_width )
-			{
-				candidate = kind;
-				best_width = width;
-			}
-		}
-		if ( candidate == 0u )
-			break;
-		new_slots[candidate]++;
-		used++;
-	}
-	if ( new_slots[selected_kind] == 0u )
-		return(0u);
-	if ( selected_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
-		return(queued_by_kind[selected_kind] < maximum_by_kind[selected_kind] ? queued_by_kind[selected_kind] : maximum_by_kind[selected_kind]);
-	width = (queued_by_kind[selected_kind] / new_slots[selected_kind]) + (queued_by_kind[selected_kind] % new_slots[selected_kind] != 0u ? 1u : 0u);
-	return(width < maximum_by_kind[selected_kind] ? width : maximum_by_kind[selected_kind]);
+	return(queued_by_kind[selected_kind] < maximum_by_kind[selected_kind] ?
+		queued_by_kind[selected_kind] : maximum_by_kind[selected_kind]);
 }
 
 uint32_t SparkModelBatchSchedulerChooseWorkKind(
@@ -1698,7 +1663,9 @@ static void SparkModelBatchInitializeLane(
 	lane->flags = flags;
 	if ( allow_cache == 0u || engine->cache_block_token_count == 0u )
 		return;
-	if ( request->cache_prefix_token_count != 0u )
+	if ( request->cache_prefix_token_count != 0u &&
+		request->computed_prompt_token_count == request->cache_prefix_token_count &&
+		request->computed_prompt_token_count < request->prompt_token_count )
 	{
 		lane->flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX;
 		lane->cache_prefix_token_count = request->cache_prefix_token_count;

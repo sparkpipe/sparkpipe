@@ -18,10 +18,12 @@ extern "C" {
 #define SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS UINT32_C(0x00000001)
 #define SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT UINT32_C(0x00000002)
 #define SPARK_PIPELINE_RUNTIME_RANK_FLAG_FINAL_STAGE UINT32_C(0x00000004)
+#define SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT UINT32_C(0x00000008)
 #define SPARK_PIPELINE_RUNTIME_RANK_KNOWN_FLAGS \
 	(SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS | \
 	 SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT | \
-		 SPARK_PIPELINE_RUNTIME_RANK_FLAG_FINAL_STAGE)
+	 SPARK_PIPELINE_RUNTIME_RANK_FLAG_FINAL_STAGE | \
+	 SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT)
 
 typedef struct SparkPipelineRuntimeLinearNode
 {
@@ -37,6 +39,17 @@ typedef struct SparkPipelineRuntimeLinearNode
 	const char *previous_host_name;
 	const char *next_host_name;
 } SparkPipelineRuntimeLinearNode;
+
+typedef struct SparkPipelineRuntimeFanoutNode
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t rank_index;
+	uint32_t stage_index;
+	uint32_t stage_count;
+	uint32_t reserved0;
+	const char *host_name;
+} SparkPipelineRuntimeFanoutNode;
 
 typedef struct SparkPipelineRuntimeRankPlan
 {
@@ -79,6 +92,8 @@ typedef struct SparkPipelineRuntimeRankPlan
 	((uint32_t)sizeof(SparkPipelineRuntimeRankPlan))
 #define SPARK_PIPELINE_RUNTIME_LINEAR_NODE_BYTES \
 	((uint32_t)sizeof(SparkPipelineRuntimeLinearNode))
+#define SPARK_PIPELINE_RUNTIME_FANOUT_NODE_BYTES \
+	((uint32_t)sizeof(SparkPipelineRuntimeFanoutNode))
 
 SparkStatus SparkPipelineRuntimeBuildLinearRankPlan(
 	const SparkModelServingAdapterDescriptor *descriptor,
@@ -88,6 +103,13 @@ SparkStatus SparkPipelineRuntimeBuildLinearRankPlan(
 	uint32_t transport_capability_flags,
 	uint32_t transport_control_port_base,
 	const char *transport_module_id,
+	SparkPipelineRuntimeRankPlan *rank_plan);
+SparkStatus SparkPipelineRuntimeBuildFanoutRankPlan(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkPipelineRuntimeFanoutNode *node,
+	uint32_t max_active_sequence_count,
+	uint32_t max_input_row_count,
+	uint32_t transport_control_port_base,
 	SparkPipelineRuntimeRankPlan *rank_plan);
 SparkStatus SparkPipelineRuntimeValidateRankPlan(
 	const SparkModelServingAdapterDescriptor *descriptor,

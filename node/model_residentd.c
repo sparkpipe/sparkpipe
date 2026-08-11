@@ -951,7 +951,21 @@ static SparkStatus SparkModelResidentdBuildRankPlan(
 	uint32_t transport_capabilities,
 	const char *transport_module_id)
 {
+	const SparkModelServingAdapterDescriptor *descriptor;
 	SparkPipelineRuntimeLinearNode linear_node;
+	SparkPipelineRuntimeFanoutNode fanout_node;
+	descriptor = runtime->adapter_library.adapter_interface.descriptor;
+	if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u )
+	{
+		memset(&fanout_node,0,sizeof(fanout_node));
+		fanout_node.abi_version = SPARK_PIPELINE_RUNTIME_ABI_VERSION;
+		fanout_node.descriptor_bytes = SPARK_PIPELINE_RUNTIME_FANOUT_NODE_BYTES;
+		fanout_node.rank_index = configuration->rank_index;
+		fanout_node.stage_index = configuration->stage_index;
+		fanout_node.stage_count = configuration->deployment->node_count;
+		fanout_node.host_name = configuration->transport_host;
+		return(SparkPipelineRuntimeBuildFanoutRankPlan(descriptor,&fanout_node,runtime->runtime_limits.max_active_sequence_count,runtime->runtime_limits.max_input_row_count,0u,&runtime->rank_plan));
+	}
 	memset(&linear_node,0,sizeof(linear_node));
 	linear_node.abi_version = SPARK_PIPELINE_RUNTIME_ABI_VERSION;
 	linear_node.descriptor_bytes = SPARK_PIPELINE_RUNTIME_LINEAR_NODE_BYTES;
@@ -963,7 +977,7 @@ static SparkStatus SparkModelResidentdBuildRankPlan(
 	linear_node.host_name = configuration->transport_host;
 	linear_node.previous_host_name = configuration->previous_transport_host;
 	linear_node.next_host_name = configuration->next_transport_host;
-	return(SparkPipelineRuntimeBuildLinearRankPlan(runtime->adapter_library.adapter_interface.descriptor,&linear_node,runtime->runtime_limits.max_active_sequence_count,runtime->runtime_limits.max_input_row_count,transport_capabilities,configuration->port_base,transport_module_id,&runtime->rank_plan));
+	return(SparkPipelineRuntimeBuildLinearRankPlan(descriptor,&linear_node,runtime->runtime_limits.max_active_sequence_count,runtime->runtime_limits.max_input_row_count,transport_capabilities,configuration->port_base,transport_module_id,&runtime->rank_plan));
 }
 
 static SparkStatus SparkModelResidentdInitializePlan(
@@ -975,7 +989,7 @@ static SparkStatus SparkModelResidentdInitializePlan(
 {
 	SparkStatus status;
 	runtime->initialize_phase = "adapter_load";
-	status = SparkModelServingAdapterLoadInterfaceFromSharedObject(configuration->adapter_path,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&runtime->adapter_library);
+	status = SparkModelServingAdapterLoadInterfaceFromSharedObject(configuration->adapter_path,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE,&runtime->adapter_library);
 	if ( status == SPARK_STATUS_OK )
 	{
 		runtime->initialize_phase = "deployment_validation";
@@ -989,7 +1003,15 @@ static SparkStatus SparkModelResidentdInitializePlan(
 	if ( status == SPARK_STATUS_OK )
 	{
 		runtime->initialize_phase = "transport_contract";
-		status = SparkModelResidentdTransportContract(configuration->transport_mode,transport_capabilities,transport_module_id,memory_mode);
+		if ( (runtime->adapter_library.adapter_interface.descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u )
+		{
+			*transport_capabilities = 0u;
+			*transport_module_id = 0;
+			*memory_mode = SPARK_MODEL_RESIDENTD_MEMORY_DEVICE;
+			status = SPARK_STATUS_OK;
+		}
+		else
+			status = SparkModelResidentdTransportContract(configuration->transport_mode,transport_capabilities,transport_module_id,memory_mode);
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -999,7 +1021,10 @@ static SparkStatus SparkModelResidentdInitializePlan(
 	if ( status == SPARK_STATUS_OK )
 	{
 		runtime->initialize_phase = "transport_load";
-		status = SparkHiddenTransportLoadInterfaceFromSharedObject(configuration->transport_path,*transport_capabilities,&runtime->transport_library);
+		if ( (runtime->adapter_library.adapter_interface.descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u )
+			status = SPARK_STATUS_OK;
+		else
+			status = SparkHiddenTransportLoadInterfaceFromSharedObject(configuration->transport_path,*transport_capabilities,&runtime->transport_library);
 	}
 	return(status);
 }
@@ -1318,9 +1343,9 @@ static SparkStatus SparkModelResidentdBindRoute(
 	status = SparkModelResidentIpcDecodeSubmission(slot->message,message_bytes,&route->submission);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterValidateRuntimeSubmission(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&route->submission);
-	hidden_bytes = status == SPARK_STATUS_OK ? (uint64_t)route->submission.row_count * runtime->rank_plan.boundary_bytes_per_sequence : 0u;
-	input_sideband_bytes = status == SPARK_STATUS_OK ? (uint64_t)route->submission.row_count * runtime->rank_plan.input_sideband_bytes_per_sequence : 0u;
-	output_sideband_bytes = status == SPARK_STATUS_OK ? (uint64_t)route->submission.row_count * runtime->rank_plan.output_sideband_bytes_per_sequence : 0u;
+	hidden_bytes = status == SPARK_STATUS_OK && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT) == 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.boundary_bytes_per_sequence : 0u;
+	input_sideband_bytes = status == SPARK_STATUS_OK && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.input_sideband_bytes_per_sequence : 0u;
+	output_sideband_bytes = status == SPARK_STATUS_OK && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.output_sideband_bytes_per_sequence : 0u;
 	if ( status == SPARK_STATUS_OK && (hidden_bytes + input_sideband_bytes > runtime->rank_plan.input_max_packet_bytes || hidden_bytes + output_sideband_bytes > runtime->rank_plan.output_max_packet_bytes) )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
@@ -1675,6 +1700,8 @@ static SparkStatus SparkModelResidentdSubmitAdapter(
 	route->adapter_submit_time_ns = SparkModelResidentdMonotonicTimeNs();
 	pthread_mutex_unlock(&runtime->mutex);
 	status = runtime->adapter_library.adapter_interface.submit(runtime->adapter_state,&route->submission);
+	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
+		fprintf(stderr,"model_residentd adapter_submit status=%s rank=%u stage=%u submission=%llu kind=%u rows=%u lanes=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(unsigned long long)route->submission.submission_id,route->submission.work_kind,route->submission.row_count,route->submission.active_sequence_count);
 	pthread_mutex_lock(&runtime->mutex);
 	state = route->state;
 	result = SPARK_STATUS_OK;
@@ -1797,20 +1824,36 @@ static SparkStatus SparkModelResidentdProgress(SparkModelResidentdRuntime *runti
 		status = SPARK_STATUS_OK;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressRoutes(runtime,0u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=routes-pre status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->input_transport,1u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=input-transport-pre status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->output_transport,0u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=output-transport-pre status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressRoutes(runtime,0u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=routes-mid status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressRoutes(runtime,1u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=routes-adapter status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->input_transport,1u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=input-transport-post status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->output_transport,0u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=output-transport-post status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressRoutes(runtime,0u);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd progress stage=routes-final status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	return(status);
 }
 

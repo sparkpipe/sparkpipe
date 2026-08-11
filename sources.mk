@@ -46,6 +46,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     ring/transport/fabric_topology.c \
     ring/transport/memlink.c \
     ring/transport/tp_collective.c \
+    ring/transport/tp_device_collective.c \
     text/tokenizer.c \
     cache/kv_cache.c \
 	cache/kv_page_cache.c \
@@ -65,6 +66,7 @@ SPARKPIPE_QWEN36_SOURCES := \
     model-families/qwen36/src/spark_qwen36_work_control.c
 
 SPARKPIPE_DSV4_SOURCES := \
+    model-families/dsv4/src/spark_dsv4_parallel_shape.c \
     model-families/dsv4/src/spark_dsv4_cache_plan.c \
     model-families/dsv4/src/spark_dsv4_cache_arena.c
 
