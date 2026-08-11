@@ -14,6 +14,9 @@
 #include <cuda_runtime.h>
 
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
+
+#define SPARK_DSV4_TP_HOST_RECEIVE_BUFFER_COUNT \
+	(2u * SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS)
 #include "sparkpipe/spark_dsv4_parallel_shape.h"
 #include "sparkpipe/spark_kv_page_store.h"
 #include "sparkpipe/spark_model_driver_support.h"
@@ -186,6 +189,11 @@ struct SparkDsv4ModuleState
 	void *tp_exchange_receive_bf16;
 	void *tp_host_exchange_send_bf16;
 	void *tp_host_exchange_receive_bf16;
+	uint64_t tp_host_exchange_bytes;
+	cudaEvent_t tp_host_receive_events[
+		SPARK_DSV4_TP_HOST_RECEIVE_BUFFER_COUNT];
+	uint32_t tp_host_receive_event_recorded[
+		SPARK_DSV4_TP_HOST_RECEIVE_BUFFER_COUNT];
 	uint32_t resident_sequence_capacity;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
@@ -1912,10 +1920,10 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 	uint32_t rows)
 {
 	uint8_t *gather_base,*local_source,*destination,*send_buffer,*receive_buffer;
-	void *host_send_buffer,*host_receive_buffer;
+	uint8_t *host_send_buffer,*host_receive_base,*host_receive_buffer;
 	uint64_t local_bytes,full_bytes,block_bytes;
 	uint32_t block_count,block_start,partner_start,rank,host_mode;
-	uint32_t step_count,step_index,receive_block_count;
+	uint32_t buffer_index,buffer_set,step_count,step_index,receive_block_count;
 	void *receive_target;
 	cudaStream_t stream;
 	cudaError_t error;
@@ -1942,14 +1950,36 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 		(uint64_t)state->tp_rank * local_bytes;
 	send_buffer = (uint8_t *)state->tp_exchange_send_bf16;
 	receive_buffer = (uint8_t *)state->tp_exchange_receive_bf16;
-	host_send_buffer = state->tp_host_exchange_send_bf16;
-	host_receive_buffer = state->tp_host_exchange_receive_bf16;
+	host_send_buffer = (uint8_t *)state->tp_host_exchange_send_bf16;
+	host_receive_base = (uint8_t *)state->tp_host_exchange_receive_bf16;
 	stream = (cudaStream_t)slot->cuda_stream;
 	step_count = state->tp_device_collective.step_count;
-	receive_target = host_mode != 0u ? host_receive_buffer : receive_buffer;
+	buffer_set = (uint32_t)((state->tp_device_collective.next_operation_sequence /
+		(uint64_t)step_count) & 1u);
 	for (step_index=0u; step_index<step_count; step_index++)
 	{
 		receive_block_count = 1u << step_index;
+		buffer_index = buffer_set * step_count + step_index;
+		if ( host_mode != 0u )
+		{
+			if ( state->tp_host_receive_event_recorded[buffer_index] != 0u )
+			{
+				error = cudaEventQuery(
+					state->tp_host_receive_events[buffer_index]);
+				if ( error == cudaErrorNotReady )
+					error = cudaEventSynchronize(
+						state->tp_host_receive_events[buffer_index]);
+				if ( error != cudaSuccess )
+					return(SparkStageModuleCudaStatus(
+						SPARK_DSV4_MODULE_TAG,error,"tp_gather_receive_reuse"));
+				state->tp_host_receive_event_recorded[buffer_index] = 0u;
+			}
+			host_receive_buffer = host_receive_base +
+				(uint64_t)buffer_index * state->tp_host_exchange_bytes;
+			receive_target = host_receive_buffer;
+		}
+		else
+			receive_target = receive_buffer;
 		status = SparkTpDeviceCollectivePrepareReceiveBf16(
 			&state->tp_device_collective,
 			receive_target,
@@ -1981,6 +2011,10 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 			count >>= 1u;
 			step++;
 		}
+		buffer_index = buffer_set * step_count + step;
+		if ( host_mode != 0u )
+			host_receive_buffer = host_receive_base +
+				(uint64_t)buffer_index * state->tp_host_exchange_bytes;
 		block_start = (state->tp_rank >> step) << step;
 		partner_start = block_start ^ block_count;
 		error = cudaMemcpy2DAsync(
@@ -2023,6 +2057,15 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 			stream);
 		if ( error != cudaSuccess )
 			return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_gather_unpack_step"));
+		if ( host_mode != 0u )
+		{
+			error = cudaEventRecord(
+				state->tp_host_receive_events[buffer_index],stream);
+			if ( error != cudaSuccess )
+				return(SparkStageModuleCudaStatus(
+					SPARK_DSV4_MODULE_TAG,error,"tp_gather_receive_record"));
+			state->tp_host_receive_event_recorded[buffer_index] = 1u;
+		}
 	}
 	for (rank=0u; rank<state->tp_degree; rank++)
 	{
@@ -3210,6 +3253,12 @@ void SparkDsv4ResidentDecodeStageDestroy(void *module_state)
 		(void)cudaFreeHost(state->tp_host_exchange_send_bf16);
 	if ( state->tp_host_exchange_receive_bf16 != 0 )
 		(void)cudaFreeHost(state->tp_host_exchange_receive_bf16);
+	for (slot_index=0u;
+		slot_index<SPARK_DSV4_TP_HOST_RECEIVE_BUFFER_COUNT; slot_index++)
+	{
+		if ( state->tp_host_receive_events[slot_index] != 0 )
+			(void)cudaEventDestroy(state->tp_host_receive_events[slot_index]);
+	}
 	state->tp_host_exchange_send_bf16 = 0;
 	state->tp_host_exchange_receive_bf16 = 0;
 	SparkDsv4PagedCacheDestroyHost(&state->paged_cache);
@@ -3279,10 +3328,16 @@ static SparkStatus SparkDsv4ModulePrepareState(
 		status = SparkDsv4ModuleAllocatePools(state);
 	if ( status == SPARK_STATUS_OK && state->tp_device_collective_initialized != 0u )
 	{
-		uint64_t exchange_bytes;
+		uint64_t exchange_bytes,host_exchange_bytes;
 		exchange_bytes = (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT *
 			SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
 			SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+		if ( exchange_bytes > UINT64_MAX /
+			SPARK_DSV4_TP_HOST_RECEIVE_BUFFER_COUNT )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		host_exchange_bytes = exchange_bytes *
+			SPARK_DSV4_TP_HOST_RECEIVE_BUFFER_COUNT;
+		state->tp_host_exchange_bytes = exchange_bytes;
 		status = SparkStageModuleDeviceAllocate(
 			&state->ledger,exchange_bytes,&state->tp_gather_bf16);
 		if ( status == SPARK_STATUS_OK )
@@ -3295,12 +3350,30 @@ static SparkStatus SparkDsv4ModulePrepareState(
 			SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
 		{
 			status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
-				cudaHostAlloc(&state->tp_host_exchange_send_bf16,exchange_bytes,
+				cudaHostAlloc(&state->tp_host_exchange_send_bf16,
+					exchange_bytes,
 				cudaHostAllocPortable | cudaHostAllocMapped),"tp_host_send_alloc");
 			if ( status == SPARK_STATUS_OK )
 				status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
-					cudaHostAlloc(&state->tp_host_exchange_receive_bf16,exchange_bytes,
+					cudaHostAlloc(&state->tp_host_exchange_receive_bf16,
+						host_exchange_bytes,
 					cudaHostAllocPortable | cudaHostAllocMapped),"tp_host_receive_alloc");
+			if ( status == SPARK_STATUS_OK )
+			{
+				uint32_t event_index;
+				for (event_index=0u;
+					event_index<SPARK_DSV4_TP_HOST_RECEIVE_BUFFER_COUNT;
+					event_index++)
+				{
+					status = SparkStageModuleCudaStatus(
+						SPARK_DSV4_MODULE_TAG,
+						cudaEventCreateWithFlags(
+							&state->tp_host_receive_events[event_index],
+							cudaEventDisableTiming),"tp_host_receive_event");
+					if ( status != SPARK_STATUS_OK )
+						break;
+				}
+			}
 		}
 	}
 	if ( status == SPARK_STATUS_OK )
