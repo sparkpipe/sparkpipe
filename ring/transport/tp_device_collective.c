@@ -3,12 +3,13 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 
 #include <stdint.h>
+#include <sched.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #define SPARK_TP_DEVICE_COLLECTIVE_PORT_STRIDE 64u
-#define SPARK_TP_DEVICE_COLLECTIVE_POLL_SLEEP_NANOSECONDS 10000L
+#define SPARK_TP_DEVICE_COLLECTIVE_YIELD_INTERVAL 256u
 
 static int SparkTpDeviceCollectiveDegreeIsSupported(uint32_t tp_degree)
 {
@@ -436,6 +437,7 @@ SparkStatus SparkTpDeviceCollectiveExchangeBf16(
     uint32_t receive_posted;
     uint32_t send_complete;
     uint32_t receive_complete;
+    uint32_t poll_iterations;
 
     if (collective == NULL || collective->abi_version !=
         SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION || collective->failed != 0u ||
@@ -480,10 +482,10 @@ SparkStatus SparkTpDeviceCollectiveExchangeBf16(
     receive_posted = 0u;
     send_complete = 0u;
     receive_complete = 0u;
+    poll_iterations = 0u;
     while (send_complete == 0u || receive_complete == 0u)
     {
         SparkStatus status;
-        struct timespec delay;
 
         if (SparkTpDeviceCollectiveNowMilli() >= deadline_milli)
         {
@@ -531,11 +533,9 @@ SparkStatus SparkTpDeviceCollectiveExchangeBf16(
         }
         if (send_complete == 0u || receive_complete == 0u)
         {
-            delay.tv_sec = 0;
-            delay.tv_nsec = SPARK_TP_DEVICE_COLLECTIVE_POLL_SLEEP_NANOSECONDS;
-            while (nanosleep(&delay, &delay) != 0)
-            {
-            }
+            poll_iterations += 1u;
+            if ((poll_iterations % SPARK_TP_DEVICE_COLLECTIVE_YIELD_INTERVAL) == 0u)
+                sched_yield();
         }
     }
     collective->next_operation_sequence += 1u;
