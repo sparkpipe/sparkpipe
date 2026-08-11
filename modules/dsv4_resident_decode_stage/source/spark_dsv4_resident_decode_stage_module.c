@@ -1915,6 +1915,8 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 	void *host_send_buffer,*host_receive_buffer;
 	uint64_t local_bytes,full_bytes,block_bytes;
 	uint32_t block_count,block_start,partner_start,rank,host_mode;
+	uint32_t step_count,step_index,receive_block_count;
+	void *receive_target;
 	cudaStream_t stream;
 	cudaError_t error;
 	SparkStatus status;
@@ -1943,6 +1945,20 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 	host_send_buffer = state->tp_host_exchange_send_bf16;
 	host_receive_buffer = state->tp_host_exchange_receive_bf16;
 	stream = (cudaStream_t)slot->cuda_stream;
+	step_count = state->tp_device_collective.step_count;
+	receive_target = host_mode != 0u ? host_receive_buffer : receive_buffer;
+	for (step_index=0u; step_index<step_count; step_index++)
+	{
+		receive_block_count = 1u << step_index;
+		status = SparkTpDeviceCollectivePrepareReceiveBf16(
+			&state->tp_device_collective,
+			receive_target,
+			rows,
+			receive_block_count * state->tp_device_collective.local_hidden_dimension,
+			step_index,(void *)stream);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
 	error = cudaMemcpy2DAsync(
 		gather_base + (uint64_t)state->tp_rank * local_bytes,
 		(size_t)full_bytes,

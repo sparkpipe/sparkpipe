@@ -61,9 +61,22 @@ int main(void)
     }
     assert(host_collective.memory_mode ==
         SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST);
+    assert(SparkTpDeviceCollectivePrepareReceiveBf16(
+        &host_collective,receive_buffer,2u,4u,0u,(void *)1) ==
+        SPARK_STATUS_OK);
+    assert(SparkTpDeviceCollectivePrepareReceiveBf16(
+        &host_collective,receive_buffer,2u,8u,1u,(void *)1) ==
+        SPARK_STATUS_OK);
+    assert(host_collective.prepared_receive_mask == 3u);
     assert(SparkTpDeviceCollectiveExchangeBf16(
         &host_collective,send_buffer,receive_buffer,2u,4u,0u,
         (void *)1) == SPARK_STATUS_OK);
+    assert(host_collective.prepared_receive_mask == 2u);
+    assert(SparkTpDeviceCollectiveExchangeBf16(
+        &host_collective,send_buffer,receive_buffer,2u,8u,1u,
+        (void *)1) == SPARK_STATUS_OK);
+    assert(host_collective.prepared_receive_mask == 0u);
+    assert(host_collective.next_operation_sequence == 3u);
     SparkTpDeviceCollectiveDestroy(&host_collective);
     assert(unsetenv("SPARK_TEST_TP_DEVICE_COLLECTIVE_HOST_MODE") == 0);
     return 0;
