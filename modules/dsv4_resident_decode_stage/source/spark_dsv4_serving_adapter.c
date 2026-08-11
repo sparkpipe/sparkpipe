@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -858,10 +859,16 @@ static SparkStatus SparkDsv4ServingSubmit(
 	state = (SparkDsv4ServingAdapterState *)adapter_state;
 	status = SparkDsv4ServingValidateSubmissionBase(state,submission);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"dsv4_adapter submit_validate status=%s stage=%u submission=%llu kind=%u rows=%u lanes=%u\n",SparkStatusToString(status),state != 0 ? state->stage_index : UINT32_MAX,submission != 0 ? (unsigned long long)submission->submission_id : 0ull,submission != 0 ? submission->work_kind : 0u,submission != 0 ? submission->row_count : 0u,submission != 0 ? submission->active_sequence_count : 0u);
 		return(status);
+	}
 	status = SparkDsv4ServingReservePending(state,submission,&pending);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"dsv4_adapter reserve_pending status=%s stage=%u submission=%llu\n",SparkStatusToString(status),state->stage_index,(unsigned long long)submission->submission_id);
 		return(status);
+	}
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
 		status = SparkDsv4ServingSubmitRelease(state,submission,pending);
@@ -906,6 +913,13 @@ static SparkStatus SparkDsv4ServingSubmit(
 	dispatch.completion_function = SparkDsv4ServingDriverCompletion;
 	dispatch.completion_context = pending;
 	status = SparkDsv4StageRunnerSubmit(&state->runner,&dispatch);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkDsv4StageRunnerStats stats;
+		memset(&stats,0,sizeof(stats));
+		(void)SparkDsv4StageRunnerGetStats(&state->runner,&stats);
+		fprintf(stderr,"dsv4_adapter runner_submit status=%s stage=%u submission=%llu kind=%u rows=%u lanes=%u cache_lanes=%u last=%u rejected=%llu admitted=%llu\n",SparkStatusToString(status),state->stage_index,(unsigned long long)submission->submission_id,submission->work_kind,submission->row_count,submission->active_sequence_count,dispatch.cache_lane_count,stats.last_status,(unsigned long long)stats.rejected_count,(unsigned long long)stats.admitted_count);
+	}
 	if ( status != SPARK_STATUS_OK )
 		pending->active = 0u;
 	return(status);
