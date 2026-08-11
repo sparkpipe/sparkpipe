@@ -1602,6 +1602,20 @@ static SparkStatus SparkDsv4ModuleValidateFrameContinuity(
 		lane_sequence_ids[ordinal] = state->lane_sequence_ids[lane];
 		lane_next_positions[ordinal] = state->lane_next_positions[lane];
 		lane_requires_reset[ordinal] = 0u;
+		if ( frame->cache_lane_count != 0u &&
+			(frame->cache_lanes[ordinal].flags &
+			 SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) != 0u )
+		{
+			if ( frame->cache_lanes[ordinal].resident_sequence_slot != lane ||
+				frame->cache_lanes[ordinal].sequence_id == 0u ||
+				frame->cache_lanes[ordinal].sequence_position !=
+					frame->cache_lanes[ordinal].prefix_token_count )
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+			lane_sequence_ids[ordinal] =
+				frame->cache_lanes[ordinal].sequence_id;
+			lane_next_positions[ordinal] =
+				frame->cache_lanes[ordinal].sequence_position;
+		}
 	}
 	for (row=0u; row<row_count; row++)
 	{
