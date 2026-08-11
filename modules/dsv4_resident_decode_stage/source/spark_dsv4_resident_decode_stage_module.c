@@ -401,7 +401,7 @@ static SparkStatus SparkDsv4ModuleConfigure(
 	if ( (context->flags & ~SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS) != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	parallel = (context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL) != 0u ? 1u : 0u;
-	if ( context->stage_count == 0u || context->stage_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT || context->layer_count == 0u || context->layer_count > SPARK_DSV4_MODEL_LAYER_COUNT - context->first_layer_index || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->cuda_graph_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT || context->max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || context->max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS || context->linear_weight_codec != SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC || context->expert_weight_codec != SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC || context->kv_cache_codec != SPARK_DSV4_MODEL_KV_CACHE_CODEC || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || (parallel == 0u && (context->tp_degree != 1u || context->tp_rank != 0u || context->tp_configuration_hash != 0u)) || (parallel != 0u && (context->tp_degree != SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE || context->stage_count != SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE || context->stage_index != context->tp_rank)) )
+	if ( context->stage_count == 0u || context->stage_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT || context->layer_count == 0u || context->layer_count > SPARK_DSV4_MODEL_LAYER_COUNT - context->first_layer_index || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->cuda_graph_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT || context->max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || context->max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS || context->linear_weight_codec != SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC || context->expert_weight_codec != SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC || context->kv_cache_codec != SPARK_DSV4_MODEL_KV_CACHE_CODEC || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || (parallel == 0u && (context->tp_degree != 1u || context->tp_rank != 0u || context->tp_configuration_hash != 0u)) || (parallel != 0u && (context->tp_degree <= 1u || context->stage_count != context->tp_degree || context->stage_index != context->tp_rank)) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( parallel != 0u && (context->tp_local_host == 0 ||
 		context->tp_transport_module_path == 0 ||
@@ -473,9 +473,9 @@ static SparkStatus SparkDsv4ModuleValidateSlice(SparkDsv4ModuleState *state)
 		fprintf(stderr,"%s config_slice_invalid stage=%u/%u slice=%u+%u\n",SPARK_DSV4_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	if ( state->tp_degree == SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE )
+	if ( state->tp_degree > 1u )
 	{
-		if ( state->stage_count != SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE || state->stage_index != state->tp_rank || state->first_layer_index != 0u || state->layer_count != SPARK_DSV4_MODEL_LAYER_COUNT )
+		if ( state->stage_count != state->tp_degree || state->stage_index != state->tp_rank || state->first_layer_index != 0u || state->layer_count != SPARK_DSV4_MODEL_LAYER_COUNT )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		state->owns_embedding = 1u;
 		state->owns_final_head = state->tp_rank + 1u == state->tp_degree ? 1u : 0u;
@@ -804,7 +804,7 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 	if ( status == SPARK_STATUS_OK )
 	{
 		SparkDsv4StagePackExpectedGeometry(&expected,state->first_layer_index,state->layer_count);
-		if ( state->tp_degree == SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE )
+		if ( state->tp_degree > 1u )
 			expected.tensor_count = SparkDsv4StagePackExpectedTensorCountForOwnership(
 				state->first_layer_index,
 				state->layer_count,

@@ -47,9 +47,9 @@ typedef struct SparkDsv4TpNodeConfig
 
 /*
  * Derive every dimension that a rank-sharded DSV4 kernel must agree on.
- * Current supported TP shapes are degree one and TP16, both over the full 43
- * layer model.  Degree one is retained for a byte-identical control pack;
- * higher degrees fail closed unless every split dimension divides exactly.
+ * Current supported TP shapes are powers of two through TP16, all over the
+ * full 43-layer model. Degree one is retained for the PP control pack; every
+ * higher degree fails closed unless every split dimension divides exactly.
  */
 SparkStatus SparkDsv4TpDeriveNodeConfig(
 	const SparkDsv4TpShapeDescriptor *shape,

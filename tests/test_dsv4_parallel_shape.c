@@ -45,11 +45,24 @@ static void SparkDsv4TestHashSeparatesRanks(void)
 	assert(config_a.configuration_hash != config_b.configuration_hash);
 }
 
+static void SparkDsv4TestTp4(void)
+{
+	SparkDsv4TpShapeDescriptor shape;
+	SparkDsv4TpNodeConfig config;
+	shape = SparkDsv4TestShape(4u,3u);
+	assert(SparkDsv4TpDeriveNodeConfig(&shape,&config) == SPARK_STATUS_OK);
+	assert(config.query_heads_per_rank == 16u);
+	assert(config.query_output_elements_per_rank == 8192u);
+	assert(config.output_hidden_rows_per_rank == 1024u);
+	assert(config.expert_intermediate_per_rank == 512u);
+	assert(config.vocabulary_rows_per_rank == 32320u);
+}
+
 static void SparkDsv4TestFailsClosed(void)
 {
 	SparkDsv4TpShapeDescriptor shape;
 	SparkDsv4TpNodeConfig config;
-	shape = SparkDsv4TestShape(8u,0u);
+	shape = SparkDsv4TestShape(3u,0u);
 	assert(SparkDsv4TpDeriveNodeConfig(&shape,&config) == SPARK_STATUS_UNSUPPORTED);
 	shape = SparkDsv4TestShape(16u,16u);
 	assert(SparkDsv4TpDeriveNodeConfig(&shape,&config) == SPARK_STATUS_INVALID_ARGUMENT);
@@ -61,6 +74,7 @@ static void SparkDsv4TestFailsClosed(void)
 int main(void)
 {
 	SparkDsv4TestTp16();
+	SparkDsv4TestTp4();
 	SparkDsv4TestHashSeparatesRanks();
 	SparkDsv4TestFailsClosed();
 	return(0);
