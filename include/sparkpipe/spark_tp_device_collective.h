@@ -38,6 +38,8 @@ typedef struct SparkTpDeviceCollective
     uint32_t tp_degree;
     uint32_t tp_rank;
     uint32_t step_count;
+    uint32_t operation_step_index;
+    uint32_t prepared_receive_mask;
     uint32_t local_hidden_dimension;
     uint32_t max_active_sequence_count;
     uint32_t operation_timeout_milli;
@@ -57,6 +59,8 @@ typedef struct SparkTpDeviceCollective
     char receive_route_names[
         SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS]
         [SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES];
+    SparkHiddenTransportPacket prepared_receive_packets[
+        SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
 } SparkTpDeviceCollective;
 
 /* Opens one bidirectional RDMA session pair per recursive-doubling step. The
@@ -73,6 +77,18 @@ SparkStatus SparkTpDeviceCollectiveCreate(
 SparkStatus SparkTpDeviceCollectiveExchangeBf16(
     SparkTpDeviceCollective *collective,
     const void *send_device,
+    void *receive_device,
+    uint32_t active_sequence_count,
+    uint32_t hidden_dimension,
+    uint32_t step_index,
+    void *cuda_stream);
+
+/* Posts a receive for a current or future recursive-doubling step. Calling
+ * this before the caller's device-to-host copy lets receive advertisement and
+ * memory registration overlap that copy. The matching exchange consumes the
+ * prepared receive; the operation remains ordered by step_index. */
+SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
+    SparkTpDeviceCollective *collective,
     void *receive_device,
     uint32_t active_sequence_count,
     uint32_t hidden_dimension,

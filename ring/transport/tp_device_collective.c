@@ -294,6 +294,8 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     collective_out->tp_degree = config->tp_degree;
     collective_out->tp_rank = config->tp_rank;
     collective_out->step_count = step_count;
+    collective_out->operation_step_index = 0u;
+    collective_out->prepared_receive_mask = 0u;
     collective_out->local_hidden_dimension = config->local_hidden_dimension;
     collective_out->max_active_sequence_count =
         config->max_active_sequence_count;
@@ -381,6 +383,108 @@ static SparkStatus SparkTpDeviceCollectiveBuildPacket(
     return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkTpDeviceCollectivePacketMatches(
+    const SparkHiddenTransportPacket *left,
+    const SparkHiddenTransportPacket *right)
+{
+    return left != NULL && right != NULL &&
+        left->active_sequence_count == right->active_sequence_count &&
+        left->hidden_dimension == right->hidden_dimension &&
+        left->bytes_per_sequence == right->bytes_per_sequence &&
+        left->sequence_id == right->sequence_id &&
+        left->token_index == right->token_index &&
+        left->hidden_bf16 == right->hidden_bf16 &&
+        left->cuda_stream == right->cuda_stream;
+}
+
+static SparkStatus SparkTpDeviceCollectiveBuildPreparedReceive(
+    SparkTpDeviceCollective *collective,
+    void *receive_device,
+    uint32_t active_sequence_count,
+    uint32_t hidden_dimension,
+    uint32_t step_index,
+    void *cuda_stream,
+    SparkHiddenTransportPacket *packet)
+{
+    uint64_t operation_base;
+
+    if (collective == NULL || packet == NULL || receive_device == NULL ||
+        step_index >= collective->step_count ||
+        collective->next_operation_sequence <
+            (uint64_t)collective->operation_step_index)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    operation_base = collective->next_operation_sequence -
+        (uint64_t)collective->operation_step_index;
+    if (step_index != 0u && operation_base > UINT64_MAX - step_index)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    return SparkTpDeviceCollectiveBuildPacket(
+        receive_device,
+        active_sequence_count,
+        hidden_dimension,
+        operation_base + (uint64_t)step_index,
+        step_index,
+        cuda_stream,
+        packet);
+}
+
+SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
+    SparkTpDeviceCollective *collective,
+    void *receive_device,
+    uint32_t active_sequence_count,
+    uint32_t hidden_dimension,
+    uint32_t step_index,
+    void *cuda_stream)
+{
+    SparkHiddenTransportPacket packet;
+    SparkStatus status;
+    uint32_t mask;
+
+    if (collective == NULL || collective->abi_version !=
+        SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION || collective->failed != 0u ||
+        receive_device == NULL || active_sequence_count == 0u ||
+        active_sequence_count > collective->max_active_sequence_count ||
+        step_index >= collective->step_count || cuda_stream == NULL)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (hidden_dimension != collective->step_hidden_dimensions[step_index])
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkTpDeviceCollectiveBuildPreparedReceive(
+        collective,
+        receive_device,
+        active_sequence_count,
+        hidden_dimension,
+        step_index,
+        cuda_stream,
+        &packet);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    mask = 1u << step_index;
+    if ((collective->prepared_receive_mask & mask) != 0u)
+    {
+        return SparkTpDeviceCollectivePacketMatches(
+            &collective->prepared_receive_packets[step_index],
+            &packet) != 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenTransportPostReceive(
+        collective->receive_sessions[step_index], &packet);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    collective->prepared_receive_packets[step_index] = packet;
+    collective->prepared_receive_mask |= mask;
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkTpDeviceCollectivePollCompletion(
     SparkHiddenTransportSession *session,
     const SparkHiddenTransportPacket *packet,
@@ -438,10 +542,12 @@ SparkStatus SparkTpDeviceCollectiveExchangeBf16(
     uint32_t send_complete;
     uint32_t receive_complete;
     uint32_t poll_iterations;
+    uint32_t receive_prepared;
 
     if (collective == NULL || collective->abi_version !=
         SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION || collective->failed != 0u ||
         step_index >= collective->step_count || send_device == NULL ||
+        step_index != collective->operation_step_index ||
         receive_device == NULL || active_sequence_count == 0u ||
         active_sequence_count > collective->max_active_sequence_count ||
         hidden_dimension != collective->step_hidden_dimensions[step_index] ||
@@ -470,6 +576,19 @@ SparkStatus SparkTpDeviceCollectiveExchangeBf16(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    receive_prepared = 1u << step_index;
+    if ((collective->prepared_receive_mask & receive_prepared) != 0u)
+    {
+        if (SparkTpDeviceCollectivePacketMatches(
+                &collective->prepared_receive_packets[step_index],
+                &receive_packet) == 0u)
+        {
+            return SparkTpDeviceCollectiveFail(
+                collective,
+                SPARK_STATUS_VALIDATION_FAILED);
+        }
+        receive_packet = collective->prepared_receive_packets[step_index];
+    }
     if (SparkTpDeviceCollectiveBuildDeadline(
             collective->operation_timeout_milli,
             &deadline_milli) != SPARK_STATUS_OK)
@@ -479,7 +598,8 @@ SparkStatus SparkTpDeviceCollectiveExchangeBf16(
             SPARK_STATUS_IO_ERROR);
     }
     send_posted = 0u;
-    receive_posted = 0u;
+    receive_posted = (collective->prepared_receive_mask &
+        receive_prepared) != 0u ? 1u : 0u;
     send_complete = 0u;
     receive_complete = 0u;
     poll_iterations = 0u;
@@ -539,6 +659,14 @@ SparkStatus SparkTpDeviceCollectiveExchangeBf16(
         }
     }
     collective->next_operation_sequence += 1u;
+    collective->prepared_receive_mask &= ~receive_prepared;
+    memset(&collective->prepared_receive_packets[step_index],0,
+        sizeof(collective->prepared_receive_packets[step_index]));
+    collective->operation_step_index += 1u;
+    if (collective->operation_step_index == collective->step_count)
+    {
+        collective->operation_step_index = 0u;
+    }
     return SPARK_STATUS_OK;
 }
 
