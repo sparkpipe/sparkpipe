@@ -1994,6 +1994,14 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 			stream);
 		if ( error != cudaSuccess )
 			return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_gather_pack_step"));
+		if ( host_mode != 0u )
+		{
+			error = cudaEventRecord(slot->tp_host_copy_event,stream);
+			if ( error == cudaSuccess )
+				error = cudaEventSynchronize(slot->tp_host_copy_event);
+			if ( error != cudaSuccess )
+				return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_gather_host_pack"));
+		}
 		status = SparkTpDeviceCollectiveExchangeBf16(
 			&state->tp_device_collective,
 			host_mode != 0u ? host_send_buffer : send_buffer,
