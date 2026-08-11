@@ -2725,9 +2725,6 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 {
 	uint32_t m_blocks = (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
 	uint32_t n_tiles = (output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N;
-	uint32_t tiny_tile_supported = row_count < SPARK_LM_TILE &&
-		(input_dimension % SPARK_LM_TILE_K) == 0u &&
-		weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128;
 	cudaError_t contract = SparkLmValidateLinearContract(weight_format,row_count,input_dimension);
 	if ( contract != cudaSuccess )
 		return(contract);
@@ -2741,12 +2738,6 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 		return(cudaErrorInvalidValue);
 	if ( row_count < SPARK_LM_TILE )
 	{
-		if ( tiny_tile_supported != 0u )
-		{
-			dim3 tile_grid(1u,n_tiles);
-			SparkLmExpertTileKernel<GROUP_SIZE,ACTIVATION_CODEC><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,0,output_bf16,row_count,input_dimension,output_dimension);
-			return(cudaGetLastError());
-		}
 		dim3 scalar_grid(row_count,(output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
 		uint32_t shared_bytes = input_dimension * (uint32_t)sizeof(float);
 		SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC><<<scalar_grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,output_bf16,row_count,input_dimension,output_dimension);
