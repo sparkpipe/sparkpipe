@@ -363,12 +363,16 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	state->tp_collective_initialized = 1u;
 	element_count = (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
 	buffer_bytes = element_count * sizeof(uint16_t);
-	state->tp_reduce_values_bf16 = (uint16_t *)malloc((size_t)buffer_bytes);
-	state->tp_reduce_scratch_bf16 = (uint16_t *)malloc((size_t)buffer_bytes);
+	if ( cudaHostAlloc((void **)&state->tp_reduce_values_bf16,(size_t)buffer_bytes,cudaHostAllocPortable) != cudaSuccess )
+		state->tp_reduce_values_bf16 = 0;
+	if ( state->tp_reduce_values_bf16 != 0 && cudaHostAlloc((void **)&state->tp_reduce_scratch_bf16,(size_t)buffer_bytes,cudaHostAllocPortable) != cudaSuccess )
+		state->tp_reduce_scratch_bf16 = 0;
 	if ( state->tp_reduce_values_bf16 == 0 || state->tp_reduce_scratch_bf16 == 0 )
 	{
-		free(state->tp_reduce_values_bf16);
-		free(state->tp_reduce_scratch_bf16);
+		if ( state->tp_reduce_values_bf16 != 0 )
+			(void)cudaFreeHost(state->tp_reduce_values_bf16);
+		if ( state->tp_reduce_scratch_bf16 != 0 )
+			(void)cudaFreeHost(state->tp_reduce_scratch_bf16);
 		state->tp_reduce_values_bf16 = 0;
 		state->tp_reduce_scratch_bf16 = 0;
 		SparkTpCollectiveDestroy(&state->tp_collective);
@@ -3066,8 +3070,10 @@ void SparkDsv4ResidentDecodeStageDestroy(void *module_state)
 		SparkTpCollectiveDestroy(&state->tp_collective);
 		state->tp_collective_initialized = 0u;
 	}
-	free(state->tp_reduce_values_bf16);
-	free(state->tp_reduce_scratch_bf16);
+	if ( state->tp_reduce_values_bf16 != 0 )
+		(void)cudaFreeHost(state->tp_reduce_values_bf16);
+	if ( state->tp_reduce_scratch_bf16 != 0 )
+		(void)cudaFreeHost(state->tp_reduce_scratch_bf16);
 	state->tp_reduce_values_bf16 = 0;
 	state->tp_reduce_scratch_bf16 = 0;
 	SparkDsv4PagedCacheDestroyHost(&state->paged_cache);
