@@ -121,11 +121,15 @@ static SparkStatus TestTpDeviceCollectiveSendBatch(
 const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface(void)
 {
     static SparkHiddenTransportInterface interface;
+    const char *host_mode;
 
     memset(&interface,0,sizeof(interface));
+    host_mode = getenv("SPARK_TEST_TP_DEVICE_COLLECTIVE_HOST_MODE");
     interface.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
     interface.descriptor_bytes = SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES;
     interface.capability_flags =
+        host_mode != 0 && host_mode[0] == '1' ?
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS :
         SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_GPUDIRECT_RDMA_CAPS;
     interface.initialize = TestTpDeviceCollectiveInitialize;
     interface.destroy = TestTpDeviceCollectiveDestroy;

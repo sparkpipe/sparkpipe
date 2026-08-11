@@ -134,6 +134,39 @@ cudaError_t cudaDeviceSynchronize(void)
     return cudaSuccess;
 }
 
+cudaError_t cudaEventCreate(cudaEvent_t *event)
+{
+    return cudaEventCreateWithFlags(event,cudaEventDefault);
+}
+
+cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event, unsigned int flags)
+{
+    (void)flags;
+    if (event == 0)
+    {
+        return cudaErrorMemoryAllocation;
+    }
+    *event = malloc(1u);
+    return *event != 0 ? cudaSuccess : cudaErrorMemoryAllocation;
+}
+
+cudaError_t cudaEventDestroy(cudaEvent_t event)
+{
+    free(event);
+    return cudaSuccess;
+}
+
+cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream)
+{
+    (void)stream;
+    return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
+}
+
+cudaError_t cudaEventSynchronize(cudaEvent_t event)
+{
+    return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
+}
+
 cudaError_t cudaLaunchHostFunc(
     cudaStream_t stream,
     cudaHostFn_t function,

@@ -9,6 +9,7 @@ extern "C" {
 
 typedef int cudaError_t;
 typedef void *cudaStream_t;
+typedef void *cudaEvent_t;
 typedef void *cudaGraph_t;
 typedef void *cudaGraphExec_t;
 
@@ -34,6 +35,8 @@ typedef enum cudaStreamCaptureMode
 #define cudaErrorNotReady 34
 #define cudaStreamDefault 0u
 #define cudaStreamNonBlocking 1u
+#define cudaEventDefault 0u
+#define cudaEventDisableTiming 2u
 #define cudaHostAllocDefault 0u
 #define cudaHostAllocPortable 1u
 #define cudaHostAllocMapped 2u
@@ -79,6 +82,11 @@ cudaError_t cudaStreamDestroy(cudaStream_t stream);
 cudaError_t cudaStreamQuery(cudaStream_t stream);
 cudaError_t cudaStreamSynchronize(cudaStream_t stream);
 cudaError_t cudaDeviceSynchronize(void);
+cudaError_t cudaEventCreate(cudaEvent_t *event);
+cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event, unsigned int flags);
+cudaError_t cudaEventDestroy(cudaEvent_t event);
+cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream);
+cudaError_t cudaEventSynchronize(cudaEvent_t event);
 cudaError_t cudaLaunchHostFunc(
     cudaStream_t stream,
     cudaHostFn_t function,
