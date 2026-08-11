@@ -1374,8 +1374,8 @@ static SparkStatus SparkDsv4ModuleValidateFrameContext(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	decode_view = (context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW) != 0u;
 	prefill_view = (context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_BATCH_VIEW) != 0u;
-	needs_input = state->stage_index > 0u ? 1u : 0u;
-	needs_output = state->stage_index + 1u < state->stage_count ? 1u : 0u;
+	needs_input = state->tp_degree == 1u && state->stage_index > 0u ? 1u : 0u;
+	needs_output = state->tp_degree == 1u && state->stage_index + 1u < state->stage_count ? 1u : 0u;
 	if ( prefill_view != is_prefill || decode_view == is_prefill ||
 		((context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_BUFFER) != 0u) != (needs_input != 0u) ||
 		((context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER) != 0u) != (needs_output != 0u) )
@@ -1441,8 +1441,8 @@ static SparkStatus SparkDsv4ModuleValidateBoundaryBuffers(
 {
 	uint32_t needs_input,needs_output;
 	uint64_t bytes;
-	needs_input = state->stage_index > 0u ? 1u : 0u;
-	needs_output = state->stage_index + 1u < state->stage_count ? 1u : 0u;
+	needs_input = state->tp_degree == 1u && state->stage_index > 0u ? 1u : 0u;
+	needs_output = state->tp_degree == 1u && state->stage_index + 1u < state->stage_count ? 1u : 0u;
 	bytes = (uint64_t)row_count * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 	if ( (needs_input != 0u && (context->hidden_input_bf16 == 0 || context->hidden_input_bytes < bytes)) ||
 		(needs_input == 0u && (context->hidden_input_bf16 != 0 || context->hidden_input_bytes != 0u)) ||
@@ -2177,7 +2177,7 @@ static SparkStatus SparkDsv4ModuleRunFrame(
 	status = SparkDsv4ModuleBeginStreams(state,slot,context,rows,&input_streams_bf16);
 	if ( status == SPARK_STATUS_OK )
 	{
-		output_streams_bf16 = state->owns_final_head != 0u ? slot->streams_bf16 : context->hidden_output_bf16;
+		output_streams_bf16 = state->tp_degree != 1u || state->owns_final_head != 0u ? slot->streams_bf16 : context->hidden_output_bf16;
 		status = SparkDsv4ModuleRunLayers(state,slot,input_streams_bf16,output_streams_bf16,prefill,rows);
 	}
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u && prefill != 0 )
@@ -2295,7 +2295,7 @@ static SparkStatus SparkDsv4ModuleRunGraphedDecode(
 		status = SparkDsv4ModuleCaptureDecode(state,slot,&key,rows);
 	else
 		status = SparkDsv4ModuleRunCapturedDecode(state,slot,rows);
-	if ( status == SPARK_STATUS_OK && state->owns_final_head == 0u )
+	if ( status == SPARK_STATUS_OK && state->tp_degree == 1u && state->owns_final_head == 0u )
 		status = SparkDsv4ModuleBounceBoundary(context->hidden_output_bf16,slot->streams_bf16,rows,stream,"graph_boundary_out");
 	return(status);
 }
