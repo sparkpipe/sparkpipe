@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -14,6 +15,7 @@ int main(void)
 {
     SparkTpDeviceCollectiveConfig configuration;
     SparkTpDeviceCollective collective;
+    SparkTpDeviceCollective host_collective;
     uint8_t send_buffer[256];
     uint8_t receive_buffer[256];
     const char *hosts[4] = {"rank0","rank1","rank2","rank3"};
@@ -51,5 +53,18 @@ int main(void)
         &collective,send_buffer,receive_buffer,2u,2u,0u,(void *)1) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     SparkTpDeviceCollectiveDestroy(&collective);
+    assert(setenv("SPARK_TEST_TP_DEVICE_COLLECTIVE_HOST_MODE","1",1) == 0);
+    {
+        SparkStatus status = SparkTpDeviceCollectiveCreate(
+            &configuration,&host_collective);
+        assert(status == SPARK_STATUS_OK);
+    }
+    assert(host_collective.memory_mode ==
+        SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST);
+    assert(SparkTpDeviceCollectiveExchangeBf16(
+        &host_collective,send_buffer,receive_buffer,2u,4u,0u,
+        (void *)1) == SPARK_STATUS_OK);
+    SparkTpDeviceCollectiveDestroy(&host_collective);
+    assert(unsetenv("SPARK_TEST_TP_DEVICE_COLLECTIVE_HOST_MODE") == 0);
     return 0;
 }

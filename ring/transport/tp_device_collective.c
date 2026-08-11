@@ -105,6 +105,7 @@ static SparkStatus SparkTpDeviceCollectiveValidateConfig(
 
 static SparkStatus SparkTpDeviceCollectiveBuildEndpoint(
     const SparkTpDeviceCollectiveConfig *config,
+    const SparkTpDeviceCollective *collective,
     uint32_t step_index,
     uint32_t source_rank,
     uint32_t sink_rank,
@@ -115,7 +116,7 @@ static SparkStatus SparkTpDeviceCollectiveBuildEndpoint(
     uint32_t port_base;
     int written;
 
-    if (config == NULL || route_name == NULL || endpoint == NULL ||
+    if (config == NULL || collective == NULL || route_name == NULL || endpoint == NULL ||
         source_rank >= config->tp_degree || sink_rank >= config->tp_degree ||
         source_rank == sink_rank || step_index >=
             SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS)
@@ -145,12 +146,15 @@ static SparkStatus SparkTpDeviceCollectiveBuildEndpoint(
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
-    SparkHiddenTransportInitializeSparkGpudirectRdmaEndpoint(
-        endpoint,
-        hidden_dimension,
-        config->max_active_sequence_count,
-        0u,
-        route_name);
+    if (collective->memory_mode ==
+        SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST)
+        SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
+            endpoint,hidden_dimension,config->max_active_sequence_count,0u,
+            route_name);
+    else
+        SparkHiddenTransportInitializeSparkGpudirectRdmaEndpoint(
+            endpoint,hidden_dimension,config->max_active_sequence_count,0u,
+            route_name);
     endpoint->configuration_flags =
         SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION;
     endpoint->local_rank_index = config->tp_rank;
@@ -221,6 +225,7 @@ static SparkStatus SparkTpDeviceCollectiveOpenStep(
     memset(&endpoint, 0, sizeof(endpoint));
     status = SparkTpDeviceCollectiveBuildEndpoint(
         config,
+        collective,
         step_index,
         source_rank,
         sink_rank,
@@ -234,7 +239,10 @@ static SparkStatus SparkTpDeviceCollectiveOpenStep(
     status = SparkHiddenTransportOpen(
         &endpoint,
         &collective->transport_library.transport_interface,
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS,
+        collective->memory_mode ==
+                SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS :
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS,
         &collective->send_sessions[step_index]);
     if (status != SPARK_STATUS_OK)
     {
@@ -243,6 +251,7 @@ static SparkStatus SparkTpDeviceCollectiveOpenStep(
     memset(&endpoint, 0, sizeof(endpoint));
     status = SparkTpDeviceCollectiveBuildEndpoint(
         config,
+        collective,
         step_index,
         partner_rank,
         config->tp_rank,
@@ -256,7 +265,10 @@ static SparkStatus SparkTpDeviceCollectiveOpenStep(
     status = SparkHiddenTransportOpen(
         &endpoint,
         &collective->transport_library.transport_interface,
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS,
+        collective->memory_mode ==
+                SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS :
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS,
         &collective->receive_sessions[step_index]);
     return status;
 }
@@ -305,12 +317,26 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     }
     status = SparkHiddenTransportLoadInterfaceFromSharedObject(
         config->transport_module_path,
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS,
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
         &collective_out->transport_library);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
+    if ((collective_out->transport_library.transport_interface.capability_flags &
+            SPARK_HIDDEN_TRANSPORT_CAP_GPUDIRECT_RDMA) != 0u)
+        collective_out->memory_mode =
+            SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE;
+    else if ((collective_out->transport_library.transport_interface.capability_flags &
+            (SPARK_HIDDEN_TRANSPORT_CAP_SPARK_HOST_PINNED_RDMA |
+             SPARK_HIDDEN_TRANSPORT_CAP_CUDA_MAPPED_HOST_MEMORY)) ==
+            (SPARK_HIDDEN_TRANSPORT_CAP_SPARK_HOST_PINNED_RDMA |
+             SPARK_HIDDEN_TRANSPORT_CAP_CUDA_MAPPED_HOST_MEMORY))
+        collective_out->memory_mode =
+            SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST;
+    else
+        return SparkTpDeviceCollectiveFail(
+            collective_out,SPARK_STATUS_INVALID_ARGUMENT);
     for (step_index = 0u;
          status == SPARK_STATUS_OK && step_index < step_count;
          ++step_index)

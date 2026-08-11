@@ -13,6 +13,8 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES 64u
+#define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE 0u
+#define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST 1u
 
 typedef struct SparkTpDeviceCollectiveConfig
 {
@@ -39,6 +41,7 @@ typedef struct SparkTpDeviceCollective
     uint32_t local_hidden_dimension;
     uint32_t max_active_sequence_count;
     uint32_t operation_timeout_milli;
+    uint32_t memory_mode;
     uint32_t failed;
     uint64_t collective_identifier;
     uint64_t next_operation_sequence;
@@ -56,10 +59,9 @@ typedef struct SparkTpDeviceCollective
         [SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES];
 } SparkTpDeviceCollective;
 
-/* Opens one bidirectional GPUDirect-RDMA session pair per recursive-doubling
- * step. The rank_hosts array is the complete TP group in rank order. No
- * transport fallback is selected here: the shared object must advertise the
- * GPUDirect-RDMA, device-pointer, stream-ordered capabilities. */
+/* Opens one bidirectional RDMA session pair per recursive-doubling step. The
+ * transport module selects device memory or CUDA-mapped host memory from its
+ * advertised capabilities; TCP and simulation transports are rejected. */
 SparkStatus SparkTpDeviceCollectiveCreate(
     const SparkTpDeviceCollectiveConfig *config,
     SparkTpDeviceCollective *collective_out);

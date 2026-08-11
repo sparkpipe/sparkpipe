@@ -72,6 +72,7 @@ typedef struct SparkDsv4ModuleState SparkDsv4ModuleState;
 typedef struct SparkDsv4ModuleSlot
 {
 	void *cuda_stream;
+	cudaEvent_t tp_host_copy_event;
 	void *host_staging;
 	uint32_t *host_input_token_ids;
 	uint32_t *host_row_lane_indices;
@@ -183,6 +184,8 @@ struct SparkDsv4ModuleState
 	void *tp_gather_bf16;
 	void *tp_exchange_send_bf16;
 	void *tp_exchange_receive_bf16;
+	void *tp_host_exchange_send_bf16;
+	void *tp_host_exchange_receive_bf16;
 	uint32_t resident_sequence_capacity;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
@@ -1325,6 +1328,12 @@ static SparkStatus SparkDsv4ModuleAllocateSlot(SparkDsv4ModuleState *state, Spar
 		status = SparkDsv4ModuleAllocateSlotWide(state,slot);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleAllocateSlotTail(state,slot);
+	if ( status == SPARK_STATUS_OK && state->tp_device_collective_initialized != 0u &&
+		state->tp_device_collective.memory_mode ==
+		SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
+		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
+			cudaEventCreateWithFlags(&slot->tp_host_copy_event,cudaEventDisableTiming),
+			"tp_host_event_create");
 	return(status);
 }
 
@@ -1903,8 +1912,9 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 	uint32_t rows)
 {
 	uint8_t *gather_base,*local_source,*destination,*send_buffer,*receive_buffer;
+	void *host_send_buffer,*host_receive_buffer;
 	uint64_t local_bytes,full_bytes,block_bytes;
-	uint32_t block_count,block_start,partner_start,rank;
+	uint32_t block_count,block_start,partner_start,rank,host_mode;
 	cudaStream_t stream;
 	cudaError_t error;
 	SparkStatus status;
@@ -1916,6 +1926,11 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 		state->tp_gather_bf16 == 0 || state->tp_exchange_send_bf16 == 0 ||
 		state->tp_exchange_receive_bf16 == 0 )
 		return(SPARK_STATUS_INTERNAL_ERROR);
+	host_mode = state->tp_device_collective.memory_mode ==
+		SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? 1u : 0u;
+	if ( host_mode != 0u && (state->tp_host_exchange_send_bf16 == 0 ||
+		state->tp_host_exchange_receive_bf16 == 0) )
+		return(SPARK_STATUS_INTERNAL_ERROR);
 	local_bytes = ((uint64_t)SPARK_DSV4_MODEL_HIDDEN_DIMENSION /
 		state->tp_degree) * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 	full_bytes = (uint64_t)SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
@@ -1925,6 +1940,8 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 		(uint64_t)state->tp_rank * local_bytes;
 	send_buffer = (uint8_t *)state->tp_exchange_send_bf16;
 	receive_buffer = (uint8_t *)state->tp_exchange_receive_bf16;
+	host_send_buffer = state->tp_host_exchange_send_bf16;
+	host_receive_buffer = state->tp_host_exchange_receive_bf16;
 	stream = (cudaStream_t)slot->cuda_stream;
 	error = cudaMemcpy2DAsync(
 		gather_base + (uint64_t)state->tp_rank * local_bytes,
@@ -1951,20 +1968,28 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 		block_start = (state->tp_rank >> step) << step;
 		partner_start = block_start ^ block_count;
 		error = cudaMemcpy2DAsync(
-			send_buffer,
+			host_mode != 0u ? host_send_buffer : send_buffer,
 			(size_t)block_bytes,
 			gather_base + (uint64_t)block_start * local_bytes,
 			(size_t)full_bytes,
 			(size_t)block_bytes,
 			rows,
-			cudaMemcpyDeviceToDevice,
+			host_mode != 0u ? cudaMemcpyDeviceToHost : cudaMemcpyDeviceToDevice,
 			stream);
 		if ( error != cudaSuccess )
 			return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_gather_pack_step"));
+		if ( host_mode != 0u )
+		{
+			error = cudaEventRecord(slot->tp_host_copy_event,stream);
+			if ( error == cudaSuccess )
+				error = cudaEventSynchronize(slot->tp_host_copy_event);
+			if ( error != cudaSuccess )
+				return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_gather_host_pack"));
+		}
 		status = SparkTpDeviceCollectiveExchangeBf16(
 			&state->tp_device_collective,
-			send_buffer,
-			receive_buffer,
+			host_mode != 0u ? host_send_buffer : send_buffer,
+			host_mode != 0u ? host_receive_buffer : receive_buffer,
 			rows,
 			block_count * state->tp_device_collective.local_hidden_dimension,
 			step,
@@ -1974,11 +1999,11 @@ static SparkStatus SparkDsv4ModuleGatherHidden(
 		error = cudaMemcpy2DAsync(
 			gather_base + (uint64_t)partner_start * local_bytes,
 			(size_t)full_bytes,
-			receive_buffer,
+			host_mode != 0u ? host_receive_buffer : receive_buffer,
 			(size_t)block_bytes,
 			(size_t)block_bytes,
 			rows,
-			cudaMemcpyDeviceToDevice,
+			host_mode != 0u ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToDevice,
 			stream);
 		if ( error != cudaSuccess )
 			return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tp_gather_unpack_step"));
@@ -3130,6 +3155,8 @@ void SparkDsv4ResidentDecodeStageDestroy(void *module_state)
     }
 	for (slot_index = 0u; slot_index < state->pipeline_slot_count; ++slot_index)
 	{
+		if ( state->slots[slot_index].tp_host_copy_event != 0 )
+			(void)cudaEventDestroy(state->slots[slot_index].tp_host_copy_event);
 		if ( state->slots[slot_index].host_staging != 0 )
 			(void)cudaFreeHost(state->slots[slot_index].host_staging);
 	}
@@ -3163,6 +3190,12 @@ void SparkDsv4ResidentDecodeStageDestroy(void *module_state)
 	state->tp_gather_bf16 = 0;
 	state->tp_exchange_send_bf16 = 0;
 	state->tp_exchange_receive_bf16 = 0;
+	if ( state->tp_host_exchange_send_bf16 != 0 )
+		(void)cudaFreeHost(state->tp_host_exchange_send_bf16);
+	if ( state->tp_host_exchange_receive_bf16 != 0 )
+		(void)cudaFreeHost(state->tp_host_exchange_receive_bf16);
+	state->tp_host_exchange_send_bf16 = 0;
+	state->tp_host_exchange_receive_bf16 = 0;
 	SparkDsv4PagedCacheDestroyHost(&state->paged_cache);
 	if ( state->cache_mutex_initialized != 0u )
 	{
@@ -3242,6 +3275,17 @@ static SparkStatus SparkDsv4ModulePrepareState(
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(
 			&state->ledger,exchange_bytes,&state->tp_exchange_receive_bf16);
+		if ( status == SPARK_STATUS_OK && state->tp_device_collective.memory_mode ==
+			SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
+		{
+			status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
+				cudaHostAlloc(&state->tp_host_exchange_send_bf16,exchange_bytes,
+				cudaHostAllocPortable | cudaHostAllocMapped),"tp_host_send_alloc");
+			if ( status == SPARK_STATUS_OK )
+				status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
+					cudaHostAlloc(&state->tp_host_exchange_receive_bf16,exchange_bytes,
+					cudaHostAllocPortable | cudaHostAllocMapped),"tp_host_receive_alloc");
+		}
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleFinalizeLoad(state);
