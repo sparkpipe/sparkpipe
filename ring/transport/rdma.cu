@@ -3178,41 +3178,31 @@ static SparkStatus SparkHiddenSparkHostRdmaPrepareInflightSend(
     if (remote_receive_index >=
             SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT)
         return SPARK_STATUS_INTERNAL_ERROR;
-    /* In mapped-host mode the collective caller has already synchronized the
-     * D2H copy before handing this pinned host buffer to the transport.  Do
-     * not enqueue a second CUDA event/host callback here: that callback adds
-     * a stream round-trip to every recursive-doubling exchange.  Device
-     * direct packets still require the CUDA readiness fence because the RDMA
-     * NIC reads the device allocation asynchronously. */
-    if (state->memory_mode !=
-        SPARK_HIDDEN_SPARK_HOST_RDMA_MEMORY_MODE_MAPPED_HOST)
+    if (state->send_ready_recorded[remote_receive_index] == 0u)
     {
-        if (state->send_ready_recorded[remote_receive_index] == 0u)
+        if (cudaEventRecord(
+                state->send_ready_events[remote_receive_index],
+                (cudaStream_t)packet->cuda_stream) != cudaSuccess ||
+            cudaLaunchHostFunc(
+                (cudaStream_t)packet->cuda_stream,
+                SparkHiddenSparkHostRdmaSignalCudaReady,
+                state) != cudaSuccess)
         {
-            if (cudaEventRecord(
-                    state->send_ready_events[remote_receive_index],
-                    (cudaStream_t)packet->cuda_stream) != cudaSuccess ||
-                cudaLaunchHostFunc(
-                    (cudaStream_t)packet->cuda_stream,
-                    SparkHiddenSparkHostRdmaSignalCudaReady,
-                    state) != cudaSuccess)
-            {
-                return SPARK_STATUS_IO_ERROR;
-            }
-            state->send_ready_recorded[remote_receive_index] = 1u;
+            return SPARK_STATUS_IO_ERROR;
+        }
+        state->send_ready_recorded[remote_receive_index] = 1u;
+        return SPARK_STATUS_BUSY;
+    }
+    switch (cudaEventQuery(state->send_ready_events[remote_receive_index]))
+    {
+        case cudaErrorNotReady:
             return SPARK_STATUS_BUSY;
-        }
-        switch (cudaEventQuery(state->send_ready_events[remote_receive_index]))
-        {
-            case cudaErrorNotReady:
-                return SPARK_STATUS_BUSY;
-            case cudaSuccess:
-                state->send_ready_recorded[remote_receive_index] = 0u;
-                break;
-            default:
-                state->send_ready_recorded[remote_receive_index] = 0u;
-                return SPARK_STATUS_IO_ERROR;
-        }
+        case cudaSuccess:
+            state->send_ready_recorded[remote_receive_index] = 0u;
+            break;
+        default:
+            state->send_ready_recorded[remote_receive_index] = 0u;
+            return SPARK_STATUS_IO_ERROR;
     }
     doorbell = SparkHiddenSparkHostRdmaPacketUsesDoorbell(state,packet);
     doorbell_lane = doorbell != 0u && remote_receive->receive_index !=
