@@ -739,7 +739,7 @@ static SparkStatus SparkDsv4ServingInitialize(
 			if ( control_port_base == 0u )
 				status = SPARK_STATUS_SCHEMA_ERROR;
 			for (rank_index=0u;
-				status == SPARK_STATUS_OK && rank_index < SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT;
+				status == SPARK_STATUS_OK && rank_index < SPARK_DSV4_SERVING_STAGE_COUNT;
 				rank_index++)
 			{
 				if ( control_port_base > UINT16_MAX - rank_index ||
