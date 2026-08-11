@@ -2635,14 +2635,15 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
 	return(cudaGetLastError());
 }
 
-// Size-aware batched dense linear/QKVO projection. The measured regimes
-// (GLM52_B128_SCALING_ROOT_CAUSE) are three, not a continuum, so this
-// deliberately breaks DRY into exactly three paths with two crossovers -
-// more paths would not pay because per-token cost is flat within a regime:
+// Size-aware batched dense linear/QKVO projection. The tile path is also the
+// fast path for tiny aligned batches: it zero-fills the padded M rows and
+// keeps one weight tile resident while tensor cores process the live row. The
+// scalar fallback remains for widths with a partial K tile or a scale layout
+// that the tile decoder does not implement.
 //
-//   B < SPARK_LM_TILE  (tiny): the scalar one-warp-per-neuron kernel. B1
-//     decode is memory bound; a tensor tile over a near-empty M wastes the
-//     fragment and the padded rows. Unchanged, correct here.
+//   B < SPARK_LM_TILE  (tiny): the tensor tile for aligned production shapes;
+//     scalar only for the explicitly unsupported layouts. This avoids making
+//     B1 pay one scalar CTA per 128 output neurons for every projection.
 //   SPARK_LM_TILE <= B <= READ_ONCE: one tile pass, weight read once across
 //     the batch. Per-token cost is flat B16..B128 - one kernel serves it.
 //   B > READ_ONCE (wide): the SAME tile, but grid.x rasterizes M as the
@@ -2724,6 +2725,9 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 {
 	uint32_t m_blocks = (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
 	uint32_t n_tiles = (output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N;
+	uint32_t tiny_tile_supported = row_count < SPARK_LM_TILE &&
+		(input_dimension % SPARK_LM_TILE_K) == 0u &&
+		weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128;
 	cudaError_t contract = SparkLmValidateLinearContract(weight_format,row_count,input_dimension);
 	if ( contract != cudaSuccess )
 		return(contract);
@@ -2737,6 +2741,12 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 		return(cudaErrorInvalidValue);
 	if ( row_count < SPARK_LM_TILE )
 	{
+		if ( tiny_tile_supported != 0u )
+		{
+			dim3 tile_grid(1u,n_tiles);
+			SparkLmExpertTileKernel<GROUP_SIZE,ACTIVATION_CODEC><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,0,output_bf16,row_count,input_dimension,output_dimension);
+			return(cudaGetLastError());
+		}
 		dim3 scalar_grid(row_count,(output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
 		uint32_t shared_bytes = input_dimension * (uint32_t)sizeof(float);
 		SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC><<<scalar_grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,output_bf16,row_count,input_dimension,output_dimension);
