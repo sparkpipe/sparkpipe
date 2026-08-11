@@ -14,6 +14,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	source/spark_dsv4_stage_runner.c \
 	source/spark_dsv4_paged_cache.c \
 	../../model-families/dsv4/src/spark_dsv4_parallel_shape.c \
+	../../ring/transport/hidden_transport.c \
 	../../ring/transport/tp_collective.c \
 	../../ring/transport/tp_device_collective.c \
 	../../cache/kv_cache.c \
