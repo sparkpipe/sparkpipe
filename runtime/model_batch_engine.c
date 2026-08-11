@@ -1663,7 +1663,9 @@ static void SparkModelBatchInitializeLane(
 	lane->flags = flags;
 	if ( allow_cache == 0u || engine->cache_block_token_count == 0u )
 		return;
-	if ( request->cache_prefix_token_count != 0u )
+	if ( request->cache_prefix_token_count != 0u &&
+		request->computed_prompt_token_count == request->cache_prefix_token_count &&
+		request->computed_prompt_token_count < request->prompt_token_count )
 	{
 		lane->flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX;
 		lane->cache_prefix_token_count = request->cache_prefix_token_count;
