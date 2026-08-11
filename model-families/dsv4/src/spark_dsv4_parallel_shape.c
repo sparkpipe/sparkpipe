@@ -19,6 +19,12 @@ static uint64_t SparkDsv4TpHashBytes(
 	return(hash);
 }
 
+static int SparkDsv4TpDegreeIsSupported(uint32_t degree)
+{
+	return degree == 1u || degree == 2u || degree == 4u ||
+		degree == 8u || degree == SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE;
+}
+
 uint64_t SparkDsv4TpConfigurationHash(
 	const SparkDsv4TpShapeDescriptor *shape,
 	const SparkDsv4TpNodeConfig *config)
@@ -41,7 +47,7 @@ SparkStatus SparkDsv4TpDeriveNodeConfig(
 		shape->abi_version != SPARK_DSV4_PARALLEL_SHAPE_ABI_VERSION )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	degree = shape->tp_degree;
-	if ( degree != 1u && degree != SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE )
+	if ( !SparkDsv4TpDegreeIsSupported(degree) )
 		return(SPARK_STATUS_UNSUPPORTED);
 	if ( shape->tp_rank >= degree || shape->pp_stage_count != 1u ||
 		shape->pp_stage_index != 0u )

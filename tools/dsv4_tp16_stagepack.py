@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Shard a validated full DSV4 stage pack for one TP16 rank.
+"""Shard a validated full DSV4 stage pack for one tensor-parallel rank.
 
 The source pack is the canonical full-model pack produced by
-``dsv4_stagepack.py --first-layer 0 --layer-count 43``.  This utility only
-changes the dimensions that the TP16 kernels actually shard; replicated
+``dsv4_stagepack.py --first-layer 0 --layer-count 43``. This utility only
+changes the dimensions that the tensor-parallel kernels actually shard; replicated
 weights remain byte-for-byte identical.  It streams matrix rows, so the
 largest expert tensor is never loaded wholesale into host memory.
 """
@@ -133,7 +133,7 @@ def shard_shape(kind: int, rank: int, rows: int, columns: int) -> Tuple[List[int
         if rows % TP_DEGREE != 0 and kind not in (KIND_EXPERTS_W1,
                                                    KIND_EXPERTS_W2,
                                                    KIND_EXPERTS_W3):
-            raise PackFailure(f"kind {kind} rows {rows} not divisible by TP16")
+            raise PackFailure(f"kind {kind} rows {rows} not divisible by TP{TP_DEGREE}")
     if kind == KIND_WO_A:
         indices = list(range(rows))
     if start + width > columns:
@@ -330,9 +330,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--input-pack", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--rank", type=int, required=True)
+    parser.add_argument("--tp-degree", type=int, default=16,
+                        choices=(1, 2, 4, 8, 16))
     parser.add_argument("--verify-output", action="store_true")
     args = parser.parse_args(argv)
     try:
+        global TP_DEGREE
+        TP_DEGREE = args.tp_degree
         result = (verify_sharded_pack(args.input_pack,args.output,args.rank)
                   if args.verify_output else shard_pack(args.input_pack,args.output,args.rank))
         print(json.dumps(result, indent=2, sort_keys=True))

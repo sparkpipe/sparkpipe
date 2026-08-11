@@ -29,6 +29,24 @@
 #define SPARK_DSV4_SERVING_STAGE_LAYERS \
 	{3u,3u,3u,3u,3u,3u,3u,3u,3u,3u,3u,3u,3u,2u,1u,1u}
 #define SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX 16u
+#elif SPARK_DSV4_SERVING_TOPOLOGY == 4
+#define SPARK_DSV4_SERVING_ADAPTER_ID \
+	"spark.dsv4.flash-0731.serving-adapter.tp4.v1"
+#define SPARK_DSV4_SERVING_STAGE_COUNT 4u
+#define SPARK_DSV4_SERVING_TOPOLOGY_FLAG \
+	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
+#define SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS \
+	(SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
+#define SPARK_DSV4_SERVING_STAGE_LAYERS \
+	{SPARK_DSV4_MODEL_LAYER_COUNT,SPARK_DSV4_MODEL_LAYER_COUNT, \
+	 SPARK_DSV4_MODEL_LAYER_COUNT,SPARK_DSV4_MODEL_LAYER_COUNT}
+#define SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX 4u
 #else
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.pp13.v2"
@@ -253,7 +271,7 @@ static SparkStatus SparkDsv4ServingLoadTpCollective(
 	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
-	if ( count != SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT )
+	if ( count != SPARK_DSV4_SERVING_STAGE_COUNT )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	for (index=0u; index<count; index++)
 	{
@@ -270,7 +288,7 @@ static SparkStatus SparkDsv4ServingLoadTpCollective(
 	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
-	if ( count != SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT )
+	if ( count != SPARK_DSV4_SERVING_STAGE_COUNT )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	for (index=0u; index<count; index++)
 	{
@@ -657,7 +675,7 @@ static void SparkDsv4ServingInitializeNodeContext(
 	state->node_context.linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC;
 	state->node_context.expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC;
 	state->node_context.kv_cache_codec = SPARK_DSV4_MODEL_KV_CACHE_CODEC;
-	state->node_context.tp_degree = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE : 1u;
+	state->node_context.tp_degree = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? SPARK_DSV4_SERVING_TOPOLOGY : 1u;
 	state->node_context.tp_rank = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? state->stage_index : 0u;
 	state->node_context.tp_configuration_hash = 0u;
 	memset(&shape,0,sizeof(shape));

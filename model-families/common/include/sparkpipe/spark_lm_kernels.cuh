@@ -28,9 +28,6 @@
 #define SPARK_LM_WARP_LANES 32u
 #define SPARK_LM_CTA_THREADS 256u
 #define SPARK_LM_CTA_WARPS (SPARK_LM_CTA_THREADS / SPARK_LM_WARP_LANES)
-#define SPARK_LM_TILE 16u
-#define SPARK_LM_TILE_N 128u
-#define SPARK_LM_TILE_K 64u
 
 #define SPARK_LM_WEIGHT_FORMAT_BF16 0u
 #define SPARK_LM_WEIGHT_FORMAT_F32 1u
@@ -531,56 +528,6 @@ static __global__ void SparkLmLinearKernel(uint32_t weight_format, const void *w
 	accumulator = SparkLmWarpReduceSum(accumulator);
 	if ( lane == 0u )
 		SparkLmFloatToBf16(output_bf16,((uint64_t)row * output_dimension) + neuron,accumulator);
-}
-
-// Tiny batches keep the scalar arithmetic but use one CTA per output tile.
-// The old launcher assigned one CTA to eight neurons, rereading the same input
-// row for every eight-neuron group.  This launcher stages the row once and lets
-// all eight warps walk a 128-neuron tile, preserving the exact dot path while
-// removing that redundant activation traffic and launch work.
-template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE>
-static __global__ void SparkLmTinyLinearKernel(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
-{
-	extern __shared__ float shared_input[];
-	uint32_t row = blockIdx.x,neuron_base = blockIdx.y * SPARK_LM_TILE_N;
-	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
-	uint32_t neuron,element,subtile;
-	float accumulator;
-	float2 stage_pair;
-	if ( row >= row_count )
-		return;
-	for (element = threadIdx.x; element < (input_dimension >> 1u); element += blockDim.x)
-	{
-		stage_pair = SparkLmLoadBf16Pair(input_bf16,(((uint64_t)row * input_dimension) >> 1u) + element);
-		shared_input[element << 1u] = stage_pair.x;
-		shared_input[(element << 1u) + 1u] = stage_pair.y;
-	}
-	for (element = ((input_dimension >> 1u) << 1u) + threadIdx.x; element < input_dimension; element += blockDim.x)
-		shared_input[element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + element);
-	__syncthreads();
-	if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 )
-	{
-		LmActivationFp8QdqFloatRow<ACTIVATION_CODEC>(shared_input,input_dimension);
-		__syncthreads();
-	}
-	for (subtile = 0u; subtile < SPARK_LM_TILE_N / SPARK_LM_CTA_WARPS; subtile++)
-	{
-		neuron = neuron_base + subtile * SPARK_LM_CTA_WARPS + warp;
-		if ( neuron < output_dimension )
-		{
-			if ( weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
-				accumulator = SparkLmDotRowBf16(shared_input,weight_payload,neuron,input_dimension,lane);
-			else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
-				accumulator = SparkLmDotRowFp8<GROUP_SIZE>(shared_input,weight_payload,(const uint8_t *)weight_scale,neuron,input_dimension,lane);
-			else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
-				accumulator = SparkLmDotRowFp8F32<128u>(shared_input,weight_payload,(const float *)weight_scale,neuron,input_dimension,lane);
-			else
-				accumulator = SparkLmDotRowMxfp4<GROUP_SIZE>(shared_input,weight_payload,(const uint8_t *)weight_scale,neuron,input_dimension,lane);
-			accumulator = SparkLmWarpReduceSum(accumulator);
-			if ( lane == 0u )
-				SparkLmFloatToBf16(output_bf16,((uint64_t)row * output_dimension) + neuron,accumulator);
-		}
-	}
 }
 
 /*
@@ -1681,6 +1628,10 @@ static inline cudaError_t SparkLmHostLaunchAdaptiveAttnDecode(cudaStream_t strea
 
 #include <mma.h>
 
+#define SPARK_LM_TILE 16u
+#define SPARK_LM_TILE_N 128u
+#define SPARK_LM_TILE_K 64u
+
 /*
  * Decode a 32-element contiguous run of one weight row into bf16, the
  * tile stager's unit: vector payload loads (4-byte lanes, 16-byte for
@@ -2690,9 +2641,9 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
 // scalar fallback remains for widths with a partial K tile or a scale layout
 // that the tile decoder does not implement.
 //
-//   B < SPARK_LM_TILE  (tiny): one scalar CTA per 128-output tile, with the
-//     input row staged once per tile. The narrow reference kernel remains for
-//     output widths that do not fill a tile.
+//   B < SPARK_LM_TILE  (tiny): the tensor tile for aligned production shapes;
+//     scalar only for the explicitly unsupported layouts. This avoids making
+//     B1 pay one scalar CTA per 128 output neurons for every projection.
 //   SPARK_LM_TILE <= B <= READ_ONCE: one tile pass, weight read once across
 //     the batch. Per-token cost is flat B16..B128 - one kernel serves it.
 //   B > READ_ONCE (wide): the SAME tile, but grid.x rasterizes M as the
@@ -2701,9 +2652,9 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
 //     deleted per-size wide-warp variants lost to grid rasterization, not
 //     to a kernel-per-size. ceil(B/TILE) M-blocks per N-tile, M fastest.
 //
-// The tiny path is scalar by design for exact B1 arithmetic; the full-tile
-// path retains the tensor implementation, and every dimension is parametric
-// so the shape carries to the next model generation unchanged.
+// All three inherit the FP8 tensor path under SPARK_LM_FP8_TILE (the tile
+// dispatch), and every dimension is parametric so the shape carries to the
+// next model generation unchanged.
 //
 /*
  * Hard validation of the tile's input contract. The tile does not fail on
@@ -2787,16 +2738,9 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 		return(cudaErrorInvalidValue);
 	if ( row_count < SPARK_LM_TILE )
 	{
-		if ( output_dimension <= SPARK_LM_CTA_WARPS )
-		{
-			dim3 narrow_grid(row_count,1u);
-			uint32_t narrow_shared_bytes = input_dimension * (uint32_t)sizeof(float);
-			SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC><<<narrow_grid,SPARK_LM_CTA_THREADS,narrow_shared_bytes,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,output_bf16,row_count,input_dimension,output_dimension);
-			return(cudaGetLastError());
-		}
-		dim3 scalar_grid(row_count,n_tiles);
+		dim3 scalar_grid(row_count,(output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
 		uint32_t shared_bytes = input_dimension * (uint32_t)sizeof(float);
-		SparkLmTinyLinearKernel<GROUP_SIZE,ACTIVATION_CODEC><<<scalar_grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,output_bf16,row_count,input_dimension,output_dimension);
+		SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC><<<scalar_grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,output_bf16,row_count,input_dimension,output_dimension);
 		return(cudaGetLastError());
 	}
 	// B >= TILE: the tensor tile spans BOTH the read-once (B<=128) and the
