@@ -28,6 +28,7 @@ struct ibv_port_attr
 {
     int state;
     uint16_t lid;
+    int active_mtu;
 };
 
 struct ibv_qp_cap
@@ -131,7 +132,14 @@ struct ibv_wc
 #define IBV_QPS_RTR 2
 #define IBV_QPS_RTS 3
 #define IBV_QPS_ERR 6
-#define IBV_MTU_4096 5
+enum ibv_mtu
+{
+    IBV_MTU_256 = 1,
+    IBV_MTU_512 = 2,
+    IBV_MTU_1024 = 3,
+    IBV_MTU_2048 = 4,
+    IBV_MTU_4096 = 5
+};
 #define IBV_ACCESS_LOCAL_WRITE 1
 #define IBV_ACCESS_REMOTE_WRITE 2
 #define IBV_ACCESS_REMOTE_READ 4

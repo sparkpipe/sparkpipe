@@ -125,6 +125,8 @@ typedef struct SparkHiddenSparkHostRdmaQueuePairWireInfo
     uint32_t packet_sequence_number;
     uint16_t lid;
     uint16_t memory_mode;
+    uint8_t active_mtu;
+    uint8_t reserved[3];
     uint8_t gid[sizeof(union ibv_gid)];
 } SparkHiddenSparkHostRdmaQueuePairWireInfo;
 
@@ -245,6 +247,7 @@ typedef struct SparkHiddenSparkHostRdmaState
     uint32_t open_timeout_milli;
     uint64_t open_deadline_ns;
     uint8_t verbs_port;
+    uint8_t active_mtu;
     int32_t gid_index;
     int listen_fd;
     int control_fd;
@@ -1188,11 +1191,14 @@ static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(
     }
     if (ibv_query_port(state->verbs_context, state->verbs_port,
             &port_attributes) != 0 ||
-        port_attributes.state != IBV_PORT_ACTIVE)
+        port_attributes.state != IBV_PORT_ACTIVE ||
+        port_attributes.active_mtu < IBV_MTU_256 ||
+        port_attributes.active_mtu > IBV_MTU_4096)
     {
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
     state->local_lid = port_attributes.lid;
+    state->active_mtu = (uint8_t)port_attributes.active_mtu;
     memset(&state->local_gid, 0, sizeof(state->local_gid));
     if (ibv_query_gid(state->verbs_context, state->verbs_port,
             state->gid_index, &state->local_gid) != 0)
@@ -1287,6 +1293,7 @@ static SparkStatus SparkHiddenSparkHostRdmaCreateQueuePairs(SparkHiddenSparkHost
             0x778800u + ((uint32_t)getpid() & 0xfffu) + lane_index;
         lane->local_info.lid = state->local_lid;
         lane->local_info.memory_mode = (uint16_t)state->memory_mode;
+        lane->local_info.active_mtu = state->active_mtu;
         memcpy(lane->local_info.gid, state->local_gid.raw,
             sizeof(lane->local_info.gid));
     }
@@ -1363,7 +1370,12 @@ static SparkStatus SparkHiddenSparkHostRdmaExchangeQueuePairInfo(
     }
     for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
     {
-        if (remote_infos[lane_index].memory_mode != state->memory_mode)
+        if (remote_infos[lane_index].memory_mode != state->memory_mode ||
+            remote_infos[lane_index].active_mtu < IBV_MTU_256 ||
+            remote_infos[lane_index].active_mtu > IBV_MTU_4096 ||
+            remote_infos[lane_index].reserved[0] != 0u ||
+            remote_infos[lane_index].reserved[1] != 0u ||
+            remote_infos[lane_index].reserved[2] != 0u)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -1378,11 +1390,14 @@ static SparkStatus SparkHiddenSparkHostRdmaModifyQueuePairToReady(
 {
     struct ibv_qp_attr attributes;
     union ibv_gid remote_gid;
+    uint8_t path_mtu;
 
     memcpy(remote_gid.raw, lane->remote_info.gid, sizeof(remote_gid.raw));
+    path_mtu = lane->local_info.active_mtu < lane->remote_info.active_mtu ?
+        lane->local_info.active_mtu : lane->remote_info.active_mtu;
     memset(&attributes, 0, sizeof(attributes));
     attributes.qp_state = IBV_QPS_RTR;
-    attributes.path_mtu = IBV_MTU_4096;
+    attributes.path_mtu = (enum ibv_mtu)path_mtu;
     attributes.dest_qp_num = lane->remote_info.qp_number;
     attributes.rq_psn = lane->remote_info.packet_sequence_number;
     attributes.max_dest_rd_atomic = 1;
@@ -1418,6 +1433,18 @@ static SparkStatus SparkHiddenSparkHostRdmaModifyQueuePairToReady(
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
     return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkHiddenSparkHostRdmaPathMtuBytes(
+    const SparkHiddenSparkHostRdmaLane *lane)
+{
+    uint8_t path_mtu;
+
+    if (lane == 0)
+        return 0u;
+    path_mtu = lane->local_info.active_mtu < lane->remote_info.active_mtu ?
+        lane->local_info.active_mtu : lane->remote_info.active_mtu;
+    return 128u << path_mtu;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaReadyQueuePairs(SparkHiddenSparkHostRdmaState *state)
@@ -5058,12 +5085,13 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
     if (state->debug_enabled != 0u)
     {
         fprintf(stderr,
-            "hidden_spark_rdma_ready route=%s rank=%d sender=%u lanes=%u device=%s memory_mode=%u doorbell_max_bytes=%u\n",
+            "hidden_spark_rdma_ready route=%s rank=%d sender=%u lanes=%u device=%s path_mtu_bytes=%u memory_mode=%u doorbell_max_bytes=%u\n",
             endpoint->route_name,
             state->local_rank,
             state->is_sender,
             state->lane_count,
             state->verbs_device_name,
+            SparkHiddenSparkHostRdmaPathMtuBytes(&state->lanes[0]),
             state->memory_mode,
             state->doorbell_max_bytes);
     }

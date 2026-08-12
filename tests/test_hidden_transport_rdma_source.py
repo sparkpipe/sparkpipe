@@ -53,6 +53,15 @@ assert "SPARKPIPE_RING_TRANSPORT_RANK" not in RDMA
 assert "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_DEVICE" not in RDMA
 assert '"rocep1s0f0"' not in RDMA and '"rocep1s0f1"' not in RDMA
 
+open_verbs = function_body("SparkHiddenSparkHostRdmaOpenVerbsDevice(")
+assert "port_attributes.active_mtu" in open_verbs
+exchange_qp = function_body("SparkHiddenSparkHostRdmaExchangeQueuePairInfo(")
+assert "remote_infos[lane_index].active_mtu" in exchange_qp
+ready_qp = function_body("SparkHiddenSparkHostRdmaModifyQueuePairToReady(")
+assert "lane->local_info.active_mtu" in ready_qp
+assert "lane->remote_info.active_mtu" in ready_qp
+assert "attributes.path_mtu = IBV_MTU_4096" not in ready_qp
+
 hello = function_body("SparkHiddenSparkHostRdmaExchangeCompatibilityHello(")
 for identity_field in (
     "transport_module_id", "route_name", "source_host", "sink_host",
