@@ -10,6 +10,10 @@ SparkStatus SparkTpDeviceCollectiveNcclSubmitBf16(
 	SparkTpDeviceCollective *collective,
 	const SparkTpDeviceCollectiveSubmission *submission);
 
+SparkStatus SparkTpDeviceCollectiveNcclSubmitU64Max(
+	SparkTpDeviceCollective *collective,
+	const SparkTpDeviceCollectiveSubmission *submission);
+
 SparkStatus SparkTpDeviceCollectiveNcclRequestFailure(
 	SparkTpDeviceCollective *collective,
 	SparkStatus failure_status);

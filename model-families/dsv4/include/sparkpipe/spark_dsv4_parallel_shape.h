@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_DSV4_PARALLEL_SHAPE_ABI_VERSION 3u
+#define SPARK_DSV4_PARALLEL_SHAPE_ABI_VERSION 4u
 #define SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE 16u
 #define SPARK_DSV4_PARALLEL_SHAPE_MAX_PP_DEGREE 16u
 #define SPARK_DSV4_PARALLEL_SHAPE_MAX_WORLD_SIZE 16u
@@ -38,6 +38,7 @@ typedef struct SparkDsv4TpNodeConfig
 	uint32_t output_lora_elements_per_rank;
 	uint32_t output_hidden_rows_per_rank;
 	uint32_t expert_intermediate_per_rank;
+	uint32_t vocabulary_row_start;
 	uint32_t vocabulary_rows_per_rank;
 	uint32_t world_size;
 	uint32_t world_rank;

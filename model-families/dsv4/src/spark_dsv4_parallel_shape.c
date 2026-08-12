@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <string.h>
 
+#define SPARK_DSV4_TP_VOCABULARY_TILE_ROWS 128u
+
 static uint64_t SparkDsv4TpHashBytes(
 	uint64_t hash,
 	const void *data,
@@ -46,6 +48,24 @@ static SparkStatus SparkDsv4TpDeriveLayerSlice(
 	*first_layer_out = stage_index * base_layer_count +
 		(stage_index < remainder ? stage_index : remainder);
 	return(SPARK_STATUS_OK);
+}
+
+static void SparkDsv4TpDeriveVocabularySlice(
+	uint32_t degree,
+	uint32_t rank,
+	uint32_t *row_start_out,
+	uint32_t *row_count_out)
+{
+	uint32_t base_tiles,remainder_tiles,start_tile,tile_count,total_tiles;
+	total_tiles = SPARK_DSV4_MODEL_VOCAB_COUNT /
+		SPARK_DSV4_TP_VOCABULARY_TILE_ROWS;
+	base_tiles = total_tiles / degree;
+	remainder_tiles = total_tiles % degree;
+	start_tile = rank * base_tiles +
+		(rank < remainder_tiles ? rank : remainder_tiles);
+	tile_count = base_tiles + (rank < remainder_tiles ? 1u : 0u);
+	*row_start_out = start_tile * SPARK_DSV4_TP_VOCABULARY_TILE_ROWS;
+	*row_count_out = tile_count * SPARK_DSV4_TP_VOCABULARY_TILE_ROWS;
 }
 
 uint64_t SparkDsv4TpConfigurationHash(
@@ -96,6 +116,8 @@ SparkStatus SparkDsv4TpDeriveNodeConfig(
 			SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT) != 0u ||
 		SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION % ranks_per_group != 0u ||
 		SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION % degree != 0u ||
+		SPARK_DSV4_MODEL_VOCAB_COUNT %
+			SPARK_DSV4_TP_VOCABULARY_TILE_ROWS != 0u ||
 		SPARK_DSV4_MODEL_OUTPUT_LORA_RANK == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(config_out,0,sizeof(*config_out));
@@ -120,8 +142,9 @@ SparkStatus SparkDsv4TpDeriveNodeConfig(
 		SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
 	config_out->expert_intermediate_per_rank =
 		SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION / degree;
-	config_out->vocabulary_rows_per_rank =
-		SPARK_DSV4_MODEL_VOCAB_COUNT;
+	SparkDsv4TpDeriveVocabularySlice(degree,shape->tp_rank,
+		&config_out->vocabulary_row_start,
+		&config_out->vocabulary_rows_per_rank);
 	config_out->world_size = world_size;
 	config_out->world_rank = shape->pp_stage_index * degree + shape->tp_rank;
 	config_out->configuration_hash =

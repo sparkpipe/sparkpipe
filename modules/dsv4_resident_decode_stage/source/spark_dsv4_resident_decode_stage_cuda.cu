@@ -30,6 +30,42 @@ static_assert(SPARK_DSV4_MODEL_HIDDEN_DIMENSION % SparkDsv4ExpertWeightFormat::k
 static_assert(SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION % SparkDsv4ExpertWeightFormat::kScaleGroup == 0u,
 	"DSV4 expert width must contain complete expert codec scale groups");
 
+static __device__ __forceinline__ uint32_t SparkDsv4OrderedHeadScore(float score)
+{
+	uint32_t bits;
+	if ( isnan(score) )
+		return(0u);
+	if ( score == 0.0f )
+		score = 0.0f;
+	bits = __float_as_uint(score);
+	return(bits ^ ((bits & UINT32_C(0x80000000)) != 0u ?
+		UINT32_MAX : UINT32_C(0x80000000)));
+}
+
+static __global__ void SparkDsv4HeadMaxlocPackKernel(
+	const float *scores,
+	const uint32_t *token_ids,
+	uint64_t *maxloc,
+	uint32_t row_count)
+{
+	uint32_t row;
+	row = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row < row_count )
+		maxloc[row] = ((uint64_t)SparkDsv4OrderedHeadScore(scores[row]) << 32u) |
+			(UINT32_MAX - token_ids[row]);
+}
+
+static __global__ void SparkDsv4HeadMaxlocUnpackKernel(
+	const uint64_t *maxloc,
+	uint32_t *token_ids,
+	uint32_t row_count)
+{
+	uint32_t row;
+	row = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row < row_count )
+		token_ids[row] = UINT32_MAX - (uint32_t)maxloc[row];
+}
+
 /*
  * Production DSV4 compute is an SM121-only, fail-closed route.  This runtime
  * architecture check is not a hardware-qualification receipt.  Cache the
@@ -1475,6 +1511,35 @@ extern "C" cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, co
 	if ( status != cudaSuccess )
 		return(status);
 	return(SparkLmHostLaunchHeadScreenedArgmax(stream,hidden_bf16,head_weight_bf16,shadow_payload,shadow_scale,error_norm,logits_bf16,candidate_ids,candidate_counts,output_token_ids,row_count,candidate_count,hidden_dimension));
+}
+
+extern "C" cudaError_t SparkDsv4LaunchHeadScreenedArgmaxSharded(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
+{
+	cudaError_t status = SparkDsv4RequireNativeDecodeShape(row_count);
+	if ( status != cudaSuccess )
+		return(status);
+	return(SparkLmHostLaunchHeadScreenedArgmaxWithScore(stream,hidden_bf16,
+		head_weight_bf16,shadow_payload,shadow_scale,error_norm,logits_bf16,
+		candidate_ids,candidate_counts,output_token_ids,output_scores,
+		candidate_offset,row_count,candidate_count,hidden_dimension));
+}
+
+extern "C" cudaError_t SparkDsv4LaunchHeadMaxlocPack(cudaStream_t stream, const float *scores, const uint32_t *token_ids, uint64_t *maxloc, uint32_t row_count)
+{
+	if ( scores == 0 || token_ids == 0 || maxloc == 0 || row_count == 0u )
+		return(cudaErrorInvalidValue);
+	SparkDsv4HeadMaxlocPackKernel<<<(row_count + 255u) / 256u,256u,0u,
+		stream>>>(scores,token_ids,maxloc,row_count);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchHeadMaxlocUnpack(cudaStream_t stream, const uint64_t *maxloc, uint32_t *token_ids, uint32_t row_count)
+{
+	if ( maxloc == 0 || token_ids == 0 || row_count == 0u )
+		return(cudaErrorInvalidValue);
+	SparkDsv4HeadMaxlocUnpackKernel<<<(row_count + 255u) / 256u,256u,0u,
+		stream>>>(maxloc,token_ids,row_count);
+	return(cudaGetLastError());
 }
 
 extern "C" cudaError_t SparkDsv4LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)

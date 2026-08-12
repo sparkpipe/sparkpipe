@@ -226,6 +226,18 @@ def main() -> int:
     head = body(dsv4, "SparkDsv4LaunchHeadScreenedArgmax")
     require(head, "SparkDsv4RequireNativeDecodeShape(row_count)",
             "screened-head exact-shape/native-device gate")
+    sharded_head = body(dsv4, "SparkDsv4LaunchHeadScreenedArgmaxSharded")
+    require(sharded_head, "SparkLmHostLaunchHeadScreenedArgmaxWithScore",
+            "local exact score and vocabulary-offset head")
+    require(body(dsv4, "SparkDsv4HeadMaxlocPackKernel"),
+            "UINT32_MAX - token_ids[row]", "lower-token maxloc tie break")
+    require(body(module, "SparkDsv4ModuleReduceHeadMax"),
+            "SparkTpDeviceCollectiveSubmitU64Max",
+            "generic device max collective")
+    require(body(module, "SparkDsv4ModuleResolvedShape"),
+            "state->vocabulary_rows_per_rank", "rank-local head pack shape")
+    require(body(module, "SparkDsv4ModuleLaunchTpFinalIsland"),
+            "state->participates_final_head", "all-rank final-head work")
 
     print("PASS DSV4 native SM121 compute source contract")
     print("  static only: live sm_121a compile/PTX and GA tensors remain required")

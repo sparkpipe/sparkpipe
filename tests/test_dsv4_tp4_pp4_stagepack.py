@@ -109,7 +109,22 @@ def main() -> int:
     expect_filtered(embedding, 1)
     expect_filtered(final_norm, 0)
     expect_filtered(final_norm, 2)
+    PACK.plan_entry(final_norm, 0, 4, 3)
     PACK.plan_entry(final_norm, 3, 4, 3)
+    lm_head = (
+        PACK.KIND_LM_HEAD, PACK.GLOBAL_LAYER, PACK.WEIGHT_BF16,
+        PACK.VOCAB, PACK.HIDDEN, 0, 0, 0,
+    )
+    expected_starts = (0, 32384, 64768, 97024)
+    expected_counts = (32384, 32384, 32256, 32256)
+    for rank in range(4):
+        planned, indices, column_start, _ = PACK.plan_entry(
+            lm_head, rank, 4, 3
+        )
+        assert planned[3:5] == (expected_counts[rank], PACK.HIDDEN)
+        assert indices[0] == expected_starts[rank]
+        assert indices[-1] + 1 == expected_starts[rank] + expected_counts[rank]
+        assert column_start == 0
     wo_a = (PACK.KIND_WO_A, 33, PACK.WEIGHT_FP8,
             PACK.OUTPUT_GROUPS * PACK.OUTPUT_LORA,
             PACK.OUTPUT_GROUP_DIM, 0, 0, 0)
