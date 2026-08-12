@@ -99,12 +99,39 @@ def main() -> int:
         "lib/runtime_libs/libnccl.so.2")
     assert tp4_pp4_stage["tp_collective"]["peer_hosts"] == [
         f"spark{index:x}-mgmt" for index in range(16)]
+    tp4_stage = json.loads(
+        (ROOT / "examples" / "deployments" /
+         "dsv4_flash_tp4_stage.json").read_text(encoding="utf-8")
+    )
+    assert tp4_stage["cuda_graph_count_by_pp_stage"] == [87]
+    assert tp4_stage["tp_collective"]["backend"] == "nccl"
+    assert tp4_stage["tp_collective"]["peer_hosts"] == [
+        f"spark{index:x}-mgmt" for index in range(4)]
+    tp4_spec = json.loads(
+        (ROOT / "examples" / "deployments" /
+         "dsv4_flash_tp4_b1_host_rdma.spec.json").read_text(
+             encoding="utf-8")
+    )
+    assert tp4_spec["topology"]["rank_hosts"] == [
+        f"spark{index:x}" for index in range(4)]
+    assert tp4_spec["topology"]["stage_indices"] == list(range(4))
     for release_template in ("dsv4_tp4_pp4_b1_template",
                              "dsv4_tp16_b1_template"):
         release = json.loads(
             (ROOT / "examples" / "release" / release_template /
              "sparkpipe.json").read_text(encoding="utf-8"))
         assert "NCCL_IB_GID_INDEX=0" in release["roles"][0]["env"]
+    tp4_release = json.loads(
+        (ROOT / "examples" / "release" / "dsv4_tp4_b1_template" /
+         "sparkpipe.json").read_text(encoding="utf-8"))
+    assert tp4_release["rank_count"] == 4
+    assert tp4_release["max_active_sequence_count"] == 1
+    assert not any(value.startswith("NCCL_IB_HCA=") or
+                   value.startswith("NCCL_IB_GID_INDEX=") or
+                   value.startswith("NCCL_SOCKET_IFNAME=")
+                   for value in tp4_release["roles"][0]["env"])
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    assert "DSV4_TP4_B1_SERVING_ADAPTER" in makefile
     stage_source = (
         ROOT / "modules" / "dsv4_resident_decode_stage" / "source" /
         "spark_dsv4_resident_decode_stage_module.c").read_text(
