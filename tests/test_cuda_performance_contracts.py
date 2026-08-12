@@ -238,6 +238,9 @@ def validate_model_precision_contracts() -> None:
     dsv4_model = read(
         "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h"
     )
+    dsv4_common = read(
+        "model-families/common/include/sparkpipe/spark_lm_kernels.cuh"
+    )
 
     require(
         glm,
@@ -295,10 +298,16 @@ def validate_model_precision_contracts() -> None:
     require(dsv4_model, "SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3", "DSV4 FP8 linear codec")
     require(dsv4_model, "SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1", "DSV4 MXFP4 expert codec")
     require(dsv4_model, "SPARK_DSV4_MODEL_KV_CACHE_CODEC SPARK_WEIGHT_CODEC_BF16", "DSV4 BF16 KV codec")
-    require(dsv4, "SparkDsv4LaunchExpertUp", "DSV4 grouped expert execution")
+    require(dsv4, "SparkDsv4LaunchFusedExpertW13Act", "DSV4 fused grouped W13 execution")
+    forbid(dsv4, "SparkDsv4LaunchExpertUp(", "DSV4 split routed W1/W3 execution")
     require(dsv4_cuda, "LmWeightCodec<SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC>::Format", "DSV4 package-selected expert codec")
-    require(dsv4_cuda, "LmGemmWeightOnlyIndirectLaunch<SparkDsv4ExpertWeightFormat", "DSV4 indirect grouped up GEMM")
-    require(dsv4_cuda, "LmGemmWeightOnlyLaunch<SparkDsv4ExpertWeightFormat", "DSV4 grouped down GEMM")
+    require(dsv4_cuda, "SparkLmHostLaunchSm121FusedExpertW13", "DSV4 native fused routed W13")
+    require(dsv4_cuda, "SparkLmHostLaunchSm121ExpertW2", "DSV4 native packed routed W2")
+    require(dsv4_common, "LmMmaMxf8Mxf4(gate_total", "DSV4 native routed W1 atom")
+    require(dsv4_common, "LmMmaMxf8Mxf4(up_total", "DSV4 native routed W3 atom")
+    require(dsv4_common, "LmMmaMxf8Mxf4(total", "DSV4 native routed W2 atom")
+    forbid(dsv4_cuda, "LmGemmWeightOnlyIndirectLaunch<SparkDsv4ExpertWeightFormat", "DSV4 old indirect up success path")
+    forbid(dsv4_cuda, "LmGemmWeightOnlyLaunch<SparkDsv4ExpertWeightFormat", "DSV4 old BF16-dequant down success path")
     forbid(dsv4_cuda, "SparkLmExpertTileAllKernel", "DSV4 runtime-format expert kernel")
     require(dsv4_cuda, "SparkDsv4LaunchQuantSim", "DSV4 checkpoint activation quantization")
     forbid(dsv4, "inference/llms/deepseek_v4", "DSV4 legacy driver dependency")

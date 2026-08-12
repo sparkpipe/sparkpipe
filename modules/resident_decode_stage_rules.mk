@@ -124,13 +124,13 @@ MODULE_BATCH_VARIANT_ARCHIVES := $(foreach bucket,$(MODULE_BATCH_VARIANT_BUCKETS
 define SPARK_STAGE_VARIANT_HOST_SOURCE_RULE
 $(BUILD_DIRECTORY)/$(subst /,_,$(basename $(1)))_b$(2).o: $(1) | $(BUILD_DIRECTORY)
 	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC -fvisibility=hidden $(MODULE_INCLUDE_FLAGS) \
-		$(MODULE_COMPILE_FLAGS) -DSPARK_BATCH_BUCKET=$(2) -I"$(CUDA_HOME)/include" -include $(MODEL_HEADER) -MMD -MP -c "$$<" -o "$$@"
+		$(MODULE_COMPILE_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=$(2) -I"$(CUDA_HOME)/include" -include $(MODEL_HEADER) -MMD -MP -c "$$<" -o "$$@"
 endef
 
 define SPARK_MODULE_BATCH_VARIANT_RULES
 $(foreach source,$(MODULE_HOST_SOURCES),$(eval $(call SPARK_STAGE_VARIANT_HOST_SOURCE_RULE,$(source),$(1))))
 $(BUILD_DIRECTORY)/$(subst /,_,$(basename $(MODULE_CUDA_SOURCE)))_b$(1).o: $(MODULE_CUDA_SOURCE) | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) -DSPARK_BATCH_BUCKET=$(1) -include $(MODEL_HEADER) \
+	$(NVCC) $(NVCCFLAGS) $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=$(1) -include $(MODEL_HEADER) \
 		-Xcompiler -Wall,-Wextra,-fPIC,-fvisibility=hidden -MMD -MP -c "$$<" -o "$$@"
 
 $(call MODULE_BATCH_VARIANT_ARCHIVE,$(1)): $(foreach source,$(MODULE_HOST_SOURCES),$(BUILD_DIRECTORY)/$(subst /,_,$(basename $(source)))_b$(1).o) $(BUILD_DIRECTORY)/$(subst /,_,$(basename $(MODULE_CUDA_SOURCE)))_b$(1).o
@@ -158,7 +158,7 @@ publish_variants: require_cuda_target require_stage_pack require_gpu_validator $
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
 	@set -e; \
 		for bucket in $(filter-out 1024,$(MODULE_BATCH_VARIANT_BUCKETS)); do \
-			$(RUNTIME_CONFIGURATION) \
+			SPARK_MODULE_BATCH_BUCKET=$$bucket $(RUNTIME_CONFIGURATION) \
 				$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 				--library $(MODULE_LIBRARY_ROOT) \
 				--module $(MODULE_IDENTIFIER_PREFIX).b$$bucket.$(MODULE_IDENTIFIER_SUFFIX) \
@@ -197,14 +197,14 @@ contract:
 archive: require_cuda_target $(MODULE_ARCHIVE)
 
 validate: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_ARCHIVE)
-	$(RUNTIME_CONFIGURATION) \
+	SPARK_MODULE_BATCH_BUCKET=$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) $(RUNTIME_CONFIGURATION) \
 		$(GPU_VALIDATOR) \
 		$(VALIDATION_CONFIGURATION_SHA256) \
 		$(MODULE_ARCHIVE)
 
 publish: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_ARCHIVE)
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
-	$(RUNTIME_CONFIGURATION) \
+	SPARK_MODULE_BATCH_BUCKET=$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) $(RUNTIME_CONFIGURATION) \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 		--library $(MODULE_LIBRARY_ROOT) \
 		--module $(MODULE_IDENTIFIER) \

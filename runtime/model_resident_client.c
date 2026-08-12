@@ -409,6 +409,19 @@ static SparkModelResidentClientPending *SparkModelResidentClientFindPending(
 	return(0);
 }
 
+static const SparkModelResidentClientPending *
+	SparkModelResidentClientFindPendingConst(
+		const SparkModelResidentClient *client,
+		uint64_t submission_id)
+{
+	uint32_t index;
+	for (index=0u; index<client->queue_capacity; index++)
+		if ( client->pending[index].active != 0u &&
+			client->pending[index].submission_id == submission_id )
+			return(&client->pending[index]);
+	return(0);
+}
+
 static SparkModelResidentClientPending *SparkModelResidentClientReservePending(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission,
@@ -518,8 +531,10 @@ static SparkStatus SparkModelResidentClientQueueDecision(
 	uint8_t *message;
 	uint32_t index;
 	SparkStatus status;
-	if ( client->output_count >= client->queue_capacity )
-		return(SPARK_STATUS_BUSY);
+	status = SparkModelResidentClientCanQueueDecision(client,
+		pending->submission_id,decision_kind);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	index = (client->output_head + client->output_count) % client->queue_capacity;
 	output = &client->outputs[index];
 	message = client->output_storage + ((uint64_t)index * client->output_message_capacity);
@@ -538,6 +553,36 @@ static SparkStatus SparkModelResidentClientQueueDecision(
 	output->sent_bytes = 0u;
 	client->output_count++;
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentClientCanQueueDecision(
+	const SparkModelResidentClient *client,
+	uint64_t submission_id,
+	uint32_t decision_kind)
+{
+	const SparkModelResidentClientPending *pending;
+	SparkModelResidentIpcDecision decision;
+	SparkModelServingSubmission submission;
+	if ( client == 0 || client->connected == 0u || submission_id == 0u ||
+		(decision_kind != SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT &&
+		 decision_kind != SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	pending = SparkModelResidentClientFindPendingConst(client,submission_id);
+	if ( pending == 0 || pending->requires_decision == 0u ||
+		pending->prepared == 0u || pending->committed != 0u ||
+		pending->decision_kind != 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->output_count >= client->queue_capacity )
+		return(SPARK_STATUS_BUSY);
+	if ( client->output_message_capacity < SPARK_MODEL_RESIDENT_IPC_DECISION_BYTES )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(&submission,0,sizeof(submission));
+	submission.submission_id = pending->submission_id;
+	submission.control_generation = pending->control_generation;
+	submission.transaction_id = pending->transaction_id;
+	submission.dispatch_generation = pending->dispatch_generation;
+	return(SparkModelResidentIpcInitializeDecision(&decision,
+		client->next_message_id,decision_kind,&submission));
 }
 
 SparkStatus SparkModelResidentClientCommit(

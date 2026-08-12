@@ -16,8 +16,12 @@ receiver advertises. The receiver posts a zero-length receive work
 request on that lane and advertises a persistent registered boundary
 region. The sender performs an ordered RDMA write, using
 `IBV_WR_RDMA_WRITE_WITH_IMM` for the final region. The immediate value
-identifies the pending receive slot, and both endpoints derive the same
-lane from it without any extra control traffic. A completion-channel
+identifies the pending receive slot and persistent generation, and both
+endpoints derive the same lane from it without any extra control traffic.
+Receive work requests form a fixed FIFO credit pool per lane rather than
+belonging to logical requests; every consumed credit is reposted immediately.
+Data that safely arrives before persistent activation is retained and validated
+against its generation when activation catches up. A completion-channel
 file descriptor wakes the normal SparkPipe transport event loop; no TCP
 transfer-complete message is sent.
 
@@ -64,11 +68,13 @@ Present values are parsed strictly: malformed or out-of-range configuration
 fails initialization rather than selecting a different setting. A doorbell
 threshold of `0` explicitly disables the doorbell path.
 
-For the PP13 linear ring, the module selects the RoCE device per edge: `f0`
-faces the previous rank and `f1` faces the next rank. Non-adjacent routes fail
-closed unless `SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_DEVICE` explicitly names the
-device. This matters because each rank's input and output sessions use different
-ConnectX ports.
+The module discovers the local verbs device once per process. Exactly one
+device must have an ACTIVE port 1 reporting 100 Gbit/s; zero or multiple
+matches fail initialization. Peer hostnames and ranks remain deployment
+configuration, while every PP and TP session reuses the discovered local
+device. The selected endpoints exchange their active MTUs and program each QP
+to the smaller value, so a 4096-byte endpoint interoperates with a 1024-byte
+endpoint without RC retry exhaustion.
 
 ## Registration lifetime
 
@@ -89,7 +95,8 @@ eviction occurs.
 When `SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DEBUG=1`, transport destruction logs
 doorbell sends, striped sends, pointer-attribute queries,
 memory-registration count, MR-cache evictions, and MR-cache hits. The
-only other accepted value is `0`.
+only other accepted value is `0`. Each ready record also reports the selected
+device and negotiated `path_mtu_bytes`.
 
 ## Hardware validation
 
@@ -114,12 +121,11 @@ complete 13-rank correctness run pass for the exact built artifact.
 
 The existing `sparkpipe_glm52_pp13_ring_check` accepts both `--transport` and
 `--transport-module`. For an isolated hardware test, set a control port base not
-used by production and select the adjacent RoCE device on each node:
+used by production; device selection uses the same 100 Gbit/s discovery rule:
 
 ```sh
 export SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_CONTROL_PORT_BASE=57700
 export SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DOORBELL_MAX_BYTES=262144
-export SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_DEVICE=rocep1s0f1
 build/sparkpipe_glm52_pp13_ring_check \
     --rank 0 --ranks 2 --prev spark1 --next spark1 --laps 1000 --active 1 \
     --sideband-bytes 1024 \
@@ -127,7 +133,7 @@ build/sparkpipe_glm52_pp13_ring_check \
     --transport-module spark.hidden_transport.spark_host_pinned_rdma.verbs.v1
 ```
 
-The peer uses rank 1 and its RoCE device for the same physical link. The checker
+The peer uses rank 1 and its discovered 100 Gbit/s device. The checker
 alternates connection order by rank so blocking RC setup cannot deadlock. It
 allocates only the boundary payload and scratch space, so it can run beside the
 model pipeline without loading another checkpoint.

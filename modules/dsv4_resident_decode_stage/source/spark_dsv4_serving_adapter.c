@@ -12,10 +12,38 @@
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_row_layout.h"
 
-#if SPARK_DSV4_SERVING_TOPOLOGY == 16
+#if SPARK_DSV4_SERVING_TOPOLOGY == 404
+#define SPARK_DSV4_SERVING_ADAPTER_ID \
+	"spark.dsv4.flash-0731.serving-adapter.tp4-pp4.v1"
+#define SPARK_DSV4_SERVING_STAGE_COUNT 16u
+#define SPARK_DSV4_SERVING_TP_DEGREE 4u
+#define SPARK_DSV4_SERVING_PP_STAGE_COUNT 4u
+#define SPARK_DSV4_SERVING_HYBRID 1u
+#define SPARK_DSV4_SERVING_TOPOLOGY_FLAG \
+	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
+#define SPARK_DSV4_SERVING_EXTRA_CAPABILITY \
+	(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT)
+#define SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS \
+	(SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
+	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
+#define SPARK_DSV4_SERVING_STAGE_LAYERS \
+	{11u,11u,11u,11u,11u,11u,11u,11u,11u,11u,11u,11u,10u,10u,10u,10u}
+#define SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX 4u
+#elif SPARK_DSV4_SERVING_TOPOLOGY == 16
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.tp16.v1"
 #define SPARK_DSV4_SERVING_STAGE_COUNT 16u
+#define SPARK_DSV4_SERVING_TP_DEGREE 16u
+#define SPARK_DSV4_SERVING_PP_STAGE_COUNT 1u
+#define SPARK_DSV4_SERVING_HYBRID 0u
+#define SPARK_DSV4_SERVING_EXTRA_CAPABILITY 0u
 #define SPARK_DSV4_SERVING_TOPOLOGY_FLAG \
 	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
 #define SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS \
@@ -40,6 +68,10 @@
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.tp4.v1"
 #define SPARK_DSV4_SERVING_STAGE_COUNT 4u
+#define SPARK_DSV4_SERVING_TP_DEGREE 4u
+#define SPARK_DSV4_SERVING_PP_STAGE_COUNT 1u
+#define SPARK_DSV4_SERVING_HYBRID 0u
+#define SPARK_DSV4_SERVING_EXTRA_CAPABILITY 0u
 #define SPARK_DSV4_SERVING_TOPOLOGY_FLAG \
 	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
 #define SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS \
@@ -58,6 +90,10 @@
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.pp13.v2"
 #define SPARK_DSV4_SERVING_STAGE_COUNT 13u
+#define SPARK_DSV4_SERVING_TP_DEGREE 1u
+#define SPARK_DSV4_SERVING_PP_STAGE_COUNT 13u
+#define SPARK_DSV4_SERVING_HYBRID 0u
+#define SPARK_DSV4_SERVING_EXTRA_CAPABILITY 0u
 #define SPARK_DSV4_SERVING_TOPOLOGY_FLAG 0u
 #define SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS \
 	(SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION | \
@@ -77,7 +113,15 @@
 #endif
 #define SPARK_DSV4_SERVING_MODEL_ID SPARK_DSV4_MODEL_ID
 #define SPARK_DSV4_SERVING_MODEL_REVISION SPARK_DSV4_MODEL_SOURCE_REVISION
-#define SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256 SPARK_DSV4_MODEL_DESCRIPTION_SHA256
+#if SPARK_BATCH_BUCKET == 1u
+#define SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256 \
+	SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B1
+#elif SPARK_BATCH_BUCKET == 1024u
+#define SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256 \
+	SPARK_DSV4_MODEL_DESCRIPTION_SHA256
+#else
+#error "serving adapter requires a generated batch-specific model description"
+#endif
 #define SPARK_DSV4_SERVING_DRIVER_MODEL_ID SPARK_DSV4_MODEL_DRIVER_MODEL_ID
 #define SPARK_DSV4_SERVING_DRIVER_MODEL_REVISION SPARK_DSV4_MODEL_DRIVER_REVISION
 #define SPARK_DSV4_SERVING_DRIVER_STAGE_NAME "dsv4_resident_decode_stage"
@@ -107,16 +151,7 @@ static const char *const SparkDsv4ServingConfigurationMembersTp[] =
 	"model_revision",
 	"stage_pack_path",
 	"max_sequence_positions",
-	"tp_collective"
-};
-
-static const char *const SparkDsv4ServingConfigurationMembersTpGraphs[] =
-{
-	"schema_version",
-	"model_revision",
-	"stage_pack_path",
-	"max_sequence_positions",
-	"cuda_graph_count",
+	"cuda_graph_count_by_pp_stage",
 	"tp_collective"
 };
 
@@ -179,6 +214,18 @@ typedef struct SparkDsv4ServingAdapterState
 	SparkDsv4ServingPending pending[SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX];
 } SparkDsv4ServingAdapterState;
 
+static uint32_t SparkDsv4ServingPpStageIndex(uint32_t world_rank)
+{
+	return(SPARK_DSV4_SERVING_HYBRID != 0u ?
+		world_rank / SPARK_DSV4_SERVING_TP_DEGREE : world_rank);
+}
+
+static uint32_t SparkDsv4ServingTpRank(uint32_t world_rank)
+{
+	return(SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ?
+		world_rank % SPARK_DSV4_SERVING_TP_DEGREE : 0u);
+}
+
 static _Thread_local SparkModelDriverCacheLane SparkDsv4ServingPrefetchLanes[
 	SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 
@@ -186,7 +233,7 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_DSV4_SERVING_TOPOLOGY_FLAG | (SPARK_DSV4_SERVING_TOPOLOGY_FLAG == 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT : 0u) | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_DSV4_SERVING_TOPOLOGY_FLAG | SPARK_DSV4_SERVING_EXTRA_CAPABILITY | (SPARK_DSV4_SERVING_TOPOLOGY_FLAG == 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT : 0u) | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV,
 	.stage_count = SPARK_DSV4_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_DSV4_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -210,7 +257,9 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 	.stage_layer_counts = SPARK_DSV4_SERVING_STAGE_LAYERS,
 	.minimum_efficient_submission_row_count = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? 1u : 16u,
 	.cache_block_token_count =
-		SPARK_DSV4_RESIDENT_DECODE_STAGE_CACHE_BLOCK_TOKENS
+		SPARK_DSV4_RESIDENT_DECODE_STAGE_CACHE_BLOCK_TOKENS,
+	.parallel_group_size = SPARK_DSV4_SERVING_HYBRID != 0u ?
+		SPARK_DSV4_SERVING_TP_DEGREE : 0u
 };
 
 static int32_t SparkDsv4ServingJsonMember(
@@ -308,6 +357,46 @@ static SparkStatus SparkDsv4ServingLoadTpCollective(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkDsv4ServingLoadTpGraphCounts(
+	const SparkJsonDocument *document,
+	int32_t root,
+	const SparkDsv4ServingAdapterState *state,
+	uint32_t *cuda_graph_count)
+{
+	int32_t element,token;
+	uint32_t count,descriptor_index,expected,index,pp_stage_index,value;
+	SparkStatus status;
+	if ( document == 0 || state == 0 || cuda_graph_count == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	token = SparkDsv4ServingJsonMember(document,root,
+		"cuda_graph_count_by_pp_stage");
+	if ( token < 0 ||
+		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	count = SparkJsonGetArrayElementCount(document,token);
+	if ( count != SPARK_DSV4_SERVING_PP_STAGE_COUNT )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	*cuda_graph_count = 0u;
+	pp_stage_index = SPARK_DSV4_SERVING_HYBRID != 0u ?
+		SparkDsv4ServingPpStageIndex(state->stage_index) : 0u;
+	for (index=0u; index<count; index++)
+	{
+		element = SparkJsonGetArrayElement(document,token,index);
+		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR :
+			SparkJsonGetUInt32(document,element,&value);
+		descriptor_index = SPARK_DSV4_SERVING_HYBRID != 0u ?
+			index * SPARK_DSV4_SERVING_TP_DEGREE : 0u;
+		expected = SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(
+			SparkDsv4ServingDescriptor.stage_layer_counts[descriptor_index]);
+		if ( status != SPARK_STATUS_OK || expected == 0u || value != expected )
+			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
+		if ( index == pp_stage_index )
+			*cuda_graph_count = value;
+	}
+	return(*cuda_graph_count != 0u ? SPARK_STATUS_OK :
+		SPARK_STATUS_SCHEMA_ERROR);
+}
+
 static SparkStatus SparkDsv4ServingLoadConfiguration(
 	const char *path,
 	const char *runtime_root,
@@ -327,12 +416,14 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 	root = status == SPARK_STATUS_OK ? SparkJsonGetRootToken(&document) : -1;
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(&document,root,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	has_cuda_graphs = SparkDsv4ServingJsonMember(&document,root,"cuda_graph_count") >= 0 ? 1u : 0u;
+	has_cuda_graphs = SparkDsv4ServingJsonMember(&document,root,
+		"cuda_graph_count") >= 0 ? 1u : 0u;
 	has_tp_collective = SparkDsv4ServingJsonMember(&document,root,"tp_collective") >= 0 ? 1u : 0u;
 	if ( SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
 	{
-		members = has_cuda_graphs != 0u ? SparkDsv4ServingConfigurationMembersTpGraphs : SparkDsv4ServingConfigurationMembersTp;
-		member_count = has_cuda_graphs != 0u ? (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersTpGraphs) / sizeof(SparkDsv4ServingConfigurationMembersTpGraphs[0])) : (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersTp) / sizeof(SparkDsv4ServingConfigurationMembersTp[0]));
+		members = SparkDsv4ServingConfigurationMembersTp;
+		member_count = (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersTp) /
+			sizeof(SparkDsv4ServingConfigurationMembersTp[0]));
 		if ( has_tp_collective == 0u )
 			status = SPARK_STATUS_SCHEMA_ERROR;
 	}
@@ -358,11 +449,19 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ServingJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
 	*cuda_graph_count = 0u;
-	token = status == SPARK_STATUS_OK ? SparkDsv4ServingJsonMember(&document,root,"cuda_graph_count") : -1;
-	if ( status == SPARK_STATUS_OK && token >= 0 )
-		status = SparkJsonGetUInt32(&document,token,cuda_graph_count);
-	if ( status == SPARK_STATUS_OK && *cuda_graph_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT )
-		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK && SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
+		status = SparkDsv4ServingLoadTpGraphCounts(&document,root,state,
+			cuda_graph_count);
+	else
+	{
+		token = status == SPARK_STATUS_OK ?
+			SparkDsv4ServingJsonMember(&document,root,"cuda_graph_count") : -1;
+		if ( status == SPARK_STATUS_OK && token >= 0 )
+			status = SparkJsonGetUInt32(&document,token,cuda_graph_count);
+		if ( status == SPARK_STATUS_OK && *cuda_graph_count >
+			SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+	}
 	if ( status == SPARK_STATUS_OK && SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
 		status = SparkDsv4ServingLoadTpCollective(&document,root,state);
 	SparkJsonDocumentDestroy(&document);
@@ -508,6 +607,8 @@ static void SparkDsv4ServingDriverCompletion(
 	completion.service_time_ns = driver_completion->service_time_ns;
 	completion.device_memcpy_bytes = driver_completion->device_memcpy_bytes;
 	completion.host_staging_bytes = driver_completion->host_staging_bytes;
+	if ( driver_completion->status != SPARK_STATUS_OK )
+		fprintf(stderr,"dsv4_adapter driver_completion status=%s stage=%u submission=%llu accepted=%u\n",SparkStatusToString((SparkStatus)driver_completion->status),state->stage_index,(unsigned long long)pending->submission_id,driver_completion->accepted_token_count);
 	if ( matches == 0u )
 		state->orphan_completion_count++;
 	if ( state->stage_index + 1u == SPARK_DSV4_SERVING_STAGE_COUNT &&
@@ -599,13 +700,26 @@ static SparkStatus SparkDsv4ServingInitializeRunner(
 	const SparkModelServingAdapterConfiguration *configuration)
 {
 	SparkDsv4StageRunnerConfiguration runner_configuration;
+	uint32_t pp_stage_index;
 	memset(&runner_configuration,0,sizeof(runner_configuration));
 	runner_configuration.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
 	runner_configuration.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES;
 	runner_configuration.flags = SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_ADMISSION;
+	pp_stage_index = SparkDsv4ServingPpStageIndex(state->stage_index);
 	if ( SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
 		runner_configuration.flags |= SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL;
-	else
+	if ( SPARK_DSV4_SERVING_HYBRID != 0u )
+	{
+		runner_configuration.flags |= SPARK_DSV4_STAGE_RUNNER_FLAG_HYBRID_TP_PP;
+		runner_configuration.parallel_group_size = SPARK_DSV4_SERVING_TP_DEGREE;
+		if ( pp_stage_index != 0u )
+			runner_configuration.flags |= SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY;
+		if ( pp_stage_index + 1u < SPARK_DSV4_SERVING_PP_STAGE_COUNT )
+			runner_configuration.flags |= SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY;
+		if ( state->stage_index + 1u == SPARK_DSV4_SERVING_STAGE_COUNT )
+			runner_configuration.flags |= SPARK_DSV4_STAGE_RUNNER_FLAG_FINAL_TP_RANK;
+	}
+	else if ( SPARK_DSV4_SERVING_TOPOLOGY_FLAG == 0u )
 	{
 		if ( state->stage_index != 0u )
 			runner_configuration.flags |= SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY;
@@ -662,7 +776,7 @@ static void SparkDsv4ServingInitializeState(
 		state->tp_local_host[0] = '\0';
 }
 
-static void SparkDsv4ServingInitializeNodeContext(
+static SparkStatus SparkDsv4ServingInitializeNodeContext(
 	SparkDsv4ServingAdapterState *state,
 	uint32_t max_sequence_positions,
 	uint32_t cuda_graph_count)
@@ -672,8 +786,10 @@ static void SparkDsv4ServingInitializeNodeContext(
 	state->node_context.abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 	state->node_context.descriptor_bytes = SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES;
 	state->node_context.flags = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL : 0u;
-	state->node_context.stage_count = SPARK_DSV4_SERVING_STAGE_COUNT;
-	state->node_context.stage_index = state->stage_index;
+	if ( SPARK_DSV4_SERVING_HYBRID != 0u )
+		state->node_context.flags |= SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_PIPELINE_PARALLEL;
+	state->node_context.stage_count = SPARK_DSV4_SERVING_HYBRID != 0u ? SPARK_DSV4_SERVING_PP_STAGE_COUNT : SPARK_DSV4_SERVING_STAGE_COUNT;
+	state->node_context.stage_index = SPARK_DSV4_SERVING_HYBRID != 0u ? SparkDsv4ServingPpStageIndex(state->stage_index) : state->stage_index;
 	state->node_context.first_layer_index = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? 0u : SparkDsv4ServingFirstLayer(state->stage_index);
 	state->node_context.layer_count = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? SPARK_DSV4_MODEL_LAYER_COUNT : SparkDsv4ServingDescriptor.stage_layer_counts[state->stage_index];
 	state->node_context.resident_sequence_capacity = state->resident_sequence_capacity;
@@ -682,16 +798,32 @@ static void SparkDsv4ServingInitializeNodeContext(
 	state->node_context.linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC;
 	state->node_context.expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC;
 	state->node_context.kv_cache_codec = SPARK_DSV4_MODEL_KV_CACHE_CODEC;
-	state->node_context.tp_degree = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? SPARK_DSV4_SERVING_TOPOLOGY : 1u;
-	state->node_context.tp_rank = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? state->stage_index : 0u;
+	state->node_context.tp_degree = SPARK_DSV4_SERVING_TP_DEGREE;
+	state->node_context.tp_rank = SparkDsv4ServingTpRank(state->stage_index);
 	state->node_context.tp_configuration_hash = 0u;
 	memset(&shape,0,sizeof(shape));
 	shape.abi_version = SPARK_DSV4_PARALLEL_SHAPE_ABI_VERSION;
 	shape.tp_degree = state->node_context.tp_degree;
 	shape.tp_rank = state->node_context.tp_rank;
-	shape.pp_stage_count = 1u;
-	if ( SparkDsv4TpDeriveNodeConfig(&shape,&tp_config) == SPARK_STATUS_OK )
-		state->node_context.tp_configuration_hash = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? tp_config.configuration_hash : 0u;
+	shape.pp_stage_count = SPARK_DSV4_SERVING_HYBRID != 0u ?
+		SPARK_DSV4_SERVING_PP_STAGE_COUNT :
+		(SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? 1u :
+		 SPARK_DSV4_SERVING_STAGE_COUNT);
+	shape.pp_stage_index = SPARK_DSV4_SERVING_HYBRID != 0u ?
+		state->node_context.stage_index :
+		(SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? 0u : state->stage_index);
+	if ( SparkDsv4TpDeriveNodeConfig(&shape,&tp_config) != SPARK_STATUS_OK )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	state->node_context.tp_configuration_hash = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? tp_config.configuration_hash : 0u;
+	if ( SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
+	{
+		state->node_context.first_layer_index = tp_config.first_layer_index;
+		state->node_context.layer_count = tp_config.layer_count;
+	}
+	state->node_context.world_size = tp_config.world_size;
+	state->node_context.world_rank = tp_config.world_rank;
+	state->node_context.pp_stage_count = shape.pp_stage_count;
+	state->node_context.pp_stage_index = shape.pp_stage_index;
 	if ( SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
 	{
 		state->node_context.tp_listen_port = state->tp_listen_port;
@@ -703,10 +835,25 @@ static void SparkDsv4ServingInitializeNodeContext(
 		state->node_context.tp_local_host = state->tp_local_host;
 		state->node_context.tp_transport_module_path = state->tp_transport_path;
 		state->node_context.tp_transport_control_port_base = state->tp_transport_control_port_base;
+		if ( SPARK_DSV4_SERVING_HYBRID != 0u )
+		{
+			uint32_t group_first_rank,index;
+			group_first_rank = state->node_context.pp_stage_index * SPARK_DSV4_SERVING_TP_DEGREE;
+			memset(state->node_context.tp_peer_ports,0,sizeof(state->node_context.tp_peer_ports));
+			memset(state->node_context.tp_peer_hosts,0,sizeof(state->node_context.tp_peer_hosts));
+			for (index=0u; index<SPARK_DSV4_SERVING_TP_DEGREE; index++)
+			{
+				state->node_context.tp_peer_ports[index] = state->tp_peer_ports[group_first_rank + index];
+				memcpy(state->node_context.tp_peer_hosts[index],state->tp_peer_hosts[group_first_rank + index],SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES);
+			}
+			state->node_context.tp_transport_control_port_base = state->tp_peer_ports[group_first_rank];
+			state->node_context.tp_collective_identifier ^= (uint64_t)state->node_context.pp_stage_index << 32u;
+		}
 	}
 	/* Zero keeps the eager decode path; the deployment opts into capture. */
 	state->node_context.cuda_graph_count = cuda_graph_count;
 	state->node_context.stage_pack_path = state->stage_pack_path;
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkDsv4ServingInitialize(
@@ -755,8 +902,10 @@ static SparkStatus SparkDsv4ServingInitialize(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
-		SparkDsv4ServingInitializeNodeContext(state,max_sequence_positions,cuda_graph_count);
-		status = SparkDsv4ServingLoadDriver(state,configuration);
+		status = SparkDsv4ServingInitializeNodeContext(state,
+			max_sequence_positions,cuda_graph_count);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDsv4ServingLoadDriver(state,configuration);
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ServingInitializeRunner(state,configuration);
@@ -817,6 +966,11 @@ static void SparkDsv4ServingBuildCacheAdmission(
 	memset(request,0,sizeof(*request));
 	request->descriptor_bytes = sizeof(*request);
 	request->program_id = state->program->program_id;
+	request->submission_id = submission->submission_id;
+	request->control_generation = submission->control_generation;
+	request->transaction_id = submission->transaction_id;
+	request->request_generation = submission->request_generation;
+	request->step_generation = submission->step_generation;
 	request->request_id = submission->request_id;
 	request->sequence_id = submission->sequence_id;
 	request->sequence_position = submission->sequence_position;
@@ -870,6 +1024,42 @@ static SparkStatus SparkDsv4ServingPrefetch(
 		}
 	}
 	return(status);
+}
+
+static SparkStatus SparkDsv4ServingResolvePrefetch(
+	void *adapter_state,
+	const SparkModelServingSubmission *submission,
+	uint32_t resolution)
+{
+	SparkDsv4ServingAdapterState *state;
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	uint32_t admission_flag,cache_lane_count;
+	SparkStatus status;
+	state = (SparkDsv4ServingAdapterState *)adapter_state;
+	if ( state == 0 || submission == 0 ||
+		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
+		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkDsv4ServingValidateSubmissionBase(state,submission);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		return(SPARK_STATUS_OK);
+	status = SparkModelServingAdapterBuildDriverCacheLanes(submission,
+		SparkDsv4ServingPrefetchLanes,
+		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+		&cache_lane_count);
+	if ( status != SPARK_STATUS_OK || cache_lane_count !=
+		submission->active_sequence_count )
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INTERNAL_ERROR);
+	admission_flag = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ?
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT :
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	SparkDsv4ServingBuildCacheAdmission(state,submission,
+		SparkDsv4ServingPrefetchLanes,admission_flag,&request);
+	return(SparkModelDriverEvaluateAdmission(state->driver.interface,
+		state->driver_instance,&request,&decision));
 }
 
 static SparkStatus SparkDsv4ServingSubmitRelease(
@@ -946,6 +1136,12 @@ static SparkStatus SparkDsv4ServingSubmit(
 	dispatch.sequence_id = submission->sequence_id;
 	dispatch.sequence_position = submission->sequence_position;
 	dispatch.deadline_time_ns = submission->deadline_time_ns;
+	dispatch.submission_id = submission->submission_id;
+	dispatch.control_generation = submission->control_generation;
+	dispatch.transaction_id = submission->transaction_id;
+	dispatch.dispatch_generation = submission->dispatch_generation;
+	dispatch.request_generation = submission->request_generation;
+	dispatch.step_generation = submission->step_generation;
 	dispatch.active_sequence_count = submission->active_sequence_count;
 	dispatch.new_token_count = submission->new_token_count;
 	dispatch.row_count = submission->row_count;
@@ -965,7 +1161,7 @@ static SparkStatus SparkDsv4ServingSubmit(
 			dispatch.emit_lane_indices = pending->emit_lane_indices;
 		}
 	}
-	dispatch.output_token_ids = pending->output_token_ids;
+	dispatch.output_token_ids = state->runner.owns_final_head != 0u ? pending->output_token_ids : 0;
 	dispatch.hidden_input_bf16 = submission->hidden_input_address;
 	dispatch.hidden_input_bytes = submission->hidden_input_bytes;
 	dispatch.hidden_output_bf16 = submission->hidden_output_address;
@@ -1068,6 +1264,7 @@ static const SparkModelServingAdapterInterface SparkDsv4ServingInterface =
 	.validate_submission = SparkDsv4ServingValidateSubmission,
 	.submit = SparkDsv4ServingSubmit,
 	.prefetch = SparkDsv4ServingPrefetch,
+	.resolve_prefetch = SparkDsv4ServingResolvePrefetch,
 	.progress = SparkDsv4ServingProgress,
 	.quiesce = SparkDsv4ServingQuiesce,
 	.snapshot = SparkDsv4ServingSnapshot

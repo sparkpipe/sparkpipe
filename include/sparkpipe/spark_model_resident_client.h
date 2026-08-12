@@ -100,6 +100,10 @@ SparkStatus SparkModelResidentClientSubmit(
 SparkStatus SparkModelResidentClientPrepare(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelResidentClientCanQueueDecision(
+	const SparkModelResidentClient *client,
+	uint64_t submission_id,
+	uint32_t decision_kind);
 SparkStatus SparkModelResidentClientCommit(
 	SparkModelResidentClient *client,
 	uint64_t submission_id);

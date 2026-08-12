@@ -109,6 +109,16 @@ SparkStatus SparkKvPageCachePrepareLane(
 	uint32_t *logical_page_indices,
 	uint32_t logical_page_capacity,
 	uint32_t *logical_page_count_out);
+SparkStatus SparkKvPageCacheResolveLanePages(
+	const SparkKvPageCache *cache,
+	const SparkModelDriverCacheLane *lane,
+	uint32_t *logical_page_indices,
+	uint32_t logical_page_capacity,
+	uint32_t *logical_page_count_out);
+SparkStatus SparkKvPageCacheGetLaneMutablePageDemand(
+	const SparkKvPageCache *cache,
+	const SparkModelDriverCacheLane *lane,
+	uint32_t *mutable_page_demand_out);
 SparkStatus SparkKvPageCacheBeginLane(
 	SparkKvPageCache *cache,
 	const SparkModelDriverCacheLane *lane,

@@ -27,6 +27,10 @@ extern "C" {
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT 1u
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT 2u
 
+/* Distributed adapters must enter through PREPARE and a terminal decision. */
+SparkStatus SparkModelResidentIpcValidateDirectSubmitDescriptor(
+	const SparkModelServingAdapterDescriptor *descriptor);
+
 typedef struct SparkModelResidentIpcHeader
 {
 	uint32_t magic;

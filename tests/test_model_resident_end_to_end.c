@@ -347,7 +347,7 @@ static void TestModelResidentRunCase(
 	client = 0;
 	assert(SparkModelResidentClientConnect(&configuration,&client) == SPARK_STATUS_OK);
 	TestModelResidentBuildSubmission(&submission,lanes,tokens,row_lanes,positions,sequences);
-	assert(SparkModelResidentClientSubmit(client,&submission) == SPARK_STATUS_OK);
+	assert(SparkModelResidentClientPrepare(client,&submission) == SPARK_STATUS_OK);
 	submission.submission_id = 502u;
 	submission.transaction_id = 1502u;
 	submission.dispatch_generation = 2502u;
@@ -355,12 +355,13 @@ static void TestModelResidentRunCase(
 	submission.residency.word0 = 502u;
 	submission.residency.word1 = 602u;
 	submission.residency.generation = 702u;
-	assert(SparkModelResidentClientSubmit(client,&submission) == SPARK_STATUS_OK);
-	TestModelResidentWaitForCompletion(client,&state,1u);
+	assert(SparkModelResidentClientPrepare(client,&submission) == SPARK_STATUS_OK);
 	TestModelResidentWaitForResult(client,&state,2u);
 	assert(state.result_count == 2u);
 	assert(state.result_submission_id == 502u);
 	assert(state.result_status == SPARK_STATUS_BUSY);
+	assert(SparkModelResidentClientCommit(client,501u) == SPARK_STATUS_OK);
+	TestModelResidentWaitForCompletion(client,&state,1u);
 	assert(state.completion.submission_id == 501u);
 	assert(state.completion.residency.word0 == 501u);
 	assert(state.completion.residency.word1 == 601u);
@@ -375,7 +376,11 @@ static void TestModelResidentRunCase(
 		assert(state.completion.token_ids[1] == 4201u);
 	}
 	TestModelResidentBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences);
-	assert(SparkModelResidentClientSubmit(client,&submission) == SPARK_STATUS_OK);
+	assert(SparkModelResidentClientPrepare(client,&submission) == SPARK_STATUS_OK);
+	TestModelResidentWaitForResult(client,&state,3u);
+	assert(state.result_submission_id == 503u);
+	assert(state.result_status == SPARK_STATUS_OK);
+	assert(SparkModelResidentClientCommit(client,503u) == SPARK_STATUS_OK);
 	TestModelResidentWaitForCompletion(client,&state,2u);
 	assert(state.result_count == 3u);
 	assert(state.result_submission_id == 503u);
@@ -392,12 +397,12 @@ static void TestModelResidentRunCase(
 	submission.dispatch_generation = 2504u;
 	submission.step_generation = 3504u;
 	positions[1] = 3u;
-	assert(SparkModelResidentClientSubmit(client,&submission) == SPARK_STATUS_OK);
+	assert(SparkModelResidentClientPrepare(client,&submission) == SPARK_STATUS_OK);
 	TestModelResidentWaitForResult(client,&state,4u);
 	assert(state.result_submission_id == 504u);
 	assert(state.result_status == SPARK_STATUS_INVALID_ARGUMENT);
 	assert(state.completion_count == 2u);
-	assert(SparkModelResidentClientSubmit(client,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelResidentClientPrepare(client,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	assert(SparkModelResidentClientGetView(client,&view) == SPARK_STATUS_OK);
 	assert(view.connected == 1u);
 	assert(view.pending_submission_count == 0u);

@@ -135,12 +135,14 @@ compile_cuda \
 	modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu \
 	dsv4_resident_decode_stage \
 	-include "${dsv4_model_header}" \
-	-DSPARK_DSV4_MODULE_BUILD=1
+	-DSPARK_DSV4_MODULE_BUILD=1 \
+	-DSPARK_BATCH_BUCKET=1024u
 compile_cuda \
 	modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu \
 	dsv4_resident_decode_stage_validation \
 	-include "${dsv4_model_header}" \
-	-DSPARK_DSV4_MODULE_BUILD=1
+	-DSPARK_DSV4_MODULE_BUILD=1 \
+	-DSPARK_BATCH_BUCKET=1024u
 
 glm_model_header="${repository_root}/model-families/glm52/include/sparkpipe/spark_glm52_model.h"
 glm_codecs=(int6 int7 int8 fp8 nvfp4 mxfp4)

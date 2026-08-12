@@ -31,6 +31,20 @@
 
 #define LM_WARP_LANES 32u
 
+/*
+ * The native DSV4 decode kernels below this header are deliberately tied to
+ * the architecture-qualified SM121 target.  PTX block-scaled mma is not a
+ * portable fallback: compiling another real-device pass must leave a trap,
+ * never a scalar or BF16-dequant implementation that can be mistaken for the
+ * qualified route.  The host half of an nvcc translation also sees the trap;
+ * only the SM121 device pass sees the architecture-specific instruction.
+ */
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 1210)
+#define LM_SM121_NATIVE_COMPUTE_PTX 1
+#else
+#define LM_SM121_NATIVE_COMPUTE_PTX 0
+#endif
+
 // -- accumulator, shared by every atom ---------------------------------------
 //
 // SM80_16x8_Row: ((4,8),(2,2)) : ((32,1),(16,8)) over a 16x8 tile. Four floats
@@ -88,6 +102,73 @@ static __device__ __forceinline__ void LmMmaE4m3(float accumulator[4], const uin
 		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
 		: "+f"(accumulator[0]), "+f"(accumulator[1]), "+f"(accumulator[2]), "+f"(accumulator[3])
 		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
+
+/*
+ * SM121 mixed-width block-scaled atoms used by DSV4.
+ *
+ * PTX represents every f8/f6/f4 element in the m16n8k32 register fragment as
+ * one byte.  MXFP4 therefore remains nibble-packed in global/shared memory and
+ * is placed in the central four bits of each padded byte only while the two B
+ * registers are formed; it is never decoded to BF16.  A and B retain
+ * independent UE8M0 scale bytes, one per K32 block.
+ * The register coordinates are consequently the m16n8k32 byte coordinates
+ * above for both the E4M3 and E2M1 operands.
+ *
+ * These exact forms are independently listed in the ptxas capability gate.
+ * Static source tests prove that the production kernels call them; only a live
+ * sm_121a nvcc/ptxas build and GA tensor qualification can prove deployment.
+ */
+static __device__ __forceinline__ void LmMmaMxf8Mxf4(
+	float accumulator[4],
+	const uint32_t a[4],
+	const uint32_t b[2],
+	uint32_t scale_a,
+	uint32_t scale_b)
+{
+#if LM_SM121_NATIVE_COMPUTE_PTX
+	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
+		".block_scale.scale_vec::1X.f32.e4m3.e2m1.f32.ue8m0 "
+		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3}, "
+		"%10, {0, 0}, %11, {0, 0};\n"
+		: "+f"(accumulator[0]), "+f"(accumulator[1]),
+		  "+f"(accumulator[2]), "+f"(accumulator[3])
+		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]),
+		  "r"(b[0]), "r"(b[1]), "r"(scale_a), "r"(scale_b));
+#else
+	(void)accumulator;
+	(void)a;
+	(void)b;
+	(void)scale_a;
+	(void)scale_b;
+	asm volatile("trap;\n");
+#endif
+}
+
+static __device__ __forceinline__ void LmMmaMxf8Mxf8(
+	float accumulator[4],
+	const uint32_t a[4],
+	const uint32_t b[2],
+	uint32_t scale_a,
+	uint32_t scale_b)
+{
+#if LM_SM121_NATIVE_COMPUTE_PTX
+	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
+		".block_scale.scale_vec::1X.f32.e4m3.e4m3.f32.ue8m0 "
+		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3}, "
+		"%10, {0, 0}, %11, {0, 0};\n"
+		: "+f"(accumulator[0]), "+f"(accumulator[1]),
+		  "+f"(accumulator[2]), "+f"(accumulator[3])
+		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]),
+		  "r"(b[0]), "r"(b[1]), "r"(scale_a), "r"(scale_b));
+#else
+	(void)accumulator;
+	(void)a;
+	(void)b;
+	(void)scale_a;
+	(void)scale_b;
+	asm volatile("trap;\n");
+#endif
 }
 
 // -- 4-bit atom: m16n8k64 block-scaled ---------------------------------------

@@ -82,6 +82,19 @@ PROBES = {
     "mma.f8f6f4.e4m3xe2m1": (
         "\tmma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e4m3.e2m1.f32"
         " {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4}, {%r5,%r6}, {%f1,%f2,%f3,%f4};", True),
+    # DSV4 production atom: independently block-scaled MXFP8 activations and
+    # MXFP4 weights.  The unscaled mixed-width probe above is not sufficient:
+    # it neither checks the UE8M0 scale operands nor scale_vec::1X grammar.
+    "mma.mxf8f6f4.e4m3xe2m1": (
+        "\tmma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale"
+        ".scale_vec::1X.f32.e4m3.e2m1.f32.ue8m0 {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4},"
+        " {%r5,%r6}, {%f1,%f2,%f3,%f4}, %r7, {0, 0}, %r8, {0, 0};", True),
+    # Shared expert and dense FP8 projections use the same block-scaled family
+    # with E4M3 on both operands.
+    "mma.mxf8f6f4.e4m3xe4m3": (
+        "\tmma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale"
+        ".scale_vec::1X.f32.e4m3.e4m3.f32.ue8m0 {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4},"
+        " {%r5,%r6}, {%f1,%f2,%f3,%f4}, %r7, {0, 0}, %r8, {0, 0};", True),
     # NVFP4: e2m1 data, ue4m3 scale, one scale per 16 elements (scale_vec::4X at
     # k64). Matches SPARK_GLM52_MODEL_NVFP4_GROUP_SIZE.
     "mma.mxf4nvf4.ue4m3.4X": (

@@ -26,6 +26,7 @@ def main() -> int:
         "-Werror",
         "-D_POSIX_C_SOURCE=200809L",
         "-D_FILE_OFFSET_BITS=64",
+        "-DSPARK_BATCH_BUCKET=1024u",
         "-fsyntax-only",
         "-I.",
         "-Iinclude",

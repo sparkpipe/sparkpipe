@@ -125,6 +125,15 @@ def check_rules_makefile():
     if "$(filter-out 1024,$(MODULE_BATCH_VARIANT_BUCKETS))" not in text:
         report("publish set", rel,
                "publish_variants must skip the b1024 re-publish")
+    if "SPARK_MODULE_BATCH_BUCKET=$$bucket $(RUNTIME_CONFIGURATION)" not in text:
+        report("validator bucket", rel,
+               "variant publication must bind validation to the exact bucket")
+    default_validation = ("SPARK_MODULE_BATCH_BUCKET="
+                          "$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) "
+                          "$(RUNTIME_CONFIGURATION)")
+    if text.count(default_validation) != 2:
+        report("validator bucket", rel,
+               "default validation and publication must identify B1024")
     return 1
 
 
@@ -167,7 +176,14 @@ def check_tuning_header(path, family, id_prefix, id_suffix):
     text = open(path).read()
     upper = family.upper()
 
-    if "#define SPARK_BATCH_BUCKET 1024u" not in text:
+    if family == "dsv4":
+        if "#define SPARK_BATCH_BUCKET" in text:
+            report("explicit bucket", rel,
+                   "DSV4 must fail when the build omits its bucket")
+        if not text.startswith("#pragma once\n") or "#ifndef" in text:
+            report("header guard", rel,
+                   "DSV4 uses pragma once and no ifndef fallback")
+    elif "#define SPARK_BATCH_BUCKET 1024u" not in text:
         report("default bucket", rel, "the unflagged build must be b1024")
     # The guard closes the set: every bucket named exactly as the flag spells
     # it, so a typo'd -DSPARK_BATCH_BUCKET is a build error, not a silent tune.
@@ -398,18 +414,22 @@ def check_selection_contract():
                 report("probe run", f"bucket b{bucket}",
                        "the compiled selection contract asserted")
 
-        # The unflagged build IS the b1024 module.
+        # DSV4 has no implicit bucket.  Its root and module Makefiles name
+        # B1024 explicitly, while every generated variant supplies its rung.
         default_source = os.path.join(scratch, "probe_default.c")
-        default_binary = os.path.join(scratch, "probe_default")
         with open(default_source, "w") as handle:
-            handle.write(probe_source(1024))
+            handle.write(
+                '#include "sparkpipe/spark_dsv4_model.h"\n'
+                '#include "sparkpipe/spark_dsv4_batch_tuning.h"\n'
+                'int main(void) { return(0); }\n'
+            )
         built = subprocess.run(
             [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", codec_flag,
-             *include_flags, default_source, "-o", default_binary],
+             *include_flags, default_source, "-o", os.devnull],
             cwd=ROOT, capture_output=True, text=True)
-        if built.returncode != 0 or subprocess.run([default_binary]).returncode != 0:
-            report("probe default", "unflagged build",
-                   "the unflagged build must be the b1024 module")
+        if built.returncode == 0:
+            report("probe default", "unflagged DSV4 build",
+                   "a missing bucket must fail loudly")
 
         # A bucket outside the set must not compile at all: the variant list
         # is closed, so a typo'd bucket is a build error, not a silent tune.

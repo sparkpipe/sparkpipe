@@ -74,10 +74,58 @@ static void TestBuildFanoutDescriptor(SparkModelServingAdapterDescriptor *descri
 	descriptor->boundary_sideband_bytes_per_sequence[0] = 0u;
 }
 
+static void TestBuildHybridDescriptor(
+	SparkModelServingAdapterDescriptor *descriptor)
+{
+	static const uint32_t layer_counts[16] =
+	{
+		11u,11u,11u,11u,
+		11u,11u,11u,11u,
+		11u,11u,11u,11u,
+		10u,10u,10u,10u
+	};
+	uint32_t stage_index;
+	TestBuildFanoutDescriptor(descriptor);
+	descriptor->capability_flags |=
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP;
+	descriptor->parallel_group_size = 4u;
+	descriptor->max_active_sequence_count = 1024u;
+	descriptor->max_input_row_count = 1024u;
+	descriptor->max_resident_sequence_count = 1024u;
+	descriptor->max_output_token_count = 1024u;
+	for (stage_index=0u; stage_index<16u; stage_index++)
+		descriptor->stage_layer_counts[stage_index] =
+			layer_counts[stage_index];
+}
+
+static void TestBuildHybridNode(
+	SparkPipelineRuntimeLinearNode *node,
+	uint32_t rank_index,
+	uint32_t previous_rank_index,
+	uint32_t next_rank_index,
+	const char *host,
+	const char *previous_host,
+	const char *next_host)
+{
+	memset(node,0,sizeof(*node));
+	node->abi_version = SPARK_PIPELINE_RUNTIME_ABI_VERSION;
+	node->descriptor_bytes = SPARK_PIPELINE_RUNTIME_LINEAR_NODE_BYTES;
+	node->rank_index = rank_index;
+	node->stage_index = rank_index;
+	node->stage_count = 16u;
+	node->previous_rank_index = previous_rank_index;
+	node->next_rank_index = next_rank_index;
+	node->host_name = host;
+	node->previous_host_name = previous_host;
+	node->next_host_name = next_host;
+}
+
 int main(void)
 {
 	SparkModelServingAdapterDescriptor descriptor;
 	SparkModelServingAdapterDescriptor fanout_descriptor;
+	SparkModelServingAdapterDescriptor hybrid_descriptor;
 	SparkHiddenTransportEndpoint endpoint;
 	SparkPipelineRuntimeLinearNode node;
 	SparkPipelineRuntimeFanoutNode fanout_node;
@@ -145,5 +193,47 @@ int main(void)
 	assert(SparkPipelineRuntimeBuildInputEndpoint(&fanout_descriptor,&rank_plan,&endpoint) == SPARK_STATUS_NOT_FOUND);
 	assert(SparkPipelineRuntimeBuildOutputEndpoint(&fanout_descriptor,&rank_plan,&endpoint) == SPARK_STATUS_NOT_FOUND);
 	assert(SparkPipelineRuntimeValidateRankPlan(&fanout_descriptor,&rank_plan) == SPARK_STATUS_OK);
+	TestBuildHybridDescriptor(&hybrid_descriptor);
+	assert(SparkModelServingAdapterValidateDescriptor(&hybrid_descriptor) ==
+		SPARK_STATUS_OK);
+	TestBuildHybridNode(&node,8u,4u,12u,"tp4-pp4-rank-8",
+		"tp4-pp4-rank-4","tp4-pp4-rank-12");
+	assert(SparkPipelineRuntimeBuildHybridRankPlan(&hybrid_descriptor,&node,
+		1024u,1024u,SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS,
+		59000u,SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID,
+		&rank_plan) == SPARK_STATUS_OK);
+	assert(rank_plan.first_layer_index == 22u);
+	assert(rank_plan.layer_count == 11u);
+	assert(rank_plan.previous_rank_index == 4u);
+	assert(rank_plan.next_rank_index == 12u);
+	assert((rank_plan.flags &
+		(SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT |
+		 SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS |
+		 SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT)) ==
+		(SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT |
+		 SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS |
+		 SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT));
+	assert(rank_plan.boundary_bytes_per_sequence == 32768u);
+	assert(rank_plan.input_max_packet_bytes == UINT64_C(33554432));
+	assert(rank_plan.output_max_packet_bytes == UINT64_C(33554432));
+	assert(SparkPipelineRuntimeBuildInputEndpoint(&hybrid_descriptor,&rank_plan,
+		&endpoint) == SPARK_STATUS_OK);
+	assert(endpoint.source_rank_index == 4u);
+	assert(endpoint.sink_rank_index == 8u);
+	assert(SparkPipelineRuntimeBuildOutputEndpoint(&hybrid_descriptor,&rank_plan,
+		&endpoint) == SPARK_STATUS_OK);
+	assert(endpoint.source_rank_index == 8u);
+	assert(endpoint.sink_rank_index == 12u);
+	TestBuildHybridNode(&node,15u,11u,SPARK_PIPELINE_RUNTIME_NO_RANK,
+		"tp4-pp4-rank-15","tp4-pp4-rank-11",0);
+	assert(SparkPipelineRuntimeBuildHybridRankPlan(&hybrid_descriptor,&node,
+		1024u,1024u,SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS,
+		59000u,SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID,
+		&rank_plan) == SPARK_STATUS_OK);
+	assert(rank_plan.first_layer_index == 33u);
+	assert(rank_plan.layer_count == 10u);
+	assert((rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_FINAL_STAGE) != 0u);
+	assert(SparkPipelineRuntimeBuildOutputEndpoint(&hybrid_descriptor,&rank_plan,
+		&endpoint) == SPARK_STATUS_NOT_FOUND);
 	return(0);
 }

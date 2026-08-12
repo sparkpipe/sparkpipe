@@ -46,8 +46,8 @@ extern "C" {
  * callback; submit never synchronizes a successful CUDA frame.
  */
 
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 9u
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 10u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 5u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION 2u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION 1u
@@ -61,12 +61,18 @@ extern "C" {
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LOGICAL_PAGE_COUNT 1048576u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 13u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT 61u
+/* TP graphs are fixed stage-local islands, counted per pipeline slot. */
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_ISLAND_COUNT \
+	(2u * SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT + 1u)
+/* TP1 retains the older shape cache and its independent capacity ceiling. */
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT 64u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT 16u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES 64u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL UINT32_C(0x00000001)
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_PIPELINE_PARALLEL UINT32_C(0x00000002)
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS \
-	SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL
+	(SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL | \
+	 SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_PIPELINE_PARALLEL)
 
 typedef struct SparkDsv4ResidentDecodeStageNodeContext
 {
@@ -86,6 +92,10 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 	uint32_t tp_degree;
 	uint32_t tp_rank;
 	uint64_t tp_configuration_hash;
+	uint32_t world_size;
+	uint32_t world_rank;
+	uint32_t pp_stage_count;
+	uint32_t pp_stage_index;
 	uint16_t tp_listen_port;
 	uint16_t tp_peer_ports[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT];
 	uint32_t tp_connect_timeout_milli;
@@ -96,10 +106,10 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 	const char *tp_transport_module_path;
 	uint32_t tp_transport_control_port_base;
 	/*
-	 * Decode-step CUDA graph cache size, 0 disables capture and preserves the
-	 * eager launch path exactly. Captured shapes are the fixed (pipeline slot,
-	 * lane count) pairs actually submitted; a full cache or any capture
-	 * failure falls back to eager launches, never to a wrong sequence.
+	 * TP1: optional dynamic decode-shape cache capacity; zero keeps eager
+	 * execution. TP>1: exact number of prewarmed stage-local graph islands
+	 * PER PIPELINE SLOT. It must equal 2 * layer_count + 1; zero, a short
+	 * count, capture failure, or an unsealed entry fails initialization.
 	 */
 	uint32_t cuda_graph_count;
 	const char *stage_pack_path;
@@ -107,6 +117,21 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES \
 	((uint32_t)sizeof(SparkDsv4ResidentDecodeStageNodeContext))
+
+static inline uint32_t SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(
+	uint32_t local_layer_count)
+{
+	if ( local_layer_count == 0u ||
+		local_layer_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT )
+		return(0u);
+	return(2u * local_layer_count + 1u);
+}
+
+static inline uint32_t SparkDsv4ResidentDecodeStageNativeTpWidthSupported(
+	uint32_t width)
+{
+	return(width == 1u || width == 8u || width == 1024u ? 1u : 0u);
+}
 
 typedef struct SparkDsv4LinearView
 {
@@ -253,6 +278,12 @@ typedef struct SparkDsv4ResidentDecodeStageFrameContext
 	uint32_t descriptor_bytes;
 	uint32_t flags;
 	uint32_t reserved0;
+	uint64_t submission_id;
+	uint64_t control_generation;
+	uint64_t transaction_id;
+	uint64_t dispatch_generation;
+	uint64_t request_generation;
+	uint64_t step_generation;
 	const SparkDsv4DecodeBatchView *decode_batch;
 	const SparkDsv4PrefillBatchView *prefill_batch;
 	const void *hidden_input_bf16;

@@ -3,6 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 
@@ -126,6 +127,28 @@ def main():
         assert (output / "lib" / "model_driver.so").read_bytes() == (
             b"exact-model-driver")
         assert list(root.glob("output.assembling.*")) == []
+
+        manifest_only = root / "manifest-only"
+        manifest_only.mkdir()
+        shutil.copy2(template / "sparkpipe.json",manifest_only / "sparkpipe.json")
+        replacements = []
+        for relative in REQUIRED_FILES:
+            source = root / "replacements" / relative
+            source.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(template / relative,source)
+            replacements.extend(("--replace",relative + "=" + str(source)))
+        manifest_only_output = root / "manifest-only-output"
+        run_tool(
+            tool,
+            "--template",str(manifest_only),
+            "--output",str(manifest_only_output),
+            "--release-id","manifest-only",
+            "--git-commit",COMMIT,
+            "--install-dataset","dsv4_flash.fp8.tp4_pp4.b1",
+            *replacements,
+        )
+        assert all((manifest_only_output / relative).is_file()
+                   for relative in REQUIRED_FILES)
 
         duplicate = run_tool(
             tool,

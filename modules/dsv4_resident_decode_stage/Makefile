@@ -21,7 +21,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../cache/kv_page_cache.c \
 	../../cache/kv_page_store.c
 MODULE_CUDA_SOURCE := source/spark_dsv4_resident_decode_stage_cuda.cu
-MODULE_COMPILE_FLAGS := -DSPARK_DSV4_MODULE_BUILD=1
+MODULE_COMPILE_FLAGS := -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u
 
 # Keep the module graph relative to this directory. The checkout path contains
 # spaces on the development Mac, so absolute source lists are not shell-safe.

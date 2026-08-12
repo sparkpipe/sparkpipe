@@ -27,14 +27,28 @@ static uint32_t SparkModelServingAdapterSha256IsValid(const char *sha256)
 SparkStatus SparkModelServingAdapterValidateDescriptor(
 	const SparkModelServingAdapterDescriptor *descriptor)
 {
-	uint32_t index,total,parallel;
+	uint32_t group,group_count,hybrid,index,parallel,total;
 	if ( descriptor == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( descriptor->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || descriptor->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( (descriptor->capability_flags & ~SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES) != 0u || descriptor->stage_count == 0u || descriptor->stage_count > SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT || descriptor->layer_count == 0u || descriptor->layer_count > SPARK_MODEL_SERVING_ADAPTER_MAX_LAYER_COUNT )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) != 0u )
+	if ( (descriptor->capability_flags &
+		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT)) ==
+		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) &&
+		(descriptor->capability_flags &
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u &&
+		(descriptor->capability_flags &
+		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT)) !=
+		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( descriptor->boundary_format != SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 || descriptor->boundary_element_count == 0u || descriptor->boundary_element_bytes != sizeof(uint16_t) || SparkWeightCodecIsKnown(descriptor->linear_weight_codec) == 0u || SparkWeightCodecIsKnown(descriptor->expert_weight_codec) == 0u || SparkWeightCodecIsKnown(descriptor->kv_cache_codec) == 0u || descriptor->max_inflight_submission_count == 0u || descriptor->max_inflight_submission_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT || descriptor->max_active_sequence_count == 0u || descriptor->max_active_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || descriptor->max_input_row_count < descriptor->max_active_sequence_count || descriptor->max_input_row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || descriptor->max_resident_sequence_count < descriptor->max_active_sequence_count || descriptor->max_resident_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT || descriptor->max_output_token_count == 0u || descriptor->max_output_token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -48,7 +62,13 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( descriptor->minimum_efficient_submission_row_count > descriptor->max_input_row_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( descriptor->reserved0 != 0u || descriptor->cache_block_token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_TOKEN_COUNT )
+	hybrid = (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ? 1u : 0u;
+	if ( descriptor->cache_block_token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_TOKEN_COUNT ||
+		(hybrid == 0u && descriptor->parallel_group_size != 0u) ||
+		(hybrid != 0u && (descriptor->parallel_group_size < 2u ||
+		 descriptor->parallel_group_size > descriptor->stage_count ||
+		 descriptor->stage_count % descriptor->parallel_group_size != 0u)) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (descriptor->cache_block_token_count != 0u) != ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV) != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -72,6 +92,25 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 	for (; index<SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT; index++)
 		if ( descriptor->stage_layer_counts[index] != 0u || descriptor->boundary_sideband_kinds[index] != 0u || descriptor->boundary_sideband_bytes_per_sequence[index] != 0u )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( hybrid != 0u )
+	{
+		group_count = descriptor->stage_count / descriptor->parallel_group_size;
+		total = 0u;
+		for (group=0u; group<group_count; group++)
+		{
+			uint32_t group_layer_count;
+			group_layer_count = descriptor->stage_layer_counts[
+				group * descriptor->parallel_group_size];
+			for (index=1u; index<descriptor->parallel_group_size; index++)
+				if ( descriptor->stage_layer_counts[
+					group * descriptor->parallel_group_size + index] !=
+					group_layer_count )
+					return(SPARK_STATUS_INVALID_ARGUMENT);
+			total += group_layer_count;
+		}
+		return(total == descriptor->layer_count ? SPARK_STATUS_OK :
+			SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	if ( total == descriptor->layer_count )
 		return(SPARK_STATUS_OK);
 	if ( parallel != 0u )
@@ -132,6 +171,13 @@ SparkStatus SparkModelServingAdapterValidateInterface(
 	if ( (adapter_interface->descriptor->capability_flags & required_capability_flags) != required_capability_flags || adapter_interface->initialize == 0 || adapter_interface->destroy == 0 || adapter_interface->validate_submission == 0 || adapter_interface->submit == 0 || adapter_interface->progress == 0 || adapter_interface->quiesce == 0 || adapter_interface->snapshot == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (adapter_interface->descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH) != 0u && adapter_interface->prefetch == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (adapter_interface->descriptor->capability_flags &
+		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH)) ==
+		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH) &&
+		adapter_interface->resolve_prefetch == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (adapter_interface->descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESET) != 0u && adapter_interface->reset == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -346,6 +392,33 @@ SparkStatus SparkModelServingAdapterPrepareSubmission(
 	return(adapter_interface->prefetch(adapter_state,submission,1u));
 }
 
+SparkStatus SparkModelServingAdapterResolvePrefetch(
+	const SparkModelServingAdapterInterface *adapter_interface,
+	void *adapter_state,
+	const SparkModelServingSubmission *submission,
+	uint32_t resolution)
+{
+	SparkStatus status;
+	uint32_t required_capabilities;
+	if ( adapter_interface == 0 || adapter_interface->descriptor == 0 ||
+		adapter_state == 0 || submission == 0 ||
+		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
+		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	required_capabilities = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH;
+	if ( (adapter_interface->descriptor->capability_flags &
+		required_capabilities) != required_capabilities )
+		return(SPARK_STATUS_OK);
+	if ( adapter_interface->resolve_prefetch == 0 )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	status = adapter_interface->resolve_prefetch(adapter_state,submission,
+		resolution);
+	if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	return(status);
+}
+
 SparkStatus SparkModelServingAdapterBuildDriverCacheLanes(
 	const SparkModelServingSubmission *submission,
 	SparkModelDriverCacheLane *cache_lanes,
@@ -372,6 +445,8 @@ SparkStatus SparkModelServingAdapterBuildDriverCacheLanes(
 		memset(destination,0,sizeof(*destination));
 		destination->sequence_id = source->sequence_id;
 		destination->sequence_position = source->sequence_position;
+		destination->request_generation = source->request_generation;
+		destination->step_generation = source->step_generation;
 		destination->resident_sequence_slot = source->resident_sequence_slot;
 		destination->context_token_count = source->context_token_count;
 		if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )

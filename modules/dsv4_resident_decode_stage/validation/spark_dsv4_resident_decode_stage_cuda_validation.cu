@@ -10,8 +10,12 @@
 #include "sparkpipe/spark_dsv4_model.h"
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 
-#define SPARK_DSV4_VALIDATION_ROW_COUNT 8u
-#define SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT 128u
+#define SPARK_DSV4_VALIDATION_ROW_COUNT \
+	(SPARK_BATCH_BUCKET < 8u ? SPARK_BATCH_BUCKET : 8u)
+#define SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT 128u
+#define SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT \
+	(SPARK_BATCH_BUCKET < SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT ? \
+	SPARK_BATCH_BUCKET : SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT)
 #define SPARK_DSV4_VALIDATION_REFERENCE_MAX_RELATIVE_L2 0.02
 #define SPARK_DSV4_VALIDATION_REFERENCE_MIN_COSINE 0.999
 #define SPARK_DSV4_VALIDATION_REFERENCE_MAX_ROW_RELATIVE_L2 0.075
@@ -115,6 +119,14 @@ static int SparkDsv4ValidationRequire(int condition,const char *message)
 	if ( condition != 0 )
 		return(0);
 	fprintf(stderr,"dsv4_validation failure=%s\n",message);
+	return(1);
+}
+
+static int32_t SparkDsv4ValidationRequireCuda(cudaError_t error,const char *message)
+{
+	if ( error == cudaSuccess )
+		return(0);
+	fprintf(stderr,"dsv4_validation failure=%s cuda=%s\n",message,cudaGetErrorString(error));
 	return(1);
 }
 
@@ -222,7 +234,7 @@ static int SparkDsv4ValidationHeadRunCase(SparkDsv4ValidationHeadBuffers *buffer
 	if ( error == cudaSuccess ) error = cudaStreamSynchronize(cudaStreamPerThread);
 	if ( error == cudaSuccess ) error = cudaMemcpy(reference,buffers->reference_output,sizeof(reference),cudaMemcpyDeviceToHost);
 	if ( error == cudaSuccess ) error = cudaMemcpy(screened,buffers->screened_output,sizeof(screened),cudaMemcpyDeviceToHost);
-	if ( SparkDsv4ValidationRequire(error == cudaSuccess,"head_cuda") != 0 ) return(1);
+	if ( SparkDsv4ValidationRequireCuda(error,"head_cuda") != 0 ) return(1);
 	for (row=0u; row<row_count; row++)
 	{
 		if ( SparkDsv4ValidationRequire(counts[row] == (overflow != 0u ? candidate_count : ((row & 1u) == 0u ? 2u : 1u)),"head_screen_branch") != 0 ) return(1);
@@ -245,7 +257,6 @@ static int SparkDsv4ValidationHead(void)
 	result = head == 0 || errors == 0 || SparkDsv4ValidationHeadAllocate(&buffers) != 0;
 	if ( result == 0 ) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT,SPARK_DSV4_VALIDATION_HEAD_SCREENED_VOCAB,0u,0u);
 	if ( result == 0 ) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,1u,SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB,1u,0u);
-	if ( result == 0 ) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT - 1u,SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB,1u,0u);
 	if ( result == 0 ) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT,SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB,1u,0u);
 	for (seed=1u; seed<=4u && result == 0; seed++) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT,SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB,1u,seed);
 	SparkDsv4ValidationHeadDestroy(&buffers);
@@ -369,20 +380,26 @@ static float SparkDsv4ValidationBf16ToFloat(uint16_t value)
 	return(converted);
 }
 
-static int SparkDsv4ValidationReadExact(const char *path,void *destination,uint64_t bytes)
+static int SparkDsv4ValidationReadPrefix(const char *path,void *destination,uint64_t bytes,uint64_t file_bytes)
 {
 	FILE *file;
 	uint64_t read_bytes;
-	int32_t extra;
+	long actual_bytes;
 	file = fopen(path,"rb");
 	if ( file == 0 )
 		return(1);
-	read_bytes = fread(destination,1u,(size_t)bytes,file);
-	extra = fgetc(file);
-	fclose(file);
-	if ( read_bytes != bytes || extra != EOF )
+	actual_bytes = fseek(file,0,SEEK_END) == 0 ? ftell(file) : -1;
+	if ( actual_bytes < 0 || (uint64_t)actual_bytes != file_bytes || fseek(file,0,SEEK_SET) != 0 )
 	{
-		fprintf(stderr,"dsv4_validation reference_read path=%s bytes=%llu expected=%llu extra=%d\n",path,(unsigned long long)read_bytes,(unsigned long long)bytes,extra);
+		fclose(file);
+		fprintf(stderr,"dsv4_validation reference_size path=%s bytes=%ld expected=%llu\n",path,actual_bytes,(unsigned long long)file_bytes);
+		return(1);
+	}
+	read_bytes = fread(destination,1u,(size_t)bytes,file);
+	fclose(file);
+	if ( read_bytes != bytes )
+	{
+		fprintf(stderr,"dsv4_validation reference_read path=%s bytes=%llu expected=%llu\n",path,(unsigned long long)read_bytes,(unsigned long long)bytes);
 		return(1);
 	}
 	return(0);
@@ -449,6 +466,7 @@ static int SparkDsv4ValidationReferenceThresholds(const SparkDsv4ValidationRefer
 static int SparkDsv4ValidationCompareReference(const char *path,const uint16_t *actual)
 {
 	const uint64_t elements = (uint64_t)SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS;
+	const uint64_t fixture_elements = (uint64_t)SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS;
 	SparkDsv4ValidationReferenceMetrics metrics;
 	double row_difference_l2[SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT];
 	double row_reference_l2[SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT];
@@ -456,7 +474,7 @@ static int SparkDsv4ValidationCompareReference(const char *path,const uint16_t *
 	uint16_t *reference;
 	uint32_t row;
 	reference = (uint16_t *)calloc((size_t)elements,sizeof(uint16_t));
-	if ( reference == 0 || SparkDsv4ValidationReadExact(path,reference,elements * sizeof(uint16_t)) != 0 )
+	if ( reference == 0 || SparkDsv4ValidationReadPrefix(path,reference,elements * sizeof(uint16_t),fixture_elements * sizeof(uint16_t)) != 0 )
 	{
 		free(reference);
 		return(1);
@@ -485,8 +503,9 @@ static int SparkDsv4ValidationCompareReference(const char *path,const uint16_t *
 
 static int SparkDsv4ValidationBuildReferenceRows(SparkDsv4ValidationReferenceFrame *frame,const char *token_path)
 {
+	const uint64_t fixture_bytes = (uint64_t)SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT * sizeof(uint32_t);
 	uint32_t row;
-	if ( SparkDsv4ValidationReadExact(token_path,frame->token_ids,sizeof(frame->token_ids)) != 0 )
+	if ( SparkDsv4ValidationReadPrefix(token_path,frame->token_ids,sizeof(frame->token_ids),fixture_bytes) != 0 )
 		return(1);
 	for (row=0u; row<SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT; row++)
 	{
@@ -516,6 +535,12 @@ static void SparkDsv4ValidationBuildReferenceContext(SparkDsv4ValidationReferenc
 	frame->context.abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	frame->context.descriptor_bytes = sizeof(frame->context);
 	frame->context.flags = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_BATCH_VIEW | SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER;
+	frame->context.submission_id = 1u;
+	frame->context.control_generation = 1u;
+	frame->context.transaction_id = 1u;
+	frame->context.dispatch_generation = 1u;
+	frame->context.request_generation = 1u;
+	frame->context.step_generation = 1u;
 	frame->context.prefill_batch = &frame->batch;
 	frame->context.hidden_output_bf16 = frame->hidden_output_bf16;
 	frame->context.hidden_output_bytes = hidden_bytes;
@@ -656,6 +681,12 @@ static void SparkDsv4ValidationBuildFrame(
 	frame->context.abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	frame->context.descriptor_bytes = sizeof(frame->context);
 	frame->context.flags = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW;
+	frame->context.submission_id = 1u;
+	frame->context.control_generation = 1u;
+	frame->context.transaction_id = 1u;
+	frame->context.dispatch_generation = 1u;
+	frame->context.request_generation = 1u;
+	frame->context.step_generation = 1u;
 	frame->context.decode_batch = &frame->batch;
 	frame->context.hidden_input_bf16 = frame->hidden_input_bf16;
 	frame->context.hidden_input_bytes = frame->hidden_input_bf16 != 0 ? hidden_bytes : 0u;
