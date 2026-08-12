@@ -662,9 +662,8 @@ SparkStatus SparkKvCacheArenaReserveUnassignedResidentBlocks(
     SparkKvCacheArena *arena,
     uint32_t block_count)
 {
-	uint32_t current,next;
+	uint32_t current,next,target;
 	SparkStatus status;
-
 	status = SparkKvCacheArenaValidate(arena);
 	if ( status != SPARK_STATUS_OK || block_count == 0u )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
@@ -673,10 +672,17 @@ SparkStatus SparkKvCacheArenaReserveUnassignedResidentBlocks(
 	{
 		if ( current > arena->resident_block_capacity ||
 			block_count > arena->resident_block_capacity - current ||
-			(uint64_t)arena->resident_block_count +
-				arena->reserved_block_count + current + block_count >
+			(uint64_t)arena->reserved_block_count + current + block_count >
 				arena->resident_block_capacity )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		target = arena->resident_block_capacity - arena->reserved_block_count -
+			current - block_count;
+		if ( arena->resident_block_count > target )
+		{
+			status = SparkKvCacheArenaTrimResidentBlocks(arena,0,0u,target,0);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+		}
 		next = current + block_count;
 		if ( atomic_compare_exchange_weak(
 			&arena->unassigned_resident_block_count,&current,next) )

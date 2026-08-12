@@ -196,6 +196,25 @@ static void SparkTestKvUnassignedResidentCapacityOwnership(void)
 		SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkTestKvUnassignedOwnershipEvictsReusableResident(void)
+{
+	SparkTestKvFixture fixture;
+	uint32_t block;
+	SparkTestKvInitialize(&fixture);
+	block = SparkTestKvAcquire(&fixture);
+	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block) ==
+		SPARK_STATUS_OK);
+	assert(SparkKvCacheArenaReserveUnassignedResidentBlocks(&fixture.arena,
+		SPARK_TEST_RESIDENT_SLOT_COUNT) == SPARK_STATUS_OK);
+	assert(fixture.arena.resident_block_count == 0u);
+	assert(fixture.evict_count == 1u);
+	assert(fixture.evicted_logical_block == block);
+	assert(SparkKvCacheArenaUnassignedResidentBlockCount(&fixture.arena) ==
+		SPARK_TEST_RESIDENT_SLOT_COUNT);
+	assert(SparkKvCacheArenaReleaseUnassignedResidentBlocks(&fixture.arena,
+		SPARK_TEST_RESIDENT_SLOT_COUNT) == SPARK_STATUS_OK);
+}
+
 #define SPARK_TEST_KV_OWNERSHIP_THREAD_COUNT 8u
 
 typedef struct SparkTestKvOwnershipThread
@@ -977,6 +996,7 @@ int main(void)
 	SparkTestKvLogicalBlockFreeListReusesReleasedHead();
 	SparkTestKvFramePinProtectsResidentBlock();
 	SparkTestKvUnassignedResidentCapacityOwnership();
+	SparkTestKvUnassignedOwnershipEvictsReusableResident();
 	SparkTestKvConcurrentOwnershipSaturatesExactly();
 	SparkTestKvPrefetchUsesReservedDeviceSlot();
 	SparkTestKvOverlappingPrefetchReservationsAreReferenceCounted();
