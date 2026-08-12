@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -96,6 +97,17 @@ def main() -> int:
     assert tp4_pp4_stage["tp_collective"]["backend"] == "nccl"
     assert tp4_pp4_stage["tp_collective"]["backend_module_path"] == (
         "lib/runtime_libs/libnccl.so.2")
+    stage_source = (
+        ROOT / "modules" / "dsv4_resident_decode_stage" / "source" /
+        "spark_dsv4_resident_decode_stage_module.c").read_text(
+            encoding="utf-8")
+    assert re.search(
+        r"if \( state->tp_credit_binding_count != 0u \)\s*\{\s*"
+        r"configuration\.credit_bindings = state->tp_credit_bindings;\s*"
+        r"configuration\.credit_binding_count = "
+        r"state->tp_credit_binding_count;\s*\}",
+        stage_source,
+    )
     deployment = json.loads(
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_pp13_host_rdma.spec.json").read_text(encoding="utf-8")

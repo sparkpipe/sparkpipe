@@ -597,8 +597,11 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 			offset += credit_bytes;
 		}
 	}
-	configuration.credit_bindings = state->tp_credit_bindings;
-	configuration.credit_binding_count = state->tp_credit_binding_count;
+	if ( state->tp_credit_binding_count != 0u )
+	{
+		configuration.credit_bindings = state->tp_credit_bindings;
+		configuration.credit_binding_count = state->tp_credit_binding_count;
+	}
 	status = SparkTpDeviceCollectiveCreate(
 		&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
