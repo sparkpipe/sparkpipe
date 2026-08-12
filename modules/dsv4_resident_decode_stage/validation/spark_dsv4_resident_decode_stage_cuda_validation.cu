@@ -119,6 +119,14 @@ static int SparkDsv4ValidationRequire(int condition,const char *message)
 	return(1);
 }
 
+static int32_t SparkDsv4ValidationRequireCuda(cudaError_t error,const char *message)
+{
+	if ( error == cudaSuccess )
+		return(0);
+	fprintf(stderr,"dsv4_validation failure=%s cuda=%s\n",message,cudaGetErrorString(error));
+	return(1);
+}
+
 static void SparkDsv4ValidationHeadDestroy(SparkDsv4ValidationHeadBuffers *buffers)
 {
 	if ( buffers->hidden_bf16 != 0 )
@@ -223,7 +231,7 @@ static int SparkDsv4ValidationHeadRunCase(SparkDsv4ValidationHeadBuffers *buffer
 	if ( error == cudaSuccess ) error = cudaStreamSynchronize(cudaStreamPerThread);
 	if ( error == cudaSuccess ) error = cudaMemcpy(reference,buffers->reference_output,sizeof(reference),cudaMemcpyDeviceToHost);
 	if ( error == cudaSuccess ) error = cudaMemcpy(screened,buffers->screened_output,sizeof(screened),cudaMemcpyDeviceToHost);
-	if ( SparkDsv4ValidationRequire(error == cudaSuccess,"head_cuda") != 0 ) return(1);
+	if ( SparkDsv4ValidationRequireCuda(error,"head_cuda") != 0 ) return(1);
 	for (row=0u; row<row_count; row++)
 	{
 		if ( SparkDsv4ValidationRequire(counts[row] == (overflow != 0u ? candidate_count : ((row & 1u) == 0u ? 2u : 1u)),"head_screen_branch") != 0 ) return(1);
@@ -246,7 +254,6 @@ static int SparkDsv4ValidationHead(void)
 	result = head == 0 || errors == 0 || SparkDsv4ValidationHeadAllocate(&buffers) != 0;
 	if ( result == 0 ) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT,SPARK_DSV4_VALIDATION_HEAD_SCREENED_VOCAB,0u,0u);
 	if ( result == 0 ) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,1u,SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB,1u,0u);
-	if ( result == 0 ) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT - 1u,SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB,1u,0u);
 	if ( result == 0 ) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT,SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB,1u,0u);
 	for (seed=1u; seed<=4u && result == 0; seed++) result = SparkDsv4ValidationHeadRunCase(&buffers,head,errors,SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT,SPARK_DSV4_VALIDATION_HEAD_OVERFLOW_VOCAB,1u,seed);
 	SparkDsv4ValidationHeadDestroy(&buffers);

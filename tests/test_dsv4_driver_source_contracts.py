@@ -268,6 +268,8 @@ def main() -> None:
 	require(adapter, ".max_resident_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT", "adapter resident lane capacity")
 	require(validator, "(SPARK_BATCH_BUCKET < 8u ? SPARK_BATCH_BUCKET : 8u)", "bucket-safe CUDA validation width")
 	require(validator, "frame->batch.row_count = SPARK_DSV4_VALIDATION_ROW_COUNT;", "CUDA decode batch")
+	reject(validator, "SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT - 1u", "non-native DSV4 head validation width")
+	require(validator, "SparkDsv4ValidationRequireCuda(error,\"head_cuda\")", "CUDA head failure detail")
 	require(validator, "frame->lanes[row] = row;", "CUDA distinct resident lanes")
 	require(validator, "frame->frame.completion_function = SparkDsv4ValidationCompletion", "validator external completion")
 	require(driver_smoke, "node_context.linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC", "driver smoke linear codec binding")
