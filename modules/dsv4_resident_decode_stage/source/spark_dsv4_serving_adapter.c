@@ -607,6 +607,8 @@ static void SparkDsv4ServingDriverCompletion(
 	completion.service_time_ns = driver_completion->service_time_ns;
 	completion.device_memcpy_bytes = driver_completion->device_memcpy_bytes;
 	completion.host_staging_bytes = driver_completion->host_staging_bytes;
+	if ( driver_completion->status != SPARK_STATUS_OK )
+		fprintf(stderr,"dsv4_adapter driver_completion status=%s stage=%u submission=%llu accepted=%u\n",SparkStatusToString((SparkStatus)driver_completion->status),state->stage_index,(unsigned long long)pending->submission_id,driver_completion->accepted_token_count);
 	if ( matches == 0u )
 		state->orphan_completion_count++;
 	if ( state->stage_index + 1u == SPARK_DSV4_SERVING_STAGE_COUNT &&

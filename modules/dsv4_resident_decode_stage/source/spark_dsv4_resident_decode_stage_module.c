@@ -2505,6 +2505,8 @@ static void SparkDsv4ModuleFinishContinuationTerminal(
 	slot = continuation->slot;
 	slot_index = (uint32_t)(slot - state->slots);
 	async = &state->completions[slot_index];
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"dsv4_stage tp_continuation_failed status=%s stage=%u tp_rank=%u layer=%u side=%u rows=%u\n",SparkStatusToString(status),state->pp_stage_index,state->tp_rank,continuation->layer_index,continuation->side,continuation->rows);
 	async->completion.status = status;
 	continuation->active = 0u;
 	enqueue_status = SparkDsv4ModuleEnqueueAsync(state,slot,slot_index);
