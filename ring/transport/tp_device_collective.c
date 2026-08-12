@@ -2159,6 +2159,21 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveSubmission *submission)
+{
+    if (collective == 0 || submission == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (collective->backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+    {
+        return SPARK_STATUS_UNSUPPORTED;
+    }
+    return SparkTpDeviceCollectiveNcclSubmitU64Max(collective,submission);
+}
+
 SparkStatus SparkTpDeviceCollectiveRequestFailure(
     SparkTpDeviceCollective *collective,
     SparkStatus failure_status)

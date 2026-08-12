@@ -1127,7 +1127,7 @@ static __global__ void SparkLmHeadGroupedFallbackRescoreKernel(const void *hidde
 
 // Screened rows rescore their compact list. Overflow rows reduce the exact
 // chunk winners with the same score and lower-token tie rule.
-static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_ids, const uint32_t *candidate_counts, const float *partial_scores, const uint32_t *partial_candidates, uint32_t *output_token_ids, uint32_t row_count, uint32_t hidden_dimension)
+static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_ids, const uint32_t *candidate_counts, const float *partial_scores, const uint32_t *partial_candidates, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t hidden_dimension)
 {
 	extern __shared__ float hidden_shared[];
 	__shared__ float best_score[SPARK_LM_CTA_WARPS];
@@ -1156,7 +1156,11 @@ static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, c
 		SparkLmArgmaxReduce(running_best,running_candidate,best_score,best_candidate);
 	}
 	if ( threadIdx.x == 0u )
-		output_token_ids[row] = best_candidate[0];
+	{
+		output_token_ids[row] = best_candidate[0] + candidate_offset;
+		if ( output_scores != 0 )
+			output_scores[row] = best_score[0];
+	}
 }
 
 
@@ -3800,7 +3804,7 @@ static cudaError_t SparkLmHostLaunchHeadShadowQuantize(cudaStream_t stream, cons
 	return(cudaGetLastError());
 }
 
-static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
+static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmaxWithScore(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
 {
     dim3 tile_grid(
         (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,
@@ -3901,9 +3905,19 @@ static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmax(cudaStream_t strea
             partial_scores,
             partial_candidates,
             output_token_ids,
+			output_scores,
+			candidate_offset,
             row_count,
             hidden_dimension);
     return cudaGetLastError();
+}
+
+static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
+{
+	return(SparkLmHostLaunchHeadScreenedArgmaxWithScore(stream,hidden_bf16,
+		head_weight_bf16,shadow_payload,shadow_scale,error_norm,logits_bf16,
+		candidate_ids,candidate_counts,output_token_ids,0,0u,row_count,
+		candidate_count,hidden_dimension));
 }
 
 static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const uint32_t *pair_expert_ids, uint32_t pair_count, uint32_t expert_count, uint32_t experts_per_token, uint32_t *expert_offsets, uint32_t *grouped_rows, uint32_t *grouped_weight_slots, uint32_t *inverse_map)

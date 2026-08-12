@@ -5,8 +5,10 @@
 #define TEST_NCCL_SUCCESS 0
 #define TEST_NCCL_VERSION 23007
 #define TEST_NCCL_UNIQUE_ID_BYTES 128u
+#define TEST_NCCL_U64 5
 #define TEST_NCCL_BF16 9
 #define TEST_NCCL_SUM 0
+#define TEST_NCCL_MAX 2
 
 typedef struct TestNcclComm
 {
@@ -57,12 +59,15 @@ int32_t ncclAllReduce(const void *send_device,void *receive_device,
 	size_t element_count,int32_t data_type,int32_t operation,
 	ncclComm_t communicator,void *cuda_stream)
 {
+	size_t element_bytes;
 	if ( send_device == 0 || receive_device == 0 || element_count == 0u ||
-		data_type != TEST_NCCL_BF16 || operation != TEST_NCCL_SUM ||
+		!((data_type == TEST_NCCL_BF16 && operation == TEST_NCCL_SUM) ||
+		  (data_type == TEST_NCCL_U64 && operation == TEST_NCCL_MAX)) ||
 		communicator == 0 || cuda_stream == 0 )
 		return(4);
+	element_bytes = data_type == TEST_NCCL_U64 ? 8u : 2u;
 	if ( send_device != receive_device )
-		memmove(receive_device,send_device,element_count * 2u);
+		memmove(receive_device,send_device,element_count * element_bytes);
 	return(TEST_NCCL_SUCCESS);
 }
 

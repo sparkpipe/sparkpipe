@@ -28,8 +28,10 @@
 #define SPARK_TP_NCCL_MINIMUM_VERSION 23000
 #define SPARK_TP_NCCL_SUCCESS 0
 #define SPARK_TP_NCCL_IN_PROGRESS 7
+#define SPARK_TP_NCCL_DATA_TYPE_U64 5
 #define SPARK_TP_NCCL_DATA_TYPE_BF16 9
 #define SPARK_TP_NCCL_REDUCTION_SUM 0
+#define SPARK_TP_NCCL_REDUCTION_MAX 2
 
 typedef int32_t SparkTpNcclResult;
 typedef struct SparkTpNcclComm *SparkTpNcclCommHandle;
@@ -727,13 +729,17 @@ static SparkStatus SparkTpNcclCheckAsyncError(SparkTpDeviceCollective *collectiv
 	return(SPARK_STATUS_IO_ERROR);
 }
 
-SparkStatus SparkTpDeviceCollectiveNcclSubmitBf16(SparkTpDeviceCollective *collective,const SparkTpDeviceCollectiveSubmission *submission)
+static SparkStatus SparkTpNcclSubmitAllReduce(
+	SparkTpDeviceCollective *collective,
+	const SparkTpDeviceCollectiveSubmission *submission,
+	uint64_t element_count,
+	int32_t data_type,
+	int32_t reduction_operation)
 {
 	SparkTpDeviceNcclImplementation *implementation;
 	SparkTpDeviceCollectiveCompletion completion;
 	SparkTpNcclResult result;
 	SparkStatus status;
-	uint64_t element_count;
 	status = SparkTpNcclValidateSubmission(collective,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -750,15 +756,13 @@ SparkStatus SparkTpDeviceCollectiveNcclSubmitBf16(SparkTpDeviceCollective *colle
 		status = SPARK_STATUS_VALIDATION_FAILED;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkTpNcclCheckAsyncError(collective,implementation);
-	element_count = (uint64_t)submission->active_sequence_count *
-		collective->local_hidden_dimension;
 	if ( status == SPARK_STATUS_OK && element_count > SIZE_MAX )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
 	{
 		result = implementation->library.all_reduce(submission->local_device,
 			submission->full_device,(size_t)element_count,
-			SPARK_TP_NCCL_DATA_TYPE_BF16,SPARK_TP_NCCL_REDUCTION_SUM,
+			data_type,reduction_operation,
 			implementation->communicator,submission->cuda_stream);
 		if ( result != SPARK_TP_NCCL_SUCCESS )
 		{
@@ -789,6 +793,26 @@ SparkStatus SparkTpDeviceCollectiveNcclSubmitBf16(SparkTpDeviceCollective *colle
 	 * and the callback may enqueue dependent work on the same stream. */
 	submission->completion_function(submission->completion_context,&completion);
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkTpDeviceCollectiveNcclSubmitBf16(SparkTpDeviceCollective *collective,const SparkTpDeviceCollectiveSubmission *submission)
+{
+	uint64_t element_count;
+	if ( collective == 0 || submission == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	element_count = (uint64_t)submission->active_sequence_count *
+		collective->local_hidden_dimension;
+	return(SparkTpNcclSubmitAllReduce(collective,submission,element_count,
+		SPARK_TP_NCCL_DATA_TYPE_BF16,SPARK_TP_NCCL_REDUCTION_SUM));
+}
+
+SparkStatus SparkTpDeviceCollectiveNcclSubmitU64Max(SparkTpDeviceCollective *collective,const SparkTpDeviceCollectiveSubmission *submission)
+{
+	if ( submission == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkTpNcclSubmitAllReduce(collective,submission,
+		submission->active_sequence_count,SPARK_TP_NCCL_DATA_TYPE_U64,
+		SPARK_TP_NCCL_REDUCTION_MAX));
 }
 
 static SparkStatus SparkTpNcclFailureIsValid(SparkStatus failure_status)

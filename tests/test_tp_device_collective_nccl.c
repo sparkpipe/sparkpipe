@@ -94,6 +94,7 @@ static void TestNcclRank(uint32_t rank,uint16_t port)
 	SparkTpDeviceCollectiveConfig configuration;
 	SparkTpDeviceCollectiveSubmission submission;
 	TestNcclCompletion completion;
+	uint64_t maxloc[2],reduced[2];
 	uint16_t values[8];
 	uint32_t index;
 	TestNcclConfigure(&configuration,rank,port);
@@ -119,13 +120,28 @@ static void TestNcclRank(uint32_t rank,uint16_t port)
 	assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
 		SPARK_STATUS_OK);
 	assert(completion.count == 1u && completion.completion.ordinal == 0u);
-	submission.ordinal = 2u;
+	submission.ordinal = 3u;
 	assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
 		SPARK_STATUS_VALIDATION_FAILED);
 	submission.ordinal = 1u;
-	assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
+	submission.active_sequence_count = 1u;
+	maxloc[0] = UINT64_C(0xbf800000ffffffd5);
+	maxloc[1] = UINT64_C(0x3f800000ffffffea);
+	reduced[0] = 0u;
+	reduced[1] = 0u;
+	submission.local_device = maxloc;
+	submission.full_device = reduced;
+	assert(SparkTpDeviceCollectiveSubmitU64Max(&collective,&submission) ==
 		SPARK_STATUS_OK);
 	assert(completion.count == 2u && completion.completion.ordinal == 1u);
+	assert(reduced[0] == maxloc[0] && reduced[1] == 0u);
+	submission.ordinal = 2u;
+	submission.active_sequence_count = 2u;
+	submission.local_device = values;
+	submission.full_device = values;
+	assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
+		SPARK_STATUS_OK);
+	assert(completion.count == 3u && completion.completion.ordinal == 2u);
 	SparkTpDeviceCollectiveDestroy(&collective);
 }
 

@@ -33,6 +33,7 @@ OUTPUT_GROUP_DIM = QUERY_DIM // OUTPUT_GROUPS
 EXPERTS = 256
 EXPERT_WIDTH = 2048
 VOCAB = 129280
+VOCAB_TILE_ROWS = 128
 
 WEIGHT_BF16 = 0
 WEIGHT_F32 = 1
@@ -116,7 +117,24 @@ def output_group_shard(rank: int) -> Tuple[int, int, int, int]:
     return group_start, group_count, column_start, column_width
 
 
+def vocabulary_shard(rank: int) -> Tuple[int, int]:
+    validate_tp_degree()
+    if rank < 0 or rank >= TP_DEGREE:
+        raise PackFailure(f"rank {rank} does not address TP{TP_DEGREE}")
+    if VOCAB % VOCAB_TILE_ROWS:
+        raise PackFailure("vocabulary is not native-tile aligned")
+    base, remainder = divmod(VOCAB // VOCAB_TILE_ROWS, TP_DEGREE)
+    start_tile = rank * base + min(rank, remainder)
+    tile_count = base + (1 if rank < remainder else 0)
+    return start_tile * VOCAB_TILE_ROWS, tile_count * VOCAB_TILE_ROWS
+
+
 def row_indices(kind: int, rank: int, rows: int) -> List[int]:
+    if kind == KIND_LM_HEAD:
+        if rows != VOCAB:
+            raise PackFailure(f"lm_head rows {rows} do not match vocabulary")
+        start, count = vocabulary_shard(rank)
+        return list(range(start, start + count))
     if kind in (KIND_EXPERTS_W1, KIND_EXPERTS_W3):
         per = EXPERT_WIDTH // TP_DEGREE
         return [expert * EXPERT_WIDTH + rank * per + row
@@ -181,10 +199,10 @@ def selected_global(kind: int, rank: int, pp_stages: int = 1,
         return pp_stage == 0
     if pp_stage + 1 != pp_stages:
         return False
-    if rank == TP_DEGREE - 1:
+    if kind in (KIND_FINAL_NORM, KIND_LM_HEAD, KIND_HC_HEAD_FN,
+                KIND_HC_HEAD_BASE, KIND_HC_HEAD_SCALE):
         return True
-    return kind not in (KIND_FINAL_NORM, KIND_LM_HEAD, KIND_HC_HEAD_FN,
-                        KIND_HC_HEAD_BASE, KIND_HC_HEAD_SCALE)
+    return True
 
 
 def sha256_file(path: Path) -> str:
