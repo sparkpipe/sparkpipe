@@ -40,6 +40,19 @@ assert "SparkHiddenTransportRdmaControlDeadlineNs" in initialize
 connect = function_body("SparkHiddenSparkHostRdmaConnectControl(")
 assert connect.count("SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS") == 3
 
+discover_device = function_body("SparkHiddenSparkHostRdmaDiscoverDevice(")
+assert "SPARK_HIDDEN_SPARK_HOST_RDMA_REQUIRED_LINK_RATE_GBPS" in discover_device
+assert "matching_count != 1u" in discover_device
+resolve_device = function_body("SparkHiddenSparkHostRdmaResolveDevice(")
+assert "SparkHiddenSparkHostRdmaDeviceResolved" in resolve_device
+assert "SparkHiddenSparkHostRdmaDiscoverDevice" in resolve_device
+assert "SparkHiddenSparkHostRdmaDefaultDeviceName" not in RDMA
+assert "SparkHiddenSparkHostRdmaRankFromHost" not in RDMA
+assert "SparkHiddenSparkHostRdmaParseRoute" not in RDMA
+assert "SPARKPIPE_RING_TRANSPORT_RANK" not in RDMA
+assert "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_DEVICE" not in RDMA
+assert '"rocep1s0f0"' not in RDMA and '"rocep1s0f1"' not in RDMA
+
 hello = function_body("SparkHiddenSparkHostRdmaExchangeCompatibilityHello(")
 for identity_field in (
     "transport_module_id", "route_name", "source_host", "sink_host",

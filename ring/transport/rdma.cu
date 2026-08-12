@@ -42,7 +42,6 @@
     SPARK_HIDDEN_TRANSPORT_RDMA_CONTROL_MAGIC
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_VERSION \
     SPARK_HIDDEN_TRANSPORT_RDMA_CONTROL_VERSION
-#define SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_CONTROL_PORT_BASE 55700u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_LANE_COUNT 8u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT 32u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT 64u
@@ -70,7 +69,9 @@
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_ENV "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_MS"
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES 64u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_DEVICE_NAME_BYTES 32u
-#define SPARK_HIDDEN_SPARK_HOST_RDMA_SPARK_COUNT 13u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_DEVICE_RATE_PATH_BYTES 256u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_DEVICE_RATE_TEXT_BYTES 64u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_REQUIRED_LINK_RATE_GBPS 100u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_POLL_TIMEOUT_MS 1000u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_DOORBELL_MAX_BYTES 262144u
 
@@ -305,6 +306,15 @@ typedef struct SparkHiddenSparkHostRdmaResolveRequest
     char host[SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES];
     char port[16u];
 } SparkHiddenSparkHostRdmaResolveRequest;
+
+static pthread_mutex_t SparkHiddenSparkHostRdmaDeviceMutex =
+    PTHREAD_MUTEX_INITIALIZER;
+static SparkStatus SparkHiddenSparkHostRdmaDeviceStatus =
+    SPARK_STATUS_INTERNAL_ERROR;
+static uint32_t SparkHiddenSparkHostRdmaDeviceResolved;
+static uint8_t SparkHiddenSparkHostRdmaDevicePort;
+static char SparkHiddenSparkHostRdmaDeviceName[
+    SPARK_HIDDEN_SPARK_HOST_RDMA_DEVICE_NAME_BYTES];
 
 static SparkStatus SparkHiddenSparkHostRdmaParseUintEnv(
     const char *name,
@@ -636,34 +646,6 @@ static SparkStatus SparkHiddenSparkHostRdmaWriteFull(
         fd,buffer,bytes,deadline_ns);
 }
 
-static int32_t SparkHiddenSparkHostRdmaRankFromHost(const char *host)
-{
-    uint32_t tail;
-    char extra;
-
-    if (host == 0 || host[0] != 's' || host[1] != 'p' ||
-        host[2] != 'a' || host[3] != 'r' || host[4] != 'k' ||
-        host[5] == '\0')
-    {
-        extra = '\0';
-        if (sscanf(host, "10.10.100.%u%c", &tail, &extra) == 1 &&
-            tail >= 10u && tail <= 22u)
-        {
-            return (int32_t)(tail - 10u);
-        }
-        return -1;
-    }
-    if (host[5] >= '0' && host[5] <= '9' && host[6] == '\0')
-    {
-        return (int32_t)(host[5] - '0');
-    }
-    if (host[5] >= 'a' && host[5] <= 'c' && host[6] == '\0')
-    {
-        return (int32_t)(10 + (host[5] - 'a'));
-    }
-    return -1;
-}
-
 static void *SparkHiddenSparkHostRdmaResolveHostMain(void *context)
 {
     SparkHiddenSparkHostRdmaResolveRequest *request;
@@ -770,41 +752,6 @@ static SparkStatus SparkHiddenSparkHostRdmaResolveHostDeadline(
         (void)poll(0,0,SparkHiddenSparkHostRdmaDeadlinePollMilliseconds(
             deadline_ns,1u));
     }
-}
-
-static SparkStatus SparkHiddenSparkHostRdmaParseRoute(
-    const char *route_name,
-    char *source_host,
-    char *sink_host)
-{
-    const char *middle;
-    const char *suffix;
-    uint64_t source_bytes;
-    uint64_t sink_bytes;
-
-    if (route_name == 0 || source_host == 0 || sink_host == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    middle = strstr(route_name, "_to_");
-    suffix = strstr(route_name, "_hidden");
-    if (middle == 0 || suffix == 0 || middle >= suffix)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    source_bytes = (uint64_t)(middle - route_name);
-    sink_bytes = (uint64_t)(suffix - (middle + 4));
-    if (source_bytes == 0u || sink_bytes == 0u ||
-        source_bytes >= SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES ||
-        sink_bytes >= SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES)
-    {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
-    }
-    memcpy(source_host, route_name, (size_t)source_bytes);
-    source_host[source_bytes] = '\0';
-    memcpy(sink_host, middle + 4, (size_t)sink_bytes);
-    sink_host[sink_bytes] = '\0';
-    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
@@ -1030,29 +977,46 @@ static SparkStatus SparkHiddenSparkHostRdmaExchangeCompatibilityHello(
         state->control_fd,state->open_deadline_ns,&identity);
 }
 
-static const char *SparkHiddenSparkHostRdmaDefaultDeviceName(
-    const SparkHiddenSparkHostRdmaState *state)
+static SparkStatus SparkHiddenSparkHostRdmaDeviceRateGbps(
+    const char *device_name,
+    uint8_t verbs_port,
+    uint32_t *rate_gbps_out)
 {
-    uint32_t next_rank;
-    uint32_t previous_rank;
-    uint32_t peer_rank;
+    char path[SPARK_HIDDEN_SPARK_HOST_RDMA_DEVICE_RATE_PATH_BYTES];
+    char rate_text[SPARK_HIDDEN_SPARK_HOST_RDMA_DEVICE_RATE_TEXT_BYTES];
+    char unit[16u];
+    uint32_t rate_gbps;
+    FILE *stream;
+    int written;
 
-    next_rank = ((uint32_t)state->local_rank + 1u) %
-        SPARK_HIDDEN_SPARK_HOST_RDMA_SPARK_COUNT;
-    previous_rank = ((uint32_t)state->local_rank +
-        SPARK_HIDDEN_SPARK_HOST_RDMA_SPARK_COUNT - 1u) %
-        SPARK_HIDDEN_SPARK_HOST_RDMA_SPARK_COUNT;
-    peer_rank = state->is_sender != 0u ? (uint32_t)state->sink_rank :
-        (uint32_t)state->source_rank;
-    if (peer_rank == next_rank)
+    if (device_name == 0 || device_name[0] == '\0' || verbs_port == 0u ||
+        rate_gbps_out == 0)
     {
-        return "rocep1s0f1";
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (peer_rank == previous_rank)
+    written = snprintf(path,sizeof(path),"%s/%s/ports/%u/rate",
+        SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_INFINIBAND_SYSFS_PATH,
+        device_name,(uint32_t)verbs_port);
+    if (written < 0 || (uint32_t)written >= sizeof(path))
     {
-        return "rocep1s0f0";
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
-    return 0;
+    stream = fopen(path,"r");
+    if (stream == 0)
+        return SPARK_STATUS_IO_ERROR;
+    rate_text[0] = '\0';
+    if (fgets(rate_text,sizeof(rate_text),stream) == 0)
+    {
+        (void)fclose(stream);
+        return SPARK_STATUS_IO_ERROR;
+    }
+    (void)fclose(stream);
+    unit[0] = '\0';
+    if (sscanf(rate_text,"%u %15s",&rate_gbps,unit) != 2 ||
+        strcmp(unit,"Gb/sec") != 0)
+        return SPARK_STATUS_SCHEMA_ERROR;
+    *rate_gbps_out = (uint32_t)rate_gbps;
+    return SPARK_STATUS_OK;
 }
 
 static int SparkHiddenSparkHostRdmaPortIsActive(
@@ -1075,99 +1039,156 @@ static int SparkHiddenSparkHostRdmaPortIsActive(
     return active;
 }
 
-static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(SparkHiddenSparkHostRdmaState *state)
+static SparkStatus SparkHiddenSparkHostRdmaDiscoverDevice(
+    uint8_t verbs_port,
+    char *device_name,
+    uint32_t device_name_bytes)
 {
     struct ibv_device **devices;
     struct ibv_device *selected_device;
-    const char *requested_name;
-    const char *default_name;
-    uint32_t explicit_name;
-    uint32_t active_count;
+    uint32_t matching_count;
+    uint32_t rate_gbps;
+    SparkStatus rate_status;
     int count;
     int index;
-    struct ibv_port_attr port_attributes;
+    int written;
 
-    requested_name = getenv("SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_DEVICE");
-    explicit_name = requested_name != 0 && requested_name[0] != '\0';
-    default_name = SparkHiddenSparkHostRdmaDefaultDeviceName(state);
+    if (verbs_port == 0u || device_name == 0 || device_name_bytes == 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
     devices = ibv_get_device_list(&count);
-    if (devices == 0 || count <= 0)
-    {
+    if (devices == 0)
         return SPARK_STATUS_ROUTE_NOT_FOUND;
-    }
-    selected_device = 0;
-    active_count = 0u;
-    for (index = 0; index < count; ++index)
-    {
-        if (SparkHiddenSparkHostRdmaPortIsActive(
-                devices[index], state->verbs_port) == 0)
-        {
-            continue;
-        }
-        active_count += 1u;
-        if (explicit_name != 0u &&
-            strcmp(ibv_get_device_name(devices[index]), requested_name) == 0)
-        {
-            selected_device = devices[index];
-        }
-    }
-#if SPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT
-    if (explicit_name == 0u && active_count != 1u)
+    if (count <= 0)
     {
         ibv_free_device_list(devices);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
-#endif
-    if (explicit_name == 0u && active_count == 1u)
+    selected_device = 0;
+    matching_count = 0u;
+    for (index = 0; index < count; ++index)
     {
-        for (index = 0; index < count; ++index)
-        {
-            if (SparkHiddenSparkHostRdmaPortIsActive(
-                    devices[index], state->verbs_port) != 0)
-            {
-                fprintf(stderr,
-                    "hidden_spark_rdma_device_discovered route=%s selected=%s\n",
-                    state->endpoint.route_name,
-                    ibv_get_device_name(devices[index]));
-                selected_device = devices[index];
-                break;
-            }
-        }
+        if (SparkHiddenSparkHostRdmaPortIsActive(
+                devices[index],verbs_port) == 0)
+            continue;
+        rate_status = SparkHiddenSparkHostRdmaDeviceRateGbps(
+            ibv_get_device_name(devices[index]),verbs_port,&rate_gbps);
+        if (rate_status != SPARK_STATUS_OK || rate_gbps !=
+            SPARK_HIDDEN_SPARK_HOST_RDMA_REQUIRED_LINK_RATE_GBPS)
+            continue;
+        selected_device = devices[index];
+        matching_count++;
     }
-    if (explicit_name == 0u && selected_device == 0 && default_name != 0)
+    if (matching_count != 1u || selected_device == 0)
     {
-        for (index = 0; index < count; ++index)
-        {
-            if (strcmp(ibv_get_device_name(devices[index]), default_name) == 0 &&
-                SparkHiddenSparkHostRdmaPortIsActive(
-                    devices[index], state->verbs_port) != 0)
-            {
-                selected_device = devices[index];
-                break;
-            }
-        }
+        fprintf(stderr,
+            "hidden_spark_rdma_fabric_invalid active_%ug_count=%u\n",
+            SPARK_HIDDEN_SPARK_HOST_RDMA_REQUIRED_LINK_RATE_GBPS,
+            matching_count);
+        ibv_free_device_list(devices);
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
+    written = snprintf(device_name,device_name_bytes,"%s",
+        ibv_get_device_name(selected_device));
+    if (written < 0 || (uint32_t)written >= device_name_bytes)
+    {
+        ibv_free_device_list(devices);
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    ibv_free_device_list(devices);
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaResolveDevice(
+    uint8_t verbs_port,
+    char *device_name,
+    uint32_t device_name_bytes)
+{
+    SparkStatus status;
+    int written;
+    if (verbs_port == 0u || device_name == 0 || device_name_bytes == 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (pthread_mutex_lock(&SparkHiddenSparkHostRdmaDeviceMutex) != 0)
+        return SPARK_STATUS_INTERNAL_ERROR;
+    if (SparkHiddenSparkHostRdmaDeviceResolved == 0u)
+    {
+        SparkHiddenSparkHostRdmaDeviceStatus =
+            SparkHiddenSparkHostRdmaDiscoverDevice(verbs_port,
+                SparkHiddenSparkHostRdmaDeviceName,
+                sizeof(SparkHiddenSparkHostRdmaDeviceName));
+        SparkHiddenSparkHostRdmaDevicePort = verbs_port;
+        SparkHiddenSparkHostRdmaDeviceResolved = 1u;
+        if (SparkHiddenSparkHostRdmaDeviceStatus == SPARK_STATUS_OK)
+            fprintf(stderr,
+                "hidden_spark_rdma_fabric_ready device=%s port=%u rate_gbps=%u\n",
+                SparkHiddenSparkHostRdmaDeviceName,(uint32_t)verbs_port,
+                SPARK_HIDDEN_SPARK_HOST_RDMA_REQUIRED_LINK_RATE_GBPS);
+    }
+    status = SparkHiddenSparkHostRdmaDeviceStatus;
+    if (status == SPARK_STATUS_OK &&
+        SparkHiddenSparkHostRdmaDevicePort != verbs_port)
+        status = SPARK_STATUS_INVALID_ARGUMENT;
+    if (status == SPARK_STATUS_OK)
+    {
+        written = snprintf(device_name,device_name_bytes,"%s",
+            SparkHiddenSparkHostRdmaDeviceName);
+        if (written < 0 || (uint32_t)written >= device_name_bytes)
+            status = SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    (void)pthread_mutex_unlock(&SparkHiddenSparkHostRdmaDeviceMutex);
+    return status;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(
+    SparkHiddenSparkHostRdmaState *state)
+{
+    struct ibv_device **devices;
+    struct ibv_device *selected_device;
+    char device_name[SPARK_HIDDEN_SPARK_HOST_RDMA_DEVICE_NAME_BYTES];
+    struct ibv_port_attr port_attributes;
+    SparkStatus status;
+    int count;
+    int index;
+
+    if (state == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    status = SparkHiddenSparkHostRdmaResolveDevice(state->verbs_port,
+        device_name,sizeof(device_name));
+    if (status != SPARK_STATUS_OK)
+        return status;
+    devices = ibv_get_device_list(&count);
+    if (devices == 0)
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    if (count <= 0)
+    {
+        ibv_free_device_list(devices);
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
+    selected_device = 0;
+    for (index=0; index<count; index++)
+        if (strcmp(ibv_get_device_name(devices[index]),device_name) == 0)
+        {
+            selected_device = devices[index];
+            break;
+        }
     if (selected_device == 0)
     {
         ibv_free_device_list(devices);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     (void)snprintf(state->verbs_device_name,
-        sizeof(state->verbs_device_name), "%s",
-        ibv_get_device_name(selected_device));
+        sizeof(state->verbs_device_name),"%s",device_name);
     state->verbs_context = ibv_open_device(selected_device);
     ibv_free_device_list(devices);
     if (state->verbs_context == 0)
-    {
         return SPARK_STATUS_ROUTE_NOT_FOUND;
-    }
     state->protection_domain = ibv_alloc_pd(state->verbs_context);
     if (state->protection_domain == 0)
     {
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
     if (ibv_query_port(state->verbs_context, state->verbs_port,
-            &port_attributes) != 0)
+            &port_attributes) != 0 ||
+        port_attributes.state != IBV_PORT_ACTIVE)
     {
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
@@ -4799,65 +4820,29 @@ static SparkStatus SparkHiddenSparkHostRdmaConfigureRoute(
     SparkHiddenSparkHostRdmaState *state,
     const SparkHiddenTransportEndpoint *endpoint)
 {
-    SparkStatus status;
-    uint32_t local_rank;
-    const char *rank_text;
     int written;
 
-    if ((endpoint->configuration_flags &
-            SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION) != 0u)
-    {
-        if (endpoint->local_rank_index > (uint32_t)INT32_MAX ||
-            endpoint->source_rank_index > (uint32_t)INT32_MAX ||
-            endpoint->sink_rank_index > (uint32_t)INT32_MAX ||
-            endpoint->control_port_base == 0u ||
-            endpoint->control_port_base >
-                65535u - endpoint->sink_rank_index)
-        {
-            return SPARK_STATUS_INVALID_ARGUMENT;
-        }
-        state->local_rank = (int32_t)endpoint->local_rank_index;
-        state->source_rank = (int32_t)endpoint->source_rank_index;
-        state->sink_rank = (int32_t)endpoint->sink_rank_index;
-        state->control_port_base = endpoint->control_port_base;
-        written = snprintf(state->source_host,sizeof(state->source_host),"%s",
-            endpoint->source_host);
-        if (written < 0 || (uint32_t)written >= sizeof(state->source_host))
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
-        written = snprintf(state->sink_host,sizeof(state->sink_host),"%s",
-            endpoint->sink_host);
-        if (written < 0 || (uint32_t)written >= sizeof(state->sink_host))
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
-        state->is_sender = state->local_rank == state->source_rank ? 1u : 0u;
-        return SPARK_STATUS_OK;
-    }
-    status = SparkHiddenSparkHostRdmaParseUintEnv(
-        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_CONTROL_PORT_BASE",
-        SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_CONTROL_PORT_BASE,
-        &state->control_port_base);
-    rank_text = getenv("SPARKPIPE_RING_TRANSPORT_RANK");
-    if (status != SPARK_STATUS_OK || rank_text == 0 || rank_text[0] == '\0')
-    {
+    if (state == 0 || endpoint == 0 ||
+        (endpoint->configuration_flags &
+            SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION) == 0u ||
+        endpoint->local_rank_index > (uint32_t)INT32_MAX ||
+        endpoint->source_rank_index > (uint32_t)INT32_MAX ||
+        endpoint->sink_rank_index > (uint32_t)INT32_MAX ||
+        endpoint->control_port_base == 0u ||
+        endpoint->control_port_base > 65535u - endpoint->sink_rank_index)
         return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    status = SparkHiddenSparkHostRdmaParseUintEnv(
-        "SPARKPIPE_RING_TRANSPORT_RANK", 0u, &local_rank);
-    if (status != SPARK_STATUS_OK || local_rank > (uint32_t)INT32_MAX ||
-        state->control_port_base == 0u ||
-        state->control_port_base >
-            65535u - (SPARK_HIDDEN_SPARK_HOST_RDMA_SPARK_COUNT - 1u))
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    state->local_rank = (int32_t)local_rank;
-    status = SparkHiddenSparkHostRdmaParseRoute(endpoint->route_name,
-        state->source_host,state->sink_host);
-    if (status != SPARK_STATUS_OK)
-        return status;
-    state->source_rank = SparkHiddenSparkHostRdmaRankFromHost(state->source_host);
-    state->sink_rank = SparkHiddenSparkHostRdmaRankFromHost(state->sink_host);
-    if (state->source_rank < 0 || state->sink_rank < 0)
-        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    state->local_rank = (int32_t)endpoint->local_rank_index;
+    state->source_rank = (int32_t)endpoint->source_rank_index;
+    state->sink_rank = (int32_t)endpoint->sink_rank_index;
+    state->control_port_base = endpoint->control_port_base;
+    written = snprintf(state->source_host,sizeof(state->source_host),"%s",
+        endpoint->source_host);
+    if (written < 0 || (uint32_t)written >= sizeof(state->source_host))
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    written = snprintf(state->sink_host,sizeof(state->sink_host),"%s",
+        endpoint->sink_host);
+    if (written < 0 || (uint32_t)written >= sizeof(state->sink_host))
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
     state->is_sender = state->local_rank == state->source_rank ? 1u : 0u;
     if (state->is_sender == 0u && state->local_rank != state->sink_rank)
         return SPARK_STATUS_ROUTE_NOT_FOUND;
