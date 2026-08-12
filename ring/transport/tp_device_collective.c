@@ -54,6 +54,13 @@ typedef struct SparkTpDeviceCollectiveOperation
     void *cuda_stream;
     SparkTpDeviceCollectiveCompletionFunction completion_function;
     void *completion_context;
+    uint64_t profile_submit_ns;
+    uint64_t profile_reserved_ns;
+    uint64_t profile_send_done_ns[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    uint64_t profile_receive_done_ns[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    uint64_t profile_consume_done_ns[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    uint64_t profile_release_done_ns[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    uint64_t profile_complete_ns;
 } SparkTpDeviceCollectiveOperation;
 
 typedef struct SparkTpDeviceCollectiveImplementation
@@ -84,6 +91,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     atomic_int failure_status;
     pthread_t progress_thread;
     uint32_t progress_thread_started;
+    uint32_t profile_enabled;
     SparkTpDeviceCollective *collective;
 } SparkTpDeviceCollectiveImplementation;
 
@@ -115,6 +123,33 @@ static uint64_t SparkTpDeviceCollectiveNowMilli(void)
     }
     return ((uint64_t)current_time.tv_sec * 1000u) +
         ((uint64_t)current_time.tv_nsec / 1000000u);
+}
+
+static uint64_t SparkTpDeviceCollectiveNowNano(void)
+{
+    struct timespec current_time;
+
+    if (clock_gettime(CLOCK_MONOTONIC,&current_time) != 0)
+    {
+        return 0u;
+    }
+    return ((uint64_t)current_time.tv_sec * UINT64_C(1000000000)) +
+        (uint64_t)current_time.tv_nsec;
+}
+
+static uint64_t SparkTpDeviceCollectiveProfileDelta(
+    uint64_t start_ns,
+    uint64_t end_ns)
+{
+    return end_ns >= start_ns ? end_ns - start_ns : 0u;
+}
+
+static uint32_t SparkTpDeviceCollectiveProfileIsEnabled(void)
+{
+    const char *profile_value;
+
+    profile_value = getenv("SPARK_TP_COLLECTIVE_PROFILE");
+    return profile_value != 0 && strcmp(profile_value,"1") == 0 ? 1u : 0u;
 }
 
 static uint64_t SparkTpDeviceCollectiveStateWord(
@@ -1029,6 +1064,12 @@ static void SparkTpDeviceCollectiveReserveOperation(
     if (operation->reserved_send_mask == all_step_mask &&
         operation->activated_receive_mask == all_step_mask)
     {
+        if (implementation->profile_enabled != 0u &&
+            operation->profile_reserved_ns == 0u)
+        {
+            operation->profile_reserved_ns =
+                SparkTpDeviceCollectiveNowNano();
+        }
         (void)SparkTpDeviceCollectiveTransitionPhase(operation,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_SEND_BUILDING);
@@ -1076,6 +1117,11 @@ static void SparkTpDeviceCollectiveBuildSend(
         return;
     }
     operation->sent_mask |= mask;
+    if (implementation->profile_enabled != 0u)
+    {
+        operation->profile_send_done_ns[operation->current_step] =
+            SparkTpDeviceCollectiveNowNano();
+    }
     (void)SparkTpDeviceCollectiveTransitionPhase(operation,
         SPARK_TP_DEVICE_COLLECTIVE_PHASE_SEND_BUILDING,
         SPARK_TP_DEVICE_COLLECTIVE_PHASE_TRANSFER_ACTIVE);
@@ -1108,6 +1154,11 @@ static void SparkTpDeviceCollectiveProgressTransfer(
                 SPARK_STATUS_IO_ERROR);
         }
         return;
+    }
+    if (implementation->profile_enabled != 0u)
+    {
+        operation->profile_receive_done_ns[operation->current_step] =
+            SparkTpDeviceCollectiveNowNano();
     }
     (void)SparkTpDeviceCollectiveTransitionPhase(operation,
         SPARK_TP_DEVICE_COLLECTIVE_PHASE_TRANSFER_ACTIVE,
@@ -1153,6 +1204,12 @@ static void SparkTpDeviceCollectiveProgressConsumption(
             implementation,operation,operation->generation,status);
         return;
     }
+    if (implementation->profile_enabled != 0u &&
+        operation->profile_consume_done_ns[operation->current_step] == 0u)
+    {
+        operation->profile_consume_done_ns[operation->current_step] =
+            SparkTpDeviceCollectiveNowNano();
+    }
     if (operation->terminal_after_consume != 0u)
     {
         (void)SparkTpDeviceCollectiveTransitionPhase(operation,
@@ -1179,6 +1236,11 @@ static void SparkTpDeviceCollectiveProgressConsumption(
         }
         operation->released_receive_mask |= mask;
         operation->activated_receive_mask &= ~mask;
+        if (implementation->profile_enabled != 0u)
+        {
+            operation->profile_release_done_ns[operation->current_step] =
+                SparkTpDeviceCollectiveNowNano();
+        }
     }
     if (SparkTpDeviceCollectiveStateHasFailure(state_word) != 0u ||
         operation->current_step + 1u == implementation->collective->step_count)
@@ -1202,6 +1264,57 @@ static void SparkTpDeviceCollectiveProgressConsumption(
     (void)SparkTpDeviceCollectiveTransitionPhase(operation,
         SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE,
         SPARK_TP_DEVICE_COLLECTIVE_PHASE_SEND_BUILDING);
+}
+
+static void SparkTpDeviceCollectiveReportProfile(
+    const SparkTpDeviceCollectiveImplementation *implementation,
+    const SparkTpDeviceCollectiveOperation *operation,
+    SparkStatus status)
+{
+    char message[1536];
+    uint64_t start_ns;
+    uint32_t offset,step_index;
+    int count;
+
+    if (implementation == 0 || operation == 0 ||
+        implementation->profile_enabled == 0u ||
+        operation->profile_submit_ns == 0u)
+    {
+        return;
+    }
+    start_ns = operation->profile_submit_ns;
+    count = snprintf(message,sizeof(message),
+        "sparkpipe_tp_collective_profile tp_rank=%u ordinal=%llu rows=%u "
+        "steps=%u status=%u reserved_ns=%llu",
+        implementation->collective->tp_rank,
+        (unsigned long long)operation->ordinal,
+        operation->active_sequence_count,
+        implementation->collective->step_count,(uint32_t)status,
+        (unsigned long long)SparkTpDeviceCollectiveProfileDelta(
+            start_ns,operation->profile_reserved_ns));
+    if (count < 0 || (uint32_t)count >= sizeof(message))
+        return;
+    offset = (uint32_t)count;
+    for (step_index=0u;
+         step_index<implementation->collective->step_count; step_index++)
+    {
+        count = snprintf(message+offset,sizeof(message)-offset,
+            " send_done%u_ns=%llu receive_done%u_ns=%llu "
+            "consume_done%u_ns=%llu release_done%u_ns=%llu",
+            step_index,(unsigned long long)SparkTpDeviceCollectiveProfileDelta(start_ns,operation->profile_send_done_ns[step_index]),
+            step_index,(unsigned long long)SparkTpDeviceCollectiveProfileDelta(start_ns,operation->profile_receive_done_ns[step_index]),
+            step_index,(unsigned long long)SparkTpDeviceCollectiveProfileDelta(start_ns,operation->profile_consume_done_ns[step_index]),
+            step_index,(unsigned long long)SparkTpDeviceCollectiveProfileDelta(start_ns,operation->profile_release_done_ns[step_index]));
+        if (count < 0 || (uint32_t)count >= sizeof(message)-offset)
+            return;
+        offset += (uint32_t)count;
+    }
+    count = snprintf(message+offset,sizeof(message)-offset,
+        " complete_ns=%llu\n",(unsigned long long)SparkTpDeviceCollectiveProfileDelta(start_ns,operation->profile_complete_ns));
+    if (count < 0 || (uint32_t)count >= sizeof(message)-offset)
+        return;
+    offset += (uint32_t)count;
+    (void)fwrite(message,1u,offset,stderr);
 }
 
 static void SparkTpDeviceCollectivePublishCompletion(
@@ -1234,7 +1347,12 @@ static void SparkTpDeviceCollectivePublishCompletion(
     completion.credit_index = operation->credit_index;
     completion.ordinal = operation->ordinal;
     completion.generation = operation->generation;
+    if (implementation->profile_enabled != 0u)
+    {
+        operation->profile_complete_ns = SparkTpDeviceCollectiveNowNano();
+    }
     operation->completion_function(operation->completion_context,&completion);
+    SparkTpDeviceCollectiveReportProfile(implementation,operation,status);
     (void)SparkTpDeviceCollectiveTransitionPhase(operation,
         SPARK_TP_DEVICE_COLLECTIVE_PHASE_CALLBACK_CLAIMED,
         SPARK_TP_DEVICE_COLLECTIVE_PHASE_RELEASE_PENDING);
@@ -1611,6 +1729,8 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         config->registration_cuda_stream;
     implementation->combine_bf16_function = config->combine_bf16_function;
     implementation->combine_context = config->combine_context;
+    implementation->profile_enabled =
+        SparkTpDeviceCollectiveProfileIsEnabled();
     if (config->debug_hooks != 0)
     {
         implementation->debug_hooks = *config->debug_hooks;
@@ -1826,6 +1946,18 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     operation->cuda_stream = submission->cuda_stream;
     operation->completion_function = submission->completion_function;
     operation->completion_context = submission->completion_context;
+    operation->profile_submit_ns = implementation->profile_enabled != 0u ?
+        SparkTpDeviceCollectiveNowNano() : 0u;
+    operation->profile_reserved_ns = 0u;
+    memset(operation->profile_send_done_ns,0,
+        sizeof(operation->profile_send_done_ns));
+    memset(operation->profile_receive_done_ns,0,
+        sizeof(operation->profile_receive_done_ns));
+    memset(operation->profile_consume_done_ns,0,
+        sizeof(operation->profile_consume_done_ns));
+    memset(operation->profile_release_done_ns,0,
+        sizeof(operation->profile_release_done_ns));
+    operation->profile_complete_ns = 0u;
     status = now_milli == 0u ? SPARK_STATUS_IO_ERROR :
         SparkTpDeviceCollectiveEnqueueLocalPlacement(
             implementation,operation);
