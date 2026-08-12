@@ -132,7 +132,9 @@ The exact-width B1 correctness release uses
 compiled from
 `examples/model_descriptions/dsv4_resident_decode_stage_firmware_b1.json`,
 which resolves the validated `.b1.v3` module instead of the unflagged B1024
-module. It retains one
+module. Build its exact-width adapter with
+`make build/libdsv4_tp4_pp4_b1_serving_adapter.so`; the adapter embeds the B1
+description hash and B1 capacity ceiling. It retains one
 physical KV page and 32 logical page-table entries, enough to lazily advance a
 single 4,096-position sequence without dense KV preallocation.
 

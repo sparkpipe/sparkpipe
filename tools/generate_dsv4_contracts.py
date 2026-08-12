@@ -159,7 +159,9 @@ def c_float(value: float) -> str:
     return f"{value:.10g}f"
 
 
-def render_header(variant: str, contract: dict[str, Any], description_sha256: str = "") -> str:
+def render_header(
+        variant: str, contract: dict[str, Any], description_sha256: str = "",
+        b1_description_sha256: str = "") -> str:
     model = contract["model"]
     attention = contract["attention"]
     hyper_connections = contract["hyper_connections"]
@@ -232,6 +234,7 @@ def render_header(variant: str, contract: dict[str, Any], description_sha256: st
             f"#define {prefix}_DRIVER_MODEL_ID {json.dumps(FLASH_DRIVER_MODEL_ID)}",
             f"#define {prefix}_DRIVER_REVISION {json.dumps(FLASH_DRIVER_REVISION)}",
             f"#define {prefix}_DESCRIPTION_SHA256 {json.dumps(description_sha256)}",
+            f"#define {prefix}_DESCRIPTION_SHA256_B1 {json.dumps(b1_description_sha256)}",
             f"#define {prefix}_MODULE_ID {json.dumps(FLASH_MODULE_ID)}",
             f"#define {prefix}_MODULE_TARGET {json.dumps(FLASH_MODULE_TARGET)}",
             f"#define {prefix}_ATTN_HEAD_DIMENSION {prefix}_HEAD_DIMENSION",
@@ -494,15 +497,21 @@ def main() -> int:
         contract = json.loads(source_path.read_text(encoding="utf-8"))
         validate_contract(variant, contract)
         description = render_flash_model_description(contract) if variant == "flash" else ""
+        b1_description = (
+            render_flash_model_description(contract, 1)
+            if variant == "flash" else "")
         description_sha256 = hashlib.sha256(description.encode("utf-8")).hexdigest()
+        b1_description_sha256 = hashlib.sha256(
+            b1_description.encode("utf-8")).hexdigest()
         outputs = {
-            header_path: render_header(variant, contract, description_sha256),
+            header_path: render_header(
+                variant, contract, description_sha256,
+                b1_description_sha256),
             normalized_path: render_normalized_contract(variant, contract),
         }
         if variant == "flash":
             outputs[FLASH_DESCRIPTION_PATH] = description
-            outputs[FLASH_B1_DESCRIPTION_PATH] = render_flash_model_description(
-                contract, 1)
+            outputs[FLASH_B1_DESCRIPTION_PATH] = b1_description
         for path, content in outputs.items():
             if not write_or_check(path, content, args.check):
                 stale.append(str(path.relative_to(ROOT)))
