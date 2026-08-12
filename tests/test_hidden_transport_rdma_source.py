@@ -92,6 +92,21 @@ release = function_body("SparkHiddenSparkHostRdmaReleasePersistentReceive(")
 assert "cudaEventRecord" in release and "cudaEventQuery" in release
 assert "SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_RETURN" in release
 
+service_completion = function_body(
+    "SparkHiddenSparkHostRdmaServiceCompletionEvent("
+)
+assert "poll(&event_poll,1,0)" in service_completion
+assert service_completion.index("poll(&event_poll,1,0)") < (
+    service_completion.index("ibv_get_cq_event")
+)
+pump_doorbells = function_body("SparkHiddenSparkHostRdmaPumpDoorbells(")
+assert pump_doorbells.count(
+    "SparkHiddenSparkHostRdmaPollCompletionQueues"
+) == 2
+assert pump_doorbells.index(
+    "SparkHiddenSparkHostRdmaPollCompletionQueues"
+) < pump_doorbells.index("SparkHiddenSparkHostRdmaServiceCompletionEvent")
+
 fence = function_body("SparkHiddenSparkHostRdmaFenceSession(")
 assert "__atomic_compare_exchange_n" in fence
 assert "SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_FENCED" in fence
