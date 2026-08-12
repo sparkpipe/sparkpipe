@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <math.h>
@@ -82,7 +83,9 @@ static __device__ __forceinline__ float SparkLmDecodeE8m0(uint32_t byte_value)
 {
 	if ( byte_value == 0xffu )
 		return(0.0f);
-	return(exp2f((float)(int32_t)byte_value - 127.0f));
+	if ( byte_value == 0u )
+		return(__uint_as_float(0x00400000u));
+	return(__uint_as_float(byte_value << 23u));
 }
 
 static __device__ __forceinline__ float SparkLmSigmoid(float value)
@@ -409,6 +412,68 @@ static __device__ __forceinline__ float SparkLmDotRowBf16(const float *shared_in
 	return(accumulator);
 }
 
+typedef union
+{
+	uint32_t bits;
+	__half2 values;
+} SparkLmHalf2Bits;
+
+// Decode full payload words with native packed converts. The scalar GEMV
+// consumes float pairs, but it must not pay one transcendental/table path per
+// weight while the target can widen the packed checkpoint representation.
+static __device__ __forceinline__ void SparkLmDecodeE2m1x8Half2(uint32_t packed, uint32_t decoded[4])
+{
+#if LM_SM121_NATIVE_COMPUTE_PTX
+	asm volatile(
+		"{\n\t"
+		".reg .b8 b0, b1, b2, b3;\n\t"
+		"mov.b32 {b0, b1, b2, b3}, %4;\n\t"
+		"cvt.rn.f16x2.e2m1x2 %0, b0;\n\t"
+		"cvt.rn.f16x2.e2m1x2 %1, b1;\n\t"
+		"cvt.rn.f16x2.e2m1x2 %2, b2;\n\t"
+		"cvt.rn.f16x2.e2m1x2 %3, b3;\n\t"
+		"}"
+		: "=r"(decoded[0]),"=r"(decoded[1]),"=r"(decoded[2]),"=r"(decoded[3])
+		: "r"(packed));
+#else
+	SparkLmHalf2Bits value;
+	uint32_t pair;
+	#pragma unroll
+	for (pair=0u; pair<4u; pair++)
+	{
+		value.values = __floats2half2_rn(SparkLmDecodeE2m1((packed >> (pair * 8u)) & 0x0fu),SparkLmDecodeE2m1((packed >> ((pair * 8u) + 4u)) & 0x0fu));
+		decoded[pair] = value.bits;
+	}
+#endif
+}
+
+static __device__ __forceinline__ void SparkLmDecodeE4m3x4Half2(uint32_t packed, uint32_t decoded[2])
+{
+#if LM_SM121_NATIVE_COMPUTE_PTX
+	uint32_t invalid_high = (((packed & 0x7f7f7f7fu) + 0x01010101u) & 0x80808080u);
+	uint32_t invalid_mask = invalid_high | (invalid_high - (invalid_high >> 7u));
+	packed &= ~invalid_mask;
+	asm volatile(
+		"{\n\t"
+		".reg .b16 lo, hi;\n\t"
+		"mov.b32 {lo, hi}, %2;\n\t"
+		"cvt.rn.f16x2.e4m3x2 %0, lo;\n\t"
+		"cvt.rn.f16x2.e4m3x2 %1, hi;\n\t"
+		"}"
+		: "=r"(decoded[0]),"=r"(decoded[1])
+		: "r"(packed));
+#else
+	SparkLmHalf2Bits value;
+	uint32_t pair;
+	#pragma unroll
+	for (pair=0u; pair<2u; pair++)
+	{
+		value.values = __floats2half2_rn(SparkLmDecodeE4m3((packed >> (pair * 16u)) & 0xffu),SparkLmDecodeE4m3((packed >> ((pair * 16u) + 8u)) & 0xffu));
+		decoded[pair] = value.bits;
+	}
+#endif
+}
+
 // One 4-byte load carries eight E2M1 elements; an eight-element run at an
 // eight-aligned base never crosses a scale group (eight divides every
 // GROUP_SIZE in use), so each run costs one scale decode.
@@ -416,21 +481,60 @@ template <uint32_t GROUP_SIZE>
 static __device__ __forceinline__ float SparkLmDotRowMxfp4(const float *shared_input, const void *weight_payload, const uint8_t *weight_scale_e8m0, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
 {
 	uint64_t run_row = ((uint64_t)neuron * input_dimension) >> 3u,scale_row = (uint64_t)neuron * (input_dimension / GROUP_SIZE);
-	uint32_t run_count = input_dimension >> 3u,run,nibble_pair,packed;
+	uint32_t run_count = input_dimension >> 3u,run,pair,packed,decoded[4];
 	float accumulator = 0.0f,scale_value;
+	float2 values;
+	SparkLmHalf2Bits half2_bits;
 	#pragma unroll 2
 	for (run = lane; run < run_count; run += SPARK_LM_WARP_LANES)
 	{
 		packed = __ldg(((const uint32_t *)weight_payload) + run_row + run);
 		scale_value = SparkLmDecodeE8m0(weight_scale_e8m0[scale_row + ((run << 3u) / GROUP_SIZE)]);
+		SparkLmDecodeE2m1x8Half2(packed,decoded);
 		#pragma unroll
-		for (nibble_pair = 0; nibble_pair < 4u; nibble_pair++)
+		for (pair = 0; pair < 4u; pair++)
 		{
-			accumulator = fmaf(shared_input[(run << 3u) + (nibble_pair << 1u)],SparkLmDecodeE2m1((packed >> (nibble_pair << 3u)) & 0x0fu) * scale_value,accumulator);
-			accumulator = fmaf(shared_input[(run << 3u) + (nibble_pair << 1u) + 1u],SparkLmDecodeE2m1((packed >> ((nibble_pair << 3u) + 4u)) & 0x0fu) * scale_value,accumulator);
+			half2_bits.bits = decoded[pair];
+			values = __half22float2(half2_bits.values);
+			accumulator = fmaf(shared_input[(run << 3u) + (pair << 1u)],values.x * scale_value,accumulator);
+			accumulator = fmaf(shared_input[(run << 3u) + (pair << 1u) + 1u],values.y * scale_value,accumulator);
 		}
 	}
 	return(accumulator);
+}
+
+template <uint32_t GROUP_SIZE>
+static __device__ __forceinline__ void SparkLmDotRowMxfp4Pair(const float *shared_input, const void *first_payload, const uint8_t *first_scale_e8m0, const void *second_payload, const uint8_t *second_scale_e8m0, uint32_t neuron, uint32_t input_dimension, uint32_t lane, float *first_total, float *second_total)
+{
+	uint64_t run_row = ((uint64_t)neuron * input_dimension) >> 3u,scale_row = (uint64_t)neuron * (input_dimension / GROUP_SIZE);
+	uint32_t run_count = input_dimension >> 3u,run,pair,first_packed,second_packed,first_decoded[4],second_decoded[4];
+	float first_value = 0.0f,second_value = 0.0f,first_scale,second_scale;
+	float2 values;
+	SparkLmHalf2Bits half2_bits;
+	#pragma unroll 2
+	for (run=lane; run<run_count; run+=SPARK_LM_WARP_LANES)
+	{
+		first_packed = __ldg(((const uint32_t *)first_payload) + run_row + run);
+		second_packed = __ldg(((const uint32_t *)second_payload) + run_row + run);
+		first_scale = SparkLmDecodeE8m0(first_scale_e8m0[scale_row + ((run << 3u) / GROUP_SIZE)]);
+		second_scale = SparkLmDecodeE8m0(second_scale_e8m0[scale_row + ((run << 3u) / GROUP_SIZE)]);
+		SparkLmDecodeE2m1x8Half2(first_packed,first_decoded);
+		SparkLmDecodeE2m1x8Half2(second_packed,second_decoded);
+		#pragma unroll
+		for (pair=0u; pair<4u; pair++)
+		{
+			half2_bits.bits = first_decoded[pair];
+			values = __half22float2(half2_bits.values);
+			first_value = fmaf(shared_input[(run << 3u) + (pair << 1u)],values.x * first_scale,first_value);
+			first_value = fmaf(shared_input[(run << 3u) + (pair << 1u) + 1u],values.y * first_scale,first_value);
+			half2_bits.bits = second_decoded[pair];
+			values = __half22float2(half2_bits.values);
+			second_value = fmaf(shared_input[(run << 3u) + (pair << 1u)],values.x * second_scale,second_value);
+			second_value = fmaf(shared_input[(run << 3u) + (pair << 1u) + 1u],values.y * second_scale,second_value);
+		}
+	}
+	*first_total = first_value;
+	*second_total = second_value;
 }
 
 // FP8 weights with F32 scales on [BLOCK, BLOCK] 2-D tiles - the MiMo
@@ -459,16 +563,24 @@ template <uint32_t GROUP_SIZE>
 static __device__ __forceinline__ float SparkLmDotRowFp8(const float *shared_input, const void *weight_payload, const uint8_t *weight_scale_e8m0, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
 {
 	uint64_t run_row = ((uint64_t)neuron * input_dimension) >> 2u,scale_row = (uint64_t)neuron * (input_dimension / GROUP_SIZE);
-	uint32_t run_count = input_dimension >> 2u,run,byte_index,packed;
+	uint32_t run_count = input_dimension >> 2u,run,pair,packed,decoded[2];
 	float accumulator = 0.0f,scale_value;
+	float2 values;
+	SparkLmHalf2Bits half2_bits;
 	#pragma unroll 4
 	for (run = lane; run < run_count; run += SPARK_LM_WARP_LANES)
 	{
 		packed = __ldg(((const uint32_t *)weight_payload) + run_row + run);
 		scale_value = SparkLmDecodeE8m0(weight_scale_e8m0[scale_row + ((run << 2u) / GROUP_SIZE)]);
+		SparkLmDecodeE4m3x4Half2(packed,decoded);
 		#pragma unroll
-		for (byte_index = 0; byte_index < 4u; byte_index++)
-			accumulator = fmaf(shared_input[(run << 2u) + byte_index],SparkLmDecodeE4m3((packed >> (byte_index << 3u)) & 0xffu) * scale_value,accumulator);
+		for (pair = 0; pair < 2u; pair++)
+		{
+			half2_bits.bits = decoded[pair];
+			values = __half22float2(half2_bits.values);
+			accumulator = fmaf(shared_input[(run << 2u) + (pair << 1u)],values.x * scale_value,accumulator);
+			accumulator = fmaf(shared_input[(run << 2u) + (pair << 1u) + 1u],values.y * scale_value,accumulator);
+		}
 	}
 	return(accumulator);
 }
@@ -1687,10 +1799,28 @@ static inline cudaError_t SparkLmHostLaunchAdaptiveAttnDecode(cudaStream_t strea
 #define SPARK_LM_SM121_NATIVE_K 32u
 #define SPARK_LM_SM121_NATIVE_WEIGHT_FP8 8u
 #define SPARK_LM_SM121_NATIVE_WEIGHT_MXFP4 4u
+// With one routed row per selected expert, N128 exposes too few independent
+// CTAs. N32 fills W13's 512 columns and N64 fills W2's 4096 columns without
+// padding M to 16; larger decode buckets keep the block-scaled MMA schedule.
+#define SPARK_LM_SM121_B1_EXPERT_W13_TILE_N 32u
+#define SPARK_LM_SM121_B1_EXPERT_W2_TILE_N 64u
+#define SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM 2u
 
 static inline uint32_t SparkLmSm121NativeDecodeShape(uint32_t rows)
 {
 	return(rows == 1u || rows == 8u || rows == 1024u ? 1u : 0u);
+}
+
+static inline uint32_t SparkLmSm121ExpertW13TileN(uint32_t rows)
+{
+	return(rows == 1u ? SPARK_LM_SM121_B1_EXPERT_W13_TILE_N :
+		SPARK_LM_SM121_NATIVE_TILE_N);
+}
+
+static inline uint32_t SparkLmSm121ExpertW2TileN(uint32_t rows)
+{
+	return(rows == 1u ? SPARK_LM_SM121_B1_EXPERT_W2_TILE_N :
+		SPARK_LM_SM121_NATIVE_TILE_N);
 }
 
 static __device__ __forceinline__ uint8_t SparkLmSm121E8m0ScaleCode(float amax)
@@ -1919,6 +2049,43 @@ static __device__ __forceinline__ uint32_t SparkLmSm121GroupOfTile(
 			high = middle;
 	}
 	return(low);
+}
+
+static __device__ __forceinline__ void SparkLmSm121StageB1Activation(
+	const void *input_bf16,
+	uint32_t row,
+	uint32_t row_stride,
+	uint32_t width,
+	float *shared_input)
+{
+	uint32_t element;
+	for (element=threadIdx.x; element<width; element+=blockDim.x)
+		shared_input[element] = SparkLmBf16ToFloat(input_bf16,
+			((uint64_t)row * row_stride) + element);
+	__syncthreads();
+	LmActivationFp8QdqFloatRow<
+		SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0>(shared_input,width);
+	__syncthreads();
+}
+
+template<uint32_t TILE_N>
+static __device__ __forceinline__ void SparkLmSm121B1ExpertTask(
+	const uint32_t *group_row_offset,
+	const uint32_t *group_tile_prefix,
+	uint32_t group_count,
+	uint32_t output_dimension,
+	uint32_t task,
+	uint32_t *group,
+	uint32_t *row,
+	uint32_t *neuron_base)
+{
+	uint32_t in_group,neuron_tiles;
+	*group = SparkLmSm121GroupOfTile(group_tile_prefix,group_count,task);
+	in_group = task - __ldg(group_tile_prefix + *group);
+	neuron_tiles = output_dimension / TILE_N;
+	*row = __ldg(group_row_offset + *group) +
+		(in_group / neuron_tiles) * SPARK_LM_SM121_NATIVE_TILE_M;
+	*neuron_base = (in_group % neuron_tiles) * TILE_N;
 }
 
 template<uint32_t TILE_M,uint32_t WEIGHT_BITS>
@@ -2187,6 +2354,203 @@ void SparkLmSm121FusedExpertW13Kernel(
 	}
 }
 
+template<uint32_t TILE_N>
+static __device__ __forceinline__ void SparkLmSm121B1ExpertW13Task(
+	const uint8_t *w1_payload,
+	const uint8_t *w1_scale_e8m0,
+	const uint8_t *w3_payload,
+	const uint8_t *w3_scale_e8m0,
+	const void *input_bf16,
+	const uint32_t *source_row_map,
+	void *activated_bf16,
+	uint32_t source_row_count,
+	uint32_t group,
+	uint32_t row,
+	uint32_t neuron_base,
+	uint32_t input_dimension,
+	uint32_t output_dimension,
+	float limit,
+	float *shared_input)
+{
+	uint64_t payload_stride = (uint64_t)output_dimension * input_dimension / 2u;
+	uint64_t scale_stride = (uint64_t)output_dimension * (input_dimension / 32u);
+	const uint8_t *group_w1 = w1_payload + ((uint64_t)group * payload_stride);
+	const uint8_t *group_w3 = w3_payload + ((uint64_t)group * payload_stride);
+	const uint8_t *group_s1 = w1_scale_e8m0 + ((uint64_t)group * scale_stride);
+	const uint8_t *group_s3 = w3_scale_e8m0 + ((uint64_t)group * scale_stride);
+	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
+	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	uint32_t source_row = __ldg(source_row_map + row),neuron;
+	float gate,up;
+	if ( source_row >= source_row_count )
+		asm volatile("trap;\n");
+	SparkLmSm121StageB1Activation(input_bf16,source_row,input_dimension,
+		input_dimension,shared_input);
+	for (neuron=neuron_base + warp; neuron<neuron_base + TILE_N;
+		neuron+=SPARK_LM_CTA_WARPS)
+	{
+		SparkLmDotRowMxfp4Pair<32u>(shared_input,group_w1,group_s1,group_w3,
+			group_s3,neuron,input_dimension,lane,&gate,&up);
+		gate = SparkLmWarpReduceSum(gate);
+		up = SparkLmWarpReduceSum(up);
+		if ( lane == 0u )
+		{
+			gate = SparkLmSm121Bf16Round(gate);
+			up = SparkLmSm121Bf16Round(up);
+			gate = gate > limit ? limit : gate;
+			up = up > limit ? limit : (up < -limit ? -limit : up);
+			SparkLmFloatToBf16(activated_bf16,
+				((uint64_t)row * output_dimension) + neuron,
+				SparkLmSwish(gate) * up);
+		}
+	}
+	__syncthreads();
+}
+
+template<uint32_t TILE_N>
+static __global__ __launch_bounds__(SPARK_LM_CTA_THREADS,1)
+void SparkLmSm121B1ExpertW13Kernel(
+	const uint8_t *w1_payload,
+	const uint8_t *w1_scale_e8m0,
+	const uint8_t *w3_payload,
+	const uint8_t *w3_scale_e8m0,
+	const void *input_bf16,
+	const uint32_t *source_row_map,
+	const uint32_t *group_row_offset,
+	const uint32_t *group_tile_prefix,
+	void *activated_bf16,
+	uint32_t source_row_count,
+	uint32_t group_count,
+	uint32_t input_dimension,
+	uint32_t output_dimension,
+	float limit)
+{
+	extern __shared__ float shared_input[];
+	uint32_t task,group,row,neuron_base;
+	uint32_t total_tasks = __ldg(group_tile_prefix + group_count);
+	for (task=blockIdx.x; task<total_tasks; task+=gridDim.x)
+	{
+		SparkLmSm121B1ExpertTask<TILE_N>(group_row_offset,group_tile_prefix,
+			group_count,output_dimension,task,&group,&row,&neuron_base);
+		if ( row >= __ldg(group_row_offset + group + 1u) )
+			asm volatile("trap;\n");
+		SparkLmSm121B1ExpertW13Task<TILE_N>(w1_payload,w1_scale_e8m0,
+			w3_payload,w3_scale_e8m0,input_bf16,source_row_map,
+			activated_bf16,source_row_count,group,row,neuron_base,
+			input_dimension,output_dimension,limit,shared_input);
+	}
+}
+
+template<uint32_t TILE_N>
+static __device__ __forceinline__ void SparkLmSm121B1ExpertW2Task(
+	const uint8_t *weight_payload,
+	const uint8_t *weight_scale_e8m0,
+	const void *input_bf16,
+	void *output_bf16,
+	uint32_t group,
+	uint32_t row,
+	uint32_t neuron_base,
+	uint32_t input_dimension,
+	uint32_t output_dimension,
+	float *shared_input)
+{
+	uint64_t payload_stride = (uint64_t)output_dimension * input_dimension / 2u;
+	uint64_t scale_stride = (uint64_t)output_dimension * (input_dimension / 32u);
+	const uint8_t *group_payload = weight_payload + ((uint64_t)group * payload_stride);
+	const uint8_t *group_scale = weight_scale_e8m0 + ((uint64_t)group * scale_stride);
+	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
+	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	uint32_t neuron;
+	float value;
+	SparkLmSm121StageB1Activation(input_bf16,row,input_dimension,input_dimension,
+		shared_input);
+	for (neuron=neuron_base + warp; neuron<neuron_base + TILE_N;
+		neuron+=SPARK_LM_CTA_WARPS)
+	{
+		value = SparkLmDotRowMxfp4<32u>(shared_input,group_payload,group_scale,
+			neuron,input_dimension,lane);
+		value = SparkLmWarpReduceSum(value);
+		if ( lane == 0u )
+			SparkLmFloatToBf16(output_bf16,
+				((uint64_t)row * output_dimension) + neuron,value);
+	}
+	__syncthreads();
+}
+
+template<uint32_t TILE_N>
+static __global__ __launch_bounds__(SPARK_LM_CTA_THREADS,1)
+void SparkLmSm121B1ExpertW2Kernel(
+	const uint8_t *weight_payload,
+	const uint8_t *weight_scale_e8m0,
+	const void *input_bf16,
+	const uint32_t *group_row_offset,
+	const uint32_t *group_tile_prefix,
+	void *output_bf16,
+	uint32_t group_count,
+	uint32_t input_dimension,
+	uint32_t output_dimension)
+{
+	extern __shared__ float shared_input[];
+	uint32_t task,group,row,neuron_base;
+	uint32_t total_tasks = __ldg(group_tile_prefix + group_count);
+	for (task=blockIdx.x; task<total_tasks; task+=gridDim.x)
+	{
+		SparkLmSm121B1ExpertTask<TILE_N>(group_row_offset,group_tile_prefix,
+			group_count,output_dimension,task,&group,&row,&neuron_base);
+		if ( row >= __ldg(group_row_offset + group + 1u) )
+			asm volatile("trap;\n");
+		SparkLmSm121B1ExpertW2Task<TILE_N>(weight_payload,weight_scale_e8m0,
+			input_bf16,output_bf16,group,row,neuron_base,input_dimension,
+			output_dimension,shared_input);
+	}
+}
+
+template<uint32_t WEIGHT_BITS>
+static __global__ void SparkLmSm121FusedDenseW13GemvKernel(
+	const uint8_t *w1_payload,
+	const uint8_t *w1_scale_e8m0,
+	const uint8_t *w3_payload,
+	const uint8_t *w3_scale_e8m0,
+	const void *input_bf16,
+	void *activated_bf16,
+	uint32_t input_dimension,
+	uint32_t output_dimension,
+	float limit)
+{
+	extern __shared__ float shared_input[];
+	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
+	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	uint32_t neuron = blockIdx.x * SPARK_LM_CTA_WARPS + warp,element;
+	float gate,up;
+	for (element=threadIdx.x; element<input_dimension; element+=blockDim.x)
+		shared_input[element] = SparkLmBf16ToFloat(input_bf16,element);
+	__syncthreads();
+	LmActivationFp8QdqFloatRow<SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0>(shared_input,input_dimension);
+	__syncthreads();
+	if ( neuron >= output_dimension )
+		return;
+	if constexpr ( WEIGHT_BITS == SPARK_LM_SM121_NATIVE_WEIGHT_FP8 )
+	{
+		gate = SparkLmDotRowFp8<128u>(shared_input,w1_payload,w1_scale_e8m0,neuron,input_dimension,lane);
+		up = SparkLmDotRowFp8<128u>(shared_input,w3_payload,w3_scale_e8m0,neuron,input_dimension,lane);
+	}
+	else
+	{
+		gate = SparkLmDotRowMxfp4<32u>(shared_input,w1_payload,w1_scale_e8m0,neuron,input_dimension,lane);
+		up = SparkLmDotRowMxfp4<32u>(shared_input,w3_payload,w3_scale_e8m0,neuron,input_dimension,lane);
+	}
+	gate = SparkLmWarpReduceSum(gate);
+	up = SparkLmWarpReduceSum(up);
+	if ( lane == 0u )
+	{
+		gate = SparkLmSm121Bf16Round(gate);
+		up = SparkLmSm121Bf16Round(up);
+		gate = gate > limit ? limit : gate;
+		up = up > limit ? limit : (up < -limit ? -limit : up);
+		SparkLmFloatToBf16(activated_bf16,neuron,SparkLmSwish(gate) * up);
+	}
+}
+
 template<uint32_t TILE_M>
 static __global__ __launch_bounds__(SPARK_LM_CTA_THREADS,1)
 void SparkLmSm121ExpertW2Kernel(
@@ -2348,6 +2712,15 @@ static inline cudaError_t SparkLmHostLaunchSm121FusedDenseW13(
 		output_dimension == 0u ||
 		output_dimension % SPARK_LM_SM121_NATIVE_TILE_N != 0u || limit <= 0.0f )
 		return(cudaErrorInvalidValue);
+	if ( row_count == 1u )
+	{
+		SparkLmSm121FusedDenseW13GemvKernel<WEIGHT_BITS>
+			<<<((output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS),SPARK_LM_CTA_THREADS,input_dimension * sizeof(float),stream>>>(
+				(const uint8_t *)w1_payload,w1_scale_e8m0,
+				(const uint8_t *)w3_payload,w3_scale_e8m0,input_bf16,
+				activated_bf16,input_dimension,output_dimension,limit);
+		return(cudaGetLastError());
+	}
 	dim3 grid((row_count + SPARK_LM_SM121_NATIVE_TILE_M - 1u) /
 		SPARK_LM_SM121_NATIVE_TILE_M,
 		output_dimension / SPARK_LM_SM121_NATIVE_TILE_N);
@@ -2378,6 +2751,7 @@ static inline cudaError_t SparkLmHostLaunchSm121FusedExpertW13(
 	float limit,
 	uint32_t multiprocessor_count)
 {
+	uint32_t block_count;
 	if ( w1_payload == 0 || w1_scale_e8m0 == 0 || w3_payload == 0 ||
 		w3_scale_e8m0 == 0 || input_bf16 == 0 || source_row_map == 0 ||
 		group_row_offset == 0 || group_tile_prefix == 0 ||
@@ -2385,8 +2759,24 @@ static inline cudaError_t SparkLmHostLaunchSm121FusedExpertW13(
 		top_k == 0u || group_count == 0u || input_dimension % 128u != 0u ||
 		output_dimension == 0u ||
 		output_dimension % SPARK_LM_SM121_NATIVE_TILE_N != 0u ||
-		limit <= 0.0f || multiprocessor_count == 0u )
+		limit <= 0.0f || multiprocessor_count == 0u ||
+		multiprocessor_count > UINT32_MAX /
+			SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM )
 		return(cudaErrorInvalidValue);
+	if ( rows == 1u )
+	{
+		block_count = multiprocessor_count *
+			SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM;
+		SparkLmSm121B1ExpertW13Kernel<SPARK_LM_SM121_B1_EXPERT_W13_TILE_N>
+			<<<block_count,SPARK_LM_CTA_THREADS,
+				input_dimension * sizeof(float),stream>>>(
+				(const uint8_t *)w1_payload,w1_scale_e8m0,
+				(const uint8_t *)w3_payload,w3_scale_e8m0,input_bf16,
+				source_row_map,group_row_offset,group_tile_prefix,
+				activated_bf16,rows,group_count,input_dimension,
+				output_dimension,limit);
+		return(cudaGetLastError());
+	}
 	if ( rows == 1024u )
 		SparkLmSm121FusedExpertW13Kernel<SPARK_LM_SM121_NATIVE_WIDE_TILE_M>
 			<<<multiprocessor_count,SPARK_LM_CTA_THREADS,0,stream>>>(
@@ -2419,15 +2809,29 @@ static inline cudaError_t SparkLmHostLaunchSm121ExpertW2(
 	uint32_t output_dimension,
 	uint32_t multiprocessor_count)
 {
+	uint32_t block_count,packed_rows;
 	if ( weight_payload == 0 || weight_scale_e8m0 == 0 || input_bf16 == 0 ||
 		group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 ||
 		SparkLmSm121NativeDecodeShape(rows) == 0u || top_k == 0u ||
 		rows > UINT32_MAX / top_k || group_count == 0u ||
 		input_dimension % 128u != 0u || output_dimension == 0u ||
 		output_dimension % SPARK_LM_SM121_NATIVE_TILE_N != 0u ||
-		multiprocessor_count == 0u )
+		multiprocessor_count == 0u || multiprocessor_count > UINT32_MAX /
+			SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM )
 		return(cudaErrorInvalidValue);
-	uint32_t packed_rows = rows * top_k;
+	packed_rows = rows * top_k;
+	if ( rows == 1u )
+	{
+		block_count = multiprocessor_count *
+			SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM;
+		SparkLmSm121B1ExpertW2Kernel<SPARK_LM_SM121_B1_EXPERT_W2_TILE_N>
+			<<<block_count,SPARK_LM_CTA_THREADS,
+				input_dimension * sizeof(float),stream>>>(
+				(const uint8_t *)weight_payload,weight_scale_e8m0,input_bf16,
+				group_row_offset,group_tile_prefix,output_bf16,group_count,
+				input_dimension,output_dimension);
+		return(cudaGetLastError());
+	}
 	if ( rows == 1024u )
 		SparkLmSm121ExpertW2Kernel<SPARK_LM_SM121_NATIVE_WIDE_TILE_M>
 			<<<multiprocessor_count,SPARK_LM_CTA_THREADS,0,stream>>>(

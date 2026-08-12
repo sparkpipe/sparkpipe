@@ -156,7 +156,8 @@ static int32_t LmRouteBuild(
 	uint32_t *route_source_token,
 	uint32_t output_dimension_up,
 	uint32_t output_dimension_down,
-	uint32_t tile_n,
+	uint32_t tile_n_up,
+	uint32_t tile_n_down,
 	uint32_t *tile_prefix_up,
 	uint32_t *tile_prefix_down,
 	cudaStream_t stream)
@@ -170,14 +171,15 @@ static int32_t LmRouteBuild(
 		rows > UINT32_MAX / top_k || group_row_offset == 0 ||
 		route_packed_row == 0 || route_source_token == 0 ||
 		output_dimension_up == 0u || output_dimension_down == 0u ||
-		tile_n == 0u || tile_prefix_up == 0 || tile_prefix_down == 0 )
+		tile_n_up == 0u || tile_n_down == 0u ||
+		tile_prefix_up == 0 || tile_prefix_down == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	expected_packed_rows = rows * top_k;
 	if ( packed_rows != expected_packed_rows )
 		return(LM_LAUNCH_ERR_SHAPE);
 	tile_m = LmLaunchGroupedTileM(rows,top_k,EXPERTS);
-	neuron_tiles_up = (output_dimension_up + tile_n - 1u) / tile_n;
-	neuron_tiles_down = (output_dimension_down + tile_n - 1u) / tile_n;
+	neuron_tiles_up = (output_dimension_up + tile_n_up - 1u) / tile_n_up;
+	neuron_tiles_down = (output_dimension_down + tile_n_down - 1u) / tile_n_down;
 	LM_LAUNCH((LmRouteBuildKernel<THREADS,EXPERTS>), 1u, THREADS, 0, stream,
 		route_expert,packed_rows,top_k,group_row_offset,route_packed_row,
 		route_source_token,tile_m,neuron_tiles_up,tile_prefix_up,
@@ -185,4 +187,26 @@ static int32_t LmRouteBuild(
 	return(cudaPeekAtLastError() == cudaSuccess
 		? LM_LAUNCH_OK
 		: LM_LAUNCH_ERR_LAUNCH);
+}
+
+template<uint32_t THREADS, uint32_t EXPERTS>
+static int32_t LmRouteBuild(
+	const uint32_t *route_expert,
+	uint32_t rows,
+	uint32_t packed_rows,
+	uint32_t top_k,
+	uint32_t *group_row_offset,
+	uint32_t *route_packed_row,
+	uint32_t *route_source_token,
+	uint32_t output_dimension_up,
+	uint32_t output_dimension_down,
+	uint32_t tile_n,
+	uint32_t *tile_prefix_up,
+	uint32_t *tile_prefix_down,
+	cudaStream_t stream)
+{
+	return(LmRouteBuild<THREADS,EXPERTS>(route_expert,rows,packed_rows,top_k,
+		group_row_offset,route_packed_row,route_source_token,
+		output_dimension_up,output_dimension_down,tile_n,tile_n,
+		tile_prefix_up,tile_prefix_down,stream));
 }

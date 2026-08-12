@@ -11,7 +11,6 @@
 #include <stdio.h>
 
 #define SPARK_DSV4_ROUTER_SORT_CAPACITY 512u
-#define SPARK_DSV4_EXPERT_TILE_N 128u
 #define SPARK_DSV4_EXPERT_STAGES 4u
 #define SPARK_DSV4_EXPERT_WARPS 8u
 
@@ -1758,7 +1757,7 @@ static cudaError_t SparkDsv4GemmStatus(const char *site, int32_t status)
 
 extern "C" cudaError_t SparkDsv4LaunchMoeRoute(cudaStream_t stream, const uint32_t *route_expert, uint32_t rows, uint32_t expert_width, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2)
 {
-	return(SparkDsv4GemmStatus("route",LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,expert_width,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_EXPERT_TILE_N,group_tile_prefix_w1,group_tile_prefix_w2,stream)));
+	return(SparkDsv4GemmStatus("route",LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,expert_width,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SparkLmSm121ExpertW13TileN(rows),SparkLmSm121ExpertW2TileN(rows),group_tile_prefix_w1,group_tile_prefix_w2,stream)));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchExpertUp(cudaStream_t stream, const SparkDsv4LinearView *stacked, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t multiprocessor_count)
