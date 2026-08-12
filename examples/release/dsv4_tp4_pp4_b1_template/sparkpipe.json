@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "generation": 1,
+  "release_id": "dsv4-tp4-pp4-b1-template",
+  "git_commit": "0000000000000000000000000000000000000000",
+  "install_root": "/home/{host}/sparkdata/dsv4_flash.fp8.tp4_pp4.b1",
+  "state_root": "/home/{host}/sparkdata/.layout/sparkpipe_state/dsv4_flash.fp8.tp4_pp4.b1",
+  "rank_count": 16,
+  "max_active_sequence_count": 1,
+  "poll_interval_ms": 1000,
+  "stop_grace_ms": 5000,
+  "files": [
+    {
+      "path": "bin/sparkpipe_model_residentd",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "executable": true,
+      "resident_reload_boundary": true
+    },
+    {
+      "path": "bin/sparkpipe_release_manager",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "executable": true
+    },
+    {
+      "path": "lib/model_serving_adapter.so",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "resident_reload_boundary": true
+    },
+    {
+      "path": "lib/model_driver.so",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "resident_reload_boundary": true
+    },
+    {
+      "path": "lib/hidden_transport.so",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "path": "config/model_resident.json",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "restart_on_change": true
+    },
+    {
+      "path": "config/dsv4_flash_tp4_pp4_stage.json",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "restart_on_change": true
+    },
+    {
+      "path": "packs/dsv4_flash_tp4_pp4_stage.spstage",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "resident_reload_boundary": true
+    }
+  ],
+  "roles": [
+    {
+      "name": "model_resident",
+      "selector": "rank",
+      "command": "bin/sparkpipe_model_residentd",
+      "argv": [
+        "--deployment",
+        "{install_root}/config/model_resident.json",
+        "--rank-index",
+        "{rank}"
+      ],
+      "env": [
+        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs"
+      ]
+    }
+  ]
+}

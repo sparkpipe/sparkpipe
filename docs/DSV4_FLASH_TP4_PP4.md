@@ -126,6 +126,12 @@ spec is `examples/deployments/dsv4_flash_tp4_pp4_host_rdma.spec.json`.  Replace
 the example host names and port bases with the installed fleet values before
 generating a deployment.
 
+The exact-width B1 correctness release uses
+`examples/deployments/dsv4_flash_tp4_pp4_b1_host_rdma.spec.json` and
+`examples/release/dsv4_tp4_pp4_b1_template/sparkpipe.json`. It retains one
+physical KV page and 32 logical page-table entries, enough to lazily advance a
+single 4,096-position sequence without dense KV preallocation.
+
 The source/host reconstruction prewarms and seals the stage-local graphs, but
 CUDA 13 capture/instantiate/replay acceptance on SM121 has not been observed
 in this archive.  Live compilation, graph replay against the GA fixture, and
