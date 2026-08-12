@@ -3,11 +3,12 @@
 
 This test deliberately does not claim numerical or hardware qualification.  It
 checks the properties that can be proved without a CUDA toolkit/GPU: the exact
-PTX atom is reachable from the production launchers; DSV4 admits only the three
-qualified shapes; W13 shares one activation stage and owns both BF16 rounding
-boundaries; W2 never routes through the BF16-dequant weight-only GEMM; strided
-stores keep the full row stride.  tests/test_ptx_capability_gate.py separately
-assembles the exact PTX forms when ptxas is installed.
+PTX atoms and packed conversion instructions are reachable from the production
+launchers; DSV4 admits only the three qualified shapes; B1 has exact-width
+expert tiles while B8/B1024 retain tensor-core routes; W13 owns both BF16
+rounding boundaries; W2 never routes through the BF16-dequant weight-only GEMM;
+strided stores keep the full row stride. tests/test_ptx_capability_gate.py
+separately assembles the exact PTX forms when ptxas is installed.
 """
 
 from pathlib import Path
@@ -19,6 +20,7 @@ COMMON = ROOT / "model-families/common/include/sparkpipe/spark_lm_kernels.cuh"
 DSV4 = ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu"
 MODULE = ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c"
 MMA = ROOT / "inference/kernels/mma.cuh"
+ROUTE = ROOT / "inference/kernels/route.cuh"
 
 
 def body(source: str, name: str) -> str:
@@ -52,6 +54,7 @@ def main() -> int:
     dsv4 = DSV4.read_text(encoding="utf-8")
     module = MODULE.read_text(encoding="utf-8")
     mma = MMA.read_text(encoding="utf-8")
+    route = ROUTE.read_text(encoding="utf-8")
 
     require(mma, "defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 1210)",
             "SM121-only device gate")
@@ -61,6 +64,10 @@ def main() -> int:
     require(mma, ".f32.e4m3.e4m3.f32.ue8m0", "MXFP8 x MXFP8 atom")
     for name in ("LmMmaMxf8Mxf4", "LmMmaMxf8Mxf8"):
         require(body(mma, name), 'asm volatile("trap;', f"{name} fail-closed trap")
+    require(body(common, "SparkLmDecodeE2m1x8Half2"),
+            "cvt.rn.f16x2.e2m1x2", "packed E2M1 conversion")
+    require(body(common, "SparkLmDecodeE4m3x4Half2"),
+            "cvt.rn.f16x2.e4m3x2", "packed E4M3 conversion")
 
     shape = body(common, "SparkLmSm121NativeDecodeShape")
     require(shape, "rows == 1u || rows == 8u || rows == 1024u", "exact decode buckets")
@@ -68,6 +75,14 @@ def main() -> int:
     require(dsv4, "SparkDsv4RequireNativeDecodeShape(rows)", "MoE shape gate")
     require(dsv4, "properties.major != 12", "runtime major check")
     require(dsv4, "properties.minor != 1", "runtime minor check")
+    route_build = body(route, "LmRouteBuild")
+    require(route_build, "tile_n_up", "independent W13 route tile")
+    require(route_build, "tile_n_down", "independent W2 route tile")
+    route_launch = body(dsv4, "SparkDsv4LaunchMoeRoute")
+    require(route_launch, "SparkLmSm121ExpertW13TileN(rows)",
+            "shared W13 tile policy")
+    require(route_launch, "SparkLmSm121ExpertW2TileN(rows)",
+            "shared W2 tile policy")
 
     fused = body(common, "SparkLmSm121FusedExpertW13Kernel")
     if fused.count("SparkLmSm121StageMxf8<TILE_M>(") != 1:
@@ -85,6 +100,17 @@ def main() -> int:
     require(fused, "up < -limit ? -limit : up", "two-sided up clamp")
     forbid(fused, "SparkLmDecodeE2m1", "software MXFP4 decode")
     forbid(fused, "LmMmaBf16", "BF16 MMA fallback")
+
+    b1_fused = body(common, "SparkLmSm121B1ExpertW13Task")
+    require(b1_fused, "SparkLmDotRowMxfp4Pair<32u>",
+            "B1 interleaved packed W1/W3 GEMV")
+    if b1_fused.count("SparkLmSm121Bf16Round(") != 2:
+        raise AssertionError("B1 expert W13 must BF16-round both projections")
+    b1_clamp = b1_fused.index("gate = gate > limit ? limit : gate")
+    if not (b1_fused.index("gate = SparkLmSm121Bf16Round") < b1_clamp and
+            b1_fused.index("up = SparkLmSm121Bf16Round") < b1_clamp <
+            b1_fused.index("SparkLmSwish(gate) * up")):
+        raise AssertionError("B1 W13 lost the BF16/clamp/SwiGLU boundary")
 
     shared = body(common, "SparkLmSm121FusedDenseW13Kernel")
     if shared.count("SparkLmSm121StageMxf8<TILE_M>(") != 1:
@@ -116,6 +142,8 @@ def main() -> int:
             "E2M1 central-bit PTX byte packing")
     forbid(w2, "SparkLmDecodeE2m1", "software W2 dequant")
     forbid(w2, "LmMmaBf16", "BF16 W2 MMA")
+    require(body(common, "SparkLmSm121B1ExpertW2Task"),
+            "SparkLmDotRowMxfp4<32u>", "B1 packed W2 GEMV")
 
     strided = body(common, "SparkLmSm121NativeLinearKernel")
     require(strided, "(uint64_t)row * output_row_stride + output_offset +",
@@ -158,6 +186,11 @@ def main() -> int:
     require(w2_host, "if ( rows == 1024u )", "B1024 routed W2 M64 tile")
     require(w2_host, "SPARK_LM_SM121_NATIVE_WIDE_TILE_M",
             "wide routed W2 specialization")
+    require(expert_host, "if ( rows == 1u )", "true-B1 routed W13 dispatch")
+    require(expert_host, "SPARK_LM_SM121_B1_EXPERT_W13_TILE_N",
+            "B1 W13 N32 tile")
+    require(w2_host, "if ( rows == 1u )", "true-B1 routed W2 dispatch")
+    require(w2_host, "SPARK_LM_SM121_B1_EXPERT_W2_TILE_N", "B1 W2 N64 tile")
 
     up = body(dsv4, "SparkDsv4LaunchExpertUp")
     require(up, "return(cudaErrorInvalidValue);", "retired split-up fail closed")
@@ -175,6 +208,13 @@ def main() -> int:
     require(dense_dispatch, "if ( row_count == 1u )", "true-B1 dispatch")
     require(dense_dispatch, "SparkLmHostLaunchBatchedLinear", "B1 GEMV route")
     require(dense_dispatch, "SparkLmHostLaunchSm121NativeLinear", "B8/B1024 native route")
+    dense_w13_dispatch = body(common, "SparkLmHostLaunchSm121FusedDenseW13")
+    require(dense_w13_dispatch, "if ( row_count == 1u )",
+            "true-B1 shared W13 dispatch")
+    require(dense_w13_dispatch, "SparkLmSm121FusedDenseW13GemvKernel",
+            "B1 shared W13 GEMV")
+    require(dense_w13_dispatch, "SparkLmSm121FusedDenseW13Kernel",
+            "B8/B1024 shared W13 tensor route")
     strided_launch = body(dsv4, "SparkDsv4LaunchStridedLinear")
     require(strided_launch, "SparkLmHostLaunchSm121StridedDecodeLinear",
             "shape-aware strided route")
