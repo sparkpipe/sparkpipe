@@ -97,6 +97,8 @@ def main() -> int:
     assert tp4_pp4_stage["tp_collective"]["backend"] == "nccl"
     assert tp4_pp4_stage["tp_collective"]["backend_module_path"] == (
         "lib/runtime_libs/libnccl.so.2")
+    assert tp4_pp4_stage["tp_collective"]["peer_hosts"] == [
+        f"spark{index:x}-mgmt" for index in range(16)]
     for release_template in ("dsv4_tp4_pp4_b1_template",
                              "dsv4_tp16_b1_template"):
         release = json.loads(
