@@ -928,7 +928,8 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
                         connect_poll.events = POLLOUT;
                         poll_result = poll(&connect_poll,1,
                             SparkHiddenSparkHostRdmaDeadlinePollMilliseconds(
-                                state->open_deadline_ns,0u));
+                                state->open_deadline_ns,
+                                SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS));
                         socket_error = 0;
                         socket_error_bytes = sizeof(socket_error);
                         if (poll_result > 0 &&

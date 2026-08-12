@@ -37,6 +37,9 @@ assert "SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT" in initialize
 assert "endpoint->reserved0" in initialize
 assert "SparkHiddenTransportRdmaControlDeadlineNs" in initialize
 
+connect = function_body("SparkHiddenSparkHostRdmaConnectControl(")
+assert connect.count("SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS") == 3
+
 hello = function_body("SparkHiddenSparkHostRdmaExchangeCompatibilityHello(")
 for identity_field in (
     "transport_module_id", "route_name", "source_host", "sink_host",
