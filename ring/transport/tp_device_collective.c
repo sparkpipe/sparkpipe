@@ -233,6 +233,8 @@ static SparkStatus SparkTpDeviceCollectiveValidateBindings(
         if (binding->step_index >= step_count ||
             binding->credit_index >= credit_count ||
             binding->send_device == 0 || binding->receive_device == 0 ||
+            binding->send_transport == 0 ||
+            binding->receive_transport == 0 ||
             seen[binding->step_index][binding->credit_index] != 0u)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -533,7 +535,7 @@ static SparkStatus SparkTpDeviceCollectiveBuildOperationPackets(
     SparkStatus status;
 
     binding = &implementation->bindings[step_index][operation->credit_index];
-    status = SparkTpDeviceCollectiveBuildPacket(binding->send_device,
+    status = SparkTpDeviceCollectiveBuildPacket(binding->send_transport,
         operation->active_sequence_count,
         implementation->step_hidden_dimensions[step_index],
         operation->ordinal,step_index,operation->cuda_stream,
@@ -542,7 +544,7 @@ static SparkStatus SparkTpDeviceCollectiveBuildOperationPackets(
     {
         return status;
     }
-    return SparkTpDeviceCollectiveBuildPacket(binding->receive_device,
+    return SparkTpDeviceCollectiveBuildPacket(binding->receive_transport,
         operation->active_sequence_count,
         implementation->step_hidden_dimensions[step_index],
         operation->ordinal,step_index,operation->cuda_stream,
@@ -569,6 +571,7 @@ static SparkStatus SparkTpDeviceCollectiveCopyRows(
     uint64_t source_pitch,
     uint64_t width,
     uint32_t rows,
+    cudaMemcpyKind copy_kind,
     void *cuda_stream)
 {
     if (destination == 0 || source == 0 || destination_pitch < width ||
@@ -580,14 +583,57 @@ static SparkStatus SparkTpDeviceCollectiveCopyRows(
     }
     return SparkTpDeviceCollectiveCudaStatus(cudaMemcpy2DAsync(
         destination,(size_t)destination_pitch,source,(size_t)source_pitch,
-        (size_t)width,(size_t)rows,cudaMemcpyDeviceToDevice,
+        (size_t)width,(size_t)rows,copy_kind,
         (cudaStream_t)cuda_stream));
+}
+
+static SparkStatus SparkTpDeviceCollectiveStageSend(
+    const SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveCreditBinding *binding,
+    uint64_t pitch,
+    uint64_t width,
+    uint32_t rows,
+    void *cuda_stream)
+{
+    cudaMemcpyKind copy_kind;
+
+    if (binding->send_device == binding->send_transport)
+    {
+        return SPARK_STATUS_OK;
+    }
+    copy_kind = collective->memory_mode ==
+        SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
+        cudaMemcpyDeviceToHost : cudaMemcpyDeviceToDevice;
+    return SparkTpDeviceCollectiveCopyRows(binding->send_transport,pitch,
+        binding->send_device,pitch,width,rows,copy_kind,cuda_stream);
+}
+
+static SparkStatus SparkTpDeviceCollectiveStageReceive(
+    const SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveCreditBinding *binding,
+    uint64_t pitch,
+    uint64_t width,
+    uint32_t rows,
+    void *cuda_stream)
+{
+    cudaMemcpyKind copy_kind;
+
+    if (binding->receive_device == binding->receive_transport)
+    {
+        return SPARK_STATUS_OK;
+    }
+    copy_kind = collective->memory_mode ==
+        SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
+        cudaMemcpyHostToDevice : cudaMemcpyDeviceToDevice;
+    return SparkTpDeviceCollectiveCopyRows(binding->receive_device,pitch,
+        binding->receive_transport,pitch,width,rows,copy_kind,cuda_stream);
 }
 
 static SparkStatus SparkTpDeviceCollectiveEnqueueLocalPlacement(
     SparkTpDeviceCollectiveImplementation *implementation,
     SparkTpDeviceCollectiveOperation *operation)
 {
+    const SparkTpDeviceCollectiveCreditBinding *binding;
     uint64_t full_pitch;
     uint64_t local_bytes;
     uint64_t rank_offset;
@@ -613,17 +659,26 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueLocalPlacement(
         status = SparkTpDeviceCollectiveCopyRows(
             (uint8_t *)operation->full_device + rank_offset,full_pitch,
             operation->local_device,local_bytes,local_bytes,
-            operation->active_sequence_count,operation->cuda_stream);
+            operation->active_sequence_count,cudaMemcpyDeviceToDevice,
+            operation->cuda_stream);
     }
     if (status != SPARK_STATUS_OK || implementation->collective->step_count == 0u)
     {
         return status;
     }
-    return SparkTpDeviceCollectiveCopyRows(
-        implementation->bindings[0u][operation->credit_index].send_device,
+    binding = &implementation->bindings[0u][operation->credit_index];
+    status = SparkTpDeviceCollectiveCopyRows(binding->send_device,
         local_bytes,
         (const uint8_t *)operation->full_device + rank_offset,full_pitch,
-        local_bytes,operation->active_sequence_count,operation->cuda_stream);
+        local_bytes,operation->active_sequence_count,
+        cudaMemcpyDeviceToDevice,operation->cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkTpDeviceCollectiveStageSend(implementation->collective,
+        binding,local_bytes,local_bytes,operation->active_sequence_count,
+        operation->cuda_stream);
 }
 
 static uint32_t SparkTpDeviceCollectiveBlockBase(
@@ -657,6 +712,16 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueReceiveConsumption(
         [operation->credit_index];
     local_bytes = (uint64_t)implementation->collective->local_hidden_dimension *
         SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
+    step_bytes = implementation->collective->operation_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 ?
+        local_bytes : local_bytes << operation->current_step;
+    status = SparkTpDeviceCollectiveStageReceive(
+        implementation->collective,binding,step_bytes,step_bytes,
+        operation->active_sequence_count,operation->cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     if (implementation->collective->operation_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16)
     {
@@ -669,13 +734,13 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueReceiveConsumption(
     else
     {
         full_pitch = local_bytes * implementation->collective->tp_degree;
-        step_bytes = local_bytes << operation->current_step;
         destination_offset = local_bytes * SparkTpDeviceCollectiveBlockBase(
             implementation->collective,operation->current_step,1u);
         status = SparkTpDeviceCollectiveCopyRows(
             (uint8_t *)operation->full_device + destination_offset,full_pitch,
             binding->receive_device,step_bytes,step_bytes,
-            operation->active_sequence_count,operation->cuda_stream);
+            operation->active_sequence_count,cudaMemcpyDeviceToDevice,
+            operation->cuda_stream);
     }
     if (status != SPARK_STATUS_OK)
     {
@@ -695,6 +760,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueNextSendPack(
     uint64_t local_bytes;
     uint64_t step_bytes;
     uint64_t source_offset;
+    SparkStatus status;
 
     local_bytes = (uint64_t)implementation->collective->local_hidden_dimension *
         SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
@@ -712,13 +778,19 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueNextSendPack(
         source_offset = local_bytes * SparkTpDeviceCollectiveBlockBase(
             implementation->collective,next_step,0u);
     }
-    SparkStatus status;
-
     status = SparkTpDeviceCollectiveCopyRows(
         implementation->bindings[next_step][operation->credit_index]
             .send_device,
         step_bytes,(const uint8_t *)operation->full_device + source_offset,
         full_pitch,step_bytes,operation->active_sequence_count,
+        cudaMemcpyDeviceToDevice,operation->cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkTpDeviceCollectiveStageSend(implementation->collective,
+        &implementation->bindings[next_step][operation->credit_index],
+        step_bytes,step_bytes,operation->active_sequence_count,
         operation->cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
@@ -1597,7 +1669,7 @@ static SparkStatus SparkTpDeviceCollectiveRegisterCredits(
 
             binding = &implementation->bindings[step_index][credit_index];
             status = SparkTpDeviceCollectiveBuildPacket(
-                binding->receive_device,
+                binding->receive_transport,
                 implementation->collective->max_active_sequence_count,
                 implementation->step_hidden_dimensions[step_index],
                 0u,step_index,implementation->registration_cuda_stream,

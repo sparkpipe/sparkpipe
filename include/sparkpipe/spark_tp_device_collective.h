@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 3u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT 64u
@@ -37,8 +37,12 @@ typedef struct SparkTpDeviceCollectiveCreditBinding
 {
     uint32_t step_index;
     uint32_t credit_index;
+    /* Kernels use device buffers; transports may use distinct host
+     * mirrors. */
     void *send_device;
     void *receive_device;
+    void *send_transport;
+    void *receive_transport;
 } SparkTpDeviceCollectiveCreditBinding;
 
 typedef struct SparkTpDeviceCollectiveCompletion

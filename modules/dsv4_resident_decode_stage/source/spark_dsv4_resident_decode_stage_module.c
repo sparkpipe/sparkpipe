@@ -527,29 +527,20 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 		total_bytes += credit_bytes *
 			configuration.credit_count;
 	}
-	if ( memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE )
-	{
+	status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,
+		&state->tp_credit_send_bf16);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,
-			&state->tp_credit_send_bf16);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,
-				&state->tp_credit_receive_bf16);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-	}
-	else
+			&state->tp_credit_receive_bf16);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
 	{
 		error = cudaHostAlloc(&state->tp_host_credit_send_bf16,total_bytes,
 			cudaHostAllocPortable | cudaHostAllocMapped);
 		if ( error == cudaSuccess )
 			error = cudaHostAlloc(&state->tp_host_credit_receive_bf16,total_bytes,
 				cudaHostAllocPortable | cudaHostAllocMapped);
-		if ( error == cudaSuccess )
-			error = cudaHostGetDevicePointer(&state->tp_credit_send_bf16,
-				state->tp_host_credit_send_bf16,0u);
-		if ( error == cudaSuccess )
-			error = cudaHostGetDevicePointer(&state->tp_credit_receive_bf16,
-				state->tp_host_credit_receive_bf16,0u);
 		if ( error != cudaSuccess )
 		{
 			if ( state->tp_host_credit_send_bf16 != 0 )
@@ -580,6 +571,14 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 				(uint8_t *)state->tp_credit_send_bf16 + offset;
 			binding->receive_device =
 				(uint8_t *)state->tp_credit_receive_bf16 + offset;
+			binding->send_transport = memory_mode ==
+				SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
+				(uint8_t *)state->tp_host_credit_send_bf16 + offset :
+				binding->send_device;
+			binding->receive_transport = memory_mode ==
+				SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
+				(uint8_t *)state->tp_host_credit_receive_bf16 + offset :
+				binding->receive_device;
 			offset += credit_bytes;
 		}
 	}
