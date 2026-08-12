@@ -57,6 +57,9 @@ typedef struct SparkTpDeviceCollectiveOperation
     uint64_t profile_submit_ns;
     uint64_t profile_reserved_ns;
     uint64_t profile_send_done_ns[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    uint64_t profile_send_complete_ns[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    uint64_t profile_receive_complete_ns[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    uint64_t profile_send_service_ns[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
     uint64_t profile_receive_done_ns[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
     uint64_t profile_consume_done_ns[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
     uint64_t profile_release_done_ns[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
@@ -900,10 +903,24 @@ static void SparkTpDeviceCollectiveRouteCompletion(
     if (receive_completion != 0u)
     {
         operation->receive_complete_mask |= 1u << step_index;
+        if (implementation->profile_enabled != 0u &&
+            operation->profile_receive_complete_ns[step_index] == 0u)
+        {
+            operation->profile_receive_complete_ns[step_index] =
+                SparkTpDeviceCollectiveNowNano();
+        }
     }
     else
     {
         operation->send_complete_mask |= 1u << step_index;
+        if (implementation->profile_enabled != 0u &&
+            operation->profile_send_complete_ns[step_index] == 0u)
+        {
+            operation->profile_send_complete_ns[step_index] =
+                SparkTpDeviceCollectiveNowNano();
+            operation->profile_send_service_ns[step_index] =
+                completion->service_time_ns;
+        }
     }
 }
 
@@ -1299,9 +1316,14 @@ static void SparkTpDeviceCollectiveReportProfile(
          step_index<implementation->collective->step_count; step_index++)
     {
         count = snprintf(message+offset,sizeof(message)-offset,
-            " send_done%u_ns=%llu receive_done%u_ns=%llu "
-            "consume_done%u_ns=%llu release_done%u_ns=%llu",
+            " send_done%u_ns=%llu send_complete%u_ns=%llu "
+            "receive_complete%u_ns=%llu send_service%u_ns=%llu "
+            "receive_done%u_ns=%llu consume_done%u_ns=%llu "
+            "release_done%u_ns=%llu",
             step_index,(unsigned long long)SparkTpDeviceCollectiveProfileDelta(start_ns,operation->profile_send_done_ns[step_index]),
+            step_index,(unsigned long long)SparkTpDeviceCollectiveProfileDelta(start_ns,operation->profile_send_complete_ns[step_index]),
+            step_index,(unsigned long long)SparkTpDeviceCollectiveProfileDelta(start_ns,operation->profile_receive_complete_ns[step_index]),
+            step_index,(unsigned long long)operation->profile_send_service_ns[step_index],
             step_index,(unsigned long long)SparkTpDeviceCollectiveProfileDelta(start_ns,operation->profile_receive_done_ns[step_index]),
             step_index,(unsigned long long)SparkTpDeviceCollectiveProfileDelta(start_ns,operation->profile_consume_done_ns[step_index]),
             step_index,(unsigned long long)SparkTpDeviceCollectiveProfileDelta(start_ns,operation->profile_release_done_ns[step_index]));
@@ -1951,6 +1973,12 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     operation->profile_reserved_ns = 0u;
     memset(operation->profile_send_done_ns,0,
         sizeof(operation->profile_send_done_ns));
+    memset(operation->profile_send_complete_ns,0,
+        sizeof(operation->profile_send_complete_ns));
+    memset(operation->profile_receive_complete_ns,0,
+        sizeof(operation->profile_receive_complete_ns));
+    memset(operation->profile_send_service_ns,0,
+        sizeof(operation->profile_send_service_ns));
     memset(operation->profile_receive_done_ns,0,
         sizeof(operation->profile_receive_done_ns));
     memset(operation->profile_consume_done_ns,0,
