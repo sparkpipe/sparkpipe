@@ -46,7 +46,7 @@ extern "C" {
  * callback; submit never synchronizes a successful CUDA frame.
  */
 
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 10u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 11u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 5u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION 2u
@@ -100,11 +100,12 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 	uint16_t tp_peer_ports[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT];
 	uint32_t tp_connect_timeout_milli;
 	uint32_t tp_operation_timeout_milli;
+	uint32_t tp_collective_backend_kind;
 	uint64_t tp_collective_identifier;
 	char tp_peer_hosts[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT][SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES];
 	const char *tp_local_host;
-	const char *tp_transport_module_path;
-	uint32_t tp_transport_control_port_base;
+	const char *tp_collective_backend_module_path;
+	uint32_t tp_collective_control_port_base;
 	/*
 	 * TP1: optional dynamic decode-shape cache capacity; zero keeps eager
 	 * execution. TP>1: exact number of prewarmed stage-local graph islands

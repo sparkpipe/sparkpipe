@@ -47,6 +47,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     ring/transport/memlink.c \
     ring/transport/tp_collective.c \
     ring/transport/tp_device_collective.c \
+    ring/transport/tp_device_collective_nccl.c \
     text/tokenizer.c \
     cache/kv_cache.c \
 	cache/kv_page_cache.c \

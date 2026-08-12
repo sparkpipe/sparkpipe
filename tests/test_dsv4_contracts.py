@@ -93,6 +93,9 @@ def main() -> int:
          "dsv4_flash_tp4_pp4_stage.json").read_text(encoding="utf-8")
     )
     assert tp4_pp4_stage["tp_collective"]["connect_timeout_milli"] >= 30000
+    assert tp4_pp4_stage["tp_collective"]["backend"] == "nccl"
+    assert tp4_pp4_stage["tp_collective"]["backend_module_path"] == (
+        "lib/runtime_libs/libnccl.so.2")
     deployment = json.loads(
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_pp13_host_rdma.spec.json").read_text(encoding="utf-8")
