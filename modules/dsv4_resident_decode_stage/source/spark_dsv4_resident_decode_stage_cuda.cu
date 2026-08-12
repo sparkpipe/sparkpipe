@@ -1397,49 +1397,6 @@ static __global__ void SparkDsv4HcHeadReduceKernel(const void *streams_bf16, con
 	}
 }
 
-/*
- * Grouped linear with strided input rows: the o composition reads group g
- * (grid.z) of each row's heads*head_dim output (row stride the full width,
- * input slice group_dim wide at g*group_dim) against wo_a's group block.
- * Same dot helpers as the flat linear; the stride is the only difference.
- */
-template<uint32_t ACTIVATION_CODEC>
-static __global__ void SparkDsv4StridedLinearKernel(uint32_t weight_format, const void *weight_payload, const uint8_t *weight_scale_e8m0, uint64_t weight_payload_group_stride_bytes, uint64_t weight_scale_group_stride_bytes, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, uint32_t input_group_stride, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t output_group_stride, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
-{
-	extern __shared__ float strided_shared[];
-	uint32_t row = blockIdx.x,neuron_base = blockIdx.y * SPARK_LM_CTA_WARPS,group = blockIdx.z;
-	const uint8_t *group_payload = (const uint8_t *)weight_payload + (uint64_t)group * weight_payload_group_stride_bytes;
-	const uint8_t *group_scale = weight_scale_e8m0 != 0 ? weight_scale_e8m0 + (uint64_t)group * weight_scale_group_stride_bytes : 0;
-	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES,neuron,element;
-	float accumulator;
-	input_offset += group * input_group_stride;
-	output_offset += group * output_group_stride;
-	if ( row >= row_count )
-		return;
-	for (element = threadIdx.x; element < input_dimension; element += blockDim.x)
-		strided_shared[element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * input_row_stride) + input_offset + element);
-	__syncthreads();
-	if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 )
-	{
-		LmActivationFp8QdqFloatRow<ACTIVATION_CODEC>(strided_shared,input_dimension);
-		__syncthreads();
-	}
-	neuron = neuron_base + warp;
-	if ( neuron >= output_dimension )
-		return;
-	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
-		accumulator = SparkLmDotRowBf16(strided_shared,group_payload,neuron,input_dimension,lane);
-	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
-		accumulator = SparkLmDotRowFp8<128u>(strided_shared,group_payload,group_scale,neuron,input_dimension,lane);
-	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 )
-		accumulator = SparkLmDotRowMxfp4<32u>(strided_shared,group_payload,group_scale,neuron,input_dimension,lane);
-	else
-		return;
-	accumulator = SparkLmWarpReduceSum(accumulator);
-	if ( lane == 0u )
-		SparkLmFloatToBf16(output_bf16,((uint64_t)row * output_row_stride) + output_offset + neuron,accumulator);
-}
-
 // Score = wgate output plus the in-group ape row - the ape add the
 // reference folds before pooling.
 static __global__ void SparkDsv4ApeAddKernel(float *score_f32, const float *ape_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t channels)
@@ -1478,31 +1435,9 @@ extern "C" cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv
 	if ( status != cudaSuccess )
 		return(status);
 	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
-	{
-		if ( view->scale_data == 0 || view->columns % 128u != 0u ||
-			view->rows % SPARK_LM_SM121_NATIVE_TILE_N != 0u )
-			return(cudaErrorInvalidValue);
-		return(SparkLmHostLaunchSm121NativeLinear<
-			SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(stream,view->payload,
-			(const uint8_t *)view->scale_data,
-			(uint64_t)view->rows * view->columns,
-			(uint64_t)view->rows * (view->columns / 128u),input_bf16,
-			view->columns,0u,0u,output_bf16,view->rows,0u,0u,1u,
-			row_count,view->columns,view->rows));
-	}
-	/* BF16 weights stay BF16 and use the tensor-core tile even for B1/B8. */
-	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 &&
-		(view->columns % SPARK_LM_TILE_K) == 0u )
-	{
-		dim3 grid((row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,
-			(view->rows + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
-		SparkLmExpertTileKernel<32u,SPARK_ACTIVATION_CODEC_NONE>
-			<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(
-				SPARK_LM_WEIGHT_FORMAT_BF16,view->payload,0,input_bf16,0,
-				output_bf16,row_count,view->columns,view->rows);
-		return(cudaGetLastError());
-	}
-	/* No MXFP4/BF16-dequant or scalar compatibility route is a DSV4 success. */
+		return(SparkLmHostLaunchSm121DecodeLinear<128u,SPARK_DSV4_MODEL_ACTIVATION_CODEC>(stream,view->weight_format,view->payload,view->scale_data,input_bf16,output_bf16,row_count,view->columns,view->rows));
+	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
+		return(SparkLmHostLaunchSm121DecodeLinear<32u,SPARK_ACTIVATION_CODEC_NONE>(stream,view->weight_format,view->payload,view->scale_data,input_bf16,output_bf16,row_count,view->columns,view->rows));
 	return(cudaErrorInvalidValue);
 }
 
@@ -1517,12 +1452,7 @@ extern "C" cudaError_t SparkDsv4LaunchStridedLinear(cudaStream_t stream, const S
 	status = SparkDsv4RequireNativeDecodeShape(row_count);
 	if ( status != cudaSuccess )
 		return(status);
-	return(SparkLmHostLaunchSm121NativeLinear<
-		SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(stream,payload,scale,
-		weight_payload_group_stride_bytes,weight_scale_group_stride_bytes,
-		input_bf16,input_row_stride,input_offset,input_group_stride,
-		output_bf16,output_row_stride,output_offset,output_group_stride,
-		group_count,row_count,view->columns,view->rows));
+	return(SparkLmHostLaunchSm121StridedDecodeLinear<128u,SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC>(stream,view->weight_format,payload,scale,weight_payload_group_stride_bytes,weight_scale_group_stride_bytes,input_bf16,input_row_stride,input_offset,input_group_stride,output_bf16,output_row_stride,output_offset,output_group_stride,group_count,row_count,view->columns,view->rows));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t hidden_dimension)
