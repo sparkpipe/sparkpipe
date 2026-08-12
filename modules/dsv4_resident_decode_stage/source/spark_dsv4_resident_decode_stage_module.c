@@ -3164,6 +3164,8 @@ static SparkStatus SparkDsv4ModuleCopyCacheLanes(
 		{
 			memset(destination,0,sizeof(*destination));
 			destination->sequence_id = sequences[index];
+			destination->request_generation = context->request_generation;
+			destination->step_generation = context->step_generation;
 			destination->sequence_position = positions[index];
 			destination->resident_sequence_slot = async->lane_indices[index];
 			destination->context_token_count =

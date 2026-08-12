@@ -249,6 +249,8 @@ def main() -> None:
 	reject(moe, "for (expert", "per-expert host dispatch")
 	reject(module, "SparkDsv4ModuleHostTopkFill", "host-built attention indices")
 	reject(module, "host_topk_indices", "resident host attention-index matrix")
+	require(module, "destination->request_generation = context->request_generation;", "synthesized cache lane request generation")
+	require(module, "destination->step_generation = context->step_generation;", "synthesized cache lane step generation")
 	for name in (
 		"SPARK_DSV4_STAGE_COUNT",
 		"SPARK_DSV4_STAGE_INDEX",
