@@ -93,10 +93,16 @@ def main() -> int:
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_tp4_pp4_stage.json").read_text(encoding="utf-8")
     )
-    assert tp4_pp4_stage["tp_collective"]["connect_timeout_milli"] >= 30000
+    assert tp4_pp4_stage["tp_collective"]["connect_timeout_milli"] >= 120000
     assert tp4_pp4_stage["tp_collective"]["backend"] == "nccl"
     assert tp4_pp4_stage["tp_collective"]["backend_module_path"] == (
         "lib/runtime_libs/libnccl.so.2")
+    for release_template in ("dsv4_tp4_pp4_b1_template",
+                             "dsv4_tp16_b1_template"):
+        release = json.loads(
+            (ROOT / "examples" / "release" / release_template /
+             "sparkpipe.json").read_text(encoding="utf-8"))
+        assert "NCCL_IB_GID_INDEX=0" in release["roles"][0]["env"]
     stage_source = (
         ROOT / "modules" / "dsv4_resident_decode_stage" / "source" /
         "spark_dsv4_resident_decode_stage_module.c").read_text(

@@ -68,7 +68,8 @@
         "{rank}"
       ],
       "env": [
-        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs"
+        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs",
+        "NCCL_IB_GID_INDEX=0"
       ]
     }
   ]
