@@ -9,9 +9,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 FLASH_DESCRIPTION_PATH = ROOT / "examples" / "model_descriptions" / "dsv4_resident_decode_stage_firmware.json"
+FLASH_B1_DESCRIPTION_PATH = ROOT / "examples" / "model_descriptions" / "dsv4_resident_decode_stage_firmware_b1.json"
 FLASH_DRIVER_MODEL_ID = "deepseek.v4.flash.resident-decode-stage-firmware"
 FLASH_DRIVER_REVISION = "h4096-l43-dsa-e256k6-hash3-v129280-ga0731-v3"
-FLASH_MODULE_ID = "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.v3"
+FLASH_MODULE_ID_PREFIX = "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731"
+FLASH_MODULE_ID_SUFFIX = "v3"
+FLASH_MODULE_ID = f"{FLASH_MODULE_ID_PREFIX}.{FLASH_MODULE_ID_SUFFIX}"
 FLASH_MODULE_TARGET = "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16"
 CONTRACTS = {
     "flash": (
@@ -341,7 +344,16 @@ def render_normalized_contract(variant: str, contract: dict[str, Any]) -> str:
     return json.dumps(result, indent=2, sort_keys=True) + "\n"
 
 
-def render_flash_model_description(contract: dict[str, Any]) -> str:
+def flash_module_id(batch_bucket: int) -> str:
+    if batch_bucket == 1024:
+        return FLASH_MODULE_ID
+    if batch_bucket not in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512):
+        raise ValueError(f"invalid DSV4 batch bucket: {batch_bucket}")
+    return f"{FLASH_MODULE_ID_PREFIX}.b{batch_bucket}.{FLASH_MODULE_ID_SUFFIX}"
+
+
+def render_flash_model_description(
+        contract: dict[str, Any], batch_bucket: int = 1024) -> str:
     model = contract["model"]
     attention = contract["attention"]
     moe = contract["moe"]
@@ -419,11 +431,11 @@ def render_flash_model_description(contract: dict[str, Any]) -> str:
             "programs": [{
                 "name": "resident_decode",
                 "id": 1,
-                "max_inflight": 13,
+                "max_inflight": min(13, batch_bucket),
                 "completion": "external",
                 "operations": [{
                     "name": "dsv4_resident_decode_stage",
-                    "module": FLASH_MODULE_ID,
+                    "module": flash_module_id(batch_bucket),
                     "configuration": {
                         "linear_weight_codec": precision["non_expert_linear_weight_codec"],
                         "expert_weight_codec": precision["routed_expert_weight_codec"],
@@ -445,9 +457,10 @@ def render_flash_model_description(contract: dict[str, Any]) -> str:
                         "no_file_transport",
                         "no_shell_transport",
                     ],
-                    "max_active_slots": 1024,
+                    "max_active_slots": batch_bucket,
                     "max_new_tokens": 65536,
-                    "max_resident_sequences": 16384,
+                    "max_resident_sequences": (
+                        16384 if batch_bucket == 1024 else batch_bucket),
                     "max_sequence_tokens": model["maximum_context_tokens"],
                     "target_latency_ns": 0,
                     "validated_latency_ns": 0,
@@ -488,6 +501,8 @@ def main() -> int:
         }
         if variant == "flash":
             outputs[FLASH_DESCRIPTION_PATH] = description
+            outputs[FLASH_B1_DESCRIPTION_PATH] = render_flash_model_description(
+                contract, 1)
         for path, content in outputs.items():
             if not write_or_check(path, content, args.check):
                 stale.append(str(path.relative_to(ROOT)))

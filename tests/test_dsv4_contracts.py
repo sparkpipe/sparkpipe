@@ -49,6 +49,16 @@ def main() -> int:
     scheduling = description["stages"][0]["programs"][0]["scheduling"]
     assert scheduling["max_active_slots"] == 1024
     assert scheduling["max_resident_sequences"] == 16384
+    b1_description = json.loads(
+        (ROOT / "examples" / "model_descriptions" /
+         "dsv4_resident_decode_stage_firmware_b1.json").read_text(
+             encoding="utf-8")
+    )
+    b1_program = b1_description["stages"][0]["programs"][0]
+    assert b1_program["max_inflight"] == 1
+    assert b1_program["operations"][0]["module"].endswith(".b1.v3")
+    assert b1_program["scheduling"]["max_active_slots"] == 1
+    assert b1_program["scheduling"]["max_resident_sequences"] == 1
     deployment = json.loads(
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_pp13_host_rdma.spec.json").read_text(encoding="utf-8")

@@ -128,7 +128,11 @@ generating a deployment.
 
 The exact-width B1 correctness release uses
 `examples/deployments/dsv4_flash_tp4_pp4_b1_host_rdma.spec.json` and
-`examples/release/dsv4_tp4_pp4_b1_template/sparkpipe.json`. It retains one
+`examples/release/dsv4_tp4_pp4_b1_template/sparkpipe.json`. Its driver must be
+compiled from
+`examples/model_descriptions/dsv4_resident_decode_stage_firmware_b1.json`,
+which resolves the validated `.b1.v3` module instead of the unflagged B1024
+module. It retains one
 physical KV page and 32 logical page-table entries, enough to lazily advance a
 single 4,096-position sequence without dense KV preallocation.
 
