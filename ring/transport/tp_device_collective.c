@@ -571,7 +571,7 @@ static SparkStatus SparkTpDeviceCollectiveCopyRows(
     uint64_t source_pitch,
     uint64_t width,
     uint32_t rows,
-    cudaMemcpyKind copy_kind,
+    enum cudaMemcpyKind copy_kind,
     void *cuda_stream)
 {
     if (destination == 0 || source == 0 || destination_pitch < width ||
@@ -595,7 +595,7 @@ static SparkStatus SparkTpDeviceCollectiveStageSend(
     uint32_t rows,
     void *cuda_stream)
 {
-    cudaMemcpyKind copy_kind;
+    enum cudaMemcpyKind copy_kind;
 
     if (binding->send_device == binding->send_transport)
     {
@@ -616,7 +616,7 @@ static SparkStatus SparkTpDeviceCollectiveStageReceive(
     uint32_t rows,
     void *cuda_stream)
 {
-    cudaMemcpyKind copy_kind;
+    enum cudaMemcpyKind copy_kind;
 
     if (binding->receive_device == binding->receive_transport)
     {
