@@ -59,6 +59,15 @@ def main() -> int:
     assert b1_program["operations"][0]["module"].endswith(".b1.v3")
     assert b1_program["scheduling"]["max_active_slots"] == 1
     assert b1_program["scheduling"]["max_resident_sequences"] == 1
+    tp4_pp4_spec = json.loads(
+        (ROOT / "examples" / "deployments" /
+         "dsv4_flash_tp4_pp4_b1_host_rdma.spec.json").read_text(
+             encoding="utf-8")
+    )
+    assert tp4_pp4_spec["adapter"]["shared_object_path"] == (
+        "lib/model_serving_adapter.so")
+    assert tp4_pp4_spec["transport"]["shared_object_path"] == (
+        "lib/hidden_transport.so")
     deployment = json.loads(
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_pp13_host_rdma.spec.json").read_text(encoding="utf-8")

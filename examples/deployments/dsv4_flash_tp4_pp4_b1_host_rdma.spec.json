@@ -2,14 +2,14 @@
   "schema_version": 2,
   "coordinator_rank_index": 0,
   "adapter": {
-    "shared_object_path": "lib/libdsv4_tp4_pp4_serving_adapter.so"
+    "shared_object_path": "lib/model_serving_adapter.so"
   },
   "driver": {
     "shared_object_path": "lib/model_driver.so",
     "program_name": "resident_decode"
   },
   "transport": {
-    "shared_object_path": "lib/libhidden_transport_spark_host_rdma_verbs.so",
+    "shared_object_path": "lib/hidden_transport.so",
     "mode": "host-rdma",
     "control_port_base": 59000
   },
