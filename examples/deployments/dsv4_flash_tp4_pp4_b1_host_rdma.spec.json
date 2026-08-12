@@ -19,7 +19,7 @@
     "max_input_rows": 1,
     "resident_sequence_capacity": 1,
     "kv_logical_page_capacity": 32,
-    "kv_physical_page_capacity": 1
+    "kv_physical_page_capacity": 32
   },
   "topology": {
     "rank_hosts": [

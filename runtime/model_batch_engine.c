@@ -202,6 +202,24 @@ uint32_t SparkModelBatchSchedulerCacheDemandFits(
 		1u : 0u);
 }
 
+uint32_t SparkModelBatchSchedulerRequestFitsPageCapacity(
+	uint32_t block_token_count,
+	uint32_t physical_page_capacity,
+	uint32_t prompt_token_count,
+	uint32_t output_token_budget)
+{
+	uint32_t processed_token_count,required_page_count;
+	if ( block_token_count == 0u || physical_page_capacity == 0u )
+		return(1u);
+	if ( prompt_token_count == 0u || output_token_budget == 0u ||
+		output_token_budget - 1u > UINT32_MAX - prompt_token_count )
+		return(0u);
+	processed_token_count = prompt_token_count + output_token_budget - 1u;
+	required_page_count = (processed_token_count / block_token_count) +
+		(processed_token_count % block_token_count != 0u ? 1u : 0u);
+	return(required_page_count <= physical_page_capacity ? 1u : 0u);
+}
+
 uint32_t SparkModelBatchSchedulerPlanMixedLaneCount(
 	const uint32_t queued_by_kind[4],
 	const uint32_t maximum_by_kind[4],
@@ -1117,6 +1135,10 @@ static SparkStatus SparkModelBatchValidateSubmit(
 	if ( request->reserved0 != 0u || request->request_id == 0u || request->sequence_id == 0u || request->prompt_token_ids == 0 || request->prompt_token_count == 0u || request->output_token_budget == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->prompt_token_count > engine->max_context_tokens || request->output_token_budget > engine->max_context_tokens - request->prompt_token_count )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( SparkModelBatchSchedulerRequestFitsPageCapacity(
+		engine->cache_block_token_count,engine->kv_physical_page_capacity,
+		request->prompt_token_count,request->output_token_budget) == 0u )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( SparkModelBatchRequestIdExists(engine,request->request_id,request->sequence_id) != 0u )
 		return(SPARK_STATUS_DUPLICATE);

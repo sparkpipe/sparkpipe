@@ -162,6 +162,16 @@ static void TestModelBatchSchedulerCacheCapacity(void)
 	}
 	assert(SparkModelBatchSchedulerPlanCacheBoundLaneCount(1024u,4096u,
 		inflight) == 0u);
+	assert(SparkModelBatchSchedulerRequestFitsPageCapacity(128u,1u,128u,1u) ==
+		1u);
+	assert(SparkModelBatchSchedulerRequestFitsPageCapacity(128u,1u,128u,2u) ==
+		0u);
+	assert(SparkModelBatchSchedulerRequestFitsPageCapacity(128u,1u,1u,128u) ==
+		1u);
+	assert(SparkModelBatchSchedulerRequestFitsPageCapacity(128u,1u,1u,129u) ==
+		0u);
+	assert(SparkModelBatchSchedulerRequestFitsPageCapacity(128u,0u,4096u,
+		4096u) == 1u);
 	seed = UINT32_C(0x7f4a7c15);
 	for (iteration=0u; iteration<100000u; iteration++)
 	{

@@ -135,9 +135,10 @@ compiled from
 which resolves the validated `.b1.v3` module instead of the unflagged B1024
 module. Build its exact-width adapter with
 `make build/libdsv4_tp4_pp4_b1_serving_adapter.so`; the adapter embeds the B1
-description hash and B1 capacity ceiling. It retains one
-physical KV page and 32 logical page-table entries, enough to lazily advance a
-single 4,096-position sequence without dense KV preallocation.
+description hash and B1 capacity ceiling. It retains 32 physical KV pages and
+32 logical page-table entries, the complete working set for one 4,096-position
+sequence. The pages are admitted lazily; the B1 release does not densely
+preallocate KV for additional sequences.
 
 The source/host reconstruction prewarms and seals the stage-local graphs, but
 CUDA 13 capture/instantiate/replay acceptance on SM121 has not been observed

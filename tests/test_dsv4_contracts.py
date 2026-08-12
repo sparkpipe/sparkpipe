@@ -77,6 +77,8 @@ def main() -> int:
         "lib/model_serving_adapter.so")
     assert tp4_pp4_spec["transport"]["shared_object_path"] == (
         "lib/hidden_transport.so")
+    assert tp4_pp4_spec["runtime_limits"]["kv_logical_page_capacity"] == 32
+    assert tp4_pp4_spec["runtime_limits"]["kv_physical_page_capacity"] == 32
     tp4_pp4_stage = json.loads(
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_tp4_pp4_stage.json").read_text(encoding="utf-8")
