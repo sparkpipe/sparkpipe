@@ -36,6 +36,11 @@ assert run_frame.index("SparkDsv4ModuleRunLocalLayers") < run_frame.index(
     "continuation = slot->tp_continuation")
 assert "continuation->prefill" not in SOURCE
 
+initialize_collective = body("static SparkStatus SparkDsv4ModuleInitializeTpCollective")
+assert "SPARK_DSV4_TP_COLLECTIVE_CREDITS_PER_SLOT" in initialize_collective
+assert "configuration.credit_count = state->pipeline_slot_count *" in \
+    initialize_collective
+
 validate_shape = body("static SparkStatus SparkDsv4ModuleValidateFrameShape")
 admission_shape = body("static uint32_t SparkDsv4ModuleAdmissionShapeSupported")
 for shape in (validate_shape, admission_shape):

@@ -55,6 +55,12 @@
  */
 
 #define SPARK_DSV4_MODULE_TAG "dsv4_stage"
+#define SPARK_DSV4_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
+
+_Static_assert(SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT *
+	SPARK_DSV4_TP_COLLECTIVE_CREDITS_PER_SLOT <=
+	SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT,
+	"DSV4 TP continuation credits exceed the collective capacity");
 
 typedef struct SparkDsv4LayerWeights
 {
@@ -468,7 +474,11 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	configuration.tp_rank = state->tp_rank;
 	configuration.operation_kind =
 		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.credit_count = state->pipeline_slot_count;
+	/* Attention completion submits the FFN reduction before its callback
+	 * releases the current transport credit. Keep the two reductions for each
+	 * live slot on different credits; later layers reuse them after release. */
+	configuration.credit_count = state->pipeline_slot_count *
+		SPARK_DSV4_TP_COLLECTIVE_CREDITS_PER_SLOT;
 	configuration.local_hidden_dimension = SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count =
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
