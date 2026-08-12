@@ -193,7 +193,9 @@ def apply_replacements(root,manifest,replacements):
             raise SystemExit("replacement occurs more than once: " + relative)
         if not os.path.isfile(source_path):
             raise SystemExit("missing replacement: " + source_path)
-        shutil.copy2(source_path,os.path.join(root,relative))
+        destination = os.path.join(root,relative)
+        os.makedirs(os.path.dirname(destination),exist_ok=True)
+        shutil.copy2(source_path,destination)
         seen.add(relative)
 
 
