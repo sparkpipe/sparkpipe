@@ -601,6 +601,10 @@ static uint32_t SparkReleaseManagerProcessIsAlive(pid_t pid)
     {
         return 0u;
     }
+    if (waitpid(pid,0,WNOHANG) == pid)
+    {
+        return 0u;
+    }
     if (kill(pid,0) == 0)
     {
         return 1u;

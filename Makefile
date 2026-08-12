@@ -305,6 +305,7 @@ PYTHON_TESTS := \
 	tests/test_qwen36_stagepack.py \
 	tests/test_recipe_generation.py \
 	tests/test_release_assemble.py \
+	tests/test_release_agent.py \
 	tests/test_rope_pairing.py \
 	tests/test_router_host.py \
 	tests/test_router_precision_contract.py \
