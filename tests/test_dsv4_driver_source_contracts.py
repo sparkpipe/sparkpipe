@@ -133,7 +133,8 @@ def main() -> None:
 	require(cuda, "SparkDsv4RopeKernel", "checkpoint interleaved RoPE")
 	require(cuda, "LmE4m3ToFloat(LmFloatToE4m3(value))", "shared exact E4M3 quantize-dequantize")
 	reject(cuda, "SparkDsv4EncodeE4m3", "duplicate DSV4 E4M3 codec")
-	require(cuda, "SparkLmHostLaunchSm121NativeLinear<", "native output-composition linear")
+	require(cuda, "SparkLmHostLaunchSm121StridedDecodeLinear<", "shape-aware output-composition linear")
+	require(common, "SparkLmHostLaunchSm121NativeLinear<", "B8/B1024 native output-composition linear")
 	require(common, "(uint64_t)row * output_row_stride + output_offset +", "B>1 output-composition row stride")
 	attention = function_body(module, "SparkDsv4ModuleRunAttention(")
 	require(attention, "SparkDsv4LaunchLinear(stream,&layer->attn.wo_b",

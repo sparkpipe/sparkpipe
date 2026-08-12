@@ -170,10 +170,19 @@ def main() -> int:
     forbid(down, "LmGemmWeightOnlyLaunch", "BF16-dequant routed W2 launch")
 
     dense = body(dsv4, "SparkDsv4LaunchLinear")
-    forbid(dense, "SparkLmHostLaunchBatchedLinear", "DSV4 scalar-compatible dense route")
+    require(dense, "SparkLmHostLaunchSm121DecodeLinear", "shape-aware dense route")
+    dense_dispatch = body(common, "SparkLmHostLaunchSm121DecodeLinear")
+    require(dense_dispatch, "if ( row_count == 1u )", "true-B1 dispatch")
+    require(dense_dispatch, "SparkLmHostLaunchBatchedLinear", "B1 GEMV route")
+    require(dense_dispatch, "SparkLmHostLaunchSm121NativeLinear", "B8/B1024 native route")
     strided_launch = body(dsv4, "SparkDsv4LaunchStridedLinear")
-    forbid(strided_launch, "SparkDsv4StridedLinearKernel", "DSV4 scalar strided route")
-    require(strided_launch, "SparkLmHostLaunchSm121NativeLinear", "native strided route")
+    require(strided_launch, "SparkLmHostLaunchSm121StridedDecodeLinear",
+            "shape-aware strided route")
+    strided_dispatch = body(common, "SparkLmHostLaunchSm121StridedDecodeLinear")
+    require(strided_dispatch, "if ( row_count == 1u )", "true-B1 strided dispatch")
+    require(strided_dispatch, "SparkLmStridedLinearKernel", "B1 strided GEMV route")
+    require(strided_dispatch, "SparkLmHostLaunchSm121NativeLinear",
+            "B8/B1024 native strided route")
     head = body(dsv4, "SparkDsv4LaunchHeadScreenedArgmax")
     require(head, "SparkDsv4RequireNativeDecodeShape(row_count)",
             "screened-head exact-shape/native-device gate")
