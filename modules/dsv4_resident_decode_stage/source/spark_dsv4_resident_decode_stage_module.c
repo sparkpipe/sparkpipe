@@ -1590,7 +1590,7 @@ static SparkStatus SparkDsv4ModuleValidateFrameShape(
 		(is_prefill == 0u && frame->new_token_count != frame->active_slot_count) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree > 1u &&
-		(is_prefill != 0u || frame->active_slot_count != SPARK_BATCH_BUCKET ||
+		(frame->active_slot_count != SPARK_BATCH_BUCKET ||
 		 frame->new_token_count != SPARK_BATCH_BUCKET) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	*is_prefill_out = is_prefill;
@@ -2934,14 +2934,18 @@ static SparkStatus SparkDsv4ModuleRunFrame(
 	uint32_t rows;
 	SparkStatus status;
 	prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? context->prefill_batch : 0;
-	/* The runner's prefill view and its host arrays are stack-owned.  A TP
-	 * collective may finish after Submit returns, so retaining that view in
-	 * the continuation would be a use-after-return.  Decode retains no frame
-	 * or context object; TP prefill remains fail-closed until it has slot-owned
-	 * staging for the complete view. */
-	if ( prefill != 0 && state->tp_degree > 1u )
-		return(SPARK_STATUS_UNSUPPORTED);
 	rows = prefill != 0 ? prefill->row_count : context->decode_batch->row_count;
+	/* A full-width prefill wave has exactly one row per active lane.  Its
+	 * causal attention is therefore the decode attention operation, and all
+	 * row values already live in slot-owned staging before this function.
+	 * Drop the stack-owned view before any asynchronous TP continuation. */
+	if ( prefill != 0 && state->tp_degree > 1u )
+	{
+		if ( rows != SPARK_BATCH_BUCKET ||
+			prefill->active_sequence_count != SPARK_BATCH_BUCKET )
+			return(SPARK_STATUS_UNSUPPORTED);
+		prefill = 0;
+	}
 	if ( prefill == 0 && state->tp_degree > 1u && state->owns_embedding != 0u )
 	{
 		input_streams_bf16 = slot->streams_bf16;
@@ -3955,7 +3959,7 @@ static uint32_t SparkDsv4ModuleAdmissionShapeSupported(
 	if ( releasing != 0u )
 		return(preparing == 0u && request->new_token_count == 0u ? 1u : 0u);
 	if ( state->tp_degree > 1u &&
-		(is_prefill != 0u || request->active_slot_count != SPARK_BATCH_BUCKET ||
+		(request->active_slot_count != SPARK_BATCH_BUCKET ||
 		 request->new_token_count != SPARK_BATCH_BUCKET) )
 		return(0u);
 	if ( request->new_token_count == 0u ||

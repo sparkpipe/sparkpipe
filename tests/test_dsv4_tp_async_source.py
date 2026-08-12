@@ -26,12 +26,22 @@ assert "SparkModelDriverFrame" not in continuation
 assert "SparkDsv4ResidentDecodeStageFrameContext" not in continuation
 
 run_frame = body("static SparkStatus SparkDsv4ModuleRunFrame")
-guard = "if ( prefill != 0 && state->tp_degree > 1u )"
-assert guard in run_frame
-assert run_frame.index(guard) < run_frame.index("SparkDsv4ModuleBeginStreams")
+promotion = "if ( prefill != 0 && state->tp_degree > 1u )"
+assert promotion in run_frame
+assert run_frame.index(promotion) < run_frame.index("SparkDsv4ModuleBeginStreams")
+assert "rows != SPARK_BATCH_BUCKET" in run_frame
+assert "prefill->active_sequence_count != SPARK_BATCH_BUCKET" in run_frame
+assert "prefill = 0;" in run_frame
 assert run_frame.index("SparkDsv4ModuleRunLocalLayers") < run_frame.index(
     "continuation = slot->tp_continuation")
 assert "continuation->prefill" not in SOURCE
+
+validate_shape = body("static SparkStatus SparkDsv4ModuleValidateFrameShape")
+admission_shape = body("static uint32_t SparkDsv4ModuleAdmissionShapeSupported")
+for shape in (validate_shape, admission_shape):
+    assert "active_slot_count != SPARK_BATCH_BUCKET" in shape
+    assert "new_token_count != SPARK_BATCH_BUCKET" in shape
+    assert "is_prefill != 0u ||" not in shape
 
 continue_name = "static void SparkDsv4ModuleContinueLayers"
 continue_layers = body(continue_name, SOURCE.index(continue_name) + 1)
