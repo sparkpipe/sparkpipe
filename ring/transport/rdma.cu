@@ -4335,8 +4335,9 @@ static SparkStatus SparkHiddenSparkHostRdmaRegisterPersistentReceive(
     memset(&message,0,sizeof(message));
     message.type =
         SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_ADVERTISE;
-    message.reserved = SparkHiddenSparkHostRdmaPacketUsesDoorbell(
-        state,packet_template) != 0u ? credit_index + 1u : 0u;
+    /* The template describes maximum buffer capacity. Doorbell eligibility
+     * is evaluated against each actual packet when it is sent. */
+    message.reserved = credit_index + 1u;
     message.active_sequence_count = state->endpoint.max_active_sequence_count;
     message.sideband_kind = packet_template->sideband_kind;
     message.sideband_bytes_per_sequence =
