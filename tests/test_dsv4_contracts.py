@@ -108,6 +108,16 @@ def main() -> int:
         r"state->tp_credit_binding_count;\s*\}",
         stage_source,
     )
+    assert re.search(
+        r"if \( rank >= state->tp_degree \)\s*\{\s*"
+        r"if \( context->tp_peer_hosts\[rank\]\[0\] != '\\0' \)\s*"
+        r"return\(SPARK_STATUS_INVALID_ARGUMENT\);\s*continue;\s*\}\s*"
+        r"if \( context->tp_peer_hosts\[rank\]\[0\] == '\\0' \)\s*"
+        r"return\(SPARK_STATUS_INVALID_ARGUMENT\);\s*"
+        r"configuration\.rank_hosts\[rank\] = "
+        r"context->tp_peer_hosts\[rank\];",
+        stage_source,
+    )
     deployment = json.loads(
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_pp13_host_rdma.spec.json").read_text(encoding="utf-8")

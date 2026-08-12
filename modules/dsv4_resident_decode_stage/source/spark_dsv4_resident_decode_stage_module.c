@@ -512,9 +512,13 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	for (rank=0u; rank<SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; rank++)
 	{
-		if ( rank >= state->tp_degree && context->tp_peer_hosts[rank][0] != '\0' )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( rank < state->tp_degree && context->tp_peer_hosts[rank][0] == '\0' )
+		if ( rank >= state->tp_degree )
+		{
+			if ( context->tp_peer_hosts[rank][0] != '\0' )
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+			continue;
+		}
+		if ( context->tp_peer_hosts[rank][0] == '\0' )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		configuration.rank_hosts[rank] = context->tp_peer_hosts[rank];
 	}
