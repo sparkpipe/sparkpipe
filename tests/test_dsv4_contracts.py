@@ -79,6 +79,15 @@ def main() -> int:
         "lib/hidden_transport.so")
     assert tp4_pp4_spec["runtime_limits"]["kv_logical_page_capacity"] == 32
     assert tp4_pp4_spec["runtime_limits"]["kv_physical_page_capacity"] == 32
+    tp4_pp4_gpudirect_spec = json.loads(
+        (ROOT / "examples" / "deployments" /
+         "dsv4_flash_tp4_pp4_b1_gpudirect_rdma.spec.json").read_text(
+             encoding="utf-8")
+    )
+    assert tp4_pp4_gpudirect_spec["transport"]["mode"] == "gpudirect-rdma"
+    assert tp4_pp4_gpudirect_spec["topology"] == tp4_pp4_spec["topology"]
+    assert tp4_pp4_gpudirect_spec["runtime_limits"] == (
+        tp4_pp4_spec["runtime_limits"])
     tp4_pp4_stage = json.loads(
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_tp4_pp4_stage.json").read_text(encoding="utf-8")
