@@ -624,6 +624,21 @@ static void SparkHiddenSparkHostRdmaReportCompletionError(
         ntohl(completion->imm_data));
 }
 
+static void SparkHiddenSparkHostRdmaReportControlError(
+    const SparkHiddenSparkHostRdmaState *state,
+    const SparkHiddenSparkHostRdmaControlMessage *message,
+    SparkStatus status)
+{
+    if (state == 0 || message == 0 || state->debug_enabled == 0u)
+        return;
+    fprintf(stderr,
+        "hidden_spark_rdma_control_error route=%s status=%u type=%u reserved=%u sequence=%llu token=%llu active=%u\n",
+        state->endpoint.route_name,(uint32_t)status,message->type,
+        message->reserved,(unsigned long long)message->sequence_id,
+        (unsigned long long)message->token_index,
+        message->active_sequence_count);
+}
+
 static void SparkHiddenSparkHostRdmaConfigureSocket(int fd, uint32_t timeout_ms)
 {
     struct timeval timeout;
@@ -2859,6 +2874,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPumpControl(SparkHiddenSparkHostRdmaS
             status = SparkHiddenSparkHostRdmaInsertRemoteReceive(state, &message);
             if (status != SPARK_STATUS_OK)
             {
+                SparkHiddenSparkHostRdmaReportControlError(
+                    state,&message,status);
                 return status;
             }
             SparkHiddenSparkHostRdmaSignalEvent(state);
@@ -2870,6 +2887,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPumpControl(SparkHiddenSparkHostRdmaS
                 state,&message);
             if (status != SPARK_STATUS_OK)
             {
+                SparkHiddenSparkHostRdmaReportControlError(
+                    state,&message,status);
                 return status;
             }
             SparkHiddenSparkHostRdmaSignalEvent(state);
@@ -2881,6 +2900,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPumpControl(SparkHiddenSparkHostRdmaS
                 state,&message);
             if (status != SPARK_STATUS_OK)
             {
+                SparkHiddenSparkHostRdmaReportControlError(
+                    state,&message,status);
                 return status;
             }
         }
@@ -2890,6 +2911,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPumpControl(SparkHiddenSparkHostRdmaS
         }
         else
         {
+            SparkHiddenSparkHostRdmaReportControlError(
+                state,&message,SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
     }
