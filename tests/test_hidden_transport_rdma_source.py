@@ -106,6 +106,7 @@ assert activate_receive.index("SparkHiddenSparkHostRdmaTerminalStatus") < (
 pump = function_body("SparkHiddenSparkHostRdmaPumpProgress(")
 assert "SparkHiddenSparkHostRdmaTerminalStatus" in pump
 assert "SparkHiddenSparkHostRdmaFenceSession" in pump
+assert "SparkHiddenSparkHostRdmaReportProgressError" in pump
 for public_path in (
     "SparkHiddenSparkHostRdmaPostReceive(",
     "SparkHiddenSparkHostRdmaPostReceiveBatch(",

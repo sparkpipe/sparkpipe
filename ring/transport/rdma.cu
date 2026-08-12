@@ -584,6 +584,34 @@ static SparkStatus SparkHiddenSparkHostRdmaSetNonblocking(int fd)
     return SparkHiddenTransportRdmaControlSetNonblocking(fd);
 }
 
+static void SparkHiddenSparkHostRdmaReportProgressError(
+    const SparkHiddenSparkHostRdmaState *state,
+    const char *origin,
+    SparkStatus status)
+{
+    if (state == 0 || origin == 0 || state->debug_enabled == 0u)
+        return;
+    fprintf(stderr,
+        "hidden_spark_rdma_progress_error route=%s origin=%s status=%u errno=%d\n",
+        state->endpoint.route_name,origin,(uint32_t)status,errno);
+}
+
+static void SparkHiddenSparkHostRdmaReportCompletionError(
+    const SparkHiddenSparkHostRdmaState *state,
+    uint32_t lane_index,
+    const struct ibv_wc *completion,
+    SparkStatus status)
+{
+    if (state == 0 || completion == 0 || state->debug_enabled == 0u)
+        return;
+    fprintf(stderr,
+        "hidden_spark_rdma_completion_error route=%s lane=%u status=%u wc_status=%u opcode=%u flags=%u wr_id=%llu immediate=%u\n",
+        state->endpoint.route_name,lane_index,(uint32_t)status,
+        (uint32_t)completion->status,(uint32_t)completion->opcode,
+        completion->wc_flags,(unsigned long long)completion->wr_id,
+        ntohl(completion->imm_data));
+}
+
 static void SparkHiddenSparkHostRdmaConfigureSocket(int fd, uint32_t timeout_ms)
 {
     struct timeval timeout;
@@ -2378,13 +2406,18 @@ static SparkStatus SparkHiddenSparkHostRdmaDrainCompletionEvents(
             {
                 continue;
             }
-            return errno == EAGAIN || errno == EWOULDBLOCK ?
-                SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return SPARK_STATUS_OK;
+            SparkHiddenSparkHostRdmaReportProgressError(
+                state,"get_cq_event",SPARK_STATUS_IO_ERROR);
+            return SPARK_STATUS_IO_ERROR;
         }
         (void)context;
         ibv_ack_cq_events(completion_queue, 1u);
         if (ibv_req_notify_cq(completion_queue, 0) != 0)
         {
+            SparkHiddenSparkHostRdmaReportProgressError(
+                state,"req_notify_cq",SPARK_STATUS_IO_ERROR);
             return SPARK_STATUS_IO_ERROR;
         }
     }
@@ -2678,6 +2711,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPollCompletionQueue(
             work_completions);
         if (result < 0)
         {
+            SparkHiddenSparkHostRdmaReportProgressError(
+                state,"poll_cq",SPARK_STATUS_IO_ERROR);
             return SPARK_STATUS_IO_ERROR;
         }
         if (result == 0)
@@ -2689,6 +2724,12 @@ static SparkStatus SparkHiddenSparkHostRdmaPollCompletionQueue(
         {
             status = SparkHiddenSparkHostRdmaApplyWorkCompletion(
                 state,&work_completions[completion_index]);
+            if (status != SPARK_STATUS_OK ||
+                work_completions[completion_index].status != IBV_WC_SUCCESS)
+            {
+                SparkHiddenSparkHostRdmaReportCompletionError(
+                    state,lane_index,&work_completions[completion_index],status);
+            }
             if (status != SPARK_STATUS_OK)
                 return status;
         }
@@ -2827,12 +2868,17 @@ static SparkStatus SparkHiddenSparkHostRdmaPumpProgress(
     status = SparkHiddenSparkHostRdmaPumpDoorbells(state);
     if (status != SPARK_STATUS_OK)
     {
+        SparkHiddenSparkHostRdmaReportProgressError(
+            state,"doorbells",status);
         (void)SparkHiddenSparkHostRdmaFenceSession(state);
         return status;
     }
     status = SparkHiddenSparkHostRdmaPumpControl(state);
     if (status != SPARK_STATUS_OK)
+    {
+        SparkHiddenSparkHostRdmaReportProgressError(state,"control",status);
         (void)SparkHiddenSparkHostRdmaFenceSession(state);
+    }
     return status;
 }
 
