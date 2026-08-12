@@ -1766,13 +1766,14 @@ static __device__ __forceinline__ uint32_t SparkLmSm121ScaleA(
 
 static __device__ __forceinline__ void SparkLmSm121LoadMxf4B(
 	const uint8_t *payload_e2m1,
-	uint32_t neuron,
+	uint32_t neuron_base,
 	uint32_t input_dimension,
 	uint32_t k_base,
 	uint32_t lane,
 	uint32_t b[2])
 {
 	uint32_t reg,byte_index,k,packed,code_byte;
+	uint32_t neuron = neuron_base + LmMma8OperandBRow(lane);
 	uint64_t row_base = (uint64_t)neuron * (input_dimension >> 1u);
 	#pragma unroll
 	for (reg = 0u; reg < 2u; ++reg)
@@ -1797,13 +1798,14 @@ static __device__ __forceinline__ void SparkLmSm121LoadMxf4B(
 
 static __device__ __forceinline__ void SparkLmSm121LoadMxf8B(
 	const uint8_t *payload_e4m3,
-	uint32_t neuron,
+	uint32_t neuron_base,
 	uint32_t input_dimension,
 	uint32_t k_base,
 	uint32_t lane,
 	uint32_t b[2])
 {
 	uint32_t reg,byte_index,packed;
+	uint32_t neuron = neuron_base + LmMma8OperandBRow(lane);
 	uint64_t row_base = (uint64_t)neuron * input_dimension;
 	#pragma unroll
 	for (reg = 0u; reg < 2u; ++reg)

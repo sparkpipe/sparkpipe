@@ -104,7 +104,15 @@ def main() -> int:
     w2 = body(common, "SparkLmSm121ExpertW2Kernel")
     require(w2, "SparkLmSm121LoadMxf4B", "packed MXFP4 W2 load")
     require(w2, "LmMmaMxf8Mxf4(total", "native mixed-width W2 MMA")
-    require(body(common, "SparkLmSm121LoadMxf4B"), "& 15u) << 2u",
+    mxf4_loader = body(common, "SparkLmSm121LoadMxf4B")
+    mxf8_loader = body(common, "SparkLmSm121LoadMxf8B")
+    require(mxf4_loader,
+            "uint32_t neuron = neuron_base + LmMma8OperandBRow(lane);",
+            "MXFP4 B-fragment lane row")
+    require(mxf8_loader,
+            "uint32_t neuron = neuron_base + LmMma8OperandBRow(lane);",
+            "MXFP8 B-fragment lane row")
+    require(mxf4_loader, "& 15u) << 2u",
             "E2M1 central-bit PTX byte packing")
     forbid(w2, "SparkLmDecodeE2m1", "software W2 dequant")
     forbid(w2, "LmMmaBf16", "BF16 W2 MMA")

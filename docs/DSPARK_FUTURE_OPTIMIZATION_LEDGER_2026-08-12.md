@@ -47,6 +47,10 @@ same model, request shape, counters, and hardware state.
    p50/p95/p99 inter-token latency, tokens/step, and per-position acceptance.
 8. Change one variable per boot, preserve the exact launch argv and binary
    hashes, and reject a faster cell if deep-prefill or concurrency stress fails.
+9. Qualify tensor-core operand loaders with deliberately distinct rows in every
+   fragment lane, then repeat one exact checkpoint projection.  A layout-formula
+   test alone can pass while a payload address omits the lane-row term; the
+   characteristic symptom is groups of eight identical output neurons.
 
 ## dSpark and MTP tricks
 
