@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Fail-closed source contract for DSV4's native SM121 decode compute.
+
+This test deliberately does not claim numerical or hardware qualification.  It
+checks the properties that can be proved without a CUDA toolkit/GPU: the exact
+PTX atom is reachable from the production launchers; DSV4 admits only the three
+qualified shapes; W13 shares one activation stage and owns both BF16 rounding
+boundaries; W2 never routes through the BF16-dequant weight-only GEMM; strided
+stores keep the full row stride.  tests/test_ptx_capability_gate.py separately
+assembles the exact PTX forms when ptxas is installed.
+"""
+
+from pathlib import Path
+import re
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+COMMON = ROOT / "model-families/common/include/sparkpipe/spark_lm_kernels.cuh"
+DSV4 = ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu"
+MODULE = ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c"
+MMA = ROOT / "inference/kernels/mma.cuh"
+
+
+def body(source: str, name: str) -> str:
+    match = re.search(r"\b" + re.escape(name) + r"\s*\([^;]*?\)\s*\{", source, re.S)
+    if match is None:
+        raise AssertionError(f"missing function {name}")
+    start = match.end()
+    depth = 1
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index]
+    raise AssertionError(f"unterminated function {name}")
+
+
+def require(source: str, needle: str, label: str) -> None:
+    if needle not in source:
+        raise AssertionError(f"missing {label}: {needle}")
+
+
+def forbid(source: str, needle: str, label: str) -> None:
+    if needle in source:
+        raise AssertionError(f"forbidden {label}: {needle}")
+
+
+def main() -> int:
+    common = COMMON.read_text(encoding="utf-8")
+    dsv4 = DSV4.read_text(encoding="utf-8")
+    module = MODULE.read_text(encoding="utf-8")
+    mma = MMA.read_text(encoding="utf-8")
+
+    require(mma, "defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 1210)",
+            "SM121-only device gate")
+    require(mma, "m16n8k32.row.col.kind::mxf8f6f4", "documented PTX modifier order")
+    require(mma, ".block_scale.scale_vec::1X", "block-scaled family")
+    require(mma, ".f32.e4m3.e2m1.f32.ue8m0", "MXFP8 x MXFP4 atom")
+    require(mma, ".f32.e4m3.e4m3.f32.ue8m0", "MXFP8 x MXFP8 atom")
+    for name in ("LmMmaMxf8Mxf4", "LmMmaMxf8Mxf8"):
+        require(body(mma, name), 'asm volatile("trap;', f"{name} fail-closed trap")
+
+    shape = body(common, "SparkLmSm121NativeDecodeShape")
+    require(shape, "rows == 1u || rows == 8u || rows == 1024u", "exact decode buckets")
+    require(dsv4, "SparkDsv4RequireNativeDecodeShape(row_count)", "dense shape gate")
+    require(dsv4, "SparkDsv4RequireNativeDecodeShape(rows)", "MoE shape gate")
+    require(dsv4, "properties.major != 12", "runtime major check")
+    require(dsv4, "properties.minor != 1", "runtime minor check")
+
+    fused = body(common, "SparkLmSm121FusedExpertW13Kernel")
+    if fused.count("SparkLmSm121StageMxf8<TILE_M>(") != 1:
+        raise AssertionError("fused expert W13 must stage each activation K tile once")
+    require(fused, "LmMmaMxf8Mxf4(gate_total", "native packed W1")
+    require(fused, "LmMmaMxf8Mxf4(up_total", "native packed W3")
+    if fused.count("SparkLmSm121Bf16Round(") != 2:
+        raise AssertionError("fused expert W13 must BF16-round both projections exactly once")
+    gate_round = fused.index("gate = SparkLmSm121Bf16Round")
+    up_round = fused.index("up = SparkLmSm121Bf16Round")
+    clamp = fused.index("gate = gate > limit ? limit : gate")
+    swiglu = fused.index("SparkLmSwish(gate) * up")
+    if not (gate_round < clamp and up_round < clamp < swiglu):
+        raise AssertionError("W13 boundary must be projection->BF16->clamp->SiLU/product->BF16")
+    require(fused, "up < -limit ? -limit : up", "two-sided up clamp")
+    forbid(fused, "SparkLmDecodeE2m1", "software MXFP4 decode")
+    forbid(fused, "LmMmaBf16", "BF16 MMA fallback")
+
+    shared = body(common, "SparkLmSm121FusedDenseW13Kernel")
+    if shared.count("SparkLmSm121StageMxf8<TILE_M>(") != 1:
+        raise AssertionError("fused shared W13 must stage each activation K tile once")
+    require(shared, "SparkLmSm121Mma<WEIGHT_BITS>(gate_total",
+            "native shared W1")
+    require(shared, "SparkLmSm121Mma<WEIGHT_BITS>(up_total",
+            "native shared W3")
+    if shared.count("SparkLmSm121Bf16Round(") != 2:
+        raise AssertionError("fused shared W13 must BF16-round both projections")
+    shared_clamp = shared.index("gate = gate > limit ? limit : gate")
+    if not (shared.index("gate = SparkLmSm121Bf16Round") < shared_clamp and
+            shared.index("up = SparkLmSm121Bf16Round") < shared_clamp <
+            shared.index("SparkLmSwish(gate) * up")):
+        raise AssertionError("shared W13 lost the BF16/clamp/SwiGLU boundary")
+
+    w2 = body(common, "SparkLmSm121ExpertW2Kernel")
+    require(w2, "SparkLmSm121LoadMxf4B", "packed MXFP4 W2 load")
+    require(w2, "LmMmaMxf8Mxf4(total", "native mixed-width W2 MMA")
+    require(body(common, "SparkLmSm121LoadMxf4B"), "& 15u) << 2u",
+            "E2M1 central-bit PTX byte packing")
+    forbid(w2, "SparkLmDecodeE2m1", "software W2 dequant")
+    forbid(w2, "LmMmaBf16", "BF16 W2 MMA")
+
+    strided = body(common, "SparkLmSm121NativeLinearKernel")
+    require(strided, "(uint64_t)row * output_row_stride + output_offset +",
+            "B>1 full output row stride")
+    require(strided, "group * output_group_stride + column", "grouped output slice")
+    routed_reduce = body(common, "SparkLmMoePairReduceStridedKernel")
+    require(routed_reduce,
+            "(uint64_t)row * accum_row_stride + accum_offset",
+            "B>1 routed-reduce full output row stride")
+    require(body(dsv4, "SparkDsv4LaunchMoePairReduceStrided"),
+            "SparkLmHostLaunchMoePairReduceStrided",
+            "DSV4 strided routed-reduce launcher")
+
+    attention = body(module, "SparkDsv4ModuleRunAttention")
+    require(attention, "SparkDsv4LaunchLinear(stream,&layer->attn.wo_b",
+            "column-parallel WO full-hidden partial")
+    forbid(attention, "state->tp_rank * local_hidden",
+           "diagonal WO rank-row write")
+    routed = body(module, "SparkDsv4ModuleRunMoeRouted")
+    require(routed, "SparkDsv4LaunchMoePairReduce(stream",
+            "column-parallel routed full-hidden partial")
+    forbid(routed, "SparkDsv4LaunchMoePairReduceStrided",
+           "diagonal routed rank-row write")
+    moe = body(module, "SparkDsv4ModuleRunMoe")
+    require(moe, "SparkDsv4LaunchLinear(stream,&moe->shared_w2",
+            "column-parallel shared-W2 full-hidden partial")
+    forbid(moe, "state->tp_rank * hidden_dimension",
+           "diagonal shared-W2 rank-row write")
+    reduce_hidden = body(module, "SparkDsv4ModuleReduceHidden")
+    require(reduce_hidden, "submission.local_device = device_bf16;",
+            "in-place full-hidden reduction input")
+    require(module, "SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16",
+            "device BF16 sum collective")
+
+    expert_host = body(common, "SparkLmHostLaunchSm121FusedExpertW13")
+    w2_host = body(common, "SparkLmHostLaunchSm121ExpertW2")
+    require(expert_host, "if ( rows == 1024u )", "B1024 routed W13 M64 tile")
+    require(expert_host, "SPARK_LM_SM121_NATIVE_WIDE_TILE_M",
+            "wide routed W13 specialization")
+    require(w2_host, "if ( rows == 1024u )", "B1024 routed W2 M64 tile")
+    require(w2_host, "SPARK_LM_SM121_NATIVE_WIDE_TILE_M",
+            "wide routed W2 specialization")
+
+    up = body(dsv4, "SparkDsv4LaunchExpertUp")
+    require(up, "return(cudaErrorInvalidValue);", "retired split-up fail closed")
+    fused_launch = body(dsv4, "SparkDsv4LaunchFusedExpertW13Act")
+    require(fused_launch, "SparkLmHostLaunchSm121FusedExpertW13", "routed fused launcher")
+    shared_launch = body(dsv4, "SparkDsv4LaunchFusedSharedW13Act")
+    require(shared_launch, "SparkLmHostLaunchSm121FusedDenseW13", "shared fused launcher")
+    down = body(dsv4, "SparkDsv4LaunchExpertDown")
+    require(down, "SparkLmHostLaunchSm121ExpertW2", "native routed W2 launcher")
+    forbid(down, "LmGemmWeightOnlyLaunch", "BF16-dequant routed W2 launch")
+
+    dense = body(dsv4, "SparkDsv4LaunchLinear")
+    forbid(dense, "SparkLmHostLaunchBatchedLinear", "DSV4 scalar-compatible dense route")
+    strided_launch = body(dsv4, "SparkDsv4LaunchStridedLinear")
+    forbid(strided_launch, "SparkDsv4StridedLinearKernel", "DSV4 scalar strided route")
+    require(strided_launch, "SparkLmHostLaunchSm121NativeLinear", "native strided route")
+    head = body(dsv4, "SparkDsv4LaunchHeadScreenedArgmax")
+    require(head, "SparkDsv4RequireNativeDecodeShape(row_count)",
+            "screened-head exact-shape/native-device gate")
+
+    print("PASS DSV4 native SM121 compute source contract")
+    print("  static only: live sm_121a compile/PTX and GA tensors remain required")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except AssertionError as error:
+        print(f"FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)

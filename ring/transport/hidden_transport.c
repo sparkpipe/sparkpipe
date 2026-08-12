@@ -88,6 +88,22 @@ static uint32_t SparkHiddenTransportSessionCanUsePollDescriptors(
         session->transport_interface.get_poll_descriptors != 0;
 }
 
+static uint32_t SparkHiddenTransportSessionCanUsePersistentReceiveCredits(
+    const SparkHiddenTransportSession *session)
+{
+    return session != 0 &&
+        (session->transport_interface.capability_flags &
+            SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS) != 0u &&
+        session->transport_interface.register_persistent_receive != 0 &&
+        session->transport_interface.persistent_remote_credit_ready != 0 &&
+        session->transport_interface.reserve_persistent_send != 0 &&
+        session->transport_interface.cancel_persistent_send != 0 &&
+        session->transport_interface.activate_persistent_receive != 0 &&
+        session->transport_interface.cancel_persistent_receive != 0 &&
+        session->transport_interface.send_persistent != 0 &&
+        session->transport_interface.release_persistent_receive != 0;
+}
+
 static uint32_t SparkHiddenTransportCapabilitiesAreSimulationOnly(
     uint32_t capability_flags)
 {
@@ -129,8 +145,10 @@ static void SparkHiddenTransportCopyRouteConfiguration(
     destination->source_rank_index = source->source_rank_index;
     destination->sink_rank_index = source->sink_rank_index;
     destination->control_port_base = source->control_port_base;
+    destination->reserved0 = source->reserved0;
     destination->source_host = source->source_host;
     destination->sink_host = source->sink_host;
+    destination->route_identifier = source->route_identifier;
 }
 
 static void SparkHiddenTransportBuildEffectiveEndpoint(
@@ -156,6 +174,8 @@ static void SparkHiddenTransportBuildEffectiveEndpoint(
         effective_endpoint->bytes_per_sequence = endpoint->bytes_per_sequence;
         effective_endpoint->max_packet_bytes = endpoint->max_packet_bytes;
         SparkHiddenTransportCopyRouteConfiguration(effective_endpoint,endpoint);
+        effective_endpoint->capability_flags |= endpoint->capability_flags &
+            SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
     }
     else if (transport_interface != 0 &&
         SparkHiddenTransportCapabilitiesMeetSparkHostRdma(
@@ -170,6 +190,8 @@ static void SparkHiddenTransportBuildEffectiveEndpoint(
         effective_endpoint->bytes_per_sequence = endpoint->bytes_per_sequence;
         effective_endpoint->max_packet_bytes = endpoint->max_packet_bytes;
         SparkHiddenTransportCopyRouteConfiguration(effective_endpoint,endpoint);
+        effective_endpoint->capability_flags |= endpoint->capability_flags &
+            SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
     }
 }
 
@@ -252,7 +274,9 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
     }
     if ((endpoint->configuration_flags &
             ~SPARK_HIDDEN_TRANSPORT_ENDPOINT_KNOWN_FLAGS) != 0u ||
-        endpoint->reserved0 != 0u)
+        (((endpoint->configuration_flags &
+            SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT) != 0u) !=
+            (endpoint->reserved0 != 0u)))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -296,6 +320,18 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkHiddenTransportConfigureEndpointOpenTimeout(
+    SparkHiddenTransportEndpoint *endpoint,
+    uint32_t timeout_milli)
+{
+    if (endpoint == 0 || timeout_milli == 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    endpoint->configuration_flags |=
+        SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT;
+    endpoint->reserved0 = timeout_milli;
     return SPARK_STATUS_OK;
 }
 
@@ -469,6 +505,19 @@ SparkStatus SparkHiddenTransportValidateInterface(
             required_capability_flags) &&
         (transport_interface->post_receive_batch == 0 ||
          transport_interface->send_batch == 0))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((transport_interface->capability_flags &
+            SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS) != 0u &&
+        (transport_interface->register_persistent_receive == 0 ||
+         transport_interface->persistent_remote_credit_ready == 0 ||
+         transport_interface->reserve_persistent_send == 0 ||
+         transport_interface->cancel_persistent_send == 0 ||
+         transport_interface->activate_persistent_receive == 0 ||
+         transport_interface->cancel_persistent_receive == 0 ||
+         transport_interface->send_persistent == 0 ||
+         transport_interface->release_persistent_receive == 0))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -799,6 +848,151 @@ SparkStatus SparkHiddenTransportGetPollDescriptors(
         }
     }
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkHiddenTransportRegisterPersistentReceive(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    SparkHiddenTransportPacket *packet_template)
+{
+    SparkStatus status;
+
+    if (session == 0 || packet_template == 0 ||
+        SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenTransportValidatePacket(
+        &session->endpoint,packet_template);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return session->transport_interface.register_persistent_receive(
+        session->transport_state,credit_index,packet_template);
+}
+
+SparkStatus SparkHiddenTransportPersistentRemoteCreditReady(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index)
+{
+    if (session == 0 ||
+        SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return session->transport_interface.persistent_remote_credit_ready(
+        session->transport_state,credit_index);
+}
+
+SparkStatus SparkHiddenTransportReservePersistentSend(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation,
+    const SparkHiddenTransportPacket *packet)
+{
+    SparkStatus status;
+
+    if (session == 0 || packet == 0 || generation == 0u ||
+        SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenTransportValidatePacket(&session->endpoint,packet);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return session->transport_interface.reserve_persistent_send(
+        session->transport_state,credit_index,generation,packet);
+}
+
+SparkStatus SparkHiddenTransportCancelPersistentSend(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation)
+{
+    if (session == 0 || generation == 0u ||
+        SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return session->transport_interface.cancel_persistent_send(
+        session->transport_state,credit_index,generation);
+}
+
+SparkStatus SparkHiddenTransportActivatePersistentReceive(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation,
+    SparkHiddenTransportPacket *packet)
+{
+    SparkStatus status;
+
+    if (session == 0 || packet == 0 || generation == 0u ||
+        SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenTransportValidatePacket(&session->endpoint,packet);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return session->transport_interface.activate_persistent_receive(
+        session->transport_state,credit_index,generation,packet);
+}
+
+SparkStatus SparkHiddenTransportCancelPersistentReceive(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation)
+{
+    if (session == 0 || generation == 0u ||
+        SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return session->transport_interface.cancel_persistent_receive(
+        session->transport_state,credit_index,generation);
+}
+
+SparkStatus SparkHiddenTransportSendPersistent(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation,
+    const SparkHiddenTransportPacket *packet)
+{
+    SparkStatus status;
+
+    if (session == 0 || packet == 0 || generation == 0u ||
+        SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenTransportValidatePacket(&session->endpoint,packet);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return session->transport_interface.send_persistent(
+        session->transport_state,credit_index,generation,packet);
+}
+
+SparkStatus SparkHiddenTransportReleasePersistentReceive(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation,
+    void *consumer_cuda_stream)
+{
+    if (session == 0 || generation == 0u || consumer_cuda_stream == 0 ||
+        SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return session->transport_interface.release_persistent_receive(
+        session->transport_state,credit_index,generation,
+        consumer_cuda_stream);
 }
 
 void SparkHiddenTransportCompletionQueueInitialize(

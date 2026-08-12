@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_SPARK_DSV4_BATCH_TUNING_H
-#define SPARKPIPE_SPARK_DSV4_BATCH_TUNING_H
+#pragma once
 
 // THE BATCH-VARIANT TUNING HEADER, dsv4 resident decode stage.
 //
@@ -12,10 +11,11 @@
 // THE SET IS EVERY POWER OF TWO FROM B1 TO B1024, the same eleven-bucket
 // ladder as glm52: runtime selection takes the tightest ceiling at or above
 // the microbatch, so a live batch pads to at most twice itself, and B1024
-// stays the unflagged build. The variant convention INSERTS .b<n>. ahead of
+// stays the explicitly configured default archive. The variant convention
+// INSERTS .b<n>. ahead of
 // the version suffix: a variant-published dsv4 module is a new module
 // identity, and the unbucketed ID (SPARK_DSV4_MODEL_MODULE_ID, which the
-// unflagged archive IS) stays valid until the contract generator adopts the
+// default archive is) stays valid until the contract generator adopts the
 // bucketed form - exactly the k3 header's stance.
 
 #include <stdint.h>
@@ -26,11 +26,6 @@
 // pre-empt that choice through the shared include guard. Only the grouped
 // tile macros below expand model geometry, and only the CUDA translation
 // unit - which always has the model header - expands them.
-
-#ifndef SPARK_BATCH_BUCKET
-// The unflagged build IS the b1024 module.
-#define SPARK_BATCH_BUCKET 1024u
-#endif
 
 #if SPARK_BATCH_BUCKET != 1u && SPARK_BATCH_BUCKET != 2u && \
 	SPARK_BATCH_BUCKET != 4u && SPARK_BATCH_BUCKET != 8u && \
@@ -191,5 +186,3 @@ static inline const char *SparkDsv4BatchVariantModuleId(
 		return(0);
 	}
 }
-
-#endif

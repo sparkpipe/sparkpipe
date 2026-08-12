@@ -20,14 +20,20 @@ extern "C" {
 
 #define SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS UINT32_C(0x00000002)
+#define SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO UINT32_C(0x00000004)
 #define SPARK_KV_PAGE_STORE_KNOWN_FLAGS \
 	(SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE | \
-	 SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS)
+	 SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS | \
+	 SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO)
+
+#define SPARK_KV_PAGE_STORE_DIRECT_IO_ALIGNMENT UINT64_C(4096)
 
 /*
  * Device-neutral backing for opaque fixed-size KV pages. The cache decides
  * what to evict and when to fetch it; a model driver supplies only the copy
  * primitive needed to move its physical page between device and host memory.
+ * Anonymous backing is volatile scratch capacity with no durability guarantee.
+ * DIRECT_IO is opt-in and fails closed on unsupported or unaligned backing.
  */
 typedef SparkStatus (*SparkKvPageStoreCopyFunction)(
 	void *context,
@@ -105,6 +111,14 @@ SparkStatus SparkKvPageStorePrefetch(
 	SparkKvPageStore *store,
 	SparkKvCacheArena *arena,
 	uint32_t logical_page_index);
+SparkStatus SparkKvPageStoreProgress(
+	SparkKvPageStore *store,
+	SparkKvCacheArena *arena,
+	uint32_t maximum_job_count);
+SparkStatus SparkKvPageStoreInvalidate(
+	SparkKvPageStore *store,
+	uint32_t logical_page_index,
+	uint64_t generation);
 
 #ifdef __cplusplus
 }

@@ -29,6 +29,7 @@ int main(void)
 {
 	SparkModelServingAdapterDynamicLibrary library;
 	SparkModelServingAdapterConfiguration configuration;
+	SparkModelServingAdapterSnapshot snapshot;
 	void *adapter_state;
 	char runtime_root[4096];
 	SparkStatus status;
@@ -74,6 +75,9 @@ int main(void)
 		fprintf(stderr,"TP16 adapter initialize status=%d (%s)\n",(int)status,SparkStatusToString(status));
 	assert(status == SPARK_STATUS_OK);
 	assert(adapter_state != 0);
+	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) ==
+		SPARK_STATUS_OK);
+	assert(snapshot.kv_token_capacity == 87u);
 	library.adapter_interface.destroy(adapter_state);
 	SparkModelServingAdapterUnloadInterface(&library);
 	return(0);

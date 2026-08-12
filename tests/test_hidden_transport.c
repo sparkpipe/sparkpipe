@@ -226,6 +226,17 @@ static void SparkTestHiddenTransportValidatesEndpointAndPacket(void)
     assert(SparkHiddenTransportValidateEndpoint(&endpoint) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     endpoint.sink_host = "node-beta";
+    assert(SparkHiddenTransportConfigureEndpointOpenTimeout(&endpoint,0u) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkHiddenTransportConfigureEndpointOpenTimeout(&endpoint,25u) ==
+        SPARK_STATUS_OK);
+    assert((endpoint.configuration_flags &
+        SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT) != 0u);
+    assert(endpoint.reserved0 == 25u);
+    assert(SparkHiddenTransportValidateEndpoint(&endpoint) == SPARK_STATUS_OK);
+    endpoint.configuration_flags &=
+        ~SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT;
+    endpoint.reserved0 = 0u;
     endpoint.reserved0 = 1u;
     assert(SparkHiddenTransportValidateEndpoint(&endpoint) ==
         SPARK_STATUS_INVALID_ARGUMENT);

@@ -75,6 +75,7 @@ static inline uint32_t SparkModelDriverCacheLaneIsValid(
 {
     uint32_t prefix_present,publish_present,releasing;
     if (lane == 0 || lane->sequence_id == 0u ||
+        lane->request_generation == 0u || lane->step_generation == 0u ||
         lane->resident_sequence_slot == SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT ||
         lane->reserved != 0u ||
         (lane->flags & ~SPARK_MODEL_DRIVER_CACHE_LANE_KNOWN_FLAGS) != 0u)
@@ -114,9 +115,18 @@ static inline uint32_t SparkModelDriverAdmissionRequestIsValid(
         ((request->cache_lane_count != 0u) != (request->cache_lanes != 0)) ||
         (request->cache_lane_count != 0u &&
          request->cache_lane_count != request->active_slot_count) ||
-        ((request->admission_flags &
-          SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) != 0u &&
-         request->cache_lane_count == 0u))
+        (request->admission_flags != 0u &&
+         request->admission_flags !=
+            SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE &&
+         request->admission_flags !=
+            SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT &&
+         request->admission_flags !=
+            SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) ||
+        (request->admission_flags != 0u && request->cache_lane_count == 0u) ||
+        (request->cache_lane_count != 0u &&
+         (request->submission_id == 0u || request->control_generation == 0u ||
+          request->transaction_id == 0u || request->request_generation == 0u ||
+          request->step_generation == 0u)))
         return 0u;
     releasing = (request->frame_flags &
         SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u ? 1u : 0u;

@@ -2,6 +2,24 @@
 
 #include <string.h>
 
+SparkStatus SparkModelResidentIpcValidateDirectSubmitDescriptor(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	SparkStatus status;
+	uint32_t distributed_capabilities;
+	status = SparkModelServingAdapterValidateDescriptor(descriptor);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	distributed_capabilities =
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP;
+	if ( descriptor->stage_count > 1u ||
+		(descriptor->capability_flags & distributed_capabilities) != 0u )
+		return(SPARK_STATUS_UNSUPPORTED);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkModelResidentIpcAddBytes(
 	uint32_t *total,
 	uint32_t count,

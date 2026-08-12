@@ -53,6 +53,7 @@ extern "C" {
 #define SPARK_HIDDEN_TRANSPORT_CAP_MULTI_LANE 0x00000800u
 #define SPARK_HIDDEN_TRANSPORT_CAP_REMOTE_COMPLETION_DOORBELL 0x00001000u
 #define SPARK_HIDDEN_TRANSPORT_CAP_GPUDIRECT_RDMA 0x00002000u
+#define SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS 0x00004000u
 #define SPARK_HIDDEN_TRANSPORT_CAP_SIMULATION_ONLY 0x80000000u
 
 #define SPARK_HIDDEN_TRANSPORT_POLL_READ 0x00000001u
@@ -60,8 +61,10 @@ extern "C" {
 
 #define SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION \
     0x00000001u
+#define SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT 0x00000002u
 #define SPARK_HIDDEN_TRANSPORT_ENDPOINT_KNOWN_FLAGS \
-    SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION
+    (SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION | \
+     SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT)
 
 #define SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS \
     (SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_CONNECTION | \
@@ -152,6 +155,7 @@ typedef struct SparkHiddenTransportEndpoint
     const char *route_name;
     const char *source_host;
     const char *sink_host;
+    uint64_t route_identifier;
 } SparkHiddenTransportEndpoint;
 
 typedef struct SparkHiddenTransportPacket
@@ -213,6 +217,42 @@ typedef struct SparkHiddenTransportPollDescriptor
     uint32_t events;
 } SparkHiddenTransportPollDescriptor;
 
+typedef SparkStatus (*SparkHiddenTransportRegisterPersistentReceiveFunction)(
+    void *transport_state,
+    uint32_t credit_index,
+    SparkHiddenTransportPacket *packet_template);
+typedef SparkStatus (*SparkHiddenTransportPersistentRemoteCreditReadyFunction)(
+    void *transport_state,
+    uint32_t credit_index);
+typedef SparkStatus (*SparkHiddenTransportReservePersistentSendFunction)(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation,
+    const SparkHiddenTransportPacket *packet);
+typedef SparkStatus (*SparkHiddenTransportCancelPersistentSendFunction)(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation);
+typedef SparkStatus (*SparkHiddenTransportActivatePersistentReceiveFunction)(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation,
+    SparkHiddenTransportPacket *packet);
+typedef SparkStatus (*SparkHiddenTransportCancelPersistentReceiveFunction)(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation);
+typedef SparkStatus (*SparkHiddenTransportSendPersistentFunction)(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation,
+    const SparkHiddenTransportPacket *packet);
+typedef SparkStatus (*SparkHiddenTransportReleasePersistentReceiveFunction)(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation,
+    void *consumer_cuda_stream);
+
 typedef SparkStatus (*SparkHiddenTransportInitializeFunction)(
     const SparkHiddenTransportEndpoint *endpoint,
     void **transport_state);
@@ -254,6 +294,21 @@ typedef struct SparkHiddenTransportInterface
     SparkHiddenTransportPostReceiveBatchFunction post_receive_batch;
     SparkHiddenTransportSendBatchFunction send_batch;
     SparkHiddenTransportGetPollDescriptorsFunction get_poll_descriptors;
+    SparkHiddenTransportRegisterPersistentReceiveFunction
+        register_persistent_receive;
+    SparkHiddenTransportPersistentRemoteCreditReadyFunction
+        persistent_remote_credit_ready;
+    SparkHiddenTransportReservePersistentSendFunction
+        reserve_persistent_send;
+    SparkHiddenTransportCancelPersistentSendFunction
+        cancel_persistent_send;
+    SparkHiddenTransportActivatePersistentReceiveFunction
+        activate_persistent_receive;
+    SparkHiddenTransportCancelPersistentReceiveFunction
+        cancel_persistent_receive;
+    SparkHiddenTransportSendPersistentFunction send_persistent;
+    SparkHiddenTransportReleasePersistentReceiveFunction
+        release_persistent_receive;
 } SparkHiddenTransportInterface;
 
 typedef const SparkHiddenTransportInterface *(*SparkHiddenTransportGetInterfaceFunction)(
@@ -274,6 +329,9 @@ typedef struct SparkHiddenTransportDynamicLibrary
 
 SparkStatus SparkHiddenTransportValidateEndpoint(
     const SparkHiddenTransportEndpoint *endpoint);
+SparkStatus SparkHiddenTransportConfigureEndpointOpenTimeout(
+    SparkHiddenTransportEndpoint *endpoint,
+    uint32_t timeout_milli);
 SparkStatus SparkHiddenTransportValidatePacket(
     const SparkHiddenTransportEndpoint *endpoint,
     const SparkHiddenTransportPacket *packet);
@@ -319,6 +377,41 @@ SparkStatus SparkHiddenTransportGetPollDescriptors(
     SparkHiddenTransportPollDescriptor *descriptors,
     uint32_t descriptor_capacity,
     uint32_t *descriptor_count_out);
+SparkStatus SparkHiddenTransportRegisterPersistentReceive(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    SparkHiddenTransportPacket *packet_template);
+SparkStatus SparkHiddenTransportPersistentRemoteCreditReady(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index);
+SparkStatus SparkHiddenTransportReservePersistentSend(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation,
+    const SparkHiddenTransportPacket *packet);
+SparkStatus SparkHiddenTransportCancelPersistentSend(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation);
+SparkStatus SparkHiddenTransportActivatePersistentReceive(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation,
+    SparkHiddenTransportPacket *packet);
+SparkStatus SparkHiddenTransportCancelPersistentReceive(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation);
+SparkStatus SparkHiddenTransportSendPersistent(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation,
+    const SparkHiddenTransportPacket *packet);
+SparkStatus SparkHiddenTransportReleasePersistentReceive(
+    SparkHiddenTransportSession *session,
+    uint32_t credit_index,
+    uint64_t generation,
+    void *consumer_cuda_stream);
 void SparkHiddenTransportCompletionQueueInitialize(
     SparkHiddenTransportCompletionQueue *queue);
 uint32_t SparkHiddenTransportCompletionQueueIsFull(

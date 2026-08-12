@@ -23,6 +23,8 @@ static void SparkTestDsv4Lane(
 {
 	memset(lane,0,sizeof(*lane));
 	lane->sequence_id = sequence_id;
+	lane->request_generation = 1u;
+	lane->step_generation = 1u;
 	lane->sequence_position = sequence_position;
 	lane->resident_sequence_slot = 0u;
 	lane->context_token_count = context_token_count;

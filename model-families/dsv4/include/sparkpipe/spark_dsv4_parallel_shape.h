@@ -9,16 +9,12 @@
 extern "C" {
 #endif
 
-#define SPARK_DSV4_PARALLEL_SHAPE_ABI_VERSION 1u
+#define SPARK_DSV4_PARALLEL_SHAPE_ABI_VERSION 3u
 #define SPARK_DSV4_PARALLEL_SHAPE_MAX_TP_DEGREE 16u
+#define SPARK_DSV4_PARALLEL_SHAPE_MAX_PP_DEGREE 16u
+#define SPARK_DSV4_PARALLEL_SHAPE_MAX_WORLD_SIZE 16u
 
-/*
- * The TP descriptor is deliberately separate from the PP deployment
- * descriptor.  TP16 is one complete model replica per rank with dimensions
- * sharded inside every layer; it is not twelve or sixteen pipeline slices.
- * A non-one PP stage count is therefore refused until a distinct TPxPP
- * contract is added instead of silently changing the topology semantics.
- */
+/* A physical rank is pp_stage_index * tp_degree + tp_rank. */
 typedef struct SparkDsv4TpShapeDescriptor
 {
 	uint32_t abi_version;
@@ -37,19 +33,24 @@ typedef struct SparkDsv4TpNodeConfig
 	uint32_t layer_count;
 	uint32_t query_heads_per_rank;
 	uint32_t query_output_elements_per_rank;
-	uint32_t output_composition_input_elements_per_rank;
+	uint32_t output_group_count_per_rank;
+	uint32_t output_group_input_elements_per_rank;
+	uint32_t output_lora_elements_per_rank;
 	uint32_t output_hidden_rows_per_rank;
 	uint32_t expert_intermediate_per_rank;
 	uint32_t vocabulary_rows_per_rank;
-	uint32_t reserved0;
+	uint32_t world_size;
+	uint32_t world_rank;
 	uint64_t configuration_hash;
 } SparkDsv4TpNodeConfig;
 
 /*
  * Derive every dimension that a rank-sharded DSV4 kernel must agree on.
- * Current supported TP shapes are powers of two through TP16, all over the
- * full 43-layer model. Degree one is retained for the PP control pack; every
- * higher degree fails closed unless every split dimension divides exactly.
+ * Current supported TP shapes are powers of two through TP16. TP1-TP8 assign
+ * whole attention output groups to ranks. TP16 assigns one group to each rank
+ * pair and splits that group's input columns; every rank still emits a full
+ * hidden partial for the device all-reduce. PP stages own contiguous balanced
+ * layer slices. Every shape fails closed unless all splits divide exactly.
  */
 SparkStatus SparkDsv4TpDeriveNodeConfig(
 	const SparkDsv4TpShapeDescriptor *shape,

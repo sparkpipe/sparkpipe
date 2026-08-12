@@ -9,18 +9,93 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 3u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 4u
-#define SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES 64u
+#define SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT 64u
+#define SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT \
+    (SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS * \
+     SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT)
+#define SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES 96u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER 0u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 1u
+
+#define SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE 0u
+#define SPARK_TP_DEVICE_COLLECTIVE_PHASE_SUBMIT_BUILDING 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE 2u
+#define SPARK_TP_DEVICE_COLLECTIVE_PHASE_SEND_BUILDING 3u
+#define SPARK_TP_DEVICE_COLLECTIVE_PHASE_TRANSFER_ACTIVE 4u
+#define SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_BUILDING 5u
+#define SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE 6u
+#define SPARK_TP_DEVICE_COLLECTIVE_PHASE_TERMINAL_READY 7u
+#define SPARK_TP_DEVICE_COLLECTIVE_PHASE_CALLBACK_CLAIMED 8u
+#define SPARK_TP_DEVICE_COLLECTIVE_PHASE_RELEASE_PENDING 9u
+
+typedef struct SparkTpDeviceCollectiveCreditBinding
+{
+    uint32_t step_index;
+    uint32_t credit_index;
+    void *send_device;
+    void *receive_device;
+} SparkTpDeviceCollectiveCreditBinding;
+
+typedef struct SparkTpDeviceCollectiveCompletion
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    SparkStatus status;
+    uint32_t slot_index;
+    uint32_t credit_index;
+    uint64_t ordinal;
+    uint64_t generation;
+} SparkTpDeviceCollectiveCompletion;
+
+typedef void (*SparkTpDeviceCollectiveCompletionFunction)(
+    void *completion_context,
+    const SparkTpDeviceCollectiveCompletion *completion);
+
+typedef struct SparkTpDeviceCollectiveSubmission
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t slot_index;
+    uint32_t active_sequence_count;
+    uint64_t ordinal;
+    const void *local_device;
+    void *full_device;
+    void *cuda_stream;
+    SparkTpDeviceCollectiveCompletionFunction completion_function;
+    void *completion_context;
+} SparkTpDeviceCollectiveSubmission;
+
+typedef void (*SparkTpDeviceCollectiveFailureObservedFunction)(
+    void *hook_context,
+    uint32_t credit_index,
+    uint64_t observed_state_word);
+
+typedef SparkStatus (*SparkTpDeviceCollectiveCombineBf16Function)(
+    void *combine_context,
+    void *destination_device,
+    const void *source_device,
+    uint32_t active_sequence_count,
+    uint32_t hidden_dimension,
+    void *cuda_stream);
+
+typedef struct SparkTpDeviceCollectiveDebugHooks
+{
+    SparkTpDeviceCollectiveFailureObservedFunction failure_observed_function;
+    void *hook_context;
+} SparkTpDeviceCollectiveDebugHooks;
 
 typedef struct SparkTpDeviceCollectiveConfig
 {
     uint32_t abi_version;
     uint32_t tp_degree;
     uint32_t tp_rank;
+    uint32_t operation_kind;
+    uint32_t credit_count;
     uint32_t local_hidden_dimension;
     uint32_t max_active_sequence_count;
     uint32_t connect_timeout_milli;
@@ -30,6 +105,12 @@ typedef struct SparkTpDeviceCollectiveConfig
     const char *transport_module_path;
     const char *local_host;
     const char *rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
+    const SparkTpDeviceCollectiveCreditBinding *credit_bindings;
+    uint32_t credit_binding_count;
+    void *registration_cuda_stream;
+    SparkTpDeviceCollectiveCombineBf16Function combine_bf16_function;
+    void *combine_context;
+    const SparkTpDeviceCollectiveDebugHooks *debug_hooks;
 } SparkTpDeviceCollectiveConfig;
 
 typedef struct SparkTpDeviceCollective
@@ -38,42 +119,43 @@ typedef struct SparkTpDeviceCollective
     uint32_t tp_degree;
     uint32_t tp_rank;
     uint32_t step_count;
-    uint32_t operation_step_index;
-    uint32_t prepared_receive_mask;
+    uint32_t operation_kind;
+    uint32_t credit_count;
     uint32_t local_hidden_dimension;
     uint32_t max_active_sequence_count;
     uint32_t operation_timeout_milli;
     uint32_t memory_mode;
-    uint32_t failed;
     uint64_t collective_identifier;
-    uint64_t next_operation_sequence;
-    SparkHiddenTransportDynamicLibrary transport_library;
-    SparkHiddenTransportSession *send_sessions[
-        SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
-    SparkHiddenTransportSession *receive_sessions[
-        SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
-    uint32_t step_hidden_dimensions[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
-    char send_route_names[
-        SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS]
-        [SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES];
-    char receive_route_names[
-        SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS]
-        [SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES];
-    SparkHiddenTransportPacket prepared_receive_packets[
-        SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    void *implementation;
 } SparkTpDeviceCollective;
 
-/* Opens one bidirectional RDMA session pair per recursive-doubling step. The
- * transport module selects device memory or CUDA-mapped host memory from its
- * advertised capabilities; TCP and simulation transports are rejected. */
 SparkStatus SparkTpDeviceCollectiveCreate(
     const SparkTpDeviceCollectiveConfig *config,
     SparkTpDeviceCollective *collective_out);
 
-/* Exchanges one already-contiguous rank block with its butterfly partner.
- * send_device and receive_device are device pointers laid out as
- * active_sequence_count rows of hidden_dimension BF16 elements. The caller
- * owns the contiguous exchange buffers and chooses the current block. */
+SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
+    const char *transport_module_path,
+    uint32_t *memory_mode_out);
+
+SparkStatus SparkTpDeviceCollectiveSubmitBf16(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveSubmission *submission);
+
+SparkStatus SparkTpDeviceCollectiveRequestFailure(
+    SparkTpDeviceCollective *collective,
+    SparkStatus failure_status);
+
+SparkStatus SparkTpDeviceCollectiveRequestOperationFailure(
+    SparkTpDeviceCollective *collective,
+    uint64_t ordinal,
+    SparkStatus failure_status);
+
+SparkStatus SparkTpDeviceCollectiveOperationPhase(
+    const SparkTpDeviceCollective *collective,
+    uint64_t ordinal,
+    uint32_t *phase_out,
+    uint32_t *failure_requested_out);
+
 SparkStatus SparkTpDeviceCollectiveExchangeBf16(
     SparkTpDeviceCollective *collective,
     const void *send_device,
@@ -83,10 +165,6 @@ SparkStatus SparkTpDeviceCollectiveExchangeBf16(
     uint32_t step_index,
     void *cuda_stream);
 
-/* Posts a receive for a current or future recursive-doubling step. Calling
- * this before the caller's device-to-host copy lets receive advertisement and
- * memory registration overlap that copy. The matching exchange consumes the
- * prepared receive; the operation remains ordered by step_index. */
 SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
     SparkTpDeviceCollective *collective,
     void *receive_device,

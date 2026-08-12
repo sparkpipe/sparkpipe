@@ -33,7 +33,7 @@ MODEL_FAMILY_INCLUDE_FLAGS := \
     -Imodel-families/k3/include \
     -Imodel-families/mimo25/include
 DEPLOYMENT_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src
-CPPFLAGS ?= $(CORE_INCLUDE_FLAGS) $(MODEL_FAMILY_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src
+CPPFLAGS ?= $(CORE_INCLUDE_FLAGS) $(MODEL_FAMILY_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src -DSPARK_BATCH_BUCKET=1024u
 LDFLAGS ?=
 LDLIBS ?= -ldl -pthread
 CUDA_ARCH ?= sm_121a
@@ -129,9 +129,11 @@ LIBRARIES := $(CORE_LIBRARY) $(MODEL_COMMON_LIBRARY) $(COMPILER_LIBRARY) $(RUNTI
 DSV4_SERVING_ADAPTER := build/libdsv4_serving_adapter.$(SHARED_LIBRARY_EXT)
 DSV4_TP16_SERVING_ADAPTER := build/libdsv4_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
 DSV4_TP4_SERVING_ADAPTER := build/libdsv4_tp4_serving_adapter.$(SHARED_LIBRARY_EXT)
+DSV4_TP4_PP4_SERVING_ADAPTER := build/libdsv4_tp4_pp4_serving_adapter.$(SHARED_LIBRARY_EXT)
 DSV4_SERVING_TOPOLOGY_FLAGS := -DSPARK_DSV4_SERVING_TOPOLOGY=13
 DSV4_TP16_SERVING_TOPOLOGY_FLAGS := -DSPARK_DSV4_SERVING_TOPOLOGY=16
 DSV4_TP4_SERVING_TOPOLOGY_FLAGS := -DSPARK_DSV4_SERVING_TOPOLOGY=4
+DSV4_TP4_PP4_SERVING_TOPOLOGY_FLAGS := -DSPARK_DSV4_SERVING_TOPOLOGY=404
 QWEN36_SERVING_ADAPTER := build/libqwen36_serving_adapter.$(SHARED_LIBRARY_EXT)
 QWEN36_MODEL_DESCRIPTION := examples/model_descriptions/qwen36_resident_decode_stage_firmware.json
 QWEN36_MODEL_REVISION ?= bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1
@@ -170,15 +172,18 @@ TEST_NAMES := \
     test_model_serving_adapter \
 	test_model_resident_deployment \
     test_model_resident_ipc \
+	test_model_resident_deadline \
     test_model_pipeline_client \
     test_pipeline_runtime \
     test_dsv4_serving_adapter \
     test_dsv4_tp16_serving_adapter \
+	test_dsv4_tp4_pp4_serving_adapter \
     test_qwen36_serving_adapter \
     test_model_resident_end_to_end \
     test_distributed_work \
-    test_json \
-    test_hidden_transport \
+	    test_json \
+	    test_hidden_transport \
+	    test_hidden_transport_rdma_control \
     test_fabric_topology \
     test_memlink \
     test_release \
@@ -202,6 +207,7 @@ TEST_NAMES := \
     test_driver_compiler \
     test_orchestrator \
 	test_dsv4_lane_continuity \
+	test_dsv4_tp_graph_contract \
 	test_dsv4_pool_layout \
 	test_dsv4_paged_cache \
     test_dsv4_stage_runner \
@@ -221,9 +227,15 @@ PYTHON_TESTS := \
 	tests/test_dsv4_contracts.py \
 	tests/test_dsv4_driver_source_contracts.py \
 	tests/test_dsv4_ga_reference_fixture.py \
+	tests/test_dsv4_native_compute_source.py \
 	tests/test_dsv4_module_host_syntax.py \
 	tests/test_dsv4_stage_source.py \
 	tests/test_dsv4_stagepack.py \
+	tests/test_dsv4_tp_async_source.py \
+	tests/test_dsv4_tp_graph_islands_source.py \
+	tests/test_dsv4_tp4_decode_roofline.py \
+	tests/test_dsv4_tp4_pp4_perf_estimate.py \
+	tests/test_dsv4_tp4_pp4_stagepack.py \
 	tests/test_expert_grouping.py \
 	tests/test_production_selection_contract.py \
 	tests/test_gemm_k_alignment.py \
@@ -243,8 +255,9 @@ PYTHON_TESTS := \
 	tests/test_hardware_policy_closure.py \
 	tests/test_hardware_probe_coverage.py \
 	tests/test_hardware_probe_source_contracts.py \
-	tests/test_hardware_runner_configs.py \
-	tests/test_spark_model_kernel_probe.py \
+		tests/test_hardware_runner_configs.py \
+		tests/test_hidden_transport_rdma_source.py \
+		tests/test_spark_model_kernel_probe.py \
 	tests/test_spark_transport_probe.py \
 	tests/test_spark_topology_probe.py \
 	tests/test_spark_pmtu_probe.py \
@@ -313,6 +326,8 @@ TEST_DSV4_SERVING_DRIVER_MODULE := \
     build/test_modules/libdsv4_serving_driver_module.$(SHARED_LIBRARY_EXT)
 TEST_DSV4_TP16_SERVING_DRIVER_MODULE := \
     build/test_modules/libdsv4_tp16_serving_driver_module.$(SHARED_LIBRARY_EXT)
+TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE := \
+    build/test_modules/libdsv4_tp4_pp4_serving_driver_module.$(SHARED_LIBRARY_EXT)
 TEST_QWEN36_SERVING_DRIVER_MODULE := \
     build/test_modules/libqwen36_serving_driver_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_RESIDENT_TRANSPORT_MODULE := \
@@ -335,9 +350,9 @@ TEST_VALIDATOR_CHANGED := build/test_module_validator_identity_changed
 
 # Model CUDA modules are immutable artifacts selected by an explicit model
 # package. Host builds never guess a codec or silently skip a CUDA artifact.
-all: $(LIBRARIES) tools $(DSV4_SERVING_ADAPTER) $(QWEN36_SERVING_ADAPTER)
+all: $(LIBRARIES) tools $(DSV4_SERVING_ADAPTER) $(DSV4_TP4_PP4_SERVING_ADAPTER) $(QWEN36_SERVING_ADAPTER)
 
-tools: $(TOOL_BINARIES) $(DSV4_SERVING_ADAPTER) $(QWEN36_SERVING_ADAPTER)
+tools: $(TOOL_BINARIES) $(DSV4_SERVING_ADAPTER) $(DSV4_TP4_PP4_SERVING_ADAPTER) $(QWEN36_SERVING_ADAPTER)
 
 .PHONY: core model_common deployment audit-boundaries architecture_audit model_driver_contracts non_glm_model_driver_contracts
 
@@ -535,10 +550,13 @@ $(DSV4_TP16_SERVING_ADAPTER): modules/dsv4_resident_decode_stage/source/spark_ds
 $(DSV4_TP4_SERVING_ADAPTER): modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_serving_adapter.h modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY)
 	$(CC) $(CPPFLAGS) $(DSV4_TP4_SERVING_TOPOLOGY_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+$(DSV4_TP4_PP4_SERVING_ADAPTER): modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_serving_adapter.h modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY)
+	$(CC) $(CPPFLAGS) $(DSV4_TP4_PP4_SERVING_TOPOLOGY_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 $(QWEN36_SERVING_ADAPTER): modules/qwen36_resident_decode_stage/source/spark_qwen36_serving_adapter.c modules/qwen36_resident_decode_stage/include/sparkpipe/spark_qwen36_serving_adapter.h modules/qwen36_resident_decode_stage/include/sparkpipe/spark_qwen36_resident_decode_stage_firmware.h $(QWEN36_MODEL_DESCRIPTION) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include $(CFLAGS) $(QWEN36_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/qwen36_resident_decode_stage/source/spark_qwen36_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-$(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
+$(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "hidden_transport_spark_host_rdma_verbs failed: nvcc unavailable" >&2; exit 1; \
 	elif [ ! -f "$(CUDA_HOME)/include/cuda_runtime_api.h" ]; then \
@@ -546,12 +564,12 @@ $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu include/sparkpipe/sp
 	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
 		echo "hidden_transport_spark_host_rdma_verbs failed: libibverbs headers unavailable" >&2; exit 1; \
 	else \
-		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=0 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
+		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=0 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu ring/transport/rdma_control.c $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
 	fi
 
 hidden_transport_spark_host_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
 
-$(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA): ring/transport/rdma.cu include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
+$(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA): ring/transport/rdma.cu ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "hidden_transport_spark_gpudirect_rdma_verbs failed: nvcc unavailable" >&2; exit 1; \
 	elif [ ! -f "$(CUDA_HOME)/include/cuda_runtime_api.h" ]; then \
@@ -559,7 +577,7 @@ $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA): ring/transport/rdma.cu include/sparkpi
 	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
 		echo "hidden_transport_spark_gpudirect_rdma_verbs failed: libibverbs headers unavailable" >&2; exit 1; \
 	else \
-		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=1 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
+		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=1 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu ring/transport/rdma_control.c $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
 	fi
 
 hidden_transport_spark_gpudirect_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA)
@@ -605,6 +623,9 @@ $(TEST_DSV4_SERVING_DRIVER_MODULE): tests/fixtures/dsv4_serving_adapter_driver.c
 $(TEST_DSV4_TP16_SERVING_DRIVER_MODULE): tests/fixtures/dsv4_serving_adapter_driver.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h | build/test_modules
 	$(CC) $(CPPFLAGS) -DTEST_DSV4_SERVING_TP16=1 -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
+$(TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE): tests/fixtures/dsv4_serving_adapter_driver.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h | build/test_modules
+	$(CC) $(CPPFLAGS) -DTEST_DSV4_SERVING_HYBRID=1 -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_QWEN36_SERVING_DRIVER_MODULE): tests/fixtures/qwen36_serving_adapter_driver.c modules/qwen36_resident_decode_stage/include/sparkpipe/spark_qwen36_resident_decode_stage_firmware.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(QWEN36_MODEL_DESCRIPTION) | build/test_modules
 	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include $(CFLAGS) $(QWEN36_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
@@ -642,6 +663,9 @@ build/test_model_resident_deployment: tests/test_model_resident_deployment.c $(R
 build/test_model_resident_ipc: tests/test_model_resident_ipc.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_model_resident_ipc.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_model_resident_deadline: tests/test_model_resident_deadline.c node/model_residentd.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) tests/test_model_resident_deadline.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
 build/test_model_pipeline_client: tests/test_model_pipeline_client.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_residentd build/sparkpipe_model_batch $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_BATCH_PATH=\"build/sparkpipe_model_batch\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_pipeline_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -653,6 +677,9 @@ build/test_dsv4_serving_adapter: tests/test_dsv4_serving_adapter.c tests/fixture
 
 build/test_dsv4_tp16_serving_adapter: tests/test_dsv4_tp16_serving_adapter.c tests/fixtures/dsv4_tp16_serving_adapter_config.json $(DSV4_TP16_SERVING_ADAPTER) $(TEST_DSV4_TP16_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/dsv4_resident_decode_stage/include -DTEST_DSV4_TP16_ADAPTER_PATH=\"$(DSV4_TP16_SERVING_ADAPTER)\" -DTEST_DSV4_TP16_DRIVER_PATH=\"$(TEST_DSV4_TP16_SERVING_DRIVER_MODULE)\" -DTEST_DSV4_TP16_CONFIG_PATH=\"tests/fixtures/dsv4_tp16_serving_adapter_config.json\" $(CFLAGS) tests/test_dsv4_tp16_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv4_tp4_pp4_serving_adapter: tests/test_dsv4_tp4_pp4_serving_adapter.c tests/fixtures/dsv4_tp4_pp4_serving_adapter_config.json tests/fixtures/dsv4_tp4_pp4_serving_adapter_config_missing_graphs.json tests/fixtures/dsv4_tp4_pp4_serving_adapter_config_short_graphs.json $(DSV4_TP4_PP4_SERVING_ADAPTER) $(TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -Imodules/dsv4_resident_decode_stage/include -DTEST_DSV4_TP4_PP4_ADAPTER_PATH=\"$(DSV4_TP4_PP4_SERVING_ADAPTER)\" -DTEST_DSV4_TP4_PP4_DRIVER_PATH=\"$(TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE)\" -DTEST_DSV4_TP4_PP4_CONFIG_PATH=\"tests/fixtures/dsv4_tp4_pp4_serving_adapter_config.json\" -DTEST_DSV4_TP4_PP4_MISSING_GRAPHS_CONFIG_PATH=\"tests/fixtures/dsv4_tp4_pp4_serving_adapter_config_missing_graphs.json\" -DTEST_DSV4_TP4_PP4_SHORT_GRAPHS_CONFIG_PATH=\"tests/fixtures/dsv4_tp4_pp4_serving_adapter_config_short_graphs.json\" $(CFLAGS) tests/test_dsv4_tp4_pp4_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_qwen36_serving_adapter: tests/test_qwen36_serving_adapter.c tests/fixtures/qwen36_serving_adapter_config.json tests/fixtures/qwen36_serving_adapter_config_stale.json tests/fixtures/qwen36_serving_adapter_config_absolute.json tests/fixtures/qwen36_serving_adapter_config_overrun.json $(QWEN36_SERVING_ADAPTER) $(TEST_QWEN36_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include -DTEST_QWEN36_SERVING_ADAPTER_PATH=\"$(QWEN36_SERVING_ADAPTER)\" -DTEST_QWEN36_SERVING_DRIVER_PATH=\"$(TEST_QWEN36_SERVING_DRIVER_MODULE)\" -DTEST_QWEN36_SERVING_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config.json\" -DTEST_QWEN36_SERVING_STALE_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_stale.json\" -DTEST_QWEN36_SERVING_ABSOLUTE_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_absolute.json\" -DTEST_QWEN36_SERVING_OVERRUN_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_overrun.json\" $(CFLAGS) tests/test_qwen36_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
@@ -691,6 +718,9 @@ build/test_fabric_topology: tests/test_fabric_topology.c $(MODEL_COMMON_LIBRARY)
 build/test_hidden_transport: tests/test_hidden_transport.c $(COMMON_LIBRARY) $(TEST_HIDDEN_TRANSPORT_MODULE)
 	$(CC) $(CPPFLAGS) -Itests -DSPARK_TEST_HIDDEN_TRANSPORT_MODULE_PATH=\"$(TEST_HIDDEN_TRANSPORT_MODULE)\" $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_hidden_transport_rdma_control: tests/test_hidden_transport_rdma_control.c ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport_rdma_control.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_hidden_transport_rdma_control.c ring/transport/rdma_control.c $(LDFLAGS) $(LDLIBS) -lpthread -o $@
+
 build/test_memlink: tests/test_memlink.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -721,7 +751,7 @@ build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
 build/test_tp_device_collective: tests/test_tp_device_collective.c include/sparkpipe/spark_tp_device_collective.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(TEST_TP_DEVICE_COLLECTIVE_MODULE)
-	$(CC) $(CPPFLAGS) -DSPARK_TEST_TP_DEVICE_COLLECTIVE_MODULE_PATH=\"$(TEST_TP_DEVICE_COLLECTIVE_MODULE)\" $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -DSPARK_TEST_TP_DEVICE_COLLECTIVE_MODULE_PATH=\"$(TEST_TP_DEVICE_COLLECTIVE_MODULE)\" $(CFLAGS) $< tests/fixtures/tp_device_collective_cuda_query_stub.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c model-families/glm52/include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -756,6 +786,9 @@ build/test_dsv4_stage_runner: tests/test_dsv4_stage_runner.c modules/dsv4_reside
 
 build/test_dsv4_lane_continuity: tests/test_dsv4_lane_continuity.c modules/dsv4_resident_decode_stage/source/spark_dsv4_lane_continuity.h
 	$(CC) $(CPPFLAGS) -Imodules/dsv4_resident_decode_stage/source $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv4_tp_graph_contract: tests/test_dsv4_tp_graph_contract.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h
+	$(CC) $(DSV4_INCLUDE_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dsv4_pool_layout: tests/test_dsv4_pool_layout.c modules/dsv4_resident_decode_stage/source/spark_dsv4_pool_layout.h
 	$(CC) $(DSV4_INCLUDE_FLAGS) -Imodules/dsv4_resident_decode_stage/include -Imodules/dsv4_resident_decode_stage/source $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@

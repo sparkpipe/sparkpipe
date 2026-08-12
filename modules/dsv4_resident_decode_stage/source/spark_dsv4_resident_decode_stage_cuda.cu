@@ -32,6 +32,40 @@ static_assert(SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION % SparkDsv4ExpertWe
 	"DSV4 expert width must contain complete expert codec scale groups");
 
 /*
+ * Production DSV4 compute is an SM121-only, fail-closed route.  This runtime
+ * architecture check is not a hardware-qualification receipt.  Cache the
+ * check per executor thread (a resident module binds a thread to one device)
+ * so the hot layer loop does not issue a device-properties query.  A caller
+ * that moves the same resident executor thread to another device violates the
+ * module binding contract; the SM121 device code is independently guarded by
+ * LM_SM121_NATIVE_COMPUTE_PTX and traps on any non-SM121 image.
+ */
+static cudaError_t SparkDsv4RequireNativeSm121(void)
+{
+	static thread_local int32_t checked = 0;
+	static thread_local cudaError_t cached = cudaErrorInvalidValue;
+	cudaDeviceProp properties;
+	int device;
+	if ( checked != 0 )
+		return(cached);
+	checked = 1;
+	cached = cudaGetDevice(&device);
+	if ( cached == cudaSuccess )
+		cached = cudaGetDeviceProperties(&properties,device);
+	if ( cached != cudaSuccess || properties.major != 12 ||
+		properties.minor != 1 )
+		cached = cudaErrorInvalidValue;
+	return(cached);
+}
+
+static cudaError_t SparkDsv4RequireNativeDecodeShape(uint32_t rows)
+{
+	if ( SparkLmSm121NativeDecodeShape(rows) == 0u )
+		return(cudaErrorInvalidValue);
+	return(SparkDsv4RequireNativeSm121());
+}
+
+/*
  * DeepSeek V4 device kernels. The variant model header arrives via the
  * build's -include ahead of everything here; nothing below names a
  * variant. Shared machinery (linear over bf16/fp8/mxfp4, rms norm, head
@@ -1436,25 +1470,59 @@ extern "C" cudaError_t SparkDsv4LaunchRmsNorm(cudaStream_t stream, const void *i
 
 extern "C" cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
-	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
-		return(SparkLmHostLaunchBatchedLinear<32u,SPARK_ACTIVATION_CODEC_NONE>(stream,view->weight_format,view->payload,view->scale_data,input_bf16,output_bf16,row_count,view->columns,view->rows));
+	cudaError_t status;
+	if ( view == 0 || input_bf16 == 0 || output_bf16 == 0 ||
+		view->payload == 0 || view->rows == 0u || view->columns == 0u )
+		return(cudaErrorInvalidValue);
+	status = SparkDsv4RequireNativeDecodeShape(row_count);
+	if ( status != cudaSuccess )
+		return(status);
 	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
-		return(SparkLmHostLaunchBatchedLinear<128u,SPARK_DSV4_MODEL_ACTIVATION_CODEC>(stream,view->weight_format,view->payload,view->scale_data,input_bf16,output_bf16,row_count,view->columns,view->rows));
-	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 )
-		return(SparkLmHostLaunchBatchedLinear<32u,SPARK_DSV4_MODEL_ACTIVATION_CODEC>(stream,view->weight_format,view->payload,view->scale_data,input_bf16,output_bf16,row_count,view->columns,view->rows));
+	{
+		if ( view->scale_data == 0 || view->columns % 128u != 0u ||
+			view->rows % SPARK_LM_SM121_NATIVE_TILE_N != 0u )
+			return(cudaErrorInvalidValue);
+		return(SparkLmHostLaunchSm121NativeLinear<
+			SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(stream,view->payload,
+			(const uint8_t *)view->scale_data,
+			(uint64_t)view->rows * view->columns,
+			(uint64_t)view->rows * (view->columns / 128u),input_bf16,
+			view->columns,0u,0u,output_bf16,view->rows,0u,0u,1u,
+			row_count,view->columns,view->rows));
+	}
+	/* BF16 weights stay BF16 and use the tensor-core tile even for B1/B8. */
+	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 &&
+		(view->columns % SPARK_LM_TILE_K) == 0u )
+	{
+		dim3 grid((row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,
+			(view->rows + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
+		SparkLmExpertTileKernel<32u,SPARK_ACTIVATION_CODEC_NONE>
+			<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(
+				SPARK_LM_WEIGHT_FORMAT_BF16,view->payload,0,input_bf16,0,
+				output_bf16,row_count,view->columns,view->rows);
+		return(cudaGetLastError());
+	}
+	/* No MXFP4/BF16-dequant or scalar compatibility route is a DSV4 success. */
 	return(cudaErrorInvalidValue);
 }
 
 extern "C" cudaError_t SparkDsv4LaunchStridedLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *payload, const uint8_t *scale, uint64_t weight_payload_group_stride_bytes, uint64_t weight_scale_group_stride_bytes, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, uint32_t input_group_stride, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t output_group_stride, uint32_t group_count, uint32_t row_count)
 {
-	dim3 grid(row_count,(view->rows + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS,group_count);
-	uint32_t shared_bytes = view->columns * (uint32_t)sizeof(float);
-	if ( view->weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && view->weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && view->weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 )
+	cudaError_t status;
+	if ( view == 0 || view->weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 ||
+		payload == 0 || scale == 0 || input_bf16 == 0 || output_bf16 == 0 ||
+		group_count == 0u || view->columns % 128u != 0u ||
+		view->rows % SPARK_LM_SM121_NATIVE_TILE_N != 0u )
 		return(cudaErrorInvalidValue);
-	if ( SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE && (view->columns % SparkActivationCodecGroupSize(SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC)) != 0u )
-		return(cudaErrorInvalidValue);
-	SparkDsv4StridedLinearKernel<SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC><<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(view->weight_format,payload,scale,weight_payload_group_stride_bytes,weight_scale_group_stride_bytes,input_bf16,input_row_stride,input_offset,input_group_stride,output_bf16,output_row_stride,output_offset,output_group_stride,row_count,view->columns,view->rows);
-	return(cudaGetLastError());
+	status = SparkDsv4RequireNativeDecodeShape(row_count);
+	if ( status != cudaSuccess )
+		return(status);
+	return(SparkLmHostLaunchSm121NativeLinear<
+		SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(stream,payload,scale,
+		weight_payload_group_stride_bytes,weight_scale_group_stride_bytes,
+		input_bf16,input_row_stride,input_offset,input_group_stride,
+		output_bf16,output_row_stride,output_offset,output_group_stride,
+		group_count,row_count,view->columns,view->rows));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t hidden_dimension)
@@ -1474,6 +1542,9 @@ extern "C" cudaError_t SparkDsv4LaunchHeadShadowQuantize(cudaStream_t stream, co
 // full scan outright - dsv4 never carried the intermediate tiled form.
 extern "C" cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
 {
+	cudaError_t status = SparkDsv4RequireNativeDecodeShape(row_count);
+	if ( status != cudaSuccess )
+		return(status);
 	return(SparkLmHostLaunchHeadScreenedArgmax(stream,hidden_bf16,head_weight_bf16,shadow_payload,shadow_scale,error_norm,logits_bf16,candidate_ids,candidate_counts,output_token_ids,row_count,candidate_count,hidden_dimension));
 }
 
@@ -1760,40 +1831,135 @@ extern "C" cudaError_t SparkDsv4LaunchMoeRoute(cudaStream_t stream, const uint32
 	return(SparkDsv4GemmStatus("route",LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,expert_width,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_EXPERT_TILE_N,group_tile_prefix_w1,group_tile_prefix_w2,stream)));
 }
 
-static void SparkDsv4ExpertGemmArguments(LmGemmArguments *arguments, const SparkDsv4LinearView *stacked, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
-{
-	memset(arguments,0,sizeof(*arguments));
-	arguments->scale_a = LmScaleTensorNone();
-	arguments->scale_b = LmWeightCodecScaleTensor<SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC>(stacked->scale_data,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,output_dimension,input_dimension);
-	arguments->prefix_built = 1u;
-	arguments->group_row_offset = group_row_offset;
-	arguments->group_tile_prefix = group_tile_prefix;
-	arguments->output_bf16 = output_bf16;
-}
-
 extern "C" cudaError_t SparkDsv4LaunchExpertUp(cudaStream_t stream, const SparkDsv4LinearView *stacked, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t multiprocessor_count)
 {
-	LmGemmArguments arguments;
-	int32_t status;
-	SparkDsv4ExpertGemmArguments(&arguments,stacked,group_row_offset,group_tile_prefix,output_bf16,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,expert_width);
-	arguments.source_row_map = route_source_token;
-	arguments.source_row_count = rows;
-	status = LmGemmWeightOnlyIndirectLaunch<SparkDsv4ExpertWeightFormat,SPARK_DSV4_EXPERT_TILE_N,SPARK_DSV4_EXPERT_STAGES,SPARK_DSV4_EXPERT_WARPS,SPARK_DSV4_MODEL_ACTIVATION_CODEC>(&arguments,input_bf16,stacked->payload,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,rows,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,expert_width,multiprocessor_count,stream);
-	return(SparkDsv4GemmStatus("expert_up",status));
+	/* W1 and W3 must be issued together by SparkDsv4LaunchFusedExpertW13Act. */
+	(void)stream;
+	(void)stacked;
+	(void)input_bf16;
+	(void)route_source_token;
+	(void)group_row_offset;
+	(void)group_tile_prefix;
+	(void)output_bf16;
+	(void)rows;
+	(void)expert_width;
+	(void)multiprocessor_count;
+	return(cudaErrorInvalidValue);
+}
+
+extern "C" cudaError_t SparkDsv4LaunchFusedExpertW13Act(
+	cudaStream_t stream,
+	const SparkDsv4LinearView *w1,
+	const SparkDsv4LinearView *w3,
+	const void *input_bf16,
+	const uint32_t *route_source_token,
+	const uint32_t *group_row_offset,
+	uint32_t *group_tile_prefix,
+	void *activated_bf16,
+	uint32_t rows,
+	uint32_t expert_width,
+	float limit,
+	uint32_t multiprocessor_count)
+{
+	cudaError_t status;
+	uint64_t required_rows =
+		(uint64_t)SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT * expert_width;
+	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 ||
+		route_source_token == 0 || group_row_offset == 0 ||
+		group_tile_prefix == 0 || activated_bf16 == 0 ||
+		w1->weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 ||
+		w3->weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 ||
+		w1->payload == 0 || w3->payload == 0 || w1->scale_data == 0 ||
+		w3->scale_data == 0 || w1->rows != required_rows ||
+		w3->rows != required_rows ||
+		w1->columns != SPARK_DSV4_MODEL_HIDDEN_DIMENSION ||
+		w3->columns != SPARK_DSV4_MODEL_HIDDEN_DIMENSION )
+		return(cudaErrorInvalidValue);
+	status = SparkDsv4RequireNativeDecodeShape(rows);
+	if ( status != cudaSuccess )
+		return(status);
+	return(SparkLmHostLaunchSm121FusedExpertW13(stream,w1->payload,
+		(const uint8_t *)w1->scale_data,w3->payload,
+		(const uint8_t *)w3->scale_data,input_bf16,route_source_token,
+		group_row_offset,group_tile_prefix,activated_bf16,rows,
+		SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,
+		SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,
+		SPARK_DSV4_MODEL_HIDDEN_DIMENSION,expert_width,limit,
+		multiprocessor_count));
+}
+
+extern "C" cudaError_t SparkDsv4LaunchFusedSharedW13Act(
+	cudaStream_t stream,
+	const SparkDsv4LinearView *w1,
+	const SparkDsv4LinearView *w3,
+	const void *input_bf16,
+	void *activated_bf16,
+	uint32_t rows,
+	uint32_t expert_width,
+	float limit)
+{
+	cudaError_t status;
+	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 || activated_bf16 == 0 ||
+		w1->weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 ||
+		w3->weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 ||
+		w1->payload == 0 || w3->payload == 0 || w1->scale_data == 0 ||
+		w3->scale_data == 0 || w1->rows != expert_width ||
+		w3->rows != expert_width ||
+		w1->columns != SPARK_DSV4_MODEL_HIDDEN_DIMENSION ||
+		w3->columns != SPARK_DSV4_MODEL_HIDDEN_DIMENSION )
+		return(cudaErrorInvalidValue);
+	status = SparkDsv4RequireNativeDecodeShape(rows);
+	if ( status != cudaSuccess )
+		return(status);
+	return(SparkLmHostLaunchSm121FusedDenseW13<
+		SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(stream,w1->payload,
+		(const uint8_t *)w1->scale_data,w3->payload,
+		(const uint8_t *)w3->scale_data,input_bf16,activated_bf16,rows,
+		SPARK_DSV4_MODEL_HIDDEN_DIMENSION,expert_width,limit));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchExpertDown(cudaStream_t stream, const SparkDsv4LinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count)
 {
-	LmGemmArguments arguments;
-	int32_t status;
-	SparkDsv4ExpertGemmArguments(&arguments,stacked,group_row_offset,group_tile_prefix,output_bf16,expert_width,hidden_dimension);
-	status = LmGemmWeightOnlyLaunch<SparkDsv4ExpertWeightFormat,SPARK_DSV4_EXPERT_TILE_N,SPARK_DSV4_EXPERT_STAGES,SPARK_DSV4_EXPERT_WARPS,SPARK_DSV4_MODEL_ACTIVATION_CODEC>(&arguments,input_bf16,stacked->payload,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,rows,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,expert_width,hidden_dimension,multiprocessor_count,true,stream);
-	return(SparkDsv4GemmStatus("expert_down",status));
+	cudaError_t status;
+	uint64_t required_rows =
+		(uint64_t)SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT * hidden_dimension;
+	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 ||
+		group_tile_prefix == 0 || output_bf16 == 0 ||
+		stacked->weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 ||
+		stacked->payload == 0 || stacked->scale_data == 0 ||
+		stacked->rows != required_rows || stacked->columns != expert_width )
+		return(cudaErrorInvalidValue);
+	status = SparkDsv4RequireNativeDecodeShape(rows);
+	if ( status != cudaSuccess )
+		return(status);
+	return(SparkLmHostLaunchSm121ExpertW2(stream,stacked->payload,
+		(const uint8_t *)stacked->scale_data,input_bf16,group_row_offset,
+		group_tile_prefix,output_bf16,rows,
+		SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,
+		SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,expert_width,hidden_dimension,
+		multiprocessor_count));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension)
 {
 	return(SparkLmHostLaunchMoePairReduce(stream,slot_out_bf16,inverse_map,pair_weights_f32,accum_bf16,row_count,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,hidden_dimension));
+}
+
+extern "C" cudaError_t SparkDsv4LaunchMoePairReduceStrided(
+	cudaStream_t stream,
+	const void *slot_out_bf16,
+	const uint32_t *inverse_map,
+	const float *pair_weights_f32,
+	void *accum_bf16,
+	uint64_t accum_row_stride,
+	uint32_t accum_offset,
+	uint32_t row_count,
+	uint32_t hidden_dimension)
+{
+	return(SparkLmHostLaunchMoePairReduceStrided(stream,slot_out_bf16,
+		inverse_map,pair_weights_f32,accum_bf16,accum_row_stride,
+		accum_offset,row_count,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,
+		hidden_dimension));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchAccumAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)

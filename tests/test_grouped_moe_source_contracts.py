@@ -75,8 +75,13 @@ def main() -> None:
     mimo = read("inference/llms/mimo_2_5/layer.cuh")
     require(dsv4, "float *moe_scores_f32;", "DSV4 FP32 router output")
     require(dsv4, "SparkDsv4LaunchMoeRoute", "DSV4 device grouping")
-    require(dsv4, "SparkDsv4LaunchExpertUp", "DSV4 indirect grouped expert up")
-    require(dsv4, "SparkDsv4LaunchExpertDown", "DSV4 grouped expert down")
+    require(dsv4, "SparkDsv4LaunchFusedExpertW13Act",
+            "DSV4 fused indirect grouped expert W13 plus activation")
+    require(dsv4, "SparkDsv4LaunchFusedSharedW13Act",
+            "DSV4 fused shared expert W13 plus activation")
+    require(dsv4, "SparkDsv4LaunchExpertDown", "DSV4 native grouped expert W2")
+    reject(dsv4, "SparkDsv4LaunchExpertUp",
+           "DSV4 split routed expert-up success path")
     require(dsv4_cuda, "sqrtf(SparkLmSoftplus(accumulator))", "DSV4 sqrt-softplus router")
     require(dsv4, "SPARK_DSV4_MODEL_ROUTED_SCALING_FACTOR", "DSV4 router scale")
     require(mimo, "float *router_logits;", "MiMo FP32 router output")

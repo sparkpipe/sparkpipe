@@ -111,6 +111,15 @@ SparkStatus SparkPipelineRuntimeBuildFanoutRankPlan(
 	uint32_t max_input_row_count,
 	uint32_t transport_control_port_base,
 	SparkPipelineRuntimeRankPlan *rank_plan);
+SparkStatus SparkPipelineRuntimeBuildHybridRankPlan(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkPipelineRuntimeLinearNode *node,
+	uint32_t max_active_sequence_count,
+	uint32_t max_input_row_count,
+	uint32_t transport_capability_flags,
+	uint32_t transport_control_port_base,
+	const char *transport_module_id,
+	SparkPipelineRuntimeRankPlan *rank_plan);
 SparkStatus SparkPipelineRuntimeValidateRankPlan(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkPipelineRuntimeRankPlan *rank_plan);

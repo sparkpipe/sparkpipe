@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_DSV4_STAGE_RUNNER_ABI_VERSION 4u
+#define SPARK_DSV4_STAGE_RUNNER_ABI_VERSION 6u
 #define SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES \
     ((uint32_t)sizeof(SparkDsv4StageRunnerConfiguration))
 #define SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES \
@@ -23,11 +23,15 @@ extern "C" {
 #define SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY 0x00000002u
 #define SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY 0x00000004u
 #define SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL 0x00000008u
+#define SPARK_DSV4_STAGE_RUNNER_FLAG_HYBRID_TP_PP 0x00000010u
+#define SPARK_DSV4_STAGE_RUNNER_FLAG_FINAL_TP_RANK 0x00000020u
 #define SPARK_DSV4_STAGE_RUNNER_KNOWN_FLAGS \
     (SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_ADMISSION | \
      SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY | \
      SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY | \
-     SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL)
+     SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL | \
+     SPARK_DSV4_STAGE_RUNNER_FLAG_HYBRID_TP_PP | \
+     SPARK_DSV4_STAGE_RUNNER_FLAG_FINAL_TP_RANK)
 
 #define SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL \
     SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL
@@ -39,7 +43,7 @@ typedef struct SparkDsv4StageRunnerConfiguration
     uint32_t abi_version;
     uint32_t descriptor_bytes;
     uint32_t flags;
-    uint32_t reserved0;
+	uint32_t parallel_group_size;
 	uint32_t stage_index;
 	uint32_t stage_count;
 	uint32_t max_active_sequence_count;
@@ -61,6 +65,12 @@ typedef struct SparkDsv4StageRunnerDispatch
     uint64_t sequence_id;
     uint64_t sequence_position;
     uint64_t deadline_time_ns;
+	uint64_t submission_id;
+	uint64_t control_generation;
+	uint64_t transaction_id;
+	uint64_t dispatch_generation;
+	uint64_t request_generation;
+	uint64_t step_generation;
     uint32_t active_sequence_count;
     uint32_t new_token_count;
     uint32_t row_count;
@@ -104,6 +114,10 @@ typedef struct SparkDsv4StageRunner
     uint32_t flags;
     uint32_t stage_index;
 	uint32_t stage_count;
+	uint32_t parallel_group_size;
+	uint32_t pp_stage_index;
+	uint32_t pp_stage_count;
+	uint32_t tp_rank;
 	uint32_t max_active_sequence_count;
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;

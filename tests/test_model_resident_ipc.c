@@ -246,6 +246,31 @@ static void TestIndependentPrefillMessageCapacity(void)
 	assert(SparkModelResidentIpcCalculateSubmitBytes(SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT,SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT + 1u,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void TestDirectSubmitDescriptorGuard(void)
+{
+	SparkModelServingAdapterDescriptor descriptor;
+	TestBuildDescriptor(&descriptor);
+	assert(SparkModelResidentIpcValidateDirectSubmitDescriptor(&descriptor) ==
+		SPARK_STATUS_UNSUPPORTED);
+	descriptor.stage_count = 1u;
+	descriptor.stage_layer_counts[0] = descriptor.layer_count;
+	descriptor.stage_layer_counts[1] = 0u;
+	descriptor.boundary_sideband_kinds[0] = 0u;
+	descriptor.boundary_sideband_bytes_per_sequence[0] = 0u;
+	assert(SparkModelResidentIpcValidateDirectSubmitDescriptor(&descriptor) ==
+		SPARK_STATUS_OK);
+	descriptor.capability_flags |=
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
+	assert(SparkModelResidentIpcValidateDirectSubmitDescriptor(&descriptor) ==
+		SPARK_STATUS_UNSUPPORTED);
+	descriptor.capability_flags &=
+		~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
+	descriptor.capability_flags |=
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT;
+	assert(SparkModelResidentIpcValidateDirectSubmitDescriptor(&descriptor) ==
+		SPARK_STATUS_UNSUPPORTED);
+}
+
 int main(void)
 {
 	TestHello();
@@ -254,5 +279,6 @@ int main(void)
 	TestSubmissionRoundTrip();
 	TestCompletionRoundTrip();
 	TestIndependentPrefillMessageCapacity();
+	TestDirectSubmitDescriptorGuard();
 	return(0);
 }

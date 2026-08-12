@@ -89,21 +89,233 @@ static uint32_t SparkPipelineRuntimeTextBufferIsValid(
 	return(end != 0 && (required == 0u || end != text) ? 1u : 0u);
 }
 
-static SparkStatus SparkPipelineRuntimeGetStageSlice(
-	const SparkModelServingAdapterDescriptor *descriptor,
-	uint32_t stage_index,
-	uint32_t *first_layer_index,
-	uint32_t *layer_count)
+typedef struct SparkPipelineRuntimeStageGeometry
 {
-	uint32_t index,first;
-	if ( descriptor == 0 || stage_index >= descriptor->stage_count || first_layer_index == 0 || layer_count == 0 )
+	uint32_t group_size;
+	uint32_t group_lane_index;
+	uint32_t logical_stage_index;
+	uint32_t logical_stage_count;
+	uint32_t descriptor_stage_index;
+	uint32_t first_layer_index;
+	uint32_t layer_count;
+	uint32_t previous_rank_index;
+	uint32_t next_rank_index;
+} SparkPipelineRuntimeStageGeometry;
+
+static SparkStatus SparkPipelineRuntimeDeriveStageGeometry(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	uint32_t rank_index,
+	uint32_t stage_index,
+	uint32_t hybrid,
+	SparkPipelineRuntimeStageGeometry *geometry)
+{
+	uint32_t logical_stage_index;
+	uint32_t prior_stage_index;
+	if ( descriptor == 0 || geometry == 0 ||
+		rank_index >= descriptor->stage_count ||
+		stage_index >= descriptor->stage_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	first = 0u;
-	for (index=0u; index<stage_index; index++)
-		first += descriptor->stage_layer_counts[index];
-	*first_layer_index = first;
-	*layer_count = descriptor->stage_layer_counts[stage_index];
+	memset(geometry,0,sizeof(*geometry));
+	geometry->group_size = hybrid != 0u ? descriptor->parallel_group_size : 1u;
+	if ( geometry->group_size == 0u ||
+		descriptor->stage_count % geometry->group_size != 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( hybrid != 0u && rank_index != stage_index )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	geometry->group_lane_index = stage_index % geometry->group_size;
+	geometry->logical_stage_index = stage_index / geometry->group_size;
+	geometry->logical_stage_count = descriptor->stage_count /
+		geometry->group_size;
+	geometry->descriptor_stage_index = geometry->logical_stage_index *
+		geometry->group_size;
+	geometry->layer_count = descriptor->stage_layer_counts[
+		geometry->descriptor_stage_index];
+	geometry->previous_rank_index = SPARK_PIPELINE_RUNTIME_NO_RANK;
+	geometry->next_rank_index = SPARK_PIPELINE_RUNTIME_NO_RANK;
+	for (logical_stage_index=0u;
+		logical_stage_index<geometry->logical_stage_index;
+		logical_stage_index++)
+	{
+		prior_stage_index = logical_stage_index * geometry->group_size;
+		geometry->first_layer_index +=
+			descriptor->stage_layer_counts[prior_stage_index];
+	}
+	if ( hybrid != 0u && geometry->logical_stage_index != 0u )
+		geometry->previous_rank_index = rank_index - geometry->group_size;
+	if ( hybrid != 0u &&
+		geometry->logical_stage_index + 1u < geometry->logical_stage_count )
+		geometry->next_rank_index = rank_index + geometry->group_size;
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkPipelineRuntimeBuildTransportedRankPlan(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkPipelineRuntimeLinearNode *node,
+	uint32_t max_active_sequence_count,
+	uint32_t max_input_row_count,
+	uint32_t transport_capability_flags,
+	uint32_t transport_control_port_base,
+	const char *transport_module_id,
+	uint32_t hybrid,
+	SparkPipelineRuntimeRankPlan *rank_plan)
+{
+	SparkPipelineRuntimeStageGeometry geometry;
+	SparkStatus status;
+	uint32_t descriptor_stage_index;
+	uint64_t boundary_bytes_per_sequence;
+	uint64_t input_packet_bytes_per_sequence;
+	uint64_t output_packet_bytes_per_sequence;
+	status = SparkModelServingAdapterValidateDescriptor(descriptor);
+	if ( status != SPARK_STATUS_OK || node == 0 || rank_plan == 0 ||
+		transport_module_id == 0 || transport_module_id[0] == '\0' ||
+		node->abi_version != SPARK_PIPELINE_RUNTIME_ABI_VERSION ||
+		node->descriptor_bytes != SPARK_PIPELINE_RUNTIME_LINEAR_NODE_BYTES ||
+		node->rank_index >= descriptor->stage_count ||
+		node->stage_index >= descriptor->stage_count ||
+		node->stage_count != descriptor->stage_count || node->reserved0 != 0u ||
+		node->host_name == 0 || node->host_name[0] == '\0' ||
+		max_active_sequence_count == 0u ||
+		max_active_sequence_count > descriptor->max_active_sequence_count ||
+		max_input_row_count == 0u ||
+		max_input_row_count > descriptor->max_input_row_count ||
+		max_input_row_count < max_active_sequence_count ||
+		transport_control_port_base == 0u ||
+		transport_control_port_base > UINT16_MAX - (descriptor->stage_count - 1u) ||
+		descriptor->boundary_format != SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 ||
+		descriptor->boundary_element_bytes !=
+			SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT )
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
+	if ( hybrid != 0u )
+	{
+		if ( (descriptor->capability_flags &
+			(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+			 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
+			 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP)) !=
+			(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+			 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
+			 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	else if ( (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkPipelineRuntimeDeriveStageGeometry(descriptor,
+		node->rank_index,node->stage_index,hybrid,&geometry);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( hybrid != 0u )
+	{
+		if ( node->previous_rank_index != geometry.previous_rank_index ||
+			node->next_rank_index != geometry.next_rank_index ||
+			(geometry.previous_rank_index != SPARK_PIPELINE_RUNTIME_NO_RANK &&
+				(node->previous_host_name == 0 ||
+				 node->previous_host_name[0] == '\0')) ||
+			(geometry.previous_rank_index == SPARK_PIPELINE_RUNTIME_NO_RANK &&
+				node->previous_host_name != 0) ||
+			(geometry.next_rank_index != SPARK_PIPELINE_RUNTIME_NO_RANK &&
+				(node->next_host_name == 0 || node->next_host_name[0] == '\0')) ||
+			(geometry.next_rank_index == SPARK_PIPELINE_RUNTIME_NO_RANK &&
+				node->next_host_name != 0) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	else if ( SparkPipelineRuntimeNeighborIsValid(node->stage_index,
+		node->stage_count,node->rank_index,node->previous_rank_index,
+		node->previous_host_name,1u) == 0u ||
+		SparkPipelineRuntimeNeighborIsValid(node->stage_index,
+			node->stage_count,node->rank_index,node->next_rank_index,
+			node->next_host_name,0u) == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	boundary_bytes_per_sequence = (uint64_t)descriptor->boundary_element_count *
+		descriptor->boundary_element_bytes;
+	if ( boundary_bytes_per_sequence > UINT32_MAX )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	input_packet_bytes_per_sequence = boundary_bytes_per_sequence;
+	output_packet_bytes_per_sequence = boundary_bytes_per_sequence;
+	descriptor_stage_index = geometry.descriptor_stage_index;
+	if ( geometry.logical_stage_index != 0u )
+		input_packet_bytes_per_sequence +=
+			descriptor->boundary_sideband_bytes_per_sequence[
+				descriptor_stage_index - geometry.group_size];
+	if ( geometry.logical_stage_index + 1u < geometry.logical_stage_count )
+		output_packet_bytes_per_sequence +=
+			descriptor->boundary_sideband_bytes_per_sequence[
+				descriptor_stage_index];
+	if ( input_packet_bytes_per_sequence < boundary_bytes_per_sequence ||
+		output_packet_bytes_per_sequence < boundary_bytes_per_sequence )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(rank_plan,0,sizeof(*rank_plan));
+	rank_plan->abi_version = SPARK_PIPELINE_RUNTIME_ABI_VERSION;
+	rank_plan->descriptor_bytes = SPARK_PIPELINE_RUNTIME_RANK_PLAN_BYTES;
+	rank_plan->rank_index = node->rank_index;
+	rank_plan->stage_index = node->stage_index;
+	rank_plan->stage_count = descriptor->stage_count;
+	rank_plan->previous_rank_index = node->previous_rank_index;
+	rank_plan->next_rank_index = node->next_rank_index;
+	rank_plan->first_layer_index = geometry.first_layer_index;
+	rank_plan->layer_count = geometry.layer_count;
+	rank_plan->max_active_sequence_count = max_active_sequence_count;
+	rank_plan->max_input_row_count = max_input_row_count;
+	rank_plan->boundary_format = descriptor->boundary_format;
+	rank_plan->boundary_element_count = descriptor->boundary_element_count;
+	rank_plan->boundary_element_bytes = descriptor->boundary_element_bytes;
+	if ( geometry.logical_stage_index != 0u )
+	{
+		rank_plan->input_sideband_kind =
+			descriptor->boundary_sideband_kinds[
+				descriptor_stage_index - geometry.group_size];
+		rank_plan->input_sideband_bytes_per_sequence =
+			descriptor->boundary_sideband_bytes_per_sequence[
+				descriptor_stage_index - geometry.group_size];
+	}
+	if ( geometry.logical_stage_index + 1u < geometry.logical_stage_count )
+	{
+		rank_plan->output_sideband_kind =
+			descriptor->boundary_sideband_kinds[descriptor_stage_index];
+		rank_plan->output_sideband_bytes_per_sequence =
+			descriptor->boundary_sideband_bytes_per_sequence[
+				descriptor_stage_index];
+	}
+	rank_plan->transport_capability_flags = transport_capability_flags;
+	rank_plan->transport_control_port_base = transport_control_port_base;
+	rank_plan->boundary_bytes_per_sequence = boundary_bytes_per_sequence;
+	rank_plan->input_packet_bytes_per_sequence = input_packet_bytes_per_sequence;
+	rank_plan->output_packet_bytes_per_sequence = output_packet_bytes_per_sequence;
+	rank_plan->input_max_packet_bytes = input_packet_bytes_per_sequence *
+		max_input_row_count;
+	rank_plan->output_max_packet_bytes = output_packet_bytes_per_sequence *
+		max_input_row_count;
+	status = SparkPipelineRuntimeCopyText(rank_plan->transport_module_id,
+		sizeof(rank_plan->transport_module_id),transport_module_id);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkPipelineRuntimeCopyText(rank_plan->host_name,
+			sizeof(rank_plan->host_name),node->host_name);
+	if ( status == SPARK_STATUS_OK && geometry.logical_stage_index != 0u )
+	{
+		rank_plan->flags |= SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS;
+		status = SparkPipelineRuntimeCopyText(rank_plan->previous_host_name,
+			sizeof(rank_plan->previous_host_name),node->previous_host_name);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkPipelineRuntimeFormatRoute(rank_plan->previous_rank_index,
+				rank_plan->rank_index,rank_plan->input_route_name,
+				sizeof(rank_plan->input_route_name));
+	}
+	if ( status == SPARK_STATUS_OK &&
+		geometry.logical_stage_index + 1u < geometry.logical_stage_count )
+	{
+		rank_plan->flags |= SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT;
+		status = SparkPipelineRuntimeCopyText(rank_plan->next_host_name,
+			sizeof(rank_plan->next_host_name),node->next_host_name);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkPipelineRuntimeFormatRoute(rank_plan->rank_index,
+				rank_plan->next_rank_index,rank_plan->output_route_name,
+				sizeof(rank_plan->output_route_name));
+	}
+	if ( hybrid != 0u )
+		rank_plan->flags |= SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT;
+	if ( node->stage_index + 1u == descriptor->stage_count )
+		rank_plan->flags |= SPARK_PIPELINE_RUNTIME_RANK_FLAG_FINAL_STAGE;
+	return(status == SPARK_STATUS_OK ?
+		SparkPipelineRuntimeValidateRankPlan(descriptor,rank_plan) : status);
 }
 
 SparkStatus SparkPipelineRuntimeBuildLinearRankPlan(
@@ -116,74 +328,26 @@ SparkStatus SparkPipelineRuntimeBuildLinearRankPlan(
 	const char *transport_module_id,
 	SparkPipelineRuntimeRankPlan *rank_plan)
 {
-	SparkStatus status;
-	uint64_t boundary_bytes_per_sequence,input_packet_bytes_per_sequence,output_packet_bytes_per_sequence;
-	status = SparkModelServingAdapterValidateDescriptor(descriptor);
-	if ( status != SPARK_STATUS_OK || node == 0 || rank_plan == 0 || transport_module_id == 0 || transport_module_id[0] == '\0' || node->abi_version != SPARK_PIPELINE_RUNTIME_ABI_VERSION || node->descriptor_bytes != SPARK_PIPELINE_RUNTIME_LINEAR_NODE_BYTES || node->rank_index >= descriptor->stage_count || node->stage_index >= descriptor->stage_count || node->stage_count != descriptor->stage_count || node->reserved0 != 0u || node->host_name == 0 || node->host_name[0] == '\0' || SparkPipelineRuntimeNeighborIsValid(node->stage_index,node->stage_count,node->rank_index,node->previous_rank_index,node->previous_host_name,1u) == 0u || SparkPipelineRuntimeNeighborIsValid(node->stage_index,node->stage_count,node->rank_index,node->next_rank_index,node->next_host_name,0u) == 0u || max_active_sequence_count == 0u || max_active_sequence_count > descriptor->max_active_sequence_count || max_input_row_count == 0u || max_input_row_count > descriptor->max_input_row_count || max_input_row_count < max_active_sequence_count || transport_control_port_base == 0u || transport_control_port_base > UINT16_MAX - (descriptor->stage_count - 1u) || descriptor->boundary_format != SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 || descriptor->boundary_element_bytes != SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT )
-		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
-	boundary_bytes_per_sequence = (uint64_t)descriptor->boundary_element_count * descriptor->boundary_element_bytes;
-	if ( boundary_bytes_per_sequence > UINT32_MAX )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	input_packet_bytes_per_sequence = boundary_bytes_per_sequence;
-	output_packet_bytes_per_sequence = boundary_bytes_per_sequence;
-	if ( node->stage_index != 0u )
-		input_packet_bytes_per_sequence += descriptor->boundary_sideband_bytes_per_sequence[node->stage_index - 1u];
-	if ( node->stage_index + 1u < descriptor->stage_count )
-		output_packet_bytes_per_sequence += descriptor->boundary_sideband_bytes_per_sequence[node->stage_index];
-	if ( input_packet_bytes_per_sequence < boundary_bytes_per_sequence || output_packet_bytes_per_sequence < boundary_bytes_per_sequence )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	memset(rank_plan,0,sizeof(*rank_plan));
-	rank_plan->abi_version = SPARK_PIPELINE_RUNTIME_ABI_VERSION;
-	rank_plan->descriptor_bytes = SPARK_PIPELINE_RUNTIME_RANK_PLAN_BYTES;
-	rank_plan->rank_index = node->rank_index;
-	rank_plan->stage_index = node->stage_index;
-	rank_plan->stage_count = descriptor->stage_count;
-	rank_plan->previous_rank_index = node->previous_rank_index;
-	rank_plan->next_rank_index = node->next_rank_index;
-	status = SparkPipelineRuntimeGetStageSlice(descriptor,node->stage_index,&rank_plan->first_layer_index,&rank_plan->layer_count);
-	rank_plan->max_active_sequence_count = max_active_sequence_count;
-	rank_plan->max_input_row_count = max_input_row_count;
-	rank_plan->boundary_format = descriptor->boundary_format;
-	rank_plan->boundary_element_count = descriptor->boundary_element_count;
-	rank_plan->boundary_element_bytes = descriptor->boundary_element_bytes;
-	if ( node->stage_index != 0u )
-	{
-		rank_plan->input_sideband_kind = descriptor->boundary_sideband_kinds[node->stage_index - 1u];
-		rank_plan->input_sideband_bytes_per_sequence = descriptor->boundary_sideband_bytes_per_sequence[node->stage_index - 1u];
-	}
-	if ( node->stage_index + 1u < descriptor->stage_count )
-	{
-		rank_plan->output_sideband_kind = descriptor->boundary_sideband_kinds[node->stage_index];
-		rank_plan->output_sideband_bytes_per_sequence = descriptor->boundary_sideband_bytes_per_sequence[node->stage_index];
-	}
-	rank_plan->transport_capability_flags = transport_capability_flags;
-	rank_plan->transport_control_port_base = transport_control_port_base;
-	rank_plan->boundary_bytes_per_sequence = boundary_bytes_per_sequence;
-	rank_plan->input_packet_bytes_per_sequence = input_packet_bytes_per_sequence;
-	rank_plan->output_packet_bytes_per_sequence = output_packet_bytes_per_sequence;
-	rank_plan->input_max_packet_bytes = input_packet_bytes_per_sequence * max_input_row_count;
-	rank_plan->output_max_packet_bytes = output_packet_bytes_per_sequence * max_input_row_count;
-	if ( status == SPARK_STATUS_OK )
-		status = SparkPipelineRuntimeCopyText(rank_plan->transport_module_id,sizeof(rank_plan->transport_module_id),transport_module_id);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkPipelineRuntimeCopyText(rank_plan->host_name,sizeof(rank_plan->host_name),node->host_name);
-	if ( status == SPARK_STATUS_OK && node->stage_index != 0u )
-	{
-		rank_plan->flags |= SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS;
-		status = SparkPipelineRuntimeCopyText(rank_plan->previous_host_name,sizeof(rank_plan->previous_host_name),node->previous_host_name);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkPipelineRuntimeFormatRoute(rank_plan->previous_rank_index,rank_plan->rank_index,rank_plan->input_route_name,sizeof(rank_plan->input_route_name));
-	}
-	if ( status == SPARK_STATUS_OK && node->stage_index + 1u < descriptor->stage_count )
-	{
-		rank_plan->flags |= SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT;
-		status = SparkPipelineRuntimeCopyText(rank_plan->next_host_name,sizeof(rank_plan->next_host_name),node->next_host_name);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkPipelineRuntimeFormatRoute(rank_plan->rank_index,rank_plan->next_rank_index,rank_plan->output_route_name,sizeof(rank_plan->output_route_name));
-	}
-	if ( node->stage_index + 1u == descriptor->stage_count )
-		rank_plan->flags |= SPARK_PIPELINE_RUNTIME_RANK_FLAG_FINAL_STAGE;
-	return(status == SPARK_STATUS_OK ? SparkPipelineRuntimeValidateRankPlan(descriptor,rank_plan) : status);
+	return(SparkPipelineRuntimeBuildTransportedRankPlan(descriptor,node,
+		max_active_sequence_count,max_input_row_count,
+		transport_capability_flags,transport_control_port_base,
+		transport_module_id,0u,rank_plan));
+}
+
+SparkStatus SparkPipelineRuntimeBuildHybridRankPlan(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkPipelineRuntimeLinearNode *node,
+	uint32_t max_active_sequence_count,
+	uint32_t max_input_row_count,
+	uint32_t transport_capability_flags,
+	uint32_t transport_control_port_base,
+	const char *transport_module_id,
+	SparkPipelineRuntimeRankPlan *rank_plan)
+{
+	return(SparkPipelineRuntimeBuildTransportedRankPlan(descriptor,node,
+		max_active_sequence_count,max_input_row_count,
+		transport_capability_flags,transport_control_port_base,
+		transport_module_id,1u,rank_plan));
 }
 
 SparkStatus SparkPipelineRuntimeBuildFanoutRankPlan(
@@ -230,40 +394,138 @@ SparkStatus SparkPipelineRuntimeValidateRankPlan(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkPipelineRuntimeRankPlan *rank_plan)
 {
+	SparkPipelineRuntimeStageGeometry geometry;
 	SparkStatus status;
-	uint32_t first_layer_index,layer_count,parallel;
+	uint32_t descriptor_stage_index;
+	uint32_t expected_has_next;
+	uint32_t expected_has_previous;
+	uint32_t expected_input_sideband_bytes;
+	uint32_t expected_input_sideband_kind;
+	uint32_t expected_output_sideband_bytes;
+	uint32_t expected_output_sideband_kind;
+	uint32_t hybrid;
+	uint32_t parallel;
+	uint32_t transported;
 	status = SparkModelServingAdapterValidateDescriptor(descriptor);
 	if ( status != SPARK_STATUS_OK || rank_plan == 0 )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
 	if ( rank_plan->abi_version != SPARK_PIPELINE_RUNTIME_ABI_VERSION || rank_plan->descriptor_bytes != SPARK_PIPELINE_RUNTIME_RANK_PLAN_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
 	parallel = (rank_plan->flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT) != 0u ? 1u : 0u;
-	if ( SparkPipelineRuntimeTextBufferIsValid(rank_plan->transport_module_id,sizeof(rank_plan->transport_module_id),parallel == 0u ? 1u : 0u) == 0u || SparkPipelineRuntimeTextBufferIsValid(rank_plan->host_name,sizeof(rank_plan->host_name),1u) == 0u || SparkPipelineRuntimeTextBufferIsValid(rank_plan->previous_host_name,sizeof(rank_plan->previous_host_name),parallel == 0u && rank_plan->stage_index != 0u ? 1u : 0u) == 0u || SparkPipelineRuntimeTextBufferIsValid(rank_plan->next_host_name,sizeof(rank_plan->next_host_name),parallel == 0u && rank_plan->stage_index + 1u < rank_plan->stage_count ? 1u : 0u) == 0u || SparkPipelineRuntimeTextBufferIsValid(rank_plan->input_route_name,sizeof(rank_plan->input_route_name),parallel == 0u && rank_plan->stage_index != 0u ? 1u : 0u) == 0u || SparkPipelineRuntimeTextBufferIsValid(rank_plan->output_route_name,sizeof(rank_plan->output_route_name),parallel == 0u && rank_plan->stage_index + 1u < rank_plan->stage_count ? 1u : 0u) == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+	hybrid = (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ? 1u : 0u;
+	transported = parallel == 0u || hybrid != 0u ? 1u : 0u;
 	if ( rank_plan->rank_index >= descriptor->stage_count || rank_plan->stage_index >= descriptor->stage_count || rank_plan->stage_count != descriptor->stage_count || (rank_plan->flags & ~SPARK_PIPELINE_RUNTIME_RANK_KNOWN_FLAGS) != 0u || rank_plan->reserved0 != 0u || rank_plan->boundary_format != descriptor->boundary_format || rank_plan->boundary_element_count != descriptor->boundary_element_count || rank_plan->boundary_element_bytes != descriptor->boundary_element_bytes || rank_plan->max_active_sequence_count == 0u || rank_plan->max_active_sequence_count > descriptor->max_active_sequence_count || rank_plan->max_input_row_count < rank_plan->max_active_sequence_count || rank_plan->max_input_row_count > descriptor->max_input_row_count || (parallel == 0u && (rank_plan->transport_control_port_base == 0u || rank_plan->transport_control_port_base > UINT16_MAX - (rank_plan->stage_count - 1u))) || rank_plan->boundary_bytes_per_sequence != (uint64_t)descriptor->boundary_element_count * descriptor->boundary_element_bytes )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( parallel != 0u && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) != 0u )
+	if ( hybrid != parallel && hybrid != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( parallel == 0u && (rank_plan->input_sideband_kind != (rank_plan->stage_index != 0u ? descriptor->boundary_sideband_kinds[rank_plan->stage_index - 1u] : 0u) || rank_plan->input_sideband_bytes_per_sequence != (rank_plan->stage_index != 0u ? descriptor->boundary_sideband_bytes_per_sequence[rank_plan->stage_index - 1u] : 0u) || rank_plan->output_sideband_kind != (rank_plan->stage_index + 1u < rank_plan->stage_count ? descriptor->boundary_sideband_kinds[rank_plan->stage_index] : 0u) || rank_plan->output_sideband_bytes_per_sequence != (rank_plan->stage_index + 1u < rank_plan->stage_count ? descriptor->boundary_sideband_bytes_per_sequence[rank_plan->stage_index] : 0u)) )
+	if ( parallel != 0u && hybrid == 0u &&
+		(descriptor->capability_flags &
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( parallel != 0u && (rank_plan->flags & (SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS | SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT)) != 0u )
+	if ( hybrid != 0u &&
+		(descriptor->capability_flags &
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( parallel == 0u && (rank_plan->input_packet_bytes_per_sequence != rank_plan->boundary_bytes_per_sequence + rank_plan->input_sideband_bytes_per_sequence || rank_plan->output_packet_bytes_per_sequence != rank_plan->boundary_bytes_per_sequence + rank_plan->output_sideband_bytes_per_sequence || rank_plan->input_max_packet_bytes != rank_plan->input_packet_bytes_per_sequence * rank_plan->max_input_row_count || rank_plan->output_max_packet_bytes != rank_plan->output_packet_bytes_per_sequence * rank_plan->max_input_row_count) )
+	status = SparkPipelineRuntimeDeriveStageGeometry(descriptor,
+		rank_plan->rank_index,rank_plan->stage_index,hybrid,&geometry);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	expected_has_previous = transported != 0u &&
+		geometry.logical_stage_index != 0u ? 1u : 0u;
+	expected_has_next = transported != 0u &&
+		geometry.logical_stage_index + 1u < geometry.logical_stage_count ? 1u : 0u;
+	if ( SparkPipelineRuntimeTextBufferIsValid(rank_plan->transport_module_id,
+		sizeof(rank_plan->transport_module_id),transported) == 0u ||
+		SparkPipelineRuntimeTextBufferIsValid(rank_plan->host_name,
+			sizeof(rank_plan->host_name),1u) == 0u ||
+		SparkPipelineRuntimeTextBufferIsValid(rank_plan->previous_host_name,
+			sizeof(rank_plan->previous_host_name),expected_has_previous) == 0u ||
+		SparkPipelineRuntimeTextBufferIsValid(rank_plan->next_host_name,
+			sizeof(rank_plan->next_host_name),expected_has_next) == 0u ||
+		SparkPipelineRuntimeTextBufferIsValid(rank_plan->input_route_name,
+			sizeof(rank_plan->input_route_name),expected_has_previous) == 0u ||
+		SparkPipelineRuntimeTextBufferIsValid(rank_plan->output_route_name,
+			sizeof(rank_plan->output_route_name),expected_has_next) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( parallel != 0u && (rank_plan->previous_rank_index != SPARK_PIPELINE_RUNTIME_NO_RANK || rank_plan->next_rank_index != SPARK_PIPELINE_RUNTIME_NO_RANK || rank_plan->input_sideband_kind != 0u || rank_plan->input_sideband_bytes_per_sequence != 0u || rank_plan->output_sideband_kind != 0u || rank_plan->output_sideband_bytes_per_sequence != 0u || rank_plan->input_packet_bytes_per_sequence != 0u || rank_plan->output_packet_bytes_per_sequence != 0u || rank_plan->input_max_packet_bytes != 0u || rank_plan->output_max_packet_bytes != 0u || rank_plan->transport_capability_flags != 0u || rank_plan->first_layer_index != 0u || rank_plan->layer_count != descriptor->layer_count) )
+	if ( ((rank_plan->flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u) != expected_has_previous ||
+		((rank_plan->flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u) != expected_has_next )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( parallel == 0u && (SparkPipelineRuntimeNeighborIsValid(rank_plan->stage_index,rank_plan->stage_count,rank_plan->rank_index,rank_plan->previous_rank_index,rank_plan->stage_index != 0u ? rank_plan->previous_host_name : 0,1u) == 0u || SparkPipelineRuntimeNeighborIsValid(rank_plan->stage_index,rank_plan->stage_count,rank_plan->rank_index,rank_plan->next_rank_index,rank_plan->stage_index + 1u < rank_plan->stage_count ? rank_plan->next_host_name : 0,0u) == 0u) )
+	if ( transported != 0u &&
+		(rank_plan->transport_control_port_base == 0u ||
+		 rank_plan->transport_control_port_base >
+			UINT16_MAX - (rank_plan->stage_count - 1u)) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = parallel != 0u ? SPARK_STATUS_OK : SparkPipelineRuntimeGetStageSlice(descriptor,rank_plan->stage_index,&first_layer_index,&layer_count);
-	if ( parallel != 0u )
+	if ( transported == 0u )
 	{
-		first_layer_index = 0u;
-		layer_count = descriptor->layer_count;
+		if ( rank_plan->previous_rank_index != SPARK_PIPELINE_RUNTIME_NO_RANK ||
+			rank_plan->next_rank_index != SPARK_PIPELINE_RUNTIME_NO_RANK ||
+			rank_plan->input_sideband_kind != 0u ||
+			rank_plan->input_sideband_bytes_per_sequence != 0u ||
+			rank_plan->output_sideband_kind != 0u ||
+			rank_plan->output_sideband_bytes_per_sequence != 0u ||
+			rank_plan->input_packet_bytes_per_sequence != 0u ||
+			rank_plan->output_packet_bytes_per_sequence != 0u ||
+			rank_plan->input_max_packet_bytes != 0u ||
+			rank_plan->output_max_packet_bytes != 0u ||
+			rank_plan->transport_capability_flags != 0u ||
+			rank_plan->transport_control_port_base != 0u ||
+			rank_plan->first_layer_index != 0u ||
+			rank_plan->layer_count != descriptor->layer_count )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	if ( status != SPARK_STATUS_OK || rank_plan->first_layer_index != first_layer_index || rank_plan->layer_count != layer_count )
-		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
-	if ( parallel == 0u && (((rank_plan->flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u) != (rank_plan->stage_index != 0u) || ((rank_plan->flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u) != (rank_plan->stage_index + 1u < rank_plan->stage_count)) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+	else
+	{
+		if ( (hybrid != 0u &&
+			 (rank_plan->previous_rank_index != geometry.previous_rank_index ||
+			  rank_plan->next_rank_index != geometry.next_rank_index)) ||
+			rank_plan->first_layer_index != geometry.first_layer_index ||
+			rank_plan->layer_count != geometry.layer_count )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( hybrid == 0u &&
+			(SparkPipelineRuntimeNeighborIsValid(rank_plan->stage_index,
+				rank_plan->stage_count,rank_plan->rank_index,
+				rank_plan->previous_rank_index,
+				expected_has_previous != 0u ?
+					rank_plan->previous_host_name : 0,1u) == 0u ||
+			 SparkPipelineRuntimeNeighborIsValid(rank_plan->stage_index,
+				rank_plan->stage_count,rank_plan->rank_index,
+				rank_plan->next_rank_index,
+				expected_has_next != 0u ? rank_plan->next_host_name : 0,
+				0u) == 0u) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		descriptor_stage_index = geometry.descriptor_stage_index;
+		expected_input_sideband_kind = expected_has_previous != 0u ?
+			descriptor->boundary_sideband_kinds[
+				descriptor_stage_index - geometry.group_size] : 0u;
+		expected_input_sideband_bytes = expected_has_previous != 0u ?
+			descriptor->boundary_sideband_bytes_per_sequence[
+				descriptor_stage_index - geometry.group_size] : 0u;
+		expected_output_sideband_kind = expected_has_next != 0u ?
+			descriptor->boundary_sideband_kinds[descriptor_stage_index] : 0u;
+		expected_output_sideband_bytes = expected_has_next != 0u ?
+			descriptor->boundary_sideband_bytes_per_sequence[
+				descriptor_stage_index] : 0u;
+		if ( rank_plan->input_sideband_kind != expected_input_sideband_kind ||
+			rank_plan->input_sideband_bytes_per_sequence !=
+				expected_input_sideband_bytes ||
+			rank_plan->output_sideband_kind != expected_output_sideband_kind ||
+			rank_plan->output_sideband_bytes_per_sequence !=
+				expected_output_sideband_bytes ||
+			rank_plan->input_packet_bytes_per_sequence !=
+				rank_plan->boundary_bytes_per_sequence +
+				rank_plan->input_sideband_bytes_per_sequence ||
+			rank_plan->output_packet_bytes_per_sequence !=
+				rank_plan->boundary_bytes_per_sequence +
+				rank_plan->output_sideband_bytes_per_sequence ||
+			rank_plan->input_max_packet_bytes !=
+				rank_plan->input_packet_bytes_per_sequence *
+				rank_plan->max_input_row_count ||
+			rank_plan->output_max_packet_bytes !=
+				rank_plan->output_packet_bytes_per_sequence *
+				rank_plan->max_input_row_count )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	if ( ((rank_plan->flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_FINAL_STAGE) != 0u) != (rank_plan->stage_index + 1u == rank_plan->stage_count) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);

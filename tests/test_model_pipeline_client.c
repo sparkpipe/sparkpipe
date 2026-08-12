@@ -654,6 +654,43 @@ static void TestModelPipelineWaitForCompletion(
 	assert(state->completion_count == completion_count);
 }
 
+static void TestModelPipelineDecisionQueueSaturation(
+	SparkModelPipelineClient *pipeline,
+	TestModelPipelineState *state)
+{
+	SparkModelServingSubmission submissions[2u];
+	SparkModelServingLane lanes[2u][2u];
+	uint32_t tokens[2u][4u],row_lanes[2u][4u];
+	uint64_t positions[2u][4u],sequences[2u][4u];
+	uint8_t busy_once;
+	busy_once = 1u;
+	TestModelPipelineBuildPrefill(&submissions[0u],lanes[0u],tokens[0u],
+		row_lanes[0u],positions[0u],sequences[0u],401u);
+	TestModelPipelineRetargetPrefill(&submissions[0u],&lanes[0u][0u],
+		sequences[0u],801u,301u);
+	lanes[0u][0u].resident_sequence_slot = 28u;
+	submissions[0u].model_extension_kind = 99u;
+	submissions[0u].model_extension_bytes = sizeof(busy_once);
+	submissions[0u].model_extension = &busy_once;
+	TestModelPipelineBuildPrefill(&submissions[1u],lanes[1u],tokens[1u],
+		row_lanes[1u],positions[1u],sequences[1u],402u);
+	TestModelPipelineRetargetPrefill(&submissions[1u],&lanes[1u][0u],
+		sequences[1u],802u,302u);
+	lanes[1u][0u].resident_sequence_slot = 27u;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submissions[0u]) ==
+		SPARK_STATUS_OK);
+	assert(SparkModelPipelineClientSubmit(pipeline,&submissions[1u]) ==
+		SPARK_STATUS_OK);
+	TestModelPipelineWaitForCompletion(pipeline,state,2u);
+	assert(state->result_count == 2u);
+	assert(state->result_submission_ids[0u] == 401u);
+	assert(state->result_submission_ids[1u] == 402u);
+	assert(state->result_statuses[0u] == SPARK_STATUS_OK);
+	assert(state->result_statuses[1u] == SPARK_STATUS_OK);
+	assert(state->completions[0u].submission_id == 401u);
+	assert(state->completions[1u].submission_id == 402u);
+}
+
 static SparkStatus TestModelPipelineWaitForFailure(
 	SparkModelPipelineClient *pipeline)
 {
@@ -1299,6 +1336,11 @@ int main(void)
 	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
 		children[rank] = TestModelPipelineStartResident(deployment_path,rank);
 	TestModelPipelineWaitForSockets(paths);
+	pipeline = TestModelPipelineConnect(&deployment,&state);
+	state.pipeline = pipeline;
+	TestModelPipelineDecisionQueueSaturation(pipeline,&state);
+	SparkModelPipelineClientDestroy(pipeline);
+	memset(&state,0,sizeof(state));
 	pipeline = TestModelPipelineConnect(&deployment,&state);
 	state.pipeline = pipeline;
 	assert(SparkModelPipelineClientGetView(pipeline,&view) == SPARK_STATUS_OK);

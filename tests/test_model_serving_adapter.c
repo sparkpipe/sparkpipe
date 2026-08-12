@@ -1,12 +1,16 @@
 #include <assert.h>
 #include <string.h>
 
+#include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
 #include "sparkpipe/spark_row_layout.h"
 
 #ifndef TEST_MODEL_SERVING_ADAPTER_MODULE_PATH
 #define TEST_MODEL_SERVING_ADAPTER_MODULE_PATH ""
 #endif
+
+_Static_assert(SPARK_MODEL_DRIVER_ABI_VERSION == 11u,
+	"model-driver admission identity requires ABI 11");
 
 static SparkStatus TestInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
@@ -42,6 +46,9 @@ static SparkStatus TestSubmit(
 
 static uint32_t TestPrefetchCallCount;
 static SparkStatus TestPrefetchStatus;
+static uint32_t TestResolveCallCount;
+static uint32_t TestLastResolution;
+static SparkStatus TestResolveStatus;
 
 static SparkStatus TestPrefetch(
 	void *adapter_state,
@@ -53,6 +60,18 @@ static SparkStatus TestPrefetch(
 	assert(submission_count == 1u);
 	TestPrefetchCallCount++;
 	return(TestPrefetchStatus);
+}
+
+static SparkStatus TestResolvePrefetch(
+	void *adapter_state,
+	const SparkModelServingSubmission *submission,
+	uint32_t resolution)
+{
+	assert(adapter_state != 0);
+	assert(submission != 0);
+	TestResolveCallCount++;
+	TestLastResolution = resolution;
+	return(TestResolveStatus);
 }
 
 static SparkStatus TestProgress(void *adapter_state,uint32_t maximum_step_count)
@@ -124,6 +143,32 @@ static void TestDescriptor(void)
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
 	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
+}
+
+static void TestHybridDescriptor(void)
+{
+	SparkModelServingAdapterDescriptor descriptor;
+	uint32_t index;
+	TestBuildDescriptor(&descriptor);
+	descriptor.capability_flags |=
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP;
+	descriptor.stage_count = 16u;
+	descriptor.layer_count = 8u;
+	descriptor.parallel_group_size = 4u;
+	memset(descriptor.stage_layer_counts,0,
+		sizeof(descriptor.stage_layer_counts));
+	for (index=0u; index<descriptor.stage_count; index++)
+		descriptor.stage_layer_counts[index] = 2u;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) ==
+		SPARK_STATUS_OK);
+	descriptor.stage_layer_counts[5] = 3u;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor.stage_layer_counts[5] = 2u;
+	descriptor.parallel_group_size = 0u;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void TestRuntimeLimits(void)
@@ -226,6 +271,50 @@ static void TestInterfaceValidation(void)
 	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE) == SPARK_STATUS_INVALID_ARGUMENT);
 	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH;
 	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) == SPARK_STATUS_INVALID_ARGUMENT);
+	adapter_interface.prefetch = TestPrefetch;
+	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) ==
+		SPARK_STATUS_OK);
+	descriptor.capability_flags |=
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV;
+	descriptor.cache_block_token_count = 4u;
+	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
+	adapter_interface.resolve_prefetch = TestResolvePrefetch;
+	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) ==
+		SPARK_STATUS_OK);
+}
+
+static void TestPreparedResolution(void)
+{
+	SparkModelServingAdapterDescriptor descriptor;
+	SparkModelServingAdapterInterface adapter_interface;
+	SparkModelServingSubmission submission;
+	uint32_t adapter_state;
+	TestBuildDescriptor(&descriptor);
+	descriptor.capability_flags |=
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV;
+	descriptor.cache_block_token_count = 4u;
+	memset(&adapter_interface,0,sizeof(adapter_interface));
+	adapter_interface.descriptor = &descriptor;
+	adapter_interface.resolve_prefetch = TestResolvePrefetch;
+	memset(&submission,0,sizeof(submission));
+	adapter_state = 1u;
+	TestResolveCallCount = 0u;
+	TestResolveStatus = SPARK_STATUS_OK;
+	assert(SparkModelServingAdapterResolvePrefetch(&adapter_interface,
+		&adapter_state,&submission,
+		SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT) == SPARK_STATUS_OK);
+	assert(TestResolveCallCount == 1u);
+	assert(TestLastResolution ==
+		SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT);
+	TestResolveStatus = SPARK_STATUS_BUSY;
+	assert(SparkModelServingAdapterResolvePrefetch(&adapter_interface,
+		&adapter_state,&submission,
+		SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) ==
+		SPARK_STATUS_INTERNAL_ERROR);
+	assert(SparkModelServingAdapterResolvePrefetch(&adapter_interface,
+		&adapter_state,&submission,0u) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void TestSubmissionValidation(void)
@@ -319,6 +408,8 @@ static void TestDriverCacheLaneMapping(void)
 	memset(serving_lanes,0,sizeof(serving_lanes));
 	serving_lanes[0].sequence_id = 101u;
 	serving_lanes[0].sequence_position = 128u;
+	serving_lanes[0].request_generation = 1001u;
+	serving_lanes[0].step_generation = 2001u;
 	serving_lanes[0].resident_sequence_slot = 7u;
 	serving_lanes[0].context_token_count = 256u;
 	serving_lanes[0].cache_prefix_token_count = 128u;
@@ -329,6 +420,8 @@ static void TestDriverCacheLaneMapping(void)
 		SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
 	serving_lanes[1].sequence_id = 102u;
 	serving_lanes[1].sequence_position = 5u;
+	serving_lanes[1].request_generation = 1002u;
+	serving_lanes[1].step_generation = 2002u;
 	serving_lanes[1].resident_sequence_slot = 8u;
 	serving_lanes[1].context_token_count = 6u;
 	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
@@ -340,14 +433,60 @@ static void TestDriverCacheLaneMapping(void)
 	assert(SparkModelServingAdapterBuildDriverCacheLanes(&submission,driver_lanes,2u,&lane_count) == SPARK_STATUS_OK);
 	assert(lane_count == 2u);
 	assert(driver_lanes[0].flags == (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH));
+	assert(driver_lanes[0].request_generation == 1001u);
+	assert(driver_lanes[0].step_generation == 2001u);
 	assert(driver_lanes[0].prefix_token_count == 128u);
 	assert(driver_lanes[0].publish_identity.sha256[0] == 2u);
 	assert(driver_lanes[1].flags == 0u);
+	assert(driver_lanes[1].request_generation == 1002u);
+	assert(driver_lanes[1].step_generation == 2002u);
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
 	assert(SparkModelServingAdapterBuildDriverCacheLanes(&submission,driver_lanes,2u,&lane_count) == SPARK_STATUS_OK);
 	assert(driver_lanes[0].flags == SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE);
 	assert(driver_lanes[0].prefix_token_count == 0u);
 	assert(SparkModelServingAdapterBuildDriverCacheLanes(&submission,driver_lanes,1u,&lane_count) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static void TestDriverCacheAdmissionIdentity(void)
+{
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverCacheLane lane;
+	memset(&request,0,sizeof(request));
+	memset(&lane,0,sizeof(lane));
+	request.descriptor_bytes = sizeof(request);
+	request.program_id = 1u;
+	request.submission_id = 10u;
+	request.control_generation = 11u;
+	request.transaction_id = 12u;
+	request.request_generation = 13u;
+	request.step_generation = 14u;
+	request.active_slot_count = 1u;
+	request.admission_flags =
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE;
+	request.cache_lane_count = 1u;
+	request.cache_lanes = &lane;
+	lane.sequence_id = 20u;
+	lane.request_generation = request.request_generation;
+	lane.step_generation = request.step_generation;
+	lane.resident_sequence_slot = 0u;
+	lane.context_token_count = 1u;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) != 0u);
+	request.submission_id = 0u;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
+	request.submission_id = 10u;
+	lane.request_generation++;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) != 0u);
+	lane.request_generation = 0u;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
+	lane.request_generation = request.request_generation + 1u;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) != 0u);
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) != 0u);
+	request.admission_flags = 0u;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) != 0u);
+	request.transaction_id = 0u;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
 }
 
 static void TestRuntimeSubmissionValidation(void)
@@ -550,13 +689,16 @@ static void TestDynamicLoader(void)
 int main(void)
 {
 	TestDescriptor();
+	TestHybridDescriptor();
 	TestRuntimeLimits();
 	TestIndependentPrefillCapacity();
 	TestJitKvRuntimeLimits();
 	TestInterfaceValidation();
+	TestPreparedResolution();
 	TestSubmissionValidation();
 	TestPreparationInvokesOptionalPrefetch();
 	TestDriverCacheLaneMapping();
+	TestDriverCacheAdmissionIdentity();
 	TestRuntimeSubmissionValidation();
 	TestEmitRowSelection();
 	TestMaximumRoundMajorRowLayout();

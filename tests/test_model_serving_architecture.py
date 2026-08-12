@@ -139,6 +139,55 @@ def main() -> int:
         and "SparkModelResidentIpcInitializeDecisionResult" in resident,
         "resident can execute before pipeline-wide admission commits",
     )
+    submission_path = resident.split(
+        "static SparkStatus SparkModelResidentdProcessSubmission", 1
+    )[1].split("static SparkStatus SparkModelResidentdProcessDecision", 1)[0]
+    require(
+        "SparkModelResidentIpcValidateDirectSubmitDescriptor" in submission_path
+        and submission_path.index(
+            "SparkModelResidentIpcValidateDirectSubmitDescriptor"
+        )
+        < submission_path.index(
+            "SparkModelServingAdapterValidateRuntimeSubmission"
+        )
+        < submission_path.index("SparkModelServingAdapterPrepareSubmission"),
+        "distributed direct SUBMIT reaches adapter/cache admission",
+    )
+    decision_path = resident.split(
+        "static SparkStatus SparkModelResidentdProcessDecision", 1
+    )[1].split("static SparkStatus SparkModelResidentdProcessMessage", 1)[0]
+    require(
+        "SPARK_MODEL_RESIDENTD_ROUTE_RESOLVING" in decision_path
+        and "pthread_mutex_unlock(&runtime->mutex);" in decision_path
+        and decision_path.index("pthread_mutex_unlock(&runtime->mutex);")
+        < decision_path.index("SparkModelServingAdapterResolvePrefetch")
+        < decision_path.index("SparkModelResidentdEnqueueCommittedLocked"),
+        "prepared cache is resolved under the resident mutex or after commit publication",
+    )
+    require(
+        "committed_fifo_head" in resident
+        and "SparkModelResidentdEnqueueCommittedLocked" in resident
+        and "SparkModelResidentdRemoveCommittedLocked" in resident,
+        "resident lacks strict committed adapter-entry FIFO ownership",
+    )
+    require(
+        "SparkModelResidentdQueueDeadlineCompletionLocked" in resident
+        and "deadline_completion_queued" in resident
+        and "deadline_wait_state" in resident
+        and "stay quarantined until transport reports a terminal" in resident,
+        "transport expiry can hang completion or recycle a live boundary",
+    )
+    resident_client = (
+        ROOT / "runtime/model_resident_client.c"
+    ).read_text(encoding="utf-8")
+    pipeline_client = (
+        ROOT / "runtime/model_pipeline_client.c"
+    ).read_text(encoding="utf-8")
+    require(
+        "SparkModelResidentClientCanQueueDecision" in resident_client
+        and pipeline_client.count("SparkModelResidentClientCanQueueDecision") >= 2,
+        "pipeline decisions can partially publish before all-rank preflight",
+    )
     require(
         "packet->sequence_id = submission->submission_id" in resident
         and "packet->token_index = submission->dispatch_generation" in resident,
@@ -382,6 +431,21 @@ def main() -> int:
         and "host_services.kv_physical_page_capacity = request->kv_physical_page_capacity"
         in driver_compiler,
         "generated driver boundary does not forward neutral KV page budgets",
+    )
+    require(
+        "#define SPARK_MODEL_DRIVER_ABI_VERSION 11u" in driver_header
+        and "uint64_t submission_id;" in driver_header
+        and "uint64_t control_generation;" in driver_header
+        and "uint64_t transaction_id;" in driver_header
+        and driver_header.count("uint64_t request_generation;") >= 2
+        and driver_header.count("uint64_t step_generation;") >= 2
+        and "lane->request_generation == 0u" in driver_support
+        and "lane->step_generation == 0u" in driver_support
+        and "destination->request_generation = source->request_generation"
+        in serving_source
+        and "destination->step_generation = source->step_generation"
+        in serving_source,
+        "prepared driver cache admission lacks collision-safe request identity",
     )
 
     require(

@@ -33,6 +33,11 @@ static SparkStatus SparkDsv4RunnerTestAdmit(
     assert(state != 0);
     assert(request != 0);
     assert(decision != 0);
+	assert(request->submission_id == 1001u);
+	assert(request->control_generation == 1101u);
+	assert(request->transaction_id == 1201u);
+	assert(request->request_generation == 1301u);
+	assert(request->step_generation == 1401u);
     state->admit_count += 1u;
     memset(decision, 0, sizeof(*decision));
     decision->descriptor_bytes = sizeof(*decision);
@@ -62,6 +67,12 @@ static SparkStatus SparkDsv4RunnerTestSubmit(
 	state->last_execution_stream = frame->execution_stream;
     assert((context->flags &
         SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_BATCH_VIEW) != 0u);
+	assert(context->submission_id == 1001u);
+	assert(context->control_generation == 1101u);
+	assert(context->transaction_id == 1201u);
+	assert(context->dispatch_generation == 2001u);
+	assert(context->request_generation == 1301u);
+	assert(context->step_generation == 1401u);
 	assert((context->flags &
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER) != 0u);
 	if ( state->expect_hidden_input != 0u )
@@ -182,6 +193,12 @@ static void SparkDsv4RunnerTestPrefillMapping(void)
     dispatch.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
     dispatch.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES;
     dispatch.flags = SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL;
+	dispatch.submission_id = 1001u;
+	dispatch.control_generation = 1101u;
+	dispatch.transaction_id = 1201u;
+	dispatch.dispatch_generation = 2001u;
+	dispatch.request_generation = 1301u;
+	dispatch.step_generation = 1401u;
     dispatch.request_id = 1u;
     dispatch.sequence_id = sequence;
     dispatch.active_sequence_count = 1u;
@@ -271,6 +288,12 @@ static void SparkDsv4RunnerTestIntermediateTokenRouting(void)
 	dispatch.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
 	dispatch.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES;
 	dispatch.flags = SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL;
+	dispatch.submission_id = 1001u;
+	dispatch.control_generation = 1101u;
+	dispatch.transaction_id = 1201u;
+	dispatch.dispatch_generation = 2001u;
+	dispatch.request_generation = 1301u;
+	dispatch.step_generation = 1401u;
 	dispatch.request_id = 1u;
 	dispatch.sequence_id = sequence;
 	dispatch.active_sequence_count = 1u;
@@ -332,6 +355,12 @@ static void SparkDsv4RunnerTestRejectsNonFinalEmitRow(void)
 	dispatch.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
 	dispatch.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES;
 	dispatch.flags = SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL;
+	dispatch.submission_id = 1001u;
+	dispatch.control_generation = 1101u;
+	dispatch.transaction_id = 1201u;
+	dispatch.dispatch_generation = 2001u;
+	dispatch.request_generation = 1301u;
+	dispatch.step_generation = 1401u;
 	dispatch.request_id = 1u;
 	dispatch.sequence_id = 1u;
 	dispatch.active_sequence_count = 1u;
@@ -404,6 +433,45 @@ static void SparkDsv4RunnerTestPrefillOffsets(void)
 	assert(SparkDsv4AttentionWindowSlot(0u,0u,0u) == UINT32_MAX);
 }
 
+static void SparkDsv4RunnerTestHybridTopology(void)
+{
+	SparkDsv4StageRunner runner;
+	SparkDsv4StageRunnerConfiguration configuration;
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_DSV4_STAGE_RUNNER_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES;
+	configuration.flags = SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL |
+		SPARK_DSV4_STAGE_RUNNER_FLAG_HYBRID_TP_PP |
+		SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY |
+		SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY;
+	configuration.parallel_group_size = 4u;
+	configuration.stage_index = 8u;
+	configuration.stage_count = 16u;
+	configuration.max_active_sequence_count = 1u;
+	configuration.max_input_row_count = 1u;
+	configuration.resident_sequence_capacity = 1u;
+	configuration.driver_interface = &TestInterface;
+	configuration.driver_instance = &TestState;
+	configuration.program = &TestProgram;
+	configuration.execution_stream = (void *)(uintptr_t)1u;
+	assert(SparkDsv4StageRunnerInitialize(&runner,&configuration) == SPARK_STATUS_OK);
+	assert(runner.pp_stage_count == 4u);
+	assert(runner.pp_stage_index == 2u);
+	assert(runner.tp_rank == 0u);
+	assert(runner.owns_embedding == 0u);
+	assert(runner.owns_final_head == 0u);
+	configuration.parallel_group_size = 0u;
+	assert(SparkDsv4StageRunnerInitialize(&runner,&configuration) == SPARK_STATUS_INVALID_ARGUMENT);
+	configuration.parallel_group_size = 4u;
+	configuration.stage_index = 15u;
+	configuration.flags &= ~SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY;
+	configuration.flags |= SPARK_DSV4_STAGE_RUNNER_FLAG_FINAL_TP_RANK;
+	assert(SparkDsv4StageRunnerInitialize(&runner,&configuration) == SPARK_STATUS_OK);
+	assert(runner.pp_stage_index == 3u);
+	assert(runner.tp_rank == 3u);
+	assert(runner.owns_final_head == 1u);
+}
+
 int main(void)
 {
 	SparkDsv4RunnerTestResidentCapacity();
@@ -414,5 +482,6 @@ int main(void)
 	SparkDsv4RunnerTestRejectsNonFinalEmitRow();
 	SparkDsv4RunnerTestCausalBulkWaves();
 	SparkDsv4RunnerTestPrefillOffsets();
+	SparkDsv4RunnerTestHybridTopology();
     return 0;
 }

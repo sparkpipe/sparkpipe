@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 10u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 11u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
@@ -42,8 +42,12 @@ extern "C" {
 #define SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL 0x00000002u
 #define SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE 0x00000004u
 #define SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE 0x00000001u
+#define SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT 0x00000002u
+#define SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT 0x00000004u
 #define SPARK_MODEL_DRIVER_ADMISSION_KNOWN_FLAGS \
-    SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE
+    (SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE | \
+     SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT | \
+     SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT)
 #define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX 0x00000001u
 #define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH 0x00000002u
 #define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE 0x00000004u
@@ -90,6 +94,8 @@ typedef struct SparkModelDriverCacheLane
 {
     uint64_t sequence_id;
     uint64_t sequence_position;
+    uint64_t request_generation;
+    uint64_t step_generation;
     uint32_t resident_sequence_slot;
     uint32_t context_token_count;
     uint32_t prefix_token_count;
@@ -187,6 +193,11 @@ typedef struct SparkModelDriverAdmissionRequest
 {
     uint32_t descriptor_bytes;
     uint32_t program_id;
+    uint64_t submission_id;
+    uint64_t control_generation;
+    uint64_t transaction_id;
+    uint64_t request_generation;
+    uint64_t step_generation;
     uint64_t request_id;
     uint64_t sequence_id;
     uint64_t sequence_position;

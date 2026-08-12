@@ -3,6 +3,19 @@
 
 #include "sparkpipe/spark_model_serving_adapter.h"
 
+typedef struct TestModelServingPrepared
+{
+	uint32_t active;
+	uint32_t committed;
+	uint32_t busy_returned;
+	uint64_t submission_id;
+	uint64_t control_generation;
+	uint64_t transaction_id;
+	uint64_t dispatch_generation;
+	uint64_t request_generation;
+	uint64_t step_generation;
+} TestModelServingPrepared;
+
 typedef struct TestModelServingState
 {
 	SparkModelServingRuntimeLimits runtime_limits;
@@ -13,6 +26,7 @@ typedef struct TestModelServingState
 	uint64_t submitted_count;
 	uint64_t completed_count;
 	uint64_t rejected_count;
+	TestModelServingPrepared prepared[4];
 } TestModelServingState;
 
 static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
@@ -135,6 +149,8 @@ static SparkStatus TestModelServingValidateSubmission(
 		return(state->stage_index == 1u ? SPARK_STATUS_UNSUPPORTED : SPARK_STATUS_OK);
 	if ( submission->model_extension_kind == 88u && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
+	if ( submission->model_extension_kind == 99u && submission->model_extension_bytes == 1u )
+		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_bytes != 0u || submission->model_extension_kind != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
 	return(SPARK_STATUS_OK);
@@ -172,6 +188,19 @@ static void TestModelServingBuildCompletion(
 		completion->token_ids[lane] = (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u ? (submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? 4203u : 4200u) + lane : 0u;
 }
 
+static uint32_t TestModelServingPreparedIdentityMatches(
+	const TestModelServingPrepared *prepared,
+	const SparkModelServingSubmission *submission)
+{
+	return(prepared->active != 0u &&
+		prepared->submission_id == submission->submission_id &&
+		prepared->control_generation == submission->control_generation &&
+		prepared->transaction_id == submission->transaction_id &&
+		prepared->dispatch_generation == submission->dispatch_generation &&
+		prepared->request_generation == submission->request_generation &&
+		prepared->step_generation == submission->step_generation ? 1u : 0u);
+}
+
 static SparkStatus TestModelServingSubmit(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission)
@@ -179,6 +208,7 @@ static SparkStatus TestModelServingSubmit(
 	TestModelServingState *state;
 	SparkModelServingCompletion completion;
 	SparkStatus status;
+	uint32_t index;
 	state = (TestModelServingState *)adapter_state;
 	status = TestModelServingValidateSubmission(state,submission);
 	if ( status == SPARK_STATUS_OK )
@@ -188,6 +218,22 @@ static SparkStatus TestModelServingSubmit(
 		if ( state != 0 )
 			state->rejected_count++;
 		return(status);
+	}
+	for (index=0u; index<sizeof(state->prepared) / sizeof(state->prepared[0]);
+		index++)
+		if ( state->prepared[index].active != 0u &&
+			state->prepared[index].submission_id == submission->submission_id )
+			break;
+	if ( index == sizeof(state->prepared) / sizeof(state->prepared[0]) ||
+		TestModelServingPreparedIdentityMatches(&state->prepared[index],
+			submission) == 0u ||
+		state->prepared[index].committed == 0u )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( submission->model_extension_kind == 99u &&
+		state->prepared[index].busy_returned == 0u )
+	{
+		state->prepared[index].busy_returned = 1u;
+		return(SPARK_STATUS_BUSY);
 	}
 	state->submitted_count++;
 	if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && submission->hidden_output_address != 0 )
@@ -202,6 +248,7 @@ static SparkStatus TestModelServingSubmit(
 	TestModelServingBuildCompletion(state,submission,&completion);
 	state->completed_count++;
 	state->completion_function(state->completion_context,&completion);
+	memset(&state->prepared[index],0,sizeof(state->prepared[index]));
 	return(SPARK_STATUS_OK);
 }
 
@@ -210,9 +257,71 @@ static SparkStatus TestModelServingPrefetch(
 	const SparkModelServingSubmission *submissions,
 	uint32_t submission_count)
 {
+	TestModelServingState *state;
+	SparkStatus status;
+	uint32_t free_index,index;
 	if ( adapter_state == 0 || submissions == 0 || submission_count != 1u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(TestModelServingValidateSubmission(adapter_state,submissions));
+	state = (TestModelServingState *)adapter_state;
+	status = TestModelServingValidateSubmission(adapter_state,submissions);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	free_index = UINT32_MAX;
+	for (index=0u; index<sizeof(state->prepared) / sizeof(state->prepared[0]);
+		index++)
+	{
+		if ( state->prepared[index].active == 0u && free_index == UINT32_MAX )
+			free_index = index;
+		if ( state->prepared[index].active != 0u &&
+			state->prepared[index].submission_id == submissions->submission_id )
+			return(TestModelServingPreparedIdentityMatches(
+				&state->prepared[index],submissions) == 0u ?
+				SPARK_STATUS_SCHEMA_ERROR :
+				state->prepared[index].committed == 0u ? SPARK_STATUS_OK :
+				SPARK_STATUS_DUPLICATE);
+	}
+	if ( free_index == UINT32_MAX )
+		return(SPARK_STATUS_BUSY);
+	state->prepared[free_index].active = 1u;
+	state->prepared[free_index].submission_id = submissions->submission_id;
+	state->prepared[free_index].control_generation =
+		submissions->control_generation;
+	state->prepared[free_index].transaction_id = submissions->transaction_id;
+	state->prepared[free_index].dispatch_generation =
+		submissions->dispatch_generation;
+	state->prepared[free_index].request_generation =
+		submissions->request_generation;
+	state->prepared[free_index].step_generation = submissions->step_generation;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus TestModelServingResolvePrefetch(
+	void *adapter_state,
+	const SparkModelServingSubmission *submission,
+	uint32_t resolution)
+{
+	TestModelServingState *state;
+	uint32_t index;
+	if ( adapter_state == 0 || submission == 0 ||
+		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
+		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	state = (TestModelServingState *)adapter_state;
+	for (index=0u; index<sizeof(state->prepared) / sizeof(state->prepared[0]);
+		index++)
+		if ( state->prepared[index].active != 0u &&
+			state->prepared[index].submission_id == submission->submission_id )
+			break;
+	if ( index == sizeof(state->prepared) / sizeof(state->prepared[0]) ||
+		state->prepared[index].committed != 0u ||
+		TestModelServingPreparedIdentityMatches(&state->prepared[index],
+			submission) == 0u )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT )
+		state->prepared[index].committed = 1u;
+	else
+		memset(&state->prepared[index],0,sizeof(state->prepared[index]));
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus TestModelServingProgress(
@@ -262,6 +371,7 @@ static const SparkModelServingAdapterInterface TestModelServingInterface =
 	.validate_submission = TestModelServingValidateSubmission,
 	.submit = TestModelServingSubmit,
 	.prefetch = TestModelServingPrefetch,
+	.resolve_prefetch = TestModelServingResolvePrefetch,
 	.progress = TestModelServingProgress,
 	.quiesce = TestModelServingQuiesce,
 	.snapshot = TestModelServingSnapshot

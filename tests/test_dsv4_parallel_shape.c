@@ -27,10 +27,12 @@ static void SparkDsv4TestTp16(void)
 	assert(config.layer_count == 43u);
 	assert(config.query_heads_per_rank == 4u);
 	assert(config.query_output_elements_per_rank == 2048u);
-	assert(config.output_composition_input_elements_per_rank == 256u);
-	assert(config.output_hidden_rows_per_rank == 256u);
+	assert(config.output_group_count_per_rank == 1u);
+	assert(config.output_group_input_elements_per_rank == 2048u);
+	assert(config.output_lora_elements_per_rank == 1024u);
+	assert(config.output_hidden_rows_per_rank == 4096u);
 	assert(config.expert_intermediate_per_rank == 128u);
-	assert(config.vocabulary_rows_per_rank == 8080u);
+	assert(config.vocabulary_rows_per_rank == 129280u);
 	assert(config.configuration_hash != 0u);
 }
 
@@ -53,9 +55,12 @@ static void SparkDsv4TestTp4(void)
 	assert(SparkDsv4TpDeriveNodeConfig(&shape,&config) == SPARK_STATUS_OK);
 	assert(config.query_heads_per_rank == 16u);
 	assert(config.query_output_elements_per_rank == 8192u);
-	assert(config.output_hidden_rows_per_rank == 1024u);
+	assert(config.output_group_count_per_rank == 2u);
+	assert(config.output_group_input_elements_per_rank == 4096u);
+	assert(config.output_lora_elements_per_rank == 2048u);
+	assert(config.output_hidden_rows_per_rank == 4096u);
 	assert(config.expert_intermediate_per_rank == 512u);
-	assert(config.vocabulary_rows_per_rank == 32320u);
+	assert(config.vocabulary_rows_per_rank == 129280u);
 }
 
 static void SparkDsv4TestFailsClosed(void)

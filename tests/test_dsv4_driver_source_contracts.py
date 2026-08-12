@@ -127,12 +127,24 @@ def main() -> None:
 	require(module, "SparkDsv4ModuleRunCausalAttention", "causal bulk-prefill attention")
 	require(module, "slot->row_lane_indices + first_row", "causal attention row slicing")
 	require(module, "state->topk_column_count,sink_f32", "per-wave attention sink")
-	require(module, "SparkDsv4ModuleRunLayers(state,slot,input_streams_bf16,output_streams_bf16,prefill,rows)", "single bulk layer traversal")
+	require(module, "SparkDsv4ModuleStartLayers(continuation)", "asynchronous TP layer entrypoint")
+	require(module, "SparkDsv4ModuleContinueLayers", "collective-owned TP continuation")
 	reject(module, "SparkDsv4ModuleRunPrefillWave", "full-layer prefill wave replay")
 	require(cuda, "SparkDsv4RopeKernel", "checkpoint interleaved RoPE")
 	require(cuda, "LmE4m3ToFloat(LmFloatToE4m3(value))", "shared exact E4M3 quantize-dequantize")
 	reject(cuda, "SparkDsv4EncodeE4m3", "duplicate DSV4 E4M3 codec")
-	require(cuda, "SparkDsv4StridedLinearKernel<SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC>", "model-declared output-composition activation")
+	require(cuda, "SparkLmHostLaunchSm121NativeLinear<", "native output-composition linear")
+	require(common, "(uint64_t)row * output_row_stride + output_offset +", "B>1 output-composition row stride")
+	attention = function_body(module, "SparkDsv4ModuleRunAttention(")
+	require(attention, "SparkDsv4LaunchLinear(stream,&layer->attn.wo_b",
+		"column-parallel WO full-hidden partial")
+	reject(attention, "state->tp_rank * local_hidden",
+		"diagonal WO rank-row write")
+	require(module,
+		"SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16",
+		"full-hidden TP sum collective")
+	require(module, "submission.local_device = device_bf16;",
+		"in-place full-hidden TP reduction")
 	require(cuda, "SparkDsv4LaunchIndexerScore", "lightning indexer")
 	require(cuda, "SparkDsv4BuildAttentionIndicesKernel", "device attention-index assembly")
 	require(cuda, "SparkDsv4AttentionWindowSlot(position,column", "chronological ring attention indices")
@@ -145,6 +157,32 @@ def main() -> None:
 	require(paged_cache, "SparkDsv4PagedPoolBuildLayout(configuration->first_layer_index", "DSV4 page geometry")
 	require(paged_cache, "SparkKvPageCacheBeginLaneTransaction", "generic transactional page lifecycle binding")
 	require(paged_cache, "SparkKvPageCacheRollbackLaneTransaction", "generic page rollback binding")
+	require(module, "SPARK_DSV4_PREPARED_CACHE_COMMITTED", "prepared-cache committed state")
+	require(module, "SPARK_DSV4_PREPARED_CACHE_ADOPTING", "prepared-cache in-flight ownership state")
+	require(module, "SparkKvCacheArenaReserveUnassignedResidentBlocks", "atomic PREPARE capacity reservation")
+	require(module, "SparkKvCacheArenaConsumeUnassignedResidentBlocks", "COMMIT ownership adoption before mutable allocation")
+	require(module, "prepared->state = SPARK_DSV4_PREPARED_CACHE_ADOPTING", "exact committed-to-adopting transition")
+	require(module, "SparkDsv4ModuleCacheAdmissionRequestMatches(prepared", "full prepared-cache identity validation")
+	require(module, "async->prepared_cache_admission_index", "terminal callback retains prepared-cache ownership")
+	terminal_cache_release = function_body(module,
+		"static SparkStatus SparkDsv4ModuleReleaseCommittedCacheAdmission(")
+	require(terminal_cache_release,
+		"prepared->state == SPARK_DSV4_PREPARED_CACHE_COMMITTED",
+		"pre-adoption cleanup committed-state guard")
+	require(terminal_cache_release,
+		"SparkDsv4ModuleCacheAdmissionRequestMatches(prepared,&request)",
+		"pre-adoption cleanup exact request match")
+	require(terminal_cache_release,
+		"SparkDsv4ModuleClearCacheAdmission(state,prepared,1u)",
+		"pre-adoption cleanup capacity release")
+	execute_entry = function_body(module,
+		"SparkStatus SparkDsv4ResidentDecodeStageExecute(")
+	require(execute_entry, "status != SPARK_STATUS_BUSY",
+		"BUSY retains committed cache admission for FIFO retry")
+	require(execute_entry, "status != SPARK_STATUS_PENDING",
+		"PENDING retains committed cache admission for FIFO retry")
+	require(execute_entry, "SparkDsv4ModuleReleaseCommittedCacheAdmission(",
+		"terminal pre-adoption cache cleanup")
 	require(module, "SparkKvPageStoreInitialize", "generic page-store binding")
 	require(generic_cache, "SparkKvPageStoreWorkerMain", "generic asynchronous page worker")
 	require(generic_cache, "SPARK_KV_PAGE_STORE_JOB_QUEUED", "generic page transfer queue")
@@ -190,12 +228,22 @@ def main() -> None:
 	require(driver_smoke, "dispatch.output_token_ids =", "final-head driver smoke output")
 	reject(adapter + runner + module, "stage_index == 0u ? submission->token_ids", "stage-zero-only token routing")
 	moe = function_body(module, "SparkDsv4ModuleRunMoeRouted(")
-	if moe.count("SparkDsv4LaunchExpertUp(") != 2 or moe.count("SparkDsv4LaunchExpertDown(") != 1:
-		raise SystemExit("DSV4 routed MoE must issue exactly W1, W3, and W2 grouped GEMMs")
+	if moe.count("SparkDsv4LaunchFusedExpertW13Act(") != 1 or moe.count("SparkDsv4LaunchExpertDown(") != 1:
+		raise SystemExit("DSV4 routed MoE must issue exactly one fused W13 activation and one native W2")
+	require(moe, "SparkDsv4LaunchMoePairReduce(stream", "column-parallel routed full-hidden partial")
+	reject(moe, "SparkDsv4LaunchMoePairReduceStrided", "diagonal routed rank-row reduction")
+	moe_full = function_body(module, "SparkDsv4ModuleRunMoe(")
+	require(moe_full, "SparkDsv4LaunchLinear(stream,&moe->shared_w2", "column-parallel shared-W2 full-hidden partial")
+	reject(moe_full, "state->tp_rank * hidden_dimension", "diagonal shared-W2 rank-row write")
+	reject(moe, "SparkDsv4LaunchExpertUp(", "split routed W1/W3 launch")
+	reject(moe, "SparkDsv4LaunchSwigluClamp(", "separate routed SwiGLU launch")
 	require(cuda, "LmWeightCodec<SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC>::Format", "compile-time package codec")
-	require(cuda, "LmGemmWeightOnlyIndirectLaunch<SparkDsv4ExpertWeightFormat", "indirect grouped expert up GEMM")
-	require(cuda, "SPARK_DSV4_EXPERT_WARPS,SPARK_DSV4_MODEL_ACTIVATION_CODEC>", "grouped GEMM activation codec")
-	require(cuda, "LmGemmWeightOnlyLaunch<SparkDsv4ExpertWeightFormat", "grouped expert down GEMM")
+	require(cuda, "SparkLmHostLaunchSm121FusedExpertW13", "native fused routed W13")
+	require(cuda, "SparkLmHostLaunchSm121ExpertW2", "native packed routed W2")
+	require(common, "LmMmaMxf8Mxf4(gate_total", "native MXFP8-by-MXFP4 routed W1")
+	require(common, "LmMmaMxf8Mxf4(up_total", "native MXFP8-by-MXFP4 routed W3")
+	require(common, "LmMmaMxf8Mxf4(total", "native MXFP8-by-MXFP4 routed W2")
+	reject(function_body(cuda, "SparkDsv4LaunchExpertDown("), "LmGemmWeightOnlyLaunch", "BF16-dequant routed W2 success path")
 	reject(cuda, "SparkLmExpertTileAllKernel", "legacy runtime-format expert kernel")
 	reject(moe, "cudaStreamSynchronize", "routed MoE synchronization")
 	reject(moe, "for (expert", "per-expert host dispatch")
@@ -218,9 +266,9 @@ def main() -> None:
 	reject(firmware, "uint32_t physical_page_capacity;", "generic physical-page policy in DSV4 node context")
 	require(adapter, "SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT", "PP13 adapter slot capacity")
 	require(adapter, ".max_resident_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT", "adapter resident lane capacity")
-	require(validator, "#define SPARK_DSV4_VALIDATION_ROW_COUNT 8u", "B8 CUDA validation width")
-	require(validator, "frame->batch.row_count = SPARK_DSV4_VALIDATION_ROW_COUNT;", "B8 CUDA decode batch")
-	require(validator, "frame->lanes[row] = row;", "B8 CUDA distinct resident lanes")
+	require(validator, "(SPARK_BATCH_BUCKET < 8u ? SPARK_BATCH_BUCKET : 8u)", "bucket-safe CUDA validation width")
+	require(validator, "frame->batch.row_count = SPARK_DSV4_VALIDATION_ROW_COUNT;", "CUDA decode batch")
+	require(validator, "frame->lanes[row] = row;", "CUDA distinct resident lanes")
 	require(validator, "frame->frame.completion_function = SparkDsv4ValidationCompletion", "validator external completion")
 	require(driver_smoke, "node_context.linear_weight_codec = SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC", "driver smoke linear codec binding")
 	require(driver_smoke, "node_context.expert_weight_codec = SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC", "driver smoke expert codec binding")

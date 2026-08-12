@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 16u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 18u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -61,6 +61,8 @@ extern "C" {
 #define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION UINT32_C(0x00000200)
 #define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT \
 	UINT32_C(0x00000400)
+#define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP \
+	UINT32_C(0x00000800)
 #define SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES \
 	(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | \
@@ -72,7 +74,11 @@ extern "C" {
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT)
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP)
+
+#define SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT 1u
+#define SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT 2u
 
 #define SPARK_MODEL_SERVING_WORK_KIND_PREFILL 1u
 #define SPARK_MODEL_SERVING_WORK_KIND_DECODE 2u
@@ -117,7 +123,8 @@ typedef struct SparkModelServingAdapterDescriptor
 	uint32_t minimum_efficient_submission_row_count;
 	/* Zero disables content-addressed prefix reuse for this adapter. */
 	uint32_t cache_block_token_count;
-	uint32_t reserved0;
+	/* Zero for linear PP and pure TP; TP group width for hybrid TP x PP. */
+	uint32_t parallel_group_size;
 } SparkModelServingAdapterDescriptor;
 
 typedef struct SparkModelServingRuntimeLimits
@@ -293,6 +300,15 @@ typedef SparkStatus (*SparkModelServingAdapterPrefetchFunction)(
 	void *adapter_state,
 	const SparkModelServingSubmission *submissions,
 	uint32_t submission_count);
+/*
+ * Resolve a successful prepared-cache admission exactly once. COMMIT makes
+ * the prepared ownership visible to submit; ABORT releases it. A terminal
+ * resolution must not return BUSY or PENDING.
+ */
+typedef SparkStatus (*SparkModelServingAdapterResolvePrefetchFunction)(
+	void *adapter_state,
+	const SparkModelServingSubmission *submission,
+	uint32_t resolution);
 typedef SparkStatus (*SparkModelServingAdapterProgressFunction)(
 	void *adapter_state,
 	uint32_t maximum_step_count);
@@ -322,6 +338,7 @@ typedef struct SparkModelServingAdapterInterface
 	SparkModelServingAdapterValidateSubmissionFunction validate_submission;
 	SparkModelServingAdapterSubmitFunction submit;
 	SparkModelServingAdapterPrefetchFunction prefetch;
+	SparkModelServingAdapterResolvePrefetchFunction resolve_prefetch;
 	SparkModelServingAdapterProgressFunction progress;
 	SparkModelServingAdapterQuiesceFunction quiesce;
 	SparkModelServingAdapterSnapshotFunction snapshot;
@@ -373,6 +390,11 @@ SparkStatus SparkModelServingAdapterPrepareSubmission(
 	const SparkModelServingAdapterInterface *adapter_interface,
 	void *adapter_state,
 	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelServingAdapterResolvePrefetch(
+	const SparkModelServingAdapterInterface *adapter_interface,
+	void *adapter_state,
+	const SparkModelServingSubmission *submission,
+	uint32_t resolution);
 SparkStatus SparkModelServingAdapterBuildDriverCacheLanes(
 	const SparkModelServingSubmission *submission,
 	SparkModelDriverCacheLane *cache_lanes,

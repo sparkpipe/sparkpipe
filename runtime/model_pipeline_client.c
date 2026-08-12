@@ -210,9 +210,21 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 	status = SPARK_STATUS_OK;
 	if ( transaction->status == SPARK_STATUS_OK )
 	{
+		for (rank=0u; status==SPARK_STATUS_OK && rank<pipeline->rank_count;
+			rank++)
+			status = SparkModelResidentClientCanQueueDecision(
+				pipeline->clients[rank],transaction->submission_id,
+				SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT);
+		if ( status != SPARK_STATUS_OK )
+		{
+			SparkModelPipelineClientRecordFailure(transaction,status);
+			SparkModelPipelineClientSetFailure(pipeline,status,rank - 1u);
+			return(status);
+		}
 		transaction->decision_kind = SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT;
 		transaction->decision_expected_mask = pipeline->all_rank_mask;
-		for (rank=pipeline->rank_count; status==SPARK_STATUS_OK && rank!=0u; rank--)
+		for (rank=pipeline->rank_count; status==SPARK_STATUS_OK && rank!=0u;
+			rank--)
 			status = SparkModelResidentClientCommit(pipeline->clients[rank - 1u],transaction->submission_id);
 		if ( status != SPARK_STATUS_OK )
 		{
@@ -223,9 +235,21 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 	}
 	else
 	{
+		for (rank=0u; status==SPARK_STATUS_OK && rank<pipeline->rank_count;
+			rank++)
+			if ( (transaction->prepared_mask & (UINT32_C(1) << rank)) != 0u )
+				status = SparkModelResidentClientCanQueueDecision(
+					pipeline->clients[rank],transaction->submission_id,
+					SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT);
+		if ( status != SPARK_STATUS_OK )
+		{
+			SparkModelPipelineClientSetFailure(pipeline,status,rank - 1u);
+			return(status);
+		}
 		transaction->decision_kind = SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT;
 		transaction->decision_expected_mask = transaction->prepared_mask;
-		for (rank=0u; status==SPARK_STATUS_OK && rank<pipeline->rank_count; rank++)
+		for (rank=0u; status==SPARK_STATUS_OK && rank<pipeline->rank_count;
+			rank++)
 			if ( (transaction->prepared_mask & (UINT32_C(1) << rank)) != 0u )
 				status = SparkModelResidentClientAbort(pipeline->clients[rank],transaction->submission_id);
 		if ( status != SPARK_STATUS_OK )

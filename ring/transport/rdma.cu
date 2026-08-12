@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_hidden_transport.h"
+#include "sparkpipe/spark_hidden_transport_rdma_control.h"
 #include "sparkpipe/spark_memlink.h"
 
 #include <cuda_runtime_api.h>
@@ -19,6 +20,7 @@
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -36,8 +38,10 @@
 #error "GPUDirect RDMA transport requires CUDA runtime 11.3 or newer"
 #endif
 
-#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_MAGIC 0x53475055u
-#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_VERSION 3u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_MAGIC \
+    SPARK_HIDDEN_TRANSPORT_RDMA_CONTROL_MAGIC
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_VERSION \
+    SPARK_HIDDEN_TRANSPORT_RDMA_CONTROL_VERSION
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_CONTROL_PORT_BASE 55700u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_LANE_COUNT 8u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT 32u
@@ -73,6 +77,8 @@
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HELLO 1u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_RECEIVE_READY 2u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_TRANSFER_COMPLETE 3u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_ADVERTISE 4u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_RETURN 5u
 
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_BATCH 0x2000000000000000ull
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_SEND 0x4000000000000000ull
@@ -83,6 +89,10 @@
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX 0xffffffffu
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_MEMORY_MODE_MAPPED_HOST 1u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_MEMORY_MODE_DEVICE_DIRECT 2u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_LIVE 0u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_FENCING 1u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_FENCED 2u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_FENCE_FAILED 3u
 
 typedef struct SparkHiddenSparkHostRdmaMemoryRegionDescriptor
 {
@@ -147,11 +157,17 @@ typedef struct SparkHiddenSparkHostRdmaPendingReceive
     uint32_t advertised;
     uint32_t doorbell_posted;
     uint32_t visibility_flushed;
+    uint32_t persistent_registered;
+    uint32_t completion_published;
+    uint32_t release_event_recorded;
     uint32_t receive_index;
+    uint64_t generation;
+    uint64_t returned_generation;
     /* NET-001: cached-region slots pinned while this receive's rkeys are
      * advertised to the peer; NO_INDEX when the region is absent. */
     uint32_t hidden_region_index;
     uint32_t sideband_region_index;
+    SparkHiddenTransportPacket packet_template;
     SparkHiddenTransportPacket packet_snapshot;
     SparkHiddenSparkHostRdmaMemoryRegionDescriptor hidden_descriptor;
     SparkHiddenSparkHostRdmaMemoryRegionDescriptor sideband_descriptor;
@@ -162,7 +178,10 @@ typedef struct SparkHiddenSparkHostRdmaRemoteReceive
 {
     uint32_t active;
     uint32_t used;
+    uint32_t persistent;
     uint32_t receive_index;
+    uint64_t generation;
+    uint64_t returned_generation;
     uint64_t sequence_id;
     uint64_t token_index;
     uint32_t active_sequence_count;
@@ -222,11 +241,14 @@ typedef struct SparkHiddenSparkHostRdmaState
     uint32_t is_sender;
     uint32_t lane_count;
     uint32_t control_port_base;
+    uint32_t open_timeout_milli;
+    uint64_t open_deadline_ns;
     uint8_t verbs_port;
     int32_t gid_index;
     int listen_fd;
     int control_fd;
     int event_fd;
+    uint32_t terminal_state;
     uint32_t debug_enabled;
     uint32_t memory_mode;
     uint32_t gpudirect_flush_required;
@@ -249,6 +271,7 @@ typedef struct SparkHiddenSparkHostRdmaState
         SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT];
     cudaEvent_t send_ready_events[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
     uint32_t send_ready_recorded[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
+    cudaEvent_t receive_release_events[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT];
     SparkHiddenSparkHostRdmaControlMessage control_queue[SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_QUEUE_DEPTH];
     uint32_t control_queue_head;
     uint32_t control_queue_count;
@@ -269,6 +292,19 @@ typedef struct SparkHiddenSparkHostRdmaState
     uint64_t gpudirect_transfer_count;
     uint64_t gpudirect_transfer_bytes;
 } SparkHiddenSparkHostRdmaState;
+
+typedef struct SparkHiddenSparkHostRdmaResolveRequest
+{
+    pthread_mutex_t mutex;
+    pthread_t thread;
+    uint32_t abandoned;
+    uint32_t complete;
+    int result_code;
+    struct addrinfo hints;
+    struct addrinfo *result;
+    char host[SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES];
+    char port[16u];
+} SparkHiddenSparkHostRdmaResolveRequest;
 
 static SparkStatus SparkHiddenSparkHostRdmaParseUintEnv(
     const char *name,
@@ -367,6 +403,67 @@ static void SparkHiddenSparkHostRdmaSignalEvent(SparkHiddenSparkHostRdmaState *s
     }
 }
 
+static SparkStatus SparkHiddenSparkHostRdmaTerminalStatus(
+    const SparkHiddenSparkHostRdmaState *state)
+{
+    if (state == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    return __atomic_load_n(&state->terminal_state,__ATOMIC_ACQUIRE) ==
+        SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_LIVE ?
+        SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaFenceSession(
+    SparkHiddenSparkHostRdmaState *state)
+{
+    struct ibv_qp_attr attributes;
+    SparkStatus status;
+    uint32_t expected;
+    uint32_t lane_index;
+    uint32_t terminal_state;
+
+    if (state == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    expected = SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_LIVE;
+    if (!__atomic_compare_exchange_n(&state->terminal_state,&expected,
+            SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_FENCING,0,
+            __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))
+    {
+        if (expected == SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_FENCED)
+            return SPARK_STATUS_OK;
+        if (expected ==
+            SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_FENCE_FAILED)
+        {
+            return SPARK_STATUS_IO_ERROR;
+        }
+        return SPARK_STATUS_BUSY;
+    }
+    status = SPARK_STATUS_OK;
+    memset(&attributes,0,sizeof(attributes));
+    attributes.qp_state = IBV_QPS_ERR;
+    for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
+    {
+        if (state->lanes[lane_index].queue_pair != 0 &&
+            ibv_modify_qp(state->lanes[lane_index].queue_pair,&attributes,
+                IBV_QP_STATE) != 0)
+        {
+            status = SPARK_STATUS_IO_ERROR;
+        }
+    }
+    if (state->control_fd >= 0 &&
+        SparkHiddenTransportRdmaControlFenceSession(state->control_fd) !=
+            SPARK_STATUS_OK)
+    {
+        status = SPARK_STATUS_IO_ERROR;
+    }
+    terminal_state = status == SPARK_STATUS_OK ?
+        SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_FENCED :
+        SPARK_HIDDEN_SPARK_HOST_RDMA_TERMINAL_FENCE_FAILED;
+    __atomic_store_n(&state->terminal_state,terminal_state,__ATOMIC_RELEASE);
+    SparkHiddenSparkHostRdmaSignalEvent(state);
+    return status;
+}
+
 static void CUDART_CB SparkHiddenSparkHostRdmaSignalCudaReady(void *context)
 {
     SparkHiddenSparkHostRdmaSignalEvent(
@@ -381,6 +478,23 @@ static uint64_t SparkHiddenSparkHostRdmaMonotonicNs(void)
         return 0u;
     return ((uint64_t)value.tv_sec * 1000000000ull) +
         (uint64_t)value.tv_nsec;
+}
+
+static int SparkHiddenSparkHostRdmaDeadlinePollMilliseconds(
+    uint64_t deadline_ns,
+    uint32_t maximum_milli)
+{
+    uint64_t now_ns,remaining_milli;
+
+    now_ns = SparkHiddenSparkHostRdmaMonotonicNs();
+    if (now_ns == 0u || now_ns >= deadline_ns)
+        return 0;
+    remaining_milli = (deadline_ns - now_ns + 999999ull) / 1000000ull;
+    if (maximum_milli != 0u && remaining_milli > maximum_milli)
+        remaining_milli = maximum_milli;
+    if (remaining_milli > (uint64_t)INT32_MAX)
+        remaining_milli = INT32_MAX;
+    return (int)remaining_milli;
 }
 
 static uint32_t SparkHiddenSparkHostRdmaPacketsMatch(
@@ -454,22 +568,12 @@ static void SparkHiddenSparkHostRdmaDrainEvent(SparkHiddenSparkHostRdmaState *st
 
 static SparkStatus SparkHiddenSparkHostRdmaSetNonblocking(int fd)
 {
-    int flags;
-
-    flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0)
-    {
-        return SPARK_STATUS_IO_ERROR;
-    }
-    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0)
-    {
-        return SPARK_STATUS_IO_ERROR;
-    }
-    return SPARK_STATUS_OK;
+    return SparkHiddenTransportRdmaControlSetNonblocking(fd);
 }
 
-static void SparkHiddenSparkHostRdmaConfigureSocket(int fd)
+static void SparkHiddenSparkHostRdmaConfigureSocket(int fd, uint32_t timeout_ms)
 {
+    struct timeval timeout;
     int value;
 
     if (fd < 0)
@@ -479,6 +583,11 @@ static void SparkHiddenSparkHostRdmaConfigureSocket(int fd)
     value = 1;
     (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &value, sizeof(value));
     (void)setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &value, sizeof(value));
+    memset(&timeout,0,sizeof(timeout));
+    timeout.tv_sec = (time_t)(timeout_ms / 1000u);
+    timeout.tv_usec = (suseconds_t)((timeout_ms % 1000u) * 1000u);
+    (void)setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));
+    (void)setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
 }
 
 static int SparkHiddenSparkHostRdmaListen(uint32_t port)
@@ -510,55 +619,21 @@ static int SparkHiddenSparkHostRdmaListen(uint32_t port)
 static SparkStatus SparkHiddenSparkHostRdmaReadFull(
     int fd,
     void *buffer,
-    uint64_t bytes)
+    uint64_t bytes,
+    uint64_t deadline_ns)
 {
-    uint8_t *cursor;
-    uint64_t done;
-    ssize_t result;
-
-    cursor = (uint8_t *)buffer;
-    done = 0u;
-    while (done < bytes)
-    {
-        result = read(fd, cursor + done, (size_t)(bytes - done));
-        if (result < 0 && errno == EINTR)
-        {
-            continue;
-        }
-        if (result <= 0)
-        {
-            return SPARK_STATUS_IO_ERROR;
-        }
-        done += (uint64_t)result;
-    }
-    return SPARK_STATUS_OK;
+    return SparkHiddenTransportRdmaControlReadFullDeadline(
+        fd,buffer,bytes,deadline_ns);
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaWriteFull(
     int fd,
     const void *buffer,
-    uint64_t bytes)
+    uint64_t bytes,
+    uint64_t deadline_ns)
 {
-    const uint8_t *cursor;
-    uint64_t done;
-    ssize_t result;
-
-    cursor = (const uint8_t *)buffer;
-    done = 0u;
-    while (done < bytes)
-    {
-        result = write(fd, cursor + done, (size_t)(bytes - done));
-        if (result < 0 && errno == EINTR)
-        {
-            continue;
-        }
-        if (result <= 0)
-        {
-            return SPARK_STATUS_IO_ERROR;
-        }
-        done += (uint64_t)result;
-    }
-    return SPARK_STATUS_OK;
+    return SparkHiddenTransportRdmaControlWriteFullDeadline(
+        fd,buffer,bytes,deadline_ns);
 }
 
 static int32_t SparkHiddenSparkHostRdmaRankFromHost(const char *host)
@@ -587,6 +662,114 @@ static int32_t SparkHiddenSparkHostRdmaRankFromHost(const char *host)
         return (int32_t)(10 + (host[5] - 'a'));
     }
     return -1;
+}
+
+static void *SparkHiddenSparkHostRdmaResolveHostMain(void *context)
+{
+    SparkHiddenSparkHostRdmaResolveRequest *request;
+    struct addrinfo *result;
+    int result_code;
+
+    request = (SparkHiddenSparkHostRdmaResolveRequest *)context;
+    result = 0;
+    result_code = getaddrinfo(request->host,request->port,&request->hints,
+        &result);
+    (void)pthread_mutex_lock(&request->mutex);
+    if (request->abandoned != 0u)
+    {
+        (void)pthread_mutex_unlock(&request->mutex);
+        if (result != 0)
+            freeaddrinfo(result);
+        (void)pthread_mutex_destroy(&request->mutex);
+        free(request);
+        return 0;
+    }
+    request->result_code = result_code;
+    request->result = result;
+    request->complete = 1u;
+    (void)pthread_mutex_unlock(&request->mutex);
+    return 0;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaResolveHostDeadline(
+    const char *host,
+    const char *port,
+    const struct addrinfo *hints,
+    uint64_t deadline_ns,
+    struct addrinfo **result_out)
+{
+    SparkHiddenSparkHostRdmaResolveRequest *request;
+    struct addrinfo *result;
+    pthread_t resolver_thread;
+    uint64_t now_ns;
+    int result_code,written;
+
+    if (host == 0 || port == 0 || hints == 0 || deadline_ns == 0u ||
+        result_out == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    *result_out = 0;
+    request = (SparkHiddenSparkHostRdmaResolveRequest *)calloc(
+        1u,sizeof(*request));
+    if (request == 0)
+        return SPARK_STATUS_INTERNAL_ERROR;
+    written = snprintf(request->host,sizeof(request->host),"%s",host);
+    if (written < 0 || (uint32_t)written >= sizeof(request->host))
+    {
+        free(request);
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    written = snprintf(request->port,sizeof(request->port),"%s",port);
+    if (written < 0 || (uint32_t)written >= sizeof(request->port))
+    {
+        free(request);
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    request->hints = *hints;
+    if (pthread_mutex_init(&request->mutex,0) != 0)
+    {
+        free(request);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (pthread_create(&request->thread,0,
+            SparkHiddenSparkHostRdmaResolveHostMain,request) != 0)
+    {
+        (void)pthread_mutex_destroy(&request->mutex);
+        free(request);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    for (;;)
+    {
+        now_ns = SparkHiddenSparkHostRdmaMonotonicNs();
+        (void)pthread_mutex_lock(&request->mutex);
+        if (request->complete != 0u)
+        {
+            result_code = request->result_code;
+            result = request->result;
+            (void)pthread_mutex_unlock(&request->mutex);
+            (void)pthread_join(request->thread,0);
+            (void)pthread_mutex_destroy(&request->mutex);
+            free(request);
+            if (result_code != 0 || result == 0)
+            {
+                if (result != 0)
+                    freeaddrinfo(result);
+                return SPARK_STATUS_ROUTE_NOT_FOUND;
+            }
+            *result_out = result;
+            return SPARK_STATUS_OK;
+        }
+        if (now_ns == 0u || now_ns >= deadline_ns)
+        {
+            request->abandoned = 1u;
+            resolver_thread = request->thread;
+            (void)pthread_mutex_unlock(&request->mutex);
+            (void)pthread_detach(resolver_thread);
+            return now_ns == 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_BUSY;
+        }
+        (void)pthread_mutex_unlock(&request->mutex);
+        (void)poll(0,0,SparkHiddenSparkHostRdmaDeadlinePollMilliseconds(
+            deadline_ns,1u));
+    }
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaParseRoute(
@@ -632,24 +815,14 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
     struct addrinfo *entry;
     struct pollfd listen_poll;
     char port_text[16u];
-    uint64_t deadline_ns;
     uint64_t now_ns;
-    uint32_t timeout_ms;
     int fd;
     int poll_result;
     const char *host;
     SparkStatus status;
 
-    status = SparkHiddenSparkHostRdmaParseUintEnv(
-        SPARK_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_ENV,
-        SPARK_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_DEFAULT_MS,
-        &timeout_ms);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    deadline_ns = SparkHiddenSparkHostRdmaMonotonicNs() +
-        (uint64_t)timeout_ms * 1000000ull;
+    if (state == 0 || state->open_deadline_ns == 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
     if (state->is_sender == 0u)
     {
         state->listen_fd = SparkHiddenSparkHostRdmaListen(
@@ -658,40 +831,45 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
         {
             return SPARK_STATUS_ROUTE_NOT_FOUND;
         }
+        status = SparkHiddenSparkHostRdmaSetNonblocking(state->listen_fd);
+        if (status != SPARK_STATUS_OK)
+            return status;
         for (;;)
         {
             now_ns = SparkHiddenSparkHostRdmaMonotonicNs();
-            if (now_ns >= deadline_ns)
+            if (now_ns == 0u || now_ns >= state->open_deadline_ns)
             {
                 fprintf(stderr,
                     "hidden_spark_rdma_open_timeout route=%s role=receiver port=%u waited_ms=%u\n",
                     state->endpoint.route_name,
                     state->control_port_base + (uint32_t)state->sink_rank,
-                    timeout_ms);
+                    state->open_timeout_milli);
                 return SPARK_STATUS_BUSY;
             }
             memset(&listen_poll, 0, sizeof(listen_poll));
             listen_poll.fd = state->listen_fd;
             listen_poll.events = POLLIN;
             poll_result = poll(&listen_poll, 1,
-                (int)(((deadline_ns - now_ns) + 999999ull) / 1000000ull));
+                SparkHiddenSparkHostRdmaDeadlinePollMilliseconds(
+                    state->open_deadline_ns,0u));
             if (poll_result > 0)
             {
-                break;
+                fd = accept(state->listen_fd, 0, 0);
+                if (fd >= 0)
+                    break;
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                    continue;
+                return SPARK_STATUS_IO_ERROR;
             }
             if (poll_result < 0 && errno != EINTR)
             {
                 return SPARK_STATUS_IO_ERROR;
             }
         }
-        fd = accept(state->listen_fd, 0, 0);
-        if (fd < 0)
-        {
-            return SPARK_STATUS_IO_ERROR;
-        }
         state->control_fd = fd;
-        SparkHiddenSparkHostRdmaConfigureSocket(state->control_fd);
-        return SPARK_STATUS_OK;
+        SparkHiddenSparkHostRdmaConfigureSocket(state->control_fd,
+            state->open_timeout_milli);
+        return SparkHiddenSparkHostRdmaSetNonblocking(state->control_fd);
     }
 
     host = state->sink_host;
@@ -703,50 +881,152 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
         snprintf(port_text, sizeof(port_text), "%u",
             state->control_port_base + (uint32_t)state->sink_rank);
         result = 0;
-        if (getaddrinfo(host, port_text, &hints, &result) != 0 || result == 0)
+        status = SparkHiddenSparkHostRdmaResolveHostDeadline(host,port_text,
+            &hints,state->open_deadline_ns,&result);
+        if (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_IO_ERROR ||
+            status == SPARK_STATUS_INTERNAL_ERROR ||
+            status == SPARK_STATUS_CAPACITY_EXCEEDED)
+            return status;
+        if (status != SPARK_STATUS_OK)
         {
-            (void)poll(0, 0, SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS);
+            (void)poll(0,0,
+                SparkHiddenSparkHostRdmaDeadlinePollMilliseconds(
+                    state->open_deadline_ns,
+                    SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS));
         }
         else
         {
             for (entry = result; entry != 0 && state->control_fd < 0;
                  entry = entry->ai_next)
             {
+                struct pollfd connect_poll;
+                int socket_error;
+                socklen_t socket_error_bytes;
+
                 fd = socket(entry->ai_family, entry->ai_socktype,
                     entry->ai_protocol);
                 if (fd < 0)
                 {
                     continue;
                 }
-                if (connect(fd, entry->ai_addr, entry->ai_addrlen) == 0)
-                {
-                    state->control_fd = fd;
-                    SparkHiddenSparkHostRdmaConfigureSocket(state->control_fd);
-                }
-                else
+                status = SparkHiddenSparkHostRdmaSetNonblocking(fd);
+                if (status != SPARK_STATUS_OK)
                 {
                     (void)close(fd);
+                    continue;
                 }
+                if (connect(fd, entry->ai_addr, entry->ai_addrlen) == 0)
+                    state->control_fd = fd;
+                else if (errno == EINPROGRESS || errno == EALREADY ||
+                    errno == EWOULDBLOCK)
+                {
+                    now_ns = SparkHiddenSparkHostRdmaMonotonicNs();
+                    if (now_ns != 0u && now_ns < state->open_deadline_ns)
+                    {
+                        memset(&connect_poll,0,sizeof(connect_poll));
+                        connect_poll.fd = fd;
+                        connect_poll.events = POLLOUT;
+                        poll_result = poll(&connect_poll,1,
+                            SparkHiddenSparkHostRdmaDeadlinePollMilliseconds(
+                                state->open_deadline_ns,0u));
+                        socket_error = 0;
+                        socket_error_bytes = sizeof(socket_error);
+                        if (poll_result > 0 &&
+                            getsockopt(fd,SOL_SOCKET,SO_ERROR,&socket_error,
+                                &socket_error_bytes) == 0 &&
+                            socket_error == 0)
+                            state->control_fd = fd;
+                    }
+                }
+                if (state->control_fd < 0)
+                    (void)close(fd);
+                else
+                    SparkHiddenSparkHostRdmaConfigureSocket(
+                        state->control_fd,state->open_timeout_milli);
             }
             freeaddrinfo(result);
             if (state->control_fd < 0)
             {
-                (void)poll(0, 0, SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS);
+                (void)poll(0,0,
+                    SparkHiddenSparkHostRdmaDeadlinePollMilliseconds(
+                        state->open_deadline_ns,
+                        SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS));
             }
         }
         if (state->control_fd < 0 &&
-            SparkHiddenSparkHostRdmaMonotonicNs() >= deadline_ns)
+            SparkHiddenSparkHostRdmaMonotonicNs() >= state->open_deadline_ns)
         {
             fprintf(stderr,
                 "hidden_spark_rdma_open_timeout route=%s role=sender host=%s port=%u waited_ms=%u\n",
                 state->endpoint.route_name,
                 host,
                 state->control_port_base + (uint32_t)state->sink_rank,
-                timeout_ms);
+                state->open_timeout_milli);
             return SPARK_STATUS_BUSY;
         }
     }
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaExchangeCompatibilityHello(
+    SparkHiddenSparkHostRdmaState *state)
+{
+    SparkHiddenTransportRdmaV4Identity identity;
+    int written;
+
+    if (state == 0 || state->control_fd < 0 || state->source_rank < 0 ||
+        state->sink_rank < 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(&identity,0,sizeof(identity));
+    identity.magic = SPARK_HIDDEN_TRANSPORT_RDMA_CONTROL_MAGIC;
+    identity.protocol_version = SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_VERSION;
+    identity.transport_abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+    identity.descriptor_bytes = sizeof(identity);
+    identity.sender_role = state->is_sender;
+    identity.peer_sender_role = state->is_sender == 0u ? 1u : 0u;
+    identity.local_rank = (uint32_t)state->local_rank;
+    identity.peer_rank = state->is_sender != 0u ?
+        (uint32_t)state->sink_rank : (uint32_t)state->source_rank;
+    identity.source_rank = (uint32_t)state->source_rank;
+    identity.sink_rank = (uint32_t)state->sink_rank;
+    identity.control_port = state->control_port_base +
+        (uint32_t)state->sink_rank;
+    identity.hidden_dimension = state->endpoint.hidden_dimension;
+    identity.bytes_per_sequence = state->endpoint.bytes_per_sequence;
+    identity.max_active_sequence_count =
+        state->endpoint.max_active_sequence_count;
+    identity.persistent_credit_count =
+        (state->endpoint.capability_flags &
+            SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS) != 0u ?
+        SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT : 0u;
+    identity.lane_count = state->lane_count;
+    identity.doorbell_max_bytes = state->doorbell_max_bytes;
+    identity.memory_mode = state->memory_mode;
+    identity.capability_flags = state->endpoint.capability_flags;
+    identity.max_packet_bytes = state->endpoint.max_packet_bytes;
+    identity.route_identifier = state->endpoint.route_identifier;
+    written = snprintf(identity.transport_module_id,
+        sizeof(identity.transport_module_id),"%s",
+        state->endpoint.transport_module_id);
+    if (written < 0 || (uint32_t)written >=
+        sizeof(identity.transport_module_id))
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    written = snprintf(identity.route_name,sizeof(identity.route_name),"%s",
+        state->endpoint.route_name);
+    if (written < 0 || (uint32_t)written >= sizeof(identity.route_name))
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    written = snprintf(identity.source_host,sizeof(identity.source_host),"%s",
+        state->source_host);
+    if (written < 0 || (uint32_t)written >= sizeof(identity.source_host))
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    written = snprintf(identity.sink_host,sizeof(identity.sink_host),"%s",
+        state->sink_host);
+    if (written < 0 || (uint32_t)written >= sizeof(identity.sink_host))
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    return SparkHiddenTransportRdmaV4ExchangeCompatibilityHello(
+        state->control_fd,state->open_deadline_ns,&identity);
 }
 
 static const char *SparkHiddenSparkHostRdmaDefaultDeviceName(
@@ -1011,19 +1291,20 @@ static SparkStatus SparkHiddenSparkHostRdmaExchangeQueuePairInfo(
     if (state->is_sender != 0u)
     {
         status = SparkHiddenSparkHostRdmaWriteFull(state->control_fd,
-            &state->lane_count, sizeof(state->lane_count));
+            &state->lane_count,sizeof(state->lane_count),
+            state->open_deadline_ns);
         if (status != SPARK_STATUS_OK)
         {
             return status;
         }
         status = SparkHiddenSparkHostRdmaWriteFull(state->control_fd,
-            local_infos, bytes);
+            local_infos,bytes,state->open_deadline_ns);
         if (status != SPARK_STATUS_OK)
         {
             return status;
         }
         status = SparkHiddenSparkHostRdmaReadFull(state->control_fd,
-            remote_infos, bytes);
+            remote_infos,bytes,state->open_deadline_ns);
         if (status != SPARK_STATUS_OK)
         {
             return status;
@@ -1035,7 +1316,8 @@ static SparkStatus SparkHiddenSparkHostRdmaExchangeQueuePairInfo(
 
         remote_lane_count = 0u;
         status = SparkHiddenSparkHostRdmaReadFull(state->control_fd,
-            &remote_lane_count, sizeof(remote_lane_count));
+            &remote_lane_count,sizeof(remote_lane_count),
+            state->open_deadline_ns);
         if (status != SPARK_STATUS_OK)
         {
             return status;
@@ -1045,13 +1327,13 @@ static SparkStatus SparkHiddenSparkHostRdmaExchangeQueuePairInfo(
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         status = SparkHiddenSparkHostRdmaReadFull(state->control_fd,
-            remote_infos, bytes);
+            remote_infos,bytes,state->open_deadline_ns);
         if (status != SPARK_STATUS_OK)
         {
             return status;
         }
         status = SparkHiddenSparkHostRdmaWriteFull(state->control_fd,
-            local_infos, bytes);
+            local_infos,bytes,state->open_deadline_ns);
         if (status != SPARK_STATUS_OK)
         {
             return status;
@@ -1065,7 +1347,7 @@ static SparkStatus SparkHiddenSparkHostRdmaExchangeQueuePairInfo(
         }
         state->lanes[lane_index].remote_info = remote_infos[lane_index];
     }
-    return SparkHiddenSparkHostRdmaSetNonblocking(state->control_fd);
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaModifyQueuePairToReady(
@@ -1663,7 +1945,9 @@ static uint32_t SparkHiddenSparkHostRdmaRemoteReceiveMatchesPacket(
     const SparkHiddenTransportPacket *packet)
 {
     return receive != 0 && packet != 0 && receive->active != 0u &&
-        receive->used == 0u && receive->sequence_id == packet->sequence_id &&
+        ((receive->persistent != 0u && receive->used != 0u) ||
+         (receive->persistent == 0u && receive->used == 0u)) &&
+        receive->sequence_id == packet->sequence_id &&
         receive->token_index == packet->token_index &&
         receive->active_sequence_count == packet->active_sequence_count &&
         receive->sideband_kind == packet->sideband_kind &&
@@ -1751,9 +2035,75 @@ static void SparkHiddenSparkHostRdmaReleaseRemoteReceive(
     if (state == 0 ||
         index >= SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT)
         return;
-    memset(&state->remote_receives[index], 0,
-        sizeof(state->remote_receives[index]));
+    if (state->remote_receives[index].persistent == 0u)
+    {
+        memset(&state->remote_receives[index], 0,
+            sizeof(state->remote_receives[index]));
+    }
     state->send_ready_recorded[index] = 0u;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaInsertPersistentRemoteReceive(
+    SparkHiddenSparkHostRdmaState *state,
+    const SparkHiddenSparkHostRdmaControlMessage *message)
+{
+    SparkHiddenSparkHostRdmaRemoteReceive *receive;
+    uint32_t index;
+
+    if (state == 0 || message == 0 || state->is_sender == 0u ||
+        message->reserved == 0u || message->reserved >
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    index = message->reserved - 1u;
+    receive = &state->remote_receives[index];
+    if (receive->active != 0u)
+    {
+        return SPARK_STATUS_DUPLICATE;
+    }
+    memset(receive,0,sizeof(*receive));
+    receive->active = 1u;
+    receive->persistent = 1u;
+    receive->receive_index = index;
+    receive->sideband_kind = message->sideband_kind;
+    receive->sideband_bytes_per_sequence =
+        message->sideband_bytes_per_sequence;
+    receive->hidden_descriptor = message->hidden;
+    receive->sideband_descriptor = message->sideband;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaApplyPersistentReturn(
+    SparkHiddenSparkHostRdmaState *state,
+    const SparkHiddenSparkHostRdmaControlMessage *message)
+{
+    SparkHiddenSparkHostRdmaRemoteReceive *receive;
+    uint32_t index;
+
+    if (state == 0 || message == 0 || state->is_sender == 0u ||
+        message->reserved == 0u || message->reserved >
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT ||
+        message->sequence_id == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    index = message->reserved - 1u;
+    receive = &state->remote_receives[index];
+    if (receive->active == 0u || receive->persistent == 0u ||
+        receive->used == 0u || receive->generation != message->sequence_id)
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    receive->used = 0u;
+    receive->returned_generation = message->sequence_id;
+    receive->generation = 0u;
+    receive->sequence_id = 0u;
+    receive->token_index = 0u;
+    receive->active_sequence_count = 0u;
+    state->send_ready_recorded[index] = 0u;
+    SparkHiddenSparkHostRdmaSignalEvent(state);
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaInsertRemoteReceive(
@@ -1810,7 +2160,7 @@ static SparkStatus SparkHiddenSparkHostRdmaFlushControlQueue(
             state->control_queue_write_offset;
         remaining = (uint32_t)sizeof(*message) -
             state->control_queue_write_offset;
-        result = write(state->control_fd, cursor, remaining);
+        result = send(state->control_fd,cursor,remaining,MSG_NOSIGNAL);
         if (result < 0 && errno == EINTR)
             continue;
         if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
@@ -2026,6 +2376,7 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
         return SPARK_STATUS_IO_ERROR;
     }
     receive->complete = 1u;
+    receive->doorbell_posted = 0u;
     receive->completion_status = SPARK_STATUS_OK;
     SparkHiddenSparkHostRdmaSignalEvent(state);
     return SPARK_STATUS_OK;
@@ -2383,6 +2734,27 @@ static SparkStatus SparkHiddenSparkHostRdmaPumpControl(SparkHiddenSparkHostRdmaS
             }
             SparkHiddenSparkHostRdmaSignalEvent(state);
         }
+        else if (message.type ==
+            SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_ADVERTISE)
+        {
+            status = SparkHiddenSparkHostRdmaInsertPersistentRemoteReceive(
+                state,&message);
+            if (status != SPARK_STATUS_OK)
+            {
+                return status;
+            }
+            SparkHiddenSparkHostRdmaSignalEvent(state);
+        }
+        else if (message.type ==
+            SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_RETURN)
+        {
+            status = SparkHiddenSparkHostRdmaApplyPersistentReturn(
+                state,&message);
+            if (status != SPARK_STATUS_OK)
+            {
+                return status;
+            }
+        }
         else if (message.type == SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_TRANSFER_COMPLETE)
         {
             SparkHiddenSparkHostRdmaMarkPendingReceiveComplete(state, &message);
@@ -2399,11 +2771,20 @@ static SparkStatus SparkHiddenSparkHostRdmaPumpProgress(
 {
     SparkStatus status;
 
+    status = SparkHiddenSparkHostRdmaTerminalStatus(state);
+    if (status != SPARK_STATUS_OK)
+        return status;
     SparkHiddenSparkHostRdmaDrainEvent(state);
     status = SparkHiddenSparkHostRdmaPumpDoorbells(state);
     if (status != SPARK_STATUS_OK)
+    {
+        (void)SparkHiddenSparkHostRdmaFenceSession(state);
         return status;
-    return SparkHiddenSparkHostRdmaPumpControl(state);
+    }
+    status = SparkHiddenSparkHostRdmaPumpControl(state);
+    if (status != SPARK_STATUS_OK)
+        (void)SparkHiddenSparkHostRdmaFenceSession(state);
+    return status;
 }
 
 static uint32_t SparkHiddenSparkHostRdmaCompletionQueueHasRoom(
@@ -2622,6 +3003,11 @@ static SparkStatus SparkHiddenSparkHostRdmaFinalizePendingReceive(
         return status;
     }
     status = receive->completion_status;
+    if (receive->persistent_registered != 0u)
+    {
+        receive->completion_published = 1u;
+        return status;
+    }
     SparkHiddenSparkHostRdmaReleasePendingReceive(state, receive);
     return status;
 }
@@ -3769,6 +4155,412 @@ static SparkStatus SparkHiddenSparkHostRdmaSendBatch(
         state,sends,packet_count);
 }
 
+static void SparkHiddenSparkHostRdmaResetPersistentActivation(
+    SparkHiddenSparkHostRdmaPendingReceive *receive)
+{
+    if (receive == 0)
+    {
+        return;
+    }
+    receive->active = 0u;
+    receive->complete = 0u;
+    receive->visibility_flushed = 0u;
+    receive->completion_published = 0u;
+    receive->release_event_recorded = 0u;
+    receive->generation = 0u;
+    receive->completion_status = SPARK_STATUS_OK;
+    receive->packet_snapshot = receive->packet_template;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaRegisterPersistentReceive(
+    void *transport_state,
+    uint32_t credit_index,
+    SparkHiddenTransportPacket *packet_template)
+{
+    SparkHiddenSparkHostRdmaControlMessage message;
+    SparkHiddenSparkHostRdmaPendingReceive *receive;
+    SparkHiddenSparkHostRdmaState *state;
+    SparkStatus status;
+    uint64_t hidden_capacity_bytes;
+    uint64_t sideband_capacity_bytes;
+
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
+    if (state == 0 || packet_template == 0 || state->is_sender != 0u ||
+        credit_index >= SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenSparkHostRdmaTerminalStatus(state);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    receive = &state->pending_receives[credit_index];
+    if (receive->persistent_registered != 0u || receive->active != 0u)
+    {
+        return SPARK_STATUS_DUPLICATE;
+    }
+    memset(receive,0,sizeof(*receive));
+    receive->receive_index = credit_index;
+    receive->hidden_region_index = SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
+    receive->sideband_region_index = SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
+    receive->packet_template = *packet_template;
+    receive->packet_snapshot = *packet_template;
+    hidden_capacity_bytes = (uint64_t)state->endpoint.bytes_per_sequence *
+        state->endpoint.max_active_sequence_count;
+    sideband_capacity_bytes =
+        (uint64_t)packet_template->sideband_bytes_per_sequence *
+        state->endpoint.max_active_sequence_count;
+    status = SparkHiddenSparkHostRdmaRegisterReceiveRegion(state,
+        packet_template->hidden_bf16,hidden_capacity_bytes,
+        &receive->hidden_descriptor,&receive->hidden_region_index);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkHiddenSparkHostRdmaReleasePendingReceive(state,receive);
+        return status;
+    }
+    status = SparkHiddenSparkHostRdmaRegisterReceiveRegion(state,
+        packet_template->sideband_payload,sideband_capacity_bytes,
+        &receive->sideband_descriptor,&receive->sideband_region_index);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkHiddenSparkHostRdmaReleasePendingReceive(state,receive);
+        return status;
+    }
+    status = SparkHiddenSparkHostRdmaPostDoorbellReceive(state,receive);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkHiddenSparkHostRdmaReleasePendingReceive(state,receive);
+        return status;
+    }
+    memset(&message,0,sizeof(message));
+    message.type =
+        SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_ADVERTISE;
+    message.reserved = credit_index + 1u;
+    message.active_sequence_count = state->endpoint.max_active_sequence_count;
+    message.sideband_kind = packet_template->sideband_kind;
+    message.sideband_bytes_per_sequence =
+        packet_template->sideband_bytes_per_sequence;
+    message.hidden = receive->hidden_descriptor;
+    message.sideband = receive->sideband_descriptor;
+    status = SparkHiddenSparkHostRdmaWriteControlMessage(state,&message);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkHiddenSparkHostRdmaReleasePendingReceive(state,receive);
+        return status;
+    }
+    receive->persistent_registered = 1u;
+    receive->advertised = 1u;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaPersistentRemoteCreditReady(
+    void *transport_state,
+    uint32_t credit_index)
+{
+    SparkHiddenSparkHostRdmaState *state;
+    SparkHiddenSparkHostRdmaRemoteReceive *receive;
+    SparkStatus status;
+
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
+    if (state == 0 || state->is_sender == 0u || credit_index >=
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenSparkHostRdmaPumpProgress(state);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    receive = &state->remote_receives[credit_index];
+    return receive->active != 0u && receive->persistent != 0u ?
+        SPARK_STATUS_OK : SPARK_STATUS_BUSY;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaReservePersistentSend(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation,
+    const SparkHiddenTransportPacket *packet)
+{
+    SparkHiddenSparkHostRdmaState *state;
+    SparkHiddenSparkHostRdmaRemoteReceive *receive;
+    SparkStatus status;
+
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
+    if (state == 0 || packet == 0 || state->is_sender == 0u ||
+        generation == 0u || credit_index >=
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenSparkHostRdmaPumpProgress(state);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    receive = &state->remote_receives[credit_index];
+    if (receive->active == 0u || receive->persistent == 0u)
+    {
+        return SPARK_STATUS_BUSY;
+    }
+    if (receive->used != 0u)
+    {
+        return receive->generation == generation &&
+            SparkHiddenSparkHostRdmaRemoteReceiveMatchesPacket(
+                receive,packet) != 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY;
+    }
+    if (generation <= receive->returned_generation)
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    receive->used = 1u;
+    receive->generation = generation;
+    receive->sequence_id = packet->sequence_id;
+    receive->token_index = packet->token_index;
+    receive->active_sequence_count = packet->active_sequence_count;
+    receive->sideband_kind = packet->sideband_kind;
+    receive->sideband_bytes_per_sequence =
+        packet->sideband_bytes_per_sequence;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaCancelPersistentSend(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation)
+{
+    SparkHiddenSparkHostRdmaState *state;
+    SparkHiddenSparkHostRdmaRemoteReceive *receive;
+    uint32_t send_index;
+
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
+    if (state == 0 || state->is_sender == 0u || generation == 0u ||
+        credit_index >= SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    receive = &state->remote_receives[credit_index];
+    if (receive->used == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (receive->persistent == 0u || receive->generation != generation)
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    for (send_index = 0u;
+         send_index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT;
+         ++send_index)
+    {
+        if (state->inflight_sends[send_index].active != 0u &&
+            state->inflight_sends[send_index].remote_receive_index ==
+                credit_index)
+        {
+            return SPARK_STATUS_BUSY;
+        }
+    }
+    receive->used = 0u;
+    receive->returned_generation = generation;
+    receive->generation = 0u;
+    receive->sequence_id = 0u;
+    receive->token_index = 0u;
+    receive->active_sequence_count = 0u;
+    state->send_ready_recorded[credit_index] = 0u;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaActivatePersistentReceive(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation,
+    SparkHiddenTransportPacket *packet)
+{
+    SparkHiddenSparkHostRdmaPendingReceive *receive;
+    SparkHiddenSparkHostRdmaState *state;
+    SparkStatus status;
+
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
+    if (state == 0 || packet == 0 || state->is_sender != 0u ||
+        generation == 0u || credit_index >=
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenSparkHostRdmaTerminalStatus(state);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    receive = &state->pending_receives[credit_index];
+    if (receive->persistent_registered == 0u ||
+        packet->hidden_bf16 != receive->packet_template.hidden_bf16 ||
+        packet->sideband_payload !=
+            receive->packet_template.sideband_payload ||
+        packet->sideband_kind != receive->packet_template.sideband_kind ||
+        packet->sideband_bytes_per_sequence !=
+            receive->packet_template.sideband_bytes_per_sequence)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (receive->active != 0u)
+    {
+        return receive->generation == generation ?
+            SPARK_STATUS_OK : SPARK_STATUS_BUSY;
+    }
+    if (generation <= receive->returned_generation)
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    receive->active = 1u;
+    receive->complete = 0u;
+    receive->completion_published = 0u;
+    receive->release_event_recorded = 0u;
+    receive->visibility_flushed = 0u;
+    receive->generation = generation;
+    receive->packet_snapshot = *packet;
+    receive->completion_status = SPARK_STATUS_OK;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaCancelPersistentReceive(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation)
+{
+    SparkHiddenSparkHostRdmaPendingReceive *receive;
+    SparkHiddenSparkHostRdmaState *state;
+    SparkStatus status;
+
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
+    if (state == 0 || state->is_sender != 0u || generation == 0u ||
+        credit_index >= SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    receive = &state->pending_receives[credit_index];
+    if (receive->active == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (receive->persistent_registered == 0u ||
+        receive->generation != generation)
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    if (receive->complete != 0u)
+    {
+        return SPARK_STATUS_BUSY;
+    }
+    status = SparkHiddenSparkHostRdmaFenceSession(state);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    receive->returned_generation = generation;
+    SparkHiddenSparkHostRdmaResetPersistentActivation(receive);
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaSendPersistent(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation,
+    const SparkHiddenTransportPacket *packet)
+{
+    SparkHiddenSparkHostRdmaRemoteReceive *receive;
+    SparkHiddenSparkHostRdmaState *state;
+    SparkStatus status;
+
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
+    if (state == 0 || packet == 0 || state->is_sender == 0u ||
+        generation == 0u || credit_index >=
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenSparkHostRdmaTerminalStatus(state);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    receive = &state->remote_receives[credit_index];
+    if (receive->persistent == 0u || receive->used == 0u ||
+        receive->generation != generation ||
+        SparkHiddenSparkHostRdmaRemoteReceiveMatchesPacket(
+            receive,packet) == 0u)
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    return SparkHiddenSparkHostRdmaPrepareInflightSend(state,packet);
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaReleasePersistentReceive(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation,
+    void *consumer_cuda_stream)
+{
+    SparkHiddenSparkHostRdmaControlMessage message;
+    SparkHiddenSparkHostRdmaPendingReceive *receive;
+    SparkHiddenSparkHostRdmaState *state;
+    cudaError_t cuda_status;
+    SparkStatus status;
+
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
+    if (state == 0 || state->is_sender != 0u || generation == 0u ||
+        consumer_cuda_stream == 0 || credit_index >=
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenSparkHostRdmaTerminalStatus(state);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    receive = &state->pending_receives[credit_index];
+    if (receive->persistent_registered == 0u || receive->active == 0u ||
+        receive->completion_published == 0u ||
+        receive->generation != generation)
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    if (receive->release_event_recorded == 0u)
+    {
+        if (cudaEventRecord(state->receive_release_events[credit_index],
+                (cudaStream_t)consumer_cuda_stream) != cudaSuccess ||
+            cudaLaunchHostFunc((cudaStream_t)consumer_cuda_stream,
+                SparkHiddenSparkHostRdmaSignalCudaReady,state) != cudaSuccess)
+        {
+            return SPARK_STATUS_IO_ERROR;
+        }
+        receive->release_event_recorded = 1u;
+        return SPARK_STATUS_BUSY;
+    }
+    cuda_status = cudaEventQuery(
+        state->receive_release_events[credit_index]);
+    if (cuda_status == cudaErrorNotReady)
+    {
+        return SPARK_STATUS_BUSY;
+    }
+    if (cuda_status != cudaSuccess)
+    {
+        return SPARK_STATUS_IO_ERROR;
+    }
+    if (receive->doorbell_posted == 0u)
+    {
+        status = SparkHiddenSparkHostRdmaPostDoorbellReceive(state,receive);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    memset(&message,0,sizeof(message));
+    message.type = SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_RETURN;
+    message.sequence_id = generation;
+    message.reserved = credit_index + 1u;
+    status = SparkHiddenSparkHostRdmaWriteControlMessage(state,&message);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    receive->returned_generation = generation;
+    SparkHiddenSparkHostRdmaResetPersistentActivation(receive);
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkHiddenSparkHostRdmaRetireCompletedSends(
     SparkHiddenSparkHostRdmaState *state)
 {
@@ -3807,7 +4599,8 @@ static SparkStatus SparkHiddenSparkHostRdmaRetireCompletedReceives(
          ++receive_index)
     {
         if (state->pending_receives[receive_index].active == 0u ||
-            state->pending_receives[receive_index].complete == 0u)
+            state->pending_receives[receive_index].complete == 0u ||
+            state->pending_receives[receive_index].completion_published != 0u)
             continue;
         status = SparkHiddenSparkHostRdmaFinalizePendingReceive(
             state,&state->pending_receives[receive_index]);
@@ -3890,6 +4683,9 @@ static SparkStatus SparkHiddenSparkHostRdmaGetPollDescriptors(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     state = (SparkHiddenSparkHostRdmaState *)transport_state;
+    status = SparkHiddenSparkHostRdmaTerminalStatus(state);
+    if (status != SPARK_STATUS_OK)
+        return status;
     descriptor_count = 0u;
     status = SparkHiddenSparkHostRdmaAppendPollDescriptor(descriptors,
         descriptor_capacity, &descriptor_count, state->event_fd,
@@ -3962,6 +4758,10 @@ static void SparkHiddenSparkHostRdmaDestroyState(SparkHiddenSparkHostRdmaState *
         if (state->send_ready_events[receive_index] != 0)
         {
             cudaEventDestroy(state->send_ready_events[receive_index]);
+        }
+        if (state->receive_release_events[receive_index] != 0)
+        {
+            cudaEventDestroy(state->receive_release_events[receive_index]);
         }
     }
     for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
@@ -4092,6 +4892,28 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
         return SPARK_STATUS_INTERNAL_ERROR;
     }
     state->endpoint = *endpoint;
+    if ((endpoint->configuration_flags &
+            SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT) != 0u)
+    {
+        state->open_timeout_milli = endpoint->reserved0;
+        status = state->open_timeout_milli != 0u ? SPARK_STATUS_OK :
+            SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    else
+    {
+        status = SparkHiddenSparkHostRdmaParseUintEnv(
+            SPARK_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_ENV,
+            SPARK_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_DEFAULT_MS,
+            &state->open_timeout_milli);
+    }
+    state->open_deadline_ns = status == SPARK_STATUS_OK ?
+        SparkHiddenTransportRdmaControlDeadlineNs(
+            state->open_timeout_milli) : 0u;
+    if (status != SPARK_STATUS_OK || state->open_deadline_ns == 0u)
+    {
+        free(state);
+        return status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR;
+    }
     state->listen_fd = -1;
     state->control_fd = -1;
     state->event_fd = -1;
@@ -4189,6 +5011,22 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
             }
         }
     }
+    else
+    {
+        for (receive_index = 0u;
+             receive_index <
+                SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT;
+             ++receive_index)
+        {
+            if (cudaEventCreateWithFlags(
+                    &state->receive_release_events[receive_index],
+                    cudaEventDisableTiming) != cudaSuccess)
+            {
+                SparkHiddenSparkHostRdmaDestroyState(state);
+                return SPARK_STATUS_DRIVER_LOAD_ERROR;
+            }
+        }
+    }
     status = SparkHiddenSparkHostRdmaOpenVerbsDevice(state);
     if (status != SPARK_STATUS_OK)
     {
@@ -4208,6 +5046,12 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
         return status;
     }
     status = SparkHiddenSparkHostRdmaConnectControl(state);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkHiddenSparkHostRdmaDestroyState(state);
+        return status;
+    }
+    status = SparkHiddenSparkHostRdmaExchangeCompatibilityHello(state);
     if (status != SPARK_STATUS_OK)
     {
         SparkHiddenSparkHostRdmaDestroyState(state);
@@ -4260,6 +5104,8 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
     transport_interface.capability_flags =
         SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS;
 #endif
+    transport_interface.capability_flags |=
+        SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
     transport_interface.initialize = SparkHiddenSparkHostRdmaInitialize;
     transport_interface.destroy = SparkHiddenSparkHostRdmaDestroy;
     transport_interface.post_receive = SparkHiddenSparkHostRdmaPostReceive;
@@ -4269,5 +5115,21 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
         SparkHiddenSparkHostRdmaPostReceiveBatch;
     transport_interface.send_batch = SparkHiddenSparkHostRdmaSendBatch;
     transport_interface.get_poll_descriptors = SparkHiddenSparkHostRdmaGetPollDescriptors;
+    transport_interface.register_persistent_receive =
+        SparkHiddenSparkHostRdmaRegisterPersistentReceive;
+    transport_interface.persistent_remote_credit_ready =
+        SparkHiddenSparkHostRdmaPersistentRemoteCreditReady;
+    transport_interface.reserve_persistent_send =
+        SparkHiddenSparkHostRdmaReservePersistentSend;
+    transport_interface.cancel_persistent_send =
+        SparkHiddenSparkHostRdmaCancelPersistentSend;
+    transport_interface.activate_persistent_receive =
+        SparkHiddenSparkHostRdmaActivatePersistentReceive;
+    transport_interface.cancel_persistent_receive =
+        SparkHiddenSparkHostRdmaCancelPersistentReceive;
+    transport_interface.send_persistent =
+        SparkHiddenSparkHostRdmaSendPersistent;
+    transport_interface.release_persistent_receive =
+        SparkHiddenSparkHostRdmaReleasePersistentReceive;
     return &transport_interface;
 }

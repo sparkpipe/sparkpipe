@@ -1,0 +1,24 @@
+{
+  "schema_version": 3,
+  "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+  "stage_pack_path": "tests/fixtures/dsv4-stage-12.spstage",
+  "max_sequence_positions": 4096,
+  "tp_collective": {
+    "collective_identifier": 134217728,
+    "listen_port": 62000,
+    "connect_timeout_milli": 3000,
+    "operation_timeout_milli": 120000,
+    "peer_hosts": [
+      "127.0.0.1", "127.0.0.1", "127.0.0.1", "127.0.0.1",
+      "127.0.0.1", "127.0.0.1", "127.0.0.1", "127.0.0.1",
+      "127.0.0.1", "127.0.0.1", "127.0.0.1", "127.0.0.1",
+      "127.0.0.1", "127.0.0.1", "127.0.0.1", "127.0.0.1"
+    ],
+    "peer_ports": [
+      62000, 62001, 62002, 62003,
+      62004, 62005, 62006, 62007,
+      62008, 62009, 62010, 62011,
+      62012, 62013, 62014, 62015
+    ]
+  }
+}

@@ -10,7 +10,8 @@
 #include "sparkpipe/spark_dsv4_model.h"
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 
-#define SPARK_DSV4_VALIDATION_ROW_COUNT 8u
+#define SPARK_DSV4_VALIDATION_ROW_COUNT \
+	(SPARK_BATCH_BUCKET < 8u ? SPARK_BATCH_BUCKET : 8u)
 #define SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT 128u
 #define SPARK_DSV4_VALIDATION_REFERENCE_MAX_RELATIVE_L2 0.02
 #define SPARK_DSV4_VALIDATION_REFERENCE_MIN_COSINE 0.999
@@ -516,6 +517,12 @@ static void SparkDsv4ValidationBuildReferenceContext(SparkDsv4ValidationReferenc
 	frame->context.abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	frame->context.descriptor_bytes = sizeof(frame->context);
 	frame->context.flags = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_BATCH_VIEW | SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER;
+	frame->context.submission_id = 1u;
+	frame->context.control_generation = 1u;
+	frame->context.transaction_id = 1u;
+	frame->context.dispatch_generation = 1u;
+	frame->context.request_generation = 1u;
+	frame->context.step_generation = 1u;
 	frame->context.prefill_batch = &frame->batch;
 	frame->context.hidden_output_bf16 = frame->hidden_output_bf16;
 	frame->context.hidden_output_bytes = hidden_bytes;
@@ -656,6 +663,12 @@ static void SparkDsv4ValidationBuildFrame(
 	frame->context.abi_version = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	frame->context.descriptor_bytes = sizeof(frame->context);
 	frame->context.flags = SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW;
+	frame->context.submission_id = 1u;
+	frame->context.control_generation = 1u;
+	frame->context.transaction_id = 1u;
+	frame->context.dispatch_generation = 1u;
+	frame->context.request_generation = 1u;
+	frame->context.step_generation = 1u;
 	frame->context.decode_batch = &frame->batch;
 	frame->context.hidden_input_bf16 = frame->hidden_input_bf16;
 	frame->context.hidden_input_bytes = frame->hidden_input_bf16 != 0 ? hidden_bytes : 0u;

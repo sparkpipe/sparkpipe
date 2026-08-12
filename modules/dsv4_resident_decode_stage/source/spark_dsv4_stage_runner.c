@@ -17,12 +17,12 @@ static _Thread_local uint32_t SparkDsv4StageRunnerLastRows[
 static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
     const SparkDsv4StageRunnerConfiguration *configuration)
 {
-    uint32_t parallel;
+	uint32_t final_tp_rank,hybrid,parallel;
+	uint32_t pp_stage_count,pp_stage_index;
     if (configuration == 0 ||
         configuration->abi_version != SPARK_DSV4_STAGE_RUNNER_ABI_VERSION ||
         configuration->descriptor_bytes !=
             SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES ||
-        configuration->reserved0 != 0u ||
 		(configuration->flags & ~SPARK_DSV4_STAGE_RUNNER_KNOWN_FLAGS) != 0u ||
         configuration->stage_count == 0u ||
         configuration->stage_count >
@@ -46,17 +46,29 @@ static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     parallel = (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL) != 0u ? 1u : 0u;
-    if ((parallel == 0u && (configuration->stage_index != 0u)) !=
-            ((configuration->flags &
-                SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY) != 0u) ||
-        (parallel == 0u && (configuration->stage_index + 1u < configuration->stage_count)) !=
-            ((configuration->flags &
-                SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY) != 0u))
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-	if ( parallel != 0u && (configuration->flags & (SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY | SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY)) != 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+	hybrid = (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_HYBRID_TP_PP) != 0u ? 1u : 0u;
+	final_tp_rank = (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_FINAL_TP_RANK) != 0u ? 1u : 0u;
+	if ( hybrid != 0u )
+	{
+		if ( parallel == 0u || configuration->parallel_group_size < 2u ||
+			configuration->stage_count % configuration->parallel_group_size != 0u )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		pp_stage_count = configuration->stage_count / configuration->parallel_group_size;
+		pp_stage_index = configuration->stage_index / configuration->parallel_group_size;
+		if ( pp_stage_count < 2u ||
+			(pp_stage_index != 0u) != ((configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY) != 0u) ||
+			(pp_stage_index + 1u < pp_stage_count) != ((configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY) != 0u) ||
+			final_tp_rank != (configuration->stage_index + 1u == configuration->stage_count ? 1u : 0u) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	else
+	{
+		if ( configuration->parallel_group_size != 0u || final_tp_rank != 0u ||
+			((parallel == 0u && configuration->stage_index != 0u) != ((configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY) != 0u)) ||
+			((parallel == 0u && configuration->stage_index + 1u < configuration->stage_count) != ((configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY) != 0u)) ||
+			(parallel != 0u && (configuration->flags & (SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY | SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY)) != 0u) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
     if ((configuration->flags &
             SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_ADMISSION) != 0u &&
         configuration->driver_interface->admit == 0)
@@ -137,7 +149,13 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchShape(
         dispatch->row_lane_indices == 0 ||
         dispatch->row_positions == 0 ||
         dispatch->row_sequence_ids == 0 ||
-        dispatch->request_id == 0u ||
+        dispatch->submission_id == 0u ||
+		dispatch->control_generation == 0u ||
+		dispatch->transaction_id == 0u ||
+		dispatch->dispatch_generation == 0u ||
+		dispatch->request_generation == 0u ||
+		dispatch->step_generation == 0u ||
+		dispatch->request_id == 0u ||
         dispatch->sequence_id == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -167,7 +185,7 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchBoundaries(
 	const SparkDsv4StageRunnerDispatch *dispatch)
 {
 	uint64_t hidden_bytes;
-	uint32_t parallel;
+	uint32_t require_input,require_output;
     if (dispatch->token_ids == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -176,19 +194,18 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchBoundaries(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-	parallel = (runner->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL) != 0u ? 1u : 0u;
-	if ( parallel != 0u )
-		return(dispatch->hidden_input_bf16 == 0 && dispatch->hidden_input_bytes == 0u && dispatch->hidden_output_bf16 == 0 && dispatch->hidden_output_bytes == 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-    if ((runner->stage_index != 0u &&
+	require_input = (runner->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY) != 0u ? 1u : 0u;
+	require_output = (runner->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY) != 0u ? 1u : 0u;
+    if ((require_input != 0u &&
          (dispatch->hidden_input_bf16 == 0 ||
           dispatch->hidden_input_bytes == 0u)) ||
-        (runner->stage_index == 0u &&
+        (require_input == 0u &&
          (dispatch->hidden_input_bf16 != 0 ||
           dispatch->hidden_input_bytes != 0u)) ||
-        (runner->owns_final_head == 0u &&
+        (require_output != 0u &&
          (dispatch->hidden_output_bf16 == 0 ||
           dispatch->hidden_output_bytes == 0u)) ||
-        (runner->owns_final_head != 0u &&
+        (require_output == 0u &&
          (dispatch->hidden_output_bf16 != 0 ||
           dispatch->hidden_output_bytes != 0u)))
     {
@@ -197,9 +214,9 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchBoundaries(
     hidden_bytes = (uint64_t)dispatch->row_count *
         SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
         SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
-    if ((runner->stage_index != 0u &&
+    if ((require_input != 0u &&
          hidden_bytes > dispatch->hidden_input_bytes) ||
-        (runner->owns_final_head == 0u &&
+        (require_output != 0u &&
          hidden_bytes > dispatch->hidden_output_bytes))
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -240,14 +257,20 @@ static void SparkDsv4StageRunnerBuildFrame(
     context->flags = is_prefill != 0u ?
         SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_BATCH_VIEW :
         SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW;
-    if ((runner->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL) == 0u && runner->stage_index != 0u)
+	context->submission_id = dispatch->submission_id;
+	context->control_generation = dispatch->control_generation;
+	context->transaction_id = dispatch->transaction_id;
+	context->dispatch_generation = dispatch->dispatch_generation;
+	context->request_generation = dispatch->request_generation;
+	context->step_generation = dispatch->step_generation;
+    if ((runner->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY) != 0u)
     {
         context->flags |=
             SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_BUFFER;
         context->hidden_input_bf16 = dispatch->hidden_input_bf16;
         context->hidden_input_bytes = dispatch->hidden_input_bytes;
     }
-    if ((runner->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL) == 0u && runner->owns_final_head == 0u)
+    if ((runner->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY) != 0u)
     {
         context->flags |=
             SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_BUFFER;
@@ -342,6 +365,11 @@ static SparkStatus SparkDsv4StageRunnerAdmit(
     memset(&request, 0, sizeof(request));
     request.descriptor_bytes = sizeof(request);
     request.program_id = runner->program->program_id;
+	request.submission_id = dispatch->submission_id;
+	request.control_generation = dispatch->control_generation;
+	request.transaction_id = dispatch->transaction_id;
+	request.request_generation = dispatch->request_generation;
+	request.step_generation = dispatch->step_generation;
     request.request_id = dispatch->request_id;
     request.sequence_id = dispatch->sequence_id;
     request.sequence_position = dispatch->sequence_position;
@@ -399,13 +427,27 @@ SparkStatus SparkDsv4StageRunnerInitialize(
     runner->flags = configuration->flags;
     runner->stage_index = configuration->stage_index;
     runner->stage_count = configuration->stage_count;
+	runner->parallel_group_size = configuration->parallel_group_size;
+	if ( (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_HYBRID_TP_PP) != 0u )
+	{
+		runner->pp_stage_count = configuration->stage_count / configuration->parallel_group_size;
+		runner->pp_stage_index = configuration->stage_index / configuration->parallel_group_size;
+		runner->tp_rank = configuration->stage_index % configuration->parallel_group_size;
+	}
+	else
+	{
+		runner->pp_stage_count = (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL) != 0u ? 1u : configuration->stage_count;
+		runner->pp_stage_index = (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL) != 0u ? 0u : configuration->stage_index;
+		runner->tp_rank = (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL) != 0u ? configuration->stage_index : 0u;
+	}
 	runner->max_active_sequence_count =
 		configuration->max_active_sequence_count;
 	runner->max_input_row_count = configuration->max_input_row_count;
 	runner->resident_sequence_capacity = configuration->resident_sequence_capacity;
-    runner->owns_embedding = (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL) != 0u || configuration->stage_index == 0u ? 1u : 0u;
-    runner->owns_final_head = configuration->stage_index + 1u ==
-        configuration->stage_count ? 1u : 0u;
+    runner->owns_embedding = (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY) == 0u ? 1u : 0u;
+    runner->owns_final_head = (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_HYBRID_TP_PP) != 0u ?
+		((configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_FINAL_TP_RANK) != 0u ? 1u : 0u) :
+		(configuration->stage_index + 1u == configuration->stage_count ? 1u : 0u);
     runner->driver_interface = configuration->driver_interface;
     runner->driver_instance = configuration->driver_instance;
     runner->program = configuration->program;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdatomic.h>
 #include <stdint.h>
 
 #include "sparkpipe/spark_status.h"
@@ -423,7 +424,7 @@ typedef struct SparkKvCacheArena
     void *evict_context;
     uint32_t free_logical_block_head;
     uint32_t next_resident_slot_scan;
-    uint32_t reserved0;
+    atomic_uint unassigned_resident_block_count;
     uint32_t reserved1;
     uint64_t epoch;
     uint64_t allocated_block_count;
@@ -449,6 +450,23 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
 SparkStatus SparkKvCacheArenaInitialize(
     SparkKvCacheArena *arena,
     const SparkKvCacheConfiguration *configuration);
+
+/*
+ * Admission may atomically own resident capacity before assigning it to
+ * logical blocks. Consumers must either consume that ownership immediately
+ * before creating exact block reservations, or release it on abort.
+ */
+SparkStatus SparkKvCacheArenaReserveUnassignedResidentBlocks(
+    SparkKvCacheArena *arena,
+    uint32_t block_count);
+SparkStatus SparkKvCacheArenaConsumeUnassignedResidentBlocks(
+    SparkKvCacheArena *arena,
+    uint32_t block_count);
+SparkStatus SparkKvCacheArenaReleaseUnassignedResidentBlocks(
+    SparkKvCacheArena *arena,
+    uint32_t block_count);
+uint32_t SparkKvCacheArenaUnassignedResidentBlockCount(
+    const SparkKvCacheArena *arena);
 
 SparkStatus SparkKvCacheArenaAcquireBlock(
     SparkKvCacheArena *arena,

@@ -48,6 +48,18 @@ static void TestDsv4ServingCompletion(
 	state->completion_count++;
 }
 
+static void TestDsv4ServingPrepareAndCommit(
+	const SparkModelServingAdapterInterface *adapter_interface,
+	void *adapter_state,
+	const SparkModelServingSubmission *submission)
+{
+	assert(SparkModelServingAdapterPrepareSubmission(adapter_interface,
+		adapter_state,submission) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterResolvePrefetch(adapter_interface,
+		adapter_state,submission,
+		SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT) == SPARK_STATUS_OK);
+}
+
 int main(void)
 {
 	SparkModelServingAdapterDynamicLibrary library;
@@ -163,7 +175,35 @@ int main(void)
 	assert(library.adapter_interface.validate_submission(adapter_state,&submission) == SPARK_STATUS_OK);
 	assert(SparkModelServingAdapterPrepareSubmission(&library.adapter_interface,
 		adapter_state,&submission) == SPARK_STATUS_OK);
+	assert(library.adapter_interface.submit(adapter_state,&submission) ==
+		SPARK_STATUS_VALIDATION_FAILED);
+	assert(test_state.completion_count == 0u);
+	assert(SparkModelServingAdapterResolvePrefetch(&library.adapter_interface,
+		adapter_state,&submission,
+		SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterResolvePrefetch(&library.adapter_interface,
+		adapter_state,&submission,
+		SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) == SPARK_STATUS_NOT_FOUND);
+	TestDsv4ServingPrepareAndCommit(&library.adapter_interface,adapter_state,
+		&submission);
+	assert(SparkModelServingAdapterResolvePrefetch(&library.adapter_interface,
+		adapter_state,&submission,
+		SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT) == SPARK_STATUS_DUPLICATE);
+	assert(SparkModelServingAdapterResolvePrefetch(&library.adapter_interface,
+		adapter_state,&submission,
+		SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) == SPARK_STATUS_DUPLICATE);
+	submission.transaction_id++;
+	assert(library.adapter_interface.submit(adapter_state,&submission) ==
+		SPARK_STATUS_VALIDATION_FAILED);
+	submission.transaction_id--;
+	lanes[0].step_generation++;
+	assert(library.adapter_interface.submit(adapter_state,&submission) ==
+		SPARK_STATUS_VALIDATION_FAILED);
+	lanes[0].step_generation--;
 	assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_OK);
+	assert(test_state.completion_count == 1u);
+	assert(library.adapter_interface.submit(adapter_state,&submission) ==
+		SPARK_STATUS_VALIDATION_FAILED);
 	assert(test_state.completion_count == 1u);
 	assert(test_state.completion.submission_id == 77u);
 	assert(test_state.completion.dispatch_generation == 2077u);
@@ -203,6 +243,8 @@ int main(void)
 	submission.new_token_count = 4u;
 	submission.row_count = 4u;
 	submission.token_count = 4u;
+	TestDsv4ServingPrepareAndCommit(&library.adapter_interface,adapter_state,
+		&submission);
 	assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_OK);
 	assert(test_state.completion_count == 2u);
 	assert(test_state.completion.submission_id == 78u);
@@ -214,6 +256,8 @@ int main(void)
 	submission.transaction_id = 1079u;
 	submission.dispatch_generation = 2079u;
 	submission.step_generation = 3079u;
+	TestDsv4ServingPrepareAndCommit(&library.adapter_interface,adapter_state,
+		&submission);
 	assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_OK);
 	assert(test_state.completion_count == 3u);
 	assert(test_state.completion.token_ids[0] == 4202u);
@@ -223,6 +267,8 @@ int main(void)
 	submission.transaction_id = 1080u;
 	submission.dispatch_generation = 2080u;
 	submission.step_generation = 3080u;
+	TestDsv4ServingPrepareAndCommit(&library.adapter_interface,adapter_state,
+		&submission);
 	assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_OK);
 	assert(test_state.completion_count == 4u);
 	assert(test_state.completion.token_ids[0] == 0u);
