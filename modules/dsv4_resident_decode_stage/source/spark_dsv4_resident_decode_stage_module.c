@@ -470,6 +470,7 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 		return(SPARK_STATUS_OK);
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	configuration.backend_kind = context->tp_collective_backend_kind;
 	configuration.tp_degree = state->tp_degree;
 	configuration.tp_rank = state->tp_rank;
 	configuration.operation_kind =
@@ -484,21 +485,30 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
 	configuration.connect_timeout_milli = context->tp_connect_timeout_milli;
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
-	configuration.control_port_base = context->tp_transport_control_port_base;
+	configuration.control_port_base = context->tp_collective_control_port_base;
 	configuration.collective_identifier = context->tp_collective_identifier;
-	configuration.transport_module_path = context->tp_transport_module_path;
+	configuration.backend_module_path =
+		context->tp_collective_backend_module_path;
 	configuration.local_host = context->tp_local_host;
 	configuration.registration_cuda_stream = state->execution_stream;
-	configuration.combine_bf16_function = SparkDsv4ModuleCombineBf16;
-	configuration.combine_context = state;
+	if ( configuration.backend_kind ==
+		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
+	{
+		configuration.combine_bf16_function = SparkDsv4ModuleCombineBf16;
+		configuration.combine_context = state;
+	}
 	if ( configuration.connect_timeout_milli == 0u ||
 		configuration.operation_timeout_milli == 0u ||
 		configuration.control_port_base == 0u ||
 		configuration.collective_identifier == 0u ||
-		configuration.transport_module_path == 0 ||
+		configuration.backend_module_path == 0 ||
 		configuration.local_host == 0 ||
-		configuration.transport_module_path[0] == '\0' ||
+		configuration.backend_module_path[0] == '\0' ||
 		configuration.local_host[0] == '\0' )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( configuration.backend_kind !=
+		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT &&
+		configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	for (rank=0u; rank<SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; rank++)
 	{
@@ -509,12 +519,14 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 		configuration.rank_hosts[rank] = context->tp_peer_hosts[rank];
 	}
 	status = SparkTpDeviceCollectiveProbeMemoryMode(
-		configuration.transport_module_path,&memory_mode);
+		configuration.backend_kind,configuration.backend_module_path,
+		&memory_mode);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	step_count = 0u;
-	while ( (state->tp_degree >> (step_count + 1u)) != 0u )
-		step_count++;
+	status = SparkTpDeviceCollectiveCreditStepCount(
+		configuration.backend_kind,state->tp_degree,&step_count);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	total_bytes = 0u;
 	for (step=0u; step<step_count; step++)
 	{
@@ -527,14 +539,17 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 		total_bytes += credit_bytes *
 			configuration.credit_count;
 	}
-	status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,
-		&state->tp_credit_send_bf16);
-	if ( status == SPARK_STATUS_OK )
+	status = SPARK_STATUS_OK;
+	if ( total_bytes != 0u )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,
+			&state->tp_credit_send_bf16);
+	if ( status == SPARK_STATUS_OK && total_bytes != 0u )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,
 			&state->tp_credit_receive_bf16);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
+	if ( total_bytes != 0u && memory_mode ==
+		SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
 	{
 		error = cudaHostAlloc(&state->tp_host_credit_send_bf16,total_bytes,
 			cudaHostAllocPortable | cudaHostAllocMapped);
@@ -632,10 +647,10 @@ static SparkStatus SparkDsv4ModuleConfigure(
 		 SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(context->layer_count)) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if ( parallel != 0u && (context->tp_local_host == 0 ||
-		context->tp_transport_module_path == 0 ||
+		context->tp_collective_backend_module_path == 0 ||
 		context->tp_local_host[0] == '\0' ||
-		context->tp_transport_module_path[0] == '\0' ||
-		context->tp_transport_control_port_base == 0u) )
+		context->tp_collective_backend_module_path[0] == '\0' ||
+		context->tp_collective_control_port_base == 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&shape,0,sizeof(shape));
 	shape.abi_version = SPARK_DSV4_PARALLEL_SHAPE_ABI_VERSION;
@@ -2369,8 +2384,8 @@ static SparkStatus SparkDsv4ModuleRunMoe(SparkDsv4ModuleState *state, SparkDsv4M
 
 /*
  * TP=1 retains the original whole-frame launch sequence so its decode graph
- * cache remains valid.  TP>1 cannot use this body: each side must yield to
- * the host progress thread between the two collectives in every layer.
+ * cache remains valid. TP>1 cannot use this body: each collective splits the
+ * frame into stream-ordered graph islands.
  */
 static SparkStatus SparkDsv4ModuleRunLocalLayer(
 	SparkDsv4ModuleState *state,

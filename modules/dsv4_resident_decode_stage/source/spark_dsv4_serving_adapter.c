@@ -11,6 +11,7 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_row_layout.h"
+#include "sparkpipe/spark_tp_device_collective.h"
 
 #if SPARK_DSV4_SERVING_TOPOLOGY == 404
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
@@ -203,11 +204,12 @@ typedef struct SparkDsv4ServingAdapterState
 	uint16_t tp_peer_ports[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT];
 	uint32_t tp_connect_timeout_milli;
 	uint32_t tp_operation_timeout_milli;
+	uint32_t tp_collective_backend_kind;
 	uint64_t tp_collective_identifier;
 	char tp_peer_hosts[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT][SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES];
-	char tp_transport_path[SPARK_INTERNAL_PATH_BYTES];
+	char tp_collective_backend_path[SPARK_INTERNAL_PATH_BYTES];
 	char tp_local_host[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES];
-	uint32_t tp_transport_control_port_base;
+	uint32_t tp_collective_control_port_base;
 	uint32_t quiescing;
 	SparkModelServingRuntimeLimits runtime_limits;
 	uint64_t orphan_completion_count;
@@ -284,10 +286,13 @@ static SparkStatus SparkDsv4ServingJsonUnsigned(
 static SparkStatus SparkDsv4ServingLoadTpCollective(
 	const SparkJsonDocument *document,
 	int32_t root,
+	const char *runtime_root,
 	SparkDsv4ServingAdapterState *state)
 {
 	static const char *const members[] =
 	{
+		"backend",
+		"backend_module_path",
 		"collective_identifier",
 		"listen_port",
 		"connect_timeout_milli",
@@ -298,14 +303,36 @@ static SparkStatus SparkDsv4ServingLoadTpCollective(
 	int32_t object,token,element;
 	uint32_t count,index,port;
 	uint64_t collective_identifier;
-	char *host;
+	char *host,*relative_backend_path;
 	SparkStatus status;
-	if ( document == 0 || state == 0 )
+	if ( document == 0 || runtime_root == 0 || state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	object = SparkDsv4ServingJsonMember(document,root,"tp_collective");
 	if ( object < 0 || !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	status = SparkJsonValidateObjectMembersExact(document,object,members,(uint32_t)(sizeof(members) / sizeof(members[0])));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	token = SparkDsv4ServingJsonMember(document,object,"backend");
+	if ( token < 0 )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( SparkJsonStringEquals(document,token,"nccl") )
+		state->tp_collective_backend_kind =
+			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL;
+	else if ( SparkJsonStringEquals(document,token,"hidden_transport") )
+		state->tp_collective_backend_kind =
+			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
+	else
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	relative_backend_path = 0;
+	token = SparkDsv4ServingJsonMember(document,object,"backend_module_path");
+	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR :
+		SparkJsonCopyString(document,token,&relative_backend_path);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkResolveRuntimePath(runtime_root,relative_backend_path,
+			state->tp_collective_backend_path,
+			sizeof(state->tp_collective_backend_path));
+	free(relative_backend_path);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	token = SparkDsv4ServingJsonMember(document,object,"collective_identifier");
@@ -463,7 +490,8 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 			status = SPARK_STATUS_SCHEMA_ERROR;
 	}
 	if ( status == SPARK_STATUS_OK && SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
-		status = SparkDsv4ServingLoadTpCollective(&document,root,state);
+		status = SparkDsv4ServingLoadTpCollective(&document,root,runtime_root,
+			state);
 	SparkJsonDocumentDestroy(&document);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
@@ -830,11 +858,15 @@ static SparkStatus SparkDsv4ServingInitializeNodeContext(
 		memcpy(state->node_context.tp_peer_ports,state->tp_peer_ports,sizeof(state->tp_peer_ports));
 		state->node_context.tp_connect_timeout_milli = state->tp_connect_timeout_milli;
 		state->node_context.tp_operation_timeout_milli = state->tp_operation_timeout_milli;
+		state->node_context.tp_collective_backend_kind =
+			state->tp_collective_backend_kind;
 		state->node_context.tp_collective_identifier = state->tp_collective_identifier;
 		memcpy(state->node_context.tp_peer_hosts,state->tp_peer_hosts,sizeof(state->tp_peer_hosts));
 		state->node_context.tp_local_host = state->tp_local_host;
-		state->node_context.tp_transport_module_path = state->tp_transport_path;
-		state->node_context.tp_transport_control_port_base = state->tp_transport_control_port_base;
+		state->node_context.tp_collective_backend_module_path =
+			state->tp_collective_backend_path;
+		state->node_context.tp_collective_control_port_base =
+			state->tp_collective_control_port_base;
 		if ( SPARK_DSV4_SERVING_HYBRID != 0u )
 		{
 			uint32_t group_first_rank,index;
@@ -846,7 +878,8 @@ static SparkStatus SparkDsv4ServingInitializeNodeContext(
 				state->node_context.tp_peer_ports[index] = state->tp_peer_ports[group_first_rank + index];
 				memcpy(state->node_context.tp_peer_hosts[index],state->tp_peer_hosts[group_first_rank + index],SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES);
 			}
-			state->node_context.tp_transport_control_port_base = state->tp_peer_ports[group_first_rank];
+			state->node_context.tp_collective_control_port_base =
+				state->tp_peer_ports[group_first_rank];
 			state->node_context.tp_collective_identifier ^= (uint64_t)state->node_context.pp_stage_index << 32u;
 		}
 	}
@@ -876,27 +909,21 @@ static SparkStatus SparkDsv4ServingInitialize(
 	status = SparkDsv4ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&cuda_graph_count);
 	if ( status == SPARK_STATUS_OK && SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
 	{
-		status = SparkResolveRuntimePath(configuration->runtime_root,
-			"lib/hidden_transport.so",state->tp_transport_path,
-			sizeof(state->tp_transport_path));
-		if ( status == SPARK_STATUS_OK )
+		uint32_t rank_index;
+		uint32_t control_port_base = state->tp_peer_ports[0];
+		if ( control_port_base == 0u )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		for (rank_index=0u;
+			status == SPARK_STATUS_OK && rank_index < SPARK_DSV4_SERVING_STAGE_COUNT;
+			rank_index++)
 		{
-			uint32_t rank_index;
-			uint32_t control_port_base = state->tp_peer_ports[0];
-			if ( control_port_base == 0u )
+			if ( control_port_base > UINT16_MAX - rank_index ||
+				state->tp_peer_ports[rank_index] !=
+				(uint16_t)(control_port_base + rank_index) )
 				status = SPARK_STATUS_SCHEMA_ERROR;
-			for (rank_index=0u;
-				status == SPARK_STATUS_OK && rank_index < SPARK_DSV4_SERVING_STAGE_COUNT;
-				rank_index++)
-			{
-				if ( control_port_base > UINT16_MAX - rank_index ||
-					state->tp_peer_ports[rank_index] !=
-					(uint16_t)(control_port_base + rank_index) )
-					status = SPARK_STATUS_SCHEMA_ERROR;
-			}
-			if ( status == SPARK_STATUS_OK )
-				state->tp_transport_control_port_base = control_port_base;
 		}
+		if ( status == SPARK_STATUS_OK )
+			state->tp_collective_control_port_base = control_port_base;
 	}
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS) )
 		status = SPARK_STATUS_SCHEMA_ERROR;

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 4u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 5u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT 64u
@@ -19,6 +19,8 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES 96u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT 0u
+#define SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 1u
 
@@ -95,8 +97,9 @@ typedef struct SparkTpDeviceCollectiveDebugHooks
 
 typedef struct SparkTpDeviceCollectiveConfig
 {
-    uint32_t abi_version;
-    uint32_t tp_degree;
+	uint32_t abi_version;
+	uint32_t backend_kind;
+	uint32_t tp_degree;
     uint32_t tp_rank;
     uint32_t operation_kind;
     uint32_t credit_count;
@@ -106,7 +109,7 @@ typedef struct SparkTpDeviceCollectiveConfig
     uint32_t operation_timeout_milli;
     uint32_t control_port_base;
     uint64_t collective_identifier;
-    const char *transport_module_path;
+	const char *backend_module_path;
     const char *local_host;
     const char *rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
     const SparkTpDeviceCollectiveCreditBinding *credit_bindings;
@@ -119,7 +122,8 @@ typedef struct SparkTpDeviceCollectiveConfig
 
 typedef struct SparkTpDeviceCollective
 {
-    uint32_t abi_version;
+	uint32_t abi_version;
+	uint32_t backend_kind;
     uint32_t tp_degree;
     uint32_t tp_rank;
     uint32_t step_count;
@@ -138,8 +142,14 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     SparkTpDeviceCollective *collective_out);
 
 SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
-    const char *transport_module_path,
-    uint32_t *memory_mode_out);
+	uint32_t backend_kind,
+	const char *backend_module_path,
+	uint32_t *memory_mode_out);
+
+SparkStatus SparkTpDeviceCollectiveCreditStepCount(
+	uint32_t backend_kind,
+	uint32_t tp_degree,
+	uint32_t *step_count_out);
 
 SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     SparkTpDeviceCollective *collective,

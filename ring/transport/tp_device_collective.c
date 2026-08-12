@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "tp_device_collective_nccl.h"
 
 #include <cuda_runtime_api.h>
 #include <pthread.h>
@@ -256,6 +257,8 @@ static SparkStatus SparkTpDeviceCollectiveValidateConfig(
 
     if (config == 0 || step_count_out == 0 || credit_count_out == 0 ||
         config->abi_version != SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION ||
+        config->backend_kind !=
+            SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT ||
         !SparkTpDeviceCollectiveDegreeIsSupported(config->tp_degree) ||
         config->tp_rank >= config->tp_degree ||
         config->local_hidden_dimension == 0u ||
@@ -269,7 +272,7 @@ static SparkStatus SparkTpDeviceCollectiveValidateConfig(
         (config->operation_kind ==
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 &&
             config->combine_bf16_function == 0) ||
-        !SparkTpDeviceCollectiveTextIsValid(config->transport_module_path) ||
+        !SparkTpDeviceCollectiveTextIsValid(config->backend_module_path) ||
         !SparkTpDeviceCollectiveTextIsValid(config->local_host) ||
         (config->tp_degree > 1u && config->registration_cuda_stream == 0))
     {
@@ -1733,20 +1736,31 @@ static SparkStatus SparkTpDeviceCollectiveRegisterCredits(
 }
 
 SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
-    const char *transport_module_path,
+    uint32_t backend_kind,
+    const char *backend_module_path,
     uint32_t *memory_mode_out)
 {
     SparkHiddenTransportDynamicLibrary library;
     SparkStatus status;
 
-    if (!SparkTpDeviceCollectiveTextIsValid(transport_module_path) ||
+    if (!SparkTpDeviceCollectiveTextIsValid(backend_module_path) ||
         memory_mode_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+    {
+        *memory_mode_out = SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE;
+        return SPARK_STATUS_OK;
+    }
+    if (backend_kind !=
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     memset(&library,0,sizeof(library));
     status = SparkHiddenTransportLoadInterfaceFromSharedObject(
-        transport_module_path,
+        backend_module_path,
         SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS |
             SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS,
         &library);
@@ -1777,6 +1791,30 @@ SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
     return status;
 }
 
+SparkStatus SparkTpDeviceCollectiveCreditStepCount(
+    uint32_t backend_kind,
+    uint32_t tp_degree,
+    uint32_t *step_count_out)
+{
+    if (step_count_out == 0 ||
+        !SparkTpDeviceCollectiveDegreeIsSupported(tp_degree))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+    {
+        *step_count_out = 0u;
+        return SPARK_STATUS_OK;
+    }
+    if (backend_kind !=
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *step_count_out = SparkTpDeviceCollectiveStepCount(tp_degree);
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkTpDeviceCollectiveCreate(
     const SparkTpDeviceCollectiveConfig *config,
     SparkTpDeviceCollective *collective_out)
@@ -1794,6 +1832,11 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     memset(collective_out, 0, sizeof(*collective_out));
+    if (config != 0 && config->backend_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+    {
+        return SparkTpDeviceCollectiveNcclCreate(config,collective_out);
+    }
     status = SparkTpDeviceCollectiveValidateConfig(
         config,&step_count,&credit_count);
     if (status != SPARK_STATUS_OK)
@@ -1807,6 +1850,8 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         return SPARK_STATUS_INTERNAL_ERROR;
     }
     collective_out->abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    collective_out->backend_kind =
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
     collective_out->tp_degree = config->tp_degree;
     collective_out->tp_rank = config->tp_rank;
     collective_out->step_count = step_count;
@@ -1882,7 +1927,7 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     else
     {
         status = SparkHiddenTransportLoadInterfaceFromSharedObject(
-            config->transport_module_path,
+            config->backend_module_path,
             SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS |
                 SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS,
             &implementation->transport_library);
@@ -1959,6 +2004,12 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     uint64_t now_milli;
     uint32_t credit_index;
 
+    if (collective != 0 && collective->backend_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+    {
+        return SparkTpDeviceCollectiveNcclSubmitBf16(
+            collective,submission);
+    }
     if (collective == 0 || collective->abi_version !=
             SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION ||
         collective->implementation == 0 || submission == 0 ||
@@ -2114,6 +2165,12 @@ SparkStatus SparkTpDeviceCollectiveRequestFailure(
 {
     SparkTpDeviceCollectiveImplementation *implementation;
 
+    if (collective != 0 && collective->backend_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+    {
+        return SparkTpDeviceCollectiveNcclRequestFailure(
+            collective,failure_status);
+    }
     if (collective == 0 || collective->implementation == 0 ||
         collective->abi_version != SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION ||
         failure_status == SPARK_STATUS_OK ||
@@ -2138,6 +2195,12 @@ SparkStatus SparkTpDeviceCollectiveRequestOperationFailure(
     uint64_t generation;
     uint32_t credit_index;
 
+    if (collective != 0 && collective->backend_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+    {
+        return SparkTpDeviceCollectiveNcclRequestOperationFailure(
+            collective,ordinal,failure_status);
+    }
     if (collective == 0 || collective->implementation == 0 ||
         collective->abi_version != SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION ||
         failure_status == SPARK_STATUS_OK ||
@@ -2168,6 +2231,12 @@ SparkStatus SparkTpDeviceCollectiveOperationPhase(
     uint64_t state_word;
     uint32_t credit_index;
 
+    if (collective != 0 && collective->backend_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+    {
+        return SparkTpDeviceCollectiveNcclOperationPhase(
+            collective,ordinal,phase_out,failure_requested_out);
+    }
     if (collective == 0 || collective->implementation == 0 ||
         phase_out == 0 || failure_requested_out == 0)
     {
@@ -2233,6 +2302,12 @@ void SparkTpDeviceCollectiveDestroy(SparkTpDeviceCollective *collective)
 
     if (collective == 0)
     {
+        return;
+    }
+    if (collective->backend_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+    {
+        SparkTpDeviceCollectiveNcclDestroy(collective);
         return;
     }
     implementation = (SparkTpDeviceCollectiveImplementation *)

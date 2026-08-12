@@ -393,6 +393,8 @@ static void TestConfigure(
 
     memset(configuration,0,sizeof(*configuration));
     configuration->abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    configuration->backend_kind =
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
     configuration->tp_degree = 4u;
     configuration->tp_rank = 1u;
     configuration->local_hidden_dimension = 4u;
@@ -401,7 +403,7 @@ static void TestConfigure(
     configuration->operation_timeout_milli = TEST_WAIT_MILLI;
     configuration->control_port_base = 60000u;
     configuration->collective_identifier = 0x123456789abcdef0ull;
-    configuration->transport_module_path =
+    configuration->backend_module_path =
         SPARK_TEST_TP_DEVICE_COLLECTIVE_MODULE_PATH;
     configuration->local_host = hosts[1];
     memcpy(configuration->rank_hosts,hosts,sizeof(hosts));
@@ -497,6 +499,7 @@ static void TestSuccessfulOperation(TestTransportControls *controls)
     uint8_t buffer[16u];
 
     assert(SparkTpDeviceCollectiveProbeMemoryMode(
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT,
         SPARK_TEST_TP_DEVICE_COLLECTIVE_MODULE_PATH,&memory_mode) ==
         SPARK_STATUS_OK);
     assert(memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE);
@@ -604,6 +607,7 @@ static void TestMappedHostStaging(TestTransportControls *controls)
     controls->reset();
     controls->set_host_memory_mode(1u);
     assert(SparkTpDeviceCollectiveProbeMemoryMode(
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT,
         SPARK_TEST_TP_DEVICE_COLLECTIVE_MODULE_PATH,&memory_mode) ==
         SPARK_STATUS_OK);
     assert(memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST);

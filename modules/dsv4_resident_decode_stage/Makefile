@@ -17,6 +17,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../ring/transport/hidden_transport.c \
 	../../ring/transport/tp_collective.c \
 	../../ring/transport/tp_device_collective.c \
+	../../ring/transport/tp_device_collective_nccl.c \
 	../../cache/kv_cache.c \
 	../../cache/kv_page_cache.c \
 	../../cache/kv_page_store.c

@@ -128,7 +128,7 @@ generating a deployment. The 30-second collective connection deadline covers
 concurrent sixteen-rank process startup; it is not part of decode latency.
 
 The exact-width B1 correctness release uses
-`examples/deployments/dsv4_flash_tp4_pp4_b1_gpudirect_rdma.spec.json` and
+`examples/deployments/dsv4_flash_tp4_pp4_b1_host_rdma.spec.json` and
 `examples/release/dsv4_tp4_pp4_b1_template/sparkpipe.json`. Its driver must be
 compiled from
 `examples/model_descriptions/dsv4_resident_decode_stage_firmware_b1.json`,
@@ -140,14 +140,15 @@ description hash and B1 capacity ceiling. It retains 32 physical KV pages and
 sequence. The pages are admitted lazily; the B1 release does not densely
 preallocate KV for additional sequences.
 
-The B1 performance release must package
-`build/libhidden_transport_spark_gpudirect_rdma_verbs.so` as
-`lib/hidden_transport.so`. The deployment mode and the transport module ID are
-validated together, and GPUDirect capability and write visibility are checked
-at startup; unsupported hardware fails readiness. The separate
-`dsv4_flash_tp4_pp4_b1_host_rdma.spec.json` remains a correctness/debug
-configuration. It uses CUDA-mapped host credit buffers and is not a TP4 B1
-performance configuration.
+The B1 performance release packages NCCL as
+`lib/runtime_libs/libnccl.so.2` and selects it explicitly in the stage
+configuration for intra-TP BF16 all-reduce. NCCL launches are stream ordered:
+the next graph island is enqueued on the same CUDA stream without a host
+progress-thread round trip. A missing library, unsupported NCCL version, bad
+bootstrap identity, or collective error fails readiness; there is no implicit
+fallback. Hybrid TP4*PP4 still packages `lib/hidden_transport.so` for PP
+boundaries. That transport is independent of the intra-TP backend and remains
+host RDMA on Spark hardware that fails the GPUDirect capability probe.
 
 The source/host reconstruction prewarms and seals the stage-local graphs, but
 CUDA 13 capture/instantiate/replay acceptance on SM121 has not been observed
