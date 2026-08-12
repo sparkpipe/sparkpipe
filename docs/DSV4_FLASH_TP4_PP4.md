@@ -124,7 +124,8 @@ The deployment configuration is
 `examples/deployments/dsv4_flash_tp4_pp4_stage.json`; the host-RDMA deployment
 spec is `examples/deployments/dsv4_flash_tp4_pp4_host_rdma.spec.json`.  Replace
 the example host names and port bases with the installed fleet values before
-generating a deployment.
+generating a deployment. The 30-second collective connection deadline covers
+concurrent sixteen-rank process startup; it is not part of decode latency.
 
 The exact-width B1 correctness release uses
 `examples/deployments/dsv4_flash_tp4_pp4_b1_host_rdma.spec.json` and
