@@ -47,6 +47,7 @@ typedef struct TestTpDeviceCollectiveGlobal
     atomic_uint reserve_gate_credit_plus_one;
     atomic_uint send_gate_credit_plus_one;
     atomic_uint reverse_completion_order;
+    atomic_uint host_memory_mode;
     atomic_ullong metrics[11];
 } TestTpDeviceCollectiveGlobal;
 
@@ -66,6 +67,7 @@ static void TestTpDeviceCollectiveInitializeGlobal(void)
         &TestTpDeviceCollectiveGlobalState.send_gate_credit_plus_one,0u);
     atomic_init(
         &TestTpDeviceCollectiveGlobalState.reverse_completion_order,0u);
+    atomic_init(&TestTpDeviceCollectiveGlobalState.host_memory_mode,0u);
     for (index = 0u; index < 11u; ++index)
     {
         atomic_init(&TestTpDeviceCollectiveGlobalState.metrics[index],0u);
@@ -92,6 +94,7 @@ void TestTpDeviceCollectiveReset(void)
         memory_order_release);
     atomic_store_explicit(&global->reverse_completion_order,0u,
         memory_order_release);
+    atomic_store_explicit(&global->host_memory_mode,0u,memory_order_release);
     for (index = 0u; index < 11u; ++index)
     {
         atomic_store_explicit(&global->metrics[index],0u,
@@ -141,6 +144,15 @@ void TestTpDeviceCollectiveSetReverseCompletionOrder(uint32_t enabled)
 
     global = TestTpDeviceCollectiveGlobalGet();
     atomic_store_explicit(&global->reverse_completion_order,
+        enabled != 0u ? 1u : 0u,memory_order_release);
+}
+
+void TestTpDeviceCollectiveSetHostMemoryMode(uint32_t enabled)
+{
+    TestTpDeviceCollectiveGlobal *global;
+
+    global = TestTpDeviceCollectiveGlobalGet();
+    atomic_store_explicit(&global->host_memory_mode,
         enabled != 0u ? 1u : 0u,memory_order_release);
 }
 
@@ -634,12 +646,17 @@ static SparkStatus TestTpDeviceCollectiveReleasePersistentReceive(
 const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface(void)
 {
     static SparkHiddenTransportInterface interface;
+    TestTpDeviceCollectiveGlobal *global;
 
+    global = TestTpDeviceCollectiveGlobalGet();
     memset(&interface,0,sizeof(interface));
     interface.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
     interface.descriptor_bytes = SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES;
-    interface.capability_flags =
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_GPUDIRECT_RDMA_CAPS |
+    interface.capability_flags = atomic_load_explicit(
+        &global->host_memory_mode,memory_order_acquire) != 0u ?
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS :
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_GPUDIRECT_RDMA_CAPS;
+    interface.capability_flags |=
         SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
     interface.initialize = TestTpDeviceCollectiveInitialize;
     interface.destroy = TestTpDeviceCollectiveDestroy;

@@ -47,6 +47,7 @@ typedef struct TestTransportControls
     TestCreditFunction set_send_gate;
     TestVoidFunction release_send_gate;
     TestToggleFunction set_reverse_completion_order;
+    TestToggleFunction set_host_memory_mode;
     TestMetricFunction metric;
 } TestTransportControls;
 
@@ -110,11 +111,17 @@ static uint8_t TestSendBuffers[TEST_STEP_COUNT]
     [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][128u];
 static uint8_t TestReceiveBuffers[TEST_STEP_COUNT]
     [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][128u];
+static uint8_t TestSendTransportBuffers[TEST_STEP_COUNT]
+    [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][128u];
+static uint8_t TestReceiveTransportBuffers[TEST_STEP_COUNT]
+    [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][128u];
 static uint8_t TestLocalBuffers[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][64u];
 static uint8_t TestFullBuffers[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][256u];
 static SparkTpDeviceCollectiveCreditBinding TestBindings[
     TEST_STEP_COUNT * SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
 static SparkTpDeviceCollectiveCreditBinding TestReduceBindings[
+    TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT];
+static SparkTpDeviceCollectiveCreditBinding TestMappedReduceBindings[
     TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT];
 static TestSubmissionClaimHook *TestActiveSubmissionClaimHook;
 
@@ -172,6 +179,8 @@ static void TestInitializeBindings(void)
             binding->send_device = TestSendBuffers[step_index][credit_index];
             binding->receive_device =
                 TestReceiveBuffers[step_index][credit_index];
+            binding->send_transport = binding->send_device;
+            binding->receive_transport = binding->receive_device;
         }
     }
     for (step_index = 0u; step_index < TEST_STEP_COUNT; ++step_index)
@@ -191,6 +200,13 @@ static void TestInitializeBindings(void)
             binding->send_device = TestSendBuffers[step_index][credit_index];
             binding->receive_device =
                 TestReceiveBuffers[step_index][credit_index];
+            binding->send_transport = binding->send_device;
+            binding->receive_transport = binding->receive_device;
+            TestMappedReduceBindings[binding_index] = *binding;
+            TestMappedReduceBindings[binding_index].send_transport =
+                TestSendTransportBuffers[step_index][credit_index];
+            TestMappedReduceBindings[binding_index].receive_transport =
+                TestReceiveTransportBuffers[step_index][credit_index];
         }
     }
 }
@@ -255,6 +271,9 @@ static void TestLoadControls(TestTransportControls *controls)
     controls->set_reverse_completion_order =
         (TestToggleFunction)TestRequiredSymbol(controls->library,
             "TestTpDeviceCollectiveSetReverseCompletionOrder");
+    controls->set_host_memory_mode =
+        (TestToggleFunction)TestRequiredSymbol(controls->library,
+            "TestTpDeviceCollectiveSetHostMemoryMode");
     controls->metric = (TestMetricFunction)TestRequiredSymbol(
         controls->library,"TestTpDeviceCollectiveMetric");
 }
@@ -569,6 +588,74 @@ static void TestAllReduceSumAndBoundedCredits(
     configuration.combine_bf16_function = 0;
     assert(SparkTpDeviceCollectiveCreate(&configuration,&collective) ==
         SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static void TestMappedHostStaging(TestTransportControls *controls)
+{
+    SparkTpDeviceCollective collective;
+    SparkTpDeviceCollectiveConfig configuration;
+    SparkTpDeviceCollectiveSubmission submission;
+    TestCombineState combine;
+    TestCompletionState completion;
+    uint16_t *values;
+    uint32_t element;
+    uint32_t memory_mode;
+
+    controls->reset();
+    controls->set_host_memory_mode(1u);
+    assert(SparkTpDeviceCollectiveProbeMemoryMode(
+        SPARK_TEST_TP_DEVICE_COLLECTIVE_MODULE_PATH,&memory_mode) ==
+        SPARK_STATUS_OK);
+    assert(memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST);
+    TestConfigure(&configuration,0);
+    configuration.operation_kind =
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+    configuration.credit_count = TEST_REDUCE_CREDIT_COUNT;
+    configuration.credit_bindings = TestMappedReduceBindings;
+    configuration.credit_binding_count =
+        TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT;
+    configuration.combine_bf16_function = TestCombineBf16;
+    configuration.combine_context = &combine;
+    atomic_init(&combine.count,0u);
+    memset(TestSendTransportBuffers,0,sizeof(TestSendTransportBuffers));
+    memset(TestReceiveTransportBuffers,0,sizeof(TestReceiveTransportBuffers));
+    assert(SparkTpDeviceCollectiveCreate(&configuration,&collective) ==
+        SPARK_STATUS_OK);
+    assert(collective.memory_mode ==
+        SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST);
+    values = (uint16_t *)TestFullBuffers[0u];
+    for (element = 0u; element < 8u; ++element)
+    {
+        values[element] = 3u;
+    }
+    TestCompletionInitialize(&completion);
+    memset(&submission,0,sizeof(submission));
+    submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    submission.descriptor_bytes = sizeof(submission);
+    submission.slot_index = 3u;
+    submission.active_sequence_count = 2u;
+    submission.ordinal = 0u;
+    submission.local_device = values;
+    submission.full_device = values;
+    submission.cuda_stream = (void *)(uintptr_t)0x31000u;
+    submission.completion_function = TestCompletionCallback;
+    submission.completion_context = &completion;
+    assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
+        SPARK_STATUS_OK);
+    TestWaitForCompletion(&completion);
+    TestWaitForPhase(&collective,0u,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE);
+    assert(atomic_load_explicit(&combine.count,memory_order_acquire) ==
+        TEST_STEP_COUNT);
+    for (element = 0u; element < 8u; ++element)
+    {
+        assert(values[element] == 12u);
+    }
+    assert(((uint16_t *)TestSendTransportBuffers[0u][0u])[0] == 3u);
+    assert(((uint16_t *)TestSendTransportBuffers[1u][0u])[0] == 6u);
+    assert(((uint16_t *)TestReceiveBuffers[1u][0u])[0] == 6u);
+    SparkTpDeviceCollectiveDestroy(&collective);
+    controls->set_host_memory_mode(0u);
 }
 
 static void TestOutOfOrderCompletions(TestTransportControls *controls)
@@ -896,6 +983,7 @@ int main(void)
     TestLoadControls(&controls);
     TestSuccessfulOperation(&controls);
     TestAllReduceSumAndBoundedCredits(&controls);
+    TestMappedHostStaging(&controls);
     TestOutOfOrderCompletions(&controls);
     TestRotatingGenerationReuse(&controls);
     TestActiveToSendBuildingFailureRace(&controls);
