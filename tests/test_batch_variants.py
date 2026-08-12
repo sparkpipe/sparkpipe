@@ -125,6 +125,15 @@ def check_rules_makefile():
     if "$(filter-out 1024,$(MODULE_BATCH_VARIANT_BUCKETS))" not in text:
         report("publish set", rel,
                "publish_variants must skip the b1024 re-publish")
+    if "SPARK_MODULE_BATCH_BUCKET=$$bucket $(RUNTIME_CONFIGURATION)" not in text:
+        report("validator bucket", rel,
+               "variant publication must bind validation to the exact bucket")
+    default_validation = ("SPARK_MODULE_BATCH_BUCKET="
+                          "$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) "
+                          "$(RUNTIME_CONFIGURATION)")
+    if text.count(default_validation) != 2:
+        report("validator bucket", rel,
+               "default validation and publication must identify B1024")
     return 1
 
 

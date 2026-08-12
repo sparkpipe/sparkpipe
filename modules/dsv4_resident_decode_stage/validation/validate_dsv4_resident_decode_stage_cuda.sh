@@ -8,6 +8,7 @@ fi
 
 configuration_hash="$1"
 module_archive="$2"
+batch_bucket="${SPARK_MODULE_BATCH_BUCKET:-}"
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 module_directory="$(cd "${script_directory}/.." && pwd)"
 repository_root="$(cd "${module_directory}/../.." && pwd)"
@@ -37,6 +38,14 @@ if [[ ! "${configuration_hash}" =~ ^[0-9a-f]{64}$ ]]; then
     echo "validation configuration must be a lowercase SHA-256 digest" >&2
     exit 2
 fi
+case "${batch_bucket}" in
+    1|2|4|8|16|32|64|128|256|512|1024)
+        ;;
+    *)
+        echo "SPARK_MODULE_BATCH_BUCKET must name the archive's built variant" >&2
+        exit 2
+        ;;
+esac
 if [[ ! -s "${module_archive}" ]]; then
     echo "module archive is missing or empty: ${module_archive}" >&2
     exit 2
@@ -84,6 +93,7 @@ make -C "${repository_root}" \
     -O3 \
     --expt-relaxed-constexpr \
     -gencode arch=compute_121a,code=sm_121a \
+    "-DSPARK_BATCH_BUCKET=${batch_bucket}" \
     -I"${repository_root}/include" \
     -I"${repository_root}/model-families/dsv4/include" \
     -I"${module_directory}/include" \

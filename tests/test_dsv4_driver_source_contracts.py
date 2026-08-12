@@ -276,6 +276,8 @@ def main() -> None:
 	reject(validator, "node_context->stage_count = 2u", "hardcoded validator topology")
 	reject(validator + validator_script + module, "ALLOW_UNQUALIFIED", "runtime qualification bypass")
 	require(validator_script, "-lcuda", "CUDA Driver API validator link")
+	require(validator_script, 'batch_bucket="${SPARK_MODULE_BATCH_BUCKET:-}"', "published batch variant identity")
+	require(validator_script, '"-DSPARK_BATCH_BUCKET=${batch_bucket}"', "matching validator batch geometry")
 	require(validator_script, "qualification/dsv4/reference_vectors/ga_stage0_compsec076_p128", "retained GA stage-0 fixture")
 	require(validator_script, '"${SPARK_DSV4_STAGE_INDEX:-}" == "0"', "reference stage index gate")
 	require(validator_script, '"${SPARK_DSV4_STAGE_FIRST_LAYER:-}" == "0"', "reference first-layer gate")

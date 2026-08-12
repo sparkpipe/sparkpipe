@@ -158,7 +158,7 @@ publish_variants: require_cuda_target require_stage_pack require_gpu_validator $
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
 	@set -e; \
 		for bucket in $(filter-out 1024,$(MODULE_BATCH_VARIANT_BUCKETS)); do \
-			$(RUNTIME_CONFIGURATION) \
+			SPARK_MODULE_BATCH_BUCKET=$$bucket $(RUNTIME_CONFIGURATION) \
 				$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 				--library $(MODULE_LIBRARY_ROOT) \
 				--module $(MODULE_IDENTIFIER_PREFIX).b$$bucket.$(MODULE_IDENTIFIER_SUFFIX) \
@@ -197,14 +197,14 @@ contract:
 archive: require_cuda_target $(MODULE_ARCHIVE)
 
 validate: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_ARCHIVE)
-	$(RUNTIME_CONFIGURATION) \
+	SPARK_MODULE_BATCH_BUCKET=$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) $(RUNTIME_CONFIGURATION) \
 		$(GPU_VALIDATOR) \
 		$(VALIDATION_CONFIGURATION_SHA256) \
 		$(MODULE_ARCHIVE)
 
 publish: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_ARCHIVE)
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
-	$(RUNTIME_CONFIGURATION) \
+	SPARK_MODULE_BATCH_BUCKET=$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) $(RUNTIME_CONFIGURATION) \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 		--library $(MODULE_LIBRARY_ROOT) \
 		--module $(MODULE_IDENTIFIER) \
