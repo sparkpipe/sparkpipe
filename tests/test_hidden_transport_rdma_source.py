@@ -62,6 +62,19 @@ assert "lane->local_info.active_mtu" in ready_qp
 assert "lane->remote_info.active_mtu" in ready_qp
 assert "attributes.path_mtu = IBV_MTU_4096" not in ready_qp
 
+create_qps = function_body("SparkHiddenSparkHostRdmaCreateQueuePairs(")
+assert "SparkHiddenSparkHostRdmaPrepostDoorbellCredits" in create_qps
+doorbell_completion = function_body(
+    "SparkHiddenSparkHostRdmaApplyDoorbellCompletion("
+)
+assert "SparkHiddenSparkHostRdmaPostDoorbellCredit" in doorbell_completion
+assert "completion_generation_tag" in doorbell_completion
+doorbell_immediate = function_body(
+    "SparkHiddenSparkHostRdmaBuildDoorbellImmediate("
+)
+assert "SparkHiddenSparkHostRdmaDoorbellGenerationTag" in doorbell_immediate
+assert "doorbell_posted" not in RDMA
+
 hello = function_body("SparkHiddenSparkHostRdmaExchangeCompatibilityHello(")
 for identity_field in (
     "transport_module_id", "route_name", "source_host", "sink_host",
@@ -103,6 +116,8 @@ activate_receive = function_body(
 assert activate_receive.index("SparkHiddenSparkHostRdmaTerminalStatus") < (
     activate_receive.index("receive->active = 1u")
 )
+assert "early_complete" in activate_receive
+assert "completion_generation_tag" in activate_receive
 pump = function_body("SparkHiddenSparkHostRdmaPumpProgress(")
 assert "SparkHiddenSparkHostRdmaTerminalStatus" in pump
 assert "SparkHiddenSparkHostRdmaFenceSession" in pump

@@ -16,8 +16,12 @@ receiver advertises. The receiver posts a zero-length receive work
 request on that lane and advertises a persistent registered boundary
 region. The sender performs an ordered RDMA write, using
 `IBV_WR_RDMA_WRITE_WITH_IMM` for the final region. The immediate value
-identifies the pending receive slot, and both endpoints derive the same
-lane from it without any extra control traffic. A completion-channel
+identifies the pending receive slot and persistent generation, and both
+endpoints derive the same lane from it without any extra control traffic.
+Receive work requests form a fixed FIFO credit pool per lane rather than
+belonging to logical requests; every consumed credit is reposted immediately.
+Data that safely arrives before persistent activation is retained and validated
+against its generation when activation catches up. A completion-channel
 file descriptor wakes the normal SparkPipe transport event loop; no TCP
 transfer-complete message is sent.
 

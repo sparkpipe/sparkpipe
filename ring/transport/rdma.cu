@@ -86,6 +86,18 @@
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE 0x8000000000000000ull
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_INDEX_SHIFT 8u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_LANE_MASK 0xffull
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_CREDIT_BITS 6u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_CREDIT_MASK \
+    ((1u << SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_CREDIT_BITS) - 1u)
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_GENERATION_SHIFT \
+    SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_CREDIT_BITS
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_GENERATION_MASK \
+    ((1u << (32u - SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_CREDIT_BITS)) - 1u)
+
+#if SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT > \
+    (SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_CREDIT_MASK + 1u)
+#error "doorbell immediate credit field is too small"
+#endif
 
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX 0xffffffffu
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_MEMORY_MODE_MAPPED_HOST 1u
@@ -158,7 +170,7 @@ typedef struct SparkHiddenSparkHostRdmaPendingReceive
     uint32_t active;
     uint32_t complete;
     uint32_t advertised;
-    uint32_t doorbell_posted;
+    uint32_t completion_generation_tag;
     uint32_t visibility_flushed;
     uint32_t persistent_registered;
     uint32_t completion_published;
@@ -1273,6 +1285,58 @@ static SparkStatus SparkHiddenSparkHostRdmaCreateCompletionChannel(
         state->completion_channel->fd);
 }
 
+static uint32_t SparkHiddenSparkHostRdmaDoorbellLane(
+    const SparkHiddenSparkHostRdmaState *state,
+    uint32_t receive_index)
+{
+    if (state == 0 || state->lane_count <= 1u)
+        return 0u;
+    return receive_index % state->lane_count;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaPostDoorbellCredit(
+    SparkHiddenSparkHostRdmaState *state,
+    uint32_t credit_index)
+{
+    struct ibv_recv_wr work_request;
+    struct ibv_recv_wr *bad_work_request;
+
+    if (state == 0 || credit_index >=
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    memset(&work_request,0,sizeof(work_request));
+    work_request.wr_id = SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE |
+        (uint64_t)credit_index;
+    bad_work_request = 0;
+    if (ibv_post_recv(state->lanes[SparkHiddenSparkHostRdmaDoorbellLane(
+            state,credit_index)].queue_pair,&work_request,
+            &bad_work_request) != 0)
+        return SPARK_STATUS_IO_ERROR;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaPrepostDoorbellCredits(
+    SparkHiddenSparkHostRdmaState *state)
+{
+    SparkStatus status;
+    uint32_t credit_index;
+
+    if (state == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (state->is_sender != 0u)
+        return SPARK_STATUS_OK;
+    for (credit_index = 0u;
+         credit_index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT;
+         ++credit_index)
+    {
+        status = SparkHiddenSparkHostRdmaPostDoorbellCredit(
+            state,credit_index);
+        if (status != SPARK_STATUS_OK)
+            return status;
+    }
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkHiddenSparkHostRdmaCreateQueuePairs(SparkHiddenSparkHostRdmaState *state)
 {
     struct ibv_qp_init_attr init_attributes;
@@ -1325,7 +1389,7 @@ static SparkStatus SparkHiddenSparkHostRdmaCreateQueuePairs(SparkHiddenSparkHost
         memcpy(lane->local_info.gid, state->local_gid.raw,
             sizeof(lane->local_info.gid));
     }
-    return SPARK_STATUS_OK;
+    return SparkHiddenSparkHostRdmaPrepostDoorbellCredits(state);
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaExchangeQueuePairInfo(
@@ -1995,28 +2059,6 @@ static uint32_t SparkHiddenSparkHostRdmaPacketUsesDoorbell(
     return bytes <= (uint64_t)state->doorbell_max_bytes ? 1u : 0u;
 }
 
-static uint32_t SparkHiddenSparkHostRdmaDoorbellLane(
-    const SparkHiddenSparkHostRdmaState *state,
-    uint32_t receive_index)
-{
-    /* NET-003: sub-doorbell_max_bytes packets used to squeeze onto lane
-     * 0 (both the RDMA_WRITE_WITH_IMM and its pre-posted receive),
-     * leaving the other QPs idle for 14KiB-class hidden packets. Pin
-     * each receive slot to receive_index % lane_count instead: both
-     * endpoints derive the same lane from the receive_index the
-     * receiver already advertises in RECEIVE_READY, so no wire change
-     * is needed. Per-slot (not per-packet) assignment keeps every
-     * replay of one packet on one QP, which is the only ordering RC
-     * guarantees; distinct doorbell packets have no inter-packet
-     * ordering requirement because each targets distinct remote buffers
-     * and signals completion through its own immediate. */
-    if (state == 0 || state->lane_count <= 1u)
-    {
-        return 0u;
-    }
-    return receive_index % state->lane_count;
-}
-
 static uint32_t SparkHiddenSparkHostRdmaRemoteReceiveMatchesPacket(
     const SparkHiddenSparkHostRdmaRemoteReceive *receive,
     const SparkHiddenTransportPacket *packet)
@@ -2358,34 +2400,6 @@ static SparkStatus SparkHiddenSparkHostRdmaReadControlMessageNonblocking(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenSparkHostRdmaPostDoorbellReceive(
-    SparkHiddenSparkHostRdmaState *state,
-    SparkHiddenSparkHostRdmaPendingReceive *receive)
-{
-    struct ibv_recv_wr work_request;
-    struct ibv_recv_wr *bad_work_request;
-
-    if (state == 0 || receive == 0 || receive->receive_index >=
-            SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    memset(&work_request, 0, sizeof(work_request));
-    work_request.wr_id = SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE |
-        (uint64_t)receive->receive_index;
-    bad_work_request = 0;
-    /* NET-003: post on this slot's assigned lane; the sender derives
-     * the same lane from the advertised receive_index. */
-    if (ibv_post_recv(state->lanes[SparkHiddenSparkHostRdmaDoorbellLane(
-            state,receive->receive_index)].queue_pair, &work_request,
-            &bad_work_request) != 0)
-    {
-        return SPARK_STATUS_IO_ERROR;
-    }
-    receive->doorbell_posted = 1u;
-    return SPARK_STATUS_OK;
-}
-
 static SparkStatus SparkHiddenSparkHostRdmaDrainCompletionEvents(
     SparkHiddenSparkHostRdmaState *state)
 {
@@ -2423,12 +2437,22 @@ static SparkStatus SparkHiddenSparkHostRdmaDrainCompletionEvents(
     }
 }
 
+static uint32_t SparkHiddenSparkHostRdmaDoorbellGenerationTag(
+    uint64_t generation)
+{
+    return (uint32_t)generation &
+        SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_GENERATION_MASK;
+}
+
 static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
     SparkHiddenSparkHostRdmaState *state,
     const struct ibv_wc *work_completion)
 {
     SparkHiddenSparkHostRdmaPendingReceive *receive;
+    SparkStatus status;
     uint64_t receive_credit_index;
+    uint32_t generation_tag;
+    uint32_t immediate;
     uint32_t receive_index;
 
     if (state == 0 || work_completion == 0 ||
@@ -2437,8 +2461,14 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    /* FIFO receive WQEs are lane credits; immediate data owns identity. */
-    receive_index = ntohl(work_completion->imm_data);
+    /* FIFO receive WQEs are replenished lane credits. Immediate data owns
+     * the logical receive identity and its persistent generation tag. */
+    immediate = ntohl(work_completion->imm_data);
+    receive_index = immediate &
+        SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_CREDIT_MASK;
+    generation_tag = (immediate >>
+        SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_GENERATION_SHIFT) &
+        SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_GENERATION_MASK;
     receive_credit_index = work_completion->wr_id &
         ~SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE;
     if (receive_index >= SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT ||
@@ -2452,13 +2482,22 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
     {
         return SPARK_STATUS_IO_ERROR;
     }
+    status = SparkHiddenSparkHostRdmaPostDoorbellCredit(
+        state,(uint32_t)receive_credit_index);
+    if (status != SPARK_STATUS_OK)
+        return status;
     receive = &state->pending_receives[receive_index];
-    if (receive->active == 0u || receive->doorbell_posted == 0u)
+    if (receive->complete != 0u ||
+        (receive->persistent_registered == 0u &&
+         (receive->active == 0u || generation_tag != 0u)) ||
+        (receive->persistent_registered != 0u && receive->active != 0u &&
+         generation_tag != SparkHiddenSparkHostRdmaDoorbellGenerationTag(
+            receive->generation)))
     {
         return SPARK_STATUS_IO_ERROR;
     }
     receive->complete = 1u;
-    receive->doorbell_posted = 0u;
+    receive->completion_generation_tag = generation_tag;
     receive->completion_status = SPARK_STATUS_OK;
     SparkHiddenSparkHostRdmaSignalEvent(state);
     return SPARK_STATUS_OK;
@@ -2906,11 +2945,12 @@ static SparkStatus SparkHiddenSparkHostRdmaBuildCompletion(
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaBuildReceiveReadyMessage(
+    const SparkHiddenSparkHostRdmaState *state,
     const SparkHiddenTransportPacket *packet,
     const SparkHiddenSparkHostRdmaPendingReceive *receive,
     SparkHiddenSparkHostRdmaControlMessage *message)
 {
-    if (packet == 0 || receive == 0 || message == 0)
+    if (state == 0 || packet == 0 || receive == 0 || message == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
     memset(message,0,sizeof(*message));
     message->type = SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_RECEIVE_READY;
@@ -2920,8 +2960,8 @@ static SparkStatus SparkHiddenSparkHostRdmaBuildReceiveReadyMessage(
     message->sideband_kind = packet->sideband_kind;
     message->sideband_bytes_per_sequence =
         packet->sideband_bytes_per_sequence;
-    message->reserved = receive->doorbell_posted != 0u ?
-        receive->receive_index + 1u : 0u;
+    message->reserved = SparkHiddenSparkHostRdmaPacketUsesDoorbell(
+        state,packet) != 0u ? receive->receive_index + 1u : 0u;
     message->hidden = receive->hidden_descriptor;
     message->sideband = receive->sideband_descriptor;
     return SPARK_STATUS_OK;
@@ -2938,7 +2978,7 @@ static SparkStatus SparkHiddenSparkHostRdmaAdvertiseReceive(
     if (state == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
     status = SparkHiddenSparkHostRdmaBuildReceiveReadyMessage(
-        packet,receive,&message);
+        state,packet,receive,&message);
     if (status != SPARK_STATUS_OK)
         return status;
     status = SparkHiddenSparkHostRdmaWriteControlMessage(state,&message);
@@ -3044,13 +3084,6 @@ static SparkStatus SparkHiddenSparkHostRdmaPreparePendingReceive(
         if (status != SPARK_STATUS_OK)
             return status;
     }
-    if (receive->doorbell_posted == 0u &&
-        SparkHiddenSparkHostRdmaPacketUsesDoorbell(state,packet) != 0u)
-    {
-        status = SparkHiddenSparkHostRdmaPostDoorbellReceive(state,receive);
-        if (status != SPARK_STATUS_OK)
-            return status;
-    }
     if (receive->advertised == 0u)
     {
         status = SparkHiddenSparkHostRdmaAdvertiseReceive(
@@ -3129,64 +3162,6 @@ static SparkStatus SparkHiddenSparkHostRdmaPostReceive(
     return status;
 }
 
-static SparkStatus SparkHiddenSparkHostRdmaPostDoorbellReceiveBatch(
-    SparkHiddenSparkHostRdmaState *state,
-    SparkHiddenSparkHostRdmaPendingReceive **receives,
-    uint32_t packet_count)
-{
-    struct ibv_recv_wr work_requests[
-        SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT];
-    struct ibv_recv_wr *bad_work_request;
-    SparkHiddenSparkHostRdmaPendingReceive *receive;
-    uint32_t lane_index;
-    uint32_t packet_index;
-    uint32_t write_count;
-
-    /* NET-003: chained recv WRs must stay on one QP, so build and post
-     * one chain per lane instead of dumping the whole batch on lane 0.
-     * A failed lane leaves its receives unposted (doorbell_posted stays
-     * 0) so a later retry reposts exactly those. */
-    for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
-    {
-        write_count = 0u;
-        for (packet_index = 0u; packet_index < packet_count; ++packet_index)
-        {
-            receive = receives[packet_index];
-            if (receive->doorbell_posted != 0u ||
-                SparkHiddenSparkHostRdmaPacketUsesDoorbell(
-                    state,&receive->packet_snapshot) == 0u ||
-                SparkHiddenSparkHostRdmaDoorbellLane(
-                    state,receive->receive_index) != lane_index)
-                continue;
-            memset(&work_requests[write_count],0,
-                sizeof(work_requests[write_count]));
-            work_requests[write_count].wr_id =
-                SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE |
-                (uint64_t)receive->receive_index;
-            if (write_count != 0u)
-                work_requests[write_count - 1u].next =
-                    &work_requests[write_count];
-            write_count += 1u;
-        }
-        if (write_count == 0u)
-            continue;
-        bad_work_request = 0;
-        if (ibv_post_recv(state->lanes[lane_index].queue_pair,
-                &work_requests[0],&bad_work_request) != 0)
-            return SPARK_STATUS_IO_ERROR;
-        for (packet_index = 0u; packet_index < packet_count; ++packet_index)
-        {
-            receive = receives[packet_index];
-            if (SparkHiddenSparkHostRdmaPacketUsesDoorbell(
-                    state,&receive->packet_snapshot) != 0u &&
-                SparkHiddenSparkHostRdmaDoorbellLane(
-                    state,receive->receive_index) == lane_index)
-                receive->doorbell_posted = 1u;
-        }
-    }
-    return SPARK_STATUS_OK;
-}
-
 static SparkStatus SparkHiddenSparkHostRdmaAdvertiseReceiveBatch(
     SparkHiddenSparkHostRdmaState *state,
     SparkHiddenSparkHostRdmaPendingReceive **receives,
@@ -3206,7 +3181,7 @@ static SparkStatus SparkHiddenSparkHostRdmaAdvertiseReceiveBatch(
         if (receive->advertised != 0u)
             continue;
         status = SparkHiddenSparkHostRdmaBuildReceiveReadyMessage(
-            &receive->packet_snapshot,receive,&messages[message_count]);
+            state,&receive->packet_snapshot,receive,&messages[message_count]);
         if (status != SPARK_STATUS_OK)
             return status;
         message_count += 1u;
@@ -3276,10 +3251,6 @@ static SparkStatus SparkHiddenSparkHostRdmaPostReceiveBatch(
             return SPARK_STATUS_DUPLICATE;
         receive_mask |= 1ull << receive_index;
     }
-    status = SparkHiddenSparkHostRdmaPostDoorbellReceiveBatch(
-        state,receives,packet_count);
-    if (status != SPARK_STATUS_OK)
-        return status;
     status = SparkHiddenSparkHostRdmaAdvertiseReceiveBatch(
         state,receives,packet_count);
     return status;
@@ -3426,6 +3397,21 @@ static SparkStatus SparkHiddenSparkHostRdmaCheckPacketQueueCapacity(
     return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkHiddenSparkHostRdmaBuildDoorbellImmediate(
+    const SparkHiddenSparkHostRdmaRemoteReceive *receive)
+{
+    uint32_t generation_tag;
+
+    if (receive == 0)
+        return UINT32_MAX;
+    generation_tag = receive->persistent != 0u ?
+        SparkHiddenSparkHostRdmaDoorbellGenerationTag(receive->generation) :
+        0u;
+    return receive->receive_index |
+        (generation_tag <<
+            SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_GENERATION_SHIFT);
+}
+
 static SparkStatus SparkHiddenSparkHostRdmaPostLaneWrites(
     SparkHiddenSparkHostRdmaState *state,
     SparkHiddenSparkHostRdmaInflightSend *send,
@@ -3479,7 +3465,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPostLaneWrites(
         work_requests[write_count - 1u].opcode =
             IBV_WR_RDMA_WRITE_WITH_IMM;
         work_requests[write_count - 1u].imm_data =
-            htonl(remote_receive->receive_index);
+            htonl(SparkHiddenSparkHostRdmaBuildDoorbellImmediate(
+                remote_receive));
     }
     bad_work_request = 0;
     if (ibv_post_send(state->lanes[lane_index].queue_pair,
@@ -4037,7 +4024,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPostBatchLane(
             work_requests[write_count - 1u].opcode =
                 IBV_WR_RDMA_WRITE_WITH_IMM;
             work_requests[write_count - 1u].imm_data =
-                htonl(item->remote_receive->receive_index);
+                htonl(SparkHiddenSparkHostRdmaBuildDoorbellImmediate(
+                    item->remote_receive));
         }
     }
     if (write_count == 0u)
@@ -4259,6 +4247,7 @@ static void SparkHiddenSparkHostRdmaResetPersistentActivation(
     }
     receive->active = 0u;
     receive->complete = 0u;
+    receive->completion_generation_tag = 0u;
     receive->visibility_flushed = 0u;
     receive->completion_published = 0u;
     receive->release_event_recorded = 0u;
@@ -4320,16 +4309,11 @@ static SparkStatus SparkHiddenSparkHostRdmaRegisterPersistentReceive(
         SparkHiddenSparkHostRdmaReleasePendingReceive(state,receive);
         return status;
     }
-    status = SparkHiddenSparkHostRdmaPostDoorbellReceive(state,receive);
-    if (status != SPARK_STATUS_OK)
-    {
-        SparkHiddenSparkHostRdmaReleasePendingReceive(state,receive);
-        return status;
-    }
     memset(&message,0,sizeof(message));
     message.type =
         SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_ADVERTISE;
-    message.reserved = credit_index + 1u;
+    message.reserved = SparkHiddenSparkHostRdmaPacketUsesDoorbell(
+        state,packet_template) != 0u ? credit_index + 1u : 0u;
     message.active_sequence_count = state->endpoint.max_active_sequence_count;
     message.sideband_kind = packet_template->sideband_kind;
     message.sideband_bytes_per_sequence =
@@ -4473,6 +4457,7 @@ static SparkStatus SparkHiddenSparkHostRdmaActivatePersistentReceive(
     SparkHiddenSparkHostRdmaPendingReceive *receive;
     SparkHiddenSparkHostRdmaState *state;
     SparkStatus status;
+    uint32_t early_complete;
 
     state = (SparkHiddenSparkHostRdmaState *)transport_state;
     if (state == 0 || packet == 0 || state->is_sender != 0u ||
@@ -4504,14 +4489,23 @@ static SparkStatus SparkHiddenSparkHostRdmaActivatePersistentReceive(
     {
         return SPARK_STATUS_VALIDATION_FAILED;
     }
+    if (receive->complete != 0u &&
+        receive->completion_generation_tag !=
+            SparkHiddenSparkHostRdmaDoorbellGenerationTag(generation))
+        return SPARK_STATUS_VALIDATION_FAILED;
+    early_complete = receive->complete;
     receive->active = 1u;
-    receive->complete = 0u;
+    receive->complete = early_complete;
+    receive->completion_generation_tag =
+        SparkHiddenSparkHostRdmaDoorbellGenerationTag(generation);
     receive->completion_published = 0u;
     receive->release_event_recorded = 0u;
     receive->visibility_flushed = 0u;
     receive->generation = generation;
     receive->packet_snapshot = *packet;
     receive->completion_status = SPARK_STATUS_OK;
+    if (early_complete != 0u)
+        SparkHiddenSparkHostRdmaSignalEvent(state);
     return SPARK_STATUS_OK;
 }
 
@@ -4533,6 +4527,19 @@ static SparkStatus SparkHiddenSparkHostRdmaCancelPersistentReceive(
     receive = &state->pending_receives[credit_index];
     if (receive->active == 0u)
     {
+        if (receive->complete != 0u)
+        {
+            if (receive->completion_generation_tag !=
+                    SparkHiddenSparkHostRdmaDoorbellGenerationTag(generation))
+                return SPARK_STATUS_VALIDATION_FAILED;
+            status = SparkHiddenSparkHostRdmaFenceSession(state);
+            if (status == SPARK_STATUS_OK)
+            {
+                receive->returned_generation = generation;
+                SparkHiddenSparkHostRdmaResetPersistentActivation(receive);
+            }
+            return status;
+        }
         return SPARK_STATUS_OK;
     }
     if (receive->persistent_registered == 0u ||
@@ -4633,14 +4640,6 @@ static SparkStatus SparkHiddenSparkHostRdmaReleasePersistentReceive(
     if (cuda_status != cudaSuccess)
     {
         return SPARK_STATUS_IO_ERROR;
-    }
-    if (receive->doorbell_posted == 0u)
-    {
-        status = SparkHiddenSparkHostRdmaPostDoorbellReceive(state,receive);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
     }
     memset(&message,0,sizeof(message));
     message.type = SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_RETURN;
