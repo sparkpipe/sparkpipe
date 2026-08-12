@@ -9,7 +9,7 @@
     "backend_module_path": "lib/runtime_libs/libnccl.so.2",
     "collective_identifier": 134217728,
     "listen_port": 62000,
-    "connect_timeout_milli": 30000,
+    "connect_timeout_milli": 120000,
     "operation_timeout_milli": 120000,
     "peer_hosts": [
       "spark0", "spark1", "spark2", "spark3",
