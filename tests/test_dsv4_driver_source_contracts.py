@@ -267,6 +267,8 @@ def main() -> None:
 	require(adapter, "SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT", "PP13 adapter slot capacity")
 	require(adapter, ".max_resident_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT", "adapter resident lane capacity")
 	require(validator, "(SPARK_BATCH_BUCKET < 8u ? SPARK_BATCH_BUCKET : 8u)", "bucket-safe CUDA validation width")
+	require(validator, "SPARK_BATCH_BUCKET < SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT", "bucket-safe retained-reference prefix")
+	require(validator, "SparkDsv4ValidationReadPrefix", "verified full fixture with bucket prefix")
 	require(validator, "frame->batch.row_count = SPARK_DSV4_VALIDATION_ROW_COUNT;", "CUDA decode batch")
 	reject(validator, "SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT - 1u", "non-native DSV4 head validation width")
 	require(validator, "SparkDsv4ValidationRequireCuda(error,\"head_cuda\")", "CUDA head failure detail")

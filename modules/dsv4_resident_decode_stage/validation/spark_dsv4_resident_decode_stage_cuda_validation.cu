@@ -12,7 +12,10 @@
 
 #define SPARK_DSV4_VALIDATION_ROW_COUNT \
 	(SPARK_BATCH_BUCKET < 8u ? SPARK_BATCH_BUCKET : 8u)
-#define SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT 128u
+#define SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT 128u
+#define SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT \
+	(SPARK_BATCH_BUCKET < SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT ? \
+	SPARK_BATCH_BUCKET : SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT)
 #define SPARK_DSV4_VALIDATION_REFERENCE_MAX_RELATIVE_L2 0.02
 #define SPARK_DSV4_VALIDATION_REFERENCE_MIN_COSINE 0.999
 #define SPARK_DSV4_VALIDATION_REFERENCE_MAX_ROW_RELATIVE_L2 0.075
@@ -377,20 +380,26 @@ static float SparkDsv4ValidationBf16ToFloat(uint16_t value)
 	return(converted);
 }
 
-static int SparkDsv4ValidationReadExact(const char *path,void *destination,uint64_t bytes)
+static int SparkDsv4ValidationReadPrefix(const char *path,void *destination,uint64_t bytes,uint64_t file_bytes)
 {
 	FILE *file;
 	uint64_t read_bytes;
-	int32_t extra;
+	long actual_bytes;
 	file = fopen(path,"rb");
 	if ( file == 0 )
 		return(1);
-	read_bytes = fread(destination,1u,(size_t)bytes,file);
-	extra = fgetc(file);
-	fclose(file);
-	if ( read_bytes != bytes || extra != EOF )
+	actual_bytes = fseek(file,0,SEEK_END) == 0 ? ftell(file) : -1;
+	if ( actual_bytes < 0 || (uint64_t)actual_bytes != file_bytes || fseek(file,0,SEEK_SET) != 0 )
 	{
-		fprintf(stderr,"dsv4_validation reference_read path=%s bytes=%llu expected=%llu extra=%d\n",path,(unsigned long long)read_bytes,(unsigned long long)bytes,extra);
+		fclose(file);
+		fprintf(stderr,"dsv4_validation reference_size path=%s bytes=%ld expected=%llu\n",path,actual_bytes,(unsigned long long)file_bytes);
+		return(1);
+	}
+	read_bytes = fread(destination,1u,(size_t)bytes,file);
+	fclose(file);
+	if ( read_bytes != bytes )
+	{
+		fprintf(stderr,"dsv4_validation reference_read path=%s bytes=%llu expected=%llu\n",path,(unsigned long long)read_bytes,(unsigned long long)bytes);
 		return(1);
 	}
 	return(0);
@@ -457,6 +466,7 @@ static int SparkDsv4ValidationReferenceThresholds(const SparkDsv4ValidationRefer
 static int SparkDsv4ValidationCompareReference(const char *path,const uint16_t *actual)
 {
 	const uint64_t elements = (uint64_t)SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS;
+	const uint64_t fixture_elements = (uint64_t)SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS;
 	SparkDsv4ValidationReferenceMetrics metrics;
 	double row_difference_l2[SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT];
 	double row_reference_l2[SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT];
@@ -464,7 +474,7 @@ static int SparkDsv4ValidationCompareReference(const char *path,const uint16_t *
 	uint16_t *reference;
 	uint32_t row;
 	reference = (uint16_t *)calloc((size_t)elements,sizeof(uint16_t));
-	if ( reference == 0 || SparkDsv4ValidationReadExact(path,reference,elements * sizeof(uint16_t)) != 0 )
+	if ( reference == 0 || SparkDsv4ValidationReadPrefix(path,reference,elements * sizeof(uint16_t),fixture_elements * sizeof(uint16_t)) != 0 )
 	{
 		free(reference);
 		return(1);
@@ -493,8 +503,9 @@ static int SparkDsv4ValidationCompareReference(const char *path,const uint16_t *
 
 static int SparkDsv4ValidationBuildReferenceRows(SparkDsv4ValidationReferenceFrame *frame,const char *token_path)
 {
+	const uint64_t fixture_bytes = (uint64_t)SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT * sizeof(uint32_t);
 	uint32_t row;
-	if ( SparkDsv4ValidationReadExact(token_path,frame->token_ids,sizeof(frame->token_ids)) != 0 )
+	if ( SparkDsv4ValidationReadPrefix(token_path,frame->token_ids,sizeof(frame->token_ids),fixture_bytes) != 0 )
 		return(1);
 	for (row=0u; row<SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT; row++)
 	{
