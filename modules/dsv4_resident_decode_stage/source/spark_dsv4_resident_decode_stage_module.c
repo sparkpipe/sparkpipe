@@ -428,6 +428,7 @@ extern cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const 
 extern cudaError_t SparkDsv4LaunchHeadScreenedArgmaxSharded(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkDsv4LaunchHeadMaxlocPack(cudaStream_t stream, const float *scores, const uint32_t *token_ids, uint64_t *maxloc, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchHeadMaxlocUnpack(cudaStream_t stream, const uint64_t *maxloc, uint32_t *token_ids, uint32_t row_count);
+extern cudaError_t SparkDsv4LaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count);
 extern cudaError_t SparkDsv4LaunchGatherHeadRows(cudaStream_t stream, const void *source_bf16, const uint32_t *source_row_indices, void *destination_bf16, uint32_t row_count, uint32_t row_width);
 extern cudaError_t SparkDsv4LaunchScatterHeadTokens(cudaStream_t stream, const uint32_t *source, const uint32_t *destination_lane_indices, uint32_t *destination, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchQuantSim(cudaStream_t stream, void *data_bf16, uint32_t row_count, uint32_t row_stride, uint32_t width, uint32_t block, uint32_t fp4);
@@ -478,6 +479,21 @@ static SparkStatus SparkDsv4ModuleCombineBf16(
 		"tp_all_reduce_sum"));
 }
 
+static SparkStatus SparkDsv4ModuleCombineU64Max(
+	void *combine_context,
+	uint64_t *destination_device,
+	const uint64_t *source_device,
+	uint32_t element_count,
+	void *cuda_stream)
+{
+	cudaError_t error;
+	(void)combine_context;
+	error = SparkDsv4LaunchAccumU64Max((cudaStream_t)cuda_stream,
+		destination_device,source_device,element_count);
+	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+		"tp_all_reduce_max_u64"));
+}
+
 static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	SparkDsv4ModuleState *state,
 	const SparkDsv4ResidentDecodeStageNodeContext *context)
@@ -522,6 +538,7 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 	{
 		configuration.combine_bf16_function = SparkDsv4ModuleCombineBf16;
+		configuration.combine_u64_max_function = SparkDsv4ModuleCombineU64Max;
 		configuration.combine_context = state;
 	}
 	if ( configuration.connect_timeout_milli == 0u ||
@@ -771,10 +788,6 @@ static SparkStatus SparkDsv4ModuleValidateSlice(SparkDsv4ModuleState *state)
 			state->layer_count == SPARK_DSV4_MODEL_LAYER_COUNT ? 1u : 0u;
 		state->owns_final_head = state->participates_final_head != 0u &&
 			state->tp_rank + 1u == state->tp_degree ? 1u : 0u;
-		if ( state->participates_final_head != 0u &&
-			state->tp_device_collective.backend_kind !=
-			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
-			return(SPARK_STATUS_UNSUPPORTED);
 		return(SPARK_STATUS_OK);
 	}
 	state->owns_embedding = state->first_layer_index == 0u ? 1u : 0u;

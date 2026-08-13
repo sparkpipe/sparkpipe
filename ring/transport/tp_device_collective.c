@@ -29,6 +29,8 @@ extern cudaError_t cudaEventQuery(cudaEvent_t event);
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_CHUNKS_PER_LANE 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_CHUNK_COUNT 8u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_STREAM_COUNT 4u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 2u
+#define SPARK_TP_DEVICE_COLLECTIVE_U64_TRANSPORT_HIDDEN_DIMENSION 4u
 
 typedef struct SparkTpDeviceCollectiveOperation
 {
@@ -38,6 +40,7 @@ typedef struct SparkTpDeviceCollectiveOperation
     uint32_t active_sequence_count;
     uint32_t current_step;
     uint32_t algorithm_kind;
+    uint32_t operation_kind;
     uint32_t reserved_send_mask;
     uint32_t activated_receive_mask;
     uint32_t sent_mask;
@@ -91,6 +94,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
         SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     SparkTpDeviceCollectiveDebugHooks debug_hooks;
     SparkTpDeviceCollectiveCombineBf16Function combine_bf16_function;
+    SparkTpDeviceCollectiveCombineU64MaxFunction combine_u64_max_function;
     void *combine_context;
     cudaEvent_t consumer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     cudaEvent_t producer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
@@ -282,12 +286,45 @@ static uint32_t SparkTpDeviceCollectiveRouteBinding(uint32_t route_index)
         1u : route_index;
 }
 
+static uint32_t SparkTpDeviceCollectiveOperationHiddenDimension(
+    const SparkTpDeviceCollectiveImplementation *implementation,
+    const SparkTpDeviceCollectiveOperation *operation,
+    uint32_t step_index)
+{
+    if (operation->operation_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+        return SPARK_TP_DEVICE_COLLECTIVE_U64_TRANSPORT_HIDDEN_DIMENSION;
+    return implementation->step_hidden_dimensions[step_index];
+}
+
+static uint64_t SparkTpDeviceCollectiveOperationBytesPerSequence(
+    const SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveOperation *operation)
+{
+    return operation->operation_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 ?
+        sizeof(uint64_t) :
+        (uint64_t)collective->local_hidden_dimension *
+            SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
+}
+
+static uint32_t SparkTpDeviceCollectiveOperationIsReduction(
+    const SparkTpDeviceCollectiveOperation *operation)
+{
+    return operation->operation_kind !=
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER;
+}
+
 static uint32_t SparkTpDeviceCollectiveSelectAlgorithm(
     const SparkTpDeviceCollective *collective,
+    uint32_t operation_kind,
     uint32_t active_sequence_count)
 {
     uint64_t payload_bytes;
 
+    if (operation_kind !=
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16)
+        return SPARK_TP_DEVICE_COLLECTIVE_RECURSIVE_KIND;
     payload_bytes = (uint64_t)active_sequence_count *
         collective->local_hidden_dimension *
         SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
@@ -969,18 +1006,29 @@ static SparkStatus SparkTpDeviceCollectiveBuildOperationPackets(
     binding = &implementation->bindings[step_index][operation->credit_index];
     status = SparkTpDeviceCollectiveBuildPacket(binding->send_transport,
         operation->active_sequence_count,
-        implementation->step_hidden_dimensions[step_index],
+        SparkTpDeviceCollectiveOperationHiddenDimension(
+            implementation,operation,step_index),
         operation->ordinal,step_index,operation->cuda_stream,
         send_packet);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    return SparkTpDeviceCollectiveBuildPacket(binding->receive_transport,
+    if (operation->operation_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+        send_packet->flags |=
+            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SUBRANGE_SHAPE;
+    status = SparkTpDeviceCollectiveBuildPacket(binding->receive_transport,
         operation->active_sequence_count,
-        implementation->step_hidden_dimensions[step_index],
+        SparkTpDeviceCollectiveOperationHiddenDimension(
+            implementation,operation,step_index),
         operation->ordinal,step_index,operation->cuda_stream,
         receive_packet);
+    if (status == SPARK_STATUS_OK && operation->operation_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+        receive_packet->flags |=
+            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SUBRANGE_SHAPE;
+    return status;
 }
 
 static SparkStatus SparkTpDeviceCollectiveCudaStatus(cudaError_t cuda_status)
@@ -1141,10 +1189,9 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueLocalPlacement(
     uint64_t rank_offset;
     SparkStatus status;
 
-    local_bytes = (uint64_t)implementation->collective->local_hidden_dimension *
-        SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
-    if (implementation->collective->operation_kind ==
-        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16)
+    local_bytes = SparkTpDeviceCollectiveOperationBytesPerSequence(
+        implementation->collective,operation);
+    if (SparkTpDeviceCollectiveOperationIsReduction(operation) != 0u)
     {
         full_pitch = local_bytes;
         rank_offset = 0u;
@@ -1270,10 +1317,9 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueReceiveConsumption(
             implementation,operation);
     binding = &implementation->bindings[operation->current_step]
         [operation->credit_index];
-    local_bytes = (uint64_t)implementation->collective->local_hidden_dimension *
-        SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
-    step_bytes = implementation->collective->operation_kind ==
-        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 ?
+    local_bytes = SparkTpDeviceCollectiveOperationBytesPerSequence(
+        implementation->collective,operation);
+    step_bytes = SparkTpDeviceCollectiveOperationIsReduction(operation) != 0u ?
         local_bytes : local_bytes << operation->current_step;
     status = SparkTpDeviceCollectiveStageReceive(
         implementation->collective,binding,step_bytes,step_bytes,
@@ -1282,7 +1328,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueReceiveConsumption(
     {
         return status;
     }
-    if (implementation->collective->operation_kind ==
+    if (operation->operation_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16)
     {
         status = implementation->combine_bf16_function(
@@ -1290,6 +1336,15 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueReceiveConsumption(
             binding->receive_device,operation->active_sequence_count,
             implementation->collective->local_hidden_dimension,
             operation->cuda_stream);
+    }
+    else if (operation->operation_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+    {
+        status = implementation->combine_u64_max_function(
+            implementation->combine_context,
+            (uint64_t *)operation->full_device,
+            (const uint64_t *)binding->receive_device,
+            operation->active_sequence_count,operation->cuda_stream);
     }
     else
     {
@@ -1322,10 +1377,9 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueNextSendPack(
     uint64_t source_offset;
     SparkStatus status;
 
-    local_bytes = (uint64_t)implementation->collective->local_hidden_dimension *
-        SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
-    if (implementation->collective->operation_kind ==
-        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16)
+    local_bytes = SparkTpDeviceCollectiveOperationBytesPerSequence(
+        implementation->collective,operation);
+    if (SparkTpDeviceCollectiveOperationIsReduction(operation) != 0u)
     {
         full_pitch = local_bytes;
         step_bytes = local_bytes;
@@ -2594,6 +2648,8 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     implementation->registration_cuda_stream =
         config->registration_cuda_stream;
     implementation->combine_bf16_function = config->combine_bf16_function;
+    implementation->combine_u64_max_function =
+        config->combine_u64_max_function;
     implementation->combine_context = config->combine_context;
     implementation->profile_enabled =
         SparkTpDeviceCollectiveProfileIsEnabled();
@@ -2742,9 +2798,10 @@ fail_create:
     return status;
 }
 
-SparkStatus SparkTpDeviceCollectiveSubmitBf16(
+static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
     SparkTpDeviceCollective *collective,
-    const SparkTpDeviceCollectiveSubmission *submission)
+    const SparkTpDeviceCollectiveSubmission *submission,
+    uint32_t operation_kind)
 {
     SparkTpDeviceCollectiveImplementation *implementation;
     SparkTpDeviceCollectiveOperation *operation;
@@ -2755,12 +2812,6 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     uint64_t now_milli;
     uint32_t credit_index;
 
-    if (collective != 0 && collective->backend_kind ==
-        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
-    {
-        return SparkTpDeviceCollectiveNcclSubmitBf16(
-            collective,submission);
-    }
     if (collective == 0 || collective->abi_version !=
             SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION ||
         collective->implementation == 0 || submission == 0 ||
@@ -2777,6 +2828,12 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     }
     implementation = (SparkTpDeviceCollectiveImplementation *)
         collective->implementation;
+    if ((operation_kind != collective->operation_kind && operation_kind !=
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64) ||
+        (operation_kind ==
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 &&
+            implementation->combine_u64_max_function == 0))
+        return SPARK_STATUS_UNSUPPORTED;
     if (atomic_load_explicit(&implementation->admission_open,
             memory_order_acquire) == 0u)
     {
@@ -2823,8 +2880,9 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     operation->credit_index = credit_index;
     operation->active_sequence_count = submission->active_sequence_count;
     operation->current_step = 0u;
+    operation->operation_kind = operation_kind;
     operation->algorithm_kind = SparkTpDeviceCollectiveSelectAlgorithm(
-        collective,submission->active_sequence_count);
+        collective,operation_kind,submission->active_sequence_count);
     operation->reserved_send_mask = 0u;
     operation->activated_receive_mask = 0u;
     operation->sent_mask = 0u;
@@ -2926,6 +2984,18 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkTpDeviceCollectiveSubmitBf16(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveSubmission *submission)
+{
+    if (collective != 0 && collective->backend_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+        return SparkTpDeviceCollectiveNcclSubmitBf16(collective,submission);
+    return SparkTpDeviceCollectiveSubmitHidden(
+        collective,submission,collective != 0 ? collective->operation_kind :
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER);
+}
+
 SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission)
@@ -2934,11 +3004,10 @@ SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (collective->backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
-    {
-        return SPARK_STATUS_UNSUPPORTED;
-    }
-    return SparkTpDeviceCollectiveNcclSubmitU64Max(collective,submission);
+    if (collective->backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+        return SparkTpDeviceCollectiveNcclSubmitU64Max(collective,submission);
+    return SparkTpDeviceCollectiveSubmitHidden(collective,submission,
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64);
 }
 
 SparkStatus SparkTpDeviceCollectiveRequestFailure(

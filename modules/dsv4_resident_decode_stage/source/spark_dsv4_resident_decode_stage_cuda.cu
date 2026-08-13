@@ -68,6 +68,17 @@ static __global__ void SparkDsv4HeadMaxlocUnpackKernel(
 		token_ids[row] = UINT32_MAX - (uint32_t)maxloc[row];
 }
 
+static __global__ void SparkDsv4AccumU64MaxKernel(
+	uint64_t *destination,
+	const uint64_t *source,
+	uint32_t element_count)
+{
+	uint32_t element;
+	element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( element < element_count && source[element] > destination[element] )
+		destination[element] = source[element];
+}
+
 /*
  * Production DSV4 compute is an SM121-only, fail-closed route.  This runtime
  * architecture check is not a hardware-qualification receipt.  Cache the
@@ -1791,6 +1802,15 @@ extern "C" cudaError_t SparkDsv4LaunchHeadMaxlocUnpack(cudaStream_t stream, cons
 		return(cudaErrorInvalidValue);
 	SparkDsv4HeadMaxlocUnpackKernel<<<(row_count + 255u) / 256u,256u,0u,
 		stream>>>(maxloc,token_ids,row_count);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count)
+{
+	if ( stream == 0 || destination == 0 || source == 0 || element_count == 0u )
+		return(cudaErrorInvalidValue);
+	SparkDsv4AccumU64MaxKernel<<<(element_count + 255u) / 256u,256u,0u,
+		stream>>>(destination,source,element_count);
 	return(cudaGetLastError());
 }
 

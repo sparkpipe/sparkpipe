@@ -204,6 +204,15 @@ static void SparkDsv4ValidationHeadInputs(uint16_t *hidden, uint16_t *head, uint
 	}
 }
 
+static uint32_t SparkDsv4ValidationHeadExpectedCount(uint32_t row, uint32_t row_count, uint32_t candidate_count, uint32_t overflow)
+{
+	if ( row_count == 1u )
+		return(UINT32_MAX);
+	if ( overflow != 0u )
+		return(candidate_count);
+	return((row & 1u) == 0u ? 2u : 1u);
+}
+
 static int SparkDsv4ValidationHeadRunCase(SparkDsv4ValidationHeadBuffers *buffers, uint16_t *head, float *errors, uint32_t row_count, uint32_t candidate_count, uint32_t overflow, uint32_t random)
 {
 	uint16_t hidden[SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT * SPARK_DSV4_VALIDATION_HEAD_HIDDEN_DIMENSION];
@@ -237,7 +246,7 @@ static int SparkDsv4ValidationHeadRunCase(SparkDsv4ValidationHeadBuffers *buffer
 	if ( SparkDsv4ValidationRequireCuda(error,"head_cuda") != 0 ) return(1);
 	for (row=0u; row<row_count; row++)
 	{
-		if ( SparkDsv4ValidationRequire(counts[row] == (overflow != 0u ? candidate_count : ((row & 1u) == 0u ? 2u : 1u)),"head_screen_branch") != 0 ) return(1);
+		if ( SparkDsv4ValidationRequire(counts[row] == SparkDsv4ValidationHeadExpectedCount(row,row_count,candidate_count,overflow),"head_screen_branch") != 0 ) return(1);
 		if ( random == 0u && SparkDsv4ValidationRequire(screened[row] == expected[row],"head_expected_tokens") != 0 ) return(1);
 		if ( SparkDsv4ValidationRequire(screened[row] == reference[row],"head_reference_parity") != 0 ) return(1);
 	}

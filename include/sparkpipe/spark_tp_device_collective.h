@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 7u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 8u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 6u
@@ -113,6 +113,13 @@ typedef SparkStatus (*SparkTpDeviceCollectiveCombineBf16Function)(
     uint32_t hidden_dimension,
     void *cuda_stream);
 
+typedef SparkStatus (*SparkTpDeviceCollectiveCombineU64MaxFunction)(
+    void *combine_context,
+    uint64_t *destination_device,
+    const uint64_t *source_device,
+    uint32_t element_count,
+    void *cuda_stream);
+
 typedef struct SparkTpDeviceCollectiveDebugHooks
 {
     SparkTpDeviceCollectiveFailureObservedFunction failure_observed_function;
@@ -168,6 +175,7 @@ typedef struct SparkTpDeviceCollectiveConfig
     uint32_t credit_binding_count;
     void *registration_cuda_stream;
     SparkTpDeviceCollectiveCombineBf16Function combine_bf16_function;
+    SparkTpDeviceCollectiveCombineU64MaxFunction combine_u64_max_function;
     void *combine_context;
     const SparkTpDeviceCollectiveDebugHooks *debug_hooks;
 } SparkTpDeviceCollectiveConfig;
