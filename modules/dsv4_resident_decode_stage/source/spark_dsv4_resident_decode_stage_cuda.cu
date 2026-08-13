@@ -23,8 +23,10 @@ static_assert(SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_NONE,
 	"DSV4 requires an explicit routed-expert codec");
 static_assert(SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_BF16,
 	"DSV4 routed experts require a compressed package codec");
-static_assert(SPARK_DSV4_MODEL_ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0,
-	"DSV4 requires its declared FP8 E4M3/UE8M0 activation codec");
+static_assert(SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE,
+	"DSV4 Flash requires BF16 non-expert activations");
+static_assert(SPARK_DSV4_MODEL_EXPERT_ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0,
+	"DSV4 Flash requires its declared expert activation codec");
 static_assert(SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC <= SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0,
 	"DSV4 output composition requires a declared activation codec");
 static_assert(SPARK_DSV4_MODEL_HIDDEN_DIMENSION % SparkDsv4ExpertWeightFormat::kScaleGroup == 0u,
@@ -66,6 +68,17 @@ static __global__ void SparkDsv4HeadMaxlocUnpackKernel(
 	row = blockIdx.x * blockDim.x + threadIdx.x;
 	if ( row < row_count )
 		token_ids[row] = UINT32_MAX - (uint32_t)maxloc[row];
+}
+
+static __global__ void SparkDsv4AccumU64MaxKernel(
+	uint64_t *destination,
+	const uint64_t *source,
+	uint32_t element_count)
+{
+	uint32_t element;
+	element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( element < element_count && source[element] > destination[element] )
+		destination[element] = source[element];
 }
 
 /*
@@ -1665,7 +1678,10 @@ extern "C" cudaError_t SparkDsv4LaunchRmsNorm(cudaStream_t stream, const void *i
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
+template <uint32_t ACTIVATION_CODEC>
+static cudaError_t SparkDsv4LaunchLinearCodec(cudaStream_t stream,
+	const SparkDsv4LinearView *view,const void *input_bf16,
+	void *output_bf16,uint32_t row_count)
 {
 	cudaError_t status;
 	if ( view == 0 || input_bf16 == 0 || output_bf16 == 0 ||
@@ -1675,10 +1691,29 @@ extern "C" cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv
 	if ( status != cudaSuccess )
 		return(status);
 	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
-		return(SparkLmHostLaunchSm121DecodeLinear<128u,SPARK_DSV4_MODEL_ACTIVATION_CODEC>(stream,view->weight_format,view->payload,view->scale_data,input_bf16,output_bf16,row_count,view->columns,view->rows));
+		return(SparkLmHostLaunchSm121DecodeLinear<128u,ACTIVATION_CODEC>(stream,view->weight_format,view->payload,view->scale_data,input_bf16,output_bf16,row_count,view->columns,view->rows));
 	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
 		return(SparkLmHostLaunchSm121DecodeLinear<32u,SPARK_ACTIVATION_CODEC_NONE>(stream,view->weight_format,view->payload,view->scale_data,input_bf16,output_bf16,row_count,view->columns,view->rows));
 	return(cudaErrorInvalidValue);
+}
+
+extern "C" cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream,
+	const SparkDsv4LinearView *view,const void *input_bf16,
+	void *output_bf16,uint32_t row_count)
+{
+	return(SparkDsv4LaunchLinearCodec<
+		SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC>(stream,view,input_bf16,
+		output_bf16,row_count));
+}
+
+extern "C" cudaError_t SparkDsv4LaunchExpertLinear(cudaStream_t stream,
+	const SparkDsv4LinearView *view,const void *input_bf16,
+	void *output_bf16,uint32_t row_count)
+{
+	if ( view == 0 || view->weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
+		return(cudaErrorInvalidValue);
+	return(SparkDsv4LaunchLinearCodec<SPARK_DSV4_MODEL_EXPERT_ACTIVATION_CODEC>(
+		stream,view,input_bf16,output_bf16,row_count));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchFp8LinearPair(
@@ -1700,7 +1735,7 @@ extern "C" cudaError_t SparkDsv4LaunchFp8LinearPair(
 	if ( status != cudaSuccess )
 		return(status);
 	return(SparkLmHostLaunchSm121DecodeLinearPair<128u,
-		SPARK_DSV4_MODEL_ACTIVATION_CODEC>(stream,first->payload,
+		SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC>(stream,first->payload,
 		(const uint8_t *)first->scale_data,first->rows,second->payload,
 		(const uint8_t *)second->scale_data,second->rows,input_bf16,
 		first_output_bf16,second_output_bf16,row_count,first->columns));
@@ -1791,6 +1826,15 @@ extern "C" cudaError_t SparkDsv4LaunchHeadMaxlocUnpack(cudaStream_t stream, cons
 		return(cudaErrorInvalidValue);
 	SparkDsv4HeadMaxlocUnpackKernel<<<(row_count + 255u) / 256u,256u,0u,
 		stream>>>(maxloc,token_ids,row_count);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count)
+{
+	if ( stream == 0 || destination == 0 || source == 0 || element_count == 0u )
+		return(cudaErrorInvalidValue);
+	SparkDsv4AccumU64MaxKernel<<<(element_count + 255u) / 256u,256u,0u,
+		stream>>>(destination,source,element_count);
 	return(cudaGetLastError());
 }
 

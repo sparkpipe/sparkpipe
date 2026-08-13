@@ -132,7 +132,7 @@ The exact-width B1 correctness release uses
 `examples/release/dsv4_tp4_pp4_b1_template/sparkpipe.json`. Its driver must be
 compiled from
 `examples/model_descriptions/dsv4_resident_decode_stage_firmware_b1.json`,
-which resolves the validated `.b1.v3` module instead of the unflagged B1024
+which resolves the validated `.b1.v4` module instead of the unflagged B1024
 module. Build its exact-width adapter with
 `make build/libdsv4_tp4_pp4_b1_serving_adapter.so`; the adapter embeds the B1
 description hash and B1 capacity ceiling. It retains 32 physical KV pages and

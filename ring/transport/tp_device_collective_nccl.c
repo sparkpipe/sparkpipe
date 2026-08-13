@@ -589,7 +589,8 @@ static SparkStatus SparkTpNcclValidateConfig(const SparkTpDeviceCollectiveConfig
 		SparkTpNcclTextIsValid(config->backend_module_path) == 0u ||
 		SparkTpNcclTextIsValid(config->local_host) == 0u ||
 		config->credit_bindings != 0 || config->credit_binding_count != 0u ||
-		config->combine_bf16_function != 0 || config->combine_context != 0 ||
+		config->combine_bf16_function != 0 ||
+		config->combine_u64_max_function != 0 || config->combine_context != 0 ||
 		config->debug_hooks != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	for (rank=0u; rank<config->tp_degree; rank++)

@@ -280,8 +280,11 @@ static int TestDsv4GaBaselineExcludesDspark(void)
 
     contract = SparkDsv4FlashRuntimeContract();
     return TestExpect(strcmp(contract.contract_id,
-            "deepseek-v4-flash-0731-ga-baseline-mixed-v2") == 0,
+            "deepseek-v4-flash-0731-ga-baseline-mixed-v3") == 0,
             "DSV4 GA baseline contract identity") &&
+        TestExpect(contract.precision_policy.nonexpert_activation_precision ==
+            SPARK_MODEL_RUNTIME_PRECISION_BF16,
+            "DSV4 GA baseline keeps the non-expert spine BF16") &&
         TestExpect((contract.required_operation_mask &
             SPARK_MODEL_RUNTIME_OPERATION_MULTI_TOKEN_PREDICTION) == 0u,
             "DSV4 GA baseline excludes DSpark");

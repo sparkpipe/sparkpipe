@@ -117,12 +117,13 @@
   },
   "precision": {
     "accumulator_format": "fp32",
-    "dynamic_activation_format": "fp8_e4m3",
     "kv_cache_codec": "bf16",
+    "non_expert_activation_format": "bf16",
     "non_expert_linear_weight_codec": "fp8_e4m3",
     "non_expert_linear_weight_format": "fp8_e4m3_block_128x128",
     "output_composition_activation_format": "bf16",
     "residual_norm_storage_format": "bf16",
+    "routed_expert_activation_format": "fp8_e4m3",
     "routed_expert_weight_codec": "mxfp4_e2m1",
     "scale_format": "ue8m0"
   },

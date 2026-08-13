@@ -76,7 +76,7 @@ K3_ID_PREFIX = ("spark.k3.resident_decode_stage.mxfp4_routed_bf16_rest."
 K3_ID_SUFFIX = "v2"
 DSV4_ID_PREFIX = ("spark.dsv4.flash.resident_decode_stage.linear_fp8."
                   "expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731")
-DSV4_ID_SUFFIX = "v3"
+DSV4_ID_SUFFIX = "v4"
 
 FAILURES = []
 

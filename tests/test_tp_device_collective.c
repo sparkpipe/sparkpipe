@@ -241,6 +241,33 @@ static SparkStatus TestCombineBf16(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus TestCombineU64Max(
+    void *context,
+    uint64_t *destination_device,
+    const uint64_t *source_device,
+    uint32_t element_count,
+    void *cuda_stream)
+{
+    TestCombineState *state;
+    uint64_t destination;
+    uint64_t source;
+    uint32_t element;
+
+    state = (TestCombineState *)context;
+    assert(state != 0 && destination_device != 0 && source_device != 0);
+    assert(element_count != 0u && element_count <= 8u);
+    assert(cuda_stream != 0);
+    for (element=0u; element<element_count; element++)
+    {
+        memcpy(&destination,destination_device + element,sizeof(destination));
+        memcpy(&source,source_device + element,sizeof(source));
+        if (source > destination)
+            memcpy(destination_device + element,&source,sizeof(source));
+    }
+    atomic_fetch_add_explicit(&state->count,1u,memory_order_relaxed);
+    return SPARK_STATUS_OK;
+}
+
 static void *TestRequiredSymbol(void *library, const char *name)
 {
     void *symbol;
@@ -591,6 +618,60 @@ static void TestAllReduceSumAndBoundedCredits(
     configuration.combine_bf16_function = 0;
     assert(SparkTpDeviceCollectiveCreate(&configuration,&collective) ==
         SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static void TestAllReduceU64Max(TestTransportControls *controls)
+{
+    SparkTpDeviceCollective collective;
+    SparkTpDeviceCollectiveConfig configuration;
+    SparkTpDeviceCollectiveSubmission submission;
+    TestCombineState combine;
+    TestCompletionState completion;
+    uint64_t values[2] = {UINT64_C(0x100000002),UINT64_C(0x300000004)};
+
+    controls->reset();
+    TestConfigure(&configuration,0);
+    configuration.operation_kind =
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+    configuration.credit_count = TEST_REDUCE_CREDIT_COUNT;
+    configuration.credit_bindings = TestReduceBindings;
+    configuration.credit_binding_count =
+        TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT;
+    configuration.combine_bf16_function = TestCombineBf16;
+    configuration.combine_u64_max_function = TestCombineU64Max;
+    configuration.combine_context = &combine;
+    atomic_init(&combine.count,0u);
+    assert(SparkTpDeviceCollectiveCreate(&configuration,&collective) ==
+        SPARK_STATUS_OK);
+    TestCompletionInitialize(&completion);
+    memset(&submission,0,sizeof(submission));
+    submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    submission.descriptor_bytes = sizeof(submission);
+    submission.active_sequence_count = 2u;
+    submission.ordinal = 0u;
+    submission.local_device = values;
+    submission.full_device = values;
+    submission.cuda_stream = (void *)(uintptr_t)0x30800u;
+    submission.completion_function = TestCompletionCallback;
+    submission.completion_context = &completion;
+    assert(SparkTpDeviceCollectiveSubmitU64Max(&collective,&submission) ==
+        SPARK_STATUS_OK);
+    TestWaitForCompletion(&completion);
+    TestWaitForPhase(&collective,0u,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE);
+    assert(atomic_load_explicit(&completion.status,memory_order_acquire) ==
+        SPARK_STATUS_OK);
+    assert(atomic_load_explicit(&combine.count,memory_order_acquire) ==
+        TEST_STEP_COUNT);
+    assert(values[0] == UINT64_C(0x100000002));
+    assert(values[1] == UINT64_C(0x300000004));
+    SparkTpDeviceCollectiveDestroy(&collective);
+    configuration.combine_u64_max_function = 0;
+    assert(SparkTpDeviceCollectiveCreate(&configuration,&collective) ==
+        SPARK_STATUS_OK);
+    assert(SparkTpDeviceCollectiveSubmitU64Max(&collective,&submission) ==
+        SPARK_STATUS_UNSUPPORTED);
+    SparkTpDeviceCollectiveDestroy(&collective);
 }
 
 static void TestAdaptiveSplitRing(TestTransportControls *controls)
@@ -1104,6 +1185,7 @@ int main(void)
     TestLoadControls(&controls);
     TestSuccessfulOperation(&controls);
     TestAllReduceSumAndBoundedCredits(&controls);
+    TestAllReduceU64Max(&controls);
     TestAdaptiveSplitRing(&controls);
     TestMappedHostStaging(&controls);
     TestOutOfOrderCompletions(&controls);
