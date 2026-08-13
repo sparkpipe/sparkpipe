@@ -104,6 +104,7 @@ def main() -> None:
 	require(module, "kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA", "compressed attention dispatch")
 	require(module, "SparkDsv4LaunchSparseAttn", "sparse attention execution")
 	require(module, "SparkDsv4LaunchHcSplitSinkhorn", "inference mHC Sinkhorn")
+	require(module, "SparkDsv4LaunchHcMixSplitKSinkhorn", "split-K inference mHC")
 	require(module, "metadata_rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT", "frame-sized metadata ownership")
 	require(module, "uint64_t rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT", "frame-sized bulk scratch ownership")
 	require(module, "head_rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT", "active-width final-head scratch")
