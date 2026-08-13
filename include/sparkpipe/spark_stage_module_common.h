@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_SPARK_STAGE_MODULE_COMMON_H
-#define SPARKPIPE_SPARK_STAGE_MODULE_COMMON_H
+#pragma once
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -25,6 +24,14 @@ typedef struct SparkStageModuleLedger
     uint64_t device_bytes_resident;
 } SparkStageModuleLedger;
 
+typedef struct SparkStageModuleCudaFork
+{
+    cudaStream_t auxiliary_stream;
+    cudaEvent_t fork_event;
+    cudaEvent_t milestone_event;
+    cudaEvent_t join_event;
+} SparkStageModuleCudaFork;
+
 typedef SparkStatus (*SparkStageModuleClaimedIndexPrepareFunction)(
     void *prepare_context);
 
@@ -32,6 +39,10 @@ SparkStatus SparkStageModuleCudaStatus(
     const char *module_tag,
     cudaError_t error,
     const char *site);
+SparkStatus SparkStageModuleCudaForkInitialize(
+    const char *module_tag,
+    SparkStageModuleCudaFork *fork);
+void SparkStageModuleCudaForkDestroy(SparkStageModuleCudaFork *fork);
 SparkStatus SparkStageModuleEnvironmentText(
     const char *module_tag,
     const char *name,
@@ -140,5 +151,3 @@ void SparkStageModuleCompleteAndReleaseClaims(
     uint32_t index_count,
     atomic_uint *slot_states,
     uint32_t slot_index);
-
-#endif

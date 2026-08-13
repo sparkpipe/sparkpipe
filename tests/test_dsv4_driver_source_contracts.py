@@ -67,6 +67,7 @@ def main() -> None:
 	row_compaction = read("model-families/common/include/sparkpipe/spark_row_compaction.cuh")
 	row_layout = read("include/sparkpipe/spark_row_layout.h")
 	module = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c")
+	stage_common = read("runtime/stage_module_common.c")
 	pool_layout = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_pool_layout.h")
 	paged_cache = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_paged_cache.c")
 	generic_cache = "\n".join(read(relative) for relative in (
@@ -143,6 +144,26 @@ def main() -> None:
 		"column-parallel WO full-hidden partial")
 	reject(attention, "state->tp_rank * local_hidden",
 		"diagonal WO rank-row write")
+	overlap = function_body(module, "SparkDsv4ModuleRunAttentionOverlap(")
+	require(overlap, "cudaStreamWaitEvent(auxiliary,fork->fork_event,0u)",
+		"compressed-attention compressor fork dependency")
+	require(overlap, "cudaEventRecord(fork->milestone_event,primary)",
+		"compressed-attention query-rank milestone")
+	require(overlap, "cudaStreamWaitEvent(primary,fork->join_event,0u)",
+		"compressed-attention join dependency")
+	require(attention,
+		"state->tp_degree > 1u && kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA",
+		"all-width TP compressed-attention overlap gate")
+	reject(attention, "rows == 1u", "B1-only attention overlap gate")
+	require(stage_common, "SparkStageModuleCudaForkInitialize(",
+		"generic reusable CUDA fork resources")
+	slot_allocate = function_body(module, "SparkDsv4ModuleAllocateSlot(")
+	require(slot_allocate, "state->tp_degree > 1u",
+		"all-width TP fork allocation")
+	reject(slot_allocate, "SPARK_BATCH_BUCKET == 1u",
+		"B1-only TP fork allocation")
+	reject(slot_allocate, "cudaStreamCreateWithFlags",
+		"DSV4-specific auxiliary stream allocation")
 	require(module,
 		"SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16",
 		"full-hidden TP sum collective")

@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_TEST_CUDA_RUNTIME_API_H
-#define SPARKPIPE_TEST_CUDA_RUNTIME_API_H
+#pragma once
 
 #include <stddef.h>
 
@@ -40,10 +39,7 @@ typedef enum cudaStreamCaptureMode
 #define cudaHostAllocDefault 0u
 #define cudaHostAllocPortable 1u
 #define cudaHostAllocMapped 2u
-#ifndef CUDART_CB
 #define CUDART_CB
-#endif
-
 typedef void (*cudaHostFn_t)(void *user_data);
 
 cudaError_t cudaMalloc(void **pointer, size_t bytes);
@@ -81,6 +77,10 @@ cudaError_t cudaStreamCreateWithFlags(
 cudaError_t cudaStreamDestroy(cudaStream_t stream);
 cudaError_t cudaStreamQuery(cudaStream_t stream);
 cudaError_t cudaStreamSynchronize(cudaStream_t stream);
+cudaError_t cudaStreamWaitEvent(
+    cudaStream_t stream,
+    cudaEvent_t event,
+    unsigned int flags);
 cudaError_t cudaDeviceSynchronize(void);
 cudaError_t cudaEventCreate(cudaEvent_t *event);
 cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event, unsigned int flags);
@@ -119,6 +119,5 @@ const char *cudaGetErrorString(cudaError_t error);
 
 #ifdef __cplusplus
 }
-#endif
 
 #endif
