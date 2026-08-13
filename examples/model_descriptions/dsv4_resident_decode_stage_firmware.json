@@ -19,7 +19,7 @@
     },
     "precision_contract": {
       "accumulator_codec": "fp32",
-      "activation_codec": "fp8_e4m3_ue8m0",
+      "activation_codec": "bf16",
       "aot_codec_specialization": true,
       "expert_activation_codec": "fp8_e4m3_ue8m0",
       "expert_scale_encoding": "e8m0",
@@ -30,6 +30,7 @@
       "fallback_allowed": false,
       "kv_cache_codec": "bf16",
       "linear_weight_codec": "fp8_e4m3",
+      "non_expert_activation_codec": "bf16",
       "output_composition_activation_codec": "bf16",
       "runtime_precision_selection": "forbidden"
     },
@@ -58,7 +59,7 @@
   },
   "model": {
     "id": "deepseek.v4.flash.resident-decode-stage-firmware",
-    "revision": "h4096-l43-dsa-e256k6-hash3-v129280-ga0731-v3"
+    "revision": "h4096-l43-dsa-e256k6-hash3-v129280-ga0731-v4"
   },
   "schema_version": 1,
   "stages": [
@@ -73,7 +74,8 @@
           "operations": [
             {
               "configuration": {
-                "activation_codec": "fp8_e4m3_ue8m0",
+                "activation_codec": "bf16",
+                "expert_activation_codec": "fp8_e4m3_ue8m0",
                 "expert_weight_codec": "mxfp4_e2m1",
                 "fallback_allowed": false,
                 "kv_cache_codec": "bf16",
@@ -82,7 +84,7 @@
                 "runtime_backend_selection": "forbidden",
                 "runtime_precision_selection": "forbidden"
               },
-              "module": "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.v3",
+              "module": "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.v4",
               "name": "dsv4_resident_decode_stage"
             }
           ],

@@ -28,6 +28,9 @@ def main() -> int:
     assert flash["model"]["mtp_layer_count"] == 0
     assert flash["dspark"]["layer_count"] == 3
     assert flash["runtime"]["packed_mtp_layer_count"] == 0
+    assert flash["precision"]["non_expert_activation_format"] == "bf16"
+    assert flash["precision"]["routed_expert_activation_format"] == "fp8_e4m3"
+    assert pro["precision"]["non_expert_activation_format"] == "fp8_e4m3"
     assert flash["source_index_sha256"] == (
         "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b")
     source_files = flash["source_files"]
@@ -49,6 +52,9 @@ def main() -> int:
          "dsv4_resident_decode_stage_firmware.json").read_text(encoding="utf-8")
     )
     scheduling = description["stages"][0]["programs"][0]["scheduling"]
+    precision = description["metadata"]["precision_contract"]
+    assert precision["non_expert_activation_codec"] == "bf16"
+    assert precision["expert_activation_codec"] == "fp8_e4m3_ue8m0"
     assert scheduling["max_active_slots"] == 1024
     assert scheduling["max_resident_sequences"] == 16384
     b1_description = json.loads(
@@ -58,7 +64,7 @@ def main() -> int:
     )
     b1_program = b1_description["stages"][0]["programs"][0]
     assert b1_program["max_inflight"] == 1
-    assert b1_program["operations"][0]["module"].endswith(".b1.v3")
+    assert b1_program["operations"][0]["module"].endswith(".b1.v4")
     assert b1_program["scheduling"]["max_active_slots"] == 1
     assert b1_program["scheduling"]["max_resident_sequences"] == 1
     b1_description_path = (

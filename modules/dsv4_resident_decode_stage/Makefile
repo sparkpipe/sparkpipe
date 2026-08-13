@@ -1,6 +1,6 @@
 MODULE_FAMILY := dsv4
 MODULE_IDENTIFIER_PREFIX := spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731
-MODULE_IDENTIFIER_SUFFIX := v3
+MODULE_IDENTIFIER_SUFFIX := v4
 MODULE_IDENTIFIER := $(MODULE_IDENTIFIER_PREFIX).$(MODULE_IDENTIFIER_SUFFIX)
 # The batch-variant ladder: one archive per power of two, emitted by
 # resident_decode_stage_rules.mk from the single template there. Trim for

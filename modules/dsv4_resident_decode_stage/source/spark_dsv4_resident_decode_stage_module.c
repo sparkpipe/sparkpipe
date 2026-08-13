@@ -418,6 +418,7 @@ static uint32_t SparkDsv4ModuleTpOutputLora(const SparkDsv4ModuleState *state)
 extern cudaError_t SparkDsv4ConfigureCudaKernels(uint32_t *multiprocessor_count);
 extern cudaError_t SparkDsv4LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
+extern cudaError_t SparkDsv4LaunchExpertLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchFp8LinearPair(cudaStream_t stream, const SparkDsv4LinearView *first, const SparkDsv4LinearView *second, const void *input_bf16, void *first_output_bf16, void *second_output_bf16, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchBf16LinearPair(cudaStream_t stream, const SparkDsv4LinearView *first, const SparkDsv4LinearView *second, const void *input_bf16, void *first_output_bf16, void *second_output_bf16, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchStridedLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *payload, const uint8_t *scale, uint64_t weight_payload_group_stride_bytes, uint64_t weight_scale_group_stride_bytes, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, uint32_t input_group_stride, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t output_group_stride, uint32_t group_count, uint32_t row_count);
@@ -2559,7 +2560,7 @@ static cudaError_t SparkDsv4ModuleRunMoeShared(SparkDsv4ModuleSlot *slot, cudaSt
 		&moe->shared_w3,slot->normalized_bf16,slot->ffn_up_bf16,rows,
 		expert_width,SPARK_DSV4_MODEL_SWIGLU_LIMIT);
 	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchLinear(stream,&moe->shared_w2,
+		error = SparkDsv4LaunchExpertLinear(stream,&moe->shared_w2,
 			slot->ffn_up_bf16,slot->ffn_accum_bf16,rows);
 	return(error);
 }

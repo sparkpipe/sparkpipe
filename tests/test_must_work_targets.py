@@ -49,6 +49,7 @@ def main() -> int:
     assert by_family["dsv4_pro"]["routed_expert_weight_codec"] == "mxfp4_e2m1"
     assert by_family["dsv4_flash"]["non_expert_weight_format"] == "fp8_e4m3_block_128x128"
     assert by_family["dsv4_pro"]["non_expert_weight_format"] == "fp8_e4m3_block_128x128"
+    assert by_family["dsv4_flash"]["non_expert_activation_format"] == "bf16"
     print("PASS mandatory model target contract")
     return 0
 
