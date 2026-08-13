@@ -43,9 +43,8 @@ assert connect.count("SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS") == 3
 discover_device = function_body("SparkHiddenSparkHostRdmaDiscoverDevice(")
 assert "SPARK_HIDDEN_SPARK_HOST_RDMA_REQUIRED_LINK_RATE_GBPS" in discover_device
 assert "matching_count != 1u" in discover_device
-resolve_device = function_body("SparkHiddenSparkHostRdmaResolveDevice(")
-assert "SparkHiddenSparkHostRdmaDeviceResolved" in resolve_device
-assert "SparkHiddenSparkHostRdmaDiscoverDevice" in resolve_device
+assert "SparkHiddenSparkHostRdmaResolveIpv4" in discover_device
+assert "SparkHiddenSparkHostRdmaFindGidIndex" in discover_device
 assert "SparkHiddenSparkHostRdmaDefaultDeviceName" not in RDMA
 assert "SparkHiddenSparkHostRdmaRankFromHost" not in RDMA
 assert "SparkHiddenSparkHostRdmaParseRoute" not in RDMA
@@ -90,22 +89,24 @@ assert "SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_ADVERTISE" in register
 assert "SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_RECEIVE_READY" not in register
 release = function_body("SparkHiddenSparkHostRdmaReleasePersistentReceive(")
 assert "cudaEventRecord" in release and "cudaEventQuery" in release
-assert "SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_RETURN" in release
+assert "SparkHiddenSparkHostRdmaPostPersistentReturn" in release
+assert "SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_RETURN" not in release
 
-service_completion = function_body(
-    "SparkHiddenSparkHostRdmaServiceCompletionEvent("
-)
-assert "poll(&event_poll,1,0)" in service_completion
-assert service_completion.index("poll(&event_poll,1,0)") < (
-    service_completion.index("ibv_get_cq_event")
-)
 pump_doorbells = function_body("SparkHiddenSparkHostRdmaPumpDoorbells(")
-assert pump_doorbells.count(
-    "SparkHiddenSparkHostRdmaPollCompletionQueues"
-) == 2
-assert pump_doorbells.index(
-    "SparkHiddenSparkHostRdmaPollCompletionQueues"
-) < pump_doorbells.index("SparkHiddenSparkHostRdmaServiceCompletionEvent")
+assert pump_doorbells.count("SparkHiddenSparkHostRdmaPollCompletionQueues") == 1
+
+striped_completion = function_body(
+    "SparkHiddenSparkHostRdmaPostStripedCompletion("
+)
+assert "IBV_WR_SEND_WITH_IMM" in striped_completion
+assert "SparkHiddenSparkHostRdmaBuildDoorbellImmediate" in striped_completion
+apply_striped_completion = function_body(
+    "SparkHiddenSparkHostRdmaApplyStripedCompletionSendCompletion("
+)
+assert "completion->complete = 1u" in apply_striped_completion
+retire_sends = function_body("SparkHiddenSparkHostRdmaRetireCompletedSends(")
+assert "SparkHiddenSparkHostRdmaPostStripedCompletion" in retire_sends
+assert "striped_completions" in retire_sends
 
 fence = function_body("SparkHiddenSparkHostRdmaFenceSession(")
 assert "__atomic_compare_exchange_n" in fence
@@ -142,11 +143,13 @@ for public_path in (
     "SparkHiddenSparkHostRdmaPostReceiveBatch(",
     "SparkHiddenSparkHostRdmaSend(",
     "SparkHiddenSparkHostRdmaSendBatch(",
-    "SparkHiddenSparkHostRdmaPoll(",
     "SparkHiddenSparkHostRdmaPersistentRemoteCreditReady(",
     "SparkHiddenSparkHostRdmaReservePersistentSend(",
 ):
     assert "SparkHiddenSparkHostRdmaPumpProgress" in function_body(public_path)
+poll_transport = function_body("SparkHiddenSparkHostRdmaPoll(")
+assert "SparkHiddenSparkHostRdmaPumpDoorbells" in poll_transport
+assert "SparkHiddenSparkHostRdmaRetireCompletedSends" in poll_transport
 for public_path in (
     "SparkHiddenSparkHostRdmaRegisterPersistentReceive(",
     "SparkHiddenSparkHostRdmaActivatePersistentReceive(",

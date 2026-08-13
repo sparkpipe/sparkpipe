@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_module_abi.h"
+#include "sparkpipe/spark_tp_device_collective.h"
 
 // The batch-variant tuning header controls only the per-submit compute width.
 // Resident lane state has its own ceiling so the scheduler can keep more
@@ -46,7 +47,7 @@ extern "C" {
  * callback; submit never synchronizes a successful CUDA frame.
  */
 
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 11u
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 12u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 5u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_PREFILL_BATCH_VIEW_ABI_VERSION 2u
@@ -102,8 +103,7 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 	uint32_t tp_operation_timeout_milli;
 	uint32_t tp_collective_backend_kind;
 	uint64_t tp_collective_identifier;
-	char tp_peer_hosts[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT][SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES];
-	const char *tp_local_host;
+	SparkTpDeviceCollectiveTopology tp_collective_topology;
 	const char *tp_collective_backend_module_path;
 	uint32_t tp_collective_control_port_base;
 	/*

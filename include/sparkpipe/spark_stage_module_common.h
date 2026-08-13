@@ -14,6 +14,7 @@
 #define SPARK_STAGE_MODULE_SLOT_FREE 0u
 #define SPARK_STAGE_MODULE_SLOT_CLAIMED 1u
 #define SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS 30000000000ull
+#define SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES 2u
 
 typedef struct SparkStageModuleLedger
 {
@@ -26,10 +27,10 @@ typedef struct SparkStageModuleLedger
 
 typedef struct SparkStageModuleCudaFork
 {
-    cudaStream_t auxiliary_stream;
+    cudaStream_t auxiliary_streams[SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES];
     cudaEvent_t fork_event;
     cudaEvent_t milestone_event;
-    cudaEvent_t join_event;
+    cudaEvent_t join_events[SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES];
 } SparkStageModuleCudaFork;
 
 typedef SparkStatus (*SparkStageModuleClaimedIndexPrepareFunction)(
@@ -42,6 +43,14 @@ SparkStatus SparkStageModuleCudaStatus(
 SparkStatus SparkStageModuleCudaForkInitialize(
     const char *module_tag,
     SparkStageModuleCudaFork *fork);
+cudaError_t SparkStageModuleCudaForkBegin(
+    SparkStageModuleCudaFork *fork,
+    cudaStream_t primary_stream,
+    uint32_t branch_count);
+cudaError_t SparkStageModuleCudaForkJoin(
+    SparkStageModuleCudaFork *fork,
+    cudaStream_t primary_stream,
+    uint32_t branch_count);
 void SparkStageModuleCudaForkDestroy(SparkStageModuleCudaFork *fork);
 SparkStatus SparkStageModuleEnvironmentText(
     const char *module_tag,

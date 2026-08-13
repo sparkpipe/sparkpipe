@@ -172,6 +172,11 @@ cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream)
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
+cudaError_t cudaEventQuery(cudaEvent_t event)
+{
+    return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
+}
+
 cudaError_t cudaEventSynchronize(cudaEvent_t event)
 {
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;

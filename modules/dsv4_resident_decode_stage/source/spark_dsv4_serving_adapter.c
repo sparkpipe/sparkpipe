@@ -206,9 +206,8 @@ typedef struct SparkDsv4ServingAdapterState
 	uint32_t tp_operation_timeout_milli;
 	uint32_t tp_collective_backend_kind;
 	uint64_t tp_collective_identifier;
-	char tp_peer_hosts[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT][SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES];
+	SparkTpDeviceCollectiveTopology tp_collective_topology;
 	char tp_collective_backend_path[SPARK_INTERNAL_PATH_BYTES];
-	char tp_local_host[SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES];
 	uint32_t tp_collective_control_port_base;
 	uint32_t quiescing;
 	SparkModelServingRuntimeLimits runtime_limits;
@@ -283,23 +282,170 @@ static SparkStatus SparkDsv4ServingJsonUnsigned(
 	return(token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt32(document,token,value));
 }
 
+static SparkStatus SparkDsv4ServingLoadTpAlgorithms(
+	const SparkJsonDocument *document,
+	int32_t object,
+	SparkTpDeviceCollectiveTopology *topology)
+{
+	int32_t element,token;
+	uint32_t count,index,mask;
+	token = SparkDsv4ServingJsonMember(document,object,"algorithms");
+	if ( token < 0 ||
+		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	count = SparkJsonGetArrayElementCount(document,token);
+	mask = 0u;
+	for (index=0u; index<count; index++)
+	{
+		element = SparkJsonGetArrayElement(document,token,index);
+		if ( SparkJsonStringEquals(document,element,"recursive_doubling") )
+			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
+		else if ( SparkJsonStringEquals(document,element,
+				"counter_rotating_split_ring") )
+			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
+		else
+			return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( count != 2u || mask != SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	topology->algorithm_mask = mask;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDsv4ServingLoadTpStepRails(
+	const SparkJsonDocument *document,
+	int32_t object,
+	SparkTpDeviceCollectiveTopology *topology)
+{
+	int32_t element,token;
+	uint32_t count,index,value;
+	SparkStatus status;
+	token = SparkDsv4ServingJsonMember(document,object,"step_rail_indices");
+	if ( token < 0 ||
+		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
+		SparkJsonGetArrayElementCount(document,token) !=
+			SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	count = SparkJsonGetArrayElementCount(document,token);
+	for (index=0u; index<count; index++)
+	{
+		element = SparkJsonGetArrayElement(document,token,index);
+		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR :
+			SparkJsonGetUInt32(document,element,&value);
+		if ( status != SPARK_STATUS_OK || value >=
+			SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		topology->step_rail_indices[index] = value;
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDsv4ServingLoadTpRailHosts(
+	const SparkJsonDocument *document,
+	int32_t object,
+	SparkTpDeviceCollectiveTopology *topology)
+{
+	int32_t element,host_element,token;
+	uint32_t host_count,index,rail;
+	char *host;
+	SparkStatus status;
+	token = SparkDsv4ServingJsonMember(document,object,"rail_peer_hosts");
+	if ( token < 0 ||
+		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
+		SparkJsonGetArrayElementCount(document,token) !=
+			SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	topology->rail_count = SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT;
+	for (rail=0u; rail<topology->rail_count; rail++)
+	{
+		element = SparkJsonGetArrayElement(document,token,rail);
+		if ( element < 0 ||
+			!SparkJsonTokenIsType(document,element,SPARK_JSON_TOKEN_ARRAY) )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		host_count = SparkJsonGetArrayElementCount(document,element);
+		if ( host_count != SPARK_DSV4_SERVING_STAGE_COUNT )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		for (index=0u; index<host_count; index++)
+		{
+			host_element = SparkJsonGetArrayElement(document,element,index);
+			host = 0;
+			status = host_element < 0 ? SPARK_STATUS_SCHEMA_ERROR :
+				SparkJsonCopyString(document,host_element,&host);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkCopyString(
+					topology->rail_rank_hosts[rail][index],
+					SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,host);
+			free(host);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+		}
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDsv4ServingValidateTpCollectiveMembers(
+	const SparkJsonDocument *document,
+	int32_t object,
+	uint32_t backend_kind)
+{
+	static const char *const base_members[] =
+	{
+		"backend","backend_module_path","collective_identifier",
+		"listen_port","connect_timeout_milli","operation_timeout_milli",
+		"peer_hosts","peer_ports"
+	};
+	static const char *const adaptive_members[] =
+	{
+		"backend","backend_module_path","collective_identifier",
+		"listen_port","connect_timeout_milli","operation_timeout_milli",
+		"peer_hosts","peer_ports","algorithms",
+		"split_ring_min_payload_bytes","rail_peer_hosts",
+		"step_rail_indices"
+	};
+	const char *const *members;
+	uint32_t member_count;
+	members = backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT ?
+		adaptive_members : base_members;
+	member_count = backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT ?
+		(uint32_t)(sizeof(adaptive_members) / sizeof(adaptive_members[0])) :
+		(uint32_t)(sizeof(base_members) / sizeof(base_members[0]));
+	return(SparkJsonValidateObjectMembersExact(document,object,members,
+		member_count));
+}
+
+static SparkStatus SparkDsv4ServingLoadTpAdaptiveFabric(
+	const SparkJsonDocument *document,
+	int32_t object,
+	SparkDsv4ServingAdapterState *state)
+{
+	SparkStatus status;
+	if ( state->tp_collective_backend_kind !=
+		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
+		return(SPARK_STATUS_OK);
+	status = SparkDsv4ServingLoadTpAlgorithms(document,object,
+		&state->tp_collective_topology);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ServingJsonUnsigned(document,object,
+			"split_ring_min_payload_bytes",
+			&state->tp_collective_topology.split_ring_min_payload_bytes);
+	if ( status == SPARK_STATUS_OK &&
+		state->tp_collective_topology.split_ring_min_payload_bytes == 0u )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ServingLoadTpRailHosts(document,object,
+			&state->tp_collective_topology);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ServingLoadTpStepRails(document,object,
+			&state->tp_collective_topology);
+	return(status);
+}
+
 static SparkStatus SparkDsv4ServingLoadTpCollective(
 	const SparkJsonDocument *document,
 	int32_t root,
 	const char *runtime_root,
 	SparkDsv4ServingAdapterState *state)
 {
-	static const char *const members[] =
-	{
-		"backend",
-		"backend_module_path",
-		"collective_identifier",
-		"listen_port",
-		"connect_timeout_milli",
-		"operation_timeout_milli",
-		"peer_hosts",
-		"peer_ports"
-	};
 	int32_t object,token,element;
 	uint32_t count,index,port;
 	uint64_t collective_identifier;
@@ -307,12 +453,15 @@ static SparkStatus SparkDsv4ServingLoadTpCollective(
 	SparkStatus status;
 	if ( document == 0 || runtime_root == 0 || state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(&state->tp_collective_topology,0,
+		sizeof(state->tp_collective_topology));
+	state->tp_collective_topology.abi_version =
+		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
+	state->tp_collective_topology.descriptor_bytes =
+		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
 	object = SparkDsv4ServingJsonMember(document,root,"tp_collective");
 	if ( object < 0 || !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	status = SparkJsonValidateObjectMembersExact(document,object,members,(uint32_t)(sizeof(members) / sizeof(members[0])));
-	if ( status != SPARK_STATUS_OK )
-		return(status);
 	token = SparkDsv4ServingJsonMember(document,object,"backend");
 	if ( token < 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -324,6 +473,10 @@ static SparkStatus SparkDsv4ServingLoadTpCollective(
 			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
 	else
 		return(SPARK_STATUS_SCHEMA_ERROR);
+	status = SparkDsv4ServingValidateTpCollectiveMembers(document,object,
+		state->tp_collective_backend_kind);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	relative_backend_path = 0;
 	token = SparkDsv4ServingJsonMember(document,object,"backend_module_path");
 	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR :
@@ -356,15 +509,19 @@ static SparkStatus SparkDsv4ServingLoadTpCollective(
 	count = SparkJsonGetArrayElementCount(document,token);
 	if ( count != SPARK_DSV4_SERVING_STAGE_COUNT )
 		return(SPARK_STATUS_SCHEMA_ERROR);
+	state->tp_collective_topology.rank_count = count;
 	for (index=0u; index<count; index++)
 	{
 		element = SparkJsonGetArrayElement(document,token,index);
 		host = 0;
 		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(document,element,&host);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkCopyString(state->tp_peer_hosts[index],SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES,host);
+			status = SparkCopyString(
+				state->tp_collective_topology.rank_hosts[index],
+				SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,host);
 		free(host);
-		if ( status != SPARK_STATUS_OK || state->tp_peer_hosts[index][0] == '\0' )
+		if ( status != SPARK_STATUS_OK ||
+			state->tp_collective_topology.rank_hosts[index][0] == '\0' )
 			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
 	}
 	token = SparkDsv4ServingJsonMember(document,object,"peer_ports");
@@ -381,7 +538,7 @@ static SparkStatus SparkDsv4ServingLoadTpCollective(
 			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
 		state->tp_peer_ports[index] = (uint16_t)port;
 	}
-	return(SPARK_STATUS_OK);
+	return(SparkDsv4ServingLoadTpAdaptiveFabric(document,object,state));
 }
 
 static SparkStatus SparkDsv4ServingLoadTpGraphCounts(
@@ -786,7 +943,6 @@ static void SparkDsv4ServingInitializeState(
 	SparkDsv4ServingAdapterState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
-	SparkStatus status;
 	state->stage_index = configuration->stage_index;
 	state->pipeline_slot_count = configuration->runtime_limits.max_inflight_submission_count;
 	state->max_active_sequence_count = configuration->runtime_limits.max_active_sequence_count;
@@ -797,11 +953,6 @@ static void SparkDsv4ServingInitializeState(
 	state->completion_context = configuration->completion_context;
 	state->wake_function = configuration->wake_function;
 	state->wake_context = configuration->wake_context;
-	status = SparkCopyString(state->tp_local_host,
-		SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES,
-		configuration->node_id);
-	if ( status != SPARK_STATUS_OK )
-		state->tp_local_host[0] = '\0';
 }
 
 static SparkStatus SparkDsv4ServingInitializeNodeContext(
@@ -861,8 +1012,8 @@ static SparkStatus SparkDsv4ServingInitializeNodeContext(
 		state->node_context.tp_collective_backend_kind =
 			state->tp_collective_backend_kind;
 		state->node_context.tp_collective_identifier = state->tp_collective_identifier;
-		memcpy(state->node_context.tp_peer_hosts,state->tp_peer_hosts,sizeof(state->tp_peer_hosts));
-		state->node_context.tp_local_host = state->tp_local_host;
+		state->node_context.tp_collective_topology =
+			state->tp_collective_topology;
 		state->node_context.tp_collective_backend_module_path =
 			state->tp_collective_backend_path;
 		state->node_context.tp_collective_control_port_base =
@@ -872,12 +1023,14 @@ static SparkStatus SparkDsv4ServingInitializeNodeContext(
 			uint32_t group_first_rank,index;
 			group_first_rank = state->node_context.pp_stage_index * SPARK_DSV4_SERVING_TP_DEGREE;
 			memset(state->node_context.tp_peer_ports,0,sizeof(state->node_context.tp_peer_ports));
-			memset(state->node_context.tp_peer_hosts,0,sizeof(state->node_context.tp_peer_hosts));
 			for (index=0u; index<SPARK_DSV4_SERVING_TP_DEGREE; index++)
-			{
 				state->node_context.tp_peer_ports[index] = state->tp_peer_ports[group_first_rank + index];
-				memcpy(state->node_context.tp_peer_hosts[index],state->tp_peer_hosts[group_first_rank + index],SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES);
-			}
+			if ( SparkTpDeviceCollectiveSliceTopology(
+					&state->tp_collective_topology,group_first_rank,
+					SPARK_DSV4_SERVING_TP_DEGREE,
+					&state->node_context.tp_collective_topology) !=
+					SPARK_STATUS_OK )
+				return(SPARK_STATUS_VALIDATION_FAILED);
 			state->node_context.tp_collective_control_port_base =
 				state->tp_peer_ports[group_first_rank];
 			state->node_context.tp_collective_identifier ^= (uint64_t)state->node_context.pp_stage_index << 32u;

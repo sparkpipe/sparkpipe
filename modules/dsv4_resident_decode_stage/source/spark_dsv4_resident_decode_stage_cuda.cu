@@ -1590,17 +1590,32 @@ static __global__ void SparkDsv4HcPreReduceKernel(const void *streams_bf16, cons
 
 static __global__ void SparkDsv4HcPostKernel(const void *out_bf16, const void *residual_bf16, const float *post_f32, const float *comb_f32, void *streams_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension)
 {
+	__shared__ float post[SPARK_DSV4_MODEL_HC_STREAM_COUNT];
+	__shared__ float comb[SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT];
 	uint32_t row = blockIdx.x,element,stream,source;
-	float value;
-	if ( row >= row_count )
+	float residual[SPARK_DSV4_MODEL_HC_STREAM_COUNT],out,value;
+	if ( row >= row_count || hc != SPARK_DSV4_MODEL_HC_STREAM_COUNT )
 		return;
-	for (element = threadIdx.x; element < hc * dimension; element += blockDim.x)
+	if ( threadIdx.x < SPARK_DSV4_MODEL_HC_STREAM_COUNT )
+		post[threadIdx.x] = post_f32[(uint64_t)row * SPARK_DSV4_MODEL_HC_STREAM_COUNT + threadIdx.x];
+	if ( threadIdx.x < SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT )
+		comb[threadIdx.x] = comb_f32[(uint64_t)row * SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT + threadIdx.x];
+	__syncthreads();
+	for (element=threadIdx.x; element<dimension; element+=blockDim.x)
 	{
-		stream = element / dimension;
-		value = post_f32[((uint64_t)row * hc) + stream] * SparkLmBf16ToFloat(out_bf16,((uint64_t)row * dimension) + (element % dimension));
-		for (source = 0; source < hc; source++)
-			value += comb_f32[((uint64_t)row * hc * hc) + (source * hc) + stream] * SparkLmBf16ToFloat(residual_bf16,(((uint64_t)row * hc) + source) * dimension + (element % dimension));
-		SparkLmFloatToBf16(streams_bf16,((uint64_t)row * hc * dimension) + element,value);
+		out = SparkLmBf16ToFloat(out_bf16,(uint64_t)row * dimension + element);
+		#pragma unroll
+		for (source=0u; source<SPARK_DSV4_MODEL_HC_STREAM_COUNT; source++)
+			residual[source] = SparkLmBf16ToFloat(residual_bf16,((uint64_t)row * SPARK_DSV4_MODEL_HC_STREAM_COUNT + source) * dimension + element);
+		#pragma unroll
+		for (stream=0u; stream<SPARK_DSV4_MODEL_HC_STREAM_COUNT; stream++)
+		{
+			value = __fmul_rn(post[stream],out);
+			#pragma unroll
+			for (source=0u; source<SPARK_DSV4_MODEL_HC_STREAM_COUNT; source++)
+				value = __fmaf_rn(comb[source * SPARK_DSV4_MODEL_HC_STREAM_COUNT + stream],residual[source],value);
+			SparkLmFloatToBf16(streams_bf16,((uint64_t)row * SPARK_DSV4_MODEL_HC_STREAM_COUNT + stream) * dimension + element,value);
+		}
 	}
 }
 
@@ -1664,6 +1679,53 @@ extern "C" cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv
 	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
 		return(SparkLmHostLaunchSm121DecodeLinear<32u,SPARK_ACTIVATION_CODEC_NONE>(stream,view->weight_format,view->payload,view->scale_data,input_bf16,output_bf16,row_count,view->columns,view->rows));
 	return(cudaErrorInvalidValue);
+}
+
+extern "C" cudaError_t SparkDsv4LaunchFp8LinearPair(
+	cudaStream_t stream,const SparkDsv4LinearView *first,
+	const SparkDsv4LinearView *second,const void *input_bf16,
+	void *first_output_bf16,void *second_output_bf16,uint32_t row_count)
+{
+	cudaError_t status;
+	if ( first == 0 || second == 0 || input_bf16 == 0 ||
+		first_output_bf16 == 0 || second_output_bf16 == 0 ||
+		first->weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 ||
+		second->weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 ||
+		first->payload == 0 || first->scale_data == 0 ||
+		second->payload == 0 || second->scale_data == 0 ||
+		first->rows == 0u || second->rows == 0u || first->columns == 0u ||
+		first->columns != second->columns )
+		return(cudaErrorInvalidValue);
+	status = SparkDsv4RequireNativeDecodeShape(row_count);
+	if ( status != cudaSuccess )
+		return(status);
+	return(SparkLmHostLaunchSm121DecodeLinearPair<128u,
+		SPARK_DSV4_MODEL_ACTIVATION_CODEC>(stream,first->payload,
+		(const uint8_t *)first->scale_data,first->rows,second->payload,
+		(const uint8_t *)second->scale_data,second->rows,input_bf16,
+		first_output_bf16,second_output_bf16,row_count,first->columns));
+}
+
+extern "C" cudaError_t SparkDsv4LaunchBf16LinearPair(
+	cudaStream_t stream,const SparkDsv4LinearView *first,
+	const SparkDsv4LinearView *second,const void *input_bf16,
+	void *first_output_bf16,void *second_output_bf16,uint32_t row_count)
+{
+	cudaError_t status;
+	if ( first == 0 || second == 0 || input_bf16 == 0 ||
+		first_output_bf16 == 0 || second_output_bf16 == 0 ||
+		first->weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 ||
+		second->weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 ||
+		first->payload == 0 || second->payload == 0 || first->rows == 0u ||
+		first->columns == 0u || first->rows != second->rows ||
+		first->columns != second->columns )
+		return(cudaErrorInvalidValue);
+	status = SparkDsv4RequireNativeDecodeShape(row_count);
+	if ( status != cudaSuccess )
+		return(status);
+	return(SparkLmHostLaunchBf16LinearPair(stream,first->payload,
+		second->payload,input_bf16,first_output_bf16,second_output_bf16,
+		row_count,first->columns,first->rows));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchStridedLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *payload, const uint8_t *scale, uint64_t weight_payload_group_stride_bytes, uint64_t weight_scale_group_stride_bytes, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, uint32_t input_group_stride, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t output_group_stride, uint32_t group_count, uint32_t row_count)

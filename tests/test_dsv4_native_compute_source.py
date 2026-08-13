@@ -162,16 +162,21 @@ def main() -> int:
             "column-parallel WO full-hidden partial")
     forbid(attention, "state->tp_rank * local_hidden",
            "diagonal WO rank-row write")
-    routed = body(module, "SparkDsv4ModuleRunMoeRouted")
-    require(routed, "SparkDsv4LaunchMoePairReduce(stream",
-            "column-parallel routed full-hidden partial")
-    forbid(routed, "SparkDsv4LaunchMoePairReduceStrided",
-           "diagonal routed rank-row write")
+    routed = body(module, "SparkDsv4ModuleRunMoeRoutedProjection")
     moe = body(module, "SparkDsv4ModuleRunMoe")
-    require(moe, "SparkDsv4LaunchLinear(stream,&moe->shared_w2",
+    require(moe, "SparkDsv4LaunchMoePairReduce(stream",
+            "column-parallel routed full-hidden partial")
+    forbid(moe, "SparkDsv4LaunchMoePairReduceStrided",
+           "diagonal routed rank-row write")
+    shared = body(module, "SparkDsv4ModuleRunMoeShared")
+    require(shared, "SparkDsv4LaunchLinear(stream,&moe->shared_w2",
             "column-parallel shared-W2 full-hidden partial")
     forbid(moe, "state->tp_rank * hidden_dimension",
            "diagonal shared-W2 rank-row write")
+    require(moe, "SparkStageModuleCudaForkBegin",
+            "shared-routed MoE fork")
+    require(moe, "SparkStageModuleCudaForkJoin",
+            "shared-routed MoE join")
     reduce_hidden = body(module, "SparkDsv4ModuleReduceHidden")
     require(reduce_hidden, "submission.local_device = device_bf16;",
             "in-place full-hidden reduction input")
@@ -208,6 +213,9 @@ def main() -> int:
     require(dense_dispatch, "if ( row_count == 1u )", "true-B1 dispatch")
     require(dense_dispatch, "SparkLmHostLaunchBatchedLinear", "B1 GEMV route")
     require(dense_dispatch, "SparkLmHostLaunchSm121NativeLinear", "B8/B1024 native route")
+    scalar_dispatch = body(common, "SparkLmHostLaunchBatchedLinear")
+    require(scalar_dispatch, "SPARK_LM_SCALAR_NEURONS_PER_WARP",
+            "scalar projection activation reuse")
     dense_w13_dispatch = body(common, "SparkLmHostLaunchSm121FusedDenseW13")
     require(dense_w13_dispatch, "if ( row_count == 1u )",
             "true-B1 shared W13 dispatch")
@@ -223,12 +231,24 @@ def main() -> int:
     require(strided_dispatch, "SparkLmStridedLinearKernel", "B1 strided GEMV route")
     require(strided_dispatch, "SparkLmHostLaunchSm121NativeLinear",
             "B8/B1024 native strided route")
+    require(strided_dispatch, "SPARK_LM_SCALAR_NEURONS_PER_WARP",
+            "scalar strided activation reuse")
     head = body(dsv4, "SparkDsv4LaunchHeadScreenedArgmax")
     require(head, "SparkDsv4RequireNativeDecodeShape(row_count)",
             "screened-head exact-shape/native-device gate")
     sharded_head = body(dsv4, "SparkDsv4LaunchHeadScreenedArgmaxSharded")
     require(sharded_head, "SparkLmHostLaunchHeadScreenedArgmaxWithScore",
             "local exact score and vocabulary-offset head")
+    head_dispatch = body(common, "SparkLmHostLaunchHeadScreenedArgmaxWithScore")
+    require(head_dispatch, "if ( row_count == 1u )",
+            "B1 direct exact-head dispatch")
+    require(head_dispatch, "SparkLmHostLaunchHeadDirectArgmaxWithScore",
+            "B1 skips overflowing shadow screen")
+    direct_head = body(common, "SparkLmHostLaunchHeadDirectArgmaxWithScore")
+    require(direct_head, "SparkLmHeadFallbackRescoreKernel",
+            "parallel exact vocabulary scan")
+    require(direct_head, "SparkLmHeadRescoreArgmaxKernel",
+            "exact partial argmax reduction")
     require(body(dsv4, "SparkDsv4HeadMaxlocPackKernel"),
             "UINT32_MAX - token_ids[row]", "lower-token maxloc tie break")
     require(body(module, "SparkDsv4ModuleReduceHeadMax"),

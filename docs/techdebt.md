@@ -84,9 +84,13 @@ from hardware measurements rather than nominal batch labels.
 The payload calculation must include all effective rows, so a nominal B8 with
 eight speculative verification rows per request is treated as approximately
 64 rows rather than B8. Switching collective algorithms must not reload or
-redistribute model files, weights, or KV. Implement and qualify this selector
-after the direct-pair network change; until then, keep collective time visible
-in profiles but do not tune thresholds against the obsolete topology.
+redistribute model files, weights, or KV. The generic TP device collective now
+selects recursive doubling or counter-rotating split rings per submission from
+the effective payload and a configured measured crossover. The qualified TP4
+host-RDMA profile currently crosses at 640 KiB with one QP per route; this is a
+hardware profile, not a model or nominal-B specialization. Remaining debt is
+to regenerate the threshold profile on every qualified fabric/datatype pair
+and retain merged-main B1--B1024 receipts.
 
 ## Qualification Receipts
 

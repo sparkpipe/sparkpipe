@@ -160,9 +160,12 @@ enum ibv_mtu
 #define IBV_QP_MAX_QP_RD_ATOMIC (1 << 14)
 #define IBV_WR_RDMA_WRITE 0
 #define IBV_WR_RDMA_WRITE_WITH_IMM 1
+#define IBV_WR_SEND_WITH_IMM 2
 #define IBV_SEND_SIGNALED 2
 #define IBV_WC_SUCCESS 0
 #define IBV_WC_RECV_RDMA_WITH_IMM 1
+#define IBV_WC_SEND 2
+#define IBV_WC_RECV 3
 #define IBV_WC_WITH_IMM 1
 
 struct ibv_device **ibv_get_device_list(int *count);

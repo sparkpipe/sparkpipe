@@ -53,11 +53,11 @@ verifying the final payload on every lap.
 
 ## Large-frame path
 
-Packets above the threshold retain the existing multi-lane striped RDMA path and
-TCP completion message. This preserves large-batch bandwidth while the small
-decode path removes the expensive per-lane and completion-message overhead.
+Packets above the threshold retain the striped RDMA path.  After every payload
+write completes, a signaled `SEND_WITH_IMM` fence publishes remote completion;
+the data path does not wait for a TCP completion message.
 
-The compiled defaults are eight striped lanes, control-port base `55700`, IB
+The compiled default is one QP lane per route, control-port base `55700`, IB
 port `1`, GID index `0`, and a `262144`-byte doorbell threshold. Set
 `SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_LANES`,
 `SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_CONTROL_PORT_BASE`,
@@ -67,6 +67,15 @@ port `1`, GID index `0`, and a `262144`-byte doorbell threshold. Set
 Present values are parsed strictly: malformed or out-of-range configuration
 fails initialization rather than selecting a different setting. A doorbell
 threshold of `0` explicitly disables the doorbell path.
+
+One QP lane is deliberate on the dual-port Spark fabric.  A sustained TP4
+split-ring characterization at a 14 MiB collective payload measured 48.25
+Gb/s in each of direct TX, direct RX, switched TX, and switched RX: 193.0
+Gb/s aggregate per Spark.  The simultaneous two-port TCP hardware ceiling was
+110.10 Gb/s total TX plus 103.59 Gb/s total RX because both ports share the
+PCIe limit.  Increasing the verbs lane count to 2, 4, or 8 reduced collective
+throughput through extra posting and completion work.  The environment
+override remains available for different hardware profiles.
 
 The module discovers the local verbs device once per process. Exactly one
 device must have an ACTIVE port 1 reporting 100 Gbit/s; zero or multiple
