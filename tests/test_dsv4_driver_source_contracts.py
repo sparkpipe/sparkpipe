@@ -95,7 +95,8 @@ def main() -> None:
 	require(header, "SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC SPARK_ACTIVATION_CODEC_NONE", "output-composition activation codec")
 	require(dtype, "return((uint8_t)encoded);", "scalar E4M3 low-byte result")
 	require(activation, "LmActivationStageFp8Qdq", "shared in-tile activation codec")
-	require(common, "SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC>", "dense activation codec propagation")
+	require(common, "SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC,SPARK_LM_SCALAR_NEURONS_PER_WARP>", "dense activation codec propagation")
+	require(common, "SparkLmStridedLinearKernel<GROUP_SIZE,ACTIVATION_CODEC,SPARK_LM_SCALAR_NEURONS_PER_WARP>", "strided activation reuse")
 	require(common, "entry / SPARK_LM_TILE_N][entry % SPARK_LM_TILE_N]", "software-pipelined output tile row stride")
 	reject(common, "entry / SPARK_LM_TILE][entry % SPARK_LM_TILE_N]", "software-pipelined output tile row alias")
 	require(header, "SPARK_DSV4_MODEL_LAYER_KIND_INVALID UINT32_MAX", "invalid layer sentinel")
@@ -107,6 +108,8 @@ def main() -> None:
 	require(cuda, "SparkDsv4SparseAttnMergeKernel", "split-KV sparse attention merge")
 	require(module, "SparkDsv4LaunchHcSplitSinkhorn", "inference mHC Sinkhorn")
 	require(module, "SparkDsv4LaunchHcMixSplitKSinkhorn", "split-K inference mHC")
+	require(cuda, "residual[source] = SparkLmBf16ToFloat", "mHC post residual reuse")
+	require(cuda, "__fmaf_rn(comb[source * SPARK_DSV4_MODEL_HC_STREAM_COUNT + stream],residual[source],value)", "mHC post register tile")
 	require(module, "metadata_rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT", "frame-sized metadata ownership")
 	require(module, "uint64_t rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT", "frame-sized bulk scratch ownership")
 	require(module, "head_rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT", "active-width final-head scratch")
@@ -145,21 +148,33 @@ def main() -> None:
 	reject(attention, "state->tp_rank * local_hidden",
 		"diagonal WO rank-row write")
 	overlap = function_body(module, "SparkDsv4ModuleRunAttentionOverlap(")
-	require(overlap, "cudaStreamWaitEvent(auxiliary,fork->fork_event,0u)",
+	require(overlap, "SparkStageModuleCudaForkBegin(fork,primary,branch_count)",
 		"compressed-attention compressor fork dependency")
+	require(overlap, "fork->auxiliary_streams[1]",
+		"independent direct-KV and indexer stream")
+	require(module, "&slot->index_compressor",
+		"independent index compressor scratch")
 	require(overlap, "cudaEventRecord(fork->milestone_event,primary)",
 		"compressed-attention query-rank milestone")
-	require(overlap, "cudaStreamWaitEvent(primary,fork->join_event,0u)",
+	require(overlap, "SparkStageModuleCudaForkJoin(fork,primary,branch_count)",
 		"compressed-attention join dependency")
 	require(attention,
-		"state->tp_degree > 1u && kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA",
-		"all-width TP compressed-attention overlap gate")
+		"state->tp_degree > 1u &&",
+		"all-width TP attention overlap gate")
+	reject(attention, "kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA",
+		"SWA overlap exclusion")
 	reject(attention, "rows == 1u", "B1-only attention overlap gate")
 	require(stage_common, "SparkStageModuleCudaForkInitialize(",
 		"generic reusable CUDA fork resources")
+	require(stage_common, "fork->auxiliary_streams[branch], fork->fork_event, 0u)",
+		"generic CUDA fork dependency")
+	require(stage_common, "fork->join_events[branch], 0u)",
+		"generic CUDA join dependency")
 	slot_allocate = function_body(module, "SparkDsv4ModuleAllocateSlot(")
-	require(slot_allocate, "state->tp_degree > 1u",
-		"all-width TP fork allocation")
+	require(slot_allocate, "SparkStageModuleCudaForkInitialize",
+		"all-width compute-fork allocation")
+	reject(slot_allocate, "state->tp_degree > 1u",
+		"TP-only compute-fork allocation")
 	reject(slot_allocate, "SPARK_BATCH_BUCKET == 1u",
 		"B1-only TP fork allocation")
 	reject(slot_allocate, "cudaStreamCreateWithFlags",
@@ -251,13 +266,16 @@ def main() -> None:
 	reject(module, "state->owns_embedding != 0u ? 1u : 0u", "embedding-dependent output slot")
 	require(driver_smoke, "dispatch.output_token_ids =", "final-head driver smoke output")
 	reject(adapter + runner + module, "stage_index == 0u ? submission->token_ids", "stage-zero-only token routing")
-	moe = function_body(module, "SparkDsv4ModuleRunMoeRouted(")
+	moe = function_body(module, "SparkDsv4ModuleRunMoeRoutedProjection(")
 	if moe.count("SparkDsv4LaunchFusedExpertW13Act(") != 1 or moe.count("SparkDsv4LaunchExpertDown(") != 1:
 		raise SystemExit("DSV4 routed MoE must issue exactly one fused W13 activation and one native W2")
-	require(moe, "SparkDsv4LaunchMoePairReduce(stream", "column-parallel routed full-hidden partial")
-	reject(moe, "SparkDsv4LaunchMoePairReduceStrided", "diagonal routed rank-row reduction")
 	moe_full = function_body(module, "SparkDsv4ModuleRunMoe(")
-	require(moe_full, "SparkDsv4LaunchLinear(stream,&moe->shared_w2", "column-parallel shared-W2 full-hidden partial")
+	moe_shared = function_body(module, "SparkDsv4ModuleRunMoeShared(")
+	require(moe_shared, "SparkDsv4LaunchLinear(stream,&moe->shared_w2", "column-parallel shared-W2 full-hidden partial")
+	require(moe_full, "SparkDsv4LaunchMoePairReduce(stream", "column-parallel routed full-hidden partial")
+	require(moe_full, "SparkStageModuleCudaForkBegin", "shared-routed MoE fork")
+	require(moe_full, "SparkStageModuleCudaForkJoin", "shared-routed MoE join")
+	reject(moe_full, "SparkDsv4LaunchMoePairReduceStrided", "diagonal routed rank-row reduction")
 	reject(moe_full, "state->tp_rank * hidden_dimension", "diagonal shared-W2 rank-row write")
 	reject(moe, "SparkDsv4LaunchExpertUp(", "split routed W1/W3 launch")
 	reject(moe, "SparkDsv4LaunchSwigluClamp(", "separate routed SwiGLU launch")

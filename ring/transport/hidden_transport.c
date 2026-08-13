@@ -365,7 +365,8 @@ SparkStatus SparkHiddenTransportValidatePacket(
         SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 |
         SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER |
         SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_END_OF_SEQUENCE |
-        SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
+        SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD |
+        SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SUBRANGE_SHAPE;
     if ((packet->flags & ~known_packet_flags) != 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -393,8 +394,18 @@ SparkStatus SparkHiddenTransportValidatePacket(
     if (packet->hidden_bf16 == 0 ||
         packet->active_sequence_count == 0u ||
         packet->active_sequence_count > endpoint->max_active_sequence_count ||
-        packet->hidden_dimension != endpoint->hidden_dimension ||
-        packet->bytes_per_sequence != endpoint->bytes_per_sequence)
+        packet->hidden_dimension == 0u ||
+        packet->bytes_per_sequence !=
+            (uint64_t)packet->hidden_dimension *
+                SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT ||
+        (((packet->flags &
+                SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SUBRANGE_SHAPE) == 0u) &&
+            (packet->hidden_dimension != endpoint->hidden_dimension ||
+             packet->bytes_per_sequence != endpoint->bytes_per_sequence)) ||
+        (((packet->flags &
+                SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SUBRANGE_SHAPE) != 0u) &&
+            (packet->hidden_dimension > endpoint->hidden_dimension ||
+             packet->bytes_per_sequence > endpoint->bytes_per_sequence)))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }

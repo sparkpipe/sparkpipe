@@ -159,13 +159,18 @@ SparkStatus SparkStageModuleCudaStatus(
 
 void SparkStageModuleCudaForkDestroy(SparkStageModuleCudaFork *fork)
 {
+    uint32_t branch;
     if (fork == 0)
     {
         return;
     }
-    if (fork->join_event != 0)
+    for (branch = 0u; branch < SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES;
+         ++branch)
     {
-        (void)cudaEventDestroy(fork->join_event);
+        if (fork->join_events[branch] != 0)
+        {
+            (void)cudaEventDestroy(fork->join_events[branch]);
+        }
     }
     if (fork->milestone_event != 0)
     {
@@ -175,9 +180,13 @@ void SparkStageModuleCudaForkDestroy(SparkStageModuleCudaFork *fork)
     {
         (void)cudaEventDestroy(fork->fork_event);
     }
-    if (fork->auxiliary_stream != 0)
+    for (branch = 0u; branch < SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES;
+         ++branch)
     {
-        (void)cudaStreamDestroy(fork->auxiliary_stream);
+        if (fork->auxiliary_streams[branch] != 0)
+        {
+            (void)cudaStreamDestroy(fork->auxiliary_streams[branch]);
+        }
     }
     memset(fork, 0, sizeof(*fork));
 }
@@ -187,14 +196,28 @@ SparkStatus SparkStageModuleCudaForkInitialize(
     SparkStageModuleCudaFork *fork)
 {
     cudaError_t error;
+    uint32_t branch;
     if (module_tag == 0 || module_tag[0] == '\0' || fork == 0 ||
-        fork->auxiliary_stream != 0 || fork->fork_event != 0 ||
-        fork->milestone_event != 0 || fork->join_event != 0)
+        fork->fork_event != 0 || fork->milestone_event != 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    error = cudaStreamCreateWithFlags(
-        &fork->auxiliary_stream, cudaStreamNonBlocking);
+    for (branch = 0u; branch < SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES;
+         ++branch)
+    {
+        if (fork->auxiliary_streams[branch] != 0 ||
+            fork->join_events[branch] != 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    error = cudaSuccess;
+    for (branch = 0u; branch < SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES &&
+         error == cudaSuccess; ++branch)
+    {
+        error = cudaStreamCreateWithFlags(
+            &fork->auxiliary_streams[branch], cudaStreamNonBlocking);
+    }
     if (error == cudaSuccess)
     {
         error = cudaEventCreateWithFlags(
@@ -205,16 +228,74 @@ SparkStatus SparkStageModuleCudaForkInitialize(
         error = cudaEventCreateWithFlags(
             &fork->milestone_event, cudaEventDisableTiming);
     }
-    if (error == cudaSuccess)
+    for (branch = 0u; branch < SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES &&
+         error == cudaSuccess; ++branch)
     {
         error = cudaEventCreateWithFlags(
-            &fork->join_event, cudaEventDisableTiming);
+            &fork->join_events[branch], cudaEventDisableTiming);
     }
     if (error != cudaSuccess)
     {
         SparkStageModuleCudaForkDestroy(fork);
     }
     return SparkStageModuleCudaStatus(module_tag, error, "cuda_fork_initialize");
+}
+
+cudaError_t SparkStageModuleCudaForkBegin(
+    SparkStageModuleCudaFork *fork,
+    cudaStream_t primary_stream,
+    uint32_t branch_count)
+{
+    cudaError_t error;
+    uint32_t branch;
+    if (fork == 0 || primary_stream == 0 || branch_count == 0u ||
+        branch_count > SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES ||
+        fork->fork_event == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    error = cudaEventRecord(fork->fork_event, primary_stream);
+    for (branch = 0u; branch < branch_count && error == cudaSuccess; ++branch)
+    {
+        if (fork->auxiliary_streams[branch] == 0)
+        {
+            return cudaErrorInvalidValue;
+        }
+        error = cudaStreamWaitEvent(
+            fork->auxiliary_streams[branch], fork->fork_event, 0u);
+    }
+    return error;
+}
+
+cudaError_t SparkStageModuleCudaForkJoin(
+    SparkStageModuleCudaFork *fork,
+    cudaStream_t primary_stream,
+    uint32_t branch_count)
+{
+    cudaError_t error;
+    uint32_t branch;
+    if (fork == 0 || primary_stream == 0 || branch_count == 0u ||
+        branch_count > SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES)
+    {
+        return cudaErrorInvalidValue;
+    }
+    error = cudaSuccess;
+    for (branch = 0u; branch < branch_count && error == cudaSuccess; ++branch)
+    {
+        if (fork->auxiliary_streams[branch] == 0 ||
+            fork->join_events[branch] == 0)
+        {
+            return cudaErrorInvalidValue;
+        }
+        error = cudaEventRecord(fork->join_events[branch],
+            fork->auxiliary_streams[branch]);
+        if (error == cudaSuccess)
+        {
+            error = cudaStreamWaitEvent(primary_stream,
+                fork->join_events[branch], 0u);
+        }
+    }
+    return error;
 }
 
 SparkStatus SparkStageModuleEnvironmentText(

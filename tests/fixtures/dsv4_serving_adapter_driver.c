@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
@@ -112,6 +113,35 @@ static const SparkModelDriverDescriptor TestDsv4ServingDriverDescriptor =
 	.programs = &TestDsv4ServingDriverProgram
 };
 
+#if TEST_DSV4_SERVING_HYBRID
+static uint32_t TestDsv4ServingTopologyIsValid(
+	const SparkDsv4ResidentDecodeStageNodeContext *context)
+{
+	const SparkTpDeviceCollectiveTopology *topology;
+	char expected[SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
+	uint32_t global_rank,rank;
+	topology = &context->tp_collective_topology;
+	if ( topology->rank_count != 4u || topology->rail_count != 2u ||
+		topology->algorithm_mask != SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS ||
+		topology->split_ring_min_payload_bytes != 655360u ||
+		topology->step_rail_indices[0] != 0u ||
+		topology->step_rail_indices[1] != 1u ||
+		topology->step_rail_indices[2] != 1u )
+		return(0u);
+	for (rank=0u; rank<4u; rank++)
+	{
+		global_rank = context->pp_stage_index * 4u + rank;
+		(void)snprintf(expected,sizeof(expected),"10.10.200.%u",global_rank);
+		if ( strcmp(topology->rail_rank_hosts[0][rank],expected) != 0 )
+			return(0u);
+		(void)snprintf(expected,sizeof(expected),"10.10.100.%u",global_rank + 10u);
+		if ( strcmp(topology->rail_rank_hosts[1][rank],expected) != 0 )
+			return(0u);
+	}
+	return(1u);
+}
+#endif
+
 static SparkStatus TestDsv4ServingDriverCreate(
 	const SparkModelDriverCreateRequest *request,
 	void **driver_instance)
@@ -123,6 +153,10 @@ static SparkStatus TestDsv4ServingDriverCreate(
 	context = (const SparkDsv4ResidentDecodeStageNodeContext *)request->node_context;
 	if ( context->abi_version != SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION || context->descriptor_bytes != SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES || context->stage_count != TEST_DSV4_SERVING_STAGE_COUNT || context->stage_index >= context->stage_count || context->layer_count == 0u || context->stage_pack_path == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+#if TEST_DSV4_SERVING_HYBRID
+	if ( TestDsv4ServingTopologyIsValid(context) == 0u )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+#endif
 	driver = (TestDsv4ServingDriver *)calloc(1u,sizeof(*driver));
 	if ( driver == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);

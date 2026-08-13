@@ -1854,11 +1854,16 @@ static SparkStatus SparkModelResidentdProcessMessage(
 	return(status);
 }
 
-static SparkStatus SparkModelResidentdReadClient(SparkModelResidentdRuntime *runtime)
+static SparkStatus SparkModelResidentdReadClient(
+	SparkModelResidentdRuntime *runtime,
+	uint32_t *submission_processed_out)
 {
 	SparkModelResidentIpcHeader *header;
 	ssize_t bytes_read;
 	SparkStatus status;
+	if ( submission_processed_out == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*submission_processed_out = 0u;
 	while ( runtime->client.fd >= 0 )
 	{
 		bytes_read = read(runtime->client.fd,runtime->client.input + runtime->client.input_bytes,runtime->client.target_bytes - runtime->client.input_bytes);
@@ -1879,7 +1884,12 @@ static SparkStatus SparkModelResidentdReadClient(SparkModelResidentdRuntime *run
 		}
 		if ( runtime->client.input_bytes == runtime->client.target_bytes )
 		{
+			header = (SparkModelResidentIpcHeader *)runtime->client.input;
 			status = SparkModelResidentdProcessMessage(runtime,runtime->client.input,runtime->client.target_bytes);
+			if ( status == SPARK_STATUS_OK &&
+				(header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT ||
+				 header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE) )
+				*submission_processed_out = 1u;
 			runtime->client.input_bytes = 0u;
 			runtime->client.target_bytes = SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES;
 			if ( status != SPARK_STATUS_OK )
@@ -2332,7 +2342,7 @@ static SparkStatus SparkModelResidentdRun(SparkModelResidentdRuntime *runtime)
 	uint32_t count;
 	SparkStatus status;
 	SparkStatus client_status;
-	uint32_t failed_status;
+	uint32_t failed_status,submission_processed;
 	int32_t poll_status;
 	status = SPARK_STATUS_OK;
 	while ( SparkModelResidentdStop == 0 && atomic_load(&runtime->failed_status) == SPARK_STATUS_OK && status == SPARK_STATUS_OK )
@@ -2347,9 +2357,16 @@ static SparkStatus SparkModelResidentdRun(SparkModelResidentdRuntime *runtime)
 			SparkModelResidentdAcceptClient(runtime);
 		if ( poll_status > 0 && fds[1].fd >= 0 && (fds[1].revents & POLLIN) != 0 )
 		{
-			client_status = SparkModelResidentdReadClient(runtime);
+			client_status = SparkModelResidentdReadClient(runtime,
+				&submission_processed);
 			if ( client_status != SPARK_STATUS_OK )
 				SparkModelResidentdCloseClient(runtime);
+			else if ( submission_processed != 0u )
+			{
+				client_status = SparkModelResidentdWriteClient(runtime);
+				if ( client_status != SPARK_STATUS_OK )
+					SparkModelResidentdCloseClient(runtime);
+			}
 		}
 		if ( status == SPARK_STATUS_OK && poll_status > 0 && fds[1].fd >= 0 && (fds[1].revents & POLLOUT) != 0 )
 		{

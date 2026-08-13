@@ -25,13 +25,6 @@ typedef struct TestNcclCompletion
 	SparkTpDeviceCollectiveCompletion completion;
 } TestNcclCompletion;
 
-void SparkTpDeviceCollectiveDebugSubmissionClaimed(uint32_t credit_index,
-	uint64_t generation)
-{
-	(void)credit_index;
-	(void)generation;
-}
-
 static void TestNcclComplete(void *context,
 	const SparkTpDeviceCollectiveCompletion *completion)
 {

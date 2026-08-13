@@ -140,21 +140,25 @@ description hash and B1 capacity ceiling. It retains 32 physical KV pages and
 sequence. The pages are admitted lazily; the B1 release does not densely
 preallocate KV for additional sequences.
 
-The B1 performance release packages NCCL as
-`lib/runtime_libs/libnccl.so.2` and selects it explicitly in the stage
-configuration for intra-TP BF16 all-reduce. NCCL launches are stream ordered:
-the next graph island is enqueued on the same CUDA stream without a host
-progress-thread round trip. A missing library, unsupported NCCL version, bad
-bootstrap identity, or collective error fails readiness; there is no implicit
-fallback. Hybrid TP4*PP4 still packages `lib/hidden_transport.so` for PP
-boundaries. That transport is independent of the intra-TP backend and remains
-host RDMA on Spark hardware that fails the GPUDirect capability probe.
+The release packages one `lib/hidden_transport.so` for both PP boundaries and
+the intra-TP BF16 all-reduce. The stage configuration declares the direct-pair
+and switched rails and enables both recursive doubling and counter-rotating
+split rings. The generic collective selects per actual payload without a model,
+weight, KV, or driver reload. The measured TP4 crossover on the paired-direct
+plus switched fabric is 640 KiB: smaller payloads use recursive doubling,
+while larger payloads use the two counter-rotating rings. At four sustained
+in-flight operations, recursive measured 119.15 us versus 121.23 us at 576
+KiB; split rings measured 122.96 us versus 131.75 us at 640 KiB.
+Bandwidth-mode operations
+use a bounded four-stream pool; an isolated latency-mode operation stays on its
+caller stream. A missing rail, transport module, persistent credit, or invalid
+topology fails readiness; there is no implicit fallback.
 
-The source/host reconstruction prewarms and seals the stage-local graphs, but
-CUDA 13 capture/instantiate/replay acceptance on SM121 has not been observed
-in this archive.  Live compilation, graph replay against the GA fixture, and
-sixteen-node performance qualification remain explicit release gates; this
-document makes no measurement or hardware-qualification claim.
+The source/host reconstruction prewarms and seals the stage-local graphs. The
+isolated collective measurements above validate the algorithm selector and
+transport on SM121, but do not qualify the model. Live graph replay against the
+GA fixture plus merged-main sixteen-node accuracy and end-to-end performance
+remain explicit release gates.
 
 Future speculative-decoding experiments are deliberately excluded from this
 topology's no-spec B1 qualification.  The public dSpark/MTP observations and

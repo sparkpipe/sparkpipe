@@ -94,17 +94,26 @@ def main() -> int:
          "dsv4_flash_tp4_pp4_stage.json").read_text(encoding="utf-8")
     )
     assert tp4_pp4_stage["tp_collective"]["connect_timeout_milli"] >= 120000
-    assert tp4_pp4_stage["tp_collective"]["backend"] == "nccl"
+    assert tp4_pp4_stage["tp_collective"]["backend"] == "hidden_transport"
     assert tp4_pp4_stage["tp_collective"]["backend_module_path"] == (
-        "lib/runtime_libs/libnccl.so.2")
+        "lib/hidden_transport.so")
     assert tp4_pp4_stage["tp_collective"]["peer_hosts"] == [
         f"spark{index:x}-mgmt" for index in range(16)]
+    assert tp4_pp4_stage["tp_collective"]["algorithms"] == [
+        "recursive_doubling", "counter_rotating_split_ring"]
+    assert tp4_pp4_stage["tp_collective"][
+        "split_ring_min_payload_bytes"] == 640 * 1024
+    assert tp4_pp4_stage["tp_collective"]["rail_peer_hosts"] == [
+        [f"10.10.200.{index}" for index in range(16)],
+        [f"10.10.100.{index + 10}" for index in range(16)],
+    ]
+    assert tp4_pp4_stage["tp_collective"]["step_rail_indices"] == [0, 1, 1]
     tp4_stage = json.loads(
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_tp4_stage.json").read_text(encoding="utf-8")
     )
     assert tp4_stage["cuda_graph_count_by_pp_stage"] == [87]
-    assert tp4_stage["tp_collective"]["backend"] == "nccl"
+    assert tp4_stage["tp_collective"]["backend"] == "hidden_transport"
     assert tp4_stage["tp_collective"]["peer_hosts"] == [
         f"spark{index:x}-mgmt" for index in range(4)]
     tp4_spec = json.loads(
@@ -115,12 +124,19 @@ def main() -> int:
     assert tp4_spec["topology"]["rank_hosts"] == [
         f"spark{index:x}" for index in range(4)]
     assert tp4_spec["topology"]["stage_indices"] == list(range(4))
-    for release_template in ("dsv4_tp4_pp4_b1_template",
-                             "dsv4_tp16_b1_template"):
+    for release_template in ("dsv4_tp4_b1_template",
+                             "dsv4_tp4_pp4_b1_template"):
         release = json.loads(
             (ROOT / "examples" / "release" / release_template /
              "sparkpipe.json").read_text(encoding="utf-8"))
-        assert "NCCL_IB_GID_INDEX=0" in release["roles"][0]["env"]
+        assert not any(entry["path"].endswith("libnccl.so.2")
+                       for entry in release["files"])
+        assert not any(value.startswith("NCCL_")
+                       for value in release["roles"][0]["env"])
+    tp16_release = json.loads(
+        (ROOT / "examples" / "release" / "dsv4_tp16_b1_template" /
+         "sparkpipe.json").read_text(encoding="utf-8"))
+    assert "NCCL_IB_GID_INDEX=0" in tp16_release["roles"][0]["env"]
     tp4_release = json.loads(
         (ROOT / "examples" / "release" / "dsv4_tp4_b1_template" /
          "sparkpipe.json").read_text(encoding="utf-8"))
@@ -143,16 +159,11 @@ def main() -> int:
         r"state->tp_credit_binding_count;\s*\}",
         stage_source,
     )
-    assert re.search(
-        r"if \( rank >= state->tp_degree \)\s*\{\s*"
-        r"if \( context->tp_peer_hosts\[rank\]\[0\] != '\\0' \)\s*"
-        r"return\(SPARK_STATUS_INVALID_ARGUMENT\);\s*continue;\s*\}\s*"
-        r"if \( context->tp_peer_hosts\[rank\]\[0\] == '\\0' \)\s*"
-        r"return\(SPARK_STATUS_INVALID_ARGUMENT\);\s*"
-        r"configuration\.rank_hosts\[rank\] = "
-        r"context->tp_peer_hosts\[rank\];",
-        stage_source,
-    )
+    assert "SparkTpDeviceCollectiveApplyTopology(" in stage_source
+    adapter_source = (
+        ROOT / "modules" / "dsv4_resident_decode_stage" / "source" /
+        "spark_dsv4_serving_adapter.c").read_text(encoding="utf-8")
+    assert "SparkTpDeviceCollectiveSliceTopology(" in adapter_source
     deployment = json.loads(
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_pp13_host_rdma.spec.json").read_text(encoding="utf-8")

@@ -36,11 +36,6 @@
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     {
-      "path": "lib/runtime_libs/libnccl.so.2",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "resident_reload_boundary": true
-    },
-    {
       "path": "config/model_resident.json",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "restart_on_change": true
@@ -68,7 +63,7 @@
         "{rank}"
       ],
       "env": [
-        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs"
+        "LD_LIBRARY_PATH={install_root}/lib"
       ]
     }
   ]

@@ -263,10 +263,15 @@ def main() -> int:
         "static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion", 1
     )[1].split("static SparkHiddenSparkHostRdmaInflightSend", 1)[0]
     require(
-        "receive_credit_index" in doorbell_completion
-        and "SparkHiddenSparkHostRdmaDoorbellLane(state," in doorbell_completion
+        "receive_index = immediate &" in doorbell_completion
+        and "completion_receive_index = (uint32_t)(work_completion->wr_id &"
+        in doorbell_completion
+        and "receive_credit_index = completion_receive_index"
+        in doorbell_completion
+        and "state,receive_index,remote_receive->generation"
+        in doorbell_completion
         and "work_completion->wr_id !=" not in doorbell_completion,
-        "RDMA binds FIFO doorbell receive credits to logical receive order",
+        "RDMA separates FIFO WQE repost ownership from logical immediate credit",
     )
     pipeline_header = (
         ROOT / "include/sparkpipe/spark_model_pipeline_client.h"

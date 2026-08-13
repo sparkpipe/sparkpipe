@@ -123,15 +123,14 @@ static SparkTpDeviceCollectiveCreditBinding TestReduceBindings[
     TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT];
 static SparkTpDeviceCollectiveCreditBinding TestMappedReduceBindings[
     TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT];
-static TestSubmissionClaimHook *TestActiveSubmissionClaimHook;
-
-void SparkTpDeviceCollectiveDebugSubmissionClaimed(
+static void TestSubmissionClaimed(
+    void *context,
     uint32_t credit_index,
     uint64_t generation)
 {
     TestSubmissionClaimHook *hook;
 
-    hook = TestActiveSubmissionClaimHook;
+    hook = (TestSubmissionClaimHook *)context;
     if (hook == 0 || hook->credit_index != credit_index ||
         hook->generation != generation)
     {
@@ -228,7 +227,8 @@ static SparkStatus TestCombineBf16(
     destination = (uint16_t *)destination_device;
     source = (const uint16_t *)source_device;
     assert(state != 0 && destination != 0 && source != 0);
-    assert(active_sequence_count == 2u && hidden_dimension == 4u);
+    assert(active_sequence_count != 0u && hidden_dimension != 0u);
+    assert(active_sequence_count * hidden_dimension <= 8u);
     assert(cuda_stream != 0);
     for (element = 0u;
          element < active_sequence_count * hidden_dimension;
@@ -593,6 +593,121 @@ static void TestAllReduceSumAndBoundedCredits(
         SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void TestAdaptiveSplitRing(TestTransportControls *controls)
+{
+    static const char *direct_hosts[4] = {
+        "direct0","direct1","direct2","direct3"
+    };
+    static const char *switch_hosts[4] = {
+        "switch0","switch1","switch2","switch3"
+    };
+    SparkTpDeviceCollective collective;
+    SparkTpDeviceCollectiveConfig configuration;
+    SparkTpDeviceCollectiveTopology sliced;
+    SparkTpDeviceCollectiveTopology topology;
+    SparkTpDeviceCollectiveSubmission submission;
+    TestCombineState combine;
+    TestCompletionState completion;
+    uint16_t *values;
+    uint32_t element;
+    uint32_t rank;
+
+    controls->reset();
+    TestConfigure(&configuration,0);
+    configuration.operation_kind =
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+    configuration.credit_count = TEST_REDUCE_CREDIT_COUNT;
+    configuration.credit_bindings = TestReduceBindings;
+    configuration.credit_binding_count =
+        TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT;
+    configuration.combine_bf16_function = TestCombineBf16;
+    configuration.combine_context = &combine;
+    memset(&topology,0,sizeof(topology));
+    topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
+    topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
+    topology.rank_count = 4u;
+    topology.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS;
+    topology.split_ring_min_payload_bytes = 16u;
+    topology.rail_count = 2u;
+    topology.step_rail_indices[0] = 0u;
+    topology.step_rail_indices[1] = 1u;
+    topology.step_rail_indices[2] = 1u;
+    for (rank=0u; rank<4u; rank++)
+    {
+        (void)snprintf(topology.rank_hosts[rank],
+            sizeof(topology.rank_hosts[rank]),"rank%u",rank);
+        (void)snprintf(topology.rail_rank_hosts[0][rank],
+            sizeof(topology.rail_rank_hosts[0][rank]),"%s",direct_hosts[rank]);
+        (void)snprintf(topology.rail_rank_hosts[1][rank],
+            sizeof(topology.rail_rank_hosts[1][rank]),"%s",switch_hosts[rank]);
+    }
+    assert(SparkTpDeviceCollectiveApplyTopology(&topology,&configuration) ==
+        SPARK_STATUS_OK);
+    assert(SparkTpDeviceCollectiveSliceTopology(&topology,2u,2u,&sliced) ==
+        SPARK_STATUS_OK);
+    assert(sliced.rank_count == 2u);
+    assert(strcmp(sliced.rank_hosts[0],"rank2") == 0);
+    assert(strcmp(sliced.rail_rank_hosts[0][1],"direct3") == 0);
+    atomic_init(&combine.count,0u);
+    assert(SparkTpDeviceCollectiveCreate(&configuration,&collective) ==
+        SPARK_STATUS_OK);
+    assert(collective.algorithm_mask ==
+        SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS);
+    assert(collective.split_ring_min_payload_bytes == 16u);
+    assert(controls->metric(TEST_METRIC_REGISTER) ==
+        SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT *
+            TEST_REDUCE_CREDIT_COUNT);
+    values = (uint16_t *)TestFullBuffers[0u];
+    for (element=0u; element<8u; element++)
+        values[element] = 3u;
+    TestCompletionInitialize(&completion);
+    memset(&submission,0,sizeof(submission));
+    submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    submission.descriptor_bytes = sizeof(submission);
+    submission.active_sequence_count = 2u;
+    submission.ordinal = 0u;
+    submission.local_device = values;
+    submission.full_device = values;
+    submission.cuda_stream = (void *)(uintptr_t)0x30500u;
+    submission.completion_function = TestCompletionCallback;
+    submission.completion_context = &completion;
+    assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
+        SPARK_STATUS_OK);
+    TestWaitForCompletion(&completion);
+    TestWaitForPhase(&collective,0u,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE);
+    assert(atomic_load_explicit(&completion.status,memory_order_acquire) ==
+        SPARK_STATUS_OK);
+    assert(atomic_load_explicit(&combine.count,memory_order_acquire) == 6u);
+    assert(controls->metric(TEST_METRIC_SEND) == 12u);
+    assert(controls->metric(TEST_METRIC_RELEASE) == 12u);
+    for (element=0u; element<8u; element++)
+        assert(values[element] == 12u);
+    values = (uint16_t *)TestFullBuffers[1u];
+    for (element=0u; element<4u; element++)
+        values[element] = 3u;
+    TestCompletionInitialize(&completion);
+    submission.active_sequence_count = 1u;
+    submission.ordinal = 1u;
+    submission.local_device = values;
+    submission.full_device = values;
+    submission.completion_context = &completion;
+    assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
+        SPARK_STATUS_OK);
+    TestWaitForCompletion(&completion);
+    TestWaitForPhase(&collective,1u,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE);
+    assert(atomic_load_explicit(&completion.status,memory_order_acquire) ==
+        SPARK_STATUS_OK);
+    assert(atomic_load_explicit(&combine.count,memory_order_acquire) == 8u);
+    assert(controls->metric(TEST_METRIC_SEND) == 14u);
+    assert(controls->metric(TEST_METRIC_RELEASE) == 14u);
+    for (element=0u; element<4u; element++)
+        assert(values[element] == 12u);
+    SparkTpDeviceCollectiveDestroy(&collective);
+    assert(controls->metric(TEST_METRIC_CLOSE_WITH_OWNER) == 0u);
+}
+
 static void TestMappedHostStaging(TestTransportControls *controls)
 {
     SparkTpDeviceCollective collective;
@@ -876,6 +991,7 @@ static void TestSubmitBuildingFailureIsNotOverwritten(
     TestTransportControls *controls)
 {
     SparkTpDeviceCollective collective;
+    SparkTpDeviceCollectiveDebugHooks debug_hooks;
     TestCompletionState completion;
     TestSubmissionClaimHook hook;
     TestSubmissionThread submission_thread;
@@ -883,14 +999,16 @@ static void TestSubmitBuildingFailureIsNotOverwritten(
     uint32_t failure_requested;
     uint32_t phase;
 
-    TestCreate(controls,0,&collective);
     TestCompletionInitialize(&completion);
     memset(&hook,0,sizeof(hook));
     hook.credit_index = 5u;
     hook.generation = 1u;
     assert(pthread_mutex_init(&hook.mutex,0) == 0);
     assert(pthread_cond_init(&hook.condition,0) == 0);
-    TestActiveSubmissionClaimHook = &hook;
+    memset(&debug_hooks,0,sizeof(debug_hooks));
+    debug_hooks.submission_claimed_function = TestSubmissionClaimed;
+    debug_hooks.hook_context = &hook;
+    TestCreate(controls,&debug_hooks,&collective);
     memset(&submission_thread,0,sizeof(submission_thread));
     submission_thread.collective = &collective;
     TestBuildSubmission(&submission_thread.submission,&completion,5u,5u,2u);
@@ -918,7 +1036,6 @@ static void TestSubmitBuildingFailureIsNotOverwritten(
     assert(pthread_cond_broadcast(&hook.condition) == 0);
     assert(pthread_mutex_unlock(&hook.mutex) == 0);
     assert(pthread_join(thread,0) == 0);
-    TestActiveSubmissionClaimHook = 0;
     assert(submission_thread.result == SPARK_STATUS_OK);
     TestWaitForCompletion(&completion);
     TestWaitForPhase(&collective,5u,
@@ -987,6 +1104,7 @@ int main(void)
     TestLoadControls(&controls);
     TestSuccessfulOperation(&controls);
     TestAllReduceSumAndBoundedCredits(&controls);
+    TestAdaptiveSplitRing(&controls);
     TestMappedHostStaging(&controls);
     TestOutOfOrderCompletions(&controls);
     TestRotatingGenerationReuse(&controls);

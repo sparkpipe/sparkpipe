@@ -262,17 +262,21 @@ static void SparkTestCudaForkOwnsReusableResources(void)
     SparkStageModuleCudaFork fork = {0};
     assert(SparkStageModuleCudaForkInitialize(
                "stage_common_test", &fork) == SPARK_STATUS_OK);
-    assert(fork.auxiliary_stream != 0);
+    assert(fork.auxiliary_streams[0] != 0);
+    assert(fork.auxiliary_streams[1] != 0);
     assert(fork.fork_event != 0);
     assert(fork.milestone_event != 0);
-    assert(fork.join_event != 0);
+    assert(fork.join_events[0] != 0);
+    assert(fork.join_events[1] != 0);
     assert(SparkStageModuleCudaForkInitialize(
                "stage_common_test", &fork) == SPARK_STATUS_INVALID_ARGUMENT);
     SparkStageModuleCudaForkDestroy(&fork);
-    assert(fork.auxiliary_stream == 0);
+    assert(fork.auxiliary_streams[0] == 0);
+    assert(fork.auxiliary_streams[1] == 0);
     assert(fork.fork_event == 0);
     assert(fork.milestone_event == 0);
-    assert(fork.join_event == 0);
+    assert(fork.join_events[0] == 0);
+    assert(fork.join_events[1] == 0);
 }
 
 int main(void)
