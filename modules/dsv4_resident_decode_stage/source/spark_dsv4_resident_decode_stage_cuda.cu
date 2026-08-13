@@ -2,6 +2,7 @@
 #include "sparkpipe/spark_row_compaction.cuh"
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 #include "spark_dsv4_pool_layout.h"
+#include "spark_dsv4_hc_splitk.h"
 #include "spark_dsv4_stagepack_format.h"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/weight_codec.cuh"
@@ -1323,6 +1324,115 @@ static __global__ void SparkDsv4HcMixKernel(const void *streams_bf16, const floa
 	}
 }
 
+static __global__ void SparkDsv4HcMixSplitKKernel(const void *streams_bf16, const float *fn_f32, float *partials_f32, uint32_t row_count, uint32_t flat_dimension)
+{
+	__shared__ float values[SPARK_DSV4_HC_SPLIT_K_ELEMENTS];
+	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+	uint32_t row = blockIdx.x / SPARK_DSV4_HC_SPLIT_K_COUNT;
+	uint32_t split = blockIdx.x % SPARK_DSV4_HC_SPLIT_K_COUNT;
+	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
+	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	uint32_t base = split * SPARK_DSV4_HC_SPLIT_K_ELEMENTS,mix,element;
+	uint64_t partial_base;
+	float value,total,accumulator;
+	if ( row >= row_count )
+		return;
+	value = SparkLmBf16ToFloat(streams_bf16,(uint64_t)row * flat_dimension + base + threadIdx.x);
+	values[threadIdx.x] = value;
+	total = SparkLmBlockReduceSum(value * value,reduce_scratch);
+	partial_base = ((uint64_t)row * SPARK_DSV4_HC_SPLIT_K_COUNT + split) * SPARK_DSV4_HC_SPLIT_K_PARTIALS;
+	if ( threadIdx.x == 0u )
+		partials_f32[partial_base] = total;
+	for (mix=warp; mix<SPARK_DSV4_MODEL_HC_MIX_ROWS; mix+=SPARK_LM_CTA_WARPS)
+	{
+		accumulator = 0.0f;
+		for (element=lane; element<SPARK_DSV4_HC_SPLIT_K_ELEMENTS; element+=SPARK_LM_WARP_LANES)
+			accumulator += values[element] * __ldg(fn_f32 + (uint64_t)mix * flat_dimension + base + element);
+		accumulator = SparkLmWarpReduceSum(accumulator);
+		if ( lane == 0u )
+			partials_f32[partial_base + 1u + mix] = accumulator;
+	}
+}
+
+static __device__ __forceinline__ void SparkDsv4HcParallelSinkhorn(const float *mixes, const float *scale3_f32, const float *base_f32, uint32_t iterations, float epsilon, float *pre_f32, float *post_f32, float *comb_f32, uint32_t row, float *comb, float *sums)
+{
+	uint32_t lane = threadIdx.x,i,j,iteration;
+	float maximum,total;
+	if ( lane < SPARK_DSV4_MODEL_HC_STREAM_COUNT )
+	{
+		pre_f32[(uint64_t)row * SPARK_DSV4_MODEL_HC_STREAM_COUNT + lane] = SparkLmSigmoid(mixes[lane] * scale3_f32[0] + base_f32[lane]) + epsilon;
+		post_f32[(uint64_t)row * SPARK_DSV4_MODEL_HC_STREAM_COUNT + lane] = 2.0f * SparkLmSigmoid(mixes[SPARK_DSV4_MODEL_HC_STREAM_COUNT + lane] * scale3_f32[1] + base_f32[SPARK_DSV4_MODEL_HC_STREAM_COUNT + lane]);
+		maximum = -3.0e38f;
+		for (j=0u; j<SPARK_DSV4_MODEL_HC_STREAM_COUNT; j++)
+		{
+			comb[lane * SPARK_DSV4_MODEL_HC_STREAM_COUNT + j] = mixes[2u * SPARK_DSV4_MODEL_HC_STREAM_COUNT + lane * SPARK_DSV4_MODEL_HC_STREAM_COUNT + j] * scale3_f32[2] + base_f32[2u * SPARK_DSV4_MODEL_HC_STREAM_COUNT + lane * SPARK_DSV4_MODEL_HC_STREAM_COUNT + j];
+			maximum = fmaxf(maximum,comb[lane * SPARK_DSV4_MODEL_HC_STREAM_COUNT + j]);
+		}
+		total = 0.0f;
+		for (j=0u; j<SPARK_DSV4_MODEL_HC_STREAM_COUNT; j++)
+			total += (comb[lane * SPARK_DSV4_MODEL_HC_STREAM_COUNT + j] = __expf(comb[lane * SPARK_DSV4_MODEL_HC_STREAM_COUNT + j] - maximum));
+		for (j=0u; j<SPARK_DSV4_MODEL_HC_STREAM_COUNT; j++)
+			comb[lane * SPARK_DSV4_MODEL_HC_STREAM_COUNT + j] = comb[lane * SPARK_DSV4_MODEL_HC_STREAM_COUNT + j] / total + epsilon;
+	}
+	__syncthreads();
+	for (iteration=0u; iteration<iterations; iteration++)
+	{
+		if ( iteration != 0u && lane < SPARK_DSV4_MODEL_HC_STREAM_COUNT )
+		{
+			total = 0.0f;
+			for (j=0u; j<SPARK_DSV4_MODEL_HC_STREAM_COUNT; j++)
+				total += comb[lane * SPARK_DSV4_MODEL_HC_STREAM_COUNT + j];
+			sums[lane] = total;
+		}
+		__syncthreads();
+		if ( iteration != 0u && lane < SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT )
+			comb[lane] /= sums[lane / SPARK_DSV4_MODEL_HC_STREAM_COUNT] + epsilon;
+		__syncthreads();
+		if ( lane < SPARK_DSV4_MODEL_HC_STREAM_COUNT )
+		{
+			total = 0.0f;
+			for (i=0u; i<SPARK_DSV4_MODEL_HC_STREAM_COUNT; i++)
+				total += comb[i * SPARK_DSV4_MODEL_HC_STREAM_COUNT + lane];
+			sums[lane] = total;
+		}
+		__syncthreads();
+		if ( lane < SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT )
+			comb[lane] /= sums[lane % SPARK_DSV4_MODEL_HC_STREAM_COUNT] + epsilon;
+		__syncthreads();
+	}
+	if ( lane < SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT )
+		comb_f32[(uint64_t)row * SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT + lane] = comb[lane];
+}
+
+static __global__ void SparkDsv4HcMixSplitKFinalizeKernel(const float *partials_f32, const float *scale3_f32, const float *base_f32, uint32_t row_count, uint32_t iterations, float rms_epsilon, float hc_epsilon, float *mixes_f32, float *pre_f32, float *post_f32, float *comb_f32)
+{
+	__shared__ float mixes[SPARK_DSV4_MODEL_HC_MIX_ROWS];
+	__shared__ float comb[SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT];
+	__shared__ float sums[SPARK_DSV4_MODEL_HC_STREAM_COUNT];
+	uint32_t row = blockIdx.x,lane = threadIdx.x,split;
+	uint64_t partial_base;
+	float total = 0.0f,inverse;
+	if ( row >= row_count )
+		return;
+	if ( lane < SPARK_DSV4_HC_SPLIT_K_PARTIALS )
+		for (split=0u; split<SPARK_DSV4_HC_SPLIT_K_COUNT; split++)
+		{
+			partial_base = ((uint64_t)row * SPARK_DSV4_HC_SPLIT_K_COUNT + split) * SPARK_DSV4_HC_SPLIT_K_PARTIALS;
+			total += partials_f32[partial_base + lane];
+		}
+	if ( lane == 0u )
+		sums[0] = rsqrtf(total / (float)SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS + rms_epsilon);
+	__syncthreads();
+	if ( lane > 0u && lane < SPARK_DSV4_HC_SPLIT_K_PARTIALS )
+	{
+		inverse = sums[0];
+		mixes[lane - 1u] = total * inverse;
+		mixes_f32[(uint64_t)row * SPARK_DSV4_MODEL_HC_MIX_ROWS + lane - 1u] = total * inverse;
+	}
+	__syncthreads();
+	SparkDsv4HcParallelSinkhorn(mixes,scale3_f32,base_f32,iterations,hc_epsilon,pre_f32,post_f32,comb_f32,row,comb,sums);
+}
+
 /*
  * The split with inference Sinkhorn, one thread per row: sigmoid pre
  * (+eps), doubled sigmoid post, comb row-softmax +eps then the iteration
@@ -2034,6 +2144,21 @@ extern "C" cudaError_t SparkDsv4LaunchHcSplitSinkhorn(cudaStream_t stream, const
 {
 	SparkDsv4HcSplitSinkhornKernel<<<(row_count + 63u) / 64u,64u,0,stream>>>(mixes_f32,scale3_f32,base_f32,row_count,hc,iterations,epsilon,pre_f32,post_f32,comb_f32);
 	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchHcMixSplitKSinkhorn(cudaStream_t stream, const void *streams_bf16, const float *fn_f32, const float *scale3_f32, const float *base_f32, float *partials_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, uint32_t hc, uint32_t iterations, float rms_epsilon, float hc_epsilon, float *pre_f32, float *post_f32, float *comb_f32)
+{
+	cudaError_t error;
+	if ( streams_bf16 == 0 || fn_f32 == 0 || scale3_f32 == 0 || base_f32 == 0 || partials_f32 == 0 || mixes_f32 == 0 || pre_f32 == 0 || post_f32 == 0 || comb_f32 == 0 || row_count == 0u || flat_dimension != SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS || mix_rows != SPARK_DSV4_MODEL_HC_MIX_ROWS || hc != SPARK_DSV4_MODEL_HC_STREAM_COUNT || iterations == 0u || rms_epsilon <= 0.0f || hc_epsilon <= 0.0f )
+		return(cudaErrorInvalidValue);
+	SparkDsv4HcMixSplitKKernel<<<row_count * SPARK_DSV4_HC_SPLIT_K_COUNT,SPARK_LM_CTA_THREADS,0,stream>>>(streams_bf16,fn_f32,partials_f32,row_count,flat_dimension);
+	error = cudaGetLastError();
+	if ( error == cudaSuccess )
+	{
+		SparkDsv4HcMixSplitKFinalizeKernel<<<row_count,64u,0,stream>>>(partials_f32,scale3_f32,base_f32,row_count,iterations,rms_epsilon,hc_epsilon,mixes_f32,pre_f32,post_f32,comb_f32);
+		error = cudaGetLastError();
+	}
+	return(error);
 }
 
 extern "C" cudaError_t SparkDsv4LaunchHcPreReduce(cudaStream_t stream, const void *streams_bf16, const float *pre_f32, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension)
