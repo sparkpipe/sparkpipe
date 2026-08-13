@@ -3,6 +3,7 @@
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 #include "spark_dsv4_pool_layout.h"
 #include "spark_dsv4_hc_splitk.h"
+#include "spark_dsv4_sparse_attention_split.h"
 #include "spark_dsv4_stagepack_format.h"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/weight_codec.cuh"
@@ -265,11 +266,13 @@ static __global__ void SparkDsv4SparseAttnKernel(
     const float *sink_f32,
     float scale,
     void *out_bf16,
+    float *partials_f32,
     uint32_t row_count,
     uint32_t head_count,
-    uint32_t head_dim)
+    uint32_t head_dim,
+    uint32_t split_count)
 {
-    static const uint32_t heads_per_cta = 4u;
+    static const uint32_t heads_per_cta = SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;
     static const uint32_t maximum_pairs_per_lane =
         SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION /
         (2u * SPARK_LM_WARP_LANES);
@@ -297,12 +300,14 @@ static __global__ void SparkDsv4SparseAttnKernel(
     uint32_t selected_slot;
     uint32_t pairs_per_lane;
     uint32_t page_ordinal;
+    uint32_t split_index;
 
     row = blockIdx.x;
     first_head = blockIdx.y * heads_per_cta;
+    split_index = blockIdx.z;
     if (row >= row_count || first_head >= head_count ||
         head_dim == 0u || head_dim > SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION ||
-        (head_dim & 1u) != 0u)
+        (head_dim & 1u) != 0u || split_index >= split_count)
     {
         return;
     }
@@ -352,9 +357,9 @@ static __global__ void SparkDsv4SparseAttnKernel(
     __syncthreads();
 
     page_ordinal = row_page_table_indices[row];
-    for (selected_slot = warp_index;
+    for (selected_slot = split_index * SPARK_LM_CTA_WARPS + warp_index;
          selected_slot < topk;
-         selected_slot += SPARK_LM_CTA_WARPS)
+         selected_slot += split_count * SPARK_LM_CTA_WARPS)
     {
         int32_t cache_index;
 
@@ -559,7 +564,7 @@ static __global__ void SparkDsv4SparseAttnKernel(
                 (local_head * SPARK_LM_CTA_WARPS) + partial_index];
             block_max = partial_max > block_max ? partial_max : block_max;
         }
-        block_denominator = sink_f32 != 0
+        block_denominator = split_count == 1u && sink_f32 != 0
             ? __expf(sink_f32[actual_head] - block_max)
             : 0.0f;
         for (partial_index = 0u;
@@ -578,6 +583,15 @@ static __global__ void SparkDsv4SparseAttnKernel(
         inverse_denominator[local_head] = block_denominator > 0.0f
             ? 1.0f / block_denominator
             : 0.0f;
+        if (split_count > 1u)
+        {
+            uint64_t partial_block =
+                (((uint64_t)row * gridDim.y + blockIdx.y) * split_count +
+                 split_index) * SPARK_DSV4_SPARSE_ATTN_PARTIAL_SCALARS;
+            partials_f32[partial_block + local_head] = block_max;
+            partials_f32[partial_block + heads_per_cta + local_head] =
+                block_denominator;
+        }
     }
     __syncthreads();
 
@@ -611,12 +625,78 @@ static __global__ void SparkDsv4SparseAttnKernel(
                 merge_scale[partial_offset],
                 merged_value);
         }
-        SparkLmFloatToBf16(
-            out_bf16,
-            (((uint64_t)row * head_count) + actual_head) * head_dim +
-                output_element,
-            merged_value * inverse_denominator[local_head]);
+        if (split_count > 1u)
+        {
+            uint64_t partial_block =
+                (((uint64_t)row * gridDim.y + blockIdx.y) * split_count +
+                 split_index) * SPARK_DSV4_SPARSE_ATTN_PARTIAL_SCALARS;
+            partials_f32[partial_block + 2u * heads_per_cta +
+                (uint64_t)local_head * head_dim + output_element] = merged_value;
+        }
+        else
+            SparkLmFloatToBf16(
+                out_bf16,
+                (((uint64_t)row * head_count) + actual_head) * head_dim +
+                    output_element,
+                merged_value * inverse_denominator[local_head]);
         element_index += blockDim.x;
+    }
+}
+
+static __global__ void SparkDsv4SparseAttnMergeKernel(const float *partials_f32, const float *sink_f32, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dim, uint32_t split_count)
+{
+    __shared__ float maxima[SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA];
+    __shared__ float inverse[SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA];
+    __shared__ float scales[SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA * SPARK_DSV4_SPARSE_ATTN_MAX_SPLITS];
+    uint32_t row = blockIdx.x,first_head = blockIdx.y * SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;
+    uint32_t active_heads,entry = threadIdx.x,local_head,split,element;
+    uint64_t block;
+    float maximum,total,value;
+    if ( row >= row_count || first_head >= head_count )
+        return;
+    active_heads = head_count - first_head;
+    if ( active_heads > SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA )
+        active_heads = SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;
+    if ( entry < active_heads )
+    {
+        maximum = -3.0e38f;
+        for (split=0u; split<split_count; split++)
+        {
+            block = (((uint64_t)row * gridDim.y + blockIdx.y) * split_count + split) * SPARK_DSV4_SPARSE_ATTN_PARTIAL_SCALARS;
+            maximum = fmaxf(maximum,partials_f32[block + entry]);
+        }
+        maxima[entry] = maximum;
+    }
+    __syncthreads();
+    if ( entry < active_heads * split_count )
+    {
+        local_head = entry / split_count;
+        split = entry % split_count;
+        block = (((uint64_t)row * gridDim.y + blockIdx.y) * split_count + split) * SPARK_DSV4_SPARSE_ATTN_PARTIAL_SCALARS;
+        scales[entry] = __expf(partials_f32[block + local_head] - maxima[local_head]);
+    }
+    __syncthreads();
+    if ( entry < active_heads )
+    {
+        total = sink_f32 != 0 ? __expf(sink_f32[first_head + entry] - maxima[entry]) : 0.0f;
+        for (split=0u; split<split_count; split++)
+        {
+            block = (((uint64_t)row * gridDim.y + blockIdx.y) * split_count + split) * SPARK_DSV4_SPARSE_ATTN_PARTIAL_SCALARS;
+            total += partials_f32[block + SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA + entry] * scales[entry * split_count + split];
+        }
+        inverse[entry] = total > 0.0f ? 1.0f / total : 0.0f;
+    }
+    __syncthreads();
+    for (element=entry; element<active_heads * head_dim; element+=blockDim.x)
+    {
+        local_head = element / head_dim;
+        value = 0.0f;
+        for (split=0u; split<split_count; split++)
+        {
+            block = (((uint64_t)row * gridDim.y + blockIdx.y) * split_count + split) * SPARK_DSV4_SPARSE_ATTN_PARTIAL_SCALARS;
+            value = fmaf(partials_f32[block + 2u * SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA + (uint64_t)local_head * head_dim + element % head_dim],scales[local_head * split_count + split],value);
+        }
+        SparkLmFloatToBf16(out_bf16,((uint64_t)row * head_count + first_head + local_head) * head_dim + element % head_dim,value * inverse[local_head]);
     }
 }
 
@@ -1707,12 +1787,25 @@ extern "C" cudaError_t SparkDsv4LaunchHadamard(cudaStream_t stream, void *data_b
 
 static size_t SparkDsv4SparseAttnSharedBytes(uint32_t head_dimension)
 {
-    static const uint32_t heads_per_cta = 4u;
+    static const uint32_t heads_per_cta = SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;
 
     return
         (size_t)heads_per_cta * head_dimension * sizeof(float) +
         (size_t)heads_per_cta * SPARK_LM_CTA_WARPS *
             head_dimension * sizeof(float);
+}
+
+static uint32_t SparkDsv4SparseAttnSplitCount(uint32_t row_count, uint32_t head_count, uint32_t topk, uint32_t compressed_entries_per_page, uint32_t multiprocessor_count)
+{
+    uint32_t groups = (head_count + SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA - 1u) / SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;
+    uint32_t blocks = row_count * groups,effective_topk,splits;
+    if ( blocks == 0u || multiprocessor_count == 0u )
+        return(0u);
+    effective_topk = compressed_entries_per_page == 0u ? min(topk,SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS) : topk;
+    splits = multiprocessor_count / blocks;
+    splits = min(splits,SPARK_DSV4_SPARSE_ATTN_MAX_SPLITS);
+    splits = min(splits,effective_topk / SPARK_DSV4_SPARSE_ATTN_MIN_SLOTS_PER_SPLIT);
+    return(max(splits,1u));
 }
 
 extern "C" cudaError_t SparkDsv4ConfigureCudaKernels(uint32_t *multiprocessor_count)
@@ -1762,27 +1855,38 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
     const float *sink_f32,
     float scale,
     void *out_bf16,
+    float *partials_f32,
+    uint32_t partial_capacity,
+    uint32_t multiprocessor_count,
     uint32_t row_count,
     uint32_t head_count,
     uint32_t head_dim)
 {
-    static const uint32_t heads_per_cta = 4u;
+    static const uint32_t heads_per_cta = SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;
     dim3 grid;
+    cudaError_t error;
     size_t shared_bytes;
+    uint32_t split_count,partial_count;
 
     if (q_bf16 == 0 || kv_cache_bf16 == 0 ||
         row_lane_indices == 0 || row_page_table_indices == 0 ||
         physical_page_table == 0 || page_table_stride == 0u ||
-        topk_idxs == 0 || out_bf16 == 0 ||
+        topk_idxs == 0 || out_bf16 == 0 || partials_f32 == 0 ||
         topk == 0u || row_count == 0u || head_count == 0u ||
         head_dim == 0u || head_dim > SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION ||
-        (head_dim & 1u) != 0u)
+        (head_dim & 1u) != 0u || partial_capacity == 0u ||
+        multiprocessor_count == 0u)
     {
         return cudaErrorInvalidValue;
     }
-    grid = dim3(
-        row_count,
-        (head_count + heads_per_cta - 1u) / heads_per_cta);
+    split_count = SparkDsv4SparseAttnSplitCount(row_count,head_count,topk,
+        compressed_entries_per_page,multiprocessor_count);
+    partial_count = row_count *
+        ((head_count + heads_per_cta - 1u) / heads_per_cta) * split_count;
+    if ( split_count == 0u || partial_count > partial_capacity )
+        return(cudaErrorInvalidValue);
+    grid = dim3(row_count,(head_count + heads_per_cta - 1u) / heads_per_cta,
+        split_count);
     shared_bytes = SparkDsv4SparseAttnSharedBytes(head_dim);
     SparkDsv4SparseAttnKernel<<<
         grid,
@@ -1802,10 +1906,18 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
         sink_f32,
         scale,
         out_bf16,
+        partials_f32,
         row_count,
         head_count,
-        head_dim);
-    return cudaGetLastError();
+        head_dim,
+        split_count);
+    error = cudaGetLastError();
+    if ( error != cudaSuccess || split_count == 1u )
+        return(error);
+    SparkDsv4SparseAttnMergeKernel<<<dim3(row_count,grid.y),SPARK_LM_CTA_THREADS,0,
+        stream>>>(partials_f32,sink_f32,out_bf16,row_count,head_count,head_dim,
+        split_count);
+    return(cudaGetLastError());
 }
 
 extern "C" cudaError_t SparkDsv4LaunchWiden(cudaStream_t stream, const void *input_bf16, float *output_f32, uint32_t row_count, uint32_t width, float scale)
