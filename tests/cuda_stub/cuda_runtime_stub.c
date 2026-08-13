@@ -129,6 +129,16 @@ cudaError_t cudaStreamSynchronize(cudaStream_t stream)
     return cudaSuccess;
 }
 
+cudaError_t cudaStreamWaitEvent(
+    cudaStream_t stream,
+    cudaEvent_t event,
+    unsigned int flags)
+{
+    (void)stream;
+    (void)flags;
+    return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
+}
+
 cudaError_t cudaDeviceSynchronize(void)
 {
     return cudaSuccess;

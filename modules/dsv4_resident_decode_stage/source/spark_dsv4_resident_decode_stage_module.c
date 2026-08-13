@@ -108,6 +108,7 @@ static SparkStatus SparkDsv4ModuleBounceBoundary(
 struct SparkDsv4ModuleSlot
 {
 	void *cuda_stream;
+	SparkStageModuleCudaFork attention_fork;
 	cudaEvent_t tp_host_copy_event;
 	void *host_staging;
 	uint32_t *host_input_token_ids;
@@ -1627,6 +1628,9 @@ static SparkStatus SparkDsv4ModuleAllocateSlot(SparkDsv4ModuleState *state, Spar
 		status = SparkDsv4ModuleAllocateSlotWide(state,slot);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleAllocateSlotTail(state,slot);
+	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u )
+		status = SparkStageModuleCudaForkInitialize(SPARK_DSV4_MODULE_TAG,
+			&slot->attention_fork);
 	if ( status == SPARK_STATUS_OK && state->tp_device_collective_initialized != 0u &&
 		state->tp_device_collective.memory_mode ==
 		SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
@@ -2120,9 +2124,8 @@ static cudaError_t SparkDsv4ModuleHcEnter(SparkDsv4ModuleSlot *slot, const void 
  * start position, the fp8 cache sim, and lands at position/ratio behind
  * the window - the host knows the boundary from the position arithmetic.
  */
-static cudaError_t SparkDsv4ModuleRunCompressor(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4CompressorWeights *weights, float *kv_state, float *score_state, uint64_t state_stride, void *cache_base, uint64_t cache_lane_stride, uint64_t cache_slot_offset, uint32_t cache_width, uint32_t rotate, uint32_t rows)
+static cudaError_t SparkDsv4ModuleRunCompressor(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, cudaStream_t stream, const SparkDsv4CompressorWeights *weights, float *kv_state, float *score_state, uint64_t state_stride, void *cache_base, uint64_t cache_lane_stride, uint64_t cache_slot_offset, uint32_t cache_width, uint32_t rotate, uint32_t rows)
 {
-	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	uint32_t channels,overlapped;
 	uint64_t ratio = weights->ratio;
 	cudaError_t error;
@@ -2158,9 +2161,8 @@ static cudaError_t SparkDsv4ModuleRunCompressor(SparkDsv4ModuleState *state, Spa
 	return(error);
 }
 
-static cudaError_t SparkDsv4ModuleRunIndexer(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4LayerWeights *layer, uint32_t layer_index, uint32_t rows)
+static cudaError_t SparkDsv4ModuleRunIndexer(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, cudaStream_t stream, const SparkDsv4LayerWeights *layer, uint32_t layer_index, uint32_t rows)
 {
-	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	void *index_cache = (uint8_t *)state->index_cache_bf16 +
 		state->index_cache_offset_by_layer[layer_index] *
 		SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
@@ -2182,7 +2184,7 @@ static cudaError_t SparkDsv4ModuleRunIndexer(SparkDsv4ModuleState *state, SparkD
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchWiden(stream,slot->index_weights_bf16,slot->index_weights_f32,rows,SPARK_DSV4_MODEL_INDEX_HEAD_COUNT,weight_scale);
 	if ( error == cudaSuccess )
-		error = SparkDsv4ModuleRunCompressor(state,slot,&layer->indexer.compressor,kv_state,score_state,state->index_state_lane_stride,index_cache,state->index_lane_stride,0u,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION,1u,rows);
+		error = SparkDsv4ModuleRunCompressor(state,slot,stream,&layer->indexer.compressor,kv_state,score_state,state->index_state_lane_stride,index_cache,state->index_lane_stride,0u,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION,1u,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchIndexerScore(stream,slot->index_q_bf16,index_cache,state->index_lane_stride,slot->row_page_table_indices,slot->physical_page_table,state->paged_cache.lane_page_capacity,SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS / SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO,slot->slot_counts,slot->index_weights_f32,slot->index_scores_f32,rows,state->index_slot_capacity,SPARK_DSV4_MODEL_INDEX_HEAD_COUNT,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION);
 	if ( error == cudaSuccess )
@@ -2190,9 +2192,9 @@ static cudaError_t SparkDsv4ModuleRunIndexer(SparkDsv4ModuleState *state, SparkD
 	return(error);
 }
 
-static cudaError_t SparkDsv4ModuleStageTopk(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, uint32_t layer_kind, uint32_t rows)
+static cudaError_t SparkDsv4ModuleStageTopk(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, cudaStream_t stream, uint32_t layer_kind, uint32_t rows)
 {
-	return(SparkDsv4LaunchBuildAttentionIndices((cudaStream_t)slot->cuda_stream,slot->row_positions,slot->topk_idxs,slot->slot_counts,rows,state->topk_column_count,state->index_slot_capacity,layer_kind));
+	return(SparkDsv4LaunchBuildAttentionIndices(stream,slot->row_positions,slot->topk_idxs,slot->slot_counts,rows,state->topk_column_count,state->index_slot_capacity,layer_kind));
 }
 
 /*
@@ -2327,21 +2329,19 @@ static cudaError_t SparkDsv4ModuleRunCausalAttention(SparkDsv4ModuleState *state
 	return(error);
 }
 
-static cudaError_t SparkDsv4ModuleRunAttention(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4LayerWeights *layer, const SparkDsv4PrefillBatchView *prefill, uint32_t layer_index, uint32_t rows)
+static cudaError_t SparkDsv4ModuleRunQueryRank(SparkDsv4ModuleSlot *slot, cudaStream_t stream, const SparkDsv4LayerWeights *layer, uint32_t rows)
 {
-	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
-	uint32_t kind = SparkDsv4ModelLayerKind(layer_index);
-	const float *freqs = kind == SPARK_DSV4_MODEL_LAYER_KIND_SWA ? state->base_freqs_f32 : state->compress_freqs_f32;
-	uint64_t state_offset = state->compress_state_offset_by_layer[layer_index];
-	uint64_t state_stride = state->compress_state_lane_stride_by_layer[layer_index];
-	void *cache = (uint8_t *)state->kv_cache_bf16 + state->cache_offset_by_layer[layer_index] * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
-	uint64_t lane_stride = state->cache_lane_stride_by_layer[layer_index];
 	cudaError_t error;
 	error = SparkDsv4LaunchLinear(stream,&layer->attn.wq_a,slot->normalized_bf16,slot->delta_bf16,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchRmsNorm(stream,slot->delta_bf16,layer->attn.q_norm_weight_bf16,slot->qr_bf16,rows,SPARK_DSV4_MODEL_QUERY_LORA_RANK,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
-	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchLinear(stream,&layer->attn.wq_b,slot->qr_bf16,slot->q_bf16,rows);
+	return(error);
+}
+
+static cudaError_t SparkDsv4ModuleRunQueryKv(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, cudaStream_t stream, const SparkDsv4LayerWeights *layer, const float *freqs, uint32_t rows)
+{
+	cudaError_t error;
+	error = SparkDsv4LaunchLinear(stream,&layer->attn.wq_b,slot->qr_bf16,slot->q_bf16,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchQueryHeadRms(stream,slot->q_bf16,rows,SparkDsv4ModuleTpQueryHeads(state),SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
@@ -2354,12 +2354,74 @@ static cudaError_t SparkDsv4ModuleRunAttention(SparkDsv4ModuleState *state, Spar
 		error = SparkDsv4LaunchRope(stream,slot->kv_bf16,freqs,slot->row_positions,rows,1u,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,0u);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchQuantSim(stream,slot->kv_bf16,rows,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION - SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,SPARK_DSV4_MODEL_KV_QUANT_BLOCK,0u);
-	if ( error == cudaSuccess && kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA )
-		error = SparkDsv4ModuleRunCompressor(state,slot,&layer->compressor,state->compress_kv_state_f32 + state_offset,state->compress_score_state_f32 + state->compress_score_state_offset_by_layer[layer_index],state_stride,cache,lane_stride,SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,rows);
+	return(error);
+}
+
+static cudaError_t SparkDsv4ModuleRunAttentionSerialPrologue(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4LayerWeights *layer, const float *freqs, uint32_t layer_index, uint32_t kind, void *cache, uint64_t lane_stride, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint64_t state_offset = state->compress_state_offset_by_layer[layer_index];
+	uint64_t state_stride = state->compress_state_lane_stride_by_layer[layer_index];
+	cudaError_t error;
+	error = SparkDsv4ModuleRunQueryRank(slot,stream,layer,rows);
 	if ( error == cudaSuccess )
-		error = SparkDsv4ModuleStageTopk(state,slot,kind,rows);
+		error = SparkDsv4ModuleRunQueryKv(state,slot,stream,layer,freqs,rows);
+	if ( error == cudaSuccess && kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA )
+		error = SparkDsv4ModuleRunCompressor(state,slot,stream,&layer->compressor,state->compress_kv_state_f32 + state_offset,state->compress_score_state_f32 + state->compress_score_state_offset_by_layer[layer_index],state_stride,cache,lane_stride,SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,rows);
+	if ( error == cudaSuccess )
+		error = SparkDsv4ModuleStageTopk(state,slot,stream,kind,rows);
 	if ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
-		error = SparkDsv4ModuleRunIndexer(state,slot,layer,layer_index,rows);
+		error = SparkDsv4ModuleRunIndexer(state,slot,stream,layer,layer_index,rows);
+	return(error);
+}
+
+static cudaError_t SparkDsv4ModuleRunAttentionOverlap(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4LayerWeights *layer, const float *freqs, uint32_t layer_index, uint32_t kind, void *cache, uint64_t lane_stride, uint32_t rows)
+{
+	SparkStageModuleCudaFork *fork = &slot->attention_fork;
+	cudaStream_t primary = (cudaStream_t)slot->cuda_stream;
+	cudaStream_t auxiliary = fork->auxiliary_stream;
+	uint64_t state_offset = state->compress_state_offset_by_layer[layer_index];
+	uint64_t state_stride = state->compress_state_lane_stride_by_layer[layer_index];
+	cudaError_t error;
+	error = cudaEventRecord(fork->fork_event,primary);
+	if ( error == cudaSuccess )
+		error = cudaStreamWaitEvent(auxiliary,fork->fork_event,0u);
+	if ( error == cudaSuccess )
+		error = SparkDsv4ModuleRunCompressor(state,slot,auxiliary,&layer->compressor,state->compress_kv_state_f32 + state_offset,state->compress_score_state_f32 + state->compress_score_state_offset_by_layer[layer_index],state_stride,cache,lane_stride,SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,rows);
+	if ( error == cudaSuccess )
+		error = SparkDsv4ModuleStageTopk(state,slot,auxiliary,kind,rows);
+	if ( error == cudaSuccess )
+		error = SparkDsv4ModuleRunQueryRank(slot,primary,layer,rows);
+	if ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
+		error = cudaEventRecord(fork->milestone_event,primary);
+	if ( error == cudaSuccess )
+		error = SparkDsv4ModuleRunQueryKv(state,slot,primary,layer,freqs,rows);
+	if ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
+		error = cudaStreamWaitEvent(auxiliary,fork->milestone_event,0u);
+	if ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
+		error = SparkDsv4ModuleRunIndexer(state,slot,auxiliary,layer,layer_index,rows);
+	if ( error == cudaSuccess )
+		error = cudaEventRecord(fork->join_event,auxiliary);
+	if ( error == cudaSuccess )
+		error = cudaStreamWaitEvent(primary,fork->join_event,0u);
+	return(error);
+}
+
+static cudaError_t SparkDsv4ModuleRunAttention(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4LayerWeights *layer, const SparkDsv4PrefillBatchView *prefill, uint32_t layer_index, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint32_t kind = SparkDsv4ModelLayerKind(layer_index);
+	const float *freqs = kind == SPARK_DSV4_MODEL_LAYER_KIND_SWA ? state->base_freqs_f32 : state->compress_freqs_f32;
+	void *cache = (uint8_t *)state->kv_cache_bf16 + state->cache_offset_by_layer[layer_index] * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	uint64_t lane_stride = state->cache_lane_stride_by_layer[layer_index];
+	cudaError_t error;
+	if ( state->tp_degree > 1u && kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA &&
+		slot->attention_fork.auxiliary_stream != 0 )
+		error = SparkDsv4ModuleRunAttentionOverlap(state,slot,layer,freqs,
+			layer_index,kind,cache,lane_stride,rows);
+	else
+		error = SparkDsv4ModuleRunAttentionSerialPrologue(state,slot,layer,freqs,
+			layer_index,kind,cache,lane_stride,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4ModuleRunCausalAttention(state,slot,prefill,cache,lane_stride,layer->attn.sink_f32,kind,rows);
 	if ( error == cudaSuccess )
@@ -3760,7 +3822,7 @@ static SparkStatus SparkDsv4ModuleFinishCachePages(
 	return(result);
 }
 
-static void CUDART_CB SparkDsv4ModuleCompleteAsync(void *context)
+static void SparkDsv4ModuleCompleteAsync(void *context)
 {
 	SparkDsv4AsyncCompletion *async;
 	SparkDsv4ModuleState *state;
@@ -4532,6 +4594,9 @@ void SparkDsv4ResidentDecodeStageDestroy(void *module_state)
 	state->tp_graph_islands = 0;
 	state->tp_graph_island_count = 0u;
 	state->tp_graphs_sealed = 0u;
+	for (slot_index=0u; slot_index<state->pipeline_slot_count; slot_index++)
+		SparkStageModuleCudaForkDestroy(
+			&state->slots[slot_index].attention_fork);
 	if ( state->cache_mutex_initialized != 0u &&
 		pthread_mutex_lock(&state->cache_mutex) == 0 )
 	{

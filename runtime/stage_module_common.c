@@ -157,6 +157,66 @@ SparkStatus SparkStageModuleCudaStatus(
     return SPARK_STATUS_INTERNAL_ERROR;
 }
 
+void SparkStageModuleCudaForkDestroy(SparkStageModuleCudaFork *fork)
+{
+    if (fork == 0)
+    {
+        return;
+    }
+    if (fork->join_event != 0)
+    {
+        (void)cudaEventDestroy(fork->join_event);
+    }
+    if (fork->milestone_event != 0)
+    {
+        (void)cudaEventDestroy(fork->milestone_event);
+    }
+    if (fork->fork_event != 0)
+    {
+        (void)cudaEventDestroy(fork->fork_event);
+    }
+    if (fork->auxiliary_stream != 0)
+    {
+        (void)cudaStreamDestroy(fork->auxiliary_stream);
+    }
+    memset(fork, 0, sizeof(*fork));
+}
+
+SparkStatus SparkStageModuleCudaForkInitialize(
+    const char *module_tag,
+    SparkStageModuleCudaFork *fork)
+{
+    cudaError_t error;
+    if (module_tag == 0 || module_tag[0] == '\0' || fork == 0 ||
+        fork->auxiliary_stream != 0 || fork->fork_event != 0 ||
+        fork->milestone_event != 0 || fork->join_event != 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    error = cudaStreamCreateWithFlags(
+        &fork->auxiliary_stream, cudaStreamNonBlocking);
+    if (error == cudaSuccess)
+    {
+        error = cudaEventCreateWithFlags(
+            &fork->fork_event, cudaEventDisableTiming);
+    }
+    if (error == cudaSuccess)
+    {
+        error = cudaEventCreateWithFlags(
+            &fork->milestone_event, cudaEventDisableTiming);
+    }
+    if (error == cudaSuccess)
+    {
+        error = cudaEventCreateWithFlags(
+            &fork->join_event, cudaEventDisableTiming);
+    }
+    if (error != cudaSuccess)
+    {
+        SparkStageModuleCudaForkDestroy(fork);
+    }
+    return SparkStageModuleCudaStatus(module_tag, error, "cuda_fork_initialize");
+}
+
 SparkStatus SparkStageModuleEnvironmentText(
     const char *module_tag,
     const char *name,

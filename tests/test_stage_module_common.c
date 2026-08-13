@@ -257,6 +257,24 @@ static void SparkTestAllocationLedgerAccountsAndReleases(void)
     assert(ledger.device_bytes_resident == 0u);
 }
 
+static void SparkTestCudaForkOwnsReusableResources(void)
+{
+    SparkStageModuleCudaFork fork = {0};
+    assert(SparkStageModuleCudaForkInitialize(
+               "stage_common_test", &fork) == SPARK_STATUS_OK);
+    assert(fork.auxiliary_stream != 0);
+    assert(fork.fork_event != 0);
+    assert(fork.milestone_event != 0);
+    assert(fork.join_event != 0);
+    assert(SparkStageModuleCudaForkInitialize(
+               "stage_common_test", &fork) == SPARK_STATUS_INVALID_ARGUMENT);
+    SparkStageModuleCudaForkDestroy(&fork);
+    assert(fork.auxiliary_stream == 0);
+    assert(fork.fork_event == 0);
+    assert(fork.milestone_event == 0);
+    assert(fork.join_event == 0);
+}
+
 int main(void)
 {
     SparkTestFailedIndexSetClaimPreservesForeignOwnership();
@@ -265,5 +283,6 @@ int main(void)
     SparkTestClaimedPrepareOwnsAndUnwindsIndices();
     SparkTestCompletionHoldsClaimsThroughCallback();
     SparkTestAllocationLedgerAccountsAndReleases();
+    SparkTestCudaForkOwnsReusableResources();
     return 0;
 }
