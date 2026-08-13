@@ -103,6 +103,7 @@ def main() -> None:
 	require(module, "kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA", "CSA indexer dispatch")
 	require(module, "kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA", "compressed attention dispatch")
 	require(module, "SparkDsv4LaunchSparseAttn", "sparse attention execution")
+	require(cuda, "SparkDsv4SparseAttnMergeKernel", "split-KV sparse attention merge")
 	require(module, "SparkDsv4LaunchHcSplitSinkhorn", "inference mHC Sinkhorn")
 	require(module, "SparkDsv4LaunchHcMixSplitKSinkhorn", "split-K inference mHC")
 	require(module, "metadata_rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT", "frame-sized metadata ownership")
