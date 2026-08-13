@@ -169,8 +169,8 @@ def main() -> int:
     forbid(moe, "SparkDsv4LaunchMoePairReduceStrided",
            "diagonal routed rank-row write")
     shared = body(module, "SparkDsv4ModuleRunMoeShared")
-    require(shared, "SparkDsv4LaunchLinear(stream,&moe->shared_w2",
-            "column-parallel shared-W2 full-hidden partial")
+    require(shared, "SparkDsv4LaunchExpertLinear(stream,&moe->shared_w2",
+            "column-parallel expert-codec shared-W2 full-hidden partial")
     forbid(moe, "state->tp_rank * hidden_dimension",
            "diagonal shared-W2 rank-row write")
     require(moe, "SparkStageModuleCudaForkBegin",
@@ -207,15 +207,23 @@ def main() -> int:
     require(down, "SparkLmHostLaunchSm121ExpertW2", "native routed W2 launcher")
     forbid(down, "LmGemmWeightOnlyLaunch", "BF16-dequant routed W2 launch")
 
-    dense = body(dsv4, "SparkDsv4LaunchLinear")
+    dense = body(dsv4, "SparkDsv4LaunchLinearCodec")
     require(dense, "SparkLmHostLaunchSm121DecodeLinear", "shape-aware dense route")
+    require(body(dsv4, "SparkDsv4LaunchLinear"),
+            "SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC",
+            "BF16 spine activation specialization")
+    require(body(dsv4, "SparkDsv4LaunchExpertLinear"),
+            "SPARK_DSV4_MODEL_EXPERT_ACTIVATION_CODEC",
+            "expert activation specialization")
     dense_dispatch = body(common, "SparkLmHostLaunchSm121DecodeLinear")
     require(dense_dispatch, "if ( row_count == 1u )", "true-B1 dispatch")
     require(dense_dispatch, "SparkLmHostLaunchBatchedLinear", "B1 GEMV route")
     require(dense_dispatch, "SparkLmHostLaunchSm121NativeLinear", "B8/B1024 native route")
     scalar_dispatch = body(common, "SparkLmHostLaunchBatchedLinear")
-    require(scalar_dispatch, "SPARK_LM_SCALAR_NEURONS_PER_WARP",
-            "scalar projection activation reuse")
+    require(scalar_dispatch, "SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC>",
+            "measured one-neuron B1 projection route")
+    forbid(scalar_dispatch, "SPARK_LM_SCALAR_NEURONS_PER_WARP",
+           "slower multi-neuron scalar projection route")
     dense_w13_dispatch = body(common, "SparkLmHostLaunchSm121FusedDenseW13")
     require(dense_w13_dispatch, "if ( row_count == 1u )",
             "true-B1 shared W13 dispatch")
@@ -231,8 +239,11 @@ def main() -> int:
     require(strided_dispatch, "SparkLmStridedLinearKernel", "B1 strided GEMV route")
     require(strided_dispatch, "SparkLmHostLaunchSm121NativeLinear",
             "B8/B1024 native strided route")
-    require(strided_dispatch, "SPARK_LM_SCALAR_NEURONS_PER_WARP",
-            "scalar strided activation reuse")
+    require(strided_dispatch,
+            "SparkLmStridedLinearKernel<GROUP_SIZE,ACTIVATION_CODEC>",
+            "measured one-neuron strided B1 route")
+    forbid(strided_dispatch, "SPARK_LM_SCALAR_NEURONS_PER_WARP",
+           "slower multi-neuron scalar strided route")
     head = body(dsv4, "SparkDsv4LaunchHeadScreenedArgmax")
     require(head, "SparkDsv4RequireNativeDecodeShape(row_count)",
             "screened-head exact-shape/native-device gate")

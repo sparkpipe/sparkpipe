@@ -88,6 +88,7 @@ def main() -> None:
 	validator = read("modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu")
 	validator_script = read("modules/dsv4_resident_decode_stage/validation/validate_dsv4_resident_decode_stage_cuda.sh")
 	module_makefile = read("modules/dsv4_resident_decode_stage/Makefile")
+	root_makefile = read("Makefile")
 	fixture_verifier = read("tools/verify_dsv4_ga_reference_fixture.py")
 	fixture_generator = read("tools/generate_dsv4_ga_reference_fixture.sh")
 	driver_smoke = read("tools/sparkpipe_dsv4_driver_cuda_smoke.c")
@@ -350,6 +351,10 @@ def main() -> None:
 	require(module_makefile, "SPARK_DSV4_REFERENCE_MANIFEST_SHA256=$(DSV4_GA_STAGE0_REFERENCE_MANIFEST_SHA256)", "reference digest runtime configuration")
 	require(module_makefile, "SPARK_DSV4_CUDA_VALIDATOR_SHA256=$(DSV4_CUDA_VALIDATOR_SHA256)", "CUDA validator digest configuration")
 	require(module_makefile, "SPARK_DSV4_REFERENCE_VERIFIER_SHA256=$(DSV4_REFERENCE_VERIFIER_SHA256)", "reference verifier digest configuration")
+	require(root_makefile, "DSV4_MODEL_HEADER := model-families/dsv4/include/sparkpipe/spark_dsv4_model.h", "DSV4 generated-header dependency")
+	for target in ("DSV4_SERVING_ADAPTER", "DSV4_TP16_SERVING_ADAPTER", "DSV4_TP4_SERVING_ADAPTER", "DSV4_TP4_B1_SERVING_ADAPTER", "DSV4_TP4_PP4_SERVING_ADAPTER", "DSV4_TP4_PP4_B1_SERVING_ADAPTER", "TEST_DSV4_SERVING_DRIVER_MODULE", "TEST_DSV4_TP16_SERVING_DRIVER_MODULE", "TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE"):
+		rule = next(line for line in root_makefile.splitlines() if line.startswith(f"$({target}):"))
+		require(rule, "$(DSV4_MODEL_HEADER)", f"{target} generated-header rebuild dependency")
 	require(validator_script, 'require_source_digest "${SPARK_DSV4_CUDA_VALIDATOR_SHA256:-}"', "CUDA validator source binding")
 	require(validator_script, 'require_source_digest "${SPARK_DSV4_REFERENCE_VERIFIER_SHA256:-}"', "reference verifier source binding")
 	digest_line = next(line for line in module_makefile.splitlines() if line.startswith("override DSV4_GA_STAGE0_REFERENCE_MANIFEST_SHA256 :="))
