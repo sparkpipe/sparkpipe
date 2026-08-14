@@ -117,6 +117,7 @@ static void TestQwen36ServingDecodeSubmission(
 	submission->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	submission->descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
 	submission->work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission->tokens_per_sequence = 1u;
 	submission->submission_id = 77u;
 	submission->request_id = 9u;
 	submission->sequence_id = 100u;

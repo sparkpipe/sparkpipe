@@ -8,10 +8,11 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 11u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 12u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
+#define SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS 0x00000001u
 #define SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS 0x00000002u
 
@@ -116,6 +117,7 @@ typedef struct SparkModelDriverCompletion
     uint32_t accepted_token_count;
     uint32_t completion_flags;
     uint32_t token_count;
+    uint32_t tokens_per_sequence;
     uint32_t token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
     uint32_t draft_token_count;
     uint32_t draft_token_ids[SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY];
@@ -148,7 +150,7 @@ typedef struct SparkModelDriverFrame
     void *execution_stream;
     SparkModelDriverBuffer *buffers;
     uint32_t buffer_count;
-    uint32_t reserved;
+    uint32_t tokens_per_sequence;
     uint32_t cache_lane_count;
     uint32_t reserved1;
     const SparkModelDriverCacheLane *cache_lanes;

@@ -68,6 +68,10 @@ def main() -> int:
             "cvt.rn.f16x2.e2m1x2", "packed E2M1 conversion")
     require(body(common, "SparkLmDecodeE4m3x4Half2"),
             "cvt.rn.f16x2.e4m3x2", "packed E4M3 conversion")
+    require(body(common, "SparkLmDotRowFp8"), "packed = __ldcs(",
+            "streaming immutable FP8 payload load")
+    if common.count("__ldcs(") != 1:
+        raise AssertionError("streaming cache policy must stay limited to SparkLmDotRowFp8")
 
     shape = body(common, "SparkLmSm121NativeDecodeShape")
     require(shape, "rows == 1u || rows == 8u || rows == 1024u", "exact decode buckets")
@@ -83,6 +87,11 @@ def main() -> int:
             "shared W13 tile policy")
     require(route_launch, "SparkLmSm121ExpertW2TileN(rows)",
             "shared W2 tile policy")
+    require(common, "#define SPARK_LM_SM121_B1_EXPERT_W2_TILE_N 128u",
+            "measured B1 W2 N128 tile")
+    require(common,
+            "#define SPARK_LM_SM121_B1_EXPERT_W2_BLOCKS_PER_SM 4u",
+            "measured B1 W2 four-CTA occupancy")
 
     fused = body(common, "SparkLmSm121FusedExpertW13Kernel")
     if fused.count("SparkLmSm121StageMxf8<TILE_M>(") != 1:
@@ -195,7 +204,9 @@ def main() -> int:
     require(expert_host, "SPARK_LM_SM121_B1_EXPERT_W13_TILE_N",
             "B1 W13 N32 tile")
     require(w2_host, "if ( rows == 1u )", "true-B1 routed W2 dispatch")
-    require(w2_host, "SPARK_LM_SM121_B1_EXPERT_W2_TILE_N", "B1 W2 N64 tile")
+    require(w2_host, "SPARK_LM_SM121_B1_EXPERT_W2_TILE_N", "B1 W2 N128 tile")
+    require(w2_host, "SPARK_LM_SM121_B1_EXPERT_W2_BLOCKS_PER_SM",
+            "B1 W2 four-CTA launch")
 
     up = body(dsv4, "SparkDsv4LaunchExpertUp")
     require(up, "return(cudaErrorInvalidValue);", "retired split-up fail closed")

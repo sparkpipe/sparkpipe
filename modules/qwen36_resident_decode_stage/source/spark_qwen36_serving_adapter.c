@@ -776,6 +776,7 @@ static void SparkQwen36ServingBuildFrame(
 	frame->deadline_time_ns = submission->deadline_time_ns;
 	frame->active_slot_count = prefill != 0u ? 1u : submission->active_sequence_count;
 	frame->new_token_count = frame_rows;
+	frame->tokens_per_sequence = submission->tokens_per_sequence;
 	frame->priority = submission->priority;
 	frame->flags = prefill != 0u ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : 0u;
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
@@ -883,6 +884,7 @@ static void SparkQwen36ServingComplete(
 	completion.service_time_ns = pending->service_time_ns;
 	if ( state->stage_index + 1u == SPARK_QWEN36_SERVING_STAGE_COUNT && status == SPARK_STATUS_OK )
 	{
+		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->active_sequence_count;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 		for (index=0u; index<completion.token_count; index++)

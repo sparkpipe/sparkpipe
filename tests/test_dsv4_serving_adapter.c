@@ -148,6 +148,7 @@ int main(void)
 	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.tokens_per_sequence = 1u;
 	submission.submission_id = 77u;
 	submission.request_id = 9u;
 	submission.sequence_id = 100u;
@@ -312,6 +313,7 @@ int main(void)
 	lanes[0].flags = 0u;
 	lanes[1].flags = 0u;
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
+	submission.tokens_per_sequence = 0u;
 	submission.submission_id = 82u;
 	submission.transaction_id = 1082u;
 	submission.dispatch_generation = 2082u;

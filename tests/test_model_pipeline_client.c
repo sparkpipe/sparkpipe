@@ -465,6 +465,7 @@ static void TestModelPipelineBuildSubmission(
 	submission->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	submission->descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
 	submission->work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission->tokens_per_sequence = 1u;
 	submission->submission_id = submission_id;
 	submission->request_id = 9u;
 	submission->sequence_id = 100u;
@@ -517,6 +518,7 @@ static void TestModelPipelineBuildPrefill(
 	submission->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	submission->descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
 	submission->work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission->tokens_per_sequence = 1u;
 	submission->submission_id = submission_id;
 	submission->request_id = 10u;
 	submission->sequence_id = 200u;

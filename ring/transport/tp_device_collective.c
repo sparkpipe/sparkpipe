@@ -1087,6 +1087,7 @@ static SparkStatus SparkTpDeviceCollectiveBuildOperationPackets(
     SparkHiddenTransportPacket *receive_packet)
 {
     const SparkTpDeviceCollectiveCreditBinding *binding;
+    const SparkTpDeviceCollectiveCreditBinding *send_binding;
     SparkStatus status;
 
     if (operation->algorithm_kind ==
@@ -1094,7 +1095,10 @@ static SparkStatus SparkTpDeviceCollectiveBuildOperationPackets(
         return SparkTpDeviceCollectiveBuildRingPackets(
             implementation,operation,step_index,send_packet,receive_packet);
     binding = &implementation->bindings[step_index][operation->credit_index];
-    status = SparkTpDeviceCollectiveBuildPacket(binding->send_transport,
+    send_binding = operation->algorithm_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_KIND ?
+        &implementation->bindings[0u][operation->credit_index] : binding;
+    status = SparkTpDeviceCollectiveBuildPacket(send_binding->send_transport,
         operation->active_sequence_count,
         SparkTpDeviceCollectiveOperationHiddenDimension(
             implementation,operation,step_index),
@@ -1277,22 +1281,15 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueDirectAllToAllSendPack(
     uint64_t width)
 {
     const SparkTpDeviceCollectiveCreditBinding *binding;
-    SparkStatus status;
-    uint32_t route_index;
 
-    for (route_index=0u;
-         route_index<SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_PEER_COUNT;
-         route_index++)
-    {
-        binding = &implementation->bindings[route_index]
-            [operation->credit_index];
-        status = SparkTpDeviceCollectivePackSendRows(
-            implementation->collective,binding,source,source_pitch,width,
-            width,operation->active_sequence_count,operation->cuda_stream);
-        if (status != SPARK_STATUS_OK)
-            return status;
-    }
-    return SPARK_STATUS_OK;
+    /* Direct all-to-all sends identical immutable bytes to every peer. The
+     * operation owns its credit until every send completion arrives, so one
+     * canonical packed slot can safely back all three transport sessions.
+     * Recursive and split-ring paths retain their route-local bindings. */
+    binding = &implementation->bindings[0u][operation->credit_index];
+    return SparkTpDeviceCollectivePackSendRows(
+        implementation->collective,binding,source,source_pitch,width,width,
+        operation->active_sequence_count,operation->cuda_stream);
 }
 
 static SparkStatus SparkTpDeviceCollectiveEnqueueLocalPlacement(

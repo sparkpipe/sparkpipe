@@ -216,9 +216,20 @@ static void TestSubmissionRoundTrip(void)
 static void TestContinuationLease(void)
 {
 	SparkModelContinuationLease leases[2];
+	uint64_t next_sequence_position;
 	uint32_t order[2] = {1u,0u};
 	uint32_t index;
 	memset(leases,0,sizeof(leases));
+	assert(SparkModelContinuationLeaseDecodePosition(41u,1u,
+		&next_sequence_position) == SPARK_STATUS_OK);
+	assert(next_sequence_position == 41u);
+	assert(SparkModelContinuationLeaseDecodePosition(41u,8u,
+		&next_sequence_position) == SPARK_STATUS_OK);
+	assert(next_sequence_position == 48u);
+	assert(SparkModelContinuationLeaseDecodePosition(41u,0u,
+		&next_sequence_position) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelContinuationLeaseDecodePosition(UINT64_MAX,2u,
+		&next_sequence_position) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	assert(SparkModelContinuationLeaseIsActive(&leases[0]) == 0u);
 	assert(SparkModelContinuationLeaseEstablish(&leases[0],7u,3u,41u,11u) ==
 		SPARK_STATUS_OK);

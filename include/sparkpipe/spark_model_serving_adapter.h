@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 19u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 20u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -21,6 +21,8 @@ extern "C" {
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT 65536u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT \
 	SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT
+#define SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE \
+	SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT 64u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT 16384u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_TOKEN_COUNT 256u
@@ -65,6 +67,8 @@ extern "C" {
 	UINT32_C(0x00000800)
 #define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE \
 	UINT32_C(0x00001000)
+#define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN \
+	UINT32_C(0x00002000)
 #define SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES \
 	(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | \
@@ -78,7 +82,8 @@ extern "C" {
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE)
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN)
 
 #define SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT 1u
 #define SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT 2u
@@ -191,6 +196,7 @@ typedef struct SparkModelServingSubmission
 	uint32_t lane_count;
 	uint32_t row_count;
 	uint32_t token_count;
+	uint32_t tokens_per_sequence;
 	uint32_t model_extension_kind;
 	uint32_t model_extension_bytes;
 	const SparkModelServingLane *lanes;
@@ -228,6 +234,7 @@ typedef struct SparkModelServingCompletion
 	SparkModelDriverResidencyToken residency;
 	uint32_t accepted_token_count;
 	uint32_t token_count;
+	uint32_t tokens_per_sequence;
 	uint32_t token_ids[SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT];
 	uint32_t model_extension_kind;
 	uint32_t model_extension_bytes;
@@ -421,6 +428,7 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 	uint32_t stage_index,
 	uint32_t work_kind,
 	uint32_t active_sequence_count,
+	uint32_t tokens_per_sequence,
 	const SparkModelDriverResidencyToken *expected_residency,
 	const SparkModelServingCompletion *completion);
 SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(

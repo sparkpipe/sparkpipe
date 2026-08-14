@@ -946,7 +946,7 @@ static SparkStatus SparkQwen36ModuleValidateFrame(
     SparkStatus status;
 
     if (state == 0 || frame == 0 || context_out == 0 ||
-        frame->program_id == 0u || frame->reserved != 0u ||
+        frame->program_id == 0u || frame->tokens_per_sequence != 1u ||
         (frame->flags & ~known_frame_flags) != 0u ||
         (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) != 0u ||
         frame->new_token_count == 0u)

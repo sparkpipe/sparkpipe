@@ -21,6 +21,7 @@ typedef struct SparkModelPipelineTransaction
 	uint32_t work_kind;
 	uint32_t active_sequence_count;
 	uint32_t row_count;
+	uint32_t tokens_per_sequence;
 	uint32_t result_reported;
 	uint32_t status;
 	uint32_t result_mask;
@@ -129,6 +130,7 @@ static SparkModelPipelineTransaction *SparkModelPipelineClientReserve(
 			transaction->work_kind = submission->work_kind;
 			transaction->active_sequence_count = submission->active_sequence_count;
 			transaction->row_count = submission->row_count;
+			transaction->tokens_per_sequence = submission->tokens_per_sequence;
 			transaction->lane_count = submission->active_sequence_count;
 			transaction->status = SPARK_STATUS_OK;
 			if ( pipeline->stage_completion_function != 0 )
@@ -244,6 +246,7 @@ static SparkStatus SparkModelPipelineClientUpdateLeases(
 	SparkModelPipelineLeaseSlot *slot;
 	SparkModelServingLane *lanes;
 	SparkStatus status;
+	uint64_t next_sequence_position;
 	uint32_t lane;
 	if ( (pipeline->adapter_descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) == 0u )
@@ -263,9 +266,19 @@ static SparkStatus SparkModelPipelineClientUpdateLeases(
 		slot->request_id = lanes[lane].request_id;
 		slot->request_generation = lanes[lane].request_generation;
 		slot->sequence_id = lanes[lane].sequence_id;
+		next_sequence_position = lanes[lane].context_token_count;
+		if ( transaction->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+		{
+			status = SparkModelContinuationLeaseDecodePosition(
+				lanes[lane].context_token_count,
+				transaction->tokens_per_sequence,&next_sequence_position);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+		}
 		status = SparkModelContinuationLeaseEstablish(&slot->lease,
 			pipeline->lease_generation,transaction->control_generation,
-			lanes[lane].context_token_count,lanes[lane].step_generation);
+			next_sequence_position,
+			lanes[lane].step_generation);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
@@ -489,7 +502,7 @@ static SparkStatus SparkModelPipelineClientValidateRankCompletion(
 	uint32_t stage_index,
 	const SparkModelServingCompletion *completion)
 {
-	return(SparkModelServingAdapterValidateStageCompletion(pipeline->adapter_descriptor,stage_index,transaction->work_kind,transaction->active_sequence_count,&transaction->residency,completion));
+	return(SparkModelServingAdapterValidateStageCompletion(pipeline->adapter_descriptor,stage_index,transaction->work_kind,transaction->active_sequence_count,transaction->tokens_per_sequence,&transaction->residency,completion));
 }
 
 static void SparkModelPipelineClientReportStageCompletion(

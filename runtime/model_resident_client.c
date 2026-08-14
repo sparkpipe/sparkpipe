@@ -36,7 +36,7 @@ typedef struct SparkModelResidentClientPending
 	uint32_t decision_result_received;
 	uint32_t work_kind;
 	uint32_t active_sequence_count;
-	uint32_t reserved0;
+	uint32_t tokens_per_sequence;
 	uint64_t message_id;
 	uint64_t decision_message_id;
 	uint64_t submission_id;
@@ -459,6 +459,7 @@ static SparkModelResidentClientPending *SparkModelResidentClientReservePending(
 				pending->requires_decision = requires_decision;
 				pending->work_kind = submission->work_kind;
 				pending->active_sequence_count = submission->active_sequence_count;
+				pending->tokens_per_sequence = submission->tokens_per_sequence;
 			pending->submission_id = submission->submission_id;
 			pending->request_id = submission->request_id;
 			pending->sequence_id = submission->sequence_id;
@@ -777,7 +778,7 @@ static SparkStatus SparkModelResidentClientProcessCompletion(
 	pending = SparkModelResidentClientFindPending(client,completion.submission_id);
 	if ( pending == 0 || pending->committed == 0u )
 		return(SPARK_STATUS_NOT_FOUND);
-	status = SparkModelServingAdapterValidateStageCompletion(client->adapter_descriptor,client->stage_index,pending->work_kind,pending->active_sequence_count,&pending->residency,&completion);
+	status = SparkModelServingAdapterValidateStageCompletion(client->adapter_descriptor,client->stage_index,pending->work_kind,pending->active_sequence_count,pending->tokens_per_sequence,&pending->residency,&completion);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( ((const SparkModelResidentIpcHeader *)message)->message_id != pending->message_id || pending->request_id != completion.request_id || pending->sequence_id != completion.sequence_id || pending->sequence_position != completion.sequence_position || pending->control_generation != completion.control_generation || pending->transaction_id != completion.transaction_id || pending->dispatch_generation != completion.dispatch_generation || pending->request_generation != completion.request_generation || pending->step_generation != completion.step_generation )

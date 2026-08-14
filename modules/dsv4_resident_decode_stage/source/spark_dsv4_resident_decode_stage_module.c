@@ -137,6 +137,7 @@ struct SparkDsv4ModuleSlot
 	uint32_t *host_initialize_parent_page_indices;
 	uint32_t *input_token_ids;
 	uint32_t *output_token_ids;
+	uint32_t *resident_token_ids;
 	uint32_t *prefill_emit_rows_u32;
 	uint32_t *row_lane_indices;
 	uint32_t *row_page_table_indices;
@@ -211,10 +212,12 @@ typedef struct SparkDsv4AsyncCompletion
 	uint32_t prepared_cache_lane_count;
 	uint32_t aborted_cache_lane_count;
 	uint32_t prepared_cache_admission_index;
+	uint32_t tokens_per_sequence;
 	uint32_t lane_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_sequence_ids[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_next_positions[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkModelDriverCacheLane cache_lanes[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	SparkModelDriverCacheLane admission_cache_lanes[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkModelDriverAdmissionRequest cache_admission;
 	SparkDsv4PagedCacheLane prepared_cache_lanes[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t *output_token_destination;
@@ -435,6 +438,7 @@ extern cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const 
 extern cudaError_t SparkDsv4LaunchHeadScreenedArgmaxSharded(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkDsv4LaunchHeadMaxlocPack(cudaStream_t stream, const float *scores, const uint32_t *token_ids, uint64_t *maxloc, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchHeadMaxlocUnpack(cudaStream_t stream, const uint64_t *maxloc, uint32_t *token_ids, uint32_t row_count);
+extern cudaError_t SparkDsv4LaunchResidentTokenFeedback(cudaStream_t stream, const uint32_t *output_token_ids, uint32_t *resident_token_ids, uint32_t *input_token_ids, uint64_t *row_positions, uint64_t *row_emit_positions, uint64_t *row_emit_positions_hca, uint32_t row_count, uint32_t tokens_per_sequence, uint32_t step_index, uint32_t advance);
 extern cudaError_t SparkDsv4LaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count);
 extern cudaError_t SparkDsv4LaunchGatherHeadRows(cudaStream_t stream, const void *source_bf16, const uint32_t *source_row_indices, void *destination_bf16, uint32_t row_count, uint32_t row_width);
 extern cudaError_t SparkDsv4LaunchScatterHeadTokens(cudaStream_t stream, const uint32_t *source, const uint32_t *destination_lane_indices, uint32_t *destination, uint32_t row_count);
@@ -1627,6 +1631,10 @@ static SparkStatus SparkDsv4ModuleAllocateSlotSmall(SparkDsv4ModuleState *state,
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)head_rows * sizeof(uint32_t),(void **)&slot->output_token_ids);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,
+			(uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT *
+			sizeof(uint32_t),(void **)&slot->resident_token_ids);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)head_rows * sizeof(uint32_t),(void **)&slot->prefill_emit_rows_u32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * sizeof(uint32_t),(void **)&slot->slot_counts);
@@ -1782,7 +1790,9 @@ static SparkStatus SparkDsv4ModuleValidateFrameShape(
 	const uint32_t known_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
 	uint32_t is_prefill;
 	if ( state == 0 || frame == 0 || is_prefill_out == 0 ||
-		frame->program_id == 0u || frame->reserved != 0u ||
+		frame->program_id == 0u || frame->tokens_per_sequence == 0u ||
+		frame->tokens_per_sequence >
+		SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE ||
 		frame->reserved1 != 0u ||
 		frame->execution_stream == 0 || frame->completion_function == 0 ||
 		(frame->flags & ~known_flags) != 0u ||
@@ -1797,6 +1807,13 @@ static SparkStatus SparkDsv4ModuleValidateFrameShape(
 		frame->new_token_count == 0u ||
 		frame->new_token_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT ||
 		(is_prefill == 0u && frame->new_token_count != frame->active_slot_count) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (is_prefill != 0u && frame->tokens_per_sequence != 1u) ||
+		(frame->active_slot_count >
+		 SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT /
+		 frame->tokens_per_sequence) ||
+		(frame->tokens_per_sequence > 1u &&
+		 (state->tp_degree <= 1u || state->pp_stage_count != 1u)) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree > 1u &&
 		(frame->active_slot_count != SPARK_BATCH_BUCKET ||
@@ -1933,7 +1950,8 @@ static SparkStatus SparkDsv4ModuleValidateTokenBuffers(
 	if ( state->owns_final_head == 0u )
 		return(SPARK_STATUS_OK);
 	output_index = 1u;
-	bytes = (uint64_t)frame->active_slot_count * sizeof(uint32_t);
+	bytes = (uint64_t)frame->active_slot_count *
+		frame->tokens_per_sequence * sizeof(uint32_t);
 	return(SparkModelDriverValidateBuffer(frame,output_index,1u,SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE,bytes));
 }
 
@@ -2410,6 +2428,8 @@ struct SparkDsv4TpFrameContinuation
 	uint32_t layer_index;
 	uint32_t side;
 	uint32_t active;
+	uint32_t chain_step_index;
+	uint32_t chain_step_count;
 };
 
 static void SparkDsv4ModuleTpCompletion(
@@ -3044,6 +3064,84 @@ static void SparkDsv4ModuleFinishContinuationTerminal(
 			enqueue_status);
 }
 
+static SparkStatus SparkDsv4ModuleValidateResidentChain(
+	const SparkDsv4TpFrameContinuation *continuation)
+{
+	const SparkDsv4AsyncCompletion *async;
+	const SparkModelDriverCacheLane *lane;
+	uint32_t index,last_position,slot_index;
+	if ( continuation->chain_step_count <= 1u )
+		return(SPARK_STATUS_OK);
+	slot_index = (uint32_t)(continuation->slot - continuation->state->slots);
+	async = &continuation->state->completions[slot_index];
+	if ( continuation->rows != async->lane_count ||
+		async->cache_lane_count != async->lane_count ||
+		async->prepared_cache_lane_count != async->lane_count )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	for (index=0u; index<async->lane_count; index++)
+	{
+		lane = &async->cache_lanes[index];
+		if ( lane->flags != 0u || lane->context_token_count !=
+			lane->sequence_position + 1u ||
+			lane->context_token_count > UINT32_MAX -
+			(continuation->chain_step_count - 1u) )
+			return(SPARK_STATUS_VALIDATION_FAILED);
+		last_position = lane->context_token_count +
+			continuation->chain_step_count - 2u;
+		if ( last_position >= continuation->state->max_sequence_positions ||
+			lane->sequence_position / SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS !=
+			last_position / SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS ||
+			async->prepared_cache_lanes[index].logical_page_count <=
+			last_position / SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS )
+			return(SPARK_STATUS_VALIDATION_FAILED);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDsv4ModuleRecordResidentToken(
+	SparkDsv4TpFrameContinuation *continuation,
+	uint32_t advance)
+{
+	SparkDsv4AsyncCompletion *async;
+	SparkDsv4ModuleSlot *slot;
+	cudaError_t error;
+	uint32_t index,slot_index;
+	slot = continuation->slot;
+	slot_index = (uint32_t)(slot - continuation->state->slots);
+	async = &continuation->state->completions[slot_index];
+	error = SparkDsv4LaunchResidentTokenFeedback(
+		(cudaStream_t)slot->cuda_stream,slot->output_token_ids,
+		slot->resident_token_ids,slot->input_token_ids,slot->row_positions,
+		slot->row_emit_positions,slot->row_emit_positions_hca,
+		continuation->rows,continuation->chain_step_count,
+		continuation->chain_step_index,advance);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+			"resident_token_feedback"));
+	if ( advance == 0u )
+		return(SPARK_STATUS_OK);
+	for (index=0u; index<async->lane_count; index++)
+	{
+		async->cache_lanes[index].context_token_count++;
+		async->lane_next_positions[index]++;
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDsv4ModuleContinueResidentChain(
+	SparkDsv4TpFrameContinuation *continuation)
+{
+	SparkStatus status;
+	status = SparkDsv4ModuleRecordResidentToken(continuation,1u);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	continuation->chain_step_index++;
+	continuation->layer_index = continuation->state->first_layer_index;
+	continuation->side = 0u;
+	continuation->input_streams_bf16 = continuation->slot->streams_bf16;
+	return(SparkDsv4ModuleStartLayers(continuation));
+}
+
 static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 {
 	SparkDsv4TpFrameContinuation *continuation;
@@ -3061,9 +3159,23 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 			(cudaStream_t)slot->cuda_stream,slot->head_maxloc_u64,
 			slot->output_token_ids,continuation->rows);
 	if ( error == cudaSuccess && status == SPARK_STATUS_OK &&
+		continuation->chain_step_count > 1u &&
+		continuation->chain_step_index + 1u <
+		continuation->chain_step_count )
+	{
+		status = SparkDsv4ModuleContinueResidentChain(continuation);
+		if ( status == SPARK_STATUS_OK )
+			return;
+	}
+	if ( error == cudaSuccess && status == SPARK_STATUS_OK &&
+		continuation->chain_step_count > 1u )
+		status = SparkDsv4ModuleRecordResidentToken(continuation,0u);
+	if ( error == cudaSuccess && status == SPARK_STATUS_OK &&
 		state->owns_final_head != 0u )
 		error = cudaMemcpyAsync(slot->host_output_token_ids,
-			slot->output_token_ids,(uint64_t)continuation->rows * sizeof(uint32_t),
+			continuation->chain_step_count > 1u ? slot->resident_token_ids :
+			slot->output_token_ids,(uint64_t)continuation->rows *
+			continuation->chain_step_count * sizeof(uint32_t),
 			cudaMemcpyDeviceToHost,(cudaStream_t)slot->cuda_stream);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
@@ -3661,7 +3773,12 @@ static SparkStatus SparkDsv4ModuleRunFrame(
 		continuation->rows = rows;
 		continuation->layer_index = state->first_layer_index;
 		continuation->active = 1u;
-		status = SparkDsv4ModuleStartLayers(continuation);
+		continuation->chain_step_count =
+			(frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u ?
+			frame->tokens_per_sequence : 1u;
+		status = SparkDsv4ModuleValidateResidentChain(continuation);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDsv4ModuleStartLayers(continuation);
 		if ( status != SPARK_STATUS_OK )
 			continuation->active = 0u;
 		else
@@ -3993,6 +4110,7 @@ static SparkStatus SparkDsv4ModulePrepareAsync(
 	async->lane_count = lane_count;
 	async->row_count = row_count;
 	async->emitted_token_count = emitted_token_count;
+	async->tokens_per_sequence = frame->tokens_per_sequence;
 	async->requires_prepared_cache_admission = frame->cache_lane_count != 0u ? 1u : 0u;
 	for (index=0u; index<lane_count; index++)
 	{
@@ -4003,8 +4121,11 @@ static SparkStatus SparkDsv4ModulePrepareAsync(
 	status = SparkDsv4ModuleCopyCacheLanes(async,frame,context);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	memcpy(async->admission_cache_lanes,async->cache_lanes,
+		(uint64_t)async->cache_lane_count *
+		sizeof(async->admission_cache_lanes[0]));
 	SparkDsv4ModuleBuildFrameCacheAdmission(frame,context,
-		async->cache_lanes,&async->cache_admission);
+		async->admission_cache_lanes,&async->cache_admission);
 	async->output_token_destination = state->owns_final_head != 0u ? (uint32_t *)frame->buffers[1u].address : 0;
 	async->completion.request_id = frame->request_id;
 	async->completion.sequence_id = frame->sequence_id;
@@ -4012,6 +4133,7 @@ static SparkStatus SparkDsv4ModulePrepareAsync(
 	async->completion.program_id = frame->program_id;
 	async->completion.driver_dispatch_slot = frame->driver_dispatch_slot;
 	async->completion.accepted_token_count = frame->new_token_count;
+	async->completion.tokens_per_sequence = frame->tokens_per_sequence;
 	async->completion.status = SPARK_STATUS_OK;
 	async->completion.residency = frame->residency;
 	async->completion.host_staging_bytes = (uint64_t)row_count * (sizeof(uint32_t) * (2u + state->owns_embedding) + sizeof(uint64_t) * 3u) + (uint64_t)lane_count * sizeof(uint32_t) * state->owns_final_head;
@@ -4319,7 +4441,10 @@ static void SparkDsv4ModuleCompleteAsync(void *context)
 	if ( async->completion.status == SPARK_STATUS_OK )
 	{
 		if ( async->output_token_destination != 0 )
-			memcpy(async->output_token_destination,state->slots[async->slot_index].host_output_token_ids,(uint64_t)async->lane_count * sizeof(uint32_t));
+			memcpy(async->output_token_destination,
+				state->slots[async->slot_index].host_output_token_ids,
+				(uint64_t)async->lane_count * async->tokens_per_sequence *
+				sizeof(uint32_t));
 		for (index=0u; index<async->lane_count; index++)
 		{
 			lane = async->lane_indices[index];
@@ -4420,7 +4545,7 @@ static SparkStatus SparkDsv4ModuleExecuteFrame(
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	lane_count = frame->active_slot_count;
 	row_count = frame->new_token_count;
-	emitted_token_count = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? context->prefill_batch->emit_count : lane_count;
+	emitted_token_count = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? context->prefill_batch->emit_count : lane_count * frame->tokens_per_sequence;
 	status = SparkDsv4ModuleCollectFrameLaneIndices(state,frame,context,lane_indices);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -4507,7 +4632,7 @@ static SparkStatus SparkDsv4ModuleValidateReleaseFrame(
 	uint32_t lane;
 	if ( state == 0 || frame == 0 ||
 		frame->flags != SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE ||
-		frame->program_id == 0u || frame->reserved != 0u ||
+		frame->program_id == 0u || frame->tokens_per_sequence != 0u ||
 		frame->reserved1 != 0u || frame->execution_stream == 0 ||
 		frame->completion_function == 0 || frame->active_slot_count == 0u ||
 		frame->active_slot_count > state->resident_sequence_capacity ||

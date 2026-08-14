@@ -9,8 +9,8 @@
 #define TEST_MODEL_SERVING_ADAPTER_MODULE_PATH ""
 #endif
 
-_Static_assert(SPARK_MODEL_DRIVER_ABI_VERSION == 11u,
-	"model-driver admission identity requires ABI 11");
+_Static_assert(SPARK_MODEL_DRIVER_ABI_VERSION == 12u,
+	"resident decode chaining requires model-driver ABI 12");
 
 static SparkStatus TestInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
@@ -349,6 +349,7 @@ static void TestSubmissionValidation(void)
 	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission.tokens_per_sequence = 1u;
 	submission.submission_id = 9u;
 	submission.request_id = 6u;
 	submission.sequence_id = 7u;
@@ -375,6 +376,7 @@ static void TestSubmissionValidation(void)
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	row_lane = 0u;
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
+	submission.tokens_per_sequence = 0u;
 	submission.row_count = 0u;
 	submission.token_count = 0u;
 	submission.new_token_count = 0u;
@@ -437,6 +439,7 @@ static void TestDriverCacheLaneMapping(void)
 	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.tokens_per_sequence = 1u;
 	submission.active_sequence_count = 2u;
 	submission.lane_count = 2u;
 	submission.lanes = serving_lanes;
@@ -508,6 +511,7 @@ static void TestRuntimeSubmissionValidation(void)
 	uint32_t token_ids[2],row_lanes[2];
 	uint64_t row_positions[2],row_sequences[2];
 	TestBuildDescriptor(&descriptor);
+	descriptor.max_output_token_count = 2u;
 	memset(&limits,0,sizeof(limits));
 	limits.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
@@ -540,6 +544,7 @@ static void TestRuntimeSubmissionValidation(void)
 	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.tokens_per_sequence = 1u;
 	submission.submission_id = 10u;
 	submission.request_id = 10u;
 	submission.sequence_id = 100u;
@@ -666,8 +671,10 @@ static void TestCompletionValidation(void)
 {
 	SparkModelServingAdapterDescriptor descriptor;
 	SparkModelServingCompletion completion;
+	SparkModelDriverResidencyToken residency;
 	TestBuildDescriptor(&descriptor);
 	memset(&completion,0,sizeof(completion));
+	memset(&residency,0,sizeof(residency));
 	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
 	completion.status = SPARK_STATUS_OK;
@@ -678,6 +685,7 @@ static void TestCompletionValidation(void)
 	completion.request_generation = 1u;
 	completion.step_generation = 4u;
 	completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
+	completion.tokens_per_sequence = 1u;
 	completion.token_count = 1u;
 	assert(SparkModelServingAdapterValidateCompletion(&descriptor,&completion) == SPARK_STATUS_OK);
 	completion.completion_flags = 0u;
@@ -685,6 +693,13 @@ static void TestCompletionValidation(void)
 	completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 	completion.token_count = 2u;
 	assert(SparkModelServingAdapterValidateCompletion(&descriptor,&completion) == SPARK_STATUS_INVALID_ARGUMENT);
+	completion.token_count = 1u;
+	assert(SparkModelServingAdapterValidateStageCompletion(&descriptor,12u,
+		SPARK_MODEL_SERVING_WORK_KIND_DECODE,1u,1u,&residency,
+		&completion) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterValidateStageCompletion(&descriptor,12u,
+		SPARK_MODEL_SERVING_WORK_KIND_DECODE,1u,0u,&residency,
+		&completion) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void TestDynamicLoader(void)

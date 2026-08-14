@@ -203,6 +203,7 @@ static void SparkDsv4RunnerTestPrefillMapping(void)
     dispatch.sequence_id = sequence;
     dispatch.active_sequence_count = 1u;
     dispatch.new_token_count = 1u;
+	dispatch.tokens_per_sequence = 1u;
     dispatch.row_count = 1u;
     dispatch.lane_count = 1u;
     dispatch.token_ids = &token_id;
@@ -298,6 +299,7 @@ static void SparkDsv4RunnerTestIntermediateTokenRouting(void)
 	dispatch.sequence_id = sequence;
 	dispatch.active_sequence_count = 1u;
 	dispatch.new_token_count = 1u;
+	dispatch.tokens_per_sequence = 1u;
 	dispatch.row_count = 1u;
 	dispatch.lane_count = 1u;
 	dispatch.token_ids = &token_id;
@@ -365,6 +367,7 @@ static void SparkDsv4RunnerTestRejectsNonFinalEmitRow(void)
 	dispatch.sequence_id = 1u;
 	dispatch.active_sequence_count = 1u;
 	dispatch.new_token_count = 2u;
+	dispatch.tokens_per_sequence = 1u;
 	dispatch.row_count = 2u;
 	dispatch.lane_count = 1u;
 	dispatch.token_ids = token_ids;

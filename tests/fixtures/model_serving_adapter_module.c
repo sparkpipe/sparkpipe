@@ -34,7 +34,7 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN,
 	.stage_count = 3u,
 	.layer_count = 7u,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -47,7 +47,7 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.max_active_sequence_count = 32u,
 	.max_input_row_count = 256u,
 	.max_resident_sequence_count = 256u,
-	.max_output_token_count = 32u,
+	.max_output_token_count = 256u,
 	.max_speculative_token_count = 0u,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE,
 	.adapter_id = "test.model.serving.adapter.v1",
@@ -164,7 +164,7 @@ static void TestModelServingBuildCompletion(
 	const SparkModelServingSubmission *submission,
 	SparkModelServingCompletion *completion)
 {
-	uint32_t lane;
+	uint32_t lane,step,token_index;
 	memset(completion,0,sizeof(*completion));
 	completion->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	completion->descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
@@ -186,9 +186,19 @@ static void TestModelServingBuildCompletion(
 	if ( state->stage_index + 1u != TestModelServingDescriptor.stage_count || submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE || submission->model_extension_kind == 88u )
 		return;
 	completion->completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
-	completion->token_count = submission->active_sequence_count;
-	for (lane=0u; lane<completion->token_count; lane++)
-		completion->token_ids[lane] = (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u ? (submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? 4203u : 4200u) + lane : 0u;
+	completion->tokens_per_sequence = submission->tokens_per_sequence;
+	completion->token_count = submission->active_sequence_count *
+		submission->tokens_per_sequence;
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+		for (step=0u; step<submission->tokens_per_sequence; step++)
+		{
+			token_index = lane * submission->tokens_per_sequence + step;
+			completion->token_ids[token_index] =
+				(submission->lanes[lane].flags &
+				 SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u ?
+				(submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ?
+				 4203u : 4200u) + lane + step : 0u;
+		}
 }
 
 static uint32_t TestModelServingPreparedIdentityMatches(

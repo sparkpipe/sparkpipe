@@ -379,7 +379,7 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 	SparkModelDriverCompletion completion;
 	const uint32_t *row_slots;
 	const uint64_t *row_sequences;
-	uint32_t *tokens,emit,lane,row,row_count;
+	uint32_t *tokens,emit,lane,row,row_count,step;
 	uint64_t hidden_bytes;
 	driver = (TestDsv4ServingDriver *)driver_instance;
 	if ( driver == 0 || frame == 0 )
@@ -387,7 +387,8 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 	{
 		if ( frame->flags != SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE ||
-			frame->new_token_count != 0u || frame->user_context != 0 ||
+			frame->new_token_count != 0u || frame->tokens_per_sequence != 0u ||
+			frame->user_context != 0 ||
 			frame->cache_lane_count != frame->active_slot_count ||
 			frame->cache_lanes == 0 )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -410,6 +411,10 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 	if ( frame->user_context == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	context = (SparkDsv4ResidentDecodeStageFrameContext *)frame->user_context;
+	if ( frame->tokens_per_sequence == 0u ||
+		frame->tokens_per_sequence > SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE ||
+		(context->prefill_batch != 0 && frame->tokens_per_sequence != 1u) )
+		return(SPARK_STATUS_UNSUPPORTED);
 	prepared = TestDsv4ServingFindFrameAdmission(driver,frame,context);
 	if ( prepared == 0 )
 		return(SPARK_STATUS_VALIDATION_FAILED);
@@ -439,12 +444,13 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 	}
 	else if ( driver->owns_final_head != 0u )
 	{
-		if ( frame->buffer_count != 2u || frame->buffers[0].slot != 0u || frame->buffers[0].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_READ || frame->buffers[0].address == 0 || frame->buffers[0].bytes < (uint64_t)row_count * sizeof(uint32_t) || frame->buffers[1].slot != 1u || frame->buffers[1].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || frame->buffers[1].address == 0 || frame->buffers[1].bytes < (uint64_t)frame->active_slot_count * sizeof(uint32_t) )
+		if ( frame->buffer_count != 2u || frame->buffers[0].slot != 0u || frame->buffers[0].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_READ || frame->buffers[0].address == 0 || frame->buffers[0].bytes < (uint64_t)row_count * sizeof(uint32_t) || frame->buffers[1].slot != 1u || frame->buffers[1].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || frame->buffers[1].address == 0 || frame->buffers[1].bytes < (uint64_t)frame->active_slot_count * frame->tokens_per_sequence * sizeof(uint32_t) )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( context->prefill_batch != 0 && context->prefill_batch->token_ids != frame->buffers[0].address )
 			return(SPARK_STATUS_SCHEMA_ERROR);
 		tokens = (uint32_t *)frame->buffers[1].address;
-		memset(tokens,0,(size_t)frame->active_slot_count * sizeof(uint32_t));
+		memset(tokens,0,(size_t)frame->active_slot_count *
+			frame->tokens_per_sequence * sizeof(uint32_t));
 		if ( context->prefill_batch != 0 )
 		{
 			for (emit=0u; emit<context->prefill_batch->emit_count; emit++)
@@ -452,7 +458,9 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 		}
 		else
 			for (row=0u; row<row_count; row++)
-				tokens[row] = 4200u + row;
+				for (step=0u; step<frame->tokens_per_sequence; step++)
+					tokens[row * frame->tokens_per_sequence + step] =
+						4200u + row + step;
 	}
 	else if ( frame->buffer_count != 1u ||
 		context->hidden_output_bf16 != 0 || context->hidden_output_bytes != 0u )
@@ -466,6 +474,7 @@ static SparkStatus TestDsv4ServingDriverSubmit(
 	completion.sequence_position = frame->sequence_position;
 	completion.program_id = frame->program_id;
 	completion.accepted_token_count = frame->new_token_count;
+	completion.tokens_per_sequence = frame->tokens_per_sequence;
 	completion.residency = frame->residency;
 	completion.status = SPARK_STATUS_OK;
 	frame->completion_function(frame->completion_context,&completion);

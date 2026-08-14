@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 14u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 15u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -106,6 +106,7 @@ typedef struct SparkModelResidentIpcSubmit
 	uint32_t lane_count;
 	uint32_t row_count;
 	uint32_t token_count;
+	uint32_t tokens_per_sequence;
 	uint32_t model_extension_kind;
 	uint32_t model_extension_bytes;
 	SparkModelDriverResidencyToken residency;
@@ -115,7 +116,6 @@ typedef struct SparkModelResidentIpcSubmit
 	uint32_t row_positions_offset;
 	uint32_t row_sequence_ids_offset;
 	uint32_t model_extension_offset;
-	uint32_t reserved0;
 } SparkModelResidentIpcSubmit;
 
 typedef struct SparkModelResidentIpcSubmitResult
@@ -165,6 +165,7 @@ typedef struct SparkModelResidentIpcCompletion
 	SparkModelDriverResidencyToken residency;
 	uint32_t accepted_token_count;
 	uint32_t token_count;
+	uint32_t tokens_per_sequence;
 	uint32_t model_extension_kind;
 	uint32_t model_extension_bytes;
 	uint32_t token_ids_offset;
