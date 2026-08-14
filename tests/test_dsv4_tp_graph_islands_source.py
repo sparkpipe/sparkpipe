@@ -25,10 +25,10 @@ def body(name: str, start_at: int = 0) -> str:
     return MODULE[opening:cursor]
 
 
-assert "return(2u * local_layer_count + 1u);" in FIRMWARE
+assert "return(3u * local_layer_count + 1u);" in FIRMWARE
 assert "width == 1u || width == 8u || width == 1024u" in FIRMWARE
 assert '"cuda_graph_count_by_pp_stage"' in ADAPTER
-assert '"cuda_graph_count_by_pp_stage": [23, 23, 23, 21]' in CONFIG
+assert '"cuda_graph_count_by_pp_stage": [34, 34, 34, 31]' in CONFIG
 
 configure = body("static SparkStatus SparkDsv4ModuleConfigure(")
 assert "context->cuda_graph_count !=" in configure
@@ -40,20 +40,41 @@ assert "state->tp_graph_islands_per_slot" in prewarm
 assert "SparkDsv4ModuleCaptureTpIsland" in prewarm
 assert "state->tp_graphs_sealed = 1u;" in prewarm
 assert "cudaGraphLaunch" not in prewarm
+assert "tp_graph_program_disabled" not in MODULE
+prewarm_programs = body("static SparkStatus SparkDsv4ModulePrewarmTpGraphPrograms(")
+assert "SparkDsv4ModuleCaptureTpGraphProgram" in prewarm_programs
+assert "SparkStageModuleCudaStreamMemOpsSupported" not in MODULE
+fence = body("static SparkStatus SparkDsv4ModuleCaptureTpGraphFence(")
+assert "cudaLaunchHostFunc" in fence
+assert "SparkTpDeviceCollectiveGraphFenceHost" in fence
+assert "SparkDsv4LaunchWaitSystemU32" not in MODULE
+assert "cuStreamWaitValue32" not in MODULE
 
 prepare = body("static SparkStatus SparkDsv4ModulePrepareState(")
 assert prepare.index("SparkDsv4ModulePrewarmTpGraphs(state)") < len(prepare)
 
 start = body("static SparkStatus SparkDsv4ModuleStartLayers(")
-continue_layers = body("static void SparkDsv4ModuleContinueLayers(")
+continue_name = "static void SparkDsv4ModuleContinueLayers("
+continue_layers = body(continue_name, MODULE.index(continue_name) + 1)
 finish = body("static SparkStatus SparkDsv4ModuleFinishFrameContinuation(",
               MODULE.index("static SparkStatus SparkDsv4ModuleRunFrame("))
 assert "SparkDsv4ModuleReplayTpIsland" in start
 assert continue_layers.count("SparkDsv4ModuleReplayTpIsland") >= 1
 assert "SparkDsv4ModuleReplayTpIsland" in finish
 
+program = body("static SparkStatus SparkDsv4ModuleLaunchTpGraphProgramBody(")
+program_start = body("static SparkStatus SparkDsv4ModuleStartTpGraphProgram(")
+program_continue = body("static void SparkDsv4ModuleContinueTpGraphProgram(")
+assert "SparkDsv4ModuleCaptureTpGraphFence" in program
+assert "cudaGraphLaunch" not in program
+assert program_start.count("cudaGraphLaunch") == 1
+assert "SparkDsv4ModuleReplayTpIsland" not in program_continue
+
+projection = body("static SparkStatus SparkDsv4ModuleLaunchTpProjectionIsland(")
 attention = body("static SparkStatus SparkDsv4ModuleLaunchTpAttentionIsland(")
-assert "SparkDsv4ModuleBeginStreams(state,slot,0" in attention
+assert "SparkDsv4ModuleBeginStreams(state,slot,0" in projection
+assert "SparkDsv4ModuleRunProjectionShards" in projection
+assert "SparkDsv4ModuleRunAttentionProjected" in attention
 run_frame = body("static SparkStatus SparkDsv4ModuleRunFrame(")
 embedding_guard = ("prefill == 0 && state->tp_degree > 1u && "
                    "state->owns_embedding != 0u")
@@ -61,7 +82,7 @@ assert embedding_guard in run_frame
 assert "tp_graph_boundary_in" in run_frame
 
 replay = body("static SparkStatus SparkDsv4ModuleReplayTpIsland(",
-              MODULE.index("static SparkStatus SparkDsv4ModuleLaunchTpAttentionIsland("))
+		      MODULE.index("static SparkStatus SparkDsv4ModuleLaunchTpProjectionIsland("))
 assert "state->tp_graphs_sealed == 0u" in replay
 assert "rows != SPARK_BATCH_BUCKET" in replay
 assert "cudaGraphLaunch" in replay
@@ -69,10 +90,14 @@ assert "cudaGraphLaunch" in replay
 execute = body("static SparkStatus SparkDsv4ModuleExecuteFrame(")
 assert "state->tp_graphs_sealed == 0u" in execute
 
-# TP1's old cache may retain capture-on-miss/eager behavior, but the TP
-# continuation path must never call either whole-frame fallback function.
+# Neither TP nor TP1 may silently drop to eager execution after a graph error.
 for tp_body in (start, continue_layers, finish):
     assert "SparkDsv4ModuleCaptureDecode" not in tp_body
     assert "SparkDsv4ModuleRunCapturedDecode" not in tp_body
+capture_decode = body("static SparkStatus SparkDsv4ModuleCaptureDecode(")
+graphed_decode = body("static SparkStatus SparkDsv4ModuleRunGraphedDecode(")
+assert capture_decode.count("SparkDsv4ModuleRunCapturedDecode") == 1
+assert "return(SparkDsv4ModuleRunCapturedDecode" not in capture_decode
+assert "SparkDsv4ModuleRunCapturedDecode" not in graphed_decode
 
 print("dsv4_tp_graph_islands_source: ok")

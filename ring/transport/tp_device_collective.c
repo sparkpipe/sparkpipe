@@ -41,6 +41,7 @@ typedef struct SparkTpDeviceCollectiveOperation
     uint32_t current_step;
     uint32_t algorithm_kind;
     uint32_t operation_kind;
+    uint32_t submission_flags;
     uint32_t reserved_send_mask;
     uint32_t activated_receive_mask;
     uint32_t sent_mask;
@@ -48,12 +49,21 @@ typedef struct SparkTpDeviceCollectiveOperation
     uint32_t receive_complete_mask;
     uint32_t released_receive_mask;
     uint32_t terminal_after_consume;
+    uint32_t consumption_enqueued;
+    uint32_t producer_armed;
+    uint32_t external_completion_stream_signaled;
     uint64_t ordinal;
     uint64_t generation;
     uint64_t deadline_milli;
     const void *local_device;
     void *full_device;
     void *cuda_stream;
+    void *continuation_cuda_stream;
+    const volatile uint32_t *producer_ready_host;
+    volatile uint32_t *completion_ready_host;
+    void *completion_ready_device;
+    uint32_t producer_ready_value;
+    uint32_t completion_ready_value;
     SparkTpDeviceCollectiveCompletionFunction completion_function;
     void *completion_context;
     uint64_t profile_submit_ns;
@@ -73,6 +83,7 @@ typedef struct SparkTpDeviceCollectiveOperation
     uint64_t profile_release_done_ns[
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT];
     uint64_t profile_complete_ns;
+    uint64_t profile_last_progress_ns;
 } SparkTpDeviceCollectiveOperation;
 
 typedef struct SparkTpDeviceCollectiveImplementation
@@ -94,8 +105,12 @@ typedef struct SparkTpDeviceCollectiveImplementation
         SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     SparkTpDeviceCollectiveDebugHooks debug_hooks;
     SparkTpDeviceCollectiveCombineBf16Function combine_bf16_function;
+    SparkTpDeviceCollectiveCombineRelayBf16Function
+        combine_relay_bf16_function;
     SparkTpDeviceCollectiveCombineU64MaxFunction combine_u64_max_function;
     void *combine_context;
+    SparkTpDeviceCollectiveSignalU32Function signal_u32_function;
+    void *signal_context;
     cudaEvent_t consumer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     cudaEvent_t producer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     cudaStream_t operation_streams[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
@@ -116,6 +131,24 @@ static uint32_t SparkTpDeviceCollectiveDegreeIsSupported(uint32_t tp_degree)
 {
     return tp_degree == 1u || tp_degree == 2u || tp_degree == 4u ||
         tp_degree == 8u || tp_degree == 16u;
+}
+
+void SparkTpDeviceCollectiveGraphFenceHost(void *context)
+{
+	SparkTpDeviceCollectiveGraphFence *fence;
+	uint32_t observed;
+	fence = (SparkTpDeviceCollectiveGraphFence *)context;
+	if (fence == 0 || fence->producer_ready_host == 0 ||
+		fence->completion_ready_host == 0 || fence->ready_value == 0u)
+		return;
+	__atomic_store_n(fence->producer_ready_host,fence->ready_value,
+		__ATOMIC_RELEASE);
+	do
+	{
+		observed = __atomic_load_n(fence->completion_ready_host,
+			__ATOMIC_ACQUIRE);
+	}
+	while (observed < fence->ready_value);
 }
 
 static uint32_t SparkTpDeviceCollectiveStepCount(uint32_t tp_degree)
@@ -1243,6 +1276,29 @@ static uint32_t SparkTpDeviceCollectiveBlockBase(
     return peer_block != 0u ? own_half_base ^ half_count : own_half_base;
 }
 
+static uint32_t SparkTpDeviceCollectiveCanCombineRelayBf16(
+    const SparkTpDeviceCollectiveImplementation *implementation,
+    const SparkTpDeviceCollectiveOperation *operation)
+{
+    const SparkTpDeviceCollectiveCreditBinding *next_binding;
+
+    if (implementation->combine_relay_bf16_function == 0 ||
+        operation->algorithm_kind !=
+            SPARK_TP_DEVICE_COLLECTIVE_RECURSIVE_KIND ||
+        operation->operation_kind !=
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 ||
+        operation->current_step + 1u >=
+            implementation->collective->step_count)
+    {
+        return 0u;
+    }
+    next_binding = &implementation->bindings[operation->current_step + 1u]
+        [operation->credit_index];
+    return (next_binding->flags &
+            SPARK_TP_DEVICE_COLLECTIVE_BINDING_SEND_MAPPED_ALIAS) != 0u ||
+        next_binding->send_device == next_binding->send_transport;
+}
+
 static SparkStatus SparkTpDeviceCollectiveEnqueueRingConsumption(
     SparkTpDeviceCollectiveImplementation *implementation,
     SparkTpDeviceCollectiveOperation *operation)
@@ -1305,6 +1361,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueReceiveConsumption(
     SparkTpDeviceCollectiveOperation *operation)
 {
     const SparkTpDeviceCollectiveCreditBinding *binding;
+    const SparkTpDeviceCollectiveCreditBinding *next_binding;
     uint64_t full_pitch;
     uint64_t local_bytes;
     uint64_t step_bytes;
@@ -1331,11 +1388,26 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueReceiveConsumption(
     if (operation->operation_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16)
     {
-        status = implementation->combine_bf16_function(
-            implementation->combine_context,operation->full_device,
-            binding->receive_device,operation->active_sequence_count,
-            implementation->collective->local_hidden_dimension,
-            operation->cuda_stream);
+        if (SparkTpDeviceCollectiveCanCombineRelayBf16(
+                implementation,operation) != 0u)
+        {
+            next_binding = &implementation->bindings[
+                operation->current_step + 1u][operation->credit_index];
+            status = implementation->combine_relay_bf16_function(
+                implementation->combine_context,operation->full_device,
+                binding->receive_device,next_binding->send_device,
+                operation->active_sequence_count,
+                implementation->collective->local_hidden_dimension,
+                operation->cuda_stream);
+        }
+        else
+        {
+            status = implementation->combine_bf16_function(
+                implementation->combine_context,operation->full_device,
+                binding->receive_device,operation->active_sequence_count,
+                implementation->collective->local_hidden_dimension,
+                operation->cuda_stream);
+        }
     }
     else if (operation->operation_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
@@ -1534,6 +1606,167 @@ static uint32_t SparkTpDeviceCollectiveTransitionPhase(
     }
 }
 
+static uint32_t SparkTpDeviceCollectiveUsesStreamOrderedCompletion(
+    const SparkTpDeviceCollectiveOperation *operation)
+{
+    uint64_t state_word;
+
+    state_word = atomic_load_explicit(
+        &operation->lifecycle,memory_order_acquire);
+    return operation->algorithm_kind ==
+            SPARK_TP_DEVICE_COLLECTIVE_RECURSIVE_KIND &&
+        operation->terminal_after_consume == 0u &&
+        SparkTpDeviceCollectiveStateHasFailure(state_word) == 0u &&
+        (operation->submission_flags &
+            SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION) !=
+                0u;
+}
+
+static uint32_t SparkTpDeviceCollectiveUsesExternalGraphOrder(
+    const SparkTpDeviceCollectiveOperation *operation)
+{
+    return (operation->submission_flags &
+        SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_EXTERNAL_GRAPH_ORDER) != 0u;
+}
+
+static uint32_t SparkTpDeviceCollectiveArmExternalProducer(
+    SparkTpDeviceCollectiveImplementation *implementation,
+    SparkTpDeviceCollectiveOperation *operation)
+{
+    SparkStatus status;
+
+    if (SparkTpDeviceCollectiveUsesExternalGraphOrder(operation) == 0u ||
+        operation->producer_armed != 0u)
+        return 1u;
+    if (__atomic_load_n(operation->producer_ready_host,__ATOMIC_ACQUIRE) <
+        operation->producer_ready_value)
+        return 0u;
+    if (implementation->profile_enabled != 0u)
+        fprintf(stderr,
+            "sparkpipe_tp_collective_producer_ready tp_rank=%u ordinal=%llu credit=%u observed=%u expected=%u\n",
+            implementation->collective->tp_rank,
+            (unsigned long long)operation->ordinal,operation->credit_index,
+            __atomic_load_n(operation->producer_ready_host,__ATOMIC_ACQUIRE),
+            operation->producer_ready_value);
+    status = SparkTpDeviceCollectiveEnqueueLocalPlacement(
+        implementation,operation);
+    if (status == SPARK_STATUS_OK)
+        status = SparkTpDeviceCollectiveCudaStatus(cudaEventRecord(
+            implementation->consumer_events[operation->credit_index],
+            (cudaStream_t)operation->cuda_stream));
+    if (status != SPARK_STATUS_OK)
+    {
+        (void)SparkTpDeviceCollectiveMarkOperationFailure(
+            implementation,operation,operation->generation,status);
+        return 0u;
+    }
+    operation->producer_armed = 1u;
+    return 1u;
+}
+
+static SparkStatus SparkTpDeviceCollectiveArmReceiveRelease(
+    SparkTpDeviceCollectiveImplementation *implementation,
+    SparkTpDeviceCollectiveOperation *operation)
+{
+    SparkStatus status;
+    uint32_t pending;
+    uint32_t resource_index;
+    uint32_t resource_mask;
+
+    pending = 0u;
+    resource_mask = SparkTpDeviceCollectiveResourceMask(operation);
+    for (resource_index=0u; resource_index<32u; resource_index++)
+    {
+        uint64_t transport_generation;
+        uint32_t mask;
+        uint32_t route_index;
+
+        mask = 1u << resource_index;
+        if ((resource_mask & mask) == 0u ||
+            (operation->released_receive_mask & mask) != 0u)
+            continue;
+        route_index = SparkTpDeviceCollectiveResourceRoute(
+            operation,resource_index);
+        transport_generation = SparkTpDeviceCollectiveTransportGeneration(
+            operation,resource_index);
+        status = SparkHiddenTransportReleasePersistentReceive(
+            implementation->receive_sessions[route_index],
+            operation->credit_index,transport_generation,
+            operation->cuda_stream);
+        if (status == SPARK_STATUS_BUSY)
+        {
+            pending = 1u;
+            continue;
+        }
+        if (status != SPARK_STATUS_OK)
+            return status;
+        operation->released_receive_mask |= mask;
+        operation->activated_receive_mask &= ~mask;
+    }
+    return pending != 0u ? SPARK_STATUS_BUSY : SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkTpDeviceCollectiveAdvanceStreamOrderedConsumption(
+    SparkTpDeviceCollectiveImplementation *implementation,
+    SparkTpDeviceCollectiveOperation *operation)
+{
+    SparkStatus status;
+    uint32_t terminal_step;
+
+    status = SparkTpDeviceCollectiveArmReceiveRelease(
+        implementation,operation);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    terminal_step = operation->current_step + 1u ==
+        implementation->collective->step_count;
+    if (terminal_step != 0u)
+    {
+        if (SparkTpDeviceCollectiveUsesExternalGraphOrder(operation) != 0u)
+        {
+            status = implementation->signal_u32_function(
+                implementation->signal_context,
+                operation->completion_ready_device,
+                operation->completion_ready_value,operation->cuda_stream);
+            if (status == SPARK_STATUS_OK)
+                status = SparkTpDeviceCollectiveCudaStatus(cudaEventRecord(
+                    implementation->consumer_events[operation->credit_index],
+                    (cudaStream_t)operation->cuda_stream));
+            if (status == SPARK_STATUS_OK)
+                operation->external_completion_stream_signaled = 1u;
+        }
+        else if (operation->cuda_stream != operation->continuation_cuda_stream)
+            status = SparkTpDeviceCollectiveCudaStatus(cudaStreamWaitEvent(
+                (cudaStream_t)operation->continuation_cuda_stream,
+                implementation->consumer_events[operation->credit_index],0u));
+        if (status != SPARK_STATUS_OK)
+            return status;
+        status = SparkTpDeviceCollectiveTransitionPhase(operation,
+            SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_BUILDING,
+            SPARK_TP_DEVICE_COLLECTIVE_PHASE_TERMINAL_READY) != 0u ?
+                SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+        if (status == SPARK_STATUS_OK)
+            operation->consumption_enqueued = 0u;
+        return status;
+    }
+    status = SPARK_STATUS_OK;
+    if (SparkTpDeviceCollectiveCanCombineRelayBf16(
+            implementation,operation) == 0u)
+    {
+        status = SparkTpDeviceCollectiveEnqueueNextSendPack(
+            implementation,operation,operation->current_step + 1u);
+    }
+    if (status != SPARK_STATUS_OK)
+        return status;
+    operation->current_step += 1u;
+    status = SparkTpDeviceCollectiveTransitionPhase(operation,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_BUILDING,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_SEND_BUILDING) != 0u ?
+            SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+    if (status == SPARK_STATUS_OK)
+        operation->consumption_enqueued = 0u;
+    return status;
+}
+
 static uint32_t SparkTpDeviceCollectiveCompletionTokenIsValid(
     const SparkTpDeviceCollectiveImplementation *implementation,
     const SparkTpDeviceCollectiveOperation *operation,
@@ -1679,6 +1912,7 @@ static void SparkTpDeviceCollectivePollTransport(
 {
     uint32_t active_route_mask;
     uint32_t credit_index;
+    uint32_t resource_index;
     uint32_t step_index;
 
     active_route_mask = 0u;
@@ -1694,13 +1928,18 @@ static void SparkTpDeviceCollectivePollTransport(
         if (phase < SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE ||
             phase > SPARK_TP_DEVICE_COLLECTIVE_PHASE_RELEASE_PENDING)
             continue;
-        if (operation->algorithm_kind ==
-            SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
-            active_route_mask |= 1u |
-                (1u << SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX);
-        else if (operation->current_step <
-            implementation->collective->step_count)
-            active_route_mask |= 1u << operation->current_step;
+        for (resource_index=0u; resource_index<32u; resource_index++)
+        {
+            uint32_t resource_mask;
+
+            resource_mask = 1u << resource_index;
+            if (((operation->reserved_send_mask |
+                    operation->activated_receive_mask) &
+                    resource_mask) == 0u)
+                continue;
+            active_route_mask |= 1u << SparkTpDeviceCollectiveResourceRoute(
+                operation,resource_index);
+        }
     }
     for (step_index = 0u;
          step_index < implementation->route_count;
@@ -1962,17 +2201,38 @@ static void SparkTpDeviceCollectiveBuildConsumption(
 {
     SparkStatus status;
 
-    status = SparkTpDeviceCollectiveEnqueueReceiveConsumption(
+    if (operation->consumption_enqueued == 0u)
+    {
+        status = SparkTpDeviceCollectiveEnqueueReceiveConsumption(
+            implementation,operation);
+        if (status != SPARK_STATUS_OK)
+        {
+            (void)SparkTpDeviceCollectiveMarkOperationFailure(
+                implementation,operation,operation->generation,status);
+            return;
+        }
+        operation->consumption_enqueued = 1u;
+    }
+    if (SparkTpDeviceCollectiveUsesStreamOrderedCompletion(operation) == 0u)
+    {
+        (void)SparkTpDeviceCollectiveTransitionPhase(operation,
+            SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_BUILDING,
+            SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE);
+        return;
+    }
+    status = SparkTpDeviceCollectiveAdvanceStreamOrderedConsumption(
         implementation,operation);
+    if (status == SPARK_STATUS_BUSY)
+        return;
     if (status != SPARK_STATUS_OK)
     {
         (void)SparkTpDeviceCollectiveMarkOperationFailure(
             implementation,operation,operation->generation,status);
-        return;
+        operation->terminal_after_consume = 1u;
+        (void)SparkTpDeviceCollectiveTransitionPhase(operation,
+            SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_BUILDING,
+            SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE);
     }
-    (void)SparkTpDeviceCollectiveTransitionPhase(operation,
-        SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_BUILDING,
-        SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE);
 }
 
 static void SparkTpDeviceCollectiveProgressConsumption(
@@ -2004,6 +2264,7 @@ static void SparkTpDeviceCollectiveProgressConsumption(
     }
     if (operation->terminal_after_consume != 0u)
     {
+        operation->consumption_enqueued = 0u;
         (void)SparkTpDeviceCollectiveTransitionPhase(operation,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_TERMINAL_READY);
@@ -2054,6 +2315,7 @@ static void SparkTpDeviceCollectiveProgressConsumption(
     {
         SparkTpDeviceCollectiveCancelUnsentResources(
             implementation,operation);
+        operation->consumption_enqueued = 0u;
         (void)SparkTpDeviceCollectiveTransitionPhase(operation,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_TERMINAL_READY);
@@ -2063,13 +2325,19 @@ static void SparkTpDeviceCollectiveProgressConsumption(
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
     {
         operation->current_step += 1u;
+        operation->consumption_enqueued = 0u;
         (void)SparkTpDeviceCollectiveTransitionPhase(operation,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE);
         return;
     }
-    status = SparkTpDeviceCollectiveEnqueueNextSendPack(
-        implementation,operation,operation->current_step + 1u);
+    status = SPARK_STATUS_OK;
+    if (SparkTpDeviceCollectiveCanCombineRelayBf16(
+            implementation,operation) == 0u)
+    {
+        status = SparkTpDeviceCollectiveEnqueueNextSendPack(
+            implementation,operation,operation->current_step + 1u);
+    }
     if (status != SPARK_STATUS_OK)
     {
         (void)SparkTpDeviceCollectiveMarkOperationFailure(
@@ -2077,6 +2345,7 @@ static void SparkTpDeviceCollectiveProgressConsumption(
         return;
     }
     operation->current_step += 1u;
+    operation->consumption_enqueued = 0u;
     (void)SparkTpDeviceCollectiveTransitionPhase(operation,
         SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE,
         SPARK_TP_DEVICE_COLLECTIVE_PHASE_SEND_BUILDING);
@@ -2176,6 +2445,12 @@ static void SparkTpDeviceCollectivePublishCompletion(
     {
         operation->profile_complete_ns = SparkTpDeviceCollectiveNowNano();
     }
+    if (SparkTpDeviceCollectiveUsesExternalGraphOrder(operation) != 0u &&
+        (status != SPARK_STATUS_OK ||
+         operation->external_completion_stream_signaled == 0u))
+        __atomic_store_n(operation->completion_ready_host,
+            status == SPARK_STATUS_OK ? operation->completion_ready_value :
+            UINT32_MAX,__ATOMIC_RELEASE);
     operation->completion_function(operation->completion_context,&completion);
     SparkTpDeviceCollectiveReportProfile(implementation,operation,status);
     (void)SparkTpDeviceCollectiveTransitionPhase(operation,
@@ -2250,9 +2525,26 @@ static void SparkTpDeviceCollectiveProgressOperationPhase(
     SparkTpDeviceCollectiveOperation *operation,
     uint64_t state_word)
 {
+    uint64_t now_ns;
     uint32_t phase;
 
     phase = SparkTpDeviceCollectiveStatePhase(state_word);
+    now_ns = implementation->profile_enabled != 0u ?
+        SparkTpDeviceCollectiveNowNano() : 0u;
+    if (phase != SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE &&
+        now_ns >= operation->profile_last_progress_ns &&
+        now_ns - operation->profile_last_progress_ns >= UINT64_C(250000000))
+    {
+        fprintf(stderr,
+            "sparkpipe_tp_collective_progress tp_rank=%u ordinal=%llu credit=%u phase=%u step=%u producer=%u reserved=%08x sent=%08x send_complete=%08x receive_complete=%08x released=%08x\n",
+            implementation->collective->tp_rank,
+            (unsigned long long)operation->ordinal,operation->credit_index,
+            phase,operation->current_step,operation->producer_armed,
+            operation->reserved_send_mask,operation->sent_mask,
+            operation->send_complete_mask,operation->receive_complete_mask,
+            operation->released_receive_mask);
+        operation->profile_last_progress_ns = now_ns;
+    }
     if (phase >= SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE &&
         phase <= SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE &&
         SparkTpDeviceCollectiveNowMilli() >= operation->deadline_milli)
@@ -2267,8 +2559,10 @@ static void SparkTpDeviceCollectiveProgressOperationPhase(
     switch (phase)
     {
         case SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE:
-            SparkTpDeviceCollectiveReserveOperation(
-                implementation,operation,state_word);
+            if (SparkTpDeviceCollectiveArmExternalProducer(
+                    implementation,operation) != 0u)
+                SparkTpDeviceCollectiveReserveOperation(
+                    implementation,operation,state_word);
             break;
         case SPARK_TP_DEVICE_COLLECTIVE_PHASE_SEND_BUILDING:
             SparkTpDeviceCollectiveBuildSend(
@@ -2357,11 +2651,14 @@ static void *SparkTpDeviceCollectiveOperationStream(
     for (index=0u;
          index<implementation->collective->credit_count; index++)
     {
+        uint32_t phase;
+
+        phase = SparkTpDeviceCollectiveStatePhase(atomic_load_explicit(
+            &implementation->operations[index].lifecycle,
+            memory_order_acquire));
         if (index != operation->credit_index &&
-            SparkTpDeviceCollectiveStatePhase(atomic_load_explicit(
-                &implementation->operations[index].lifecycle,
-                memory_order_acquire)) !=
-                    SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE)
+            phase >= SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE &&
+            phase <= SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE)
             return implementation->operation_streams[
                 operation->credit_index %
                     implementation->operation_stream_count];
@@ -2648,9 +2945,13 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     implementation->registration_cuda_stream =
         config->registration_cuda_stream;
     implementation->combine_bf16_function = config->combine_bf16_function;
+    implementation->combine_relay_bf16_function =
+        config->combine_relay_bf16_function;
     implementation->combine_u64_max_function =
         config->combine_u64_max_function;
     implementation->combine_context = config->combine_context;
+    implementation->signal_u32_function = config->signal_u32_function;
+    implementation->signal_context = config->signal_context;
     implementation->profile_enabled =
         SparkTpDeviceCollectiveProfileIsEnabled();
     implementation->operation_stream_count = credit_count <
@@ -2820,14 +3121,34 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
         submission->active_sequence_count == 0u ||
         submission->active_sequence_count >
             collective->max_active_sequence_count ||
+        (submission->flags &
+            ~SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_KNOWN_FLAGS) != 0u ||
         submission->local_device == 0 || submission->full_device == 0 ||
         submission->cuda_stream == 0 ||
+        (((submission->flags &
+            SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_EXTERNAL_GRAPH_ORDER) != 0u) &&
+            (submission->producer_ready_host == 0 ||
+             submission->completion_ready_host == 0 ||
+             submission->completion_ready_device == 0 ||
+             submission->producer_ready_value == 0u ||
+             submission->completion_ready_value == 0u)) ||
+        (((submission->flags &
+            SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_EXTERNAL_GRAPH_ORDER) == 0u) &&
+            (submission->producer_ready_host != 0 ||
+             submission->completion_ready_host != 0 ||
+             submission->completion_ready_device != 0 ||
+             submission->producer_ready_value != 0u ||
+             submission->completion_ready_value != 0u)) ||
         submission->completion_function == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     implementation = (SparkTpDeviceCollectiveImplementation *)
         collective->implementation;
+    if ((submission->flags &
+            SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_EXTERNAL_GRAPH_ORDER) != 0u &&
+        implementation->signal_u32_function == 0)
+        return SPARK_STATUS_UNSUPPORTED;
     if ((operation_kind != collective->operation_kind && operation_kind !=
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64) ||
         (operation_kind ==
@@ -2881,6 +3202,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
     operation->active_sequence_count = submission->active_sequence_count;
     operation->current_step = 0u;
     operation->operation_kind = operation_kind;
+    operation->submission_flags = submission->flags;
     operation->algorithm_kind = SparkTpDeviceCollectiveSelectAlgorithm(
         collective,operation_kind,submission->active_sequence_count);
     operation->reserved_send_mask = 0u;
@@ -2890,14 +3212,27 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
     operation->receive_complete_mask = 0u;
     operation->released_receive_mask = 0u;
     operation->terminal_after_consume = 0u;
+    operation->consumption_enqueued = 0u;
+    operation->producer_armed = (submission->flags &
+        SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_EXTERNAL_GRAPH_ORDER) == 0u;
+    operation->external_completion_stream_signaled = 0u;
     operation->ordinal = submission->ordinal;
     operation->generation = generation;
     operation->deadline_milli = now_milli +
         collective->operation_timeout_milli;
     operation->local_device = submission->local_device;
     operation->full_device = submission->full_device;
-    operation->cuda_stream = SparkTpDeviceCollectiveOperationStream(
-        implementation,operation,submission->cuda_stream);
+    operation->cuda_stream = SparkTpDeviceCollectiveUsesExternalGraphOrder(
+        operation) != 0u ? implementation->operation_streams[
+            credit_index % implementation->operation_stream_count] :
+        SparkTpDeviceCollectiveOperationStream(
+            implementation,operation,submission->cuda_stream);
+    operation->continuation_cuda_stream = submission->cuda_stream;
+    operation->producer_ready_host = submission->producer_ready_host;
+    operation->completion_ready_host = submission->completion_ready_host;
+    operation->completion_ready_device = submission->completion_ready_device;
+    operation->producer_ready_value = submission->producer_ready_value;
+    operation->completion_ready_value = submission->completion_ready_value;
     operation->completion_function = submission->completion_function;
     operation->completion_context = submission->completion_context;
     operation->profile_submit_ns = implementation->profile_enabled != 0u ?
@@ -2918,8 +3253,18 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
     memset(operation->profile_release_done_ns,0,
         sizeof(operation->profile_release_done_ns));
     operation->profile_complete_ns = 0u;
+    operation->profile_last_progress_ns = operation->profile_submit_ns;
+    if (implementation->profile_enabled != 0u &&
+        SparkTpDeviceCollectiveUsesExternalGraphOrder(operation) != 0u)
+        fprintf(stderr,
+            "sparkpipe_tp_collective_external_wait tp_rank=%u ordinal=%llu credit=%u observed=%u expected=%u operation_stream=%p caller_stream=%p\n",
+            collective->tp_rank,(unsigned long long)operation->ordinal,
+            credit_index,
+            __atomic_load_n(operation->producer_ready_host,__ATOMIC_ACQUIRE),
+            operation->producer_ready_value,operation->cuda_stream,
+            operation->continuation_cuda_stream);
     status = now_milli == 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
-    if (status == SPARK_STATUS_OK &&
+    if (status == SPARK_STATUS_OK && operation->producer_armed != 0u &&
         operation->cuda_stream != submission->cuda_stream)
     {
         status = SparkTpDeviceCollectiveCudaStatus(cudaEventRecord(
@@ -2932,12 +3277,12 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
                 implementation->producer_events[credit_index],0u));
         }
     }
-    if (status == SPARK_STATUS_OK)
+    if (status == SPARK_STATUS_OK && operation->producer_armed != 0u)
     {
         status = SparkTpDeviceCollectiveEnqueueLocalPlacement(
             implementation,operation);
     }
-    if (status == SPARK_STATUS_OK)
+    if (status == SPARK_STATUS_OK && operation->producer_armed != 0u)
     {
         status = SparkTpDeviceCollectiveCudaStatus(cudaEventRecord(
             implementation->consumer_events[credit_index],

@@ -64,7 +64,7 @@ extern "C" {
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT 61u
 /* TP graphs are fixed stage-local islands, counted per pipeline slot. */
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_ISLAND_COUNT \
-	(2u * SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT + 1u)
+	(3u * SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT + 1u)
 /* TP1 retains the older shape cache and its independent capacity ceiling. */
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT 64u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT 16u
@@ -109,7 +109,7 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 	/*
 	 * TP1: optional dynamic decode-shape cache capacity; zero keeps eager
 	 * execution. TP>1: exact number of prewarmed stage-local graph islands
-	 * PER PIPELINE SLOT. It must equal 2 * layer_count + 1; zero, a short
+	 * PER PIPELINE SLOT. It must equal 3 * layer_count + 1; zero, a short
 	 * count, capture failure, or an unsealed entry fails initialization.
 	 */
 	uint32_t cuda_graph_count;
@@ -125,7 +125,7 @@ static inline uint32_t SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(
 	if ( local_layer_count == 0u ||
 		local_layer_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT )
 		return(0u);
-	return(2u * local_layer_count + 1u);
+	return(3u * local_layer_count + 1u);
 }
 
 static inline uint32_t SparkDsv4ResidentDecodeStageNativeTpWidthSupported(

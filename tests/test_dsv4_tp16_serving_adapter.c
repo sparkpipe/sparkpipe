@@ -77,7 +77,7 @@ int main(void)
 	assert(adapter_state != 0);
 	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) ==
 		SPARK_STATUS_OK);
-	assert(snapshot.kv_token_capacity == 87u);
+	assert(snapshot.kv_token_capacity == 130u);
 	library.adapter_interface.destroy(adapter_state);
 	SparkModelServingAdapterUnloadInterface(&library);
 	return(0);

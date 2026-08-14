@@ -42,7 +42,9 @@ WEIGHT_FP4 = 3
 WEIGHT_FP8 = 4
 
 KIND_ATTN_SINK = 0
+KIND_WQ_A = 1
 KIND_WQ_B = 3
+KIND_WKV = 4
 KIND_WO_A = 6
 KIND_WO_B = 7
 KIND_EXPERTS_W1 = 19
@@ -51,6 +53,10 @@ KIND_EXPERTS_W3 = 21
 KIND_SHARED_W1 = 22
 KIND_SHARED_W2 = 23
 KIND_SHARED_W3 = 24
+KIND_COMPRESS_WKV = 26
+KIND_COMPRESS_WGATE = 27
+KIND_INDEX_WKV = 32
+KIND_INDEX_WGATE = 33
 KIND_EMBEDDING = 35
 KIND_FINAL_NORM = 36
 KIND_LM_HEAD = 37
@@ -144,7 +150,10 @@ def row_indices(kind: int, rank: int, rows: int) -> List[int]:
         return [group * OUTPUT_LORA + row
                 for group in range(group_start, group_start + group_count)
                 for row in range(OUTPUT_LORA)]
-    if kind in (KIND_WQ_B, KIND_SHARED_W1, KIND_SHARED_W3):
+    if kind in (KIND_WQ_A, KIND_WQ_B, KIND_WKV,
+                KIND_COMPRESS_WKV, KIND_COMPRESS_WGATE,
+                KIND_INDEX_WKV, KIND_INDEX_WGATE,
+                KIND_SHARED_W1, KIND_SHARED_W3):
         return list(range(rank * (rows // TP_DEGREE),
                           (rank + 1) * (rows // TP_DEGREE)))
     return list(range(rows))
@@ -172,7 +181,10 @@ def shard_shape(kind: int, rank: int, rows: int, columns: int) -> Tuple[List[int
     validate_tp_degree()
     indices = row_indices(kind, rank, rows)
     start, width = column_slice(kind, rank, columns)
-    if kind in (KIND_WQ_B, KIND_EXPERTS_W1, KIND_EXPERTS_W3,
+    if kind in (KIND_WQ_A, KIND_WQ_B, KIND_WKV,
+                KIND_COMPRESS_WKV, KIND_COMPRESS_WGATE,
+                KIND_INDEX_WKV, KIND_INDEX_WGATE,
+                KIND_EXPERTS_W1, KIND_EXPERTS_W3,
                 KIND_SHARED_W1, KIND_SHARED_W3):
         if rows % TP_DEGREE != 0 and kind not in (KIND_EXPERTS_W1,
                                                    KIND_EXPERTS_W3):

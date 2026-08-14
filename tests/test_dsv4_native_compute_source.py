@@ -157,7 +157,7 @@ def main() -> int:
             "SparkLmHostLaunchMoePairReduceStrided",
             "DSV4 strided routed-reduce launcher")
 
-    attention = body(module, "SparkDsv4ModuleRunAttention")
+    attention = body(module, "SparkDsv4ModuleRunAttentionTail")
     require(attention, "SparkDsv4LaunchLinear(stream,&layer->attn.wo_b",
             "column-parallel WO full-hidden partial")
     forbid(attention, "state->tp_rank * local_hidden",
@@ -222,6 +222,11 @@ def main() -> int:
     scalar_dispatch = body(common, "SparkLmHostLaunchBatchedLinear")
     require(scalar_dispatch, "SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC>",
             "measured one-neuron B1 projection route")
+    head_screen = body(common, "SparkLmHostLaunchHeadScreenedArgmaxWithScore")
+    require(head_screen, "SPARK_LM_SCALAR_CTA_WARPS",
+            "screened-head scalar grid geometry")
+    require(head_screen, "SPARK_LM_SCALAR_CTA_THREADS",
+            "screened-head scalar launch geometry")
     forbid(scalar_dispatch, "SPARK_LM_SCALAR_NEURONS_PER_WARP",
            "slower multi-neuron scalar projection route")
     dense_w13_dispatch = body(common, "SparkLmHostLaunchSm121FusedDenseW13")
