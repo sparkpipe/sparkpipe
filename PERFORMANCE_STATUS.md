@@ -96,8 +96,8 @@ not a universal constant.
 
 ### Latest accepted milestone: DeepSeek V4 Flash TP4 B1
 
-Merged `main@56d2e95a7d6afd3f12404e782a36c146389bc21a` produces **32.96
-decode tokens/s mean** over three runs, with a **33.14 tokens/s best run**.
+Merged `main@fc897a006237a14f867ae6d45a5d11673454768a` produces **33.66
+decode tokens/s mean** over three runs, with a **33.69 tokens/s best run**.
 This is one request, not eight or sixteen concurrent requests and not aggregate
 batch throughput.
 
@@ -114,6 +114,7 @@ batch throughput.
 | Excluded | Initial process connection and prompt prefill/TTFT |
 | Runtime limits | one in-flight submission, one active sequence, one input row, one resident sequence |
 | Precision route | Exact target above; no speculative draft model |
+| Continuation proof | 254 of 256 submissions used the fenced continuation lease; zero rejects and zero live leases after release |
 
 All four ranks independently cloned, detached, and rebuilt the exact clean
 merged-main commit with CUDA 13 for `sm_121a`. The exact Blackwell CI compile
@@ -121,14 +122,16 @@ also passed before merge.
 
 | Run | Decode tok/s | Median inter-token | p95 inter-token |
 | ---: | ---: | ---: | ---: |
-| 1 | **33.1366** | **30.0503 ms** | **31.0825 ms** |
-| 2 | 32.8758 | 30.2466 ms | 31.3949 ms |
-| 3 | 32.8541 | 30.2220 ms | 31.7784 ms |
-| Mean | **32.9555** | 30.1730 ms | - |
+| 1 | 33.6256 | 29.4938 ms | **30.7386 ms** |
+| 2 | 33.6755 | 29.4980 ms | 30.7963 ms |
+| 3 | **33.6929** | **29.4375 ms** | 31.4020 ms |
+| Mean | **33.6647** | 29.4764 ms | - |
 
-Exact prior merged main averaged 31.6733 tok/s on the same workload, so this
-is a measured **4.05%** end-to-end gain. All three runs emitted the same 128
-tokens as prior main. The comma-separated token-ID sequence hashes to
+Exact immediately prior merged main averaged 32.9555 tok/s on the same
+workload, so the continuation lease adds a measured **2.15%** end-to-end gain.
+The cumulative gain over the 31.6733 tok/s control at `main@6cfd216b` is
+**6.29%**. All three runs emitted the same 128 tokens as both controls. The
+comma-separated token-ID sequence hashes to
 `211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083`
 with SHA-256.
 
@@ -136,13 +139,16 @@ The raw event streams and artifact identities are retained at:
 
 | Receipt | SHA-256 |
 | --- | --- |
-| [`merged-main-56d2e95a-run1.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-run1.json) | `5976ae0ae7c3d76867b7531e44b1dda3887716d0f6b65ae3c4fe7f6f9764d436` |
-| [`merged-main-56d2e95a-run2.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-run2.json) | `8e522ec392dc8cedc2be2b49d9987caf97843b6cf8e7de94f989d21000e19351` |
-| [`merged-main-56d2e95a-run3.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-run3.json) | `8849040c96cf33f0559de8592b9525a5fe1f8a60b78caca99c36862c15f85031` |
-| [`merged-main-56d2e95a-summary.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-summary.json) | `04e6d436df503735c341c5577712d1f86ca4e5e087c028f75e8a4b5f1da85d9b` |
+| [`merged-main-fc897a00-run1.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-fc897a00-run1.json) | `80b1528e22dd6ddb5a53748299e6841112cacf2739373ef9a88e9d326fdbde0d` |
+| [`merged-main-fc897a00-run2.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-fc897a00-run2.json) | `d002f6d520327415f6740d4e528c51db253b47357eb0871107699337622f4a29` |
+| [`merged-main-fc897a00-run3.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-fc897a00-run3.json) | `f6206e5d99eeb064a3ad9c1a8453c2902d593537ca462159a725226891b5ba6f` |
+| [`merged-main-fc897a00-summary.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-fc897a00-summary.json) | `0b37d0e6727f8ec0a98a98b2d17d2322652ac3d86ca1b31567ce17ebf88713cd` |
 
 This remains below the 50 tok/s target. The retained result is the new
 correctness-preserving floor for the next hill-climb.
+
+The immediately prior `main@56d2e95a` receipts remain in the same directory;
+they establish the 32.9555 tok/s control used for the incremental comparison.
 
 ### Previous scratch milestone: DeepSeek V4 Flash TP4 B1
 
@@ -227,18 +233,30 @@ projected, kernel-only, and multi-request aggregate figures remain separate.
 
 ### Current hill-climb boundary
 
-The measured candidate still launches 130 graph islands per token. Exact
-merged main `02dc758e32e0972b0321a4a46276a4e128214988` enabled a proposed
-single graph, but its first B1 smoke test emitted no token: all four ranks
-stopped after the first recursive-doubling exchange in collective phase
-`CONSUME_BUILDING`. The graph's host callback waited for completion while the
-transport needed later CUDA work to publish that completion, forming a
-circular dependency. This is a correctness failure, not a throughput result.
+Merged `main@07696e074d57e194e756b7f39f2ea7cbf6ca4413` replaced the
+event-driven graph-island controller with a nominal full graph. After fixing
+its recursive-U64 phase ownership bug, two exact B1 O128 runs measured 27.8426
+and 27.7339 tok/s, or 27.7883 tok/s mean. The emitted token sequence is exactly
+the accepted 128-token control. This is a 17.46% regression from the immediate
+33.6647 tok/s predecessor.
 
-The working boundary remains event-driven graph islands. Network completion
-advances the next captured compute island without a blocking graph host node.
-No single-graph speedup is claimed until it completes the exact workload above
-and preserves its token sequence.
+There are 130 collectives per token. The full graph retained all 130 legacy
+host submissions and completion callbacks, then added a mapped producer write,
+host poll, mapped completion write, and graph wait at every boundary. The
+6.2817 ms/token regression is 48.32 us per collective, matching the added
+coherent rendezvous. The change did not alter the RDMA data plane; it doubled
+the control plane around it.
+
+| Receipt | Decode tok/s | SHA-256 |
+| --- | ---: | --- |
+| [`full-graph-phase-owned-run1.json`](qualification/dsv4/performance/tp4_b1_20260814/full-graph-phase-owned-run1.json) | 27.8426 | `a9e267ce13fcd1962d38c2105884f159b3ef9a7764435c128b4e79f6476cc098` |
+| [`full-graph-phase-owned-run2.json`](qualification/dsv4/performance/tp4_b1_20260814/full-graph-phase-owned-run2.json) | 27.7339 | `f68236d2ae961ee55f142ae3188327240b71f2c8975c2a5ae162647578a3365e` |
+
+The full-graph bridge is removed rather than retained behind a runtime switch.
+The working graph-island controller remains the sole TP execution path until a
+predeclared collective program replaces its 130 submissions and callbacks
+instead of wrapping them. A restored performance claim still requires a clean
+merged-main rebuild and the three-run qualification above.
 
 ## Planning projections
 

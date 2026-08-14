@@ -187,8 +187,6 @@ cudaError_t cudaHostRegister(void *pointer, std::size_t bytes, unsigned int flag
 cudaError_t cudaHostUnregister(void *pointer);
 cudaError_t cudaStreamCreate(cudaStream_t *stream);
 cudaError_t cudaStreamCreateWithFlags(cudaStream_t *stream, unsigned int flags);
-cudaError_t cudaStreamCreateWithPriority(cudaStream_t *stream, unsigned int flags, int priority);
-cudaError_t cudaDeviceGetStreamPriorityRange(int *least_priority, int *greatest_priority);
 cudaError_t cudaStreamDestroy(cudaStream_t stream);
 cudaError_t cudaStreamSynchronize(cudaStream_t stream);
 cudaError_t cudaDeviceSynchronize(void);

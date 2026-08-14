@@ -28,6 +28,27 @@ retained as a progress diary.
 - Replay collective correctness and performance from clean merged `main` and
   retain the profile as a release artifact.
 
+## TP collective control plane
+
+- Replace the per-collective host callback/submission chain with one
+  model-neutral, predeclared collective program per resident slot. A token must
+  have exactly one control plane: never layer mapped graph semaphores over the
+  callback chain.
+- Pre-register complete send and receive slabs, build packet and work-request
+  templates at initialization, and pre-arm a rolling credit window before the
+  producing kernel runs. No memory registration, packet rebuilding, or
+  fixed-capacity table scan belongs in the steady-state token path.
+- Advance the immutable program from transport completions and publish one
+  terminal completion per token rather than one callback per collective.
+- Separate receive readiness from send-buffer reuse so local reduction can
+  begin when all receive completions arrive without waiting for unrelated send
+  completions.
+- Use one program catalog for B1-B1024. Select the collective algorithm from TP
+  degree, datatype, effective row count, payload bytes, and the measured
+  hardware profile without changing the model driver or resident weights.
+- Remove the graph-island controller only after the replacement produces exact
+  tokens and beats its retained merged-main B1 and saturated-batch receipts.
+
 ## Resident TP4 x PP4 execution
 
 - Generate the sixteen-rank TP4 x PP4 deployment directly from the final
