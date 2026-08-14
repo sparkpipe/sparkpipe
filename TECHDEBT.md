@@ -106,13 +106,16 @@ retained as a progress diary.
 
 ## DGX Station deployment
 
-- Define exact four- and eight-node Station hardware profiles, including
-  memory bandwidth, interconnect topology, power envelope, and storage.
-- Implement standalone Station placement and the mixed Station-plus-Spark
-  execution plan without introducing model-specific runtime branches.
-- Generate and calibrate Station collective profiles from exact model payloads.
-- Measure largest-model throughput against the selected DGX B300 comparison
-  workload and close the roughly one-half-throughput objective.
+- Define exact 1x, 2x, 4x, and 8x Station hardware profiles, including memory
+  bandwidth, interconnect topology, power envelope, and storage.
+- Implement standalone placement and the mixed Station-plus-Spark execution
+  plan for every supported Station count without introducing model-specific
+  runtime branches.
+- Generate and calibrate Station collective profiles from exact model payloads
+  for each supported Station count.
+- Measure each Station-count profile against the selected DGX B300 comparison
+  workload and close the roughly one-half-throughput objective for the
+  four- and eight-Station largest-model workloads.
 - Validate office power, cooling, startup, failure recovery, and service
   operations as part of the deployment receipt.
 

@@ -171,7 +171,7 @@ These are architecture requirements, not measured results:
 | Internal hot KV allocation | 2.5 TB per Spark |
 | Internal active model-shard allocation | 1.0 TB per Spark |
 | External direct model tier | at least 1.0 TB per Spark |
-| Four- or eight-node DGX Station largest-model throughput | roughly 50% of matched DGX B300 workload |
+| Four- or eight-Station largest-model throughput | roughly 50% of matched DGX B300 workload |
 
 Promotion timing includes shard access, verification, rank-local placement,
 driver and communicator binding, prewarm, all-rank agreement, and atomic ready

@@ -2,8 +2,9 @@
 
 SparkPipe is a private, on-premises serving engine for open-source frontier
 models. A business can start with four NVIDIA DGX Sparks, expand to eight and
-sixteen, then add one or more DGX Stations without changing its serving API or
-model packages. SparkPipe keeps a model working set resident, promotes other
+sixteen, then add DGX Station capacity in 1x, 2x, 4x, or 8x configurations
+without changing its serving API or model packages. SparkPipe keeps a model
+working set resident, promotes other
 configured models in at most one minute, and exposes one OpenAI-compatible
 endpoint for interactive chat and large agent workloads.
 
@@ -58,8 +59,8 @@ pick a B-number.
 | 4 Sparks | TP4 and model-specific entry plans |
 | 8 Sparks | TP8 or TP4 x PP2 |
 | 16 Sparks | canonical TP4 x PP4 for large MoE models |
-| DGX Station | standalone capacity or Spark-fabric enhancement |
-| 4-8 Stations | office-deployable fabric for the largest models |
+| DGX Stations | 1x, 2x, 4x, or 8x; standalone capacity or Spark-fabric enhancement |
+| 4x / 8x Stations | office-deployable fabric target for the largest models |
 
 Every Spark scale keeps complete direct pairs and the same combined-fabric
 contract. Expansion preserves the endpoint, scheduler semantics, package
@@ -134,10 +135,13 @@ publishes readiness atomically.
 
 ## DGX Station path
 
-The next deployment class combines four or eight DGX Stations, either as a
-standalone fabric or as an enhancement to the Spark pipeline. SparkPipe uses
-model sharding and a Station-specific collective profile to aggregate around
-each Station's memory-bandwidth limit.
+The next deployment class supports 1x, 2x, 4x, or 8x DGX Station
+configurations, either as a standalone fabric or as an enhancement to the
+Spark pipeline. SparkPipe uses model sharding and a Station-specific
+collective profile to aggregate around each Station's memory-bandwidth limit.
+
+The 1x and 2x configurations provide smaller entry points. Four- and
+eight-Station fabrics are the target for the largest models.
 
 The target for the largest models is roughly half the throughput of a DGX B300
 datacenter system, delivered in an ordinary office deployment. That target is a
