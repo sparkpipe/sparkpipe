@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-14",
+  "source_commit": "de1beb2035ecbf40dd49f0fa822c266007baea9d",
+  "cuda_target": "sm_121a",
+  "gpu": "NVIDIA GB10",
+  "driver_version": "580.159.03",
+  "probe_source_sha256": "56bff6ebd0b6c24eb213b52f086390eee38ddb80643b961ca3ffe59fee204cb4",
+  "production_cuda_source_sha256": "4e0c65b42aef3b1c32ab113a1eeeef38994585d17336db45615cfb6de83d51e6",
+  "probe_binary_sha256": "2407ab985526408a07997cde05da98958396bd948bc6701cdb732f707937d7d9",
+  "command": [
+    "build/spark_dsv4_compressor_emission_bitwise"
+  ],
+  "result": {
+    "cases": 4,
+    "boundary_modes": [
+      "swa-always",
+      "csa-attention",
+      "csa-index",
+      "hca-attention"
+    ],
+    "emitted_bf16": "bitwise_pass",
+    "complete_cache": "bitwise_pass",
+    "process_status": 0
+  }
+}

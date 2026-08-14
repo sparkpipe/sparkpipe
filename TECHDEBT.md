@@ -49,6 +49,46 @@ retained as a progress diary.
 - Remove the graph-island controller only after the replacement produces exact
   tokens and beats its retained merged-main B1 and saturated-batch receipts.
 
+## Steady-state decode hot-path audit
+
+- Replace completion-queue polling followed by fixed 64-entry send, striped
+  completion, and receive scans with work-completion-indexed ready queues. The
+  current TP4 B1 path spans six transport sessions per rank and repeats those
+  scans throughout every collective.
+- Collapse the current TP4 B1 accounting of 389 payload sends, 389 credit-return
+  sends, and 778 receive reposts per rank per token. Across TP4 that is 6,224
+  verbs posts plus matching completions for only about 3 MiB of payload per
+  rank. Piggyback credits and reuse prebuilt work requests rather than paying a
+  second message stream for buffer ownership.
+- Replace six directional session/QP control objects per rank with one
+  bidirectional peer connection per route and one completion context per rail.
+  RC queue pairs are bidirectional; direction-specific state must not duplicate
+  connection setup, polling, packet construction, or credit bookkeeping.
+- Build immutable packet fields and receive templates once. The current path
+  rebuilds packet metadata on both sides, including receive packets that are not
+  consumed by the data plane, and performs repeated string comparisons in
+  steady-state progress.
+- Remove per-poll timeout clocks, disabled-profile array clears, and exact-length
+  memory-region lookup from the steady-state path. These belong in admission,
+  setup, a completion-driven timer wheel, or a slab registry.
+- Predicate DSV4 compressor emission before RMSNorm, RoPE, Hadamard, quantize,
+  and scatter work. A non-boundary token currently launches work for zero
+  emission; static schedule accounting identifies about 221 useless compressor
+  post launches per average token.
+- Replace the approximately 780 CUDA event record/wait operations per token with
+  dependency edges at true data hazards. In particular, KV post-processing and
+  query projection must not inherit unrelated attention/projection barriers.
+- Construct deterministic attention indices once per token or position range,
+  not once per each of 43 layers. Remove repeated Hc residual copies and the
+  other tiny host/device transfers only after bitwise output comparison.
+- Remove batch- and topology-identity fallbacks. Unsupported topology values
+  must fail compilation, and B1-B1024 must share one runtime descriptor plus a
+  specialization cache rather than silently selecting PP13 or loading a
+  different resident driver.
+- Accept each removal independently: exact token parity first, then at least
+  three unprofiled end-to-end cached-prefill B1 runs. Do not stack candidates
+  until the preceding candidate beats the retained 33.6647 tok/s floor.
+
 ## Resident TP4 x PP4 execution
 
 - Generate the sixteen-rank TP4 x PP4 deployment directly from the final

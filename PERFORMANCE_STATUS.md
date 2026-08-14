@@ -94,19 +94,20 @@ not a universal constant.
 
 ## Measured model performance
 
-### Latest accepted milestone: DeepSeek V4 Flash TP4 B1
+### Latest merged-main qualification: DeepSeek V4 Flash TP4 B1
 
-Merged `main@fc897a006237a14f867ae6d45a5d11673454768a` produces **33.66
-decode tokens/s mean** over three runs, with a **33.69 tokens/s best run**.
+Merged `main@ed1d731dd72caa66ef9545464df6573d81dbbbb8` produces **33.55
+decode tokens/s mean** over three runs, with a **33.65 tokens/s best run**.
 This is one request, not eight or sixteen concurrent requests and not aggregate
-batch throughput.
+batch throughput. It removes the regressed full-graph bridge and restores the
+single control-plane execution path.
 
 | Field | Measured configuration |
 | --- | --- |
 | Model | `deepseek-ai/DeepSeek-V4-Flash-0731` |
 | Checkpoint revision | `7872f01b1d1fe23eabc4c98b48bffcef5a386062` |
 | Kernel target | `cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16` |
-| Topology | TP4 on `spark0` through `spark3`; no PP and no speculation |
+| Topology | TP4 on `spark4` through `spark7`; no PP and no speculation |
 | Workload | B1: one 128-token prompt, one request, 128 output tokens |
 | KV state during timed region | Prompt prefill complete and its KV resident |
 | Timed boundary | First emitted token to last emitted token: 127 full decode intervals |
@@ -122,16 +123,16 @@ also passed before merge.
 
 | Run | Decode tok/s | Median inter-token | p95 inter-token |
 | ---: | ---: | ---: | ---: |
-| 1 | 33.6256 | 29.4938 ms | **30.7386 ms** |
-| 2 | 33.6755 | 29.4980 ms | 30.7963 ms |
-| 3 | **33.6929** | **29.4375 ms** | 31.4020 ms |
-| Mean | **33.6647** | 29.4764 ms | - |
+| 1 | 33.5334 | 29.6790 ms | 30.8040 ms |
+| 2 | **33.6468** | **29.5453 ms** | **30.6978 ms** |
+| 3 | 33.4714 | 29.7585 ms | 31.5515 ms |
+| Mean | **33.5505** | 29.6609 ms | - |
 
-Exact immediately prior merged main averaged 32.9555 tok/s on the same
-workload, so the continuation lease adds a measured **2.15%** end-to-end gain.
-The cumulative gain over the 31.6733 tok/s control at `main@6cfd216b` is
-**6.29%**. All three runs emitted the same 128 tokens as both controls. The
-comma-separated token-ID sequence hashes to
+The retained pre-regression floor at `main@fc897a0` averaged 33.6647 tok/s on
+the same workload. The restored current-main result is 0.34% lower, inside the
+observed run-to-run range, and 20.74% faster than the regressed 27.7883 tok/s
+bridge. All three runs emitted the same 128 tokens as the retained floor. The
+comma-separated token-ID sequence plus a trailing newline hashes to
 `211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083`
 with SHA-256.
 
@@ -139,16 +140,55 @@ The raw event streams and artifact identities are retained at:
 
 | Receipt | SHA-256 |
 | --- | --- |
-| [`merged-main-fc897a00-run1.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-fc897a00-run1.json) | `80b1528e22dd6ddb5a53748299e6841112cacf2739373ef9a88e9d326fdbde0d` |
-| [`merged-main-fc897a00-run2.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-fc897a00-run2.json) | `d002f6d520327415f6740d4e528c51db253b47357eb0871107699337622f4a29` |
-| [`merged-main-fc897a00-run3.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-fc897a00-run3.json) | `f6206e5d99eeb064a3ad9c1a8453c2902d593537ca462159a725226891b5ba6f` |
-| [`merged-main-fc897a00-summary.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-fc897a00-summary.json) | `0b37d0e6727f8ec0a98a98b2d17d2322652ac3d86ca1b31567ce17ebf88713cd` |
+| [`merged-main-ed1d731d-run1.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-ed1d731d-run1.json) | `d5d6cc02cbdd470206a9f2baf453206e67d0be24de487bc430689285915057a4` |
+| [`merged-main-ed1d731d-run2.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-ed1d731d-run2.json) | `f013f26bb0f63f86d7c134051d47802c85fa3b63982ec61181a0ccb24d2e0d5b` |
+| [`merged-main-ed1d731d-run3.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-ed1d731d-run3.json) | `2caa49f9d0f152f0a8e0f64ab4dc3cfe4b88d89ea357c9d39199739bd29c0f1e` |
+| [`merged-main-ed1d731d-summary.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-ed1d731d-summary.json) | `fc875e4738960a389c00f43b50861630bbc5cbaee486d7425629b082035e7cc1` |
 
-This remains below the 50 tok/s target. The retained result is the new
-correctness-preserving floor for the next hill-climb.
+This remains below the 50 tok/s target. The 33.6647 tok/s pre-regression result
+remains the performance floor for accepting the next optimization; current
+merged main has independently restored it within 0.34% with exact token parity.
 
-The immediately prior `main@56d2e95a` receipts remain in the same directory;
-they establish the 32.9555 tok/s control used for the incremental comparison.
+The package CUDA validator did not qualify this runtime package: it currently
+hard-codes TP1 and a 64-graph maximum while this package is TP4 with 130 graphs.
+Wrapper generation therefore used the explicitly named
+`packaging-only.exact-live-inference-required.v1` recipe. Exact live inference
+passed, but the static validator gap remains open and is not represented as a
+validation success.
+
+### Current branch candidate: device-predicated compressor emission
+
+Candidate `de1beb2035ecbf40dd49f0fa822c266007baea9d`, based on merged
+`main@ed1d731d`, produces **33.9911 decode tokens/s mean** over three TP4 B1
+O128 runs, with a **34.1190 tokens/s best run**. This is 0.97% above the
+retained 33.6647 tok/s floor and 1.31% above the current-main qualification.
+It is a branch result until merged-main requalification.
+
+| Run | Decode tok/s | Median inter-token | p95 inter-token |
+| ---: | ---: | ---: | ---: |
+| 1 | 33.8394 | 29.4739 ms | 30.3798 ms |
+| 2 | 34.0149 | 29.1768 ms | **30.2899 ms** |
+| 3 | **34.1190** | **29.0832 ms** | 30.4197 ms |
+| Mean | **33.9911** | 29.2446 ms | - |
+
+The change replaces the post-compressor RMSNorm, RoPE, optional Hadamard,
+quantization, and cache-scatter launches with one device-predicated kernel.
+Off-boundary CTAs return before touching weights, staging data, or cache. The
+production post-compressor schedule falls from 269 to 62 launches per token;
+there is no host token predicate and no legacy compatibility path.
+
+An isolated `sm_121a` hardware probe compared the fused and standalone paths
+for SWA, CSA attention, CSA index/Hadamard, and HCA. Emitted BF16 bytes and the
+complete cache matched bit-for-bit in all four cases. All three end-to-end runs
+then emitted the exact retained 128-token stream.
+
+| Receipt | SHA-256 |
+| --- | --- |
+| [`device-predicated-compressor-de1beb2-run1.json`](qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-run1.json) | `3022be3101cbb2da889f015edb49c32cf6346c757349172b5a5e4e1b8e75122a` |
+| [`device-predicated-compressor-de1beb2-run2.json`](qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-run2.json) | `668a5d6ae09d2541151b0cdd0cc98c8c9f711d24f20b4b4168659cb51ac740f8` |
+| [`device-predicated-compressor-de1beb2-run3.json`](qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-run3.json) | `d1e7ee2409b41bd188c08945d279a50d45f5399a361572e15d38f51a26e8ffd0` |
+| [`device-predicated-compressor-bitwise-sm121.json`](qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-bitwise-sm121.json) | `6537d968880ffd2effd4f971232e88701ac0ff1ea8f1c8c79f73c82c2eba4b77` |
+| [`device-predicated-compressor-de1beb2-summary.json`](qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-summary.json) | `4605248320b7e6cbed55d478d207e5cd087530a696680beab436252d49145c38` |
 
 ### Previous scratch milestone: DeepSeek V4 Flash TP4 B1
 
@@ -231,7 +271,7 @@ record exact source, driver, model, topology, and workload identities, and
 prove emitted-token parity with the accepted control. Profiled, simulated,
 projected, kernel-only, and multi-request aggregate figures remain separate.
 
-### Current hill-climb boundary
+### Removed regression and current hill-climb boundary
 
 Merged `main@07696e074d57e194e756b7f39f2ea7cbf6ca4413` replaced the
 event-driven graph-island controller with a nominal full graph. After fixing
@@ -252,11 +292,12 @@ the control plane around it.
 | [`full-graph-phase-owned-run1.json`](qualification/dsv4/performance/tp4_b1_20260814/full-graph-phase-owned-run1.json) | 27.8426 | `a9e267ce13fcd1962d38c2105884f159b3ef9a7764435c128b4e79f6476cc098` |
 | [`full-graph-phase-owned-run2.json`](qualification/dsv4/performance/tp4_b1_20260814/full-graph-phase-owned-run2.json) | 27.7339 | `f68236d2ae961ee55f142ae3188327240b71f2c8975c2a5ae162647578a3365e` |
 
-The full-graph bridge is removed rather than retained behind a runtime switch.
-The working graph-island controller remains the sole TP execution path until a
-predeclared collective program replaces its 130 submissions and callbacks
-instead of wrapping them. A restored performance claim still requires a clean
-merged-main rebuild and the three-run qualification above.
+The full-graph bridge was removed in merged `main@ed1d731d` rather than retained
+behind a runtime switch. The clean merged-main rebuild and three-run
+qualification above restored 33.5505 tok/s, 20.74% above the regressed bridge
+and 0.34% below the 33.6647 tok/s floor. The working graph-island controller is
+again the sole TP execution path until a predeclared collective program
+replaces its 130 submissions and callbacks instead of wrapping them.
 
 ## Planning projections
 

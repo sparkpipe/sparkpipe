@@ -234,6 +234,7 @@ PYTHON_TESTS := \
 	tests/test_cuda_math_policy.py \
 	tests/test_dry_law.py \
 	tests/test_dsv4_contracts.py \
+	tests/test_dsv4_compressor_emission_source.py \
 	tests/test_dsv4_driver_source_contracts.py \
 	tests/test_dsv4_ga_reference_fixture.py \
 	tests/test_dsv4_native_compute_source.py \
@@ -503,6 +504,9 @@ build/spark_tp_device_collective_characterize: tools/hardware/spark_tp_device_co
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -ldl -lpthread -o $@
 
 build/spark_dsv4_tp4_tree_bitwise: tools/hardware/spark_dsv4_tp4_tree_bitwise.cu modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/common/include -Imodules/dsv4_resident_decode_stage/include -Imodules/dsv4_resident_decode_stage/source -Imodel-families/dsv4/include -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u -include model-families/dsv4/include/sparkpipe/spark_dsv4_model.h $^ -L$(CUDA_HOME)/lib64 -lcudart -o $@
+
+build/spark_dsv4_compressor_emission_bitwise: tools/hardware/spark_dsv4_compressor_emission_bitwise.cu modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/common/include -Imodules/dsv4_resident_decode_stage/include -Imodules/dsv4_resident_decode_stage/source -Imodel-families/dsv4/include -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u -include model-families/dsv4/include/sparkpipe/spark_dsv4_model.h $^ -L$(CUDA_HOME)/lib64 -lcudart -o $@
 
 hardware_handoff: hardware_tools

@@ -249,58 +249,59 @@ static __device__ void SparkLmSharedSoftmax(const float *logits, float *weights,
 	__syncthreads();
 }
 
+static __device__ __forceinline__ void SparkLmRmsNormRow(
+	const void *input_bf16,const void *gain_bf16,void *output_bf16,
+	uint32_t row,uint32_t dimension,float epsilon,float *staged_input,
+	float *reduce_scratch)
+{
+	uint32_t element;
+	uint64_t row_offset,tail_index;
+	float sum_squares = 0.0f,inverse_rms,tail;
+	float2 pair_value,gain_value;
+	row_offset = ((uint64_t)row * (uint64_t)dimension) >> 1u;
+	for (element=threadIdx.x; element<(dimension >> 1u); element+=blockDim.x)
+	{
+		pair_value = SparkLmLoadBf16Pair(input_bf16,row_offset + element);
+		staged_input[element << 1u] = pair_value.x;
+		staged_input[(element << 1u) + 1u] = pair_value.y;
+		sum_squares = fmaf(pair_value.x,pair_value.x,sum_squares);
+		sum_squares = fmaf(pair_value.y,pair_value.y,sum_squares);
+	}
+	if ( (dimension & 1u) != 0u && threadIdx.x == 0u )
+	{
+		tail_index = ((uint64_t)row * dimension) + dimension - 1u;
+		tail = SparkLmBf16ToFloat(input_bf16,tail_index);
+		staged_input[dimension - 1u] = tail;
+		sum_squares = fmaf(tail,tail,sum_squares);
+	}
+	sum_squares = SparkLmBlockReduceSum(sum_squares,reduce_scratch);
+	inverse_rms = rsqrtf((sum_squares / (float)dimension) + epsilon);
+	__syncthreads();
+	for (element=threadIdx.x; element<(dimension >> 1u); element+=blockDim.x)
+	{
+		gain_value = SparkLmLoadBf16Pair(gain_bf16,element);
+		SparkLmStoreBf16Pair(output_bf16,row_offset + element,
+			(staged_input[element << 1u] * inverse_rms) * gain_value.x,
+			(staged_input[(element << 1u) + 1u] * inverse_rms) * gain_value.y);
+	}
+	if ( (dimension & 1u) != 0u && threadIdx.x == 0u )
+	{
+		tail_index = ((uint64_t)row * dimension) + dimension - 1u;
+		SparkLmFloatToBf16(output_bf16,tail_index,
+			staged_input[dimension - 1u] * inverse_rms *
+			SparkLmBf16ToFloat(gain_bf16,dimension - 1u));
+	}
+}
+
 static __global__ void SparkLmRmsNormKernel(const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
 {
-    extern __shared__ float staged_input[];
-    __shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
-    uint32_t row = blockIdx.x;
-    uint32_t element;
-    uint64_t row_offset;
-    float sum_squares = 0.0f;
-    float inverse_rms;
-    float2 pair_value;
-    float2 gain_value;
-
-    if (row >= row_count)
-    {
-        return;
-    }
-    row_offset = ((uint64_t)row * (uint64_t)dimension) >> 1u;
-    for (element = threadIdx.x; element < (dimension >> 1u); element += blockDim.x)
-    {
-        pair_value = SparkLmLoadBf16Pair(input_bf16, row_offset + element);
-        staged_input[element << 1u] = pair_value.x;
-        staged_input[(element << 1u) + 1u] = pair_value.y;
-        sum_squares = fmaf(pair_value.x, pair_value.x, sum_squares);
-        sum_squares = fmaf(pair_value.y, pair_value.y, sum_squares);
-    }
-    if ((dimension & 1u) != 0u && threadIdx.x == 0u)
-    {
-        float tail = SparkLmBf16ToFloat(input_bf16, ((uint64_t)row * dimension) + dimension - 1u);
-        staged_input[dimension - 1u] = tail;
-        sum_squares = fmaf(tail, tail, sum_squares);
-    }
-    sum_squares = SparkLmBlockReduceSum(sum_squares, reduce_scratch);
-    inverse_rms = rsqrtf((sum_squares / (float)dimension) + epsilon);
-    __syncthreads();
-
-    for (element = threadIdx.x; element < (dimension >> 1u); element += blockDim.x)
-    {
-        gain_value = SparkLmLoadBf16Pair(gain_bf16, element);
-        SparkLmStoreBf16Pair(
-            output_bf16,
-            row_offset + element,
-            (staged_input[element << 1u] * inverse_rms) * gain_value.x,
-            (staged_input[(element << 1u) + 1u] * inverse_rms) * gain_value.y);
-    }
-    if ((dimension & 1u) != 0u && threadIdx.x == 0u)
-    {
-        uint64_t tail_index = ((uint64_t)row * dimension) + dimension - 1u;
-        SparkLmFloatToBf16(
-            output_bf16,
-            tail_index,
-            staged_input[dimension - 1u] * inverse_rms * SparkLmBf16ToFloat(gain_bf16, dimension - 1u));
-    }
+	extern __shared__ float staged_input[];
+	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+	uint32_t row = blockIdx.x;
+	if ( row >= row_count )
+		return;
+	SparkLmRmsNormRow(input_bf16,gain_bf16,output_bf16,row,dimension,epsilon,
+		staged_input,reduce_scratch);
 }
 
 // Fused residual-add + RMS-norm. The per-layer sequence hidden += delta then

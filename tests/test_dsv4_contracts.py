@@ -173,6 +173,8 @@ def main() -> int:
         ROOT / "modules" / "dsv4_resident_decode_stage" / "source" /
         "spark_dsv4_serving_adapter.c").read_text(encoding="utf-8")
     assert "SparkTpDeviceCollectiveSliceTopology(" in adapter_source
+    assert "#elif SPARK_DSV4_SERVING_TOPOLOGY == 13" in adapter_source
+    assert '#error "unsupported SPARK_DSV4_SERVING_TOPOLOGY"' in adapter_source
     deployment = json.loads(
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_pp13_host_rdma.spec.json").read_text(encoding="utf-8")

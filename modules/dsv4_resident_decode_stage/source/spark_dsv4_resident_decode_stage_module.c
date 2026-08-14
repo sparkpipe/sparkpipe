@@ -444,6 +444,7 @@ extern cudaError_t SparkDsv4LaunchSparseAttn(cudaStream_t stream, const void *q_
 extern cudaError_t SparkDsv4LaunchWiden(cudaStream_t stream, const void *input_bf16, float *output_f32, uint32_t row_count, uint32_t width, float scale);
 extern cudaError_t SparkDsv4LaunchApeAdd(cudaStream_t stream, float *score_f32, const float *ape_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t channels);
 extern cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream, const float *kv_f32, const float *score_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlapped, uint32_t width, void *emit_bf16, uint32_t *emitted);
+extern cudaError_t SparkDsv4LaunchKvEmission(cudaStream_t stream, void *emit_bf16, const uint32_t *emitted, const void *norm_weight_bf16, const float *freqs_f32, const uint64_t *row_emit_positions, void *cache_bf16, uint64_t cache_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t width, uint64_t base_slot, uint32_t ratio, uint32_t ring_slots, uint32_t rotate);
 extern cudaError_t SparkDsv4LaunchCacheScatter(cudaStream_t stream, const void *source_bf16, const uint32_t *emitted, void *cache_bf16, uint64_t cache_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t width, uint64_t base_slot, uint32_t ratio, uint32_t ring_slots);
 extern cudaError_t SparkDsv4LaunchInitializePages(cudaStream_t stream, void *page_pool, uint64_t page_stride_bytes, const uint32_t *page_indices, const uint32_t *parent_page_indices, uint32_t page_count, const SparkDsv4PagedScoreSpan *score_spans, uint32_t score_span_count);
 extern cudaError_t SparkDsv4LaunchUpdatePageTable(cudaStream_t stream, uint32_t *page_table, const uint32_t *update_indices, const uint32_t *update_values, uint32_t update_count);
@@ -2249,7 +2250,7 @@ static cudaError_t SparkDsv4ModuleHcEnter(SparkDsv4ModuleSlot *slot, const void 
  * normalized x, widen to fp32, ape by in-group position, the state step,
  * and for boundary rows the emitted slot gets norm, rope at the group
  * start position, the fp8 cache sim, and lands at position/ratio behind
- * the window - the host knows the boundary from the position arithmetic.
+ * the window. The fused device epilogue owns the boundary predicate.
  */
 static cudaError_t SparkDsv4ModuleRunCompressorProjection(
 	SparkDsv4ModuleSlot *slot,SparkDsv4CompressorScratch *scratch,
@@ -2277,19 +2278,14 @@ static cudaError_t SparkDsv4ModuleRunCompressorPost(SparkDsv4ModuleState *state,
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchCompressStep(stream,scratch->kv_f32,scratch->score_f32,kv_state,score_state,state_stride,slot->row_lane_indices,slot->row_positions,rows,(uint32_t)ratio,overlapped,cache_width,scratch->emit_bf16,scratch->emitted_u32);
 	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchRmsNorm(stream,scratch->emit_bf16,weights->norm_weight_bf16,scratch->emit_bf16,rows,cache_width,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
-	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchRope(stream,scratch->emit_bf16,state->compress_freqs_f32,weights->ratio == SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO ? slot->row_emit_positions_hca : slot->row_emit_positions,rows,1u,cache_width,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,0u);
-	if ( error == cudaSuccess && rotate != 0u )
-	{
-		error = SparkDsv4LaunchHadamard(stream,scratch->emit_bf16,rows,cache_width);
-		if ( error == cudaSuccess )
-			error = SparkDsv4LaunchQuantSim(stream,scratch->emit_bf16,rows,cache_width,cache_width,SPARK_DSV4_MODEL_FP4_QUANT_BLOCK,1u);
-	}
-	if ( error == cudaSuccess && rotate == 0u )
-		error = SparkDsv4LaunchQuantSim(stream,scratch->emit_bf16,rows,cache_width,cache_width - SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,SPARK_DSV4_MODEL_KV_QUANT_BLOCK,0u);
-	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchCacheScatter(stream,scratch->emit_bf16,scratch->emitted_u32,cache_base,cache_lane_stride,slot->row_lane_indices,slot->row_positions,rows,cache_width,cache_slot_offset,(uint32_t)ratio,SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS);
+		error = SparkDsv4LaunchKvEmission(stream,scratch->emit_bf16,
+			scratch->emitted_u32,weights->norm_weight_bf16,
+			state->compress_freqs_f32,
+			weights->ratio == SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO ?
+				slot->row_emit_positions_hca : slot->row_emit_positions,
+			cache_base,cache_lane_stride,slot->row_lane_indices,
+			slot->row_positions,rows,cache_width,cache_slot_offset,
+			(uint32_t)ratio,SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS,rotate);
 	return(error);
 }
 
