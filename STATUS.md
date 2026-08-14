@@ -1,5 +1,10 @@
 # SparkPipe Status — Phase 10 Hardware Handoff
 
+Current live DSV4 decode measurements are tracked in
+[`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).  The Phase 10 flags below
+describe the older source-package handoff and are not the current DSV4 runtime
+measurement status.
+
 This source tree is an implementation and qualification handoff candidate for:
 
 - Kimi K3: MXFP4 routed-expert weights, BF16 expert activations, BF16 non-expert tensors, FP32 accumulation.
