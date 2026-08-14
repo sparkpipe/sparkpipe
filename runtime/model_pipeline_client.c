@@ -4,7 +4,16 @@
 #include <string.h>
 #include <time.h>
 
+#include "model_continuation_lease.h"
 #include "spark_filesystem.h"
+
+typedef struct SparkModelPipelineLeaseSlot
+{
+	uint64_t request_id;
+	uint64_t request_generation;
+	uint64_t sequence_id;
+	SparkModelContinuationLease lease;
+} SparkModelPipelineLeaseSlot;
 
 typedef struct SparkModelPipelineTransaction
 {
@@ -20,6 +29,8 @@ typedef struct SparkModelPipelineTransaction
 	uint32_t decision_result_mask;
 	uint32_t decision_kind;
 	uint32_t completion_mask;
+	uint32_t continued;
+	uint32_t lane_count;
 	uint64_t submitted_time_ns;
 	uint64_t submission_id;
 	uint64_t request_id;
@@ -48,8 +59,11 @@ struct SparkModelPipelineClient
 	uint32_t failed_status;
 	uint32_t failed_stage_index;
 	uint32_t all_rank_mask;
+	uint32_t active_continue_lease_count;
+	uint64_t lease_generation;
 	uint64_t last_submission_id;
 	uint64_t submitted_count;
+	uint64_t continued_count;
 	uint64_t admitted_count;
 	uint64_t rejected_count;
 	uint64_t completed_count;
@@ -65,7 +79,19 @@ struct SparkModelPipelineClient
 	SparkModelResidentClient **clients;
 	SparkModelPipelineRankContext *rank_contexts;
 	SparkModelPipelineTransaction *transactions;
+	SparkModelServingLane *transaction_lanes;
+	SparkModelPipelineLeaseSlot *lease_slots;
 };
+
+static SparkModelServingLane *SparkModelPipelineClientTransactionLanes(
+	SparkModelPipelineClient *pipeline,
+	SparkModelPipelineTransaction *transaction)
+{
+	uint64_t index;
+	index = (uint64_t)(transaction - pipeline->transactions) *
+		pipeline->runtime_limits.max_active_sequence_count;
+	return(&pipeline->transaction_lanes[index]);
+}
 
 static uint64_t SparkModelPipelineClientMonotonicNanoseconds(void)
 {
@@ -91,6 +117,7 @@ static SparkModelPipelineTransaction *SparkModelPipelineClientReserve(
 	const SparkModelServingSubmission *submission)
 {
 	SparkModelPipelineTransaction *transaction;
+	SparkModelServingLane *lanes;
 	uint32_t index;
 	for (index=0u; index<pipeline->transaction_capacity; index++)
 	{
@@ -102,6 +129,7 @@ static SparkModelPipelineTransaction *SparkModelPipelineClientReserve(
 			transaction->work_kind = submission->work_kind;
 			transaction->active_sequence_count = submission->active_sequence_count;
 			transaction->row_count = submission->row_count;
+			transaction->lane_count = submission->active_sequence_count;
 			transaction->status = SPARK_STATUS_OK;
 			if ( pipeline->stage_completion_function != 0 )
 				transaction->submitted_time_ns = SparkModelPipelineClientMonotonicNanoseconds();
@@ -112,9 +140,12 @@ static SparkModelPipelineTransaction *SparkModelPipelineClientReserve(
 			transaction->control_generation = submission->control_generation;
 			transaction->transaction_id = submission->transaction_id;
 			transaction->dispatch_generation = submission->dispatch_generation;
-				transaction->request_generation = submission->request_generation;
-				transaction->step_generation = submission->step_generation;
-				transaction->residency = submission->residency;
+			transaction->request_generation = submission->request_generation;
+			transaction->step_generation = submission->step_generation;
+			transaction->residency = submission->residency;
+			lanes = SparkModelPipelineClientTransactionLanes(pipeline,transaction);
+			memcpy(lanes,submission->lanes,submission->active_sequence_count *
+				sizeof(lanes[0]));
 			pipeline->active_transaction_count++;
 			return(transaction);
 		}
@@ -143,17 +174,113 @@ static void SparkModelPipelineClientSetFailure(
 	SparkStatus status,
 	uint32_t stage_index)
 {
+	uint32_t rank,slot;
 	if ( pipeline->failed_status != SPARK_STATUS_OK )
 		return;
 	pipeline->failed_status = status;
 	pipeline->failed_stage_index = stage_index;
+	for (rank=0u; rank<pipeline->rank_count; rank++)
+		SparkModelResidentClientFailStop(pipeline->clients[rank]);
+	for (slot=0u; slot<pipeline->runtime_limits.resident_sequence_capacity;
+		slot++)
+	{
+		memset(&pipeline->lease_slots[slot],0,
+			sizeof(pipeline->lease_slots[slot]));
+	}
+	pipeline->active_continue_lease_count = 0u;
+}
+
+static uint32_t SparkModelPipelineClientLeaseMatches(
+	const SparkModelPipelineClient *pipeline,
+	const SparkModelServingLane *lane,
+	uint64_t control_generation)
+{
+	const SparkModelPipelineLeaseSlot *slot;
+	SparkStatus status;
+	if ( lane->resident_sequence_slot >=
+		pipeline->runtime_limits.resident_sequence_capacity )
+		return(0u);
+	slot = &pipeline->lease_slots[lane->resident_sequence_slot];
+	if ( slot->request_id != lane->request_id ||
+		slot->request_generation != lane->request_generation ||
+		slot->sequence_id != lane->sequence_id )
+		return(0u);
+	status = SparkModelContinuationLeaseValidate(&slot->lease,
+		pipeline->lease_generation,control_generation,lane->sequence_position,
+		lane->step_generation);
+	return(status == SPARK_STATUS_OK ? 1u : 0u);
+}
+
+static uint32_t SparkModelPipelineClientCanContinue(
+	const SparkModelPipelineClient *pipeline,
+	const SparkModelServingSubmission *submission)
+{
+	uint32_t lane;
+	if ( (pipeline->adapter_descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) == 0u )
+		return(0u);
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+		if ( SparkModelPipelineClientLeaseMatches(pipeline,
+			&submission->lanes[lane],submission->control_generation) == 0u )
+			return(0u);
+	return(1u);
+}
+
+static void SparkModelPipelineClientInvalidateLease(
+	SparkModelPipelineClient *pipeline,
+	uint32_t resident_sequence_slot)
+{
+	SparkModelPipelineLeaseSlot *slot;
+	slot = &pipeline->lease_slots[resident_sequence_slot];
+	if ( SparkModelContinuationLeaseIsActive(&slot->lease) != 0u )
+		pipeline->active_continue_lease_count--;
+	memset(slot,0,sizeof(*slot));
+}
+
+static SparkStatus SparkModelPipelineClientUpdateLeases(
+	SparkModelPipelineClient *pipeline,
+	SparkModelPipelineTransaction *transaction)
+{
+	SparkModelPipelineLeaseSlot *slot;
+	SparkModelServingLane *lanes;
+	SparkStatus status;
+	uint32_t lane;
+	if ( (pipeline->adapter_descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) == 0u )
+		return(SPARK_STATUS_OK);
+	lanes = SparkModelPipelineClientTransactionLanes(pipeline,transaction);
+	for (lane=0u; lane<transaction->lane_count; lane++)
+	{
+		slot = &pipeline->lease_slots[lanes[lane].resident_sequence_slot];
+		if ( transaction->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		{
+			SparkModelPipelineClientInvalidateLease(pipeline,
+				lanes[lane].resident_sequence_slot);
+			continue;
+		}
+		if ( SparkModelContinuationLeaseIsActive(&slot->lease) == 0u )
+			pipeline->active_continue_lease_count++;
+		slot->request_id = lanes[lane].request_id;
+		slot->request_generation = lanes[lane].request_generation;
+		slot->sequence_id = lanes[lane].sequence_id;
+		status = SparkModelContinuationLeaseEstablish(&slot->lease,
+			pipeline->lease_generation,transaction->control_generation,
+			lanes[lane].context_token_count,lanes[lane].step_generation);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelPipelineClientReportResult(
 	SparkModelPipelineClient *pipeline,
 	SparkModelPipelineTransaction *transaction)
 {
-	if ( transaction->result_reported != 0u || transaction->result_mask != pipeline->all_rank_mask || transaction->decision_kind == 0u || transaction->decision_result_mask != transaction->decision_expected_mask )
+	if ( transaction->result_reported != 0u ||
+		transaction->result_mask != pipeline->all_rank_mask )
+		return;
+	if ( transaction->continued == 0u && (transaction->decision_kind == 0u ||
+		transaction->decision_result_mask != transaction->decision_expected_mask) )
 		return;
 	transaction->result_reported = 1u;
 	if ( transaction->status == SPARK_STATUS_OK )
@@ -171,8 +298,19 @@ static void SparkModelPipelineClientReportCompletion(
 	SparkModelServingCompletion completion;
 	SparkModelServingCompletionFunction completion_function;
 	void *completion_context;
+	SparkStatus lease_status;
 	if ( transaction->result_reported == 0u || transaction->completion_mask != pipeline->all_rank_mask )
 		return;
+	if ( transaction->status == SPARK_STATUS_OK )
+	{
+		lease_status = SparkModelPipelineClientUpdateLeases(pipeline,transaction);
+		if ( lease_status != SPARK_STATUS_OK )
+		{
+			SparkModelPipelineClientRecordFailure(transaction,lease_status);
+			SparkModelPipelineClientSetFailure(pipeline,lease_status,
+				SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX);
+		}
+	}
 	if ( transaction->status == SPARK_STATUS_OK )
 		completion = transaction->final_completion;
 	else
@@ -207,6 +345,19 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 	uint32_t rank;
 	if ( transaction->result_mask != pipeline->all_rank_mask || transaction->decision_kind != 0u )
 		return(SPARK_STATUS_OK);
+	if ( transaction->continued != 0u )
+	{
+		if ( transaction->status != SPARK_STATUS_OK )
+		{
+			SparkModelPipelineClientSetFailure(pipeline,
+				(SparkStatus)transaction->status,
+				SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX);
+			return((SparkStatus)transaction->status);
+		}
+		SparkModelPipelineClientReportResult(pipeline,transaction);
+		SparkModelPipelineClientReportCompletion(pipeline,transaction);
+		return(SPARK_STATUS_OK);
+	}
 	status = SPARK_STATUS_OK;
 	if ( transaction->status == SPARK_STATUS_OK )
 	{
@@ -323,7 +474,12 @@ static void SparkModelPipelineClientRankResult(
 	if ( status == SPARK_STATUS_OK )
 		transaction->prepared_mask |= rank_mask;
 	else
+	{
 		SparkModelPipelineClientRecordFailure(transaction,status);
+		if ( transaction->continued != 0u )
+			SparkModelPipelineClientSetFailure(context->pipeline,status,
+				context->stage_index);
+	}
 	(void)SparkModelPipelineClientResolveAdmission(context->pipeline,transaction);
 }
 
@@ -386,7 +542,12 @@ static void SparkModelPipelineClientRankCompletion(
 	context = (SparkModelPipelineRankContext *)completion_context;
 	transaction = context != 0 && completion != 0 ? SparkModelPipelineClientFind(context->pipeline,completion->submission_id) : 0;
 	rank_mask = context != 0 ? UINT32_C(1) << context->stage_index : 0u;
-	if ( transaction == 0 || transaction->decision_kind != SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT || transaction->decision_expected_mask != context->pipeline->all_rank_mask || (transaction->result_mask & rank_mask) == 0u || (transaction->prepared_mask & rank_mask) == 0u || (transaction->completion_mask & rank_mask) != 0u )
+	if ( transaction == 0 || (transaction->continued == 0u &&
+		(transaction->decision_kind != SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT ||
+		 transaction->decision_expected_mask != context->pipeline->all_rank_mask)) ||
+		(transaction->result_mask & rank_mask) == 0u ||
+		(transaction->prepared_mask & rank_mask) == 0u ||
+		(transaction->completion_mask & rank_mask) != 0u )
 	{
 		if ( context != 0 )
 			SparkModelPipelineClientSetFailure(context->pipeline,SPARK_STATUS_SCHEMA_ERROR,context->stage_index);
@@ -444,6 +605,7 @@ static SparkStatus SparkModelPipelineClientInitializeState(
 		return(status);
 	pipeline->rank_count = configuration->deployment->node_count;
 	pipeline->transaction_capacity = configuration->deployment->runtime_limits.max_inflight_submission_count;
+	pipeline->lease_generation = 1u;
 	pipeline->failed_stage_index = SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX;
 	pipeline->all_rank_mask = (UINT32_C(1) << pipeline->rank_count) - 1u;
 	pipeline->runtime_limits = configuration->deployment->runtime_limits;
@@ -457,7 +619,17 @@ static SparkStatus SparkModelPipelineClientInitializeState(
 	pipeline->clients = (SparkModelResidentClient **)calloc(pipeline->rank_count,sizeof(pipeline->clients[0]));
 	pipeline->rank_contexts = (SparkModelPipelineRankContext *)calloc(pipeline->rank_count,sizeof(pipeline->rank_contexts[0]));
 	pipeline->transactions = (SparkModelPipelineTransaction *)calloc(pipeline->transaction_capacity,sizeof(pipeline->transactions[0]));
-	return(pipeline->clients != 0 && pipeline->rank_contexts != 0 && pipeline->transactions != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
+	pipeline->transaction_lanes = (SparkModelServingLane *)calloc(
+		(uint64_t)pipeline->transaction_capacity *
+		pipeline->runtime_limits.max_active_sequence_count,
+		sizeof(pipeline->transaction_lanes[0]));
+	pipeline->lease_slots = (SparkModelPipelineLeaseSlot *)calloc(
+		pipeline->runtime_limits.resident_sequence_capacity,
+		sizeof(pipeline->lease_slots[0]));
+	return(pipeline->clients != 0 && pipeline->rank_contexts != 0 &&
+		pipeline->transactions != 0 && pipeline->transaction_lanes != 0 &&
+		pipeline->lease_slots != 0 ? SPARK_STATUS_OK :
+		SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 
 static SparkStatus SparkModelPipelineClientConnectRank(
@@ -526,6 +698,8 @@ void SparkModelPipelineClientDestroy(SparkModelPipelineClient *pipeline)
 	if ( pipeline->clients != 0 )
 		for (rank=0u; rank<pipeline->rank_count; rank++)
 			SparkModelResidentClientDestroy(pipeline->clients[rank]);
+	free(pipeline->lease_slots);
+	free(pipeline->transaction_lanes);
 	free(pipeline->transactions);
 	free(pipeline->rank_contexts);
 	free(pipeline->clients);
@@ -561,7 +735,7 @@ SparkStatus SparkModelPipelineClientSubmit(
 {
 	SparkModelPipelineTransaction *transaction;
 	SparkStatus status;
-	uint32_t failed_stage_index,rank;
+	uint32_t continuation,failed_stage_index,rank;
 	if ( pipeline == 0 || submission == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pipeline->failed_status != SPARK_STATUS_OK )
@@ -578,12 +752,25 @@ SparkStatus SparkModelPipelineClientSubmit(
 			SparkModelPipelineClientSetFailure(pipeline,status,failed_stage_index);
 		return(status);
 	}
+	continuation = SparkModelPipelineClientCanContinue(pipeline,submission);
+	if ( continuation != 0u )
+	{
+		for (rank=0u; status==SPARK_STATUS_OK && rank<pipeline->rank_count;
+			rank++)
+			status = SparkModelResidentClientCanQueueContinuation(
+				pipeline->clients[rank],submission);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
 	transaction = SparkModelPipelineClientReserve(pipeline,submission);
 	if ( transaction == 0 )
 		return(SPARK_STATUS_BUSY);
+	transaction->continued = continuation;
 	for (rank=0u; rank<pipeline->rank_count; rank++)
 	{
-		status = SparkModelResidentClientPrepare(pipeline->clients[rank],submission);
+		status = continuation != 0u ? SparkModelResidentClientContinue(
+			pipeline->clients[rank],submission) : SparkModelResidentClientPrepare(
+			pipeline->clients[rank],submission);
 		if ( status != SPARK_STATUS_OK )
 		{
 			SparkModelPipelineClientRecordFailure(transaction,status);
@@ -593,6 +780,8 @@ SparkStatus SparkModelPipelineClientSubmit(
 	}
 	pipeline->last_submission_id = submission->submission_id;
 	pipeline->submitted_count++;
+	if ( continuation != 0u )
+		pipeline->continued_count++;
 	return(SPARK_STATUS_OK);
 }
 
@@ -694,7 +883,9 @@ SparkStatus SparkModelPipelineClientGetView(
 	view->transaction_capacity = pipeline->transaction_capacity;
 	view->failed_status = pipeline->failed_status;
 	view->failed_stage_index = pipeline->failed_stage_index;
+	view->active_continue_lease_count = pipeline->active_continue_lease_count;
 	view->submitted_count = pipeline->submitted_count;
+	view->continued_count = pipeline->continued_count;
 	view->admitted_count = pipeline->admitted_count;
 	view->rejected_count = pipeline->rejected_count;
 	view->completed_count = pipeline->completed_count;

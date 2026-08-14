@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <string.h>
 
+#include "runtime/model_continuation_lease.h"
 #include "sparkpipe/spark_model_resident_ipc.h"
 
 static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
@@ -51,9 +52,11 @@ static void TestHello(void)
 	assert(SparkModelResidentIpcValidateHello(&hello,sizeof(hello),1u,1u,&descriptor) == SPARK_STATUS_OK);
 	hello.model_revision[0] = 'x';
 	assert(SparkModelResidentIpcValidateHello(&hello,sizeof(hello),1u,1u,&descriptor) == SPARK_STATUS_TARGET_MISMATCH);
-	assert(SparkModelResidentIpcInitializeHelloAck(&ack,7u,SPARK_STATUS_OK,1u,1u,&descriptor,&limits) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcInitializeHelloAck(&ack,7u,SPARK_STATUS_OK,1u,
+		1u,13u,&descriptor,&limits) == SPARK_STATUS_OK);
 	assert(SparkModelResidentIpcValidateHelloAck(&ack,sizeof(ack),7u,1u,1u,&descriptor,&limits) == SPARK_STATUS_OK);
 	assert(ack.header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_HELLO_ACK);
+	assert(ack.client_generation == 13u);
 	assert(ack.max_inflight_submission_count == 2u);
 	assert(ack.max_active_sequence_count == 8u);
 	assert(ack.max_input_row_count == 16u);
@@ -183,6 +186,18 @@ static void TestSubmissionRoundTrip(void)
 	assert(SparkModelResidentIpcEncodePreparation(&submission,6u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
 	assert(((const SparkModelResidentIpcHeader *)buffer)->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE);
 	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcEncodeContinuation(&submission,7u,13u,buffer,
+		sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+	wire = (SparkModelResidentIpcSubmit *)buffer;
+	assert(wire->header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE);
+	assert(wire->client_generation == 13u);
+	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) ==
+		SPARK_STATUS_OK);
+	wire->client_generation = 0u;
+	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) ==
+		SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentIpcEncodeContinuation(&submission,7u,0u,buffer,
+		sizeof(buffer),&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
 	submission.hidden_input_address = buffer;
 	submission.hidden_input_bytes = sizeof(buffer);
 	assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
@@ -196,6 +211,35 @@ static void TestSubmissionRoundTrip(void)
 	wire = (SparkModelResidentIpcSubmit *)buffer;
 	wire->row_positions_offset++;
 	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_SCHEMA_ERROR);
+}
+
+static void TestContinuationLease(void)
+{
+	SparkModelContinuationLease leases[2];
+	uint32_t order[2] = {1u,0u};
+	uint32_t index;
+	memset(leases,0,sizeof(leases));
+	assert(SparkModelContinuationLeaseIsActive(&leases[0]) == 0u);
+	assert(SparkModelContinuationLeaseEstablish(&leases[0],7u,3u,41u,11u) ==
+		SPARK_STATUS_OK);
+	assert(SparkModelContinuationLeaseEstablish(&leases[1],7u,3u,99u,14u) ==
+		SPARK_STATUS_OK);
+	for (index=0u; index<2u; index++)
+		assert(SparkModelContinuationLeaseValidate(&leases[order[index]],7u,3u,
+			order[index] == 0u ? 41u : 99u,
+			order[index] == 0u ? 15u : 16u) == SPARK_STATUS_OK);
+	assert(SparkModelContinuationLeaseValidate(&leases[0],8u,3u,41u,15u) ==
+		SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelContinuationLeaseValidate(&leases[0],7u,4u,41u,15u) ==
+		SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelContinuationLeaseValidate(&leases[0],7u,3u,42u,15u) ==
+		SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelContinuationLeaseValidate(&leases[0],7u,3u,41u,11u) ==
+		SPARK_STATUS_SCHEMA_ERROR);
+	SparkModelContinuationLeaseInvalidate(&leases[0]);
+	assert(SparkModelContinuationLeaseIsActive(&leases[0]) == 0u);
+	assert(SparkModelContinuationLeaseValidate(&leases[0],7u,3u,41u,15u) ==
+		SPARK_STATUS_NOT_FOUND);
 }
 
 static void TestCompletionRoundTrip(void)
@@ -280,5 +324,6 @@ int main(void)
 	TestCompletionRoundTrip();
 	TestIndependentPrefillMessageCapacity();
 	TestDirectSubmitDescriptorGuard();
+	TestContinuationLease();
 	return(0);
 }

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION 9u
+#define SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION 10u
 #define SPARK_MODEL_RESIDENT_CLIENT_MAX_QUEUE_CAPACITY 256u
 #define SPARK_MODEL_RESIDENT_CLIENT_POLL_READ UINT32_C(0x00000001)
 #define SPARK_MODEL_RESIDENT_CLIENT_POLL_WRITE UINT32_C(0x00000002)
@@ -75,8 +75,10 @@ typedef struct SparkModelResidentClientView
 	uint32_t kv_logical_page_capacity;
 	uint32_t kv_physical_page_capacity;
 	uint32_t prepared_submission_count;
+	uint64_t client_generation;
 	uint64_t submitted_count;
 	uint64_t prepared_count;
+	uint64_t continued_count;
 	uint64_t admitted_count;
 	uint64_t rejected_count;
 	uint64_t aborted_count;
@@ -94,10 +96,17 @@ SparkStatus SparkModelResidentClientConnect(
 	const SparkModelResidentClientConfiguration *configuration,
 	SparkModelResidentClient **client_out);
 void SparkModelResidentClientDestroy(SparkModelResidentClient *client);
+void SparkModelResidentClientFailStop(SparkModelResidentClient *client);
 SparkStatus SparkModelResidentClientSubmit(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission);
 SparkStatus SparkModelResidentClientPrepare(
+	SparkModelResidentClient *client,
+	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelResidentClientCanQueueContinuation(
+	const SparkModelResidentClient *client,
+	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelResidentClientContinue(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission);
 SparkStatus SparkModelResidentClientCanQueueDecision(

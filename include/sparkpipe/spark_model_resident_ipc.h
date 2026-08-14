@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 13u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 14u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -23,6 +23,7 @@ extern "C" {
 #define SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE 6u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_DECISION 7u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_DECISION_RESULT 8u
+#define SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE 9u
 
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT 1u
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT 2u
@@ -56,6 +57,7 @@ typedef struct SparkModelResidentIpcHello
 typedef struct SparkModelResidentIpcHelloAck
 {
 	SparkModelResidentIpcHeader header;
+	uint64_t client_generation;
 	uint32_t status;
 	uint32_t rank_index;
 	uint32_t stage_index;
@@ -92,6 +94,7 @@ typedef struct SparkModelResidentIpcSubmit
 	uint64_t sequence_id;
 	uint64_t sequence_position;
 	uint64_t deadline_time_ns;
+	uint64_t client_generation;
 	uint64_t control_generation;
 	uint64_t transaction_id;
 	uint64_t dispatch_generation;
@@ -212,6 +215,7 @@ SparkStatus SparkModelResidentIpcInitializeHelloAck(
 	SparkStatus status,
 	uint32_t rank_index,
 	uint32_t stage_index,
+	uint64_t client_generation,
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingRuntimeLimits *runtime_limits);
 SparkStatus SparkModelResidentIpcValidateHelloAck(
@@ -264,6 +268,13 @@ SparkStatus SparkModelResidentIpcEncodeSubmission(
 SparkStatus SparkModelResidentIpcEncodePreparation(
 	const SparkModelServingSubmission *submission,
 	uint64_t message_id,
+	void *message_buffer,
+	uint32_t message_capacity,
+	uint32_t *message_bytes_out);
+SparkStatus SparkModelResidentIpcEncodeContinuation(
+	const SparkModelServingSubmission *submission,
+	uint64_t message_id,
+	uint64_t client_generation,
 	void *message_buffer,
 	uint32_t message_capacity,
 	uint32_t *message_bytes_out);

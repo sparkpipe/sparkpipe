@@ -143,6 +143,16 @@ static void TestDescriptor(void)
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
 	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
+	TestBuildDescriptor(&descriptor);
+	descriptor.capability_flags |=
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
+	descriptor.capability_flags &=
+		~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV;
+	descriptor.resident_sequence_slot_reuse =
+		SPARK_MODEL_SERVING_SLOT_REUSE_NONE;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void TestHybridDescriptor(void)
