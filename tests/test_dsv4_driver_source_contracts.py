@@ -151,11 +151,12 @@ def main() -> None:
 	require(common, "SparkLmHostLaunchSm121NativeLinear<", "B8/B1024 native output-composition linear")
 	require(common, "(uint64_t)row * output_row_stride + output_offset +", "B>1 output-composition row stride")
 	attention = function_body(module, "SparkDsv4ModuleRunAttention(")
-	require(attention, "SparkDsv4LaunchLinear(stream,&layer->attn.wo_b",
+	attention_tail = function_body(module, "SparkDsv4ModuleRunAttentionTail(")
+	require(attention_tail, "SparkDsv4LaunchLinear(stream,&layer->attn.wo_b",
 		"column-parallel WO full-hidden partial")
-	reject(attention, "state->tp_rank * local_hidden",
+	reject(attention_tail, "state->tp_rank * local_hidden",
 		"diagonal WO rank-row write")
-	overlap = function_body(module, "SparkDsv4ModuleRunAttentionOverlap(")
+	overlap = function_body(module, "SparkDsv4ModuleRunAttentionProjectedPrologue(")
 	require(overlap, "SparkStageModuleCudaForkBegin(fork,primary,branch_count)",
 		"compressed-attention compressor fork dependency")
 	require(overlap, "fork->auxiliary_streams[1]",
@@ -166,9 +167,8 @@ def main() -> None:
 		"compressed-attention query-rank milestone")
 	require(overlap, "SparkStageModuleCudaForkJoin(fork,primary,branch_count)",
 		"compressed-attention join dependency")
-	require(attention,
-		"state->tp_degree > 1u &&",
-		"all-width TP attention overlap gate")
+	require(module, "SparkDsv4ModuleRunAttentionProjected",
+		"all-width TP projected attention path")
 	reject(attention, "kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA",
 		"SWA overlap exclusion")
 	reject(attention, "rows == 1u", "B1-only attention overlap gate")
@@ -194,6 +194,14 @@ def main() -> None:
 		"in-place full-hidden TP reduction")
 	require(cuda, "SparkDsv4LaunchIndexerScore", "lightning indexer")
 	require(cuda, "SparkDsv4BuildAttentionIndicesKernel", "device attention-index assembly")
+	require(cuda, "attention_slots = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS +",
+		"CSA fixed index-column offset")
+	require(cuda, "valid_topk = min(__ldg(valid_topk_counts + row),topk);",
+		"row-valid sparse-attention bound")
+	require(cuda, "if ( split_index >= active_split_count )",
+		"inactive sparse-attention split rejection")
+	require(cuda, "__ldg(valid_topk_counts + row),split_count);",
+		"row-valid sparse-attention merge bound")
 	require(cuda, "SparkDsv4AttentionWindowSlot(position,column", "chronological ring attention indices")
 	require(cuda, "SparkDsv4CacheScatterKernel", "device KV cache scatter")
 	require(cuda, "pooled = 0.0f;", "initialized non-emitting compressor row")

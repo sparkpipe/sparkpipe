@@ -1,7 +1,10 @@
 #include "cuda_runtime_api.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+static uint32_t cuda_capture_depth;
 
 cudaError_t cudaMalloc(void **pointer, size_t bytes)
 {
@@ -192,7 +195,10 @@ cudaError_t cudaLaunchHostFunc(
     {
         return cudaErrorMemoryAllocation;
     }
-    function(user_data);
+    if (cuda_capture_depth == 0u)
+    {
+        function(user_data);
+    }
     return cudaSuccess;
 }
 
@@ -202,6 +208,7 @@ cudaError_t cudaStreamBeginCapture(
 {
     (void)stream;
     (void)mode;
+    cuda_capture_depth += 1u;
     return cudaSuccess;
 }
 
@@ -210,6 +217,11 @@ cudaError_t cudaStreamEndCapture(
     cudaGraph_t *graph)
 {
     (void)stream;
+    if (cuda_capture_depth == 0u)
+    {
+        return cudaErrorInvalidValue;
+    }
+    cuda_capture_depth -= 1u;
     if (graph == 0)
     {
         return cudaErrorMemoryAllocation;

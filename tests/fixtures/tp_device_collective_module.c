@@ -46,6 +46,7 @@ typedef struct TestTpDeviceCollectiveGlobal
     TestTpDeviceCollectiveState *receivers[TEST_TP_DEVICE_COLLECTIVE_MAX_STEPS];
     atomic_uint reserve_gate_credit_plus_one;
     atomic_uint send_gate_credit_plus_one;
+    atomic_uint release_gate_credit_plus_one;
     atomic_uint reverse_completion_order;
     atomic_uint host_memory_mode;
     atomic_ullong metrics[11];
@@ -65,6 +66,8 @@ static void TestTpDeviceCollectiveInitializeGlobal(void)
         &TestTpDeviceCollectiveGlobalState.reserve_gate_credit_plus_one,0u);
     atomic_init(
         &TestTpDeviceCollectiveGlobalState.send_gate_credit_plus_one,0u);
+    atomic_init(
+        &TestTpDeviceCollectiveGlobalState.release_gate_credit_plus_one,0u);
     atomic_init(
         &TestTpDeviceCollectiveGlobalState.reverse_completion_order,0u);
     atomic_init(&TestTpDeviceCollectiveGlobalState.host_memory_mode,0u);
@@ -91,6 +94,8 @@ void TestTpDeviceCollectiveReset(void)
     atomic_store_explicit(&global->reserve_gate_credit_plus_one,0u,
         memory_order_release);
     atomic_store_explicit(&global->send_gate_credit_plus_one,0u,
+        memory_order_release);
+    atomic_store_explicit(&global->release_gate_credit_plus_one,0u,
         memory_order_release);
     atomic_store_explicit(&global->reverse_completion_order,0u,
         memory_order_release);
@@ -135,6 +140,24 @@ void TestTpDeviceCollectiveReleaseSendGate(void)
 
     global = TestTpDeviceCollectiveGlobalGet();
     atomic_store_explicit(&global->send_gate_credit_plus_one,0u,
+        memory_order_release);
+}
+
+void TestTpDeviceCollectiveSetReleaseGate(uint32_t credit_index)
+{
+    TestTpDeviceCollectiveGlobal *global;
+
+    global = TestTpDeviceCollectiveGlobalGet();
+    atomic_store_explicit(&global->release_gate_credit_plus_one,
+        credit_index + 1u,memory_order_release);
+}
+
+void TestTpDeviceCollectiveReleaseReleaseGate(void)
+{
+    TestTpDeviceCollectiveGlobal *global;
+
+    global = TestTpDeviceCollectiveGlobalGet();
+    atomic_store_explicit(&global->release_gate_credit_plus_one,0u,
         memory_order_release);
 }
 
@@ -628,6 +651,11 @@ static SparkStatus TestTpDeviceCollectiveReleasePersistentReceive(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     global = TestTpDeviceCollectiveGlobalGet();
+    if (atomic_load_explicit(&global->release_gate_credit_plus_one,
+            memory_order_acquire) == credit_index + 1u)
+    {
+        return SPARK_STATUS_BUSY;
+    }
     state->activated[credit_index] = 0u;
     state->returned_generations[credit_index] = generation;
     sender = global->senders[state->step_index];

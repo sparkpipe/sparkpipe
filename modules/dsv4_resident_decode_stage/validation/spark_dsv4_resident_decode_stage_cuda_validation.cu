@@ -284,13 +284,24 @@ static int SparkDsv4ValidationReadUnsigned(
 	char *end;
 	unsigned long parsed;
 	text = getenv(name);
-	if ( text == 0 || text[0] == '\0' || value == 0 )
+	if ( value == 0 )
+	{
+		fprintf(stderr,"dsv4_validation field=%s destination=null\n",name);
 		return(1);
+	}
+	if ( text == 0 || text[0] == '\0' )
+	{
+		fprintf(stderr,"dsv4_validation field=%s value=missing range=%u..%u\n",name,minimum,maximum);
+		return(1);
+	}
 	errno = 0;
 	end = 0;
 	parsed = strtoul(text,&end,10);
 	if ( errno != 0 || end == text || end[0] != '\0' || parsed < minimum || parsed > maximum )
+	{
+		fprintf(stderr,"dsv4_validation field=%s value=%s range=%u..%u\n",name,text,minimum,maximum);
 		return(1);
+	}
 	*value = (uint32_t)parsed;
 	return(0);
 }

@@ -3,7 +3,7 @@
   "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
   "stage_pack_path": "packs/dsv4_flash_tp4_pp4_stage.spstage",
   "max_sequence_positions": 4096,
-  "cuda_graph_count_by_pp_stage": [23, 23, 23, 21],
+  "cuda_graph_count_by_pp_stage": [34, 34, 34, 31],
   "tp_collective": {
     "backend": "hidden_transport",
     "backend_module_path": "lib/hidden_transport.so",

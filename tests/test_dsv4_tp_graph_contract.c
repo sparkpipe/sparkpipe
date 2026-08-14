@@ -6,9 +6,9 @@
 int main(void)
 {
 	assert(SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(0u) == 0u);
-	assert(SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(10u) == 21u);
-	assert(SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(11u) == 23u);
-	assert(SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(43u) == 87u);
+	assert(SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(10u) == 31u);
+	assert(SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(11u) == 34u);
+	assert(SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(43u) == 130u);
 	assert(SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT) ==
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_ISLAND_COUNT);

@@ -3,7 +3,7 @@
   "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
   "stage_pack_path": "tests/fixtures/dsv4-stage-12.spstage",
   "max_sequence_positions": 4096,
-  "cuda_graph_count_by_pp_stage": [23, 23, 23],
+  "cuda_graph_count_by_pp_stage": [34, 34, 34],
   "tp_collective": {
     "backend": "nccl",
     "backend_module_path": "lib/runtime_libs/libnccl.so.2",

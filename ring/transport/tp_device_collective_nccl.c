@@ -705,6 +705,9 @@ static SparkStatus SparkTpNcclValidateSubmission(const SparkTpDeviceCollective *
 		submission->descriptor_bytes != sizeof(*submission) ||
 		submission->active_sequence_count == 0u ||
 		submission->active_sequence_count > collective->max_active_sequence_count ||
+		(submission->flags & ~SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_KNOWN_FLAGS) != 0u ||
+		(submission->flags &
+		 SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_EXTERNAL_GRAPH_ORDER) != 0u ||
 		submission->local_device == 0 || submission->full_device == 0 ||
 		submission->cuda_stream == 0 || submission->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);

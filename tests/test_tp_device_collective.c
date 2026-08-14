@@ -46,6 +46,8 @@ typedef struct TestTransportControls
     TestVoidFunction release_reserve_gate;
     TestCreditFunction set_send_gate;
     TestVoidFunction release_send_gate;
+    TestCreditFunction set_release_gate;
+    TestVoidFunction release_release_gate;
     TestToggleFunction set_reverse_completion_order;
     TestToggleFunction set_host_memory_mode;
     TestMetricFunction metric;
@@ -106,6 +108,12 @@ typedef struct TestCombineState
 {
     atomic_uint count;
 } TestCombineState;
+
+typedef struct TestRelayState
+{
+    TestCombineState combine;
+    atomic_uint relay_count;
+} TestRelayState;
 
 static uint8_t TestSendBuffers[TEST_STEP_COUNT]
     [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][128u];
@@ -241,6 +249,31 @@ static SparkStatus TestCombineBf16(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus TestCombineRelayBf16(
+    void *context,
+    void *destination_device,
+    const void *source_device,
+    void *relay_device,
+    uint32_t active_sequence_count,
+    uint32_t hidden_dimension,
+    void *cuda_stream)
+{
+    TestRelayState *state;
+    SparkStatus status;
+    uint32_t bytes;
+
+    state = (TestRelayState *)context;
+    assert(state != 0 && relay_device != 0);
+    status = TestCombineBf16(&state->combine,destination_device,
+        source_device,active_sequence_count,hidden_dimension,cuda_stream);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    bytes = active_sequence_count * hidden_dimension * sizeof(uint16_t);
+    memcpy(relay_device,destination_device,bytes);
+    atomic_fetch_add_explicit(&state->relay_count,1u,memory_order_relaxed);
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus TestCombineU64Max(
     void *context,
     uint64_t *destination_device,
@@ -265,6 +298,15 @@ static SparkStatus TestCombineU64Max(
             memcpy(destination_device + element,&source,sizeof(source));
     }
     atomic_fetch_add_explicit(&state->count,1u,memory_order_relaxed);
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus TestSignalU32(
+    void *context,void *device_word,uint32_t value,void *cuda_stream)
+{
+    (void)context;
+    assert(device_word != 0 && value != 0u && cuda_stream != 0);
+    __atomic_store_n((uint32_t *)device_word,value,__ATOMIC_RELEASE);
     return SPARK_STATUS_OK;
 }
 
@@ -295,6 +337,10 @@ static void TestLoadControls(TestTransportControls *controls)
         controls->library,"TestTpDeviceCollectiveSetSendGate");
     controls->release_send_gate = (TestVoidFunction)TestRequiredSymbol(
         controls->library,"TestTpDeviceCollectiveReleaseSendGate");
+    controls->set_release_gate = (TestCreditFunction)TestRequiredSymbol(
+        controls->library,"TestTpDeviceCollectiveSetReleaseGate");
+    controls->release_release_gate = (TestVoidFunction)TestRequiredSymbol(
+        controls->library,"TestTpDeviceCollectiveReleaseReleaseGate");
     controls->set_reverse_completion_order =
         (TestToggleFunction)TestRequiredSymbol(controls->library,
             "TestTpDeviceCollectiveSetReverseCompletionOrder");
@@ -369,6 +415,18 @@ static void TestWaitForCompletion(TestCompletionState *state)
         sched_yield();
     }
     assert(atomic_load_explicit(&state->count,memory_order_acquire) == 1u);
+}
+
+static void TestWaitForAtomicCount(atomic_uint *count,uint32_t wanted)
+{
+    uint64_t deadline;
+
+    deadline = TestNowMilli() + TEST_WAIT_MILLI;
+    while (atomic_load_explicit(count,memory_order_acquire) != wanted)
+    {
+        assert(TestNowMilli() < deadline);
+        sched_yield();
+    }
 }
 
 static void TestWaitForPhase(
@@ -597,6 +655,8 @@ static void TestAllReduceSumAndBoundedCredits(
     submission.descriptor_bytes = sizeof(submission);
     submission.slot_index = 2u;
     submission.active_sequence_count = 2u;
+    submission.flags =
+        SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
     submission.ordinal = 0u;
     submission.local_device = values;
     submission.full_device = values;
@@ -856,6 +916,131 @@ static void TestMappedHostStaging(TestTransportControls *controls)
     assert(((uint16_t *)TestReceiveBuffers[1u][0u])[0] == 6u);
     SparkTpDeviceCollectiveDestroy(&collective);
     controls->set_host_memory_mode(0u);
+}
+
+static void TestDirectBf16Relay(TestTransportControls *controls)
+{
+    SparkTpDeviceCollective collective;
+    SparkTpDeviceCollectiveConfig configuration;
+    SparkTpDeviceCollectiveSubmission submission;
+    TestCompletionState completion;
+    TestRelayState relay;
+    uint16_t *values;
+    uint32_t element;
+
+    controls->reset();
+    TestConfigure(&configuration,0);
+    configuration.operation_kind =
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+    configuration.credit_count = TEST_REDUCE_CREDIT_COUNT;
+    configuration.credit_bindings = TestReduceBindings;
+    configuration.credit_binding_count =
+        TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT;
+    configuration.combine_bf16_function = TestCombineBf16;
+    configuration.combine_relay_bf16_function = TestCombineRelayBf16;
+    configuration.combine_context = &relay;
+    atomic_init(&relay.combine.count,0u);
+    atomic_init(&relay.relay_count,0u);
+    memset(TestSendBuffers,0,sizeof(TestSendBuffers));
+    assert(SparkTpDeviceCollectiveCreate(&configuration,&collective) ==
+        SPARK_STATUS_OK);
+    values = (uint16_t *)TestFullBuffers[0u];
+    for (element=0u; element<8u; element++)
+        values[element] = 3u;
+    TestCompletionInitialize(&completion);
+    memset(&submission,0,sizeof(submission));
+    submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    submission.descriptor_bytes = sizeof(submission);
+    submission.slot_index = 3u;
+    submission.active_sequence_count = 2u;
+    submission.flags =
+        SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+    submission.ordinal = 0u;
+    submission.local_device = values;
+    submission.full_device = values;
+    submission.cuda_stream = (void *)(uintptr_t)0x31200u;
+    submission.completion_function = TestCompletionCallback;
+    submission.completion_context = &completion;
+    assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
+        SPARK_STATUS_OK);
+    TestWaitForCompletion(&completion);
+    TestWaitForPhase(&collective,0u,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE);
+    assert(atomic_load_explicit(&relay.combine.count,memory_order_acquire) ==
+        TEST_STEP_COUNT);
+    assert(atomic_load_explicit(&relay.relay_count,memory_order_acquire) ==
+        1u);
+    for (element=0u; element<8u; element++)
+        assert(values[element] == 12u);
+    assert(((uint16_t *)TestSendBuffers[1u][0u])[0] == 6u);
+    SparkTpDeviceCollectiveDestroy(&collective);
+}
+
+static void TestExternalGraphOrder(TestTransportControls *controls)
+{
+    SparkTpDeviceCollective collective;
+    SparkTpDeviceCollectiveConfig configuration;
+    SparkTpDeviceCollectiveSubmission submission;
+    TestCombineState combine;
+    TestCompletionState completion;
+    uint16_t *values;
+    uint32_t completion_word,producer_word;
+
+    controls->reset();
+    controls->set_release_gate(0u);
+    TestConfigure(&configuration,0);
+    configuration.operation_kind =
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+    configuration.credit_count = TEST_REDUCE_CREDIT_COUNT;
+    configuration.credit_bindings = TestReduceBindings;
+    configuration.credit_binding_count =
+        TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT;
+    configuration.combine_bf16_function = TestCombineBf16;
+    configuration.combine_context = &combine;
+    configuration.signal_u32_function = TestSignalU32;
+    atomic_init(&combine.count,0u);
+    assert(SparkTpDeviceCollectiveCreate(&configuration,&collective) ==
+        SPARK_STATUS_OK);
+    values = (uint16_t *)TestFullBuffers[0u];
+    memset(values,0,16u);
+    producer_word = 0u;
+    completion_word = 0u;
+    TestCompletionInitialize(&completion);
+    memset(&submission,0,sizeof(submission));
+    submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    submission.descriptor_bytes = sizeof(submission);
+    submission.active_sequence_count = 2u;
+    submission.flags =
+        SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION |
+        SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_EXTERNAL_GRAPH_ORDER;
+    submission.local_device = values;
+    submission.full_device = values;
+    submission.cuda_stream = (void *)(uintptr_t)0x31500u;
+    submission.producer_ready_host = &producer_word;
+    submission.completion_ready_host = &completion_word;
+    submission.completion_ready_device = &completion_word;
+    submission.producer_ready_value = 7u;
+    submission.completion_ready_value = 7u;
+    submission.completion_function = TestCompletionCallback;
+    submission.completion_context = &completion;
+    assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
+        SPARK_STATUS_OK);
+    TestWaitForPhase(&collective,0u,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE);
+    assert(controls->metric(TEST_METRIC_SEND) == 0u);
+    __atomic_store_n(&producer_word,7u,__ATOMIC_RELEASE);
+    TestWaitForPhase(&collective,0u,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_BUILDING);
+    TestWaitForAtomicCount(&combine.count,1u);
+    assert(controls->metric(TEST_METRIC_SEND) == 1u);
+    controls->release_release_gate();
+    TestWaitForCompletion(&completion);
+    TestWaitForPhase(&collective,0u,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE);
+    assert(__atomic_load_n(&completion_word,__ATOMIC_ACQUIRE) == 7u);
+    assert(atomic_load_explicit(&combine.count,memory_order_acquire) ==
+        TEST_STEP_COUNT);
+    SparkTpDeviceCollectiveDestroy(&collective);
 }
 
 static void TestOutOfOrderCompletions(TestTransportControls *controls)
@@ -1177,6 +1362,20 @@ static void TestFailureLosesToCallbackClaim(TestTransportControls *controls)
     assert(pthread_mutex_destroy(&blocking.mutex) == 0);
 }
 
+static void TestGraphFenceHost(void)
+{
+	SparkTpDeviceCollectiveGraphFence fence;
+	volatile uint32_t completion,producer;
+	completion = 7u;
+	producer = 0u;
+	memset(&fence,0,sizeof(fence));
+	fence.producer_ready_host = &producer;
+	fence.completion_ready_host = &completion;
+	fence.ready_value = 7u;
+	SparkTpDeviceCollectiveGraphFenceHost(&fence);
+	assert(producer == 7u);
+}
+
 int main(void)
 {
     TestTransportControls controls;
@@ -1188,6 +1387,8 @@ int main(void)
     TestAllReduceU64Max(&controls);
     TestAdaptiveSplitRing(&controls);
     TestMappedHostStaging(&controls);
+    TestDirectBf16Relay(&controls);
+    TestExternalGraphOrder(&controls);
     TestOutOfOrderCompletions(&controls);
     TestRotatingGenerationReuse(&controls);
     TestActiveToSendBuildingFailureRace(&controls);
@@ -1195,6 +1396,7 @@ int main(void)
     TestStaleFailureCannotPoisonReusedCredit(&controls);
     TestSubmitBuildingFailureIsNotOverwritten(&controls);
     TestFailureLosesToCallbackClaim(&controls);
+	TestGraphFenceHost();
     assert(dlclose(controls.library) == 0);
     puts("tp_device_collective: ok");
     return 0;
