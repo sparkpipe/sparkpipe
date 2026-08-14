@@ -1334,10 +1334,11 @@ static void TestModelBatchProcess(
 		assert(TestModelBatchCountText(output," completion_ns=") != 0u);
 		assert(TestModelBatchCountText(output,"sparkpipe_stage_profile_summary events=") == 1u);
 		assert(TestModelBatchCountText(output,"dropped=0\n") == 1u);
-		assert(TestModelBatchCountText(output,"sparkpipe_model_batch_status=0 terminal=2 requests=2\n") == 1u);
 	}
-	else
-		assert(strcmp(output,"sparkpipe_model_batch_status=0 terminal=2 requests=2\n") == 0);
+	assert(TestModelBatchCountText(output,"sparkpipe_model_batch_pipeline submitted=") == 1u);
+	assert(TestModelBatchCountText(output," continued=") == 1u);
+	assert(TestModelBatchCountText(output," leases=") == 1u);
+	assert(TestModelBatchCountText(output,"sparkpipe_model_batch_status=0 terminal=2 requests=2\n") == 1u);
 	unlink(stderr_path);
 	unlink(output_path);
 	unlink(batch_path);
