@@ -1833,8 +1833,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu",
-      "sha256": "09dd48ba48e4f7fc4e469926387e7aaf2c950d2690880e850d7dc90ca88ce8bb",
-      "size_bytes": 114796
+      "sha256": "503ff4cc9a21ff0c889ab80889d385827b7bd4912ba3fc1b8d340ad6a40876a3",
+      "size_bytes": 114792
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c",
@@ -3053,7 +3053,7 @@
     },
     {
       "path": "tests/test_dsv4_driver_source_contracts.py",
-      "sha256": "10efba2665a13158bcb87ae1fa9d33d6f2e46bcf20d6b5f644d862429c11f3dc",
+      "sha256": "77af372afffd11c0a864e4ddf2c6d6c0562f93e8581223db4e42633026bccde9",
       "size_bytes": 29730
     },
     {
@@ -4195,5 +4195,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 13209371
+  "total_bytes": 13209367
 }

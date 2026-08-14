@@ -107,7 +107,7 @@ def main() -> None:
 	require(cuda, "#define SPARK_DSV4_ROUTER_SORT_CAPACITY SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT", "exact router sort capacity")
 	require(cuda, "#define SPARK_DSV4_HC_ELEMENT_TILE 256u", "row-adaptive Hc element tile")
 	require(cuda, "#define SPARK_DSV4_HC_MINIMUM_BLOCKS 16u", "row-adaptive Hc minimum occupancy")
-	require(cuda, "row_count * tiles_per_row,SPARK_DSV4_HC_ELEMENT_TILE", "row-adaptive Hc launch grid")
+	require(cuda, "grid = dim3(tiles_per_row,row_count)", "row-adaptive Hc two-dimensional launch grid")
 	require(module, "SparkDsv4LaunchExpertLinear(stream,&moe->shared_w2", "shared expert activation specialization")
 	require(common, "entry / SPARK_LM_TILE_N][entry % SPARK_LM_TILE_N]", "software-pipelined output tile row stride")
 	reject(common, "entry / SPARK_LM_TILE][entry % SPARK_LM_TILE_N]", "software-pipelined output tile row alias")

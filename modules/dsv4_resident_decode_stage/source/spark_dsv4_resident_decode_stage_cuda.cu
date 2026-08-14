@@ -1680,8 +1680,8 @@ static __global__ void SparkDsv4HcSplitSinkhornKernel(const float *mixes_f32, co
 // sigmoid head reduction - three small element kernels.
 static __global__ void SparkDsv4HcPreReduceKernel(const void *streams_bf16, const float *pre_f32, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension, uint32_t tiles_per_row)
 {
-	uint32_t row = blockIdx.x / tiles_per_row;
-	uint32_t tile = blockIdx.x % tiles_per_row,element,stream;
+	uint32_t row = blockIdx.y;
+	uint32_t tile = blockIdx.x,element,stream;
 	float value;
 	if ( row >= row_count )
 		return;
@@ -1699,8 +1699,8 @@ static __global__ void SparkDsv4HcPostKernel(const void *out_bf16, const void *r
 {
 	__shared__ float post[SPARK_DSV4_MODEL_HC_STREAM_COUNT];
 	__shared__ float comb[SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT];
-	uint32_t row = blockIdx.x / tiles_per_row;
-	uint32_t tile = blockIdx.x % tiles_per_row,element,stream,source;
+	uint32_t row = blockIdx.y;
+	uint32_t tile = blockIdx.x,element,stream,source;
 	float residual[SPARK_DSV4_MODEL_HC_STREAM_COUNT],out,value;
 	if ( row >= row_count || hc != SPARK_DSV4_MODEL_HC_STREAM_COUNT )
 		return;
@@ -2636,25 +2636,29 @@ extern "C" cudaError_t SparkDsv4LaunchHcMixSplitKSinkhorn(cudaStream_t stream, c
 
 extern "C" cudaError_t SparkDsv4LaunchHcPreReduce(cudaStream_t stream, const void *streams_bf16, const float *pre_f32, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension)
 {
+	dim3 grid;
 	uint32_t tiles_per_row,dimension_tiles;
 	if ( row_count == 0u || dimension == 0u )
 		return(cudaErrorInvalidValue);
 	tiles_per_row = (SPARK_DSV4_HC_MINIMUM_BLOCKS + row_count - 1u) / row_count;
 	dimension_tiles = (dimension + SPARK_DSV4_HC_ELEMENT_TILE - 1u) / SPARK_DSV4_HC_ELEMENT_TILE;
 	tiles_per_row = tiles_per_row < dimension_tiles ? tiles_per_row : dimension_tiles;
-	SparkDsv4HcPreReduceKernel<<<row_count * tiles_per_row,SPARK_DSV4_HC_ELEMENT_TILE,0,stream>>>(streams_bf16,pre_f32,reduced_bf16,row_count,hc,dimension,tiles_per_row);
+	grid = dim3(tiles_per_row,row_count);
+	SparkDsv4HcPreReduceKernel<<<grid,SPARK_DSV4_HC_ELEMENT_TILE,0,stream>>>(streams_bf16,pre_f32,reduced_bf16,row_count,hc,dimension,tiles_per_row);
 	return(cudaGetLastError());
 }
 
 extern "C" cudaError_t SparkDsv4LaunchHcPost(cudaStream_t stream, const void *out_bf16, const void *residual_bf16, const float *post_f32, const float *comb_f32, void *streams_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension)
 {
+	dim3 grid;
 	uint32_t tiles_per_row,dimension_tiles;
 	if ( row_count == 0u || dimension == 0u )
 		return(cudaErrorInvalidValue);
 	tiles_per_row = (SPARK_DSV4_HC_MINIMUM_BLOCKS + row_count - 1u) / row_count;
 	dimension_tiles = (dimension + SPARK_DSV4_HC_ELEMENT_TILE - 1u) / SPARK_DSV4_HC_ELEMENT_TILE;
 	tiles_per_row = tiles_per_row < dimension_tiles ? tiles_per_row : dimension_tiles;
-	SparkDsv4HcPostKernel<<<row_count * tiles_per_row,SPARK_DSV4_HC_ELEMENT_TILE,0,stream>>>(out_bf16,residual_bf16,post_f32,comb_f32,streams_bf16,row_count,hc,dimension,tiles_per_row);
+	grid = dim3(tiles_per_row,row_count);
+	SparkDsv4HcPostKernel<<<grid,SPARK_DSV4_HC_ELEMENT_TILE,0,stream>>>(out_bf16,residual_bf16,post_f32,comb_f32,streams_bf16,row_count,hc,dimension,tiles_per_row);
 	return(cudaGetLastError());
 }
 
