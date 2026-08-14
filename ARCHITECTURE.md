@@ -55,8 +55,8 @@ The serving contract is identical at every scale:
 | 4 Sparks | Entry system, TP4 models, interactive and modest agent workloads |
 | 8 Sparks | Larger resident set, TP8 or TP4 x PP2 model plans |
 | 16 Sparks | Full TP4 x PP4 large-model pipeline and eight direct pairs |
-| DGX Station | Higher-capacity standalone node or Spark-fabric enhancement |
-| Multiple Stations | Four- or eight-node Station fabric for the largest models |
+| DGX Stations | 1x, 2x, 4x, or 8x standalone or Spark-fabric enhancement |
+| 4x / 8x Stations | Station fabric target for the largest models |
 
 Four- and eight-Spark deployments use complete `rank XOR 1` direct pairs and
 the same switched-plus-direct collective contract. Expansion adds nodes,
@@ -226,11 +226,14 @@ maintained in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
 
 ## DGX Station deployment class
 
-SparkPipe also targets office-deployable DGX Station clusters. Four- and
-eight-node Station systems may operate as a standalone fabric or augment the
-Spark pipeline. The execution planner applies the same model-aware sharding,
+SparkPipe also targets office-deployable DGX Station clusters. 1x, 2x, 4x, or
+8x Station systems may operate as a standalone fabric or augment the Spark
+pipeline. The execution planner applies the same model-aware sharding,
 residency, scheduling, and evidence contracts while using a Station-specific
 hardware and collective profile.
+
+The 1x and 2x configurations provide smaller entry points; four- and
+eight-Station fabrics target the largest models.
 
 The design objective is to aggregate enough memory bandwidth and model
 parallelism to run the largest open models at roughly half the throughput of a
