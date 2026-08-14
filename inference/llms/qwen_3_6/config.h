@@ -90,7 +90,7 @@
 // the end of the slot: at B1 the delta rule read and wrote beyond the pool.
 // The element width is a named constant because the bf16-state option is a
 // real, priced lever - it halves a state stream that is 310 MB/seq/token at
-// this geometry (docs/PERF_ROADMAP_2026-08-01.md's K3 state correction is the
+// this geometry (docs/archive/PERF_ROADMAP_2026-08-01.md's K3 state correction is the
 // same problem at twice the heads) - but it is a numerics question on a
 // recurrence that compounds per token, and it lands as a bf16-pool delta-rule
 // VARIANT with this constant flipped, never as this constant flipped alone.

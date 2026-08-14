@@ -28,20 +28,3 @@ spark.glm52.sm121.flashinfer_b12x_fused_moe.nvfp4.bf16.v2
 ```
 
 If the AOT-generated B12x backend, generated table, or adapter archive is missing, package/link must fail. There is no internal CUDA replacement.
-
-## Current hard blocker
-
-The resident B12x MoE pack binder now exists, but the strict dense-prefix routed validation fails before MoE because the required stage has no resident prebound linear-plan binder for:
-
-```text
-SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_GATE
-SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_UP
-SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_DOWN
-SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ROUTER_LOGITS
-```
-
-The required component is a startup-only C/CUDA binder that creates real cuBLASLt or driver-custom plans for those entries and attaches `node_context->linear_plans` before validation. Without it, `make validate` fails with:
-
-```text
-dense prefix requires prebound tensor-core MLP linear plans
-```

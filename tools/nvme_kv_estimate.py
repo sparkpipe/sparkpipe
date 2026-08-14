@@ -4,7 +4,7 @@
 The decision this prices: internal NVMe is ~2x the external drive's bandwidth;
 if 5 GB/s per node covers the KV tier's steady-state demand, a 4-8 TB external
 NVMe becomes the KV backing store. Every output is an ESTIMATE built from the
-per-batch roofline of docs/PERF_ROADMAP_2026-08-01.md; docs/NVME_KV_SIZING.md
+per-batch roofline of docs/archive/PERF_ROADMAP_2026-08-01.md; docs/archive/NVME_KV_SIZING.md
 is the write-up and carries the same numbers.
 
 == ASSUMED CONSTANTS - measured nowhere, re-run with receipts ================
@@ -33,7 +33,7 @@ is the write-up and carries the same numbers.
 
 Per-model geometry (kv bytes/token stored, fixed stream, expert pool, E, k,
 state) is taken from the roadmap's per-batch tables and capacity table
-(PERF_ROADMAP_2026-08-01.md:289-494) and cross-checks against
+(docs/archive/PERF_ROADMAP_2026-08-01.md:289-494) and cross-checks against
 model_contracts/*.json; each row cites its line. GB is decimal (1e9 bytes):
 the roadmap's own capacity arithmetic is decimal (GLM 1e12 / (89856 x 8192)
 ~ 1359, roadmap:483).

@@ -24,9 +24,10 @@ SparkResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile(...)
 SparkResidentDecodeStageB12xMoeResidentBindingDestroy(...)
 ```
 
-The PP13 model contract keeps attention, DSA, dense layers, shared experts,
+The GLM 5.2 model contract keeps attention, DSA, dense layers, shared experts,
 embedding, normalization, vocabulary head, and MLA KV in BF16. Only routed
-experts are stored as NVFP4.
+experts are stored as NVFP4. Physical placement comes from the deployment's
+model plan rather than the pack format.
 
 Each pack contains all 256 GLM52 experts for one routed layer.  Pack ABI v3 is
 the first ABI that stores B12x scale factors in the required FlashInfer static

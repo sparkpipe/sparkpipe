@@ -26,7 +26,7 @@ EXCLUDED_DIRECTORY_NAMES = {
     "build",
 }
 EXCLUDED_DIRECTORY_PREFIXES = (
-    "docs/validation-logs/",
+    "docs/archive/validation-logs/",
     "qualification/raw/",
     "qualification/receipts/",
     "qualification/runs/",

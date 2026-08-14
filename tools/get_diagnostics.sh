@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fetch the diagnostics archive. See docs/DIAGNOSTICS_ARCHIVE.md.
+# Fetch the diagnostics archive. See docs/archive/DIAGNOSTICS_ARCHIVE.md.
 #
 # The captures live in a release rather than the tree: they were 2,533 of the
 # repository's files and 38 MB, which made every ratio meaningless. They are

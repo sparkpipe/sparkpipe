@@ -1,7 +1,7 @@
 // sparkpipe_family_cost_model — GB10 decode-stage time cost for the resident
 // CUDA modules. Per-class rates are CALIBRATED by solving from glm52's
 // measured B128 Nsight buckets (docs/GLM52_B256_PER_TOKEN_KERNELS_20260704,
-// docs/GB10_CUDA_COST_MODEL_CALIBRATION.md), then applied to each driver's
+// docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md), then applied to each driver's
 // CONFIG byte geometry.
 //
 // VALIDATION (glm52, measured stage totals B64~100 B128~107 B256~208 ms):
