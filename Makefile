@@ -162,6 +162,7 @@ TOOL_NAMES := \
     sparkpipe_nextcp \
     sparkpipe_release_manager \
     sparkpipe_dsv4_cache_plan_report \
+    spark_tp_collective_benchmark \
     spark_model_kernel_characterize \
     spark_transport_characterize \
     spark_topology_characterize \
@@ -397,6 +398,7 @@ MODEL_COMMON_LINK_TARGETS := \
     build/test_kv_store \
     build/test_kv_mooncake \
     build/test_tp_collective \
+    build/spark_tp_collective_benchmark \
     build/test_tokenizer \
     $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) \
     $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA)
@@ -541,6 +543,9 @@ build/sparkpipe_tokenizer_benchmark: tools/sparkpipe_tokenizer_benchmark.c $(COM
 
 build/sparkpipe_memlink: node/memlink_tool.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/spark_tp_collective_benchmark: tools/spark_tp_collective_benchmark.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_prevcp: node/memlink_tool.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DSPARK_MEMLINK_FIXED_COMMAND=\"prevcp\" $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
