@@ -23,6 +23,7 @@ typedef struct TestModelServingState
 	void *completion_context;
 	uint32_t stage_index;
 	uint32_t quiescing;
+	uint32_t continuation_busy_returned;
 	uint64_t submitted_count;
 	uint64_t completed_count;
 	uint64_t rejected_count;
@@ -33,7 +34,7 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE,
 	.stage_count = 3u,
 	.layer_count = 7u,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -151,6 +152,8 @@ static SparkStatus TestModelServingValidateSubmission(
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_kind == 99u && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
+	if ( submission->model_extension_kind == 98u && submission->model_extension_bytes == 1u )
+		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_bytes != 0u || submission->model_extension_kind != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
 	return(SPARK_STATUS_OK);
@@ -266,6 +269,12 @@ static SparkStatus TestModelServingPrefetch(
 	status = TestModelServingValidateSubmission(adapter_state,submissions);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	if ( submissions->model_extension_kind == 98u &&
+		state->continuation_busy_returned == 0u )
+	{
+		state->continuation_busy_returned = 1u;
+		return(SPARK_STATUS_BUSY);
+	}
 	free_index = UINT32_MAX;
 	for (index=0u; index<sizeof(state->prepared) / sizeof(state->prepared[0]);
 		index++)

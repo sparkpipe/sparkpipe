@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <assert.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -415,16 +416,17 @@ static void TestModelPipelineWaitForSockets(char paths[][108])
 
 static void TestModelPipelineStopResidents(
 	pid_t children[TEST_MODEL_PIPELINE_RANK_COUNT],
-	char paths[][108])
+	char paths[][108],
+	uint32_t expected_exit_status)
 {
 	uint32_t rank;
 	int32_t child_status;
 	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
 	{
-		assert(kill(children[rank],SIGTERM) == 0);
+		assert(kill(children[rank],SIGTERM) == 0 || errno == ESRCH);
 		assert(waitpid(children[rank],&child_status,0) == children[rank]);
 		assert(WIFEXITED(child_status));
-		assert(WEXITSTATUS(child_status) == 0);
+		assert((uint32_t)WEXITSTATUS(child_status) == expected_exit_status);
 		unlink(paths[rank]);
 	}
 }
@@ -668,10 +670,11 @@ static void TestModelPipelineDecisionQueueSaturation(
 	SparkModelPipelineClient *pipeline,
 	TestModelPipelineState *state)
 {
-	SparkModelServingSubmission submissions[2u];
-	SparkModelServingLane lanes[2u][2u];
-	uint32_t tokens[2u][4u],row_lanes[2u][4u];
-	uint64_t positions[2u][4u],sequences[2u][4u];
+	SparkModelPipelineClientView view;
+	SparkModelServingSubmission submissions[5u];
+	SparkModelServingLane lanes[5u][2u];
+	uint32_t tokens[3u][4u],row_lanes[3u][4u];
+	uint64_t positions[3u][4u],sequences[3u][4u];
 	uint8_t busy_once;
 	busy_once = 1u;
 	TestModelPipelineBuildPrefill(&submissions[0u],lanes[0u],tokens[0u],
@@ -691,6 +694,9 @@ static void TestModelPipelineDecisionQueueSaturation(
 		SPARK_STATUS_OK);
 	assert(SparkModelPipelineClientSubmit(pipeline,&submissions[1u]) ==
 		SPARK_STATUS_OK);
+	assert(SparkModelPipelineClientGetView(pipeline,&view) == SPARK_STATUS_OK);
+	assert(view.active_continue_lease_count == 0u);
+	assert(view.continued_count == 0u);
 	TestModelPipelineWaitForCompletion(pipeline,state,2u);
 	assert(state->result_count == 2u);
 	assert(state->result_submission_ids[0u] == 401u);
@@ -699,6 +705,42 @@ static void TestModelPipelineDecisionQueueSaturation(
 	assert(state->result_statuses[1u] == SPARK_STATUS_OK);
 	assert(state->completions[0u].submission_id == 401u);
 	assert(state->completions[1u].submission_id == 402u);
+	TestModelPipelineBuildSubmission(&submissions[2u],lanes[2u],tokens[2u],
+		row_lanes[2u],positions[2u],sequences[2u],403u);
+	lanes[2u][0u].request_id = 802u;
+	lanes[2u][0u].sequence_id = 302u;
+	lanes[2u][0u].resident_sequence_slot = 27u;
+	lanes[2u][1u].request_id = 801u;
+	lanes[2u][1u].sequence_id = 301u;
+	lanes[2u][1u].resident_sequence_slot = 28u;
+	sequences[2u][0u] = 302u;
+	sequences[2u][1u] = 301u;
+	submissions[2u].model_extension_kind = 98u;
+	submissions[2u].model_extension_bytes = sizeof(busy_once);
+	submissions[2u].model_extension = &busy_once;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submissions[2u]) ==
+		SPARK_STATUS_OK);
+	TestModelPipelineWaitForCompletion(pipeline,state,3u);
+	assert(SparkModelPipelineClientGetView(pipeline,&view) == SPARK_STATUS_OK);
+	assert(view.continued_count == 1u);
+	assert(view.active_continue_lease_count == 2u);
+	TestModelPipelineBuildRelease(&submissions[3u],&lanes[3u][0u],404u);
+	lanes[3u][0u].request_id = 801u;
+	lanes[3u][0u].sequence_id = 301u;
+	lanes[3u][0u].resident_sequence_slot = 28u;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submissions[3u]) ==
+		SPARK_STATUS_OK);
+	TestModelPipelineWaitForCompletion(pipeline,state,4u);
+	TestModelPipelineBuildRelease(&submissions[4u],&lanes[4u][0u],405u);
+	lanes[4u][0u].request_id = 802u;
+	lanes[4u][0u].sequence_id = 302u;
+	lanes[4u][0u].resident_sequence_slot = 27u;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submissions[4u]) ==
+		SPARK_STATUS_OK);
+	TestModelPipelineWaitForCompletion(pipeline,state,5u);
+	assert(SparkModelPipelineClientGetView(pipeline,&view) == SPARK_STATUS_OK);
+	assert(view.continued_count == 3u);
+	assert(view.active_continue_lease_count == 0u);
 }
 
 static SparkStatus TestModelPipelineWaitForFailure(
@@ -1292,10 +1334,11 @@ static void TestModelBatchProcess(
 		assert(TestModelBatchCountText(output," completion_ns=") != 0u);
 		assert(TestModelBatchCountText(output,"sparkpipe_stage_profile_summary events=") == 1u);
 		assert(TestModelBatchCountText(output,"dropped=0\n") == 1u);
-		assert(TestModelBatchCountText(output,"sparkpipe_model_batch_status=0 terminal=2 requests=2\n") == 1u);
 	}
-	else
-		assert(strcmp(output,"sparkpipe_model_batch_status=0 terminal=2 requests=2\n") == 0);
+	assert(TestModelBatchCountText(output,"sparkpipe_model_batch_pipeline submitted=") == 1u);
+	assert(TestModelBatchCountText(output," continued=") == 1u);
+	assert(TestModelBatchCountText(output," leases=") == 1u);
+	assert(TestModelBatchCountText(output,"sparkpipe_model_batch_status=0 terminal=2 requests=2\n") == 1u);
 	unlink(stderr_path);
 	unlink(output_path);
 	unlink(batch_path);
@@ -1424,6 +1467,8 @@ int main(void)
 	assert(state.completions[5].token_ids[0] == 4203u);
 	rejected_extension = 1u;
 	TestModelPipelineBuildSubmission(&submissions[6],lanes[6],tokens[6],row_lanes[6],positions[6],sequences[6],507u);
+	lanes[6][0].resident_sequence_slot = 26u;
+	lanes[6][1].resident_sequence_slot = 25u;
 	submissions[6].model_extension_kind = 77u;
 	submissions[6].model_extension_bytes = sizeof(rejected_extension);
 	submissions[6].model_extension = &rejected_extension;
@@ -1477,7 +1522,7 @@ int main(void)
 	assert(view.rejected_count == 3u);
 	assert(view.completed_count == 9u);
 	SparkModelPipelineClientDestroy(pipeline);
-	TestModelPipelineStopResidents(children,paths);
+	TestModelPipelineStopResidents(children,paths,1u);
 	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
 		children[rank] = TestModelPipelineStartResident(deployment_path,rank);
 	TestModelPipelineWaitForSockets(paths);
@@ -1491,7 +1536,7 @@ int main(void)
 	TestModelBatchEngineShutdown(&deployment);
 	TestModelBatchProcess(deployment_path,0u);
 	TestModelBatchProcess(deployment_path,1u);
-	TestModelPipelineStopResidents(children,paths);
+	TestModelPipelineStopResidents(children,paths,0u);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	unlink(deployment_path);
 	return(0);

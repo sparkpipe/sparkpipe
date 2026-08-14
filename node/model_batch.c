@@ -502,11 +502,11 @@ int main(int argc,char **argv)
 	const SparkModelServingAdapterDescriptor *descriptor;
 	SparkModelResidentDeployment deployment;
 	SparkModelBatchEngine *engine;
-	SparkModelBatchEngineView failure_view;
+	SparkModelBatchEngineView engine_view;
 	SparkModelBatchFile file;
 	SparkModelBatchOutput output;
 	const char *deployment_path,*runtime_root,*batch_path;
-	uint32_t failed_stage_index,profile_stages;
+	uint32_t failed_stage_index,profile_stages,view_valid;
 	SparkStatus status,destroy_status;
 	if ( SparkModelBatchParseArguments(argc,argv,&deployment_path,&runtime_root,&batch_path,&profile_stages) < 0 )
 	{
@@ -516,6 +516,7 @@ int main(int argc,char **argv)
 	memset(&output,0,sizeof(output));
 	memset(&file,0,sizeof(file));
 	failed_stage_index = SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX;
+	view_valid = 0u;
 	engine = 0;
 	SparkModelResidentDeploymentReset(&deployment);
 	status = SparkModelResidentDeploymentLoad(deployment_path,&deployment);
@@ -547,8 +548,13 @@ int main(int argc,char **argv)
 		status = SparkModelBatchEngineCloseAdmission(engine);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchRun(engine,&file,&output);
-	if ( status != SPARK_STATUS_OK && engine != 0 && SparkModelBatchEngineGetView(engine,&failure_view) == SPARK_STATUS_OK )
-		failed_stage_index = failure_view.pipeline.failed_stage_index;
+	if ( engine != 0 && SparkModelBatchEngineGetView(engine,&engine_view) ==
+		SPARK_STATUS_OK )
+	{
+		view_valid = 1u;
+		if ( status != SPARK_STATUS_OK )
+			failed_stage_index = engine_view.pipeline.failed_stage_index;
+	}
 	destroy_status = SparkModelBatchEngineDestroy(engine);
 	if ( status == SPARK_STATUS_OK && destroy_status != SPARK_STATUS_OK )
 		status = destroy_status;
@@ -558,6 +564,8 @@ int main(int argc,char **argv)
 		status = SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status != SPARK_STATUS_OK && failed_stage_index != SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX )
 		fprintf(stderr,"sparkpipe_model_batch_failure status=%u stage=%u\n",status,failed_stage_index);
+	if ( view_valid != 0u )
+		fprintf(stderr,"sparkpipe_model_batch_pipeline submitted=%llu continued=%llu admitted=%llu rejected=%llu leases=%u\n",(unsigned long long)engine_view.pipeline.submitted_count,(unsigned long long)engine_view.pipeline.continued_count,(unsigned long long)engine_view.pipeline.admitted_count,(unsigned long long)engine_view.pipeline.rejected_count,engine_view.pipeline.active_continue_lease_count);
 	fprintf(stderr,"sparkpipe_model_batch_status=%u terminal=%u requests=%u\n",status,output.terminal_count,file.request_count);
 	SparkModelBatchFileDestroy(&file);
 	SparkModelResidentDeploymentDestroy(&deployment);

@@ -60,6 +60,16 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( descriptor->resident_sequence_slot_reuse == SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u &&
+		(descriptor->capability_flags &
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV) == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u &&
+		descriptor->resident_sequence_slot_reuse ==
+		SPARK_MODEL_SERVING_SLOT_REUSE_NONE )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( descriptor->minimum_efficient_submission_row_count > descriptor->max_input_row_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	hybrid = (descriptor->capability_flags &
