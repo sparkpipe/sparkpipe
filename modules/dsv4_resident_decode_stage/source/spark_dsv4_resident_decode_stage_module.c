@@ -2635,6 +2635,8 @@ static cudaError_t SparkDsv4ModuleRunAttentionProjectedPrologue(SparkDsv4ModuleS
 		slot->index_compressor.score_bf16,rows,channels,index_channels);
 	if ( error == cudaSuccess )
 		error = SparkStageModuleCudaForkBegin(fork,primary,branch_count);
+	if ( error == cudaSuccess )
+		error = SparkDsv4ModuleRunKvPost(slot,kv_stream,layer,freqs,rows);
 	if ( error == cudaSuccess && kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA )
 		error = SparkDsv4ModuleRunCompressorPost(state,slot,&slot->compressor,
 			compressor_stream,&layer->compressor,
@@ -2647,18 +2649,16 @@ static cudaError_t SparkDsv4ModuleRunAttentionProjectedPrologue(SparkDsv4ModuleS
 		error = SparkDsv4ModuleRunQueryRankPost(slot,primary,layer,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4ModuleStageTopk(state,slot,primary,kind,rows);
-	if ( error == cudaSuccess )
+	if ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
 		error = cudaEventRecord(fork->milestone_event,primary);
-	if ( error == cudaSuccess )
+	if ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
 		error = cudaStreamWaitEvent(kv_stream,fork->milestone_event,0u);
-	if ( error == cudaSuccess )
-		error = SparkDsv4ModuleRunKvPost(slot,kv_stream,layer,freqs,rows);
-	if ( error == cudaSuccess )
-		error = SparkDsv4ModuleRunQueryProjection(state,slot,primary,layer,
-			freqs,rows);
 	if ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
 		error = SparkDsv4ModuleRunIndexerCore(state,slot,kv_stream,layer,
 			layer_index,1u,rows);
+	if ( error == cudaSuccess )
+		error = SparkDsv4ModuleRunQueryProjection(state,slot,primary,layer,
+			freqs,rows);
 	if ( error == cudaSuccess )
 		error = SparkStageModuleCudaForkJoin(fork,primary,branch_count);
 	return(error);

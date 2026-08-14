@@ -22,6 +22,15 @@ def reject(text: str, needle: str, label: str) -> None:
 		raise SystemExit(f"forbidden {label}: {needle}")
 
 
+def require_order(text: str, needles: tuple[str, ...], label: str) -> None:
+	position = 0
+	for needle in needles:
+		found = text.find(needle, position)
+		if found < 0:
+			raise SystemExit(f"misordered {label}: {needle}")
+		position = found + len(needle)
+
+
 def function_body(text: str, name: str) -> str:
 	start = text.index(name)
 	brace = text.index("{", start)
@@ -167,8 +176,24 @@ def main() -> None:
 		"independent direct-KV and indexer stream")
 	require(module, "&slot->index_compressor",
 		"independent index compressor scratch")
-	require(overlap, "cudaEventRecord(fork->milestone_event,primary)",
-		"compressed-attention query-rank milestone")
+	require_order(overlap, (
+		"SparkStageModuleCudaForkBegin(fork,primary,branch_count)",
+		"SparkDsv4ModuleRunKvPost(slot,kv_stream,layer,freqs,rows)",
+		"SparkDsv4ModuleRunQueryRankPost(slot,primary,layer,rows)",
+		"SparkDsv4ModuleStageTopk(state,slot,primary,kind,rows)",
+		"cudaEventRecord(fork->milestone_event,primary)",
+		"cudaStreamWaitEvent(kv_stream,fork->milestone_event,0u)",
+		"SparkDsv4ModuleRunIndexerCore(state,slot,kv_stream,layer",
+		"SparkDsv4ModuleRunQueryProjection(state,slot,primary,layer",
+	), "attention KV/index dependency placement")
+	require(overlap,
+		"error = SparkStageModuleCudaForkBegin(fork,primary,branch_count);\n\tif ( error == cudaSuccess )\n\t\terror = SparkDsv4ModuleRunKvPost(slot,kv_stream,layer,freqs,rows);",
+		"KV post immediately follows attention fork")
+	require(overlap,
+		"if ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )\n\t\terror = cudaEventRecord(fork->milestone_event,primary);\n\tif ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )\n\t\terror = cudaStreamWaitEvent(kv_stream,fork->milestone_event,0u);\n\tif ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )\n\t\terror = SparkDsv4ModuleRunIndexerCore(state,slot,kv_stream,layer,",
+		"CSA-only milestone immediately precedes indexer")
+	if overlap.count("fork->milestone_event") != 2:
+		raise SystemExit("attention prologue has a non-CSA milestone use")
 	require(overlap, "SparkStageModuleCudaForkJoin(fork,primary,branch_count)",
 		"compressed-attention join dependency")
 	require(module, "SparkDsv4ModuleRunAttentionProjected",
