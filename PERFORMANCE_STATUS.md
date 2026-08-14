@@ -156,6 +156,40 @@ Wrapper generation therefore used the explicitly named
 passed, but the static validator gap remains open and is not represented as a
 validation success.
 
+### Current branch candidate: device-predicated compressor emission
+
+Candidate `de1beb2035ecbf40dd49f0fa822c266007baea9d`, based on merged
+`main@ed1d731d`, produces **33.9911 decode tokens/s mean** over three TP4 B1
+O128 runs, with a **34.1190 tokens/s best run**. This is 0.97% above the
+retained 33.6647 tok/s floor and 1.31% above the current-main qualification.
+It is a branch result until merged-main requalification.
+
+| Run | Decode tok/s | Median inter-token | p95 inter-token |
+| ---: | ---: | ---: | ---: |
+| 1 | 33.8394 | 29.4739 ms | 30.3798 ms |
+| 2 | 34.0149 | 29.1768 ms | **30.2899 ms** |
+| 3 | **34.1190** | **29.0832 ms** | 30.4197 ms |
+| Mean | **33.9911** | 29.2446 ms | - |
+
+The change replaces the post-compressor RMSNorm, RoPE, optional Hadamard,
+quantization, and cache-scatter launches with one device-predicated kernel.
+Off-boundary CTAs return before touching weights, staging data, or cache. The
+production post-compressor schedule falls from 269 to 62 launches per token;
+there is no host token predicate and no legacy compatibility path.
+
+An isolated `sm_121a` hardware probe compared the fused and standalone paths
+for SWA, CSA attention, CSA index/Hadamard, and HCA. Emitted BF16 bytes and the
+complete cache matched bit-for-bit in all four cases. All three end-to-end runs
+then emitted the exact retained 128-token stream.
+
+| Receipt | SHA-256 |
+| --- | --- |
+| [`device-predicated-compressor-de1beb2-run1.json`](qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-run1.json) | `3022be3101cbb2da889f015edb49c32cf6346c757349172b5a5e4e1b8e75122a` |
+| [`device-predicated-compressor-de1beb2-run2.json`](qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-run2.json) | `668a5d6ae09d2541151b0cdd0cc98c8c9f711d24f20b4b4168659cb51ac740f8` |
+| [`device-predicated-compressor-de1beb2-run3.json`](qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-run3.json) | `d1e7ee2409b41bd188c08945d279a50d45f5399a361572e15d38f51a26e8ffd0` |
+| [`device-predicated-compressor-bitwise-sm121.json`](qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-bitwise-sm121.json) | `6537d968880ffd2effd4f971232e88701ac0ff1ea8f1c8c79f73c82c2eba4b77` |
+| [`device-predicated-compressor-de1beb2-summary.json`](qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-summary.json) | `4605248320b7e6cbed55d478d207e5cd087530a696680beab436252d49145c38` |
+
 ### Previous scratch milestone: DeepSeek V4 Flash TP4 B1
 
 The previous retained measurement was **32.57 decode tokens/s mean** over four

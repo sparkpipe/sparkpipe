@@ -1,5 +1,5 @@
 {
-  "file_count": 856,
+  "file_count": 861,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "PERFORMANCE_STATUS.md",
-      "sha256": "5440c47cd3e32ed325fee934e686ceeffbebc98a3d97342737d329e9a3309ae5",
-      "size_bytes": 16534
+      "sha256": "e6121d24ed634a9297513af1c4658db779a84fe05947f0626d800ed7c9575acd",
+      "size_bytes": 19030
     },
     {
       "path": "README.md",
@@ -2110,6 +2110,31 @@
       "path": "qualification/dsv4/performance/tp4_b1_20260813/dsv4-tp4-pp4-b1-compsec076-o128.json",
       "sha256": "e498f1fc88854044eafa64c41ce308b73d54f0a351fe156a513d7ff7ca630ead",
       "size_bytes": 1309
+    },
+    {
+      "path": "qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-bitwise-sm121.json",
+      "sha256": "6537d968880ffd2effd4f971232e88701ac0ff1ea8f1c8c79f73c82c2eba4b77",
+      "size_bytes": 811
+    },
+    {
+      "path": "qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-run1.json",
+      "sha256": "3022be3101cbb2da889f015edb49c32cf6346c757349172b5a5e4e1b8e75122a",
+      "size_bytes": 50330
+    },
+    {
+      "path": "qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-run2.json",
+      "sha256": "668a5d6ae09d2541151b0cdd0cc98c8c9f711d24f20b4b4168659cb51ac740f8",
+      "size_bytes": 50334
+    },
+    {
+      "path": "qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-run3.json",
+      "sha256": "d1e7ee2409b41bd188c08945d279a50d45f5399a361572e15d38f51a26e8ffd0",
+      "size_bytes": 50321
+    },
+    {
+      "path": "qualification/dsv4/performance/tp4_b1_20260814/device-predicated-compressor-de1beb2-summary.json",
+      "sha256": "4605248320b7e6cbed55d478d207e5cd087530a696680beab436252d49145c38",
+      "size_bytes": 6515
     },
     {
       "path": "qualification/dsv4/performance/tp4_b1_20260814/full-graph-phase-owned-run1.json",
@@ -4285,5 +4310,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 13840619
+  "total_bytes": 14001426
 }
