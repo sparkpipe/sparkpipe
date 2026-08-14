@@ -9,6 +9,8 @@
 #include "inference/kernels/weight_codec.cuh"
 #include "runtime/gemm.cuh"
 
+#include <cuda.h>
+#include <dlfcn.h>
 #include <math.h>
 #include <stdio.h>
 
@@ -20,6 +22,43 @@
 
 using SparkDsv4ExpertWeightFormat =
 	typename LmWeightCodec<SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC>::Format;
+
+using SparkDsv4StreamMemOp = CUresult (*)(CUstream,CUdeviceptr,cuuint32_t,
+	unsigned int);
+
+static SparkDsv4StreamMemOp SparkDsv4GraphStreamWriteValue32 = 0;
+static SparkDsv4StreamMemOp SparkDsv4GraphStreamWaitValue32 = 0;
+static void *SparkDsv4CudaDriverLibrary = 0;
+static int32_t SparkDsv4GraphStreamMemOpsStatus = 0;
+
+static cudaError_t SparkDsv4LoadGraphStreamMemOps(void)
+{
+	void *wait_symbol,*write_symbol;
+	if ( SparkDsv4GraphStreamMemOpsStatus > 0 )
+		return(cudaSuccess);
+	if ( SparkDsv4GraphStreamMemOpsStatus < 0 )
+		return(cudaErrorNotSupported);
+	SparkDsv4CudaDriverLibrary = dlopen("libcuda.so.1",RTLD_NOW | RTLD_LOCAL);
+	if ( SparkDsv4CudaDriverLibrary == 0 )
+	{
+		SparkDsv4GraphStreamMemOpsStatus = -1;
+		return(cudaErrorNotSupported);
+	}
+	write_symbol = dlsym(SparkDsv4CudaDriverLibrary,"cuStreamWriteValue32_v2");
+	wait_symbol = dlsym(SparkDsv4CudaDriverLibrary,"cuStreamWaitValue32_v2");
+	SparkDsv4GraphStreamWriteValue32 =
+		reinterpret_cast<SparkDsv4StreamMemOp>(write_symbol);
+	SparkDsv4GraphStreamWaitValue32 =
+		reinterpret_cast<SparkDsv4StreamMemOp>(wait_symbol);
+	if ( SparkDsv4GraphStreamWriteValue32 == 0 ||
+		SparkDsv4GraphStreamWaitValue32 == 0 )
+	{
+		SparkDsv4GraphStreamMemOpsStatus = -1;
+		return(cudaErrorNotSupported);
+	}
+	SparkDsv4GraphStreamMemOpsStatus = 1;
+	return(cudaSuccess);
+}
 
 static_assert(SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_NONE,
 	"DSV4 requires an explicit routed-expert codec");
@@ -2543,6 +2582,34 @@ extern "C" cudaError_t SparkDsv4LaunchAccumAddTp4Tree(
 		destination_bf16,rank_devices[0],rank_devices[1],rank_devices[2],
 		rank_devices[3],tp_rank,row_count,width);
 	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4GraphStreamWriteSystemU32(
+	cudaStream_t stream,uint32_t *word,uint32_t value)
+{
+	CUresult status;
+	if ( stream == 0 || word == 0 || value == 0u )
+		return(cudaErrorInvalidValue);
+	if ( SparkDsv4LoadGraphStreamMemOps() != cudaSuccess )
+		return(cudaErrorNotSupported);
+	status = SparkDsv4GraphStreamWriteValue32((CUstream)stream,
+		(CUdeviceptr)word,value,
+		CU_STREAM_WRITE_VALUE_DEFAULT);
+	return(status == CUDA_SUCCESS ? cudaSuccess : cudaErrorNotSupported);
+}
+
+extern "C" cudaError_t SparkDsv4GraphStreamWaitSystemU32(
+	cudaStream_t stream,uint32_t *word,uint32_t value)
+{
+	CUresult status;
+	if ( stream == 0 || word == 0 || value == 0u )
+		return(cudaErrorInvalidValue);
+	if ( SparkDsv4LoadGraphStreamMemOps() != cudaSuccess )
+		return(cudaErrorNotSupported);
+	status = SparkDsv4GraphStreamWaitValue32((CUstream)stream,
+		(CUdeviceptr)word,value,
+		CU_STREAM_WAIT_VALUE_GEQ);
+	return(status == CUDA_SUCCESS ? cudaSuccess : cudaErrorNotSupported);
 }
 
 extern "C" cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t entries_per_page, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)

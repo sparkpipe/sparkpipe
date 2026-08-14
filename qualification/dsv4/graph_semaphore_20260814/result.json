@@ -1,0 +1,15 @@
+{
+  "schema": "sparkpipe.dsv4.graph_semaphore_receipt.v1",
+  "date_utc": "2026-08-14",
+  "result": "pass",
+  "scope": "compile-and-replay microqualification; not an inference performance result",
+  "device": "NVIDIA GB10",
+  "driver": "580.159.03",
+  "cuda_compiler": "13.0",
+  "compute_target": "sm_121a",
+  "operation_stream_priority": -5,
+  "source_sha256": "cfca95bcd561b776da0350fe985710ee13f582c07cfb8ee1950bce247736eb8c",
+  "binary_sha256": "4f3b5b2075d461d17ad5f19663eedb6a0d6b3e2c2f2eab86ba93029dbc21b395",
+  "dsv4_archive_sha256": "23c2fd5c997002c760e9058b0975c5888f0ffd8f9fae2f9ca5c1c7b20dabfba8",
+  "stdout": "dsv4_graph_semaphore_probe=pass priority=-5"
+}

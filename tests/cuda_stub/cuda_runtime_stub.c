@@ -114,6 +114,27 @@ cudaError_t cudaStreamCreateWithFlags(
     return cudaStreamCreate(stream);
 }
 
+cudaError_t cudaStreamCreateWithPriority(
+    cudaStream_t *stream,
+    unsigned int flags,
+    int priority)
+{
+    (void)flags;
+    (void)priority;
+    return cudaStreamCreate(stream);
+}
+
+cudaError_t cudaDeviceGetStreamPriorityRange(
+    int *least_priority,
+    int *greatest_priority)
+{
+    if (least_priority == 0 || greatest_priority == 0)
+        return cudaErrorMemoryAllocation;
+    *least_priority = 0;
+    *greatest_priority = -5;
+    return cudaSuccess;
+}
+
 cudaError_t cudaStreamDestroy(cudaStream_t stream)
 {
     free(stream);
