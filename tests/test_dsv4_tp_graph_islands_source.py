@@ -6,8 +6,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = (ROOT / "modules/dsv4_resident_decode_stage/source/"
           "spark_dsv4_resident_decode_stage_module.c").read_text()
-CUDA = (ROOT / "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_resident_decode_stage_cuda.cu").read_text()
 FIRMWARE = (ROOT / "modules/dsv4_resident_decode_stage/include/sparkpipe/"
             "spark_dsv4_resident_decode_stage_firmware.h").read_text()
 ADAPTER = (ROOT / "modules/dsv4_resident_decode_stage/source/"
@@ -42,18 +40,10 @@ assert "state->tp_graph_islands_per_slot" in prewarm
 assert "SparkDsv4ModuleCaptureTpIsland" in prewarm
 assert "state->tp_graphs_sealed = 1u;" in prewarm
 assert "cudaGraphLaunch" not in prewarm
-assert "tp_graph_program_disabled" not in MODULE
-prewarm_programs = body("static SparkStatus SparkDsv4ModulePrewarmTpGraphPrograms(")
-assert "SparkDsv4ModuleCaptureTpGraphProgram" in prewarm_programs
-assert "SparkStageModuleCudaStreamMemOpsSupported" not in MODULE
-semaphore = body("static SparkStatus SparkDsv4ModuleCaptureTpGraphSemaphore(")
-assert "SparkDsv4GraphStreamWriteSystemU32" in semaphore
-assert "SparkDsv4GraphStreamWaitSystemU32" in semaphore
-assert "cudaLaunchHostFunc" not in semaphore
+assert "tp_graph_program" not in MODULE
 assert "SparkTpDeviceCollectiveGraphFenceHost" not in MODULE
-assert 'dlsym(SparkDsv4CudaDriverLibrary,"cuStreamWriteValue32_v2")' in CUDA
-assert 'dlsym(SparkDsv4CudaDriverLibrary,"cuStreamWaitValue32_v2")' in CUDA
-assert "SparkDsv4SignalSystemU32Kernel" not in CUDA
+assert "SparkDsv4LaunchWaitSystemU32" not in MODULE
+assert "cuStreamWaitValue32" not in MODULE
 
 prepare = body("static SparkStatus SparkDsv4ModulePrepareState(")
 assert prepare.index("SparkDsv4ModulePrewarmTpGraphs(state)") < len(prepare)
@@ -66,14 +56,6 @@ finish = body("static SparkStatus SparkDsv4ModuleFinishFrameContinuation(",
 assert "SparkDsv4ModuleReplayTpIsland" in start
 assert continue_layers.count("SparkDsv4ModuleReplayTpIsland") >= 1
 assert "SparkDsv4ModuleReplayTpIsland" in finish
-
-program = body("static SparkStatus SparkDsv4ModuleLaunchTpGraphProgramBody(")
-program_start = body("static SparkStatus SparkDsv4ModuleStartTpGraphProgram(")
-program_continue = body("static void SparkDsv4ModuleContinueTpGraphProgram(")
-assert "SparkDsv4ModuleCaptureTpGraphSemaphore" in program
-assert "cudaGraphLaunch" not in program
-assert program_start.count("cudaGraphLaunch") == 1
-assert "SparkDsv4ModuleReplayTpIsland" not in program_continue
 
 projection = body("static SparkStatus SparkDsv4ModuleLaunchTpProjectionIsland(")
 attention = body("static SparkStatus SparkDsv4ModuleLaunchTpAttentionIsland(")
