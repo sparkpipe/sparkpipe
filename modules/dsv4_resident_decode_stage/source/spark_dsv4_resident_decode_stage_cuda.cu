@@ -81,13 +81,6 @@ static __global__ void SparkDsv4AccumU64MaxKernel(
 		destination[element] = source[element];
 }
 
-static __global__ void SparkDsv4SignalSystemU32Kernel(
-	uint32_t *word,uint32_t value)
-{
-	if ( blockIdx.x == 0u && threadIdx.x == 0u )
-		atomicExch_system((unsigned int *)word,(unsigned int)value);
-}
-
 /*
  * Production DSV4 compute is an SM121-only, fail-closed route.  This runtime
  * architecture check is not a hardware-qualification receipt.  Cache the
@@ -2487,15 +2480,6 @@ extern "C" cudaError_t SparkDsv4LaunchAccumAddRelay(cudaStream_t stream,
 		return(cudaErrorInvalidValue);
 	SparkDsv4AccumAddRelayKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(
 		destination_bf16,source_bf16,relay_bf16,row_count,width);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkDsv4LaunchSignalSystemU32(
-	cudaStream_t stream,uint32_t *word,uint32_t value)
-{
-	if ( stream == 0 || word == 0 || value == 0u )
-		return(cudaErrorInvalidValue);
-	SparkDsv4SignalSystemU32Kernel<<<1u,1u,0u,stream>>>(word,value);
 	return(cudaGetLastError());
 }
 
