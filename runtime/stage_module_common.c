@@ -298,6 +298,116 @@ cudaError_t SparkStageModuleCudaForkJoin(
     return error;
 }
 
+void SparkStageModuleCudaReadAheadDestroy(
+    SparkStageModuleCudaReadAhead *read_ahead)
+{
+    if (read_ahead == 0)
+        return;
+    if (read_ahead->stream != 0)
+        (void)cudaStreamDestroy(read_ahead->stream);
+    if (read_ahead->completion_event != 0)
+        (void)cudaEventDestroy(read_ahead->completion_event);
+    if (read_ahead->source_ready_event != 0)
+        (void)cudaEventDestroy(read_ahead->source_ready_event);
+    memset(read_ahead, 0, sizeof(*read_ahead));
+}
+
+SparkStatus SparkStageModuleCudaReadAheadInitialize(
+    const char *module_tag,
+    SparkStageModuleLedger *ledger,
+    SparkStageModuleCudaReadAhead *read_ahead,
+    uint32_t sink_word_capacity)
+{
+    cudaError_t error;
+    SparkStatus status;
+    if (module_tag == 0 || module_tag[0] == '\0' || ledger == 0 ||
+        read_ahead == 0 || sink_word_capacity == 0u || read_ahead->stream != 0 ||
+        read_ahead->source_ready_event != 0 || read_ahead->completion_event != 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    atomic_init(&read_ahead->state, SPARK_STAGE_MODULE_CUDA_READ_AHEAD_IDLE);
+    read_ahead->sink_word_capacity = sink_word_capacity;
+    status = SparkStageModuleDeviceAllocate(ledger,
+        (uint64_t)sink_word_capacity * sizeof(uint32_t),
+        (void **)&read_ahead->sink_u32);
+    error = status == SPARK_STATUS_OK ? cudaStreamCreateWithFlags(
+        &read_ahead->stream, cudaStreamNonBlocking) : cudaSuccess;
+    if (status == SPARK_STATUS_OK && error == cudaSuccess)
+        error = cudaEventCreateWithFlags(&read_ahead->source_ready_event,
+            cudaEventDisableTiming);
+    if (status == SPARK_STATUS_OK && error == cudaSuccess)
+        error = cudaEventCreateWithFlags(&read_ahead->completion_event,
+            cudaEventDisableTiming);
+    if (status == SPARK_STATUS_OK && error != cudaSuccess)
+        status = SparkStageModuleCudaStatus(module_tag, error,
+            "cuda_read_ahead_initialize");
+    if (status != SPARK_STATUS_OK)
+        SparkStageModuleCudaReadAheadDestroy(read_ahead);
+    return status;
+}
+
+SparkStatus SparkStageModuleCudaReadAheadArm(
+    const char *module_tag,
+    SparkStageModuleCudaReadAhead *read_ahead,
+    cudaStream_t primary_stream,
+    SparkStageModuleCudaReadAheadLaunchFunction launch_function,
+    void *launch_context)
+{
+    unsigned int expected;
+    cudaError_t error;
+    if (module_tag == 0 || read_ahead == 0 || read_ahead->stream == 0 ||
+        read_ahead->source_ready_event == 0 || read_ahead->completion_event == 0 ||
+        read_ahead->sink_u32 == 0 || read_ahead->sink_word_capacity == 0u ||
+        primary_stream == 0 || launch_function == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    expected = SPARK_STAGE_MODULE_CUDA_READ_AHEAD_IDLE;
+    if (!atomic_compare_exchange_strong_explicit(&read_ahead->state, &expected,
+            SPARK_STAGE_MODULE_CUDA_READ_AHEAD_BUILDING,
+            memory_order_acq_rel, memory_order_acquire))
+        return SPARK_STATUS_BUSY;
+    error = cudaEventRecord(read_ahead->source_ready_event, primary_stream);
+    if (error == cudaSuccess)
+        error = cudaStreamWaitEvent(read_ahead->stream,
+            read_ahead->source_ready_event, 0u);
+    if (error == cudaSuccess)
+        error = launch_function(read_ahead->stream, read_ahead->sink_u32,
+            read_ahead->sink_word_capacity, launch_context);
+    if (error == cudaSuccess)
+        error = cudaEventRecord(read_ahead->completion_event, read_ahead->stream);
+    if (error == cudaSuccess)
+        atomic_store_explicit(&read_ahead->state,
+            SPARK_STAGE_MODULE_CUDA_READ_AHEAD_ARMED, memory_order_release);
+    else
+    {
+        (void)cudaStreamSynchronize(read_ahead->stream);
+        atomic_store_explicit(&read_ahead->state,
+            SPARK_STAGE_MODULE_CUDA_READ_AHEAD_IDLE, memory_order_release);
+    }
+    return SparkStageModuleCudaStatus(module_tag, error, "cuda_read_ahead_arm");
+}
+
+SparkStatus SparkStageModuleCudaReadAheadJoin(
+    const char *module_tag,
+    SparkStageModuleCudaReadAhead *read_ahead,
+    cudaStream_t primary_stream)
+{
+    unsigned int state;
+    cudaError_t error;
+    if (module_tag == 0 || read_ahead == 0 || primary_stream == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    state = atomic_load_explicit(&read_ahead->state, memory_order_acquire);
+    if (state == SPARK_STAGE_MODULE_CUDA_READ_AHEAD_IDLE)
+        return SPARK_STATUS_OK;
+    if (state != SPARK_STAGE_MODULE_CUDA_READ_AHEAD_ARMED ||
+        read_ahead->completion_event == 0)
+        return SPARK_STATUS_INTERNAL_ERROR;
+    error = cudaStreamWaitEvent(primary_stream, read_ahead->completion_event, 0u);
+    if (error != cudaSuccess)
+        (void)cudaStreamSynchronize(read_ahead->stream);
+    atomic_store_explicit(&read_ahead->state,
+        SPARK_STAGE_MODULE_CUDA_READ_AHEAD_IDLE, memory_order_release);
+    return SparkStageModuleCudaStatus(module_tag, error, "cuda_read_ahead_join");
+}
+
 SparkStatus SparkStageModuleEnvironmentText(
     const char *module_tag,
     const char *name,

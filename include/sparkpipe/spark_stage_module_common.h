@@ -15,6 +15,9 @@
 #define SPARK_STAGE_MODULE_SLOT_CLAIMED 1u
 #define SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS 30000000000ull
 #define SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES 2u
+#define SPARK_STAGE_MODULE_CUDA_READ_AHEAD_IDLE 0u
+#define SPARK_STAGE_MODULE_CUDA_READ_AHEAD_BUILDING 1u
+#define SPARK_STAGE_MODULE_CUDA_READ_AHEAD_ARMED 2u
 
 typedef struct SparkStageModuleLedger
 {
@@ -32,6 +35,22 @@ typedef struct SparkStageModuleCudaFork
     cudaEvent_t milestone_event;
     cudaEvent_t join_events[SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES];
 } SparkStageModuleCudaFork;
+
+typedef struct SparkStageModuleCudaReadAhead
+{
+    cudaStream_t stream;
+    cudaEvent_t source_ready_event;
+    cudaEvent_t completion_event;
+    uint32_t *sink_u32;
+    uint32_t sink_word_capacity;
+    atomic_uint state;
+} SparkStageModuleCudaReadAhead;
+
+typedef cudaError_t (*SparkStageModuleCudaReadAheadLaunchFunction)(
+    cudaStream_t stream,
+    uint32_t *sink_u32,
+    uint32_t sink_word_capacity,
+    void *launch_context);
 
 typedef SparkStatus (*SparkStageModuleClaimedIndexPrepareFunction)(
     void *prepare_context);
@@ -52,6 +71,23 @@ cudaError_t SparkStageModuleCudaForkJoin(
     cudaStream_t primary_stream,
     uint32_t branch_count);
 void SparkStageModuleCudaForkDestroy(SparkStageModuleCudaFork *fork);
+SparkStatus SparkStageModuleCudaReadAheadInitialize(
+    const char *module_tag,
+    SparkStageModuleLedger *ledger,
+    SparkStageModuleCudaReadAhead *read_ahead,
+    uint32_t sink_word_capacity);
+SparkStatus SparkStageModuleCudaReadAheadArm(
+    const char *module_tag,
+    SparkStageModuleCudaReadAhead *read_ahead,
+    cudaStream_t primary_stream,
+    SparkStageModuleCudaReadAheadLaunchFunction launch_function,
+    void *launch_context);
+SparkStatus SparkStageModuleCudaReadAheadJoin(
+    const char *module_tag,
+    SparkStageModuleCudaReadAhead *read_ahead,
+    cudaStream_t primary_stream);
+void SparkStageModuleCudaReadAheadDestroy(
+    SparkStageModuleCudaReadAhead *read_ahead);
 SparkStatus SparkStageModuleEnvironmentText(
     const char *module_tag,
     const char *name,

@@ -44,6 +44,7 @@
 #define SPARK_LM_EXPERT_TILE_POLICY_SOFTWARE_PIPELINED 1u
 #define SPARK_LM_EXPERT_TILE_POLICY_AUTOMATIC 2u
 #define SPARK_LM_EXPERT_TILE_POLICY SPARK_LM_EXPERT_TILE_POLICY_AUTOMATIC
+#define SPARK_LM_WEIGHT_READ_AHEAD_SECTOR_BYTES 32u
 #if SPARK_LM_EXPERT_TILE_POLICY > SPARK_LM_EXPERT_TILE_POLICY_AUTOMATIC
 #error "SPARK_LM_EXPERT_TILE_POLICY is invalid"
 #endif
@@ -56,6 +57,70 @@ static __device__ __forceinline__ float SparkLmBf16ToFloat(const void *source, u
 static __device__ __forceinline__ void SparkLmFloatToBf16(void *destination, uint64_t index, float value)
 {
 	((__nv_bfloat16 *)destination)[index] = __float2bfloat16(value);
+}
+
+/*
+ * Read immutable device weights on an auxiliary stream so an exposed
+ * collective window can populate cache without changing model arithmetic.
+ * Every thread publishes its checksum into private scratch, preventing the
+ * compiler from deleting the vector loads while keeping inference outputs
+ * completely disjoint from this hint path. One uint4 load warms each measured
+ * 32-byte GB10 cache sector; the small auxiliary range is read completely.
+ */
+static __global__ void SparkLmWeightReadAheadKernel(
+	const uint4 *payload,uint64_t sector_count,const uint4 *auxiliary_payload,
+	uint64_t auxiliary_vector_count,uint32_t *sink_u32)
+{
+	uint64_t thread_index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	uint64_t stride = (uint64_t)gridDim.x * blockDim.x;
+	uint64_t index;
+	uint32_t checksum = 0u;
+	uint4 value;
+	for (index=thread_index; index<sector_count; index+=stride)
+	{
+		value = payload[index *
+			(SPARK_LM_WEIGHT_READ_AHEAD_SECTOR_BYTES / sizeof(uint4))];
+		checksum ^= value.x ^ value.y ^ value.z ^ value.w;
+	}
+	for (index=thread_index; index<auxiliary_vector_count; index+=stride)
+	{
+		value = auxiliary_payload[index];
+		checksum ^= value.x ^ value.y ^ value.z ^ value.w;
+	}
+	sink_u32[thread_index] = checksum;
+}
+
+static inline cudaError_t SparkLmHostLaunchWeightReadAhead(
+	cudaStream_t stream,const void *payload,uint64_t bytes,
+	const void *auxiliary_payload,uint64_t auxiliary_bytes,uint32_t *sink_u32,
+	uint32_t block_capacity)
+{
+	uint64_t sector_count,auxiliary_vector_count,touch_count,required_blocks;
+	uint32_t block_count;
+	if ( stream == 0 || payload == 0 || sink_u32 == 0 || block_capacity == 0u ||
+		bytes == 0u ||
+		(bytes % SPARK_LM_WEIGHT_READ_AHEAD_SECTOR_BYTES) != 0u ||
+		((uintptr_t)payload % SPARK_LM_WEIGHT_READ_AHEAD_SECTOR_BYTES) != 0u ||
+		((auxiliary_payload == 0) != (auxiliary_bytes == 0u)) ||
+		(auxiliary_bytes % sizeof(uint4)) != 0u ||
+		(auxiliary_payload != 0 &&
+			((uintptr_t)auxiliary_payload % alignof(uint4)) != 0u) )
+		return(cudaErrorInvalidValue);
+	sector_count = bytes / SPARK_LM_WEIGHT_READ_AHEAD_SECTOR_BYTES;
+	auxiliary_vector_count = auxiliary_bytes / sizeof(uint4);
+	if ( auxiliary_vector_count > UINT64_MAX - sector_count )
+		return(cudaErrorInvalidValue);
+	touch_count = sector_count + auxiliary_vector_count;
+	if ( touch_count > UINT64_MAX - (SPARK_LM_CTA_THREADS - 1u) )
+		return(cudaErrorInvalidValue);
+	required_blocks = (touch_count + SPARK_LM_CTA_THREADS - 1u) /
+		SPARK_LM_CTA_THREADS;
+	block_count = required_blocks < block_capacity ? (uint32_t)required_blocks :
+		block_capacity;
+	SparkLmWeightReadAheadKernel<<<block_count,SPARK_LM_CTA_THREADS,0u,stream>>>(
+		(const uint4 *)payload,sector_count,(const uint4 *)auxiliary_payload,
+		auxiliary_vector_count,sink_u32);
+	return(cudaGetLastError());
 }
 
 // E2M1 nibble to float: sign, 2 exponent bits (bias 1), 1 mantissa bit.

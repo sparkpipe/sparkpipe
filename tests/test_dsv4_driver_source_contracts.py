@@ -70,6 +70,7 @@ def main() -> None:
 	row_layout = read("include/sparkpipe/spark_row_layout.h")
 	module = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c")
 	stage_common = read("runtime/stage_module_common.c")
+	stage_common_header = read("include/sparkpipe/spark_stage_module_common.h")
 	pool_layout = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_pool_layout.h")
 	paged_cache = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_paged_cache.c")
 	generic_cache = "\n".join(read(relative) for relative in (
@@ -309,6 +310,70 @@ def main() -> None:
 	reject(cuda, "SparkLmExpertTileAllKernel", "legacy runtime-format expert kernel")
 	reject(moe, "cudaStreamSynchronize", "routed MoE synchronization")
 	reject(moe, "for (expert", "per-expert host dispatch")
+	require(stage_common_header, "SparkStageModuleCudaReadAhead",
+		"model-neutral CUDA read-ahead state")
+	require(stage_common, "SparkStageModuleCudaReadAheadArm",
+		"model-neutral CUDA read-ahead arm")
+	require(stage_common, "cudaEventRecord(read_ahead->source_ready_event",
+		"read-ahead source dependency")
+	require(stage_common,
+		"cudaStreamWaitEvent(primary_stream, read_ahead->completion_event",
+		"read-ahead consumer dependency")
+	require(common, "SparkLmWeightReadAheadKernel",
+		"shared immutable-weight cache-touch kernel")
+	require(common, "SPARK_LM_WEIGHT_READ_AHEAD_SECTOR_BYTES 32u",
+		"measured GB10 read-ahead sector stride")
+	require(common, "required_blocks < block_capacity",
+		"payload-sized read-ahead grid")
+	require(common, "auxiliary_vector_count = auxiliary_bytes / sizeof(uint4)",
+		"complete auxiliary scale read-ahead")
+	require(firmware, "SPARK_DSV4_WEIGHT_READ_AHEAD_MAX_BLOCK_COUNT 48u",
+		"measured GB10 read-ahead CTA cap")
+	require(firmware, "SPARK_DSV4_WEIGHT_READ_AHEAD_THREAD_COUNT 256u",
+		"measured GB10 read-ahead CTA width")
+	require(cuda,
+		"SPARK_DSV4_WEIGHT_READ_AHEAD_THREAD_COUNT == SPARK_LM_CTA_THREADS",
+		"read-ahead sink and CUDA launch geometry agreement")
+	require(cuda, "SparkLmHostLaunchWeightReadAhead",
+		"DSV4 binding to shared cache-touch kernel")
+	require(stage_common_header, "uint32_t sink_word_capacity;",
+		"bounded generic read-ahead sink")
+	require(stage_common, "(uint64_t)sink_word_capacity * sizeof(uint32_t)",
+		"exact generic read-ahead sink allocation")
+	require(module,
+		"sink_word_capacity % SPARK_DSV4_WEIGHT_READ_AHEAD_THREAD_COUNT",
+		"DSV4 sink-to-grid divisibility guard")
+	reject(stage_common_header, "uint32_t block_capacity;",
+		"unbounded callback launch geometry")
+	reject(stage_common + common + module + cuda, "cudaMemPrefetchAsync",
+		"managed-memory migration in device-weight read-ahead")
+	read_ahead_reduce = function_body(module,
+		"static SparkStatus SparkDsv4ModuleReduceHiddenReadAhead(")
+	read_ahead_arm = read_ahead_reduce.index("SparkStageModuleCudaReadAheadArm(")
+	if read_ahead_arm > read_ahead_reduce.index(
+		"status = SparkDsv4ModuleReduceHidden(", read_ahead_arm):
+		raise SystemExit("DSV4 read-ahead must arm before collective publication")
+	continuation_source = module[module.rindex(
+		"static void SparkDsv4ModuleContinueLayers("):]
+	continuation = function_body(continuation_source,
+		"static void SparkDsv4ModuleContinueLayers(")
+	if continuation.index("SparkStageModuleCudaReadAheadJoin(") > \
+		continuation.index("if ( continuation->side == 0u )"):
+		raise SystemExit("DSV4 read-ahead must join before the next graph island")
+	require(module, "layer->attn.wq_b.payload",
+		"projection collective read-ahead target")
+	require(module, "layer->attn.wq_b.scale_data",
+		"projection collective scale read-ahead target")
+	require(module, "SparkDsv4StagePackScaleBytes(layer->attn.wq_b.weight_format",
+		"projection scale read-ahead extent")
+	reject(continuation, "scale_data", "scaled HC read-ahead target")
+	require(continuation, "SparkDsv4ModuleHcFunctionBytes(),0,0u",
+		"single-range HC read-ahead")
+	require(module, "layer->hc.ffn_fn_f32",
+		"attention collective read-ahead target")
+	require(module, "continuation->layer_index + 1u].hc.attn_fn_f32",
+		"FFN collective next-layer read-ahead target")
+	reject(module, "experts_w1.payload", "all-expert read-ahead sweep")
 	reject(module, "SparkDsv4ModuleHostTopkFill", "host-built attention indices")
 	reject(module, "host_topk_indices", "resident host attention-index matrix")
 	require(module, "destination->request_generation = context->request_generation;", "synthesized cache lane request generation")
