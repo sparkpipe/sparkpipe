@@ -40,13 +40,8 @@ assert "state->tp_graph_islands_per_slot" in prewarm
 assert "SparkDsv4ModuleCaptureTpIsland" in prewarm
 assert "state->tp_graphs_sealed = 1u;" in prewarm
 assert "cudaGraphLaunch" not in prewarm
-assert "tp_graph_program_disabled" not in MODULE
-prewarm_programs = body("static SparkStatus SparkDsv4ModulePrewarmTpGraphPrograms(")
-assert "SparkDsv4ModuleCaptureTpGraphProgram" in prewarm_programs
-assert "SparkStageModuleCudaStreamMemOpsSupported" not in MODULE
-fence = body("static SparkStatus SparkDsv4ModuleCaptureTpGraphFence(")
-assert "cudaLaunchHostFunc" in fence
-assert "SparkTpDeviceCollectiveGraphFenceHost" in fence
+assert "tp_graph_program" not in MODULE
+assert "SparkTpDeviceCollectiveGraphFenceHost" not in MODULE
 assert "SparkDsv4LaunchWaitSystemU32" not in MODULE
 assert "cuStreamWaitValue32" not in MODULE
 
@@ -61,14 +56,6 @@ finish = body("static SparkStatus SparkDsv4ModuleFinishFrameContinuation(",
 assert "SparkDsv4ModuleReplayTpIsland" in start
 assert continue_layers.count("SparkDsv4ModuleReplayTpIsland") >= 1
 assert "SparkDsv4ModuleReplayTpIsland" in finish
-
-program = body("static SparkStatus SparkDsv4ModuleLaunchTpGraphProgramBody(")
-program_start = body("static SparkStatus SparkDsv4ModuleStartTpGraphProgram(")
-program_continue = body("static void SparkDsv4ModuleContinueTpGraphProgram(")
-assert "SparkDsv4ModuleCaptureTpGraphFence" in program
-assert "cudaGraphLaunch" not in program
-assert program_start.count("cudaGraphLaunch") == 1
-assert "SparkDsv4ModuleReplayTpIsland" not in program_continue
 
 projection = body("static SparkStatus SparkDsv4ModuleLaunchTpProjectionIsland(")
 attention = body("static SparkStatus SparkDsv4ModuleLaunchTpAttentionIsland(")

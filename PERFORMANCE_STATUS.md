@@ -103,17 +103,17 @@ fused the first recursive-doubling reduction with construction of the next
 relay payload. Its driver SHA-256 is
 `212cee3f901e513936cea20b305305a6ea18df28d577b5adb6f27a25924c0a8e`.
 
-The raw receipts remain outside Git because they include run-local paths and
-full event streams. Their retained paths and SHA-256 digests are:
+The raw receipts, full event streams, exact token IDs, and input batch are
+retained in Git. Their repository paths and SHA-256 digests are:
 
 | Receipt | SHA-256 |
 | --- | --- |
-| `/private/tmp/dsv4-combine-relay-run1.json` | `ba792c90f5f484bb49f6a92e95ef807d1e9efcd30d0dad06fb96b76481be2321` |
-| `/private/tmp/dsv4-combine-relay-run2.json` | `5e7f8307bd29d42cea0aead9fd09d8edd63c02e459ce4e49a89cb75bbe9d32fc` |
-| `/private/tmp/dsv4-combine-relay-run3.json` | `ff130bc6d751543b073e340772132457eff501b160588883fb198e18f19feaa8` |
-| `/private/tmp/dsv4-combine-relay-run4.json` | `6e0e4ea9afdbd4c40eebea1c6d235062761c1811241b7fce28a69a771d2767ec` |
-| `/private/tmp/dsv4-combine-relay-control2.json` | `ff9530527512f6ef1d128ae3e51dc17a1a481e430666742701482258be2d91b7` |
-| `/private/tmp/dsv4-tp4-pp4-b1-compsec076-o128.json` | `e498f1fc88854044eafa64c41ce308b73d54f0a351fe156a513d7ff7ca630ead` |
+| [`qualification/dsv4/performance/tp4_b1_20260813/dsv4-combine-relay-run1.json`](qualification/dsv4/performance/tp4_b1_20260813/dsv4-combine-relay-run1.json) | `ba792c90f5f484bb49f6a92e95ef807d1e9efcd30d0dad06fb96b76481be2321` |
+| [`qualification/dsv4/performance/tp4_b1_20260813/dsv4-combine-relay-run2.json`](qualification/dsv4/performance/tp4_b1_20260813/dsv4-combine-relay-run2.json) | `5e7f8307bd29d42cea0aead9fd09d8edd63c02e459ce4e49a89cb75bbe9d32fc` |
+| [`qualification/dsv4/performance/tp4_b1_20260813/dsv4-combine-relay-run3.json`](qualification/dsv4/performance/tp4_b1_20260813/dsv4-combine-relay-run3.json) | `ff130bc6d751543b073e340772132457eff501b160588883fb198e18f19feaa8` |
+| [`qualification/dsv4/performance/tp4_b1_20260813/dsv4-combine-relay-run4.json`](qualification/dsv4/performance/tp4_b1_20260813/dsv4-combine-relay-run4.json) | `6e0e4ea9afdbd4c40eebea1c6d235062761c1811241b7fce28a69a771d2767ec` |
+| [`qualification/dsv4/performance/tp4_b1_20260813/dsv4-combine-relay-control2.json`](qualification/dsv4/performance/tp4_b1_20260813/dsv4-combine-relay-control2.json) | `ff9530527512f6ef1d128ae3e51dc17a1a481e430666742701482258be2d91b7` |
+| [`qualification/dsv4/performance/tp4_b1_20260813/dsv4-tp4-pp4-b1-compsec076-o128.json`](qualification/dsv4/performance/tp4_b1_20260813/dsv4-tp4-pp4-b1-compsec076-o128.json) | `e498f1fc88854044eafa64c41ce308b73d54f0a351fe156a513d7ff7ca630ead` |
 
 Reproduce the measurement after deploying the exact driver to an otherwise
 identical four-rank runtime:
@@ -135,12 +135,18 @@ projected, kernel-only, and multi-request aggregate figures remain separate.
 
 ### Current hill-climb boundary
 
-The measured candidate still launches 130 graph islands per token. A proposed
-single graph exposed a real scheduling deadlock between an external host-RDMA
-collective and CUDA graph execution; the old runtime had silently disabled
-that path. The silent downgrade is being removed. No single-graph speedup is
-claimed until it completes the exact workload above and preserves its token
-sequence.
+The measured candidate still launches 130 graph islands per token. Exact
+merged main `02dc758e32e0972b0321a4a46276a4e128214988` enabled a proposed
+single graph, but its first B1 smoke test emitted no token: all four ranks
+stopped after the first recursive-doubling exchange in collective phase
+`CONSUME_BUILDING`. The graph's host callback waited for completion while the
+transport needed later CUDA work to publish that completion, forming a
+circular dependency. This is a correctness failure, not a throughput result.
+
+The working boundary remains event-driven graph islands. Network completion
+advances the next captured compute island without a blocking graph host node.
+No single-graph speedup is claimed until it completes the exact workload above
+and preserves its token sequence.
 
 ## Planning projections
 

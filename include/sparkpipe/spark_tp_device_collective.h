@@ -42,11 +42,8 @@ extern "C" {
      SPARK_TP_DEVICE_COLLECTIVE_BINDING_RECEIVE_MAPPED_ALIAS)
 #define SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION \
     0x00000001u
-#define SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_EXTERNAL_GRAPH_ORDER \
-    0x00000002u
 #define SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_KNOWN_FLAGS \
-    (SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION | \
-     SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_EXTERNAL_GRAPH_ORDER)
+    SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION
 
 #define SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_PHASE_SUBMIT_BUILDING 1u
@@ -88,13 +85,6 @@ typedef void (*SparkTpDeviceCollectiveCompletionFunction)(
     void *completion_context,
     const SparkTpDeviceCollectiveCompletion *completion);
 
-typedef struct SparkTpDeviceCollectiveGraphFence
-{
-	volatile uint32_t *producer_ready_host;
-	const volatile uint32_t *completion_ready_host;
-	uint32_t ready_value;
-} SparkTpDeviceCollectiveGraphFence;
-
 typedef struct SparkTpDeviceCollectiveSubmission
 {
     uint32_t abi_version;
@@ -109,17 +99,6 @@ typedef struct SparkTpDeviceCollectiveSubmission
     const void *local_device;
     void *full_device;
     void *cuda_stream;
-    /*
-     * EXTERNAL_GRAPH_ORDER defers local placement until producer_ready_host
-     * becomes nonzero. completion_ready_device is then set nonzero on the
-     * collective stream after the result is complete. Both words must be
-     * mapped, stream-visible uint32_t storage owned by the submitter.
-     */
-    const volatile uint32_t *producer_ready_host;
-    volatile uint32_t *completion_ready_host;
-    void *completion_ready_device;
-    uint32_t producer_ready_value;
-    uint32_t completion_ready_value;
     SparkTpDeviceCollectiveCompletionFunction completion_function;
     void *completion_context;
 } SparkTpDeviceCollectiveSubmission;
@@ -156,12 +135,6 @@ typedef SparkStatus (*SparkTpDeviceCollectiveCombineU64MaxFunction)(
     uint64_t *destination_device,
     const uint64_t *source_device,
     uint32_t element_count,
-    void *cuda_stream);
-
-typedef SparkStatus (*SparkTpDeviceCollectiveSignalU32Function)(
-    void *signal_context,
-    void *device_word,
-    uint32_t value,
     void *cuda_stream);
 
 typedef struct SparkTpDeviceCollectiveDebugHooks
@@ -223,8 +196,6 @@ typedef struct SparkTpDeviceCollectiveConfig
         combine_relay_bf16_function;
     SparkTpDeviceCollectiveCombineU64MaxFunction combine_u64_max_function;
     void *combine_context;
-    SparkTpDeviceCollectiveSignalU32Function signal_u32_function;
-    void *signal_context;
     const SparkTpDeviceCollectiveDebugHooks *debug_hooks;
 } SparkTpDeviceCollectiveConfig;
 
@@ -279,8 +250,6 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
 SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);
-
-void SparkTpDeviceCollectiveGraphFenceHost(void *context);
 
 SparkStatus SparkTpDeviceCollectiveRequestFailure(
     SparkTpDeviceCollective *collective,
