@@ -1,5 +1,5 @@
 {
-  "file_count": 837,
+  "file_count": 838,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "PERFORMANCE_STATUS.md",
-      "sha256": "7285d9ea040f395f668d025f99210b20727c420c5b2ed33991eda5c73b51e7b2",
-      "size_bytes": 10863
+      "sha256": "497e9efb8ab591270b699354fb39e278ced694f68fd84914a149d13677817436",
+      "size_bytes": 11613
     },
     {
       "path": "README.md",
@@ -2110,6 +2110,11 @@
       "path": "qualification/dsv4/performance/tp4_b1_20260813/dsv4-tp4-pp4-b1-compsec076-o128.json",
       "sha256": "e498f1fc88854044eafa64c41ce308b73d54f0a351fe156a513d7ff7ca630ead",
       "size_bytes": 1309
+    },
+    {
+      "path": "qualification/dsv4/performance/tp4_b1_20260814/hc-row-adaptive-bitwise.json",
+      "sha256": "2daf66bf2aa53308835a33616a5ab97db7b7a0842d546ab709902f2f759a810e",
+      "size_bytes": 3221
     },
     {
       "path": "qualification/dsv4/performance/tp4_b1_20260814/tp4-direct-all-to-all-80k.jsonl",
@@ -4190,5 +4195,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 13205400
+  "total_bytes": 13209371
 }

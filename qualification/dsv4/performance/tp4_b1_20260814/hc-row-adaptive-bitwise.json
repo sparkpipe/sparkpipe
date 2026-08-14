@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-14",
+  "source_commit": "290713881d8d3465b158136eefd22b713ed7497c",
+  "source_archive_sha256": "32759d44657dae43fce1965ba56ee1038f5d0b6754856f9892b7e48009ddee81",
+  "cuda_archive_sha256": "db3587dc6c0fde28cdfa68ee410ca0a6db90bb4ad2f328947bb809a5fa016769",
+  "cuda_archive_bytes": 5630200,
+  "cuda_target": "sm_121a",
+  "cuda_toolkit": "13.0.88",
+  "hardware": {
+    "node": "spark4",
+    "gpu": "NVIDIA GB10",
+    "driver": "580.159.03"
+  },
+  "validation_tool": {
+    "source_sha256": "4d0e12e6b3ca801f73bc52d42271b0aed00c2ce99fc6014463c1b986a8f92a7e",
+    "binary_sha256": "ee9ea81388ba50f7aad6c60854bfbbe4023bc28849197ef3559f3748dfb57757",
+    "hidden_dimension": 4096,
+    "hc_streams": 4,
+    "threads": 256,
+    "minimum_blocks": 16,
+    "timing_iterations": {
+      "rows_1_through_16": 1000,
+      "rows_64_through_128": 200,
+      "rows_256_through_1024": 30
+    }
+  },
+  "columns": [
+    "rows",
+    "adaptive_tiles",
+    "pre_elements",
+    "pre_mismatches",
+    "post_elements",
+    "post_mismatches",
+    "pre_original_us",
+    "pre_adaptive_us",
+    "post_original_us",
+    "post_adaptive_us"
+  ],
+  "runs": [
+    [
+      [1, 16, 4096, 0, 16384, 0, 6.156, 2.093, 8.200, 4.081],
+      [2, 8, 8192, 0, 32768, 0, 6.149, 3.513, 8.832, 4.097],
+      [4, 4, 16384, 0, 65536, 0, 6.149, 4.178, 8.783, 4.097],
+      [8, 2, 32768, 0, 131072, 0, 6.146, 5.091, 8.196, 6.145],
+      [16, 1, 65536, 0, 262144, 0, 6.997, 6.150, 8.192, 8.208],
+      [64, 1, 262144, 0, 1048576, 0, 6.155, 6.209, 8.197, 8.197],
+      [128, 1, 524288, 0, 2097152, 0, 8.225, 8.196, 10.322, 10.275],
+      [256, 1, 1048576, 0, 4194304, 0, 13.431, 12.319, 30.957, 32.394],
+      [512, 1, 2097152, 0, 8388608, 0, 37.205, 34.337, 187.596, 189.092],
+      [1024, 1, 4194304, 0, 16777216, 0, 211.668, 211.651, 382.788, 382.010]
+    ],
+    [
+      [1, 16, 4096, 0, 16384, 0, 6.157, 2.057, 8.206, 4.082],
+      [2, 8, 8192, 0, 32768, 0, 6.146, 3.502, 8.193, 4.094],
+      [4, 4, 16384, 0, 65536, 0, 6.149, 4.853, 8.191, 4.099],
+      [8, 2, 32768, 0, 131072, 0, 6.958, 4.105, 8.191, 6.778],
+      [16, 1, 65536, 0, 262144, 0, 6.160, 6.153, 8.190, 8.201],
+      [64, 1, 262144, 0, 1048576, 0, 6.180, 6.465, 8.197, 8.197],
+      [128, 1, 524288, 0, 2097152, 0, 8.229, 8.194, 10.326, 10.325],
+      [256, 1, 1048576, 0, 4194304, 0, 13.459, 12.310, 34.373, 37.170],
+      [512, 1, 2097152, 0, 8388608, 0, 29.986, 27.856, 186.028, 187.967],
+      [1024, 1, 4194304, 0, 16777216, 0, 207.031, 204.727, 388.502, 375.762]
+    ]
+  ],
+  "result": {
+    "pre_total_mismatches": 0,
+    "post_total_mismatches": 0,
+    "all_requested_row_widths_passed": true,
+    "validated_rows": [1, 2, 4, 8, 16, 64, 128, 256, 512, 1024],
+    "cuda_archive_build_passed": true
+  },
+  "notes": [
+    "Timings are isolated kernel measurements and are not end-to-end decode throughput.",
+    "Rows 16 and above select one tile per row and preserve the original launch geometry.",
+    "The validation input covers deterministic finite BF16 streams and finite F32 Hc coefficients.",
+    "Build command: make -C modules/dsv4_resident_decode_stage archive NVCC=/usr/local/cuda/bin/nvcc CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a."
+  ]
+}

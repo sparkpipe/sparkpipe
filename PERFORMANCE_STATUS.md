@@ -65,6 +65,19 @@ bit-for-bit for 1,048,576 deterministic finite inputs across all four TP ranks;
 that receipt is retained at
 [`qualification/dsv4/collectives/tp4_tree_bitwise_20260814/result.json`](qualification/dsv4/collectives/tp4_tree_bitwise_20260814/result.json).
 
+### Hc row-adaptive boundary kernels
+
+The same candidate tiles the Hc pre/post element space only when the active
+row count would otherwise expose fewer than 16 blocks. Two hardware sweeps on
+an exact `sm_121a` archive produced zero BF16 mismatches against the original
+mapping at B1, B2, B4, B8, B16, B64, B128, B256, B512, and B1024. At B1,
+pre-reduce fell from 6.156-6.157 us to 2.057-2.093 us and post fell from
+8.200-8.206 us to 4.081-4.082 us. B16 and above retain one tile per row.
+
+The raw rows, timings, artifact hashes, and build metadata are retained in
+[`hc-row-adaptive-bitwise.json`](qualification/dsv4/performance/tp4_b1_20260814/hc-row-adaptive-bitwise.json).
+These are isolated kernel measurements, not an end-to-end decode result.
+
 The larger-payload boundary remains:
 
 | Payload | Recursive doubling | Split ring | Selected |
