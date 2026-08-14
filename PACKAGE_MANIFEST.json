@@ -38,8 +38,8 @@
     },
     {
       "path": "PERFORMANCE_STATUS.md",
-      "sha256": "497e9efb8ab591270b699354fb39e278ced694f68fd84914a149d13677817436",
-      "size_bytes": 11613
+      "sha256": "ce64ae31338923d0b9ee44453075a162029bb639820e730d21275bf4fbc7d515",
+      "size_bytes": 11730
     },
     {
       "path": "README.md",
@@ -2113,8 +2113,8 @@
     },
     {
       "path": "qualification/dsv4/performance/tp4_b1_20260814/hc-row-adaptive-bitwise.json",
-      "sha256": "2daf66bf2aa53308835a33616a5ab97db7b7a0842d546ab709902f2f759a810e",
-      "size_bytes": 3221
+      "sha256": "7aadd10961e08201d74e87e29abae5406f721b95ee031dfb9a6b18e502ef0257",
+      "size_bytes": 3374
     },
     {
       "path": "qualification/dsv4/performance/tp4_b1_20260814/tp4-direct-all-to-all-80k.jsonl",
@@ -4195,5 +4195,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 13209367
+  "total_bytes": 13209637
 }

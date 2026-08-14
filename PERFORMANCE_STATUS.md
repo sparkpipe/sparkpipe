@@ -71,8 +71,10 @@ The same candidate tiles the Hc pre/post element space only when the active
 row count would otherwise expose fewer than 16 blocks. Two hardware sweeps on
 an exact `sm_121a` archive produced zero BF16 mismatches against the original
 mapping at B1, B2, B4, B8, B16, B64, B128, B256, B512, and B1024. At B1,
-pre-reduce fell from 6.156-6.157 us to 2.057-2.093 us and post fell from
-8.200-8.206 us to 4.081-4.082 us. B16 and above retain one tile per row.
+pre-reduce fell from 6.154-6.155 us to 2.058-2.089 us and post fell from
+8.199-8.208 us to 3.305-3.459 us. B16 and above retain one tile per row. The
+B256-B1024 timings use only 30 iterations and are retained as correctness-sweep
+data, not as performance claims.
 
 The raw rows, timings, artifact hashes, and build metadata are retained in
 [`hc-row-adaptive-bitwise.json`](qualification/dsv4/performance/tp4_b1_20260814/hc-row-adaptive-bitwise.json).
