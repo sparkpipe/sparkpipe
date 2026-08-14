@@ -975,6 +975,7 @@ static void TestAdaptiveDirectAllToAll(TestTransportControls *controls)
         SPARK_STATUS_INVALID_ARGUMENT);
     atomic_init(&combine.recursive.count,0u);
     atomic_init(&combine.direct_count,0u);
+    memset(TestSendBuffers,0x5a,sizeof(TestSendBuffers));
     assert(SparkTpDeviceCollectiveCreate(&configuration,&collective) ==
         SPARK_STATUS_OK);
     assert(collective.direct_all_to_all_max_payload_bytes == 16u);
@@ -1008,7 +1009,12 @@ static void TestAdaptiveDirectAllToAll(TestTransportControls *controls)
     assert(controls->metric(TEST_METRIC_SEND) == TEST_DIRECT_ROUTE_COUNT);
     assert(controls->metric(TEST_METRIC_RELEASE) == TEST_DIRECT_ROUTE_COUNT);
     for (element=0u; element<8u; element++)
+    {
         assert(values[element] == 12u);
+        assert(((uint16_t *)TestSendBuffers[0u][0u])[element] == 3u);
+        assert(((uint16_t *)TestSendBuffers[1u][0u])[element] == 0x5a5au);
+        assert(((uint16_t *)TestSendBuffers[2u][0u])[element] == 0x5a5au);
+    }
     values = (uint16_t *)TestFullBuffers[1u];
     for (element=0u; element<12u; element++)
         values[element] = 3u;
@@ -1032,7 +1038,12 @@ static void TestAdaptiveDirectAllToAll(TestTransportControls *controls)
     assert(controls->metric(TEST_METRIC_RELEASE) ==
         TEST_DIRECT_ROUTE_COUNT + TEST_STEP_COUNT);
     for (element=0u; element<12u; element++)
+    {
         assert(values[element] == 12u);
+        assert(((uint16_t *)TestSendBuffers[0u][1u])[element] == 3u);
+        assert(((uint16_t *)TestSendBuffers[1u][1u])[element] == 6u);
+        assert(((uint16_t *)TestSendBuffers[2u][1u])[element] == 0x5a5au);
+    }
     SparkTpDeviceCollectiveDestroy(&collective);
     assert(controls->metric(TEST_METRIC_CLOSE_WITH_OWNER) == 0u);
 }

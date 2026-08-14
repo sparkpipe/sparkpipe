@@ -307,6 +307,7 @@ static void SparkGlm52ServingDriverCompletion(
 		state->orphan_completion_count++;
 	if ( state->stage_index + 1u == SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT && completion.status == SPARK_STATUS_OK )
 	{
+		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->active_sequence_count;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 		for (index=0u; index<completion.token_count; index++)
@@ -554,6 +555,7 @@ static void SparkGlm52ServingBuildFrame(
 	frame->deadline_time_ns = submission->deadline_time_ns;
 	frame->active_slot_count = submission->active_sequence_count;
 	frame->new_token_count = submission->row_count;
+	frame->tokens_per_sequence = submission->tokens_per_sequence;
 	frame->priority = submission->priority;
 	frame->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : 0u;
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;

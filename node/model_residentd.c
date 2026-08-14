@@ -751,15 +751,26 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 	const SparkModelServingLane *lane,
 	SparkModelResidentdSequenceSlot *slot)
 {
+	SparkStatus status;
+	uint64_t next_sequence_position;
 	if ( route->submission.work_kind ==
 		SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
 		SparkModelContinuationLeaseInvalidate(&slot->lease);
 		return(SPARK_STATUS_OK);
 	}
+	next_sequence_position = lane->context_token_count;
+	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+	{
+		status = SparkModelContinuationLeaseDecodePosition(
+			lane->context_token_count,
+			route->submission.tokens_per_sequence,&next_sequence_position);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
 	return(SparkModelContinuationLeaseEstablish(&slot->lease,
 		route->client_generation,route->submission.control_generation,
-		lane->context_token_count,lane->step_generation));
+		next_sequence_position,lane->step_generation));
 }
 
 static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(

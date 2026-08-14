@@ -767,7 +767,7 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 	const SparkModelServingCompletion *completion)
 {
 	uint32_t *request_slots;
-	uint32_t lane;
+	uint32_t lane,step,token_index;
 	request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
 	for (lane=0u; lane<submission->lane_count; lane++)
 	{
@@ -775,11 +775,20 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 		SparkStatus status;
 		request = &engine->requests[request_slots[lane]];
 		request->resident_bound = 1u;
-		status = SparkModelBatchPublishCompletedBlocks(engine,request,request_slots[lane],request->prompt_token_count + request->generated_token_count);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-		if ( SparkModelBatchAcceptToken(engine,request,completion->token_ids[lane]) != SPARK_STATUS_OK )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		for (step=0u; step<completion->tokens_per_sequence; step++)
+		{
+			status = SparkModelBatchPublishCompletedBlocks(engine,request,
+				request_slots[lane],request->prompt_token_count +
+				request->generated_token_count);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+			token_index = lane * completion->tokens_per_sequence + step;
+			if ( SparkModelBatchAcceptToken(engine,request,
+				completion->token_ids[token_index]) != SPARK_STATUS_OK )
+				return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			if ( request->state != SPARK_MODEL_BATCH_REQUEST_READY_DECODE )
+				break;
+		}
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -1656,6 +1665,8 @@ static void SparkModelBatchInitializeSubmission(
 	submission->active_sequence_count = lane_count;
 	submission->lane_count = lane_count;
 	submission->lanes = engine->scratch_lanes;
+	submission->tokens_per_sequence = work_kind ==
+		SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? 0u : 1u;
 }
 
 static void SparkModelBatchInitializeLane(
@@ -1749,7 +1760,16 @@ static void SparkModelBatchBuildDecodeRows(
 	SparkModelServingSubmission *submission,
 	uint32_t lane_count)
 {
-	uint32_t lane,slot,position;
+	uint32_t block_remaining,chain_tokens,lane,remaining,slot,position;
+	chain_tokens = 1u;
+	if ( (engine->adapter_descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN) != 0u )
+	{
+		chain_tokens = engine->adapter_descriptor->max_output_token_count /
+			lane_count;
+		if ( chain_tokens > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE )
+			chain_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE;
+	}
 	for (lane=0u; lane<lane_count; lane++)
 	{
 		SparkModelBatchRequestState *request;
@@ -1758,6 +1778,21 @@ static void SparkModelBatchBuildDecodeRows(
 		request = &engine->requests[slot];
 		tokens = SparkModelBatchRequestTokens(engine,slot);
 		position = request->prompt_token_count + request->generated_token_count - 1u;
+		remaining = request->output_token_budget -
+			request->generated_token_count;
+		if ( remaining < chain_tokens )
+			chain_tokens = remaining;
+		remaining = engine->max_context_tokens -
+			(request->prompt_token_count + request->generated_token_count);
+		if ( remaining < chain_tokens )
+			chain_tokens = remaining;
+		if ( engine->cache_block_token_count != 0u )
+		{
+			block_remaining = engine->cache_block_token_count -
+				(position % engine->cache_block_token_count);
+			if ( block_remaining < chain_tokens )
+				chain_tokens = block_remaining;
+		}
 		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,position,position + 1u,tokens[position],SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN,1u);
 		engine->scratch_token_ids[lane] = tokens[position];
 		engine->scratch_row_lane_indices[lane] = lane;
@@ -1767,6 +1802,7 @@ static void SparkModelBatchBuildDecodeRows(
 	submission->row_count = lane_count;
 	submission->token_count = lane_count;
 	submission->new_token_count = lane_count;
+	submission->tokens_per_sequence = chain_tokens;
 }
 
 static void SparkModelBatchBuildReleaseLanes(

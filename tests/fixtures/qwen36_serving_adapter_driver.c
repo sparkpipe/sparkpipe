@@ -173,6 +173,8 @@ static SparkStatus TestQwen36ServingDriverSubmit(
 	driver = (TestQwen36ServingDriver *)driver_instance;
 	if ( driver == 0 || frame == 0 || frame->user_context == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( frame->tokens_per_sequence != 1u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	context = (SparkQwen36ResidentDecodeStageFrameContext *)frame->user_context;
 	if ( context->abi_version != SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes < (uint32_t)sizeof(*context) )
 		return(SPARK_STATUS_ABI_MISMATCH);
@@ -254,6 +256,7 @@ static SparkStatus TestQwen36ServingDriverSubmit(
 	completion.sequence_position = frame->sequence_position;
 	completion.program_id = frame->program_id;
 	completion.accepted_token_count = frame->new_token_count;
+	completion.tokens_per_sequence = frame->tokens_per_sequence;
 	completion.residency = frame->residency;
 	completion.status = SPARK_STATUS_OK;
 	frame->completion_function(frame->completion_context,&completion);

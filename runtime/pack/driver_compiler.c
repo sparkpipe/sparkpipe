@@ -674,6 +674,7 @@ static void SparkWriteGeneratedProgramFunction(
         fputs("        completion.sequence_position = frame->sequence_position;\n", file);
         fputs("        completion.driver_dispatch_slot = frame->driver_dispatch_slot;\n", file);
         fputs("        completion.accepted_token_count = frame->new_token_count;\n", file);
+        fputs("        completion.tokens_per_sequence = frame->tokens_per_sequence;\n", file);
         fputs("        completion.residency = frame->residency;\n", file);
         fprintf(file, "        completion.program_id = %uu;\n", program->program_id);
         fputs("        completion.status = execution_status;\n", file);

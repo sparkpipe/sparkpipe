@@ -945,6 +945,7 @@ static void SparkGlm52PrepareAsyncCompletion(
 	async->completion.program_id = frame->program_id;
 	async->completion.driver_dispatch_slot = frame->driver_dispatch_slot;
 	async->completion.accepted_token_count = frame->new_token_count;
+	async->completion.tokens_per_sequence = frame->tokens_per_sequence;
 	async->completion.status = SPARK_STATUS_OK;
 	async->completion.residency = frame->residency;
 	async->completion.host_staging_bytes = (uint64_t)batch->row_count * sizeof(uint32_t) * (3u + state->owns_final_head);

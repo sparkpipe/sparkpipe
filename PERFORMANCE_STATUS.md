@@ -94,6 +94,48 @@ not a universal constant.
 
 ## Measured model performance
 
+### Current branch candidate: resident decode chain
+
+The unmerged candidate based on `main@a14c2e1caa519f2c337671699afb4f6a185bc09e`
+produces **38.1059 decode tokens/s mean** over three TP4 B1 O128 runs, with a
+**38.1757 tokens/s best run**. This is an 11.95% gain over the accepted
+34.0383 tokens/s baseline and a 2.66% gain over the 37.1188 tokens/s
+chain-only measurement. It is approximately 0.85% above the retained 37.7854
+tokens/s plain-vLLM TP4 B1 reference measurement, but remains below the 50
+tokens/s SparkPipe target. The vLLM comparison used no speculation and is a
+throughput reference, not a token-parity claim between serving stacks.
+
+| Run | Decode tok/s | Full-interval time |
+| ---: | ---: | ---: |
+| 1 | 38.0552 | 3.3373 s |
+| 2 | **38.1757** | **3.3267 s** |
+| 3 | 38.0869 | 3.3345 s |
+| Mean | **38.1059** | 3.3328 s |
+
+This is one request with resident prompt KV, 128 generated tokens, no
+speculation, TP4 on `spark4` through `spark7`, and the same end-to-end client
+boundary used by the retained B1 measurements. The mean full decode interval
+is 26.2427 ms/token. The driver executes up to eight decode steps per resident
+submission and emits lane-major token bursts; the scheduler caps each chain at
+the output budget, context limit, and current KV-page boundary.
+
+The combined candidate also retains the independently measured W2 N128/four-CTA
+schedule, immutable shared direct-send buffer, and cache-streaming FP8 weight
+loads. It does not change the BF16 spine, model weights, sampling, or KV
+precision. All three runs emitted the exact retained 128-token sequence; the
+canonical comma-separated sequence plus trailing newline hashes to
+`211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083`.
+
+| Receipt | SHA-256 |
+| --- | --- |
+| [`resident-chain-combined-a14c2e1-run1.json`](qualification/dsv4/performance/tp4_b1_20260814/resident-chain-combined-a14c2e1-run1.json) | `687c9d25fcf102717ac45026340ab2053a93c41307feffe60be66c8fda91f02a` |
+| [`resident-chain-combined-a14c2e1-run2.json`](qualification/dsv4/performance/tp4_b1_20260814/resident-chain-combined-a14c2e1-run2.json) | `6942d6844bdb798a28a6d5216d1aeb6d6df8dfcaf4c827cf001f7a5289c5e6ee` |
+| [`resident-chain-combined-a14c2e1-run3.json`](qualification/dsv4/performance/tp4_b1_20260814/resident-chain-combined-a14c2e1-run3.json) | `13031f292a7bdc49388d082d19c753665a8d6fa7f8dcc8b47b0071940ef67a42` |
+| [`vllm-dsv4-b12x-tp4-b1.json`](qualification/dsv4/performance/tp4_b1_20260814/vllm-dsv4-b12x-tp4-b1.json) | `9144842eff3c103d784df30bad3ab467e8c0633347d5704bc455546785617db5` |
+
+This is branch evidence, not merged-main qualification. A clean merged-main
+rebuild and three-run exact-output requalification remain required after merge.
+
 ### Latest merged-main qualification: DeepSeek V4 Flash TP4 B1
 
 Merged `main@ed1d731dd72caa66ef9545464df6573d81dbbbb8` produces **33.55

@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_DSV4_STAGE_RUNNER_ABI_VERSION 6u
+#define SPARK_DSV4_STAGE_RUNNER_ABI_VERSION 7u
 #define SPARK_DSV4_STAGE_RUNNER_CONFIGURATION_BYTES \
     ((uint32_t)sizeof(SparkDsv4StageRunnerConfiguration))
 #define SPARK_DSV4_STAGE_RUNNER_DISPATCH_BYTES \
@@ -76,7 +76,7 @@ typedef struct SparkDsv4StageRunnerDispatch
     uint32_t row_count;
     uint32_t lane_count;
     uint32_t cache_lane_count;
-    uint32_t reserved0;
+    uint32_t tokens_per_sequence;
     const SparkModelDriverCacheLane *cache_lanes;
     const uint32_t *token_ids;
 	const uint32_t *row_lane_indices;

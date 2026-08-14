@@ -670,7 +670,7 @@ static __device__ __forceinline__ float SparkLmDotRowFp8(const float *shared_inp
 	#pragma unroll 4
 	for (run = lane; run < run_count; run += SPARK_LM_WARP_LANES)
 	{
-		packed = __ldg(((const uint32_t *)weight_payload) + run_row + run);
+		packed = __ldcs(((const uint32_t *)weight_payload) + run_row + run);
 		scale_value = SparkLmDecodeE8m0(weight_scale_e8m0[scale_row + ((run << 2u) / GROUP_SIZE)]);
 		SparkLmDecodeE4m3x4Half2(packed,decoded);
 		#pragma unroll
@@ -2069,12 +2069,14 @@ static inline cudaError_t SparkLmHostLaunchAdaptiveAttnDecode(cudaStream_t strea
 #define SPARK_LM_SM121_NATIVE_K 32u
 #define SPARK_LM_SM121_NATIVE_WEIGHT_FP8 8u
 #define SPARK_LM_SM121_NATIVE_WEIGHT_MXFP4 4u
-// With one routed row per selected expert, N128 exposes too few independent
-// CTAs. N32 fills W13's 512 columns and N64 fills W2's 4096 columns without
-// padding M to 16; larger decode buckets keep the block-scaled MMA schedule.
+// With one routed row per selected expert, N32 gives W13 exactly two CTAs per
+// SM across the six selected TP4 experts. W2 uses N128 and four CTAs per SM:
+// that leaves one complete task per CTA while halving activation restaging.
+// Larger decode buckets keep the block-scaled MMA schedule.
 #define SPARK_LM_SM121_B1_EXPERT_W13_TILE_N 32u
-#define SPARK_LM_SM121_B1_EXPERT_W2_TILE_N 64u
+#define SPARK_LM_SM121_B1_EXPERT_W2_TILE_N 128u
 #define SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM 2u
+#define SPARK_LM_SM121_B1_EXPERT_W2_BLOCKS_PER_SM 4u
 
 static inline uint32_t SparkLmSm121NativeDecodeShape(uint32_t rows)
 {
@@ -3087,13 +3089,13 @@ static inline cudaError_t SparkLmHostLaunchSm121ExpertW2(
 		input_dimension % 128u != 0u || output_dimension == 0u ||
 		output_dimension % SPARK_LM_SM121_NATIVE_TILE_N != 0u ||
 		multiprocessor_count == 0u || multiprocessor_count > UINT32_MAX /
-			SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM )
+			SPARK_LM_SM121_B1_EXPERT_W2_BLOCKS_PER_SM )
 		return(cudaErrorInvalidValue);
 	packed_rows = rows * top_k;
 	if ( rows == 1u )
 	{
 		block_count = multiprocessor_count *
-			SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM;
+			SPARK_LM_SM121_B1_EXPERT_W2_BLOCKS_PER_SM;
 		SparkLmSm121B1ExpertW2Kernel<SPARK_LM_SM121_B1_EXPERT_W2_TILE_N>
 			<<<block_count,SPARK_LM_CTA_THREADS,
 				input_dimension * sizeof(float),stream>>>(

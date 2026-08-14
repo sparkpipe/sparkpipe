@@ -74,6 +74,38 @@ static __global__ void SparkDsv4HeadMaxlocUnpackKernel(
 		token_ids[row] = UINT32_MAX - (uint32_t)maxloc[row];
 }
 
+static __global__ void SparkDsv4ResidentTokenFeedbackKernel(
+	const uint32_t *output_token_ids,
+	uint32_t *resident_token_ids,
+	uint32_t *input_token_ids,
+	uint64_t *row_positions,
+	uint64_t *row_emit_positions,
+	uint64_t *row_emit_positions_hca,
+	uint32_t row_count,
+	uint32_t tokens_per_sequence,
+	uint32_t step_index,
+	uint32_t advance)
+{
+	uint32_t row,token;
+	uint64_t position;
+	row = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row >= row_count )
+		return;
+	token = output_token_ids[row];
+	resident_token_ids[row * tokens_per_sequence + step_index] = token;
+	if ( advance == 0u )
+		return;
+	position = row_positions[row] + 1u;
+	input_token_ids[row] = token;
+	row_positions[row] = position;
+	row_emit_positions[row] = position + 1u >=
+		SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO ? position + 1u -
+		SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO : 0u;
+	row_emit_positions_hca[row] = position + 1u >=
+		SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO ? position + 1u -
+		SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO : 0u;
+}
+
 static __global__ void SparkDsv4AccumU64MaxKernel(
 	uint64_t *destination,
 	const uint64_t *source,
@@ -2141,6 +2173,26 @@ extern "C" cudaError_t SparkDsv4LaunchHeadMaxlocUnpack(cudaStream_t stream, cons
 		return(cudaErrorInvalidValue);
 	SparkDsv4HeadMaxlocUnpackKernel<<<(row_count + 255u) / 256u,256u,0u,
 		stream>>>(maxloc,token_ids,row_count);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchResidentTokenFeedback(
+	cudaStream_t stream,const uint32_t *output_token_ids,
+	uint32_t *resident_token_ids,uint32_t *input_token_ids,
+	uint64_t *row_positions,uint64_t *row_emit_positions,
+	uint64_t *row_emit_positions_hca,uint32_t row_count,
+	uint32_t tokens_per_sequence,uint32_t step_index,uint32_t advance)
+{
+	if ( stream == 0 || output_token_ids == 0 || resident_token_ids == 0 ||
+		input_token_ids == 0 || row_positions == 0 || row_emit_positions == 0 ||
+		row_emit_positions_hca == 0 || row_count == 0u ||
+		tokens_per_sequence == 0u || step_index >= tokens_per_sequence ||
+		advance > 1u )
+		return(cudaErrorInvalidValue);
+	SparkDsv4ResidentTokenFeedbackKernel<<<(row_count + 255u) / 256u,256u,0u,
+		stream>>>(output_token_ids,resident_token_ids,input_token_ids,
+		row_positions,row_emit_positions,row_emit_positions_hca,row_count,
+		tokens_per_sequence,step_index,advance);
 	return(cudaGetLastError());
 }
 

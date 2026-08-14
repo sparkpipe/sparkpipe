@@ -129,6 +129,21 @@
 #define SPARK_DSV4_SERVING_DRIVER_MODEL_REVISION SPARK_DSV4_MODEL_DRIVER_REVISION
 #define SPARK_DSV4_SERVING_DRIVER_STAGE_NAME "dsv4_resident_decode_stage"
 #define SPARK_DSV4_SERVING_PROGRAM_NAME "resident_decode"
+#define SPARK_DSV4_SERVING_CHAIN_CAPABILITY \
+	(SPARK_DSV4_SERVING_PP_STAGE_COUNT == 1u && \
+	 SPARK_DSV4_SERVING_TP_DEGREE > 1u ? \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN : 0u)
+#define SPARK_DSV4_SERVING_CHAIN_DEPTH \
+	(SPARK_DSV4_SERVING_PP_STAGE_COUNT == 1u && \
+	 SPARK_DSV4_SERVING_TP_DEGREE > 1u ? \
+	 SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE : 1u)
+#define SPARK_DSV4_SERVING_OUTPUT_TOKEN_CAPACITY \
+	(SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT <= \
+	 SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT / \
+	 SPARK_DSV4_SERVING_CHAIN_DEPTH ? \
+	 SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * \
+	 SPARK_DSV4_SERVING_CHAIN_DEPTH : \
+	 SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT)
 
 /* Optional members stay last so the exact-member check can clip them. */
 static const char *const SparkDsv4ServingConfigurationMembersBase[] =
@@ -168,6 +183,7 @@ typedef struct SparkDsv4ServingPending
 	uint32_t work_kind;
 	uint32_t emit_count;
 	uint32_t cache_lane_count;
+	uint32_t tokens_per_sequence;
 	uint64_t submission_id;
 	uint64_t request_id;
 	uint64_t sequence_id;
@@ -181,7 +197,7 @@ typedef struct SparkDsv4ServingPending
 	uint32_t emit_row_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t emit_lane_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_row_lane_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
-	uint32_t output_token_ids[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	uint32_t output_token_ids[SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT];
 	SparkModelDriverCacheLane cache_lanes[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 } SparkDsv4ServingPending;
 
@@ -236,7 +252,7 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_DSV4_SERVING_TOPOLOGY_FLAG | SPARK_DSV4_SERVING_EXTRA_CAPABILITY | (SPARK_DSV4_SERVING_TOPOLOGY_FLAG == 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT : 0u) | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_DSV4_SERVING_TOPOLOGY_FLAG | SPARK_DSV4_SERVING_EXTRA_CAPABILITY | (SPARK_DSV4_SERVING_TOPOLOGY_FLAG == 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT : 0u) | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | SPARK_DSV4_SERVING_CHAIN_CAPABILITY,
 	.stage_count = SPARK_DSV4_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_DSV4_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -249,7 +265,7 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 	.max_active_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_input_row_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
 	.max_resident_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT,
-	.max_output_token_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+	.max_output_token_count = SPARK_DSV4_SERVING_OUTPUT_TOKEN_CAPACITY,
 	.max_speculative_token_count = 0u,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE,
 	.adapter_id = SPARK_DSV4_SERVING_ADAPTER_ID,
@@ -735,6 +751,7 @@ static SparkStatus SparkDsv4ServingReservePending(
 			pending->lane_count = submission->lane_count;
 			pending->active_sequence_count = submission->active_sequence_count;
 			pending->work_kind = submission->work_kind;
+			pending->tokens_per_sequence = submission->tokens_per_sequence;
 			pending->submission_id = submission->submission_id;
 			pending->request_id = submission->request_id;
 			pending->sequence_id = submission->sequence_id;
@@ -800,6 +817,9 @@ static void SparkDsv4ServingDriverCompletion(
 	if ( matches != 0u )
 		completion.residency = driver_completion->residency;
 	completion.accepted_token_count = driver_completion->accepted_token_count;
+	if ( matches != 0u && driver_completion->tokens_per_sequence !=
+		pending->tokens_per_sequence )
+		completion.status = SPARK_STATUS_SCHEMA_ERROR;
 	completion.queue_delay_ns = driver_completion->queue_delay_ns;
 	completion.service_time_ns = driver_completion->service_time_ns;
 	completion.device_memcpy_bytes = driver_completion->device_memcpy_bytes;
@@ -812,10 +832,17 @@ static void SparkDsv4ServingDriverCompletion(
 		pending->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE &&
 		completion.status == SPARK_STATUS_OK )
 	{
-		completion.token_count = pending->active_sequence_count;
+		completion.tokens_per_sequence = pending->tokens_per_sequence;
+		completion.token_count = pending->active_sequence_count *
+			pending->tokens_per_sequence;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
-		for (index=0u; index<completion.token_count; index++)
-			completion.token_ids[index] = pending->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? pending->output_token_ids[index] : pending->output_token_ids[pending->last_row_by_lane[index]];
+		if ( pending->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+			for (index=0u; index<pending->active_sequence_count; index++)
+				completion.token_ids[index] =
+					pending->output_token_ids[index];
+		else
+			memcpy(completion.token_ids,pending->output_token_ids,
+				(uint64_t)completion.token_count * sizeof(uint32_t));
 	}
 	pending->active = 0u;
 	state->completion_function(state->completion_context,&completion);
@@ -1339,6 +1366,7 @@ static SparkStatus SparkDsv4ServingSubmit(
 	dispatch.row_count = submission->row_count;
 	dispatch.lane_count = submission->lane_count;
 	dispatch.cache_lane_count = pending->cache_lane_count;
+	dispatch.tokens_per_sequence = submission->tokens_per_sequence;
 	dispatch.cache_lanes = pending->cache_lanes;
 	dispatch.token_ids = submission->token_ids;
 	dispatch.row_lane_indices = pending->resident_row_lane_indices;

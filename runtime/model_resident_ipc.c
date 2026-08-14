@@ -367,6 +367,7 @@ static void SparkModelResidentIpcCopySubmissionScalars(
 	wire->lane_count = submission->lane_count;
 	wire->row_count = submission->row_count;
 	wire->token_count = submission->token_count;
+	wire->tokens_per_sequence = submission->tokens_per_sequence;
 	wire->model_extension_kind = submission->model_extension_kind;
 	wire->model_extension_bytes = submission->model_extension_bytes;
 	wire->residency = submission->residency;
@@ -463,7 +464,7 @@ static SparkStatus SparkModelResidentIpcValidateSubmitLayout(
 	uint32_t expected,offset;
 	SparkStatus status;
 	status = SparkModelResidentIpcCalculateSubmitBytes(wire->lane_count,wire->row_count,wire->model_extension_bytes,&expected);
-	if ( status != SPARK_STATUS_OK || expected != message_bytes || wire->token_count != wire->row_count || wire->reserved0 != 0u || ((wire->header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) != (wire->client_generation != 0u)) )
+	if ( status != SPARK_STATUS_OK || expected != message_bytes || wire->token_count != wire->row_count || ((wire->header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) != (wire->client_generation != 0u)) )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_SCHEMA_ERROR);
 	offset = SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES;
 	if ( wire->lanes_offset != offset )
@@ -524,6 +525,7 @@ SparkStatus SparkModelResidentIpcDecodeSubmission(
 	submission_out->lane_count = wire->lane_count;
 	submission_out->row_count = wire->row_count;
 	submission_out->token_count = wire->token_count;
+	submission_out->tokens_per_sequence = wire->tokens_per_sequence;
 	submission_out->model_extension_kind = wire->model_extension_kind;
 	submission_out->model_extension_bytes = wire->model_extension_bytes;
 	submission_out->residency = wire->residency;
@@ -588,6 +590,7 @@ SparkStatus SparkModelResidentIpcEncodeCompletion(
 	wire->residency = completion->residency;
 	wire->accepted_token_count = completion->accepted_token_count;
 	wire->token_count = completion->token_count;
+	wire->tokens_per_sequence = completion->tokens_per_sequence;
 	wire->model_extension_kind = completion->model_extension_kind;
 	wire->model_extension_bytes = completion->model_extension_bytes;
 	wire->token_ids_offset = SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES;
@@ -638,6 +641,7 @@ SparkStatus SparkModelResidentIpcDecodeCompletion(
 	completion_out->residency = wire->residency;
 	completion_out->accepted_token_count = wire->accepted_token_count;
 	completion_out->token_count = wire->token_count;
+	completion_out->tokens_per_sequence = wire->tokens_per_sequence;
 	completion_out->model_extension_kind = wire->model_extension_kind;
 	completion_out->model_extension_bytes = wire->model_extension_bytes;
 	completion_out->queue_delay_ns = wire->queue_delay_ns;
