@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-14",
+  "source": {
+    "repository": "https://github.com/sparkpipe/sparkpipe",
+    "commit": "ed1d731dd72caa66ef9545464df6573d81dbbbb8",
+    "pull_request": 641,
+    "cuda_ci": "https://github.com/sparkpipe/sparkpipe/actions/runs/31800881555",
+    "cuda_ci_result": "success",
+    "cuda_target": "sm_121a",
+    "node_checkouts_clean": true
+  },
+  "model": {
+    "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    "adapter_id": "spark.dsv4.flash-0731.serving-adapter.tp4.v1",
+    "tp_size": 4,
+    "pp_size": 1,
+    "active_requests": 1,
+    "speculation": false
+  },
+  "workload": {
+    "input": "qualification/dsv4/performance/tp4_b1_20260813/dsv4-tp4-pp4-b1-compsec076-o128.json",
+    "input_sha256": "e498f1fc88854044eafa64c41ce308b73d54f0a351fe156a513d7ff7ca630ead",
+    "generated_tokens": 128,
+    "timed_post_first_token_intervals": 127,
+    "cached_prefill": true
+  },
+  "continuation": {
+    "submitted_per_run": 256,
+    "continued_per_run": 254,
+    "admitted_per_run": 256,
+    "rejected_per_run": 0,
+    "active_leases_after_release": 0,
+    "all_timed_decode_steps_used_continuation": true
+  },
+  "runs": [
+    {
+      "receipt": "merged-main-ed1d731d-run1.json",
+      "receipt_sha256": "d5d6cc02cbdd470206a9f2baf453206e67d0be24de487bc430689285915057a4",
+      "decode_tokens_per_second": 33.533433385727115,
+      "decode_seconds_after_first": 3.787265042,
+      "inter_token_median_seconds": 0.029679,
+      "inter_token_p95_seconds": 0.030804
+    },
+    {
+      "receipt": "merged-main-ed1d731d-run2.json",
+      "receipt_sha256": "f013f26bb0f63f86d7c134051d47802c85fa3b63982ec61181a0ccb24d2e0d5b",
+      "decode_tokens_per_second": 33.64676857849326,
+      "decode_seconds_after_first": 3.774508084,
+      "inter_token_median_seconds": 0.029545292,
+      "inter_token_p95_seconds": 0.030697833
+    },
+    {
+      "receipt": "merged-main-ed1d731d-run3.json",
+      "receipt_sha256": "2caa49f9d0f152f0a8e0f64ab4dc3cfe4b88d89ea357c9d39199739bd29c0f1e",
+      "decode_tokens_per_second": 33.47139956209789,
+      "decode_seconds_after_first": 3.794284125,
+      "inter_token_median_seconds": 0.0297585,
+      "inter_token_p95_seconds": 0.031551458
+    }
+  ],
+  "result": {
+    "decode_tokens_per_second_mean": 33.55053384210609,
+    "decode_tokens_per_second_median": 33.533433385727115,
+    "prior_floor_commit": "fc897a006237a14f867ae6d45a5d11673454768a",
+    "prior_floor_mean_tokens_per_second": 33.664653947031844,
+    "difference_from_prior_floor_percent": -0.33899087483658663,
+    "regressed_commit": "07696e07950aa29cd2e2acbf96ccf1d40eb0ba23",
+    "regressed_mean_tokens_per_second": 27.788270191129044,
+    "recovery_over_regressed_percent": 20.736316479377525,
+    "all_runs_token_identical_to_prior_floor": true,
+    "token_count": 128,
+    "token_ids_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083"
+  },
+  "rank_artifacts": [
+    {
+      "rank": 0,
+      "model_driver_sha256": "e906c33656b853f8229cadc078623778f8d68cc22a6b4a03b1d8331ca5d199b9",
+      "hidden_transport_sha256": "6fc7d6999eea11dd1ca4704655899743d19ec771841258ecbfa089af01073cf1"
+    },
+    {
+      "rank": 1,
+      "model_driver_sha256": "217fda5d344a2132f36e325783e153f68f66a814f444ac088369acc0a9e22b8b",
+      "hidden_transport_sha256": "f70c45b7eb2dda337391c37f802565969cb93030e9a930f19bc719b46f5bddfb"
+    },
+    {
+      "rank": 2,
+      "model_driver_sha256": "8422d4aca880b3c3f2e8e3edc682b8a0ffc5554932d7ad29aec50710110b0ad6",
+      "hidden_transport_sha256": "c4297bc3b2e75936b56b2c7857cae9fbfab3343c5d337ecb2a37216c49d17f8f"
+    },
+    {
+      "rank": 3,
+      "model_driver_sha256": "2c7b4cdd79422ddabe40856db5e17c732a1e6d398235633d8ba73ac37fb87d91",
+      "hidden_transport_sha256": "57154c09f7ed7a8b45099dba8abbb1cba907e02ac8cf70bff364126cc7f36369"
+    }
+  ],
+  "common_artifacts": {
+    "model_residentd_sha256": "1ccf633989bb50b957a1ffa49870851c7de67f721782c3af843d6c19c9b45e85",
+    "model_batch_sha256": "c5fab3c40593a9700db5e861b99f130e5c611f6e07bd6bf3e59dcccbe24c9308",
+    "serving_adapter_sha256": "bfc43cb56fb562b15037f0e2b0597523e4866f5cf761e92701766ea3f426af37",
+    "deployment_sha256": "a832e2c3bc6d4559fe540e8d1dd34d118ddca521f9214586b75e2c883f2c8199",
+    "stage_config_sha256": "a39e3178b13fdeadc7fab8d0986331ea1057a4a16940e8830fc044dca6b6f322"
+  },
+  "qualification_gap": {
+    "package_cuda_validator_result": "not_run",
+    "reason": "The repository validator currently hard-codes TP1 and at most 64 graphs; this TP4 package contains 130 graphs.",
+    "wrapper_generation_recipe": "packaging-only.exact-live-inference-required.v1",
+    "live_numerical_gate": "passed"
+  },
+  "notes": [
+    "Throughput excludes time to first token and uses one real request without speculation.",
+    "Every rank cloned and detached the exact merged main commit, remained clean, and rebuilt locally with CUDA 13 for sm_121a.",
+    "All three complete 128-token streams are identical to the accepted merged-main floor.",
+    "The reverted full-graph bridge restored the prior single control-plane path and recovered the 07696e0 regression.",
+    "Package-wrapper generation did not provide CUDA validation because the existing validator cannot express this TP4 130-graph package; this limitation is recorded rather than hidden.",
+    "Raw receipts contain all ready, accepted, token, and terminal events and no credentials or private network addresses."
+  ]
+}
