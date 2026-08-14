@@ -462,6 +462,9 @@ extern cudaError_t SparkDsv4LaunchAccumAdd(cudaStream_t stream, void *destinatio
 extern cudaError_t SparkDsv4LaunchAccumAddRelay(cudaStream_t stream,
 	void *destination_bf16,const void *source_bf16,void *relay_bf16,
 	uint32_t row_count,uint32_t width);
+extern cudaError_t SparkDsv4LaunchAccumAddTp4Tree(cudaStream_t stream,
+	void *destination_bf16,const void *const rank_devices[4],uint32_t tp_rank,
+	uint32_t row_count,uint32_t width);
 extern cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t entries_per_page, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim);
 extern cudaError_t SparkDsv4LaunchTopK(cudaStream_t stream, float *scores_f32, const uint32_t *slot_counts, uint32_t max_slots, uint32_t topk, int32_t offset, int32_t *indices_out, uint64_t out_row_stride, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchHcMix(cudaStream_t stream, const void *streams_bf16, const float *fn_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, float epsilon);
@@ -505,6 +508,24 @@ static SparkStatus SparkDsv4ModuleCombineRelayBf16(
 		"tp_all_reduce_sum_relay"));
 }
 
+static SparkStatus SparkDsv4ModuleCombineTp4Bf16(
+	void *combine_context,
+	void *destination_device,
+	const void *const rank_devices[4],
+	uint32_t tp_rank,
+	uint32_t active_sequence_count,
+	uint32_t hidden_dimension,
+	void *cuda_stream)
+{
+	cudaError_t error;
+	(void)combine_context;
+	error = SparkDsv4LaunchAccumAddTp4Tree((cudaStream_t)cuda_stream,
+		destination_device,rank_devices,tp_rank,active_sequence_count,
+		hidden_dimension);
+	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+		"tp_all_reduce_sum_tp4_tree"));
+}
+
 static SparkStatus SparkDsv4ModuleCombineU64Max(
 	void *combine_context,
 	uint64_t *destination_device,
@@ -526,7 +547,7 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 {
 	SparkTpDeviceCollectiveConfig configuration;
 	uint64_t credit_bytes,offset,total_bytes;
-	uint32_t credit,hidden,memory_mode,step,step_count;
+	uint32_t credit,hidden,memory_mode,route,route_count;
 	void *mapped_receive,*mapped_send;
 	cudaError_t error;
 	SparkStatus status;
@@ -566,6 +587,8 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 		configuration.combine_bf16_function = SparkDsv4ModuleCombineBf16;
 		configuration.combine_relay_bf16_function =
 			SparkDsv4ModuleCombineRelayBf16;
+		configuration.combine_tp4_bf16_function =
+			SparkDsv4ModuleCombineTp4Bf16;
 		configuration.combine_u64_max_function = SparkDsv4ModuleCombineU64Max;
 		configuration.combine_context = state;
 	}
@@ -587,12 +610,12 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 		&memory_mode);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	status = SparkTpDeviceCollectiveCreditStepCount(
-		configuration.backend_kind,state->tp_degree,&step_count);
+	status = SparkTpDeviceCollectiveCreditBindingRouteCount(
+		&configuration,&route_count);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	total_bytes = 0u;
-	for (step=0u; step<step_count; step++)
+	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
 		credit_bytes = (uint64_t)configuration.max_active_sequence_count *
@@ -644,7 +667,7 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	}
 	offset = 0u;
 	state->tp_credit_binding_count = 0u;
-	for (step=0u; step<step_count; step++)
+	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
 		credit_bytes = (uint64_t)configuration.max_active_sequence_count *
@@ -654,7 +677,7 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 		{
 			SparkTpDeviceCollectiveCreditBinding *binding =
 				&state->tp_credit_bindings[state->tp_credit_binding_count++];
-			binding->step_index = step;
+			binding->step_index = route;
 			binding->credit_index = credit;
 			binding->send_device =
 				(uint8_t *)state->tp_credit_send_bf16 + offset;

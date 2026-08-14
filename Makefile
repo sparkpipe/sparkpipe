@@ -502,6 +502,9 @@ hardware_cuda_tools:
 build/spark_tp_device_collective_characterize: tools/hardware/spark_tp_device_collective_characterize.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -ldl -lpthread -o $@
 
+build/spark_dsv4_tp4_tree_bitwise: tools/hardware/spark_dsv4_tp4_tree_bitwise.cu modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/common/include -Imodules/dsv4_resident_decode_stage/include -Imodules/dsv4_resident_decode_stage/source -Imodel-families/dsv4/include -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u -include model-families/dsv4/include/sparkpipe/spark_dsv4_model.h $^ -L$(CUDA_HOME)/lib64 -lcudart -o $@
+
 hardware_handoff: hardware_tools
 	python3 tests/test_hardware_probe_coverage.py
 	python3 tests/test_hardware_assumption_bindings.py

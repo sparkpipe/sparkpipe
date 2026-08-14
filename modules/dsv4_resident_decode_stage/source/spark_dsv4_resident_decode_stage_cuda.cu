@@ -12,9 +12,11 @@
 #include <math.h>
 #include <stdio.h>
 
-#define SPARK_DSV4_ROUTER_SORT_CAPACITY 512u
+#define SPARK_DSV4_ROUTER_SORT_CAPACITY SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT
 #define SPARK_DSV4_EXPERT_STAGES 4u
 #define SPARK_DSV4_EXPERT_WARPS 8u
+#define SPARK_DSV4_HC_ELEMENT_TILE 256u
+#define SPARK_DSV4_HC_MINIMUM_BLOCKS 16u
 
 using SparkDsv4ExpertWeightFormat =
 	typename LmWeightCodec<SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC>::Format;
@@ -1130,6 +1132,43 @@ static __global__ void SparkDsv4AccumAddRelayKernel(void *destination_bf16,
 	}
 }
 
+static __global__ void SparkDsv4AccumAddTp4TreeKernel(
+	void *destination_bf16,
+	const void *rank0_bf16,
+	const void *rank1_bf16,
+	const void *rank2_bf16,
+	const void *rank3_bf16,
+	uint32_t tp_rank,
+	uint32_t row_count,
+	uint32_t width)
+{
+	__nv_bfloat162 pair01_bf16,pair23_bf16;
+	float2 pair01,pair23,rank0,rank1,rank2,rank3;
+	uint32_t row = blockIdx.x,element;
+	uint64_t offset = ((uint64_t)row * width) >> 1u;
+	if ( row >= row_count )
+		return;
+	for (element=threadIdx.x; element<(width >> 1u); element+=blockDim.x)
+	{
+		rank0 = SparkLmLoadBf16Pair(rank0_bf16,offset + element);
+		rank1 = SparkLmLoadBf16Pair(rank1_bf16,offset + element);
+		rank2 = SparkLmLoadBf16Pair(rank2_bf16,offset + element);
+		rank3 = SparkLmLoadBf16Pair(rank3_bf16,offset + element);
+		pair01_bf16 = __floats2bfloat162_rn(
+			rank0.x + rank1.x,rank0.y + rank1.y);
+		pair23_bf16 = __floats2bfloat162_rn(
+			rank2.x + rank3.x,rank2.y + rank3.y);
+		pair01 = __bfloat1622float2(pair01_bf16);
+		pair23 = __bfloat1622float2(pair23_bf16);
+		if ( tp_rank < 2u )
+			SparkLmStoreBf16Pair(destination_bf16,offset + element,
+				pair01.x + pair23.x,pair01.y + pair23.y);
+		else
+			SparkLmStoreBf16Pair(destination_bf16,offset + element,
+				pair23.x + pair01.x,pair23.y + pair01.y);
+	}
+}
+
 // The indexer score: relu(q_h . kv) per head times the projected head
 // weight, summed over heads - one warp per slot, lanes over dims.
 static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t entries_per_page, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)
@@ -1639,13 +1678,15 @@ static __global__ void SparkDsv4HcSplitSinkhornKernel(const float *mixes_f32, co
 
 // Stream reduction by pre, expansion by post + transposed comb, and the
 // sigmoid head reduction - three small element kernels.
-static __global__ void SparkDsv4HcPreReduceKernel(const void *streams_bf16, const float *pre_f32, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension)
+static __global__ void SparkDsv4HcPreReduceKernel(const void *streams_bf16, const float *pre_f32, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension, uint32_t tiles_per_row)
 {
-	uint32_t row = blockIdx.x,element,stream;
+	uint32_t row = blockIdx.y;
+	uint32_t tile = blockIdx.x,element,stream;
 	float value;
 	if ( row >= row_count )
 		return;
-	for (element = threadIdx.x; element < dimension; element += blockDim.x)
+	for (element=tile * blockDim.x + threadIdx.x; element<dimension;
+		element+=tiles_per_row * blockDim.x)
 	{
 		value = 0.0f;
 		for (stream = 0; stream < hc; stream++)
@@ -1654,11 +1695,12 @@ static __global__ void SparkDsv4HcPreReduceKernel(const void *streams_bf16, cons
 	}
 }
 
-static __global__ void SparkDsv4HcPostKernel(const void *out_bf16, const void *residual_bf16, const float *post_f32, const float *comb_f32, void *streams_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension)
+static __global__ void SparkDsv4HcPostKernel(const void *out_bf16, const void *residual_bf16, const float *post_f32, const float *comb_f32, void *streams_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension, uint32_t tiles_per_row)
 {
 	__shared__ float post[SPARK_DSV4_MODEL_HC_STREAM_COUNT];
 	__shared__ float comb[SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT];
-	uint32_t row = blockIdx.x,element,stream,source;
+	uint32_t row = blockIdx.y;
+	uint32_t tile = blockIdx.x,element,stream,source;
 	float residual[SPARK_DSV4_MODEL_HC_STREAM_COUNT],out,value;
 	if ( row >= row_count || hc != SPARK_DSV4_MODEL_HC_STREAM_COUNT )
 		return;
@@ -1667,7 +1709,8 @@ static __global__ void SparkDsv4HcPostKernel(const void *out_bf16, const void *r
 	if ( threadIdx.x < SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT )
 		comb[threadIdx.x] = comb_f32[(uint64_t)row * SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT + threadIdx.x];
 	__syncthreads();
-	for (element=threadIdx.x; element<dimension; element+=blockDim.x)
+	for (element=tile * blockDim.x + threadIdx.x; element<dimension;
+		element+=tiles_per_row * blockDim.x)
 	{
 		out = SparkLmBf16ToFloat(out_bf16,(uint64_t)row * dimension + element);
 		#pragma unroll
@@ -2483,6 +2526,25 @@ extern "C" cudaError_t SparkDsv4LaunchAccumAddRelay(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
+extern "C" cudaError_t SparkDsv4LaunchAccumAddTp4Tree(
+	cudaStream_t stream,
+	void *destination_bf16,
+	const void *const rank_devices[4],
+	uint32_t tp_rank,
+	uint32_t row_count,
+	uint32_t width)
+{
+	if ( stream == 0 || destination_bf16 == 0 || rank_devices == 0 ||
+		rank_devices[0] == 0 || rank_devices[1] == 0 ||
+		rank_devices[2] == 0 || rank_devices[3] == 0 || tp_rank >= 4u ||
+		row_count == 0u || width == 0u || (width & 1u) != 0u )
+		return(cudaErrorInvalidValue);
+	SparkDsv4AccumAddTp4TreeKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(
+		destination_bf16,rank_devices[0],rank_devices[1],rank_devices[2],
+		rank_devices[3],tp_rank,row_count,width);
+	return(cudaGetLastError());
+}
+
 extern "C" cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t entries_per_page, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)
 {
     dim3 grid(
@@ -2574,13 +2636,29 @@ extern "C" cudaError_t SparkDsv4LaunchHcMixSplitKSinkhorn(cudaStream_t stream, c
 
 extern "C" cudaError_t SparkDsv4LaunchHcPreReduce(cudaStream_t stream, const void *streams_bf16, const float *pre_f32, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension)
 {
-	SparkDsv4HcPreReduceKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(streams_bf16,pre_f32,reduced_bf16,row_count,hc,dimension);
+	dim3 grid;
+	uint32_t tiles_per_row,dimension_tiles;
+	if ( row_count == 0u || dimension == 0u )
+		return(cudaErrorInvalidValue);
+	tiles_per_row = (SPARK_DSV4_HC_MINIMUM_BLOCKS + row_count - 1u) / row_count;
+	dimension_tiles = (dimension + SPARK_DSV4_HC_ELEMENT_TILE - 1u) / SPARK_DSV4_HC_ELEMENT_TILE;
+	tiles_per_row = tiles_per_row < dimension_tiles ? tiles_per_row : dimension_tiles;
+	grid = dim3(tiles_per_row,row_count);
+	SparkDsv4HcPreReduceKernel<<<grid,SPARK_DSV4_HC_ELEMENT_TILE,0,stream>>>(streams_bf16,pre_f32,reduced_bf16,row_count,hc,dimension,tiles_per_row);
 	return(cudaGetLastError());
 }
 
 extern "C" cudaError_t SparkDsv4LaunchHcPost(cudaStream_t stream, const void *out_bf16, const void *residual_bf16, const float *post_f32, const float *comb_f32, void *streams_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension)
 {
-	SparkDsv4HcPostKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(out_bf16,residual_bf16,post_f32,comb_f32,streams_bf16,row_count,hc,dimension);
+	dim3 grid;
+	uint32_t tiles_per_row,dimension_tiles;
+	if ( row_count == 0u || dimension == 0u )
+		return(cudaErrorInvalidValue);
+	tiles_per_row = (SPARK_DSV4_HC_MINIMUM_BLOCKS + row_count - 1u) / row_count;
+	dimension_tiles = (dimension + SPARK_DSV4_HC_ELEMENT_TILE - 1u) / SPARK_DSV4_HC_ELEMENT_TILE;
+	tiles_per_row = tiles_per_row < dimension_tiles ? tiles_per_row : dimension_tiles;
+	grid = dim3(tiles_per_row,row_count);
+	SparkDsv4HcPostKernel<<<grid,SPARK_DSV4_HC_ELEMENT_TILE,0,stream>>>(out_bf16,residual_bf16,post_f32,comb_f32,streams_bf16,row_count,hc,dimension,tiles_per_row);
 	return(cudaGetLastError());
 }
 

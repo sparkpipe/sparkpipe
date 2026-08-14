@@ -303,10 +303,12 @@ static SparkStatus SparkDsv4ServingLoadTpAlgorithms(
 		else if ( SparkJsonStringEquals(document,element,
 				"counter_rotating_split_ring") )
 			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
+		else if ( SparkJsonStringEquals(document,element,"direct_all_to_all") )
+			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
 		else
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	if ( count != 2u || mask != SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS )
+	if ( count != 3u || mask != SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	topology->algorithm_mask = mask;
 	return(SPARK_STATUS_OK);
@@ -399,6 +401,7 @@ static SparkStatus SparkDsv4ServingValidateTpCollectiveMembers(
 		"backend","backend_module_path","collective_identifier",
 		"listen_port","connect_timeout_milli","operation_timeout_milli",
 		"peer_hosts","peer_ports","algorithms",
+		"direct_all_to_all_max_payload_bytes",
 		"split_ring_min_payload_bytes","rail_peer_hosts",
 		"step_rail_indices"
 	};
@@ -426,10 +429,17 @@ static SparkStatus SparkDsv4ServingLoadTpAdaptiveFabric(
 		&state->tp_collective_topology);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ServingJsonUnsigned(document,object,
+			"direct_all_to_all_max_payload_bytes",
+			&state->tp_collective_topology.direct_all_to_all_max_payload_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ServingJsonUnsigned(document,object,
 			"split_ring_min_payload_bytes",
 			&state->tp_collective_topology.split_ring_min_payload_bytes);
 	if ( status == SPARK_STATUS_OK &&
-		state->tp_collective_topology.split_ring_min_payload_bytes == 0u )
+		(state->tp_collective_topology.direct_all_to_all_max_payload_bytes == 0u ||
+		 state->tp_collective_topology.split_ring_min_payload_bytes == 0u ||
+		 state->tp_collective_topology.direct_all_to_all_max_payload_bytes >=
+			state->tp_collective_topology.split_ring_min_payload_bytes) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ServingLoadTpRailHosts(document,object,

@@ -106,7 +106,10 @@ def main() -> int:
     assert tp4_pp4_stage["tp_collective"]["peer_hosts"] == [
         f"spark{index:x}-mgmt" for index in range(16)]
     assert tp4_pp4_stage["tp_collective"]["algorithms"] == [
-        "recursive_doubling", "counter_rotating_split_ring"]
+        "recursive_doubling", "direct_all_to_all",
+        "counter_rotating_split_ring"]
+    assert tp4_pp4_stage["tp_collective"][
+        "direct_all_to_all_max_payload_bytes"] == 80 * 1024
     assert tp4_pp4_stage["tp_collective"][
         "split_ring_min_payload_bytes"] == 640 * 1024
     assert tp4_pp4_stage["tp_collective"]["rail_peer_hosts"] == [
