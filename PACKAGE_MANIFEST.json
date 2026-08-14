@@ -1,5 +1,5 @@
 {
-  "file_count": 838,
+  "file_count": 842,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "PERFORMANCE_STATUS.md",
-      "sha256": "ce64ae31338923d0b9ee44453075a162029bb639820e730d21275bf4fbc7d515",
-      "size_bytes": 11730
+      "sha256": "cf4d8aaf8de2ef44e9ab568b59633945666b3a32416895e7fac0736e00aea288",
+      "size_bytes": 14672
     },
     {
       "path": "README.md",
@@ -2115,6 +2115,26 @@
       "path": "qualification/dsv4/performance/tp4_b1_20260814/hc-row-adaptive-bitwise.json",
       "sha256": "7aadd10961e08201d74e87e29abae5406f721b95ee031dfb9a6b18e502ef0257",
       "size_bytes": 3374
+    },
+    {
+      "path": "qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-run1.json",
+      "sha256": "5976ae0ae7c3d76867b7531e44b1dda3887716d0f6b65ae3c4fe7f6f9764d436",
+      "size_bytes": 50313
+    },
+    {
+      "path": "qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-run2.json",
+      "sha256": "8e522ec392dc8cedc2be2b49d9987caf97843b6cf8e7de94f989d21000e19351",
+      "size_bytes": 50330
+    },
+    {
+      "path": "qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-run3.json",
+      "sha256": "8849040c96cf33f0559de8592b9525a5fe1f8a60b78caca99c36862c15f85031",
+      "size_bytes": 50331
+    },
+    {
+      "path": "qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-summary.json",
+      "sha256": "04e6d436df503735c341c5577712d1f86ca4e5e087c028f75e8a4b5f1da85d9b",
+      "size_bytes": 4538
     },
     {
       "path": "qualification/dsv4/performance/tp4_b1_20260814/tp4-direct-all-to-all-80k.jsonl",
@@ -4195,5 +4215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 13209637
+  "total_bytes": 13368091
 }

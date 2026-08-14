@@ -96,9 +96,59 @@ not a universal constant.
 
 ### Latest accepted milestone: DeepSeek V4 Flash TP4 B1
 
-The latest retained measurement is **32.57 decode tokens/s mean** over four
-runs, with a **32.81 tokens/s best run**. This is one request, not eight or
-sixteen concurrent requests and not aggregate batch throughput.
+Merged `main@56d2e95a7d6afd3f12404e782a36c146389bc21a` produces **32.96
+decode tokens/s mean** over three runs, with a **33.14 tokens/s best run**.
+This is one request, not eight or sixteen concurrent requests and not aggregate
+batch throughput.
+
+| Field | Measured configuration |
+| --- | --- |
+| Model | `deepseek-ai/DeepSeek-V4-Flash-0731` |
+| Checkpoint revision | `7872f01b1d1fe23eabc4c98b48bffcef5a386062` |
+| Kernel target | `cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16` |
+| Topology | TP4 on `spark0` through `spark3`; no PP and no speculation |
+| Workload | B1: one 128-token prompt, one request, 128 output tokens |
+| KV state during timed region | Prompt prefill complete and its KV resident |
+| Timed boundary | First emitted token to last emitted token: 127 full decode intervals |
+| Included | Scheduler, model kernels, TP collectives, sampling, runtime IPC, and streamed output observation over SSH |
+| Excluded | Initial process connection and prompt prefill/TTFT |
+| Runtime limits | one in-flight submission, one active sequence, one input row, one resident sequence |
+| Precision route | Exact target above; no speculative draft model |
+
+All four ranks independently cloned, detached, and rebuilt the exact clean
+merged-main commit with CUDA 13 for `sm_121a`. The exact Blackwell CI compile
+also passed before merge.
+
+| Run | Decode tok/s | Median inter-token | p95 inter-token |
+| ---: | ---: | ---: | ---: |
+| 1 | **33.1366** | **30.0503 ms** | **31.0825 ms** |
+| 2 | 32.8758 | 30.2466 ms | 31.3949 ms |
+| 3 | 32.8541 | 30.2220 ms | 31.7784 ms |
+| Mean | **32.9555** | 30.1730 ms | - |
+
+Exact prior merged main averaged 31.6733 tok/s on the same workload, so this
+is a measured **4.05%** end-to-end gain. All three runs emitted the same 128
+tokens as prior main. The comma-separated token-ID sequence hashes to
+`211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083`
+with SHA-256.
+
+The raw event streams and artifact identities are retained at:
+
+| Receipt | SHA-256 |
+| --- | --- |
+| [`merged-main-56d2e95a-run1.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-run1.json) | `5976ae0ae7c3d76867b7531e44b1dda3887716d0f6b65ae3c4fe7f6f9764d436` |
+| [`merged-main-56d2e95a-run2.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-run2.json) | `8e522ec392dc8cedc2be2b49d9987caf97843b6cf8e7de94f989d21000e19351` |
+| [`merged-main-56d2e95a-run3.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-run3.json) | `8849040c96cf33f0559de8592b9525a5fe1f8a60b78caca99c36862c15f85031` |
+| [`merged-main-56d2e95a-summary.json`](qualification/dsv4/performance/tp4_b1_20260814/merged-main-56d2e95a-summary.json) | `04e6d436df503735c341c5577712d1f86ca4e5e087c028f75e8a4b5f1da85d9b` |
+
+This remains below the 50 tok/s target. The retained result is the new
+correctness-preserving floor for the next hill-climb.
+
+### Previous scratch milestone: DeepSeek V4 Flash TP4 B1
+
+The previous retained measurement was **32.57 decode tokens/s mean** over four
+runs, with a **32.81 tokens/s best run**. It was one request, not aggregate
+batch throughput.
 
 | Field | Measured configuration |
 | --- | --- |
