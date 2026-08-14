@@ -31,6 +31,8 @@ static_assert(SPARK_DSV4_MODEL_EXPERT_ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC
 	"DSV4 Flash requires its declared expert activation codec");
 static_assert(SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC <= SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0,
 	"DSV4 output composition requires a declared activation codec");
+static_assert(SPARK_DSV4_WEIGHT_READ_AHEAD_THREAD_COUNT == SPARK_LM_CTA_THREADS,
+	"DSV4 read-ahead scratch geometry must match its CUDA launch width");
 static_assert(SPARK_DSV4_MODEL_HIDDEN_DIMENSION % SparkDsv4ExpertWeightFormat::kScaleGroup == 0u,
 	"DSV4 hidden width must contain complete expert codec scale groups");
 static_assert(SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION % SparkDsv4ExpertWeightFormat::kScaleGroup == 0u,
@@ -2257,6 +2259,18 @@ extern "C" cudaError_t SparkDsv4ConfigureCudaKernels(uint32_t *multiprocessor_co
                 sizeof(float)));
     }
     return error;
+}
+
+extern "C" cudaError_t SparkDsv4LaunchWeightReadAhead(
+	cudaStream_t stream,const void *payload,uint64_t bytes,
+	const void *auxiliary_payload,uint64_t auxiliary_bytes,uint32_t *sink_u32,
+	uint32_t block_capacity)
+{
+	cudaError_t error = SparkDsv4RequireNativeSm121();
+	if ( error != cudaSuccess )
+		return(error);
+	return(SparkLmHostLaunchWeightReadAhead(stream,payload,bytes,
+		auxiliary_payload,auxiliary_bytes,sink_u32,block_capacity));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchSparseAttn(

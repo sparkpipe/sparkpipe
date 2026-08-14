@@ -119,6 +119,7 @@ struct SparkDsv4ModuleSlot
 {
 	void *cuda_stream;
 	SparkStageModuleCudaFork compute_fork;
+	SparkStageModuleCudaReadAhead weight_read_ahead;
 	cudaEvent_t tp_host_copy_event;
 	void *host_staging;
 	uint32_t *host_input_token_ids;
@@ -418,6 +419,7 @@ static uint32_t SparkDsv4ModuleTpOutputLora(const SparkDsv4ModuleState *state)
 }
 
 extern cudaError_t SparkDsv4ConfigureCudaKernels(uint32_t *multiprocessor_count);
+extern cudaError_t SparkDsv4LaunchWeightReadAhead(cudaStream_t stream, const void *payload, uint64_t bytes, const void *auxiliary_payload, uint64_t auxiliary_bytes, uint32_t *sink_u32, uint32_t block_capacity);
 extern cudaError_t SparkDsv4LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchExpertLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
@@ -1754,6 +1756,15 @@ static SparkStatus SparkDsv4ModuleAllocateSlot(SparkDsv4ModuleState *state, Spar
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaForkInitialize(SPARK_DSV4_MODULE_TAG,
 			&slot->compute_fork);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaReadAheadInitialize(SPARK_DSV4_MODULE_TAG,
+			&state->ledger,&slot->weight_read_ahead,
+			state->multiprocessor_count <
+			SPARK_DSV4_WEIGHT_READ_AHEAD_MAX_BLOCK_COUNT ?
+			state->multiprocessor_count *
+				SPARK_DSV4_WEIGHT_READ_AHEAD_THREAD_COUNT :
+			SPARK_DSV4_WEIGHT_READ_AHEAD_MAX_BLOCK_COUNT *
+				SPARK_DSV4_WEIGHT_READ_AHEAD_THREAD_COUNT);
 	if ( status == SPARK_STATUS_OK && state->tp_device_collective_initialized != 0u &&
 		state->tp_device_collective.memory_mode ==
 		SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
@@ -2452,6 +2463,76 @@ static SparkStatus SparkDsv4ModuleReduceHidden(
 		&state->tp_device_collective,&submission));
 }
 
+typedef struct SparkDsv4WeightReadAheadPlan
+{
+	const void *payload;
+	uint64_t bytes;
+	const void *auxiliary_payload;
+	uint64_t auxiliary_bytes;
+} SparkDsv4WeightReadAheadPlan;
+
+static cudaError_t SparkDsv4ModuleEnqueueWeightReadAhead(
+	cudaStream_t stream,uint32_t *sink_u32,uint32_t sink_word_capacity,
+	void *launch_context)
+{
+	SparkDsv4WeightReadAheadPlan *plan =
+		(SparkDsv4WeightReadAheadPlan *)launch_context;
+	uint32_t block_capacity;
+	if ( plan == 0 || sink_word_capacity == 0u ||
+		(sink_word_capacity % SPARK_DSV4_WEIGHT_READ_AHEAD_THREAD_COUNT) != 0u )
+		return(cudaErrorInvalidValue);
+	block_capacity = sink_word_capacity /
+		SPARK_DSV4_WEIGHT_READ_AHEAD_THREAD_COUNT;
+	if ( block_capacity > SPARK_DSV4_WEIGHT_READ_AHEAD_MAX_BLOCK_COUNT )
+		return(cudaErrorInvalidValue);
+	return(SparkDsv4LaunchWeightReadAhead(stream,plan->payload,plan->bytes,
+		plan->auxiliary_payload,plan->auxiliary_bytes,sink_u32,block_capacity));
+}
+
+static SparkStatus SparkDsv4ModuleReduceHiddenReadAhead(
+	SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,void *device_bf16,
+	uint32_t rows,SparkDsv4TpContinuation *continuation,
+	const void *read_ahead_payload,uint64_t read_ahead_bytes,
+	const void *read_ahead_auxiliary_payload,uint64_t read_ahead_auxiliary_bytes)
+{
+	SparkDsv4WeightReadAheadPlan plan;
+	SparkStatus status,join_status;
+	if ( state->tp_degree <= 1u || read_ahead_payload == 0 ||
+		read_ahead_bytes == 0u )
+		return(SparkDsv4ModuleReduceHidden(state,slot,device_bf16,rows,
+			continuation));
+	plan.payload = read_ahead_payload;
+	plan.bytes = read_ahead_bytes;
+	plan.auxiliary_payload = read_ahead_auxiliary_payload;
+	plan.auxiliary_bytes = read_ahead_auxiliary_bytes;
+	status = SparkStageModuleCudaReadAheadArm(SPARK_DSV4_MODULE_TAG,
+		&slot->weight_read_ahead,(cudaStream_t)slot->cuda_stream,
+		SparkDsv4ModuleEnqueueWeightReadAhead,&plan);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ModuleReduceHidden(state,slot,device_bf16,rows,
+			continuation);
+	if ( status != SPARK_STATUS_OK )
+	{
+		join_status = SparkStageModuleCudaReadAheadJoin(SPARK_DSV4_MODULE_TAG,
+			&slot->weight_read_ahead,(cudaStream_t)slot->cuda_stream);
+		if ( join_status != SPARK_STATUS_OK )
+			status = join_status;
+	}
+	return(status);
+}
+
+static uint64_t SparkDsv4ModuleHcFunctionBytes(void)
+{
+	return((uint64_t)SPARK_DSV4_MODEL_HC_MIX_ROWS *
+		SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * sizeof(float));
+}
+
+static uint64_t SparkDsv4ModuleHcHeadFunctionBytes(void)
+{
+	return((uint64_t)SPARK_DSV4_MODEL_HC_STREAM_COUNT *
+		SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * sizeof(float));
+}
+
 static uint32_t SparkDsv4ModulePrefillWaveRowCount(
 	SparkDsv4ModuleState *state,
 	const SparkDsv4PrefillBatchView *prefill,
@@ -2930,9 +3011,14 @@ static SparkStatus SparkDsv4ModuleStartLayers(
 	}
 	continuation->collective.function = SparkDsv4ModuleContinueLayers;
 	continuation->collective.context = continuation;
-	return(SparkDsv4ModuleReduceHidden(state,slot,state->tp_degree > 1u ?
-		slot->ffn_accum_bf16 : slot->delta_bf16,
-		continuation->rows,&continuation->collective));
+	return(SparkDsv4ModuleReduceHiddenReadAhead(state,slot,
+		state->tp_degree > 1u ? slot->ffn_accum_bf16 : slot->delta_bf16,
+		continuation->rows,&continuation->collective,layer->attn.wq_b.payload,
+		SparkDsv4StagePackPayloadBytes(layer->attn.wq_b.weight_format,
+			layer->attn.wq_b.rows,layer->attn.wq_b.columns),
+		layer->attn.wq_b.scale_data,
+		SparkDsv4StagePackScaleBytes(layer->attn.wq_b.weight_format,
+			layer->attn.wq_b.rows,layer->attn.wq_b.columns)));
 }
 
 static void SparkDsv4ModuleFinishContinuationTerminal(
@@ -3025,9 +3111,12 @@ static void SparkDsv4ModuleContinueLayers(void *context,SparkStatus status)
 	SparkDsv4ModuleState *state;
 	SparkDsv4ModuleSlot *slot;
 	const SparkDsv4LayerWeights *layer;
+	const void *read_ahead_payload;
+	uint64_t read_ahead_bytes;
 	void *layer_output;
 	cudaStream_t stream;
 	cudaError_t error;
+	SparkStatus read_ahead_status;
 
 	if ( continuation == 0 || continuation->active == 0u )
 		return;
@@ -3035,6 +3124,10 @@ static void SparkDsv4ModuleContinueLayers(void *context,SparkStatus status)
 	slot = continuation->slot;
 	layer = &state->layers[continuation->layer_index];
 	stream = (cudaStream_t)slot->cuda_stream;
+	read_ahead_status = SparkStageModuleCudaReadAheadJoin(SPARK_DSV4_MODULE_TAG,
+		&slot->weight_read_ahead,stream);
+	if ( read_ahead_status != SPARK_STATUS_OK )
+		status = read_ahead_status;
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkDsv4ModuleFinishContinuationTerminal(continuation,status);
@@ -3049,8 +3142,9 @@ static void SparkDsv4ModuleContinueLayers(void *context,SparkStatus status)
 		if ( status == SPARK_STATUS_OK )
 		{
 			continuation->side = 1u;
-			status = SparkDsv4ModuleReduceHidden(state,slot,slot->delta_bf16,
-				continuation->rows,&continuation->collective);
+			status = SparkDsv4ModuleReduceHiddenReadAhead(state,slot,
+				slot->delta_bf16,continuation->rows,&continuation->collective,
+				layer->hc.ffn_fn_f32,SparkDsv4ModuleHcFunctionBytes(),0,0u);
 			if ( status == SPARK_STATUS_OK )
 				return;
 		}
@@ -3084,9 +3178,24 @@ static void SparkDsv4ModuleContinueLayers(void *context,SparkStatus status)
 		if ( status == SPARK_STATUS_OK )
 		{
 			continuation->side = 2u;
-			status = SparkDsv4ModuleReduceHidden(state,slot,
+			read_ahead_payload = 0;
+			read_ahead_bytes = 0u;
+			if ( continuation->layer_index + 1u <
+				state->first_layer_index + state->layer_count )
+			{
+				read_ahead_payload = state->layers[
+					continuation->layer_index + 1u].hc.attn_fn_f32;
+				read_ahead_bytes = SparkDsv4ModuleHcFunctionBytes();
+			}
+			else if ( state->participates_final_head != 0u )
+			{
+				read_ahead_payload = state->hc_head_fn_f32;
+				read_ahead_bytes = SparkDsv4ModuleHcHeadFunctionBytes();
+			}
+			status = SparkDsv4ModuleReduceHiddenReadAhead(state,slot,
 				slot->ffn_accum_bf16,continuation->rows,
-				&continuation->collective);
+				&continuation->collective,read_ahead_payload,read_ahead_bytes,
+				0,0u);
 			if ( status == SPARK_STATUS_OK )
 				return;
 		}
@@ -4967,8 +5076,12 @@ void SparkDsv4ResidentDecodeStageDestroy(void *module_state)
 	state->tp_graph_island_count = 0u;
 	state->tp_graphs_sealed = 0u;
 	for (slot_index=0u; slot_index<state->pipeline_slot_count; slot_index++)
+	{
+		SparkStageModuleCudaReadAheadDestroy(
+			&state->slots[slot_index].weight_read_ahead);
 		SparkStageModuleCudaForkDestroy(
 			&state->slots[slot_index].compute_fork);
+	}
 	if ( state->cache_mutex_initialized != 0u &&
 		pthread_mutex_lock(&state->cache_mutex) == 0 )
 	{

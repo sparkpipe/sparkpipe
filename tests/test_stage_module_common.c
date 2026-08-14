@@ -24,6 +24,28 @@ typedef struct SparkTestCompletionContext
     uint32_t call_count;
 } SparkTestCompletionContext;
 
+typedef struct SparkTestReadAheadContext
+{
+    uint32_t call_count;
+    uint32_t expected_sink_word_capacity;
+} SparkTestReadAheadContext;
+
+static cudaError_t SparkTestLaunchReadAhead(
+    cudaStream_t stream,
+    uint32_t *sink_u32,
+    uint32_t sink_word_capacity,
+    void *launch_context)
+{
+    SparkTestReadAheadContext *context;
+    context = (SparkTestReadAheadContext *)launch_context;
+    assert(stream != 0);
+    assert(sink_u32 != 0);
+    assert(context != 0);
+    assert(sink_word_capacity == context->expected_sink_word_capacity);
+    context->call_count++;
+    return cudaSuccess;
+}
+
 static SparkStatus SparkTestPrepareClaimedIndices(void *prepare_context)
 {
     SparkTestClaimContext *context;
@@ -279,6 +301,42 @@ static void SparkTestCudaForkOwnsReusableResources(void)
     assert(fork.join_events[1] == 0);
 }
 
+static void SparkTestCudaReadAheadArmsBeforeJoining(void)
+{
+    SparkStageModuleCudaReadAhead read_ahead = {0};
+    SparkStageModuleLedger ledger = {0};
+    SparkTestReadAheadContext context = {0};
+    cudaStream_t primary_stream;
+    ledger.module_tag = "stage_common_test";
+    context.expected_sink_word_capacity = 3u;
+    assert(cudaStreamCreateWithFlags(
+               &primary_stream, cudaStreamNonBlocking) == cudaSuccess);
+    assert(SparkStageModuleCudaReadAheadInitialize(
+               "stage_common_test", &ledger, &read_ahead,
+               0u) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkStageModuleCudaReadAheadInitialize(
+               "stage_common_test", &ledger, &read_ahead,
+               context.expected_sink_word_capacity) == SPARK_STATUS_OK);
+    assert(read_ahead.sink_word_capacity == 3u);
+    assert(ledger.device_bytes_resident == 3u * sizeof(uint32_t));
+    assert(SparkStageModuleCudaReadAheadArm(
+               "stage_common_test", &read_ahead, primary_stream,
+               SparkTestLaunchReadAhead, &context) == SPARK_STATUS_OK);
+    assert(context.call_count == 1u);
+    assert(atomic_load_explicit(
+               &read_ahead.state,
+               memory_order_acquire) == SPARK_STAGE_MODULE_CUDA_READ_AHEAD_ARMED);
+    assert(SparkStageModuleCudaReadAheadJoin(
+               "stage_common_test", &read_ahead,
+               primary_stream) == SPARK_STATUS_OK);
+    assert(atomic_load_explicit(
+               &read_ahead.state,
+               memory_order_acquire) == SPARK_STAGE_MODULE_CUDA_READ_AHEAD_IDLE);
+    SparkStageModuleCudaReadAheadDestroy(&read_ahead);
+    SparkStageModuleLedgerRelease(&ledger);
+    assert(cudaStreamDestroy(primary_stream) == cudaSuccess);
+}
+
 int main(void)
 {
     SparkTestFailedIndexSetClaimPreservesForeignOwnership();
@@ -288,5 +346,6 @@ int main(void)
     SparkTestCompletionHoldsClaimsThroughCallback();
     SparkTestAllocationLedgerAccountsAndReleases();
     SparkTestCudaForkOwnsReusableResources();
+    SparkTestCudaReadAheadArmsBeforeJoining();
     return 0;
 }
