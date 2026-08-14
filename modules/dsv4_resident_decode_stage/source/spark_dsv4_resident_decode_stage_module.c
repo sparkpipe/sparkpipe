@@ -3384,7 +3384,7 @@ static SparkStatus SparkDsv4ModuleFinishFrameContinuation(
 }
 
 /*
- * Decode-step CUDA graphs, per docs/PERF_ROADMAP_2026-08-01.md D10/D1: the
+ * Decode-step CUDA graphs, per docs/archive/PERF_ROADMAP_2026-08-01.md D10/D1: the
  * eager step costs hundreds of driver launches and at cohort width 1 the GPU
  * idles between them. A decode frame's launch SHAPE depends only on the
  * pipeline slot (every buffer above is per-slot fixed) and the lane count

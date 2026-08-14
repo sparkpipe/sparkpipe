@@ -10,7 +10,7 @@ What is held here:
     (the quadratic attention term and KV writes only grow).
 
   - Roadmap reproduction. The memory-only roofline at 13 nodes reproduces
-    the per-batch tables of docs/PERF_ROADMAP_2026-08-01.md:300-415 to
+    the per-batch tables of docs/archive/PERF_ROADMAP_2026-08-01.md:300-415 to
     rounding, and the bandwidth->compute crossover scan reproduces its
     wall crossovers exactly (roadmap:423-430) - those rows are derived,
     not fitted, so a drift means the model stopped being the roadmap.

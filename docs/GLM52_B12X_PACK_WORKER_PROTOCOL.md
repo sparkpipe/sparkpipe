@@ -49,16 +49,13 @@ python3 tools/glm52_b12x_pack_worker.py status \
 
 ## Concurrency Rule
 
-Live Spark2 evidence showed 16 local pack writers were I/O-bound, with CPU well
-below saturation.  The default local worker count is therefore conservative.
-
-To use the 13-Spark fleet efficiently:
+To use any supported deployment efficiently:
 
 ```text
 good:
     distribute stage pack jobs across idle Sparks
     keep local-jobs low enough that each node remains I/O healthy
-    use 200 Gbps/shared storage for artifact placement
+    use the direct external tier or pooled model store for artifact placement
 
 bad:
     run all pack jobs on one Spark

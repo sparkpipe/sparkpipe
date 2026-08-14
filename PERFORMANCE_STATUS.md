@@ -1,13 +1,61 @@
 # SparkPipe Performance Status
 
-This file records measured end-to-end performance.  Analytical projections
-remain in model-specific design documents and do not count as achieved
-milestones here.
+This file is the only current performance ledger. Measurements include exact
+scope and identity. Projections are kept in a separate section and never count
+as achieved results.
 
-## Latest accepted milestone: DSV4 Flash TP4 B1
+## Measured fabric
+
+### Eight pairwise direct links
+
+On 2026-08-13 all eight direct pairs ran simultaneous traffic in both
+directions. Every pair passed the 80 Gb/s-per-direction gate.
+
+| Metric | Result |
+| --- | ---: |
+| Slowest observed direction | 91.669 Gb/s |
+| Fastest observed direction | 105.907 Gb/s |
+| Combined sixteen-direction throughput | 1.643 Tb/s |
+
+These useful rates explain why the nominal 200 Gb/s direct links behave like
+approximately 100 Gb/s links after the GB10 PCIe limit. A 100 Gb/s switched
+port therefore does not reduce practical per-port throughput.
+
+### Combined direct and switched rails
+
+The isolated TP4 two-port characterization measured:
+
+| Metric | Result |
+| --- | ---: |
+| Simultaneous two-port aggregate ceiling | 213.687 Gb/s |
+| Best sustained 14 MiB split ring | 193.018 Gb/s |
+| Ceiling utilization | 90.328% |
+
+The sustained result used two counter-rotating rings, four streams, four
+credits, and one verbs QP per route. It is an isolated transport measurement,
+not model decode throughput.
+
+### TP4 algorithm crossover
+
+The retained BF16 profile selected recursive doubling below 640 KiB and the
+counter-rotating split ring at and above 640 KiB.
+
+| Payload | Recursive doubling | Split ring | Selected |
+| ---: | ---: | ---: | --- |
+| 576 KiB | 119.149 us | 121.229 us | recursive doubling |
+| 640 KiB | 131.746 us | 122.962 us | split ring |
+| 1 MiB | 198.642 us | 143.841 us | split ring |
+| 14 MiB | 2.951 ms | 1.900 ms | split ring |
+
+TP8 and TP16 require their own three-algorithm profiles. The TP4 threshold is
+not a universal constant.
+
+## Measured model performance
+
+### Latest accepted milestone: DeepSeek V4 Flash TP4 B1
 
 The latest retained measurement is **32.57 decode tokens/s mean** over four
-runs, with a **32.81 tokens/s best run**.  This is one request, not eight or
+runs, with a **32.81 tokens/s best run**. This is one request, not eight or
 sixteen concurrent requests and not aggregate batch throughput.
 
 | Field | Measured configuration |
@@ -24,12 +72,12 @@ sixteen concurrent requests and not aggregate batch throughput.
 | Runtime limits | one in-flight submission, one active sequence, one input row, one resident sequence |
 | Precision route | Exact target above; no speculative draft model |
 
-The prompt is prefetched by the same request.  The benchmark starts its decode
+The prompt is prefetched by the same request. The benchmark starts its decode
 clock at the first emitted token, after prefill has populated KV, and observes
-every subsequent token at the client.  This is therefore end-to-end cached-KV
-decode, not a kernel-only timer or a prefill-plus-decode blended rate.
+every subsequent token at the client. This is end-to-end cached-KV decode, not
+a kernel-only timer or a prefill-plus-decode blended rate.
 
-### Four-run result
+#### Four-run result
 
 | Run | Decode tok/s | Median inter-token | p95 inter-token |
 | ---: | ---: | ---: | ---: |
@@ -39,24 +87,24 @@ decode, not a kernel-only timer or a prefill-plus-decode blended rate.
 | 4 | 32.3374 | 30.7020 ms | 32.2516 ms |
 | Mean | **32.5674** | 30.5023 ms | - |
 
-The four rates span 32.3374--32.8075 tok/s.  Their median is 32.5623 tok/s.
-All four candidates emitted the same 128-token sequence, and that sequence is
-byte-for-byte identical to the retained control output.  The comma-separated
-token-id sequence hashes to
+The four rates span 32.3374--32.8075 tok/s. Their median is 32.5623 tok/s. All
+four candidates emitted the same 128-token sequence, and that sequence is
+byte-for-byte identical to the retained control output. The comma-separated
+token-ID sequence hashes to
 `211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083`
 with SHA-256.
 
-### Identity and retained evidence
+#### Identity and retained evidence
 
 This milestone was measured from a scratch candidate based on
 `main@7bf94d8bf087d5c9584e2627d03ea8408ce13c22`; it is a measured engineering
-milestone, not yet a merged-main production qualification.  The candidate
+milestone, not yet a merged-main production qualification. The candidate
 fused the first recursive-doubling reduction with construction of the next
-relay payload.  Its driver SHA-256 is
+relay payload. Its driver SHA-256 is
 `212cee3f901e513936cea20b305305a6ea18df28d577b5adb6f27a25924c0a8e`.
 
 The raw receipts remain outside Git because they include run-local paths and
-full event streams.  Their retained paths and SHA-256 digests are:
+full event streams. Their retained paths and SHA-256 digests are:
 
 | Receipt | SHA-256 |
 | --- | --- |
@@ -81,15 +129,55 @@ python3 tools/model_stream_decode_benchmark.py \
 
 An accepted replacement milestone must retain at least three unprofiled runs,
 use one real request for B1, time at least 127 post-prefill token intervals,
-record exact source/driver/model identities, and prove emitted-token parity
-with the accepted control.  Profiled, simulated, projected, kernel-only, or
-multi-request aggregate figures must be reported separately.
+record exact source, driver, model, topology, and workload identities, and
+prove emitted-token parity with the accepted control. Profiled, simulated,
+projected, kernel-only, and multi-request aggregate figures remain separate.
 
-## Current hill-climb boundary
+### Current hill-climb boundary
 
-The measured candidate still launches 130 graph islands per token.  A proposed
+The measured candidate still launches 130 graph islands per token. A proposed
 single graph exposed a real scheduling deadlock between an external host-RDMA
 collective and CUDA graph execution; the old runtime had silently disabled
-that path.  The silent downgrade is being removed.  No single-graph speedup is
+that path. The silent downgrade is being removed. No single-graph speedup is
 claimed until it completes the exact workload above and preserves its token
 sequence.
+
+## Planning projections
+
+The following values guide architecture choices and are not measurements.
+
+If optimized TP4 reaches 38 tokens/s, with approximately 24.8 ms of remaining
+local work and 85% of that work scaling with TP width, the planning points are:
+
+| Layout | Projected step | Projected speed | Credible planning range |
+| --- | ---: | ---: | ---: |
+| TP8 | 16.56 ms | 60 tok/s | 55-65 tok/s |
+| TP16 | 11.99 ms | 83 tok/s | 70-95 tok/s |
+
+For large MoE residency, TP4 x PP4 remains the canonical operational choice:
+B4 fills the pipeline, shared-prefix B8 can combine pipeline occupancy with
+DSpark revisit slack, and high concurrency can vary stage-local microbatch
+width without moving weights or KV. TP16 is a B1-latency or smaller-dense-model
+layout, not a reason to reload the primary large model.
+
+## Target gates
+
+These are architecture requirements, not measured results:
+
+| Gate | Target |
+| --- | ---: |
+| Promote a configured nonresident model to ready | at most 60 s |
+| Read model shards from the external pooled tier | at least 20 Gb/s useful |
+| Internal hot KV allocation | 2.5 TB per Spark |
+| Internal active model-shard allocation | 1.0 TB per Spark |
+| External direct model tier | at least 1.0 TB per Spark |
+| Four- or eight-node DGX Station largest-model throughput | roughly 50% of matched DGX B300 workload |
+
+Promotion timing includes shard access, verification, rank-local placement,
+driver and communicator binding, prewarm, all-rank agreement, and atomic ready
+publication. A copy-only storage benchmark does not close the model-promotion
+gate.
+
+The Station comparison requires the same checkpoint, precision, request shape,
+context, output length, batching policy, and timing boundary on both systems.
+No analytical memory-bandwidth ratio closes that gate.

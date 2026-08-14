@@ -64,7 +64,7 @@
 //               classification completes.
 //
 // THE BUDGET, and why the phases are shaped this way, is priced in
-// docs/TOPOLOGY_SWITCHING.md. The short version: quiesce and resume cost
+// docs/archive/TOPOLOGY_SWITCHING.md. The short version: quiesce and resume cost
 // microseconds-to-milliseconds, checkpoint costs one small write per
 // sequence, and swap costs pack_bytes / nvme_bandwidth, which is where the
 // twenty seconds live.

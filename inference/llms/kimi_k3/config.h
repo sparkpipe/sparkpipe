@@ -317,7 +317,7 @@
 // At batch the fp32 slot is the largest per-sequence stream in the model:
 // 69 layers x 6.59 MB x 2 (read + write) = 909 MB per sequence per token,
 // ~40% of a B64 step's bytes at the BF16 weight recipe
-// (docs/PERF_ROADMAP_2026-08-01.md, "The K3 state correction"). Halving the
+// (docs/archive/PERF_ROADMAP_2026-08-01.md, "The K3 state correction"). Halving the
 // slot halves exactly that term, and K3_SPEED.md:56-60 names it the single
 // biggest K3 throughput lever after residency - and "a numerics question,
 // not a systems one". The numerics: the slot is read and rewritten at every

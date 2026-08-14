@@ -48,9 +48,9 @@ extern "C" {
 #define SPARK_NVME_TIER_CONFIGURATION_BYTES \
 	((uint32_t)sizeof(SparkNvmeTierConfiguration))
 #define SPARK_NVME_TIER_DEFAULT_BUDGET_BYTES (1099511627776ULL)  /* 1 TB */
-// Sizing defaults from the JIT-KV bandwidth analysis (docs/NVME_KV_SIZING.md,
+// Sizing defaults from the JIT-KV bandwidth analysis (docs/archive/NVME_KV_SIZING.md,
 // tools/nvme_kv_estimate.py) - ESTIMATES, measured nowhere: the roadmap pins
-// NVMe bandwidth as PENDING (PERF_ROADMAP_2026-08-01.md:496-498). The analysis
+// NVMe bandwidth as PENDING (docs/archive/PERF_ROADMAP_2026-08-01.md:496-498). The analysis
 // verdict: at 2K chat no model touches the drive through B1024; 128K agent
 // fits under admission control; 1M survives only with token selection.
 //

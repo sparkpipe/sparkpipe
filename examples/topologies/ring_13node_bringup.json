@@ -25,7 +25,7 @@
       "unified_memory_bytes": 137438953472,
       "nvme_read_gb_s": 6,
       "network_port_count": 2,
-      "provenance": "Bandwidth/compute per docs/GB10_CUDA_COST_MODEL_CALIBRATION.md: 273 GB/s LPDDR5x unified; 250 TFLOP/s FP8 dense (1 PFLOP FP4 sparse, halved for dense, halved again FP4 to FP8); BF16 halved once more on the same public-spec chain. 128 GB unified per README. NVMe 6 GB/s is the midpoint of the unpinned 5-7 GB/s assumption in docs/PERF_ROADMAP_2026-08-01.md."
+      "provenance": "Bandwidth/compute per docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md: 273 GB/s LPDDR5x unified; 250 TFLOP/s FP8 dense (1 PFLOP FP4 sparse, halved for dense, halved again FP4 to FP8); BF16 halved once more on the same public-spec chain. 128 GB unified per README. NVMe 6 GB/s is the midpoint of the unpinned 5-7 GB/s assumption in docs/archive/PERF_ROADMAP_2026-08-01.md."
     }
   ],
   "fabrics": [

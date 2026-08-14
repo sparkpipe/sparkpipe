@@ -547,7 +547,7 @@ void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__res
 // heads * v_head_dim.
 //
 // Wrong for speed on GB10, which is what makes the choice easy rather than a
-// trade. docs/GB10_CUDA_COST_MODEL_CALIBRATION.md: 273 GB/s LPDDR5x unified at
+// trade. docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md: 273 GB/s LPDDR5x unified at
 // eta_bw 0.80, and a calibrated 6.5 TFLOP/s on the linear path - 30 FLOP per
 // byte before compute can bind. Absorbing the value half inflates the MLA
 // output projection from heads*v_head to heads*kv_lora, 8.30 GB to 19.55 GB

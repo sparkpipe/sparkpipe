@@ -97,9 +97,8 @@ slice per section, per-head widths varying by section. Section bases are
 
 Consumption: one GEMM over `normed_bf16` with output width 36960 into a wide
 scratch, then the split kernel reads q/k/v/beta by the section table — the
-qwen_3_6 fused-QKV idiom (`inference/llms/qwen_3_6/layer.cuh:177-192`), which
-this layout is shaped to copy. Four launches become one; the activation is
-read once.
+shared fused-projection idiom implemented by the common model kernels. Four
+launches become one; the activation is read once.
 
 ### `model.layers.N.kda_decay_gate_down_weight` — REPLICATED
 

@@ -59,8 +59,9 @@ def main():
         source = source_path.read_text(encoding="utf-8")
         assert POSITIVE_LATENCY.search(source) is None, source_path
 
-    status = (ROOT / "docs" / "GLM52_MEASURED_STATUS.md").read_text(
-        encoding="utf-8")
+    status = (
+        ROOT / "docs" / "archive" / "GLM52_MEASURED_STATUS.md"
+    ).read_text(encoding="utf-8")
     for required in ("MEASURED", "OBSERVED", "NOT_MEASURED", "NOT_WORKING"):
         assert required in status
 

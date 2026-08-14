@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """Prefill/decode performance estimator for the six family drivers.
 
-Extends the byte roofline of docs/PERF_ROADMAP_2026-08-01.md (whose per-batch
+Extends the byte roofline of docs/archive/PERF_ROADMAP_2026-08-01.md (whose per-batch
 step-byte law it REUSES by importing tools/nvme_kv_estimate.py - same Model
 geometry, same coverage function, same step_gb) with the terms the roadmap
 prices only in prose: launch overhead (eager vs CUDA-graph replay), the 6.5
 TFLOPS compute wall, TP collectives and PP stage transport per topology, and
-a chunked-prefill model. Docs write-up: docs/PREFILL_DECODE_ESTIMATES.md;
+a chunked-prefill model. Docs write-up: docs/archive/PREFILL_DECODE_ESTIMATES.md;
 invariants: tests/test_perf_estimate.py.
 
 == ASSUMED CONSTANTS - measured nowhere in this tree, re-run with receipts ====
 
   LAUNCH_NS_DEFAULT   2000 ns     per-kernel launch/plan floor. Calibration
-                                  doc: 2-5 us (PERF_ROADMAP_2026-08-01.md:587,
-                                  GB10_CUDA_COST_MODEL_CALIBRATION.md:36-44)
+                                  doc: 2-5 us (docs/archive/PERF_ROADMAP_2026-08-01.md:587,
+                                  docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md:36-44)
                                   and explicitly PENDING
-                                  (GB10_CUDA_COST_MODEL_CALIBRATION.md:155-157).
+                                  (docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md:155-157).
                                   Default = bottom of the range; --launch-ns.
   RING_AR_LATENCY_US  29.0        TP all-reduce latency floor per AR on the
                                   ring: the measured 29 us/hop floor
@@ -56,11 +56,11 @@ invariants: tests/test_perf_estimate.py.
 == DERIVED CONSTANTS - cited ==================================================
 
   ETA_BW              0.80        three independent derivations
-                                  (GB10_CUDA_COST_MODEL_CALIBRATION.md:87-97)
+                                  (docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md:87-97)
   NODE_BW_GBPS        273.0       GB10 LPDDR5X (roadmap:29)
   NODE_TFLOPS         BF16 31 / FP8 250 / FP4 500 (roadmap:29-30, :433-434)
   WALL_TFLOPS         6.5/node    measured QKVO WMMA wall
-                                  (GB10_CUDA_COST_MODEL_CALIBRATION.md:66-73)
+                                  (docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md:66-73)
   RING_HOP_FLOOR_US   29.0        measured (roadmap:36-38)
   wire rates          ring 12.5 GB/s/link (1x 100 GbE, HARDWARE_TOPOLOGY.md
                       ring mode), dual-switch 25 GB/s/node (2x 100 GbE rails,
@@ -111,7 +111,7 @@ GEMM_BLOCK_THREADS = 256
 ETA_BW = 0.80
 NODE_BW_GBPS = 273.0
 NODE_TFLOPS = {"bf16": 31.0, "fp8": 250.0, "fp4": 500.0}   # roadmap:29-30, :433
-WALL_TFLOPS_PER_NODE = 6.5   # GB10_CUDA_COST_MODEL_CALIBRATION.md:66-73
+WALL_TFLOPS_PER_NODE = 6.5   # docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md:66-73
 
 GRAPH_LAUNCH_EXTRA = 1   # graph mode: 1 launch per stage + this many for the
                          # head/sample outside capture. ASSUMPTION.

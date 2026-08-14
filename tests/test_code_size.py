@@ -24,7 +24,7 @@ from pathlib import Path
 # The performance wave adds the tensor-map descriptor cache
 # (runtime/gemm_descriptor_cache.h + test), the comms arena (runtime/arena.h +
 # test), the RDMA eviction/batching/lane-rotation logic in rdma.cu, the BF16
-# collective path, and docs/PERF_ROADMAP_2026-08-01.md; ceiling moves to the
+# collective path, and docs/archive/PERF_ROADMAP_2026-08-01.md; ceiling moves to the
 # exact count again.
 # The NVMe JIT KV tier (cache/nvme_tier.c + include/sparkpipe/spark_nvme_tier.h,
 # the tier-3 manager and lookahead prefetcher, ~1080 lines with its build and

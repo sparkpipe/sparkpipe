@@ -135,7 +135,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "docs/GB10_CUDA_COST_MODEL_CALIBRATION.md"
+          "path": "docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md"
         }
       ],
       "fallback": "forbidden",
@@ -283,7 +283,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "docs/PERF_ROADMAP_2026-08-01.md"
+          "path": "docs/archive/PERF_ROADMAP_2026-08-01.md"
         }
       ],
       "fallback": "forbidden",

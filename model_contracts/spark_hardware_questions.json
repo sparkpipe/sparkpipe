@@ -145,7 +145,7 @@
       "production_required": true,
       "consumers": [
         "runtime/launch.h",
-        "docs/GB10_CUDA_COST_MODEL_CALIBRATION.md"
+        "docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md"
       ],
       "decision": {
         "policy_path": "hardware.gb10.launch",
@@ -307,7 +307,7 @@
       "production_required": true,
       "consumers": [
         "runtime/gemm.cuh",
-        "docs/PERF_ROADMAP_2026-08-01.md"
+        "docs/archive/PERF_ROADMAP_2026-08-01.md"
       ],
       "decision": {
         "policy_path": "kernels.native_mma",

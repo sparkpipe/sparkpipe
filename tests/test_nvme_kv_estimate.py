@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """The NVMe KV sizing model must keep reproducing the roadmap it derives from.
 
-tools/nvme_kv_estimate.py is the arithmetic behind docs/NVME_KV_SIZING.md -
+tools/nvme_kv_estimate.py is the arithmetic behind docs/archive/NVME_KV_SIZING.md -
 the dedicate-the-external-NVMe decision and the resume-after-topology-switch
 guarantee both stand on its verdict table. If the estimator drifts from the
-per-batch roofline in docs/PERF_ROADMAP_2026-08-01.md, the doc's tables go
+per-batch roofline in docs/archive/PERF_ROADMAP_2026-08-01.md, the doc's tables go
 stale while the drive purchase and the 20 s switch budget stay justified by
 them. This gate holds the estimator to every number the doc claims it
 reproduces:
@@ -40,7 +40,7 @@ def check(condition, label):
         failures.append(label)
 
 
-# The roadmap's per-batch 2K step tables (PERF_ROADMAP_2026-08-01.md:300-414).
+# The roadmap's per-batch 2K step tables (docs/archive/PERF_ROADMAP_2026-08-01.md:300-414).
 # B8+ reproduces to rounding (0.3 GB covers the roadmap's 0.1 GB print
 # precision stacked on the estimator's 0.1 GB model inputs). B1 does not:
 # the roadmap's B1 expert column is a lump (Pro prints 14.1 where uniform
@@ -64,7 +64,7 @@ HEADLINE_GBPS = {
     ("k3", 256): 23.0, ("k3", 1024): 64.4, ("dsv4_pro", 1024): 63.7,
 }
 
-# Verdict-table spot rows (docs/NVME_KV_SIZING.md:110-127), 13-node ring:
+# Verdict-table spot rows (docs/archive/NVME_KV_SIZING.md:110-127), 13-node ring:
 # (model, batch, context, per-node GB/s, verdict class).
 VERDICT_ROWS = [
     ("glm52", 64, 131072, 1.74, "external-ok"),
@@ -73,7 +73,7 @@ VERDICT_ROWS = [
     ("dsv4_pro", 64, 1048576, 0.08, "external-ok"),
 ]
 
-# Admission caps at the 5 GB/s line (NVME_KV_SIZING.md:110-127).
+# Admission caps at the 5 GB/s line (docs/archive/NVME_KV_SIZING.md:110-127).
 CAPS_5GBPS = {
     ("k3", 131072): 111, ("k3", 1048576): 14,
     ("glm52", 131072): 130, ("glm52", 1048576): 95,
@@ -83,7 +83,7 @@ CAPS_5GBPS = {
     ("mimo25", 131072): 182, ("mimo25", 1048576): 22,
 }
 
-# One node's drive, state included (NVME_KV_SIZING.md:173-193). Exact: the
+# One node's drive, state included (docs/archive/NVME_KV_SIZING.md:173-193). Exact: the
 # formula is the roadmap's own and the floor is deterministic.
 SEQS_1TB = {
     ("k3", 8192): 1467, ("k3", 131072): 245, ("k3", 1048576): 33,
@@ -172,7 +172,7 @@ def main():
     print("\nthe resume-after-switch arithmetic the 20 s budget stands on")
     # The paused cohort's working set fits the tier with ~30x headroom and
     # reloads inside the overlap window: <= 32 GB/node resident budget at
-    # the 5-7 GB/s internal range is 4.6-6.4 s (NVME_KV_SIZING.md:222-233).
+    # the 5-7 GB/s internal range is 4.6-6.4 s (docs/archive/NVME_KV_SIZING.md:222-233).
     reload_lo = est.RESIDENT_KV_GB_PER_NODE / est.INTERNAL_GBPS_HI
     reload_hi = est.RESIDENT_KV_GB_PER_NODE / est.INTERNAL_GBPS_LO
     check(4.0 <= reload_lo <= 5.0 and 6.0 <= reload_hi <= 7.0,
