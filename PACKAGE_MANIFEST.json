@@ -1793,7 +1793,7 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h",
-      "sha256": "2d7403e4ccc0998d0ecadce729ccc37017d96545b7c31f35adcf8c148918d8e4",
+      "sha256": "576b9ab976f2808010d4e14998042db3e0df472f0dc4ed1809d18e0d06057c8a",
       "size_bytes": 11261
     },
     {
@@ -1833,8 +1833,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu",
-      "sha256": "4a9f5553cf40d953e19cad037a0115b34ac3d24b7508fade7864af4766c079fa",
-      "size_bytes": 113623
+      "sha256": "09dd48ba48e4f7fc4e469926387e7aaf2c950d2690880e850d7dc90ca88ce8bb",
+      "size_bytes": 114796
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c",
@@ -3048,8 +3048,8 @@
     },
     {
       "path": "tests/test_dsv4_driver_source_contracts.py",
-      "sha256": "d2e7626c16ea66c6b523a111d7d955ed384c505087fd0d799304db1c63350d6c",
-      "size_bytes": 29317
+      "sha256": "10efba2665a13158bcb87ae1fa9d33d6f2e46bcf20d6b5f644d862429c11f3dc",
+      "size_bytes": 29730
     },
     {
       "path": "tests/test_dsv4_ga_reference_fixture.py",
@@ -4190,5 +4190,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 13203814
+  "total_bytes": 13205400
 }
