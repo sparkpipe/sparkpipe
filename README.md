@@ -25,6 +25,15 @@ dry-run each require their own evidence before the runtime can report ready.
 Until those gates pass, SparkPipe does not present theoretical throughput or
 model-serving claims as measured production results.
 
+Measured engineering results are recorded separately from projections and
+release claims in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md). The latest
+retained DSV4 Flash TP4 B1 result is 32.57 end-to-end cached-KV decode tok/s
+mean over four runs (32.81 tok/s best), with one request, no speculation, and
+exact emitted-token parity against the retained control. It is a scratch
+candidate milestone based on `main`, not a merged-main production
+qualification; the performance status records the exact timing boundary,
+identities, raw-receipt hashes, and reproduction command.
+
 ## Runtime shape
 
 ```text
