@@ -24,8 +24,9 @@
       62012, 62013, 62014, 62015
     ],
     "algorithms": [
-      "recursive_doubling", "counter_rotating_split_ring"
+      "recursive_doubling", "direct_all_to_all", "counter_rotating_split_ring"
     ],
+    "direct_all_to_all_max_payload_bytes": 81920,
     "split_ring_min_payload_bytes": 655360,
     "rail_peer_hosts": [
       [

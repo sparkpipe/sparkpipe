@@ -37,8 +37,35 @@ not model decode throughput.
 
 ### TP4 algorithm crossover
 
-The retained BF16 profile selected recursive doubling below 640 KiB and the
+The retained BF16 profile now has three regions: direct all-to-all through
+80 KiB, recursive doubling above 80 KiB and below 640 KiB, and the
 counter-rotating split ring at and above 640 KiB.
+
+The small-payload boundary was measured on 2026-08-14 with the production
+selector and exact recursive-tree BF16 fused kernel on `spark4` through
+`spark7`, one credit and one in-flight collective. Each value is the mean of
+the four ranks.
+
+| Payload | Direct all-to-all | Recursive doubling | Selected |
+| ---: | ---: | ---: | --- |
+| 8 KiB | **43.369 us** | 52.205 us | direct all-to-all |
+| 80 KiB | **66.111 us** | 71.012 us | direct all-to-all |
+| 96 KiB | 75.862 us | **75.244 us** | recursive doubling |
+
+At 8 KiB the one-round path removes 8.836 us per collective, or 16.9%. With
+130 such collectives per B1 token, its isolated upper bound is approximately
+1.149 ms/token. This is measured collective latency, not an end-to-end decode
+result. The candidate is based on `main@6cfd216bab72368923aff08819de08ea331d26b2`
+and is not a merged-main production qualification.
+
+Raw rank receipts are retained under
+[`qualification/dsv4/performance/tp4_b1_20260814`](qualification/dsv4/performance/tp4_b1_20260814).
+The fused BF16 kernel also matched the current two-step recursive accumulator
+bit-for-bit for 1,048,576 deterministic finite inputs across all four TP ranks;
+that receipt is retained at
+[`qualification/dsv4/collectives/tp4_tree_bitwise_20260814/result.json`](qualification/dsv4/collectives/tp4_tree_bitwise_20260814/result.json).
+
+The larger-payload boundary remains:
 
 | Payload | Recursive doubling | Split ring | Selected |
 | ---: | ---: | ---: | --- |

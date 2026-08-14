@@ -18,6 +18,7 @@
 #endif
 
 #define TEST_STEP_COUNT 2u
+#define TEST_DIRECT_ROUTE_COUNT 3u
 #define TEST_REDUCE_CREDIT_COUNT 4u
 #define TEST_WAIT_MILLI 4000u
 
@@ -115,13 +116,19 @@ typedef struct TestRelayState
     atomic_uint relay_count;
 } TestRelayState;
 
-static uint8_t TestSendBuffers[TEST_STEP_COUNT]
+typedef struct TestTp4CombineState
+{
+    TestCombineState recursive;
+    atomic_uint direct_count;
+} TestTp4CombineState;
+
+static uint8_t TestSendBuffers[TEST_DIRECT_ROUTE_COUNT]
     [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][128u];
-static uint8_t TestReceiveBuffers[TEST_STEP_COUNT]
+static uint8_t TestReceiveBuffers[TEST_DIRECT_ROUTE_COUNT]
     [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][128u];
-static uint8_t TestSendTransportBuffers[TEST_STEP_COUNT]
+static uint8_t TestSendTransportBuffers[TEST_DIRECT_ROUTE_COUNT]
     [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][128u];
-static uint8_t TestReceiveTransportBuffers[TEST_STEP_COUNT]
+static uint8_t TestReceiveTransportBuffers[TEST_DIRECT_ROUTE_COUNT]
     [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][128u];
 static uint8_t TestLocalBuffers[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][64u];
 static uint8_t TestFullBuffers[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][256u];
@@ -131,6 +138,8 @@ static SparkTpDeviceCollectiveCreditBinding TestReduceBindings[
     TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT];
 static SparkTpDeviceCollectiveCreditBinding TestMappedReduceBindings[
     TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT];
+static SparkTpDeviceCollectiveCreditBinding TestDirectReduceBindings[
+    TEST_DIRECT_ROUTE_COUNT * TEST_REDUCE_CREDIT_COUNT];
 static void TestSubmissionClaimed(
     void *context,
     uint32_t credit_index,
@@ -216,6 +225,24 @@ static void TestInitializeBindings(void)
                 TestReceiveTransportBuffers[step_index][credit_index];
         }
     }
+    for (step_index=0u; step_index<TEST_DIRECT_ROUTE_COUNT; step_index++)
+        for (credit_index=0u; credit_index<TEST_REDUCE_CREDIT_COUNT;
+            credit_index++)
+        {
+            SparkTpDeviceCollectiveCreditBinding *binding;
+            uint32_t binding_index;
+
+            binding_index = step_index * TEST_REDUCE_CREDIT_COUNT +
+                credit_index;
+            binding = &TestDirectReduceBindings[binding_index];
+            binding->step_index = step_index;
+            binding->credit_index = credit_index;
+            binding->send_device = TestSendBuffers[step_index][credit_index];
+            binding->receive_device =
+                TestReceiveBuffers[step_index][credit_index];
+            binding->send_transport = binding->send_device;
+            binding->receive_transport = binding->receive_device;
+        }
 }
 
 static SparkStatus TestCombineBf16(
@@ -236,7 +263,7 @@ static SparkStatus TestCombineBf16(
     source = (const uint16_t *)source_device;
     assert(state != 0 && destination != 0 && source != 0);
     assert(active_sequence_count != 0u && hidden_dimension != 0u);
-    assert(active_sequence_count * hidden_dimension <= 8u);
+    assert(active_sequence_count * hidden_dimension <= 32u);
     assert(cuda_stream != 0);
     for (element = 0u;
          element < active_sequence_count * hidden_dimension;
@@ -271,6 +298,50 @@ static SparkStatus TestCombineRelayBf16(
     bytes = active_sequence_count * hidden_dimension * sizeof(uint16_t);
     memcpy(relay_device,destination_device,bytes);
     atomic_fetch_add_explicit(&state->relay_count,1u,memory_order_relaxed);
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus TestCombineTp4Bf16(
+    void *context,
+    void *destination_device,
+    const void *const rank_devices[4],
+    uint32_t tp_rank,
+    uint32_t active_sequence_count,
+    uint32_t hidden_dimension,
+    void *cuda_stream)
+{
+    TestTp4CombineState *state;
+    uint16_t *destination;
+    const uint16_t *rank0;
+    const uint16_t *rank1;
+    const uint16_t *rank2;
+    const uint16_t *rank3;
+    uint32_t element;
+
+    state = (TestTp4CombineState *)context;
+    destination = (uint16_t *)destination_device;
+    rank0 = (const uint16_t *)rank_devices[0];
+    rank1 = (const uint16_t *)rank_devices[1];
+    rank2 = (const uint16_t *)rank_devices[2];
+    rank3 = (const uint16_t *)rank_devices[3];
+    assert(state != 0 && destination != 0 && tp_rank == 1u);
+    assert(rank0 == (const uint16_t *)TestReceiveBuffers[0u][0u]);
+    assert(rank1 == destination);
+    assert(rank2 == (const uint16_t *)TestReceiveBuffers[2u][0u]);
+    assert(rank3 == (const uint16_t *)TestReceiveBuffers[1u][0u]);
+    assert(active_sequence_count * hidden_dimension <= 8u);
+    assert(cuda_stream != 0);
+    for (element=0u; element<active_sequence_count * hidden_dimension;
+        element++)
+    {
+        uint16_t pair01;
+        uint16_t pair23;
+
+        pair01 = (uint16_t)(rank0[element] + rank1[element]);
+        pair23 = (uint16_t)(rank2[element] + rank3[element]);
+        destination[element] = (uint16_t)(pair01 + pair23);
+    }
+    atomic_fetch_add_explicit(&state->direct_count,1u,memory_order_relaxed);
     return SPARK_STATUS_OK;
 }
 
@@ -746,7 +817,9 @@ static void TestAdaptiveSplitRing(TestTransportControls *controls)
     topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
     topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
     topology.rank_count = 4u;
-    topology.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS;
+    topology.algorithm_mask =
+        SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING |
+        SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
     topology.split_ring_min_payload_bytes = 16u;
     topology.rail_count = 2u;
     topology.step_rail_indices[0] = 0u;
@@ -771,8 +844,7 @@ static void TestAdaptiveSplitRing(TestTransportControls *controls)
     atomic_init(&combine.count,0u);
     assert(SparkTpDeviceCollectiveCreate(&configuration,&collective) ==
         SPARK_STATUS_OK);
-    assert(collective.algorithm_mask ==
-        SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS);
+    assert(collective.algorithm_mask == topology.algorithm_mask);
     assert(collective.split_ring_min_payload_bytes == 16u);
     assert(controls->metric(TEST_METRIC_REGISTER) ==
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT *
@@ -823,6 +895,143 @@ static void TestAdaptiveSplitRing(TestTransportControls *controls)
     assert(controls->metric(TEST_METRIC_SEND) == 14u);
     assert(controls->metric(TEST_METRIC_RELEASE) == 14u);
     for (element=0u; element<4u; element++)
+        assert(values[element] == 12u);
+    SparkTpDeviceCollectiveDestroy(&collective);
+    assert(controls->metric(TEST_METRIC_CLOSE_WITH_OWNER) == 0u);
+}
+
+static void TestAdaptiveDirectAllToAll(TestTransportControls *controls)
+{
+    static const char *direct_hosts[4] = {
+        "direct0","direct1","direct2","direct3"
+    };
+    static const char *switch_hosts[4] = {
+        "switch0","switch1","switch2","switch3"
+    };
+    SparkTpDeviceCollective collective;
+    SparkTpDeviceCollectiveConfig configuration;
+    SparkTpDeviceCollectiveConfig invalid;
+    SparkTpDeviceCollectiveSubmission submission;
+    SparkTpDeviceCollectiveTopology sliced;
+    SparkTpDeviceCollectiveTopology topology;
+    TestCompletionState completion;
+    TestTp4CombineState combine;
+    uint16_t *values;
+    uint32_t element;
+    uint32_t rank;
+    uint32_t route_count;
+
+    controls->reset();
+    TestConfigure(&configuration,0);
+    configuration.operation_kind =
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+    configuration.credit_count = TEST_REDUCE_CREDIT_COUNT;
+    configuration.credit_bindings = TestDirectReduceBindings;
+    configuration.credit_binding_count =
+        TEST_DIRECT_ROUTE_COUNT * TEST_REDUCE_CREDIT_COUNT;
+    configuration.combine_bf16_function = TestCombineBf16;
+    configuration.combine_tp4_bf16_function = TestCombineTp4Bf16;
+    configuration.combine_context = &combine;
+    memset(&topology,0,sizeof(topology));
+    topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
+    topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
+    topology.rank_count = 4u;
+    topology.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS;
+    topology.direct_all_to_all_max_payload_bytes = 16u;
+    topology.split_ring_min_payload_bytes = 32u;
+    topology.rail_count = 2u;
+    topology.step_rail_indices[0] = 0u;
+    topology.step_rail_indices[1] = 1u;
+    topology.step_rail_indices[2] = 1u;
+    for (rank=0u; rank<4u; rank++)
+    {
+        (void)snprintf(topology.rank_hosts[rank],
+            sizeof(topology.rank_hosts[rank]),"rank%u",rank);
+        (void)snprintf(topology.rail_rank_hosts[0][rank],
+            sizeof(topology.rail_rank_hosts[0][rank]),"%s",direct_hosts[rank]);
+        (void)snprintf(topology.rail_rank_hosts[1][rank],
+            sizeof(topology.rail_rank_hosts[1][rank]),"%s",switch_hosts[rank]);
+    }
+    assert(SparkTpDeviceCollectiveApplyTopology(&topology,&configuration) ==
+        SPARK_STATUS_OK);
+    assert(SparkTpDeviceCollectiveSliceTopology(&topology,0u,4u,&sliced) ==
+        SPARK_STATUS_OK);
+    assert(sliced.direct_all_to_all_max_payload_bytes == 16u);
+    assert(SparkTpDeviceCollectiveCreditBindingRouteCount(
+        &configuration,&route_count) == SPARK_STATUS_OK);
+    assert(route_count == TEST_DIRECT_ROUTE_COUNT);
+    invalid = configuration;
+    invalid.combine_tp4_bf16_function = 0;
+    assert(SparkTpDeviceCollectiveCreate(&invalid,&collective) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    invalid = configuration;
+    invalid.credit_binding_count = TEST_STEP_COUNT * TEST_REDUCE_CREDIT_COUNT;
+    assert(SparkTpDeviceCollectiveCreate(&invalid,&collective) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    invalid = configuration;
+    invalid.direct_all_to_all_max_payload_bytes =
+        invalid.split_ring_min_payload_bytes;
+    assert(SparkTpDeviceCollectiveCreate(&invalid,&collective) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    atomic_init(&combine.recursive.count,0u);
+    atomic_init(&combine.direct_count,0u);
+    assert(SparkTpDeviceCollectiveCreate(&configuration,&collective) ==
+        SPARK_STATUS_OK);
+    assert(collective.direct_all_to_all_max_payload_bytes == 16u);
+    assert(controls->metric(TEST_METRIC_REGISTER) ==
+        TEST_DIRECT_ROUTE_COUNT * TEST_REDUCE_CREDIT_COUNT);
+    values = (uint16_t *)TestFullBuffers[0u];
+    for (element=0u; element<8u; element++)
+        values[element] = 3u;
+    TestCompletionInitialize(&completion);
+    memset(&submission,0,sizeof(submission));
+    submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    submission.descriptor_bytes = sizeof(submission);
+    submission.active_sequence_count = 2u;
+    submission.flags =
+        SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+    submission.ordinal = 0u;
+    submission.local_device = values;
+    submission.full_device = values;
+    submission.cuda_stream = (void *)(uintptr_t)0x30600u;
+    submission.completion_function = TestCompletionCallback;
+    submission.completion_context = &completion;
+    assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
+        SPARK_STATUS_OK);
+    TestWaitForCompletion(&completion);
+    TestWaitForPhase(&collective,0u,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE);
+    assert(atomic_load_explicit(&combine.direct_count,memory_order_acquire) ==
+        1u);
+    assert(atomic_load_explicit(&combine.recursive.count,memory_order_acquire) ==
+        0u);
+    assert(controls->metric(TEST_METRIC_SEND) == TEST_DIRECT_ROUTE_COUNT);
+    assert(controls->metric(TEST_METRIC_RELEASE) == TEST_DIRECT_ROUTE_COUNT);
+    for (element=0u; element<8u; element++)
+        assert(values[element] == 12u);
+    values = (uint16_t *)TestFullBuffers[1u];
+    for (element=0u; element<12u; element++)
+        values[element] = 3u;
+    TestCompletionInitialize(&completion);
+    submission.active_sequence_count = 3u;
+    submission.ordinal = 1u;
+    submission.local_device = values;
+    submission.full_device = values;
+    submission.completion_context = &completion;
+    assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
+        SPARK_STATUS_OK);
+    TestWaitForCompletion(&completion);
+    TestWaitForPhase(&collective,1u,
+        SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE);
+    assert(atomic_load_explicit(&combine.direct_count,memory_order_acquire) ==
+        1u);
+    assert(atomic_load_explicit(&combine.recursive.count,memory_order_acquire) ==
+        TEST_STEP_COUNT);
+    assert(controls->metric(TEST_METRIC_SEND) ==
+        TEST_DIRECT_ROUTE_COUNT + TEST_STEP_COUNT);
+    assert(controls->metric(TEST_METRIC_RELEASE) ==
+        TEST_DIRECT_ROUTE_COUNT + TEST_STEP_COUNT);
+    for (element=0u; element<12u; element++)
         assert(values[element] == 12u);
     SparkTpDeviceCollectiveDestroy(&collective);
     assert(controls->metric(TEST_METRIC_CLOSE_WITH_OWNER) == 0u);
@@ -1284,6 +1493,7 @@ int main(void)
     TestAllReduceSumAndBoundedCredits(&controls);
     TestAllReduceU64Max(&controls);
     TestAdaptiveSplitRing(&controls);
+    TestAdaptiveDirectAllToAll(&controls);
     TestMappedHostStaging(&controls);
     TestDirectBf16Relay(&controls);
     TestOutOfOrderCompletions(&controls);

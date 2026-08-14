@@ -27,6 +27,7 @@ typedef struct SparkTpCharacterizeOptions
 	uint32_t iterations;
 	uint32_t control_port_base;
 	uint32_t credit_count;
+	uint32_t direct_all_to_all_max_payload_bytes;
 	uint32_t split_ring_min_payload_bytes;
 	uint32_t inflight_count;
 	uint32_t operation_kind;
@@ -93,7 +94,7 @@ static uint32_t SparkTpCharacterizeHosts(
 static uint32_t SparkTpCharacterizeParse(
 	int argc,char **argv,SparkTpCharacterizeOptions *options)
 {
-	if ( (argc != 11 && argc != 12) || options == 0 )
+	if ( (argc != 12 && argc != 13) || options == 0 )
 		return(0u);
 	memset(options,0,sizeof(*options));
 	options->module_path = argv[1];
@@ -109,17 +110,21 @@ static uint32_t SparkTpCharacterizeParse(
 		SparkTpCharacterizeUint(argv[8],1u,
 			SPARK_TP_CHARACTERIZE_MAX_CREDITS,&options->credit_count) == 0u ||
 		SparkTpCharacterizeUint(argv[9],0u,UINT32_MAX,
+			&options->direct_all_to_all_max_payload_bytes) == 0u ||
+		SparkTpCharacterizeUint(argv[10],0u,UINT32_MAX,
 			&options->split_ring_min_payload_bytes) == 0u ||
-		SparkTpCharacterizeUint(argv[10],1u,
+		SparkTpCharacterizeUint(argv[11],1u,
 			SPARK_TP_CHARACTERIZE_MAX_CREDITS,&options->inflight_count) == 0u ||
 		options->inflight_count > options->credit_count ||
 		(options->payload_bytes & 1u) != 0u )
 		return(0u);
 	options->operation_kind = SPARK_TP_CHARACTERIZE_OPERATION_BF16_SUM;
-	if ( argc == 12 )
+	if ( argc == 13 )
 	{
-		if ( strcmp(argv[11],"u64-max") != 0 ||
-			options->payload_bytes != sizeof(uint64_t) )
+		if ( strcmp(argv[12],"u64-max") != 0 ||
+			options->payload_bytes != sizeof(uint64_t) ||
+			options->direct_all_to_all_max_payload_bytes != 0u ||
+			options->split_ring_min_payload_bytes != 0u )
 			return(0u);
 		options->operation_kind = SPARK_TP_CHARACTERIZE_OPERATION_U64_MAX;
 	}
@@ -142,6 +147,28 @@ __global__ static void SparkTpCharacterizeAdd(
 	index = blockIdx.x * blockDim.x + threadIdx.x;
 	if ( index < count )
 		destination[index] = __hadd(destination[index],source[index]);
+}
+
+__global__ static void SparkTpCharacterizeAddTp4Tree(
+	__nv_bfloat16 *destination,
+	const __nv_bfloat16 *rank0,
+	const __nv_bfloat16 *rank1,
+	const __nv_bfloat16 *rank2,
+	const __nv_bfloat16 *rank3,
+	uint32_t tp_rank,
+	uint32_t count)
+{
+	float pair01,pair23;
+	uint32_t index;
+	index = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( index >= count )
+		return;
+	pair01 = __bfloat162float(__float2bfloat16_rn(
+		__bfloat162float(rank0[index]) + __bfloat162float(rank1[index])));
+	pair23 = __bfloat162float(__float2bfloat16_rn(
+		__bfloat162float(rank2[index]) + __bfloat162float(rank3[index])));
+	destination[index] = __float2bfloat16_rn(tp_rank < 2u ?
+		pair01 + pair23 : pair23 + pair01);
 }
 
 __global__ static void SparkTpCharacterizeFillU64(
@@ -175,6 +202,27 @@ static SparkStatus SparkTpCharacterizeCombine(
 	SparkTpCharacterizeAdd<<<((uint32_t)count + 255u) / 256u,256u,0,
 		(cudaStream_t)cuda_stream>>>((__nv_bfloat16 *)destination,
 		(const __nv_bfloat16 *)source,(uint32_t)count);
+	return(cudaGetLastError() == cudaSuccess ?
+		SPARK_STATUS_OK : SPARK_STATUS_DRIVER_LOAD_ERROR);
+}
+
+static SparkStatus SparkTpCharacterizeCombineTp4(
+	void *context,void *destination,const void *const rank_devices[4],
+	uint32_t tp_rank,uint32_t rows,uint32_t hidden,void *cuda_stream)
+{
+	uint64_t count;
+	(void)context;
+	count = (uint64_t)rows * hidden;
+	if ( destination == 0 || rank_devices == 0 || rank_devices[0] == 0 ||
+		rank_devices[1] == 0 || rank_devices[2] == 0 || rank_devices[3] == 0 ||
+		tp_rank >= 4u || cuda_stream == 0 || count == 0u || count > UINT32_MAX )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	SparkTpCharacterizeAddTp4Tree<<<((uint32_t)count + 255u) / 256u,256u,0,
+		(cudaStream_t)cuda_stream>>>((__nv_bfloat16 *)destination,
+		(const __nv_bfloat16 *)rank_devices[0],
+		(const __nv_bfloat16 *)rank_devices[1],
+		(const __nv_bfloat16 *)rank_devices[2],
+		(const __nv_bfloat16 *)rank_devices[3],tp_rank,(uint32_t)count);
 	return(cudaGetLastError() == cudaSuccess ?
 		SPARK_STATUS_OK : SPARK_STATUS_DRIVER_LOAD_ERROR);
 }
@@ -257,9 +305,16 @@ static void SparkTpCharacterizeConfigure(
 	configuration->connect_timeout_milli = 120000u;
 	configuration->operation_timeout_milli = 120000u;
 	configuration->control_port_base = options->control_port_base;
-	configuration->algorithm_mask = options->split_ring_min_payload_bytes == 0u ?
-		SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING :
-		SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS;
+	configuration->algorithm_mask =
+		SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
+	if ( options->direct_all_to_all_max_payload_bytes != 0u )
+		configuration->algorithm_mask |=
+			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
+	if ( options->split_ring_min_payload_bytes != 0u )
+		configuration->algorithm_mask |=
+			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
+	configuration->direct_all_to_all_max_payload_bytes =
+		options->direct_all_to_all_max_payload_bytes;
 	configuration->split_ring_min_payload_bytes =
 		options->split_ring_min_payload_bytes;
 	configuration->rail_count = SPARK_TP_CHARACTERIZE_RAILS;
@@ -272,11 +327,10 @@ static void SparkTpCharacterizeConfigure(
 	configuration->local_host = options->hosts[1][options->rank];
 	configuration->registration_cuda_stream = stream;
 	configuration->combine_bf16_function = SparkTpCharacterizeCombine;
+	configuration->combine_tp4_bf16_function = SparkTpCharacterizeCombineTp4;
 	configuration->combine_u64_max_function =
 		SparkTpCharacterizeCombineU64Max;
 	configuration->credit_bindings = bindings;
-	configuration->credit_binding_count =
-		options->credit_count * 2u;
 	for (rank=0u; rank<SPARK_TP_CHARACTERIZE_DEGREE; rank++)
 		configuration->rank_hosts[rank] = options->hosts[1][rank];
 	for (rail=0u; rail<SPARK_TP_CHARACTERIZE_RAILS; rail++)
@@ -288,12 +342,12 @@ static void SparkTpCharacterizeConfigure(
 static SparkStatus SparkTpCharacterizeBindings(
 	uint32_t payload_bytes,void *send_device,void *receive_device,
 	void *send_transport,void *receive_transport,
-	uint32_t mapped_alias,uint32_t credit_count,
+	uint32_t mapped_alias,uint32_t credit_count,uint32_t route_count,
 	SparkTpDeviceCollectiveCreditBinding *bindings)
 {
 	uint64_t offset;
 	uint32_t credit,step,index;
-	for (step=0u; step<2u; step++)
+	for (step=0u; step<route_count; step++)
 		for (credit=0u; credit<credit_count; credit++)
 		{
 			index = step * credit_count + credit;
@@ -352,6 +406,8 @@ static SparkStatus SparkTpCharacterizeRun(
 			(uint64_t)credit * payload_bytes;
 		submission.full_device = (uint8_t *)output +
 			(uint64_t)credit * payload_bytes;
+		submission.flags =
+			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 		if ( operation_kind == SPARK_TP_CHARACTERIZE_OPERATION_U64_MAX )
 			SparkTpCharacterizeFillU64<<<1u,1u,0,stream>>>(
 				(uint64_t *)submission.local_device,1u,local_value);
@@ -384,7 +440,7 @@ static SparkStatus SparkTpCharacterizeRun(
 
 int main(int argc,char **argv)
 {
-	SparkTpDeviceCollectiveCreditBinding bindings[128u];
+	SparkTpDeviceCollectiveCreditBinding bindings[192u];
 	SparkTpCharacterizeCompletion completion;
 	SparkTpDeviceCollectiveConfig configuration;
 	SparkTpCharacterizeOptions options;
@@ -395,11 +451,11 @@ int main(int argc,char **argv)
 	void *local,*output,*receive_device,*receive_transport,*result_output;
 	void *send_device,*send_transport;
 	uint64_t start_ns,end_ns,scratch_bytes;
-	uint32_t credit,memory_mode;
+	uint32_t binding_route_count,credit,memory_mode;
 	SparkStatus status;
 	if ( SparkTpCharacterizeParse(argc,argv,&options) == 0u )
 	{
-		fprintf(stderr,"usage: %s MODULE RANK DIRECT_CSV SWITCH_CSV PAYLOAD_BYTES ITERATIONS CONTROL_PORT_BASE CREDIT_COUNT SPLIT_RING_MIN_PAYLOAD_BYTES INFLIGHT_COUNT [u64-max]\n",argv[0]);
+		fprintf(stderr,"usage: %s MODULE RANK DIRECT_CSV SWITCH_CSV PAYLOAD_BYTES ITERATIONS CONTROL_PORT_BASE CREDIT_COUNT DIRECT_ALL_TO_ALL_MAX_PAYLOAD_BYTES SPLIT_RING_MIN_PAYLOAD_BYTES INFLIGHT_COUNT [u64-max]\n",argv[0]);
 		return(2);
 	}
 	status = SparkTpDeviceCollectiveProbeMemoryMode(
@@ -407,12 +463,20 @@ int main(int argc,char **argv)
 		options.module_path,&memory_mode);
 	if ( status != SPARK_STATUS_OK )
 		return((int)status + 10);
-	scratch_bytes = (uint64_t)options.payload_bytes *
-		options.credit_count * 2u;
 	receive_transport = 0;
 	send_transport = 0;
-	if ( cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking) != cudaSuccess ||
-		cudaMalloc(&local,(uint64_t)options.payload_bytes *
+	if ( cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking) != cudaSuccess )
+		return(3);
+	SparkTpCharacterizeConfigure(&options,stream,bindings,&configuration);
+	status = SparkTpDeviceCollectiveCreditBindingRouteCount(
+		&configuration,&binding_route_count);
+	if ( status != SPARK_STATUS_OK )
+		return((int)status + 10);
+	configuration.credit_binding_count =
+		options.credit_count * binding_route_count;
+	scratch_bytes = (uint64_t)options.payload_bytes *
+		options.credit_count * binding_route_count;
+	if ( cudaMalloc(&local,(uint64_t)options.payload_bytes *
 			options.credit_count) != cudaSuccess ||
 		cudaMalloc(&output,(uint64_t)options.payload_bytes *
 			options.credit_count) != cudaSuccess ||
@@ -442,8 +506,7 @@ int main(int argc,char **argv)
 	(void)SparkTpCharacterizeBindings(options.payload_bytes,send_device,
 		receive_device,send_transport,receive_transport,
 		memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST,
-		options.credit_count,bindings);
-	SparkTpCharacterizeConfigure(&options,stream,bindings,&configuration);
+		options.credit_count,binding_route_count,bindings);
 	status = SparkTpDeviceCollectiveCreate(&configuration,&collective);
 	if ( status != SPARK_STATUS_OK )
 		return((int)status + 10);
@@ -476,11 +539,12 @@ int main(int argc,char **argv)
 				sizeof(result_u64) : sizeof(result),
 			cudaMemcpyDeviceToHost) != cudaSuccess )
 		status = SPARK_STATUS_DRIVER_LOAD_ERROR;
-	printf("{\"rank\":%u,\"operation\":\"%s\",\"payload_bytes\":%u,\"iterations\":%u,\"credits\":%u,\"inflight\":%u,\"split_ring_min_payload_bytes\":%u,\"memory_mode\":%u,\"status\":%u,\"result\":%.1f,\"average_us\":%.3f}\n",
+	printf("{\"rank\":%u,\"operation\":\"%s\",\"payload_bytes\":%u,\"iterations\":%u,\"credits\":%u,\"inflight\":%u,\"direct_all_to_all_max_payload_bytes\":%u,\"split_ring_min_payload_bytes\":%u,\"memory_mode\":%u,\"status\":%u,\"result\":%.1f,\"average_us\":%.3f}\n",
 		options.rank,options.operation_kind ==
 			SPARK_TP_CHARACTERIZE_OPERATION_U64_MAX ? "u64-max" : "bf16-sum",
 		options.payload_bytes,options.iterations,
 		options.credit_count,options.inflight_count,
+		options.direct_all_to_all_max_payload_bytes,
 		options.split_ring_min_payload_bytes,memory_mode,
 		(uint32_t)status,
 		options.operation_kind == SPARK_TP_CHARACTERIZE_OPERATION_U64_MAX ?

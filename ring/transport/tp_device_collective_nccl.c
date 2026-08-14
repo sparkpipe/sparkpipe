@@ -581,6 +581,9 @@ static SparkStatus SparkTpNcclValidateConfig(const SparkTpDeviceCollectiveConfig
 		SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT ||
 		config->local_hidden_dimension == 0u ||
 		config->max_active_sequence_count == 0u ||
+		config->algorithm_mask != 0u || config->rail_count != 0u ||
+		config->direct_all_to_all_max_payload_bytes != 0u ||
+		config->split_ring_min_payload_bytes != 0u ||
 		config->connect_timeout_milli == 0u ||
 		config->operation_timeout_milli == 0u ||
 		config->control_port_base == 0u ||
@@ -590,6 +593,8 @@ static SparkStatus SparkTpNcclValidateConfig(const SparkTpDeviceCollectiveConfig
 		SparkTpNcclTextIsValid(config->local_host) == 0u ||
 		config->credit_bindings != 0 || config->credit_binding_count != 0u ||
 		config->combine_bf16_function != 0 ||
+		config->combine_relay_bf16_function != 0 ||
+		config->combine_tp4_bf16_function != 0 ||
 		config->combine_u64_max_function != 0 || config->combine_context != 0 ||
 		config->debug_hooks != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);

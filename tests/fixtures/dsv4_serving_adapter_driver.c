@@ -123,6 +123,7 @@ static uint32_t TestDsv4ServingTopologyIsValid(
 	topology = &context->tp_collective_topology;
 	if ( topology->rank_count != 4u || topology->rail_count != 2u ||
 		topology->algorithm_mask != SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS ||
+		topology->direct_all_to_all_max_payload_bytes != 81920u ||
 		topology->split_ring_min_payload_bytes != 655360u ||
 		topology->step_rail_indices[0] != 0u ||
 		topology->step_rail_indices[1] != 1u ||
