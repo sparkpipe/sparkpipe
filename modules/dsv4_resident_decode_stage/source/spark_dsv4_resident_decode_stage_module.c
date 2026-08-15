@@ -3960,6 +3960,7 @@ static void SparkDsv4ModuleTpProgramCompletion(void *context,
 		return;
 	state = continuation->state;
 	status = completion->status;
+	fprintf(stderr,"C1DBG program-completion status=%d\n",(int)status);
 	if ( status == SPARK_STATUS_OK && state->participates_final_head != 0u )
 	{
 		SparkDsv4ModuleContinueHeadMax(continuation,status);
@@ -4225,7 +4226,7 @@ static SparkStatus SparkDsv4ModuleStartTpDecodeProgram(
 	SparkDsv4TpDecodeProgram *program;
 	SparkStatus status;
 	cudaError_t error;
-	uint64_t base_ordinal;
+	uint64_t base_ordinal = 0ull;
 	uint32_t consumer_launched;
 	if ( continuation == 0 || continuation->state == 0 ||
 		continuation->slot == 0 )
@@ -4239,13 +4240,18 @@ static SparkStatus SparkDsv4ModuleStartTpDecodeProgram(
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	status = SparkDsv4ModuleReserveTpProgramOrdinal(state,program,
 		&base_ordinal);
+	fprintf(stderr,"C1DBG reserve status=%d base_ordinal=%llu program_base=%llu\n",
+		(int)status,(unsigned long long)base_ordinal,
+		(unsigned long long)program->transport_program.base_ordinal);
 	if ( status == SPARK_STATUS_OK && base_ordinal !=
 		program->transport_program.base_ordinal )
 		status = SparkTpDeviceCollectiveRearmProgram(
 			&program->transport_program,base_ordinal);
+	fprintf(stderr,"C1DBG rearm status=%d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkTpDeviceCollectiveStartProgram(
 			&program->transport_program);
+	fprintf(stderr,"C1DBG start-program status=%d\n",(int)status);
 	consumer_launched = 0u;
 	error = status == SPARK_STATUS_OK ? cudaGraphLaunch(
 		program->consumer_executable,program->consumer_stream) : cudaSuccess;
@@ -4254,6 +4260,7 @@ static SparkStatus SparkDsv4ModuleStartTpDecodeProgram(
 	if ( status == SPARK_STATUS_OK && error == cudaSuccess )
 		error = cudaGraphLaunch(program->producer_executable,
 			(cudaStream_t)continuation->slot->cuda_stream);
+	fprintf(stderr,"C1DBG launch error=%d status=%d\n",(int)error,(int)status);
 	if ( status == SPARK_STATUS_OK && error != cudaSuccess )
 	{
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,

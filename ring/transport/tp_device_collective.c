@@ -1939,6 +1939,7 @@ static void SparkTpDeviceCollectiveLatchFailure(
     {
         return;
     }
+    fprintf(stderr,"C1DBG latch-failure status=%d\n",(int)status);
     atomic_store_explicit(&implementation->admission_open,0u,
         memory_order_release);
     expected_status = SPARK_STATUS_OK;
@@ -3263,11 +3264,32 @@ static uint32_t SparkTpDeviceCollectiveOperationsAreDrained(
 static void *SparkTpDeviceCollectiveProgressMain(void *context)
 {
     SparkTpDeviceCollectiveImplementation *implementation;
+    SparkTpDeviceCollectiveProgramImplementation *dbg_program;
     uint32_t credit_index;
+    static uint64_t dbg_iterations = 0u;
 
     implementation = (SparkTpDeviceCollectiveImplementation *)context;
     for (;;)
     {
+        if ((dbg_iterations++ % 200000u) == 0u)
+        {
+            SparkTpDeviceCollectiveLockPrograms(implementation);
+            for (dbg_program = implementation->active_programs;
+                 dbg_program != 0; dbg_program = dbg_program->next_active_program)
+            {
+                fprintf(stderr,
+                    "C1DBG prog-thread state=%u next=%u sub=%u comp=%u step0gen=%u prod_ready=%u run_state_prod=%u step_count=%u credit_mask=%u\n",
+                    (unsigned)atomic_load_explicit(&dbg_program->state,memory_order_acquire),
+                    (unsigned)atomic_load_explicit(&dbg_program->next_submission,memory_order_acquire),
+                    (unsigned)atomic_load_explicit(&dbg_program->submitted_count,memory_order_acquire),
+                    (unsigned)atomic_load_explicit(&dbg_program->completed_count,memory_order_acquire),
+                    (unsigned)dbg_program->steps[0].producer.generation,
+                    (unsigned)atomic_load_explicit(&dbg_program->producer_ready_host[dbg_program->steps[0].producer.credit_index],memory_order_acquire),
+                    (unsigned)atomic_load_explicit(&dbg_program->run_state_host[SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_PRODUCER_STATE_INDEX],memory_order_acquire),
+                    (unsigned)dbg_program->step_count,(unsigned)dbg_program->credit_mask);
+            }
+            SparkTpDeviceCollectiveUnlockPrograms(implementation);
+        }
         SparkTpDeviceCollectivePollTransport(implementation);
 		SparkTpDeviceCollectiveProgressProgram(implementation);
         for (credit_index = 0u;
@@ -4934,9 +4956,14 @@ SparkStatus SparkTpDeviceCollectiveStartProgram(
 		program->implementation;
 	if (atomic_load_explicit(&implementation->collective_implementation
 			->admission_open,memory_order_acquire) == 0u)
-		return (SparkStatus)atomic_load_explicit(
+	{
+		SparkStatus replayed = (SparkStatus)atomic_load_explicit(
 			&implementation->collective_implementation->failure_status,
 			memory_order_acquire);
+		fprintf(stderr,"C1DBG start-program replaying-failure status=%d\n",
+			(int)replayed);
+		return replayed;
+	}
 	if (SparkTpDeviceCollectiveProgramLoadGeneration(
 			&implementation->run_state_host[
 				SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_PRODUCER_STATE_INDEX]) !=
