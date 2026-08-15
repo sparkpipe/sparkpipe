@@ -490,6 +490,39 @@ static __device__ __forceinline__ float SparkLmDotRowBf16(const float *shared_in
 	return(accumulator);
 }
 
+// 16-byte vectorized BF16 dot row: one uint4 load carries eight BF16
+// elements (four pairs). Requires 16-byte-aligned neuron rows, true for
+// every hidden width in use (input_dimension % 8 == 0).
+static __device__ __forceinline__ float SparkLmDotRowBf16Vector(
+	const float *shared_input,const void *weight_payload,
+	uint32_t neuron,uint32_t input_dimension,uint32_t lane)
+{
+	uint64_t quad_row = ((uint64_t)neuron * input_dimension) >> 3u;
+	uint32_t quad_count = input_dimension >> 3u,quad,sub,element;
+	float accumulator = 0.0f;
+	float2 pair_value;
+	uint4 quad_value;
+	uint32_t word;
+	#pragma unroll 1
+	for (quad=lane; quad<quad_count; quad+=SPARK_LM_WARP_LANES)
+	{
+		quad_value = __ldg(((const uint4 *)weight_payload) + quad_row + quad);
+		#pragma unroll
+		for (sub=0u; sub<4u; sub++)
+		{
+			word = sub == 0u ? quad_value.x :
+				(sub == 1u ? quad_value.y :
+				(sub == 2u ? quad_value.z : quad_value.w));
+			pair_value = __bfloat1622float2(*(const __nv_bfloat162 *)&word);
+			accumulator = fmaf(shared_input[(quad << 3u) + (sub << 1u)],pair_value.x,accumulator);
+			accumulator = fmaf(shared_input[(quad << 3u) + (sub << 1u) + 1u],pair_value.y,accumulator);
+		}
+	}
+	for (element=(quad_count << 3u) + lane; element<input_dimension; element+=SPARK_LM_WARP_LANES)
+		accumulator += (shared_input[element] * SparkLmBf16ToFloat(weight_payload,((uint64_t)neuron * input_dimension) + element));
+	return(accumulator);
+}
+
 static __device__ __forceinline__ void SparkLmDotRowBf16Pair(
 	const float *shared_input,const void *first_weight,
 	const void *second_weight,uint32_t neuron,uint32_t input_dimension,
@@ -768,7 +801,7 @@ static __device__ __forceinline__ float SparkLmDotLinearRow(
 	uint32_t lane)
 {
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
-		return(SparkLmDotRowBf16(shared_input,weight_payload,neuron,
+		return(SparkLmDotRowBf16Vector(shared_input,weight_payload,neuron,
 			input_dimension,lane));
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
 		return(SparkLmDotRowFp8<GROUP_SIZE>(shared_input,weight_payload,
@@ -947,7 +980,7 @@ static __global__ void SparkLmBf16LinearPairKernel(
 		weight = second_weight;
 		output_bf16 = second_output_bf16;
 	}
-	accumulator = SparkLmDotRowBf16(shared_input,weight,neuron,
+	accumulator = SparkLmDotRowBf16Vector(shared_input,weight,neuron,
 		input_dimension,lane);
 	accumulator = SparkLmWarpReduceSum(accumulator);
 	if ( lane == 0u )
@@ -988,7 +1021,7 @@ static __global__ void SparkLmGatherLinearKernel(uint32_t weight_format, const v
 	if ( neuron >= output_dimension )
 		return;
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
-		accumulator = SparkLmDotRowBf16(shared_input,weight_payload,neuron,input_dimension,lane);
+		accumulator = SparkLmDotRowBf16Vector(shared_input,weight_payload,neuron,input_dimension,lane);
 	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
 		accumulator = SparkLmDotRowFp8<GROUP_SIZE>(shared_input,weight_payload,(const uint8_t *)weight_scale,neuron,input_dimension,lane);
 	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
@@ -4033,7 +4066,7 @@ static __global__ void SparkLmGroupedScalarLinearKernel(uint32_t weight_format, 
 				if ( neuron < output_dimension )
 				{
 					if ( weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
-						accumulator = SparkLmDotRowBf16(shared_input,group_payload,neuron,input_dimension,lane);
+						accumulator = SparkLmDotRowBf16Vector(shared_input,group_payload,neuron,input_dimension,lane);
 					else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
 						accumulator = SparkLmDotRowFp8<GROUP_SIZE>(shared_input,group_payload,group_scale,neuron,input_dimension,lane);
 					else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
