@@ -51,6 +51,7 @@ template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 64u, K3_TILE_N, 128
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 16u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 32u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 64u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void K3EmbeddingKernel<K3_THREADS>(const uint16_t *, const uint32_t *, uint16_t *, uint32_t, uint32_t);
 template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS,float>(const uint16_t *, const uint16_t *, const float *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);

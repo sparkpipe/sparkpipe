@@ -921,3 +921,39 @@ static int32_t K3Head(const K3LayerBuffers *b, const void *head_norm_weight, con
 		b->head_candidate_score,b->head_candidate_token,tiles, b->output_token,b->output_score,rows);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
+
+// STAGE 0's ENTRY - the TP-sliced embedding. The rank pack's embed_tokens is
+// the rank's vocab slice (tools/k3_shard.py row-splits [vocab, hidden] by
+// degree), so a token inside the slice gathers its row and a token outside
+// contributes zero; the TP all-reduce over the group sums the slices into
+// the full embedding - the standard Megatron embedding split, no duplicate
+// storage. One block column per hidden stripe, one row per token; the
+// gather is a pure row lookup, no reduction stage.
+template<uint32_t THREADS>
+__global__ static void K3EmbeddingKernel(const uint16_t *embed_weight,
+	const uint32_t *token_ids,uint16_t *hidden_bf16,
+	uint32_t vocab_slice_offset,uint32_t vocab_slice_rows)
+{
+	const uint32_t row = blockIdx.y;
+	const uint32_t token = token_ids[row];
+	const uint32_t local = token - vocab_slice_offset;
+	const uint16_t *src = local < vocab_slice_rows
+		? embed_weight + ((uint64_t)local * K3_HIDDEN) : 0;
+	for ( uint32_t k = (blockIdx.x * THREADS) + threadIdx.x;
+		k < K3_HIDDEN; k += gridDim.x * THREADS )
+		hidden_bf16[((uint64_t)row * K3_HIDDEN) + k] =
+			src != 0 ? src[k] : 0u;
+}
+
+// The stage-0 host side of the same contract: launch the gather for this
+// rank's slice. vocabulary is the FULL vocab, slice offset/rows this rank's.
+static int32_t K3Embedding(const uint16_t *embed_weight,
+	const uint32_t *token_ids,uint16_t *hidden_bf16,uint32_t rows,
+	uint32_t vocab_slice_offset,uint32_t vocab_slice_rows,cudaStream_t stream)
+{
+	const uint32_t columns = (K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS;
+	LM_LAUNCH((K3EmbeddingKernel<K3_LAYER_THREADS>), dim3(columns,rows),
+		K3_LAYER_THREADS, 0, stream,
+		embed_weight,token_ids,hidden_bf16,vocab_slice_offset,vocab_slice_rows);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
