@@ -419,3 +419,282 @@ void SparkQwen38ResidentDecodeStageDestroy(void *module_state)
 	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state);
 }
+
+/* ---------------------------------------------------------------------------
+ * Execution core: slot allocation and the per-layer runners.
+ * -------------------------------------------------------------------------*/
+
+#define SPARK_QWEN38_MODULE_STAGED_ROW_CAPACITY \
+	(SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT + SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS)
+
+typedef struct SparkQwen38ModuleSlot
+{
+	void *cuda_stream;
+	uint32_t *input_token_ids;
+	uint32_t *output_token_ids;
+	uint32_t *row_lane_indices;
+	uint32_t *slot_mapping;
+	uint32_t *context_lengths;
+	uint32_t *row_cold;
+	uint64_t *row_positions;
+	void *hidden_bf16;
+	void *normalized_bf16;
+	void *delta_bf16;
+	void *qkv_bf16;
+	void *conv_out_bf16;
+	void *z_bf16;
+	void *beta_pre_bf16;
+	void *decay_pre_bf16;
+	float *log_decay_f32;
+	float *beta_f32;
+	void *core_bf16;
+	void *gated_bf16;
+	void *q_fused_bf16;
+	void *k_bf16;
+	void *v_bf16;
+	void *head_out_bf16;
+	float *moe_scores_f32;
+	uint32_t *moe_indices_u32;
+	float *moe_weights_f32;
+	uint32_t *moe_inverse_u32;
+	uint32_t *moe_grouped_rows_u32;
+	uint32_t *moe_tile_prefix_w1_u32;
+	uint32_t *moe_tile_prefix_w2_u32;
+	void *moe_slot_up_bf16;
+	void *moe_slot_out_bf16;
+	void *shared_gate_bf16;
+	void *shared_up_bf16;
+	void *shared_down_bf16;
+	float *chunk_qn_f32;
+	float *chunk_kn_f32;
+	float *chunk_cum_g_f32;
+	float *chunk_decay_f32;
+	float *chunk_attn_f32;
+	float *chunk_w_f32;
+	float *chunk_kg_f32;
+	uint32_t *mtp_draft_ids;
+} SparkQwen38ModuleSlot;
+
+extern cudaError_t SparkQwen38LaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count);
+extern cudaError_t SparkQwen38LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
+extern cudaError_t SparkQwen38LaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
+extern cudaError_t SparkQwen38LaunchLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
+extern cudaError_t SparkQwen38LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen38GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen38GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal);
+extern cudaError_t SparkQwen38LaunchDecayBeta(cudaStream_t stream, const void *decay_pre_bf16, const void *beta_pre_bf16, const SparkQwen38GdnLayerWeights *weights, float *log_decay_f32, float *beta_f32, uint32_t row_count);
+extern cudaError_t SparkQwen38LaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkQwen38GdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal);
+extern cudaError_t SparkQwen38LaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const SparkQwen38GdnLayerWeights *weights, void *output_bf16, uint32_t row_count, float epsilon);
+extern cudaError_t SparkQwen38LaunchAttnPrepare(cudaStream_t stream, void *q_fused_bf16, const void *k_bf16, const void *v_bf16, const SparkQwen38AttnLayerWeights *weights, void *kv_cache_bf16, const uint32_t *slot_mapping, const uint64_t *row_positions, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, float epsilon);
+extern cudaError_t SparkQwen38LaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen38KvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride);
+extern cudaError_t SparkQwen38LaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension);
+extern cudaError_t SparkQwen38LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
+extern cudaError_t SparkQwen38LaunchGateScores(cudaStream_t stream, const SparkQwen38LinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count);
+extern cudaError_t SparkQwen38LaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, uint32_t row_count, uint32_t expert_count, uint32_t topk, float route_scale, uint32_t *indices_u32, float *weights_f32);
+extern cudaError_t SparkQwen38LaunchMoeRoute(cudaStream_t stream, const uint32_t *route_expert, uint32_t rows, uint32_t expert_width, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2);
+extern cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, const SparkQwen38LinearView *w1, const SparkQwen38LinearView *w3, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *activated_bf16, uint32_t rows, uint32_t expert_width, float limit, uint32_t multiprocessor_count);
+extern cudaError_t SparkQwen38LaunchExpertDown(cudaStream_t stream, const SparkQwen38LinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count);
+extern cudaError_t SparkQwen38LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension);
+extern cudaError_t SparkQwen38LaunchSwiGlu(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension);
+extern cudaError_t SparkQwen38LaunchSharedGate(cudaStream_t stream, void *accum_bf16, const void *gate_weight_bf16, uint32_t row_count, uint32_t dimension);
+
+static SparkStatus SparkQwen38ModuleAllocateSlot(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot)
+{
+	uint64_t rows = SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
+	uint64_t hidden_bytes = rows * SPARK_QWEN38_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES;
+	uint64_t expert_bytes = rows * SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES;
+	uint64_t moe_up_bytes = rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN * SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES;
+	SparkStatus status;
+	cudaStream_t stream = 0;
+	status = SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,cudaStreamCreate(&stream),"cudaStreamCreate");
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	slot->cuda_stream = stream;
+	status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->input_token_ids);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->output_token_ids);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->row_lane_indices);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->slot_mapping);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->context_lengths);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->row_cold);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint64_t),(void **)&slot->row_positions);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->hidden_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->normalized_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->delta_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_GDN_CONV_CHANNELS * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&slot->qkv_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_GDN_CONV_CHANNELS * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&slot->conv_out_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_GDN_VALUE_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&slot->z_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&slot->beta_pre_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&slot->decay_pre_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT * sizeof(float),(void **)&slot->log_decay_f32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT * sizeof(float),(void **)&slot->beta_f32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_GDN_VALUE_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&slot->core_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_GDN_VALUE_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&slot->gated_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * 2u * SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&slot->q_fused_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_ATTN_KV_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&slot->k_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_ATTN_KV_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&slot->v_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&slot->head_out_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * sizeof(float),(void **)&slot->moe_scores_f32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->moe_indices_u32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN * sizeof(float),(void **)&slot->moe_weights_f32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN + SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT + 2u) * sizeof(uint32_t),(void **)&slot->moe_inverse_u32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN + SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT + 2u) * sizeof(uint32_t),(void **)&slot->moe_grouped_rows_u32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT + 1u) * sizeof(uint32_t),(void **)&slot->moe_tile_prefix_w1_u32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT + 1u) * sizeof(uint32_t),(void **)&slot->moe_tile_prefix_w2_u32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,moe_up_bytes,&slot->moe_slot_up_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,moe_up_bytes,&slot->moe_slot_out_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,expert_bytes,&slot->shared_gate_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,expert_bytes,&slot->shared_up_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->shared_down_bf16);
+	return(status);
+}
+
+static cudaError_t SparkQwen38ModuleRunGdnCoreDecode(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, const SparkQwen38GdnLayerWeights *weights, uint32_t rows, uint32_t ordinal)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error;
+	SparkQwen38GdnStatePool pool = state->gdn_pool;
+	pool.state_cold_by_row = slot->row_cold;
+	error = SparkQwen38LaunchConvUpdate(stream,slot->qkv_bf16,weights,slot->conv_out_bf16,&pool,slot->row_lane_indices,rows,ordinal);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchDecayBeta(stream,slot->decay_pre_bf16,slot->beta_pre_bf16,weights,slot->log_decay_f32,slot->beta_f32,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchGdnStep(stream,slot->conv_out_bf16,slot->log_decay_f32,slot->beta_f32,&pool,slot->core_bf16,slot->row_lane_indices,rows,ordinal);
+	return(error);
+}
+
+static SparkStatus SparkQwen38ModuleRunGdnLayer(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, uint32_t layer, uint32_t rows)
+{
+	const SparkQwen38GdnLayerWeights *weights = &state->gdn_by_layer[layer];
+	uint32_t ordinal = state->gdn_ordinal_by_layer[layer];
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error;
+	error = SparkQwen38LaunchLinear(stream,&weights->qkv,slot->normalized_bf16,slot->qkv_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchLinear(stream,&weights->gate,slot->normalized_bf16,slot->z_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchLinear(stream,&weights->beta,slot->normalized_bf16,slot->beta_pre_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchLinear(stream,&weights->decay,slot->normalized_bf16,slot->decay_pre_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38ModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchGatedNorm(stream,slot->core_bf16,slot->z_bf16,weights,slot->gated_bf16,rows,SPARK_QWEN38_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchLinear(stream,&weights->output,slot->gated_bf16,slot->delta_bf16,rows);
+	return(SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"gdn_layer"));
+}
+
+typedef struct SparkQwen38AttnRowsView
+{
+	const uint32_t *slot_mapping;
+	const uint64_t *row_positions;
+	const uint32_t *row_lane_indices;
+	const uint32_t *context_lengths;
+} SparkQwen38AttnRowsView;
+
+static SparkStatus SparkQwen38ModuleRunAttnLayer(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, const SparkQwen38KvBlockTableView *table, const SparkQwen38AttnLayerWeights *weights, uint32_t ordinal, const SparkQwen38AttnRowsView *rows_view, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error;
+	error = SparkQwen38LaunchLinear(stream,&weights->query,slot->normalized_bf16,slot->q_fused_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchLinear(stream,&weights->key,slot->normalized_bf16,slot->k_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchLinear(stream,&weights->value,slot->normalized_bf16,slot->v_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchAttnPrepare(stream,slot->q_fused_bf16,slot->k_bf16,slot->v_bf16,weights,state->kv_cache_bf16,rows_view->slot_mapping,rows_view->row_positions,rows,ordinal,state->cache_layer_stride,state->cache_block_stride,SPARK_QWEN38_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchAttnDecode(stream,slot->q_fused_bf16,state->kv_cache_bf16,table,rows_view->row_lane_indices,rows_view->context_lengths,slot->head_out_bf16,rows,ordinal,state->cache_layer_stride,state->cache_block_stride);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchLinear(stream,&weights->output,slot->head_out_bf16,slot->delta_bf16,rows);
+	return(SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"attn_layer"));
+}
+
+/*
+ * Routed MoE + shared expert, the layer's FFN side. delta_bf16 accumulates
+ * the routed expert output (weighted pair reduce) and then the shared expert
+ * output (gate-multiplied), and the fused residual norm folds the previous
+ * residual plus delta into the next normalized input.
+ */
+static SparkStatus SparkQwen38ModuleRunMoe(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, const void *mlp_norm_bf16, const SparkQwen38MoeWeights *weights, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error;
+	error = SparkQwen38LaunchFusedResidualRmsNorm(stream,slot->hidden_bf16,slot->delta_bf16,mlp_norm_bf16,slot->normalized_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchGateScores(stream,&weights->gate,slot->normalized_bf16,slot->moe_scores_f32,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchGateSelect(stream,slot->moe_scores_f32,0,rows,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT,SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,1.0f,slot->moe_indices_u32,slot->moe_weights_f32);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchMoeRoute(stream,slot->moe_indices_u32,rows,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION,slot->moe_tile_prefix_w1_u32,slot->moe_inverse_u32,slot->moe_grouped_rows_u32,slot->moe_tile_prefix_w1_u32,slot->moe_tile_prefix_w2_u32);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchFusedExpertW13Act(stream,&weights->experts_w1,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_tile_prefix_w1_u32,slot->moe_tile_prefix_w1_u32,slot->moe_slot_up_bf16,rows,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_LM_SWIGLU_LIMIT,state->multiprocessor_count);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchExpertDown(stream,&weights->experts_w2,slot->moe_slot_up_bf16,slot->moe_tile_prefix_w1_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,state->multiprocessor_count);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchMoePairReduce(stream,slot->moe_slot_out_bf16,slot->moe_inverse_u32,slot->moe_weights_f32,slot->delta_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchLinear(stream,&weights->shared_gate,slot->normalized_bf16,slot->shared_gate_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchLinear(stream,&weights->shared_up,slot->normalized_bf16,slot->shared_up_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchSwiGlu(stream,slot->shared_gate_bf16,slot->shared_up_bf16,rows,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchLinear(stream,&weights->shared_down,slot->shared_up_bf16,slot->shared_down_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchSharedGate(stream,slot->shared_down_bf16,weights->shared_gate_weight_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchResidualAdd(stream,slot->delta_bf16,slot->shared_down_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchResidualAdd(stream,slot->hidden_bf16,slot->delta_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION);
+	return(SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"moe"));
+}
+
+static SparkStatus SparkQwen38ModuleRunLayer(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, const SparkQwen38KvBlockTableView *table, uint32_t layer, uint32_t rows)
+{
+	SparkQwen38AttnRowsView rows_view;
+	SparkStatus status;
+	cudaError_t error = SparkQwen38LaunchRmsNorm((cudaStream_t)slot->cuda_stream,slot->hidden_bf16,state->attention_norm_by_layer[layer],slot->normalized_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_MODEL_RMS_NORM_EPSILON);
+	rows_view.slot_mapping = slot->slot_mapping;
+	rows_view.row_positions = slot->row_positions;
+	rows_view.row_lane_indices = slot->row_lane_indices;
+	rows_view.context_lengths = slot->context_lengths;
+	status = SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"attention_norm");
+	if ( status == SPARK_STATUS_OK )
+		status = SPARK_QWEN38_MODEL_LAYER_IS_GDN(layer) != 0u ? SparkQwen38ModuleRunGdnLayer(state,slot,layer,rows) : SparkQwen38ModuleRunAttnLayer(state,slot,table,&state->attn_by_layer[layer],state->attn_ordinal_by_layer[layer],&rows_view,rows);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen38ModuleRunMoe(state,slot,state->mlp_norm_by_layer[layer],&state->moe_by_layer[layer],rows);
+	return(status);
+}
