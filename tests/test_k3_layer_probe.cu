@@ -8,16 +8,19 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 
-static uint16_t g_snapshots[24u][K3_HIDDEN];
+static uint16_t *g_snapshots;
 static uint32_t g_rows = 0u;
 static K3LayerBuffers *g_probe_buffers;
 
 static void ProbeHook(void *context, void *stream_void, uint32_t layer)
 {
 	(void)context;
-	(void)stream_void;
-	cudaMemcpy(g_snapshots[layer], g_probe_buffers->hidden_bf16,
-		(uint64_t)g_rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToHost);
+	/* Pinned + async: the synchronous copy masked the race; the async
+	 * copy queues behind the layer's kernels and preserves the bare-run
+	 * timing while still capturing the per-layer stream. */
+	cudaMemcpyAsync(&g_snapshots[layer * K3_HIDDEN], g_probe_buffers->hidden_bf16,
+		(uint64_t)g_rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToHost,
+		(cudaStream_t)stream_void);
 }
 
 int main(int argc, char **argv)
@@ -59,6 +62,7 @@ int main(int argc, char **argv)
 	}
 	g_probe_buffers = (K3LayerBuffers *)SparkK3StageRunnerProbeBuffers(&runner);
 	g_rows = 1u;
+	cudaMallocHost(&g_snapshots, (uint64_t)24u * K3_HIDDEN * 2u);
 
 	uint32_t *d_tokens, *d_positions, *d_context, *d_seq, *d_state, *d_out_tok;
 	float *d_out_score;

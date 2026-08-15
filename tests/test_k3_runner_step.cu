@@ -12,6 +12,13 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 
+static void NoopHook(void *context, void *stream, uint32_t layer)
+{
+	(void)context;
+	(void)stream;
+	(void)layer;
+}
+
 static uint32_t FiniteCount(const uint16_t *values, uint32_t count)
 {
 	uint32_t finite = 0u;
@@ -68,6 +75,7 @@ int main(int argc, char **argv)
 	config.kv_page_bytes = K3GlobalKv::kPageBytes;
 	config.rank_pack_path = argv[1];
 	config.execution_stream = 0;
+	config.layer_collective_override = NoopHook;
 	int multiprocessors = 0;
 	cudaDeviceGetAttribute(&multiprocessors, cudaDevAttrMultiProcessorCount, 0);
 	config.multiprocessors = (uint32_t)multiprocessors;
