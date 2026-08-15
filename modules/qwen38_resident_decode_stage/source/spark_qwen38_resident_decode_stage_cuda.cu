@@ -1420,6 +1420,12 @@ static __global__ void SparkQwen38GateSelectKernel(
         choice_score = expert < expert_count
             ? row_scores[expert] + (bias_f32 != 0 ? bias_f32[expert] : 0.0f)
             : NAN;
+        /* A NaN score must rank LAST, never first: the ordered-key map
+         * sends NaN to key 0, and key 0 decodes as UINT32_MAX here, which
+         * the route build would histogram out of bounds. -inf keeps the
+         * expert selectable-safe (it sorts below every finite logit). */
+        if ( expert < expert_count && isnan(choice_score) )
+            choice_score = -INFINITY;
         ordered_keys[expert] = expert < expert_count
             ? SparkLmOrderedTopKKey(choice_score, expert)
             : 0u;
@@ -1432,7 +1438,8 @@ static __global__ void SparkQwen38GateSelectKernel(
     selected_expert = selected_key != 0u
         ? 0xffffffffu - (uint32_t)selected_key
         : UINT32_MAX;
-    selected_score = rank < topk && selected_expert < expert_count
+    selected_score = rank < topk && selected_expert < expert_count &&
+        !isnan(row_scores[selected_expert])
         ? row_scores[selected_expert]
         : 0.0f;
     if ( threadIdx.x < SPARK_LM_WARP_LANES )
@@ -1442,8 +1449,14 @@ static __global__ void SparkQwen38GateSelectKernel(
         if ( rank < topk )
         {
             indices_u32[((uint64_t)row * topk) + rank] = selected_expert;
+            /* The dsv4 normalization guard, verbatim semantics: a zero or
+             * non-finite total (all-equal or all-NaN logits) yields zero
+             * weights instead of NaN, which would poison the pair reduce
+             * and the next layer's gate scores. */
             weights_f32[((uint64_t)row * topk) + rank] =
-                route_scale * selected_score / selected_total;
+                selected_total > 0.0f
+                ? route_scale * selected_score / selected_total
+                : 0.0f;
         }
     }
 }
