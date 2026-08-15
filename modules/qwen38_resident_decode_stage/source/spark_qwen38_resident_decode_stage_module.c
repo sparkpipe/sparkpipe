@@ -143,6 +143,16 @@ static SparkStatus SparkQwen38ModuleConfigure(SparkQwen38ModuleState *state)
 		fprintf(stderr,"%s config_slice_invalid stage=%u/%u slice=%u+%u\n",SPARK_QWEN38_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
+	/* The grouped scalar expert path prices its row tiles at SPARK_LM_TILE
+	 * (16) rows while the route build switches to 32-row tiles past 409
+	 * sequences; a batch that crosses the boundary would silently skip rows
+	 * in every expert group. Refuse it loudly until the MoE moves to the
+	 * launch-planner GEMM (which shares one tile-M with the route build). */
+	if ( state->max_active_sequence_count > 409u )
+	{
+		fprintf(stderr,"%s config_batch_too_wide max_active=%u (grouped scalar path supports at most 409 rows at a 16-row tile; see audit doc)\n",SPARK_QWEN38_MODULE_TAG,state->max_active_sequence_count);
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	state->owns_embedding = state->first_layer_index == 0u ? 1u : 0u;
 	state->owns_final_head = state->first_layer_index + state->layer_count == SPARK_QWEN38_RESIDENT_DECODE_STAGE_LAYER_COUNT ? 1u : 0u;
 	if ( (state->stage_index == 0u) != (state->owns_embedding != 0u) || (state->stage_index + 1u == state->stage_count) != (state->owns_final_head != 0u) )

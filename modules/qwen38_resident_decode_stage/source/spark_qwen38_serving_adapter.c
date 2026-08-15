@@ -76,11 +76,11 @@ static uint32_t SparkQwen38ServingPpStageIndex(uint32_t world_rank)
 {
 	return(world_rank / SPARK_QWEN38_SERVING_TP_DEGREE);
 }
-/* The owner's KV-limit decision: serving caps context at 8192 positions
- * until the long-context KV plan lands, far under the module's 256K admit
- * ceiling. The KV pool is sized from this cap, so a conforming deployment
- * can never exhaust blocks. */
-#define SPARK_QWEN38_SERVING_MAX_SEQUENCE_POSITIONS_CAP 8192u
+/* Serving caps context at the model's native 262144 until the KV-tier
+ * plan lands; the module's KV pool is sized from the deployment's
+ * kv_block_count, and the cap merely refuses configs past the model. */
+#define SPARK_QWEN38_SERVING_MAX_SEQUENCE_POSITIONS_CAP \
+	SPARK_QWEN38_MODEL_MAXIMUM_CONTEXT_TOKENS
 #define SPARK_QWEN38_SERVING_REQUIRED_PROGRAM_FLAGS \
 	(SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | \
@@ -201,7 +201,10 @@ static const SparkModelServingAdapterDescriptor SparkQwen38ServingDescriptor =
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
 	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
-	.max_inflight_submission_count = SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
+	/* The lean module executes every frame on ONE slot (slots[0]) with a
+	 * per-frame stream sync, so concurrent inflight frames would share one
+	 * set of buffers; advertise 1 until multi-slot pipelining lands. */
+	.max_inflight_submission_count = 1u,
 	.max_active_sequence_count = SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_input_row_count = SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_resident_sequence_count = SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,

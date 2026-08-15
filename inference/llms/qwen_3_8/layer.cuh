@@ -94,6 +94,11 @@ void Qwen38HeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint
 	uint32_t row = blockIdx.y,head = blockIdx.x,column = threadIdx.x;
 	uint64_t index = ((uint64_t)row * head_count * head_dim) + ((uint64_t)head * head_dim) + column;
 	float value,variance;
+	/* Threads past the head width return below; zero the scratch first so
+	 * the block sum's second stage reads defined values for every warp. */
+	if ( threadIdx.x < THREADS / LM_WARP_LANES )
+		reduce_scratch[threadIdx.x] = 0.0f;
+	__syncthreads();
 	if ( row >= row_count || column >= head_dim )
 		return;
 	value = LmBf16ToFloat(input_bf16[index]);
@@ -112,6 +117,9 @@ void Qwen38GatedHeadNormKernel(const uint16_t *__restrict__ core_bf16, const uin
 	uint32_t row = blockIdx.y,head = blockIdx.x,column = threadIdx.x;
 	uint64_t index = ((uint64_t)row * head_count * head_dim) + ((uint64_t)head * head_dim) + column;
 	float value,variance,z;
+	if ( threadIdx.x < THREADS / LM_WARP_LANES )
+		reduce_scratch[threadIdx.x] = 0.0f;
+	__syncthreads();
 	if ( row >= row_count || column >= head_dim )
 		return;
 	value = LmBf16ToFloat(core_bf16[index]);
@@ -463,7 +471,10 @@ static int32_t Qwen38LayerLinear(const Qwen38LayerBuffers *b, uint32_t rows, uin
 	LM_LAUNCH((LmDeltaRuleKernel<QWEN38_LAYER_THREADS,QWEN38_GDN_KEY_DIM,QWEN38_GDN_VALUE_DIM>), dim3(rows,QWEN38_GDN_VALUE_HEADS), QWEN38_LAYER_THREADS, (uint32_t)(QWEN38_GDN_KEY_DIM * QWEN38_GDN_VALUE_DIM * sizeof(float)), stream,
 		b->gdn_state_pool,QWEN38_GDN_STATE_BYTES,b->gdn_state_index,0,0,b->gdn_query_expanded_bf16,b->gdn_key_expanded_bf16,b->value_bf16, b->gdn_forget_gate,b->gdn_write_gate,b->gdn_core_bf16, QWEN38_GDN_VALUE_HEADS,1u,rows,1u);
 	// Gated head norm: per value head RMSNorm, times weight, times silu(z).
-	LM_LAUNCH((Qwen38GatedHeadNormKernel<QWEN38_LAYER_THREADS>), dim3(QWEN38_GDN_VALUE_HEADS,rows), QWEN38_GDN_VALUE_DIM, 0, stream,
+	// Launched at the full CTA width (256 threads): the kernel's block sum
+	// reduces THREADS lanes, and launching at the 128-wide head would leave
+	// the upper half of the reduction reading unwritten scratch.
+	LM_LAUNCH((Qwen38GatedHeadNormKernel<QWEN38_LAYER_THREADS>), dim3(QWEN38_GDN_VALUE_HEADS,rows), QWEN38_LAYER_THREADS, 0, stream,
 		b->gdn_core_bf16,b->gdn_z_logit_bf16,(const uint16_t *)b->gdn_norm_weight,b->gdn_gated_bf16,rows,QWEN38_GDN_VALUE_HEADS,QWEN38_GDN_VALUE_DIM,QWEN38_RMS_EPSILON);
 	activation = Qwen38PrepareInput<Format>(
 		b,b->gdn_gated_bf16,rows,QWEN38_GDN_V_DIM,&gemm.scale_a,stream);
