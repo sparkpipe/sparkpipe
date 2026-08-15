@@ -43,8 +43,8 @@ CONFIG_NAME = "config.json"
 # Wire constants, mirroring spark_qwen36_stagepack_format.h. The round-trip
 # test cross-checks these against the header so the two cannot drift apart.
 MAGIC = 0x50533651  # 'Q6SP'
-FORMAT_VERSION = 2
-HEADER_BYTES = 112
+FORMAT_VERSION = 3
+HEADER_BYTES = 120
 ENTRY_BYTES = 56
 GLOBAL_LAYER = 0xFFFFFFFF
 MTP_LAYER = 0xFFFFFFFE
@@ -77,9 +77,10 @@ GDN_CONV_CHANNELS = 2 * GDN_QK_DIM + GDN_VALUE_DIM     # 10240
 ATTN_Q_DIM = ATTN_QUERY_HEADS * ATTN_HEAD_DIM          # 6144
 ATTN_KV_DIM = ATTN_KV_HEADS * ATTN_HEAD_DIM            # 1024
 
-HEADER_STRUCT = struct.Struct("<24I2Q")
+HEADER_STRUCT = struct.Struct("<26I2Q")
 ENTRY_STRUCT = struct.Struct("<6I4Q")
 assert HEADER_STRUCT.size == HEADER_BYTES and ENTRY_STRUCT.size == ENTRY_BYTES
+
 
 # Tensor kinds, mirroring SparkQwen36StagePackTensorKind.
 (KIND_EMBEDDING, KIND_FINAL_NORM, KIND_LM_HEAD, KIND_ATTENTION_NORM,
@@ -367,38 +368,132 @@ def f32_to_bf16_u16(value: float) -> int:
     return ((bits + 0x7FFF + lsb) >> 16) & 0xFFFF
 
 
-def copy_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, out) -> None:
-    """Stream one tensor's payload, upcasting BF16 to F32 where the pack says,
-    folding +1 into the Qwen3_5 standard-norm weights."""
-    path = source.checkpoint / source.weight_map[ref.name]
-    elements = ref.rows * ref.columns
-    source_bytes = elements * BF16_BYTES
-    with path.open("rb") as file:
+# ---------------------------------------------------------------------------
+# Tensor-parallel sharding (recipe qwen36.TP4). A TP pack stores ONE rank's
+# row/column window of every shardable tensor, stitched where the checkpoint
+# layout fuses several shard classes into one tensor. Replicated tensors
+# (norms, conv, gates, beta/decay, MTP) are stored whole.
+# ---------------------------------------------------------------------------
+
+class TpSlice:
+    """A contiguous window of a row-major [rows, columns] tensor."""
+    def __init__(self, row_off, row_count, col_off, col_count):
+        self.row_off = row_off
+        self.row_count = row_count
+        self.col_off = col_off
+        self.col_count = col_count
+
+class TpFusedSlice:
+    """Row windows of several source row ranges stitched into one entry."""
+    def __init__(self, segments):
+        self.segments = segments          # [(row_off, row_count), ...]
+        self.col_count = HIDDEN
+
+def tp_window(total, degree, rank):
+    if total % degree != 0:
+        raise PackFailure(f"dimension {total} does not divide TP degree {degree}")
+    width = total // degree
+    return (rank * width, width)
+
+def build_tp_plan(ref, degree, rank):
+    """Return (row_slice, col_slice, packed_rows, packed_cols). None = replicated."""
+    if degree <= 1:
+        return None
+    if ref.layer == GLOBAL_LAYER:
+        if ref.kind in (KIND_EMBEDDING, KIND_LM_HEAD):
+            off, count = tp_window(VOCAB, degree, rank)
+            return TpSlice(off, count, 0, HIDDEN)
+        if ref.kind == KIND_MTP_FC:
+            return None  # replicated per the recipe
+        return None
+    if ref.layer == MTP_LAYER:
+        return None  # the MTP chain is replicated
+    if ref.kind in (KIND_FFN_GATE, KIND_FFN_UP):
+        off, count = tp_window(FFN_INTERMEDIATE, degree, rank)
+        return TpSlice(off, count, 0, HIDDEN)
+    if ref.kind == KIND_FFN_DOWN:
+        off, count = tp_window(FFN_INTERMEDIATE, degree, rank)
+        return TpSlice(0, HIDDEN, off, count)
+    if ref.kind == KIND_GDN_QKV:
+        qk_off, qk_count = tp_window(GDN_QK_DIM, degree, rank)
+        v_off, v_count = tp_window(GDN_VALUE_DIM, degree, rank)
+        segments = [(qk_off, qk_count), (GDN_QK_DIM + qk_off, qk_count),
+                    (2 * GDN_QK_DIM + v_off, v_count)]
+        return TpFusedSlice(segments)
+    if ref.kind == KIND_GDN_OUTPUT:
+        off, count = tp_window(GDN_VALUE_DIM, degree, rank)
+        return TpSlice(0, HIDDEN, off, count)
+    if ref.kind == KIND_ATTN_QUERY:
+        off, count = tp_window(2 * ATTN_Q_DIM, degree, rank)
+        return TpSlice(off, count, 0, HIDDEN)
+    if ref.kind in (KIND_ATTN_KEY, KIND_ATTN_VALUE):
+        off, count = tp_window(ATTN_KV_DIM, degree, rank)
+        return TpSlice(off, count, 0, HIDDEN)
+    if ref.kind == KIND_ATTN_OUTPUT:
+        off, count = tp_window(ATTN_Q_DIM, degree, rank)
+        return TpSlice(0, HIDDEN, off, count)
+    return None
+
+def packed_shape(ref, plan):
+    """The TP entry's rows/columns after sharding."""
+    if plan is None:
+        return (ref.rows, ref.columns)
+    if isinstance(plan, TpFusedSlice):
+        return (sum(count for _, count in plan.segments), plan.col_count)
+    return (plan.row_count, plan.col_count)
+
+def write_batch(out, source_path, offset, byte_count, mode):
+    """Read byte_count payload bytes at offset. mode 0 = raw BF16,
+    1 = fold +1 (standard norms), 2 = upcast BF16 to F32 (A_log/dt_bias)."""
+    with open(source_path, "rb") as file:
         file.seek(offset)
-        remaining = source_bytes
+        remaining = byte_count
         while remaining > 0:
             step = min(remaining, CHUNK_BYTES)
             chunk = file.read(step)
             if len(chunk) != step:
-                raise PackFailure(f"short read on {ref.name}")
+                raise PackFailure(f"short read at {offset}")
             remaining -= step
-            if ref.weight_format != WEIGHT_BF16:
-                # BF16 is the top half of F32: shift into place, zero the tail.
-                widened = bytearray(step * 2)
-                widened[2::4] = chunk[0::2]
-                widened[3::4] = chunk[1::2]
-                out.write(widened)
-            elif ref.kind in NORM_PLUS_ONE_KINDS:
+            if mode == 0:
+                out.write(chunk)
+            elif mode == 1:
                 count = step // BF16_BYTES
                 values = struct.unpack("<" + ("H" * count), chunk)
                 folded = [f32_to_bf16_u16(bf16_u16_to_f32(v) + 1.0) for v in values]
                 out.write(struct.pack("<" + ("H" * count), *folded))
             else:
-                out.write(chunk)
+                widened = bytearray(step * 2)
+                widened[2::4] = chunk[0::2]
+                widened[3::4] = chunk[1::2]
+                out.write(widened)
+
+def copy_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, plan, out) -> None:
+    """Stream one tensor's payload (optionally TP-sliced), upcasting BF16 to
+    F32 where the pack says, folding +1 into the standard-norm weights."""
+    path = source.checkpoint / source.weight_map[ref.name]
+    mode = 2 if ref.weight_format == WEIGHT_F32 else (
+        1 if ref.kind in NORM_PLUS_ONE_KINDS else 0)
+    if plan is None:
+        write_batch(out, path, offset, ref.rows * ref.columns * BF16_BYTES, mode)
+        return
+    if isinstance(plan, TpFusedSlice):
+        for (row_off, row_count) in plan.segments:
+            for row in range(row_off, row_off + row_count):
+                base = offset + (row * ref.columns) * BF16_BYTES
+                write_batch(out, path, base, ref.columns * BF16_BYTES, mode)
+        return
+    if plan.col_count == ref.columns:
+        for row in range(plan.row_off, plan.row_off + plan.row_count):
+            base = offset + (row * ref.columns) * BF16_BYTES
+            write_batch(out, path, base, ref.columns * BF16_BYTES, mode)
+        return
+    for row in range(plan.row_off, plan.row_off + plan.row_count):
+        base = offset + ((row * ref.columns) + plan.col_off) * BF16_BYTES
+        write_batch(out, path, base, plan.col_count * BF16_BYTES, mode)
 
 
 def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
-            receipt: dict, dry_run: bool) -> dict:
+            receipt: dict, dry_run: bool, tp_degree: int = 1, tp_rank: int = 0) -> dict:
     source = SafetensorsSource(checkpoint)
     source.check_config()
     refs = build_inventory(first_layer, layer_count)
@@ -406,10 +501,12 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     cursor = 0
     for ref in refs:
         shard, meta, offset = source.check_shape(ref)
+        plan = build_tp_plan(ref, tp_degree, tp_rank)
+        packed_rows, packed_cols = packed_shape(ref, plan)
         payload_offset = align(cursor)
         element_bytes = BF16_BYTES if ref.weight_format == WEIGHT_BF16 else F32_BYTES
-        payload_bytes = ref.rows * ref.columns * element_bytes
-        plans.append((ref, offset, payload_offset, payload_bytes))
+        payload_bytes = packed_rows * packed_cols * element_bytes
+        plans.append((ref, offset, payload_offset, payload_bytes, plan))
         cursor = payload_offset + payload_bytes
     payload_base = align(HEADER_BYTES + len(plans) * ENTRY_BYTES)
     file_bytes = payload_base + cursor
@@ -421,17 +518,20 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         GDN_KEY_HEADS, GDN_VALUE_HEADS, GDN_HEAD_KEY_DIM, GDN_HEAD_VALUE_DIM,
         GDN_CONV_KERNEL, ATTN_QUERY_HEADS, ATTN_KV_HEADS, ATTN_HEAD_DIM,
         ATTN_ROPE_DIM, FFN_INTERMEDIATE, VOCAB, MXFP4_GROUP, MTP_LAYERS,
-        HEADER_BYTES, file_bytes)
+        tp_degree, tp_rank, HEADER_BYTES, file_bytes)
     entries = b"".join(
-        ENTRY_STRUCT.pack(ref.kind, ref.layer, ref.weight_format, ref.rows,
-                          ref.columns, 0, payload_base + payload_offset,
+        ENTRY_STRUCT.pack(ref.kind, ref.layer, ref.weight_format,
+                          packed_shape(ref, plan)[0], packed_shape(ref, plan)[1],
+                          0, payload_base + payload_offset,
                           payload_bytes, 0, 0)
-        for ref, _, payload_offset, payload_bytes in plans)
+        for ref, _, payload_offset, payload_bytes, plan in plans)
     receipt.update({
         "first_layer_index": first_layer,
         "layer_count": layer_count,
         "tensor_count": len(plans),
         "bytes": file_bytes,
+        "tp_degree": tp_degree,
+        "tp_rank": tp_rank,
         "source_index_sha256": source.index_sha256,
         "source_config_sha256": source.config_sha256,
     })
@@ -451,9 +551,9 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         if padding < 0:
             raise PackFailure("directory overruns the payload base")
         temp.write(b"\0" * padding)
-        for ref, source_offset, _, payload_bytes in plans:
+        for ref, source_offset, _, payload_bytes, plan in plans:
             before = temp.tell()
-            copy_tensor(source, ref, source_offset, temp)
+            copy_tensor(source, ref, source_offset, plan, temp)
             if temp.tell() - before != payload_bytes:
                 raise PackFailure(f"payload size mismatch on {ref.name}")
             pad = align(temp.tell()) - temp.tell()
@@ -481,7 +581,7 @@ def verify(pack_path: Path) -> dict:
          layer_count, first_layer, total_layers, period, phase,
          gdn_kh, gdn_vh, gdn_kd, gdn_vd, conv_kernel,
          attn_qh, attn_kvh, attn_hd, rope_dim, ffn, vocab, mxfp4, mtp,
-         directory_offset, declared_bytes) = fields
+         tp_degree, tp_rank, directory_offset, declared_bytes) = fields
         geometry = {
             "magic": (magic, MAGIC), "format_version": (version, FORMAT_VERSION),
             "header_bytes": (header_bytes, HEADER_BYTES),
@@ -503,6 +603,7 @@ def verify(pack_path: Path) -> dict:
             "ffn_intermediate_dimension": (ffn, FFN_INTERMEDIATE),
             "output_vocab_count": (vocab, VOCAB),
             "mxfp4_group_size": (mxfp4, MXFP4_GROUP), "mtp_layer_count": (mtp, MTP_LAYERS),
+            "tp_degree": (tp_degree, tp_degree), "tp_rank": (tp_rank, tp_rank),
         }
         for name, (actual, expected) in geometry.items():
             if actual != expected:
@@ -520,6 +621,14 @@ def verify(pack_path: Path) -> dict:
             (kind, layer, weight_format, rows, columns, scale_group,
              payload_offset, payload_bytes, scale_offset, scale_bytes) = entry
             expected_rows, expected_columns, expected_format = kind_shape(kind)
+            if tp_degree > 1:
+                class _Ref:
+                    pass
+                _ref = _Ref()
+                _ref.kind, _ref.layer = kind, layer
+                _ref.rows, _ref.columns = expected_rows, expected_columns
+                plan = build_tp_plan(_ref, tp_degree, tp_rank)
+                expected_rows, expected_columns = packed_shape(_ref, plan)
             if (rows, columns, weight_format) != (expected_rows, expected_columns, expected_format):
                 raise PackFailure(f"entry {index} kind {kind}: shape or format mismatch")
             if (kind, layer) in seen:
@@ -564,7 +673,15 @@ def main() -> int:
     parser.add_argument("--receipt", type=Path, help="receipt output (default: <output>.receipt.json)")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verify", type=Path, help="verify an existing pack and exit")
+    parser.add_argument("--tp-degree", type=int, default=1,
+                        help="tensor-parallel degree; shards the pack for --tp-rank")
+    parser.add_argument("--tp-rank", type=int, default=0,
+                        help="this rank's shard (0 .. tp-degree-1)")
     args = parser.parse_args()
+    if args.tp_degree < 1 or args.tp_rank < 0 or args.tp_rank >= args.tp_degree:
+        parser.error("--tp-rank must satisfy 0 <= tp-rank < tp-degree")
+    if args.tp_degree > 1 and args.first_layer != 0 and args.layer_count != LAYER_COUNT:
+        parser.error("TP packs cover the whole stack: --first-layer 0 --layer-count 64")
 
     if args.verify is not None:
         result = verify(args.verify)
@@ -603,7 +720,8 @@ def main() -> int:
                              "sha256": sha256_file(args.recipe),
                              "content_hash": recipe.get("content_hash")}
     result = convert(args.checkpoint, args.output or Path("/dev/null"),
-                     first_layer, layer_count, receipt, args.dry_run)
+                     first_layer, layer_count, receipt, args.dry_run,
+                     args.tp_degree, args.tp_rank)
     if not args.dry_run:
         receipt_path = args.receipt or Path(str(args.output) + ".receipt.json")
         receipt_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

@@ -96,6 +96,8 @@ typedef struct SparkQwen36ModuleState
 	uint32_t layer_count;
 	uint32_t owns_embedding;
 	uint32_t owns_final_head;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
 	uint32_t kv_block_count;
@@ -172,6 +174,10 @@ static SparkStatus SparkQwen36ModuleConfigure(SparkQwen36ModuleState *state)
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_STAGE_LAYER_COUNT",1u,SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT,&state->layer_count);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_TP_DEGREE",1u,16u,&state->tp_degree);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_TP_RANK",0u,15u,&state->tp_rank);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES",1u,SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&state->max_active_sequence_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_STAGE_PIPELINE_SLOTS",1u,SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&state->pipeline_slot_count);
@@ -186,6 +192,12 @@ static SparkStatus SparkQwen36ModuleConfigure(SparkQwen36ModuleState *state)
 	if ( state->stage_index >= state->stage_count || state->first_layer_index + state->layer_count > SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT )
 	{
 		fprintf(stderr,"%s config_slice_invalid stage=%u/%u slice=%u+%u\n",SPARK_QWEN36_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( state->tp_rank >= state->tp_degree ||
+		(state->tp_degree > 1u && (state->stage_count != 1u || state->stage_index != 0u || state->first_layer_index != 0u || state->layer_count != SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT)) )
+	{
+		fprintf(stderr,"%s config_tp_invalid degree=%u rank=%u stage=%u/%u slice=%u+%u\n",SPARK_QWEN36_MODULE_TAG,state->tp_degree,state->tp_rank,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	state->owns_embedding = state->first_layer_index == 0u ? 1u : 0u;
@@ -236,7 +248,7 @@ static SparkStatus SparkQwen36ModuleValidateEntry(SparkQwen36ModuleState *state,
 {
 	SparkQwen36StagePackTensorShape shape;
 	uint32_t global = entry->layer_index == SPARK_QWEN36_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
-	if ( SparkQwen36StagePackResolvedShape(entry->tensor_kind,global != 0u ? 0u : entry->layer_index,global,&shape) != 0 || entry->rows != shape.rows || entry->columns != shape.columns )
+	if ( SparkQwen36StagePackResolvedShape(entry->tensor_kind,global != 0u ? 0u : entry->layer_index,global,state->tp_degree,&shape) != 0 || entry->rows != shape.rows || entry->columns != shape.columns )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if ( shape.quantizable != 0u )
 	{
@@ -429,6 +441,8 @@ static SparkStatus SparkQwen36ModuleLoadPack(SparkQwen36ModuleState *state, cons
 	if ( status == SPARK_STATUS_OK )
 	{
 		SparkQwen36StagePackExpectedGeometry(&expected,state->first_layer_index,state->layer_count);
+		expected.tp_degree = state->tp_degree;
+		expected.tp_rank = state->tp_rank;
 		compare = SparkQwen36StagePackCompareGeometry(&header,&expected);
 		if ( compare != 0 || header.directory_offset != SPARK_QWEN36_STAGEPACK_HEADER_BYTES )
 		{
@@ -1473,6 +1487,8 @@ static SparkStatus SparkQwen36ModuleOpenKvTier(SparkQwen36ModuleState *state)
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	SparkQwen36StagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count);
+	geometry.tp_degree = state->tp_degree;
+	geometry.tp_rank = state->tp_rank;
 	model_fp = SparkQwen36ModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
 	layout_bits[0] = state->cache_layer_stride;
 	layout_bits[1] = state->cache_block_stride;

@@ -70,7 +70,7 @@ static int32_t SparkQwen36SynthesizeAppend(SparkQwen36SynthesizeContext *context
 	uint32_t format;
 	if ( context->entry_count >= SPARK_QWEN36_SYNTHESIZE_MAX_TENSORS )
 		return(-1);
-	if ( SparkQwen36StagePackResolvedShape(tensor_kind,layer_index,is_global,&shape) < 0 )
+	if ( SparkQwen36StagePackResolvedShape(tensor_kind,layer_index,is_global,1u,&shape) < 0 )
 		return(-2);
 	format = (quantize != 0u && shape.quantizable != 0u) ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 : shape.natural_format;
 	entry = &context->entries[context->entry_count];

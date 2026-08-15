@@ -29,7 +29,10 @@
  */
 
 #define SPARK_QWEN36_STAGEPACK_MAGIC 0x50533651u /* 'Q6SP' little endian */
-#define SPARK_QWEN36_STAGEPACK_FORMAT_VERSION 2u
+#define SPARK_QWEN36_STAGEPACK_FORMAT_VERSION 3u
+/* v3 added tp_degree/tp_rank. A v2 pack read into the v3 struct leaves the
+ * two TP fields zero; the loader treats degree 0 as degree 1 (no tensor
+ * parallelism), so v2 PP packs stay loadable. */
 #define SPARK_QWEN36_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_QWEN36_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
 #define SPARK_QWEN36_STAGEPACK_PAYLOAD_ALIGNMENT 256u
@@ -100,6 +103,8 @@ typedef struct SparkQwen36StagePackHeader
 	uint32_t output_vocab_count;
 	uint32_t mxfp4_group_size;
 	uint32_t mtp_layer_count;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
 	uint64_t directory_offset;
 	uint64_t file_bytes;
 } SparkQwen36StagePackHeader;
@@ -123,9 +128,9 @@ typedef struct SparkQwen36StagePackEntry
  * padding on the LP64 targets this module builds for; the asserts make that a
  * compile error rather than a silent format drift.
  */
-#define SPARK_QWEN36_STAGEPACK_HEADER_BYTES 112u
+#define SPARK_QWEN36_STAGEPACK_HEADER_BYTES 120u
 #define SPARK_QWEN36_STAGEPACK_ENTRY_BYTES 56u
-_Static_assert(sizeof(SparkQwen36StagePackHeader) == SPARK_QWEN36_STAGEPACK_HEADER_BYTES,"qwen36 stage pack header must be 112 wire bytes");
+_Static_assert(sizeof(SparkQwen36StagePackHeader) == SPARK_QWEN36_STAGEPACK_HEADER_BYTES,"qwen36 stage pack header must be 120 wire bytes");
 _Static_assert(sizeof(SparkQwen36StagePackEntry) == SPARK_QWEN36_STAGEPACK_ENTRY_BYTES,"qwen36 stage pack directory entry must be 56 wire bytes");
 
 // Model-geometry compile-time proofs live here, in the C-only pack header,
@@ -201,6 +206,8 @@ static inline void SparkQwen36StagePackExpectedGeometry(SparkQwen36StagePackHead
 	header->output_vocab_count = SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT;
 	header->mxfp4_group_size = 32u;
 	header->mtp_layer_count = SPARK_QWEN36_MODEL_MTP_LAYER_COUNT;
+	header->tp_degree = 1u;
+	header->tp_rank = 0u;
 	header->directory_offset = 0u;
 	header->file_bytes = 0u;
 }
@@ -257,6 +264,10 @@ static inline int32_t SparkQwen36StagePackCompareGeometry(const SparkQwen36Stage
 		return(-23);
 	if ( file_header->mtp_layer_count != expected->mtp_layer_count )
 		return(-24);
+	if ( file_header->tp_degree != expected->tp_degree )
+		return(-25);
+	if ( file_header->tp_rank != expected->tp_rank )
+		return(-26);
 	return(0);
 }
 
@@ -448,10 +459,54 @@ static inline int32_t SparkQwen36StagePackTensorShapeOf(uint32_t tensor_kind, Sp
  * layer marker; only the four MTP globals (fc, the two pre-fc norms, the
  * final norm) are new kinds. Pinned from the checkpoint safetensors index.
  */
-static inline int32_t SparkQwen36StagePackResolvedShape(uint32_t tensor_kind, uint32_t layer_index, uint32_t is_global, SparkQwen36StagePackTensorShape *shape)
+/* TP packs store one rank's row/column window of each shardable tensor;
+ * replicated kinds (norms, conv, gates, beta/decay, MTP) are unchanged.
+ * The fused GDN q|k|v projection is stitched q|k|v per rank, so its row
+ * count is (2*qk + v) / degree. */
+static inline void SparkQwen36StagePackApplyTpShard(uint32_t tensor_kind, uint32_t tp_degree, SparkQwen36StagePackTensorShape *shape)
+{
+	if ( tp_degree <= 1u )
+		return;
+	switch ( tensor_kind )
+	{
+	case SPARK_QWEN36_STAGEPACK_TENSOR_EMBEDDING:
+	case SPARK_QWEN36_STAGEPACK_TENSOR_LM_HEAD:
+		shape->rows /= tp_degree;
+		break;
+	case SPARK_QWEN36_STAGEPACK_TENSOR_FFN_GATE:
+	case SPARK_QWEN36_STAGEPACK_TENSOR_FFN_UP:
+		shape->rows /= tp_degree;
+		break;
+	case SPARK_QWEN36_STAGEPACK_TENSOR_FFN_DOWN:
+		shape->columns /= tp_degree;
+		break;
+	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_QKV:
+		shape->rows = (2u * SPARK_QWEN36_MODEL_GDN_QK_DIMENSION +
+			SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION) / tp_degree;
+		break;
+	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_OUTPUT:
+		shape->columns /= tp_degree;
+		break;
+	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY:
+		shape->rows /= tp_degree;
+		break;
+	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY:
+	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_VALUE:
+		shape->rows /= tp_degree;
+		break;
+	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_OUTPUT:
+		shape->columns /= tp_degree;
+		break;
+	default:
+		break;
+	}
+}
+
+static inline int32_t SparkQwen36StagePackResolvedShape(uint32_t tensor_kind, uint32_t layer_index, uint32_t is_global, uint32_t tp_degree, SparkQwen36StagePackTensorShape *shape)
 {
 	if ( SparkQwen36StagePackTensorShapeOf(tensor_kind,shape) < 0 )
 		return(-1);
+	SparkQwen36StagePackApplyTpShard(tensor_kind,tp_degree,shape);
 	if ( layer_index == SPARK_QWEN36_STAGEPACK_MTP_LAYER )
 		return((is_global == 0u && (shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_EVERY_LAYER || shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_ATTN_LAYER)) ? 0 : -6);
 	if ( (shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_GLOBAL) != (is_global != 0u) )
