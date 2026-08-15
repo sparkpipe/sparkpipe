@@ -34,9 +34,12 @@ any common-layer edit is a flagged, separately-reviewable commit.
       shapes verified against the pinned FP8 index. TP4 rank slicing still
       comes with the TP4xPP4 deployment work.
 - [x] qwen38 resident decode stage module + serving adapter + firmware JSON.
-      Module compiles clean (Makefile archive target), and a real 1-layer
-      FP8 pack (layer 1, GDN+MoE, 24.9 GiB) executes a two-step decode on a
-      single spark, compute-sanitizer clean.
+      Module compiles clean (Makefile archive target). Real FP8 packs execute
+      a two-step decode on a single spark, compute-sanitizer clean: the
+      1-layer GDN pack (layer 1, 24.9 GiB) and the 2-layer GDN+attention
+      pack (layers 2-3, 49.8 GiB) - both layer kinds and both MoE paths on
+      real weights. Adapter identifiers now tp4-pp4 / fp8 / 16 ranks; the
+      TP-rank frame mapping inside the adapter is flagged outstanding.
 - [x] inference/llms/qwen_3_8 driver family (config.h / layer.cuh / bind.cu /
       unity.cu): GDN + gated attention + routed FP8 MoE + shared expert,
       three family-local kernels (per-head q/k RMSNorm, gated head norm,
