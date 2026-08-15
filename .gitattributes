@@ -1,1 +1,2 @@
 third_party/flashinfer/3rdparty/cutlass/** -whitespace
+qualification/dsv4/performance/** -whitespace

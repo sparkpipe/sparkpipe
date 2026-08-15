@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-14",
+  "status": "retained_after_threshold_policy_correction",
+  "measurement_kind": "direct_interleaved_end_to_end_cached_kv_decode",
+  "base_commit": "a14c2e1caa519f2c337671699afb4f6a185bc09e",
+  "workload": {
+    "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    "adapter_id": "spark.dsv4.flash-0731.serving-adapter.tp4.v1",
+    "layout": "TP4",
+    "ranks": [
+      "spark4",
+      "spark5",
+      "spark6",
+      "spark7"
+    ],
+    "stage_count": 4,
+    "batch_size": 1,
+    "request_count": 1,
+    "prompt_tokens": 128,
+    "generated_tokens": 128,
+    "batch_sha256": "ad47693813d04ed65fc67178ab2d783e633282c14ed5445f092f67939aa40b7d",
+    "speculation": false,
+    "prefill": "resident cached prompt KV",
+    "timed_intervals": 127,
+    "linear_weight_codec": 5,
+    "expert_weight_codec": 7,
+    "kv_cache_codec": 1
+  },
+  "comparison": {
+    "control": "resident-chain baseline",
+    "candidate": "active-slot IndexerScore CTA retirement and all-candidates-fit TopK"
+  },
+  "correctness": {
+    "token_count": 128,
+    "token_vector_encoding": "comma-separated decimal token IDs plus trailing newline",
+    "token_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+    "token_le_u32_sha256": "52737f6bafea66d96f579b41fbd439212a63dd362683a505065ebdafd8bed9c3",
+    "all_control_runs_exact": true,
+    "all_candidate_runs_exact": true
+  },
+  "identity": {
+    "control_driver_sha256": "a2bfd99f328100a7d53c16b48c3de5fdc6eb140c474b43b222a654f5b118037f",
+    "candidate_driver_sha256": "831410a0814f1c310d418fc1659d8e3ba677de99f56743c4797b2370f7785f58",
+    "source_patch_sha256": "dcd23248b7c1732ae9d4db144ec97d1e45bb7b6e6c5171d5c467f6d6afd7a212"
+  },
+  "result": {
+    "control_tokens_per_second": [
+      37.978731059524236,
+      38.065597261028856,
+      38.0861828089542
+    ],
+    "candidate_tokens_per_second": [
+      38.40880777472901,
+      38.420590047993215,
+      38.37338736477897
+    ],
+    "paired_delta_percent": [
+      1.132414652113356,
+      0.9325816813803067,
+      0.7540912074739392
+    ],
+    "control_mean_tokens_per_second": 38.04350370983576,
+    "candidate_mean_tokens_per_second": 38.40092839583373,
+    "aggregate_delta_percent": 0.9395156889967504,
+    "positive_pairs": 3,
+    "pair_count": 3,
+    "directly_measured": true
+  },
+  "receipt_sha256": {
+    "raw-interleaved-o128.json": "eea43710fc00c89d73c35c20f2183f3de529b8dfd0f2457114e5ae36c7e5b016",
+    "adjudication.json": "cfe235184fff526438e94cf7ea4429f7f09bdc713a49f330957913731aaa87e8"
+  },
+  "decision": "retain because the three repeatable bit-exact pairs are positive; the raw receipt's one-percent threshold rejection is superseded by adjudication.json"
+}
