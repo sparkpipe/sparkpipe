@@ -29,15 +29,36 @@ any common-layer edit is a flagged, separately-reviewable commit.
       slices (54/53/52/54 shards). The earlier HF bf16 download was stopped
       and its partials removed.
 - [x] qwen38 stage packer (tools/qwen38_stagepack.py): whole-PP-stage slices,
-      MXFP4-E2M1 routed experts with E8M0 scales, BF16 non-expert; inventory
-      and shapes verified against the pinned HF index. TP4 rank slicing and
-      the C format header (modules/qwen38_resident_decode_stage/) come with
-      the module work.
-- [ ] qwen38 resident decode stage module + serving adapter + firmware JSON.
-- [ ] inference/llms/qwen_3_8 driver family.
-- [ ] TP4xPP4 deployment configs (16 sparks, world_rank = pp_stage*4 + tp_rank,
-      layer slices 0-22 / 23-45 / 46-68 / 69-91).
+      routed experts now packed in the VENDOR FP8 form (FP8_E4M3 payload +
+      F32 block-128 scales, codec code 4) with BF16 non-expert; inventory and
+      shapes verified against the pinned FP8 index. TP4 rank slicing still
+      comes with the TP4xPP4 deployment work.
+- [x] qwen38 resident decode stage module + serving adapter + firmware JSON.
+      Module compiles clean (Makefile archive target), and a real 1-layer
+      FP8 pack (layer 1, GDN+MoE, 24.9 GiB) executes a two-step decode on a
+      single spark, compute-sanitizer clean.
+- [x] inference/llms/qwen_3_8 driver family (config.h / layer.cuh / bind.cu /
+      unity.cu): GDN + gated attention + routed FP8 MoE + shared expert,
+      three family-local kernels (per-head q/k RMSNorm, gated head norm,
+      shared-expert gate add); nvcc compile-checked and the layer-kinds gate
+      lists it green.
+- [x] TP4xPP4 deployment configs: examples/deployments/qwen38_fp8_tp4_pp4_
+      {host_rdma.spec,stage}.json (port block 22480/66620, revision
+      d2dc3565, ctx 262144) and examples/release/qwen38_tp4_pp4_b1_template/.
 - [ ] Torch/HF reference harness + validation gate; exact end-to-end run.
+- [ ] TP4 rank-local packs (the packer slices column-parallel inputs and
+      shards the hidden dimension per rank; the module dispatches the
+      rank-local view). Today the pack is whole-stage; a 16-rank run needs
+      four rank-local packs per stage.
+
+Single-spark validation done (no ring needed): pack-load test and the
+module execute test both pass on the real FP8 pack; the full TP4xPP4
+end-to-end run waits for a fleet window. Build recipe:
+`make archive REPOSITORY_ROOT=/home/spark4/sparkpipe-qwen38` in
+modules/qwen38_resident_decode_stage, then link
+tests/test_qwen38_execute.c against libqwen38_resident_decode_stage.a
+with -lcudart -lcuda -lstdc++ -lpthread -lm. The test runs
+`test_qwen38_execute PACK` and expects execute[0]/execute[1] status 0.
 
 ## Packer plan
 
