@@ -996,6 +996,7 @@ static int SparkQwen36ValModuleExecute(SparkQwen36ValModule *module, uint32_t pr
 	module->context.hidden_output_transport_session = (SparkHiddenTransportSession *)&module->capture;
 	module->context.hidden_output_send_function = SparkQwen36ValCaptureSend;
 	module->frame.program_id = 1u;
+	module->frame.tokens_per_sequence = 1u;
 	module->frame.request_id = 1u;
 	module->frame.sequence_id = module->sequence_ids[0];
 	module->frame.sequence_position = module->positions[0];

@@ -53,15 +53,15 @@
 #endif
 
 #define SPARK_QWEN36_SERVING_ADAPTER_ID \
-	"spark.qwen36.serving-adapter.pp13.v1"
-#define SPARK_QWEN36_SERVING_MODEL_ID "Qwen/Qwen3.6-27B"
+	"spark.qwen36.serving-adapter.pp16.v1"
+#define SPARK_QWEN36_SERVING_MODEL_ID "Qwen/Qwen3.8-27B"
 #define SPARK_QWEN36_SERVING_DRIVER_MODEL_ID \
 	"alibaba.qwen3.6-27b.resident-decode-stage-firmware"
 #define SPARK_QWEN36_SERVING_STAGE_NAME "qwen36_resident_decode_stage"
 #define SPARK_QWEN36_SERVING_TARGET \
 	"cuda.sm121.qwen36.resident_decode_stage.bf16"
 #define SPARK_QWEN36_SERVING_PROGRAM_NAME "resident_decode"
-#define SPARK_QWEN36_SERVING_STAGE_COUNT 13u
+#define SPARK_QWEN36_SERVING_STAGE_COUNT 16u
 /* The owner's KV-limit decision: serving caps context at 8192 positions
  * until the long-context KV plan lands, far under the module's 256K admit
  * ceiling. The KV pool is sized from this cap, so a conforming deployment
@@ -199,7 +199,7 @@ static const SparkModelServingAdapterDescriptor SparkQwen36ServingDescriptor =
 	.model_revision = QWEN36_MODEL_REVISION,
 	.driver_program_name = SPARK_QWEN36_SERVING_PROGRAM_NAME,
 	.artifact_sha256 = QWEN36_CONTRACT_SHA256,
-	.stage_layer_counts = {5u,5u,5u,5u,5u,5u,5u,5u,5u,6u,5u,6u,2u},
+	.stage_layer_counts = {4u,4u,4u,4u,4u,4u,4u,4u,4u,4u,4u,4u,5u,5u,5u,1u},
 	.minimum_efficient_submission_row_count = 0u
 };
 
