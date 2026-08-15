@@ -39,6 +39,95 @@ static_assert(SPARK_DSV4_MODEL_HIDDEN_DIMENSION % SparkDsv4ExpertWeightFormat::k
 static_assert(SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION % SparkDsv4ExpertWeightFormat::kScaleGroup == 0u,
 	"DSV4 expert width must contain complete expert codec scale groups");
 
+static __global__ void SparkDsv4ExactBf16MirrorKernel(
+	const uint4 *source,uint4 *first_destination,uint64_t first_offset_words,
+	uint64_t first_word_count,uint4 *second_destination,
+	uint64_t second_offset_words,uint64_t second_word_count)
+{
+	uint4 *destination;
+	uint64_t offset_words,word_count,word_index;
+	if ( blockIdx.y == 0u )
+	{
+		destination = first_destination;
+		offset_words = first_offset_words;
+		word_count = first_word_count;
+	}
+	else
+	{
+		destination = second_destination;
+		offset_words = second_offset_words;
+		word_count = second_word_count;
+	}
+	word_index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	if ( word_index < word_count )
+		destination[word_index] = source[offset_words + word_index];
+}
+
+static cudaError_t SparkDsv4ExactBf16MirrorValidate(
+	const void *source,uint64_t source_bytes,
+	const SparkDsv4ExactBf16MirrorTarget *target)
+{
+	const SparkDsv4ExactBf16MirrorSpan *first,*second,*span;
+	uint32_t index;
+	if ( source == 0 || source_bytes == 0u || target == 0 ||
+		target->span_count == 0u || target->span_count >
+			SPARK_DSV4_EXACT_BF16_MIRROR_SPAN_COUNT || target->reserved0 != 0u ||
+		((uintptr_t)source & (sizeof(uint4) - 1u)) != 0u )
+		return(cudaErrorInvalidValue);
+	for (index=0u; index<target->span_count; index++)
+	{
+		span = &target->spans[index];
+		if ( span->destination_device == 0 || span->byte_count == 0u ||
+			((uintptr_t)span->destination_device & (sizeof(uint4) - 1u)) != 0u ||
+			(span->source_offset_bytes & (sizeof(uint4) - 1u)) != 0u ||
+			(span->byte_count & (sizeof(uint4) - 1u)) != 0u ||
+			span->source_offset_bytes > source_bytes || span->byte_count >
+				source_bytes - span->source_offset_bytes )
+			return(cudaErrorInvalidValue);
+	}
+	for (; index<SPARK_DSV4_EXACT_BF16_MIRROR_SPAN_COUNT; index++)
+		if ( target->spans[index].destination_device != 0 ||
+			target->spans[index].source_offset_bytes != 0u ||
+			target->spans[index].byte_count != 0u )
+			return(cudaErrorInvalidValue);
+	if ( target->span_count == 2u )
+	{
+		first = &target->spans[0];
+		second = &target->spans[1];
+		if ( first->source_offset_bytes < second->source_offset_bytes +
+				second->byte_count && second->source_offset_bytes <
+				first->source_offset_bytes + first->byte_count )
+			return(cudaErrorInvalidValue);
+	}
+	return(cudaSuccess);
+}
+
+extern "C" cudaError_t SparkDsv4LaunchExactBf16ProducerMirror(
+	cudaStream_t stream,const void *source,uint64_t source_bytes,
+	const SparkDsv4ExactBf16MirrorTarget *target)
+{
+	cudaError_t error;
+	uint64_t first_words,maximum_words,second_words;
+	error = SparkDsv4ExactBf16MirrorValidate(source,source_bytes,target);
+	if ( error != cudaSuccess || stream == 0 )
+		return(cudaErrorInvalidValue);
+	first_words = target->spans[0].byte_count / sizeof(uint4);
+	second_words = target->span_count == 2u ?
+		target->spans[1].byte_count / sizeof(uint4) : 0u;
+	maximum_words = first_words > second_words ? first_words : second_words;
+	SparkDsv4ExactBf16MirrorKernel<<<
+		dim3((uint32_t)((maximum_words + 255u) / 256u),target->span_count),
+		256u,0u,stream>>>((const uint4 *)source,
+		(uint4 *)target->spans[0].destination_device,
+		target->spans[0].source_offset_bytes / sizeof(uint4),first_words,
+		target->span_count == 2u ?
+			(uint4 *)target->spans[1].destination_device : 0,
+		target->span_count == 2u ?
+			target->spans[1].source_offset_bytes / sizeof(uint4) : 0u,
+		second_words);
+	return(cudaGetLastError());
+}
+
 static __device__ __forceinline__ uint32_t SparkDsv4OrderedHeadScore(float score)
 {
 	uint32_t bits;
@@ -116,6 +205,21 @@ static __global__ void SparkDsv4AccumU64MaxKernel(
 	element = blockIdx.x * blockDim.x + threadIdx.x;
 	if ( element < element_count && source[element] > destination[element] )
 		destination[element] = source[element];
+}
+
+static __global__ void SparkDsv4AccumU64MaxTp4Kernel(
+	uint64_t *destination,const uint64_t *rank0,const uint64_t *rank1,
+	const uint64_t *rank2,const uint64_t *rank3,uint32_t element_count)
+{
+	uint64_t maximum;
+	uint32_t element;
+	element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( element >= element_count )
+		return;
+	maximum = rank0[element] > rank1[element] ? rank0[element] : rank1[element];
+	maximum = maximum > rank2[element] ? maximum : rank2[element];
+	maximum = maximum > rank3[element] ? maximum : rank3[element];
+	destination[element] = maximum;
 }
 
 /*
@@ -2508,6 +2612,22 @@ extern "C" cudaError_t SparkDsv4LaunchAccumU64Max(cudaStream_t stream, uint64_t 
 		return(cudaErrorInvalidValue);
 	SparkDsv4AccumU64MaxKernel<<<(element_count + 255u) / 256u,256u,0u,
 		stream>>>(destination,source,element_count);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchAccumU64MaxTp4(
+	cudaStream_t stream,uint64_t *destination,
+	const uint64_t *const rank_devices[4],uint32_t tp_rank,
+	uint32_t element_count)
+{
+	if ( stream == 0 || destination == 0 || rank_devices == 0 ||
+		rank_devices[0] == 0 || rank_devices[1] == 0 ||
+		rank_devices[2] == 0 || rank_devices[3] == 0 || tp_rank >= 4u ||
+		element_count == 0u )
+		return(cudaErrorInvalidValue);
+	SparkDsv4AccumU64MaxTp4Kernel<<<(element_count + 255u) / 256u,256u,0u,
+		stream>>>(destination,rank_devices[0],rank_devices[1],rank_devices[2],
+		rank_devices[3],element_count);
 	return(cudaGetLastError());
 }
 

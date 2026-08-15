@@ -172,8 +172,7 @@ int main(void)
 		assert(adapter_state != 0);
 		assert(library.adapter_interface.snapshot(adapter_state,&snapshot) ==
 			SPARK_STATUS_OK);
-		assert(snapshot.kv_token_capacity ==
-			(rank / 4u < 3u ? 34u : 31u));
+		assert(snapshot.kv_token_capacity == 2u);
 		TestDsv4Tp4Pp4BuildSubmission(&submission,&lane,rank,&token_id,
 			&row_lane,&row_position,&row_sequence,hidden_input,hidden_output,
 			hidden_bytes);

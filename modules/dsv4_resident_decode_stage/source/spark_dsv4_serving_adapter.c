@@ -598,7 +598,7 @@ static SparkStatus SparkDsv4ServingLoadTpGraphCounts(
 			SparkJsonGetUInt32(document,element,&value);
 		descriptor_index = SPARK_DSV4_SERVING_HYBRID != 0u ?
 			index * SPARK_DSV4_SERVING_TP_DEGREE : 0u;
-		expected = SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(
+		expected = SparkDsv4ResidentDecodeStageTpProgramGraphsPerSlot(
 			SparkDsv4ServingDescriptor.stage_layer_counts[descriptor_index]);
 		if ( status != SPARK_STATUS_OK || expected == 0u || value != expected )
 			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
