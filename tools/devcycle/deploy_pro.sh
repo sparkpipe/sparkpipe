@@ -38,7 +38,10 @@ for host in "${HOSTS[@]}"; do
     root="/home/${host}/sparkdata/${RUNTIME_DIR_NAME}"
     ssh -o BatchMode=yes "${host}" "mkdir -p ${root}/bin ${root}/lib ${root}/config ${root}/kv ${root}/packs" || exit 1
     scp -q -o BatchMode=yes /tmp/pro-deploy/sparkpipe_model_residentd /tmp/pro-deploy/sparkpipe_model_batch "${host}:${root}/bin/" || exit 1
-    scp -q -o BatchMode=yes /tmp/pro-deploy/model_driver.so /tmp/pro-deploy/model_serving_adapter.so /tmp/pro-deploy/hidden_transport.so "${host}:${root}/lib/" || exit 1
+    scp -q -o BatchMode=yes /tmp/pro-deploy/model_driver.so "${host}:${root}/lib/" || exit 1
+    scp -q -o BatchMode=yes /tmp/pro-deploy/model_serving_adapter.so "${host}:${root}/lib/libdsv4_pro_tp4_pp4_serving_adapter.so" || exit 1
+    scp -q -o BatchMode=yes /tmp/pro-deploy/hidden_transport.so "${host}:${root}/lib/libhidden_transport_spark_host_rdma_verbs.so" || exit 1
+    ssh -o BatchMode=yes "${host}" "mkdir -p /home/${host}/kvcache/dsv4_pro/tp4pp4.bf16" || exit 1
     scp -q -o BatchMode=yes /tmp/pro-deploy/model_resident.json /tmp/pro-deploy/dsv4_pro_tp4_pp4_stage.json "${host}:${root}/config/" || exit 1
     if [[ $SKIP_PACKS == 0 ]]; then
         scp -q -o BatchMode=yes "${BUILD_HOST}:/home/sparkb/sparkdata/dsv4_pro.tp4_pp4.ranks/dsv4_pro.tp4_pp4.rank$(printf '%02d' $rank).spstage" \

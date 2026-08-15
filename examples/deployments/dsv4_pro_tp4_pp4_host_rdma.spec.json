@@ -28,6 +28,24 @@
       "spark8", "spark9", "sparka", "sparkb",
       "sparkc", "sparkd", "sparke", "sparkf"
     ],
+    "transport_hosts": [
+      "spark0-200g",
+      "spark1-200g",
+      "spark2-200g",
+      "spark3-200g",
+      "spark4-200g",
+      "spark5-200g",
+      "spark6-200g",
+      "spark7-200g",
+      "spark8-200g",
+      "spark9-200g",
+      "sparka-200g",
+      "sparkb-200g",
+      "sparkc-200g",
+      "sparkd-200g",
+      "sparke-200g",
+      "sparkf-200g"
+    ],
     "stage_indices": [
       0, 1, 2, 3, 4, 5, 6, 7,
       8, 9, 10, 11, 12, 13, 14, 15

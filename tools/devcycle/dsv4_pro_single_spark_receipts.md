@@ -82,6 +82,39 @@ regeneration == shipped bytes (2be8aa0a... full-hash match); the loop runs
 through ranks 1-15 in the background. The sharder on sparkb is byte-identical
 to the worktree version (md5 2f9517ad4f8531f85cb1712922b47df9).
 
+## Single-rank residentd boot test (round 7, sparkb rank 11)
+
+The real residentd path (not the validator) was booted solo on sparkb against
+the production deployment. Three blockers were found and fixed; the boot now
+reaches the peer-connect stage and exits cleanly (busy) only because the
+other 15 ranks are absent:
+
+1. **Lib names**: config expected lib/libdsv4_pro_tp4_pp4_serving_adapter.so
+   and lib/libhidden_transport_spark_host_rdma_verbs.so; deploy had shipped
+   generic names. Renamed on all 16 hosts + deploy_pro.sh fixed.
+2. **Stale adapter stage-layer table**: SPARK_DSV4_SERVING_STAGE_LAYERS was
+   {11x12, 10x4} (172-layer leftovers); the runtime descriptor check
+   (per-TP-group counts must sum to layer_count=61) rejected the adapter with
+   invalid_argument. Fixed to {16x4, 15x12} — matches TpDeriveLayerSlice
+   (16/15/15/15) and the stage JSON graph counts [49,46,46,46] (3L+1).
+   Adapter rebuilt + shipped to all 16 hosts.
+3. **RDMA local identity**: the host-rdma transport resolves transport_host
+   for local GID discovery; "sparkN" resolves to the mgmt IP first (no GID on
+   any 100G port). Added topology.transport_hosts to the spec + generator;
+   nodes now use sparkN-200g (10.10.100.x, the 100G RoCEv2 port) while the
+   control endpoint stays on the mgmt name. Config regenerated + deployed.
+
+Boot log milestones (all passed):
+adapter_load -> deployment_validation -> runtime_limits -> transport_contract
+-> rank_plan -> transport_load -> transport_open ->
+`hidden_spark_rdma_fabric_ready local_host=sparkb-200g device=rocep1s0f1
+port=1 gid_index=3` -> boundary connect to rank 7 (absent) -> busy timeout
+(120 s) -> clean exit.
+
+KV backing dirs (/home/{host}/kvcache/dsv4_pro/tp4pp4.bf16) created on all 16
+hosts (were missing); preflight now checks adapter/transport libs + KV dirs.
+Preflight after fixes: 16/16 ready.
+
 ## What is still untested until the ring reservation
 
 - 16-rank TP4xPP4 live decode (fleet_swap dsv4pro + model_stream_decode_benchmark).
