@@ -49,7 +49,8 @@ PAYLOAD_F32 = 2
 PAYLOAD_U32 = 3
 PAYLOAD_PACKED_WEIGHT = 4
 
-CODEC_BF16 = 0
+CODEC_BF16 = 1
+CODEC_NONE = 0
 CODEC_FP8 = 5
 SCALE_NONE = 0
 SCALE_F32 = 1
@@ -221,7 +222,7 @@ class Packer:
             tensor = tensor.unsqueeze(0)
         tensor = tensor.to(torch.float32)
         rows, cols = tensor.shape
-        entry = Entry(kind, layer, PAYLOAD_F32, CODEC_BF16, SCALE_NONE,
+        entry = Entry(kind, layer, PAYLOAD_F32, CODEC_NONE, SCALE_NONE,
                       1, rows, cols)
         payload_bytes = rows * cols * 4
         blob = to_bytes(tensor)
