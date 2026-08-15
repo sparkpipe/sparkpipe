@@ -115,6 +115,28 @@ KV backing dirs (/home/{host}/kvcache/dsv4_pro/tp4pp4.bf16) created on all 16
 hosts (were missing); preflight now checks adapter/transport libs + KV dirs.
 Preflight after fixes: 16/16 ready.
 
+## 16-host fabric sweep (round 8)
+
+tools/devcycle/fabric_probe_pro.sh (run with the spark alias) on all 16 hosts:
+
+- Every host has exactly 2 active verbs ports with the expected GIDs:
+  ::ffff:10.10.200.{rank} (200G rail) and ::ffff:10.10.100.{10+rank}
+  (100G ring). The second 200G NIC pair (roceP2p1*) is DOWN fleet-wide —
+  the rails in the stage JSON only reference the UP ports, so this matches
+  the topology.
+- Control/collective ports (20480, 64620-64635) free on all 16 hosts.
+- Alias gap found and fixed: sparkN-200g was missing on sparkd/e/f (their
+  hosts files only carry sparkN-fabric). transport_hosts switched to
+  sparkN-fabric, which resolves to exactly one 10.10.100.x address on all
+  16 hosts. Config regenerated (sha256
+  0c7103acc7ab59b872bef10db450711c4ca4fb94d81d6017efcccab36c38780b) and
+  redeployed; boot-tested on sparkb (0-c host) and sparkf (d-f host) - both
+  reach hidden_spark_rdma_fabric_ready.
+- Rails in the stage JSON: rail 0 = 10.10.200.0-15 (paired 200G links, used
+  by split-ring step 0), rail 1 = 10.10.100.10-25 (all-to-all 100G /24,
+  steps 1-2); step_rail_indices [0,1,1]; rail_count=2 satisfies the
+  counter-rotating split-ring validation.
+
 ## What is still untested until the ring reservation
 
 - 16-rank TP4xPP4 live decode (fleet_swap dsv4pro + model_stream_decode_benchmark).
