@@ -5,6 +5,7 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_k3_serving_adapter.h"
+#include "inference/llms/kimi_k3/layer.cuh"
 
 typedef struct SparkK3ServingState
 {
@@ -70,7 +71,9 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 		configuration->runtime_limits.resident_sequence_capacity);
 	state->runner_config.kv_pages_per_sequence =
 		K3ServingJsonU32(&doc, root, "kv_pages", 2u);
-	state->runner_config.kv_page_bytes = 0u;
+	/* The MLA cache page: the K3 latent KV geometry's page bytes (the
+	 * runner rejects zero). */
+	state->runner_config.kv_page_bytes = K3GlobalKv::kPageBytes;
 	state->runner_config.rank_pack_path = state->pack_path;
 	state->runner_config.execution_stream = configuration->execution_stream;
 	state->runner_config.multiprocessors = 48u;
