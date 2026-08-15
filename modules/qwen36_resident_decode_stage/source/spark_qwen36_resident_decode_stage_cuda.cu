@@ -1311,9 +1311,167 @@ extern "C" cudaError_t SparkQwen36LaunchRmsNorm(cudaStream_t stream, const void 
     SparkLmRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, shared_memory_bytes, stream>>>(input_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
     return cudaGetLastError();
 }
+/*
+ * Small-batch dense linear for the decode microbatch (B1..B8): weights
+ * stream from HBM exactly once per projection instead of once per row (the
+ * library scalar path re-reads the whole strip for every row).
+ *
+ * The arithmetic is BIT-IDENTICAL to the library dense scalar path
+ * (SparkLmDotRowBf16 + SparkLmWarpReduceSum): each lane accumulates the
+ * k-pairs at warp stride 32 in ascending order, the warp sums the lane
+ * partials with the same shfl-down tree, and lane 0 rounds to bf16 with
+ * __float2bfloat16. The 128-wide k-chunk only tiles the memory traffic;
+ * because a chunk covers exactly 64 pairs the per-lane pair sequence
+ * (l, l+32, l+64, ...) continues across chunk boundaries in the same order
+ * as the library's single full-length pass, so every fp32 add happens in
+ * the identical order and the outputs match the library bit for bit.
+ *
+ * Row-specialized so every warp does useful work:
+ *  - rows == 1: lean kernel, no shared staging or barriers, 16 warps x 4
+ *    neurons per 64-neuron tile, weights read straight from L2 once.
+ *  - rows <= 2/4/8: tiled kernel, 64x128 weight chunk staged to shared and
+ *    shared by all rows; warp w owns row (w & (ROWS-1)) and
+ *    64 / (32 / ROWS) neurons. Row counts 3 and 5..7 ride the next
+ *    power-of-two template with a store guard.
+ */
+#define SPARK_QWEN36_SMALL_BATCH_MAX_ROWS 8u
+#define SPARK_QWEN36_SMALL_BATCH_TILE_N 64u
+#define SPARK_QWEN36_SMALL_BATCH_K_CHUNK 128u
+
+static __global__ void SparkQwen36SmallBatchLean1Kernel(const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
+{
+	const uint32_t neuron_base = blockIdx.x * SPARK_QWEN36_SMALL_BATCH_TILE_N;
+	const uint32_t warp = threadIdx.x >> 5u;
+	const uint32_t lane = threadIdx.x & 31u;
+	uint32_t k_base, p;
+	float value, x0, x1;
+	float acc[4];
+	#pragma unroll
+	for (p = 0u; p < 4u; p++)
+		acc[p] = 0.0f;
+	for (k_base = 0u; k_base < input_dimension; k_base += SPARK_QWEN36_SMALL_BATCH_K_CHUNK)
+	{
+		const uint32_t pair0 = k_base >> 1u;
+		/* input pairs at chunk-local pair indices l and l+32 */
+		const uint32_t in_a = __ldg(((const uint32_t *)input_bf16) + pair0 + lane);
+		const uint32_t in_b = __ldg(((const uint32_t *)input_bf16) + pair0 + 32u + lane);
+		x0 = __bfloat162float(*(const __nv_bfloat16 *)&in_a);
+		x1 = __bfloat162float(*((const __nv_bfloat16 *)&in_a + 1));
+		#pragma unroll
+		for (p = 0u; p < 4u; p++)
+		{
+			const uint64_t row = ((uint64_t)(neuron_base + (warp << 2u) + p) * input_dimension);
+			const uint32_t wa = __ldg(((const uint32_t *)weight_bf16) + ((row + k_base) >> 1u) + lane);
+			const uint32_t wb = __ldg(((const uint32_t *)weight_bf16) + ((row + k_base) >> 1u) + 32u + lane);
+			acc[p] = fmaf(x0, __bfloat162float(*(const __nv_bfloat16 *)&wa), acc[p]);
+			acc[p] = fmaf(x1, __bfloat162float(*((const __nv_bfloat16 *)&wa + 1)), acc[p]);
+			acc[p] = fmaf(__bfloat162float(*(const __nv_bfloat16 *)&in_b), __bfloat162float(*(const __nv_bfloat16 *)&wb), acc[p]);
+			acc[p] = fmaf(__bfloat162float(*((const __nv_bfloat16 *)&in_b + 1)), __bfloat162float(*((const __nv_bfloat16 *)&wb + 1)), acc[p]);
+		}
+	}
+	#pragma unroll
+	for (p = 0u; p < 4u; p++)
+	{
+		const uint32_t neuron = neuron_base + (warp << 2u) + p;
+		value = acc[p];
+		value += __shfl_down_sync(0xffffffffu, value, 16u);
+		value += __shfl_down_sync(0xffffffffu, value, 8u);
+		value += __shfl_down_sync(0xffffffffu, value, 4u);
+		value += __shfl_down_sync(0xffffffffu, value, 2u);
+		value += __shfl_down_sync(0xffffffffu, value, 1u);
+		if ( lane == 0u && neuron < output_dimension )
+			SparkLmFloatToBf16(output_bf16, neuron, value);
+	}
+}
+
+template <uint32_t ROWS>
+static __global__ void SparkQwen36SmallBatchTiledKernel(const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	extern __shared__ __nv_bfloat16 tile[];
+	__nv_bfloat16 *weight_tile = tile;
+	__nv_bfloat16 *input_tile = tile + (SPARK_QWEN36_SMALL_BATCH_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK);
+	const uint32_t GROUP_SHIFT = (ROWS == 2u) ? 1u : ((ROWS == 4u) ? 2u : 3u);
+	const uint32_t GROUPS = 32u >> GROUP_SHIFT;
+	const uint32_t PER_GROUP = SPARK_QWEN36_SMALL_BATCH_TILE_N / GROUPS;
+	const uint32_t neuron_base = blockIdx.x * SPARK_QWEN36_SMALL_BATCH_TILE_N;
+	const uint32_t thread = threadIdx.x;
+	const uint32_t warp = thread >> 5u;
+	const uint32_t lane = thread & 31u;
+	const uint32_t row = warp & (ROWS - 1u);
+	uint32_t k_base, neuron, p;
+	float value;
+	float acc[PER_GROUP];
+	#pragma unroll
+	for (p = 0u; p < PER_GROUP; p++)
+		acc[p] = 0.0f;
+	for (k_base = 0u; k_base < input_dimension; k_base += SPARK_QWEN36_SMALL_BATCH_K_CHUNK)
+	{
+		/* 64x128 weight tile: one uint4 (8 bf16) per thread. */
+		((uint4 *)weight_tile)[thread] = __ldg(((const uint4 *)weight_bf16) + ((((uint64_t)(neuron_base + (thread >> 4u)) * input_dimension) + k_base) >> 3u) + (thread & 15u));
+		/* 8x128 input tile: threads 0..127; pad rows past row_count with zero. */
+		if ( thread < 128u && (thread >> 4u) < row_count )
+			((uint4 *)input_tile)[thread] = __ldg(((const uint4 *)input_bf16) + ((((uint64_t)(thread >> 4u) * input_dimension) + k_base) >> 3u) + (thread & 15u));
+		else if ( thread < 128u )
+			((uint4 *)input_tile)[thread] = make_uint4(0u, 0u, 0u, 0u);
+		__syncthreads();
+		/*
+		 * Lane l covers chunk-local pairs l and l+32 (k = 2l, 2l+1 and
+		 * 2l+64, 2l+65), matching SparkLmDotRowBf16's stride-32 pair loop.
+		 */
+		#pragma unroll
+		for (p = 0u; p < PER_GROUP; p++)
+		{
+			neuron = ((warp >> GROUP_SHIFT) * PER_GROUP) + p;
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + (lane << 1u)]), __bfloat162float(input_tile[(row << 7u) + (lane << 1u)]), acc[p]);
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + (lane << 1u) + 1u]), __bfloat162float(input_tile[(row << 7u) + (lane << 1u) + 1u]), acc[p]);
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + 64u + (lane << 1u)]), __bfloat162float(input_tile[(row << 7u) + 64u + (lane << 1u)]), acc[p]);
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + 64u + (lane << 1u) + 1u]), __bfloat162float(input_tile[(row << 7u) + 64u + (lane << 1u) + 1u]), acc[p]);
+		}
+		__syncthreads();
+	}
+	/*
+	 * Same reduction tree as SparkLmWarpReduceSum, then the library's
+	 * round-to-nearest bf16 store.
+	 */
+	#pragma unroll
+	for (p = 0u; p < PER_GROUP; p++)
+	{
+		neuron = ((warp >> GROUP_SHIFT) * PER_GROUP) + p;
+		value = acc[p];
+		value += __shfl_down_sync(0xffffffffu, value, 16u);
+		value += __shfl_down_sync(0xffffffffu, value, 8u);
+		value += __shfl_down_sync(0xffffffffu, value, 4u);
+		value += __shfl_down_sync(0xffffffffu, value, 2u);
+		value += __shfl_down_sync(0xffffffffu, value, 1u);
+		if ( lane == 0u && row < row_count && neuron_base + neuron < output_dimension )
+			SparkLmFloatToBf16(output_bf16, ((uint64_t)row * output_dimension) + neuron_base + neuron, value);
+	}
+}
+
+extern "C" cudaError_t SparkQwen36LaunchSmallBatchLinear(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	uint32_t blocks = (output_dimension + SPARK_QWEN36_SMALL_BATCH_TILE_N - 1u) / SPARK_QWEN36_SMALL_BATCH_TILE_N;
+	size_t shared_bytes = (size_t)(SPARK_QWEN36_SMALL_BATCH_TILE_N + SPARK_QWEN36_SMALL_BATCH_MAX_ROWS) * SPARK_QWEN36_SMALL_BATCH_K_CHUNK * sizeof(__nv_bfloat16);
+	if ( row_count == 1u )
+		SparkQwen36SmallBatchLean1Kernel<<<blocks, 512u, 0u, stream>>>(weight_bf16, input_bf16, output_bf16, input_dimension, output_dimension);
+	else if ( row_count <= 2u )
+		SparkQwen36SmallBatchTiledKernel<2u><<<blocks, 1024u, shared_bytes, stream>>>(weight_bf16, input_bf16, output_bf16, row_count, input_dimension, output_dimension);
+	else if ( row_count <= 4u )
+		SparkQwen36SmallBatchTiledKernel<4u><<<blocks, 1024u, shared_bytes, stream>>>(weight_bf16, input_bf16, output_bf16, row_count, input_dimension, output_dimension);
+	else
+		SparkQwen36SmallBatchTiledKernel<8u><<<blocks, 1024u, shared_bytes, stream>>>(weight_bf16, input_bf16, output_bf16, row_count, input_dimension, output_dimension);
+	return(cudaGetLastError());
+}
 
 extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQwen36LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
+	const char *gate = getenv("SPARK_QWEN36_SMALL_BATCH_GEMM");
+	if ( (gate == 0 || strcmp(gate, "0") != 0) &&
+		view->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
+		row_count != 0u && row_count <= SPARK_QWEN36_SMALL_BATCH_MAX_ROWS &&
+		(view->input_dimension % SPARK_QWEN36_SMALL_BATCH_K_CHUNK) == 0u &&
+		(view->output_dimension % SPARK_QWEN36_SMALL_BATCH_TILE_N) == 0u )
+		return(SparkQwen36LaunchSmallBatchLinear(stream,view->weight_payload,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 }
 

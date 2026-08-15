@@ -74,12 +74,72 @@ static void SparkQwen36TpPendingCompletion(void *context, const SparkTpDeviceCol
 	atomic_store_explicit(&pending->done,1u,memory_order_release);
 }
 
-static SparkStatus SparkQwen36TpSubmit(SparkQwen36TpState *tp, void *buffer, uint32_t count, void *cuda_stream, uint32_t u64_max)
+/*
+ * Pipelined bf16 submit: stream ordering makes the reduction a pure
+ * producer/consumer edge between the kernel that wrote the buffer and the
+ * kernels that read it, so the host does not have to observe completion
+ * before launching the consuming layer. The pending pool has one cell per
+ * transport credit; before reusing a cell the submitter waits for the
+ * operation that owns it, which is exactly the credit back-pressure the
+ * transport needs. Deferred completion statuses surface on the next submit
+ * or at SparkQwen36TpDrain.
+ */
+static SparkStatus SparkQwen36TpSubmitBf16(SparkQwen36TpState *tp, void *buffer, uint32_t count, void *cuda_stream)
+{
+	SparkTpDeviceCollectiveSubmission submission;
+	SparkQwen36TpPending *pending;
+	SparkStatus status;
+	uint32_t slot,spin;
+	if ( tp->deferred_status != SPARK_STATUS_OK )
+		return (SparkStatus)tp->deferred_status;
+	slot = tp->reduce_sequence % tp->credit_count;
+	tp->reduce_sequence++;
+	pending = &tp->pending_pool[slot];
+	spin = 0u;
+	while ( atomic_load_explicit(&pending->done,memory_order_acquire) == 0u )
+	{
+		if ( (spin & 0x3Fu) == 0u )
+			sched_yield();
+		spin++;
+	}
+	if ( pending->status != SPARK_STATUS_OK )
+		tp->deferred_status = pending->status;
+	atomic_store_explicit(&pending->done,0u,memory_order_release);
+	pending->status = (uint32_t)SPARK_STATUS_OK;
+	memset(&submission, 0, sizeof(submission));
+	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	submission.descriptor_bytes = sizeof(submission);
+	submission.slot_index = 0u;
+	submission.active_sequence_count = count;
+	submission.flags =
+		SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+	submission.ordinal = tp->next_ordinal++;
+	submission.local_device = buffer;
+	submission.full_device = buffer;
+	submission.cuda_stream = cuda_stream;
+	submission.completion_function = SparkQwen36TpPendingCompletion;
+	submission.completion_context = pending;
+	status = SparkTpDeviceCollectiveSubmitBf16(&tp->collective,&submission);
+	if ( status != SPARK_STATUS_OK )
+	{
+		/* The cell will never complete: release it and remember the failure
+		 * so the next submit or drain reports it instead of hanging. */
+		pending->status = (uint32_t)status;
+		atomic_store_explicit(&pending->done,1u,memory_order_release);
+		tp->deferred_status = status;
+	}
+	return status;
+}
+
+/* The head maxloc reduce feeds a host-side read, so it stays synchronous. */
+static SparkStatus SparkQwen36TpSubmitU64Max(SparkQwen36TpState *tp, uint64_t *buffer, uint32_t count, void *cuda_stream)
 {
 	SparkTpDeviceCollectiveSubmission submission;
 	SparkQwen36TpPending pending;
 	SparkStatus status;
 	uint32_t spin;
+	if ( tp->deferred_status != SPARK_STATUS_OK )
+		return (SparkStatus)tp->deferred_status;
 	atomic_init(&pending.done,0u);
 	pending.status = (uint32_t)SPARK_STATUS_OK;
 	memset(&submission, 0, sizeof(submission));
@@ -95,12 +155,9 @@ static SparkStatus SparkQwen36TpSubmit(SparkQwen36TpState *tp, void *buffer, uin
 	submission.cuda_stream = cuda_stream;
 	submission.completion_function = SparkQwen36TpPendingCompletion;
 	submission.completion_context = &pending;
-	status = u64_max != 0u ? SparkTpDeviceCollectiveSubmitU64Max(&tp->collective,&submission) : SparkTpDeviceCollectiveSubmitBf16(&tp->collective,&submission);
+	status = SparkTpDeviceCollectiveSubmitU64Max(&tp->collective,&submission);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	/* Wait for the stream-ordered completion: the NCCL backend publishes at
-	 * submit time; the transport backend publishes once the reduction is
-	 * folded and the consumer stream is ordered after it. */
 	spin = 0u;
 	while ( atomic_load_explicit(&pending.done,memory_order_acquire) == 0u )
 	{
@@ -109,6 +166,34 @@ static SparkStatus SparkQwen36TpSubmit(SparkQwen36TpState *tp, void *buffer, uin
 		spin++;
 	}
 	return (SparkStatus)pending.status;
+}
+
+/* Observe every outstanding pipelined reduction and surface any deferred
+ * completion status. Called once at the end of a frame, after the blocking
+ * head reduce has already drained the stream, so it spins at most a few
+ * cycles in the healthy case. */
+SparkStatus SparkQwen36TpDrain(SparkQwen36TpState *tp)
+{
+	uint32_t index,spin;
+	if ( tp == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( tp->deferred_status != SPARK_STATUS_OK )
+		return (SparkStatus)tp->deferred_status;
+	if ( tp->degree <= 1u || tp->initialized == 0u || tp->pending_pool == 0 )
+		return SPARK_STATUS_OK;
+	for (index = 0u; index < tp->credit_count; index++)
+	{
+		spin = 0u;
+		while ( atomic_load_explicit(&tp->pending_pool[index].done,memory_order_acquire) == 0u )
+		{
+			if ( (spin & 0x3Fu) == 0u )
+				sched_yield();
+			spin++;
+		}
+		if ( tp->pending_pool[index].status != SPARK_STATUS_OK )
+			tp->deferred_status = tp->pending_pool[index].status;
+	}
+	return (SparkStatus)tp->deferred_status;
 }
 
 SparkStatus SparkQwen36TpInitialize(
@@ -326,6 +411,19 @@ SparkStatus SparkQwen36TpInitialize(
 		configuration.step_rail_indices[0], configuration.step_rail_indices[1],
 		configuration.step_rail_indices[2], configuration.local_host,
 		configuration.rank_hosts[0], configuration.credit_binding_count);
+	tp->credit_count = configuration.credit_count;
+	tp->pending_pool = (SparkQwen36TpPending *)malloc(
+		(uint64_t)tp->credit_count * sizeof(SparkQwen36TpPending));
+	if ( tp->pending_pool == 0 )
+	{
+		free((void *)configuration.credit_bindings);
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	for (index = 0u; index < tp->credit_count; index++)
+	{
+		atomic_init(&tp->pending_pool[index].done,1u);
+		tp->pending_pool[index].status = (uint32_t)SPARK_STATUS_OK;
+	}
 	status = SparkTpDeviceCollectiveCreate(&configuration, &tp->collective);
 	free((void *)configuration.credit_bindings);
 	if ( status != SPARK_STATUS_OK )
@@ -350,6 +448,9 @@ void SparkQwen36TpDestroy(SparkQwen36TpState *tp)
 		return;
 	if ( tp->initialized != 0u )
 		(void)SparkTpDeviceCollectiveDestroy(&tp->collective);
+	if ( tp->pending_pool != 0 )
+		free(tp->pending_pool);
+	tp->pending_pool = 0;
 	if ( tp->credit_send_bf16 != 0 && tp->host_credit_send_bf16 == 0 )
 		(void)cudaFree(tp->credit_send_bf16);
 	if ( tp->credit_receive_bf16 != 0 && tp->host_credit_receive_bf16 == 0 )
@@ -373,7 +474,7 @@ SparkStatus SparkQwen36TpReduceHidden(
 		return SPARK_STATUS_OK;
 	if ( rows > tp->collective.max_active_sequence_count )
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	return SparkQwen36TpSubmit(tp,buffer,rows,cuda_stream,0u);
+	return SparkQwen36TpSubmitBf16(tp,buffer,rows,cuda_stream);
 }
 
 SparkStatus SparkQwen36TpReduceU64Max(
@@ -386,5 +487,5 @@ SparkStatus SparkQwen36TpReduceU64Max(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ( tp->degree <= 1u || tp->initialized == 0u )
 		return SPARK_STATUS_OK;
-	return SparkQwen36TpSubmit(tp,buffer,count,cuda_stream,1u);
+	return SparkQwen36TpSubmitU64Max(tp,buffer,count,cuda_stream);
 }
