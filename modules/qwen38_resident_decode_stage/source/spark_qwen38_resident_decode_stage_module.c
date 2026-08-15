@@ -192,10 +192,10 @@ static SparkStatus SparkQwen38ModuleValidateEntry(SparkQwen38ModuleState *state,
 	 * arrive BF16 (synthesized test packs); anything else fails. */
 	if ( entry->weight_format != shape.natural_format )
 	{
-		if ( shape.natural_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || entry->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+		if ( (shape.natural_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 && shape.natural_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128) || entry->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
 			return(SPARK_STATUS_VALIDATION_FAILED);
 	}
-	if ( entry->weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ? entry->scale_group_size != SPARK_QWEN38_MODEL_MXFP4_GROUP_SIZE : entry->scale_group_size != 0u )
+	if ( entry->weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ? entry->scale_group_size != SPARK_QWEN38_MODEL_MXFP4_GROUP_SIZE : (entry->weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ? entry->scale_group_size != 128u : entry->scale_group_size != 0u) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if ( entry->payload_bytes != SparkQwen38StagePackPayloadBytes(entry->weight_format,entry->rows,entry->columns) || entry->scale_bytes != SparkQwen38StagePackScaleBytes(entry->weight_format,entry->rows,entry->columns) )
 		return(SPARK_STATUS_VALIDATION_FAILED);

@@ -277,12 +277,12 @@ static inline int32_t SparkQwen38StagePackShapeEveryLayer(uint32_t tensor_kind, 
 	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_W3:
 		shape->rows = SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
 		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		shape->natural_format = SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1;
+		shape->natural_format = SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128;
 		return(0);
 	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_DOWN:
 		shape->rows = SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
 		shape->columns = SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
-		shape->natural_format = SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1;
+		shape->natural_format = SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128;
 		return(0);
 	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_SHARED_GATE:
 	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_SHARED_UP:
@@ -415,6 +415,8 @@ static inline uint64_t SparkQwen38StagePackPayloadBytes(uint32_t weight_format, 
 	uint64_t elements = (uint64_t)rows * (uint64_t)columns;
 	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
 		return(elements / 2u);
+	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+		return(elements);
 	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 || weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U32 )
 		return(elements * 4u);
 	return(elements * (uint64_t)SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES);
@@ -424,5 +426,7 @@ static inline uint64_t SparkQwen38StagePackScaleBytes(uint32_t weight_format, ui
 {
 	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
 		return(((uint64_t)rows * (uint64_t)columns) / SPARK_QWEN38_MODEL_MXFP4_GROUP_SIZE);
+	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+		return(((uint64_t)rows / 128u) * ((uint64_t)columns / 128u) * 4u);
 	return(0u);
 }

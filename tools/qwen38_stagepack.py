@@ -57,6 +57,7 @@ PAYLOAD_ALIGNMENT = 256
 
 WEIGHT_BF16 = 0
 WEIGHT_F32 = 1
+WEIGHT_FP8_F32B128 = 4
 WEIGHT_MXFP4_E2M1 = 7
 
 HIDDEN = 8192
@@ -139,9 +140,9 @@ def kind_shape(kind: int) -> tuple[int, int, int]:
         KIND_ATTENTION_NORM: (1, HIDDEN, WEIGHT_BF16),
         KIND_MLP_NORM: (1, HIDDEN, WEIGHT_BF16),
         KIND_MOE_GATE: (EXPERT_COUNT, HIDDEN, WEIGHT_BF16),
-        KIND_MOE_W1: (EXPERT_COUNT * EXPERT_INTERMEDIATE, HIDDEN, WEIGHT_MXFP4_E2M1),
-        KIND_MOE_W3: (EXPERT_COUNT * EXPERT_INTERMEDIATE, HIDDEN, WEIGHT_MXFP4_E2M1),
-        KIND_MOE_DOWN: (EXPERT_COUNT * HIDDEN, EXPERT_INTERMEDIATE, WEIGHT_MXFP4_E2M1),
+        KIND_MOE_W1: (EXPERT_COUNT * EXPERT_INTERMEDIATE, HIDDEN, WEIGHT_FP8_F32B128),
+        KIND_MOE_W3: (EXPERT_COUNT * EXPERT_INTERMEDIATE, HIDDEN, WEIGHT_FP8_F32B128),
+        KIND_MOE_DOWN: (EXPERT_COUNT * HIDDEN, EXPERT_INTERMEDIATE, WEIGHT_FP8_F32B128),
         KIND_MOE_SHARED_GATE: (EXPERT_INTERMEDIATE, HIDDEN, WEIGHT_BF16),
         KIND_MOE_SHARED_UP: (EXPERT_INTERMEDIATE, HIDDEN, WEIGHT_BF16),
         KIND_MOE_SHARED_DOWN: (HIDDEN, EXPERT_INTERMEDIATE, WEIGHT_BF16),
@@ -194,9 +195,9 @@ def layer_tensor_name(kind: int, layer: int) -> str:
         KIND_ATTENTION_NORM: "input_layernorm.weight",
         KIND_MLP_NORM: "post_attention_layernorm.weight",
         KIND_MOE_GATE: "mlp.gate.weight",
-        KIND_MOE_W1: "mlp.experts.gate_up_proj",
-        KIND_MOE_W3: "mlp.experts.gate_up_proj",
-        KIND_MOE_DOWN: "mlp.experts.down_proj",
+        KIND_MOE_W1: "mlp.experts.{e}.gate_proj.weight",
+        KIND_MOE_W3: "mlp.experts.{e}.up_proj.weight",
+        KIND_MOE_DOWN: "mlp.experts.{e}.down_proj.weight",
         KIND_MOE_SHARED_GATE: "mlp.shared_expert.gate_proj.weight",
         KIND_MOE_SHARED_UP: "mlp.shared_expert.up_proj.weight",
         KIND_MOE_SHARED_DOWN: "mlp.shared_expert.down_proj.weight",
@@ -343,6 +344,17 @@ class SafetensorsSource:
         return shard, meta, self.data_start[shard] + meta["data_offsets"][0]
 
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
+        if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
+            # per-expert FP8 tensors: validate expert 0 and the scale companion
+            expert0 = ref.name.replace("{e}", "0")
+            shard, meta, offset = self.resolve(expert0)
+            if meta["dtype"] != "F8_E4M3":
+                raise PackFailure(f"{expert0}: dtype {meta['dtype']}, expected F8_E4M3")
+            scale_name = expert0 + "_scale_inv"
+            scale_shard, scale_meta, scale_offset = self.resolve(scale_name)
+            if scale_meta["dtype"] != "BF16":
+                raise PackFailure(f"{scale_name}: dtype {scale_meta['dtype']}, expected BF16")
+            return shard, meta, offset
         shard, meta, offset = self.resolve(ref.name)
         if meta["dtype"] != "BF16":
             raise PackFailure(f"{ref.name}: dtype {meta['dtype']}, expected BF16")
@@ -453,37 +465,39 @@ def copy_bf16_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, out
                 out.write(widened)
 
 
-def copy_mxfp4_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, out) -> None:
-    """Read BF16 payload, quantize group-32 MXFP4-E2M1, write payload+scales.
-    The routed expert tensors are 3-D [E, R, C] in the checkpoint; the pack
-    flattens them to [E*slice_rows, C] (W1/W3 take their half of the fused
-    gate_up rows per expert)."""
+def copy_fp8_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
+    """Stack 512 per-expert F8_E4M3 weights and their BF16 scale_inv planes
+    into the pack: payload [E*R, C] expert-major, scales [E*R/128, C/128]
+    as F32 row-major (the common FP8_E4M3_F32B128 kernel layout; scale_inv
+    is stored verbatim as the multiplier plane)."""
     import numpy as np
-    path = source.checkpoint / source.weight_map[ref.name]
-    row_bytes = ref.columns * BF16_BYTES
-    experts = ref.rows // (ref.slice_rows or ref.columns or 1)
-    if ref.slice_rows == 0:
-        experts = ref.rows // ref.columns
-    with path.open("rb") as file:
-        for expert in range(experts):
-            if ref.slice_rows:
-                rows = ref.slice_rows
-                row_start = ref.slice_start
-                total_rows = (ref.rows // experts)
-            else:
-                rows = ref.rows // experts
-                row_start = 0
-                total_rows = rows
-            for row in range(rows):
-                file.seek(offset + ((expert * total_rows + row_start + row) * row_bytes))
-                raw = file.read(row_bytes)
-                if len(raw) != row_bytes:
-                    raise PackFailure(f"short read on {ref.name} expert {expert} row {row}")
-                values = np.frombuffer(raw, dtype="<u2").astype(np.uint32)
-                f32 = ((values << 16).astype(np.uint32)).view(np.float32).astype(np.float64).tolist()
-                payload, scales = quantize_mxfp4_e2m1(f32)
-                out.write(payload)
-                out.write(scales)
+    experts = EXPERT_COUNT
+    rows_per_expert = ref.rows // experts
+    scale_rows = rows_per_expert // 128
+    scale_cols = ref.columns // 128
+    payload = bytearray(ref.rows * ref.columns)
+    scales = bytearray(ref.rows * ref.columns // (128 * 128) * 4)
+    for e in range(experts):
+        name = ref.name.replace("{e}", str(e))
+        shard, meta, off = source.resolve(name)
+        with (source.checkpoint / shard).open("rb") as f:
+            f.seek(off)
+            raw = f.read(rows_per_expert * ref.columns)
+        if len(raw) != rows_per_expert * ref.columns:
+            raise PackFailure(f"short read on {name}")
+        base = e * rows_per_expert * ref.columns
+        payload[base:base + len(raw)] = raw
+        scale_name = name + "_scale_inv"
+        s_shard, s_meta, s_off = source.resolve(scale_name)
+        with (source.checkpoint / s_shard).open("rb") as f:
+            f.seek(s_off)
+            sraw = f.read(scale_rows * scale_cols * 2)
+        s16 = np.frombuffer(sraw, dtype="<u2").astype(np.uint32)
+        s32 = ((s16 << 16).astype(np.uint32)).view(np.float32).astype("<f4").tobytes()
+        sbase = e * scale_rows * scale_cols * 4
+        scales[sbase:sbase + len(s32)] = s32
+    out.write(payload)
+    out.write(scales)
 
 
 def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
@@ -498,6 +512,9 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         if ref.weight_format == WEIGHT_MXFP4_E2M1:
             payload_bytes = ref.rows * ref.columns // 2
             scale_bytes = ref.rows * ref.columns // MXFP4_GROUP
+        elif ref.weight_format == WEIGHT_FP8_F32B128:
+            payload_bytes = ref.rows * ref.columns
+            scale_bytes = (ref.rows // 128) * (ref.columns // 128) * F32_BYTES
         else:
             payload_bytes = ref.rows * ref.columns * (BF16_BYTES if ref.weight_format == WEIGHT_BF16 else F32_BYTES)
             scale_bytes = 0
@@ -519,7 +536,8 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     entries = b"".join(
         ENTRY_STRUCT.pack(
             ref.kind, ref.layer, ref.weight_format, ref.rows, ref.columns,
-            MXFP4_GROUP if ref.weight_format == WEIGHT_MXFP4_E2M1 else 0,
+            (MXFP4_GROUP if ref.weight_format == WEIGHT_MXFP4_E2M1 else
+             128 if ref.weight_format == WEIGHT_FP8_F32B128 else 0),
             payload_base + payload_offset, payload_bytes,
             payload_base + payload_offset + payload_bytes if scale_bytes else 0,
             scale_bytes)
@@ -550,7 +568,9 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         temp.write(b"\0" * padding)
         for ref, source_offset, payload_offset, payload_bytes, scale_bytes in plans:
             before = temp.tell()
-            if ref.weight_format == WEIGHT_MXFP4_E2M1:
+            if ref.weight_format == WEIGHT_FP8_F32B128:
+                copy_fp8_experts(source, ref, temp)
+            elif ref.weight_format == WEIGHT_MXFP4_E2M1:
                 copy_mxfp4_tensor(source, ref, source_offset, temp)
             else:
                 copy_bf16_tensor(source, ref, source_offset, temp)
