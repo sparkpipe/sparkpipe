@@ -27,6 +27,11 @@
 typedef struct SparkQwen38ModuleSlot
 {
 	void *cuda_stream;
+	uint32_t *host_row_lane_indices;
+	uint64_t *host_row_positions;
+	uint32_t *host_row_cold;
+	uint32_t *host_slot_mapping;
+	uint32_t *host_context_lengths;
 	uint32_t *input_token_ids;
 	uint32_t *output_token_ids;
 	uint32_t *row_lane_indices;
@@ -76,6 +81,16 @@ typedef struct SparkQwen38ModuleState
 {
 	SparkStageModuleLedger ledger;
 	uint32_t multiprocessor_count;
+	uint32_t max_active_sequence_count;
+	uint32_t pipeline_slot_count;
+	uint32_t kv_block_count;
+	uint32_t cache_layer_count;
+	uint32_t mtp_cache_ordinal;
+	atomic_ullong submitted_count;
+	atomic_ullong completed_count;
+	atomic_ullong rejected_count;
+	atomic_ullong failed_count;
+	atomic_ullong tokens_emitted;
 	SparkQwen38GdnStatePool gdn_pool;
 	void *kv_cache_bf16;
 	uint64_t cache_layer_stride;
@@ -115,6 +130,12 @@ static SparkStatus SparkQwen38ModuleConfigure(SparkQwen38ModuleState *state)
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MODULE_TAG,"SPARK_QWEN38_STAGE_FIRST_LAYER",0u,SPARK_QWEN38_RESIDENT_DECODE_STAGE_LAYER_COUNT - 1u,&state->first_layer_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MODULE_TAG,"SPARK_QWEN38_STAGE_LAYER_COUNT",1u,SPARK_QWEN38_RESIDENT_DECODE_STAGE_LAYER_COUNT,&state->layer_count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MODULE_TAG,"SPARK_QWEN38_STAGE_MAX_ACTIVE_SEQUENCES",1u,SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&state->max_active_sequence_count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MODULE_TAG,"SPARK_QWEN38_STAGE_PIPELINE_SLOTS",1u,SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&state->pipeline_slot_count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MODULE_TAG,"SPARK_QWEN38_STAGE_KV_BLOCKS",1u,1u << 20u,&state->kv_block_count);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( state->stage_index >= state->stage_count || state->first_layer_index + state->layer_count > SPARK_QWEN38_RESIDENT_DECODE_STAGE_LAYER_COUNT )
@@ -393,6 +414,10 @@ static SparkStatus SparkQwen38ModuleLoadPack(SparkQwen38ModuleState *state, cons
 }
 
 void SparkQwen38ResidentDecodeStageDestroy(void *module_state);
+static SparkStatus SparkQwen38ModuleAllocatePools(SparkQwen38ModuleState *state);
+extern cudaError_t SparkQwen38ConfigureCudaKernels(void);
+static SparkStatus SparkQwen38ModuleAllocateSlot(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot);
+static SparkStatus SparkQwen38ModuleAllocateSlotHostMirrors(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot);
 
 SparkStatus SparkQwen38ResidentDecodeStageInitialize(
     const SparkFirmwareModuleConfiguration *configuration,
@@ -415,6 +440,11 @@ SparkStatus SparkQwen38ResidentDecodeStageInitialize(
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->ledger.module_tag = SPARK_QWEN38_MODULE_TAG;
+	atomic_init(&state->submitted_count,0u);
+	atomic_init(&state->completed_count,0u);
+	atomic_init(&state->rejected_count,0u);
+	atomic_init(&state->failed_count,0u);
+	atomic_init(&state->tokens_emitted,0u);
 	status = SparkQwen38ModuleConfigure(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentText(SPARK_QWEN38_MODULE_TAG,"SPARK_QWEN38_STAGE_PACK_PATH",&pack_path);
@@ -423,8 +453,22 @@ SparkStatus SparkQwen38ResidentDecodeStageInitialize(
 		SparkQwen38ModuleBuildOrdinals(state);
 		status = SparkQwen38ModuleLoadPack(state,pack_path);
 	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,SparkQwen38ConfigureCudaKernels(),"configure_cuda_kernels");
+	if ( status == SPARK_STATUS_OK )
+	{
+		int32_t sm_count = 0;
+		cudaError_t attr = cudaDeviceGetAttribute(&sm_count,cudaDevAttrMultiProcessorCount,0);
+		state->multiprocessor_count = attr == cudaSuccess && sm_count > 0 ? (uint32_t)sm_count : 1u;
+		status = SparkQwen38ModuleAllocatePools(state);
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen38ModuleAllocateSlot(state,&state->slots[0]);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen38ModuleAllocateSlotHostMirrors(state,&state->slots[0]);
 	if ( status != SPARK_STATUS_OK )
 	{
+		fprintf(stderr,"%s initialize_failed status=%d\n",SPARK_QWEN38_MODULE_TAG,(int)status);
 		SparkQwen38ResidentDecodeStageDestroy(state);
 		return(status);
 	}
@@ -433,15 +477,7 @@ SparkStatus SparkQwen38ResidentDecodeStageInitialize(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkQwen38ResidentDecodeStageExecute(
-    void *module_state,
-    SparkModelDriverFrame *frame)
-{
-	(void)module_state;
-	(void)frame;
-	/* Loader skeleton: no compute path yet. Fails closed. */
-	return(SPARK_STATUS_UNSUPPORTED);
-}
+
 
 SparkStatus SparkQwen38ResidentDecodeStageAdmit(
     void *module_state,
@@ -506,7 +542,7 @@ extern cudaError_t SparkQwen38LaunchSharedGate(cudaStream_t stream, void *accum_
 
 static SparkStatus SparkQwen38ModuleAllocateSlot(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot)
 {
-	uint64_t rows = SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
+	uint64_t rows = state->max_active_sequence_count;
 	uint64_t hidden_bytes = rows * SPARK_QWEN38_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t expert_bytes = rows * SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t moe_up_bytes = rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN * SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES;
@@ -704,5 +740,194 @@ static SparkStatus SparkQwen38ModuleRunLayer(SparkQwen38ModuleState *state, Spar
 		status = SPARK_QWEN38_MODEL_LAYER_IS_GDN(layer) != 0u ? SparkQwen38ModuleRunGdnLayer(state,slot,layer,rows) : SparkQwen38ModuleRunAttnLayer(state,slot,table,&state->attn_by_layer[layer],state->attn_ordinal_by_layer[layer],&rows_view,rows);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen38ModuleRunMoe(state,slot,state->mlp_norm_by_layer[layer],&state->moe_by_layer[layer],rows);
+	return(status);
+}
+
+/* ---------------------------------------------------------------------------
+ * Pools, slot host mirrors, and the lean decode Execute path.
+ * Decode-only for now: prefill, speculation and the KV tier land with the
+ * serving adapter. The attention block table is a one-block-per-lane view
+ * (valid for contexts up to KV_BLOCK_TOKENS); the adapter replaces it.
+ * -------------------------------------------------------------------------*/
+
+#define SPARK_QWEN38_MODULE_HOST_ROW_CAPACITY \
+	(SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT + SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS)
+
+static SparkStatus SparkQwen38ModuleAllocatePools(SparkQwen38ModuleState *state)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	uint64_t state_elements,tail_elements,cache_elements;
+	state->gdn_pool.abi_version = SPARK_QWEN38_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION;
+	state->gdn_pool.lane_capacity = state->max_active_sequence_count;
+	state->gdn_pool.gdn_layer_count = state->gdn_layer_count;
+	state->gdn_pool.state_layer_stride_elements = (uint64_t)SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT * SPARK_QWEN38_MODEL_GDN_HEAD_KEY_DIMENSION * SPARK_QWEN38_MODEL_GDN_HEAD_VALUE_DIMENSION;
+	state->gdn_pool.state_lane_stride_elements = state->gdn_pool.state_layer_stride_elements * state->gdn_layer_count;
+	state->gdn_pool.conv_tail_layer_stride_elements = (uint64_t)SPARK_QWEN38_MODEL_GDN_CONV_CHANNELS * (SPARK_QWEN38_MODEL_GDN_CONV_KERNEL - 1u);
+	state->gdn_pool.conv_tail_lane_stride_elements = state->gdn_pool.conv_tail_layer_stride_elements * state->gdn_layer_count;
+	if ( state->gdn_layer_count != 0u )
+	{
+		state_elements = state->gdn_pool.state_lane_stride_elements * state->max_active_sequence_count;
+		tail_elements = state->gdn_pool.conv_tail_lane_stride_elements * state->max_active_sequence_count;
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,state_elements * sizeof(float),(void **)&state->gdn_pool.state_f32);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,tail_elements * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&state->gdn_pool.conv_tail_bf16);
+	}
+	state->mtp_cache_ordinal = state->attn_layer_count;
+	state->cache_layer_count = state->attn_layer_count;
+	if ( status == SPARK_STATUS_OK && state->cache_layer_count != 0u )
+	{
+		state->cache_layer_stride = (uint64_t)SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN38_MODEL_ATTN_CACHE_TOKEN_ELEMENTS;
+		state->cache_block_stride = state->cache_layer_stride * state->cache_layer_count;
+		cache_elements = state->cache_block_stride * state->kv_block_count;
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,cache_elements * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES,&state->kv_cache_bf16);
+	}
+	return(status);
+}
+
+static SparkStatus SparkQwen38ModuleAllocateSlotHostMirrors(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot)
+{
+	uint64_t rows = state->max_active_sequence_count;
+	SparkStatus status = SPARK_STATUS_OK;
+	slot->host_row_lane_indices = (uint32_t *)malloc(SPARK_QWEN38_MODULE_HOST_ROW_CAPACITY * sizeof(uint32_t));
+	slot->host_row_positions = (uint64_t *)malloc(SPARK_QWEN38_MODULE_HOST_ROW_CAPACITY * sizeof(uint64_t));
+	slot->host_row_cold = (uint32_t *)malloc(rows * sizeof(uint32_t));
+	slot->host_slot_mapping = (uint32_t *)malloc(SPARK_QWEN38_MODULE_HOST_ROW_CAPACITY * sizeof(uint32_t));
+	slot->host_context_lengths = (uint32_t *)malloc(SPARK_QWEN38_MODULE_HOST_ROW_CAPACITY * sizeof(uint32_t));
+	if ( slot->host_row_lane_indices == 0 || slot->host_row_positions == 0 ||
+		slot->host_row_cold == 0 || slot->host_slot_mapping == 0 ||
+		slot->host_context_lengths == 0 )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return(status);
+}
+
+static SparkStatus SparkQwen38ModuleUploadRows(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, const SparkModelDriverFrame *frame, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error;
+	uint32_t token_guard;
+	error = cudaMemcpyAsync(slot->row_lane_indices,slot->host_row_lane_indices,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->row_positions,slot->host_row_positions,rows * sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->row_cold,slot->host_row_cold,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess && state->attn_layer_count != 0u )
+		error = cudaMemcpyAsync(slot->slot_mapping,slot->host_slot_mapping,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess && state->attn_layer_count != 0u )
+		error = cudaMemcpyAsync(slot->context_lengths,slot->host_context_lengths,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess && state->owns_embedding != 0u )
+	{
+		if ( frame->buffer_count < 1u || frame->buffers == 0 || frame->buffers[0].address == 0 )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		for (token_guard = 0; token_guard < rows; token_guard++)
+			if ( ((const uint32_t *)frame->buffers[0].address)[token_guard] >= SPARK_QWEN38_MODEL_OUTPUT_VOCAB_COUNT )
+			{
+				fprintf(stderr,"%s token_id_out_of_range row=%u\n",SPARK_QWEN38_MODULE_TAG,token_guard);
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+			}
+		error = cudaMemcpyAsync(slot->input_token_ids,frame->buffers[0].address,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	}
+	return(SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"stage_upload"));
+}
+
+static cudaError_t SparkQwen38ModuleEmitHead(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, SparkModelDriverFrame *frame, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint32_t out_index = state->owns_embedding != 0u ? 1u : 0u;
+	cudaError_t error;
+	if ( frame->buffer_count <= out_index || frame->buffers == 0 || frame->buffers[out_index].address == 0 )
+		return(cudaErrorInvalidValue);
+	error = SparkQwen38LaunchRmsNorm(stream,slot->hidden_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen38LaunchHeadArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,slot->input_token_ids,slot->output_token_ids,rows,SPARK_QWEN38_MODEL_OUTPUT_VOCAB_COUNT);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(frame->buffers[out_index].address,slot->output_token_ids,rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+	return(error);
+}
+
+static SparkStatus SparkQwen38ModuleRunDecode(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, SparkModelDriverFrame *frame, uint32_t rows)
+{
+	SparkQwen38KvBlockTableView table;
+	uint32_t block_indices[SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t block_counts[SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t layer,row;
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	SparkStatus status;
+	cudaError_t error;
+	memset(&table,0,sizeof(table));
+	for (row = 0; row < rows; row++)
+	{
+		block_indices[row] = row;
+		block_counts[row] = 1u;
+	}
+	table.abi_version = SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION;
+	table.descriptor_bytes = sizeof(table);
+	table.block_token_count = SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+	table.lane_count = state->max_active_sequence_count;
+	table.lane_stride = 1u;
+	table.lane_capacity = state->max_active_sequence_count;
+	table.physical_block_indices = block_indices;
+	table.lane_physical_block_counts = block_counts;
+	table.host_physical_block_indices = block_indices;
+	table.host_lane_physical_block_counts = block_counts;
+	status = SparkQwen38ModuleUploadRows(state,slot,frame,rows);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( state->owns_embedding != 0u )
+	{
+		error = SparkQwen38LaunchEmbeddingGather(stream,slot->input_token_ids,state->token_embedding_bf16,slot->hidden_bf16,rows);
+		status = SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"embedding");
+	}
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
+		status = SparkQwen38ModuleRunLayer(state,slot,&table,layer,rows);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( state->owns_final_head != 0u )
+		status = SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,SparkQwen38ModuleEmitHead(state,slot,frame,rows),"head_emit");
+	error = cudaStreamSynchronize(stream);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"stream_sync");
+	return(status);
+}
+
+SparkStatus SparkQwen38ResidentDecodeStageExecute(
+    void *module_state,
+    SparkModelDriverFrame *frame)
+{
+	SparkQwen38ModuleState *state = (SparkQwen38ModuleState *)module_state;
+	SparkQwen38ModuleSlot *slot;
+	uint32_t rows,row;
+	SparkStatus status;
+	if ( state == 0 || frame == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u )
+		return(SPARK_STATUS_UNSUPPORTED);
+	rows = frame->active_slot_count;
+	if ( rows == 0u || rows > state->max_active_sequence_count )
+	{
+		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	slot = &state->slots[0];
+	if ( slot->cuda_stream == 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	for (row = 0; row < rows; row++)
+	{
+		slot->host_row_lane_indices[row] = row;
+		slot->host_row_positions[row] = frame->sequence_position;
+		slot->host_row_cold[row] = 0u;
+		slot->host_slot_mapping[row] = (frame->sequence_position + row) % SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+		slot->host_context_lengths[row] = (uint32_t)((frame->sequence_position + row) % SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) + 1u;
+	}
+	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
+	status = SparkQwen38ModuleRunDecode(state,slot,frame,rows);
+	if ( status == SPARK_STATUS_OK )
+	{
+		atomic_fetch_add_explicit(&state->completed_count,1u,memory_order_relaxed);
+		atomic_fetch_add_explicit(&state->tokens_emitted,rows,memory_order_relaxed);
+	}
+	else
+		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	return(status);
 }

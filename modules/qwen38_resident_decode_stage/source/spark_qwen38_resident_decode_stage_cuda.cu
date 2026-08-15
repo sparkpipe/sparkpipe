@@ -1558,3 +1558,44 @@ extern "C" cudaError_t SparkQwen38LaunchGateScores(cudaStream_t stream, const Sp
 	SparkQwen38GateScoresKernel<<<dim3(row_count,expert_blocks),SPARK_LM_CTA_THREADS,gate->input_dimension * sizeof(float),stream>>>(gate->weight_payload,input_bf16,scores_f32,row_count,gate->input_dimension,gate->output_dimension);
 	return(cudaGetLastError());
 }
+
+extern "C" cudaError_t SparkQwen38ConfigureCudaKernels(void)
+{
+    cudaError_t status;
+
+    status = cudaFuncSetAttribute(
+        SparkQwen38GdnStepKernel,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        (int)SPARK_QWEN38_CUDA_GDN_DECODE_SHARED_BYTES);
+    if (status != cudaSuccess)
+    {
+        fprintf(stderr, "qwen38 configure gdn_step failed %d shared=%d\n", (int)status, (int)SPARK_QWEN38_CUDA_GDN_DECODE_SHARED_BYTES);
+        return status;
+    }
+    {
+        return status;
+    }
+    status = cudaFuncSetAttribute(
+        SparkQwen38ChunkQkDecayKernel,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        (int)SPARK_QWEN38_CUDA_GDN_QK_SHARED_BYTES);
+    if (status != cudaSuccess)
+    {
+        return status;
+    }
+    status = cudaFuncSetAttribute(
+        SparkQwen38ChunkStepKernel,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        (int)SPARK_QWEN38_CUDA_GDN_CHUNK_SHARED_BYTES);
+    if (status != cudaSuccess)
+    {
+        return status;
+    }
+    /* The scalar Linear path stages the input row in dynamic shared memory;
+     * the widest qwen38 input is the 16384-wide attention/GDN output
+     * projection (64KB of floats), past the 48KB static ceiling. */
+    return cudaFuncSetAttribute(
+        (const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        (int)(SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION * sizeof(float)));
+}
