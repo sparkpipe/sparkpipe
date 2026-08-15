@@ -1570,9 +1570,6 @@ extern "C" cudaError_t SparkQwen38ConfigureCudaKernels(void)
         fprintf(stderr, "qwen38 configure gdn_step failed %d shared=%d\n", (int)status, (int)SPARK_QWEN38_CUDA_GDN_DECODE_SHARED_BYTES);
         return status;
     }
-    {
-        return status;
-    }
     status = cudaFuncSetAttribute(
         SparkQwen38ChunkQkDecayKernel,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -1611,16 +1608,17 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertLinear(
 	const uint32_t *group_row_offset,
 	const uint32_t *group_tile_prefix,
 	void *output_bf16,
-	uint32_t rows,
+	uint32_t source_row_count,
 	uint32_t multiprocessor_count)
 {
 	uint64_t rows_per_expert;
 	uint64_t payload_stride,scale_stride;
-	if ( view == 0 || input_bf16 == 0 || source_row_map == 0 ||
+	if ( view == 0 || input_bf16 == 0 ||
 		group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 ||
 		view->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
 		view->output_dimension % SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT != 0u ||
-		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 )
+		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
+		(source_row_map == 0 && source_row_count == 0u) )
 		return(cudaErrorInvalidValue);
 	rows_per_expert = (uint64_t)view->output_dimension / SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT;
 	payload_stride = rows_per_expert * view->input_dimension;
@@ -1629,7 +1627,7 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertLinear(
 		SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,
 		view->weight_payload,(const uint8_t *)view->weight_scale_e8m0,
 		payload_stride,scale_stride,
-		input_bf16,source_row_map,rows,group_row_offset,group_tile_prefix,
+		input_bf16,source_row_map,source_row_count,group_row_offset,group_tile_prefix,
 		output_bf16,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT,
 		view->input_dimension,rows_per_expert,multiprocessor_count));
 }

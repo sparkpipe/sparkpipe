@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,9 @@ int main(int argc, char **argv)
     setenv("SPARK_QWEN38_STAGE_INDEX","1",1);
     setenv("SPARK_QWEN38_STAGE_FIRST_LAYER","1",1);
     setenv("SPARK_QWEN38_STAGE_LAYER_COUNT","1",1);
+    setenv("SPARK_QWEN38_STAGE_MAX_ACTIVE_SEQUENCES","1",1);
+    setenv("SPARK_QWEN38_STAGE_PIPELINE_SLOTS","1",1);
+    setenv("SPARK_QWEN38_STAGE_KV_BLOCKS","8",1);
     setenv("SPARK_QWEN38_STAGE_PACK_PATH",argv[1],1);
     memset(&configuration,0,sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
