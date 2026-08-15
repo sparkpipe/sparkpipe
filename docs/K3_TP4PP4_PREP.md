@@ -101,3 +101,29 @@ the module's capacity request scales them by first_layer/layer_count).
   Deployment layout: stage s ranks t (spark[s*4+t]) get
   /home/<user>/sparkdata/k3.mxfp4.tp4pp4/packs/<stage>.<s>.rank0<t>.pack,
   matching the fleet_registry pack_dir.
+
+## CUDA dispatch (built this round, sm_121a compile-verified)
+
+- `modules/k3_resident_decode_stage/` gained the serving-tier bridge:
+  `spark_k3_resident_decode_stage_cuda.{h,cu}` (commits 2155b3f7, c481a008).
+  It fills the device `K3LayerWeights` table from the binder's name tables
+  (offsetof table over slice.cuh fields), carves the `K3SliceState` recurrent
+  pools exactly as `tests/host_cuda/k3_slice_host.cu` does, builds the MLA
+  `LmKvView` array, allocates the per-step scratch blob, and launches
+  `K3StageSlice` from bind.cu's ABI.
+- `tools/k3_dispatch_compile_gate.sh` compiles it for sm_121a on sparka
+  (worktree /home/sparka/sparkpipe-k3): PASS. The `K3StageSlice` extern "C"
+  declaration matches bind.cu exactly.
+- Pack mmap is `cudaHostRegister`ed for UVA weight access (GB10 unified
+  memory, no device copy of the ~87 GB rank pack).
+- Two facts the dispatch encodes that the end-to-end run will surface:
+  1. Pack V2 has NO scale tensors outside the interleaved experts (BF16
+     spine), so every `K3LayerWeights` `*_scale` field stays NULL and
+     `expert_interleave` is 1 on every MoE layer.
+  2. `K3LayerLatentMoe` currently FAILS CLOSED on `expert_interleave=1`
+     (layer.cuh comment: the grouped GEMM has not learned the interleave
+     cell). The first live MoE launch errors until that kernels wave lands;
+     the dispatch still encodes the pack truth so nothing runs silently wrong.
+- The head step signature surfaced while compiling: `K3Head(buffers,
+  head_norm_weight, head_weight, token_ids, vocabulary, rows, stream)` at
+  layer.cuh:909 - the PP-last rank's serving tier calls it after the slice.
