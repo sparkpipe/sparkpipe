@@ -178,7 +178,8 @@ def c_float(value: float) -> str:
 
 def render_header(
         variant: str, contract: dict[str, Any], description_sha256: str = "",
-        b1_description_sha256: str = "") -> str:
+        b1_description_sha256: str = "",
+        bucket_shas: dict | None = None) -> str:
     model = contract["model"]
     attention = contract["attention"]
     hyper_connections = contract["hyper_connections"]
@@ -289,6 +290,10 @@ def render_header(
             f"#define {prefix}_LAYER_KIND_INVALID UINT32_MAX",
             "",
         ])
+        if bucket_shas is not None:
+            for bucket in sorted(bucket_shas.keys()):
+                lines.append(
+                    f"#define {prefix}_DESCRIPTION_SHA256_B{bucket} {json.dumps(bucket_shas[bucket])}")
     else:
         lines.extend([
             f"#define {prefix}_RMS_NORM_EPSILON {c_float(model['rms_norm_epsilon'])}",
@@ -524,12 +529,24 @@ def main() -> int:
         description_sha256 = hashlib.sha256(description.encode("utf-8")).hexdigest()
         b1_description_sha256 = hashlib.sha256(
             b1_description.encode("utf-8")).hexdigest()
+        bucket_shas: dict[int, str] = {}
+        if variant == "flash":
+            for bucket in (8, 16, 32, 64):
+                bucket_description = render_flash_model_description(
+                    contract, bucket)
+                bucket_shas[bucket] = hashlib.sha256(
+                    bucket_description.encode("utf-8")).hexdigest()
         outputs = {
             header_path: render_header(
                 variant, contract, description_sha256,
-                b1_description_sha256),
+                b1_description_sha256, bucket_shas),
             normalized_path: render_normalized_contract(variant, contract),
         }
+        if variant == "flash":
+            for bucket in (8, 16, 32, 64):
+                outputs[ROOT / "examples" / "model_descriptions" /
+                    f"dsv4_resident_decode_stage_firmware_b{bucket}.json"] = (
+                        render_flash_model_description(contract, bucket))
         if variant == "flash":
             outputs[FLASH_DESCRIPTION_PATH] = description
             outputs[FLASH_B1_DESCRIPTION_PATH] = b1_description
