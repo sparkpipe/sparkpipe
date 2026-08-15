@@ -21,12 +21,13 @@ any common-layer edit is a flagged, separately-reviewable commit.
 ## State
 
 - [x] Contract written (model_contracts/qwen38_authoritative.json).
-- [x] Distributed checkpoint download running: all 16 sparks, resumable,
-      ~1/16 of shards each (~240 GB) to the INTERNAL NVMe at
-      /home/<user>/sparkdata/qwen38_2.4t_a95b/checkpoint. Shard assignment
-      follows PP-stage layer slices so each stage's 4 machines hold its
-      shards; boundary-crossing shards are assigned to the lower stage and
-      pulled by the upper stage at pack time.
+- [x] Checkpoint source: the LOCAL FP8 release at
+      /home/spark9/extnvme/models/hf/Qwen/Qwen3.8-2.4T-A95B-FP8 (2.3 TB,
+      224/224 files hash-verified, vendor block-128 FP8 experts + BF16
+      spine). Redistributed from spark9 to each spark's INTERNAL NVMe at
+      /home/<user>/sparkdata/qwen38_2.4t_a95b/checkpoint by PP-stage layer
+      slices (54/53/52/54 shards). The earlier HF bf16 download was stopped
+      and its partials removed.
 - [x] qwen38 stage packer (tools/qwen38_stagepack.py): whole-PP-stage slices,
       MXFP4-E2M1 routed experts with E8M0 scales, BF16 non-expert; inventory
       and shapes verified against the pinned HF index. TP4 rank slicing and

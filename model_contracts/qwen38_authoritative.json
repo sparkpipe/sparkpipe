@@ -3,20 +3,20 @@
   "model_id": "Qwen/Qwen3.8-2.4T-A95B",
   "architecture": "GatedDeltaNet hybrid, routed MoE",
   "sources": {
-    "checkpoint_config": "Hugging Face config.json at revision 207bd685a7e3696cfaff12ded7c6a7ea0f88c996 (pinned 2026-08-15); model card architecture summary cross-checked against the shard index",
-    "variant_note": "the 2.4T-A95B open release of the Qwen3.8-Max class: 92 layers of 3x GatedDeltaNet+MoE then 1x GatedAttention+MoE, 512 routed experts (top-10) plus one shared expert, MTP trained multi-step (checkpoint carries one MTP decoder layer)",
+    "checkpoint_config": "local FP8 checkpoint /home/spark9/extnvme/models/hf/Qwen/Qwen3.8-2.4T-A95B-FP8 (HASH_VERIFY.json: 224/224 files verified, manifest_sha256 8825c2e711da1194066f85c6d689053ece88597bc1a0f850b65841d42e1441b3)",
+    "variant_note": "the vendor-shipped FP8 release: routed experts F8_E4M3 with per-block scale_inv (block 128x128, activation dynamic), everything else BF16. Experts are per-expert tensors (E.gate_proj/up_proj/down_proj + weight_scale_inv), not the fused gate_up stack of the BF16 release.",
     "known_gaps": [
       "vision tower and multimodal input out of scope by contract (text decode path only)",
       "mrope sections degenerate to plain rope for text-only decode",
-      "MTP execution not enabled by the first driver revision; the MTP decoder tensors are packed but the serving path is speculation-off"
+      "MTP execution not enabled by the first driver revision"
     ],
-    "precision_policy": "routed expert weights MXFP4-E2M1; non-expert weights, activations, KV, and the final head BF16; GEMM accumulation and GDN recurrent state FP32. Same quality-first ladder as the DSV4 Flash contract."
+    "precision_policy": "vendor FP8 experts kept AS SHIPPED (F8_E4M3 + F32 block-128 scales; scale_inv stored verbatim as the multiplier plane, matching the common FP8_E4M3_F32B128 kernel path); non-expert weights, activations, KV and the final head BF16; GDN recurrent state FP32"
   },
   "model": {
     "hidden_dimension": 8192,
     "layer_count": 92,
     "vocabulary_size": 248320,
-    "rms_norm_epsilon": 0.000001,
+    "rms_norm_epsilon": 1e-06,
     "mtp_layer_count": 1,
     "maximum_context_tokens": 262144
   },
@@ -52,7 +52,8 @@
     "router_aux_loss_coef": 0.001
   },
   "precision": {
-    "routed_expert_weight_codec": "mxfp4_e2m1",
+    "routed_expert_weight_codec": "fp8_e4m3",
+    "routed_expert_scale": "f32_block_128x128_scale_inv",
     "non_expert_weight_format": "bf16",
     "activation_format": "bf16",
     "kv_cache_codec": "bf16",
