@@ -53,3 +53,8 @@ are always allowed regardless of slot state.
   stage2 (47+23) spark8, stage3 (69+23) sparkc. ~350 GB each, Python
   expert interleave loops dominate; multi-hour ETA. spark0 was dropped
   for stage0 because the Qwen session's sha256/rsync saturates its disk.
+- Single-spark CUDA compile gate PASSED on sparka: bind.cu and unity.cu
+  compile clean for compute_121a/sm_121a (nvcc 13.0) with the full-rank
+  gate reconciliation. tools/k3_sm121a_compile_gate.sh preserves the
+  exact flags (gencode arch=compute_121a,code=sm_121a; no forced model
+  header, which drags spark_kv_cache.h into the host pass).
