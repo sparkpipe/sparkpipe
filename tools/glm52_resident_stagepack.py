@@ -487,7 +487,11 @@ def main() -> int:
                     include_embedding, include_head, args.tp_degree, args.tp_rank)
     packer.build_plan()
 
-    contract_bytes = (repo_root / "model_contracts" / "glm52.json").read_bytes()
+    # The "contract" identity is the model DESCRIPTION file's sha256: the module
+    # and serving adapter compile it in as GLM52_CONTRACT_SHA256 and the driver
+    # embeds it as model_description_sha256, so the pack header must match.
+    contract_bytes = (repo_root / "examples" / "model_descriptions" /
+                      "glm52_resident_decode_stage_fp8_firmware.json").read_bytes()
     source_config = json.dumps(
         {"layer_range": f"{first}-{last}", "stage": args.stage,
          "tp_degree": args.tp_degree, "tp_rank": args.tp_rank,
