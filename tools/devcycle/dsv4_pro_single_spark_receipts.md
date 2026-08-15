@@ -136,6 +136,17 @@ tools/devcycle/fabric_probe_pro.sh (run with the spark alias) on all 16 hosts:
   by split-ring step 0), rail 1 = 10.10.100.10-25 (all-to-all 100G /24,
   steps 1-2); step_rail_indices [0,1,1]; rail_count=2 satisfies the
   counter-rotating split-ring validation.
+- Rail/edge device selection verified by code reading (round 9):
+  SparkTpDeviceCollectiveRankHost() resolves each collective step's edge
+  endpoints from rail_rank_hosts[step_rail_indices[step]] (tp_device_collective.c
+  endpoint fill at SparkTpDeviceCollectiveConfigureRoute), and
+  SparkHiddenSparkHostRdmaOpenVerbsDevice() discovers the local verbs device
+  from the edge's own endpoint host. So step-0 edges open the 200G port
+  (10.10.200.{self} GID on rocep1s0f0, rate 200G) and steps 1-2 open the
+  100G port (10.10.100.{self} GID on rocep1s0f1, rate 100G) - one matching
+  device per edge, no routing gap.
+- Preflight now pins both config sha256s (resident 0c7103ac..., stage
+  7bdc3437...) and checks adapter/transport libs + KV dirs. 16/16 ready.
 
 ## What is still untested until the ring reservation
 
