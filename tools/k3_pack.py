@@ -526,13 +526,20 @@ def validate_layout(manifest, config):
                                   f"section bases cannot stay {ALIGN}B-aligned")
 
 
-def pack_model(model_dir, out_path):
+def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
     reader = SafetensorDir(model_dir)
     config = json.loads((Path(model_dir) / "config.json").read_text())
+    # The Kimi-K3 checkpoint nests the model config under text_config.
+    if isinstance(config.get("text_config"), dict):
+        config = config["text_config"]
     hidden = config["hidden_size"]
     layers = config["num_hidden_layers"]
+    if layer_count is None:
+        layer_count = layers
+    if first_layer + layer_count > layers or first_layer < 0 or layer_count <= 0:
+        raise PackFailure(f"invalid slice {first_layer}+{layer_count} of {layers}")
     experts = config["num_experts"]
-    top_k = config["num_experts_per_tok"]
+    top_k = config.get("num_experts_per_tok", config["num_experts_per_token"])
     latent = config["routed_expert_hidden_size"]
     inter = config["moe_intermediate_size"]
     shared = config.get("num_shared_experts", 1) * inter
@@ -549,7 +556,16 @@ def pack_model(model_dir, out_path):
     kda_dim = kda_heads * kda_head
     kernel = config["linear_attn_config"]["short_conv_kernel_size"] \
         if "linear_attn_config" in config else 4
-    types = config["layer_types"]
+    if "layer_types" in config:
+        types = config["layer_types"]
+    else:
+        # Kimi-K3 names the layer map inside linear_attn_config as two
+        # one-indexed lists; everything else defaults to the 3:1 period.
+        lac = config.get("linear_attn_config", {})
+        types = ["full_attention"] * layers
+        for i in lac.get("kda_layers", []):
+            if 1 <= i <= layers:
+                types[i - 1] = "linear_attention"
     if len(types) != layers:
         raise PackFailure("layer_types does not cover num_hidden_layers")
     # The interleave grid prices both expert GEMMs up front; a checkpoint the
@@ -559,18 +575,20 @@ def pack_model(model_dir, out_path):
 
     payload_path = Path(str(out_path) + ".payload")
     pack = Pack(payload_path)
-    L = "model.layers.{}."
+    L = "language_model.model.layers.{}."
 
     def bf(dst, src, shape=None):
         pack.add(dst, reader.bf16(src, shape), KIND_BF16,
                  shape if shape is not None else [0])
 
     # model level, in consumption order: the embedding first, the closing
-    # norm, output retrieval and head last.
-    bf("model.embed_tokens.weight", "model.embed_tokens.weight",
-       (config["vocab_size"], hidden))
+    # norm, output retrieval and head last. The embedding rides stage zero
+    # only; the closing globals ride the last stage only.
+    if first_layer == 0:
+        bf("model.embed_tokens.weight", "language_model.model.embed_tokens.weight",
+           (config["vocab_size"], hidden))
 
-    for layer in range(layers):
+    for layer in range(first_layer, first_layer + layer_count):
         p = L.format(layer)
         linear = types[layer] == "linear_attention"
         bf(p + "attn_norm_weight", p + "input_layernorm.weight", (hidden,))
@@ -709,18 +727,20 @@ def pack_model(model_dir, out_path):
            (hidden, latent))
         bf(p + "routed_norm_weight", m + "routed_expert_norm.weight", (latent,))
 
-    bf("model.norm.weight", "model.norm.weight", (hidden,))
-    gamma = reader.bf16("model.output_attn_res_norm.weight", (hidden,))
-    proj = reader.bf16("model.output_attn_res_proj.weight", (1, hidden))
-    pack.add("model.attnres_out_weight", gamma_fold_bf16(proj, gamma, hidden),
-             KIND_BF16, [1, hidden])
-    bf("lm_head.weight", "lm_head.weight", (config["vocab_size"], hidden))
+    if first_layer + layer_count == layers:
+        bf("model.norm.weight", "language_model.model.norm.weight", (hidden,))
+        gamma = reader.bf16("language_model.model.output_attn_res_norm.weight", (hidden,))
+        proj = reader.bf16("language_model.model.output_attn_res_proj.weight", (1, hidden))
+        pack.add("model.attnres_out_weight", gamma_fold_bf16(proj, gamma, hidden),
+                 KIND_BF16, [1, hidden])
+        bf("lm_head.weight", "language_model.lm_head.weight", (config["vocab_size"], hidden))
 
     validate_layout(pack.manifest, {"hidden": hidden})
 
     pack.handle.flush()
     pack.handle.close()
-    echo = {"hidden": hidden, "layers": layers, "experts": experts,
+    echo = {"hidden": hidden, "layers": layer_count, "first_layer": first_layer,
+            "total_layers": layers, "experts": experts,
             "top_k": top_k, "latent": latent, "intermediate": inter,
             "group": GROUP, "vocab": config["vocab_size"],
             "kda_heads": kda_heads, "kda_head": kda_head, "heads": heads,
@@ -755,11 +775,15 @@ def pack_model(model_dir, out_path):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("usage: k3_pack.py <checkpoint_dir> <out.pack>")
+    if len(sys.argv) not in (3, 5):
+        print("usage: k3_pack.py <checkpoint_dir> <out.pack> [first_layer layer_count]")
         return 2
     try:
-        echo, manifest = pack_model(sys.argv[1], sys.argv[2])
+        if len(sys.argv) == 5:
+            echo, manifest = pack_model(sys.argv[1], sys.argv[2],
+                                        int(sys.argv[3]), int(sys.argv[4]))
+        else:
+            echo, manifest = pack_model(sys.argv[1], sys.argv[2])
     except PackFailure as failure:
         print(f"PACK FAILURE: {failure}")
         return 1
