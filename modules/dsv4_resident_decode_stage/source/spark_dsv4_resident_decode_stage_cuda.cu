@@ -3433,3 +3433,4 @@ extern "C" cudaError_t SparkDsv4LaunchHcHeadReduce(cudaStream_t stream, const vo
 	SparkDsv4HcHeadReduceKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(streams_bf16,mixes_f32,scale,base_f32,epsilon,reduced_bf16,row_count,hc,dimension);
 	return(cudaGetLastError());
 }
+#include "spark_dsv4_dspark_kernels.cuh"
