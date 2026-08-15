@@ -2,7 +2,8 @@
 
 set -eu
 
-pat_file=/Users/mac/sparkpipe/.env
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+pat_file=$repo_root/.env
 if [ ! -r "$pat_file" ]; then
     printf '%s\n' "missing SparkPipe PAT file: $pat_file" >&2
     exit 2

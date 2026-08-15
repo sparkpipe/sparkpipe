@@ -3,9 +3,9 @@
 
 #include "sparkpipe/spark_driver_loader.h"
 
-static void SparkPrintUsage(const char *program_name)
+static void SparkPrintUsage(FILE *stream, const char *program_name)
 {
-    fprintf(stderr, "usage: %s DRIVER_SO [EXPECTED_TARGET]\n", program_name);
+    fprintf(stream, "usage: %s DRIVER_SO [EXPECTED_TARGET]\n", program_name);
 }
 
 int main(int argument_count, char **arguments)
@@ -17,9 +17,14 @@ int main(int argument_count, char **arguments)
     uint32_t program_index;
     SparkStatus status;
 
+    if (argument_count == 2 && strcmp(arguments[1], "--help") == 0)
+    {
+        SparkPrintUsage(stdout, arguments[0]);
+        return 0;
+    }
     if (argument_count < 2 || argument_count > 3)
     {
-        SparkPrintUsage(arguments[0]);
+        SparkPrintUsage(stderr, arguments[0]);
         return 2;
     }
     expected_target = argument_count == 3 ? arguments[2] : 0;
