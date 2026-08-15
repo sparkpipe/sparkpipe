@@ -1480,10 +1480,8 @@ extern "C" cudaError_t SparkQwen38LaunchGateSelect(cudaStream_t stream, const fl
 
 extern "C" cudaError_t SparkQwen38LaunchMoeRoute(cudaStream_t stream, const uint32_t *route_expert, uint32_t rows, uint32_t expert_width, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2)
 {
-{
-	int32_t launch_status = LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,expert_width,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,SparkLmSm121ExpertW13TileN(rows),SparkLmSm121ExpertW2TileN(rows),group_tile_prefix_w1,group_tile_prefix_w2,stream);
+	int32_t launch_status = LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,expert_width,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,SPARK_LM_TILE_N,SPARK_LM_TILE_N,group_tile_prefix_w1,group_tile_prefix_w2,stream);
 	return(launch_status == LM_LAUNCH_OK ? cudaSuccess : cudaErrorLaunchFailure);
-}
 }
 
 extern "C" cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, const SparkQwen38LinearView *w1, const SparkQwen38LinearView *w3, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *activated_bf16, uint32_t rows, uint32_t expert_width, float limit, uint32_t multiprocessor_count)
@@ -1598,4 +1596,40 @@ extern "C" cudaError_t SparkQwen38ConfigureCudaKernels(void)
         (const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         (int)(SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION * sizeof(float)));
+}
+
+/*
+ * FP8 grouped expert linear via the common grouped-scalar path (FP8_E4M3
+ * F32B128). The pack stores experts expert-major, so the per-group strides
+ * are constant; source_row_map is the route's packed->source row table.
+ */
+extern "C" cudaError_t SparkQwen38LaunchGroupedExpertLinear(
+	cudaStream_t stream,
+	const SparkQwen38LinearView *view,
+	const void *input_bf16,
+	const uint32_t *source_row_map,
+	const uint32_t *group_row_offset,
+	const uint32_t *group_tile_prefix,
+	void *output_bf16,
+	uint32_t rows,
+	uint32_t multiprocessor_count)
+{
+	uint64_t rows_per_expert;
+	uint64_t payload_stride,scale_stride;
+	if ( view == 0 || input_bf16 == 0 || source_row_map == 0 ||
+		group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 ||
+		view->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
+		view->output_dimension % SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT != 0u ||
+		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 )
+		return(cudaErrorInvalidValue);
+	rows_per_expert = (uint64_t)view->output_dimension / SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT;
+	payload_stride = rows_per_expert * view->input_dimension;
+	scale_stride = (rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u;
+	return(SparkLmHostLaunchGroupedScalarLinear<32u>(stream,
+		SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,
+		view->weight_payload,(const uint8_t *)view->weight_scale_e8m0,
+		payload_stride,scale_stride,
+		input_bf16,source_row_map,rows,group_row_offset,group_tile_prefix,
+		output_bf16,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT,
+		view->input_dimension,rows_per_expert,multiprocessor_count));
 }
