@@ -141,16 +141,16 @@ the module's capacity request scales them by first_layer/layer_count).
 - Stage pack progress at last check: sparkc layer 91/92 (~356 GB), spark4
   44/46 (~339 GB), spark8 65/69, spark1 19/24 - all four packers healthy.
 - REMAINING to a live run, in dependency order:
-  1. Rank slicing + deployment (slicers running on all four stage nodes with
-     the mmap/streaming fix; deploy via tools/k3_deploy_ranks.sh).
-  2. Serving adapter + stage runner implementing the
-     `spark_stage_module_common` ABI over the dispatch (the DSV4 module's
-     serving_adapter.c + stage_runner.c are the pattern); TP4 device
-     collectives wiring for the TP4xPP4 hidden stream.
-  3. ~~The expert_interleave grouped-GEMM wave~~ LANDED: the interleaved
-     launchers + cell staging are in, the refusal is lifted, and the
-     numerical gate (tests/test_k3_interleave_gemm.cu, direct w2 + indirect
-     w1 vs a CPU reference) PASSES on sm_121a, alongside the existing
-     bind/unity compile gate.
-  4. The full-cluster end-to-end run itself: needs a spark ring reservation
+  1. Rank deployment (running: stage-node-local rsync pushes, ~500 MB/s,
+     sha256-verified per pack via tools/k3_deploy_stage.sh).
+  2. ~~Serving adapter + stage runner~~ LANDED: the runner (embed -> slice ->
+     head + TP wiring, the collective hook) and the serving adapter
+     (SparkModelServingAdapterInterface, example config) both compile-gate
+     on sm_121a.
+  3. ~~The expert_interleave grouped-GEMM wave~~ LANDED + gated.
+  4. ~~The rank-sliced dimensions~~ LANDED: the layer calls read the rank
+     pack's shapes through K3_RANK_DIM; the single-spark real-weight gate
+     now PASSES bit-deterministic (0 mismatches, 6/6 identical dumps) and
+     the warm step runs in ~56 ms.
+  5. The full-cluster end-to-end run itself: needs a spark ring reservation
      (live runs are not allowed without one), then `tools/fleet_swap.sh k3`.
