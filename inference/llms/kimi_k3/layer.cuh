@@ -279,6 +279,15 @@ struct K3LayerBuffers
 	float *replay_retention;
 	float *replay_write_gate;
 
+	// TP4: nonzero when the rank's input-dimension-sharded projections
+	// (kda_out, mla_out, routed_up, shared_w2, dense_down) must NOT fold
+	// into the AttnRes partial in their own epilogues. The slice's
+	// layer_collective hook then all-reduces each destination buffer and
+	// adds the SUMMED value into the partial (set at a boundary, add
+	// otherwise) - the layer's local partial would otherwise be one rank's
+	// shard and the next layer would read it as the full sum. Zero keeps
+	// the fused epilogue, which is every single-rank contract.
+	uint32_t tp_sharded;
 	// The recurrent half. Fixed per sequence, never grows with context.
 	uint8_t *kda_state_pool;
 	// BF16 STATE, DEFAULT OFF, AND IT FAILS CLOSED HERE. Nonzero asks for the
@@ -407,7 +416,11 @@ static void K3AttnRes(const K3LayerBuffers *b, const void *score_weight, uint32_
 // Reusing an add as a copy banks twice the value; reusing an add as a restart
 // carries the previous block's sum into the next - both run and both are a
 // different model.
-static void K3PartialSet(const K3LayerBuffers *b, const uint16_t *value, uint32_t rows, cudaStream_t stream)
+// Non-static: the serving tier's TP all-reduce hook (the slice's
+// layer_collective) runs in a different translation unit and folds the
+// SUMMED projection outputs into the partial with the same set-at-boundary
+// / add-otherwise rule the fused epilogue would have applied.
+void K3PartialSet(const K3LayerBuffers *b, const uint16_t *value, uint32_t rows, cudaStream_t stream)
 {
 	LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
 		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
@@ -415,7 +428,7 @@ static void K3PartialSet(const K3LayerBuffers *b, const uint16_t *value, uint32_
 		value,b->attnres_partial_bf16,rows,K3_HIDDEN);
 }
 
-static void K3PartialAdd(const K3LayerBuffers *b, const uint16_t *value, uint32_t rows, cudaStream_t stream)
+void K3PartialAdd(const K3LayerBuffers *b, const uint16_t *value, uint32_t rows, cudaStream_t stream)
 {
 	LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),
 		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
@@ -613,7 +626,8 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,b->gate_bf16,K3_KDA_V_DIM);
 	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->kda_out_weight,b->kda_out_scale,
-		b->attention_out_bf16,partial_accumulate,rows,K3_KDA_V_DIM,K3_HIDDEN,multiprocessors,stream));
+		b->attention_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
+		rows,K3_KDA_V_DIM,K3_HIDDEN,multiprocessors,stream));
 }
 
 // Gated MLA, 24 of 93 including the last layer of the backbone.
@@ -691,7 +705,8 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->value_bf16,b->gate_bf16,K3_MLA_OUT_DIM);
 	return(K3Project<LmBf16Format>(b,b->value_bf16,b->mla_out_weight,b->mla_out_scale,
-		b->attention_out_bf16,partial_accumulate,rows,K3_MLA_OUT_DIM,K3_HIDDEN,multiprocessors,stream));
+		b->attention_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
+		rows,K3_MLA_OUT_DIM,K3_HIDDEN,multiprocessors,stream));
 }
 
 template<class Format>
@@ -829,7 +844,8 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_ROUTED_EXPERT_HIDDEN + 8u) * sizeof(float), stream,
 		b->latent_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->latent_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->routed_up_weight,b->routed_up_scale,
-		b->hidden_bf16,b->attnres_partial_bf16,rows,K3_ROUTED_EXPERT_HIDDEN,K3_HIDDEN,multiprocessors,stream);
+		b->hidden_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
+		rows,K3_ROUTED_EXPERT_HIDDEN,K3_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// The two shared experts run on the pre-projection hidden at full width and
@@ -856,7 +872,8 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// them into hidden, and the slice's PartialAdd that read the sum back,
 	// are both gone, and so is a full-width round trip per MoE layer.
 	status = K3Project<LmBf16Format>(b,b->intermediate_bf16,b->shared_w2_weight,b->shared_w2_scale,
-		b->shared_out_bf16,b->attnres_partial_bf16,rows,K3_SHARED_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream);
+		b->shared_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
+		rows,K3_SHARED_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream);
 	return(status);
 }
 
@@ -886,8 +903,9 @@ static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 		b->gate_up_bf16,b->intermediate_bf16,K3_DENSE_INTERMEDIATE, K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	// the dense layer's module output folds into the partial the same way
 	return(K3Project<LmBf16Format>(b,b->intermediate_bf16,b->dense_down_weight,
-		b->dense_down_scale,b->hidden_bf16,b->attnres_partial_bf16,rows,
-		K3_DENSE_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream));
+		b->dense_down_scale,b->hidden_bf16,
+		b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
+		rows,K3_DENSE_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream));
 }
 
 // The head, already in the split form the full-vocab price demands.
