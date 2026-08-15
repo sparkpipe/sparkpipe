@@ -192,7 +192,15 @@ SparkStatus SparkK3StageRunnerInitialize(
 		(uint64_t)state->module.sizing.mla_layer_count *
 		configuration->kv_pages_per_sequence * 4u);
 	state->vocab = state->module.pack.config.vocab;
-	state->vocab_slice_rows = state->vocab / configuration->tp_degree;
+	/* The rank pack's embed/lm_head are ALREADY the rank's slice: the
+	 * sharder row-split them by the PACK's tp degree, so the rank's rows
+	 * come from the tensor's own shape, never vocab / run_degree (which
+	 * double-divides for a TP4 pack run single-rank, or vice versa). */
+	if ( SparkK3PackLoadEntry(&state->module.pack,"model.embed_tokens.weight",&entry) == 0 &&
+		entry.shape_count >= 1u )
+		state->vocab_slice_rows = entry.shape[0];
+	else
+		state->vocab_slice_rows = state->vocab;
 	/* The TP contract: sharded ranks defer the partial epilogues to the hook. */
 	state->dispatch.buffers->tp_sharded = configuration->tp_degree > 1u ? 1u : 0u;
 	if ( configuration->tp_degree > 1u )
