@@ -10,15 +10,28 @@
 
 /* v1 NCCL configuration. The control port base and the collective
  * identifier come from the environment so the band deployment owns its
- * port block; the bootstrap hosts are the TP4 band's 100G rail addresses. */
+ * port block; the bootstrap hosts are the TP4 band's 100G rail addresses.
+ * The NCCL library is bundled with the runtime (lib/runtime libs pattern)
+ * and resolved through the process LD_LIBRARY_PATH; the env override names
+ * a specific file for out-of-band layouts. */
 #define SPARK_QWEN36_TP_DEFAULT_CONTROL_PORT_BASE 61620u
 #define SPARK_QWEN36_TP_IDENTIFIER 0x513630545031ull
+#define SPARK_QWEN36_TP_DEFAULT_NCCL_LIBRARY "libnccl.so.2"
 
 static const char *SparkQwen36TpDefaultHosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE] =
 {
 	"10.10.100.10", "10.10.100.11", "10.10.100.12", "10.10.100.13",
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
+
+/* The NCCL backend requires a completion callback on every submission and
+ * invokes it synchronously right after enqueue (a stream-order
+ * continuation); the v1 synchronous caller waits on the stream instead. */
+static void SparkQwen36TpCompletion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
+{
+	(void)context;
+	(void)completion;
+}
 
 SparkStatus SparkQwen36TpInitialize(
 	SparkQwen36TpState *tp,
@@ -86,12 +99,14 @@ SparkStatus SparkQwen36TpInitialize(
 	configuration.local_hidden_dimension =
 		SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = max_active_sequence_count;
-	configuration.connect_timeout_milli = 30000u;
-	configuration.operation_timeout_milli = 30000u;
+	configuration.connect_timeout_milli = 120000u;
+	configuration.operation_timeout_milli = 120000u;
 	configuration.control_port_base = SPARK_QWEN36_TP_DEFAULT_CONTROL_PORT_BASE;
 	configuration.collective_identifier = SPARK_QWEN36_TP_IDENTIFIER;
 	configuration.backend_module_path =
-		"/usr/local/cuda/targets/sbsa-linux/lib/libnccl.so";
+		getenv("SPARK_QWEN36_TP_NCCL_LIBRARY") != 0
+			? getenv("SPARK_QWEN36_TP_NCCL_LIBRARY")
+			: SPARK_QWEN36_TP_DEFAULT_NCCL_LIBRARY;
 	configuration.local_host = SparkQwen36TpDefaultHosts[rank];
 	for (index = 0u; index < SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; index++)
 		configuration.rank_hosts[index] = SparkQwen36TpDefaultHosts[index];
@@ -105,7 +120,8 @@ SparkStatus SparkQwen36TpInitialize(
 		return status;
 	}
 	tp->initialized = 1u;
-	tp->next_ordinal = 1u;
+	/* The backend's own ordinal counter starts at zero. */
+	tp->next_ordinal = 0u;
 	fprintf(stderr, "%s ready degree=%u rank=%u\n",
 		SPARK_QWEN36_TP_TAG, degree, rank);
 	return SPARK_STATUS_OK;
@@ -143,6 +159,8 @@ SparkStatus SparkQwen36TpReduceHidden(
 	submission.local_device = buffer;
 	submission.full_device = buffer;
 	submission.cuda_stream = tp->cuda_stream;
+	submission.completion_function = SparkQwen36TpCompletion;
+	submission.completion_context = tp;
 	status = SparkTpDeviceCollectiveSubmitBf16(
 		&tp->collective, &submission);
 	if ( status != SPARK_STATUS_OK )
@@ -173,6 +191,8 @@ SparkStatus SparkQwen36TpReduceU64Max(
 	submission.local_device = buffer;
 	submission.full_device = buffer;
 	submission.cuda_stream = tp->cuda_stream;
+	submission.completion_function = SparkQwen36TpCompletion;
+	submission.completion_context = tp;
 	status = SparkTpDeviceCollectiveSubmitU64Max(
 		&tp->collective, &submission);
 	if ( status != SPARK_STATUS_OK )

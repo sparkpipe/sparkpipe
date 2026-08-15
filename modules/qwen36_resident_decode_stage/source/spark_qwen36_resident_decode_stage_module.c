@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
+#include <inttypes.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1744,6 +1745,7 @@ SparkStatus SparkQwen36ResidentDecodeStageExecute(
         (const SparkQwen36ResidentDecodeStageFrameContext **)&context);
     if (status != SPARK_STATUS_OK)
     {
+        fprintf(stderr, "%s frame_validate_failed status=%d frame_flags=0x%x buffers=%u tps=%u new_tokens=%u active_slots=%u seq_pos=%" PRIu64 "\n", SPARK_QWEN36_MODULE_TAG, (int)status, frame->flags, frame->buffer_count, frame->tokens_per_sequence, frame->new_token_count, frame->active_slot_count, frame->sequence_position);
         atomic_fetch_add_explicit(
             &state->rejected_count,
             1u,
