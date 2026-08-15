@@ -1,0 +1,18 @@
+{
+  "schema": "sparkpipe.performance_adjudication.v1",
+  "date_utc": "2026-08-14",
+  "experiment": "dsv4_csa_active_slot_indexer_topk_tp4_b1_o128",
+  "raw_receipt": "/private/tmp/dsv4-csa-active-interleaved-o128.json",
+  "raw_receipt_sha256": "eea43710fc00c89d73c35c20f2183f3de529b8dfd0f2457114e5ae36c7e5b016",
+  "supersedes_field": "accepted",
+  "original_policy_error": "an arbitrary one-percent minimum threshold was applied",
+  "acceptance_policy": "accept every repeatable bit-exact positive end-to-end delta; no minimum magnitude",
+  "control_tokens_per_second": 38.04350370983576,
+  "candidate_tokens_per_second": 38.40092839583373,
+  "delta_percent": 0.9395156889967504,
+  "paired_delta_percent": [1.132414652113356, 0.9325816813803067, 0.7540912074739392],
+  "positive_pairs": 3,
+  "pair_count": 3,
+  "token_parity": true,
+  "accepted": true
+}

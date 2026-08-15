@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-15",
+  "status": "retained_incremental_exact_full_ring",
+  "measurement_kind": "direct_interleaved_end_to_end_cached_kv_decode",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "workload": {
+    "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    "adapter_id": "spark.dsv4.flash-0731.serving-adapter.tp4.v1",
+    "layout": "TP4",
+    "ranks": [
+      "spark4",
+      "spark5",
+      "spark6",
+      "spark7"
+    ],
+    "stage_count": 4,
+    "batch_size": 1,
+    "request_count": 1,
+    "prompt_tokens": 128,
+    "generated_tokens": 128,
+    "batch_sha256": "ad47693813d04ed65fc67178ab2d783e633282c14ed5445f092f67939aa40b7d",
+    "speculation": false,
+    "prefill": "resident cached prompt KV",
+    "timed_intervals": 127,
+    "linear_weight_codec": 5,
+    "expert_weight_codec": 7,
+    "kv_cache_codec": 1
+  },
+  "comparison": {
+    "control": "exact retained pre-post stack with canonical Query, KV, and indexer post operations",
+    "candidate": "same stack with fixed KV and indexer post fusions using runtime inverse kernel ABI; Query remains canonical"
+  },
+  "correctness": {
+    "token_count": 128,
+    "token_vector_encoding": "comma-separated decimal token IDs plus trailing newline",
+    "token_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+    "all_control_runs_exact": true,
+    "all_candidate_runs_exact": true,
+    "all_process_status_zero": true,
+    "short_gate_token_count": 24,
+    "short_gate_token_csv_newline_sha256": "18cd1dfc7c7fce04adf200916184cee952a185367412a1780c0d28486c42cbd8"
+  },
+  "identity": {
+    "control_driver_sha256": "53c758ae8f8e84ec950e3103a009c0189758ac8a11698f5cd416105a8cf4eb87",
+    "candidate_driver_sha256": "07c63b069c066694fb184f3ebd807e9f28f364d1b929389549df9d659f49dc1d",
+    "control_runtime_root": "/tmp/dsv4-no-postfusions-53c758ae-runtime",
+    "candidate_runtime_root": "/tmp/dsv4-kv-indexer-fixed-07c63b06-runtime"
+  },
+  "result": {
+    "control_tokens_per_second": [
+      40.22623243255814,
+      40.182297910132924,
+      40.161808866772176
+    ],
+    "candidate_tokens_per_second": [
+      40.51840265290253,
+      40.388328486573315,
+      40.29550512600517
+    ],
+    "paired_delta_percent": [
+      0.7263176357224843,
+      0.5127396569035714,
+      0.33289401798732854
+    ],
+    "control_mean_tokens_per_second": 40.19011306982108,
+    "candidate_mean_tokens_per_second": 40.400745421827004,
+    "aggregate_delta_percent": 0.5240899711827174,
+    "mean_paired_delta_percent": 0.5239837702044614,
+    "positive_pairs": 3,
+    "pair_count": 3,
+    "directly_measured": true
+  },
+  "normalized_context": {
+    "pre_post_stack_direct_delta_percent": 5.92656568947727,
+    "incremental_kv_indexer_direct_delta_percent": 0.5240899711827174,
+    "multiplicatively_composed_delta_percent": 6.481716197074094,
+    "directly_measured": false,
+    "note": "The composed value normalizes two separate direct experiments; it is not a direct integrated-source measurement."
+  },
+  "receipt_sha256": {
+    "control-run1.json": "83bd296982064c8e0240193152753c626a46c774b20cf0d0577d66427760faa9",
+    "candidate-run1.json": "255a5ca49d6161b2daed2753eeba8b43e992b82762b2fa1eebb6ff939750c9c4",
+    "control-run2.json": "48ca0c33d67b9aaa9c0c10b3c94958baad5c12ac29b0a749315f4c1062c482a3",
+    "candidate-run2.json": "f0cfc2ceaba19d4727e136b36c82b056e94071c921057bc4ad510995e3ad6fd1",
+    "control-run3.json": "408fde403754fc46358ab1e259c4a5850233251586300f28721262be30651de5",
+    "candidate-run3.json": "630e07dd64586ea750d88eead6303dec1b955f589e7d1506d9dffb8681c8f848",
+    "exact-smoke-o24.json": "c9b687a1c4f6df4f99e9ed8dec9de7c17e6a0b02688f5c22dfaa2e407a2fa90e"
+  },
+  "decision": "retain because all three repeatable bit-exact end-to-end pairs are positive; a 0.5241 percent gain is a gain, not a failure"
+}

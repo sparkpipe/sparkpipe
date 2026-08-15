@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-15",
+  "repository": "https://github.com/sparkpipe/sparkpipe.git",
+  "branch": "codex/dsv4-tp4-b1-lean-handoff",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "status": "selected_branch_source_exact_live_validated_not_merged_main",
+  "production_source": {
+    "inference/kernels/dtype.cuh": "d8967399f717bb13562e9835c3fff8542e7b88a5b764f09dede6dfbf2ee31195",
+    "model-families/common/include/sparkpipe/spark_lm_kernels.cuh": "a7261f234ac6515fa4eda8daf6d543977511bdc6e73e6ec579d69a70c8bd3b0f",
+    "include/sparkpipe/spark_head_screen.h": "8d1d6caa837313307392ea61611318a85a2e008a274cb48f5195d9b6b4bd852c",
+    "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu": "81dc95083e353f6a0edf991d31c5a6f36731aafd0a36069104e2957e1cd52311",
+    "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c": "4b6d7636869dd9820877513eebfba80c351ab85b7b0a4d7a920dbda4a92e421e",
+    "modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu": "f9c6d83b6bad0def16897eac8775b49372238a8c265ff504c58dfc68a7ef2cdd"
+  },
+  "source_contract_tests": {
+    "tests/test_dsv4_driver_source_contracts.py": "bd38587668066f4e054f8a4732b1523a230a9b75000529859eddc6c855fe8a1f",
+    "tests/test_dsv4_native_compute_source.py": "7c9069222ca9d3270894d3858eb95daaa4ecd7980d8ae30dfeab70280337d060",
+    "tests/test_grouped_moe_source_contracts.py": "655500b23d0347d44d80d5a9bb7fcaf29c1825fd532ec6e474a7c852bde9abb2",
+    "tests/test_dsv4_hc_residual_fusion_source.py": "eedfac96363071411e82d67b58f3d0a77fa857cfe6da9b58f7515e8e05994000",
+    "tests/test_dsv4_indexer_post_fusion_source.py": "9055cbe817c551aad2c7ea90506217ac5ca06a1eb1323de73b1f2a63a5030c17"
+  },
+  "model": {
+    "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    "adapter_id": "spark.dsv4.flash-0731.serving-adapter.tp4.v1",
+    "linear_weight_codec": 5,
+    "expert_weight_codec": 7,
+    "kv_cache_codec": 1
+  },
+  "workload": {
+    "layout": "TP4",
+    "ranks": ["spark4", "spark5", "spark6", "spark7"],
+    "batch_size": 1,
+    "request_count": 1,
+    "prompt_tokens": 128,
+    "generated_tokens": 128,
+    "timed_decode_intervals": 127,
+    "prefill": "resident cached prompt KV",
+    "speculation": false
+  },
+  "correctness": {
+    "o24_token_csv_newline_sha256": "18cd1dfc7c7fce04adf200916184cee952a185367412a1780c0d28486c42cbd8",
+    "o128_token_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+    "ga_stage_pack_validator": "PASS",
+    "all_selected_ab_outputs_exact": true
+  },
+  "performance": {
+    "integrated_lean_mean_tokens_per_second": 40.45530384743696,
+    "best_contemporaneous_lean_control_mean_tokens_per_second": 40.47526543352803,
+    "target_tokens_per_second": 50.0,
+    "target_achieved": false
+  },
+  "deployed_branch_artifact": {
+    "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+    "driver_sha256_all_four_ranks": "3d962820608fbad251aa50b7650dba2ab4b1d19ec378251c0e0ee36922e7fce4",
+    "model_package_sha256": "664a213dfe2924dafd490ff4bb7a4dc84ba77f167f63cecc20305decbe04c53c",
+    "archive_sha256": "99fb279d3ef02f8b351a6737fc11dbe0f4c5e8b7d723f4fc1e45c38c917b4a35",
+    "model_resident_configuration_sha256": "aa9e098fbd6a34e9bc3c47d71ccff2981d2451a79ee038e3bbc50b2b2122ef6b",
+    "stage_configuration_sha256": "a7c8be460bc7c2f3571483dfb6fa7470a066b9c5300c8bf22164f3b8a8673280",
+    "process_active_at_handoff": false
+  },
+  "receipt_summaries": {
+    "qualification/dsv4/performance/tp4_b1_20260814/csa_active_slot_adjudication_da7f/summary.json": "5616acfdf60206c92755be583537c067553180522c765622f6ebf6366442fbe2",
+    "qualification/dsv4/performance/tp4_b1_20260815/pre_post_stack_vs_resident_chain_a2bfd99f/summary.json": "56b28c23f3a280fc8b81ff4b99cc69505ca1a57891c6b4494e71c8f61f8e5c71",
+    "qualification/dsv4/performance/tp4_b1_20260815/kv_indexer_runtime_inverse_07c63b06/summary.json": "0fa7183f71b8cb069d12cf6265e79648fd7e463fa33968654c434fd766be3cae",
+    "qualification/dsv4/performance/tp4_b1_20260815/query_runtime_inverse_e9116c07/summary.json": "ab25317e276f30946410060c02099c70954cbf687b90a6cdc98bfc4888636683",
+    "qualification/dsv4/performance/tp4_b1_20260815/query_selection_kv_indexer_vs_all_post/summary.json": "09a3e2971f10c6f1eb84a9b6f8297ec66f3af48b218a5398400b97f5473fc15e",
+    "qualification/dsv4/performance/tp4_b1_20260814/projection_precollective_overlap_da7f/full_ring_rejection_5e0a3b14/summary.json": "558bd0df1744c7f7c43e5c409e985d4fcfce8606adf827de9d6a74a8eb299f6b",
+    "qualification/dsv4/performance/tp4_b1_20260815/integrated_lean_3d962820/summary.json": "8568ec900068bb12de1c376cf81c9bd8398476e41205154b6141f7a7116f40db",
+    "qualification/dsv4/performance/tp4_b1_20260815/hc_cooperative_full_ring_rejection_a7ebd51c/summary.json": "bef14d8252428c4cb4a1a6d59b45067fa363000957c9f79fd13923da5f4aa69e"
+  },
+  "quarantined_transport": {
+    "patch_path": "qualification/dsv4/performance/tp4_b1_20260815/rolling_program_quarantine_4678dfcf/rolling-program-freeze.patch",
+    "patch_sha256": "9ed365260fd9ba08c75372699b51628f246054fe5f39cbb5dbfebd886b609bc3",
+    "transport_source_sha256": "4678dfcf1ba8afde38b8851b1be1a02c37389d9689978c21194c4e11ab40ee81",
+    "integrated": false,
+    "blocker": "current source lacks hardware provenance and exact {1024,4096} runtime execution"
+  },
+  "removed_from_production": [
+    "fused Query RMS plus RoPE call",
+    "projection-precollective overlap",
+    "cooperative Hc finalize plus pre-reduce",
+    "persistent expert schedule",
+    "persistent dense projection bundle",
+    "persistent weight read-ahead queue"
+  ],
+  "qualification_limit": "branch evidence only; merge, clean pull, rebuild, restart, and exact rerun are required for zero-drift production qualification"
+}
