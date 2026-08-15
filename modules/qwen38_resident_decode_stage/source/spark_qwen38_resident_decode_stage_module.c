@@ -1,11 +1,8 @@
-/* Qwen 3.8 Max resident decode stage - loader skeleton.
- *
- * This revision implements the complete stage-pack load and validation path
- * (geometry compare, per-entry shape/format checks, binding, coverage
- * verification) and the module entry points. Layer execution, pools and the
- * CUDA kernels land in the following revisions; Execute/Admit/Snapshot fail
- * closed with SPARK_STATUS_UNSUPPORTED until then, so this skeleton can
- * never serve a token.
+/* Qwen 3.8 Max resident decode stage: stage-pack load + validation, a lean
+ * decode-only Execute (GDN/attention + routed FP8 MoE per layer, argmax
+ * head on the final stage), and the firmware's first-class hidden-transport
+ * contract for PP handoffs. Prefill, MTP and speculation fail closed with
+ * SPARK_STATUS_UNSUPPORTED.
  */
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
@@ -100,6 +97,7 @@ typedef struct SparkQwen38ModuleState
 	SparkQwen38ModuleSlot slots[SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	uint32_t stage_count;
 	uint32_t stage_index;
+	uint32_t allow_unqualified_execution;
 	uint32_t first_layer_index;
 	uint32_t layer_count;
 	uint32_t owns_embedding;
@@ -441,6 +439,7 @@ SparkStatus SparkQwen38ResidentDecodeStageInitialize(
 	state = (SparkQwen38ModuleState *)calloc(1u,sizeof(*state));
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	state->allow_unqualified_execution = allow_unqualified_execution;
 	state->ledger.module_tag = SPARK_QWEN38_MODULE_TAG;
 	atomic_init(&state->submitted_count,0u);
 	atomic_init(&state->completed_count,0u);
@@ -858,39 +857,117 @@ static cudaError_t SparkQwen38ModuleEmitHead(SparkQwen38ModuleState *state, Spar
 	return(error);
 }
 
-static SparkStatus SparkQwen38ModuleRunDecode(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, SparkModelDriverFrame *frame, uint32_t rows)
+/* The firmware's transport contract (firmware header, frame context): a
+ * stage with stage_index > 0 requires HIDDEN_INPUT_TRANSPORT on every
+ * frame and a stage with stage_index + 1 < stage_count requires
+ * HIDDEN_OUTPUT_TRANSPORT; the module refuses a frame whose transport
+ * flags disagree with its position, in either direction. The one escape is
+ * the unqualified smoke path (context absent AND the env gate set), which
+ * runs the stage on its own buffers. */
+static SparkStatus SparkQwen38ModuleValidateFrameContext(SparkQwen38ModuleState *state, const SparkQwen38ResidentDecodeStageFrameContext *context)
+{
+	uint32_t wants_input,wants_output,has_input,has_output;
+	wants_input = state->stage_index != 0u ? 1u : 0u;
+	wants_output = state->stage_index + 1u < state->stage_count ? 1u : 0u;
+	if ( context == 0 )
+		return((wants_input == 0u && wants_output == 0u) || state->allow_unqualified_execution != 0u
+			? SPARK_STATUS_OK
+			: SPARK_STATUS_INVALID_ARGUMENT);
+	if ( context->abi_version != SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION ||
+		context->descriptor_bytes != sizeof(*context) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	has_input = (context->flags & SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u ? 1u : 0u;
+	has_output = (context->flags & SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u ? 1u : 0u;
+	if ( has_input != wants_input || has_output != wants_output )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( has_input != 0u && (context->hidden_input_transport_session == 0 || context->hidden_input_post_receive_function == 0) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( has_output != 0u && (context->hidden_output_transport_session == 0 || context->hidden_output_send_function == 0) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (context->flags & SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW) != 0u )
+		return(SPARK_STATUS_UNSUPPORTED);
+	return(SPARK_STATUS_OK);
+}
+
+/* Land the previous stage's hidden residual into the slot's hidden buffer. */
+static SparkStatus SparkQwen38ModuleConsumeHiddenInput(SparkQwen38ModuleSlot *slot, SparkQwen38ResidentDecodeStageFrameContext *context, uint32_t rows)
+{
+	SparkHiddenTransportPacket *packet = &context->hidden_input_packet;
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error;
+	SparkStatus status;
+	memset(packet,0,sizeof(*packet));
+	status = context->hidden_input_post_receive_function(context->hidden_input_transport_session,packet);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( packet->hidden_bf16 == 0 || packet->active_sequence_count < rows ||
+		packet->hidden_dimension != SPARK_QWEN38_MODEL_HIDDEN_DIMENSION ||
+		packet->bytes_per_sequence < SPARK_QWEN38_MODEL_HIDDEN_BF16_BYTES )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	error = cudaMemcpyAsync(slot->hidden_bf16,packet->hidden_bf16,(uint64_t)rows * SPARK_QWEN38_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,stream);
+	return(SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"hidden_input"));
+}
+
+/* Hand the slot's final hidden residual to the next stage. */
+static SparkStatus SparkQwen38ModuleEmitHiddenOutput(SparkQwen38ModuleSlot *slot, SparkQwen38ResidentDecodeStageFrameContext *context, uint32_t rows)
+{
+	SparkHiddenTransportPacket *packet = &context->hidden_output_packet;
+	memset(packet,0,sizeof(*packet));
+	packet->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+	packet->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_PACKET_BYTES;
+	packet->flags = SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 | SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER;
+	packet->active_sequence_count = rows;
+	packet->hidden_dimension = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
+	packet->bytes_per_sequence = SPARK_QWEN38_MODEL_HIDDEN_BF16_BYTES;
+	packet->hidden_bf16 = slot->hidden_bf16;
+	packet->cuda_stream = slot->cuda_stream;
+	return(context->hidden_output_send_function(context->hidden_output_transport_session,packet));
+}
+
+static SparkStatus SparkQwen38ModuleRunDecode(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, SparkModelDriverFrame *frame, SparkQwen38ResidentDecodeStageFrameContext *context, uint32_t rows)
 {
 	SparkQwen38KvBlockTableView table;
 	uint32_t block_indices[SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t block_counts[SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t layer,row;
+	uint32_t wants_input,wants_output;
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	SparkStatus status;
 	cudaError_t error;
-	memset(&table,0,sizeof(table));
-	for (row = 0; row < rows; row++)
+	/* The KV table comes from the frame context when the serving adapter
+	 * provides one; the synthesized identity table is the smoke path. */
+	if ( context != 0 && context->kv_block_table != 0 )
+		table = *context->kv_block_table;
+	else
 	{
-		block_indices[row] = row;
-		block_counts[row] = 1u;
+		memset(&table,0,sizeof(table));
+		for (row = 0; row < rows; row++)
+		{
+			block_indices[row] = row;
+			block_counts[row] = 1u;
+		}
+		table.abi_version = SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION;
+		table.descriptor_bytes = sizeof(table);
+		table.block_token_count = SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+		table.lane_count = state->max_active_sequence_count;
+		table.lane_stride = 1u;
+		table.lane_capacity = state->max_active_sequence_count;
+		table.physical_block_indices = block_indices;
+		table.lane_physical_block_counts = block_counts;
+		table.host_physical_block_indices = block_indices;
+		table.host_lane_physical_block_counts = block_counts;
 	}
-	table.abi_version = SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION;
-	table.descriptor_bytes = sizeof(table);
-	table.block_token_count = SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-	table.lane_count = state->max_active_sequence_count;
-	table.lane_stride = 1u;
-	table.lane_capacity = state->max_active_sequence_count;
-	table.physical_block_indices = block_indices;
-	table.lane_physical_block_counts = block_counts;
-	table.host_physical_block_indices = block_indices;
-	table.host_lane_physical_block_counts = block_counts;
 	status = SparkQwen38ModuleUploadRows(state,slot,frame,rows);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	wants_input = context != 0 && (context->flags & SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u ? 1u : 0u;
 	if ( state->owns_embedding != 0u )
 	{
 		error = SparkQwen38LaunchEmbeddingGather(stream,slot->input_token_ids,state->token_embedding_bf16,slot->hidden_bf16,rows);
 		status = SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"embedding");
 	}
+	else if ( wants_input != 0u )
+		status = SparkQwen38ModuleConsumeHiddenInput(slot,context,rows);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
@@ -899,6 +976,9 @@ static SparkStatus SparkQwen38ModuleRunDecode(SparkQwen38ModuleState *state, Spa
 		return(status);
 	if ( state->owns_final_head != 0u )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,SparkQwen38ModuleEmitHead(state,slot,frame,rows),"head_emit");
+	wants_output = context != 0 && (context->flags & SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u ? 1u : 0u;
+	if ( status == SPARK_STATUS_OK && wants_output != 0u )
+		status = SparkQwen38ModuleEmitHiddenOutput(slot,context,rows);
 	error = cudaStreamSynchronize(stream);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"stream_sync");
@@ -910,6 +990,7 @@ SparkStatus SparkQwen38ResidentDecodeStageExecute(
     SparkModelDriverFrame *frame)
 {
 	SparkQwen38ModuleState *state = (SparkQwen38ModuleState *)module_state;
+	SparkQwen38ResidentDecodeStageFrameContext *context;
 	SparkQwen38ModuleSlot *slot;
 	uint32_t rows,row;
 	SparkStatus status;
@@ -917,6 +998,10 @@ SparkStatus SparkQwen38ResidentDecodeStageExecute(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
+	context = (SparkQwen38ResidentDecodeStageFrameContext *)frame->user_context;
+	status = SparkQwen38ModuleValidateFrameContext(state,context);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	rows = frame->active_slot_count;
 	if ( rows == 0u || rows > state->max_active_sequence_count )
 	{
@@ -935,7 +1020,7 @@ SparkStatus SparkQwen38ResidentDecodeStageExecute(
 		slot->host_context_lengths[row] = (uint32_t)((frame->sequence_position + row) % SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) + 1u;
 	}
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-	status = SparkQwen38ModuleRunDecode(state,slot,frame,rows);
+	status = SparkQwen38ModuleRunDecode(state,slot,frame,context,rows);
 	if ( status == SPARK_STATUS_OK )
 	{
 		atomic_fetch_add_explicit(&state->completed_count,1u,memory_order_relaxed);
