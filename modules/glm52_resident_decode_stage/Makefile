@@ -94,7 +94,7 @@ adapter:
 	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
 	@mkdir -p "$(BUILD_DIRECTORY)"
 	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC $(ADAPTER_SHARED_FLAGS) \
-		$(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) \
+		-I$(REPOSITORY_ROOT)/src $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) \
 		source/spark_glm52_serving_adapter.c \
 		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
 		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
