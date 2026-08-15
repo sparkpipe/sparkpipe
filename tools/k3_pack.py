@@ -575,7 +575,8 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
 
     payload_path = Path(str(out_path) + ".payload")
     pack = Pack(payload_path)
-    L = "language_model.model.layers.{}."
+    L = "model.layers.{}."
+    SL = "language_model.model.layers.{}."
 
     def bf(dst, src, shape=None):
         pack.add(dst, reader.bf16(src, shape), KIND_BF16,
@@ -590,14 +591,15 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
 
     for layer in range(first_layer, first_layer + layer_count):
         p = L.format(layer)
+        sp = SL.format(layer)
         linear = types[layer] == "linear_attention"
-        bf(p + "attn_norm_weight", p + "input_layernorm.weight", (hidden,))
-        g = reader.bf16(p + "self_attention_res_norm.weight", (hidden,))
-        w = reader.bf16(p + "self_attention_res_proj.weight", (1, hidden))
+        bf(p + "attn_norm_weight", sp + "input_layernorm.weight", (hidden,))
+        g = reader.bf16(sp + "self_attention_res_norm.weight", (hidden,))
+        w = reader.bf16(sp + "self_attention_res_proj.weight", (1, hidden))
         pack.add(p + "attnres_attn_weight", gamma_fold_bf16(w, g, hidden),
                  KIND_BF16, [1, hidden])
         if linear:
-            a = p + "self_attn."
+            a = sp + "self_attn."
             # THE FUSED WIDE TENSOR, OUTPUT_DIM_HEADS CLASS. q|k|v|beta as
             # one [sum_out, hidden] BF16 tensor: one GEMM over normed_bf16
             # replaces four launches, and the section table in the manifest
@@ -642,7 +644,7 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
                      KIND_F32, [kda_head])
             bf(p + "kda_out_weight", a + "o_proj.weight", (hidden, kda_dim))
         else:
-            a = p + "self_attn."
+            a = sp + "self_attn."
             bf(p + "mla_q_down_weight", a + "q_a_proj.weight", (q_lora, hidden))
             bf(p + "mla_q_norm_weight", a + "q_a_layernorm.weight", (q_lora,))
             bf(p + "mla_kv_a_weight", a + "kv_a_proj_with_mqa.weight",
@@ -663,15 +665,15 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
                      KIND_BF16, [heads * v_head, hidden],
                      {"shard_class": "output_dim_heads"})
             bf(p + "mla_out_weight", a + "o_proj.weight", (hidden, heads * v_head))
-        bf(p + "mlp_norm_weight", p + "post_attention_layernorm.weight", (hidden,))
-        g = reader.bf16(p + "mlp_res_norm.weight", (hidden,))
-        w = reader.bf16(p + "mlp_res_proj.weight", (1, hidden))
+        bf(p + "mlp_norm_weight", sp + "post_attention_layernorm.weight", (hidden,))
+        g = reader.bf16(sp + "mlp_res_norm.weight", (hidden,))
+        w = reader.bf16(sp + "mlp_res_proj.weight", (1, hidden))
         pack.add(p + "attnres_mlp_weight", gamma_fold_bf16(w, g, hidden),
                  KIND_BF16, [1, hidden])
         # Routed layers ship their MoE under block_sparse_moe; the dense
         # replacement layer keeps the mlp.gate_proj naming.
-        dense_m = p + "mlp."
-        m = p + "block_sparse_moe."
+        dense_m = sp + "mlp."
+        m = sp + "block_sparse_moe."
         if m + "gate.weight" not in reader.names():
             # the dense layer: one MLP, no router, no experts
             w1 = reader.bf16(dense_m + "gate_proj.weight")
