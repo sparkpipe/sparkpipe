@@ -1,0 +1,47 @@
+{
+  "schema_version": 3,
+  "model_revision": "d2dc35658bcf77e66643428cb52e774cc3b5bd29",
+  "stage_pack_path": "packs/qwen38_fp8_tp4_pp4_stage.spstage",
+  "max_sequence_positions": 262144,
+  "cuda_graph_count_by_pp_stage": [1, 1, 1, 1],
+  "tp_collective": {
+    "backend": "hidden_transport",
+    "backend_module_path": "lib/hidden_transport.so",
+    "collective_identifier": 134217728,
+    "listen_port": 66620,
+    "connect_timeout_milli": 120000,
+    "operation_timeout_milli": 120000,
+    "peer_hosts": [
+      "spark0-mgmt", "spark1-mgmt", "spark2-mgmt", "spark3-mgmt",
+      "spark4-mgmt", "spark5-mgmt", "spark6-mgmt", "spark7-mgmt",
+      "spark8-mgmt", "spark9-mgmt", "sparka-mgmt", "sparkb-mgmt",
+      "sparkc-mgmt", "sparkd-mgmt", "sparke-mgmt", "sparkf-mgmt"
+    ],
+    "peer_ports": [
+      66620, 66621, 66622, 66623,
+      66624, 66625, 66626, 66627,
+      66628, 66629, 66630, 66631,
+      66632, 66633, 66634, 66635
+    ],
+    "algorithms": [
+      "recursive_doubling", "direct_all_to_all", "counter_rotating_split_ring"
+    ],
+    "direct_all_to_all_max_payload_bytes": 81920,
+    "split_ring_min_payload_bytes": 655360,
+    "rail_peer_hosts": [
+      [
+        "10.10.200.0", "10.10.200.1", "10.10.200.2", "10.10.200.3",
+        "10.10.200.4", "10.10.200.5", "10.10.200.6", "10.10.200.7",
+        "10.10.200.8", "10.10.200.9", "10.10.200.10", "10.10.200.11",
+        "10.10.200.12", "10.10.200.13", "10.10.200.14", "10.10.200.15"
+      ],
+      [
+        "10.10.100.10", "10.10.100.11", "10.10.100.12", "10.10.100.13",
+        "10.10.100.14", "10.10.100.15", "10.10.100.16", "10.10.100.17",
+        "10.10.100.18", "10.10.100.19", "10.10.100.20", "10.10.100.21",
+        "10.10.100.22", "10.10.100.23", "10.10.100.24", "10.10.100.25"
+      ]
+    ],
+    "step_rail_indices": [0, 1, 1]
+  }
+}
