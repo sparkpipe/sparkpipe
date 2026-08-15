@@ -63,6 +63,7 @@ typedef struct SparkK3RunnerState
 	uint32_t max_rows;
 	uint32_t max_context;
 	uint32_t multiprocessors;
+	uint64_t kv_page_bytes;
 } SparkK3RunnerState;
 
 static uint32_t K3RunnerFirstLayer(uint32_t stage_index)
@@ -146,8 +147,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 		configuration->stage_count != 4u ||
 		configuration->rank_pack_path == 0 ||
 		configuration->max_active_sequence_count == 0u ||
-		configuration->max_input_row_count == 0u ||
-		configuration->kv_page_bytes == 0u )
+		configuration->max_input_row_count == 0u )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	memset(runner, 0, sizeof(*runner));
 	state = new SparkK3RunnerState;
@@ -166,6 +166,12 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->max_rows = configuration->max_input_row_count;
 	state->max_context = configuration->resident_sequence_capacity;
 	state->multiprocessors = configuration->multiprocessors;
+	/* Zero kv_page_bytes means the K3 latent KV geometry (the adapter is
+	 * CUDA-free and cannot see it). */
+	if ( configuration->kv_page_bytes == 0u )
+		state->kv_page_bytes = K3GlobalKv::kPageBytes;
+	else
+		state->kv_page_bytes = configuration->kv_page_bytes;
 	runner->stats.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	runner->stats.descriptor_bytes = (uint32_t)sizeof(SparkK3StageRunnerStats);
 	/* Pack + bind + pools + device objects. */
@@ -179,7 +185,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 		configuration->max_active_sequence_count,
 		configuration->max_input_row_count,
 		configuration->kv_pages_per_sequence,
-		configuration->kv_page_bytes, 0) != SPARK_K3_DISPATCH_OK )
+		state->kv_page_bytes, 0) != SPARK_K3_DISPATCH_OK )
 		{ SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
 	if ( SparkK3DispatchRegisterPack(&state->module.pack) != SPARK_K3_DISPATCH_OK ||
 		SparkK3DispatchBindWeights(&state->dispatch,&state->module.pack,
