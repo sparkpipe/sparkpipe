@@ -215,8 +215,9 @@ def pro_build_records(contract: Mapping[str, object], first_layer: int,
 
 def pro_pack_header(records, first_layer: int, layer_count: int,
                     file_bytes: int, codecs) -> bytes:
-    packed_mtp_layer_count = int(any(
-        record.layer == flash.MTP_LAYER for record in records))
+    # The header declares the MODEL's packed MTP count (1 for Pro), not
+    # whether this particular slice carries the MTP records.
+    packed_mtp_layer_count = PRO_MTP_PACKED
     return flash.HEADER_STRUCT.pack(
         0x34565344, flash.FORMAT_VERSION, flash.HEADER_STRUCT.size,
         flash.ENTRY_STRUCT.size, flash.CODEC_ABI_VERSION, *codecs,
