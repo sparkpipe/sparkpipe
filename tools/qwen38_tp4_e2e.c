@@ -163,11 +163,11 @@ int main(int argc, char **argv)
 	uint32_t prompt[PROMPT_TOKENS] = { 760u, 6511u, 314u, 9338u, 369u };
 	uint32_t row_lane_indices[PROMPT_TOKENS] = { 0u, 0u, 0u, 0u, 0u };
 	uint64_t row_positions[PROMPT_TOKENS] = { 0u, 1u, 2u, 3u, 4u };
-	uint64_t row_sequence_ids[PROMPT_TOKENS] = { 71001ull, 71001ull, 71001ull, 71001ull, 71001ull };
+	uint64_t row_sequence_ids[PROMPT_TOKENS];
 	uint32_t decode_token_ids[1];
 	uint32_t decode_lane_indices[1] = { 0u };
 	uint64_t decode_positions[1];
-	uint64_t decode_sequence_ids[1] = { 71001ull };
+	uint64_t decode_sequence_ids[1];
 	uint32_t emitted[64];
 	char adapter_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 	SparkStatus status;
@@ -175,11 +175,18 @@ int main(int argc, char **argv)
 	uint32_t previous_token;
 	uint64_t submission_id = 1ull;
 	uint32_t mismatches = 0u;
-	if ( argc != 3 )
+	uint64_t sequence_id_value = 71001ull;
+	if ( argc != 3 && argc != 4 )
 	{
-		fprintf(stderr, "usage: %s DEPLOYMENT_JSON RUNTIME_ROOT\n", argv[0]);
+		fprintf(stderr, "usage: %s DEPLOYMENT_JSON RUNTIME_ROOT [SEQUENCE_ID]\n", argv[0]);
 		return(2);
 	}
+	if ( argc == 4 )
+		sequence_id_value = strtoull(argv[3], 0, 0);
+	uint32_t prompt_index;
+	for (prompt_index = 0u; prompt_index < PROMPT_TOKENS; prompt_index++)
+		row_sequence_ids[prompt_index] = sequence_id_value;
+	decode_sequence_ids[0] = sequence_id_value;
 	SparkModelResidentDeploymentReset(&deployment);
 	status = SparkModelResidentDeploymentLoad(argv[1], &deployment);
 	if ( status != SPARK_STATUS_OK ) { fprintf(stderr, "deployment load status=%d\n", (int)status); return(1); }
@@ -212,14 +219,14 @@ int main(int argc, char **argv)
 	lane.request_id = 71001ull;
 	lane.request_generation = 1ull;
 	lane.step_generation = 1ull;
-	lane.sequence_id = 71001ull;
+	lane.sequence_id = sequence_id_value;
 	lane.resident_sequence_slot = 0u;
 	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	memset(&submission, 0, sizeof(submission));
 	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
 	submission.request_id = 71001ull;
-	submission.sequence_id = 71001ull;
+	submission.sequence_id = sequence_id_value;
 	submission.control_generation = 1ull;
 	submission.transaction_id = 1ull;
 	submission.dispatch_generation = 1ull;
