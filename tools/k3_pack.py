@@ -464,12 +464,36 @@ def q_fold_absorb(q_b_raw, kv_b_raw, heads, nope, rope, v_head, kv_lora,
 # -- the pack itself ------------------------------------------------------------
 
 class Pack:
-    def __init__(self, out_path):
-        self.handle = open(out_path, "wb")
+    """Sequential payload writer with a side journal: every entry is appended
+    to <out>.journal only AFTER its bytes are on disk, so a killed run can
+    resume by re-walking the journal, truncating to the last complete tensor,
+    and skipping already-emitted tensors (the emission order is deterministic,
+    so re-generated entries and offsets are byte-identical)."""
+    def __init__(self, out_path, resume=False):
+        self.journal_path = str(out_path) + ".journal"
         self.manifest = {}
         self.offset = 0
+        if resume and os.path.exists(self.journal_path):
+            with open(self.journal_path, "r", encoding="utf-8") as journal:
+                for line in journal:
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    name = record["name"]
+                    self.manifest[name] = record["entry"]
+                    self.offset = record["end"]
+            self.handle = open(out_path, "r+b")
+            self.handle.truncate(self.offset)
+            self.handle.seek(0, 2)
+        else:
+            self.handle = open(out_path, "wb")
+            with open(self.journal_path, "w", encoding="utf-8"):
+                pass
+        self.journal = open(self.journal_path, "a", encoding="utf-8")
 
     def add(self, name, payload, kind, shape, extra=None):
+        if name in self.manifest:
+            return
         pad = (-self.offset) % ALIGN
         if pad:
             self.handle.write(b"\0" * pad)
@@ -482,6 +506,15 @@ class Pack:
         self.manifest[name] = entry
         self.handle.write(raw)
         self.offset += len(raw)
+        self.journal.write(json.dumps({"name": name, "entry": entry,
+                                       "end": self.offset},
+                                      separators=(",", ":")) + "\n")
+        self.journal.flush()
+
+    def close(self):
+        self.journal.close()
+        self.handle.close()
+        os.unlink(self.journal_path)
 
 
 def validate_layout(manifest, config):
@@ -574,11 +607,13 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
     w2_geom = interleave_geometry(latent, inter, experts)
 
     payload_path = Path(str(out_path) + ".payload")
-    pack = Pack(payload_path)
+    pack = Pack(payload_path, resume=payload_path.exists())
     L = "model.layers.{}."
     SL = "language_model.model.layers.{}."
 
     def bf(dst, src, shape=None):
+        if dst in pack.manifest:
+            return
         pack.add(dst, reader.bf16(src, shape), KIND_BF16,
                  shape if shape is not None else [0])
 
@@ -604,9 +639,13 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
             # one [sum_out, hidden] BF16 tensor: one GEMM over normed_bf16
             # replaces four launches, and the section table in the manifest
             # is the split contract.
-            sections, rows = kda_fused_qkvb_sections(kda_heads, kda_head,
-                                                     kda_head)
-            fused = b"".join((
+            if p + "kda_qkv_beta_weight" in pack.manifest:
+                fused = b""
+                sections, rows = [], 0
+            else:
+                sections, rows = kda_fused_qkvb_sections(kda_heads, kda_head,
+                                                         kda_head)
+                fused = b"".join((
                 reader.bf16(a + "q_proj.weight", (kda_dim, hidden)),
                 reader.bf16(a + "k_proj.weight", (kda_dim, hidden)),
                 reader.bf16(a + "v_proj.weight", (kda_dim, hidden)),
@@ -697,7 +736,8 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
         # concat, w2 = down) but there is no separate scale plane to bind,
         # shard or prefetch. Geometry was validated before the layer loop.
         w1_pay, w1_sc, w2_pay, w2_sc = [], [], [], []
-        for e in range(experts):
+        experts_done = p + "expert_w1_weight" in pack.manifest
+        for e in range(0 if experts_done else experts):
             base = m + f"experts.{e}."
             g_name, g_scale = quant_pair(reader, base + "w1")
             u_name, u_scale = quant_pair(reader, base + "w3")
@@ -743,8 +783,7 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
 
     validate_layout(pack.manifest, {"hidden": hidden})
 
-    pack.handle.flush()
-    pack.handle.close()
+    pack.close()
     echo = {"hidden": hidden, "layers": layer_count, "first_layer": first_layer,
             "total_layers": layers, "experts": experts,
             "top_k": top_k, "latent": latent, "intermediate": inter,

@@ -63,3 +63,10 @@ are always allowed regardless of slot state.
   MLA 8, MoE 9, dense 2) resolving pack entries by name; host test
   8/8 PASS against the real layer-0 pack (dense KDA: gate present,
   dense payload resolves, experts correctly absent).
+- Packer RESUME added: a side journal records each tensor only after its
+  bytes are on disk; a killed run re-walks the journal, truncates to the
+  last complete tensor, and skips re-generating emitted tensors.
+  tools/k3_watchdog.sh restarts a killed pack on the stage nodes, so the
+  externally-killed stage packs now survive and finish (the packs were
+  being killed by an unknown external process; the watchdog + journal
+  make the pack build self-healing).
