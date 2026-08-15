@@ -46,14 +46,14 @@ struct K3LayerWeights
 	// asserts the tiling at compile time; bind stays pointer arithmetic and
 	// no manifest JSON is parsed anywhere on this path.
 	const void *kda_qkv_beta_weight;
-	const void *kda_decay_gate_down_weight;
+	const void *kda_decay_down_weight;
 	const float *kda_q_conv_weight;
 	const float *kda_k_conv_weight;
 	const float *kda_v_conv_weight;
 	const void *kda_decay_up_weight;
 	const float *kda_decay_bias;
 	const float *kda_head_log_scale;
-	const void *kda_gate_up_weight;
+	const void *kda_gate_weight;
 	const float *kda_out_norm_weight;
 	const void *kda_out_weight;
 	const void *kda_out_scale;
@@ -68,8 +68,7 @@ struct K3LayerWeights
 	const void *mla_kv_a_norm_weight;
 	const void *mla_kv_b_value_weight;
 	const void *mla_kv_b_scale;
-	const void *mla_gate_down_weight;
-	const void *mla_gate_up_weight;
+	const void *mla_gate_weight;
 	const void *mla_out_weight;
 	const void *mla_out_scale;
 
@@ -171,14 +170,14 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->attn_norm_weight = weights->attn_norm_weight;
 	buffers->mlp_norm_weight = weights->mlp_norm_weight;
 	buffers->kda_qkv_beta_weight = weights->kda_qkv_beta_weight;
-	buffers->kda_decay_gate_down_weight = weights->kda_decay_gate_down_weight;
+	buffers->kda_decay_down_weight = weights->kda_decay_down_weight;
 	buffers->kda_q_conv_weight = weights->kda_q_conv_weight;
 	buffers->kda_k_conv_weight = weights->kda_k_conv_weight;
 	buffers->kda_v_conv_weight = weights->kda_v_conv_weight;
 	buffers->kda_decay_up_weight = weights->kda_decay_up_weight;
 	buffers->kda_decay_bias = weights->kda_decay_bias;
 	buffers->kda_head_log_scale = weights->kda_head_log_scale;
-	buffers->kda_gate_up_weight = weights->kda_gate_up_weight;
+	buffers->kda_gate_weight = weights->kda_gate_weight;
 	buffers->kda_out_norm_weight = weights->kda_out_norm_weight;
 	buffers->kda_out_weight = weights->kda_out_weight;
 	buffers->kda_out_scale = weights->kda_out_scale;
@@ -192,8 +191,7 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->mla_kv_a_norm_weight = weights->mla_kv_a_norm_weight;
 	buffers->mla_kv_b_value_weight = weights->mla_kv_b_value_weight;
 	buffers->mla_kv_b_scale = weights->mla_kv_b_scale;
-	buffers->mla_gate_down_weight = weights->mla_gate_down_weight;
-	buffers->mla_gate_up_weight = weights->mla_gate_up_weight;
+	buffers->mla_gate_weight = weights->mla_gate_weight;
 	buffers->mla_out_weight = weights->mla_out_weight;
 	buffers->mla_out_scale = weights->mla_out_scale;
 	buffers->router_weight = weights->router_weight;

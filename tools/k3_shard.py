@@ -55,10 +55,10 @@ class ShardFailure(RuntimeError):
 REPLICATED = {
     "attn_norm_weight", "mlp_norm_weight", "attnres_attn_weight",
     "attnres_mlp_weight", "router_weight", "router_bias",
-    "kda_decay_gate_down_weight", "kda_decay_bias",
+    "kda_decay_down_weight", "kda_decay_bias",
     "kda_head_log_scale", "kda_out_norm_weight",
     "mla_q_down_weight", "mla_q_norm_weight", "mla_kv_a_weight",
-    "mla_kv_a_norm_weight", "mla_gate_down_weight", "routed_norm_weight",
+    "mla_kv_a_norm_weight", "routed_norm_weight",
 }
 MODEL_REPLICATED = {"model.norm.weight", "model.attnres_out_weight"}
 # output-dimension, sliced on whole head blocks: (head elements, row bytes)
@@ -66,9 +66,10 @@ OUTPUT_HEADS = {
     "kda_qkv_beta_weight": ("kda_qkvb", 1),
     "kda_q_conv_weight": ("kda", 1), "kda_k_conv_weight": ("kda", 1),
     "kda_v_conv_weight": ("kda", 1),
-    "kda_decay_up_weight": ("kda", 1), "kda_gate_up_weight": ("kda", 1),
+    "kda_decay_up_weight": ("kda", 1),
+    "kda_gate_weight": ("kda", 1),
     "mla_q_up_weight": ("mla_q", 1), "mla_kv_b_value_weight": ("mla_v", 1),
-    "mla_gate_up_weight": ("mla_v", 1),
+    "mla_gate_weight": ("mla_v", 1),
 }
 # input-dimension on whole head blocks, partials summed by the all-reduce
 INPUT_HEADS = {"kda_out_weight": ("kda", 1), "mla_out_weight": ("mla_v", 1)}

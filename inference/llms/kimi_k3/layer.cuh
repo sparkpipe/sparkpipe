@@ -157,27 +157,23 @@ struct K3LayerBuffers
 	// KDA, PACK V2 (docs/K3_PACK_FORMAT_V2.md). The six projections that read
 	// the normed input are TWO tensors: kda_qkv_beta_weight fuses q|k|v|beta
 	// head-major (per-head widths 128/128/128/1, section offsets above), and
-	// kda_decay_gate_down_weight fuses decay_down|gate_down, replicated across
-	// TP. The V1 per-projection tensors and their scales no longer exist; the
-	// layer derives the sections from the K3_KDA_*_FUSED_ROWS constants, which
-	// are the numbers the packer emitted - no manifest is parsed at run time.
-	// decay_up and gate_up stay separate: their input is the 128-wide
-	// bottleneck, not the normed hidden, so they were never fusion candidates.
+	// The released checkpoint ships a FULL-RANK output gate (g_proj), so the
+	// decay|gate fusion and the low-rank gate pair are gone: kda_decay_down
+	// is the standalone 128-wide replicated bottleneck, and kda_gate_weight
+	// is the checkpoint's g_proj unchanged
+	// (docs/K3_GATE_RECONCILIATION.md).
 	const void *kda_qkv_beta_weight;
-	const void *kda_decay_gate_down_weight;
+	const void *kda_decay_down_weight;
 	const float *kda_q_conv_weight;
 	const float *kda_k_conv_weight;
 	const float *kda_v_conv_weight;
 	const void *kda_decay_up_weight;
 	const float *kda_decay_bias;
 	const float *kda_head_log_scale;
-	// THE GATE IS LOW-RANK, LIKE THE DECAY. g_a_proj takes the hidden to the
-	// 128-wide head dim and g_b_proj takes that to heads * head_dim; one fused
-	// matrix would be a rank-128 product materialised at 176 MB per layer -
-	// 12 GB of weights and 3.5 ms of bandwidth per token, for arithmetic the
-	// bottleneck already does in 6 MB. Two projections, like f_a and f_b -
-	// and only the down half lives in the fused decay|gate tensor.
-	const void *kda_gate_up_weight;
+	// The gate is the released checkpoint's full-rank g_proj: one projection
+	// from the normed hidden to heads * head_dim, applied after the delta
+	// rule's head-wise RMSNorm.
+	const void *kda_gate_weight;
 	const float *kda_out_norm_weight;
 	const void *kda_out_weight;
 	const void *kda_out_scale;
@@ -193,10 +189,9 @@ struct K3LayerBuffers
 	const void *mla_kv_a_norm_weight;
 	const void *mla_kv_b_value_weight;
 	const void *mla_kv_b_scale;
-	// Low-rank, exactly like the KDA gate: g_a to head_dim, g_b to
-	// heads * v_head. One fused matrix exists in no checkpoint.
-	const void *mla_gate_down_weight;
-	const void *mla_gate_up_weight;
+	// The gate is the released checkpoint's full-rank g_proj, unchanged, at
+	// heads * v_head_dim.
+	const void *mla_gate_weight;
 	const void *mla_out_weight;
 	const void *mla_out_scale;
 
@@ -470,7 +465,7 @@ static int32_t K3DeltaRuleOptIn(uint32_t shared_bytes)
 // both sources are ready the moment the second GEMM retires.
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, const uint16_t *__restrict__ decay_gate_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint16_t *__restrict__ decay_bf16, uint16_t *__restrict__ gate_bf16, uint32_t rows)
+void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint32_t rows)
 {
 	uint32_t row = blockIdx.x,index;
 	uint64_t fused = (uint64_t)row * K3_KDA_QKVB_FUSED_ROWS;
@@ -488,14 +483,6 @@ void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, const
 	for (index = threadIdx.x; index < K3_KDA_HEADS; index += THREADS)
 		beta_bf16[((uint64_t)row * K3_KDA_HEADS) + index] =
 			qkvb_bf16[fused + K3_KDA_QKVB_BETA_OFFSET + index];
-	dense = (uint64_t)row * K3_KDA_KEY_DIM;
-	fused = (uint64_t)row * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS;
-	for (index = threadIdx.x; index < K3_KDA_KEY_DIM; index += THREADS)
-	{
-		decay_bf16[dense + index] = decay_gate_bf16[fused + index];
-		gate_bf16[dense + index] =
-			decay_gate_bf16[fused + K3_KDA_GATE_DOWN_OFFSET + index];
-	}
 }
 
 // Kimi Delta Attention, 69 of 93 layers.
@@ -546,18 +533,20 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 		b->fused_qkvb_bf16,rows,K3_HIDDEN,K3_KDA_QKVB_FUSED_ROWS,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_decay_gate_down_weight,0,
-		b->fused_decay_gate_bf16,rows,K3_HIDDEN,K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS,multiprocessors,stream);
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_decay_down_weight,0,
+		b->latent_bf16,rows,K3_HIDDEN,K3_KDA_KEY_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	// The gate bottleneck is split out NOW, though gate_up reads it after the
-	// delta rule: one split launch total, and gate_latent_bf16 holds the half
-	// across. normed_bf16 is never rewritten in this layer, so the early
-	// down-projection is the same arithmetic the late one was.
+	// The full-rank gate runs back to back with the decay because both read
+	// normed_bf16: one activation read serves both GEMMs, and the gate output
+	// waits in gate_bf16 until the delta rule finishes.
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_gate_weight,0,
+		b->gate_bf16,rows,K3_HIDDEN,K3_KDA_V_DIM,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	LM_LAUNCH((K3SplitFusedProjectionsKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-		b->fused_qkvb_bf16,b->fused_decay_gate_bf16,
-		b->query_bf16,b->key_bf16,b->value_bf16,(uint16_t *)b->kda_beta_logit,
-		b->latent_bf16,b->gate_latent_bf16,rows);
+		b->fused_qkvb_bf16,
+		b->query_bf16,b->key_bf16,b->value_bf16,(uint16_t *)b->kda_beta_logit,rows);
 	// THE VERIFY STEP KEEPS ITS RAW INPUTS. The convolutions below overwrite
 	// q, k and v in place, so this is the last moment the pre-conv rows exist -
 	// and they are exactly what a fold needs to advance the windows and the
@@ -619,13 +608,8 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	// no normalisation at all. The two paths differ in exactly this step.
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,float>), dim3(rows * K3_KDA_HEADS), K3_LAYER_THREADS, (K3_KDA_VALUE_DIM + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,0,b->kda_out_norm_weight,0,b->attention_out_bf16,K3_KDA_VALUE_DIM,K3_KDA_VALUE_DIM,K3_RMS_EPSILON);
-	// The gate's down half ran inside the same fused decay|gate GEMM as the
-	// decay's - both read normed_bf16 - and the split parked it in
-	// gate_latent_bf16, which nothing touches between the split and here.
-	status = K3Project<LmBf16Format>(b,b->gate_latent_bf16,b->kda_gate_up_weight,0,
-		b->gate_bf16,rows,K3_KDA_KEY_DIM,K3_KDA_V_DIM,multiprocessors,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
+	// The gate output has been waiting in gate_bf16 since the early
+	// back-to-back projection.
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,b->gate_bf16,K3_KDA_V_DIM);
 	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->kda_out_weight,b->kda_out_scale,
@@ -697,12 +681,8 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 	// value_bf16 is idle on the MLA path and is sized at heads * 128.
 	LM_LAUNCH((LmPerHeadProjectKernel<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>), dim3(rows,K3_MLA_HEADS), K3_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight, b->value_bf16,K3_MLA_HEADS,rows);
-	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_down_weight,0,
-		b->latent_bf16,rows,K3_HIDDEN,K3_V_HEAD_DIM,multiprocessors,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->mla_gate_up_weight,0,
-		b->gate_bf16,rows,K3_V_HEAD_DIM,K3_MLA_OUT_DIM,multiprocessors,stream);
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_weight,0,
+		b->gate_bf16,rows,K3_HIDDEN,K3_MLA_OUT_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// No RMSNorm here - eq. 7 gates the raw attention output, unlike KDA's eq. 6

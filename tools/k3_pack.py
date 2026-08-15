@@ -617,17 +617,15 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
                                  (kda_dim, 1, kernel))
                 pack.add(p + f"kda_{conv}_conv_weight", raw, KIND_F32,
                          [kda_dim, kernel])
-            # THE FUSED REPLICATED TENSOR. decay_down and gate_down are the
-            # low-rank bottlenecks the TP table replicates; fusing them keeps
-            # the second wide GEMM to one launch without mixing shard classes
-            # into kda_qkv_beta_weight.
-            sections, rows = kda_fused_decay_gate_down_sections(kda_head)
-            fused = b"".join((
-                reader.bf16(a + "f_a_proj.weight", (kda_head, hidden)),
-                reader.bf16(a + "g_a_proj.weight", (kda_head, hidden))))
-            pack.add(p + "kda_decay_gate_down_weight", fused, KIND_BF16,
-                     [rows, hidden], {"sections": sections,
-                                      "shard_class": "replicated"})
+            # RELEASED CHECKPOINT (full_rank_output_gate): decay_down is the
+            # standalone 128-wide replicated bottleneck and the gate is the
+            # checkpoint's full-rank g_proj, unchanged. The old low-rank
+            # g_a/g_b pair and the decay|gate fusion do not exist in this
+            # checkpoint (docs/K3_GATE_RECONCILIATION.md).
+            pack.add(p + "kda_decay_down_weight",
+                     reader.bf16(a + "f_a_proj.weight", (kda_head, hidden)),
+                     KIND_BF16, [kda_head, hidden],
+                     {"shard_class": "replicated"})
             bf(p + "kda_decay_up_weight", a + "f_b_proj.weight",
                (kda_dim, kda_head))
             pack.add(p + "kda_decay_bias", reader.f32(a + "dt_bias", (kda_dim,)),
@@ -635,8 +633,10 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
             head_log_scale = reader.f32(a + "A_log", (A_LOG_SOURCE_HEADS,))
             pack.add(p + "kda_head_log_scale", head_log_scale[:kda_heads * 4],
                      KIND_F32, [kda_heads])
-            bf(p + "kda_gate_up_weight", a + "g_b_proj.weight",
-               (kda_dim, kda_head))
+            pack.add(p + "kda_gate_weight",
+                     reader.bf16(a + "g_proj.weight", (kda_dim, hidden)),
+                     KIND_BF16, [kda_dim, hidden],
+                     {"shard_class": "output_dim_heads"})
             pack.add(p + "kda_out_norm_weight",
                      reader.f32(a + "o_norm.weight", (kda_head,)),
                      KIND_F32, [kda_head])
@@ -658,24 +658,28 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
                      [heads * (kv_lora + rope), q_lora])
             pack.add(p + "mla_kv_b_value_weight", value, KIND_BF16,
                      [heads * v_head, kv_lora])
-            bf(p + "mla_gate_down_weight", a + "g_a_proj.weight", (v_head, hidden))
-            bf(p + "mla_gate_up_weight", a + "g_b_proj.weight",
-               (heads * v_head, v_head))
+            pack.add(p + "mla_gate_weight",
+                     reader.bf16(a + "g_proj.weight", (heads * v_head, hidden)),
+                     KIND_BF16, [heads * v_head, hidden],
+                     {"shard_class": "output_dim_heads"})
             bf(p + "mla_out_weight", a + "o_proj.weight", (hidden, heads * v_head))
         bf(p + "mlp_norm_weight", p + "post_attention_layernorm.weight", (hidden,))
         g = reader.bf16(p + "mlp_res_norm.weight", (hidden,))
         w = reader.bf16(p + "mlp_res_proj.weight", (1, hidden))
         pack.add(p + "attnres_mlp_weight", gamma_fold_bf16(w, g, hidden),
                  KIND_BF16, [1, hidden])
-        m = p + "mlp."
+        # Routed layers ship their MoE under block_sparse_moe; the dense
+        # replacement layer keeps the mlp.gate_proj naming.
+        dense_m = p + "mlp."
+        m = p + "block_sparse_moe."
         if m + "gate.weight" not in reader.names():
             # the dense layer: one MLP, no router, no experts
-            w1 = reader.bf16(m + "gate_proj.weight")
-            w3 = reader.bf16(m + "up_proj.weight")
+            w1 = reader.bf16(dense_m + "gate_proj.weight")
+            w3 = reader.bf16(dense_m + "up_proj.weight")
             dense_inter = len(w1) // (hidden * 2)
             pack.add(p + "dense_gate_up_weight", w1 + w3, KIND_BF16,
                      [2 * dense_inter, hidden])
-            down = reader.bf16(m + "down_proj.weight")
+            down = reader.bf16(dense_m + "down_proj.weight")
             pack.add(p + "dense_down_weight", down, KIND_BF16,
                      [hidden, len(down) // (hidden * 2)])
             continue
