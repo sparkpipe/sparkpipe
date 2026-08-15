@@ -87,10 +87,12 @@ build/sparkpipe_model_compile \
     --cc-arg -ldl \
     --cc-arg -pthread
 
-# fail fast on bucket plumbing bugs: the compiled driver must publish the
-# requested bucket id (a silent b1 fallback produces exactly this mismatch)
-strings "${OUT}/model_driver.so" | grep -q "ga0731.b${BUCKET}.v4" || { \
-    echo "build_remote: driver module id mismatch (expected b${BUCKET}.v4)" >&2; exit 9; }
+# fail fast on bucket plumbing bugs: the driver embeds the bucket firmware's
+# raw-file sha256 as its model description sha (a silent b1 fallback would
+# embed the b1 firmware sha instead).
+FIRMWARE_SHA="$(sha256sum "${FIRMWARE}" | cut -d' ' -f1)"
+strings "${OUT}/model_driver.so" | grep -q "${FIRMWARE_SHA}" || { \
+    echo "build_remote: driver firmware mismatch (expected ${FIRMWARE_SHA:0:16}...)" >&2; exit 9; }
 cp build/sparkpipe_model_residentd "${OUT}/sparkpipe_model_residentd"
 cp build/sparkpipe_model_batch "${OUT}/sparkpipe_model_batch"
 cp "${ADAPTER_SO}" "${OUT}/model_serving_adapter.so"
