@@ -80,8 +80,12 @@ cmd_sync() {
 }
 
 cmd_build() {
-    local name="$1" local_sha
+    local name="$1" local_sha current_branch
     [[ -n "$name" ]] || die "usage: devcycle build NAME"
+    current_branch="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
+    if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/dsv4-$name"; then
+        [[ "$current_branch" == "dsv4-$name" ]] || die "worktree is on '$current_branch' but branch 'dsv4-$name' exists; git checkout it before building"
+    fi
     local_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
     cmd_sync >/dev/null || die "sync failed"
     ssh_rank "$BUILD_HOST" "cd '$BUILD_CHECKOUT' && bash tools/devcycle/build_remote.sh '$name' '$local_sha'" \
