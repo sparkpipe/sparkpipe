@@ -96,14 +96,14 @@ scp -q -o BatchMode=yes "$BATCH_LOCAL" spark4:/tmp/bbench-batch.json
 sleep 45
 
 # ---- warm + measured ----
-python3 "$SCRIPT_DIR/model_stream_decode_benchmark.py" \
+python3 "$REPO_ROOT/tools/model_stream_decode_benchmark.py" \
     --output "/tmp/bbench-b$B-warm.json" \
     ssh -o BatchMode=yes spark4 "$ROOT/bin/sparkpipe_model_batch" \
         --deployment "$ROOT/config/model_resident.json" \
         --runtime-root "$ROOT" \
         --batch /tmp/bbench-batch.json >/dev/null 2>&1 || { echo "warmup failed" >&2; exit 6; }
 
-python3 "$SCRIPT_DIR/model_stream_decode_benchmark.py" \
+python3 "$REPO_ROOT/tools/model_stream_decode_benchmark.py" \
     --output "/tmp/bbench-b$B-run.json" \
     ssh -o BatchMode=yes spark4 "$ROOT/bin/sparkpipe_model_batch" \
         --deployment "$ROOT/config/model_resident.json" \

@@ -364,7 +364,7 @@ cmd_gate24() {
     root="$(runtime_path "$name")"
     ensure_remote_batches
     out="/tmp/devcycle-$name-o24-$(date +%H%M%S).json"
-    python3 "$SCRIPT_DIR/model_stream_decode_benchmark.py" --output "$out" \
+    python3 "$REPO_ROOT/tools/model_stream_decode_benchmark.py" --output "$out" \
         ssh -o BatchMode=yes spark4 "$root/bin/sparkpipe_model_batch" \
             --deployment "$root/config/model_resident.json" \
             --runtime-root "$root" \
@@ -391,7 +391,7 @@ cmd_run() {
     root="$(runtime_path "$name")"
     ensure_remote_batches
     # warmup: one discarded run so weights/KV/L2 reach steady state
-    python3 "$SCRIPT_DIR/model_stream_decode_benchmark.py" \
+    python3 "$REPO_ROOT/tools/model_stream_decode_benchmark.py" \
         --output "/tmp/devcycle-$name-o128-warm-$(date +%H%M%S).json" \
         ssh -o BatchMode=yes spark4 "$root/bin/sparkpipe_model_batch" \
             --deployment "$root/config/model_resident.json" \
@@ -399,7 +399,7 @@ cmd_run() {
             --batch "$BATCH_O128_REMOTE" >/dev/null 2>&1 || die "o128 warmup failed"
     for ((k=1; k<=n; k++)); do
         out="/tmp/devcycle-$name-o128-r$k-$(date +%H%M%S).json"
-        python3 "$SCRIPT_DIR/model_stream_decode_benchmark.py" --output "$out" \
+        python3 "$REPO_ROOT/tools/model_stream_decode_benchmark.py" --output "$out" \
             ssh -o BatchMode=yes spark4 "$root/bin/sparkpipe_model_batch" \
                 --deployment "$root/config/model_resident.json" \
                 --runtime-root "$root" \
@@ -465,13 +465,13 @@ cmd_spot() {
         cmd_driver "$a" "$so_a" >/dev/null || die "deploy A pair $p"
         cmd_ready "$a" >/dev/null || die "ready A pair $p"
         warm="/tmp/devcycle-spot-warm-$(date +%H%M%S%N).json"
-        python3 "$SCRIPT_DIR/model_stream_decode_benchmark.py" --output "$warm" \
+        python3 "$REPO_ROOT/tools/model_stream_decode_benchmark.py" --output "$warm" \
             ssh -o BatchMode=yes spark4 "$root_a/bin/sparkpipe_model_batch" \
                 --deployment "$root_a/config/model_resident.json" \
                 --runtime-root "$root_a" \
                 --batch "$BATCH_O128_REMOTE" >/dev/null 2>&1 || die "A warm pair $p failed"
         out="/tmp/devcycle-spot-$a-p$p.json"
-        python3 "$SCRIPT_DIR/model_stream_decode_benchmark.py" --output "$out" \
+        python3 "$REPO_ROOT/tools/model_stream_decode_benchmark.py" --output "$out" \
             ssh -o BatchMode=yes spark4 "$root_a/bin/sparkpipe_model_batch" \
                 --deployment "$root_a/config/model_resident.json" \
                 --runtime-root "$root_a" \
@@ -490,13 +490,13 @@ cmd_spot() {
         fi
         cmd_ready "$b" >/dev/null || die "ready B pair $p"
         warm="/tmp/devcycle-spot-warm-$(date +%H%M%S%N).json"
-        python3 "$SCRIPT_DIR/model_stream_decode_benchmark.py" --output "$warm" \
+        python3 "$REPO_ROOT/tools/model_stream_decode_benchmark.py" --output "$warm" \
             ssh -o BatchMode=yes spark4 "$root_b/bin/sparkpipe_model_batch" \
                 --deployment "$root_b/config/model_resident.json" \
                 --runtime-root "$root_b" \
                 --batch "$BATCH_O128_REMOTE" >/dev/null 2>&1 || die "B warm pair $p failed"
         out="/tmp/devcycle-spot-$b-p$p.json"
-        python3 "$SCRIPT_DIR/model_stream_decode_benchmark.py" --output "$out" \
+        python3 "$REPO_ROOT/tools/model_stream_decode_benchmark.py" --output "$out" \
             ssh -o BatchMode=yes spark4 "$root_b/bin/sparkpipe_model_batch" \
                 --deployment "$root_b/config/model_resident.json" \
                 --runtime-root "$root_b" \
