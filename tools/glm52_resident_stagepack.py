@@ -167,11 +167,14 @@ class PlanItem:
 
 class Packer:
     def __init__(self, spine: Reader, experts: Reader, contract: Dict[str, Any],
-                 layer_range: Tuple[int, int]):
+                 layer_range: Tuple[int, int], include_embedding: bool = True,
+                 include_head: bool = True):
         self.spine = spine
         self.experts = experts
         self.c = contract
         self.layer_range = layer_range
+        self.include_embedding = include_embedding
+        self.include_head = include_head
         self.plan: List[PlanItem] = []
 
     # -- plan construction -------------------------------------------------
@@ -285,9 +288,11 @@ class Packer:
         first, last = self.layer_range
         first_routed = c["first_routed_layer"]
 
-        self.add_spine_bf16(K_EMBEDDING, GLOBAL_LAYER, "model.embed_tokens.weight")
-        self.add_spine_bf16(K_FINAL_NORM, GLOBAL_LAYER, "model.norm.weight")
-        self.add_spine_bf16(K_LM_HEAD, GLOBAL_LAYER, "lm_head.weight")
+        if self.include_embedding:
+            self.add_spine_bf16(K_EMBEDDING, GLOBAL_LAYER, "model.embed_tokens.weight")
+        if self.include_head:
+            self.add_spine_bf16(K_FINAL_NORM, GLOBAL_LAYER, "model.norm.weight")
+            self.add_spine_bf16(K_LM_HEAD, GLOBAL_LAYER, "lm_head.weight")
 
         for layer in range(first, last + 1):
             attn = f"model.layers.{layer}.self_attn"
@@ -394,7 +399,9 @@ def main() -> int:
                         help="FP8 checkpoint (routed experts)")
     parser.add_argument("--output", required=True)
     parser.add_argument("--layer-range", default="0-77",
-                        help="inclusive layer range, e.g. 0-77 or 0-2")
+                        help="inclusive layer range, e.g. 0-77 or 0-2 (ignored with --stage)")
+    parser.add_argument("--stage", type=int, default=-1,
+                        help="PP13 stage 0-12: layers 6*stage..6*stage+5, globals gated")
     parser.add_argument("--model-revision", default=SPINE_REVISION)
     parser.add_argument("--stage-count", type=int, default=1)
     parser.add_argument("--stage-index", type=int, default=0)
@@ -402,31 +409,48 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parents[1]
     contract = load_contract(repo_root)
-    first, last = (int(v) for v in args.layer_range.split("-"))
-    if last < first or last >= contract["layer_count"]:
-        raise PackFailure(f"bad layer range {args.layer_range}")
+    stage_count = args.stage_count
+    stage_index = args.stage_index
+    include_embedding = True
+    include_head = True
+    if args.stage >= 0:
+        if args.stage >= 13:
+            raise PackFailure(f"--stage must be 0-12, got {args.stage}")
+        first = args.stage * 6
+        last = first + 5
+        stage_count = 13
+        stage_index = args.stage
+        include_embedding = args.stage == 0
+        include_head = args.stage == 12
+    else:
+        first, last = (int(v) for v in args.layer_range.split("-"))
+        if last < first or last >= contract["layer_count"]:
+            raise PackFailure(f"bad layer range {args.layer_range}")
 
     spine = Reader(Path(args.spine_dir))
     experts = Reader(Path(args.expert_dir))
-    packer = Packer(spine, experts, contract, (first, last))
+    packer = Packer(spine, experts, contract, (first, last),
+                    include_embedding, include_head)
     packer.build_plan()
 
     contract_bytes = (repo_root / "model_contracts" / "glm52.json").read_bytes()
     source_config = json.dumps(
-        {"layer_range": args.layer_range, "spine_dir": args.spine_dir,
-         "expert_dir": args.expert_dir}, sort_keys=True)
+        {"layer_range": f"{first}-{last}", "stage": args.stage,
+         "spine_dir": args.spine_dir, "expert_dir": args.expert_dir},
+        sort_keys=True)
     recipe = json.dumps({"tool": "glm52_resident_stagepack.py",
                          "codec": "fp8", "spine": "bf16-master",
                          "expert_revision_pending": True}, sort_keys=True)
     file_bytes = packer.write(
         Path(args.output), args.model_revision,
         sha256_bytes(contract_bytes), sha256_bytes(source_config.encode()),
-        sha256_bytes(recipe.encode()), args.stage_count, args.stage_index,
+        sha256_bytes(recipe.encode()), stage_count, stage_index,
         first, last - first + 1, contract["layer_count"])
     spine.close()
     experts.close()
     print(f"glm52sp written: {args.output} bytes={file_bytes} "
-          f"layers={first}-{last} tensors={len(packer.plan)}")
+          f"stage={stage_index}/{stage_count} layers={first}-{last} "
+          f"tensors={len(packer.plan)}")
     return 0
 
 
