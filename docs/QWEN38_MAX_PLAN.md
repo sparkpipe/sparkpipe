@@ -83,7 +83,7 @@ Clone the qwen36 module (same GDN/attention family, ~7.8k LOC) and:
 ## Fleet port registry and measurement exclusivity (operational policy)
 
 Qwen 3.8 Max TP4xPP4 occupies the full-16 fleet slot: control TCP 20480,
-collective ports 64620-64623, transport control port 61700, on all sixteen
+collective ports 66620-66623, transport control port 63700, on all sixteen (the next free block; dsv4-pro took 20480/64620/61700 in the fleet registry)
 sparks. Ports per rank follow the per-model port block registry; no model
 may claim another slot's block.
 
