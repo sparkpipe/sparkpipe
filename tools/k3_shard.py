@@ -37,6 +37,7 @@ from glm52, each earned by the architecture:
   TP16 is REFUSED, not approximated
 """
 import json
+import mmap
 import struct
 import sys
 from pathlib import Path
@@ -113,7 +114,12 @@ def slice_cols(raw, rows, row_bytes, lo_byte, hi_byte):
 
 class Slicer:
     def __init__(self, pack_path, geo, degree, rank):
-        raw = Path(pack_path).read_bytes()
+        # The stage packs are ~390 GB: the source is MAPPED, never read. A
+        # read_bytes() here is the MemoryError this constructor exists to
+        # prevent - four ranks x one full copy is five pack-sized buffers
+        # on a 128 GB host.
+        self.handle = open(pack_path, "rb")
+        raw = mmap.mmap(self.handle.fileno(), 0, access=mmap.ACCESS_READ)
         magic, version, length = struct.unpack_from("<IIQ", raw, 0)
         if magic != MAGIC:
             raise ShardFailure("not a K3 pack")
@@ -137,26 +143,42 @@ class Slicer:
                         self.base + entry["offset"] + entry["bytes"]]
 
     def emit(self, out_path):
+        # STREAMED, never assembled: a rank pack is ~97 GB and a bytearray
+        # of it is the second MemoryError this file's layout is shaped to
+        # avoid. The payload streams to the file first, behind a fixed
+        # manifest reserve; the manifest is built from the recorded offsets
+        # and written over the reserve at the end, space-padded to the exact
+        # reserve so the payload base (align(16 + manifest_len)) is a
+        # compile-time constant of this writer.
+        manifest_reserve = 65520  # header(16) + manifest = 65536, aligned
         tensors = {}
-        payload = bytearray()
-        for name in self.manifest["tensors"]:
-            sliced, meta = self.route(name)
-            pad = (-len(payload)) % ALIGN
-            payload += b"\0" * pad
-            entry = {"offset": len(payload), "bytes": len(sliced)}
-            entry.update(meta)
-            tensors[name] = entry
-            payload += sliced
-        echo = dict(self.config)
-        echo.update({"tp_degree": self.degree, "tp_rank": self.rank})
-        manifest = json.dumps(
-            {"format": self.manifest["format"], "config": echo,
-             "tensors": tensors}, separators=(",", ":")).encode()
+        offset = 0
         with open(out_path, "wb") as out:
+            out.seek(16 + manifest_reserve)
+            for name in self.manifest["tensors"]:
+                sliced, meta = self.route(name)
+                pad = (-offset) % ALIGN
+                if pad:
+                    out.write(b"\0" * pad)
+                    offset += pad
+                entry = {"offset": offset, "bytes": len(sliced)}
+                entry.update(meta)
+                tensors[name] = entry
+                out.write(sliced)
+                offset += len(sliced)
+            echo = dict(self.config)
+            echo.update({"tp_degree": self.degree, "tp_rank": self.rank})
+            manifest = json.dumps(
+                {"format": self.manifest["format"], "config": echo,
+                 "tensors": tensors}, separators=(",", ":")).encode()
+            if len(manifest) > manifest_reserve:
+                raise ShardFailure(
+                    f"manifest {len(manifest)} bytes overruns the "
+                    f"{manifest_reserve}-byte reserve")
+            manifest = manifest + b" " * (manifest_reserve - len(manifest))
+            out.seek(0)
             out.write(struct.pack("<IIQ", MAGIC, 2, len(manifest)))
             out.write(manifest)
-            out.write(b"\0" * ((-out.tell()) % ALIGN))
-            out.write(payload)
         return tensors
 
     def route(self, name):

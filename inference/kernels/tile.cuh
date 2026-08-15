@@ -168,6 +168,40 @@ static __device__ __forceinline__ void LmPipelineProduceWeight(
 		LmTmaLoad2d(stage_b,tensor_map_b,barrier,(int32_t)k_byte_b,(int32_t)neuron_base);
 }
 
+// INTERLEAVED WEIGHT STAGING - pack V2 mxfp4_ws_interleaved_v1 (K3).
+//
+// The B operand is a cell grid, not a [neuron, k] plane: per expert and per
+// 128-element pack k-tile, each 16-neuron cell occupies 17 rows of 64 bytes -
+// rows 0..15 payload (one neuron's k-tile, 64 bytes = 128 4-bit elements),
+// row 16 the cell's sixteen 4-byte E8M0 group scales. One rank-3 UINT8 tensor
+// map describes the whole expert operand ([64, rows_per_expert, experts], box
+// [64, 17 * (TILE_N/16), 1], 64B swizzle - the contract in layer.cuh), and one
+// bulk copy per pack k-tile stages the cells for the whole tile: the box's y
+// coordinate is (k_tile * cells_total + neuron_base/16) * 17, x is 0, z the
+// expert. The staged layout IS the cell layout: payload row r of cell c lands
+// at stage byte (c*17 + r) * 64 and the cell's scales at row c*17 + 16, which
+// LmGemmConsume's interleaved arm reads with the same arithmetic.
+static __device__ __forceinline__ void LmPipelineProduceWeightInterleaved(
+    const LmTileGeometry *a,
+    const LmTileGeometry *b,
+    const void *tensor_map_b,
+    void *stage_b,
+    uint64_t *barrier,
+    uint32_t k_tile,
+    uint32_t cells_total,
+    uint32_t neuron_base,
+    uint32_t group_index)
+{
+	if ( threadIdx.x != 0u )
+		return;
+	LmMbarrierArriveExpect(barrier,
+		LmTileBytes(a->rows,a->depth,a->element_bits)
+		+ LmTileBytes(b->rows,b->depth,b->element_bits));
+	LmTmaLoad3d(stage_b,tensor_map_b,barrier,0,
+		(int32_t)(((k_tile * cells_total) + (neuron_base / 16u)) * 17u),
+		(int32_t)group_index);
+}
+
 static __device__ __forceinline__ void LmPipelineProduce(
     const LmTileGeometry *a,
     const LmTileGeometry *b,
@@ -180,7 +214,9 @@ static __device__ __forceinline__ void LmPipelineProduce(
     uint32_t neuron_base,
     uint32_t k_tile,
     uint32_t group_index,
-    bool grouped)
+    bool grouped,
+    bool interleaved_b,
+    uint32_t cells_total)
 {
 	// THE K COORDINATE IS BYTES, PER OPERAND. Every descriptor is a UINT8
 	// tensor, so the x coordinate advances in bytes - and a BF16 activation
@@ -190,9 +226,34 @@ static __device__ __forceinline__ void LmPipelineProduce(
 	// the K TILE INDEX and each operand prices its own stride.
 	uint32_t k_byte_a = k_tile * LmTileBytes(1u,a->depth,a->element_bits);
 	uint32_t k_byte_b = k_tile * LmTileBytes(1u,b->depth,b->element_bits);
-	LmPipelineProduceWeight(a,b,tensor_map_b,stage_b,barrier,k_byte_b,neuron_base,group_index,grouped);
+	if ( interleaved_b )
+		LmPipelineProduceWeightInterleaved(a,b,tensor_map_b,stage_b,barrier,
+			k_tile,cells_total,neuron_base,group_index);
+	else
+		LmPipelineProduceWeight(a,b,tensor_map_b,stage_b,barrier,k_byte_b,neuron_base,group_index,grouped);
 	if ( threadIdx.x != 0u )
 		return;
+	if ( interleaved_b )
+	{
+		// A TILE_K=128 BF16 row is 256 bytes and no hardware swizzle spans
+		// it, and a TMA box stages its rows at the BOX's width - so the two
+		// 128-byte half-row boxes cannot land side by side in one 256-byte
+		// row. The stage is therefore TWO BLOCKS of [TILE_M rows x 128
+		// bytes]: block 0 holds k 0..63 of every row, block 1 k 64..127,
+		// and the consume addresses (block, row, k & 63) with pitch 128.
+		// The K coordinate advances WITH THE K TILE: the x coordinates are
+		// k_byte_a and k_byte_a + 128, the destination bases are stage_a
+		// and stage_a + TILE_M * 128. Both blocks' per-row swizzle selector
+		// is r % 8 because block 1 starts TILE_M (a multiple of 8) sectors
+		// in - which is the same selector the consume derives, and is why
+		// the two 128-byte boxes stage without a third copy path.
+		const uint32_t a_block_bytes =
+			LmTileBytes(a->rows,64u,a->element_bits);
+		LmTmaLoad2d(stage_a,tensor_map_a,barrier,(int32_t)k_byte_a,(int32_t)row_base);
+		LmTmaLoad2d((uint8_t *)stage_a + a_block_bytes,
+			tensor_map_a,barrier,(int32_t)(k_byte_a + 128u),(int32_t)row_base);
+		return;
+	}
 	LmTmaLoad2d(stage_a,tensor_map_a,barrier,(int32_t)k_byte_a,(int32_t)row_base);
 }
 
@@ -227,7 +288,7 @@ static __device__ __forceinline__ void LmPipelineProduce(
 // wrong output. The trap is the other half of that guard: a mapped row past
 // source_row_count means the route build wrote past its own arrays, and a
 // wild bulk copy faults or, worse, does not.
-template<class FormatA>
+template<class FormatA, bool INTERLEAVED_B = false>
 static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 	const LmTileGeometry *a,
 	const LmTileGeometry *b,
@@ -244,7 +305,8 @@ static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 	uint32_t neuron_base,
 	uint32_t k_tile,
 	uint32_t group_index,
-	bool grouped)
+	bool grouped,
+	uint32_t cells_total)
 {
 	const uint32_t row_pitch = LmTileBytes(1u,a->depth,a->element_bits);
 	const uint32_t chunk_count = row_pitch / LM_SWIZZLE_CHUNK_BYTES;
@@ -254,8 +316,12 @@ static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 		"indirect activation staging requires byte-addressable rows");
 	static_assert(LmTileBytes(1u,FormatA::kTileK,FormatA::kStoredBits) % LM_SWIZZLE_CHUNK_BYTES == 0u,
 		"indirect activation staging requires complete 16-byte chunks");
-	LmPipelineProduceWeight(a,b,tensor_map_b,stage_b,barrier,
-		k_tile * LmTileBytes(1u,b->depth,b->element_bits),neuron_base,group_index,grouped);
+	if constexpr ( INTERLEAVED_B )
+		LmPipelineProduceWeightInterleaved(a,b,tensor_map_b,stage_b,barrier,
+			k_tile,cells_total,neuron_base,group_index);
+	else
+		LmPipelineProduceWeight(a,b,tensor_map_b,stage_b,barrier,
+			k_tile * LmTileBytes(1u,b->depth,b->element_bits),neuron_base,group_index,grouped);
 	for (index=threadIdx.x; index<a->rows * chunk_count; index+=blockDim.x)
 	{
 		local_row = index / chunk_count;
@@ -266,9 +332,25 @@ static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 			asm volatile("trap;\n");
 		source_offset = ((uint64_t)source_row * ((input_dimension * FormatA::kStoredBits) / 8u))
 			+ (k_tile * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
-		destination_offset = FormatA::kTmaSwizzle
-			? LmSwizzledOffset(local_row,chunk * LM_SWIZZLE_CHUNK_BYTES,row_pitch,LmSwizzleSpanFor(row_pitch))
-			: (local_row * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
+		if constexpr ( INTERLEAVED_B )
+		{
+			// THE TWO-BLOCK A STAGE (see LmPipelineProduce's interleaved
+			// arm): chunks 0..7 are k 0..63 and land in block 0, chunks
+			// 8..15 are k 64..127 in block 1, each block [rows x 128]
+			// with the r % 8 per-row selector the consume derives from
+			// pitch 128.
+			const uint32_t a_block_bytes =
+				LmTileBytes(a->rows,64u,a->element_bits);
+			destination_offset = ((chunk / 8u) * a_block_bytes)
+				+ LmSwizzledOffset(local_row,
+					(chunk % 8u) * LM_SWIZZLE_CHUNK_BYTES,128u,128u);
+		}
+		else
+		{
+			destination_offset = FormatA::kTmaSwizzle
+				? LmSwizzledOffset(local_row,chunk * LM_SWIZZLE_CHUNK_BYTES,row_pitch,LmSwizzleSpanFor(row_pitch))
+				: (local_row * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
+		}
 		LmTmaLoadBulk1d(
 			(uint8_t *)stage_a + destination_offset,
 			activation_bytes + source_offset,

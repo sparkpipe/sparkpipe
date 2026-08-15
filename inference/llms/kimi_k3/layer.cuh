@@ -699,27 +699,17 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 {
 	LmGemmArguments gemm;
 	int32_t status;
-	// THE INTERLEAVED EXPERT STREAM FAILS CLOSED, AT THE TOP, BEFORE ANY
-	// LAUNCH. Pack V2 ships expert_w{1,2}_weight as mxfp4_ws_interleaved_v1:
-	// payload and E8M0 scales co-tiled in 17-row cells, one stream
-	// (docs/K3_PACK_FORMAT_V2.md). Today's grouped GEMM reads its scales from
-	// a separately-strided plane through LmScaleTensor, which has no encoding
-	// for a scale row inside the payload stream - so for an interleaved
-	// operand there is no honest scale_b, and no readable payload either: the
-	// B descriptor's row geometry is the cell grid, not a [neuron, k] plane.
-	// Launching would read scale bytes as weights and decode fluently, which
-	// is exactly the failure shape this tree refuses by construction.
-	//
-	// THE KERNELS-WAVE CONTRACT THAT LIFTS THIS (inference/kernels, not here):
-	// one rank-3 UINT8 tensor map per expert operand, dims [64,
-	// rows_per_expert, experts], box [64, 17 * (TILE_N/16), 1], swizzle 64B;
-	// per k-tile stage ONE cp.async.bulk.tensor at (0, (t * cells +
-	// neuron_base/16) * 17, expert); staged rows 0..15 are payload on the
-	// existing fragment path, row 16 is the cell's scales read with the same
-	// staged-row xor; the LmScaleTensor far-plane path is simply not used for
-	// these operands. When that lands this check and the flag go together.
-	if ( b->expert_interleave != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+	// THE INTERLEAVED EXPERT STREAM. Pack V2 ships expert_w{1,2}_weight as
+	// mxfp4_ws_interleaved_v1: payload and E8M0 scales co-tiled in 17-row
+	// cells, one stream (docs/K3_PACK_FORMAT_V2.md). The kernels wave is
+	// landed (INTERLEAVED_B in inference/kernels/gemm.cuh + tile.cuh +
+	// runtime/gemm.cuh): a rank-3 UINT8 map [64, rows_per_expert, experts]
+	// box [64, 17 * (TILE_N/16), 1] 64B swizzle, one bulk per 128-element
+	// pack k-tile at (0, (t*cells + neuron_base/16)*17, expert), payload
+	// rows 0..15 on the fragment path, staged row 16 feeding the scales - no
+	// LmScaleTensor for these operands. The two launch sites below pick the
+	// interleaved launchers (TILE_K forced to the pack grid's 128) when the
+	// flag is set, so both pack forms run.
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,0,(const uint16_t *)b->mlp_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	memset(&gemm,0,sizeof(gemm));
@@ -777,11 +767,18 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	gemm.output_bf16 = b->gate_up_bf16;
 	gemm.source_row_map = b->route_source_token;
 	gemm.source_row_count = rows;
-	status = LmGemmWeightOnlyIndirectLaunch<
-		Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,b->latent_bf16,b->expert_w1_weight,packed_rows,rows,
-		K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE * 2u,
-		multiprocessors,stream);
+	if ( b->expert_interleave != 0u )
+		status = LmGemmWeightOnlyIndirectInterleavedLaunch<
+			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+			&gemm,b->latent_bf16,b->expert_w1_weight,packed_rows,rows,
+			K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE * 2u,
+			multiprocessors,stream);
+	else
+		status = LmGemmWeightOnlyIndirectLaunch<
+			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+			&gemm,b->latent_bf16,b->expert_w1_weight,packed_rows,rows,
+			K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE * 2u,
+			multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// SiTU, not SwiGLU. Both betas, in the order the report gives them: 4 caps
@@ -797,11 +794,18 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	gemm.scale_b = LmScaleTensorNone();
 	gemm.group_tile_prefix = b->group_tile_prefix_w2;
 	gemm.output_bf16 = b->gate_up_bf16;
-	status = LmGemmWeightOnlyLaunch<
-		Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-		K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE,
-		multiprocessors,true,stream);
+	if ( b->expert_interleave != 0u )
+		status = LmGemmWeightOnlyInterleavedLaunch<
+			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+			&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
+			K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE,
+			multiprocessors,true,stream);
+	else
+		status = LmGemmWeightOnlyLaunch<
+			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+			&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
+			K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE,
+			multiprocessors,true,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// THIS CALL WAS WRONG THREE WAYS AND COMPILED. The kernel's tail is

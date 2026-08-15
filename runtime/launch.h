@@ -88,6 +88,11 @@ typedef struct LmLaunchShape
 	// sub-byte weights, and one width for both was the assumption that priced
 	// that path out of the planner.
 	uint32_t stored_bits,stored_bits_a,tile_n,tile_k,stages;
+	// Nonzero marks the interleaved-B launch (pack V2 mxfp4_ws_interleaved_v1):
+	// the weight stage is the 17-row cell grid and a TILE_K=128 BF16 activation
+	// row (256 bytes) is staged as two 128-byte sectors, so the activation pitch
+	// is a multiple of its swizzle span rather than equal to it.
+	uint32_t interleaved_b;
 }
 LmLaunchShape;
 
@@ -147,7 +152,9 @@ static uint32_t LmLaunchSharedBytes(const LmLaunchShape *shape, uint32_t tile_m)
 {
 	uint32_t bits_a = shape->stored_bits_a != 0u ? shape->stored_bits_a : shape->stored_bits;
 	uint32_t a = (tile_m * shape->tile_k * bits_a) / 8u;
-	uint32_t b = (shape->tile_n * shape->tile_k * shape->stored_bits) / 8u;
+	uint32_t b = shape->interleaved_b != 0u
+		? (17u * (shape->tile_n / 16u) * 64u)
+		: (shape->tile_n * shape->tile_k * shape->stored_bits) / 8u;
 	return((shape->stages * (a + b)) + (shape->stages * 8u));
 }
 
@@ -178,19 +185,27 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 	if ( plan->shared_bytes > LM_SMEM_SM_TOTAL )
 		return(LM_LAUNCH_ERR_SHARED);
 	// The row pitch decides the swizzle span, and the descriptor must be built
-	// with the same one the kernel applies. Both come from here.
+	// with the same one the kernel applies. Both come from here. The
+	// interleaved launch stages 64-byte cell rows, so its weight pitch equals
+	// its span like every other path.
 	pitch = (shape->tile_k * shape->stored_bits) / 8u;
 	plan->swizzle_span = LmSwizzleSpanFor(pitch);
 	if ( plan->swizzle_span == 0u || pitch != plan->swizzle_span )
 		return(LM_LAUNCH_ERR_MAP);
 	// The activation pitch must be swizzleable in its own right when the widths
-	// differ; the weight span above does not vouch for it.
+	// differ; the weight span above does not vouch for it. A TILE_K=128 BF16
+	// row is 256 bytes and no single span covers it, so the interleaved direct
+	// path stages it as two 128-byte sectors - the pitch must then be a whole
+	// number of sectors, not equal to one span.
 	if ( shape->stored_bits_a != 0u )
 	{
 		uint32_t activation_pitch =
 			(shape->tile_k * shape->stored_bits_a) / 8u;
 		uint32_t activation_span = LmSwizzleSpanFor(activation_pitch);
-		if ( activation_span == 0u || activation_pitch != activation_span )
+		if ( activation_span == 0u ||
+			(shape->interleaved_b == 0u
+				? activation_pitch != activation_span
+				: (activation_pitch % activation_span) != 0u) )
 			return(LM_LAUNCH_ERR_MAP);
 	}
 	// Persistent grid: one CTA per SM, sized to the machine rather than the
