@@ -288,7 +288,37 @@ struct K3LayerBuffers
 	// shard and the next layer would read it as the full sum. Zero keeps
 	// the fused epilogue, which is every single-rank contract.
 	uint32_t tp_sharded;
-	// The recurrent half. Fixed per sequence, never grows with context.
+	// RANK-SLICED DIMENSIONS. The TP4 rank pack's tensors carry the RANK's
+	// shapes (tools/k3_shard.py re-prices them), not the full model's, and
+	// the compile-time K3_* constants are the FULL model - a GEMM launched
+	// with a full-model dimension reads past the rank tensor. Each field
+	// here is the rank's dimension; zero means the full-model constant
+	// (the host harnesses and a full pack). The dispatch fills them from
+	// the manifest shapes at bind time.
+	uint32_t kda_qkvb_rows;       /* heads/degree x fused 385 */
+	uint32_t kda_gate_rows;       /* heads/degree x 128 */
+	uint32_t kda_decay_up_rows;   /* heads/degree x 128 */
+	uint32_t kda_out_input;       /* kda_dim / degree */
+	uint32_t mla_q_up_rows;       /* heads/degree x q_up width */
+	uint32_t mla_kv_b_value_rows; /* heads/degree x v_head */
+	uint32_t mla_gate_rows;       /* heads/degree x v_head */
+	uint32_t mla_out_input;       /* mla_out_dim / degree */
+	uint32_t routed_down_rows;    /* latent / degree */
+	uint32_t routed_up_input;     /* latent / degree */
+	uint32_t expert_w1_output;    /* 2 x intermediate / degree */
+	uint32_t expert_w2_input;     /* intermediate / degree */
+	uint32_t shared_w1_rows;      /* 2 x shared_inter / degree */
+	uint32_t shared_w2_input;     /* shared_inter / degree */
+	uint32_t dense_gate_up_rows;  /* 2 x dense_inter / degree */
+	uint32_t dense_down_input;    /* dense_inter / degree */
+	uint32_t kda_heads_rank;      /* K3_KDA_HEADS / degree */
+	uint32_t mla_heads_rank;      /* K3_MLA_HEADS / degree */
+	// The rank's dimension or the full-model constant: the serving tier fills
+// the field from the pack, the host harnesses leave zero.
+#define K3_RANK_DIM(b, field, constant) \
+	((b)->field != 0u ? (b)->field : (constant))
+
+// The recurrent half. Fixed per sequence, never grows with context.
 	uint8_t *kda_state_pool;
 	// BF16 STATE, DEFAULT OFF, AND IT FAILS CLOSED HERE. Nonzero asks for the
 	// half-width slot of config.h's K3_KDA_STATE_SLOT_BYTES_BF16 - the batch
@@ -544,7 +574,8 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	// (roadmap D1 counts the launches; the roofline counts the reads). Both
 	// GEMMs run back to back precisely because they share the activation.
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_qkv_beta_weight,0,
-		b->fused_qkvb_bf16,rows,K3_HIDDEN,K3_KDA_QKVB_FUSED_ROWS,multiprocessors,stream);
+		b->fused_qkvb_bf16,rows,K3_HIDDEN,
+		K3_RANK_DIM(b,kda_qkvb_rows,K3_KDA_QKVB_FUSED_ROWS),multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_decay_down_weight,0,
@@ -555,7 +586,8 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	// normed_bf16: one activation read serves both GEMMs, and the gate output
 	// waits in gate_bf16 until the delta rule finishes.
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_gate_weight,0,
-		b->gate_bf16,rows,K3_HIDDEN,K3_KDA_V_DIM,multiprocessors,stream);
+		b->gate_bf16,rows,K3_HIDDEN,
+		K3_RANK_DIM(b,kda_gate_rows,K3_KDA_V_DIM),multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((K3SplitFusedProjectionsKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
@@ -595,13 +627,14 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	// the up-projection under Format would compute zero tiles and emit
 	// nothing. See the static_assert above.
 	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->kda_decay_up_weight,0,
-		b->decay_logit_bf16,rows,K3_KDA_KEY_DIM,K3_KDA_QK_DIM,multiprocessors,stream);
+		b->decay_logit_bf16,rows,K3_KDA_KEY_DIM,
+		K3_RANK_DIM(b,kda_decay_up_rows,K3_KDA_QK_DIM),multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	float *retention = b->replay_retention != 0
 		? b->replay_retention : b->kda_retention;
-	LM_LAUNCH((LmBoundedDecayKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
-		b->decay_logit_bf16,b->kda_decay_bias,b->kda_head_log_scale,retention,K3_KDA_HEADS,K3_KDA_GATE_LOWER_BOUND,rows);
+	LM_LAUNCH((LmBoundedDecayKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS)), K3_LAYER_THREADS, 0, stream,
+		b->decay_logit_bf16,b->kda_decay_bias,b->kda_head_log_scale,retention,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),K3_KDA_GATE_LOWER_BOUND,rows);
 	// BETA COMES FROM THE SPLIT NOW. It was read raw from kda_write_gate,
 	// which nothing filled - the comment said "still on the host" and no host
 	// exists. The reference is Sigmoid(W_beta x), per head, with the sigmoid
@@ -611,16 +644,16 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	float *write_gate = b->replay_write_gate != 0
 		? b->replay_write_gate : b->kda_write_gate_out;
 	LM_LAUNCH((LmSigmoidRowsKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-		(const uint16_t *)b->kda_beta_logit,write_gate,K3_KDA_HEADS);
+		(const uint16_t *)b->kda_beta_logit,write_gate,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS));
 	status = K3DeltaRuleOptIn((uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)));
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(sequences,K3_KDA_HEADS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)), stream,
-		b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,retention,write_gate,b->attention_out_bf16, K3_KDA_HEADS,1u,sequences,commit);
+	LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(sequences,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS)), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)), stream,
+		b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,retention,write_gate,b->attention_out_bf16, K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),1u,sequences,commit);
 	// RMSNORM BEFORE THE GATE, AND ONLY HERE. Report eq. 6 normalises the
 	// recurrent output head-wise before gating; eq. 7 gates the MLA output with
 	// no normalisation at all. The two paths differ in exactly this step.
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,float>), dim3(rows * K3_KDA_HEADS), K3_LAYER_THREADS, (K3_KDA_VALUE_DIM + 8u) * sizeof(float), stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,float>), dim3(rows * K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS)), K3_LAYER_THREADS, (K3_KDA_VALUE_DIM + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,0,b->kda_out_norm_weight,0,b->attention_out_bf16,K3_KDA_VALUE_DIM,K3_KDA_VALUE_DIM,K3_RMS_EPSILON);
 	// The gate output has been waiting in gate_bf16 since the early
 	// back-to-back projection.
@@ -628,7 +661,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 		b->attention_out_bf16,b->gate_bf16,K3_KDA_V_DIM);
 	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->kda_out_weight,b->kda_out_scale,
 		b->attention_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
-		rows,K3_KDA_V_DIM,K3_HIDDEN,multiprocessors,stream));
+		rows,K3_RANK_DIM(b,kda_out_input,K3_KDA_V_DIM),K3_HIDDEN,multiprocessors,stream));
 }
 
 // Gated MLA, 24 of 93 including the last layer of the backbone.
@@ -658,7 +691,8 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_Q_LORA_RANK + 8u) * sizeof(float), stream,
 		b->latent_bf16,0,(const uint16_t *)b->mla_q_norm_weight, 0,b->latent_bf16,K3_Q_LORA_RANK,K3_Q_LORA_RANK,K3_LORA_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->mla_q_up_weight,b->mla_q_up_scale,
-		b->query_bf16,rows,K3_Q_LORA_RANK,K3_MLA_Q_DIM,multiprocessors,stream);
+		b->query_bf16,rows,K3_Q_LORA_RANK,
+		K3_RANK_DIM(b,mla_q_up_rows,K3_MLA_Q_DIM),multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_kv_a_weight,b->mla_kv_a_scale,
@@ -671,8 +705,8 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 		b->kv_slot_bf16,0,(const uint16_t *)b->mla_kv_a_norm_weight, 0,b->kv_slot_bf16,K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_LORA_RMS_EPSILON);
 	LM_LAUNCH((LmKvStoreKernel<Geometry,K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows, Geometry::kSlotBytes / 2u);
-	LM_LAUNCH((LmAttentionDecodeKernel<Geometry,K3_ATTN_THREADS,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>), dim3(rows,K3_MLA_HEADS), K3_ATTN_THREADS, 0, stream,
-		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,K3_MLA_HEADS,K3_MLA_QK_SCALE,b->attention_out_bf16,b->positions);
+	LM_LAUNCH((LmAttentionDecodeKernel<Geometry,K3_ATTN_THREADS,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>), dim3(rows,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS)), K3_ATTN_THREADS, 0, stream,
+		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),K3_MLA_QK_SCALE,b->attention_out_bf16,b->positions);
 	(void)context;
 	// PREFILL IS THAT ONE ARGUMENT. The kernel skips any cached position past
 	// row_position[row], so a chunk of rows at ascending positions attends
@@ -694,20 +728,21 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 	// The one-thread host shim executes blocks in ascending order and can never
 	// see it, which its own header lists as exactly the class it cannot catch.
 	// value_bf16 is idle on the MLA path and is sized at heads * 128.
-	LM_LAUNCH((LmPerHeadProjectKernel<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>), dim3(rows,K3_MLA_HEADS), K3_LAYER_THREADS, 0, stream,
-		b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight, b->value_bf16,K3_MLA_HEADS,rows);
+	LM_LAUNCH((LmPerHeadProjectKernel<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>), dim3(rows,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS)), K3_LAYER_THREADS, 0, stream,
+		b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight, b->value_bf16,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),rows);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_weight,0,
-		b->gate_bf16,rows,K3_HIDDEN,K3_MLA_OUT_DIM,multiprocessors,stream);
+		b->gate_bf16,rows,K3_HIDDEN,
+		K3_RANK_DIM(b,mla_gate_rows,K3_MLA_OUT_DIM),multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// No RMSNorm here - eq. 7 gates the raw attention output, unlike KDA's eq. 6
 	// which normalises first. The gate is the checkpoint's g_proj, unchanged, at
 	// heads * v_head_dim.
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-		b->value_bf16,b->gate_bf16,K3_MLA_OUT_DIM);
+		b->value_bf16,b->gate_bf16,K3_RANK_DIM(b,mla_gate_rows,K3_MLA_OUT_DIM));
 	return(K3Project<LmBf16Format>(b,b->value_bf16,b->mla_out_weight,b->mla_out_scale,
 		b->attention_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
-		rows,K3_MLA_OUT_DIM,K3_HIDDEN,multiprocessors,stream));
+		rows,K3_RANK_DIM(b,mla_out_input,K3_MLA_OUT_DIM),K3_HIDDEN,multiprocessors,stream));
 }
 
 template<class Format>
@@ -743,15 +778,17 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// cannot pack what it cannot see without a sync on the hot path, and until
 	// this call nothing packed it at all - every harness filled the arrays by
 	// hand, which is the precise shape of a driver that cannot exist.
+	const uint32_t moe_in = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
+	const uint32_t moe_out = K3_RANK_DIM(b,expert_w1_output,K3_EXPERT_INTERMEDIATE * 2u);
 	status = LmRouteBuild<K3_LAYER_THREADS,K3_EXPERTS>(
 		b->route_expert,rows,packed_rows,K3_TOP_K,b->group_row_offset,
-		b->route_packed_row,b->route_source_token,K3_EXPERT_INTERMEDIATE * 2u,
-		K3_ROUTED_EXPERT_HIDDEN,K3_LAYER_TILE_N,b->group_tile_prefix_w1,
+		b->route_packed_row,b->route_source_token,moe_out,
+		moe_in,K3_LAYER_TILE_N,b->group_tile_prefix_w1,
 		b->group_tile_prefix_w2,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
-		b->latent_bf16,rows,K3_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,multiprocessors,stream);
+		b->latent_bf16,rows,K3_HIDDEN,moe_in,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// THE GATHER IS DELETED (K3-PERF-004, roadmap D9, landed). What stood
@@ -787,20 +824,22 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 		status = LmGemmWeightOnlyIndirectInterleavedLaunch<
 			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 			&gemm,b->latent_bf16,b->expert_w1_weight,packed_rows,rows,
-			K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE * 2u,
+			K3_TOP_K,K3_EXPERTS,moe_in,moe_out,
 			multiprocessors,stream);
 	else
 		status = LmGemmWeightOnlyIndirectLaunch<
 			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 			&gemm,b->latent_bf16,b->expert_w1_weight,packed_rows,rows,
-			K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE * 2u,
+			K3_TOP_K,K3_EXPERTS,moe_in,moe_out,
 			multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// SiTU, not SwiGLU. Both betas, in the order the report gives them: 4 caps
 	// the gate branch and 25 the up branch, and swapping them runs.
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
-		b->gate_up_bf16,b->intermediate_bf16,K3_EXPERT_INTERMEDIATE, K3_SITU_BETA,K3_SITU_LINEAR_BETA);
+		b->gate_up_bf16,b->intermediate_bf16,
+		K3_RANK_DIM(b,expert_w2_input,K3_EXPERT_INTERMEDIATE),
+		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	// The SiTU output is already expert-major: no gather, no quantise, the
 	// rows feed the down-projection as they are. The scale descriptor stays
 	// None for the reason written at the w1 launch: the scales are co-tiled
@@ -810,17 +849,18 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	gemm.scale_b = LmScaleTensorNone();
 	gemm.group_tile_prefix = b->group_tile_prefix_w2;
 	gemm.output_bf16 = b->gate_up_bf16;
+	const uint32_t w2_in = K3_RANK_DIM(b,expert_w2_input,K3_EXPERT_INTERMEDIATE);
 	if ( b->expert_interleave != 0u )
 		status = LmGemmWeightOnlyInterleavedLaunch<
 			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 			&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-			K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE,
+			K3_TOP_K,K3_EXPERTS,moe_in,w2_in,
 			multiprocessors,true,stream);
 	else
 		status = LmGemmWeightOnlyLaunch<
 			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 			&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-			K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE,
+			K3_TOP_K,K3_EXPERTS,moe_in,w2_in,
 			multiprocessors,true,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -837,26 +877,29 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	//
 	// Every argument is a uint32_t and every one type-checked. glm5_2's call has
 	// been correct since it was written; I did not read it before writing this.
-	LM_LAUNCH((LmMoeFinalizeKernel<K3_LAYER_THREADS>), dim3((K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-		b->gate_up_bf16,b->route_packed_row,b->route_weight,b->latent_bf16, rows,K3_TOP_K,K3_ROUTED_EXPERT_HIDDEN);
+	LM_LAUNCH((LmMoeFinalizeKernel<K3_LAYER_THREADS>), dim3((moe_in + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+		b->gate_up_bf16,b->route_packed_row,b->route_weight,b->latent_bf16, rows,K3_TOP_K,moe_in);
 	// RMSNorm between aggregation and the up-projection - the "Normalized" in
 	// Normalized LatentMoE, and the report is explicit that it goes here rather
 	// than after.
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_ROUTED_EXPERT_HIDDEN + 8u) * sizeof(float), stream,
-		b->latent_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->latent_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (moe_in + 8u) * sizeof(float), stream,
+		b->latent_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->latent_bf16,moe_in,moe_in,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->routed_up_weight,b->routed_up_scale,
 		b->hidden_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
-		rows,K3_ROUTED_EXPERT_HIDDEN,K3_HIDDEN,multiprocessors,stream);
+		rows,K3_RANK_DIM(b,routed_up_input,K3_ROUTED_EXPERT_HIDDEN),K3_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// The two shared experts run on the pre-projection hidden at full width and
 	// are added to the routed result, not composed with it.
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->shared_w1_weight,b->shared_w1_scale,
-		b->gate_up_bf16,rows,K3_HIDDEN,K3_SHARED_INTERMEDIATE * 2u,multiprocessors,stream);
+		b->gate_up_bf16,rows,K3_HIDDEN,
+		K3_RANK_DIM(b,shared_w1_rows,K3_SHARED_INTERMEDIATE * 2u),multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-		b->gate_up_bf16,b->intermediate_bf16,K3_SHARED_INTERMEDIATE, K3_SITU_BETA,K3_SITU_LINEAR_BETA);
+		b->gate_up_bf16,b->intermediate_bf16,
+		K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),
+		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	// SEPARATE BUFFER, THEN ADD. This wrote hidden_bf16, which the routed
 	// up-projection had just written, and LmGemmStore assigns rather than
 	// accumulates - so the MoE output was the shared experts alone and the
@@ -874,7 +917,7 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// are both gone, and so is a full-width round trip per MoE layer.
 	status = K3Project<LmBf16Format>(b,b->intermediate_bf16,b->shared_w2_weight,b->shared_w2_scale,
 		b->shared_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
-		rows,K3_SHARED_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream);
+		rows,K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),K3_HIDDEN,multiprocessors,stream);
 	return(status);
 }
 
@@ -897,16 +940,18 @@ static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 		b->hidden_bf16,0,(const uint16_t *)b->mlp_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->dense_gate_up_weight,
 		b->dense_gate_up_scale,b->gate_up_bf16,rows,K3_HIDDEN,
-		K3_DENSE_INTERMEDIATE * 2u,multiprocessors,stream);
+		K3_RANK_DIM(b,dense_gate_up_rows,K3_DENSE_INTERMEDIATE * 2u),multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-		b->gate_up_bf16,b->intermediate_bf16,K3_DENSE_INTERMEDIATE, K3_SITU_BETA,K3_SITU_LINEAR_BETA);
+		b->gate_up_bf16,b->intermediate_bf16,
+		K3_RANK_DIM(b,dense_down_input,K3_DENSE_INTERMEDIATE),
+		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	// the dense layer's module output folds into the partial the same way
 	return(K3Project<LmBf16Format>(b,b->intermediate_bf16,b->dense_down_weight,
 		b->dense_down_scale,b->hidden_bf16,
 		b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
-		rows,K3_DENSE_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream));
+		rows,K3_RANK_DIM(b,dense_down_input,K3_DENSE_INTERMEDIATE),K3_HIDDEN,multiprocessors,stream));
 }
 
 // The head, already in the split form the full-vocab price demands.

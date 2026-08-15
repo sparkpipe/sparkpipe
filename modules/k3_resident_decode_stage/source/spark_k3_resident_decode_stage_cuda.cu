@@ -6,6 +6,7 @@
 // gate in tests/ holds the two allocators together.
 
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
@@ -321,6 +322,49 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 	}
 	if ( status == SPARK_K3_DISPATCH_OK )
 	{
+		/* THE RANK-SLICED DIMENSIONS. The layer calls default to the
+		 * full-model constants; the rank pack's tensors carry the rank's
+		 * shapes, so each sliced projection's in/out dimension comes from
+		 * the manifest here (zero keeps the constant, which is the host
+		 * harnesses' contract). */
+		char dim_name[96];
+		uint32_t base = d->first_layer;
+		SparkK3PackEntry dim_entry;
+#define K3_FILL_RANK(layer, field_name, field_ptr, columns) \
+		do { \
+			snprintf(dim_name, sizeof(dim_name), "model.layers.%u.%s", \
+				(uint32_t)(layer), field_name); \
+			if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) == 0 && \
+				dim_entry.shape_count >= 2u ) \
+				*(field_ptr) = (columns) ? dim_entry.shape[1] : dim_entry.shape[0]; \
+		} while ( 0 )
+		K3_FILL_RANK(base, "kda_qkv_beta_weight", &d->buffers->kda_qkvb_rows, 0);
+		K3_FILL_RANK(base, "kda_gate_weight", &d->buffers->kda_gate_rows, 0);
+		K3_FILL_RANK(base, "kda_decay_up_weight", &d->buffers->kda_decay_up_rows, 0);
+		K3_FILL_RANK(base, "kda_out_weight", &d->buffers->kda_out_input, 1);
+		K3_FILL_RANK(base + 3u, "mla_q_up_weight", &d->buffers->mla_q_up_rows, 0);
+		K3_FILL_RANK(base + 3u, "mla_gate_weight", &d->buffers->mla_gate_rows, 0);
+		K3_FILL_RANK(base + 3u, "mla_out_weight", &d->buffers->mla_out_input, 1);
+		K3_FILL_RANK(base + 1u, "routed_down_weight", &d->buffers->routed_down_rows, 0);
+		K3_FILL_RANK(base + 1u, "routed_up_weight", &d->buffers->routed_up_input, 1);
+		K3_FILL_RANK(base + 1u, "expert_w1_weight", &d->buffers->expert_w1_output, 0);
+		K3_FILL_RANK(base + 1u, "shared_w1_weight", &d->buffers->shared_w1_rows, 0);
+		K3_FILL_RANK(base + 1u, "shared_w2_weight", &d->buffers->shared_w2_input, 1);
+		/* the w2's k extent is the third shape slot ([experts, out, k]) */
+		snprintf(dim_name, sizeof(dim_name), "model.layers.%u.expert_w2_weight", base + 1u);
+		if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) == 0 &&
+			dim_entry.shape_count >= 3u )
+			d->buffers->expert_w2_input = dim_entry.shape[2];
+		if ( d->first_layer == 0u )
+		{
+			K3_FILL_RANK(0u, "dense_gate_up_weight", &d->buffers->dense_gate_up_rows, 0);
+			K3_FILL_RANK(0u, "dense_down_weight", &d->buffers->dense_down_input, 1);
+		}
+		if ( d->buffers->kda_qkvb_rows != 0u )
+			d->buffers->kda_heads_rank = d->buffers->kda_qkvb_rows / 385u;
+		if ( d->buffers->mla_gate_rows != 0u )
+			d->buffers->mla_heads_rank = d->buffers->mla_gate_rows / K3_V_HEAD_DIM;
+#undef K3_FILL_RANK
 		/* Model-level fields the slice loop never sets. */
 		SparkK3PackEntry entry;
 		if ( SparkK3PackLoadEntry(pack, "model.attnres_out_weight", &entry) == 0 )
