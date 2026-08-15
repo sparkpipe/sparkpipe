@@ -27,8 +27,11 @@ any common-layer edit is a flagged, separately-reviewable commit.
       follows PP-stage layer slices so each stage's 4 machines hold its
       shards; boundary-crossing shards are assigned to the lower stage and
       pulled by the upper stage at pack time.
-- [ ] qwen38 stage pack format + packer (tools/qwen38_stagepack.py,
-      modules/qwen38_resident_decode_stage/source/spark_qwen38_stagepack_format.h).
+- [x] qwen38 stage packer (tools/qwen38_stagepack.py): whole-PP-stage slices,
+      MXFP4-E2M1 routed experts with E8M0 scales, BF16 non-expert; inventory
+      and shapes verified against the pinned HF index. TP4 rank slicing and
+      the C format header (modules/qwen38_resident_decode_stage/) come with
+      the module work.
 - [ ] qwen38 resident decode stage module + serving adapter + firmware JSON.
 - [ ] inference/llms/qwen_3_8 driver family.
 - [ ] TP4xPP4 deployment configs (16 sparks, world_rank = pp_stage*4 + tp_rank,
