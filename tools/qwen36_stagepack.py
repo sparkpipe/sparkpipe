@@ -348,8 +348,28 @@ class SafetensorsSource:
         return shard, meta, offset
 
 
+# Qwen3_5RMSNorm applies x * (1 + weight) with zero-initialized weights and
+# the checkpoint stores the raw weight. The pack stores the EFFECTIVE gain,
+# so these kinds fold the +1 at pack time. The gated GDN norm (weight
+# initialized to ones, applied directly) is NOT folded.
+NORM_PLUS_ONE_KINDS = frozenset([
+    KIND_ATTENTION_NORM, KIND_MLP_NORM, KIND_FINAL_NORM,
+    KIND_ATTN_QUERY_NORM, KIND_ATTN_KEY_NORM,
+    KIND_MTP_EMBED_NORM, KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM,
+])
+
+def bf16_u16_to_f32(value: int) -> float:
+    return struct.unpack("<f", struct.pack("<I", value << 16))[0]
+
+def f32_to_bf16_u16(value: float) -> int:
+    bits = struct.unpack("<I", struct.pack("<f", value))[0]
+    lsb = (bits >> 16) & 1
+    return ((bits + 0x7FFF + lsb) >> 16) & 0xFFFF
+
+
 def copy_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, out) -> None:
-    """Stream one tensor's payload, upcasting BF16 to F32 where the pack says."""
+    """Stream one tensor's payload, upcasting BF16 to F32 where the pack says,
+    folding +1 into the Qwen3_5 standard-norm weights."""
     path = source.checkpoint / source.weight_map[ref.name]
     elements = ref.rows * ref.columns
     source_bytes = elements * BF16_BYTES
@@ -362,14 +382,19 @@ def copy_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, out) -> 
             if len(chunk) != step:
                 raise PackFailure(f"short read on {ref.name}")
             remaining -= step
-            if ref.weight_format == WEIGHT_BF16:
-                out.write(chunk)
-            else:
+            if ref.weight_format != WEIGHT_BF16:
                 # BF16 is the top half of F32: shift into place, zero the tail.
                 widened = bytearray(step * 2)
                 widened[2::4] = chunk[0::2]
                 widened[3::4] = chunk[1::2]
                 out.write(widened)
+            elif ref.kind in NORM_PLUS_ONE_KINDS:
+                count = step // BF16_BYTES
+                values = struct.unpack("<" + ("H" * count), chunk)
+                folded = [f32_to_bf16_u16(bf16_u16_to_f32(v) + 1.0) for v in values]
+                out.write(struct.pack("<" + ("H" * count), *folded))
+            else:
+                out.write(chunk)
 
 
 def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
