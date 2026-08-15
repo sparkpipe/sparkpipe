@@ -150,7 +150,10 @@ class Slicer:
         # and written over the reserve at the end, space-padded to the exact
         # reserve so the payload base (align(16 + manifest_len)) is a
         # compile-time constant of this writer.
-        manifest_reserve = 65520  # header(16) + manifest = 65536, aligned
+        # The rank manifest carries the interleave geometry per expert
+        # tensor and runs ~86 KB; the reserve must hold it AND keep
+        # header(16) + reserve 128-aligned (262144 = 2048 * 128).
+        manifest_reserve = 262128
         tensors = {}
         offset = 0
         with open(out_path, "wb") as out:
