@@ -10,9 +10,13 @@ Precision policy (full-fidelity spine, quantized experts):
     zai-org/GLM-5.2 @ b4734de4 and stored losslessly as BF16.
   - routed experts: read from the FP8 checkpoint zai-org/GLM-5.2-FP8; payload
     bytes copied as-is (codec 5) with F32 scales per 128-column block.
-    The checkpoint scale_inv is the dequant multiplier; each per-tile value
-    is expanded across its block's 128 rows (SparkWeightCodecScaleBytes).
+    scale_inv is the dequant multiplier; each per-tile value is expanded
+    across its block's 128 rows (SparkWeightCodecScaleBytes).
   - expert up/gate order: [up_proj rows, gate_proj rows] stacked.
+
+Streaming: offsets are computed arithmetically from the plan; tensors are
+produced lazily per entry and written in chunks, so the full ~1 TB pack is
+built in bounded memory.
 
 The serving path never opens the checkpoints; this is setup-time code.
 """
@@ -24,7 +28,7 @@ import hashlib
 import json
 import struct
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import torch
 from safetensors import safe_open
@@ -148,10 +152,17 @@ class Entry:
 
 
 class PlanItem:
-    def __init__(self, entry: Entry, payload: Optional[torch.Tensor], scale: Optional[torch.Tensor]):
+    """One directory entry plus lazy producers of its payload and scale bytes."""
+
+    def __init__(self, entry: Entry,
+                 produce_payload: Optional[Callable[[], Iterator[bytes]]],
+                 produce_scale: Optional[Callable[[], Iterator[bytes]]] = None,
+                 payload_bytes: int = 0, scale_bytes: int = 0):
         self.entry = entry
-        self.payload = payload
-        self.scale = scale
+        self.produce_payload = produce_payload
+        self.produce_scale = produce_scale
+        self.entry.payload_bytes = payload_bytes
+        self.entry.scale_bytes = scale_bytes
 
 
 class Packer:
@@ -177,7 +188,9 @@ class Packer:
             rows = rows // groups
         entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE,
                       groups, rows, cols)
-        self.plan.append(PlanItem(entry, tensor, None))
+        payload_bytes = groups * rows * cols * 2
+        blob = to_bytes(tensor)
+        self.plan.append(PlanItem(entry, lambda: iter([blob]), None, payload_bytes, 0))
 
     def add_f32(self, kind: int, layer: int, tensor: torch.Tensor):
         if tensor.dim() == 1:
@@ -186,7 +199,9 @@ class Packer:
         rows, cols = tensor.shape
         entry = Entry(kind, layer, PAYLOAD_F32, CODEC_BF16, SCALE_NONE,
                       1, rows, cols)
-        self.plan.append(PlanItem(entry, tensor, None))
+        payload_bytes = rows * cols * 4
+        blob = to_bytes(tensor)
+        self.plan.append(PlanItem(entry, lambda: iter([blob]), None, payload_bytes, 0))
 
     def add_spine_bf16(self, kind: int, layer: int, name: str):
         t = self.spine.tensor(name)
@@ -196,32 +211,35 @@ class Packer:
 
     def add_experts(self, kind: int, layer: int, projections: List[str],
                     rows: int, columns: int):
-        """Stack 256 experts' fp8 payloads (up then gate) + F32 scales.
-
-        The pack scale layout is [groups, rows, cols/128] f32: each checkpoint
-        per-tile scale_inv value is expanded across its 128 rows (matching
-        SparkWeightCodecScaleBytes). scale_inv is the dequant multiplier.
-        """
-        payloads: List[torch.Tensor] = []
-        scales: List[torch.Tensor] = []
-        for expert in range(EXPERT_COUNT):
-            for proj in projections:
-                name = f"model.layers.{layer}.mlp.experts.{expert}.{proj}"
-                w = self.experts.tensor(name + ".weight")
-                if w.shape != (rows, columns):
-                    raise PackFailure(f"{name}.weight shape {tuple(w.shape)} != ({rows}, {columns})")
-                payloads.append(w)
-                s_inv = self.experts.tensor(name + ".weight_scale_inv")
-                scales.append(s_inv.to(torch.float32).repeat_interleave(128, dim=0))
-        payload = torch.cat(payloads, dim=0)
-        scale = torch.cat(scales, dim=0)
-        group_count = EXPERT_COUNT
-        total_rows, cols = payload.shape
-        if total_rows % group_count != 0:
-            raise PackFailure(f"expert rows {total_rows} not divisible by {group_count}")
+        """Stack 256 experts' fp8 payloads (up then gate) + F32 scales, streamed."""
+        per_expert_payload = len(projections) * rows * columns          # fp8 bytes
+        per_expert_scale = len(projections) * rows * (columns // 128) * 4  # f32
+        payload_bytes = EXPERT_COUNT * per_expert_payload
+        scale_bytes = EXPERT_COUNT * per_expert_scale
         entry = Entry(kind, layer, PAYLOAD_PACKED_WEIGHT, CODEC_FP8, SCALE_F32,
-                      group_count, total_rows // group_count, cols)
-        self.plan.append(PlanItem(entry, payload, scale))
+                      EXPERT_COUNT, len(projections) * rows, columns)
+        experts = self.experts
+
+        def produce_payload() -> Iterator[bytes]:
+            for expert in range(EXPERT_COUNT):
+                for proj in projections:
+                    name = f"model.layers.{layer}.mlp.experts.{expert}.{proj}"
+                    w = experts.tensor(name + ".weight")
+                    if w.shape != (rows, columns):
+                        raise PackFailure(
+                            f"{name}.weight shape {tuple(w.shape)} != ({rows}, {columns})")
+                    yield to_bytes(w)
+
+        def produce_scale() -> Iterator[bytes]:
+            for expert in range(EXPERT_COUNT):
+                for proj in projections:
+                    name = f"model.layers.{layer}.mlp.experts.{expert}.{proj}"
+                    s_inv = experts.tensor(name + ".weight_scale_inv")
+                    expanded = s_inv.to(torch.float32).repeat_interleave(128, dim=0)
+                    yield to_bytes(expanded)
+
+        self.plan.append(PlanItem(entry, produce_payload, produce_scale,
+                                  payload_bytes, scale_bytes))
 
     def add_kv_b(self, layer: int):
         w = self.spine.tensor(f"model.layers.{layer}.self_attn.kv_b_proj.weight")
@@ -241,8 +259,8 @@ class Packer:
             block = w[head * per_head:(head + 1) * per_head, :]
             key_parts.append(block[:qk_nope, :].t().contiguous())  # [latent, qk_nope]
             value_parts.append(block[qk_nope:, :])                  # [value, latent]
-        key_t = torch.stack(key_parts, dim=0).contiguous()   # [heads, latent, qk_nope]
-        value = torch.stack(value_parts, dim=0).contiguous()  # [heads, value, latent]
+        key_t = torch.stack(key_parts, dim=0).contiguous()
+        value = torch.stack(value_parts, dim=0).contiguous()
         self.add_bf16(K_KV_B_KEY_T, layer, key_t.reshape(heads * latent, qk_nope), groups=heads)
         self.add_bf16(K_KV_B_VALUE, layer, value.reshape(heads * value_dim, latent), groups=heads)
 
@@ -321,20 +339,14 @@ class Packer:
         offset = align_up(directory_offset + directory_bytes, ALIGNMENT)
         for item in self.plan:
             entry = item.entry
-            payload_bytes = self._payload_bytes(item.payload)
             entry.payload_offset = offset
-            entry.payload_bytes = payload_bytes
-            offset += payload_bytes
+            offset += entry.payload_bytes
         for item in self.plan:
             entry = item.entry
-            scale_bytes = 0
-            if item.scale is not None:
-                scale_bytes = item.scale.numel() * item.scale.element_size()
-            if scale_bytes:
+            if entry.scale_bytes:
                 offset = align_up(offset, ALIGNMENT)
                 entry.scale_offset = offset
-                entry.scale_bytes = scale_bytes
-                offset += scale_bytes
+                offset += entry.scale_bytes
         file_bytes = offset
 
         with output_path.open("wb") as f:
@@ -360,18 +372,14 @@ class Packer:
                     entry.scale_offset, entry.scale_bytes))
             for item in self.plan:
                 f.seek(item.entry.payload_offset)
-                f.write(to_bytes(item.payload))
-            for item in self.plan:
-                if item.scale is not None:
+                if item.produce_payload is not None:
+                    for chunk in item.produce_payload():
+                        f.write(chunk)
+                if item.produce_scale is not None:
                     f.seek(item.entry.scale_offset)
-                    f.write(to_bytes(item.scale))
+                    for chunk in item.produce_scale():
+                        f.write(chunk)
         return file_bytes
-
-    @staticmethod
-    def _payload_bytes(payload: Optional[torch.Tensor]) -> int:
-        if payload is None:
-            return 0
-        return payload.numel() * payload.element_size()
 
 
 def sha256_bytes(data: bytes) -> bytes:
