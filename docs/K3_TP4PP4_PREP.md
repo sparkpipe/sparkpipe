@@ -70,3 +70,24 @@ are always allowed regardless of slot state.
   externally-killed stage packs now survive and finish (the packs were
   being killed by an unknown external process; the watchdog + journal
   make the pack build self-healing).
+
+## Per-spark data budget (TP4 x PP4, 1/16 per rank)
+
+Weights: the full PP-stage pack (~350 GB, 1/4 of the model) is sliced by
+k3_shard.py into four rank packs (~87 GB each, 1/16); each spark's
+internal NVMe holds exactly its rank pack + its stage's checkpoint shards
+(~400 GB) until packing is retired. The rank pack is the deployment unit.
+
+KV and recurrent state, per rank (its 23-layer slice: 17 KDA + 6 MLA):
+
+  - KDA slot pool: 6.59 MB per layer (96x128x128 f32 state + conv
+    windows) x 17 layers = ~112 MB per sequence per rank (the full-model
+    number is 448 MB; PP4 quarters it).
+  - MLA token arena: 1152 B/token/layer (512 latent + 64 unrotated, bf16)
+    x 6 layers = ~6.9 KB/token per rank. The kv_a latent replicates within
+    the TP group (512-wide cannot shard usefully) - the rank-local saving
+    is the PP slice (6 of 24 layers), not a TP split of the latent.
+
+The serving module must size both pools from ITS slice layer counts
+(model-families/k3/spark_k3_kv_geometry.h holds the full-model constants;
+the module's capacity request scales them by first_layer/layer_count).
