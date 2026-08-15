@@ -28,9 +28,16 @@
  */
 
 #define SPARK_DSV4_STAGEPACK_MAGIC 0x34565344u
-#define SPARK_DSV4_STAGEPACK_FORMAT_VERSION 3u
+#define SPARK_DSV4_STAGEPACK_FORMAT_VERSION 4u
 #define SPARK_DSV4_STAGEPACK_GLOBAL_LAYER UINT32_MAX
-#define SPARK_DSV4_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
+/* Three DSpark draft layers (checkpoint namespace mtp.0..2, attached to main
+ * layers 40-42). Encoded as layer indices MTP_LAYER_FIRST+stage so the
+ * standard per-layer tensor kinds carry the draft transformer weights; the
+ * MTP_* kinds below carry only the draft-only extras. */
+#define SPARK_DSV4_STAGEPACK_MTP_LAYER_FIRST (UINT32_MAX - 4u)
+#define SPARK_DSV4_STAGEPACK_MTP_LAYER_LAST (UINT32_MAX - 2u)
+#define SPARK_DSV4_STAGEPACK_MTP_LAYER_COUNT_MAX 3u
+#define SPARK_DSV4_STAGEPACK_MTP_LAYER(stage) (SPARK_DSV4_STAGEPACK_MTP_LAYER_FIRST + (stage))
 #define SPARK_DSV4_STAGEPACK_HEADER_BYTES ((uint32_t)sizeof(SparkDsv4StagePackHeader))
 #define SPARK_DSV4_STAGEPACK_ENTRY_BYTES ((uint32_t)sizeof(SparkDsv4StagePackEntry))
 
@@ -92,15 +99,21 @@ typedef enum SparkDsv4StagePackTensorKind
 	SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_FN = 38,
 	SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_BASE = 39,
 	SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_SCALE = 40,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_E_PROJ = 41,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_H_PROJ = 42,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_ENORM = 43,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HNORM = 44,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_FINAL_NORM = 45,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_FN = 46,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_BASE = 47,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE = 48,
-	SPARK_DSV4_STAGEPACK_TENSOR_KIND_COUNT = 49
+	/* Draft-stage extras (reference: inference/model.py DSparkBlock).
+	 * Stage 0 carries the target-hidden projection; stage 2 carries the
+	 * output norm, the 5-token hc head, the markov logits-bias head, and
+	 * the acceptance confidence head. The draft transformer tensors ride
+	 * the standard kinds above under layer MTP_LAYER_FIRST+stage. */
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_PROJ = 41,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_NORM = 42,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_FINAL_NORM = 43,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_FN = 44,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_BASE = 45,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE = 46,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_MARKOV_W1 = 47,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_MARKOV_W2 = 48,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_CONFIDENCE_PROJ = 49,
+	SPARK_DSV4_STAGEPACK_TENSOR_KIND_COUNT = 50
 } SparkDsv4StagePackTensorKind;
 
 typedef struct SparkDsv4StagePackHeader
@@ -145,18 +158,30 @@ typedef struct SparkDsv4StagePackTensorShape
 	uint32_t layer_class;
 } SparkDsv4StagePackTensorShape;
 
+static inline uint32_t SparkDsv4StagePackLayerIsMtp(uint32_t layer_index)
+{
+	return(layer_index >= SPARK_DSV4_STAGEPACK_MTP_LAYER_FIRST &&
+		layer_index <= SPARK_DSV4_STAGEPACK_MTP_LAYER_LAST ? 1u : 0u);
+}
+
+static inline uint32_t SparkDsv4StagePackMtpStage(uint32_t layer_index)
+{
+	return(layer_index - SPARK_DSV4_STAGEPACK_MTP_LAYER_FIRST);
+}
+
 // The MoE routing split, pinned: layers below HASH_ROUTED_LAYER_COUNT ship
 // the tid2eid lookup and NO balancer bias; all others the reverse. The MTP
-// layer sits past the hash range, so it score-routes.
+// layers sit past the hash range, so they score-route.
 static inline uint32_t SparkDsv4StagePackLayerIsHashRouted(uint32_t layer_index)
 {
-	return(layer_index != SPARK_DSV4_STAGEPACK_MTP_LAYER && layer_index < SPARK_DSV4_MODEL_HASH_ROUTED_LAYER_COUNT ? 1u : 0u);
+	return(SparkDsv4StagePackLayerIsMtp(layer_index) == 0u &&
+		layer_index < SPARK_DSV4_MODEL_HASH_ROUTED_LAYER_COUNT ? 1u : 0u);
 }
 
 static inline uint32_t SparkDsv4StagePackLayerKind(uint32_t layer_index)
 {
-	if ( layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER )
-		return(SPARK_DSV4_MODEL_MTP_LAYER_COUNT == 1u ? SPARK_DSV4_MODEL_MTP_LAYER_KIND : SPARK_DSV4_MODEL_LAYER_KIND_INVALID);
+	if ( SparkDsv4StagePackLayerIsMtp(layer_index) != 0u )
+		return(SPARK_DSV4_MODEL_MTP_LAYER_KIND);
 	return(SparkDsv4ModelLayerKind(layer_index));
 }
 
@@ -226,8 +251,7 @@ static inline int32_t SparkDsv4StagePackShapeOfGlobal(uint32_t tensor_kind, Spar
 	case SPARK_DSV4_STAGEPACK_TENSOR_EMBEDDING:
 	case SPARK_DSV4_STAGEPACK_TENSOR_LM_HEAD: shape->rows = SPARK_DSV4_MODEL_VOCAB_COUNT; shape->columns = SPARK_DSV4_MODEL_HIDDEN_DIMENSION; shape->layer_class = SPARK_DSV4_STAGEPACK_CLASS_GLOBAL; return(0);
 	case SPARK_DSV4_STAGEPACK_TENSOR_FINAL_NORM:
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_ENORM:
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HNORM:
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_NORM:
 	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_FINAL_NORM: shape->rows = 1u; shape->columns = SPARK_DSV4_MODEL_HIDDEN_DIMENSION; shape->layer_class = SPARK_DSV4_STAGEPACK_CLASS_GLOBAL; return(0);
 	case SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_FN:
 	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_FN: shape->rows = SPARK_DSV4_MODEL_HC_STREAM_COUNT; shape->columns = SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS; shape->weight_format = SPARK_DSV4_STAGEPACK_WEIGHT_F32; shape->layer_class = SPARK_DSV4_STAGEPACK_CLASS_GLOBAL; return(0);
@@ -235,8 +259,10 @@ static inline int32_t SparkDsv4StagePackShapeOfGlobal(uint32_t tensor_kind, Spar
 	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_BASE: shape->rows = 1u; shape->columns = SPARK_DSV4_MODEL_HC_STREAM_COUNT; shape->weight_format = SPARK_DSV4_STAGEPACK_WEIGHT_F32; shape->layer_class = SPARK_DSV4_STAGEPACK_CLASS_GLOBAL; return(0);
 	case SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_SCALE:
 	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE: shape->rows = 1u; shape->columns = 1u; shape->weight_format = SPARK_DSV4_STAGEPACK_WEIGHT_F32; shape->layer_class = SPARK_DSV4_STAGEPACK_CLASS_GLOBAL; return(0);
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_E_PROJ:
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_H_PROJ: shape->rows = SPARK_DSV4_MODEL_HIDDEN_DIMENSION; shape->columns = SPARK_DSV4_MODEL_HIDDEN_DIMENSION; shape->weight_format = SPARK_DSV4_STAGEPACK_WEIGHT_FP8_E4M3; shape->layer_class = SPARK_DSV4_STAGEPACK_CLASS_GLOBAL; return(0);
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_PROJ: shape->rows = SPARK_DSV4_MODEL_HIDDEN_DIMENSION; shape->columns = SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT * SPARK_DSV4_MODEL_HIDDEN_DIMENSION; shape->weight_format = SPARK_DSV4_STAGEPACK_WEIGHT_FP8_E4M3; shape->layer_class = SPARK_DSV4_STAGEPACK_CLASS_GLOBAL; return(0);
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MARKOV_W1:
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MARKOV_W2: shape->rows = SPARK_DSV4_MODEL_VOCAB_COUNT; shape->columns = SPARK_DSV4_MODEL_DSPARK_MARKOV_RANK; shape->layer_class = SPARK_DSV4_STAGEPACK_CLASS_GLOBAL; return(0);
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_CONFIDENCE_PROJ: shape->rows = 1u; shape->columns = SPARK_DSV4_MODEL_HIDDEN_DIMENSION + SPARK_DSV4_MODEL_DSPARK_MARKOV_RANK; shape->layer_class = SPARK_DSV4_STAGEPACK_CLASS_GLOBAL; return(0);
 	default:
 		return(-1);
 	}
@@ -256,7 +282,7 @@ static inline int32_t SparkDsv4StagePackResolvedShape(uint32_t tensor_kind, uint
 	uint32_t kind = SparkDsv4StagePackLayerKind(layer_index),ratio,overlap;
 	if ( is_global == 0u && (tensor_kind == SPARK_DSV4_STAGEPACK_TENSOR_COMPRESS_APE || tensor_kind == SPARK_DSV4_STAGEPACK_TENSOR_COMPRESS_WKV || tensor_kind == SPARK_DSV4_STAGEPACK_TENSOR_COMPRESS_WGATE) )
 	{
-		if ( layer_index != SPARK_DSV4_STAGEPACK_MTP_LAYER && layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT )
+		if ( SparkDsv4StagePackLayerIsMtp(layer_index) == 0u && layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT )
 			return(-2);
 		if ( kind == SPARK_DSV4_MODEL_LAYER_KIND_SWA )
 			return(-3);
@@ -275,7 +301,7 @@ static inline int32_t SparkDsv4StagePackResolvedShape(uint32_t tensor_kind, uint
 		return(-4);
 	if ( is_global != 0u )
 		return(0);
-	if ( layer_index != SPARK_DSV4_STAGEPACK_MTP_LAYER && layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT )
+	if ( SparkDsv4StagePackLayerIsMtp(layer_index) == 0u && layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT )
 		return(-5);
 	if ( tensor_kind == SPARK_DSV4_STAGEPACK_TENSOR_GATE_BIAS && SparkDsv4StagePackLayerIsHashRouted(layer_index) != 0u )
 		return(-6);
@@ -339,9 +365,13 @@ static inline uint32_t SparkDsv4StagePackExpectedTensorCountForOwnership(
 		tensors += 1u;
 	if ( include_final_globals != 0u )
 	{
+		uint32_t stage;
 		tensors += 5u;
-		if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
-			tensors += 8u + SparkDsv4StagePackLayerTensorCount(SPARK_DSV4_STAGEPACK_MTP_LAYER) + (include_embedding == 0u ? 1u : 0u);
+		for (stage = 0u; stage < SPARK_DSV4_MODEL_MTP_LAYER_COUNT; stage++)
+			tensors += SparkDsv4StagePackLayerTensorCount(SPARK_DSV4_STAGEPACK_MTP_LAYER(stage));
+		/* Draft extras: stage-0 main projection pair + stage-2 output norm,
+		 * hc head trio, markov pair, confidence projection = 9 kinds. */
+		tensors += 9u + (include_embedding == 0u ? 1u : 0u);
 	}
 	return(tensors);
 }

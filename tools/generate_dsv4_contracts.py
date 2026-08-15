@@ -109,7 +109,7 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
 
     require_equal(contract["schema_version"], 1, f"{variant} schema version")
     require_equal(contract["architecture"], "DeepseekV4ForCausalLM", f"{variant} architecture")
-    expected_mtp_layer_count = 0 if variant == "flash" else 1
+    expected_mtp_layer_count = 3 if variant == "flash" else 1
     packed_mtp_layer_count = contract.get("runtime", {}).get(
         "packed_mtp_layer_count", model["mtp_layer_count"])
     require_equal(model["mtp_layer_count"], expected_mtp_layer_count, f"{variant} MTP layer count")
@@ -132,8 +132,8 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
     if variant == "flash":
         require_equal(contract["model_id"], "deepseek-ai/DeepSeek-V4-Flash-0731", "Flash source model")
         require_equal(contract["source_revision"], "7872f01b1d1fe23eabc4c98b48bffcef5a386062", "Flash source revision")
-        require_equal(packed_mtp_layer_count, 0, "Flash packed MTP layer count")
-        require_equal(contract["runtime"]["speculative_decoding"], "disabled", "Flash speculative decoding")
+        require_equal(packed_mtp_layer_count, 3, "Flash packed MTP layer count")
+        require_equal(contract["runtime"]["speculative_decoding"], "enabled", "Flash speculative decoding")
         require_equal(contract["dspark"]["checkpoint_namespace"], "mtp", "Flash DSpark checkpoint namespace")
         require_equal(contract["dspark"]["layer_count"], 3, "Flash DSpark layer count")
         require_equal(contract["dspark"]["block_size"], 5, "Flash DSpark block size")
@@ -141,8 +141,8 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
         require_equal(contract["dspark"]["target_layer_ids"], [40, 41, 42], "Flash DSpark target layers")
         require_equal(contract["dspark"]["markov_rank"], 256, "Flash DSpark Markov rank")
         require_equal(contract["dspark"]["tensor_counts"], [1568, 1565, 1572], "Flash DSpark tensor counts")
-        require_equal(contract["dspark"]["packed"], False, "Flash DSpark packing")
-        require_equal(contract["dspark"]["execution_supported"], False, "Flash DSpark execution")
+        require_equal(contract["dspark"]["packed"], True, "Flash DSpark packing")
+        require_equal(contract["dspark"]["execution_supported"], True, "Flash DSpark execution")
         require_equal(contract["source_index_sha256"], "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b", "Flash source index hash")
         require_equal(contract["source_tensor_count"], 72317, "Flash source tensor count")
         validate_flash_source_files(contract)
@@ -212,6 +212,10 @@ def render_header(
     if variant == "flash":
         defines = common_defines + [
             ("CHECKPOINT_DSPARK_LAYER_COUNT", contract["dspark"]["layer_count"]),
+            ("DSPARK_BLOCK_SIZE", contract["dspark"]["block_size"]),
+            ("DSPARK_NOISE_TOKEN_ID", contract["dspark"]["noise_token_id"]),
+            ("DSPARK_MARKOV_RANK", contract["dspark"]["markov_rank"]),
+            ("DSPARK_TARGET_LAYER_COUNT", len(contract["dspark"]["target_layer_ids"])),
             ("MAX_POSITIONS", model["maximum_context_tokens"]),
             ("ATTN_QUERY_HEAD_COUNT", model["attention_head_count"]),
             ("ATTN_KV_HEAD_COUNT", model["kv_head_count"]),

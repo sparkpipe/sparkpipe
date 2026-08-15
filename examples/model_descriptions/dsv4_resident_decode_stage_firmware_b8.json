@@ -12,7 +12,7 @@
       "index_head_dimension": 128,
       "index_top_k": 512,
       "layer_count": 43,
-      "packed_dspark_layer_count": 0,
+      "packed_dspark_layer_count": 3,
       "routed_expert_count": 256,
       "sliding_window_tokens": 128,
       "vocab_count": 129280
@@ -49,8 +49,8 @@
       "required_environment": [],
       "runtime_backend_selection": "forbidden",
       "runtime_precision_selection": "forbidden",
-      "speculative_decoding": "disabled",
-      "speculative_decoding_reason": "GA DSpark layers are checkpoint-declared but not implemented by the native DSV4 driver"
+      "speculative_decoding": "enabled",
+      "speculative_decoding_reason": "DSpark draft layers packed and executed by the native DSV4 driver"
     },
     "source_model": {
       "id": "deepseek-ai/DeepSeek-V4-Flash-0731",

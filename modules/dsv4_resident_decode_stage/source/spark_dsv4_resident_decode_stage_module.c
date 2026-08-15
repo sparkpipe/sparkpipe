@@ -327,10 +327,12 @@ struct SparkDsv4ModuleState
 	float hc_head_scale_value;
 	uint32_t csa_ordinal_by_layer[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT];
 	uint64_t layer_seen_bits[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT];
-	uint64_t mtp_seen_bits;
+	uint64_t mtp_seen_bits[SPARK_DSV4_STAGEPACK_MTP_LAYER_COUNT_MAX];
 	uint64_t global_seen_bits;
 	SparkDsv4LayerWeights layers[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT];
-	SparkDsv4LayerWeights mtp_layer;
+	/* DSpark draft: three full transformer layers (mtp.0..2) carrying the
+	 * standard per-layer tensor set, plus the stage extras below. */
+	SparkDsv4LayerWeights mtp_layers[SPARK_DSV4_STAGEPACK_MTP_LAYER_COUNT_MAX];
 	SparkDsv4MtpWeights mtp;
 	const void *token_embedding_bf16;
 	const void *final_norm_weight_bf16;
@@ -985,7 +987,7 @@ static SparkStatus SparkDsv4ModuleValidateEntry(SparkDsv4ModuleState *state, con
 	SparkDsv4StagePackTensorShape shape;
 	uint64_t payload_bytes,scale_bytes;
 	uint32_t global = entry->layer_index == SPARK_DSV4_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
-	uint32_t in_slice = (entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER && SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u) || (entry->layer_index >= state->first_layer_index && entry->layer_index < state->first_layer_index + state->layer_count) ? 1u : 0u;
+	uint32_t in_slice = (SparkDsv4StagePackLayerIsMtp(entry->layer_index) != 0u && SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u) || (entry->layer_index >= state->first_layer_index && entry->layer_index < state->first_layer_index + state->layer_count) ? 1u : 0u;
 	if ( entry->tensor_kind >= SPARK_DSV4_STAGEPACK_TENSOR_KIND_COUNT || (global == 0u && in_slice == 0u) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if ( SparkDsv4ModuleResolvedShape(state,entry,&shape) < 0 )
@@ -1002,6 +1004,7 @@ static SparkStatus SparkDsv4ModuleValidateEntry(SparkDsv4ModuleState *state, con
 
 static SparkStatus SparkDsv4ModuleBindGlobal(SparkDsv4ModuleState *state, const SparkDsv4StagePackEntry *entry, void *payload, void *scale)
 {
+	(void)scale;
 	switch ( entry->tensor_kind )
 	{
 	case SPARK_DSV4_STAGEPACK_TENSOR_EMBEDDING: state->token_embedding_bf16 = payload; break;
@@ -1010,18 +1013,29 @@ static SparkStatus SparkDsv4ModuleBindGlobal(SparkDsv4ModuleState *state, const 
 	case SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_FN: state->hc_head_fn_f32 = (const float *)payload; break;
 	case SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_BASE: state->hc_head_base_f32 = (const float *)payload; break;
 	case SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_SCALE: state->hc_head_scale_f32 = (const float *)payload; break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_E_PROJ: SparkDsv4ModuleFillLinearView(&state->mtp.e_proj,entry,payload,scale); break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_H_PROJ: SparkDsv4ModuleFillLinearView(&state->mtp.h_proj,entry,payload,scale); break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_ENORM: state->mtp.enorm_weight_bf16 = payload; break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HNORM: state->mtp.hnorm_weight_bf16 = payload; break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_FINAL_NORM: state->mtp.final_norm_weight_bf16 = payload; break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_FN: state->mtp.hc_head_fn_f32 = (const float *)payload; break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_BASE: state->mtp.hc_head_base_f32 = (const float *)payload; break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE: state->mtp.hc_head_scale_f32 = (const float *)payload; break;
 	default:
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	state->global_seen_bits |= 1ull << entry->tensor_kind;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDsv4ModuleBindMtpExtras(SparkDsv4ModuleState *state, const SparkDsv4StagePackEntry *entry, void *payload, void *scale)
+{
+	switch ( entry->tensor_kind )
+	{
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_PROJ: SparkDsv4ModuleFillLinearView(&state->mtp.main_proj,entry,payload,scale); break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_NORM: state->mtp.main_norm_weight_bf16 = payload; break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_FINAL_NORM: state->mtp.final_norm_weight_bf16 = payload; break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_FN: state->mtp.hc_head_fn_f32 = (const float *)payload; break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_BASE: state->mtp.hc_head_base_f32 = (const float *)payload; break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE: state->mtp.hc_head_scale_f32 = (const float *)payload; break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MARKOV_W1: SparkDsv4ModuleFillLinearView(&state->mtp.markov_w1,entry,payload,scale); break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MARKOV_W2: SparkDsv4ModuleFillLinearView(&state->mtp.markov_w2,entry,payload,scale); break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_CONFIDENCE_PROJ: SparkDsv4ModuleFillLinearView(&state->mtp.confidence_proj,entry,payload,scale); break;
+	default:
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	}
 	return(SPARK_STATUS_OK);
 }
 
@@ -1092,9 +1106,24 @@ static SparkStatus SparkDsv4ModuleBindLayerRest(SparkDsv4LayerWeights *layer, co
 
 static SparkStatus SparkDsv4ModuleBindLayer(SparkDsv4ModuleState *state, const SparkDsv4StagePackEntry *entry, void *payload, void *scale)
 {
-	SparkDsv4LayerWeights *layer = entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER ? &state->mtp_layer : &state->layers[entry->layer_index];
-	uint64_t *seen = entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER ? &state->mtp_seen_bits : &state->layer_seen_bits[entry->layer_index];
+	SparkDsv4LayerWeights *layer;
+	uint64_t *seen;
 	SparkStatus status;
+	if ( SparkDsv4StagePackLayerIsMtp(entry->layer_index) != 0u )
+	{
+		uint32_t stage = SparkDsv4StagePackMtpStage(entry->layer_index);
+		if ( stage >= SPARK_DSV4_STAGEPACK_MTP_LAYER_COUNT_MAX )
+			return(SPARK_STATUS_VALIDATION_FAILED);
+		if ( entry->tensor_kind >= SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_PROJ )
+			return(SparkDsv4ModuleBindMtpExtras(state,entry,payload,scale));
+		layer = &state->mtp_layers[stage];
+		seen = &state->mtp_seen_bits[stage];
+	}
+	else
+	{
+		layer = &state->layers[entry->layer_index];
+		seen = &state->layer_seen_bits[entry->layer_index];
+	}
 	if ( entry->tensor_kind <= SPARK_DSV4_STAGEPACK_TENSOR_COMPRESS_NORM && entry->tensor_kind >= SPARK_DSV4_STAGEPACK_TENSOR_COMPRESS_APE )
 		status = SparkDsv4ModuleBindLayerAttn(layer,entry,payload,scale);
 	else if ( entry->tensor_kind <= SPARK_DSV4_STAGEPACK_TENSOR_FFN_NORM )
@@ -1167,15 +1196,27 @@ static SparkStatus SparkDsv4ModuleVerifyCoverage(SparkDsv4ModuleState *state)
 	{
 		for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_FINAL_NORM; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_SCALE; tensor++)
 			expected_globals |= 1ull << tensor;
-		if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
-		{
-			for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_MTP_E_PROJ; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE; tensor++)
-				expected_globals |= 1ull << tensor;
-			if ( state->mtp_seen_bits != SparkDsv4ModuleExpectedLayerBits(SPARK_DSV4_STAGEPACK_MTP_LAYER) )
+	}
+	/* DSpark draft: every rank's pack carries the three full draft layers
+	 * (they ride the standard per-layer kinds under the MTP layer range)
+	 * plus the stage extras; a missing draft tensor is a refused pack. */
+	if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
+	{
+		uint32_t stage;
+		for (stage = 0u; stage < SPARK_DSV4_MODEL_MTP_LAYER_COUNT; stage++)
+			if ( state->mtp_seen_bits[stage] != SparkDsv4ModuleExpectedLayerBits(SPARK_DSV4_STAGEPACK_MTP_LAYER(stage)) )
 			{
-				fprintf(stderr,"%s pack_mtp_coverage seen=%llx\n",SPARK_DSV4_MODULE_TAG,(unsigned long long)state->mtp_seen_bits);
+				fprintf(stderr,"%s pack_mtp_coverage stage=%u seen=%llx\n",SPARK_DSV4_MODULE_TAG,stage,(unsigned long long)state->mtp_seen_bits[stage]);
 				return(SPARK_STATUS_VALIDATION_FAILED);
 			}
+		if ( state->mtp.main_proj.payload == 0 || state->mtp.main_proj.scale_data == 0 ||
+			state->mtp.main_norm_weight_bf16 == 0 || state->mtp.final_norm_weight_bf16 == 0 ||
+			state->mtp.hc_head_fn_f32 == 0 || state->mtp.hc_head_base_f32 == 0 ||
+			state->mtp.hc_head_scale_f32 == 0 || state->mtp.markov_w1.payload == 0 ||
+			state->mtp.markov_w2.payload == 0 || state->mtp.confidence_proj.payload == 0 )
+		{
+			fprintf(stderr,"%s pack_mtp_extras_coverage incomplete\n",SPARK_DSV4_MODULE_TAG);
+			return(SPARK_STATUS_VALIDATION_FAILED);
 		}
 	}
 	if ( state->global_seen_bits != expected_globals )

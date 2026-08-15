@@ -202,16 +202,22 @@ typedef struct SparkDsv4HcWeights
 	const float *ffn_scale_f32;
 } SparkDsv4HcWeights;
 
+/* DSpark draft-only extras (reference: inference/model.py DSparkBlock).
+ * Stage 0 projects the concatenated target-layer hiddens; stage 2 carries
+ * the output norm, the 5-position hc head, the markov logits-bias head
+ * (vocab x rank embedding + head), and the acceptance confidence head.
+ * The draft transformer layers themselves use SparkDsv4LayerWeights. */
 typedef struct SparkDsv4MtpWeights
 {
-	SparkDsv4LinearView e_proj;
-	SparkDsv4LinearView h_proj;
-	const void *enorm_weight_bf16;
-	const void *hnorm_weight_bf16;
+	SparkDsv4LinearView main_proj;
+	const void *main_norm_weight_bf16;
 	const void *final_norm_weight_bf16;
 	const float *hc_head_fn_f32;
 	const float *hc_head_base_f32;
 	const float *hc_head_scale_f32;
+	SparkDsv4LinearView markov_w1;
+	SparkDsv4LinearView markov_w2;
+	SparkDsv4LinearView confidence_proj;
 } SparkDsv4MtpWeights;
 
 typedef struct SparkDsv4DecodeBatchView
