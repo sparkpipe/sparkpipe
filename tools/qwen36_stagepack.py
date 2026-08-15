@@ -400,9 +400,12 @@ def build_tp_plan(ref, degree, rank):
     if degree <= 1:
         return None
     if ref.layer == GLOBAL_LAYER:
-        if ref.kind in (KIND_EMBEDDING, KIND_LM_HEAD):
+        if ref.kind == KIND_LM_HEAD:
             off, count = tp_window(VOCAB, degree, rank)
             return TpSlice(off, count, 0, HIDDEN)
+        if ref.kind == KIND_EMBEDDING:
+            return None  # replicated: no collective broadcast yet; the
+                        # gather path reads the full table on every rank
         if ref.kind == KIND_MTP_FC:
             return None  # replicated per the recipe
         return None

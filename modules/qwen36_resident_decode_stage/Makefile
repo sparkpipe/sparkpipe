@@ -9,7 +9,10 @@ MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_qwen36_resident_decode_stage_cuda.c
 # client and store implementations now live under cache/store (same ABI).
 MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/cache/store/stage_kv_client.c \
-	$(REPOSITORY_ROOT)/cache/store/kv_store.c
+	$(REPOSITORY_ROOT)/cache/store/kv_store.c \
+	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c \
+	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective_nccl.c \
+	$(CURDIR)/source/spark_qwen36_tp.c
 # The rewritten rules.mk requires a non-empty MODULE_COMPILE_FLAGS; mirror the
 # dsv4 convention so a future module-build define has a home.
 MODULE_COMPILE_FLAGS := -DSPARK_QWEN36_MODULE_BUILD=1
