@@ -127,3 +127,27 @@ the module's capacity request scales them by first_layer/layer_count).
 - The head step signature surfaced while compiling: `K3Head(buffers,
   head_norm_weight, head_weight, token_ids, vocabulary, rows, stream)` at
   layer.cuh:909 - the PP-last rank's serving tier calls it after the slice.
+
+## Final round state (round 16)
+
+- `SPARKPIPE_K3_SOURCES` added to sources.mk (pack_load, bind, module .c
+  files; the .cu dispatch TU follows the DSV4 module's CUDA pattern).
+- `tools/k3_autoslice.sh` watchers are LIVE on spark1/4/8/c: each polls for
+  its stage pack's final `.pack` (payload streamed in and unlinked on
+  close), then runs `k3_shard.py` to emit the four TP4 rank packs.
+- `tools/k3_deploy_ranks.sh` copies the 16 rank packs to
+  /home/<host>/sparkdata/k3.mxfp4.tp4pp4/packs/k3.stage<s>.rank0<t>.pack
+  with sha256 verification (stage s ranks t on spark[s*4+t]).
+- Stage pack progress at last check: sparkc layer 91/92 (~356 GB), spark4
+  44/46 (~339 GB), spark8 65/69, spark1 19/24 - all four packers healthy.
+- REMAINING to a live run, in dependency order:
+  1. Rank slicing + deployment (automatic via the watchers + deploy script).
+  2. Serving adapter + stage runner implementing the
+     `spark_stage_module_common` ABI over the dispatch (the DSV4 module's
+     serving_adapter.c + stage_runner.c are the pattern); TP4 device
+     collectives wiring for the TP4xPP4 hidden stream.
+  3. The expert_interleave grouped-GEMM wave: K3LayerLatentMoe still fails
+     closed on interleave=1, so the first live MoE launch errors until it
+     lands.
+  4. The full-cluster end-to-end run itself: needs a spark ring reservation
+     (live runs are not allowed without one), then `tools/fleet_swap.sh k3`.
