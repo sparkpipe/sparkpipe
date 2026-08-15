@@ -50,9 +50,9 @@
 
 #define SPARK_DSV4_MODEL_DRIVER_MODEL_ID "deepseek.v4.pro.resident-decode-stage-firmware"
 #define SPARK_DSV4_MODEL_DRIVER_REVISION "h7168-l61-dsa-e384k6-hash3-v129280-ga0731-v1"
-/* Computed from the Pro firmware description once it is finalized. */
-#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256 "0000000000000000000000000000000000000000000000000000000000000000"
-#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B1 "0000000000000000000000000000000000000000000000000000000000000000"
+/* sha256 of examples/model_descriptions/dsv4_pro_resident_decode_stage_firmware*.json */
+#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256 "c784f18fa3f75d0bc08cbe0cda87136f0fc13966ae2613b6efb543439853fc9f"
+#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B1 "a93c6ac9b8ef6b223b77ef7dd8b920e08692b81110d64e1541248cc423786a76"
 #define SPARK_DSV4_MODEL_MODULE_ID "spark.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h7168.l61.e384.k6.ga0731.v1"
 #define SPARK_DSV4_MODEL_MODULE_TARGET "cuda.sm121.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16"
 
