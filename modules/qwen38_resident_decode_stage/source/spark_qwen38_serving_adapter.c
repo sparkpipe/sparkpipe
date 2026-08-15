@@ -53,15 +53,20 @@
 #endif
 
 #define SPARK_QWEN38_SERVING_ADAPTER_ID \
-	"spark.qwen38.serving-adapter.pp13.v1"
-#define SPARK_QWEN38_SERVING_MODEL_ID "Qwen/Qwen3.6-27B"
+	"spark.qwen38.serving-adapter.tp4-pp4.v1"
+#define SPARK_QWEN38_SERVING_MODEL_ID "Qwen/Qwen3.8-2.4T-A95B"
 #define SPARK_QWEN38_SERVING_DRIVER_MODEL_ID \
-	"alibaba.qwen3.6-27b.resident-decode-stage-firmware"
+	"qwen38.2.4t-a95b.resident-decode-stage-firmware"
 #define SPARK_QWEN38_SERVING_STAGE_NAME "qwen38_resident_decode_stage"
 #define SPARK_QWEN38_SERVING_TARGET \
-	"cuda.sm121.qwen38.resident_decode_stage.bf16"
+	"cuda.sm121.qwen38.resident_decode_stage.fp8"
 #define SPARK_QWEN38_SERVING_PROGRAM_NAME "resident_decode"
-#define SPARK_QWEN38_SERVING_STAGE_COUNT 13u
+/* World ranks in the TP4xPP4 deployment (pp_stage = stage_index / 4). The
+ * TP-rank mapping inside this adapter (column/row-parallel hidden sharding
+ * and the router gate all-reduce) is OUTSTANDING: the frame plumbing below
+ * is the qwen36 PP clone's, carried until the TP rework lands with the
+ * rank-local packs. */
+#define SPARK_QWEN38_SERVING_STAGE_COUNT 16u
 /* The owner's KV-limit decision: serving caps context at 8192 positions
  * until the long-context KV plan lands, far under the module's 256K admit
  * ceiling. The KV pool is sized from this cap, so a conforming deployment
