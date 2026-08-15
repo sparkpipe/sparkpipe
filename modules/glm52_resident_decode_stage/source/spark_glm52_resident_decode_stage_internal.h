@@ -89,6 +89,8 @@ typedef struct SparkGlm52CudaWave
 	uint32_t stage_index;
 	uint32_t first_layer_index;
 	uint32_t layer_count;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
 	uint32_t row_count;
 	uint32_t maximum_context;
 	uint32_t resident_sequence_capacity;

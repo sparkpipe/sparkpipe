@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "modules/glm52_resident_decode_stage/source/cuda/unity.cu"
@@ -46,16 +47,22 @@ __global__ static void SparkGlm52EmbeddingKernel(
 	const uint16_t *embedding,
 	uint16_t *hidden,
 	uint16_t *residual,
-	uint32_t row_count)
+	uint32_t row_count,
+	uint32_t tp_degree,
+	uint32_t tp_rank)
 {
 	uint64_t element,row,source,destination;
+	uint32_t token,vocab_per_rank,rank_offset;
 	element = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
 	row = blockIdx.y;
 	if ( row >= row_count || element >= GLM52_HIDDEN )
 		return;
-	source = (uint64_t)token_ids[row] * GLM52_HIDDEN + element;
+	vocab_per_rank = GLM52_VOCAB / tp_degree;
+	rank_offset = tp_rank * vocab_per_rank;
+	token = token_ids[row];
+	source = (uint64_t)(token - rank_offset) * GLM52_HIDDEN + element;
 	destination = row * (uint64_t)GLM52_HIDDEN + element;
-	hidden[destination] = embedding[source];
+	hidden[destination] = (token >= rank_offset && token < rank_offset + vocab_per_rank) ? embedding[source] : 0u;
 	residual[destination] = 0u;
 }
 
@@ -80,6 +87,15 @@ __global__ static void SparkGlm52WaveMetadataKernel(
 static int32_t SparkGlm52CudaStatus(cudaError_t status)
 {
 	return(status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+static void SparkGlm52DbgStage(const char *name,int32_t status)
+{
+	const char *text;
+	if ( status == LM_LAUNCH_OK )
+		return;
+	text = cudaGetErrorString(cudaGetLastError());
+	(void)fprintf(stderr,"GLM52-DBG stage=%s status=%d cuda=%s\n",name,(int)status,text != 0 ? text : "n/a");
 }
 
 static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
@@ -113,7 +129,7 @@ static int32_t SparkGlm52StageWaveBoundary(const SparkGlm52CudaWave *wave)
 	error = cudaSuccess;
 	if ( wave->owns_embedding != 0u )
 	{
-		SparkGlm52EmbeddingKernel<<<dim3((GLM52_HIDDEN + SPARK_GLM52_CUDA_THREADS - 1u) / SPARK_GLM52_CUDA_THREADS,wave->row_count),SPARK_GLM52_CUDA_THREADS,0,stream>>>(slot->token_ids,(const uint16_t *)wave->embedding_bf16,slot->hidden_bf16,slot->residual_bf16,wave->row_count);
+		SparkGlm52EmbeddingKernel<<<dim3((GLM52_HIDDEN + SPARK_GLM52_CUDA_THREADS - 1u) / SPARK_GLM52_CUDA_THREADS,wave->row_count),SPARK_GLM52_CUDA_THREADS,0,stream>>>(slot->token_ids,(const uint16_t *)wave->embedding_bf16,slot->hidden_bf16,slot->residual_bf16,wave->row_count,wave->tp_degree,wave->tp_rank);
 		error = cudaPeekAtLastError();
 	}
 	else
@@ -152,6 +168,18 @@ static void SparkGlm52BindLayer(
 	weight = &wave->layers[local_layer];
 	slot = wave->slot;
 	memset(buffers,0,sizeof(*buffers));
+	buffers->tp_degree = wave->tp_degree;
+	buffers->tp_rank = wave->tp_rank;
+	buffers->attn_heads = SPARK_GLM52_MODEL_HEAD_COUNT / wave->tp_degree;
+	buffers->q_b_rows = buffers->attn_heads * (SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION + SPARK_GLM52_MODEL_ROPE_DIMENSION);
+	buffers->attn_output_columns = buffers->attn_heads * SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION;
+	buffers->dense_gate_up_rows = 2u * SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->dense_intermediate = SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->expert_w1_rows = 2u * SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->expert_intermediate = SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->shared_gate_up_rows = 2u * SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->shared_intermediate = SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->head_vocabulary = SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT / wave->tp_degree;
 	buffers->dense_row_offset = slot->dense_row_offset;
 	buffers->dense_tile_prefix = slot->dense_tile_prefix;
 	buffers->attn_norm_weight = weight->attn_norm_bf16;
@@ -237,10 +265,18 @@ static int32_t SparkGlm52RunLayers(const SparkGlm52CudaWave *wave)
 		SparkGlm52BindLayer(wave,local,&buffers);
 		status = Glm52LayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
 		if ( status != LM_LAUNCH_OK )
+		{
+			SparkGlm52DbgStage("attention",status);
+			(void)fprintf(stderr,"GLM52-DBG layer=%u rows=%u ctx=%u\n",layer,wave->row_count,wave->maximum_context);
 			return(status);
+		}
 		status = layer < GLM52_FIRST_ROUTED_LAYER ? Glm52LayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream) : Glm52LayerMoe<GLM52_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
 		if ( status != LM_LAUNCH_OK )
+		{
+			SparkGlm52DbgStage(layer < GLM52_FIRST_ROUTED_LAYER ? "dense_mlp" : "moe",status);
+			(void)fprintf(stderr,"GLM52-DBG layer=%u rows=%u ctx=%u\n",layer,wave->row_count,wave->maximum_context);
 			return(status);
+		}
 	}
 	return(LM_LAUNCH_OK);
 }
@@ -261,7 +297,10 @@ static int32_t SparkGlm52FinishWave(const SparkGlm52CudaWave *wave)
 		SparkGlm52BindLayer(wave,wave->layer_count - 1u,&buffers);
 		status = Glm52HeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
 		if ( status != LM_LAUNCH_OK )
+		{
+			SparkGlm52DbgStage("head",status);
 			return(status);
+		}
 		error = cudaMemcpyAsync(wave->host_output_token_ids,slot->output_token,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 	}
 	else
@@ -282,7 +321,7 @@ static int32_t SparkGlm52FinishWave(const SparkGlm52CudaWave *wave)
 extern "C" int32_t SparkGlm52LaunchCudaWave(const SparkGlm52CudaWave *wave)
 {
 	int32_t status;
-	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || wave->row_count > wave->resident_sequence_capacity || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u )
+	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || wave->row_count > wave->resident_sequence_capacity || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	status = SparkGlm52StageWaveMetadata(wave);
 	if ( status == LM_LAUNCH_OK )
@@ -291,6 +330,7 @@ extern "C" int32_t SparkGlm52LaunchCudaWave(const SparkGlm52CudaWave *wave)
 		status = SparkGlm52RunLayers(wave);
 	if ( status == LM_LAUNCH_OK )
 		status = SparkGlm52FinishWave(wave);
+	SparkGlm52DbgStage("wave",status);
 	return(status);
 }
 

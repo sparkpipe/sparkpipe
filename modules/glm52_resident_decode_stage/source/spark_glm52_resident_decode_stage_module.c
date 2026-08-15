@@ -144,6 +144,8 @@ static SparkStatus SparkGlm52ModuleConfigure(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u || context->expert_weight_codec == SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_UNSUPPORTED);
+	if ( context->tp_degree != 1u && (SPARK_GLM52_MODEL_HEAD_COUNT % context->tp_degree != 0u || SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT % context->tp_degree != 0u || SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u || SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->model_revision == 0 || strcmp(configuration->model_revision,context->model_revision) != 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	state->stage_index = context->stage_index;
@@ -856,6 +858,8 @@ static SparkStatus SparkGlm52ExecuteWave(
 	wave.stage_index = state->stage_index;
 	wave.first_layer_index = state->first_layer_index;
 	wave.layer_count = state->layer_count;
+	wave.tp_degree = state->tp_degree;
+	wave.tp_rank = state->tp_rank;
 	wave.row_count = row_count;
 	wave.maximum_context = maximum_context;
 	wave.resident_sequence_capacity = state->resident_sequence_capacity;
