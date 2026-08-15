@@ -29,3 +29,6 @@ jq -r '{decode_tokens_per_second, token_count, ttft_seconds, total_seconds, inte
 echo "token_hash:"
 jq -r '[.events[] | select(.event.event == "token") | .event.token_id] | join(",") + "\n"' "${OUT}" | shasum -a 256
 echo "receipt: ${OUT}"
+
+echo "== restore (after the measured window) =="
+echo "tools/fleet_swap.sh <previous-big-model>   # restores the pre-swap snapshot"

@@ -23,6 +23,7 @@ packs sliced from the authoritative checkpoint at
 | config sha256 | 05e488c5e5405416714273808464125aac7788cf074adadb7672d2ce26e1358d | 68a63375bc7033bbc726b3241e7e7ed99c69a9d69e01da6ef411b6be0bc6b65e |
 | nonzero_hidden | 28672 | 0 |
 | output_token | 4294967295 (no head in slice) | **48774** (first real Pro token) |
+| val4 pack sha256 (measured) | 0ac4d053b2bb8cee300225c2add88c4bac66a79e1d11acf73a48a21b3d2481d4 | (n/a) |
 
 Config hash scheme (deterministic, reproduced with shasum -a 256 over the
 exact string): for the valtail run the string was
@@ -36,6 +37,50 @@ exact string): for the valtail run the string was
   packed MTP record set (E/H projections, norms, HC head, full MTP layer
   records) plus the MTP-only embedding copy; deep CSA layers. First token
   ever produced by the Pro module through the real final head: 48774.
+
+## TP4xPP4 staged-artifact identities (round 6, all verified)
+
+Full pack (/home/sparkb/sparkdata/dsv4_pro.full.spstage):
+- sha256 a15455ad83b1e5f3846d31dfcc349847e84bb2275907a570388407763ddba592 —
+  matches the pack-build log /tmp/dsv4pro-pack.log exactly (unchanged since build).
+- --verify-pack PASS: 1926 tensors, 61 layers, codecs fp8_e4m3/mxfp4(7)/bf16,
+  864875157944 bytes.
+
+Shipped rank packs (one per host, /home/{host}/sparkdata/dsv4_pro.tp4pp4/packs/
+dsv4_pro_tp4_pp4_stage.spstage) — sha256 first-16 match vs split-time values in
+/tmp/dsv4pro-split2.log, 16/16:
+
+| rank | host | sha256 (first 16) |
+| --- | --- | --- |
+| 0 | spark0 | 2be8aa0a9258be00 |
+| 1 | spark1 | 0e9f015877bde140 |
+| 2 | spark2 | 24821d5736da788c |
+| 3 | spark3 | 197348a90316e1b3 |
+| 4 | spark4 | 6d39fad9fe6dab2f |
+| 5 | spark5 | 81c7468c171cd63a |
+| 6 | spark6 | a50eb96b3a40decb |
+| 7 | spark7 | f2aeb49d9c7cafd3 |
+| 8 | spark8 | 608f9bb5a6e838e5 |
+| 9 | spark9 | 298243fe3a0d8a11 |
+| 10 | sparka | d47dff6de53c8e40 |
+| 11 | sparkb | 84986831237272be |
+| 12 | sparkc | bfe6f618061bcb58 |
+| 13 | sparkd | 89b54c62f5fbf721 |
+| 14 | sparke | a78333103ca57efe |
+| 15 | sparkf | d53de7845573d789 |
+
+Deployment configs on all 16 hosts are byte-identical to each other and (for
+the stage topology) to the repo file:
+- config/dsv4_pro_tp4_pp4_stage.json sha256 7bdc343786885f1a5b3f2d78acfe6791105ca97335e0662ab95ce1084a34e57a
+  (== examples/deployments/dsv4_pro_tp4_pp4_stage.json)
+- config/model_resident.json sha256 23f9729a669456125e619dadf9108e27db6f20ce1428332ed7c8765c7d93c54e
+
+Regeneration proof (tools/devcycle/verify_rank_packs_pro.sh on sparkb,
+log /tmp/dsv4pro-regen-verify.log): every rank pack is re-sharded from the
+current full pack and sha256-compared with the shipped bytes. Rank 0
+regeneration == shipped bytes (2be8aa0a... full-hash match); the loop runs
+through ranks 1-15 in the background. The sharder on sparkb is byte-identical
+to the worktree version (md5 2f9517ad4f8531f85cb1712922b47df9).
 
 ## What is still untested until the ring reservation
 
