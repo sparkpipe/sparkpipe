@@ -45,3 +45,11 @@ are always allowed regardless of slot state.
   names + resident stage driver) does not exist in this revision; it is
   the next build item, followed by the TP4xPP4 deployment and the
   torch-reference numerical gate.
+- Fleet coordination adopted (PR #649): K3 registry entry filled
+  (owner, verified shard/pack layout, K3 port block 21480/65620/62700,
+  fleet scope); fleet_swap.sh status verified; branch pushed to origin.
+- All four PP stage packs RUNNING in parallel on their stage nodes with
+  the fixed packer: stage0 (0+24) spark1, stage1 (24+23) spark4,
+  stage2 (47+23) spark8, stage3 (69+23) sparkc. ~350 GB each, Python
+  expert interleave loops dominate; multi-hour ETA. spark0 was dropped
+  for stage0 because the Qwen session's sha256/rsync saturates its disk.
