@@ -196,6 +196,21 @@ struct SparkDsv4ModuleSlot
 	uint32_t *moe_inverse_u32;
 	uint32_t page_table_update_count;
 	SparkDsv4TpFrameContinuation *tp_continuation;
+	/* DSpark draft workspace. The draft runs replicated at full width on
+	 * every rank (identical math, no draft collectives); the verify rides
+	 * the standard TP island chain at bucket width. */
+	uint32_t dspark_armed;
+	uint32_t *dspark_draft_token_ids;
+	uint32_t *dspark_verify_token_ids;
+	void *dspark_x_bf16;
+	void *dspark_q_attn_bf16;
+	void *dspark_o_ranks_bf16;
+	void *dspark_main_cat_bf16;
+	void *dspark_main_x_bf16;
+	void *dspark_tap_bf16;
+	void *dspark_tap_ring_bf16;
+	void *dspark_logits_bf16;
+	float *dspark_logits_f32;
 };
 
 typedef struct SparkDsv4AsyncCompletion
@@ -1818,6 +1833,34 @@ static SparkStatus SparkDsv4ModuleAllocateSlotTail(SparkDsv4ModuleState *state, 
 	return(status);
 }
 
+static SparkStatus SparkDsv4ModuleAllocateDspark(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot)
+{
+	uint64_t block = SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION,vocab = SPARK_DSV4_MODEL_VOCAB_COUNT,qdim = SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,bf16 = SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	SparkStatus status;
+	status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_draft_token_ids);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_verify_token_ids);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * SPARK_DSV4_MODEL_HC_STREAM_COUNT * dim * bf16,&slot->dspark_x_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * qdim * bf16,&slot->dspark_q_attn_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * SPARK_DSV4_MODEL_OUTPUT_LORA_RANK * SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT * bf16,&slot->dspark_o_ranks_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT * dim * bf16,&slot->dspark_main_cat_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,dim * bf16,&slot->dspark_main_x_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT * dim * bf16,&slot->dspark_tap_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT * dim * bf16,&slot->dspark_tap_ring_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * vocab * bf16,&slot->dspark_logits_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * vocab * sizeof(float),(void **)&slot->dspark_logits_f32);
+	return(status);
+}
+
 static SparkStatus SparkDsv4ModuleAllocateSlot(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot)
 {
 	SparkStatus status = SparkDsv4ModuleAllocateSlotSmall(state,slot);
@@ -1825,6 +1868,8 @@ static SparkStatus SparkDsv4ModuleAllocateSlot(SparkDsv4ModuleState *state, Spar
 		status = SparkDsv4ModuleAllocateSlotWide(state,slot);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleAllocateSlotTail(state,slot);
+	if ( status == SPARK_STATUS_OK && SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
+		status = SparkDsv4ModuleAllocateDspark(state,slot);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaForkInitialize(SPARK_DSV4_MODULE_TAG,
 			&slot->compute_fork);

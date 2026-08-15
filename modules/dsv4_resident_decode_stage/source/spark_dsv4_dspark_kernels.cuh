@@ -328,3 +328,46 @@ extern "C" cudaError_t SparkDsv4LaunchDsparkArgmax(cudaStream_t stream,
 		logits_f32,vocab_count,output_token_id);
 	return(cudaGetLastError());
 }
+
+/* Tap: mean over the hc streams of a 4-stream hidden state, per row
+ * (reference: h.mean(dim=2)). */
+static __global__ void SparkDsv4DsparkTapMeanKernel(
+	const uint16_t *streams_bf16,uint16_t *tap_bf16,uint32_t row_count,
+	uint32_t stream_count,uint32_t dimension)
+{
+	uint32_t element_index;
+	uint32_t row,stream_index;
+	float sum;
+	for (element_index = blockIdx.x * blockDim.x + threadIdx.x;
+		element_index < row_count * dimension;
+		element_index += gridDim.x * blockDim.x)
+	{
+		row = element_index / dimension;
+		sum = 0.0f;
+		for (stream_index = 0u; stream_index < stream_count; stream_index++)
+			sum += SparkLmBf16ToFloat(streams_bf16,
+				((uint64_t)row * stream_count + stream_index) * dimension +
+					(element_index - row * dimension));
+		SparkLmStoreBf16(tap_bf16,element_index,sum / (float)stream_count);
+	}
+}
+
+extern "C" cudaError_t SparkDsv4LaunchDsparkTapMean(cudaStream_t stream,
+	const void *streams_bf16,void *tap_bf16,uint32_t row_count,
+	uint32_t stream_count,uint32_t dimension,uint32_t multiprocessor_count)
+{
+	if ( stream == 0 || streams_bf16 == 0 || tap_bf16 == 0 ||
+		row_count == 0u || stream_count == 0u || dimension == 0u ||
+		multiprocessor_count == 0u )
+		return(cudaErrorInvalidValue);
+	{
+		uint32_t blocks = ((uint64_t)row_count * dimension +
+			SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS;
+		if ( blocks > multiprocessor_count )
+			blocks = multiprocessor_count;
+		SparkDsv4DsparkTapMeanKernel<<<blocks,SPARK_LM_CTA_THREADS,0u,
+			stream>>>((const uint16_t *)streams_bf16,(uint16_t *)tap_bf16,
+			row_count,stream_count,dimension);
+	}
+	return(cudaGetLastError());
+}
