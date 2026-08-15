@@ -46,10 +46,14 @@ make -j4 \
     build/sparkpipe_model_batch \
     build/libdsv4_tp4_b1_serving_adapter.so \
     build/libhidden_transport_spark_host_rdma_verbs.so
-# non-B1 buckets use the base TP4 adapter (bucket-1024 ceiling; mid-bucket
-# adapters need generated batch descriptions, a known ladder gap)
+# The adapter embeds the model-contract sha for its bucket, so non-B1
+# buckets compile the TP4 adapter with the same -DSPARK_BATCH_BUCKET as the
+# module (make command-line vars override the Makefile's := assignment).
+# rm -f first: make skips an up-to-date target even when flags changed.
 if [[ "${BUCKET}" != "1" ]]; then
-    make build/libdsv4_tp4_serving_adapter.so
+    rm -f build/libdsv4_tp4_serving_adapter.so
+    make build/libdsv4_tp4_serving_adapter.so \
+        DSV4_TP4_SERVING_TOPOLOGY_FLAGS="-DSPARK_DSV4_SERVING_TOPOLOGY=4 -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=${BUCKET}u"
     ADAPTER_SO=build/libdsv4_tp4_serving_adapter.so
 else
     ADAPTER_SO=build/libdsv4_tp4_b1_serving_adapter.so
@@ -91,8 +95,20 @@ build/sparkpipe_model_compile \
 # raw-file sha256 as its model description sha (a silent b1 fallback would
 # embed the b1 firmware sha instead).
 FIRMWARE_SHA="$(sha256sum "${FIRMWARE}" | cut -d' ' -f1)"
-strings "${OUT}/model_driver.so" | grep -q "${FIRMWARE_SHA}" || { \
+STRINGS_TMP="$(mktemp)"
+strings "${OUT}/model_driver.so" >"${STRINGS_TMP}"
+grep -q "${FIRMWARE_SHA}" "${STRINGS_TMP}" || { \
+    rm -f "${STRINGS_TMP}"
     echo "build_remote: driver firmware mismatch (expected ${FIRMWARE_SHA:0:16}...)" >&2; exit 9; }
+rm -f "${STRINGS_TMP}"
+# the adapter must carry the same bucket contract sha or the residentd
+# rejects the driver at adapter init (TARGET_MISMATCH).
+STRINGS_TMP="$(mktemp)"
+strings "${ADAPTER_SO}" >"${STRINGS_TMP}"
+grep -q "${FIRMWARE_SHA}" "${STRINGS_TMP}" || { \
+    rm -f "${STRINGS_TMP}"
+    echo "build_remote: adapter contract mismatch (expected ${FIRMWARE_SHA:0:16}...)" >&2; exit 9; }
+rm -f "${STRINGS_TMP}"
 cp build/sparkpipe_model_residentd "${OUT}/sparkpipe_model_residentd"
 cp build/sparkpipe_model_batch "${OUT}/sparkpipe_model_batch"
 cp "${ADAPTER_SO}" "${OUT}/model_serving_adapter.so"
