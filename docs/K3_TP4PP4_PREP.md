@@ -91,3 +91,8 @@ KV and recurrent state, per rank (its 23-layer slice: 17 KDA + 6 MLA):
 The serving module must size both pools from ITS slice layer counts
 (model-families/k3/spark_k3_kv_geometry.h holds the full-model constants;
 the module's capacity request scales them by first_layer/layer_count).
+- Full binder test 16/16 PASS against the real 0-4 pack (dense-KDA,
+  routed-KDA, routed-MLA). Fixed the pack loader to read manifest offsets
+  with SparkJsonGetUInt64 - pack offsets exceed 2^32 for the ~350 GB stage
+  packs (the common JSON API already exported the uint64 getter; no
+  common-code change was needed).

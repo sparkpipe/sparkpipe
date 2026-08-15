@@ -164,6 +164,7 @@ SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name,
 	int32_t root, tensors_token, member_token, field_token, shape_token,
 		element_token;
 	uint32_t value;
+	uint64_t wide_value;
 	if ( pack == 0 || name == 0 || entry == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(entry, 0, sizeof(*entry));
@@ -177,12 +178,12 @@ SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name,
 		return(SPARK_STATUS_NOT_FOUND);
 	field_token = SparkJsonFindObjectMember(&pack->private_state->document, member_token, "offset");
 	if ( field_token < 0 ||
-		SparkJsonGetUInt32(&pack->private_state->document, field_token, &value) != SPARK_STATUS_OK )
+		SparkJsonGetUInt64(&pack->private_state->document, field_token, &wide_value) != SPARK_STATUS_OK )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	entry->payload_offset = (uint64_t)value;
 	field_token = SparkJsonFindObjectMember(&pack->private_state->document, member_token, "bytes");
 	if ( field_token < 0 ||
-		SparkJsonGetUInt32(&pack->private_state->document, field_token, &value) != SPARK_STATUS_OK )
+		SparkJsonGetUInt64(&pack->private_state->document, field_token, &wide_value) != SPARK_STATUS_OK )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	entry->bytes = (uint64_t)value;
 	field_token = SparkJsonFindObjectMember(&pack->private_state->document, member_token, "kind");
