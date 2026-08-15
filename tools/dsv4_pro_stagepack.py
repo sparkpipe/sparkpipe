@@ -42,6 +42,7 @@ PRO_GATE_ROWS = 384
 PRO_QUERY_RANK = 1536
 PRO_Q_DIM = 128 * 512      # 128 heads x 512 head dim
 PRO_HEAD_DIM = 512
+PRO_ATTN_HEADS = 128
 PRO_OUTPUT_GROUPS = 16
 PRO_OUTPUT_RANK = 1024
 PRO_MTP_PACKED = 1
@@ -65,8 +66,8 @@ def pro_add_layer_records(records, ratios: Sequence[int], layer: int) -> None:
     add_record = flash.add_record
     add_linear = flash.add_linear
     add_experts = flash.add_experts
-    add_record(records, flash.KIND_ATTN_SINK, layer, flash.WEIGHT_F32, 1, 64,
-               (f"{prefix}.attn.attn_sink",))
+    add_record(records, flash.KIND_ATTN_SINK, layer, flash.WEIGHT_F32, 1,
+               PRO_ATTN_HEADS, (f"{prefix}.attn.attn_sink",))
     add_linear(records, flash.KIND_WQ_A, f"{prefix}.attn", layer,
                query_rank, hidden, flash.WEIGHT_FP8, "wq_a")
     add_record(records, flash.KIND_Q_NORM, layer, flash.WEIGHT_BF16, 1,
