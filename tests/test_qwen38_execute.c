@@ -31,10 +31,12 @@ int main(int argc, char **argv)
         return 2;
     }
     setenv("SPARK_QWEN38_ALLOW_UNQUALIFIED_EXECUTION","1",1);
-    setenv("SPARK_QWEN38_STAGE_COUNT","4",1);
-    setenv("SPARK_QWEN38_STAGE_INDEX","1",1);
-    setenv("SPARK_QWEN38_STAGE_FIRST_LAYER","1",1);
-    setenv("SPARK_QWEN38_STAGE_LAYER_COUNT","1",1);
+    /* Slice geometry defaults to the 1-layer GDN smoke; the environment can
+     * override for other slices (e.g. a GDN+attention pack). */
+    setenv("SPARK_QWEN38_STAGE_COUNT",getenv("TEST_QWEN38_STAGE_COUNT") ? getenv("TEST_QWEN38_STAGE_COUNT") : "4",1);
+    setenv("SPARK_QWEN38_STAGE_INDEX",getenv("TEST_QWEN38_STAGE_INDEX") ? getenv("TEST_QWEN38_STAGE_INDEX") : "1",1);
+    setenv("SPARK_QWEN38_STAGE_FIRST_LAYER",getenv("TEST_QWEN38_FIRST_LAYER") ? getenv("TEST_QWEN38_FIRST_LAYER") : "1",1);
+    setenv("SPARK_QWEN38_STAGE_LAYER_COUNT",getenv("TEST_QWEN38_LAYER_COUNT") ? getenv("TEST_QWEN38_LAYER_COUNT") : "1",1);
     setenv("SPARK_QWEN38_STAGE_MAX_ACTIVE_SEQUENCES","1",1);
     setenv("SPARK_QWEN38_STAGE_PIPELINE_SLOTS","1",1);
     setenv("SPARK_QWEN38_STAGE_KV_BLOCKS","8",1);
