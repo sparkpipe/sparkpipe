@@ -51,4 +51,4 @@ for host in "${HOSTS[@]}"; do
     rank=$((rank + 1))
 done
 
-echo "deploy_pro done; designate with: tools/fleet_swap.sh dsv4pro"
+echo "deploy_pro done; designate with: tools/fleet_swap.sh dsv4-pro"

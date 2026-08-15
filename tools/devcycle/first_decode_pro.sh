@@ -12,8 +12,8 @@ OUT="/tmp/dsv4pro-first-${STAMP}.json"
 echo "== preflight =="
 "${SC}/preflight_pro.sh"
 
-echo "== fleet_swap dsv4pro =="
-"${ROOT}/tools/fleet_swap.sh" dsv4pro
+echo "== fleet_swap dsv4-pro =="
+"${ROOT}/tools/fleet_swap.sh" dsv4-pro
 sleep 30
 
 echo "== first decode (this may take minutes: 16-rank start + pipeline fill) =="

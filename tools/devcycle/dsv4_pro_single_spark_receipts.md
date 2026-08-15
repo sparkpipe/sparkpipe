@@ -150,5 +150,5 @@ tools/devcycle/fabric_probe_pro.sh (run with the spark alias) on all 16 hosts:
 
 ## What is still untested until the ring reservation
 
-- 16-rank TP4xPP4 live decode (fleet_swap dsv4pro + model_stream_decode_benchmark).
+- 16-rank TP4xPP4 live decode (fleet_swap dsv4-pro + model_stream_decode_benchmark).
 - The measured token stream and its hash (baseline gate).
