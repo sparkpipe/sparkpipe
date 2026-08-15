@@ -5,7 +5,12 @@
     "qwen27b": {
       "tier": "always-on",
       "scope": "band",
-      "hosts": ["spark0", "spark1", "spark2", "spark3"],
+      "hosts": [
+        "spark0",
+        "spark1",
+        "spark2",
+        "spark3"
+      ],
       "rank_count": 4,
       "runtime_root": "/home/{host}/sparkdata/qwen38.bf16.pp16",
       "pack_dir": "/home/{host}/sparkdata/qwen38.bf16.pp16/packs",
@@ -13,12 +18,18 @@
       "collective_port_base": 61620,
       "transport_control_base": 58700,
       "owner": "qwen session - verify runtime_root and fill deployment specifics",
-      "status": "placeholder"
+      "status": "active",
+      "topology": "TP4"
     },
     "dsv4-flash": {
       "tier": "always-on",
       "scope": "band",
-      "hosts": ["spark4", "spark5", "spark6", "spark7"],
+      "hosts": [
+        "spark4",
+        "spark5",
+        "spark6",
+        "spark7"
+      ],
       "rank_count": 4,
       "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
       "pack_dir": "/home/{host}/sparkdata/dsv4_flash.fp8.pp13.b16/packs",
@@ -26,12 +37,23 @@
       "collective_port_base": 62620,
       "transport_control_base": 59700,
       "owner": "dsv4-flash session (devcycle)",
-      "status": "active"
+      "status": "active",
+      "topology": "TP4",
+      "notes": "Pool is spark3-7: measurement quartet spark4-7, spark3 spare for single-rank debug."
     },
     "glm52": {
       "tier": "big",
       "scope": "band",
-      "hosts": ["spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "hosts": [
+        "spark8",
+        "spark9",
+        "sparka",
+        "sparkb",
+        "sparkc",
+        "sparkd",
+        "sparke",
+        "sparkf"
+      ],
       "rank_count": 8,
       "runtime_root": "/home/{host}/sparkdata/glm52.fp8.pp13",
       "pack_dir": "/home/{host}/sparkdata/glm52.fp8.pp13/packs",
@@ -39,12 +61,30 @@
       "collective_port_base": 63620,
       "transport_control_base": 60700,
       "owner": "glm52 session - verify runtime_root and fill deployment specifics",
-      "status": "placeholder"
+      "status": "placeholder",
+      "topology": "TP8"
     },
     "dsv4-pro": {
       "tier": "big",
       "scope": "fleet",
-      "hosts": ["spark0","spark1","spark2","spark3","spark4","spark5","spark6","spark7","spark8","spark9","sparka","sparkb","sparkc","sparkd","sparke","sparkf"],
+      "hosts": [
+        "spark0",
+        "spark1",
+        "spark2",
+        "spark3",
+        "spark4",
+        "spark5",
+        "spark6",
+        "spark7",
+        "spark8",
+        "spark9",
+        "sparka",
+        "sparkb",
+        "sparkc",
+        "sparkd",
+        "sparke",
+        "sparkf"
+      ],
       "rank_count": 16,
       "runtime_root": "/home/{host}/sparkdata/dsv4_pro.tp4pp4",
       "pack_dir": "/home/{host}/sparkdata/dsv4_pro.tp4pp4/packs",
@@ -57,7 +97,24 @@
     "k3": {
       "tier": "big",
       "scope": "fleet",
-      "hosts": ["spark0","spark1","spark2","spark3","spark4","spark5","spark6","spark7","spark8","spark9","sparka","sparkb","sparkc","sparkd","sparke","sparkf"],
+      "hosts": [
+        "spark0",
+        "spark1",
+        "spark2",
+        "spark3",
+        "spark4",
+        "spark5",
+        "spark6",
+        "spark7",
+        "spark8",
+        "spark9",
+        "sparka",
+        "sparkb",
+        "sparkc",
+        "sparkd",
+        "sparke",
+        "sparkf"
+      ],
       "rank_count": 16,
       "runtime_root": "/home/{host}/sparkdata/k3.mxfp4.tp4pp4",
       "pack_dir": "/home/{host}/sparkdata/k3.mxfp4.tp4pp4/packs",
