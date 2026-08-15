@@ -12,7 +12,16 @@
 #include <math.h>
 #include <stdio.h>
 
-#define SPARK_DSV4_ROUTER_SORT_CAPACITY SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT
+/* Bitonic sort needs a power of two; pad to the next one (Pro has 384
+ * experts). The router pads non-existent experts with zero keys, which
+ * sort below every real key, so the top-k tail still selects real experts. */
+#if SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= 256u
+#define SPARK_DSV4_ROUTER_SORT_CAPACITY 256u
+#elif SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= 512u
+#define SPARK_DSV4_ROUTER_SORT_CAPACITY 512u
+#else
+#define SPARK_DSV4_ROUTER_SORT_CAPACITY 1024u
+#endif
 #define SPARK_DSV4_EXPERT_STAGES 4u
 #define SPARK_DSV4_EXPERT_WARPS 8u
 #define SPARK_DSV4_HC_ELEMENT_TILE 256u
