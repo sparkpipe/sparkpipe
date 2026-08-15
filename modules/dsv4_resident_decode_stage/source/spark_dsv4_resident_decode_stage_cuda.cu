@@ -2383,6 +2383,20 @@ extern "C" cudaError_t SparkDsv4ConfigureCudaKernels(uint32_t *multiprocessor_co
             cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)(hc_mix_shared_elements * sizeof(float)));
     }
+#if defined(SPARK_DSV4_PRO_BUILD)
+    /* Pro's output composition (16 groups x 1024 = 16384) stages 64 KB of
+     * activations in the decode LinearKernel - over the 48 KB default.
+     * Opt the exact instantiation in; Flash's 8192-wide input never needs
+     * this and keeps its original attribute set. */
+    if ( error == cudaSuccess )
+        error = cudaFuncSetAttribute(
+            SparkLmLinearKernel<128u,
+                SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC,
+                SPARK_LM_CTA_WARPS>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)((uint64_t)SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT *
+                SPARK_DSV4_MODEL_OUTPUT_LORA_RANK * sizeof(float)));
+#endif
     return error;
 }
 
@@ -2444,7 +2458,11 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
     partial_count = row_count *
         ((head_count + heads_per_cta - 1u) / heads_per_cta) * split_count;
     if ( split_count == 0u || partial_count > partial_capacity )
+    {
+            split_count,partial_count,partial_capacity,head_count,
+            heads_per_cta,row_count,topk,multiprocessor_count);
         return(cudaErrorInvalidValue);
+    }
     grid = dim3(row_count,(head_count + heads_per_cta - 1u) / heads_per_cta,
         split_count);
     shared_bytes = SparkDsv4SparseAttnSharedBytes(head_dim);
