@@ -53,7 +53,7 @@
 #endif
 
 #define SPARK_QWEN36_SERVING_ADAPTER_ID \
-	"spark.qwen36.serving-adapter.pp16.v1"
+	"spark.qwen36.serving-adapter.tp4.v1"
 #define SPARK_QWEN36_SERVING_MODEL_ID "Qwen/Qwen3.8-27B"
 #define SPARK_QWEN36_SERVING_DRIVER_MODEL_ID \
 	"alibaba.qwen3.6-27b.resident-decode-stage-firmware"
@@ -61,7 +61,11 @@
 #define SPARK_QWEN36_SERVING_TARGET \
 	"cuda.sm121.qwen36.resident_decode_stage.bf16"
 #define SPARK_QWEN36_SERVING_PROGRAM_NAME "resident_decode"
-#define SPARK_QWEN36_SERVING_STAGE_COUNT 16u
+#define SPARK_QWEN36_SERVING_STAGE_COUNT 4u
+/* TP4: the residentd rank is the TP rank; every rank runs the whole stack
+ * (module stage 1/1) and owns both the embedding and the head. */
+#define SPARK_QWEN36_SERVING_TP4 1u
+#define SPARK_QWEN36_SERVING_TP_DEGREE 4u
 /* The owner's KV-limit decision: serving caps context at 8192 positions
  * until the long-context KV plan lands, far under the module's 256K admit
  * ceiling. The KV pool is sized from this cap, so a conforming deployment
@@ -199,7 +203,7 @@ static const SparkModelServingAdapterDescriptor SparkQwen36ServingDescriptor =
 	.model_revision = QWEN36_MODEL_REVISION,
 	.driver_program_name = SPARK_QWEN36_SERVING_PROGRAM_NAME,
 	.artifact_sha256 = QWEN36_CONTRACT_SHA256,
-	.stage_layer_counts = {4u,4u,4u,4u,4u,4u,4u,4u,4u,4u,4u,4u,5u,5u,5u,1u},
+	.stage_layer_counts = {64u,64u,64u,64u,64u,64u,64u,64u,64u,64u,64u,64u,64u,64u,64u,64u},
 	.minimum_efficient_submission_row_count = 0u
 };
 
@@ -263,6 +267,10 @@ static SparkStatus SparkQwen36ServingLoadConfiguration(
 static uint32_t SparkQwen36ServingFirstLayer(uint32_t stage_index)
 {
 	uint32_t index,first_layer;
+#if SPARK_QWEN36_SERVING_TP4
+	(void)stage_index;
+	return(0u);
+#endif
 	first_layer = 0u;
 	for (index=0u; index<stage_index; index++)
 		first_layer += SparkQwen36ServingDescriptor.stage_layer_counts[index];
@@ -288,10 +296,19 @@ static SparkStatus SparkQwen36ServingSetEnvironment(
 	do { snprintf(value,sizeof(value),"%u",(uint32_t)(number)); SPARK_QWEN36_SERVING_SET_TEXT(name,value); } while (0)
 	SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION","1");
 	SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_PACK_PATH",state->stage_pack_path);
+#if SPARK_QWEN36_SERVING_TP4
+	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_COUNT",1u);
+	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_INDEX",0u);
+	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_FIRST_LAYER",0u);
+	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_LAYER_COUNT",SPARK_QWEN36_MODEL_LAYER_COUNT);
+	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_TP_DEGREE",SPARK_QWEN36_SERVING_TP_DEGREE);
+	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_TP_RANK",state->stage_index);
+#else
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_COUNT",SPARK_QWEN36_SERVING_STAGE_COUNT);
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_INDEX",state->stage_index);
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_FIRST_LAYER",state->first_layer_index);
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_LAYER_COUNT",state->stage_layer_count);
+#endif
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES",state->max_active_sequence_count);
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_PIPELINE_SLOTS",state->pipeline_slot_count);
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_KV_BLOCKS",state->kv_block_count);
@@ -353,6 +370,39 @@ static SparkStatus SparkQwen36ServingValidateRowOrder(
 	return(row == submission->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+/* TP4 stage-position helpers: every rank owns the embedding and the head
+ * and no rank sends or receives hidden boundaries. Degree-1/PP builds keep
+ * the original stage-slice derivations. */
+static uint32_t SparkQwen36ServingOwnsEmbedding(const SparkQwen36ServingState *state)
+{
+	(void)state;
+#if SPARK_QWEN36_SERVING_TP4
+	return(1u);
+#else
+	return(state->stage_index == 0u ? 1u : 0u);
+#endif
+}
+
+static uint32_t SparkQwen36ServingOwnsFinalHead(const SparkQwen36ServingState *state)
+{
+	(void)state;
+#if SPARK_QWEN36_SERVING_TP4
+	return(1u);
+#else
+	return(state->stage_index + 1u == SPARK_QWEN36_SERVING_STAGE_COUNT ? 1u : 0u);
+#endif
+}
+
+static uint32_t SparkQwen36ServingNeedsHiddenOutput(const SparkQwen36ServingState *state)
+{
+	(void)state;
+#if SPARK_QWEN36_SERVING_TP4
+	return(0u);
+#else
+	return(state->stage_index + 1u < SPARK_QWEN36_SERVING_STAGE_COUNT ? 1u : 0u);
+#endif
+}
+
 /* Hidden boundary pointers exist only after the resident commits a route:
  * the wire submission validate_submission sees always has them absent (the
  * serving header documents this), so this check is meaningful only from
@@ -363,7 +413,7 @@ static SparkStatus SparkQwen36ServingValidateBoundaries(
 {
 	uint64_t boundary_bytes;
 	boundary_bytes = (uint64_t)submission->row_count * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES;
-	if ( (state->stage_index != 0u && (submission->hidden_input_address == 0 || submission->hidden_input_bytes < boundary_bytes)) || (state->stage_index == 0u && (submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u)) || (state->stage_index + 1u < SPARK_QWEN36_SERVING_STAGE_COUNT && (submission->hidden_output_address == 0 || submission->hidden_output_bytes < boundary_bytes)) || (state->stage_index + 1u == SPARK_QWEN36_SERVING_STAGE_COUNT && (submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u)) )
+	if ( (SparkQwen36ServingOwnsEmbedding(state) == 0u && (submission->hidden_input_address == 0 || submission->hidden_input_bytes < boundary_bytes)) || (SparkQwen36ServingOwnsEmbedding(state) != 0u && (submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u)) || (SparkQwen36ServingNeedsHiddenOutput(state) != 0u && (submission->hidden_output_address == 0 || submission->hidden_output_bytes < boundary_bytes)) || (SparkQwen36ServingNeedsHiddenOutput(state) == 0u && (submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u)) )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
 }
@@ -692,13 +742,13 @@ static void SparkQwen36ServingBuildFrame(
 		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE;
 		context->kv_block_table = &state->block_table;
 	}
-	if ( state->stage_index != 0u )
+	if ( SparkQwen36ServingOwnsEmbedding(state) == 0u )
 	{
 		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT;
 		context->hidden_input_transport_session = (SparkHiddenTransportSession *)&state->shim;
 		context->hidden_input_post_receive_function = SparkQwen36ServingPostReceive;
 	}
-	if ( state->stage_index + 1u < SPARK_QWEN36_SERVING_STAGE_COUNT )
+	if ( SparkQwen36ServingNeedsHiddenOutput(state) != 0u )
 	{
 		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT;
 		context->hidden_output_transport_session = (SparkHiddenTransportSession *)&state->shim;
@@ -754,16 +804,16 @@ static void SparkQwen36ServingBuildFrame(
 		context->decode_batch = decode_batch;
 	}
 	memset(buffers,0,sizeof(SparkModelDriverBuffer[2]));
-	if ( state->stage_index == 0u )
+	if ( SparkQwen36ServingOwnsEmbedding(state) != 0u )
 	{
 		buffers[0].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
 		buffers[0].address = pending->frame_token_ids;
 		buffers[0].bytes = (uint64_t)frame_rows * sizeof(uint32_t);
 	}
-	if ( state->stage_index + 1u == SPARK_QWEN36_SERVING_STAGE_COUNT )
+	if ( SparkQwen36ServingOwnsFinalHead(state) != 0u )
 	{
 		uint32_t out_index;
-		out_index = state->stage_index == 0u ? 1u : 0u;
+		out_index = SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u;
 		buffers[out_index].slot = 1u;
 		buffers[out_index].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
 		buffers[out_index].address = pending->frame_output_ids;
@@ -782,8 +832,8 @@ static void SparkQwen36ServingBuildFrame(
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	frame->program_id = state->program->program_id;
 	frame->execution_stream = state->execution_stream;
-	frame->buffers = state->stage_index == 0u || state->stage_index + 1u == SPARK_QWEN36_SERVING_STAGE_COUNT ? buffers : 0;
-	frame->buffer_count = (state->stage_index == 0u ? 1u : 0u) + (state->stage_index + 1u == SPARK_QWEN36_SERVING_STAGE_COUNT ? 1u : 0u);
+	frame->buffers = SparkQwen36ServingOwnsEmbedding(state) != 0u || SparkQwen36ServingOwnsFinalHead(state) != 0u ? buffers : 0;
+	frame->buffer_count = (SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u) + (SparkQwen36ServingOwnsFinalHead(state) != 0u ? 1u : 0u);
 	frame->residency = submission->residency;
 	frame->user_context = context;
 	frame->completion_function = SparkQwen36ServingDriverCompletion;
@@ -844,7 +894,7 @@ static SparkStatus SparkQwen36ServingRunFrame(
 		status = state->program->submit(state->driver_instance,&frame);
 	if ( status == SPARK_STATUS_OK )
 		status = pending->frame_status;
-	if ( status == SPARK_STATUS_OK && state->stage_index + 1u == SPARK_QWEN36_SERVING_STAGE_COUNT )
+	if ( status == SPARK_STATUS_OK && SparkQwen36ServingOwnsFinalHead(state) != 0u )
 	{
 		if ( prefill != 0u )
 			pending->output_token_ids[lane] = (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u ? pending->frame_output_ids[0] : 0u;
@@ -882,7 +932,7 @@ static void SparkQwen36ServingComplete(
 	completion.accepted_token_count = (uint32_t)(pending->accepted_token_count > UINT32_MAX ? UINT32_MAX : pending->accepted_token_count);
 	completion.queue_delay_ns = pending->queue_delay_ns;
 	completion.service_time_ns = pending->service_time_ns;
-	if ( state->stage_index + 1u == SPARK_QWEN36_SERVING_STAGE_COUNT && status == SPARK_STATUS_OK )
+	if ( SparkQwen36ServingOwnsFinalHead(state) != 0u && status == SPARK_STATUS_OK )
 	{
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->active_sequence_count;

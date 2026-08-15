@@ -1,6 +1,7 @@
 #include "spark_qwen36_tp.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "sparkpipe/spark_qwen36_model.h"
@@ -37,10 +38,10 @@ SparkStatus SparkQwen36TpInitialize(
 	tp->degree = degree;
 	tp->rank = rank;
 	tp->cuda_stream = registration_cuda_stream;
-	if ( degree == 1u )
-		return SPARK_STATUS_OK;
 	if ( (SPARK_QWEN36_MODEL_GDN_QK_DIMENSION % degree) != 0u ||
 		(SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION % degree) != 0u ||
+		(SPARK_QWEN36_MODEL_GDN_KEY_HEAD_COUNT % degree) != 0u ||
+		(SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT % degree) != 0u ||
 		(SPARK_QWEN36_MODEL_ATTN_QUERY_HEAD_COUNT % degree) != 0u ||
 		(SPARK_QWEN36_MODEL_ATTN_KV_HEAD_COUNT % degree) != 0u ||
 		(SPARK_QWEN36_MODEL_FFN_INTERMEDIATE_DIMENSION % degree) != 0u ||
@@ -54,11 +55,25 @@ SparkStatus SparkQwen36TpInitialize(
 	tp->gdn_value_channels = SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION / degree;
 	tp->gdn_conv_channels =
 		2u * tp->gdn_qk_channels + tp->gdn_value_channels;
+	tp->gdn_key_heads = SPARK_QWEN36_MODEL_GDN_KEY_HEAD_COUNT / degree;
+	tp->gdn_value_heads = SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT / degree;
 	tp->attn_query_heads = SPARK_QWEN36_MODEL_ATTN_QUERY_HEAD_COUNT / degree;
 	tp->attn_kv_heads = SPARK_QWEN36_MODEL_ATTN_KV_HEAD_COUNT / degree;
 	tp->ffn_intermediate =
 		SPARK_QWEN36_MODEL_FFN_INTERMEDIATE_DIMENSION / degree;
 	tp->head_rows = SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT / degree;
+	if ( degree == 1u )
+		return SPARK_STATUS_OK;
+	/* GPU-validator escape hatch: one rank validates the whole-stack TP4
+	 * path without a peer group. The collective is skipped and the
+	 * reduces become no-ops, so the validator checks internal consistency
+	 * and determinism; cross-rank numerics are gated by the band E2E run. */
+	if ( getenv("SPARK_QWEN36_TP_STANDALONE") != 0 )
+	{
+		fprintf(stderr, "%s standalone degree=%u rank=%u (collective skipped)\n",
+			SPARK_QWEN36_TP_TAG, degree, rank);
+		return SPARK_STATUS_OK;
+	}
 
 	memset(&configuration, 0, sizeof(configuration));
 	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -113,11 +128,12 @@ SparkStatus SparkQwen36TpReduceHidden(
 	SparkTpDeviceCollectiveSubmission submission;
 	SparkStatus status;
 
-	if ( tp == 0 || buffer == 0 || rows == 0u ||
-		rows > tp->collective.max_active_sequence_count )
+	if ( tp == 0 || buffer == 0 || rows == 0u )
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	if ( tp->degree <= 1u )
+	if ( tp->degree <= 1u || tp->initialized == 0u )
 		return SPARK_STATUS_OK;
+	if ( rows > tp->collective.max_active_sequence_count )
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	memset(&submission, 0, sizeof(submission));
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission.descriptor_bytes = sizeof(submission);
@@ -146,7 +162,7 @@ SparkStatus SparkQwen36TpReduceU64Max(
 
 	if ( tp == 0 || buffer == 0 || count == 0u )
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	if ( tp->degree <= 1u )
+	if ( tp->degree <= 1u || tp->initialized == 0u )
 		return SPARK_STATUS_OK;
 	memset(&submission, 0, sizeof(submission));
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;

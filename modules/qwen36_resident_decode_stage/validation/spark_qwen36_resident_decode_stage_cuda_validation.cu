@@ -887,6 +887,8 @@ typedef struct SparkQwen36ValModule
 	void *state;
 	/* Prefill frames carry PREFILL_TOKENS ids; decode uses only ROWS lanes. */
 	uint32_t token_ids[SPARK_QWEN36_VALIDATION_PREFILL_TOKENS];
+	uint32_t output_token_ids[SPARK_QWEN36_VALIDATION_PREFILL_TOKENS];
+	uint32_t head_stage;
 	uint32_t lanes[SPARK_QWEN36_VALIDATION_PREFILL_TOKENS];
 	uint64_t positions[SPARK_QWEN36_VALIDATION_PREFILL_TOKENS];
 	uint64_t sequence_ids[SPARK_QWEN36_VALIDATION_PREFILL_TOKENS];
@@ -898,7 +900,7 @@ typedef struct SparkQwen36ValModule
 	SparkQwen36DecodeBatchView decode_batch;
 	SparkQwen36PrefillFrameView prefill_view;
 	SparkQwen36ResidentDecodeStageFrameContext context;
-	SparkModelDriverBuffer buffers[1];
+	SparkModelDriverBuffer buffers[2];
 	SparkModelDriverFrame frame;
 	SparkQwen36ValCapture capture;
 } SparkQwen36ValModule;
@@ -908,9 +910,12 @@ static int SparkQwen36ValModuleInitialize(SparkQwen36ValModule *module)
 	SparkFirmwareModuleConfiguration configuration;
 	SparkFirmwareModuleHostServices host_services;
 	SparkStatus status;
+	const char *tp_degree_text;
 	uint32_t lane;
 	cudaError_t error;
 	memset(module,0,sizeof(*module));
+	tp_degree_text = getenv("SPARK_QWEN36_TP_DEGREE");
+	module->head_stage = tp_degree_text != 0 && strcmp(tp_degree_text,"1") != 0 ? 1u : 0u;
 	for (lane = 0u; lane < SPARK_QWEN36_VALIDATION_KV_LANES; lane++)
 	{
 		module->host_blocks[lane] = lane;
@@ -968,7 +973,9 @@ static int SparkQwen36ValModuleExecute(SparkQwen36ValModule *module, uint32_t pr
 	module->context.descriptor_bytes = sizeof(module->context);
 	module->context.flags =
 		SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE |
-		SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT |
+		(module->head_stage == 0u
+			? SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT
+			: 0u) |
 		(prefill != 0u
 			? SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW
 			: SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW);
@@ -993,8 +1000,8 @@ static int SparkQwen36ValModuleExecute(SparkQwen36ValModule *module, uint32_t pr
 		module->decode_batch.row_sequence_ids = module->sequence_ids;
 		module->context.decode_batch = &module->decode_batch;
 	}
-	module->context.hidden_output_transport_session = (SparkHiddenTransportSession *)&module->capture;
-	module->context.hidden_output_send_function = SparkQwen36ValCaptureSend;
+	module->context.hidden_output_transport_session = module->head_stage != 0u ? 0 : (SparkHiddenTransportSession *)&module->capture;
+	module->context.hidden_output_send_function = module->head_stage != 0u ? 0 : SparkQwen36ValCaptureSend;
 	module->frame.program_id = 1u;
 	module->frame.tokens_per_sequence = 1u;
 	module->frame.request_id = 1u;
@@ -1005,12 +1012,19 @@ static int SparkQwen36ValModuleExecute(SparkQwen36ValModule *module, uint32_t pr
 	module->frame.flags = prefill != 0u ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : 0u;
 	module->frame.execution_stream = (void *)cudaStreamPerThread;
 	module->frame.buffers = module->buffers;
-	module->frame.buffer_count = 1u;
+	module->frame.buffer_count = module->head_stage != 0u ? 2u : 1u;
 	module->frame.user_context = &module->context;
 	memset(module->buffers,0,sizeof(module->buffers));
 	module->buffers[0].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
 	module->buffers[0].address = module->token_ids;
 	module->buffers[0].bytes = rows * sizeof(uint32_t);
+	if ( module->head_stage != 0u )
+	{
+		module->buffers[1].slot = 1u;
+		module->buffers[1].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
+		module->buffers[1].address = module->output_token_ids;
+		module->buffers[1].bytes = sizeof(module->output_token_ids);
+	}
 	status = SparkQwen36ResidentDecodeStageExecute(module->state,&module->frame);
 	if (status != SPARK_STATUS_OK)
 	{
@@ -1039,6 +1053,7 @@ static int SparkQwen36ValCheckModule(void)
 	uint16_t decode_hidden[SPARK_QWEN36_MODEL_HIDDEN_DIMENSION];
 	uint16_t prefill_hidden[SPARK_QWEN36_MODEL_HIDDEN_DIMENSION];
 	uint16_t rerun_hidden[SPARK_QWEN36_MODEL_HIDDEN_DIMENSION];
+	uint32_t decode_token = 0u,prefill_token = 0u,rerun_token = 0u;
 	uint32_t index;
 	SparkQwen36ValMetrics metrics;
 	SparkModelDriverAdmissionRequest admission;
@@ -1053,9 +1068,9 @@ static int SparkQwen36ValCheckModule(void)
 	module.sequence_ids[0] = 1u;
 	if (SparkQwen36ValModuleExecute(&module,1u,SPARK_QWEN36_VALIDATION_PREFILL_TOKENS,0u) != 0)
 		return(1);
-	if (module.capture.sends != 1u)
-		return(SparkQwen36ValFail("module_prefill","no_hidden_send"));
-	if (SparkQwen36ValCheckFinite("module_prefill",module.capture.hidden,SPARK_QWEN36_VALIDATION_PREFILL_TOKENS) != 0)
+	if (module.capture.sends != (module.head_stage != 0u ? 0u : 1u))
+		return(SparkQwen36ValFail("module_prefill",module.head_stage != 0u ? "unexpected_hidden_send" : "no_hidden_send"));
+	if (module.head_stage == 0u && SparkQwen36ValCheckFinite("module_prefill",module.capture.hidden,SPARK_QWEN36_VALIDATION_PREFILL_TOKENS) != 0)
 		return(1);
 	/* Decode position 8 on lane 0, token chosen arbitrarily but fixed. */
 	module.token_ids[0] = 4242u;
@@ -1064,9 +1079,14 @@ static int SparkQwen36ValCheckModule(void)
 	module.sequence_ids[0] = 1u;
 	if (SparkQwen36ValModuleExecute(&module,0u,1u,0u) != 0)
 		return(1);
-	memcpy(decode_hidden,module.capture.hidden,sizeof(decode_hidden));
-	if (SparkQwen36ValCheckFinite("module_decode",decode_hidden,1u) != 0)
-		return(1);
+	if (module.head_stage == 0u)
+	{
+		memcpy(decode_hidden,module.capture.hidden,sizeof(decode_hidden));
+		if (SparkQwen36ValCheckFinite("module_decode",decode_hidden,1u) != 0)
+			return(1);
+	}
+	else
+		decode_token = module.output_token_ids[0];
 	/* Lane 1: same 8 tokens as a fresh sequence, then a warm 1-token
 	 * prefill at position 8 - the chunk-walk twin of lane 0's decode. */
 	for (index = 0u; index < SPARK_QWEN36_VALIDATION_PREFILL_TOKENS; index++)
@@ -1080,18 +1100,28 @@ static int SparkQwen36ValCheckModule(void)
 	module.sequence_ids[0] = 2u;
 	if (SparkQwen36ValModuleExecute(&module,1u,1u,1u) != 0)
 		return(1);
-	memcpy(prefill_hidden,module.capture.hidden,sizeof(prefill_hidden));
+	if (module.head_stage == 0u)
 	{
-		float actual[SPARK_QWEN36_MODEL_HIDDEN_DIMENSION];
-		float reference[SPARK_QWEN36_MODEL_HIDDEN_DIMENSION];
-		for (index = 0u; index < SPARK_QWEN36_MODEL_HIDDEN_DIMENSION; index++)
+		memcpy(prefill_hidden,module.capture.hidden,sizeof(prefill_hidden));
 		{
-			actual[index] = SparkQwen36ValFromBf16(decode_hidden[index]);
-			reference[index] = SparkQwen36ValFromBf16(prefill_hidden[index]);
+			float actual[SPARK_QWEN36_MODEL_HIDDEN_DIMENSION];
+			float reference[SPARK_QWEN36_MODEL_HIDDEN_DIMENSION];
+			for (index = 0u; index < SPARK_QWEN36_MODEL_HIDDEN_DIMENSION; index++)
+			{
+				actual[index] = SparkQwen36ValFromBf16(decode_hidden[index]);
+				reference[index] = SparkQwen36ValFromBf16(prefill_hidden[index]);
+			}
+			SparkQwen36ValMeasure(&metrics,actual,reference,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION);
+			if (SparkQwen36ValReport("module_decode_vs_prefill",&metrics,5e-2,0.999) != 0)
+				return(1);
 		}
-		SparkQwen36ValMeasure(&metrics,actual,reference,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION);
-		if (SparkQwen36ValReport("module_decode_vs_prefill",&metrics,5e-2,0.999) != 0)
-			return(1);
+	}
+	else
+	{
+		prefill_token = module.output_token_ids[0];
+		printf("qwen36_validation check=module_decode_vs_prefill decode_token=%u prefill_token=%u bit_exact=%d\n",decode_token,prefill_token,decode_token == prefill_token ? 1 : 0);
+		if (decode_token != prefill_token)
+			return(SparkQwen36ValFail("module_decode_vs_prefill","token_mismatch"));
 	}
 	/* Determinism: a fresh instance must reproduce lane 0's decode hidden
 	 * bit for bit. */
@@ -1111,12 +1141,21 @@ static int SparkQwen36ValCheckModule(void)
 		rerun.sequence_ids[0] = 1u;
 		if (SparkQwen36ValModuleExecute(&rerun,0u,1u,0u) != 0)
 			return(1);
-		memcpy(rerun_hidden,rerun.capture.hidden,sizeof(rerun_hidden));
+		if (module.head_stage == 0u)
+		{
+			memcpy(rerun_hidden,rerun.capture.hidden,sizeof(rerun_hidden));
+			if (memcmp(decode_hidden,rerun_hidden,sizeof(decode_hidden)) != 0)
+				return(SparkQwen36ValFail("module_determinism","fresh_instance_mismatch"));
+		}
+		else
+		{
+			rerun_token = rerun.output_token_ids[0];
+			if (rerun_token != decode_token)
+				return(SparkQwen36ValFail("module_determinism","fresh_instance_token_mismatch"));
+		}
 		SparkQwen36ResidentDecodeStageDestroy(rerun.state);
 		cudaFree(rerun.device_blocks);
 		cudaFree(rerun.device_counts);
-		if (memcmp(decode_hidden,rerun_hidden,sizeof(decode_hidden)) != 0)
-			return(SparkQwen36ValFail("module_determinism","fresh_instance_mismatch"));
 		printf("qwen36_validation check=module_determinism bit_exact=1\n");
 	}
 	/* Admission and snapshot smoke: a decode admit must accept, and the

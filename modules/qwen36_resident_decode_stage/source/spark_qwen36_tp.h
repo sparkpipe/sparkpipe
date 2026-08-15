@@ -38,6 +38,8 @@ typedef struct SparkQwen36TpState
 	uint32_t gdn_qk_channels;
 	uint32_t gdn_value_channels;
 	uint32_t gdn_conv_channels;
+	uint32_t gdn_key_heads;
+	uint32_t gdn_value_heads;
 	uint32_t attn_query_heads;
 	uint32_t attn_kv_heads;
 	uint32_t ffn_intermediate;

@@ -470,6 +470,9 @@ static inline void SparkQwen36StagePackApplyTpShard(uint32_t tensor_kind, uint32
 	switch ( tensor_kind )
 	{
 	case SPARK_QWEN36_STAGEPACK_TENSOR_EMBEDDING:
+		/* Replicated: no collective broadcast primitive yet, so every rank
+		 * gathers from the full table (matches the packer's TP plan). */
+		break;
 	case SPARK_QWEN36_STAGEPACK_TENSOR_LM_HEAD:
 		shape->rows /= tp_degree;
 		break;
@@ -506,7 +509,11 @@ static inline int32_t SparkQwen36StagePackResolvedShape(uint32_t tensor_kind, ui
 {
 	if ( SparkQwen36StagePackTensorShapeOf(tensor_kind,shape) < 0 )
 		return(-1);
-	SparkQwen36StagePackApplyTpShard(tensor_kind,tp_degree,shape);
+	/* The MTP chain is replicated under TP (no shard), so its entries keep
+	 * the full-model shapes even when the same kinds are sharded on main
+	 * layers. */
+	if ( layer_index != SPARK_QWEN36_STAGEPACK_MTP_LAYER )
+		SparkQwen36StagePackApplyTpShard(tensor_kind,tp_degree,shape);
 	if ( layer_index == SPARK_QWEN36_STAGEPACK_MTP_LAYER )
 		return((is_global == 0u && (shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_EVERY_LAYER || shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_ATTN_LAYER)) ? 0 : -6);
 	if ( (shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_GLOBAL) != (is_global != 0u) )

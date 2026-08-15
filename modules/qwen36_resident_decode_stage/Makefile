@@ -10,6 +10,7 @@ MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_qwen36_resident_decode_stage_cuda.c
 MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/cache/store/stage_kv_client.c \
 	$(REPOSITORY_ROOT)/cache/store/kv_store.c \
+	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective_nccl.c \
 	$(CURDIR)/source/spark_qwen36_tp.c
@@ -43,11 +44,17 @@ KV_SOCKET_PATH ?= none
 KV_POOL_BYTES ?= 0
 KV_WORKER_COUNT ?= 0
 ALLOW_UNQUALIFIED_EXECUTION ?= 0
+TP_DEGREE ?= 1
+TP_RANK ?= 0
+TP_STANDALONE ?= 0
 override QWEN36_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_qwen36_resident_decode_stage_cuda_validation.cu | awk '{print $$1}')
 override QWEN36_CPU_ORACLE_SHA256 := $(shell sha256sum validation/spark_qwen36_reference.c | awk '{print $$1}')
 
 RUNTIME_CONFIGURATION := \
 	SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION=$(ALLOW_UNQUALIFIED_EXECUTION) \
+	SPARK_QWEN36_TP_DEGREE=$(TP_DEGREE) \
+	SPARK_QWEN36_TP_RANK=$(TP_RANK) \
+	SPARK_QWEN36_TP_STANDALONE=$(TP_STANDALONE) \
 	SPARK_QWEN36_STAGE_PACK_PATH=$(STAGE_PACK_PATH) \
 	SPARK_QWEN36_STAGE_COUNT=$(STAGE_COUNT) \
 	SPARK_QWEN36_STAGE_INDEX=$(STAGE_INDEX) \

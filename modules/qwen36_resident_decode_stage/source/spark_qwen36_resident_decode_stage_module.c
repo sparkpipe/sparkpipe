@@ -15,6 +15,7 @@
 #include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "spark_qwen36_stagepack_format.h"
+#include "spark_qwen36_tp.h"
 
 /*
  * Qwen 3.6 27B resident decode stage host module, PP-Nx native.
@@ -78,6 +79,8 @@ typedef struct SparkQwen36ModuleSlot
 	float *chunk_attn_f32;
 	float *chunk_w_f32;
 	float *chunk_kg_f32;
+	float *head_scores_f32;
+	uint64_t *head_maxloc_u64;
 	uint32_t *mtp_draft_ids;
 	uint32_t mtp_seed_row;
 	uint32_t host_row_cold[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -137,6 +140,8 @@ typedef struct SparkQwen36ModuleState
 	atomic_uint slot_states[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint lane_states[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkStageKvClient kv_client;
+	SparkQwen36TpState tp;
+	void *tp_stream;
 	atomic_ullong submitted_count;
 	atomic_ullong completed_count;
 	atomic_ullong rejected_count;
@@ -162,6 +167,10 @@ extern cudaError_t SparkQwen36LaunchSwiGlu(cudaStream_t stream, const void *gate
 extern cudaError_t SparkQwen36LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkQwen36LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen36LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
+extern cudaError_t SparkQwen36LaunchHeadScreenedArgmaxScore(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *scratch_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t candidate_count);
+extern cudaError_t SparkQwen36LaunchHeadMaxLocPack(cudaStream_t stream, const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count);
+extern cudaError_t SparkQwen36LaunchHeadMaxLocUnpack(cudaStream_t stream, const uint64_t *keys_u64, uint32_t *token_ids_u32, uint32_t row_count);
+extern cudaError_t SparkQwen36TpSetGeometry(uint32_t gdn_qk_channels,uint32_t gdn_value_channels,uint32_t gdn_conv_channels,uint32_t gdn_key_heads,uint32_t gdn_value_heads,uint32_t attn_query_heads,uint32_t attn_kv_heads,uint32_t gdn_qk_channel_base,uint32_t gdn_value_channel_base,uint32_t gdn_key_head_base,uint32_t gdn_value_head_base);
 
 static SparkStatus SparkQwen36ModuleConfigure(SparkQwen36ModuleState *state)
 {
@@ -195,7 +204,7 @@ static SparkStatus SparkQwen36ModuleConfigure(SparkQwen36ModuleState *state)
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( state->tp_rank >= state->tp_degree ||
-		(state->tp_degree > 1u && (state->stage_count != 1u || state->stage_index != 0u || state->first_layer_index != 0u || state->layer_count != SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT)) )
+		(state->tp_degree > 1u && (state->stage_count != 1u || state->stage_index != 0u || state->first_layer_index != 0u || state->layer_count != SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT || state->mtp_armed != 0u)) )
 	{
 		fprintf(stderr,"%s config_tp_invalid degree=%u rank=%u stage=%u/%u slice=%u+%u\n",SPARK_QWEN36_MODULE_TAG,state->tp_degree,state->tp_rank,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -469,7 +478,7 @@ static SparkStatus SparkQwen36ModuleLoadPack(SparkQwen36ModuleState *state, cons
 // synchronously at initialize.
 static SparkStatus SparkQwen36ModuleBuildHeadShadow(SparkQwen36ModuleState *state)
 {
-	uint64_t vocab = SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT,dim = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
+	uint64_t vocab = state->tp.head_rows,dim = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
 	SparkStatus status;
 	if ( state->owns_final_head == 0u )
 		return(SPARK_STATUS_OK);
@@ -485,6 +494,47 @@ static SparkStatus SparkQwen36ModuleBuildHeadShadow(SparkQwen36ModuleState *stat
 	return(status);
 }
 
+/* Tensor-parallel bootstrap: one dedicated stream for the synchronous
+ * collective submissions, the collective itself, and the per-rank device
+ * geometry table. Must precede every allocation that derives per-rank
+ * dimensions. */
+static SparkStatus SparkQwen36ModuleInitializeTp(SparkQwen36ModuleState *state)
+{
+	cudaStream_t stream = 0;
+	SparkStatus status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,cudaStreamCreate(&stream),"tp_stream_create");
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	state->tp_stream = stream;
+	status = SparkQwen36TpInitialize(&state->tp,state->tp_degree,state->tp_rank,state->max_active_sequence_count,stream);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,
+		SparkQwen36TpSetGeometry(
+			state->tp.gdn_qk_channels,state->tp.gdn_value_channels,
+			state->tp.gdn_conv_channels,state->tp.gdn_key_heads,
+			state->tp.gdn_value_heads,state->tp.attn_query_heads,
+			state->tp.attn_kv_heads,
+			state->tp_rank * state->tp.gdn_qk_channels,
+			state->tp_rank * state->tp.gdn_value_channels,
+			state->tp_rank * state->tp.gdn_key_heads,
+			state->tp_rank * state->tp.gdn_value_heads),
+		"tp_set_geometry"));
+}
+
+/* Synchronous BF16 hidden all-reduce of slot->delta_bf16: drain the slot
+ * stream that produced the partial, then the collective (which synchronizes
+ * its own stream before returning) makes the full sum visible. */
+static SparkStatus SparkQwen36ModuleTpReduceDelta(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, uint32_t rows)
+{
+	SparkStatus status;
+	if ( state->tp_degree <= 1u )
+		return(SPARK_STATUS_OK);
+	status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)slot->cuda_stream),"tp_slot_sync");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen36TpReduceHidden(&state->tp,slot->delta_bf16,rows);
+	return(status);
+}
+
 static SparkStatus SparkQwen36ModuleAllocatePools(SparkQwen36ModuleState *state)
 {
 	SparkStatus status = SPARK_STATUS_OK;
@@ -492,9 +542,9 @@ static SparkStatus SparkQwen36ModuleAllocatePools(SparkQwen36ModuleState *state)
 	state->gdn_pool.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION;
 	state->gdn_pool.lane_capacity = state->max_active_sequence_count;
 	state->gdn_pool.gdn_layer_count = state->gdn_layer_count;
-	state->gdn_pool.state_layer_stride_elements = (uint64_t)SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT * SPARK_QWEN36_MODEL_GDN_HEAD_KEY_DIMENSION * SPARK_QWEN36_MODEL_GDN_HEAD_VALUE_DIMENSION;
+	state->gdn_pool.state_layer_stride_elements = (uint64_t)state->tp.gdn_value_heads * SPARK_QWEN36_MODEL_GDN_HEAD_KEY_DIMENSION * SPARK_QWEN36_MODEL_GDN_HEAD_VALUE_DIMENSION;
 	state->gdn_pool.state_lane_stride_elements = state->gdn_pool.state_layer_stride_elements * state->gdn_layer_count;
-	state->gdn_pool.conv_tail_layer_stride_elements = (uint64_t)SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS * (SPARK_QWEN36_MODEL_GDN_CONV_KERNEL - 1u);
+	state->gdn_pool.conv_tail_layer_stride_elements = (uint64_t)state->tp.gdn_conv_channels * (SPARK_QWEN36_MODEL_GDN_CONV_KERNEL - 1u);
 	state->gdn_pool.conv_tail_lane_stride_elements = state->gdn_pool.conv_tail_layer_stride_elements * state->gdn_layer_count;
 	if ( state->gdn_layer_count != 0u )
 	{
@@ -510,7 +560,7 @@ static SparkStatus SparkQwen36ModuleAllocatePools(SparkQwen36ModuleState *state)
 	state->cache_layer_count = state->attn_layer_count + (state->owns_final_head != 0u && state->mtp_armed != 0u ? SPARK_QWEN36_MODEL_MTP_LAYER_COUNT : 0u);
 	if ( status == SPARK_STATUS_OK && state->cache_layer_count != 0u )
 	{
-		state->cache_layer_stride = (uint64_t)SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN36_MODEL_ATTN_CACHE_TOKEN_ELEMENTS;
+		state->cache_layer_stride = (uint64_t)SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * (uint64_t)state->tp.attn_kv_heads * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION * 2u;
 		state->cache_block_stride = state->cache_layer_stride * state->cache_layer_count;
 		cache_elements = state->cache_block_stride * state->kv_block_count;
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,cache_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&state->kv_cache_bf16);
@@ -542,6 +592,10 @@ static SparkStatus SparkQwen36ModuleAllocateSlotControl(SparkQwen36ModuleState *
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_QWEN36_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP * sizeof(uint32_t),(void **)&slot->head_candidate_ids_u32);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->head_candidate_counts_u32);
+	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(float),(void **)&slot->head_scores_f32);
+	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint64_t),(void **)&slot->head_maxloc_u64);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,staged * sizeof(uint32_t),(void **)&slot->row_lane_indices);
 	if ( status == SPARK_STATUS_OK )
@@ -562,7 +616,7 @@ static SparkStatus SparkQwen36ModuleAllocateSlotControl(SparkQwen36ModuleState *
 // Only stages that own GDN layers pay for it.
 static SparkStatus SparkQwen36ModuleAllocateSlotChunkWorkspace(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot)
 {
-	uint64_t heads = SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT,chunk = SPARK_QWEN36_MODEL_GDN_CHUNK_TOKENS;
+	uint64_t heads = state->tp.gdn_value_heads,chunk = SPARK_QWEN36_MODEL_GDN_CHUNK_TOKENS;
 	uint64_t vector_bytes = heads * chunk * SPARK_QWEN36_MODEL_GDN_HEAD_KEY_DIMENSION * sizeof(float);
 	uint64_t matrix_bytes = heads * chunk * chunk * sizeof(float);
 	SparkStatus status;
@@ -587,6 +641,8 @@ static SparkStatus SparkQwen36ModuleAllocateSlotChunkWorkspace(SparkQwen36Module
 static SparkStatus SparkQwen36ModuleAllocateSlot(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot)
 {
 	uint64_t rows = state->max_active_sequence_count;
+	uint64_t attn_query_dim = (uint64_t)state->tp.attn_query_heads * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION;
+	uint64_t attn_kv_dim = (uint64_t)state->tp.attn_kv_heads * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION;
 	SparkStatus status = SparkQwen36ModuleAllocateSlotControl(state,slot);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->hidden_bf16);
@@ -595,9 +651,9 @@ static SparkStatus SparkQwen36ModuleAllocateSlot(SparkQwen36ModuleState *state, 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->delta_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->qkv_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_conv_channels * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->qkv_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->conv_out_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_conv_channels * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->conv_out_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->z_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -605,25 +661,25 @@ static SparkStatus SparkQwen36ModuleAllocateSlot(SparkQwen36ModuleState *state, 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->decay_pre_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT * sizeof(float),(void **)&slot->log_decay_f32);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_value_heads * sizeof(float),(void **)&slot->log_decay_f32);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT * sizeof(float),(void **)&slot->beta_f32);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_value_heads * sizeof(float),(void **)&slot->beta_f32);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->core_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_value_channels * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->core_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->gated_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_value_channels * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->gated_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODULE_FUSED_QUERY_COMPONENT_COUNT * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->q_fused_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODULE_FUSED_QUERY_COMPONENT_COUNT * attn_query_dim * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->q_fused_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_ATTN_KV_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->k_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * attn_kv_dim * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->k_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_ATTN_KV_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->v_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * attn_kv_dim * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->v_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->head_out_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * attn_query_dim * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->head_out_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_FFN_INTERMEDIATE_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->ffn_gate_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.ffn_intermediate * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->ffn_gate_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN36_MODEL_FFN_INTERMEDIATE_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->ffn_up_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.ffn_intermediate * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->ffn_up_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleAllocateSlotChunkWorkspace(state,slot);
 	return(status);
@@ -688,6 +744,8 @@ static SparkStatus SparkQwen36ModuleRunGdnLayer(SparkQwen36ModuleState *state, S
 		error = SparkQwen36LaunchGatedNorm(stream,slot->core_bf16,slot->z_bf16,weights,slot->gated_bf16,rows,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchLinear(stream,&weights->output,slot->gated_bf16,slot->delta_bf16,rows);
+	if ( error == cudaSuccess && SparkQwen36ModuleTpReduceDelta(state,slot,rows) != SPARK_STATUS_OK )
+		error = cudaErrorUnknown;
 	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"gdn_layer"));
 }
 
@@ -717,10 +775,12 @@ static SparkStatus SparkQwen36ModuleRunAttnLayer(SparkQwen36ModuleState *state, 
 		error = SparkQwen36LaunchAttnDecode(stream,slot->q_fused_bf16,state->kv_cache_bf16,table,rows_view->row_lane_indices,rows_view->context_lengths,slot->head_out_bf16,rows,ordinal,state->cache_layer_stride,state->cache_block_stride);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchLinear(stream,&weights->output,slot->head_out_bf16,slot->delta_bf16,rows);
+	if ( error == cudaSuccess && SparkQwen36ModuleTpReduceDelta(state,slot,rows) != SPARK_STATUS_OK )
+		error = cudaErrorUnknown;
 	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"attn_layer"));
 }
 
-static SparkStatus SparkQwen36ModuleRunFfn(SparkQwen36ModuleSlot *slot, const void *mlp_norm_bf16, const SparkQwen36FfnLayerWeights *weights, uint32_t rows)
+static SparkStatus SparkQwen36ModuleRunFfn(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, const void *mlp_norm_bf16, const SparkQwen36FfnLayerWeights *weights, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
@@ -730,9 +790,11 @@ static SparkStatus SparkQwen36ModuleRunFfn(SparkQwen36ModuleSlot *slot, const vo
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchLinear(stream,&weights->up,slot->normalized_bf16,slot->ffn_up_bf16,rows);
 	if ( error == cudaSuccess )
-		error = SparkQwen36LaunchSwiGlu(stream,slot->ffn_gate_bf16,slot->ffn_up_bf16,rows,SPARK_QWEN36_MODEL_FFN_INTERMEDIATE_DIMENSION);
+		error = SparkQwen36LaunchSwiGlu(stream,slot->ffn_gate_bf16,slot->ffn_up_bf16,rows,state->tp.ffn_intermediate);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchLinear(stream,&weights->down,slot->ffn_up_bf16,slot->delta_bf16,rows);
+	if ( error == cudaSuccess && SparkQwen36ModuleTpReduceDelta(state,slot,rows) != SPARK_STATUS_OK )
+		error = cudaErrorUnknown;
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchResidualAdd(stream,slot->hidden_bf16,slot->delta_bf16,rows,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"ffn"));
@@ -751,7 +813,7 @@ static SparkStatus SparkQwen36ModuleRunLayer(SparkQwen36ModuleState *state, Spar
 	if ( status == SPARK_STATUS_OK )
 		status = SPARK_QWEN36_MODEL_LAYER_IS_GDN(layer) != 0u ? SparkQwen36ModuleRunGdnLayer(state,slot,prefill,layer,rows) : SparkQwen36ModuleRunAttnLayer(state,slot,table,&state->attn_by_layer[layer],state->attn_ordinal_by_layer[layer],&rows_view,rows);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen36ModuleRunFfn(slot,state->mlp_norm_by_layer[layer],&state->ffn_by_layer[layer],rows);
+		status = SparkQwen36ModuleRunFfn(state,slot,state->mlp_norm_by_layer[layer],&state->ffn_by_layer[layer],rows);
 	return(status);
 }
 
@@ -1325,7 +1387,15 @@ static cudaError_t SparkQwen36ModuleEmitHead(SparkQwen36ModuleState *state, Spar
 	cudaError_t error;
 	error = SparkQwen36LaunchRmsNorm(stream,head_hidden,state->final_norm_weight_bf16,slot->normalized_bf16,head_rows,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
-		error = SparkQwen36LaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->output_token_ids,head_rows,SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT);
+		error = SparkQwen36LaunchHeadScreenedArgmaxScore(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->output_token_ids,slot->head_scores_f32,state->tp_rank * state->tp.head_rows,head_rows,state->tp.head_rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen36LaunchHeadMaxLocPack(stream,slot->head_scores_f32,slot->output_token_ids,slot->head_maxloc_u64,head_rows);
+	if ( error == cudaSuccess && state->tp_degree > 1u )
+		error = cudaStreamSynchronize(stream);
+	if ( error == cudaSuccess && SparkQwen36TpReduceU64Max(&state->tp,slot->head_maxloc_u64,head_rows) != SPARK_STATUS_OK )
+		error = cudaErrorUnknown;
+	if ( error == cudaSuccess )
+		error = SparkQwen36LaunchHeadMaxLocUnpack(stream,slot->head_maxloc_u64,slot->output_token_ids,head_rows);
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(frame->buffers[out_index].address,slot->output_token_ids,head_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 	return(error);
@@ -1368,7 +1438,7 @@ static SparkStatus SparkQwen36ModuleRunMtpDecoderPass(SparkQwen36ModuleState *st
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,SparkQwen36LaunchResidualAdd(stream,slot->hidden_bf16,slot->delta_bf16,rows_p,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION),"mtp_residual");
 	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen36ModuleRunFfn(slot,state->mtp.mlp_norm_weight_bf16,&state->mtp.ffn,rows_p);
+		status = SparkQwen36ModuleRunFfn(state,slot,state->mtp.mlp_norm_weight_bf16,&state->mtp.ffn,rows_p);
 	return(status);
 }
 
@@ -1976,6 +2046,9 @@ void SparkQwen36ResidentDecodeStageDestroy(void *module_state)
             cudaStreamDestroy((cudaStream_t)state->slots[slot_index].cuda_stream);
         }
     }
+    SparkQwen36TpDestroy(&state->tp);
+    if ( state->tp_stream != 0 )
+        cudaStreamDestroy((cudaStream_t)state->tp_stream);
     SparkStageKvClientClose(&state->kv_client);
     SparkStageModuleLedgerRelease(&state->ledger);
     free(state);
@@ -2056,6 +2129,10 @@ SparkStatus SparkQwen36ResidentDecodeStageInitialize(
     }
     if (status == SPARK_STATUS_OK)
     {
+        status = SparkQwen36ModuleInitializeTp(state);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
         status = SparkQwen36ModuleAllocatePools(state);
     }
     if (status == SPARK_STATUS_OK)
@@ -2080,12 +2157,14 @@ SparkStatus SparkQwen36ResidentDecodeStageInitialize(
 
     fprintf(
         stderr,
-        "%s ready stage=%u/%u slice=%u+%u gdn=%u attn=%u lanes=%u kv_blocks=%u device_gib=%.1f\n",
+        "%s ready stage=%u/%u slice=%u+%u tp=%u/%u gdn=%u attn=%u lanes=%u kv_blocks=%u device_gib=%.1f\n",
         SPARK_QWEN36_MODULE_TAG,
         state->stage_index,
         state->stage_count,
         state->first_layer_index,
         state->layer_count,
+        state->tp_degree,
+        state->tp_rank,
         state->gdn_layer_count,
         state->attn_layer_count,
         state->max_active_sequence_count,
