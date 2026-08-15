@@ -3,6 +3,8 @@
 
 #include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_lm_kernels.cuh"
+#include "inference/kernels/route.cuh"
+#include "runtime/launch.h"
 
 /*
  * Qwen 3.6 27B device code. Two production hot paths share these kernels: a
@@ -1367,5 +1369,160 @@ extern "C" cudaError_t SparkQwen38LaunchHeadScreenedArgmax(cudaStream_t stream, 
 extern "C" cudaError_t SparkQwen38LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count)
 {
 	SparkLmHeadArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,head_weight_bf16,token_ids,output_token_ids,row_count,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,candidate_count);
+	return(cudaGetLastError());
+}
+/*
+ * Routed MoE execution, Qwen 3.8: BF16 router gate -> per-row top-k selection
+ * -> common grouped-MoE kernels over MXFP4-E2M1 experts -> weighted pair
+ * reduce into the hidden accumulator; BF16 shared expert with a learned
+ * per-dimension sigmoid gate. All launchers are stream-ordered.
+ */
+#define SPARK_QWEN38_ROUTER_SORT_CAPACITY 512u
+
+static __global__ void SparkQwen38GateSelectKernel(
+    const float *scores_f32,
+    const float *bias_f32,
+    uint32_t row_count,
+    uint32_t expert_count,
+    uint32_t topk,
+    float route_scale,
+    uint32_t *indices_u32,
+    float *weights_f32)
+{
+    __shared__ uint64_t ordered_keys[SPARK_QWEN38_ROUTER_SORT_CAPACITY];
+    const float *row_scores;
+    uint64_t selected_key;
+    uint32_t row;
+    uint32_t expert;
+    uint32_t rank;
+    uint32_t selected_expert;
+    float selected_score;
+    float selected_total;
+
+    static_assert(
+        SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT <=
+            SPARK_QWEN38_ROUTER_SORT_CAPACITY,
+        "qwen38 expert count exceeds router sort capacity");
+    static_assert(
+        SPARK_LM_MOE_MAX_TOPK <= SPARK_LM_WARP_LANES,
+        "qwen38 router normalization requires one warp");
+    row = blockIdx.x;
+    if ( row >= row_count || expert_count == 0u ||
+        expert_count > SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT ||
+        topk == 0u || topk > SPARK_LM_MOE_MAX_TOPK || topk > expert_count )
+        return;
+    row_scores = scores_f32 + ((uint64_t)row * expert_count);
+    rank = threadIdx.x;
+    for (expert = threadIdx.x; expert < SPARK_QWEN38_ROUTER_SORT_CAPACITY;
+        expert += blockDim.x)
+    {
+        float choice_score;
+        choice_score = expert < expert_count
+            ? row_scores[expert] + (bias_f32 != 0 ? bias_f32[expert] : 0.0f)
+            : NAN;
+        ordered_keys[expert] = expert < expert_count
+            ? SparkLmOrderedTopKKey(choice_score, expert)
+            : 0u;
+    }
+    __syncthreads();
+    SparkLmBitonicSortKeysAscending<SPARK_QWEN38_ROUTER_SORT_CAPACITY>(ordered_keys);
+    selected_key = rank < topk
+        ? ordered_keys[SPARK_QWEN38_ROUTER_SORT_CAPACITY - 1u - rank]
+        : 0u;
+    selected_expert = selected_key != 0u
+        ? 0xffffffffu - (uint32_t)selected_key
+        : UINT32_MAX;
+    selected_score = rank < topk && selected_expert < expert_count
+        ? row_scores[selected_expert]
+        : 0.0f;
+    if ( threadIdx.x < SPARK_LM_WARP_LANES )
+    {
+        selected_total = SparkLmWarpReduceSum(selected_score);
+        selected_total = __shfl_sync(0xffffffffu, selected_total, 0u);
+        if ( rank < topk )
+        {
+            indices_u32[((uint64_t)row * topk) + rank] = selected_expert;
+            weights_f32[((uint64_t)row * topk) + rank] =
+                route_scale * selected_score / selected_total;
+        }
+    }
+}
+
+static __global__ void SparkQwen38SwiGluKernel(const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension)
+{
+	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,pair_count = ((uint64_t)row_count * dimension) >> 1u;
+	float2 gate_pair,up_pair;
+	if ( pair >= pair_count )
+		return;
+	gate_pair = SparkLmLoadBf16Pair(gate_bf16,pair);
+	up_pair = SparkLmLoadBf16Pair(up_bf16,pair);
+	SparkLmStoreBf16Pair(up_bf16,pair,SparkLmSwish(gate_pair.x) * up_pair.x,SparkLmSwish(gate_pair.y) * up_pair.y);
+	if ( pair == 0u && (((uint64_t)row_count * dimension) & 1u) != 0u )
+		SparkLmFloatToBf16(up_bf16,((uint64_t)row_count * dimension) - 1u,SparkLmSwish(SparkLmBf16ToFloat(gate_bf16,((uint64_t)row_count * dimension) - 1u)) * SparkLmBf16ToFloat(up_bf16,((uint64_t)row_count * dimension) - 1u));
+}
+
+static __global__ void SparkQwen38SharedGateKernel(void *accum_bf16, const void *gate_weight_bf16, uint32_t row_count, uint32_t dimension)
+{
+	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	uint64_t total = (uint64_t)row_count * dimension;
+	float gate;
+	if ( index >= total )
+		return;
+	gate = SparkLmSigmoid(SparkLmBf16ToFloat(gate_weight_bf16,(uint32_t)(index % dimension)));
+	SparkLmFloatToBf16(accum_bf16,index,gate * SparkLmBf16ToFloat(accum_bf16,index));
+}
+
+extern "C" cudaError_t SparkQwen38LaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, uint32_t row_count, uint32_t expert_count, uint32_t topk, float route_scale, uint32_t *indices_u32, float *weights_f32)
+{
+	SparkQwen38GateSelectKernel<<<row_count, SPARK_LM_CTA_THREADS, 0, stream>>>(scores_f32,bias_f32,row_count,expert_count,topk,route_scale,indices_u32,weights_f32);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen38LaunchMoeRoute(cudaStream_t stream, const uint32_t *route_expert, uint32_t rows, uint32_t expert_width, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2)
+{
+{
+	int32_t launch_status = LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,expert_width,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,SparkLmSm121ExpertW13TileN(rows),SparkLmSm121ExpertW2TileN(rows),group_tile_prefix_w1,group_tile_prefix_w2,stream);
+	return(launch_status == LM_LAUNCH_OK ? cudaSuccess : cudaErrorLaunchFailure);
+}
+}
+
+extern "C" cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, const SparkQwen38LinearView *w1, const SparkQwen38LinearView *w3, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *activated_bf16, uint32_t rows, uint32_t expert_width, float limit, uint32_t multiprocessor_count)
+{
+	cudaError_t status;
+	uint64_t required_rows = (uint64_t)SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * expert_width;
+	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 || route_source_token == 0 || group_row_offset == 0 || group_tile_prefix == 0 || activated_bf16 == 0 || w1->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w3->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w1->weight_payload == 0 || w3->weight_payload == 0 || w1->weight_scale_e8m0 == 0 || w3->weight_scale_e8m0 == 0 || w1->output_dimension != required_rows || w3->output_dimension != required_rows || w1->input_dimension != SPARK_QWEN38_MODEL_HIDDEN_DIMENSION || w3->input_dimension != SPARK_QWEN38_MODEL_HIDDEN_DIMENSION )
+		return(cudaErrorInvalidValue);
+	status = SparkLmHostLaunchSm121FusedExpertW13(stream,w1->weight_payload,w1->weight_scale_e8m0,w3->weight_payload,w3->weight_scale_e8m0,input_bf16,route_source_token,group_row_offset,group_tile_prefix,activated_bf16,rows,SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,expert_width,limit,multiprocessor_count);
+	return(status);
+}
+
+extern "C" cudaError_t SparkQwen38LaunchExpertDown(cudaStream_t stream, const SparkQwen38LinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count)
+{
+	uint64_t required_rows = (uint64_t)SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * hidden_dimension;
+	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || stacked->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || stacked->weight_payload == 0 || stacked->weight_scale_e8m0 == 0 || stacked->output_dimension != required_rows || stacked->input_dimension != expert_width )
+		return(cudaErrorInvalidValue);
+	return(SparkLmHostLaunchSm121ExpertW2(stream,stacked->weight_payload,stacked->weight_scale_e8m0,input_bf16,group_row_offset,group_tile_prefix,output_bf16,rows,SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT,expert_width,hidden_dimension,multiprocessor_count));
+}
+
+extern "C" cudaError_t SparkQwen38LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension)
+{
+	return(SparkLmHostLaunchMoePairReduce(stream,slot_out_bf16,inverse_map,pair_weights_f32,accum_bf16,row_count,SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,hidden_dimension));
+}
+
+extern "C" cudaError_t SparkQwen38LaunchSwiGlu(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension)
+{
+	uint32_t threads = 256u;
+	uint64_t pairs = ((uint64_t)row_count * dimension) >> 1u;
+	uint32_t blocks = (uint32_t)((pairs + threads - 1u) / threads);
+	SparkQwen38SwiGluKernel<<<(blocks == 0u ? 1u : blocks), threads, 0, stream>>>(gate_bf16,up_bf16,row_count,dimension);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen38LaunchSharedGate(cudaStream_t stream, void *accum_bf16, const void *gate_weight_bf16, uint32_t row_count, uint32_t dimension)
+{
+	uint32_t threads = 256u;
+	uint64_t total = (uint64_t)row_count * dimension;
+	uint32_t blocks = (uint32_t)((total + threads - 1u) / threads);
+	SparkQwen38SharedGateKernel<<<(blocks == 0u ? 1u : blocks), threads, 0, stream>>>(accum_bf16,gate_weight_bf16,row_count,dimension);
 	return(cudaGetLastError());
 }
