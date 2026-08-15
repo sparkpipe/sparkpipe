@@ -30,8 +30,6 @@ extern "C" {
  *   - lm_head rows: 248320 / D (embedding replicated)
  *   - norms, conv, beta/decay, MTP: replicated
  */
-typedef struct SparkQwen36TpPending SparkQwen36TpPending;
-
 typedef struct SparkQwen36TpState
 {
 	SparkTpDeviceCollective collective;
@@ -54,12 +52,6 @@ typedef struct SparkQwen36TpState
 	void *host_credit_receive_bf16;
 	uint64_t next_ordinal;
 	void *cuda_stream;
-	/* pipelined-submit machinery: one completion cell per transport credit,
-	 * a rotating submit sequence, and the first deferred failure observed. */
-	uint32_t credit_count;
-	SparkQwen36TpPending *pending_pool;
-	uint32_t reduce_sequence;
-	uint32_t deferred_status;
 } SparkQwen36TpState;
 
 /* Per-operation completion wait cell: the collective's completion callback
@@ -99,11 +91,6 @@ SparkStatus SparkQwen36TpReduceU64Max(
 	uint64_t *buffer,
 	uint32_t count,
 	void *cuda_stream);
-
-/* Observe every outstanding pipelined bf16 reduction and surface the first
- * deferred completion failure, if any. Called once at the end of a frame
- * after the blocking head reduce. */
-SparkStatus SparkQwen36TpDrain(SparkQwen36TpState *tp);
 
 #ifdef __cplusplus
 }

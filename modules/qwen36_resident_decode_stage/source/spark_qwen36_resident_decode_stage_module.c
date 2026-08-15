@@ -1390,8 +1390,6 @@ static cudaError_t SparkQwen36ModuleEmitHead(SparkQwen36ModuleState *state, Spar
 		error = SparkQwen36LaunchHeadMaxLocPack(stream,slot->head_scores_f32,slot->output_token_ids,slot->head_maxloc_u64,head_rows);
 	if ( error == cudaSuccess && SparkQwen36TpReduceU64Max(&state->tp,slot->head_maxloc_u64,head_rows,stream) != SPARK_STATUS_OK )
 		error = cudaErrorUnknown;
-	if ( error == cudaSuccess && SparkQwen36TpDrain(&state->tp) != SPARK_STATUS_OK )
-		error = cudaErrorUnknown;
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchHeadMaxLocUnpack(stream,slot->head_maxloc_u64,slot->output_token_ids,head_rows);
 	if ( error == cudaSuccess )
