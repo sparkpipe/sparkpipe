@@ -168,14 +168,35 @@ class PlanItem:
 class Packer:
     def __init__(self, spine: Reader, experts: Reader, contract: Dict[str, Any],
                  layer_range: Tuple[int, int], include_embedding: bool = True,
-                 include_head: bool = True):
+                 include_head: bool = True, tp_degree: int = 1, tp_rank: int = 0):
         self.spine = spine
         self.experts = experts
         self.c = contract
         self.layer_range = layer_range
         self.include_embedding = include_embedding
         self.include_head = include_head
+        self.tp_degree = tp_degree
+        self.tp_rank = tp_rank
         self.plan: List[PlanItem] = []
+
+    def shard_rows(self, t: torch.Tensor) -> torch.Tensor:
+        """This TP rank's row slice; whole tensors when tp_degree == 1."""
+        if self.tp_degree <= 1:
+            return t
+        rows = t.shape[0]
+        if rows % self.tp_degree != 0:
+            raise PackFailure(f"rows {rows} not divisible by tp degree {self.tp_degree}")
+        count = rows // self.tp_degree
+        return t[self.tp_rank * count:(self.tp_rank + 1) * count, :].contiguous()
+
+    def shard_cols(self, t: torch.Tensor) -> torch.Tensor:
+        if self.tp_degree <= 1:
+            return t
+        cols = t.shape[1]
+        if cols % self.tp_degree != 0:
+            raise PackFailure(f"cols {cols} not divisible by tp degree {self.tp_degree}")
+        count = cols // self.tp_degree
+        return t[:, self.tp_rank * count:(self.tp_rank + 1) * count].contiguous()
 
     # -- plan construction -------------------------------------------------
 
@@ -206,21 +227,45 @@ class Packer:
         blob = to_bytes(tensor)
         self.plan.append(PlanItem(entry, lambda: iter([blob]), None, payload_bytes, 0))
 
-    def add_spine_bf16(self, kind: int, layer: int, name: str):
+    def add_spine_bf16(self, kind: int, layer: int, name: str, shard: str = ""):
         t = self.spine.tensor(name)
         if t.dtype != torch.bfloat16:
             raise PackFailure(f"{name}: spine tensor must be BF16, got {t.dtype}")
+        if shard == "rows":
+            t = self.shard_rows(t)
+        elif shard == "cols":
+            t = self.shard_cols(t)
         self.add_bf16(kind, layer, t)
 
     def add_experts(self, kind: int, layer: int, projections: List[str],
-                    rows: int, columns: int):
-        """Stack 256 experts' fp8 payloads (up then gate) + F32 scales, streamed."""
-        per_expert_payload = len(projections) * rows * columns          # fp8 bytes
-        per_expert_scale = len(projections) * rows * (columns // 128) * 4  # f32
+                    rows: int, columns: int, shard: str = ""):
+        """Stack 256 experts' fp8 payloads (up then gate) + F32 scales, streamed.
+
+        With shard='rows'/'cols' the per-expert tensor is sliced to this TP
+        rank's range before writing; the entry dims reflect the shard.
+        """
+        r0, r1 = 0, rows
+        c0, c1 = 0, columns
+        if shard == "rows" and self.tp_degree > 1:
+            if rows % self.tp_degree != 0:
+                raise PackFailure(f"expert rows {rows} not divisible by tp {self.tp_degree}")
+            count = rows // self.tp_degree
+            r0 = self.tp_rank * count
+            r1 = r0 + count
+        elif shard == "cols" and self.tp_degree > 1:
+            if columns % self.tp_degree != 0:
+                raise PackFailure(f"expert cols {columns} not divisible by tp {self.tp_degree}")
+            count = columns // self.tp_degree
+            c0 = self.tp_rank * count
+            c1 = c0 + count
+        shard_rows = r1 - r0
+        shard_cols = c1 - c0
+        per_expert_payload = len(projections) * shard_rows * shard_cols   # fp8 bytes
+        per_expert_scale = len(projections) * shard_rows * (shard_cols // 128) * 4
         payload_bytes = EXPERT_COUNT * per_expert_payload
         scale_bytes = EXPERT_COUNT * per_expert_scale
         entry = Entry(kind, layer, PAYLOAD_PACKED_WEIGHT, CODEC_FP8, SCALE_F32,
-                      EXPERT_COUNT, len(projections) * rows, columns)
+                      EXPERT_COUNT, len(projections) * shard_rows, shard_cols)
         experts = self.experts
 
         def produce_payload() -> Iterator[bytes]:
@@ -231,7 +276,7 @@ class Packer:
                     if w.shape != (rows, columns):
                         raise PackFailure(
                             f"{name}.weight shape {tuple(w.shape)} != ({rows}, {columns})")
-                    yield to_bytes(w)
+                    yield to_bytes(w[r0:r1, c0:c1])
 
         def produce_scale() -> Iterator[bytes]:
             for expert in range(EXPERT_COUNT):
@@ -239,7 +284,7 @@ class Packer:
                     name = f"model.layers.{layer}.mlp.experts.{expert}.{proj}"
                     s_inv = experts.tensor(name + ".weight_scale_inv")
                     expanded = s_inv.to(torch.float32).repeat_interleave(128, dim=0)
-                    yield to_bytes(expanded)
+                    yield to_bytes(expanded[r0:r1, c0 // 128:c1 // 128])
 
         self.plan.append(PlanItem(entry, produce_payload, produce_scale,
                                   payload_bytes, scale_bytes))
@@ -268,13 +313,13 @@ class Packer:
         self.add_bf16(K_KV_B_VALUE, layer, value.reshape(heads * value_dim, latent), groups=heads)
 
     def add_dense_gate_up(self, layer: int):
-        gate = self.spine.tensor(f"model.layers.{layer}.mlp.gate_proj.weight")
-        up = self.spine.tensor(f"model.layers.{layer}.mlp.up_proj.weight")
+        gate = self.shard_rows(self.spine.tensor(f"model.layers.{layer}.mlp.gate_proj.weight"))
+        up = self.shard_rows(self.spine.tensor(f"model.layers.{layer}.mlp.up_proj.weight"))
         self.add_bf16(K_DENSE_GATE_UP, layer, torch.cat([up, gate], dim=0))
 
     def add_shared_gate_up(self, layer: int):
-        gate = self.spine.tensor(f"model.layers.{layer}.mlp.shared_experts.gate_proj.weight")
-        up = self.spine.tensor(f"model.layers.{layer}.mlp.shared_experts.up_proj.weight")
+        gate = self.shard_rows(self.spine.tensor(f"model.layers.{layer}.mlp.shared_experts.gate_proj.weight"))
+        up = self.shard_rows(self.spine.tensor(f"model.layers.{layer}.mlp.shared_experts.up_proj.weight"))
         self.add_bf16(K_SHARED_GATE_UP, layer, torch.cat([up, gate], dim=0))
 
     def has_full_indexer(self, layer: int) -> bool:
@@ -289,10 +334,10 @@ class Packer:
         first_routed = c["first_routed_layer"]
 
         if self.include_embedding:
-            self.add_spine_bf16(K_EMBEDDING, GLOBAL_LAYER, "model.embed_tokens.weight")
+            self.add_spine_bf16(K_EMBEDDING, GLOBAL_LAYER, "model.embed_tokens.weight", shard="rows")
         if self.include_head:
             self.add_spine_bf16(K_FINAL_NORM, GLOBAL_LAYER, "model.norm.weight")
-            self.add_spine_bf16(K_LM_HEAD, GLOBAL_LAYER, "lm_head.weight")
+            self.add_spine_bf16(K_LM_HEAD, GLOBAL_LAYER, "lm_head.weight", shard="rows")
 
         for layer in range(first, last + 1):
             attn = f"model.layers.{layer}.self_attn"
@@ -300,11 +345,11 @@ class Packer:
                                 f"model.layers.{layer}.input_layernorm.weight")
             self.add_spine_bf16(K_Q_A, layer, f"{attn}.q_a_proj.weight")
             self.add_spine_bf16(K_Q_A_NORM, layer, f"{attn}.q_a_layernorm.weight")
-            self.add_spine_bf16(K_Q_B, layer, f"{attn}.q_b_proj.weight")
+            self.add_spine_bf16(K_Q_B, layer, f"{attn}.q_b_proj.weight", shard="rows")
             self.add_spine_bf16(K_KV_A, layer, f"{attn}.kv_a_proj_with_mqa.weight")
             self.add_spine_bf16(K_KV_A_NORM, layer, f"{attn}.kv_a_layernorm.weight")
             self.add_kv_b(layer)
-            self.add_spine_bf16(K_ATTN_OUTPUT, layer, f"{attn}.o_proj.weight")
+            self.add_spine_bf16(K_ATTN_OUTPUT, layer, f"{attn}.o_proj.weight", shard="cols")
             self.add_spine_bf16(K_POST_ATTN_NORM, layer,
                                 f"model.layers.{layer}.post_attention_layernorm.weight")
             if self.has_full_indexer(layer):
@@ -316,7 +361,7 @@ class Packer:
             if layer < first_routed:
                 self.add_dense_gate_up(layer)
                 self.add_spine_bf16(K_DENSE_DOWN, layer,
-                                    f"model.layers.{layer}.mlp.down_proj.weight")
+                                    f"model.layers.{layer}.mlp.down_proj.weight", shard="cols")
             else:
                 self.add_spine_bf16(K_ROUTER, layer,
                                     f"model.layers.{layer}.mlp.gate.weight")
@@ -324,12 +369,15 @@ class Packer:
                              self.spine.tensor(
                                  f"model.layers.{layer}.mlp.gate.e_score_correction_bias"))
                 self.add_experts(K_EXPERT_UP_GATE, layer, ["up_proj", "gate_proj"],
-                                 c["moe_intermediate_dimension"], c["hidden_dimension"])
+                                 c["moe_intermediate_dimension"], c["hidden_dimension"],
+                                 shard="rows")
                 self.add_experts(K_EXPERT_DOWN, layer, ["down_proj"],
-                                 c["hidden_dimension"], c["moe_intermediate_dimension"])
+                                 c["hidden_dimension"], c["moe_intermediate_dimension"],
+                                 shard="cols")
                 self.add_shared_gate_up(layer)
                 self.add_spine_bf16(K_SHARED_DOWN, layer,
-                                    f"model.layers.{layer}.mlp.shared_experts.down_proj.weight")
+                                    f"model.layers.{layer}.mlp.shared_experts.down_proj.weight",
+                                    shard="cols")
 
     # -- writing -----------------------------------------------------------
 
@@ -362,7 +410,7 @@ class Packer:
                 first_layer_index, layer_count, total_layer_count,
                 self.c["hidden_dimension"], self.c["output_vocab_count"],
                 self.c["moe_expert_count"], CODEC_BF16, CODEC_FP8, CODEC_BF16,
-                0, 0, directory_offset, file_bytes,
+                self.tp_degree, self.tp_rank, directory_offset, file_bytes,
                 model_revision.encode("utf-8")[:MODEL_REVISION_BYTES - 1].ljust(
                     MODEL_REVISION_BYTES - 1, b"\0") + b"\0",
                 contract_sha256, source_config_sha256, pack_recipe_sha256)
@@ -405,10 +453,16 @@ def main() -> int:
     parser.add_argument("--model-revision", default=SPINE_REVISION)
     parser.add_argument("--stage-count", type=int, default=1)
     parser.add_argument("--stage-index", type=int, default=0)
+    parser.add_argument("--tp-degree", type=int, default=1,
+                        help="tensor parallel degree (shards tensors across ranks)")
+    parser.add_argument("--tp-rank", type=int, default=0,
+                        help="this rank's TP slice index (0..tp_degree-1)")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
     contract = load_contract(repo_root)
+    if args.tp_degree < 1 or args.tp_rank < 0 or args.tp_rank >= args.tp_degree:
+        raise PackFailure(f"invalid tp rank {args.tp_rank}/{args.tp_degree}")
     stage_count = args.stage_count
     stage_index = args.stage_index
     include_embedding = True
@@ -430,12 +484,13 @@ def main() -> int:
     spine = Reader(Path(args.spine_dir))
     experts = Reader(Path(args.expert_dir))
     packer = Packer(spine, experts, contract, (first, last),
-                    include_embedding, include_head)
+                    include_embedding, include_head, args.tp_degree, args.tp_rank)
     packer.build_plan()
 
     contract_bytes = (repo_root / "model_contracts" / "glm52.json").read_bytes()
     source_config = json.dumps(
         {"layer_range": f"{first}-{last}", "stage": args.stage,
+         "tp_degree": args.tp_degree, "tp_rank": args.tp_rank,
          "spine_dir": args.spine_dir, "expert_dir": args.expert_dir},
         sort_keys=True)
     recipe = json.dumps({"tool": "glm52_resident_stagepack.py",
