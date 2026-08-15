@@ -2458,11 +2458,7 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
     partial_count = row_count *
         ((head_count + heads_per_cta - 1u) / heads_per_cta) * split_count;
     if ( split_count == 0u || partial_count > partial_capacity )
-    {
-            split_count,partial_count,partial_capacity,head_count,
-            heads_per_cta,row_count,topk,multiprocessor_count);
         return(cudaErrorInvalidValue);
-    }
     grid = dim3(row_count,(head_count + heads_per_cta - 1u) / heads_per_cta,
         split_count);
     shared_bytes = SparkDsv4SparseAttnSharedBytes(head_dim);
