@@ -24,18 +24,6 @@
 
 #define SPARK_QWEN38_MODULE_TAG "qwen38_stage"
 
-typedef struct SparkQwen38MtpWeights
-{
-	SparkQwen38AttentionLayerWeights attention;
-	SparkQwen38MoeWeights moe;
-	const void *attention_norm_weight_bf16;
-	const void *mlp_norm_weight_bf16;
-	SparkQwen38LinearView fc;
-	const void *embed_norm_weight_bf16;
-	const void *hidden_norm_weight_bf16;
-	const void *final_norm_weight_bf16;
-} SparkQwen38MtpWeights;
-
 typedef struct SparkQwen38ModuleState
 {
 	SparkStageModuleLedger ledger;
@@ -59,7 +47,7 @@ typedef struct SparkQwen38ModuleState
 	const void *attention_norm_by_layer[SPARK_QWEN38_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	const void *mlp_norm_by_layer[SPARK_QWEN38_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	SparkQwen38GdnLayerWeights gdn_by_layer[SPARK_QWEN38_RESIDENT_DECODE_STAGE_LAYER_COUNT];
-	SparkQwen38AttentionLayerWeights attn_by_layer[SPARK_QWEN38_RESIDENT_DECODE_STAGE_LAYER_COUNT];
+	SparkQwen38AttnLayerWeights attn_by_layer[SPARK_QWEN38_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	SparkQwen38MoeWeights moe_by_layer[SPARK_QWEN38_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 } SparkQwen38ModuleState;
 
@@ -179,8 +167,8 @@ static SparkStatus SparkQwen38ModuleBindMtp(SparkQwen38ModuleState *state, const
 	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_KEY: SparkQwen38ModuleFillLinearView(&state->mtp.attention.key,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_VALUE: SparkQwen38ModuleFillLinearView(&state->mtp.attention.value,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_OUTPUT: SparkQwen38ModuleFillLinearView(&state->mtp.attention.output,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->mtp.attention.query_norm_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->mtp.attention.key_norm_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->mtp.attention.query_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->mtp.attention.key_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	default:
 		return(SparkQwen38ModuleBindMoe(&state->mtp.moe,entry,payload,scale));
 	}
@@ -234,8 +222,8 @@ static SparkStatus SparkQwen38ModuleBindLayer(SparkQwen38ModuleState *state, con
 	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_KEY: SparkQwen38ModuleFillLinearView(&state->attn_by_layer[layer].key,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_VALUE: SparkQwen38ModuleFillLinearView(&state->attn_by_layer[layer].value,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_OUTPUT: SparkQwen38ModuleFillLinearView(&state->attn_by_layer[layer].output,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->attn_by_layer[layer].query_norm_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->attn_by_layer[layer].key_norm_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->attn_by_layer[layer].query_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->attn_by_layer[layer].key_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	default:
 		status = SparkQwen38ModuleBindMoe(&state->moe_by_layer[layer],entry,payload,scale);
 		if ( status == SPARK_STATUS_OK )

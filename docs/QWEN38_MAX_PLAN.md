@@ -78,3 +78,21 @@ Clone the qwen36 module (same GDN/attention family, ~7.8k LOC) and:
   outputs for the exact checkpoint, GDN state trajectories, MoE routing,
   and head logits; then the exact end-to-end token gate on the 16-node
   deployment. No approximate parity claim.
+
+## Fleet port registry and measurement exclusivity (operational policy)
+
+Qwen 3.8 Max TP4xPP4 occupies the full-16 fleet slot: control TCP 20480,
+collective ports 64620-64623, transport control port 61700, on all sixteen
+sparks. Ports per rank follow the per-model port block registry; no model
+may claim another slot's block.
+
+Coexistence rule: models may be dev-active together (residentd up, idle)
+anytime, but a measured window is exclusive on its hosts - pause sibling
+residentds there, measure, restore. Because this model's TP4xPP4 window
+covers the whole fleet, its measurements are fleet-exclusive slices; the
+scheduler owns the timeslice. DSV4 Flash TP4 (spark4-7) and Qwen 27B PP16
+(spark0-3) stay resident and pause during my windows.
+
+My workspace is the dedicated worktree /Users/cem/Documents/dsh/qwen38-worktree
+(branch qwen38-max-tp4pp4); the shared checkout at ~/Documents/dsh/sparkpipe
+is the DSV4 Pro session's tree and is not mine to switch.
