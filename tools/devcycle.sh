@@ -80,9 +80,8 @@ cmd_sync() {
 }
 
 cmd_build() {
-    local name="$1" local_sha bucket="1"
+    local name="$1" bucket="${2:-1}" local_sha
     [[ -n "$name" ]] || die "usage: devcycle build NAME [BUCKET]"
-    [[ -n "${3:-}" ]] && bucket="$3"
     local_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
     cmd_sync >/dev/null || die "sync failed"
     ssh_rank "$BUILD_HOST" "cd '$BUILD_CHECKOUT' && bash tools/devcycle/build_remote.sh '$name' '$local_sha' '$bucket'" \
@@ -535,7 +534,7 @@ case "${1:-}" in
     start)   cmd_start "$2" ;;
     ready)   cmd_ready "$2" ;;
     sync)    cmd_sync ;;
-    build)   cmd_build "$2" ;;
+    build)   cmd_build "$2" "${3:-}" ;;
     deploy)  cmd_deploy "$2" "$3" ;;
     driver)  cmd_driver "$2" "$3" ;;
     gate24)  cmd_gate24 "$2" ;;

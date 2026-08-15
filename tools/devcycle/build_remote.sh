@@ -87,6 +87,10 @@ build/sparkpipe_model_compile \
     --cc-arg -ldl \
     --cc-arg -pthread
 
+# fail fast on bucket plumbing bugs: the compiled driver must publish the
+# requested bucket id (a silent b1 fallback produces exactly this mismatch)
+strings "${OUT}/model_driver.so" | grep -q "ga0731.b${BUCKET}.v4" || { \
+    echo "build_remote: driver module id mismatch (expected b${BUCKET}.v4)" >&2; exit 9; }
 cp build/sparkpipe_model_residentd "${OUT}/sparkpipe_model_residentd"
 cp build/sparkpipe_model_batch "${OUT}/sparkpipe_model_batch"
 cp "${ADAPTER_SO}" "${OUT}/model_serving_adapter.so"
