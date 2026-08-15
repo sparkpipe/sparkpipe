@@ -76,7 +76,7 @@ def main() -> int:
         raise AssertionError("streaming cache policy must stay limited to SparkLmDotRowFp8")
 
     shape = body(common, "SparkLmSm121NativeDecodeShape")
-    require(shape, "rows == 1u || rows == 8u || rows == 1024u", "exact decode buckets")
+    require(shape, "rows == 1u || rows == 8u || rows == 16u || rows == 32u || rows == 64u || rows == 1024u", "exact decode buckets")
     require(dsv4, "SparkDsv4RequireNativeDecodeShape(row_count)", "dense shape gate")
     require(dsv4, "SparkDsv4RequireNativeDecodeShape(rows)", "MoE shape gate")
     require(dsv4, "properties.major != 12", "runtime major check")

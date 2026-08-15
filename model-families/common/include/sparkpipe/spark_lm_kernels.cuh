@@ -2312,7 +2312,7 @@ static inline cudaError_t SparkLmHostLaunchAdaptiveAttnDecode(cudaStream_t strea
 
 static inline uint32_t SparkLmSm121NativeDecodeShape(uint32_t rows)
 {
-	return(rows == 1u || rows == 8u || rows == 1024u ? 1u : 0u);
+	return(rows == 1u || rows == 8u || rows == 16u || rows == 32u || rows == 64u || rows == 1024u ? 1u : 0u);
 }
 
 static inline uint32_t SparkLmSm121ExpertW13TileN(uint32_t rows)
