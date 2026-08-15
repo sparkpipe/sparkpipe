@@ -303,6 +303,10 @@ struct SparkDsv4ModuleState
 	uint32_t topk_column_count;
 	uint32_t index_slot_capacity;
 	uint32_t multiprocessor_count;
+	/* Sparse-attention partials: one slot per (row, head-group, split)
+	 * block; sized for max(multiprocessor_count, bucket_rows * head_groups)
+	 * so multi-wave grids stay within the allocation. */
+	uint32_t sparse_attn_partial_capacity;
 	void *execution_stream;
 	char kv_backing_directory[SPARK_KV_PAGE_STORE_PATH_BYTES];
 	uint64_t kv_backing_maximum_bytes;
@@ -1693,7 +1697,7 @@ static SparkStatus SparkDsv4ModuleAllocateSlotWide(SparkDsv4ModuleState *state, 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * query_dimension * bf16,&slot->attn_out_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)state->multiprocessor_count * SPARK_DSV4_SPARSE_ATTN_PARTIAL_SCALARS * sizeof(float),(void **)&slot->sparse_attn_partials_f32);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)state->sparse_attn_partial_capacity * SPARK_DSV4_SPARSE_ATTN_PARTIAL_SCALARS * sizeof(float),(void **)&slot->sparse_attn_partials_f32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows *
 			SparkDsv4ModuleTpOutputLora(state) * bf16,&slot->o_ranks_bf16);
@@ -2596,7 +2600,7 @@ static cudaError_t SparkDsv4ModuleRunAttentionRows(SparkDsv4ModuleState *state, 
 	cudaError_t error;
 	error = SparkDsv4LaunchCacheScatter(stream,(const uint8_t *)slot->kv_bf16 + kv_offset * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,0,cache,lane_stride,slot->row_lane_indices + first_row,slot->row_positions + first_row,rows,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,0u,SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS);
 	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchSparseAttn(stream,(const uint8_t *)slot->q_bf16 + q_offset * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,cache,lane_stride,slot->row_lane_indices + first_row,slot->row_page_table_indices + first_row,slot->physical_page_table,state->paged_cache.lane_page_capacity,SparkDsv4PagedPoolCompressedEntries(layer_kind),slot->topk_idxs + topk_offset,slot->attention_slot_counts + first_row,state->topk_column_count,sink_f32,1.0f / sqrtf((float)SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION),(uint8_t *)slot->attn_out_bf16 + q_offset * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,slot->sparse_attn_partials_f32,state->multiprocessor_count,state->multiprocessor_count,rows,SparkDsv4ModuleTpQueryHeads(state),SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION);
+		error = SparkDsv4LaunchSparseAttn(stream,(const uint8_t *)slot->q_bf16 + q_offset * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,cache,lane_stride,slot->row_lane_indices + first_row,slot->row_page_table_indices + first_row,slot->physical_page_table,state->paged_cache.lane_page_capacity,SparkDsv4PagedPoolCompressedEntries(layer_kind),slot->topk_idxs + topk_offset,slot->attention_slot_counts + first_row,state->topk_column_count,sink_f32,1.0f / sqrtf((float)SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION),(uint8_t *)slot->attn_out_bf16 + q_offset * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,slot->sparse_attn_partials_f32,state->sparse_attn_partial_capacity,state->multiprocessor_count,rows,SparkDsv4ModuleTpQueryHeads(state),SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION);
 	return(error);
 }
 
@@ -5365,6 +5369,21 @@ static SparkStatus SparkDsv4ModulePrepareState(
 		SparkDsv4ConfigureCudaKernels(&state->multiprocessor_count),"configure_cuda_kernels");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleValidateSlice(state);
+	if ( status == SPARK_STATUS_OK )
+	{
+		/* Worst-case sparse-attention block count for this bucket: the
+		 * launch needs one partial slot per (row, head-group, split);
+		 * when blocks exceed the SM count the split count clamps to 1
+		 * and the grid queues in waves, so the capacity must cover
+		 * bucket_rows * head_groups even past multiprocessor_count. */
+		uint32_t head_groups = (SparkDsv4ModuleTpQueryHeads(state) +
+			SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA - 1u) /
+			SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;
+		uint64_t blocks_max = (uint64_t)SPARK_BATCH_BUCKET * head_groups;
+		state->sparse_attn_partial_capacity = state->multiprocessor_count;
+		if ( blocks_max > state->sparse_attn_partial_capacity )
+			state->sparse_attn_partial_capacity = (uint32_t)blocks_max;
+	}
 	if ( status == SPARK_STATUS_OK )
 	{
 		SparkDsv4ModuleBuildOrdinals(state);
