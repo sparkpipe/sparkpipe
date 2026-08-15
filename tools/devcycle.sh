@@ -390,6 +390,13 @@ cmd_run() {
     local root out hash rate k ok=0
     root="$(runtime_path "$name")"
     ensure_remote_batches
+    # warmup: one discarded run so weights/KV/L2 reach steady state
+    python3 "$SCRIPT_DIR/model_stream_decode_benchmark.py" \
+        --output "/tmp/devcycle-$name-o128-warm-$(date +%H%M%S).json" \
+        ssh -o BatchMode=yes spark4 "$root/bin/sparkpipe_model_batch" \
+            --deployment "$root/config/model_resident.json" \
+            --runtime-root "$root" \
+            --batch "$BATCH_O128_REMOTE" >/dev/null 2>&1 || die "o128 warmup failed"
     for ((k=1; k<=n; k++)); do
         out="/tmp/devcycle-$name-o128-r$k-$(date +%H%M%S).json"
         python3 "$SCRIPT_DIR/model_stream_decode_benchmark.py" --output "$out" \
