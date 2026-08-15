@@ -141,6 +141,17 @@ struct K3SliceState
 	// step can launch against the half-width pool before one does. The
 	// numerics contract is in config.h.
 	uint32_t kda_state_bf16;
+	// THE TP4 ALL-REDUCE HOOK. The slice loop runs on the HOST, so the
+	// serving tier can register one host callable per layer fired AFTER the
+	// layer's MLP half: an input-dimension-sharded projection (routed_up,
+	// and the head-sliced KDA/MLA out-projections) leaves its partial
+	// rank-local, and the next layer's attention reads the running partial,
+	// so the TP sum must land before the next retrieval - a post-slice
+	// all-reduce is wrong by one layer's residual. Null skips it, which is
+	// every single-rank contract (the host harnesses, the numerical gates,
+	// and a PP-only deployment).
+	void (*layer_collective)(void *context, void *stream, uint32_t layer);
+	void *collective_context;
 };
 
 // The two kind indices below partition the backbone, and the partition is
@@ -375,6 +386,8 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
+		if ( state->layer_collective != 0 )
+			state->layer_collective(state->collective_context,stream,layer);
 		// THE DRAFTER READS THE STREAM, AND THE PARTIAL IS THE STREAM. What
 		// flows between blocks under AttnRes is the running partial - the next
 		// block's first act is a retrieval that REPLACES its input - so the

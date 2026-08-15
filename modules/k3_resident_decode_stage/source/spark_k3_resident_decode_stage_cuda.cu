@@ -149,46 +149,49 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
 	cudaMemset(d->kda_state_pool, 0, state_bytes);
 
-	/* MLA caches: view structs, per-view page tables, error slots, pool. */
+	/* MLA caches: the view structs are HOST memory (K3BindLayerState copies
+	 * one by value into the buffers on the host); the pools, page tables
+	 * and error slots they point at are device memory. */
 	uint64_t kv_total = (uint64_t)d->mla_count * kv_pages_per_view * kv_page_bytes;
 	if ( cudaMalloc(&d->kv_pool, kv_total) != cudaSuccess ||
 		cudaMalloc(&d->page_table, (size_t)d->mla_count * kv_pages_per_view * 4u) != cudaSuccess ||
-		cudaMalloc(&d->access_error, (size_t)d->mla_count * sizeof(LmKvAccessError)) != cudaSuccess ||
-		cudaMalloc(&d->mla_cache, (size_t)d->mla_count * sizeof(LmKvView)) != cudaSuccess )
+		cudaMalloc(&d->access_error, (size_t)d->mla_count * sizeof(LmKvAccessError)) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
-	LmKvView *views = new LmKvView[d->mla_count];
+	d->mla_cache = new LmKvView[d->mla_count];
 	for ( uint32_t i = 0u; i < d->mla_count; ++i )
 	{
-		memset(&views[i], 0, sizeof(views[i]));
-		views[i].pool = d->kv_pool + (size_t)i * kv_pages_per_view * kv_page_bytes;
-		views[i].page_table = d->page_table + (size_t)i * kv_pages_per_view;
-		views[i].page_table_stride = 1u;
-		views[i].sequence_count = sequences;
-		views[i].pool_page_count = kv_pages_per_view;
-		views[i].access_error = d->access_error + i;
+		memset(&d->mla_cache[i], 0, sizeof(d->mla_cache[i]));
+		d->mla_cache[i].pool = d->kv_pool + (size_t)i * kv_pages_per_view * kv_page_bytes;
+		d->mla_cache[i].page_table = d->page_table + (size_t)i * kv_pages_per_view;
+		d->mla_cache[i].page_table_stride = 1u;
+		d->mla_cache[i].sequence_count = sequences;
+		d->mla_cache[i].pool_page_count = kv_pages_per_view;
+		d->mla_cache[i].access_error = d->access_error + i;
 	}
-	cudaMemcpy(d->mla_cache, views, (size_t)d->mla_count * sizeof(LmKvView),
-		cudaMemcpyHostToDevice);
-	delete[] views;
 
-	/* The launch structs. */
-	if ( cudaMalloc(&d->weights, (size_t)d->layer_count * sizeof(K3LayerWeights)) != cudaSuccess ||
-		cudaMalloc(&d->slice_state, sizeof(K3SliceState)) != cudaSuccess ||
-		cudaMalloc(&d->buffers, sizeof(K3LayerBuffers)) != cudaSuccess )
-		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
-	d->buffers_host = new K3LayerBuffers;
+	/* THE LAUNCH STRUCTS ARE HOST MEMORY. K3LaunchSlice runs its per-layer
+	 * loop ON THE HOST (K3BindLayer/K3BindLayerState mutate the buffers
+	 * struct between launches and only the individual pointer FIELDS are
+	 * passed to kernels as arguments), so weights, slice_state and buffers
+	 * are plain host structs whose members are device pointers. A
+	 * device-allocated copy of any of them would be dereferenced by host
+	 * code and fault. */
+	d->weights = new K3LayerWeights[d->layer_count];
+	memset(d->weights, 0, (size_t)d->layer_count * sizeof(K3LayerWeights));
+	d->slice_state = new K3SliceState;
+	memset(d->slice_state, 0, sizeof(*d->slice_state));
+	d->buffers = new K3LayerBuffers;
+	d->buffers_host = d->buffers;
 	memset(d->buffers_host, 0, sizeof(*d->buffers_host));
 
-	K3SliceState st;
-	memset(&st, 0, sizeof(st));
-	st.kda_state = d->kda_state_pool;
-	st.kda_q_window = d->kda_q_window_pool;
-	st.kda_k_window = d->kda_k_window_pool;
-	st.kda_v_window = d->kda_v_window_pool;
-	st.mla_cache = d->mla_cache;
-	st.sequences = sequences;
-	st.kda_state_bf16 = 0u;
-	cudaMemcpy(d->slice_state, &st, sizeof(st), cudaMemcpyHostToDevice);
+	K3SliceState *st = d->slice_state;
+	st->kda_state = d->kda_state_pool;
+	st->kda_q_window = d->kda_q_window_pool;
+	st->kda_k_window = d->kda_k_window_pool;
+	st->kda_v_window = d->kda_v_window_pool;
+	st->mla_cache = d->mla_cache;
+	st->sequences = sequences;
+	st->kda_state_bf16 = 0u;
 
 	/* Scratch blob, carved per the host test's static arrays. */
 	size_t off = 0u;
@@ -241,8 +244,6 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	b->intermediate_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)d->routes_capacity * K3_SHARED_INTERMEDIATE * 2u);
 	b->kda_retention = (float *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_HEADS * K3_KDA_KEY_DIM * 4u);
 	b->router_logits = (float *)k3_carve(d, &off, (size_t)max_rows * K3_EXPERTS * 4u);
-	cudaMemcpy(d->buffers, d->buffers_host, sizeof(*d->buffers_host),
-		cudaMemcpyHostToDevice);
 	return SPARK_K3_DISPATCH_OK;
 }
 
@@ -253,9 +254,11 @@ void SparkK3DispatchDestroy(SparkK3Dispatch *d)
 	cudaFree(d->kda_state_pool); cudaFree(d->kda_q_window_pool);
 	cudaFree(d->kda_k_window_pool); cudaFree(d->kda_v_window_pool);
 	cudaFree(d->kv_pool); cudaFree(d->page_table); cudaFree(d->access_error);
-	cudaFree(d->mla_cache); cudaFree(d->weights); cudaFree(d->slice_state);
-	cudaFree(d->buffers); cudaFree(d->scratch);
-	delete d->buffers_host;
+	cudaFree(d->scratch);
+	delete[] d->mla_cache;
+	delete[] d->weights;
+	delete d->slice_state;
+	delete d->buffers;
 	memset(d, 0, sizeof(*d));
 }
 
@@ -317,10 +320,9 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 				break;
 			}
 		}
-		cudaMemcpy(d->buffers, d->buffers_host, sizeof(*d->buffers_host),
-			cudaMemcpyHostToDevice);
-		cudaMemcpy(d->weights, host, (size_t)layer_count * sizeof(K3LayerWeights),
-			cudaMemcpyHostToDevice);
+		/* The launch structs are host memory (see Create); the bound table
+		 * copies straight over and the loop reads it on the host. */
+		memcpy(d->weights, host, (size_t)layer_count * sizeof(K3LayerWeights));
 	}
 	delete[] host;
 	return status;
@@ -354,7 +356,9 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->head_candidate_token = in->head_candidate_token;
 	b->output_token = in->output_token;
 	b->output_score = in->output_score;
-	cudaMemcpy(d->buffers, b, sizeof(*b), cudaMemcpyHostToDevice);
+	/* The host struct IS the launch struct: the slice loop mutates it on the
+	 * host between launches and the kernels receive individual pointer
+	 * fields as arguments, so there is no device copy of it. */
 	return(K3StageSlice(d->weights, d->slice_state, d->buffers, d->first_layer,
 		d->layer_count, rows, sequences, commit, packed_rows, context,
 		multiprocessors, (void *)stream));

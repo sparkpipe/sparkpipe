@@ -94,13 +94,17 @@ typedef struct SparkK3Dispatch
 	uint32_t routes_capacity;
 	uint32_t kv_pages_per_view;
 	uint64_t kv_page_bytes;
-	/* device objects */
-	K3LayerWeights *weights;        /* [layer_count] */
-	K3SliceState *slice_state;      /* one */
-	K3LayerBuffers *buffers;        /* one */
-	K3LayerBuffers *buffers_host;   /* host template; step edits then uploads */
-	LmKvView *mla_cache;            /* [mla_count] */
-	LmKvAccessError *access_error;  /* [mla_count] */
+	/* THE LAUNCH STRUCTS ARE HOST MEMORY. K3LaunchSlice runs its per-layer
+	 * loop on the host and mutates these structs between launches; only
+	 * their pointer FIELDS (device addresses) are passed to kernels as
+	 * arguments. weights/buffers/slice_state/mla_cache are plain host
+	 * allocations and must never be cudaMalloc'd. */
+	K3LayerWeights *weights;        /* [layer_count], host */
+	K3SliceState *slice_state;      /* one, host */
+	K3LayerBuffers *buffers;        /* one, host */
+	K3LayerBuffers *buffers_host;   /* == buffers (alias kept for clarity) */
+	LmKvView *mla_cache;            /* [mla_count], host */
+	LmKvAccessError *access_error;  /* [mla_count], device */
 	uint8_t *kv_pool;               /* mla_count*pages*page_bytes */
 	uint32_t *page_table;           /* mla_count*pages */
 	uint8_t *kda_state_pool;        /* kda_count*sequences*K3_KDA_STATE_SLOT_BYTES */
