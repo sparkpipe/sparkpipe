@@ -50,6 +50,13 @@ sed "s|$BASE_RUNTIME|$ROOT|g" "$TEMPLATE" | \
     '.runtime_limits.max_active_sequences = $b | .runtime_limits.max_input_rows = $b | .runtime_limits.resident_sequence_capacity = $b | .runtime_limits.kv_logical_page_capacity = $kv | .runtime_limits.kv_physical_page_capacity = $kv' \
     > /tmp/bbench-mr.json
 
+# stop any residentd still holding the control/collective ports (a stale
+# runtime from a previous bucket answers the readiness probe and rejects the
+# batch with TARGET_MISMATCH)
+for h in "${RANKS[@]}"; do
+    ssh -o BatchMode=yes "$h" "pkill -9 -f '^bin/sparkpipe_model_residentd' 2>/dev/null; sleep 1" || true
+done
+
 i=0
 for h in "${RANKS[@]}"; do
     ssh -o BatchMode=yes "$h" "
