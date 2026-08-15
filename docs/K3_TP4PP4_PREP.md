@@ -27,3 +27,21 @@ are always allowed regardless of slot state.
 - Copy plan: every node gets its stage's full shard set + the tail on
   stage 3 + metadata; sha256-verified against the concatenated
   .sparkpipe-dataset.json table.
+
+## Progress log (2026-08-15)
+
+- Shard fetch COMPLETE: 16/16 nodes hold their stage's full shard set
+  plus the 94-96 tail, sha256-verified (0 mismatches).
+- k3_pack.py reconciled with the released checkpoint (text_config,
+  language_model prefix, block_sparse_moe MoE subtree, full-rank gates,
+  slice support). Verified: layer-0 pack (18 tensors, 4.7 GB) and
+  layers-1-3 pack (69 tensors, 50.6 GB) build from real shards.
+- k3_shard.py TP4 classification updated for the full-rank gates;
+  rank00 pack produced, full 4-rank slice running.
+- Driver gate path reconciled (layer.cuh/slice.cuh); the K3 host gate
+  (tests/test_k3_layer_host.py) passes.
+- Stage-0 pack (layers 0-23, ~350 GB) packing on spark0.
+- OPEN: the serving-tier module (manifest loader for the new tensor
+  names + resident stage driver) does not exist in this revision; it is
+  the next build item, followed by the TP4xPP4 deployment and the
+  torch-reference numerical gate.
