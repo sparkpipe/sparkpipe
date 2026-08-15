@@ -59,6 +59,8 @@ struct SparkGlm52ModuleState
 	uint32_t first_layer_index;
 	uint32_t layer_count;
 	uint32_t expert_weight_codec;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
 	uint32_t resident_sequence_capacity;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
@@ -138,7 +140,7 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	context = (const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context;
 	if ( context->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION || context->descriptor_bytes != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( context->stage_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index != SparkGlm52ResidentDecodeStageFirstLayer(context->stage_index) || context->layer_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > context->resident_sequence_capacity || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
+	if ( context->stage_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index != SparkGlm52ResidentDecodeStageFirstLayer(context->stage_index) || context->layer_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > context->resident_sequence_capacity || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u || context->expert_weight_codec == SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_UNSUPPORTED);
@@ -148,6 +150,8 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	state->first_layer_index = context->first_layer_index;
 	state->layer_count = context->layer_count;
 	state->expert_weight_codec = context->expert_weight_codec;
+	state->tp_degree = context->tp_degree;
+	state->tp_rank = context->tp_rank;
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
 	state->max_sequence_positions = context->max_sequence_positions;
@@ -188,8 +192,10 @@ static SparkStatus SparkGlm52PackValidateHeader(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( header->magic != SPARK_GLM52_STAGEPACK_MAGIC || header->format_version != SPARK_GLM52_STAGEPACK_FORMAT_VERSION || header->header_bytes != SPARK_GLM52_STAGEPACK_HEADER_BYTES || header->directory_entry_bytes != SPARK_GLM52_STAGEPACK_ENTRY_BYTES || header->codec_abi_version != SPARK_WEIGHT_CODEC_ABI_VERSION )
 		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( (header->flags & ~SPARK_GLM52_STAGEPACK_KNOWN_FLAGS) != 0u || (header->flags & SPARK_GLM52_STAGEPACK_FLAG_MTP) != 0u || header->reserved0 != 0u || header->reserved1 != 0u )
+	if ( (header->flags & ~SPARK_GLM52_STAGEPACK_KNOWN_FLAGS) != 0u || (header->flags & SPARK_GLM52_STAGEPACK_FLAG_MTP) != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
+	if ( SparkGlm52StagePackHeaderTpDegree(header) == 0u || SparkGlm52StagePackHeaderTpDegree(header) != state->tp_degree || SparkGlm52StagePackHeaderTpRank(header) != state->tp_rank )
+		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( header->tensor_count == 0u || header->tensor_count > SPARK_GLM52_STAGEPACK_MAX_TENSOR_COUNT || header->stage_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || header->stage_index != state->stage_index || header->first_layer_index != state->first_layer_index || header->layer_count != state->layer_count || header->total_layer_count != SPARK_GLM52_MODEL_LAYER_COUNT || header->hidden_dimension != SPARK_GLM52_MODEL_HIDDEN_DIMENSION || header->vocab_count != SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT || header->routed_expert_count != SPARK_GLM52_MODEL_MOE_EXPERT_COUNT )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( header->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 || header->expert_weight_codec != state->expert_weight_codec || header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
@@ -213,7 +219,7 @@ static SparkStatus SparkGlm52PackValidateEntryGeometry(
 {
 	uint64_t payload_bytes,scale_bytes;
 	uint32_t local_layer;
-	if ( SparkGlm52StagePackExpectedShape(entry->tensor_kind,entry->layer_index,state->expert_weight_codec,shape) < 0 )
+	if ( SparkGlm52StagePackExpectedShape(entry->tensor_kind,entry->layer_index,state->expert_weight_codec,state->tp_degree,shape) < 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( entry->layer_index != SPARK_GLM52_STAGEPACK_GLOBAL_LAYER )
 	{
@@ -361,7 +367,7 @@ static uint64_t SparkGlm52ExpectedLayerMask(
 	uint32_t kind;
 	mask = 0u;
 	for (kind=SPARK_GLM52_STAGEPACK_TENSOR_ATTN_NORM; kind<SPARK_GLM52_STAGEPACK_TENSOR_KIND_COUNT; kind++)
-		if ( SparkGlm52StagePackExpectedShape(kind,layer_index,state->expert_weight_codec,&shape) == 0 )
+		if ( SparkGlm52StagePackExpectedShape(kind,layer_index,state->expert_weight_codec,state->tp_degree,&shape) == 0 )
 			mask |= UINT64_C(1) << kind;
 	return(mask);
 }

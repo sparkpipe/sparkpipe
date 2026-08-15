@@ -48,7 +48,9 @@ static const char *const SparkGlm52ServingConfigurationMembers[] =
 	"expert_weight_codec",
 	"stage_pack_path",
 	"max_sequence_positions",
-	"execution_row_capacity"
+	"execution_row_capacity",
+	"tp_degree",
+	"tp_rank"
 };
 
 typedef struct SparkGlm52ServingPending
@@ -149,7 +151,9 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 	const char *runtime_root,
 	SparkGlm52ServingState *state,
 	uint32_t *max_sequence_positions,
-	uint32_t *execution_row_capacity)
+	uint32_t *execution_row_capacity,
+	uint32_t *tp_degree,
+	uint32_t *tp_rank)
 {
 	SparkJsonDocument document;
 	char *relative_stage_pack_path;
@@ -181,6 +185,12 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 		status = SparkGlm52ServingJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ServingJsonUnsigned(&document,root,"execution_row_capacity",execution_row_capacity);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52ServingJsonUnsigned(&document,root,"tp_degree",tp_degree);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52ServingJsonUnsigned(&document,root,"tp_rank",tp_rank);
+	if ( status == SPARK_STATUS_OK && (*tp_degree == 0u || *tp_rank >= *tp_degree) )
+		status = SPARK_STATUS_SCHEMA_ERROR;
 	SparkJsonDocumentDestroy(&document);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
@@ -417,7 +427,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 	void **adapter_state)
 {
 	SparkGlm52ServingState *state;
-	uint32_t max_sequence_positions,execution_row_capacity;
+	uint32_t max_sequence_positions,execution_row_capacity,tp_degree,tp_rank;
 	SparkStatus status;
 	if ( adapter_state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -439,7 +449,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 	state->wake_function = configuration->wake_function;
 	state->wake_context = configuration->wake_context;
 	state->execution_stream = configuration->execution_stream;
-	status = SparkGlm52ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity);
+	status = SparkGlm52ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&tp_degree,&tp_rank);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > state->resident_sequence_capacity) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
@@ -455,6 +465,8 @@ static SparkStatus SparkGlm52ServingInitialize(
 		state->node_context.pipeline_slot_count = state->pipeline_slot_count;
 		state->node_context.max_sequence_positions = max_sequence_positions;
 		state->node_context.execution_row_capacity = execution_row_capacity;
+		state->node_context.tp_degree = tp_degree;
+		state->node_context.tp_rank = tp_rank;
 		state->node_context.stage_pack_path = state->stage_pack_path;
 		state->node_context.model_revision = GLM52_MODEL_REVISION;
 		status = SparkGlm52ServingLoadDriver(state,configuration);

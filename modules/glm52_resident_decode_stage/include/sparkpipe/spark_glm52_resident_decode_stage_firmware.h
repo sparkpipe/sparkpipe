@@ -15,11 +15,15 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 1u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 2u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT 13u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE 6u
+/*
+ * TP8 geometry: every rank owns the full 78-layer model as one stage.
+ * The old PP13 split (13 stages x 6 layers) is retired.
+ */
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT 1u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE 78u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT \
 	SPARK_BATCH_BUCKET
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 65536u
@@ -56,7 +60,8 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
 	uint32_t execution_row_capacity;
-	uint32_t reserved0;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
 	const char *stage_pack_path;
 	const char *model_revision;
 } SparkGlm52ResidentDecodeStageNodeContext;
