@@ -63,14 +63,17 @@ typedef struct SparkK3StepInput
 	const uint32_t *sequence_of_row;      /* rows */
 	const uint32_t *sequence_row_begin;   /* sequences+1; NULL = row i is sequence i */
 	const uint32_t *kda_state_index;      /* sequences; per-sequence state slot */
-	const uint32_t *route_expert;         /* packed_rows */
-	const uint32_t *route_packed_row;     /* packed_rows */
-	const uint32_t *route_source_token;   /* packed_rows */
-	const float *route_weight;            /* packed_rows */
-	const uint32_t *group_row_offset;     /* K3_EXPERTS + 1 */
-	const uint32_t *group_tile_prefix_w1; /* K3_EXPERTS + 1 */
-	const uint32_t *group_tile_prefix_w2; /* K3_EXPERTS + 1 */
-	const uint32_t *dense_row_offset;     /* 2 */
+	/* The routing arrays are NON-const: K3LayerBuffers declares them writable
+	 * (the MoE path advances tile prefixes on device), so the input contract
+	 * passes the serving tier's writable arrays straight through. */
+	uint32_t *route_expert;         /* packed_rows */
+	uint32_t *route_packed_row;     /* packed_rows */
+	uint32_t *route_source_token;   /* packed_rows */
+	float *route_weight;            /* packed_rows */
+	uint32_t *group_row_offset;     /* K3_EXPERTS + 1 */
+	uint32_t *group_tile_prefix_w1; /* K3_EXPERTS + 1 */
+	uint32_t *group_tile_prefix_w2; /* K3_EXPERTS + 1 */
+	uint32_t *dense_row_offset;     /* 2 */
 	uint32_t *dense_tile_prefix;          /* 2, device-writable */
 	float *head_candidate_score;          /* rows*K3_KDA_HEADS; head kernel out */
 	uint32_t *head_candidate_token;       /* rows */
