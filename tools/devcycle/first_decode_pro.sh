@@ -16,6 +16,21 @@ echo "== fleet_swap dsv4-pro =="
 "${ROOT}/tools/fleet_swap.sh" dsv4-pro
 sleep 30
 
+echo "== rank liveness (expect 1 pro residentd per host, no stragglers) =="
+rank_up=0
+for host in spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf; do
+    count=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "${host}" "pgrep -cf 'sparkpipe_model_residentd --deployment config/model_resident.json --rank-index' 2>/dev/null || echo 0")
+    if [[ "${count}" == "1" ]]; then
+        rank_up=$((rank_up + 1))
+    else
+        echo "rank liveness: ${host} residentd_count=${count}"
+    fi
+done
+echo "rank liveness: ${rank_up}/16 up"
+if [[ "${rank_up}" != "16" ]]; then
+    echo "NOTE: not all 16 ranks are up; check /tmp/fleet-swap-dsv4-pro-*.log on the affected hosts" >&2
+fi
+
 echo "== first decode (this may take minutes: 16-rank start + pipeline fill) =="
 python3 "${ROOT}/tools/model_stream_decode_benchmark.py" --output "${OUT}" \
     ssh -o BatchMode=yes spark0 \
