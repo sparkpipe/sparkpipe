@@ -11,54 +11,83 @@ Scope: the six parallel model sessions sharing the 16-Spark fleet
   collective listen/peer ports, a transport control port, an RDMA fabric
   share, and a KV backing directory. Nothing else conflicts.
 - Measured resident footprints: DSV4 Flash TP4 ~38.5 GB device + 11 GB pack
-  per rank; Qwen 27B PP16 ~2.9 GB pack per rank. Two or even three models
-  fit in one node's memory. **Memory is not the constraint; measurement
-  cleanliness is.**
+  per rank; Qwen 27B PP16 ~2.9 GB pack per rank. Two or three models fit in
+  one node's memory. **Memory is not the constraint; measurement cleanliness
+  and big-model mutual exclusion are.**
 
-## Port registry (the coexistence mechanism)
+## The isolation model: tiers, scopes, and one current big model
 
-Two deployments coexist iff they never share a host AND a port. The registry
-allocates per-model blocks so sessions never negotiate ad hoc:
+Every model is registered in
+[`deployment/fleet_registry.json`](deployment/fleet_registry.json) with a
+**tier** and a **scope**:
 
-| Model / slot | Hosts | Control port (per rank) | Collective listen/peer | Transport ctrl base |
-| --- | --- | ---: | ---: | ---: |
-| DSV4 Flash TP4 (always-on) | spark4-7 | 18480 | 62620-62623 | 59700 |
-| Qwen 27B PP16 (always-on) | spark0-3 | 17480 | 61620-61623 | 58700 |
-| Big-model slot A | spark8-f | 19480 | 63620-63623 | 60700 |
-| Big-model slot B (full-16 windows) | all 16 | 20480 | 64620-64623 | 61700 |
+| Model | Tier | Scope | Hosts |
+| --- | --- | --- | --- |
+| Qwen 27B | always-on | band | spark0-3 |
+| DSV4 Flash | always-on | band | spark4-7 |
+| GLM 5.2 | big | band | spark8-f |
+| DSV4 Pro | big | fleet | spark0-f |
+| K3 | big | fleet | spark0-f |
 
-Rules:
+- **Always-on models** (Qwen 27B, DSV4 Flash) each own a fixed four-host
+  band and run concurrently with each other and with one big model.
+- **Band big models** (GLM 5.2, ...) share the spark8-f band and are
+  mutually exclusive: exactly one of them is the **current big model**.
+- **Fleet big models** (DSV4 Pro, K3) take all 16 sparks: swapping one in
+  evicts *everything*, including the always-on tier. K3 is the heaviest
+  case and is expected to need this; the swap mechanism handles it the same
+  way as DSV4 Pro.
+- The big data stays on each Spark's NVMe (`sparkdata/` dirs); a swap is
+  stop-old + start-new, no data copy. Promotion is <60 s.
 
-1. A session must use exactly its registered block on its registered hosts.
-   Control port = block base (one per rank is fine: the same port on
-   different hosts never collides).
-2. Adding a model = adding a row here FIRST, via PR, before any deploy.
-3. The KV backing directory lives under the runtime root, so runtime dirs
-   are already isolated. Never point two deployments at one KV dir.
+## Designating the current big model
+
+`tools/fleet_swap.sh MODEL` is the single mechanism every session uses:
+
+- `fleet_swap.sh glm52` — stops the current band model on spark8-f,
+  starts GLM 5.2 there. Qwen 27B and DSV4 Flash are untouched.
+- `fleet_swap.sh k3` — snapshots which models were running, stops ALL
+  residentds on all 16 sparks, starts K3. Swapping it back out restores
+  the snapshot.
+- `fleet_swap.sh status` — prints the current big model and the running
+  set (reads the state file).
+- State lives at `/tmp/sparkpipe_fleet_state.json` on every spark, with
+  the authoritative copy on spark0. **Never start or stop a big model
+  residentd by hand** — always through the swap script, so the state file
+  stays true.
+
+Adding a model = adding a registry entry (tier, scope, hosts, ports,
+runtime root, pack dir) via PR, then swapping.
+
+## Port registry (inside the model registry)
+
+Ports are assigned per model in `fleet_registry.json` so two deployments
+never share a host AND a port. Current blocks: Qwen 27B control 17480 /
+collective 61620 / transport 58700; DSV4 Flash 18480 / 62620 / 59700;
+big band 19480 / 63620 / 60700; fleet slot 20480 / 64620 / 61700; K3
+21480 / 65620 / 62700.
 
 ## Coexistence vs measurement
 
-- **Dev-active (always OK):** residentd up, kernels idle. Two or three
-  models may be dev-active on the same node; the idle residentd consumes
-  memory only.
+- **Dev-active (always OK):** residentd up, kernels idle. The always-on
+  models plus the current big model may be dev-active together; idle
+  residentds consume memory only.
 - **Measured runs (exclusive):** B1 decode receipts are latency-critical;
   any co-resident GPU work, L2 traffic, or RDMA traffic on the measured
   hosts invalidates them. Before a measured window, stop the other models'
-  residentds ON THOSE HOSTS ONLY. Model promotion is <60 s, so swapping is
-  cheap. Restore them after the window.
+  residentds ON THOSE HOSTS ONLY (via the swap script if it is the big
+  model, or a targeted stop for the sibling always-on model). Model
+  promotion is <60 s, so swapping is cheap. Restore after the window.
+- Always-on bands (DSV4 Flash on spark4-7, Qwen 27B on spark0-3) measure
+  without consuming a time slice whenever their band is otherwise idle.
 
 ## Time slices
 
-30-minute exclusive measurement windows, scheduled on the shared hosts
-(spark8-f for four-host topologies; all 16 for TP16/PP16 topologies, in
-which case the always-on models pause on their hosts for the window).
-
-- Priority order decides the queue. DSV4 Flash is currently leading-edge:
-  half the slots.
-- A window that starts late ends on time; no overruns into the next slot.
-- A session that only needs its always-on hosts (DSV4 Flash, Qwen 27B) does
-  not consume a slot.
-- Every receipt records the fleet state at run time (see probe below).
+30-minute exclusive measurement windows on the big band (spark8-f), and
+whole-fleet windows for fleet-scope models (during which the always-on
+models pause). Priority order decides the queue; a window that starts late
+ends on time. Every receipt records the fleet state at run time
+(`tools/devcycle/fleet_status.sh` output).
 
 ## Repository conventions
 
