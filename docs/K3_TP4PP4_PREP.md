@@ -58,3 +58,8 @@ are always allowed regardless of slot state.
   gate reconciliation. tools/k3_sm121a_compile_gate.sh preserves the
   exact flags (gencode arch=compute_121a,code=sm_121a; no forced model
   header, which drags spark_kv_cache.h into the host pass).
+- Serving-tier binder written (modules/k3_resident_decode_stage/
+  spark_k3_bind.c): per-layer-kind name tables (every-layer, KDA 11,
+  MLA 8, MoE 9, dense 2) resolving pack entries by name; host test
+  8/8 PASS against the real layer-0 pack (dense KDA: gate present,
+  dense payload resolves, experts correctly absent).
