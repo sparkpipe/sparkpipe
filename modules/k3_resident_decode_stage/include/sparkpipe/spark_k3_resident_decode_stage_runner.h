@@ -124,6 +124,8 @@ SparkStatus SparkK3StageRunnerGetStats(
     const SparkK3StageRunner *runner,
     SparkK3StageRunnerStats *stats_out);
 
+void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner);
+
 #ifdef __cplusplus
 }
 #endif

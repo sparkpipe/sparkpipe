@@ -6,6 +6,10 @@
 
 #include "sparkpipe/spark_status.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * K3 pack V2 loader (docs/K3_PACK_FORMAT_V2.md). Opens the pack, validates
  * magic/version, parses the manifest config, and resolves tensors BY NAME:
@@ -73,5 +77,9 @@ SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name,
 	SparkK3PackEntry *entry);
 const void *SparkK3PackPayload(const SparkK3Pack *pack,
 	const SparkK3PackEntry *entry);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

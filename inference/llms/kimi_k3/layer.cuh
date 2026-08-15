@@ -416,11 +416,12 @@ static void K3AttnRes(const K3LayerBuffers *b, const void *score_weight, uint32_
 // Reusing an add as a copy banks twice the value; reusing an add as a restart
 // carries the previous block's sum into the next - both run and both are a
 // different model.
-// Non-static: the serving tier's TP all-reduce hook (the slice's
+// Inline (not static): the serving tier's TP all-reduce hook (the slice's
 // layer_collective) runs in a different translation unit and folds the
 // SUMMED projection outputs into the partial with the same set-at-boundary
-// / add-otherwise rule the fused epilogue would have applied.
-void K3PartialSet(const K3LayerBuffers *b, const uint16_t *value, uint32_t rows, cudaStream_t stream)
+// / add-otherwise rule the fused epilogue would have applied. Header-defined
+// inline keeps one definition per including TU without a link duplicate.
+inline void K3PartialSet(const K3LayerBuffers *b, const uint16_t *value, uint32_t rows, cudaStream_t stream)
 {
 	LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
 		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
@@ -428,7 +429,7 @@ void K3PartialSet(const K3LayerBuffers *b, const uint16_t *value, uint32_t rows,
 		value,b->attnres_partial_bf16,rows,K3_HIDDEN);
 }
 
-void K3PartialAdd(const K3LayerBuffers *b, const uint16_t *value, uint32_t rows, cudaStream_t stream)
+inline void K3PartialAdd(const K3LayerBuffers *b, const uint16_t *value, uint32_t rows, cudaStream_t stream)
 {
 	LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),
 		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),

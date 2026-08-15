@@ -148,6 +148,12 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		cudaMalloc(&d->kda_v_window_pool, v_bytes) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
 	cudaMemset(d->kda_state_pool, 0, state_bytes);
+	/* The convolution windows start all-zero too: the first position's tap
+	 * history is nothing, and cudaMalloc garbage would make the fresh-run
+	 * output depend on allocator history. */
+	cudaMemset(d->kda_q_window_pool, 0, qk_bytes);
+	cudaMemset(d->kda_k_window_pool, 0, qk_bytes);
+	cudaMemset(d->kda_v_window_pool, 0, v_bytes);
 
 	/* MLA caches: the view structs are HOST memory (K3BindLayerState copies
 	 * one by value into the buffers on the host); the pools, page tables
@@ -157,6 +163,12 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		cudaMalloc(&d->page_table, (size_t)d->mla_count * kv_pages_per_view * 4u) != cudaSuccess ||
 		cudaMalloc(&d->access_error, (size_t)d->mla_count * sizeof(LmKvAccessError)) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
+	/* THE CACHE STARTS ALL-ZERO: a read of a position nobody wrote must be
+	 * deterministic (and the reference's first token attends over nothing),
+	 * and cudaMalloc's garbage would otherwise make every fresh run a
+	 * different model. The serving tier overwrites pages as it publishes. */
+	cudaMemset(d->kv_pool, 0, kv_total);
+	cudaMemset(d->access_error, 0, (size_t)d->mla_count * sizeof(LmKvAccessError));
 	d->mla_cache = new LmKvView[d->mla_count];
 	for ( uint32_t i = 0u; i < d->mla_count; ++i )
 	{
@@ -221,6 +233,11 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	d->scratch_bytes += 256u;
 	if ( cudaMalloc(&d->scratch, d->scratch_bytes) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
+	/* The whole scratch starts zeroed: the AttnRes bank's unwritten slots,
+	 * the first partial, and every stream buffer a layer reads before it
+	 * writes must be deterministic, and a fresh run must not depend on
+	 * allocator history. */
+	cudaMemset(d->scratch, 0, d->scratch_bytes);
 	K3LayerBuffers *b = d->buffers_host;
 	b->hidden_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_HIDDEN * 2u);
 	b->normed_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_HIDDEN * 2u);

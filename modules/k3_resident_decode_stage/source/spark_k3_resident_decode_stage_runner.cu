@@ -62,6 +62,7 @@ typedef struct SparkK3RunnerState
 	cudaStream_t stream;
 	uint32_t max_rows;
 	uint32_t max_context;
+	uint32_t multiprocessors;
 } SparkK3RunnerState;
 
 static uint32_t K3RunnerFirstLayer(uint32_t stage_index)
@@ -164,6 +165,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->stream = (cudaStream_t)configuration->execution_stream;
 	state->max_rows = configuration->max_input_row_count;
 	state->max_context = configuration->resident_sequence_capacity;
+	state->multiprocessors = configuration->multiprocessors;
 	runner->stats.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	runner->stats.descriptor_bytes = (uint32_t)sizeof(SparkK3StageRunnerStats);
 	/* Pack + bind + pools + device objects. */
@@ -183,6 +185,12 @@ SparkStatus SparkK3StageRunnerInitialize(
 		SparkK3DispatchBindWeights(&state->dispatch,&state->module.pack,
 			state->module.bound,state->module.bound_count) != SPARK_K3_DISPATCH_OK )
 		{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+	/* The page tables start all-zero (every position maps to physical page
+	 * 0); the serving tier owns the real mappings and rewrites them before
+	 * publishing a step, but an uninitialised table would be a wild read. */
+	cudaMemset(state->dispatch.page_table, 0,
+		(uint64_t)state->module.sizing.mla_layer_count *
+		configuration->kv_pages_per_sequence * 4u);
 	state->vocab = state->module.pack.config.vocab;
 	state->vocab_slice_rows = state->vocab / configuration->tp_degree;
 	/* The TP contract: sharded ranks defer the partial epilogues to the hook. */
@@ -349,7 +357,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 	dense_offsets[1] = rows;
 	cudaMemcpy(state->dense_row_offset, dense_offsets, 8u, cudaMemcpyHostToDevice);
 	status = SparkK3DispatchStep(&state->dispatch, &in, rows, sequences,
-		1u, packed_rows, state->max_context, 0u, stream);
+		1u, packed_rows, state->max_context, state->multiprocessors, stream);
 	if ( status != SPARK_K3_DISPATCH_OK )
 		return SPARK_STATUS_INTERNAL_ERROR;
 	/* The head stage commits the tokens. */
@@ -411,4 +419,43 @@ SparkStatus SparkK3StageRunnerGetStats(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	*stats_out = runner->stats;
 	return SPARK_STATUS_OK;
+}
+
+void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
+{
+	SparkK3RunnerState *state;
+	if ( runner == 0 || runner->private_state == 0 )
+		return;
+	state = (SparkK3RunnerState *)runner->private_state;
+	if ( state->collective_created != 0 )
+		SparkTpCollectiveDestroy(&state->collective);
+	SparkK3DispatchDestroy(&state->dispatch);
+	/* The dispatch registered the pack mmap for UVA weight access; a
+	 * re-initialise remaps (often the same address) and registering an
+	 * already-registered region fails, so the runner unregisters before the
+	 * munmap. */
+	if ( state->module.pack.mapping != 0 )
+		cudaHostUnregister((void *)state->module.pack.mapping);
+	SparkK3ModuleDestroy(&state->module);
+	delete[] state->staging_values;
+	delete[] state->staging_scratch;
+	delete[] state->head_slots_host;
+	delete[] state->output_token_host;
+	delete[] state->output_score_host;
+	cudaFree(state->head_slots_device);
+	cudaFree(state->route_expert);
+	cudaFree(state->route_packed_row);
+	cudaFree(state->route_source_token);
+	cudaFree(state->route_weight);
+	cudaFree(state->group_row_offset);
+	cudaFree(state->group_tile_prefix_w1);
+	cudaFree(state->group_tile_prefix_w2);
+	cudaFree(state->dense_row_offset);
+	cudaFree(state->dense_tile_prefix);
+	cudaFree(state->head_candidate_token);
+	cudaFree(state->head_candidate_score);
+	cudaFree(state->output_token);
+	cudaFree(state->output_score);
+	delete state;
+	runner->private_state = 0;
 }

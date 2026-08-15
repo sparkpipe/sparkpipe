@@ -6,6 +6,10 @@
 #include "sparkpipe/spark_k3_pack_load.h"
 #include "sparkpipe/spark_status.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Pack name -> layer weight binding for K3. The pack manifest is the single
  * source of truth for names; this file owns the per-layer-kind name tables
@@ -40,5 +44,9 @@ const SparkK3PackEntry *SparkK3BoundEntry(const SparkK3BoundLayer *bound,
 	const char *name);
 const void *SparkK3BoundPayload(const SparkK3Pack *pack,
 	const SparkK3BoundLayer *bound, const char *name);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
