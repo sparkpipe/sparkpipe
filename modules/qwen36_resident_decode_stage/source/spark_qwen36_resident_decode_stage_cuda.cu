@@ -1584,3 +1584,96 @@ extern "C" cudaError_t SparkQwen36LaunchHeadMaxLocUnpack(cudaStream_t stream, co
 	SparkQwen36HeadMaxLocUnpackKernel<<<row_count,1u,0,stream>>>(keys_u64,token_ids_u32,row_count);
 	return(cudaGetLastError());
 }
+
+/*
+ * Transport-collective combine kernels: fold the staged reduction into the
+ * consumer buffer in place, stream-ordered between the producing kernels and
+ * the consuming layer. BF16 adds are elementwise; the relay variant also
+ * copies the source into the next route's send buffer; the TP4 tree variant
+ * adds every peer rank's contribution except the destination's own; the u64
+ * variant is an elementwise max.
+ */
+static __global__ void SparkQwen36AccumAddKernel(void *destination, const void *source, uint32_t element_count)
+{
+	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	uint64_t pair_count = (uint64_t)element_count >> 1u;
+	float2 dst,src;
+	if ( pair >= pair_count )
+		return;
+	dst = SparkLmLoadBf16Pair(destination,pair);
+	src = SparkLmLoadBf16Pair(source,pair);
+	SparkLmStoreBf16Pair(destination,pair,dst.x + src.x,dst.y + src.y);
+	if ( pair == 0u && ((uint64_t)element_count & 1u) != 0u )
+		SparkLmFloatToBf16(destination,element_count - 1u,SparkLmBf16ToFloat(destination,element_count - 1u) + SparkLmBf16ToFloat(source,element_count - 1u));
+}
+
+static __global__ void SparkQwen36AccumAddRelayKernel(void *destination, const void *source, void *relay, uint32_t element_count)
+{
+	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	uint64_t pair_count = (uint64_t)element_count >> 1u;
+	float2 dst,src;
+	if ( pair >= pair_count )
+		return;
+	dst = SparkLmLoadBf16Pair(destination,pair);
+	src = SparkLmLoadBf16Pair(source,pair);
+	SparkLmStoreBf16Pair(destination,pair,dst.x + src.x,dst.y + src.y);
+	SparkLmStoreBf16Pair(relay,pair,src.x,src.y);
+}
+
+static __global__ void SparkQwen36AccumAddTp4Kernel(void *destination, const void *const *rank_devices, uint32_t tp_rank, uint32_t element_count)
+{
+	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	uint64_t pair_count = (uint64_t)element_count >> 1u;
+	float2 dst,peer;
+	uint32_t rank;
+	if ( pair >= pair_count )
+		return;
+	dst = SparkLmLoadBf16Pair(destination,pair);
+	for (rank = 0u; rank < 4u; rank++)
+	{
+		if ( rank == tp_rank )
+			continue;
+		peer = SparkLmLoadBf16Pair(rank_devices[rank],pair);
+		dst.x += peer.x;
+		dst.y += peer.y;
+	}
+	SparkLmStoreBf16Pair(destination,pair,dst.x,dst.y);
+}
+
+static __global__ void SparkQwen36AccumU64MaxKernel(uint64_t *destination, const uint64_t *source, uint32_t element_count)
+{
+	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	uint64_t value;
+	if ( index >= (uint64_t)element_count )
+		return;
+	value = source[index];
+	if ( value > destination[index] )
+		destination[index] = value;
+}
+
+extern "C" cudaError_t SparkQwen36LaunchAccumAdd(cudaStream_t stream, void *destination, const void *source, uint32_t active_sequence_count, uint32_t hidden_dimension)
+{
+	uint64_t elements = (uint64_t)active_sequence_count * hidden_dimension;
+	SparkQwen36AccumAddKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(destination,source,(uint32_t)elements);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchAccumAddRelay(cudaStream_t stream, void *destination, const void *source, void *relay, uint32_t active_sequence_count, uint32_t hidden_dimension)
+{
+	uint64_t elements = (uint64_t)active_sequence_count * hidden_dimension;
+	SparkQwen36AccumAddRelayKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(destination,source,relay,(uint32_t)elements);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchAccumAddTp4(cudaStream_t stream, void *destination, const void *const rank_devices[4], uint32_t tp_rank, uint32_t active_sequence_count, uint32_t hidden_dimension)
+{
+	uint64_t elements = (uint64_t)active_sequence_count * hidden_dimension;
+	SparkQwen36AccumAddTp4Kernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(destination,rank_devices,tp_rank,(uint32_t)elements);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count)
+{
+	SparkQwen36AccumU64MaxKernel<<<(element_count + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,SPARK_LM_CTA_THREADS,0,stream>>>(destination,source,element_count);
+	return(cudaGetLastError());
+}

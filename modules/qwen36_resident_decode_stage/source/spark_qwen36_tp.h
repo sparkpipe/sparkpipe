@@ -1,6 +1,7 @@
 #ifndef SPARKPIPE_SPARK_QWEN36_TP_H
 #define SPARKPIPE_SPARK_QWEN36_TP_H
 
+#include <stdatomic.h>
 #include <stdint.h>
 
 #include <cuda_runtime_api.h>
@@ -14,18 +15,19 @@ extern "C" {
 
 /* Tensor-parallel execution state for the qwen36 resident decode stage.
  *
- * v1 uses the NCCL collective backend with SYNCHRONOUS stream-ordered
- * submissions: the caller submits the reduction and synchronizes the
- * execution stream before the next sharded GEMM reads the result. The
- * credit machinery is the one-credit degenerate case; the async
- * continuation path (the dsv4 pattern) is the follow-up.
+ * The collective runs on the hidden-transport backend (host-RDMA verbs on
+ * the 100G rail, the dsv4 pattern): submissions are stream-ordered on the
+ * producing slot stream and the module waits for each operation's
+ * stream-ordered completion before the consuming layer, so the reduction
+ * overlaps the transport with no device synchronizations. The NCCL backend
+ * remains selectable via SPARK_QWEN36_TP_BACKEND=nccl.
  *
  * Sharding geometry at degree D (recipe qwen36.TP4):
  *   - MLP gate/up rows and down columns: 17408 / D
  *   - attention q rows: 12288 / D, kv rows: 1024 / D, o columns: 6144 / D
  *   - GDN fused q|k|v rows: 10240 / D (stitched q|k|v per rank),
  *     GDN out columns: 6144 / D
- *   - lm_head rows: 248320 / D (embedding replicated in v1)
+ *   - lm_head rows: 248320 / D (embedding replicated)
  *   - norms, conv, beta/decay, MTP: replicated
  */
 typedef struct SparkQwen36TpState
@@ -46,9 +48,19 @@ typedef struct SparkQwen36TpState
 	uint32_t head_rows;
 	void *credit_send_bf16;
 	void *credit_receive_bf16;
+	void *host_credit_send_bf16;
+	void *host_credit_receive_bf16;
 	uint64_t next_ordinal;
 	void *cuda_stream;
 } SparkQwen36TpState;
+
+/* Per-operation completion wait cell: the collective's completion callback
+ * stores the status and releases the spinner. */
+typedef struct SparkQwen36TpPending
+{
+	atomic_uint done;
+	uint32_t status;
+} SparkQwen36TpPending;
 
 /* degree 1 = no tensor parallelism; the struct stays zeroed and unused. */
 SparkStatus SparkQwen36TpInitialize(
@@ -56,30 +68,29 @@ SparkStatus SparkQwen36TpInitialize(
 	uint32_t degree,
 	uint32_t rank,
 	uint32_t max_active_sequence_count,
+	uint32_t pipeline_slot_count,
 	void *registration_cuda_stream);
 
 void SparkQwen36TpDestroy(SparkQwen36TpState *tp);
 
-/* Synchronous BF16 all-reduce of rows * hidden_dimension elements.
- * The caller must have written the local partial into buffer; on return the
- * buffer holds the reduced value on every rank. */
+/* Stream-ordered BF16 all-reduce of rows * hidden_dimension elements. The
+ * reduction is enqueued on the caller's stream between the producing and
+ * consuming kernels; on return the operation's completion has been
+ * observed, so the next kernels launched on the same stream are ordered
+ * after the reduction. */
 SparkStatus SparkQwen36TpReduceHidden(
 	SparkQwen36TpState *tp,
 	void *buffer,
-	uint32_t rows);
+	uint32_t rows,
+	void *cuda_stream);
 
-/* Synchronous u64 maxloc reduce over count elements (head shard argmax). */
+/* Stream-ordered u64 maxloc reduce over count elements (head shard
+ * argmax); same ordering contract as the hidden reduce. */
 SparkStatus SparkQwen36TpReduceU64Max(
 	SparkQwen36TpState *tp,
 	uint64_t *buffer,
-	uint32_t count);
-
-static inline SparkStatus SparkQwen36TpStreamSynchronize(
-	const SparkQwen36TpState *tp)
-{
-	return cudaStreamSynchronize((cudaStream_t)tp->cuda_stream) == cudaSuccess
-		? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-}
+	uint32_t count,
+	void *cuda_stream);
 
 #ifdef __cplusplus
 }

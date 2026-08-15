@@ -506,7 +506,7 @@ static SparkStatus SparkQwen36ModuleInitializeTp(SparkQwen36ModuleState *state)
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	state->tp_stream = stream;
-	status = SparkQwen36TpInitialize(&state->tp,state->tp_degree,state->tp_rank,state->max_active_sequence_count,stream);
+	status = SparkQwen36TpInitialize(&state->tp,state->tp_degree,state->tp_rank,state->max_active_sequence_count,state->pipeline_slot_count,stream);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,
@@ -522,18 +522,15 @@ static SparkStatus SparkQwen36ModuleInitializeTp(SparkQwen36ModuleState *state)
 		"tp_set_geometry"));
 }
 
-/* Synchronous BF16 hidden all-reduce of slot->delta_bf16: drain the slot
- * stream that produced the partial, then the collective (which synchronizes
- * its own stream before returning) makes the full sum visible. */
+/* Stream-ordered BF16 hidden all-reduce of slot->delta_bf16: the reduction
+ * is enqueued on the slot stream between the producing projection and the
+ * consuming kernels, so no stream drain is needed; the frame's own end-of-
+ * execute synchronization covers every collective in flight. */
 static SparkStatus SparkQwen36ModuleTpReduceDelta(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, uint32_t rows)
 {
-	SparkStatus status;
 	if ( state->tp_degree <= 1u )
 		return(SPARK_STATUS_OK);
-	status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)slot->cuda_stream),"tp_slot_sync");
-	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen36TpReduceHidden(&state->tp,slot->delta_bf16,rows);
-	return(status);
+	return SparkQwen36TpReduceHidden(&state->tp,slot->delta_bf16,rows,slot->cuda_stream);
 }
 
 static SparkStatus SparkQwen36ModuleAllocatePools(SparkQwen36ModuleState *state)
@@ -1391,9 +1388,7 @@ static cudaError_t SparkQwen36ModuleEmitHead(SparkQwen36ModuleState *state, Spar
 		error = SparkQwen36LaunchHeadScreenedArgmaxScore(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->output_token_ids,slot->head_scores_f32,state->tp_rank * state->tp.head_rows,head_rows,state->tp.head_rows);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchHeadMaxLocPack(stream,slot->head_scores_f32,slot->output_token_ids,slot->head_maxloc_u64,head_rows);
-	if ( error == cudaSuccess && state->tp_degree > 1u )
-		error = cudaStreamSynchronize(stream);
-	if ( error == cudaSuccess && SparkQwen36TpReduceU64Max(&state->tp,slot->head_maxloc_u64,head_rows) != SPARK_STATUS_OK )
+	if ( error == cudaSuccess && SparkQwen36TpReduceU64Max(&state->tp,slot->head_maxloc_u64,head_rows,stream) != SPARK_STATUS_OK )
 		error = cudaErrorUnknown;
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchHeadMaxLocUnpack(stream,slot->head_maxloc_u64,slot->output_token_ids,head_rows);

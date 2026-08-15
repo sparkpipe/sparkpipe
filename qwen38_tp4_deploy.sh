@@ -18,6 +18,7 @@ if [[ "${1:-}" == "deploy" ]]; then
     rsync -a $PACKS/tp4-rank$i.qwen36sp $host:$rt/packs/tp4-rank$i.qwen36sp &
     rsync -a $BUILD/sparkpipe_model_residentd $BUILD/sparkpipe_model_batch $host:$rt/bin/ &
     rsync -a $BUILD/model_driver.so $BUILD/model_serving_adapter.so $BUILD/hidden_transport.so $BUILD/libnccl.so.2 $host:$rt/lib/ &
+    ssh -o BatchMode=yes $host "cp $rt/lib/hidden_transport.so $rt/lib/libhidden_transport.so" &
     rsync -a $BUILD/qwen36_tp4_rank$i.json $host:$rt/config/qwen36_tp4_rank$i.json &
     rsync -a $BUILD/model_resident.json $host:$rt/config/ &
     wait
