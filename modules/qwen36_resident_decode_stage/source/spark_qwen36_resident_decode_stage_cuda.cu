@@ -1466,9 +1466,13 @@ extern "C" cudaError_t SparkQwen36LaunchSmallBatchLinear(cudaStream_t stream, co
 extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQwen36LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
 	const char *gate = getenv("SPARK_QWEN36_SMALL_BATCH_GEMM");
+	/* Rows 1..4 stay on the library scalar path: its per-row weight re-reads
+	 * hit L2 at those sizes and its 4x larger thread grid hides HBM latency
+	 * better than the tiled kernel. Rows 5..8 re-read the full strip enough
+	 * to exceed L2, where the once-per-projection shared tile wins. */
 	if ( (gate == 0 || strcmp(gate, "0") != 0) &&
 		view->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
-		row_count != 0u && row_count <= SPARK_QWEN36_SMALL_BATCH_MAX_ROWS &&
+		row_count >= 5u && row_count <= SPARK_QWEN36_SMALL_BATCH_MAX_ROWS &&
 		(view->input_dimension % SPARK_QWEN36_SMALL_BATCH_K_CHUNK) == 0u &&
 		(view->output_dimension % SPARK_QWEN36_SMALL_BATCH_TILE_N) == 0u )
 		return(SparkQwen36LaunchSmallBatchLinear(stream,view->weight_payload,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
