@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Build GLM-5.2 resident-decode stage packs (v3 .glm52sp) from the FP8 checkpoint.
+"""Build GLM-5.2 resident-decode stage packs (v3 .glm52sp).
 
 Wire format: modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h
 Layout: header (264B) | directory (N * 64B) | 256B-aligned payloads | scales.
 
-Precision route (fp8 firmware):
-  - linear (attention/dense/indexer/router/shared) weights: stored BF16,
-    reconstructed from the checkpoint's F8_E4M3 codes by dequantizing
-    value = code * weight_scale_inv per 128-column block (scale_inv is
-    the dequant multiplier per the LLM-Compressor convention).
-  - routed experts: stored FP8 (codec 5) with F32 scales per 128-column
-    block; payload bytes are copied as-is, scales stored as scale_inv
-    expanded across each block's 128 rows.
+Precision policy (full-fidelity spine, quantized experts):
+  - spine tensors (embedding, lm_head, norms, attention, indexer, dense MLP,
+    router, shared experts): read directly from the BF16 master checkpoint
+    zai-org/GLM-5.2 @ b4734de4 and stored losslessly as BF16.
+  - routed experts: read from the FP8 checkpoint zai-org/GLM-5.2-FP8; payload
+    bytes copied as-is (codec 5) with F32 scales per 128-column block.
+    The checkpoint scale_inv is the dequant multiplier; each per-tile value
+    is expanded across its block's 128 rows (SparkWeightCodecScaleBytes).
   - expert up/gate order: [up_proj rows, gate_proj rows] stacked.
 
-The serving path never opens the checkpoint; this is setup-time code.
+The serving path never opens the checkpoints; this is setup-time code.
 """
 
 from __future__ import annotations
@@ -78,6 +78,9 @@ K_EXPERT_DOWN = 23
 K_SHARED_GATE_UP = 24
 K_SHARED_DOWN = 25
 
+EXPERT_COUNT = 256
+SPINE_REVISION = "b4734de4facf877f85769a911abafc5283eab3d9"
+
 
 class PackFailure(RuntimeError):
     pass
@@ -127,39 +130,6 @@ def to_bytes(t: torch.Tensor) -> bytes:
     return t.contiguous().numpy().tobytes()
 
 
-def expand_scale_inv(scale_inv: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
-    """scale_inv [ceil(rows/128), cols/128] -> dequant scale [rows, cols].
-
-    The checkpoint convention (LLM-Compressor): scale_inv is the dequant
-    MULTIPLIER, value = code * scale_inv, one per 128x128 block."""
-    scale_rows = (rows + 127) // 128
-    if scale_inv.shape[0] != scale_rows or scale_inv.shape[1] != cols // 128:
-        raise PackFailure(
-            f"scale_inv shape {tuple(scale_inv.shape)} != expected "
-            f"[{scale_rows}, {cols // 128}] for [{rows}, {cols}]")
-    scale = scale_inv.to(torch.float32).repeat_interleave(128, dim=0)[:rows]
-    scale = scale.repeat_interleave(128, dim=1)
-    return scale
-
-
-def dequant_fp8_bf16(reader: Reader, weight_name: str) -> torch.Tensor:
-    """F8_E4M3 codes -> BF16 via value = code * weight_scale_inv per 128-block."""
-    weight = reader.tensor(weight_name)
-    scale_inv = reader.tensor(weight_name + "_scale_inv")
-    rows, cols = weight.shape
-    scale = expand_scale_inv(scale_inv, rows, cols)
-    values = weight.to(torch.float32) * scale
-    return values.to(torch.bfloat16)
-
-
-def dequant_fp8_f32(reader: Reader, weight_name: str) -> torch.Tensor:
-    weight = reader.tensor(weight_name)
-    scale_inv = reader.tensor(weight_name + "_scale_inv")
-    rows, cols = weight.shape
-    scale = expand_scale_inv(scale_inv, rows, cols)
-    return weight.to(torch.float32) * scale
-
-
 class Entry:
     def __init__(self, kind: int, layer: int, payload_type: int, weight_codec: int,
                  scale_encoding: int, group_count: int, rows: int, columns: int):
@@ -185,8 +155,10 @@ class PlanItem:
 
 
 class Packer:
-    def __init__(self, reader: Reader, contract: Dict[str, Any], layer_range: Tuple[int, int]):
-        self.reader = reader
+    def __init__(self, spine: Reader, experts: Reader, contract: Dict[str, Any],
+                 layer_range: Tuple[int, int]):
+        self.spine = spine
+        self.experts = experts
         self.c = contract
         self.layer_range = layer_range
         self.plan: List[PlanItem] = []
@@ -216,13 +188,10 @@ class Packer:
                       1, rows, cols)
         self.plan.append(PlanItem(entry, tensor, None))
 
-    def add_dequant(self, kind: int, layer: int, weight_name: str):
-        self.add_bf16(kind, layer, dequant_fp8_bf16(self.reader, weight_name))
-
-    def add_checkpoint_bf16(self, kind: int, layer: int, name: str):
-        t = self.reader.tensor(name)
-        if str(t.dtype) != "torch.bfloat16":
-            raise PackFailure(f"{name}: expected BF16 checkpoint tensor, got {t.dtype}")
+    def add_spine_bf16(self, kind: int, layer: int, name: str):
+        t = self.spine.tensor(name)
+        if t.dtype != torch.bfloat16:
+            raise PackFailure(f"{name}: spine tensor must be BF16, got {t.dtype}")
         self.add_bf16(kind, layer, t)
 
     def add_experts(self, kind: int, layer: int, projections: List[str],
@@ -235,18 +204,18 @@ class Packer:
         """
         payloads: List[torch.Tensor] = []
         scales: List[torch.Tensor] = []
-        for expert in range(256):
+        for expert in range(EXPERT_COUNT):
             for proj in projections:
                 name = f"model.layers.{layer}.mlp.experts.{expert}.{proj}"
-                w = self.reader.tensor(name + ".weight")
+                w = self.experts.tensor(name + ".weight")
                 if w.shape != (rows, columns):
                     raise PackFailure(f"{name}.weight shape {tuple(w.shape)} != ({rows}, {columns})")
                 payloads.append(w)
-                s_inv = self.reader.tensor(name + ".weight_scale_inv")
+                s_inv = self.experts.tensor(name + ".weight_scale_inv")
                 scales.append(s_inv.to(torch.float32).repeat_interleave(128, dim=0))
         payload = torch.cat(payloads, dim=0)
         scale = torch.cat(scales, dim=0)
-        group_count = 256
+        group_count = EXPERT_COUNT
         total_rows, cols = payload.shape
         if total_rows % group_count != 0:
             raise PackFailure(f"expert rows {total_rows} not divisible by {group_count}")
@@ -255,7 +224,9 @@ class Packer:
         self.plan.append(PlanItem(entry, payload, scale))
 
     def add_kv_b(self, layer: int):
-        w = dequant_fp8_bf16(self.reader, f"model.layers.{layer}.self_attn.kv_b_proj.weight")
+        w = self.spine.tensor(f"model.layers.{layer}.self_attn.kv_b_proj.weight")
+        if w.dtype != torch.bfloat16:
+            raise PackFailure(f"kv_b must be BF16, got {w.dtype}")
         heads = self.c["head_count"]
         qk_nope = self.c["qk_nope_head_dimension"]
         value_dim = self.c["value_head_dimension"]
@@ -276,13 +247,13 @@ class Packer:
         self.add_bf16(K_KV_B_VALUE, layer, value.reshape(heads * value_dim, latent), groups=heads)
 
     def add_dense_gate_up(self, layer: int):
-        gate = dequant_fp8_bf16(self.reader, f"model.layers.{layer}.mlp.gate_proj.weight")
-        up = dequant_fp8_bf16(self.reader, f"model.layers.{layer}.mlp.up_proj.weight")
+        gate = self.spine.tensor(f"model.layers.{layer}.mlp.gate_proj.weight")
+        up = self.spine.tensor(f"model.layers.{layer}.mlp.up_proj.weight")
         self.add_bf16(K_DENSE_GATE_UP, layer, torch.cat([up, gate], dim=0))
 
     def add_shared_gate_up(self, layer: int):
-        gate = dequant_fp8_bf16(self.reader, f"model.layers.{layer}.mlp.shared_experts.gate_proj.weight")
-        up = dequant_fp8_bf16(self.reader, f"model.layers.{layer}.mlp.shared_experts.up_proj.weight")
+        gate = self.spine.tensor(f"model.layers.{layer}.mlp.shared_experts.gate_proj.weight")
+        up = self.spine.tensor(f"model.layers.{layer}.mlp.shared_experts.up_proj.weight")
         self.add_bf16(K_SHARED_GATE_UP, layer, torch.cat([up, gate], dim=0))
 
     def has_full_indexer(self, layer: int) -> bool:
@@ -296,46 +267,46 @@ class Packer:
         first, last = self.layer_range
         first_routed = c["first_routed_layer"]
 
-        self.add_checkpoint_bf16(K_EMBEDDING, GLOBAL_LAYER, "model.embed_tokens.weight")
-        self.add_checkpoint_bf16(K_FINAL_NORM, GLOBAL_LAYER, "model.norm.weight")
-        self.add_checkpoint_bf16(K_LM_HEAD, GLOBAL_LAYER, "lm_head.weight")
+        self.add_spine_bf16(K_EMBEDDING, GLOBAL_LAYER, "model.embed_tokens.weight")
+        self.add_spine_bf16(K_FINAL_NORM, GLOBAL_LAYER, "model.norm.weight")
+        self.add_spine_bf16(K_LM_HEAD, GLOBAL_LAYER, "lm_head.weight")
 
         for layer in range(first, last + 1):
             attn = f"model.layers.{layer}.self_attn"
-            self.add_checkpoint_bf16(K_ATTN_NORM, layer,
-                                     f"model.layers.{layer}.input_layernorm.weight")
-            self.add_dequant(K_Q_A, layer, f"{attn}.q_a_proj.weight")
-            self.add_checkpoint_bf16(K_Q_A_NORM, layer, f"{attn}.q_a_layernorm.weight")
-            self.add_dequant(K_Q_B, layer, f"{attn}.q_b_proj.weight")
-            self.add_dequant(K_KV_A, layer, f"{attn}.kv_a_proj_with_mqa.weight")
-            self.add_checkpoint_bf16(K_KV_A_NORM, layer, f"{attn}.kv_a_layernorm.weight")
+            self.add_spine_bf16(K_ATTN_NORM, layer,
+                                f"model.layers.{layer}.input_layernorm.weight")
+            self.add_spine_bf16(K_Q_A, layer, f"{attn}.q_a_proj.weight")
+            self.add_spine_bf16(K_Q_A_NORM, layer, f"{attn}.q_a_layernorm.weight")
+            self.add_spine_bf16(K_Q_B, layer, f"{attn}.q_b_proj.weight")
+            self.add_spine_bf16(K_KV_A, layer, f"{attn}.kv_a_proj_with_mqa.weight")
+            self.add_spine_bf16(K_KV_A_NORM, layer, f"{attn}.kv_a_layernorm.weight")
             self.add_kv_b(layer)
-            self.add_dequant(K_ATTN_OUTPUT, layer, f"{attn}.o_proj.weight")
-            self.add_checkpoint_bf16(K_POST_ATTN_NORM, layer,
-                                     f"model.layers.{layer}.post_attention_layernorm.weight")
+            self.add_spine_bf16(K_ATTN_OUTPUT, layer, f"{attn}.o_proj.weight")
+            self.add_spine_bf16(K_POST_ATTN_NORM, layer,
+                                f"model.layers.{layer}.post_attention_layernorm.weight")
             if self.has_full_indexer(layer):
-                self.add_dequant(K_INDEX_Q, layer, f"{attn}.indexer.wq_b.weight")
-                self.add_dequant(K_INDEX_K, layer, f"{attn}.indexer.wk.weight")
-                self.add_checkpoint_bf16(K_INDEX_HEAD, layer, f"{attn}.indexer.weights_proj.weight")
-                self.add_checkpoint_bf16(K_INDEX_NORM_W, layer, f"{attn}.indexer.k_norm.weight")
-                self.add_checkpoint_bf16(K_INDEX_NORM_B, layer, f"{attn}.indexer.k_norm.bias")
+                self.add_spine_bf16(K_INDEX_Q, layer, f"{attn}.indexer.wq_b.weight")
+                self.add_spine_bf16(K_INDEX_K, layer, f"{attn}.indexer.wk.weight")
+                self.add_spine_bf16(K_INDEX_HEAD, layer, f"{attn}.indexer.weights_proj.weight")
+                self.add_spine_bf16(K_INDEX_NORM_W, layer, f"{attn}.indexer.k_norm.weight")
+                self.add_spine_bf16(K_INDEX_NORM_B, layer, f"{attn}.indexer.k_norm.bias")
             if layer < first_routed:
                 self.add_dense_gate_up(layer)
-                self.add_dequant(K_DENSE_DOWN, layer,
-                                 f"model.layers.{layer}.mlp.down_proj.weight")
+                self.add_spine_bf16(K_DENSE_DOWN, layer,
+                                    f"model.layers.{layer}.mlp.down_proj.weight")
             else:
-                self.add_checkpoint_bf16(K_ROUTER, layer,
-                                         f"model.layers.{layer}.mlp.gate.weight")
+                self.add_spine_bf16(K_ROUTER, layer,
+                                    f"model.layers.{layer}.mlp.gate.weight")
                 self.add_f32(K_ROUTER_CORRECTION, layer,
-                             self.reader.tensor(
+                             self.spine.tensor(
                                  f"model.layers.{layer}.mlp.gate.e_score_correction_bias"))
                 self.add_experts(K_EXPERT_UP_GATE, layer, ["up_proj", "gate_proj"],
                                  c["moe_intermediate_dimension"], c["hidden_dimension"])
                 self.add_experts(K_EXPERT_DOWN, layer, ["down_proj"],
                                  c["hidden_dimension"], c["moe_intermediate_dimension"])
                 self.add_shared_gate_up(layer)
-                self.add_dequant(K_SHARED_DOWN, layer,
-                                 f"model.layers.{layer}.mlp.shared_experts.down_proj.weight")
+                self.add_spine_bf16(K_SHARED_DOWN, layer,
+                                    f"model.layers.{layer}.mlp.shared_experts.down_proj.weight")
 
     # -- writing -----------------------------------------------------------
 
@@ -350,7 +321,7 @@ class Packer:
         offset = align_up(directory_offset + directory_bytes, ALIGNMENT)
         for item in self.plan:
             entry = item.entry
-            payload_bytes = self._payload_bytes(item.payload, entry)
+            payload_bytes = self._payload_bytes(item.payload)
             entry.payload_offset = offset
             entry.payload_bytes = payload_bytes
             offset += payload_bytes
@@ -397,7 +368,7 @@ class Packer:
         return file_bytes
 
     @staticmethod
-    def _payload_bytes(payload: Optional[torch.Tensor], entry: Entry) -> int:
+    def _payload_bytes(payload: Optional[torch.Tensor]) -> int:
         if payload is None:
             return 0
         return payload.numel() * payload.element_size()
@@ -409,11 +380,14 @@ def sha256_bytes(data: bytes) -> bytes:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build GLM-5.2 resident stage packs")
-    parser.add_argument("--model-dir", required=True)
+    parser.add_argument("--spine-dir", required=True,
+                        help="BF16 master checkpoint (full-fidelity spine)")
+    parser.add_argument("--expert-dir", required=True,
+                        help="FP8 checkpoint (routed experts)")
     parser.add_argument("--output", required=True)
     parser.add_argument("--layer-range", default="0-77",
                         help="inclusive layer range, e.g. 0-77 or 0-2")
-    parser.add_argument("--model-revision", default="b4734de4facf877f85769a911abafc5283eab3d9")
+    parser.add_argument("--model-revision", default=SPINE_REVISION)
     parser.add_argument("--stage-count", type=int, default=1)
     parser.add_argument("--stage-index", type=int, default=0)
     args = parser.parse_args()
@@ -424,20 +398,25 @@ def main() -> int:
     if last < first or last >= contract["layer_count"]:
         raise PackFailure(f"bad layer range {args.layer_range}")
 
-    reader = Reader(Path(args.model_dir))
-    packer = Packer(reader, contract, (first, last))
+    spine = Reader(Path(args.spine_dir))
+    experts = Reader(Path(args.expert_dir))
+    packer = Packer(spine, experts, contract, (first, last))
     packer.build_plan()
 
     contract_bytes = (repo_root / "model_contracts" / "glm52.json").read_bytes()
-    source_config = json.dumps({"layer_range": args.layer_range}, sort_keys=True)
-    recipe = json.dumps({"tool": "glm52_resident_stagepack.py", "codec": "fp8"},
-                        sort_keys=True)
+    source_config = json.dumps(
+        {"layer_range": args.layer_range, "spine_dir": args.spine_dir,
+         "expert_dir": args.expert_dir}, sort_keys=True)
+    recipe = json.dumps({"tool": "glm52_resident_stagepack.py",
+                         "codec": "fp8", "spine": "bf16-master",
+                         "expert_revision_pending": True}, sort_keys=True)
     file_bytes = packer.write(
         Path(args.output), args.model_revision,
         sha256_bytes(contract_bytes), sha256_bytes(source_config.encode()),
         sha256_bytes(recipe.encode()), args.stage_count, args.stage_index,
         first, last - first + 1, contract["layer_count"])
-    reader.close()
+    spine.close()
+    experts.close()
     print(f"glm52sp written: {args.output} bytes={file_bytes} "
           f"layers={first}-{last} tensors={len(packer.plan)}")
     return 0
