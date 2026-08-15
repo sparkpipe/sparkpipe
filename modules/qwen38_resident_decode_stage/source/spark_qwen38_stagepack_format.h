@@ -197,6 +197,22 @@ static inline void SparkQwen38StagePackExpectedGeometry(SparkQwen38StagePackHead
 	header->file_bytes = 0u;
 }
 
+/* Field-by-field comparison; returns 0 on match, nonzero on any drift. */
+static inline int32_t SparkQwen38StagePackHeaderMatches(const SparkQwen38StagePackHeader *file_header, const SparkQwen38StagePackHeader *expected)
+{
+	if ( file_header->magic != expected->magic || file_header->format_version != expected->format_version || file_header->header_bytes != expected->header_bytes || file_header->directory_entry_bytes != expected->directory_entry_bytes )
+		return(-1);
+	if ( file_header->tensor_count != expected->tensor_count || file_header->hidden_dimension != expected->hidden_dimension || file_header->layer_count != expected->layer_count || file_header->first_layer_index != expected->first_layer_index || file_header->total_layer_count != expected->total_layer_count )
+		return(-2);
+	if ( file_header->attention_period != expected->attention_period || file_header->full_attention_phase != expected->full_attention_phase || file_header->gdn_key_head_count != expected->gdn_key_head_count || file_header->gdn_value_head_count != expected->gdn_value_head_count || file_header->gdn_head_key_dimension != expected->gdn_head_key_dimension || file_header->gdn_head_value_dimension != expected->gdn_head_value_dimension || file_header->gdn_conv_kernel != expected->gdn_conv_kernel )
+		return(-3);
+	if ( file_header->attn_query_head_count != expected->attn_query_head_count || file_header->attn_kv_head_count != expected->attn_kv_head_count || file_header->attn_head_dimension != expected->attn_head_dimension || file_header->attn_rope_dimension != expected->attn_rope_dimension )
+		return(-4);
+	if ( file_header->routed_expert_count != expected->routed_expert_count || file_header->experts_per_token != expected->experts_per_token || file_header->expert_intermediate_dimension != expected->expert_intermediate_dimension || file_header->output_vocab_count != expected->output_vocab_count || file_header->mxfp4_group_size != expected->mxfp4_group_size || file_header->mtp_layer_count != expected->mtp_layer_count )
+		return(-5);
+	return(0);
+}
+
 typedef struct SparkQwen38StagePackTensorShape
 {
 	uint32_t rows;
