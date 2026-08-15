@@ -7,13 +7,15 @@
 # Usage (on spark):  tools/devcycle/build_remote.sh NAME
 set -euo pipefail
 
-NAME="${1:?usage: build_remote.sh NAME [LOCAL_SHA]}"
+NAME="${1:?usage: build_remote.sh NAME [LOCAL_SHA] [BUCKET]}"
 SOURCE_SHA="${2:-}"
+BUCKET="${3:-1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="/tmp/devcycle-build-${NAME}"
 MODULE_LIB="/tmp/devcycle-build-${NAME}-module-library"
+FIRMWARE="/tmp/devcycle-firmware-b${BUCKET}.json"
 VALIDATOR="/tmp/sparkpipe_dsv4_devcycle_validator.sh"
-ARCHIVE="build/modules/dsv4_resident_decode_stage/libdsv4_resident_decode_stage_b1.a"
+ARCHIVE="build/modules/dsv4_resident_decode_stage/libdsv4_resident_decode_stage_b${BUCKET}.a"
 if [[ -z "${SOURCE_SHA}" ]]; then
     SOURCE_SHA="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)"
 fi
@@ -31,9 +33,12 @@ mkdir -p "${OUT}"
 
 make clean >/dev/null
 make -C modules/dsv4_resident_decode_stage -j4 variants \
-    MODULE_BATCH_VARIANT_BUCKETS=1 \
+    MODULE_BATCH_VARIANT_BUCKETS=${BUCKET} \
     NVCC=/usr/local/cuda-13.0/bin/nvcc \
     CUDA_ARCH=sm_121a
+# firmware for this bucket: the generated bucket description (committed)
+[[ "${BUCKET}" == "1" ]] && cp examples/model_descriptions/dsv4_resident_decode_stage_firmware_b1.json "${FIRMWARE}"
+[[ "${BUCKET}" != "1" ]] && cp examples/model_descriptions/dsv4_resident_decode_stage_firmware_b${BUCKET}.json "${FIRMWARE}"
 make -j4 \
     build/sparkpipe_module_publish \
     build/sparkpipe_model_compile \
@@ -41,11 +46,19 @@ make -j4 \
     build/sparkpipe_model_batch \
     build/libdsv4_tp4_b1_serving_adapter.so \
     build/libhidden_transport_spark_host_rdma_verbs.so
+# non-B1 buckets use the base TP4 adapter (bucket-1024 ceiling; mid-bucket
+# adapters need generated batch descriptions, a known ladder gap)
+if [[ "${BUCKET}" != "1" ]]; then
+    make build/libdsv4_tp4_serving_adapter.so
+    ADAPTER_SO=build/libdsv4_tp4_serving_adapter.so
+else
+    ADAPTER_SO=build/libdsv4_tp4_b1_serving_adapter.so
+fi
 
 ARCHIVE_SHA="$(sha256sum "${ARCHIVE}" | cut -d' ' -f1)"
 build/sparkpipe_module_publish \
     --library "${MODULE_LIB}" \
-    --module spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.b1.v4 \
+    --module spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.b${BUCKET}.v4 \
     --target cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16 \
     --link-unit "${ARCHIVE}" \
     --recipe merged-main.dsv4.tp4.b1.static-sm121.live-pending.v1 \
@@ -60,7 +73,7 @@ build/sparkpipe_module_publish \
     --validator-arg "${ARCHIVE_SHA}"
 
 build/sparkpipe_model_compile \
-    --model examples/model_descriptions/dsv4_resident_decode_stage_firmware_b1.json \
+    --model "${FIRMWARE}" \
     --stage dsv4_resident_decode_stage \
     --library "${MODULE_LIB}" \
     --output "${OUT}" \
@@ -76,7 +89,7 @@ build/sparkpipe_model_compile \
 
 cp build/sparkpipe_model_residentd "${OUT}/sparkpipe_model_residentd"
 cp build/sparkpipe_model_batch "${OUT}/sparkpipe_model_batch"
-cp build/libdsv4_tp4_b1_serving_adapter.so "${OUT}/model_serving_adapter.so"
+cp "${ADAPTER_SO}" "${OUT}/model_serving_adapter.so"
 cp build/libhidden_transport_spark_host_rdma_verbs.so "${OUT}/hidden_transport.so"
 printf '%s\n' "${SOURCE_SHA}" >"${OUT}/SOURCE_COMMIT"
 

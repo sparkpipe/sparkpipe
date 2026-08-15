@@ -133,7 +133,7 @@ static inline uint32_t SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(
 static inline uint32_t SparkDsv4ResidentDecodeStageNativeTpWidthSupported(
 	uint32_t width)
 {
-	return(width == 1u || width == 8u || width == 1024u ? 1u : 0u);
+	return(width == 1u || width == 8u || width == 16u || width == 32u || width == 64u || width == 1024u ? 1u : 0u);
 }
 
 typedef struct SparkDsv4LinearView

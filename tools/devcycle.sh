@@ -80,11 +80,12 @@ cmd_sync() {
 }
 
 cmd_build() {
-    local name="$1" local_sha
-    [[ -n "$name" ]] || die "usage: devcycle build NAME"
+    local name="$1" local_sha bucket="1"
+    [[ -n "$name" ]] || die "usage: devcycle build NAME [BUCKET]"
+    [[ -n "${3:-}" ]] && bucket="$3"
     local_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
     cmd_sync >/dev/null || die "sync failed"
-    ssh_rank "$BUILD_HOST" "cd '$BUILD_CHECKOUT' && bash tools/devcycle/build_remote.sh '$name' '$local_sha'" \
+    ssh_rank "$BUILD_HOST" "cd '$BUILD_CHECKOUT' && bash tools/devcycle/build_remote.sh '$name' '$local_sha' '$bucket'" \
         || die "remote build failed"
     mkdir -p "$SCRIPT_DIR/devcycle/drivers/$name"
     for artifact in model_driver.so model_serving_adapter.so hidden_transport.so; do
