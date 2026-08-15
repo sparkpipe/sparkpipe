@@ -55,10 +55,13 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	memset(&state->runner_config, 0, sizeof(state->runner_config));
 	state->runner_config.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	state->runner_config.descriptor_bytes = (uint32_t)sizeof(state->runner_config);
-	state->runner_config.stage_index = configuration->stage_index;
-	state->runner_config.stage_count = 4u;
+	/* The residentd's stage_index IS the world rank (the deployment has one
+	 * node per rank, like the DSV4 hybrid); the runner wants the PP stage
+	 * and the TP placement, derived here: world_rank = pp*4 + tp. */
 	state->runner_config.tp_degree = K3ServingJsonU32(&doc, root, "tp_degree", 1u);
-	state->runner_config.tp_rank = K3ServingJsonU32(&doc, root, "tp_rank", 0u);
+	state->runner_config.stage_index = configuration->stage_index / state->runner_config.tp_degree;
+	state->runner_config.stage_count = 4u;
+	state->runner_config.tp_rank = configuration->stage_index % state->runner_config.tp_degree;
 	state->runner_config.max_active_sequence_count =
 		K3ServingJsonU32(&doc, root, "max_sequences",
 		configuration->runtime_limits.max_active_sequence_count);
@@ -332,7 +335,9 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = (uint32_t)sizeof(SparkModelServingAdapterDescriptor),
 	.capability_flags = 0u,
-	.stage_count = 4u,
+	/* One node per RANK (the hybrid's contract): the residentd checks the
+	 * node count against this. */
+	.stage_count = 16u,
 	.layer_count = 93u,
 	.boundary_format = 0u,
 	.boundary_element_count = 7168u,
@@ -352,7 +357,7 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.model_revision = "k3-tp4pp4",
 	.driver_program_name = "k3",
 	.artifact_sha256 = "",
-	.stage_layer_counts = { 24u, 23u, 23u, 23u },
+	.stage_layer_counts = { 24u, 23u, 23u, 23u, 24u, 23u, 23u, 23u, 24u, 23u, 23u, 23u, 24u, 23u, 23u, 23u },
 	.boundary_sideband_kinds = { 0u, 0u, 0u, 0u },
 	.boundary_sideband_bytes_per_sequence = { 0u, 0u, 0u, 0u },
 	.minimum_efficient_submission_row_count = 1u,
