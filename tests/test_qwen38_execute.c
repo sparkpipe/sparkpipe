@@ -67,7 +67,17 @@ int main(int argc, char **argv)
     frame.buffers = buffers;
     frame.buffer_count = 2u;
     status = SparkQwen38ResidentDecodeStageExecute(state,&frame);
-    fprintf(stderr,"execute status=%d output_token=%u\n",(int)status,output_tokens[0]);
+    fprintf(stderr,"execute[0] status=%d output_token=%u\n",(int)status,output_tokens[0]);
+    if ( status == SPARK_STATUS_OK )
+    {
+        /* Second decode step at position 1: same slot, exercises the
+         * recurrent state path with the carried conv tail and GDN state
+         * (row_cold is 0, so the recurrence accumulates). */
+        frame.sequence_position = 1u;
+        output_tokens[0] = 0xdeadbeefu;
+        status = SparkQwen38ResidentDecodeStageExecute(state,&frame);
+        fprintf(stderr,"execute[1] status=%d output_token=%u\n",(int)status,output_tokens[0]);
+    }
     SparkQwen38ResidentDecodeStageDestroy(state);
     fprintf(stderr,"destroy ok\n");
     return status == SPARK_STATUS_OK ? 0 : 1;
