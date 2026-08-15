@@ -77,10 +77,30 @@ the stage topology) to the repo file:
 
 Regeneration proof (tools/devcycle/verify_rank_packs_pro.sh on sparkb,
 log /tmp/dsv4pro-regen-verify.log): every rank pack is re-sharded from the
-current full pack and sha256-compared with the shipped bytes. Rank 0
-regeneration == shipped bytes (2be8aa0a... full-hash match); the loop runs
-through ranks 1-15 in the background. The sharder on sparkb is byte-identical
-to the worktree version (md5 2f9517ad4f8531f85cb1712922b47df9).
+current full pack and sha256-compared with the shipped bytes. COMPLETE:
+16/16 MATCH, exit=0 (round 10). Full shipped sha256s:
+
+| rank | sha256 |
+| --- | --- |
+| 0 | 2be8aa0a9258be00a5e255752d870395037804d7f1de5073a61c03d5bce18ed7 |
+| 1 | 0e9f015877bde1400c2e36b352e646b0792c645e09f3014597f9cbbaefb75512 |
+| 2 | 24821d5736da788cc1177a9265f9463f86a6e434491c90ba3b3b512138122418 |
+| 3 | 197348a90316e1b3652e07a333c0d818c3440204d93e2fa57855bd3ff787e0f7 |
+| 4 | 6d39fad9fe6dab2fd03ab72e93047412e18ee33a774dd13245d6a13f119519f7 |
+| 5 | 81c7468c171cd63a9e5bcb8fa510e3ed2f6cb1bbca417c827edcf45c7e16b96a |
+| 6 | a50eb96b3a40decb24454fceab9414492da78c01bf1ab7fd5cd6e4e82bbc4332 |
+| 7 | f2aeb49d9c7cafd32542f045ae40a73cf9a0a96956b155203939921a639bfa73 |
+| 8 | 608f9bb5a6e838e53d8110f96d0aceaa59ea3b37569d5c48ca8eb74d54787472 |
+| 9 | 298243fe3a0d8a110fdc27391848fcba867021d23dbafbea4b5526df8f97827b |
+| 10 | d47dff6de53c8e40c6cb7b7aa3412f79e9f0677db95e3a40d9dd688d2c375c69 |
+| 11 | 84986831237272be59b3c9003f2d39bcb04bd12d510523a5e29978544d732c84 |
+| 12 | bfe6f618061bcb58f3aa2e69aeeab4ba9f11e911836e4876ee6c0735ec7738e6 |
+| 13 | 89b54c62f5fbf7213c7e366b5b903e68165f3dff2d9dfa1a6797a3fbaa4e4ce3 |
+| 14 | a78333103ca57efeb52a7267d1400492b016965f0e3bd4c1b9899d749134460d |
+| 15 | d53de7845573d7891622016d53486f5dbdbd5ab62fbe1962a544106aae03e64e |
+
+The sharder on sparkb is byte-identical to the worktree version
+(md5 2f9517ad4f8531f85cb1712922b47df9).
 
 ## Single-rank residentd boot test (round 7, sparkb rank 11)
 
