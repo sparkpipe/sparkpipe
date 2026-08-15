@@ -68,6 +68,7 @@ does not divide - each is a PackFailure naming what and where.
 """
 import json
 import math
+import os
 import struct
 import sys
 from pathlib import Path
@@ -754,14 +755,16 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
             w1_sc.append(gs + us)
             w2_pay.append(d)
             w2_sc.append(ds)
-        pack.add(p + "expert_w1_weight",
-                 interleave(b"".join(w1_pay), b"".join(w1_sc), w1_geom),
-                 KIND_MXFP4_INTERLEAVED, [experts, 2 * inter, latent],
-                 {"interleave": w1_geom, "shard_class": "concat_output"})
-        pack.add(p + "expert_w2_weight",
-                 interleave(b"".join(w2_pay), b"".join(w2_sc), w2_geom),
-                 KIND_MXFP4_INTERLEAVED, [experts, latent, inter],
-                 {"interleave": w2_geom, "shard_class": "input_dim"})
+        if p + "expert_w1_weight" not in pack.manifest:
+            pack.add(p + "expert_w1_weight",
+                     interleave(b"".join(w1_pay), b"".join(w1_sc), w1_geom),
+                     KIND_MXFP4_INTERLEAVED, [experts, 2 * inter, latent],
+                     {"interleave": w1_geom, "shard_class": "concat_output"})
+        if p + "expert_w2_weight" not in pack.manifest:
+            pack.add(p + "expert_w2_weight",
+                     interleave(b"".join(w2_pay), b"".join(w2_sc), w2_geom),
+                     KIND_MXFP4_INTERLEAVED, [experts, latent, inter],
+                     {"interleave": w2_geom, "shard_class": "input_dim"})
         s1 = reader.bf16(m + "shared_experts.gate_proj.weight", (shared, hidden))
         s3 = reader.bf16(m + "shared_experts.up_proj.weight", (shared, hidden))
         pack.add(p + "shared_w1_weight", s1 + s3, KIND_BF16, [2 * shared, hidden])
