@@ -1,13 +1,11 @@
-// Per-layer divergence probe: dumps the hidden stream after every layer via
-// the slice's layer_collective hook, so two fresh runs can be diffed to find
-// the exact layer whose output first diverges (the tail-region race in the
-// single-spark gate).
+// Per-layer divergence probe over the EXACT serving path: the runner with a
+// diagnostic hook override dumps the hidden stream after every layer, so two
+// runs can be diffed to find the layer whose output first diverges.
 
 #include <cstdio>
 #include <cstring>
 
-#include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
-#include "sparkpipe/spark_k3_resident_decode_stage_module.h"
+#include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 
 static uint16_t g_snapshots[24u][K3_HIDDEN];
@@ -17,12 +15,9 @@ static K3LayerBuffers *g_probe_buffers;
 static void ProbeHook(void *context, void *stream_void, uint32_t layer)
 {
 	(void)context;
-	/* Async: the synchronous copy masked the race this probe exists to
-	 * catch - the queue-ordered copy preserves the timing and the final
-	 * synchronise drains everything. */
-	cudaMemcpyAsync(g_snapshots[layer], g_probe_buffers->hidden_bf16,
-		(uint64_t)g_rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToHost,
-		(cudaStream_t)stream_void);
+	(void)stream_void;
+	cudaMemcpy(g_snapshots[layer], g_probe_buffers->hidden_bf16,
+		(uint64_t)g_rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToHost);
 }
 
 int main(int argc, char **argv)
@@ -32,108 +27,81 @@ int main(int argc, char **argv)
 		printf("usage: k3_layer_probe <rank.pack> <dump.bin>\n");
 		return 2;
 	}
-	SparkK3ModuleState module;
-	SparkK3Dispatch dispatch;
+	SparkK3StageRunner runner;
+	SparkK3StageRunnerConfiguration config;
+	SparkK3StageRunnerDispatch dispatch;
 	SparkStatus status;
-	memset(&module, 0, sizeof(module));
-	status = SparkK3ModuleInitialize(&module, argv[1], 0u, 24u);
+	memset(&config, 0, sizeof(config));
+	config.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
+	config.descriptor_bytes = (uint32_t)sizeof(config);
+	config.stage_index = 0u;
+	config.stage_count = 4u;
+	config.tp_degree = 1u;
+	config.tp_rank = 0u;
+	config.max_active_sequence_count = 1u;
+	config.max_input_row_count = 1u;
+	config.resident_sequence_capacity = 1u;
+	config.kv_pages_per_sequence = 2u;
+	config.kv_page_bytes = K3GlobalKv::kPageBytes;
+	config.rank_pack_path = argv[1];
+	config.execution_stream = 0;
+	int multiprocessors = 0;
+	cudaDeviceGetAttribute(&multiprocessors, cudaDevAttrMultiProcessorCount, 0);
+	config.multiprocessors = (uint32_t)multiprocessors;
+	config.layer_collective_override = ProbeHook;
+	config.layer_collective_context = 0;
+
+	status = SparkK3StageRunnerInitialize(&runner, &config);
 	if ( status != SPARK_STATUS_OK )
 	{
-		printf("MODULE FAIL %d\n", (int)status);
+		printf("INIT FAIL %d\n", (int)status);
 		return 1;
 	}
-	if ( SparkK3DispatchCreate(&dispatch, &module.sizing, 1u, 1u, 2u,
-		K3GlobalKv::kPageBytes, 0) != SPARK_K3_DISPATCH_OK )
-	{
-		printf("DISPATCH FAIL\n");
-		return 1;
-	}
-	if ( SparkK3DispatchRegisterPack(&module.pack) != SPARK_K3_DISPATCH_OK ||
-		SparkK3DispatchBindWeights(&dispatch, &module.pack,
-			module.bound, module.bound_count) != SPARK_K3_DISPATCH_OK )
-	{
-		printf("BIND FAIL\n");
-		return 1;
-	}
-	g_probe_buffers = dispatch.buffers;
+	g_probe_buffers = (K3LayerBuffers *)SparkK3StageRunnerProbeBuffers(&runner);
 	g_rows = 1u;
-	dispatch.slice_state->layer_collective = ProbeHook;
-	dispatch.slice_state->collective_context = 0;
-	dispatch.buffers->tp_sharded = 0u;
 
-	uint32_t *d_tokens, *d_positions, *d_context, *d_seq, *d_state, *d_dense;
-	uint32_t *d_route_expert, *d_route_packed, *d_route_source;
-	float *d_route_weight;
-	uint32_t *d_group_off, *d_prefix1, *d_prefix2, *d_dense_tiles;
-	float *d_score;
-	uint32_t *d_cand_token, *d_out_token;
+	uint32_t *d_tokens, *d_positions, *d_context, *d_seq, *d_state, *d_out_tok;
 	float *d_out_score;
+	uint16_t *d_hidden;
+	uint32_t h_token = 1u, h_zero = 0u, h_one = 1u;
 	cudaMalloc(&d_tokens, 4u); cudaMalloc(&d_positions, 4u);
 	cudaMalloc(&d_context, 4u); cudaMalloc(&d_seq, 4u);
-	cudaMalloc(&d_state, 4u); cudaMalloc(&d_dense, 8u);
-	cudaMalloc(&d_route_expert, 64u); cudaMalloc(&d_route_packed, 64u);
-	cudaMalloc(&d_route_source, 64u); cudaMalloc(&d_route_weight, 64u);
-	cudaMalloc(&d_group_off, (K3_EXPERTS + 1u) * 4u);
-	cudaMalloc(&d_prefix1, (K3_EXPERTS + 1u) * 4u);
-	cudaMalloc(&d_prefix2, (K3_EXPERTS + 1u) * 4u);
-	cudaMalloc(&d_dense_tiles, 8u);
-	cudaMalloc(&d_score, 16384u * 4u); cudaMalloc(&d_cand_token, 16384u * 4u);
-	cudaMalloc(&d_out_token, 4u); cudaMalloc(&d_out_score, 4u);
-	uint32_t h_token = 1u, h_zero = 0u, h_one = 1u, h_dense[2] = { 0u, 1u };
+	cudaMalloc(&d_state, 4u); cudaMalloc(&d_out_tok, 4u);
+	cudaMalloc(&d_out_score, 4u);
+	cudaMalloc(&d_hidden, (uint64_t)K3_HIDDEN * 2u);
 	cudaMemcpy(d_tokens, &h_token, 4u, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_positions, &h_zero, 4u, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_context, &h_one, 4u, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_seq, &h_zero, 4u, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_state, &h_zero, 4u, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_dense, h_dense, 8u, cudaMemcpyHostToDevice);
 
-	const uint16_t *embed = 0;
-	SparkK3PackEntry entry;
-	if ( SparkK3PackLoadEntry(&module.pack, "model.embed_tokens.weight", &entry) == 0 )
-		embed = (const uint16_t *)SparkK3PackPayload(&module.pack, &entry);
+	memset(&dispatch, 0, sizeof(dispatch));
+	dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
+	dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
+	dispatch.row_count = 1u;
+	dispatch.active_sequence_count = 1u;
+	dispatch.token_ids = d_tokens;
+	dispatch.positions = d_positions;
+	dispatch.context_length = d_context;
+	dispatch.sequence_of_row = d_seq;
+	dispatch.kda_state_index = d_state;
+	dispatch.hidden_output_bf16 = d_hidden;
+	dispatch.hidden_output_bytes = (uint64_t)K3_HIDDEN * 2u;
+	dispatch.output_token_ids = d_out_tok;
+	dispatch.output_scores = d_out_score;
 
-	SparkK3StepInput in;
-	memset(&in, 0, sizeof(in));
-	in.hidden_in = dispatch.buffers->hidden_bf16;
-	in.positions = d_positions;
-	in.context_length = d_context;
-	in.sequence_of_row = d_seq;
-	in.kda_state_index = d_state;
-	in.route_expert = d_route_expert;
-	in.route_packed_row = d_route_packed;
-	in.route_source_token = d_route_source;
-	in.route_weight = d_route_weight;
-	in.group_row_offset = d_group_off;
-	in.group_tile_prefix_w1 = d_prefix1;
-	in.group_tile_prefix_w2 = d_prefix2;
-	in.dense_row_offset = d_dense;
-	in.dense_tile_prefix = d_dense_tiles;
-	in.head_candidate_score = d_score;
-	in.head_candidate_token = d_cand_token;
-	in.output_token = d_out_token;
-	in.output_score = d_out_score;
-
-	int32_t launch = K3Embedding(embed, d_tokens, dispatch.buffers->hidden_bf16,
-		1u, 0u, 40960u, (cudaStream_t)0);
-	if ( launch != LM_LAUNCH_OK )
+	status = SparkK3StageRunnerSubmit(&runner, &dispatch);
+	if ( status != SPARK_STATUS_OK )
 	{
-		printf("EMBED FAIL %d\n", launch);
+		printf("SUBMIT FAIL %d\n", (int)status);
 		return 1;
 	}
-	launch = SparkK3DispatchStep(&dispatch, &in, 1u, 1u, 1u, K3_TOP_K,
-		1u, 48u, (cudaStream_t)0);
-	if ( launch != SPARK_K3_DISPATCH_OK )
-	{
-		printf("STEP FAIL %d\n", launch);
-		return 1;
-	}
-	cudaStreamSynchronize((cudaStream_t)0);
 
 	FILE *f = fopen(argv[2], "wb");
 	if ( f == 0 )
 		return 1;
 	fwrite(g_snapshots, sizeof(g_snapshots), 1u, f);
 	fclose(f);
-	printf("probe dumped %u layers\n", 24u);
+	printf("probe dumped 24 layers\n");
 	return 0;
 }

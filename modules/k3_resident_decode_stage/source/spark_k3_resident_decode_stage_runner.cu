@@ -214,6 +214,15 @@ SparkStatus SparkK3StageRunnerInitialize(
 			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return status; }
 		state->collective_created = 1;
 	}
+	/* The diagnostic override wins over the TP hook (tests use it at
+	 * tp_degree 1 to observe the serving path layer by layer). */
+	if ( configuration->layer_collective_override != 0 )
+	{
+		state->dispatch.slice_state->layer_collective =
+			configuration->layer_collective_override;
+		state->dispatch.slice_state->collective_context =
+			configuration->layer_collective_context;
+	}
 	/* Stage 0 and the head stage need the model-level tensors. */
 	if ( runner->owns_embedding != 0u &&
 		SparkK3PackLoadEntry(&state->module.pack,"model.embed_tokens.weight",&entry) == 0 )
@@ -427,6 +436,13 @@ SparkStatus SparkK3StageRunnerGetStats(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	*stats_out = runner->stats;
 	return SPARK_STATUS_OK;
+}
+
+const void *SparkK3StageRunnerProbeBuffers(const SparkK3StageRunner *runner)
+{
+	if ( runner == 0 || runner->private_state == 0 )
+		return 0;
+	return ((SparkK3RunnerState *)runner->private_state)->dispatch.buffers;
 }
 
 void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)

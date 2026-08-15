@@ -55,6 +55,11 @@ typedef struct SparkK3StageRunnerConfiguration
      * The runner owns no connection state outside this config; the serving
      * adapter fills it from its configuration file. */
     const SparkTpCollectiveConfig *tp_collective;
+    /* Diagnostic override: when set, the slice's layer_collective hook is
+     * THIS callback instead of the TP all-reduce (even at tp_degree 1), so
+     * a test can observe the stream per layer on the exact serving path. */
+    void (*layer_collective_override)(void *context, void *stream, uint32_t layer);
+    void *layer_collective_context;
 } SparkK3StageRunnerConfiguration;
 
 typedef struct SparkK3StageRunnerDispatch
@@ -125,6 +130,10 @@ SparkStatus SparkK3StageRunnerGetStats(
     SparkK3StageRunnerStats *stats_out);
 
 void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner);
+
+/* Diagnostic: the host-side buffers struct (device pointers inside), for
+ * probe hooks and tests that observe the stream per layer. */
+const void *SparkK3StageRunnerProbeBuffers(const SparkK3StageRunner *runner);
 
 #ifdef __cplusplus
 }
