@@ -37,7 +37,8 @@ python3 "${ROOT}/tools/model_stream_decode_benchmark.py" --output "${OUT}" \
         /home/spark0/sparkdata/dsv4_pro.tp4pp4/bin/sparkpipe_model_batch \
         --deployment /home/spark0/sparkdata/dsv4_pro.tp4pp4/config/model_resident.json \
         --runtime-root /home/spark0/sparkdata/dsv4_pro.tp4pp4 \
-        --batch /tmp/dsv4pro-o128-batch.json
+        --profile-stages \
+        --batch /tmp/dsv4pro-o128-128row-batch.json
 
 echo "== receipt =="
 jq -r '{decode_tokens_per_second, token_count, ttft_seconds, total_seconds, inter_token_p95_seconds}' "${OUT}"
