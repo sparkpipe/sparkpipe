@@ -22,7 +22,17 @@
 #endif
 
 #define SPARK_GLM52_SERVING_ADAPTER_ID \
-	"spark.glm52.serving-adapter.pp13.expert_" GLM52_EXPERT_CODEC_NAME ".v1"
+	"spark.glm52.serving-adapter.tp8.expert_" GLM52_EXPERT_CODEC_NAME ".v1"
+/* Deployment-facing geometry: 8 flat ranks, one per TP rank, single PP
+ * stage. The residentd fans each submission out to every rank
+ * (PARALLEL_FANOUT) and the firmware stage stays STAGE_COUNT=1; the
+ * adapter maps flat rank -> tp_rank and pins the firmware stage to 0. */
+#define SPARK_GLM52_SERVING_STAGE_COUNT 8u
+#define SPARK_GLM52_SERVING_TP_DEGREE 8u
+#define SPARK_GLM52_SERVING_STAGE_LAYERS \
+	{78u,78u,78u,78u,78u,78u,78u,78u}
+#define SPARK_GLM52_SERVING_TOPOLOGY_FLAG \
+	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
 #define SPARK_GLM52_SERVING_MODEL_ID "zai-org/GLM-5.2"
 #define SPARK_GLM52_SERVING_DRIVER_MODEL_ID \
 	"zai.glm-5.2.resident-decode-stage-firmware"
@@ -111,8 +121,8 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
-	.stage_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_GLM52_SERVING_TOPOLOGY_FLAG | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
+	.stage_count = SPARK_GLM52_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT,
@@ -132,7 +142,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.model_revision = GLM52_MODEL_REVISION,
 	.driver_program_name = SPARK_GLM52_SERVING_PROGRAM_NAME,
 	.artifact_sha256 = GLM52_CONTRACT_SHA256,
-	.stage_layer_counts = {78u},
+	.stage_layer_counts = SPARK_GLM52_SERVING_STAGE_LAYERS,
 	.boundary_sideband_kinds = {0u},
 	.boundary_sideband_bytes_per_sequence = {0u}
 };
@@ -182,7 +192,10 @@ static SparkStatus SparkGlm52ServingLoadTpAlgorithms(
 		else
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	if ( count != 3u || mask != SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS )
+	/* direct_all_to_all requires exactly 4 ranks (the collective's DA2A
+	 * geometry), so TP8 runs recursive_doubling + counter-rotating split
+	 * ring only. */
+	if ( count != 2u || mask != (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING | SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	topology->algorithm_mask = mask;
 	return(SPARK_STATUS_OK);
@@ -697,6 +710,7 @@ static SparkStatus SparkGlm52ServingLoadDriver(
 	request.wake_function = SparkGlm52ServingDriverWake;
 	request.wake_context = state;
 	status = state->driver.interface->create(&request,&state->driver_instance);
+	(void)fprintf(stderr,"GLM52-ADAPTER LoadDriver rc=%d\n",(int)status);
 	return(status == SPARK_STATUS_OK && state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : status);
 }
 
@@ -711,7 +725,7 @@ static SparkStatus SparkGlm52ServingValidateConfiguration(
 	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkGlm52ServingDescriptor,&configuration->runtime_limits);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( configuration->stage_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_GLM52_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
+	if ( configuration->stage_index >= SPARK_GLM52_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_GLM52_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
@@ -746,13 +760,17 @@ static SparkStatus SparkGlm52ServingInitialize(
 	status = SparkGlm52ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&tp_degree,&tp_rank);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > state->resident_sequence_capacity) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK && (tp_rank != configuration->stage_index || tp_degree != SPARK_GLM52_SERVING_TP_DEGREE) )
+		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
 		state->node_context.abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 		state->node_context.descriptor_bytes = SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES;
 		state->node_context.stage_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT;
-		state->node_context.stage_index = state->stage_index;
-		state->node_context.first_layer_index = SparkGlm52ResidentDecodeStageFirstLayer(state->stage_index);
+		/* Firmware stage is always 0; the deployment's flat rank index is the
+		 * TP rank, cross-checked against the stage config below. */
+		state->node_context.stage_index = 0u;
+		state->node_context.first_layer_index = 0u;
 		state->node_context.layer_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE;
 		state->node_context.expert_weight_codec = GLM52_EXPERT_WEIGHT_CODEC;
 		state->node_context.resident_sequence_capacity = state->resident_sequence_capacity;

@@ -1004,14 +1004,19 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
 	configuration.credit_count = state->pipeline_slot_count * SPARK_GLM52_TP_COLLECTIVE_CREDITS_PER_SLOT;
 	configuration.local_hidden_dimension = SPARK_GLM52_MODEL_HIDDEN_DIMENSION;
-	configuration.max_active_sequence_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
+	/* The chain never reduces more rows than one execution wave, so the
+	 * credit buffers are priced by execution_row_capacity, not the bucket's
+	 * absolute input-row ceiling. */
+	configuration.max_active_sequence_count = state->execution_row_capacity;
 	configuration.connect_timeout_milli = context->tp_connect_timeout_milli;
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
 	configuration.control_port_base = context->tp_collective_control_port_base;
 	configuration.collective_identifier = context->tp_collective_identifier;
 	configuration.backend_module_path = context->tp_collective_backend_module_path;
 	configuration.registration_cuda_stream = state->execution_stream;
+	(void)fprintf(stderr,"GLM52-DBG tp topology rc=%u abi=%u desc=%u ranks=%u mask=%u rails=%u res0=%u\n",context->tp_collective_topology.rank_count,context->tp_collective_topology.abi_version,context->tp_collective_topology.descriptor_bytes,context->tp_collective_topology.rank_count,context->tp_collective_topology.algorithm_mask,context->tp_collective_topology.rail_count,context->tp_collective_topology.reserved0);
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
+	(void)fprintf(stderr,"GLM52-DBG tp apply rc=%d local=%s\n",(int)status,configuration.local_host != 0 ? configuration.local_host : "null");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
@@ -1025,9 +1030,11 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	if ( configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT && configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkTpDeviceCollectiveProbeMemoryMode(configuration.backend_kind,configuration.backend_module_path,&memory_mode);
+	(void)fprintf(stderr,"GLM52-DBG tp probe rc=%d mode=%u\n",(int)status,memory_mode);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	status = SparkTpDeviceCollectiveCreditBindingRouteCount(&configuration,&route_count);
+	(void)fprintf(stderr,"GLM52-DBG tp routecount rc=%d routes=%u credits=%u\n",(int)status,route_count,configuration.credit_count);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	total_bytes = 0u;
@@ -1099,6 +1106,7 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 		configuration.credit_binding_count = state->tp_credit_binding_count;
 	}
 	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
+	(void)fprintf(stderr,"GLM52-DBG tp create rc=%d\n",(int)status);
 	if ( status != SPARK_STATUS_OK )
 	{
 		if ( state->tp_host_credit_send_bf16 != 0 )
@@ -1635,16 +1643,19 @@ static SparkStatus SparkGlm52InitializeState(
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->ledger.module_tag = SPARK_GLM52_MODULE_TAG;
 	status = SparkGlm52ModuleConfigure(state,configuration,host_services,&pack_path);
+	(void)fprintf(stderr,"GLM52-DBG module configure rc=%d\n",(int)status);
 	if ( status == SPARK_STATUS_OK && SparkGlm52ConfigureCudaModule(&state->multiprocessor_count) != 0 )
 		status = SPARK_STATUS_TARGET_MISMATCH;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52PackLoad(state,pack_path);
+	(void)fprintf(stderr,"GLM52-DBG pack load rc=%d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52AllocateCaches(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52AllocateSlots(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ModuleInitializeTpCollective(state,(const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context);
+	(void)fprintf(stderr,"GLM52-DBG module init rc=%d\n",(int)status);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkGlm52ReleaseSlotHost(state);

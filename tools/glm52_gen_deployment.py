@@ -30,8 +30,8 @@ TP_COLLECTIVE = {
     "operation_timeout_milli": 30000,
     "peer_hosts": list(HOSTS),
     "peer_ports": [COLLECTIVE_BASE + r for r in range(TP)],
-    "algorithms": ["recursive_doubling", "counter_rotating_split_ring",
-                   "direct_all_to_all"],
+    "algorithms": ["recursive_doubling",
+                   "counter_rotating_split_ring"],
     "direct_all_to_all_max_payload_bytes": 12288,
     "split_ring_min_payload_bytes": 24576,
     "rail_peer_hosts": [list(HOSTS), list(HOSTS)],
@@ -59,7 +59,7 @@ def resident_deployment() -> dict:
     for rank, host in enumerate(HOSTS):
         nodes.append({
             "rank_index": rank,
-            "stage_index": 0,
+            "stage_index": rank,
             "runtime_root": RUNTIME_ROOT.format(host=host),
             "node_target": NODE_TARGET,
             "transport_host": host,
