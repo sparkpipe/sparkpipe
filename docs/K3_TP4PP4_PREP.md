@@ -96,3 +96,8 @@ the module's capacity request scales them by first_layer/layer_count).
   with SparkJsonGetUInt64 - pack offsets exceed 2^32 for the ~350 GB stage
   packs (the common JSON API already exported the uint64 getter; no
   common-code change was needed).
+- Rank-slicing recipe ready: tools/k3_tp4_slice.sh runs k3_shard.py over a
+  completed stage pack and emits the four TP4 rank packs (~87 GB each).
+  Deployment layout: stage s ranks t (spark[s*4+t]) get
+  /home/<user>/sparkdata/k3.mxfp4.tp4pp4/packs/<stage>.<s>.rank0<t>.pack,
+  matching the fleet_registry pack_dir.
