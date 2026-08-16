@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "scope": "isolated_tp4_8kib_bf16_130_step_program_rearm",
+  "program_launches": 2,
+  "program_rearms": 1,
+  "terminal_callback_requires_both_graphs_drained": true,
+  "characterizer_sha256": "834a722c1275d35dea6c9448ce08030ed0bb1377060a5c09cf71c5dd4c717ed1",
+  "transport_sha256": "60d4701630e0bee0900bd2f31b15b44c450b54a55856c024ec026623d1b074fc",
+  "rank_receipts": [
+    {"rank":0,"status":0,"result":10.0,"mismatch_count":0,"result_hash":"22b433e29b34c383","terminal_callbacks":2,"program_rearms":1,"average_us":28.483},
+    {"rank":1,"status":0,"result":10.0,"mismatch_count":0,"result_hash":"22b433e29b34c383","terminal_callbacks":2,"program_rearms":1,"average_us":28.482},
+    {"rank":2,"status":0,"result":10.0,"mismatch_count":0,"result_hash":"22b433e29b34c383","terminal_callbacks":2,"program_rearms":1,"average_us":28.506},
+    {"rank":3,"status":0,"result":10.0,"mismatch_count":0,"result_hash":"22b433e29b34c383","terminal_callbacks":2,"program_rearms":1,"average_us":28.481}
+  ],
+  "rank_mean_us": 28.488
+}

@@ -133,7 +133,7 @@ static inline uint32_t SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(
 static inline uint32_t SparkDsv4ResidentDecodeStageNativeTpWidthSupported(
 	uint32_t width)
 {
-	return(width == 1u || width == 8u || width == 1024u ? 1u : 0u);
+	return(width == 1u || width == 8u || width == 16u || width == 32u || width == 64u || width == 1024u ? 1u : 0u);
 }
 
 typedef struct SparkDsv4LinearView
@@ -202,20 +202,22 @@ typedef struct SparkDsv4HcWeights
 	const float *ffn_scale_f32;
 } SparkDsv4HcWeights;
 
+/* DSpark draft-only extras (reference: inference/model.py DSparkBlock).
+ * Stage 0 projects the concatenated target-layer hiddens; stage 2 carries
+ * the output norm, the 5-position hc head, the markov logits-bias head
+ * (vocab x rank embedding + head), and the acceptance confidence head.
+ * The draft transformer layers themselves use SparkDsv4LayerWeights. */
 typedef struct SparkDsv4MtpWeights
 {
-	/* GA DSpark speculative stage heads (mtp.0 main-stream projection and
-	 * the mtp.2 draft heads). The draft layers themselves live in
-	 * SparkDsv4ModuleState.mtp_layers[]. */
 	SparkDsv4LinearView main_proj;
 	const void *main_norm_weight_bf16;
-	const void *norm_weight_bf16;
-	const void *markov_w1_weight_bf16;
-	const void *markov_w2_weight_bf16;
-	const void *confidence_proj_weight_bf16;
+	const void *final_norm_weight_bf16;
 	const float *hc_head_fn_f32;
 	const float *hc_head_base_f32;
 	const float *hc_head_scale_f32;
+	SparkDsv4LinearView markov_w1;
+	SparkDsv4LinearView markov_w2;
+	SparkDsv4LinearView confidence_proj;
 } SparkDsv4MtpWeights;
 
 typedef struct SparkDsv4DecodeBatchView

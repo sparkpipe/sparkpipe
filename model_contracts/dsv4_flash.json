@@ -61,11 +61,11 @@
   "dspark": {
     "block_size": 5,
     "checkpoint_namespace": "mtp",
-    "execution_supported": false,
+    "execution_supported": true,
     "layer_count": 3,
     "markov_rank": 256,
     "noise_token_id": 128799,
-    "packed": false,
+    "packed": true,
     "target_layer_ids": [
       40,
       41,
@@ -94,7 +94,7 @@
     "kv_head_count": 1,
     "layer_count": 43,
     "maximum_context_tokens": 1048576,
-    "mtp_layer_count": 0,
+    "mtp_layer_count": 3,
     "output_group_count": 8,
     "output_lora_rank": 1024,
     "qk_rope_head_dimension": 64,
@@ -133,9 +133,9 @@
     "status": "NOT_MEASURED"
   },
   "runtime": {
-    "packed_mtp_layer_count": 0,
-    "speculative_decoding": "disabled",
-    "speculative_decoding_reason": "GA DSpark layers are checkpoint-declared but not implemented by the native DSV4 driver"
+    "packed_mtp_layer_count": 3,
+    "speculative_decoding": "enabled",
+    "speculative_decoding_reason": "DSpark draft layers packed and executed by the native DSV4 driver"
   },
   "schema_version": 1,
   "source_files": {

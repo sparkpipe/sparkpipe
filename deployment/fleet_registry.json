@@ -18,7 +18,8 @@
       "collective_port_base": 61620,
       "transport_control_base": 58700,
       "owner": "qwen session - verify runtime_root and fill deployment specifics",
-      "status": "placeholder"
+      "status": "active",
+      "topology": "TP4"
     },
     "dsv4-flash": {
       "tier": "always-on",
@@ -36,7 +37,9 @@
       "collective_port_base": 62620,
       "transport_control_base": 59700,
       "owner": "dsv4-flash session (devcycle)",
-      "status": "active"
+      "status": "active",
+      "topology": "TP4",
+      "notes": "Pool is spark3-7: measurement quartet spark4-7, spark3 spare for single-rank debug."
     },
     "glm52": {
       "tier": "big",
@@ -52,13 +55,15 @@
         "sparkf"
       ],
       "rank_count": 8,
-      "runtime_root": "/home/{host}/sparkdata/glm52.fp8.pp13",
-      "pack_dir": "/home/{host}/sparkdata/glm52.fp8.pp13/packs",
+      "runtime_root": "/home/{host}/sparkdata/glm52.tp8.fp8",
+      "pack_dir": "/home/{host}/sparkdata/glm52.tp8.fp8/packs",
       "control_port_base": 19480,
       "collective_port_base": 63620,
       "transport_control_base": 60700,
-      "owner": "glm52 session - verify runtime_root and fill deployment specifics",
-      "status": "placeholder"
+      "owner": "glm52 session",
+      "status": "active",
+      "topology": "TP8",
+      "notes": "Single-stage TP8 resident decode, BF16 spine + FP8 experts. Rank packs glm52_tp8_rank0N.fp8.glms52sp (rank 0 = spark8 ... rank 7 = sparkf)."
     },
     "dsv4-pro": {
       "tier": "big",
@@ -115,11 +120,11 @@
       "runtime_root": "/home/{host}/sparkdata/k3.mxfp4.tp4pp4",
       "pack_dir": "/home/{host}/sparkdata/k3.mxfp4.tp4pp4/packs",
       "control_port_base": 21480,
-      "collective_port_base": 65620,
+      "collective_port_base": 61620,
       "transport_control_base": 62700,
-      "owner": "k3 session - verify everything",
-      "status": "placeholder",
-      "notes": "K3 is the heaviest model. Swapping it in evicts every other model including the always-on tier (scope=fleet). Its own swap-out restores the previous fleet state from the saved snapshot."
+      "owner": "k3 session (tp4xpp4)",
+      "status": "packs-deployed",
+      "notes": "16 TP4 rank packs sha256-verified on all sparks at pack_dir 2026-08-15. Kernels + runner + serving adapter gated on sm_121a; single-spark decode gate passes bit-deterministic. Live run awaits the ring reservation."
     },
     "qwen38max": {
       "tier": "big",

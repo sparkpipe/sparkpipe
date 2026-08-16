@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "experiment": "dsv4_query_head_rms_rope_exact_fusion",
+  "status": "REPEATABLE_EXACT_ISOLATED_GAIN",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "host": "spark2",
+  "gpu": "NVIDIA GB10",
+  "driver": "580.159.03",
+  "compute_capability": "12.1",
+  "workload": {
+    "layers": 43,
+    "rows": 1,
+    "tp_degree": 4,
+    "query_heads_per_rank": 16,
+    "head_dimension": 512,
+    "rope_dimension": 64,
+    "l2_flush_bytes_before_trial": 134217728
+  },
+  "control": "one production QueryHeadRms launch followed by one production forward-RoPE launch per layer",
+  "candidate": "one fused launch per layer; identical RMS reduction, explicit intermediate BF16 store and reload, then identical forward RoPE",
+  "measurement": {
+    "independent_process_runs": 3,
+    "alternating_pairs_per_run": 31,
+    "warmups_per_run": 4,
+    "all_query_output_bytes_exact": true,
+    "run_median_results": [
+      {
+        "control_ms": 0.330432,
+        "candidate_ms": 0.177408,
+        "gain_percent": 46.310287
+      },
+      {
+        "control_ms": 0.330560,
+        "candidate_ms": 0.177024,
+        "gain_percent": 46.447239
+      },
+      {
+        "control_ms": 0.330368,
+        "candidate_ms": 0.176704,
+        "gain_percent": 46.512981
+      }
+    ],
+    "control_mean_of_medians_ms": 0.330453333,
+    "candidate_mean_of_medians_ms": 0.177045333,
+    "aggregate_gain_percent": 46.423499032,
+    "absolute_saving_ms_per_model_step": 0.153408000,
+    "all_independent_median_deltas_positive": true
+  },
+  "decision": {
+    "isolated_gate": "PASS",
+    "production_integration": "PENDING",
+    "full_ring_end_to_end": "NOT_MEASURED",
+    "quality": "no quantization change; spine remains BF16 and the intermediate BF16 rounding point is preserved exactly"
+  },
+  "identity": {
+    "probe_source": "/private/tmp/dsv4_query_rms_rope_fusion_probe.cu",
+    "probe_source_sha256": "b8599bcdbdcfbf8794ff4f640894d83f1be117539eaac7d2e8964f292a55534c",
+    "binary_sha256": "9c5943cb124bde2eea8b070aea0416ca26db3b2eb3091d7c6e1d700f71645654",
+    "included_production_cuda_sha256": "01ec33e97c27afa872e757110353093898596e8a51c25c50247b34654ea2ec9d",
+    "run_log_sha256": [
+      "62692514ec732e783f5434f7dca330d61cdc4936369322dff08765d9928ad65d",
+      "8888cce033f7dc0ff0180be655fa25f2297151278e8000459818c472a941a30d",
+      "051227cf6355f82fea2e59ebe02c0073147747297858b828c3581f2826a128e2"
+    ]
+  }
+}

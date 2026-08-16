@@ -115,6 +115,17 @@ static __device__ __forceinline__ float LmE4m3ToFloat(uint8_t value)
 	return(__half2float(__ushort_as_half((uint16_t)(widened & 0xffffu))));
 }
 
+static __device__ __forceinline__ float2 LmE4m3PairToFloat2(uint16_t value)
+{
+	uint32_t widened;
+	float2 result;
+	asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
+		: "=r"(widened) : "h"(value));
+	result.x = __half2float(__ushort_as_half((uint16_t)widened));
+	result.y = __half2float(__ushort_as_half((uint16_t)(widened >> 16u)));
+	return(result);
+}
+
 // -- e2m1 --------------------------------------------------------------------
 //
 // Four bits: sign, two exponent, one mantissa. The representable magnitudes are

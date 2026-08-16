@@ -14,8 +14,9 @@ layer's closing all-reduce combines (SparkTpCollectiveAllReduceSumF32 is that
 collective on this ring), replicated tensors load whole. K3's departures
 from glm52, each earned by the architecture:
 
-  the low-rank bottlenecks REPLICATE, and V2 fuses the two KDA ones into
-  kda_decay_gate_down_weight (docs/K3_PACK_FORMAT_V2.md): their 128-wide
+  the low-rank bottlenecks REPLICATE: the KDA decay_down is the
+  checkpoint's standalone 128-wide f_a_proj (the released checkpoint has no
+  fused decay|gate pair): its 128-wide
   output is what every rank's up half reads in full, and slicing 128 sixteen
   ways buys nothing but a collective
   the kv_a latent path replicates, which is what keeps the latent KV cache
@@ -27,16 +28,21 @@ from glm52, each earned by the architecture:
   the concatenated gate|up tensors (shared, dense, and every expert's w1)
   slice EACH HALF and re-concatenate per rank, or the SiTU kernel's
   gate-first contract breaks at every rank boundary
-  expert w1 is the V2 interleaved grid (64B rows, 16 payload + 1 scale row
-  per 16-neuron cell per 128-element k-tile): it output-splits on whole
-  16-neuron cells per gate|up half, so each rank's shard is itself a valid
-  interleaved tensor with the scales riding along
-  expert w2 input-splits on whole 128-element k-tiles - a contiguous row
-  range per expert per rank. V1 split K on 32-element groups; the interleave
-  coarsens that to the k-tile, so K3's 24 w2 k-tiles admit TP 1/2/4/8 and
-  TP16 is REFUSED, not approximated
+  expert w1 is the V2 interleaved grid (16 payload + 1 scale row per
+  16-neuron cell per k-tile): it output-splits on whole 16-neuron cells
+  per gate|up half AND input-splits on whole k-tiles - the rank's latent
+  slice addresses only its own tiles, so keeping the whole k axis would
+  pair a rank's activations with rank 0's weights
+  expert w2 input-splits on whole k-tiles - a contiguous row range per
+  expert per rank. The rank's SiTU intermediate slice IS contiguous (the
+  gate|up halves share cell offsets), so the contiguous take matches it.
+  K3's 128-element tiles admit TP 1/2/4/8 on both experts; TP16 is
+  REFUSED unless the pack carries 32-element tiles (224 = 7 x 32 for the
+  w1 k, 192 = 6 x 32 for the w2 k - the packer's interleave_geometry
+  already closes at tile_k 32)
 """
 import json
+import mmap
 import struct
 import sys
 from pathlib import Path
@@ -55,10 +61,10 @@ class ShardFailure(RuntimeError):
 REPLICATED = {
     "attn_norm_weight", "mlp_norm_weight", "attnres_attn_weight",
     "attnres_mlp_weight", "router_weight", "router_bias",
-    "kda_decay_gate_down_weight", "kda_decay_bias",
+    "kda_decay_down_weight", "kda_decay_bias",
     "kda_head_log_scale", "kda_out_norm_weight",
     "mla_q_down_weight", "mla_q_norm_weight", "mla_kv_a_weight",
-    "mla_kv_a_norm_weight", "mla_gate_down_weight", "routed_norm_weight",
+    "mla_kv_a_norm_weight", "routed_norm_weight",
 }
 MODEL_REPLICATED = {"model.norm.weight", "model.attnres_out_weight"}
 # output-dimension, sliced on whole head blocks: (head elements, row bytes)
@@ -66,9 +72,10 @@ OUTPUT_HEADS = {
     "kda_qkv_beta_weight": ("kda_qkvb", 1),
     "kda_q_conv_weight": ("kda", 1), "kda_k_conv_weight": ("kda", 1),
     "kda_v_conv_weight": ("kda", 1),
-    "kda_decay_up_weight": ("kda", 1), "kda_gate_up_weight": ("kda", 1),
+    "kda_decay_up_weight": ("kda", 1),
+    "kda_gate_weight": ("kda", 1),
     "mla_q_up_weight": ("mla_q", 1), "mla_kv_b_value_weight": ("mla_v", 1),
-    "mla_gate_up_weight": ("mla_v", 1),
+    "mla_gate_weight": ("mla_v", 1),
 }
 # input-dimension on whole head blocks, partials summed by the all-reduce
 INPUT_HEADS = {"kda_out_weight": ("kda", 1), "mla_out_weight": ("mla_v", 1)}
@@ -112,7 +119,12 @@ def slice_cols(raw, rows, row_bytes, lo_byte, hi_byte):
 
 class Slicer:
     def __init__(self, pack_path, geo, degree, rank):
-        raw = Path(pack_path).read_bytes()
+        # The stage packs are ~390 GB: the source is MAPPED, never read. A
+        # read_bytes() here is the MemoryError this constructor exists to
+        # prevent - four ranks x one full copy is five pack-sized buffers
+        # on a 128 GB host.
+        self.handle = open(pack_path, "rb")
+        raw = mmap.mmap(self.handle.fileno(), 0, access=mmap.ACCESS_READ)
         magic, version, length = struct.unpack_from("<IIQ", raw, 0)
         if magic != MAGIC:
             raise ShardFailure("not a K3 pack")
@@ -136,26 +148,45 @@ class Slicer:
                         self.base + entry["offset"] + entry["bytes"]]
 
     def emit(self, out_path):
+        # STREAMED, never assembled: a rank pack is ~97 GB and a bytearray
+        # of it is the second MemoryError this file's layout is shaped to
+        # avoid. The payload streams to the file first, behind a fixed
+        # manifest reserve; the manifest is built from the recorded offsets
+        # and written over the reserve at the end, space-padded to the exact
+        # reserve so the payload base (align(16 + manifest_len)) is a
+        # compile-time constant of this writer.
+        # The rank manifest carries the interleave geometry per expert
+        # tensor and runs ~86 KB; the reserve must hold it AND keep
+        # header(16) + reserve 128-aligned (262144 = 2048 * 128).
+        manifest_reserve = 262128
         tensors = {}
-        payload = bytearray()
-        for name in self.manifest["tensors"]:
-            sliced, meta = self.route(name)
-            pad = (-len(payload)) % ALIGN
-            payload += b"\0" * pad
-            entry = {"offset": len(payload), "bytes": len(sliced)}
-            entry.update(meta)
-            tensors[name] = entry
-            payload += sliced
-        echo = dict(self.config)
-        echo.update({"tp_degree": self.degree, "tp_rank": self.rank})
-        manifest = json.dumps(
-            {"format": self.manifest["format"], "config": echo,
-             "tensors": tensors}, separators=(",", ":")).encode()
+        offset = 0
         with open(out_path, "wb") as out:
+            out.seek(16 + manifest_reserve)
+            for name in self.manifest["tensors"]:
+                sliced, meta = self.route(name)
+                pad = (-offset) % ALIGN
+                if pad:
+                    out.write(b"\0" * pad)
+                    offset += pad
+                entry = {"offset": offset, "bytes": len(sliced)}
+                entry.update(meta)
+                tensors[name] = entry
+                out.write(sliced)
+                offset += len(sliced)
+            echo = dict(self.config)
+            echo.update({"tp_degree": self.degree, "tp_rank": self.rank})
+            manifest = json.dumps(
+                {"format": self.manifest["format"], "config": echo,
+                 "tensors": tensors}, separators=(",", ":")).encode()
+            if len(manifest) > manifest_reserve:
+                raise ShardFailure(
+                    f"manifest {len(manifest)} bytes overruns the "
+                    f"{manifest_reserve}-byte reserve")
+            manifest = manifest + b" " * (manifest_reserve - len(manifest))
+            out.seek(0)
             out.write(struct.pack("<IIQ", MAGIC, 2, len(manifest)))
             out.write(manifest)
-            out.write(b"\0" * ((-out.tell()) % ALIGN))
-            out.write(payload)
         return tensors
 
     def route(self, name):
@@ -272,55 +303,75 @@ class Slicer:
         """w1 output-splits on whole 16-neuron cells, each gate|up half on
         its own: per (expert, k-tile) the rank takes its gate cell range then
         its up cell range, so the shard is itself a valid interleaved tensor
-        whose gate-first order survives every rank boundary."""
+        whose gate-first order survives every rank boundary. THE K SIDE
+        SPLITS TOO: the activation the GEMM feeds is the rank's latent slice
+        (moe_in columns), so the rank's shard carries only ITS k-tiles -
+        keeping the whole k axis would pair the rank's latent slice with
+        rank 0's weights."""
         degree, rank = self.degree, self.rank
         geom = self.entry_of(name)["interleave"]
         experts, cells = geom["experts"], geom["cells"]
         k_tiles, cell_rows, row_bytes = (geom["k_tiles"], geom["cell_rows"],
                                          geom["row_bytes"])
+        tile_k = geom["tile_k"]
         rpe = geom["rows_per_expert"]
         half = cells // 2  # the gate|up boundary is a cell boundary
         if half % degree != 0:
             raise ShardFailure(
                 f"{name}: {half} 16-neuron cells per gate|up half do not "
                 f"split {degree} ways")
-        take = half // degree
-        lo = rank * take
+        if k_tiles % degree != 0:
+            raise ShardFailure(
+                f"{name}: {k_tiles} {tile_k}-element k-tiles do not split "
+                f"{degree} ways - the rank's latent slice cannot address "
+                f"whole k-tiles (pack the experts with a smaller tile_k)")
+        take_out = half // degree
+        take_k = k_tiles // degree
+        lo = rank * take_out
+        t0 = rank * take_k
         out = bytearray()
         for e in range(experts):
             block = raw[e * rpe * row_bytes:(e + 1) * rpe * row_bytes]
-            for t in range(k_tiles):
+            for t in range(t0, t0 + take_k):
                 for base in (lo, half + lo):
                     row0 = (t * cells + base) * cell_rows
                     out += block[row0 * row_bytes:
-                                 (row0 + take * cell_rows) * row_bytes]
-        self._reprice_interleave(name, meta, out_dim=geom["out_dim"] // degree)
+                                 (row0 + take_out * cell_rows) * row_bytes]
+        self._reprice_interleave(name, meta,
+                                 out_dim=geom["out_dim"] // degree,
+                                 k_dim=take_k * tile_k)
         return bytes(out)
 
     def _expert_down(self, name, raw, meta):
-        """w2 input-splits on whole 128-element k-tiles: a contiguous row
-        range per expert per rank. The interleave coarsened V1's 32-element
-        K groups to the k-tile, so a degree that does not divide the tile
-        count is refused - for K3's 24 tiles that excludes TP16."""
+        """w2 input-splits on whole k-tiles (tile_k from the pack geometry):
+        a contiguous row range per expert per rank. The k axis IS the SiTU
+        intermediate, and a rank's slice of it is CONTIGUOUS - the gate|up
+        halves share cell offsets, so situ(gate[o..]) x up[o..] produces the
+        global intermediate's contiguous range [o..] - the contiguous tile
+        take is exactly the rank's slice. K3's 128-tile packs therefore
+        admit TP 1/2/4/8; TP16 needs 32-element tiles (224 = 7 x 32 for the
+        w1 k, 192 = 6 x 32 for the w2 k) and refuses here until the pack
+        carries them."""
         degree, rank = self.degree, self.rank
         geom = self.entry_of(name)["interleave"]
         experts, k_tiles = geom["experts"], geom["k_tiles"]
+        tile_k = geom["tile_k"]
         if k_tiles % degree != 0:
             raise ShardFailure(
-                f"{name}: {k_tiles} 128-element k-tiles do not split "
-                f"{degree} ways; the interleaved grid coarsened the K split "
-                f"from 32-element groups to whole k-tiles, and a partial "
-                f"tile would strand its co-tiled scales")
-        per = k_tiles // degree
-        t0 = rank * per
+                f"{name}: {k_tiles} {tile_k}-element k-tiles do not split "
+                f"{degree} ways - the rank's intermediate slice cannot "
+                f"address whole k-tiles (pack the experts with a smaller "
+                f"tile_k; TP16 needs 32-element tiles)")
+        take = k_tiles // degree
+        t0 = rank * take
         tile_rows = geom["cells"] * geom["cell_rows"]
         row_bytes, rpe = geom["row_bytes"], geom["rows_per_expert"]
         out = bytearray()
         for e in range(experts):
             block = raw[e * rpe * row_bytes:(e + 1) * rpe * row_bytes]
             out += block[t0 * tile_rows * row_bytes:
-                         (t0 + per) * tile_rows * row_bytes]
-        self._reprice_interleave(name, meta, k_dim=geom["k_dim"] // degree)
+                         (t0 + take) * tile_rows * row_bytes]
+        self._reprice_interleave(name, meta, k_dim=take * tile_k)
         return bytes(out)
 
     def _reprice_interleave(self, name, meta, out_dim=None, k_dim=None):
@@ -328,7 +379,8 @@ class Slicer:
         priced = k3_pack.interleave_geometry(
             out_dim if out_dim is not None else geom["out_dim"],
             k_dim if k_dim is not None else geom["k_dim"],
-            geom["experts"])
+            geom["experts"],
+            tile_k=geom["tile_k"])
         meta["interleave"] = priced
         if "shape" in meta and len(meta["shape"]) == 3:
             meta["shape"] = [priced["experts"], priced["out_dim"],

@@ -22,7 +22,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REGISTRY="$(cd "$SCRIPT_DIR/../.." && pwd)/deployment/fleet_registry.json"
+REGISTRY="$(cd "$SCRIPT_DIR/.." && pwd)/deployment/fleet_registry.json"
 STATE_REMOTE="/tmp/sparkpipe_fleet_state.json"
 ALL_HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7
            spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
@@ -30,8 +30,8 @@ STATE_HOST="spark0"
 
 die() { echo "fleet_swap: ERROR: $*" >&2; exit 1; }
 
-registry_hosts() { jq -r ".models["$1"].hosts[]" "$REGISTRY"; }
-registry_field() { jq -r ".models["$1"].$2" "$REGISTRY"; }
+registry_hosts() { jq -r ".models[\"$1\"].hosts[]" "$REGISTRY"; }
+registry_field() { jq -r ".models[\"$1\"].$2" "$REGISTRY"; }
 
 remote_state() {
     ssh -o BatchMode=yes "$STATE_HOST" "cat '$STATE_REMOTE' 2>/dev/null" 2>/dev/null         || echo '{"schema_version":1,"current_big":null,"running":{}}'
@@ -62,7 +62,7 @@ start_model() {
             test -x '$runtime/bin/sparkpipe_model_residentd' \
                 || { echo "missing residentd for $model on $host: $runtime" >&2; exit 1; }
             cd '$runtime' &&
-            export LD_LIBRARY_PATH='$runtime/lib':$LD_LIBRARY_PATH
+            export LD_LIBRARY_PATH='$runtime/lib':${LD_LIBRARY_PATH:-}
             setsid -f bin/sparkpipe_model_residentd \
                 --deployment config/model_resident.json --rank-index $rank \
                 >/tmp/fleet-swap-$model-$host.log 2>&1 </dev/null
@@ -80,7 +80,7 @@ cmd_status() {
 
 cmd_swap() {
     local model="$1" state current scope
-    jq -e ".models["$model"]" "$REGISTRY" >/dev/null || die "unknown model '$model'"
+    jq -e ".models[\"$model\"]" "$REGISTRY" >/dev/null || die "unknown model '$model'"
     state="$(remote_state)"
     current="$(printf '%s' "$state" | jq -r '.current_big')"
     scope="$(registry_field "$model" scope)"

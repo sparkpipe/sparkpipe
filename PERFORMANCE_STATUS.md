@@ -94,7 +94,190 @@ not a universal constant.
 
 ## Measured model performance
 
-### Current branch candidate: resident decode chain
+### Selected exact TP4 B1 stack: canonical Query plus fused KV and indexer
+
+The 2026-08-14 and 2026-08-15 interleaved full-ring evidence selects the lean
+stack with canonical separate Query arithmetic and the retained KV plus indexer
+post fusions. Every experiment below used one real request, resident prompt KV,
+128 generated tokens, no speculation, TP4 on `spark4` through `spark7`, and
+127 timed decode intervals after the first emitted token.
+
+| Experiment | Control mean tok/s | Candidate mean tok/s | Direct delta | Positive pairs | Decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| CSA active-slot | 38.0435 | 38.4009 | **+0.9395%** | 3/3 | Retain |
+| Pre-post stack vs resident chain | 38.0019 | 40.2541 | **+5.9266%** | 3/3 | Retain |
+| KV plus indexer post fusions | 40.1901 | 40.4007 | **+0.5241%** | 3/3 | Retain |
+| Query fusion alone | 40.3437 | 40.0519 | **-0.7232%** | 0/3 | Reject |
+| All-post vs lean selected stack | 40.3869 | 40.4596 | **+0.1800%** | 4/8 | Inconclusive; select lean |
+| Projection-precollective overlap | 40.4164 | 40.1835 | **-0.5763%** | 0/3 | Reject production integration |
+| Integrated lean live revalidation | 40.1503 | 40.4553 | **+0.7597%** | 3/3 | Retain observation; no new code attribution |
+| Cooperative Hc finalize plus pre-reduce | 40.4753 | 40.3402 | **-0.3336%** | 0/3 | Reject and remove |
+
+The CSA result is a repeatable bit-exact gain, not a failure: the raw receipt's
+arbitrary one-percent acceptance threshold is explicitly superseded by the
+adjudication. The Query fusion is rejected because its direct incremental test
+regressed in all three pairs. Its all-post stack then won only four of eight
+pairs by 0.1800% in aggregate. Under **Solutions/(codesize^2)**, that mixed
+result does not justify retaining extra Query-fusion source, so canonical Query
+is selected.
+
+The pre-post stack's +5.9266% and the KV-plus-indexer increment's +0.5241%
+compose multiplicatively to a **normalized +6.4817%**. That number is derived
+from two separate direct experiments; it is **not** a directly measured total
+for the integrated selected source. The CSA component is already represented
+inside the pre-post stack and must not be added again.
+
+All control and candidate O128 runs in the retained/rejected selection emitted
+the same comma-separated, newline-terminated token vector, SHA-256
+`211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083`.
+The available O24 gates matched
+`18cd1dfc7c7fce04adf200916184cee952a185367412a1780c0d28486c42cbd8`.
+Exact workload identities, driver identities, per-run rates, and raw receipt
+SHA-256s are frozen in:
+
+- [CSA active-slot adjudication](qualification/dsv4/performance/tp4_b1_20260814/csa_active_slot_adjudication_da7f/summary.json)
+- [pre-post stack versus resident chain](qualification/dsv4/performance/tp4_b1_20260815/pre_post_stack_vs_resident_chain_a2bfd99f/summary.json)
+- [KV plus indexer incremental result](qualification/dsv4/performance/tp4_b1_20260815/kv_indexer_runtime_inverse_07c63b06/summary.json)
+- [standalone Query attribution](qualification/dsv4/performance/tp4_b1_20260815/query_runtime_inverse_e9116c07/summary.json)
+- [lean versus all-post selection](qualification/dsv4/performance/tp4_b1_20260815/query_selection_kv_indexer_vs_all_post/summary.json)
+
+The isolated projection-precollective
+[PoC](qualification/dsv4/performance/tp4_b1_20260814/projection_precollective_overlap_da7f/poc_repeatability_receipt.json)
+was positive, but the production full-ring A/B regressed by 0.6321%, 0.9574%,
+and 0.1400% with all six O128 outputs exact. Production integration is
+therefore rejected. The raw full-ring runs and aggregate decision are frozen in
+the [rejection summary](qualification/dsv4/performance/tp4_b1_20260814/projection_precollective_overlap_da7f/full_ring_rejection_5e0a3b14/summary.json).
+
+The cooperative Hc candidate was also positive in its isolated actual-shape
+PoC: 93/93 exact comparisons and +13.1800%, saving 0.1606 ms/model step. The
+real full-ring A/B nevertheless regressed in all three exact pairs by 0.3336%
+in aggregate. Its production integration was removed; the PoC, rejected patch,
+artifact identities, raw runs, and decision are frozen in the
+[Hc rejection summary](qualification/dsv4/performance/tp4_b1_20260815/hc_cooperative_full_ring_rejection_a7ebd51c/summary.json).
+
+The selected integrated lean source passed the GA validator, an exact O24
+gate, and three exact interleaved O128 pairs. It measured 40.4553 tok/s mean
+versus 40.1503 tok/s for the previous semantically identical lean build. The
+positive 0.7597% observation is retained, but no separate optimization credit
+is assigned because the production module source was byte-identical. The
+[integrated-source receipt](qualification/dsv4/performance/tp4_b1_20260815/integrated_lean_3d962820/summary.json)
+freezes the exact source and artifact hashes. The best contemporaneous lean
+control mean is 40.4753 tok/s in the Hc rejection A/B. None of these branch
+receipts is merged-main or zero-drift production qualification.
+
+### Earlier retained milestone: exact combined plus LinearPair B1 wins
+
+The unmerged candidate based on
+`main@da7f91090c0d40729352b4e4180ad231971c90a2` produces **39.5202
+decode tokens/s mean** over three interleaved TP4 B1 O128 pairs. The accepted
+control measured 37.9797 tokens/s in the same sequence, so the candidate is
+**4.0561% faster**. Every paired delta was positive. The normalized
+increment over the preceding exact combined candidate is **1.3086%**; it is
+retained because every repeatable bit-exact positive end-to-end delta counts,
+with no minimum-gain threshold.
+
+| Pair | Control tok/s | Candidate tok/s | Delta |
+| ---: | ---: | ---: | ---: |
+| 1 | 37.9479 | 39.6750 | +4.5514% |
+| 2 | 37.9765 | 39.2847 | +3.4448% |
+| 3 | 38.0147 | 39.6008 | +4.1723% |
+| Mean | **37.9797** | **39.5202** | **+4.0561%** |
+
+This is one real request with resident prompt KV, 128 generated tokens, no
+speculation, and TP4 on `spark4` through `spark7`. The timed boundary is the
+127 decode intervals after the first emitted token, and includes scheduler,
+model kernels, TP collectives, sampling, runtime IPC, and streamed client
+observation. Mean end-to-end decode time fell from 26.3299 to 25.3035 ms/token,
+a measured saving of 1.0263 ms/token.
+
+The candidate combines active-slot CSA work, fused compressor ingest, explicit
+B1 CTA policies, shared-dense W13, a certified head screen, and a common
+runtime LinearPair work-shape selector. The selector lives in common kernel
+code rather than a B1-specific driver fork. The target head, spine, KV, and
+final rescore remain BF16: FP8 is used only to form a conservative head
+candidate set, and every survivor is rescored against the untouched BF16 head
+before the token and score are emitted. The screen has full rank-local
+vocabulary capacity and dedicated scratch; it has no overflow fallback.
+
+All six measured runs emitted the exact retained 128-token vector. Its
+comma-separated token IDs plus trailing newline hash to
+`211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083`.
+The exact archive passed the standard `sm_121a` GA B1 validator; the archive
+SHA-256 is
+`5615871cf7e38ecf4b85cdd7d11494455c6a6e248461b6be8ffbceae46481295`
+and the measured driver SHA-256 is
+`045b31d3a68c2cf41f79caa96af9471388b7410496d09c54108c4e31b2aad6fe`.
+
+The raw client event streams, warmups, exact smoke, artifact identity, and
+aggregate decision are retained under
+[`combined_plus_linear_da7f`](qualification/dsv4/performance/tp4_b1_20260814/combined_plus_linear_da7f).
+The aggregate receipt is
+[`summary.json`](qualification/dsv4/performance/tp4_b1_20260814/combined_plus_linear_da7f/summary.json)
+with SHA-256
+`ad6959eddaa7e4a1c7e8dda3e8ed7d5141c3de6cfabfbd96fab8afdf47b5dc3f`.
+
+The immediately preceding 39.0094 tok/s candidate was also profiled with
+CUPTI. Its steady profiled decode period was 27.8437 ms: GPU busy-union was
+22.0572 ms (79.22%) and exposed idle was 5.7865 ms (20.78%). Summed kernel
+durations attribute 38.65% to dense/projection GEMVs, 21.08% to routed
+experts, 10.81% to attention/KV, 9.48% to weight read-ahead, and 7.93% to
+routing/gate. These category percentages can overlap and are not exclusive
+wall time. Collective-shaped transitions account for approximately 4.47 ms
+per model step and 73% of captured exposed gaps. The raw no-drop CUPTI log and
+profile receipt are retained under
+[`profile_da7f`](qualification/dsv4/performance/tp4_b1_20260814/profile_da7f).
+
+| Profile category | Summed ms/model step | Share of summed kernel time |
+| --- | ---: | ---: |
+| Dense and projection GEMVs | 10.202 | 38.649% |
+| Routed-expert compute | 5.564 | 21.077% |
+| Attention and KV | 2.854 | 10.811% |
+| Weight read-ahead | 2.504 | 9.484% |
+| Routing and gate | 2.093 | 7.928% |
+| Compressor and Hc | 1.349 | 5.110% |
+| Output head | 0.801 | 3.036% |
+| Collective local combine and pack | 0.584 | 2.214% |
+| Norm and embedding | 0.410 | 1.554% |
+| Setup and bookkeeping | 0.036 | 0.135% |
+
+The first post-profile expert fast gate was rejected before production
+integration. A routed-only cooperative W13-to-W2 schedule appeared 3.3829%
+faster, but that test omitted the concurrent shared-expert branch. At the
+required production overlap boundary, the same schedule regressed in all three
+independent runs by 0.8871%, 0.8206%, and 0.7861% (0.8311% aggregate). A
+non-grid-cooperative expert-cluster alternative regressed by 13.71%. Every
+variant was bitwise exact; the rejection is strictly performance-based. No
+expert change entered the candidate. The superseding source and raw receipt
+are retained under
+[`persistent_expert_probe_da7f`](qualification/dsv4/performance/tp4_b1_20260814/persistent_expert_probe_da7f).
+
+The production-shaped dense/projection persistent bundle was also rejected.
+It preserved exact FP32 accumulation order and was bitwise exact across all 41
+non-SWA layers, nine CTA-grid choices, and seven deterministic inputs, but the
+best 64-CTA choice lost 1.0338% in the first 15-round interleaved validation and
+0.7840% in an independent replay. Smaller persistent grids were slower. The
+accepted three-stream fork already overlaps FP8 q/kv with BF16 main/index work;
+reusing the 8 KiB input did not repay the lost CTA parallelism and descriptor
+overhead. No bundle change entered the candidate. Raw receipts and source are
+retained under
+[`projection_bundle_probe_da7f`](qualification/dsv4/performance/tp4_b1_20260814/projection_bundle_probe_da7f).
+
+A predeclared persistent GPU queue for all 129 weight-read-ahead tasks was
+also rejected at the production overlap boundary. It removed 128 kernel
+launches per model step and remained exact for all 129 consumers, but its best
+eight-CTA configuration regressed by 33.1519%, 32.8773%, and 33.1884% in three
+independent interleaved runs: 13.4551 ms versus 9.0051 ms control, or 4.4500 ms
+added per model step. One to four resident worker CTAs could not keep pace with
+the 60 us collective windows; eight or more permanently occupied CTAs stole
+capacity from the full-byte consumers. No queue change entered the candidate.
+The exact actual-shape source and receipt are retained under
+[`weight_readahead_queue_probe_da7f`](qualification/dsv4/performance/tp4_b1_20260814/weight_readahead_queue_probe_da7f).
+
+This is branch evidence, not merged-main qualification. It remains below the
+50 tokens/s target; CI and clean merged-main deployment qualification are
+deferred until the retained hill-climb changes are finalized.
+
+### Earlier retained milestone: resident decode chain
 
 The unmerged candidate based on `main@a14c2e1caa519f2c337671699afb4f6a185bc09e`
 produces **38.1059 decode tokens/s mean** over three TP4 B1 O128 runs, with a
@@ -198,7 +381,7 @@ Wrapper generation therefore used the explicitly named
 passed, but the static validator gap remains open and is not represented as a
 validation success.
 
-### Current branch candidate: device-predicated compressor emission
+### Earlier retained milestone: device-predicated compressor emission
 
 Candidate `de1beb2035ecbf40dd49f0fa822c266007baea9d`, based on merged
 `main@ed1d731d`, produces **33.9911 decode tokens/s mean** over three TP4 B1
@@ -380,3 +563,66 @@ gate.
 The Station comparison requires the same checkpoint, precision, request shape,
 context, output length, batching policy, and timing boundary on both systems.
 No analytical memory-bandwidth ratio closes that gate.
+
+### GLM 5.2 TP8 B1 single-stream + B8 multi-sequence (2026-08-16)
+
+Merged-main accuracy fixes (#663 TP8 support, #665 head-offset + gate-up order)
+deployed on the TP8 fanout band spark8-sparkf (8 ranks, BF16 spine + FP8
+experts, recursive-doubling collective). Layer 0 and layer 3 outputs were
+verified against a CPU torch reference of the BF16 master (0.2-0.9% RMS
+agreement; layer 3 includes the router + correction-bias top-8 + FP8 expert
+path). All runs emit the identical token stream.
+
+| Field | Measured configuration |
+| --- | --- |
+| Model | zai-org/GLM-5.2 |
+| Checkpoint revision | b4734de4facf877f85769a911abafc5283eab3d9 |
+| Kernel target | cuda.sm121.glm52.resident_decode_stage.bf16.expert_fp8 |
+| Topology | TP8 fanout on spark8 through sparkf; no PP, no speculation |
+| Workload A (single-stream) | B1/B8: one 6-token prompt, one request, 128 output tokens |
+| Workload B (serving aggregate) | B8: 8 concurrent sequences x 32 output tokens (256 total) |
+| Timed boundary | Process start to terminal (includes prefill + connect) |
+| Included | Scheduler, model kernels, TP collectives, runtime IPC |
+| Precision route | Exact target above; no speculative draft model |
+
+| Workload | Tokens | Wall time | Throughput |
+| ---: | ---: | ---: | ---: |
+| A: single-stream decode (B1, clean fleet) | 128 | 18.52 s | 6.91 tok/s |
+| A: single-stream decode (B8 class, batched prefill) | 128 | 18.73 s | 6.83 tok/s |
+| B: 8-sequence aggregate (B8 class) | 256 | 5.89 s | 43.46 tok/s |
+
+The single-stream path is bandwidth-bound: per token it reads ~15.7 GB of FP8
+expert weights plus ~6 GB of BF16 spine at the 273 GB/s LPDDR5x limit (~80 ms
+hard floor), plus ~31 ms of TP collectives (158 reduces/token, median 912 us)
+and ~25 ms of kernel launch + compute overhead. The B8 class amortizes the same
+weight bytes across eight rows, which is what lifts the aggregate to 43.46
+tok/s. Next: reduce-path and launch-overhead squeezes toward the single-stream
+ceiling, and dspark speculative decode (draft weights must be trained first;
+the base checkpoint ships none).
+
+| Receipt | SHA-256 |
+| --- | --- |
+| [glm52-b128d.stderr](qualification/glm52/performance/tp8_b8_20260816/glm52-b128d.stderr) | 4519f1b8a5f4639916e81d374c4fdf7c92cd500fc0ffa8569636df0ad278fe06 |
+| [glm52-toks.txt](qualification/glm52/performance/tp8_b8_20260816/glm52-toks.txt) | bc9edad1edcb6fcebf2aadb42c2dd1b85549bfdfc7ee8a0d6d2dca2a1d32b7c8 |
+| [glm52-b8.stdout](qualification/glm52/performance/tp8_b8_20260816/glm52-b8.stdout) | 29bea03aad86124aae5e0521afdb34262b173f6e0fb8595f630f410b81a525f7 |
+| [glm52-multi.stdout](qualification/glm52/performance/tp8_b8_20260816/glm52-multi.stdout) | 5740de2f83cdb93237fc5c12a4a96b6393e856c39793f682e8a2c2318846c0d9 |
+
+### GLM 5.2 TP8 B16 16-sequence aggregate (2026-08-16)
+
+The B16 batch class (16 rows per wave, resident_sequence_capacity 16, 8 GiB KV
+backing) lifts the serving aggregate further: the same weight bytes amortize
+across sixteen rows. Sequence 1 emits the identical retained token stream.
+
+| Workload | Tokens | Wall time | Throughput |
+| ---: | ---: | ---: | ---: |
+| 16-sequence aggregate, run 1 | 512 | 6.74 s | 75.96 tok/s |
+| 16-sequence aggregate, run 2 | 512 | 6.77 s | 75.63 tok/s |
+| 16-sequence aggregate, run 3 | 512 | 6.82 s | 75.07 tok/s |
+| Mean | 512 | 6.78 s | 75.55 tok/s |
+
+| Receipt | SHA-256 |
+| --- | --- |
+| [glm52-b16.stdout](qualification/glm52/performance/tp8_b16_20260816/glm52-b16.stdout) | 0f74a5775de854ccadf57ac2b46b3e878e88aeecdef93d83298096f704652b44 |
+| [glm52-b16.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16.stderr) | 2d606c22af465762952d0f9ba51c82a14c8e8885a7a30df4985cca403c260b21 |
+| [glm52-b16-r1.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16-r1.stderr) | 9483ab63383a267903c771eb10caa182af3ff847543a7d080f198e512d51436a |
+| [glm52-b16-r2.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16-r2.stderr) | cdf2d247e59adce83d8102741786860be4a0b5f87ba086ecd11d74f361b873a5 |

@@ -199,10 +199,10 @@ def pro_build_records(contract: Mapping[str, object], first_layer: int,
                              flash.GLOBAL_LAYER, PRO_HIDDEN,
                              PRO_DSPARK_TARGET_LAYER_COUNT * PRO_HIDDEN,
                              flash.WEIGHT_FP8, "main_proj")
-            pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER)
-            pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_2)
-            pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_3)
-            flash.add_record(records, flash.KIND_MTP_NORM,
+            pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 0)
+            pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 1)
+            pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 2)
+            flash.add_record(records, flash.KIND_MTP_FINAL_NORM,
                              flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
                              PRO_HIDDEN, ("mtp.2.norm.weight",))
             flash.add_record(records, flash.KIND_MTP_MARKOV_W1,
@@ -290,9 +290,9 @@ def pro_parse_args(argv=None) -> argparse.Namespace:
 
 # Patch the flash module's geometry-bearing functions, then reuse its main().
 MTP_PREFIXES = {
-    flash.MTP_LAYER: "mtp.0",
-    flash.MTP_LAYER_2: "mtp.1",
-    flash.MTP_LAYER_3: "mtp.2",
+    flash.MTP_LAYER_FIRST + 0: "mtp.0",
+    flash.MTP_LAYER_FIRST + 1: "mtp.1",
+    flash.MTP_LAYER_FIRST + 2: "mtp.2",
 }
 
 

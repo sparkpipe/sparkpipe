@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-15",
+  "status": "lean_canonical_query_selected",
+  "measurement_kind": "direct_interleaved_end_to_end_cached_kv_decode",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "workload": {
+    "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    "adapter_id": "spark.dsv4.flash-0731.serving-adapter.tp4.v1",
+    "layout": "TP4",
+    "ranks": [
+      "spark4",
+      "spark5",
+      "spark6",
+      "spark7"
+    ],
+    "stage_count": 4,
+    "batch_size": 1,
+    "request_count": 1,
+    "prompt_tokens": 128,
+    "generated_tokens": 128,
+    "batch_sha256": "ad47693813d04ed65fc67178ab2d783e633282c14ed5445f092f67939aa40b7d",
+    "speculation": false,
+    "prefill": "resident cached prompt KV",
+    "timed_intervals": 127,
+    "linear_weight_codec": 5,
+    "expert_weight_codec": 7,
+    "kv_cache_codec": 1
+  },
+  "comparison": {
+    "control": "lean stack with canonical Query and retained fixed KV plus indexer post fusions",
+    "candidate": "all-post stack adding fixed fused Query RMS plus RoPE"
+  },
+  "correctness": {
+    "token_count": 128,
+    "token_vector_encoding": "comma-separated decimal token IDs plus trailing newline",
+    "token_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+    "all_control_runs_exact": true,
+    "all_candidate_runs_exact": true,
+    "all_process_status_zero": true,
+    "all_post_short_gate_token_count": 24,
+    "all_post_short_gate_token_csv_newline_sha256": "18cd1dfc7c7fce04adf200916184cee952a185367412a1780c0d28486c42cbd8"
+  },
+  "identity": {
+    "lean_driver_sha256": "07c63b069c066694fb184f3ebd807e9f28f364d1b929389549df9d659f49dc1d",
+    "all_post_driver_sha256": "7bc3485df59b0556dfb6381a908d8ebe32a6e8c75289583f3f7152818c3fd52b",
+    "lean_runtime_root": "/tmp/dsv4-kv-indexer-fixed-07c63b06-runtime",
+    "all_post_runtime_root": "/tmp/dsv4-all-post-fixed-7bc3485d-runtime"
+  },
+  "result": {
+    "lean_tokens_per_second": [
+      40.46225149150056,
+      40.37075826672025,
+      40.421090163256345,
+      40.42230594941489,
+      40.36184339208963,
+      40.24443264222763,
+      40.38939244061789,
+      40.4228752583837
+    ],
+    "all_post_tokens_per_second": [
+      40.231668952757865,
+      40.5907023127771,
+      40.5541787019827,
+      40.4121407288536,
+      40.462494274616795,
+      40.6829666415085,
+      40.36280921497236,
+      40.37956312412705
+    ],
+    "paired_all_post_delta_percent": [
+      -0.5698707566758388,
+      0.544810292151876,
+      0.32925519373383505,
+      -0.025147552378657068,
+      0.24937137174187995,
+      1.0896761874603422,
+      -0.06581734470162415,
+      -0.10714758408399971
+    ],
+    "lean_mean_tokens_per_second": 40.386868700526364,
+    "all_post_mean_tokens_per_second": 40.4595654939495,
+    "aggregate_all_post_delta_percent": 0.18000106411366623,
+    "mean_paired_all_post_delta_percent": 0.1806412259059767,
+    "all_post_positive_pairs": 4,
+    "pair_count": 8,
+    "directly_measured": true,
+    "interpretation": "inconclusive"
+  },
+  "standalone_query_attribution": {
+    "summary": "../query_runtime_inverse_e9116c07/summary.json",
+    "aggregate_delta_percent": -0.7232083783714427,
+    "positive_pairs": 0,
+    "pair_count": 3,
+    "decision": "rejected"
+  },
+  "receipt_sha256": {
+    "winner-compare-allpost-warm-o24.json": "66c2ed82aae685377057c67bf11966d33800e8d2265a3171cce05e69d9585f46",
+    "winner-compare-pair1-allpost-o128.json": "95906c66d2c26f3cb0f09e76a826111656359e4041088623cf77eea1ff8905f1",
+    "winner-compare-pair1-kvindexer-o128.json": "58a78bcbc4aa848a1ae590958e94042dfdcecb4ba728ccec75aaacbeb6960a57",
+    "winner-compare-pair2-allpost-o128.json": "1b19175429e696af897154607575e5e841b3d209d113bd00076c6f8e2337de1f",
+    "winner-compare-pair2-kvindexer-o128.json": "50706cd52a002ce2e8156017c9a4e4c32360a2f89084011da8100e17bcd8514f",
+    "winner-compare-pair3-allpost-o128.json": "04e0dbb39a848a8819203574063fcc98be43a4b51ae2d4c56d7a4104e2c0532b",
+    "winner-compare-pair3-kvindexer-o128.json": "cb00851fd86379f464b3b0d0a8e4bca6657698fd81e6776eee4d7336141ad2d2",
+    "winner-compare-pair4-allpost-o128.json": "49d842b7db32439fef86db300d8d2feeca306123bb2b553f33cb2c26ef2bfa74",
+    "winner-compare-pair4-kvindexer-o128.json": "44ec266c42a3102516d4cdf2899fe2a11202363ab513f112f9ee4d8de5c96a62",
+    "winner-compare-pair5-allpost-o128.json": "22a760f32404fed26b7c7ec32472a4760b2baf8836c6117ca2f99ad76a24ab35",
+    "winner-compare-pair5-kvindexer-o128.json": "c0cc7abebb9cb852a6663a302d470bfc6c725034b46bd624fed96f4a87b69f74",
+    "winner-compare-pair6-allpost-o128.json": "3128af4dec8a496db587c34de7e6b04a560217f7c927a2ab0ea0dad8673d596a",
+    "winner-compare-pair6-kvindexer-o128.json": "aec814abf2d26b3e94b7f11c281f51d622e01cf8247380fde695eafe367894da",
+    "winner-compare-pair7-allpost-o128.json": "9546f80a09e23a89afd29788aa6f26a1038d1286b7ac7373f47167891d6127c1",
+    "winner-compare-pair7-kvindexer-o128.json": "266426def3fd36db88bdacc1f92116a7aec345d7a6da24b0205a3e71fa254c79",
+    "winner-compare-pair8-allpost-o128.json": "b0cbe6bfb43a7bb305b1fca9441a668365f6d3fc6ea3aaaf3fccc49def052a01",
+    "winner-compare-pair8-kvindexer-o128.json": "68b4b2e6fadd8689e5d42d8b8789f938eb483b39107117e323d62e2c735a2a64"
+  },
+  "decision": "select the lean canonical Query stack under Solutions/(codesize^2): the standalone Query fusion regressed, while the eight-pair all-post comparison was split 4/8 and too small to justify extra source"
+}

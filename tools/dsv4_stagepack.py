@@ -80,30 +80,23 @@ KIND_LM_HEAD = 37
 KIND_HC_HEAD_FN = 38
 KIND_HC_HEAD_BASE = 39
 KIND_HC_HEAD_SCALE = 40
-KIND_MTP_E_PROJ = 41
-KIND_MTP_H_PROJ = 42
-KIND_MTP_ENORM = 43
-KIND_MTP_HNORM = 44
-KIND_MTP_FINAL_NORM = 45
-KIND_MTP_HC_HEAD_FN = 46
-KIND_MTP_HC_HEAD_BASE = 47
-KIND_MTP_HC_HEAD_SCALE = 48
-# GA DSpark speculative stage (deepseek-ai/DeepSeek-V4-Pro-0813).
-KIND_MTP_MAIN_NORM = 49
-KIND_MTP_MAIN_PROJ = 50
-KIND_MTP_NORM = 51
-KIND_MTP_MARKOV_W1 = 52
-KIND_MTP_MARKOV_W2 = 53
-KIND_MTP_CONFIDENCE_PROJ = 54
+KIND_MTP_MAIN_PROJ = 41
+KIND_MTP_MAIN_NORM = 42
+KIND_MTP_FINAL_NORM = 43
+KIND_MTP_HC_HEAD_FN = 44
+KIND_MTP_HC_HEAD_BASE = 45
+KIND_MTP_HC_HEAD_SCALE = 46
+KIND_MTP_MARKOV_W1 = 47
+KIND_MTP_MARKOV_W2 = 48
+KIND_MTP_CONFIDENCE_PROJ = 49
 
 GLOBAL_LAYER = 0xFFFFFFFF
-MTP_LAYER = 0xFFFFFFFE
-MTP_LAYER_2 = 0xFFFFFFFD
-MTP_LAYER_3 = 0xFFFFFFFC
+MTP_LAYER_FIRST = 0xFFFFFFFB
+MTP_LAYER_COUNT_MAX = 3
 
 HEADER_STRUCT = struct.Struct("<16I2Q")
 ENTRY_STRUCT = struct.Struct("<6I2Q")
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 CODEC_ABI_VERSION = 1
 CODEC_IDS = {
     "bf16": 1,
@@ -482,12 +475,20 @@ class SafetensorSource:
             remaining -= len(data)
 
 
+def is_mtp_layer(layer: int) -> bool:
+    return MTP_LAYER_FIRST <= layer < MTP_LAYER_FIRST + MTP_LAYER_COUNT_MAX
+
+
 def source_prefix(layer: int) -> str:
-    return "mtp.0" if layer == MTP_LAYER else f"layers.{layer}"
+    if is_mtp_layer(layer):
+        return f"mtp.{layer - MTP_LAYER_FIRST}"
+    return f"layers.{layer}"
 
 
 def layer_kind(ratios: Sequence[int], layer: int) -> int:
-    if layer == MTP_LAYER:
+    # The three checkpoint draft layers are all sliding-window (ratio 0);
+    # build_records verifies the auxiliary ratio entries before packing.
+    if is_mtp_layer(layer):
         return 0
     ratio = int(ratios[layer])
     if ratio == 0:
@@ -621,14 +622,21 @@ def build_records(contract: Mapping[str, object], first_layer: int, layer_count:
         raise PackFailure("contract runtime section is malformed")
     packed_mtp_layer_count = int(runtime.get(
         "packed_mtp_layer_count", mtp_layer_count))
-    if packed_mtp_layer_count not in (0, 1):
+    if packed_mtp_layer_count not in (0, MTP_LAYER_COUNT_MAX):
         raise PackFailure(
             f"unsupported packed MTP layer count: {packed_mtp_layer_count}")
+    if packed_mtp_layer_count != 0 and source_auxiliary_layer_count != packed_mtp_layer_count:
+        raise PackFailure(
+            f"DSpark layer count {source_auxiliary_layer_count} does not match packed {packed_mtp_layer_count}")
     if first_layer < 0 or layer_count <= 0 or first_layer + layer_count > total_layers:
         raise PackFailure(f"invalid layer slice {first_layer}+{layer_count}")
     ratios = contract["attention"]["compression_ratios"]
     if not isinstance(ratios, list) or len(ratios) != total_layers + source_auxiliary_layer_count:
         raise PackFailure("contract compression ratio table is malformed")
+    for aux_index in range(source_auxiliary_layer_count):
+        if int(ratios[total_layers + aux_index]) != 0:
+            raise PackFailure(
+                f"DSpark draft layer {aux_index} is not sliding-window (ratio {ratios[total_layers + aux_index]})")
     records: List[Record] = []
     if first_layer == 0:
         add_record(records, KIND_EMBEDDING, GLOBAL_LAYER, WEIGHT_BF16, 129280, 4096,
@@ -650,23 +658,30 @@ def build_records(contract: Mapping[str, object], first_layer: int, layer_count:
         add_record(records, KIND_HC_HEAD_SCALE, GLOBAL_LAYER, WEIGHT_F32, 1, 1,
                    ("hc_head_scale",))
         if packed_mtp_layer_count != 0:
-            add_record(records, KIND_MTP_E_PROJ, GLOBAL_LAYER, WEIGHT_FP8, 4096, 4096,
-                       ("mtp.0.e_proj.weight",), ("mtp.0.e_proj.scale",))
-            add_record(records, KIND_MTP_H_PROJ, GLOBAL_LAYER, WEIGHT_FP8, 4096, 4096,
-                       ("mtp.0.h_proj.weight",), ("mtp.0.h_proj.scale",))
-            add_record(records, KIND_MTP_ENORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
-                       ("mtp.0.enorm.weight",))
-            add_record(records, KIND_MTP_HNORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
-                       ("mtp.0.hnorm.weight",))
+            # Three full draft transformer layers (reference: DSparkBlock):
+            # each is a sliding-window layer with the standard per-layer
+            # tensor set, plus stage extras below.
+            for stage in range(packed_mtp_layer_count):
+                add_layer_records(records, ratios, MTP_LAYER_FIRST + stage)
+            add_record(records, KIND_MTP_MAIN_PROJ, GLOBAL_LAYER, WEIGHT_FP8, 4096, 3 * 4096,
+                       ("mtp.0.main_proj.weight",), ("mtp.0.main_proj.scale",))
+            add_record(records, KIND_MTP_MAIN_NORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
+                       ("mtp.0.main_norm.weight",))
+            last = MTP_LAYER_FIRST + packed_mtp_layer_count - 1
             add_record(records, KIND_MTP_FINAL_NORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
-                       ("mtp.0.norm.weight",))
+                       (f"mtp.{last - MTP_LAYER_FIRST}.norm.weight",))
             add_record(records, KIND_MTP_HC_HEAD_FN, GLOBAL_LAYER, WEIGHT_F32, 4, 16384,
-                       ("mtp.0.hc_head_fn",))
+                       (f"mtp.{last - MTP_LAYER_FIRST}.hc_head_fn",))
             add_record(records, KIND_MTP_HC_HEAD_BASE, GLOBAL_LAYER, WEIGHT_F32, 1, 4,
-                       ("mtp.0.hc_head_base",))
+                       (f"mtp.{last - MTP_LAYER_FIRST}.hc_head_base",))
             add_record(records, KIND_MTP_HC_HEAD_SCALE, GLOBAL_LAYER, WEIGHT_F32, 1, 1,
-                       ("mtp.0.hc_head_scale",))
-            add_layer_records(records, ratios, MTP_LAYER)
+                       (f"mtp.{last - MTP_LAYER_FIRST}.hc_head_scale",))
+            add_record(records, KIND_MTP_MARKOV_W1, GLOBAL_LAYER, WEIGHT_BF16, 129280, 256,
+                       (f"mtp.{last - MTP_LAYER_FIRST}.markov_head.markov_w1.weight",))
+            add_record(records, KIND_MTP_MARKOV_W2, GLOBAL_LAYER, WEIGHT_BF16, 129280, 256,
+                       (f"mtp.{last - MTP_LAYER_FIRST}.markov_head.markov_w2.weight",))
+            add_record(records, KIND_MTP_CONFIDENCE_PROJ, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096 + 256,
+                       (f"mtp.{last - MTP_LAYER_FIRST}.confidence_head.proj.weight",))
     return records
 
 
@@ -773,8 +788,9 @@ def make_directory(records: Sequence[Record]) -> Tuple[List[DirectoryEntry], int
 
 def pack_header(records: Sequence[Record], first_layer: int, layer_count: int,
                 file_bytes: int, codecs: Tuple[int, int, int]) -> bytes:
-    packed_mtp_layer_count = int(any(
-        record.layer == MTP_LAYER for record in records))
+    packed_mtp_layer_count = max(
+        (record.layer - MTP_LAYER_FIRST + 1
+         for record in records if is_mtp_layer(record.layer)), default=0)
     return HEADER_STRUCT.pack(
         0x34565344, FORMAT_VERSION, HEADER_STRUCT.size, ENTRY_STRUCT.size,
         CODEC_ABI_VERSION, *codecs,

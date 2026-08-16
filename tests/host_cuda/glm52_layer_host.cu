@@ -232,6 +232,18 @@ int main(void)
     uint16_t poison;
 
     memset(&buffers, 0, sizeof(buffers));
+    buffers.tp_degree = 1u;
+    buffers.tp_rank = 0u;
+    buffers.attn_heads = GLM52_ATTN_HEADS;
+    buffers.q_b_rows = GLM52_ATTN_HEADS * (GLM52_QK_NOPE_DIM + GLM52_ROPE_DIM);
+    buffers.attn_output_columns = GLM52_ATTN_HEADS * GLM52_VALUE_DIM;
+    buffers.dense_gate_up_rows = GLM52_DENSE_INTERMEDIATE * 2u;
+    buffers.dense_intermediate = GLM52_DENSE_INTERMEDIATE;
+    buffers.expert_w1_rows = GLM52_GATE_UP_DIM;
+    buffers.expert_intermediate = GLM52_EXPERT_INTERMEDIATE;
+    buffers.shared_gate_up_rows = GLM52_GATE_UP_DIM;
+    buffers.shared_intermediate = GLM52_EXPERT_INTERMEDIATE;
+    buffers.head_vocabulary = GLM52_VOCAB;
     LmKvAccessErrorReset(&kv_access_error);
     FillRandom(hidden, ROWS * GLM52_HIDDEN);
     FillRandom(residual, ROWS * GLM52_HIDDEN);

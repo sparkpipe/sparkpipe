@@ -4,6 +4,7 @@
 
 #include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_module_abi.h"
+#include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weight_codec.h"
 
 // The batch-variant tuning header: the active-sequence ceiling below IS the
@@ -15,11 +16,15 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 1u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 3u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT 13u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE 6u
+/*
+ * TP8 geometry: every rank owns the full 78-layer model as one stage.
+ * The old PP13 split (13 stages x 6 layers) is retired.
+ */
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT 1u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE 78u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT \
 	SPARK_BATCH_BUCKET
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 65536u
@@ -56,9 +61,19 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
 	uint32_t execution_row_capacity;
-	uint32_t reserved0;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
 	const char *stage_pack_path;
 	const char *model_revision;
+	/* TP8 hidden-state collectives. tp_degree == 1 leaves every field
+	 * unset and the module runs the eager chunk chain without a backend. */
+	uint32_t tp_collective_backend_kind;
+	uint64_t tp_collective_identifier;
+	uint32_t tp_connect_timeout_milli;
+	uint32_t tp_operation_timeout_milli;
+	uint32_t tp_collective_control_port_base;
+	SparkTpDeviceCollectiveTopology tp_collective_topology;
+	const char *tp_collective_backend_module_path;
 } SparkGlm52ResidentDecodeStageNodeContext;
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES \

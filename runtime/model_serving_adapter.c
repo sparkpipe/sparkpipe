@@ -583,7 +583,16 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ? 1u : 0u;
 	if ( stage_index != final_stage && (parallel == 0u || hybrid != 0u) )
 		return(has_tokens == 0u && completion->tokens_per_sequence == 0u ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
-	return(has_tokens != 0u && completion->tokens_per_sequence == tokens_per_sequence && active_sequence_count <= UINT32_MAX / tokens_per_sequence && completion->token_count == active_sequence_count * tokens_per_sequence ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
+	/* Speculative completions may commit up to max_speculative_token_count
+	 * extra tokens per sequence beyond the submission's count; the exact
+	 * yield rides accepted_token_count. */
+	if ( has_tokens != 0u &&
+		completion->tokens_per_sequence >= tokens_per_sequence &&
+		completion->tokens_per_sequence <= tokens_per_sequence + descriptor->max_speculative_token_count &&
+		active_sequence_count <= UINT32_MAX / completion->tokens_per_sequence &&
+		completion->token_count == active_sequence_count * completion->tokens_per_sequence )
+		return(SPARK_STATUS_OK);
+	return(SPARK_STATUS_SCHEMA_ERROR);
 }
 
 SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(

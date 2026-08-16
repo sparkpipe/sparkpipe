@@ -65,9 +65,7 @@ extern "C" void SparkStageModuleCudaForkDestroy(SparkStageModuleCudaFork *fork);
 extern "C" cudaError_t SparkDsv4LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
 extern "C" cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
 extern "C" cudaError_t SparkDsv4LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
-extern "C" cudaError_t SparkDsv4LaunchGateScores(cudaStream_t stream, const SparkDsv4LinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count);
-extern "C" cudaError_t SparkDsv4LaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, const uint32_t *tid2eid_u32, const uint32_t *token_ids, uint32_t row_count, uint32_t expert_count, uint32_t topk, float route_scale, uint32_t *indices_u32, float *weights_f32);
-extern "C" cudaError_t SparkDsv4LaunchMoeRoute(cudaStream_t stream, const uint32_t *route_expert, uint32_t rows, uint32_t expert_width, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2);
+extern "C" cudaError_t SparkDsv4LaunchGateRoute(cudaStream_t stream, const SparkDsv4LinearView *gate, const void *input_bf16, float *scores_f32, const float *bias_f32, const uint32_t *tid2eid_u32, const uint32_t *token_ids, uint32_t row_count, uint32_t expert_count, uint32_t topk, float route_scale, uint32_t *indices_u32, float *weights_f32, uint32_t expert_width, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2);
 extern "C" cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
 extern "C" cudaError_t SparkDsv4LaunchWiden(cudaStream_t stream, const void *input_bf16, float *output_f32, uint32_t row_count, uint32_t width, float scale);
 extern "C" cudaError_t SparkDsv4LaunchBuildAttentionIndices(cudaStream_t stream, const uint64_t *row_positions, int32_t *indices, uint32_t *slot_counts, uint32_t *attention_slot_counts, uint32_t row_count, uint32_t column_count, uint32_t index_slot_capacity, uint32_t layer_kind);
@@ -503,9 +501,7 @@ static int SparkDsv4ValidationGateRouteRunCase(
 	error = cudaMemcpy(buffers->bias_f32,bias,sizeof(bias),cudaMemcpyHostToDevice);
 	if ( error == cudaSuccess ) error = cudaMemcpy(buffers->tid2eid_u32,hash_expected,sizeof(hash_expected),cudaMemcpyHostToDevice);
 	if ( error == cudaSuccess ) error = cudaMemcpy(buffers->token_ids,&token,sizeof(token),cudaMemcpyHostToDevice);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchGateScores(cudaStreamPerThread,&gate,buffers->input_bf16,buffers->scores_f32,1u);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchGateSelect(cudaStreamPerThread,buffers->scores_f32,hash_routed != 0u ? 0 : buffers->bias_f32,hash_routed != 0u ? buffers->tid2eid_u32 : 0,buffers->token_ids,1u,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_ROUTED_SCALING_FACTOR,buffers->indices_u32,buffers->weights_f32);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchMoeRoute(cudaStreamPerThread,buffers->indices_u32,1u,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,buffers->group_row_offset,buffers->route_packed_row,buffers->route_source_token,buffers->group_tile_prefix_w1,buffers->group_tile_prefix_w2);
+	if ( error == cudaSuccess ) error = SparkDsv4LaunchGateRoute(cudaStreamPerThread,&gate,buffers->input_bf16,buffers->scores_f32,hash_routed != 0u ? 0 : buffers->bias_f32,hash_routed != 0u ? buffers->tid2eid_u32 : 0,buffers->token_ids,1u,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_ROUTED_SCALING_FACTOR,buffers->indices_u32,buffers->weights_f32,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,buffers->group_row_offset,buffers->route_packed_row,buffers->route_source_token,buffers->group_tile_prefix_w1,buffers->group_tile_prefix_w2);
 	if ( error == cudaSuccess ) error = cudaStreamSynchronize(cudaStreamPerThread);
 	if ( SparkDsv4ValidationRequireCuda(error,"gate_route_launch") != 0 ) return(1);
 	if ( SparkDsv4ValidationGateRouteRead(buffers,scores,weights,indices,offsets,packed,source,prefix_w1,prefix_w2) != 0 ) return(1);
@@ -862,7 +858,8 @@ static int SparkDsv4ValidationPostExact(
 		for (index=0u; index<elements; index++)
 			if ( buffers->control[index] != buffers->candidate[index] )
 			{
-				fprintf(stderr,"%s mismatch_index=%u control=%04x candidate=%04x\n",message,index,(unsigned)buffers->control[index],(unsigned)buffers->candidate[index]);
+				fprintf(stderr,"%s mismatch_index=%u control=%04x candidate=%04x
+",message,index,(unsigned)buffers->control[index],(unsigned)buffers->candidate[index]);
 				break;
 			}
 		return(SparkDsv4ValidationRequire(0,message));
@@ -882,8 +879,7 @@ static int SparkDsv4ValidationQueryPostCase(
 		position) != 0 ) return(1);
 	error = SparkDsv4LaunchQueryHeadRms(cudaStreamPerThread,buffers->control_bf16,1u,SPARK_DSV4_VALIDATION_POST_QUERY_HEAD_COUNT,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess ) error = SparkDsv4LaunchRope(cudaStreamPerThread,buffers->control_bf16,buffers->freqs_f32,buffers->position_u64,1u,SPARK_DSV4_VALIDATION_POST_QUERY_HEAD_COUNT,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,0u);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchQueryHeadRms(cudaStreamPerThread,buffers->candidate_bf16,1u,SPARK_DSV4_VALIDATION_POST_QUERY_HEAD_COUNT,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchRope(cudaStreamPerThread,buffers->candidate_bf16,buffers->freqs_f32,buffers->position_u64,1u,SPARK_DSV4_VALIDATION_POST_QUERY_HEAD_COUNT,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,0u);
+	if ( error == cudaSuccess ) error = SparkDsv4LaunchQueryHeadRmsRope(cudaStreamPerThread,buffers->candidate_bf16,buffers->freqs_f32,buffers->position_u64,1u,SPARK_DSV4_VALIDATION_POST_QUERY_HEAD_COUNT,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 	if ( SparkDsv4ValidationRequireCuda(error,"query_post_fusion_launch") != 0 ) return(1);
 	return(SparkDsv4ValidationPostExact(buffers,elements,"query_post_fusion_exact"));
 }
@@ -899,9 +895,7 @@ static int SparkDsv4ValidationKvPostCase(
 	error = SparkDsv4LaunchRmsNorm(cudaStreamPerThread,buffers->control_bf16,buffers->gain_bf16,buffers->control_bf16,1u,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess ) error = SparkDsv4LaunchRope(cudaStreamPerThread,buffers->control_bf16,buffers->freqs_f32,buffers->position_u64,1u,1u,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,0u);
 	if ( error == cudaSuccess ) error = SparkDsv4LaunchQuantSim(cudaStreamPerThread,buffers->control_bf16,1u,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION - SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,SPARK_DSV4_MODEL_KV_QUANT_BLOCK,0u);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchRmsNorm(cudaStreamPerThread,buffers->candidate_bf16,buffers->gain_bf16,buffers->candidate_bf16,1u,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchRope(cudaStreamPerThread,buffers->candidate_bf16,buffers->freqs_f32,buffers->position_u64,1u,1u,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,0u);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchQuantSim(cudaStreamPerThread,buffers->candidate_bf16,1u,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION - SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,SPARK_DSV4_MODEL_KV_QUANT_BLOCK,0u);
+	if ( error == cudaSuccess ) error = SparkDsv4LaunchKvPost(cudaStreamPerThread,buffers->candidate_bf16,buffers->gain_bf16,buffers->freqs_f32,buffers->position_u64,1u,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION - SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,SPARK_DSV4_MODEL_KV_QUANT_BLOCK,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 	if ( SparkDsv4ValidationRequireCuda(error,"kv_post_fusion_launch") != 0 ) return(1);
 	return(SparkDsv4ValidationPostExact(buffers,elements,"kv_post_fusion_exact"));
 }
@@ -916,10 +910,8 @@ static int SparkDsv4ValidationIndexerPostCase(
 		position) != 0 ) return(1);
 	error = SparkDsv4LaunchRope(cudaStreamPerThread,buffers->control_bf16,buffers->freqs_f32,buffers->position_u64,1u,SPARK_DSV4_MODEL_INDEX_HEAD_COUNT,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,0u);
 	if ( error == cudaSuccess ) error = SparkDsv4LaunchHadamard(cudaStreamPerThread,buffers->control_bf16,SPARK_DSV4_MODEL_INDEX_HEAD_COUNT,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchQuantSim(cudaStreamPerThread,buffers->control_bf16,1u,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION,SPARK_DSV4_MODEL_FP4_QUANT_BLOCK,1u);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchRope(cudaStreamPerThread,buffers->candidate_bf16,buffers->freqs_f32,buffers->position_u64,1u,SPARK_DSV4_MODEL_INDEX_HEAD_COUNT,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,0u);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchHadamard(cudaStreamPerThread,buffers->candidate_bf16,SPARK_DSV4_MODEL_INDEX_HEAD_COUNT,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION);
-	if ( error == cudaSuccess ) error = SparkDsv4LaunchQuantSim(cudaStreamPerThread,buffers->candidate_bf16,1u,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION,SPARK_DSV4_MODEL_FP4_QUANT_BLOCK,1u);
+	if ( error == cudaSuccess ) error = SparkDsv4LaunchQuantSim(cudaStreamPerThread,buffers->control_bf16,1u,SPARK_DSV4_MODEL_INDEX_DIMENSION,SPARK_DSV4_MODEL_INDEX_DIMENSION,SPARK_DSV4_MODEL_FP4_QUANT_BLOCK,1u);
+	if ( error == cudaSuccess ) error = SparkDsv4LaunchIndexerPost(cudaStreamPerThread,buffers->candidate_bf16,buffers->freqs_f32,buffers->position_u64,1u,SPARK_DSV4_MODEL_INDEX_HEAD_COUNT,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION,SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,SPARK_DSV4_MODEL_FP4_QUANT_BLOCK);
 	if ( SparkDsv4ValidationRequireCuda(error,"indexer_post_fusion_launch") != 0 ) return(1);
 	return(SparkDsv4ValidationPostExact(buffers,elements,"indexer_post_fusion_exact"));
 }
