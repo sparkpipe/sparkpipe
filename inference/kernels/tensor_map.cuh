@@ -147,8 +147,12 @@ static int32_t LmTensorMapPlanBuild(
     {
         return LM_TM_ERR_ROW_SWIZZLE;
     }
+    // SWIZZLE_NONE is deliberate only for the interleaved 32-element
+    // k-tile's 16-byte cell rows (the consumer reads them linearly); every
+    // other box keeps a hardware swizzle span or the INT6/7 exemption.
     if (swizzle_bytes == 0u && request->element_bits != LM_TM_BITS_INT6 &&
-        request->element_bits != LM_TM_BITS_INT7)
+        request->element_bits != LM_TM_BITS_INT7 &&
+        box_column_bytes != 16u)
     {
         return LM_TM_ERR_BOX_ALIGN;
     }

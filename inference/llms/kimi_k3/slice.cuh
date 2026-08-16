@@ -46,14 +46,14 @@ struct K3LayerWeights
 	// asserts the tiling at compile time; bind stays pointer arithmetic and
 	// no manifest JSON is parsed anywhere on this path.
 	const void *kda_qkv_beta_weight;
-	const void *kda_decay_gate_down_weight;
+	const void *kda_decay_down_weight;
 	const float *kda_q_conv_weight;
 	const float *kda_k_conv_weight;
 	const float *kda_v_conv_weight;
 	const void *kda_decay_up_weight;
 	const float *kda_decay_bias;
 	const float *kda_head_log_scale;
-	const void *kda_gate_up_weight;
+	const void *kda_gate_weight;
 	const float *kda_out_norm_weight;
 	const void *kda_out_weight;
 	const void *kda_out_scale;
@@ -68,8 +68,7 @@ struct K3LayerWeights
 	const void *mla_kv_a_norm_weight;
 	const void *mla_kv_b_value_weight;
 	const void *mla_kv_b_scale;
-	const void *mla_gate_down_weight;
-	const void *mla_gate_up_weight;
+	const void *mla_gate_weight;
 	const void *mla_out_weight;
 	const void *mla_out_scale;
 
@@ -89,6 +88,9 @@ struct K3LayerWeights
 	// kernels-wave contract that lifts it are in K3LayerLatentMoe. The zero
 	// path exists for the host recorders, which bind no weights at all.
 	uint32_t expert_interleave;
+	/* the pack's interleave k-tile (128 or 32 elements); the MoE launches
+	 * pick the matching INTERLEAVED_B GEMM instantiation */
+	uint32_t expert_tile_k;
 	const void *shared_w1_weight;
 	const void *shared_w1_scale;
 	const void *shared_w2_weight;
@@ -142,6 +144,22 @@ struct K3SliceState
 	// step can launch against the half-width pool before one does. The
 	// numerics contract is in config.h.
 	uint32_t kda_state_bf16;
+	// THE TP4 ALL-REDUCE HOOK. The slice loop runs on the HOST, so the
+	// serving tier can register one host callable per layer fired AFTER the
+	// layer's MLP half: an input-dimension-sharded projection (routed_up,
+	// and the head-sliced KDA/MLA out-projections) leaves its partial
+	// rank-local, and the next layer's attention reads the running partial,
+	// so the TP sum must land before the next retrieval - a post-slice
+	// all-reduce is wrong by one layer's residual. Null skips it, which is
+	// every single-rank contract (the host harnesses, the numerical gates,
+	// and a PP-only deployment).
+	/* phase 0 fires after the attention half (before the MLP-side
+	 * retrieval, which reads the POST-attention partial), phase 1 after the
+	 * MLP half. The hook all-reduces the phase's sharded outputs and folds
+	 * the sums into the partial. */
+	void (*layer_collective)(void *context, void *stream, uint32_t layer,
+		uint32_t phase);
+	void *collective_context;
 };
 
 // The two kind indices below partition the backbone, and the partition is
@@ -171,14 +189,14 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->attn_norm_weight = weights->attn_norm_weight;
 	buffers->mlp_norm_weight = weights->mlp_norm_weight;
 	buffers->kda_qkv_beta_weight = weights->kda_qkv_beta_weight;
-	buffers->kda_decay_gate_down_weight = weights->kda_decay_gate_down_weight;
+	buffers->kda_decay_down_weight = weights->kda_decay_down_weight;
 	buffers->kda_q_conv_weight = weights->kda_q_conv_weight;
 	buffers->kda_k_conv_weight = weights->kda_k_conv_weight;
 	buffers->kda_v_conv_weight = weights->kda_v_conv_weight;
 	buffers->kda_decay_up_weight = weights->kda_decay_up_weight;
 	buffers->kda_decay_bias = weights->kda_decay_bias;
 	buffers->kda_head_log_scale = weights->kda_head_log_scale;
-	buffers->kda_gate_up_weight = weights->kda_gate_up_weight;
+	buffers->kda_gate_weight = weights->kda_gate_weight;
 	buffers->kda_out_norm_weight = weights->kda_out_norm_weight;
 	buffers->kda_out_weight = weights->kda_out_weight;
 	buffers->kda_out_scale = weights->kda_out_scale;
@@ -192,8 +210,7 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->mla_kv_a_norm_weight = weights->mla_kv_a_norm_weight;
 	buffers->mla_kv_b_value_weight = weights->mla_kv_b_value_weight;
 	buffers->mla_kv_b_scale = weights->mla_kv_b_scale;
-	buffers->mla_gate_down_weight = weights->mla_gate_down_weight;
-	buffers->mla_gate_up_weight = weights->mla_gate_up_weight;
+	buffers->mla_gate_weight = weights->mla_gate_weight;
 	buffers->mla_out_weight = weights->mla_out_weight;
 	buffers->mla_out_scale = weights->mla_out_scale;
 	buffers->router_weight = weights->router_weight;
@@ -205,6 +222,7 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->expert_w1_weight = weights->expert_w1_weight;
 	buffers->expert_w2_weight = weights->expert_w2_weight;
 	buffers->expert_interleave = weights->expert_interleave;
+	buffers->expert_tile_k = weights->expert_tile_k;
 	buffers->shared_w1_weight = weights->shared_w1_weight;
 	buffers->shared_w1_scale = weights->shared_w1_scale;
 	buffers->shared_w2_weight = weights->shared_w2_weight;
@@ -362,8 +380,15 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
-		if ( boundary != 0u )
+		/* the sharded path defers the restart to the phase-0 hook, whose
+		 * completion sets the SUMMED attention output into the partial */
+		if ( boundary != 0u && buffers->tp_sharded == 0u )
 			K3PartialSet(buffers,buffers->attention_out_bf16,rows,stream);
+		// The sharded attention output all-reduces and folds BEFORE the
+		// MLP-side retrieval: the retrieval's partial mix must contain the
+		// post-attention contribution on every rank.
+		if ( state->layer_collective != 0 )
+			state->layer_collective(state->collective_context,stream,layer,0u);
 		// MLP-side retrieval, over the post-append bank and the post-attention
 		// partial. It runs at layer 0 as well: b_0 is in the bank by then.
 		K3AttnRes(buffers,buffers->attnres_mlp_weight,
@@ -377,6 +402,8 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
+		if ( state->layer_collective != 0 )
+			state->layer_collective(state->collective_context,stream,layer,1u);
 		// THE DRAFTER READS THE STREAM, AND THE PARTIAL IS THE STREAM. What
 		// flows between blocks under AttnRes is the running partial - the next
 		// block's first act is a retrieval that REPLACES its input - so the

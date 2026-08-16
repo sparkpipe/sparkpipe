@@ -215,6 +215,15 @@ static int32_t Glm52LayerIndexer(
     {
         return LM_LAUNCH_OK;
     }
+    /* The DSA selection is bypassed entirely while the context fits the
+     * selection width (the top-k selects every position), so the indexer's
+     * projections, norms, rope and cache store are pure overhead there.
+     * Skip the whole launch sequence and save ~8 kernel launches per
+     * full-indexer layer on every short-context token. */
+    if (context <= GLM52_DSA_SELECTED)
+    {
+        return LM_LAUNCH_OK;
+    }
     if (buffers == 0 || rows == 0u || context == 0u ||
         buffers->positions == 0 || buffers->sequence_of_row == 0 ||
         buffers->context_length == 0 ||
@@ -670,11 +679,12 @@ static int32_t Glm52LayerDenseMlp(
 
     if (buffers->dense_gate_up_fused != 0u)
     {
-        // Bind proved the up rows sit immediately behind the gate rows, so one
-        // GEMM over the concatenated tensor writes the [gate | up] layout
-        // directly - the two-launch form below re-reads the normed activation
-        // and pays a second launch for the same weight bytes. Per-element math
-        // is identical either way; only the launch count differs.
+        // The pack stores the dense gate-up stack as [up | gate] (matching the
+        // routed-expert convention), so one GEMM over the concatenated tensor
+        // writes that [up | gate] layout directly and LmSiluMulKernel runs with
+        // gate_first=false - the two-launch form below re-reads the normed
+        // activation and pays a second launch for the same weight bytes.
+        // Per-element math is identical either way; only the launch count differs.
         status = Glm52LaunchBf16Linear(
             buffers->normed_bf16,
             buffers->dense_gate_weight,
@@ -740,7 +750,7 @@ static int32_t Glm52LayerDenseMlp(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
         buffers->dense_intermediate,
-        true);
+        false);
 
     return Glm52LaunchBf16Linear(
         buffers->intermediate_bf16,
@@ -998,7 +1008,7 @@ static int32_t Glm52LayerMoe(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
         buffers->shared_intermediate,
-        true);
+        false);
     status = Glm52LaunchBf16Linear(
         buffers->intermediate_bf16,
         buffers->shared_down_weight,

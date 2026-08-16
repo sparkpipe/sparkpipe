@@ -67,7 +67,7 @@ Ports are assigned per model in `fleet_registry.json` so two deployments
 never share a host AND a port. Current blocks: Qwen 27B control 17480 /
 collective 61620 / transport 58700; DSV4 Flash 18480 / 62620 / 59700;
 big band 19480 / 63620 / 60700; fleet slot 20480 / 64620 / 61700; K3
-21480 / 65620 / 62700.
+21480 / 61620 / 62700.
 
 ## Coexistence vs measurement
 
