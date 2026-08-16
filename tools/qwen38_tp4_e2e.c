@@ -26,7 +26,8 @@ static const uint32_t reference_tokens[64] = {
 typedef struct RankCollect
 {
 	uint32_t have_token;
-	uint32_t token;
+	uint32_t token_count;
+	uint32_t token_ids[16];
 	int32_t submit_result_status;
 } RankCollect;
 
@@ -40,13 +41,17 @@ static void RankSubmitResult(void *context, uint64_t submission_id, SparkStatus 
 static void RankCompletion(void *context, const SparkModelServingCompletion *completion)
 {
 	RankCollect *collect = (RankCollect *)context;
-	if ( completion->status != SPARK_STATUS_OK || completion->token_count != 1u ||
+	uint32_t i;
+	if ( completion->status != SPARK_STATUS_OK || completion->token_count == 0u ||
+		completion->token_count > 16u ||
 		(completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS) == 0u )
 	{
 		fprintf(stderr, "bad completion status=%u tokens=%u flags=0x%x\n", completion->status, completion->token_count, completion->completion_flags);
 		return;
 	}
-	collect->token = completion->token_ids[0];
+	collect->token_count = completion->token_count;
+	for (i = 0u; i < completion->token_count; i++)
+		collect->token_ids[i] = completion->token_ids[i];
 	collect->have_token = 1u;
 }
 
@@ -257,18 +262,24 @@ int main(int argc, char **argv)
 	lane.context_token_count = PROMPT_TOKENS;
 	lane.input_token_id = 0u;
 	if ( DriveStep(clients, collects, deployment.node_count, &submission) != 0 ) return(1);
-	emitted[0] = collects[0].token;
+	emitted[0] = collects[0].token_ids[0];
 	for (rank = 1u; rank < deployment.node_count; rank++)
-		if ( collects[rank].token != emitted[0] )
+		if ( collects[rank].token_ids[0] != emitted[0] )
 		{
-			fprintf(stderr, "prefill token mismatch rank=%u token=%u expected=%u\n", rank, collects[rank].token, emitted[0]);
+			fprintf(stderr, "prefill token mismatch rank=%u token=%u expected=%u\n", rank, collects[rank].token_ids[0], emitted[0]);
 			mismatches++;
 		}
 	previous_token = emitted[0];
 	printf("token[%2u] = %u\n", 0u, emitted[0]);
 	fflush(stdout);
-	for (step = 0u; step < DECODE_STEPS; step++)
+	/* The decode walk advances by the completion's returned token count:
+	 * with speculation a completion carries the committed token plus the
+	 * accepted drafts, so one submission can advance several positions. */
+	step = 0u;
+	while ( step < DECODE_STEPS )
 	{
+		uint32_t i;
+		uint32_t count;
 		uint64_t position = (uint64_t)(PROMPT_TOKENS + step);
 		decode_token_ids[0] = previous_token;
 		decode_positions[0] = position;
@@ -291,16 +302,23 @@ int main(int argc, char **argv)
 		lane.context_token_count = PROMPT_TOKENS + step + 1u;
 		lane.input_token_id = previous_token;
 		if ( DriveStep(clients, collects, deployment.node_count, &submission) != 0 ) return(1);
-		emitted[1u + step] = collects[0].token;
-		for (rank = 1u; rank < deployment.node_count; rank++)
-			if ( collects[rank].token != emitted[1u + step] )
-			{
-				fprintf(stderr, "step %u token mismatch rank=%u token=%u expected=%u\n", step, rank, collects[rank].token, emitted[1u + step]);
-				mismatches++;
-			}
-		previous_token = emitted[1u + step];
-		printf("token[%2u] = %u\n", 1u + step, previous_token);
-		fflush(stdout);
+		count = collects[0].token_count;
+		if ( count > DECODE_STEPS - step )
+			count = DECODE_STEPS - step;
+		for (i = 0u; i < count; i++)
+		{
+			emitted[1u + step + i] = collects[0].token_ids[i];
+			for (rank = 1u; rank < deployment.node_count; rank++)
+				if ( collects[rank].token_count <= i || collects[rank].token_ids[i] != emitted[1u + step + i] )
+				{
+					fprintf(stderr, "step %u token mismatch rank=%u token=%u expected=%u\n", step + i, rank, collects[rank].token_count <= i ? 0u : collects[rank].token_ids[i], emitted[1u + step + i]);
+					mismatches++;
+				}
+			printf("token[%2u] = %u\n", 1u + step + i, emitted[1u + step + i]);
+			fflush(stdout);
+		}
+		previous_token = collects[0].token_ids[collects[0].token_count - 1u];
+		step += count;
 	}
 	printf("--- verification ---\n");
 	for (step = 0u; step < 64u; step++)

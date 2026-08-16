@@ -18,12 +18,13 @@
 #include "spark_filesystem.h"
 
 #define PROMPT_TOKENS 5u
-#define MAX_BATCH 16u
+#define MAX_BATCH 64u
 
 typedef struct RankCollect
 {
 	uint32_t have_completion;
 	uint32_t token_count;
+	uint32_t token_ids[MAX_BATCH * 16u];
 	int32_t submit_result_status;
 } RankCollect;
 
@@ -37,9 +38,12 @@ static void RankSubmitResult(void *context, uint64_t submission_id, SparkStatus 
 static void RankCompletion(void *context, const SparkModelServingCompletion *completion)
 {
 	RankCollect *collect = (RankCollect *)context;
+	uint32_t i;
 	if ( completion->status == SPARK_STATUS_OK )
 	{
 		collect->token_count = completion->token_count;
+		for (i = 0u; i < completion->token_count && i < MAX_BATCH * 16u; i++)
+			collect->token_ids[i] = completion->token_ids[i];
 		collect->have_completion = 1u;
 	}
 }
@@ -143,11 +147,17 @@ static int DriveStep(SparkModelResidentClient **clients, RankCollect *collects, 
 	if ( PumpUntilAll(clients, collects, rank_count, 60000000000ull) != 0 )
 		return(1);
 	for (rank = 0u; rank < rank_count; rank++)
-		if ( collects[rank].token_count != expected_tokens )
+	{
+		/* Speculation may commit more tokens than the submission asked for
+		 * (accepted drafts); report the extra as speculative yield. */
+		if ( collects[rank].token_count > expected_tokens && rank == 0u )
+			fprintf(stderr, "speculative extra tokens=%u expected=%u\n", collects[rank].token_count - expected_tokens, expected_tokens);
+		if ( collects[rank].token_count < expected_tokens )
 		{
 			fprintf(stderr, "token count mismatch rank=%u got=%u expected=%u\n", rank, collects[rank].token_count, expected_tokens);
 			return(1);
 		}
+	}
 	return(0);
 }
 
@@ -287,8 +297,12 @@ int main(int argc, char **argv)
 	submission.row_sequence_ids = decode_sequence_ids;
 	submission.request_id = base_sequence;
 	submission.sequence_id = base_sequence;
-	for (step = 0u; step < step_count; step++)
+	/* The decode walk advances by the completion's returned token count:
+	 * with speculation one submission can commit several positions. */
+	step = 0u;
+	while ( step < step_count )
 	{
+		uint32_t committed_count;
 		uint64_t position = (uint64_t)(PROMPT_TOKENS + step);
 		for (lane = 0u; lane < batch_size; lane++)
 		{
@@ -313,6 +327,15 @@ int main(int argc, char **argv)
 			step_max_ns = step_elapsed;
 		if ( step_elapsed < step_min_ns )
 			step_min_ns = step_elapsed;
+		committed_count = collects[0].token_count / batch_size;
+		if ( committed_count == 0u || committed_count > step_count - step )
+			committed_count = step_count - step;
+		/* The completion packs tokens lane-major (lane x tokens_per_sequence
+		 * + step), so the last committed id of lane l sits at its lane block's
+		 * tail. */
+		for (lane = 0u; lane < batch_size; lane++)
+			decode_token_ids[lane] = collects[0].token_ids[(lane * committed_count) + (committed_count - 1u)];
+		step += committed_count;
 	}
 	{
 		double decode_seconds = (double)decode_total_ns / 1e9;
