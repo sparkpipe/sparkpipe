@@ -122,7 +122,7 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
     require_equal(precision["non_expert_linear_weight_codec"], "fp8_e4m3", f"{variant} non-expert codec")
     require_equal(precision["non_expert_linear_weight_format"], "fp8_e4m3_block_128x128", f"{variant} non-expert precision")
     require_equal(precision["kv_cache_codec"], "bf16", f"{variant} KV cache codec")
-    expected_non_expert_activation = "bf16" if variant == "flash" else "fp8_e4m3"
+    expected_non_expert_activation = "bf16"
     require_equal(precision["non_expert_activation_format"], expected_non_expert_activation, f"{variant} non-expert activation format")
     require_equal(precision["routed_expert_activation_format"], "fp8_e4m3", f"{variant} routed-expert activation format")
     require_equal(precision["output_composition_activation_format"], "bf16", f"{variant} output-composition activation format")
@@ -238,9 +238,19 @@ def render_header(
             ("HYPER_CONNECTION_SINKHORN_ITERATIONS", hyper_connections["sinkhorn_iterations"]),
         ]
 
-    lines = [
-        "#pragma once",
-        "",
+    lines = ["#pragma once", ""]
+    if variant == "flash":
+        lines.extend([
+            "/*",
+            " * Pro builds define SPARK_DSV4_PRO_BUILD and get the Pro geometry through",
+            " * the model-generic name space; Flash builds are unchanged by this guard.",
+            " */",
+            "#if defined(SPARK_DSV4_PRO_BUILD)",
+            '#include "sparkpipe/spark_dsv4_pro_model_aliases.h"',
+            "#else",
+            "",
+        ])
+    lines.extend([
         "#include <stdint.h>",
         "",
         "#include \"sparkpipe/spark_weight_codec.h\"",
@@ -249,8 +259,13 @@ def render_header(
         f"#define {prefix}_ID {json.dumps(contract['model_id'])}",
         f"#define {prefix}_SOURCE_REVISION {json.dumps(contract['source_revision'])}",
         "",
-    ]
+    ])
     for suffix, value in defines:
+        if variant == "flash" and suffix == "DSPARK_TARGET_LAYER_FIRST":
+            lines.append(f"#define {prefix}_DSPARK_TARGET_LAYER_FIRST \\")
+            lines.append(
+                f"\t({prefix}_LAYER_COUNT - {prefix}_DSPARK_TARGET_LAYER_COUNT)")
+            continue
         lines.append(f"#define {prefix}_{suffix} {value}u")
     if variant == "flash":
         lines.extend([
@@ -307,10 +322,18 @@ def render_header(
             f"#define {prefix}_HYPER_CONNECTION_EPSILON {c_float(hyper_connections['epsilon'])}",
             f"#define {prefix}_ROUTED_SCALING_FACTOR {c_float(moe['routed_scaling_factor'])}",
             f"#define {prefix}_SWIGLU_LIMIT {c_float(moe['swiglu_limit'])}",
-            f"#define {prefix}_EXPERT_WEIGHT_CODEC {WEIGHT_CODEC_MACROS[precision['routed_expert_weight_codec']]}",
+            "#if defined(SPARK_DSV4_PRO_EXPERT_CODEC_FP8_E4M3)",
+            "/* Variant builds: FP8-E4M3 expert weights (requires the FP8 expert kernel",
+            " * variant and an FP8-expert pack; default remains MXFP4-E2M1). */",
+            "#define SPARK_DSV4_PRO_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3",
+            "#else",
+            "#define SPARK_DSV4_PRO_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1",
+            "#endif",
             f"#define {prefix}_NON_EXPERT_WEIGHT_CODEC {WEIGHT_CODEC_MACROS[precision['non_expert_linear_weight_codec']]}",
             f"#define {prefix}_KV_CACHE_CODEC {WEIGHT_CODEC_MACROS[precision['kv_cache_codec']]}",
-            f"#define {prefix}_NON_EXPERT_ACTIVATION_CODEC {activation_codec_macro(precision, 'non_expert_activation_format')}",
+            f"#define {prefix}_NON_EXPERT_ACTIVATION_CODEC {activation_codec_macro(precision, 'non_expert_activation_format')}"
+            + (" /* first-light: BF16 activations, matching the Flash-validated kernel set */"
+               if precision["non_expert_activation_format"] == "bf16" else ""),
             f"#define {prefix}_EXPERT_ACTIVATION_CODEC {activation_codec_macro(precision, 'routed_expert_activation_format')}",
             f"#define {prefix}_OUTPUT_COMPOSITION_ACTIVATION_CODEC {OUTPUT_ACTIVATION_CODEC_MACROS[precision['output_composition_activation_format']]}",
             "",
@@ -357,6 +380,8 @@ def render_header(
             f"\treturn({prefix}_LAYER_KIND_INVALID);",
             "}",
             "",
+            "#endif /* SPARK_DSV4_PRO_BUILD */",
+            "",
         ])
     return "\n".join(lines)
 
@@ -373,6 +398,17 @@ def render_normalized_contract(variant: str, contract: dict[str, Any]) -> str:
             "first layer_count entries are backbone layers; final entry is the one declared MTP layer"
         ),
     }
+    if variant == "pro":
+        note = result["precision"].pop("_first_light_note")
+        body = json.dumps(result, indent=2, sort_keys=True)
+        anchor = '    "scale_format": "ue8m0"\n  },\n  "qualification": {'
+        replacement = (
+            '    "scale_format": "ue8m0",\n'
+            f'    "_first_light_note": {json.dumps(note)}\n'
+            '  },\n  "qualification": {')
+        if anchor not in body:
+            raise ValueError("pro normalized contract anchor not found")
+        return body.replace(anchor, replacement)
     return json.dumps(result, indent=2, sort_keys=True) + "\n"
 
 

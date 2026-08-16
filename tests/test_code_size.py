@@ -163,7 +163,13 @@ from pathlib import Path
 # and the GLM52 accuracy fixes (#665); the unified branch folds it in as-is
 # (the shared-gemm provenance rename is line-neutral). 162375 is the exact
 # count after the integration; ceiling moves with it.
-CEILING = 162375
+# The DSV4 contract reconciliation teaches the generator the merged Pro
+# reality (first-light BF16 activations, FP8-expert codec selectability,
+# the Pro alias guard in the Flash header, the first-light note in the
+# normalized contract) so --check reproduces the checked-in files
+# byte-exact; 162411 is the exact count after it lands. Ceiling moves
+# with it.
+CEILING = 162411
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
