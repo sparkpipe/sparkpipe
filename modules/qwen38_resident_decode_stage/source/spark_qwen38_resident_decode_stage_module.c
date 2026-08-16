@@ -19,6 +19,7 @@
 #include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_qwen38_work_control.h"
 #include "spark_qwen38_stagepack_format.h"
 
@@ -110,6 +111,26 @@ typedef struct SparkQwen38ModuleState
 	 * to price the GDN/attention half vs the MoE half. Default 0. */
 	uint32_t debug_skip_gdn;
 	uint32_t debug_skip_moe;
+	/* Tensor-parallel collective: one residual all-reduce per layer after
+	 * the expert-sharded MoE. Env-driven (TP_BACKEND_PATH / TP_IDENTIFIER /
+	 * TP_PORT_BASE / TP_HOSTS / TP_TIMEOUT_MS), mirrors the dsv4 wiring. */
+	SparkTpDeviceCollective tp_device_collective;
+	SparkTpDeviceCollectiveCreditBinding tp_credit_bindings[8u];
+	uint32_t tp_credit_binding_count;
+	uint32_t tp_collective_initialized;
+	void *tp_collective_credit_send_bf16;
+	void *tp_collective_credit_receive_bf16;
+	void *tp_host_credit_send_bf16;
+	void *tp_host_credit_receive_bf16;
+	atomic_uint tp_completion_flag;
+	atomic_ullong tp_next_ordinal;
+	char tp_backend_path[SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES];
+	char tp_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE][SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
+	char tp_local_host[SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
+	uint64_t tp_collective_identifier;
+	uint32_t tp_control_port_base;
+	uint32_t tp_connect_timeout_milli;
+	uint32_t tp_operation_timeout_milli;
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
 	uint32_t kv_block_count;
@@ -208,8 +229,59 @@ static SparkStatus SparkQwen38ModuleConfigure(SparkQwen38ModuleState *state)
 				return(SPARK_STATUS_INVALID_ARGUMENT);
 		}
 		state->tp_rank = (uint32_t)parsed;
-		if ( state->tp_rank >= state->tp_degree || (SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT % state->tp_degree) != 0u || (SPARK_QWEN38_MODEL_ATTN_KV_HEAD_COUNT % state->tp_degree) != 0u )
+		/* TP sharding (expert-sharded MoE, one residual all-reduce per
+		 * layer). The attention/GDN head slicing and the KV-head split are
+		 * the follow-on increments; the expert slice works for any degree
+		 * that divides the 512 experts. tp>1 needs the collective env. */
+		if ( state->tp_rank >= state->tp_degree || state->tp_degree > SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT || (SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT % state->tp_degree) != 0u )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
+		state->tp_collective_identifier = 0u;
+		state->tp_control_port_base = 0u;
+		state->tp_connect_timeout_milli = 120000u;
+		state->tp_operation_timeout_milli = 120000u;
+		state->tp_backend_path[0] = '\0';
+		state->tp_local_host[0] = '\0';
+		for (parsed = 0u; parsed < SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; parsed++)
+			state->tp_hosts[parsed][0] = '\0';
+		if ( state->tp_degree > 1u )
+		{
+			const char *tp_backend = getenv("SPARK_QWEN38_STAGE_TP_BACKEND_PATH");
+			const char *tp_identifier = getenv("SPARK_QWEN38_STAGE_TP_IDENTIFIER");
+			const char *tp_port_base = getenv("SPARK_QWEN38_STAGE_TP_PORT_BASE");
+			const char *tp_hosts = getenv("SPARK_QWEN38_STAGE_TP_HOSTS");
+			const char *tp_local_host = getenv("SPARK_QWEN38_STAGE_TP_LOCAL_HOST");
+			const char *tp_timeout = getenv("SPARK_QWEN38_STAGE_TP_TIMEOUT_MS");
+			const char *scan;
+			uint32_t host_index,host_start;
+			if ( tp_backend == 0 || tp_identifier == 0 || tp_port_base == 0 || tp_hosts == 0 || tp_local_host == 0 )
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+			snprintf(state->tp_backend_path,sizeof(state->tp_backend_path),"%s",tp_backend);
+			snprintf(state->tp_local_host,sizeof(state->tp_local_host),"%s",tp_local_host);
+			state->tp_collective_identifier = strtoull(tp_identifier,0,10);
+			state->tp_control_port_base = (uint32_t)strtoul(tp_port_base,0,10);
+			if ( tp_timeout != 0 )
+			{
+				state->tp_connect_timeout_milli = (uint32_t)strtoul(tp_timeout,0,10);
+				state->tp_operation_timeout_milli = state->tp_connect_timeout_milli;
+			}
+			/* Comma-separated peer host list, one per rank in rank order. */
+			scan = tp_hosts;
+			host_index = 0u;
+			while ( *scan != '\0' && host_index < state->tp_degree )
+			{
+				const char *comma = strchr(scan,',');
+				size_t length = comma != 0 ? (size_t)(comma - scan) : strlen(scan);
+				if ( length >= SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES )
+					return(SPARK_STATUS_INVALID_ARGUMENT);
+				memcpy(state->tp_hosts[host_index],scan,length);
+				state->tp_hosts[host_index][length] = '\0';
+				host_index++;
+				scan = comma != 0 ? comma + 1 : scan + length;
+			}
+			if ( host_index != state->tp_degree )
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+			(void)host_start;
+		}
 	}
 	state->debug_skip_gdn = getenv("SPARK_QWEN38_STAGE_DEBUG_SKIP_GDN") != 0 ? 1u : 0u;
 	state->debug_skip_moe = getenv("SPARK_QWEN38_STAGE_DEBUG_SKIP_MOE") != 0 ? 1u : 0u;
@@ -906,6 +978,179 @@ static void SparkQwen38ModuleKvMarkWritten(SparkQwen38ModuleState *state, SparkQ
 extern cudaError_t SparkQwen38LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkQwen38LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen38LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
+extern cudaError_t SparkQwen38LaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width);
+
+/* --------------------------------------------------------------------------
+ * Tensor-parallel collective: one residual all-reduce per layer. The
+ * combine callback runs the elementwise add kernel; the module waits on an
+ * atomic flag set by the completion callback (the device collective's own
+ * progress thread drives the transfer phases).
+ * ------------------------------------------------------------------------*/
+
+static SparkStatus SparkQwen38ModuleTpCombineBf16(void *combine_context, void *destination_device, const void *source_device, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
+{
+	(void)combine_context;
+	return(SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,SparkQwen38LaunchTpCombineAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension),"tp_combine"));
+}
+
+static void SparkQwen38ModuleTpCompletion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
+{
+	atomic_uint *flag = (atomic_uint *)context;
+	atomic_store_explicit(flag,completion != 0 && completion->status == SPARK_STATUS_OK ? 1u : 2u,memory_order_release);
+}
+
+static SparkStatus SparkQwen38ModuleInitializeTpCollective(SparkQwen38ModuleState *state)
+{
+	SparkTpDeviceCollectiveConfig configuration;
+	SparkTpDeviceCollectiveTopology topology;
+	uint32_t credit,rank,route,route_count,memory_mode;
+	uint64_t credit_bytes,total_bytes,offset;
+	void *mapped_send,*mapped_receive;
+	cudaError_t error;
+	SparkStatus status;
+	if ( state->tp_degree == 1u )
+		return(SPARK_STATUS_OK);
+	memset(&topology,0,sizeof(topology));
+	topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
+	topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
+	topology.rank_count = state->tp_degree;
+	topology.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
+	topology.rail_count = 0u;
+	topology.direct_all_to_all_max_payload_bytes = 0u;
+	topology.split_ring_min_payload_bytes = 0u;
+	for (rank = 0u; rank < state->tp_degree; rank++)
+		memcpy(topology.rank_hosts[rank],state->tp_hosts[rank],SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	configuration.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
+	configuration.tp_degree = state->tp_degree;
+	configuration.tp_rank = state->tp_rank;
+	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+	configuration.credit_count = 2u * state->pipeline_slot_count;
+	configuration.local_hidden_dimension = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
+	/* The backend sizes its credit planes by this; use the static maximum
+	 * (dsv4 does the same) so the .so contract is configuration-free. */
+	configuration.max_active_sequence_count = SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
+	configuration.connect_timeout_milli = state->tp_connect_timeout_milli;
+	configuration.operation_timeout_milli = state->tp_operation_timeout_milli;
+	configuration.control_port_base = state->tp_control_port_base;
+	configuration.collective_identifier = state->tp_collective_identifier;
+	configuration.backend_module_path = state->tp_backend_path;
+	configuration.local_host = state->tp_local_host;
+	configuration.registration_cuda_stream = state->slots[0].cuda_stream;
+	configuration.combine_bf16_function = SparkQwen38ModuleTpCombineBf16;
+	configuration.combine_context = state;
+	status = SparkTpDeviceCollectiveApplyTopology(&topology,&configuration);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s tp_apply_topology_failed status=%d\n",SPARK_QWEN38_MODULE_TAG,(int)status);
+		return(status);
+	}
+	status = SparkTpDeviceCollectiveCreditBindingRouteCount(&configuration,&route_count);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkTpDeviceCollectiveProbeMemoryMode(
+		configuration.backend_kind,configuration.backend_module_path,
+		&memory_mode);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s tp_probe_memory_mode_failed status=%d\n",SPARK_QWEN38_MODULE_TAG,(int)status);
+		return(status);
+	}
+	credit_bytes = (uint64_t)SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_QWEN38_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES;
+	total_bytes = credit_bytes * configuration.credit_count * route_count;
+	status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,&state->tp_collective_credit_send_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,&state->tp_collective_credit_receive_bf16);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
+	{
+		mapped_send = 0;
+		mapped_receive = 0;
+		error = cudaHostAlloc(&state->tp_host_credit_send_bf16,total_bytes,cudaHostAllocPortable | cudaHostAllocMapped);
+		if ( error == cudaSuccess )
+			error = cudaHostAlloc(&state->tp_host_credit_receive_bf16,total_bytes,cudaHostAllocPortable | cudaHostAllocMapped);
+		if ( error == cudaSuccess )
+			error = cudaHostGetDevicePointer(&mapped_send,state->tp_host_credit_send_bf16,0u);
+		if ( error == cudaSuccess )
+			error = cudaHostGetDevicePointer(&mapped_receive,state->tp_host_credit_receive_bf16,0u);
+		if ( error != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"tp_credit_mapped_alloc"));
+		state->tp_collective_credit_send_bf16 = mapped_send;
+		state->tp_collective_credit_receive_bf16 = mapped_receive;
+	}
+	offset = 0u;
+	state->tp_credit_binding_count = 0u;
+	for (route = 0u; route < route_count; route++)
+		for (credit = 0u; credit < configuration.credit_count; credit++)
+		{
+			SparkTpDeviceCollectiveCreditBinding *binding = &state->tp_credit_bindings[state->tp_credit_binding_count++];
+			binding->step_index = route;
+			binding->credit_index = credit;
+			binding->send_device = (uint8_t *)state->tp_collective_credit_send_bf16 + offset;
+			binding->receive_device = (uint8_t *)state->tp_collective_credit_receive_bf16 + offset;
+			binding->send_transport = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (uint8_t *)state->tp_host_credit_send_bf16 + offset : binding->send_device;
+			binding->receive_transport = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (uint8_t *)state->tp_host_credit_receive_bf16 + offset : binding->receive_device;
+			binding->flags = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS : 0u;
+			binding->reserved0 = 0u;
+			offset += credit_bytes;
+		}
+	configuration.credit_bindings = state->tp_credit_bindings;
+	configuration.credit_binding_count = state->tp_credit_binding_count;
+	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s tp_create_failed status=%d\n",SPARK_QWEN38_MODULE_TAG,(int)status);
+		return(status);
+	}
+	state->tp_collective_initialized = 1u;
+	fprintf(stderr,"%s tp_collective_open degree=%u rank=%u port_base=%u\n",SPARK_QWEN38_MODULE_TAG,state->tp_degree,state->tp_rank,state->tp_control_port_base);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkQwen38ModuleTpAllReduceHidden(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, void *device_bf16, uint32_t rows)
+{
+	SparkTpDeviceCollectiveSubmission submission;
+	struct timespec pause;
+	uint32_t polls,flag;
+	SparkStatus status;
+	if ( state->tp_degree == 1u )
+		return(SPARK_STATUS_OK);
+	if ( state->tp_collective_initialized == 0u )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	atomic_store_explicit(&state->tp_completion_flag,0u,memory_order_relaxed);
+	memset(&submission,0,sizeof(submission));
+	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	submission.descriptor_bytes = sizeof(submission);
+	submission.slot_index = 0u;
+	submission.active_sequence_count = rows;
+	/* Stream-ordered: the backend orders its device work after the
+	 * pair-reduce on the slot stream before the completion fires. */
+	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+	submission.ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
+	submission.local_device = device_bf16;
+	submission.full_device = device_bf16;
+	submission.cuda_stream = slot->cuda_stream;
+	submission.completion_function = SparkQwen38ModuleTpCompletion;
+	submission.completion_context = &state->tp_completion_flag;
+	status = SparkTpDeviceCollectiveSubmitBf16(&state->tp_device_collective,&submission);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	pause.tv_sec = 0u;
+	pause.tv_nsec = 100000;
+	for (polls = 0u; polls < 100000u; polls++)
+	{
+		flag = atomic_load_explicit(&state->tp_completion_flag,memory_order_acquire);
+		if ( flag == 1u )
+			return(SPARK_STATUS_OK);
+		if ( flag == 2u )
+			return(SPARK_STATUS_IO_ERROR);
+		nanosleep(&pause,0);
+	}
+	fprintf(stderr,"%s tp_all_reduce_stall\n",SPARK_QWEN38_MODULE_TAG);
+	return(SPARK_STATUS_IO_ERROR);
+}
 
 SparkStatus SparkQwen38ResidentDecodeStageInitialize(
     const SparkFirmwareModuleConfiguration *configuration,
@@ -931,19 +1176,16 @@ SparkStatus SparkQwen38ResidentDecodeStageInitialize(
 	state->ledger.module_tag = SPARK_QWEN38_MODULE_TAG;
 	atomic_init(&state->submitted_count,0u);
 	atomic_init(&state->completed_count,0u);
+	atomic_init(&state->tp_completion_flag,0u);
+	atomic_init(&state->tp_next_ordinal,0u);
 	atomic_init(&state->rejected_count,0u);
 	atomic_init(&state->failed_count,0u);
 	atomic_init(&state->tokens_emitted,0u);
 	status = SparkQwen38ModuleConfigure(state);
-	if ( status == SPARK_STATUS_OK && state->tp_degree != 1u )
-	{
-		/* The head-parallel kernels exist and compile, but activation needs
-		 * the sliced attention projections and the residual all-reduce
-		 * (SparkTpDeviceCollective); running head-parallel without the
-		 * combine would emit rank-partial hiddens silently. Fail closed. */
-		fprintf(stderr,"%s tp_head_parallel_refused tp_degree=%u (residual collective not wired)\n",SPARK_QWEN38_MODULE_TAG,state->tp_degree);
-		status = SPARK_STATUS_UNSUPPORTED;
-	}
+	/* tp_degree > 1 runs the expert-sharded MoE with one residual
+	 * all-reduce per layer (the collective opens right after the slot
+	 * allocation); the head-parallel attention/GDN slicing is the next
+	 * increment. tp=1 is the replicated path, byte-identical as before. */
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentText(SPARK_QWEN38_MODULE_TAG,"SPARK_QWEN38_STAGE_PACK_PATH",&pack_path);
 	if ( status == SPARK_STATUS_OK )
@@ -966,6 +1208,8 @@ SparkStatus SparkQwen38ResidentDecodeStageInitialize(
 		status = SparkQwen38ModuleAllocateSlot(state,&state->slots[0]);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen38ModuleAllocateSlotHostMirrors(state,&state->slots[0]);
+	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u )
+		status = SparkQwen38ModuleInitializeTpCollective(state);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 	{
 		/* One-time 4-bit shadow of the 248320 x 8192 head weights plus
@@ -1023,6 +1267,8 @@ void SparkQwen38ResidentDecodeStageDestroy(void *module_state)
 	if ( state == 0 )
 		return;
 	SparkStageKvClientClose(&state->kv_client);
+	if ( state->tp_collective_initialized != 0u )
+		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
 	free(state->kv_logical_to_slot);
 	free(state->kv_slot_lane);
 	free(state->kv_slot_logical);
@@ -1068,8 +1314,8 @@ extern cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, const
 extern cudaError_t SparkQwen38LaunchExpertDown(cudaStream_t stream, const SparkQwen38LinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count);
 extern cudaError_t SparkQwen38LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen38LaunchMoePairReduceOverwrite(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *output_bf16, uint32_t row_count, uint32_t hidden_dimension);
-extern cudaError_t SparkQwen38LaunchGroupedExpertLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, const uint32_t *group_tile_prefix, void *output_bf16, uint32_t source_row_count, uint32_t multiprocessor_count);
-extern cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, void *output_bf16, uint32_t source_row_count);
+extern cudaError_t SparkQwen38LaunchGroupedExpertLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, const uint32_t *group_tile_prefix, void *output_bf16, uint32_t source_row_count, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank);
+extern cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, void *output_bf16, uint32_t source_row_count, uint32_t tp_degree, uint32_t tp_rank);
 /* The MoE switches from the scalar grouped path to the tensor-core tile
  * path (SparkLmExpertTileAllKernel / SparkLmExpertTileAllMloopKernel) at
  * 8 rows. Measured on spark4: tile-at-1/2/4 LOSES (the 512-expert grid's
@@ -1254,6 +1500,7 @@ static SparkStatus SparkQwen38ModuleRunMoe(SparkQwen38ModuleState *state, SparkQ
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
+	SparkStatus status;
 	error = SparkQwen38LaunchFusedResidualRmsNorm(stream,slot->hidden_bf16,slot->delta_bf16,mlp_norm_bf16,slot->normalized_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
 		error = SparkQwen38LaunchGateScores(stream,&weights->gate,slot->normalized_bf16,slot->moe_scores_f32,rows);
@@ -1267,27 +1514,37 @@ static SparkStatus SparkQwen38ModuleRunMoe(SparkQwen38ModuleState *state, SparkQ
 		{
 			/* Tensor-core tile path: gridDim.z spans the experts, FP8
 			 * decodes to BF16 fragments under wmma mma_sync. */
-			error = SparkQwen38LaunchGroupedExpertTileLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_gate_packed_bf16,rows);
+			error = SparkQwen38LaunchGroupedExpertTileLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_gate_packed_bf16,rows,state->tp_degree,state->tp_rank);
 			if ( error == cudaSuccess )
-				error = SparkQwen38LaunchGroupedExpertTileLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_slot_up_bf16,rows);
+				error = SparkQwen38LaunchGroupedExpertTileLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_slot_up_bf16,rows,state->tp_degree,state->tp_rank);
 			if ( error == cudaSuccess )
 				error = SparkQwen38LaunchSwiGlu(stream,slot->moe_gate_packed_bf16,slot->moe_slot_up_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION);
 			if ( error == cudaSuccess )
-				error = SparkQwen38LaunchGroupedExpertTileLinear(stream,&weights->experts_w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN);
+				error = SparkQwen38LaunchGroupedExpertTileLinear(stream,&weights->experts_w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,state->tp_degree,state->tp_rank);
 		}
 		else
 		{
-			error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_gate_packed_bf16,rows,state->multiprocessor_count);
+			error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_gate_packed_bf16,rows,state->multiprocessor_count,state->tp_degree,state->tp_rank);
 			if ( error == cudaSuccess )
-				error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_slot_up_bf16,rows,state->multiprocessor_count);
+				error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_slot_up_bf16,rows,state->multiprocessor_count,state->tp_degree,state->tp_rank);
 			if ( error == cudaSuccess )
 				error = SparkQwen38LaunchSwiGlu(stream,slot->moe_gate_packed_bf16,slot->moe_slot_up_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION);
 			if ( error == cudaSuccess )
-				error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,state->multiprocessor_count);
+				error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,state->multiprocessor_count,state->tp_degree,state->tp_rank);
 		}
 	}
 	if ( error == cudaSuccess )
 		error = SparkQwen38LaunchMoePairReduceOverwrite(stream,slot->moe_slot_out_bf16,slot->moe_inverse_u32,slot->moe_weights_f32,slot->delta_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION);
+	if ( error == cudaSuccess && state->tp_degree > 1u )
+	{
+		/* Expert-sharded TP: the pair reduce holds only THIS rank's
+		 * experts' contribution. Reduce the DELTA before the replicated
+		 * shared expert and the residual add join it - reducing the hidden
+		 * instead would double-count the shared expert and the base. */
+		status = SparkQwen38ModuleTpAllReduceHidden(state,slot,slot->delta_bf16,rows);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
 	if ( error == cudaSuccess )
 		error = SparkQwen38LaunchLinear(stream,&weights->shared_gate,slot->normalized_bf16,slot->shared_gate_bf16,rows);
 	if ( error == cudaSuccess )
@@ -1526,6 +1783,15 @@ static SparkStatus SparkQwen38ModuleRunDecode(SparkQwen38ModuleState *state, Spa
 		table.host_lane_physical_block_counts = block_counts;
 	}
 	status = SparkQwen38ModuleUploadRows(state,slot,frame,rows);
+	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u )
+	{
+		/* Zero the grouped expert output buffer so the rank-local pair
+		 * reduce over ALL pairs sums only this rank's experts (the peers'
+		 * rows live in their own buffers; the all-reduce completes the
+		 * mixture). */
+		error = cudaMemsetAsync(slot->moe_slot_out_bf16,0,(uint64_t)rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN * SPARK_QWEN38_MODEL_HIDDEN_BF16_BYTES,stream);
+		status = SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"tp_slot_zero");
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen38ModuleKvPrepareFrame(state,slot,context,&table,rows);
 	if ( status != SPARK_STATUS_OK )

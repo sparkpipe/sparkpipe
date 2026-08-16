@@ -1400,6 +1400,34 @@ extern "C" cudaError_t SparkQwen38LaunchEmbeddingGather(cudaStream_t stream, con
 	return(cudaGetLastError());
 }
 
+/* TP all-reduce combine: destination += source, one block per row, bf16
+ * pairs added in f32 - the SparkTpDeviceCollective combine callback for
+ * the hidden_transport backend. */
+static __global__ void SparkQwen38TpCombineAddKernel(void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
+{
+	uint32_t row = blockIdx.x;
+	uint64_t pair_base = ((uint64_t)row * width) >> 1u;
+	uint64_t pair_count = width >> 1u;
+	uint64_t pair;
+	float2 dst,src;
+	if ( row >= row_count )
+		return;
+	for (pair = threadIdx.x; pair < pair_count; pair += blockDim.x)
+	{
+		dst = SparkLmLoadBf16Pair(destination_bf16,pair_base + pair);
+		src = SparkLmLoadBf16Pair(source_bf16,pair_base + pair);
+		SparkLmStoreBf16Pair(destination_bf16,pair_base + pair,dst.x + src.x,dst.y + src.y);
+	}
+}
+
+extern "C" cudaError_t SparkQwen38LaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
+{
+	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u || width == 0u || (width & 1u) != 0u )
+		return(cudaErrorInvalidValue);
+	SparkQwen38TpCombineAddKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(destination_bf16,source_bf16,row_count,width);
+	return(cudaGetLastError());
+}
+
 extern "C" cudaError_t SparkQwen38LaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
 {
 	uint64_t pairs = ((uint64_t)row_count * dimension + 1u) >> 1u;
@@ -1712,26 +1740,42 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertLinear(
 	const uint32_t *group_tile_prefix,
 	void *output_bf16,
 	uint32_t source_row_count,
-	uint32_t multiprocessor_count)
+	uint32_t multiprocessor_count,
+	uint32_t tp_degree,
+	uint32_t tp_rank)
 {
 	uint64_t rows_per_expert;
 	uint64_t payload_stride,scale_stride;
+	uint32_t experts_per_rank = SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
+	const uint8_t *payload;
+	const uint8_t *scale;
+	const uint32_t *offsets;
+	const uint32_t *prefix;
 	if ( view == 0 || input_bf16 == 0 ||
 		group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 ||
 		view->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
 		view->output_dimension % SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT != 0u ||
 		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
-		(source_row_map == 0 && source_row_count == 0u) )
+		(source_row_map == 0 && source_row_count == 0u) ||
+		tp_degree == 0u || tp_rank >= tp_degree ||
+		(SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
 		return(cudaErrorInvalidValue);
 	rows_per_expert = (uint64_t)view->output_dimension / SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT;
 	payload_stride = rows_per_expert * view->input_dimension;
 	scale_stride = (rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u;
+	/* Expert shard: the pack stores experts expert-major, so the rank's
+	 * slice is one contiguous pointer shift over payload, scales, offsets
+	 * and tile prefixes; all row/output indexing stays global. */
+	payload = (const uint8_t *)view->weight_payload + ((uint64_t)tp_rank * experts_per_rank * payload_stride);
+	scale = (const uint8_t *)view->weight_scale_e8m0 + ((uint64_t)tp_rank * experts_per_rank * scale_stride);
+	offsets = group_row_offset + ((uint64_t)tp_rank * experts_per_rank);
+	prefix = group_tile_prefix + ((uint64_t)tp_rank * experts_per_rank);
 	return(SparkLmHostLaunchGroupedScalarLinear<32u>(stream,
 		SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,
-		view->weight_payload,(const uint8_t *)view->weight_scale_e8m0,
+		payload,scale,
 		payload_stride,scale_stride,
-		input_bf16,source_row_map,source_row_count,group_row_offset,group_tile_prefix,
-		output_bf16,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT,
+		input_bf16,source_row_map,source_row_count,offsets,prefix,
+		output_bf16,experts_per_rank,
 		view->input_dimension,rows_per_expert,multiprocessor_count));
 }
 
@@ -1756,17 +1800,24 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(
 	const uint32_t *source_row_map,
 	const uint32_t *group_row_offset,
 	void *output_bf16,
-	uint32_t source_row_count)
+	uint32_t source_row_count,
+	uint32_t tp_degree,
+	uint32_t tp_rank)
 {
 	uint64_t rows_per_expert;
 	uint64_t payload_stride,scale_stride;
-	uint32_t m_blocks,n_tiles;
+	uint32_t m_blocks,n_tiles,experts_per_rank;
+	const uint8_t *payload;
+	const uint8_t *scale;
+	const uint32_t *offsets;
 	if ( view == 0 || input_bf16 == 0 || group_row_offset == 0 || output_bf16 == 0 ||
 		view->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
 		view->output_dimension % SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT != 0u ||
 		view->input_dimension % 64u != 0u ||
 		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
-		source_row_count == 0u )
+		source_row_count == 0u ||
+		tp_degree == 0u || tp_rank >= tp_degree ||
+		(SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
 		return(cudaErrorInvalidValue);
 	rows_per_expert = (uint64_t)view->output_dimension / SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT;
 	if ( rows_per_expert % SPARK_LM_TILE_N != 0u )
@@ -1776,16 +1827,22 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(
 	m_blocks = (source_row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
 	n_tiles = (uint32_t)(rows_per_expert / SPARK_LM_TILE_N);
 	(void)m_blocks;
+	(void)n_tiles;
+	experts_per_rank = SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
+	payload = (const uint8_t *)view->weight_payload + ((uint64_t)tp_rank * experts_per_rank * payload_stride);
+	scale = (const uint8_t *)view->weight_scale_e8m0 + ((uint64_t)tp_rank * experts_per_rank * scale_stride);
+	offsets = group_row_offset + ((uint64_t)tp_rank * experts_per_rank);
 	/* The expert-stride m-loop at every tile shape: one launch of
 	 * 64 x n_tiles CTAs, each walking several experts - empty experts
 	 * cost a few cycles instead of a launch, and each k-strip is staged
-	 * once per 8-m-tile chunk (the measured B=256 collapse fix). */
+	 * once per 8-m-tile chunk (the measured B=256 collapse fix). The
+	 * expert shard is the pointer shift above; indexing stays global. */
 	return(SparkLmHostLaunchGroupedExpertTileMloop(
 		stream,
 		SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,
-		view->weight_payload,(const uint8_t *)view->weight_scale_e8m0,
+		payload,scale,
 		payload_stride,scale_stride,
-		input_bf16,source_row_map,group_row_offset,output_bf16,
+		input_bf16,source_row_map,offsets,output_bf16,
 		view->input_dimension,(uint32_t)rows_per_expert,
-		SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT));
+		experts_per_rank));
 }
