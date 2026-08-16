@@ -49,11 +49,11 @@
 #define SPARK_DSV4_MODEL_HC_SINKHORN_ITERATIONS SPARK_DSV4_PRO_HYPER_CONNECTION_SINKHORN_ITERATIONS
 
 #define SPARK_DSV4_MODEL_DRIVER_MODEL_ID "deepseek.v4.pro.resident-decode-stage-firmware"
-#define SPARK_DSV4_MODEL_DRIVER_REVISION "h7168-l61-dsa-e384k6-hash3-v129280-ga0731-v1"
+#define SPARK_DSV4_MODEL_DRIVER_REVISION "h7168-l61-dsa-e384k6-hash3-v129280-ga0813-v1"
 /* sha256 of examples/model_descriptions/dsv4_pro_resident_decode_stage_firmware*.json */
-#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256 "7715ba4b01c533fc203d906cb44a9e645b8a1a164f682c165e06fb1ae394b9d7"
-#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B1 "d0481e4d22740abe5313132e0269bd8e3d8ddd51f5ba08d16c1591470f709858"
-#define SPARK_DSV4_MODEL_MODULE_ID "spark.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h7168.l61.e384.k6.ga0731.v1"
+#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256 "8ffb4fec1f7874ad195c3139b9120a0a48edb22815b55b05fe4bed3066ee9160"
+#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B1 "d0a9242f57777e7534c9d1f95d8934a05e669015509eb00f25b19d87b3875d36"
+#define SPARK_DSV4_MODEL_MODULE_ID "spark.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h7168.l61.e384.k6.ga0813.v1"
 #define SPARK_DSV4_MODEL_MODULE_TARGET "cuda.sm121.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16"
 
 #define SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION SPARK_DSV4_MODEL_HEAD_DIMENSION
