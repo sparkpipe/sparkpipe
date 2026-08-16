@@ -49,15 +49,23 @@ Measured on sparka, real rank pack, stage 0 (24 layers), 1 token:
    slice bounds from the pack manifest when the runner passes
    SPARK_K3_MODULE_DERIVE_SLICE, the bound-layer cap is 93, and the
    generator emits TP16 configs (16 peer hosts, no host tier). The degree
-   divisibility audit below holds. The expert w2 remains the ONE TP16
-   blocker: its 24 k-tiles cannot split 16 ways in whole tiles, and an
-   unbalanced whole-tile split CANNOT match the gate|up output split (a
-   rank's down k-slice must equal the intermediate its w1 slice computed -
-   192 = 96+96 elements at TP16 = 1.5 tiles) - the sharder now REFUSES
-   TP16 loudly instead of emitting inconsistent packs, and the fix is the
-   64-element half-tile repack (pack V3 + a TILE_K=64 INTERLEAVED_B
-   variant). Everything else (configs, NCCL degree 16, geometry, pools)
-   is staged.
+   divisibility audit below holds.
+5. **Expert sharding, corrected (LANDED)**: two real findings from the
+   audit. (a) The w1's K AXIS must slice too: the rank's latent slice
+   addresses only its k-tiles, so the old whole-k shard paired ranks 1-3's
+   activations with rank 0's weights - the sharder now takes the rank's
+   k-tile range on w1 as well as the cell range. (b) The TP16 tile size
+   is 32, not 64: the rank's SiTU intermediate slice IS contiguous (the
+   gate|up halves share cell offsets), and 32 divides both the w1 k-slice
+   (224 = 7 x 32) and the w2 k-slice (192 = 6 x 32); the packer's
+   interleave_geometry already closes at tile_k 32 (16B payload row = 16
+   rows x 1 scale byte). The packer now takes expert_tile_k (128 default,
+   32 for TP16 packs) and the sharder refuses any degree the tile counts
+   do not divide, naming the tile size. The TILE_K=32 INTERLEAVED_B GEMM
+   variant is the remaining code wave; until then TP16 packs cannot be
+   consumed by the serving tier. NOTE: the deployed TP4 rank packs were
+   sliced by the pre-fix sharder and must be RE-SLICED before the
+   end-to-end run (only rank 0's w1 is correct today).
 5. **Two-phase layer collective (LANDED)**: the hook now fires after the
    attention half (phase 0) AND after the MLP half (phase 1). Phase 0 is
    required for correctness, not just speed: the MLP-side AttnRes retrieval
