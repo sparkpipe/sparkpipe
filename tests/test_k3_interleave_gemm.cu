@@ -390,6 +390,14 @@ int main(void)
 		uint16_t *h_out_wide = (uint16_t *)malloc(TEST_PACKED * TEST_WIDE_OUT * sizeof(uint16_t));
 		BuildInterleavedWeightsWide(h_weight_wide);
 		cudaMalloc(&d_weight_wide, TEST_WIDE_EXPERT_BYTES * TEST_EXPERTS);
+		/* the wide prefix: 1 row-tile x 56 neuron tiles per group */
+		uint32_t *d_group_prefix_wide = 0;
+		uint32_t h_group_prefix_wide[TEST_EXPERTS + 1u] =
+			{ 0u, TEST_WIDE_OUT / TEST_TILE_N,
+			  2u * (TEST_WIDE_OUT / TEST_TILE_N) };
+		cudaMalloc(&d_group_prefix_wide, sizeof(h_group_prefix_wide));
+		cudaMemcpy(d_group_prefix_wide, h_group_prefix_wide,
+			sizeof(h_group_prefix_wide), cudaMemcpyHostToDevice);
 		cudaMalloc(&d_out_wide, TEST_PACKED * TEST_WIDE_OUT * sizeof(uint16_t));
 		cudaMemcpy(d_weight_wide, h_weight_wide, TEST_WIDE_EXPERT_BYTES * TEST_EXPERTS,
 			cudaMemcpyHostToDevice);
@@ -398,7 +406,7 @@ int main(void)
 		gemm.scale_a = LmScaleTensorNone();
 		gemm.scale_b = LmScaleTensorNone();
 		gemm.group_row_offset = d_group_offset;
-		gemm.group_tile_prefix = d_group_prefix;
+		gemm.group_tile_prefix = d_group_prefix_wide;
 		gemm.prefix_built = 1u;
 		gemm.output_bf16 = d_out_wide;
 		status = LmGemmWeightOnlyInterleavedLaunch<
@@ -440,6 +448,7 @@ int main(void)
 			failures++;
 		cudaFree(d_weight_wide);
 		cudaFree(d_out_wide);
+		cudaFree(d_group_prefix_wide);
 		free(h_weight_wide);
 		free(h_out_wide);
 	}
