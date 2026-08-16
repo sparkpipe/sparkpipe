@@ -204,11 +204,15 @@ typedef struct SparkDsv4HcWeights
 
 typedef struct SparkDsv4MtpWeights
 {
-	SparkDsv4LinearView e_proj;
-	SparkDsv4LinearView h_proj;
-	const void *enorm_weight_bf16;
-	const void *hnorm_weight_bf16;
-	const void *final_norm_weight_bf16;
+	/* GA DSpark speculative stage heads (mtp.0 main-stream projection and
+	 * the mtp.2 draft heads). The draft layers themselves live in
+	 * SparkDsv4ModuleState.mtp_layers[]. */
+	SparkDsv4LinearView main_proj;
+	const void *main_norm_weight_bf16;
+	const void *norm_weight_bf16;
+	const void *markov_w1_weight_bf16;
+	const void *markov_w2_weight_bf16;
+	const void *confidence_proj_weight_bf16;
 	const float *hc_head_fn_f32;
 	const float *hc_head_base_f32;
 	const float *hc_head_scale_f32;

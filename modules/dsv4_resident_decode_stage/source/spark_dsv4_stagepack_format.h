@@ -31,6 +31,9 @@
 #define SPARK_DSV4_STAGEPACK_FORMAT_VERSION 3u
 #define SPARK_DSV4_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_DSV4_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
+/* GA DSpark speculative stage: three draft layers. */
+#define SPARK_DSV4_STAGEPACK_MTP_LAYER_2 (UINT32_MAX - 2u)
+#define SPARK_DSV4_STAGEPACK_MTP_LAYER_3 (UINT32_MAX - 3u)
 #define SPARK_DSV4_STAGEPACK_HEADER_BYTES ((uint32_t)sizeof(SparkDsv4StagePackHeader))
 #define SPARK_DSV4_STAGEPACK_ENTRY_BYTES ((uint32_t)sizeof(SparkDsv4StagePackEntry))
 
@@ -92,15 +95,22 @@ typedef enum SparkDsv4StagePackTensorKind
 	SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_FN = 38,
 	SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_BASE = 39,
 	SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_SCALE = 40,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_E_PROJ = 41,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_H_PROJ = 42,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_ENORM = 43,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HNORM = 44,
-	SPARK_DSV4_STAGEPACK_TENSOR_MTP_FINAL_NORM = 45,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_E_PROJ = 41, /* deprecated: preview MTP */
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_H_PROJ = 42, /* deprecated: preview MTP */
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_ENORM = 43, /* deprecated: preview MTP */
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HNORM = 44, /* deprecated: preview MTP */
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_FINAL_NORM = 45, /* deprecated: preview MTP */
 	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_FN = 46,
 	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_BASE = 47,
 	SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE = 48,
-	SPARK_DSV4_STAGEPACK_TENSOR_KIND_COUNT = 49
+	/* GA DSpark speculative stage (deepseek-ai/DeepSeek-V4-Pro-0813). */
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_NORM = 49,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_PROJ = 50,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_NORM = 51,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_MARKOV_W1 = 52,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_MARKOV_W2 = 53,
+	SPARK_DSV4_STAGEPACK_TENSOR_MTP_CONFIDENCE_PROJ = 54,
+	SPARK_DSV4_STAGEPACK_TENSOR_KIND_COUNT = 55
 } SparkDsv4StagePackTensorKind;
 
 typedef struct SparkDsv4StagePackHeader
@@ -147,16 +157,23 @@ typedef struct SparkDsv4StagePackTensorShape
 
 // The MoE routing split, pinned: layers below HASH_ROUTED_LAYER_COUNT ship
 // the tid2eid lookup and NO balancer bias; all others the reverse. The MTP
-// layer sits past the hash range, so it score-routes.
+// layers sit past the hash range, so they score-route.
+static inline uint32_t SparkDsv4StagePackLayerIsMtp(uint32_t layer_index)
+{
+	return(layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER ||
+		layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER_2 ||
+		layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER_3 ? 1u : 0u);
+}
+
 static inline uint32_t SparkDsv4StagePackLayerIsHashRouted(uint32_t layer_index)
 {
-	return(layer_index != SPARK_DSV4_STAGEPACK_MTP_LAYER && layer_index < SPARK_DSV4_MODEL_HASH_ROUTED_LAYER_COUNT ? 1u : 0u);
+	return(SparkDsv4StagePackLayerIsMtp(layer_index) == 0u && layer_index < SPARK_DSV4_MODEL_HASH_ROUTED_LAYER_COUNT ? 1u : 0u);
 }
 
 static inline uint32_t SparkDsv4StagePackLayerKind(uint32_t layer_index)
 {
-	if ( layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER )
-		return(SPARK_DSV4_MODEL_MTP_LAYER_COUNT == 1u ? SPARK_DSV4_MODEL_MTP_LAYER_KIND : SPARK_DSV4_MODEL_LAYER_KIND_INVALID);
+	if ( SparkDsv4StagePackLayerIsMtp(layer_index) != 0u )
+		return(SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u ? SPARK_DSV4_MODEL_MTP_LAYER_KIND : SPARK_DSV4_MODEL_LAYER_KIND_INVALID);
 	return(SparkDsv4ModelLayerKind(layer_index));
 }
 

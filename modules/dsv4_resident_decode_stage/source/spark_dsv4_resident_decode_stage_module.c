@@ -323,10 +323,10 @@ struct SparkDsv4ModuleState
 	float hc_head_scale_value;
 	uint32_t csa_ordinal_by_layer[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT];
 	uint64_t layer_seen_bits[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT];
-	uint64_t mtp_seen_bits;
+	uint64_t mtp_seen_bits[SPARK_DSV4_PRO_MTP_LAYER_COUNT];
 	uint64_t global_seen_bits;
 	SparkDsv4LayerWeights layers[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT];
-	SparkDsv4LayerWeights mtp_layer;
+	SparkDsv4LayerWeights mtp_layers[SPARK_DSV4_PRO_MTP_LAYER_COUNT];
 	SparkDsv4MtpWeights mtp;
 	const void *token_embedding_bf16;
 	const void *final_norm_weight_bf16;
@@ -973,7 +973,11 @@ static SparkStatus SparkDsv4ModuleValidateEntry(SparkDsv4ModuleState *state, con
 	SparkDsv4StagePackTensorShape shape;
 	uint64_t payload_bytes,scale_bytes;
 	uint32_t global = entry->layer_index == SPARK_DSV4_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
-	uint32_t in_slice = (entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER && SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u) || (entry->layer_index >= state->first_layer_index && entry->layer_index < state->first_layer_index + state->layer_count) ? 1u : 0u;
+	uint32_t is_mtp = (entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER ||
+		entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER_2 ||
+		entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER_3) &&
+		SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u ? 1u : 0u;
+	uint32_t in_slice = (is_mtp != 0u) || (entry->layer_index >= state->first_layer_index && entry->layer_index < state->first_layer_index + state->layer_count) ? 1u : 0u;
 	if ( entry->tensor_kind >= SPARK_DSV4_STAGEPACK_TENSOR_KIND_COUNT || (global == 0u && in_slice == 0u) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if ( SparkDsv4ModuleResolvedShape(state,entry,&shape) < 0 )
@@ -998,11 +1002,12 @@ static SparkStatus SparkDsv4ModuleBindGlobal(SparkDsv4ModuleState *state, const 
 	case SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_FN: state->hc_head_fn_f32 = (const float *)payload; break;
 	case SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_BASE: state->hc_head_base_f32 = (const float *)payload; break;
 	case SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_SCALE: state->hc_head_scale_f32 = (const float *)payload; break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_E_PROJ: SparkDsv4ModuleFillLinearView(&state->mtp.e_proj,entry,payload,scale); break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_H_PROJ: SparkDsv4ModuleFillLinearView(&state->mtp.h_proj,entry,payload,scale); break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_ENORM: state->mtp.enorm_weight_bf16 = payload; break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HNORM: state->mtp.hnorm_weight_bf16 = payload; break;
-	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_FINAL_NORM: state->mtp.final_norm_weight_bf16 = payload; break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_NORM: state->mtp.main_norm_weight_bf16 = payload; break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_PROJ: SparkDsv4ModuleFillLinearView(&state->mtp.main_proj,entry,payload,scale); break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_NORM: state->mtp.norm_weight_bf16 = payload; break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MARKOV_W1: state->mtp.markov_w1_weight_bf16 = payload; break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_MARKOV_W2: state->mtp.markov_w2_weight_bf16 = payload; break;
+	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_CONFIDENCE_PROJ: state->mtp.confidence_proj_weight_bf16 = payload; break;
 	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_FN: state->mtp.hc_head_fn_f32 = (const float *)payload; break;
 	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_BASE: state->mtp.hc_head_base_f32 = (const float *)payload; break;
 	case SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE: state->mtp.hc_head_scale_f32 = (const float *)payload; break;
@@ -1080,8 +1085,19 @@ static SparkStatus SparkDsv4ModuleBindLayerRest(SparkDsv4LayerWeights *layer, co
 
 static SparkStatus SparkDsv4ModuleBindLayer(SparkDsv4ModuleState *state, const SparkDsv4StagePackEntry *entry, void *payload, void *scale)
 {
-	SparkDsv4LayerWeights *layer = entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER ? &state->mtp_layer : &state->layers[entry->layer_index];
-	uint64_t *seen = entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER ? &state->mtp_seen_bits : &state->layer_seen_bits[entry->layer_index];
+	uint32_t mtp_slot;
+	SparkDsv4LayerWeights *layer;
+	uint64_t *seen;
+	if ( entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER )
+		mtp_slot = 0u;
+	else if ( entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER_2 )
+		mtp_slot = 1u;
+	else if ( entry->layer_index == SPARK_DSV4_STAGEPACK_MTP_LAYER_3 )
+		mtp_slot = 2u;
+	else
+		mtp_slot = UINT32_MAX;
+	layer = mtp_slot == UINT32_MAX ? &state->layers[entry->layer_index] : &state->mtp_layers[mtp_slot];
+	seen = mtp_slot == UINT32_MAX ? &state->layer_seen_bits[entry->layer_index] : &state->mtp_seen_bits[mtp_slot];
 	SparkStatus status;
 	if ( entry->tensor_kind <= SPARK_DSV4_STAGEPACK_TENSOR_COMPRESS_NORM && entry->tensor_kind >= SPARK_DSV4_STAGEPACK_TENSOR_COMPRESS_APE )
 		status = SparkDsv4ModuleBindLayerAttn(layer,entry,payload,scale);
@@ -1157,11 +1173,15 @@ static SparkStatus SparkDsv4ModuleVerifyCoverage(SparkDsv4ModuleState *state)
 			expected_globals |= 1ull << tensor;
 		if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
 		{
-			for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_MTP_E_PROJ; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE; tensor++)
+			for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_NORM; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_MTP_CONFIDENCE_PROJ; tensor++)
 				expected_globals |= 1ull << tensor;
-			if ( state->mtp_seen_bits != SparkDsv4ModuleExpectedLayerBits(SPARK_DSV4_STAGEPACK_MTP_LAYER) )
+			for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_FN; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_MTP_HC_HEAD_SCALE; tensor++)
+				expected_globals |= 1ull << tensor;
+			if ( state->mtp_seen_bits[0] != SparkDsv4ModuleExpectedLayerBits(SPARK_DSV4_STAGEPACK_MTP_LAYER) ||
+				state->mtp_seen_bits[1] != SparkDsv4ModuleExpectedLayerBits(SPARK_DSV4_STAGEPACK_MTP_LAYER_2) ||
+				state->mtp_seen_bits[2] != SparkDsv4ModuleExpectedLayerBits(SPARK_DSV4_STAGEPACK_MTP_LAYER_3) )
 			{
-				fprintf(stderr,"%s pack_mtp_coverage seen=%llx\n",SPARK_DSV4_MODULE_TAG,(unsigned long long)state->mtp_seen_bits);
+				fprintf(stderr,"%s pack_mtp_coverage seen=%llx/%llx/%llx\n",SPARK_DSV4_MODULE_TAG,(unsigned long long)state->mtp_seen_bits[0],(unsigned long long)state->mtp_seen_bits[1],(unsigned long long)state->mtp_seen_bits[2]);
 				return(SPARK_STATUS_VALIDATION_FAILED);
 			}
 		}

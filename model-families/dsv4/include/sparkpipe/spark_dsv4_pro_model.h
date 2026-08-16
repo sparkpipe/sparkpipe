@@ -5,12 +5,17 @@
 #include "sparkpipe/spark_weight_codec.h"
 
 /* Generated from the exact source revision by tools/generate_dsv4_contracts.py. */
-#define SPARK_DSV4_PRO_ID "deepseek-ai/DeepSeek-V4-Pro"
-#define SPARK_DSV4_PRO_SOURCE_REVISION "official Hugging Face config observed 2026-07-31"
+#define SPARK_DSV4_PRO_ID "deepseek-ai/DeepSeek-V4-Pro-0813"
+#define SPARK_DSV4_PRO_SOURCE_REVISION "GA release deepseek-ai/DeepSeek-V4-Pro-0813 (HF, 2026-08-13)"
 
 #define SPARK_DSV4_PRO_HIDDEN_DIMENSION 7168u
 #define SPARK_DSV4_PRO_LAYER_COUNT 61u
-#define SPARK_DSV4_PRO_MTP_LAYER_COUNT 1u
+#define SPARK_DSV4_PRO_MTP_LAYER_COUNT 3u
+/* DSpark speculative stage. */
+#define SPARK_DSV4_PRO_DSPARK_BLOCK_SIZE 5u
+#define SPARK_DSV4_PRO_DSPARK_TARGET_LAYER_COUNT 3u
+#define SPARK_DSV4_PRO_DSPARK_MARKOV_RANK 512u
+#define SPARK_DSV4_PRO_DSPARK_NOISE_TOKEN_ID 128799u
 #define SPARK_DSV4_PRO_VOCAB_COUNT 129280u
 #define SPARK_DSV4_PRO_QUERY_LORA_RANK 1536u
 #define SPARK_DSV4_PRO_OUTPUT_LORA_RANK 1024u
@@ -52,14 +57,14 @@
 #define SPARK_DSV4_PRO_EXPERT_ACTIVATION_CODEC SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0
 #define SPARK_DSV4_PRO_OUTPUT_COMPOSITION_ACTIVATION_CODEC SPARK_ACTIVATION_CODEC_NONE
 
-static const uint16_t SparkDsv4ProCompressionRatios[62u] =
+static const uint16_t SparkDsv4ProCompressionRatios[64u] =
 {
     128u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u,
     4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u,
     4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u,
     4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u,
     4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u,
-    4u, 0u
+    4u, 0u, 0u, 0u
 };
 
 static inline uint16_t SparkDsv4ProBackboneCompressionRatio(uint32_t layer_index)
