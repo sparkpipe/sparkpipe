@@ -14,8 +14,13 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 
 #if SPARK_DSV4_SERVING_TOPOLOGY == 404
+#if defined(SPARK_DSV4_PRO_BUILD)
+#define SPARK_DSV4_SERVING_ADAPTER_ID \
+	"spark.dsv4.pro.serving-adapter.tp4-pp4.v1"
+#else
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.tp4-pp4.v1"
+#endif
 #define SPARK_DSV4_SERVING_STAGE_COUNT 16u
 #define SPARK_DSV4_SERVING_TP_DEGREE 4u
 #define SPARK_DSV4_SERVING_PP_STAGE_COUNT 4u
@@ -35,11 +40,16 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
 #define SPARK_DSV4_SERVING_STAGE_LAYERS \
-	{11u,11u,11u,11u,11u,11u,11u,11u,11u,11u,11u,11u,10u,10u,10u,10u}
+	{16u,16u,16u,16u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u}
 #define SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX 4u
 #elif SPARK_DSV4_SERVING_TOPOLOGY == 16
+#if defined(SPARK_DSV4_PRO_BUILD)
+#define SPARK_DSV4_SERVING_ADAPTER_ID \
+	"spark.dsv4.pro.serving-adapter.tp16.v1"
+#else
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.tp16.v1"
+#endif
 #define SPARK_DSV4_SERVING_STAGE_COUNT 16u
 #define SPARK_DSV4_SERVING_TP_DEGREE 16u
 #define SPARK_DSV4_SERVING_PP_STAGE_COUNT 1u
@@ -66,8 +76,13 @@
 	 SPARK_DSV4_MODEL_LAYER_COUNT,SPARK_DSV4_MODEL_LAYER_COUNT}
 #define SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX 16u
 #elif SPARK_DSV4_SERVING_TOPOLOGY == 4
+#if defined(SPARK_DSV4_PRO_BUILD)
+#define SPARK_DSV4_SERVING_ADAPTER_ID \
+	"spark.dsv4.pro.serving-adapter.tp4.v1"
+#else
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.tp4.v1"
+#endif
 #define SPARK_DSV4_SERVING_STAGE_COUNT 4u
 #define SPARK_DSV4_SERVING_TP_DEGREE 4u
 #define SPARK_DSV4_SERVING_PP_STAGE_COUNT 1u

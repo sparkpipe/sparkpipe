@@ -148,6 +148,13 @@ DSV4_TP4_SERVING_TOPOLOGY_FLAGS := -DSPARK_DSV4_SERVING_TOPOLOGY=4
 DSV4_TP4_B1_SERVING_TOPOLOGY_FLAGS := $(DSV4_TP4_SERVING_TOPOLOGY_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=1u
 DSV4_TP4_PP4_SERVING_TOPOLOGY_FLAGS := -DSPARK_DSV4_SERVING_TOPOLOGY=404
 DSV4_TP4_PP4_B1_SERVING_TOPOLOGY_FLAGS := $(DSV4_TP4_PP4_SERVING_TOPOLOGY_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=1u
+DSV4_PRO_TP4_PP4_SERVING_ADAPTER := build/libdsv4_pro_tp4_pp4_serving_adapter.$(SHARED_LIBRARY_EXT)
+DSV4_PRO_TP4_PP4_B1_SERVING_ADAPTER := build/libdsv4_pro_tp4_pp4_b1_serving_adapter.$(SHARED_LIBRARY_EXT)
+# Pro serving topology selection: 404 = TP4xPP4 hybrid (default), 16 = TP16,
+# 4 = TP4, 404-B1 = TP4xPP4 bucket-1 variant. The adapter id and the adapter
+# geometry derive from the same flag (spark_dsv4_serving_adapter.c).
+DSV4_PRO_TP4_PP4_SERVING_TOPOLOGY_FLAGS := -DSPARK_DSV4_SERVING_TOPOLOGY=404 -DSPARK_DSV4_PRO_BUILD=1
+DSV4_PRO_TP4_PP4_B1_SERVING_TOPOLOGY_FLAGS := $(DSV4_PRO_TP4_PP4_SERVING_TOPOLOGY_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=1u
 QWEN36_SERVING_ADAPTER := build/libqwen36_serving_adapter.$(SHARED_LIBRARY_EXT)
 QWEN36_MODEL_DESCRIPTION := examples/model_descriptions/qwen36_resident_decode_stage_firmware.json
 QWEN36_MODEL_REVISION ?= bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1
@@ -594,6 +601,12 @@ $(DSV4_TP4_PP4_SERVING_ADAPTER): modules/dsv4_resident_decode_stage/source/spark
 
 $(DSV4_TP4_PP4_B1_SERVING_ADAPTER): modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_serving_adapter.h modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(DSV4_MODEL_HEADER) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY)
 	$(CC) $(CPPFLAGS) $(DSV4_TP4_PP4_B1_SERVING_TOPOLOGY_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+$(DSV4_PRO_TP4_PP4_SERVING_ADAPTER): modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_serving_adapter.h modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(DSV4_MODEL_HEADER) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY)
+	$(CC) $(CPPFLAGS) $(DSV4_PRO_TP4_PP4_SERVING_TOPOLOGY_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+$(DSV4_PRO_TP4_PP4_B1_SERVING_ADAPTER): modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_serving_adapter.h modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(DSV4_MODEL_HEADER) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY)
+	$(CC) $(CPPFLAGS) $(DSV4_PRO_TP4_PP4_B1_SERVING_TOPOLOGY_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 $(QWEN36_SERVING_ADAPTER): modules/qwen36_resident_decode_stage/source/spark_qwen36_serving_adapter.c modules/qwen36_resident_decode_stage/include/sparkpipe/spark_qwen36_serving_adapter.h modules/qwen36_resident_decode_stage/include/sparkpipe/spark_qwen36_resident_decode_stage_firmware.h $(QWEN36_MODEL_DESCRIPTION) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include $(CFLAGS) $(QWEN36_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/qwen36_resident_decode_stage/source/spark_qwen36_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@

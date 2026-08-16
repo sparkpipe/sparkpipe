@@ -12,7 +12,16 @@
 #include <math.h>
 #include <stdio.h>
 
-#define SPARK_DSV4_ROUTER_SORT_CAPACITY SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT
+/* Bitonic sort needs a power of two; pad to the next one (Pro has 384
+ * experts). The router pads non-existent experts with zero keys, which
+ * sort below every real key, so the top-k tail still selects real experts. */
+#if SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= 256u
+#define SPARK_DSV4_ROUTER_SORT_CAPACITY 256u
+#elif SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= 512u
+#define SPARK_DSV4_ROUTER_SORT_CAPACITY 512u
+#else
+#define SPARK_DSV4_ROUTER_SORT_CAPACITY 1024u
+#endif
 #define SPARK_DSV4_EXPERT_STAGES 4u
 #define SPARK_DSV4_EXPERT_WARPS 8u
 #define SPARK_DSV4_HC_ELEMENT_TILE 256u
@@ -1609,6 +1618,11 @@ static __global__ void SparkDsv4TopKKernel(const float *scores_f32, const uint32
  * flattened mean square - the norm applied to the mix, exactly the
  * reference order. One block per row, one warp per mix row.
  */
+/* Pro tiles the HcMix staging: 4096 floats = 16 KB shared, safely under the
+ * GB10 99 KB dynamic-shared limit for any hidden size. Flash builds ignore it. */
+#define SPARK_DSV4_HC_MIX_TILE 4096u
+#define SPARK_LM_HC_MIX_ROWS_PER_WARP 3u
+
 static __global__ void SparkDsv4HcMixKernel(const void *streams_bf16, const float *fn_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, float epsilon)
 {
 	extern __shared__ float hc_shared[];
@@ -1617,6 +1631,57 @@ static __global__ void SparkDsv4HcMixKernel(const void *streams_bf16, const floa
 	float value,total = 0.0f,inverse,accumulator;
 	if ( row >= row_count )
 		return;
+#if defined(SPARK_DSV4_PRO_BUILD)
+	/* Pro's flat dimension (4 streams x 7168 = 28672 floats = 112 KB) exceeds
+	 * the GB10 dynamic-shared limit (101376 B), so tile the staging. Flash
+	 * builds keep the original single-pass path. */
+	float mix_accum[SPARK_LM_HC_MIX_ROWS_PER_WARP];
+	uint32_t tile,tile_end,tile_elements,mix_index,mix_row;
+	total = 0.0f;
+	mix_index = 0u;
+	for (mix = warp; mix < mix_rows; mix += SPARK_LM_CTA_WARPS)
+	{
+		mix_accum[mix_index] = 0.0f;
+		mix_index++;
+	}
+	for (tile = 0u; tile < flat_dimension; tile += SPARK_DSV4_HC_MIX_TILE)
+	{
+		tile_end = tile + SPARK_DSV4_HC_MIX_TILE < flat_dimension ?
+			tile + SPARK_DSV4_HC_MIX_TILE : flat_dimension;
+		tile_elements = tile_end - tile;
+		for (element = threadIdx.x; element < tile_elements; element += blockDim.x)
+		{
+			value = SparkLmBf16ToFloat(streams_bf16,
+				((uint64_t)row * flat_dimension) + tile + element);
+			hc_shared[element] = value;
+			total += value * value;
+		}
+		__syncthreads();
+		mix_index = 0u;
+		for (mix = warp; mix < mix_rows; mix += SPARK_LM_CTA_WARPS)
+		{
+			mix_row = mix;
+			accumulator = 0.0f;
+			for (element = lane; element < tile_elements; element += SPARK_LM_WARP_LANES)
+				accumulator += hc_shared[element] *
+					fn_f32[((uint64_t)mix_row * flat_dimension) + tile + element];
+			accumulator = SparkLmWarpReduceSum(accumulator);
+			if ( lane == 0u )
+				mix_accum[mix_index] += accumulator;
+			mix_index++;
+		}
+		__syncthreads();
+	}
+	total = SparkLmBlockReduceSum(total,reduce_scratch);
+	inverse = rsqrtf(total / (float)flat_dimension + epsilon);
+	mix_index = 0u;
+	for (mix = warp; mix < mix_rows; mix += SPARK_LM_CTA_WARPS)
+	{
+		if ( lane == 0u )
+			mixes_f32[((uint64_t)row * mix_rows) + mix] = mix_accum[mix_index] * inverse;
+		mix_index++;
+	}
+#else
 	for (element = threadIdx.x; element < flat_dimension; element += blockDim.x)
 	{
 		value = SparkLmBf16ToFloat(streams_bf16,((uint64_t)row * flat_dimension) + element);
@@ -1634,6 +1699,7 @@ static __global__ void SparkDsv4HcMixKernel(const void *streams_bf16, const floa
 		if ( lane == 0u )
 			mixes_f32[((uint64_t)row * mix_rows) + mix] = accumulator * inverse;
 	}
+#endif
 }
 
 static __global__ void SparkDsv4HcMixSplitKKernel(const void *streams_bf16, const float *fn_f32, float *partials_f32, uint32_t row_count, uint32_t flat_dimension)
@@ -2304,12 +2370,33 @@ extern "C" cudaError_t SparkDsv4ConfigureCudaKernels(uint32_t *multiprocessor_co
             SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION));
     if (error == cudaSuccess)
     {
+        uint32_t hc_mix_shared_elements;
+#if defined(SPARK_DSV4_PRO_BUILD)
+        hc_mix_shared_elements = SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS <
+            SPARK_DSV4_HC_MIX_TILE ? SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS :
+            SPARK_DSV4_HC_MIX_TILE;
+#else
+        hc_mix_shared_elements = SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS;
+#endif
         error = cudaFuncSetAttribute(
             SparkDsv4HcMixKernel,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
-            (int)(SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
-                sizeof(float)));
+            (int)(hc_mix_shared_elements * sizeof(float)));
     }
+#if defined(SPARK_DSV4_PRO_BUILD)
+    /* Pro's output composition (16 groups x 1024 = 16384) stages 64 KB of
+     * activations in the decode LinearKernel - over the 48 KB default.
+     * Opt the exact instantiation in; Flash's 8192-wide input never needs
+     * this and keeps its original attribute set. */
+    if ( error == cudaSuccess )
+        error = cudaFuncSetAttribute(
+            SparkLmLinearKernel<128u,
+                SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC,
+                SPARK_LM_CTA_WARPS>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)((uint64_t)SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT *
+                SPARK_DSV4_MODEL_OUTPUT_LORA_RANK * sizeof(float)));
+#endif
     return error;
 }
 
@@ -2797,7 +2884,13 @@ extern "C" cudaError_t SparkDsv4LaunchTopK(cudaStream_t stream, const float *sco
 
 extern "C" cudaError_t SparkDsv4LaunchHcMix(cudaStream_t stream, const void *streams_bf16, const float *fn_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, float epsilon)
 {
+#if defined(SPARK_DSV4_PRO_BUILD)
+	uint32_t shared_elements = flat_dimension < SPARK_DSV4_HC_MIX_TILE ?
+		flat_dimension : SPARK_DSV4_HC_MIX_TILE;
+	SparkDsv4HcMixKernel<<<row_count,SPARK_LM_CTA_THREADS,shared_elements * (uint32_t)sizeof(float),stream>>>(streams_bf16,fn_f32,mixes_f32,row_count,flat_dimension,mix_rows,epsilon);
+#else
 	SparkDsv4HcMixKernel<<<row_count,SPARK_LM_CTA_THREADS,flat_dimension * (uint32_t)sizeof(float),stream>>>(streams_bf16,fn_f32,mixes_f32,row_count,flat_dimension,mix_rows,epsilon);
+#endif
 	return(cudaGetLastError());
 }
 

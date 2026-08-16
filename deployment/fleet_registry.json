@@ -87,8 +87,8 @@
       "control_port_base": 20480,
       "collective_port_base": 64620,
       "transport_control_base": 61700,
-      "owner": "dsv4-pro session - verify everything",
-      "status": "placeholder"
+      "owner": "dsv4-pro session: packs+driver validated single-spark (val4 PASS), 16 rank packs staged, run tools/devcycle/first_decode_pro.sh on reservation",
+      "status": "ready-pending-ring-reservation"
     },
     "k3": {
       "tier": "big",

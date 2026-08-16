@@ -1,5 +1,13 @@
 #pragma once
 
+/*
+ * Pro builds define SPARK_DSV4_PRO_BUILD and get the Pro geometry through
+ * the model-generic name space; Flash builds are unchanged by this guard.
+ */
+#if defined(SPARK_DSV4_PRO_BUILD)
+#include "sparkpipe/spark_dsv4_pro_model_aliases.h"
+#else
+
 #include <stdint.h>
 
 #include "sparkpipe/spark_weight_codec.h"
@@ -108,3 +116,5 @@ static inline uint32_t SparkDsv4ModelLayerKind(uint32_t layer_index)
 		return(SPARK_DSV4_MODEL_LAYER_KIND_HCA);
 	return(SPARK_DSV4_MODEL_LAYER_KIND_INVALID);
 }
+
+#endif /* SPARK_DSV4_PRO_BUILD */
