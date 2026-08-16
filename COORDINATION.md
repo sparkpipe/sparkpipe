@@ -20,7 +20,7 @@ Scope: the six parallel model sessions sharing the 16-Spark fleet
 ## The isolation model: tiers, scopes, and one current big model
 
 Every model is registered in
-[`deployment/fleet_registry.json`](deployment/fleet_registry.json) with a
+[`tools/devcycle/fleet_registry.json`](tools/devcycle/fleet_registry.json) with a
 **tier** and a **scope**:
 
 | Model | Tier | Scope | Hosts |

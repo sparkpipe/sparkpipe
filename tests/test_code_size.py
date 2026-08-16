@@ -150,7 +150,14 @@ from pathlib import Path
 # targets relative and therefore valid in space-containing workspaces. This is
 # not generated output or a model-specific copy of common serving code; 154239
 # is the exact count after the landing.
-CEILING = 154239
+# The multi-session wave (merged as one span) adds the DSV4 Pro bring-up
+# (stagepacks, requant tool, runbook tooling), the Qwen 3.8 Max family and
+# resident stage, the Qwen TP4 deployment/bench tooling, the GLM52 TP8
+# additive path, and the devcycle coordination harness; the DRY consolidation
+# on the unified branch removes the duplicated Pro TP16 stagepack and
+# re-parameterizes the TP4xPP4 driver; 158323 is the exact count after that
+# consolidation lands. Ceiling moves to the exact count.
+CEILING = 158323
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -2,7 +2,7 @@
 #
 # fleet_swap.sh MODEL — designate the current big model on the fleet.
 #
-# The registry (deployment/fleet_registry.json) assigns every model a
+# The registry (tools/devcycle/fleet_registry.json) assigns every model a
 # tier ("always-on" | "big"), a scope ("band" = its own hosts,
 # "fleet" = all 16 sparks), hosts, ports, and its runtime root.
 #
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REGISTRY="$(cd "$SCRIPT_DIR/.." && pwd)/deployment/fleet_registry.json"
+REGISTRY="$SCRIPT_DIR/devcycle/fleet_registry.json"
 STATE_REMOTE="/tmp/sparkpipe_fleet_state.json"
 ALL_HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7
            spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
