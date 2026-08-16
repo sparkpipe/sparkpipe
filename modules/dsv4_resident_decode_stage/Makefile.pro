@@ -9,14 +9,24 @@ else
 PRO_EXPERT_CODEC_FRAGMENT := expert_mxfp4
 PRO_EXPERT_CODEC_FLAG :=
 endif
-MODULE_IDENTIFIER_PREFIX := spark.dsv4.pro.resident_decode_stage.linear_fp8.$(PRO_EXPERT_CODEC_FRAGMENT).kv_bf16.h7168.l61.e384.k6.ga0731
+# KV cache codec selection: bf16 (default, the validated set) |
+# fp8_e4m3 (variant builds; requires the FP8-KV cache kernels).
+PRO_KV_CODEC ?= bf16
+ifeq ($(PRO_KV_CODEC),fp8_e4m3)
+PRO_KV_CODEC_FRAGMENT := kv_fp8
+PRO_KV_CODEC_FLAG := -DSPARK_DSV4_PRO_KV_CODEC_FP8_E4M3=1
+else
+PRO_KV_CODEC_FRAGMENT := kv_bf16
+PRO_KV_CODEC_FLAG :=
+endif
+MODULE_IDENTIFIER_PREFIX := spark.dsv4.pro.resident_decode_stage.linear_fp8.$(PRO_EXPERT_CODEC_FRAGMENT).$(PRO_KV_CODEC_FRAGMENT).h7168.l61.e384.k6.ga0731
 MODULE_IDENTIFIER_SUFFIX := v1
 MODULE_IDENTIFIER := $(MODULE_IDENTIFIER_PREFIX).$(MODULE_IDENTIFIER_SUFFIX)
 # The batch-variant ladder: one archive per power of two, emitted by
 # resident_decode_stage_rules.mk from the single template there. Trim for
 # local iteration here, never by editing a variant.
 MODULE_BATCH_VARIANT_BUCKETS ?= 1 2 4 8 16 32 64 128 256 512 1024
-MODULE_TARGET := cuda.sm121.dsv4.pro.resident_decode_stage.linear_fp8.$(PRO_EXPERT_CODEC_FRAGMENT).kv_bf16
+MODULE_TARGET := cuda.sm121.dsv4.pro.resident_decode_stage.linear_fp8.$(PRO_EXPERT_CODEC_FRAGMENT).$(PRO_KV_CODEC_FRAGMENT)
 MODEL_HEADER := ../../model-families/dsv4/include/sparkpipe/spark_dsv4_model.h
 MODULE_ENTRY_PREFIX := SparkDsv4ResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_dsv4_resident_decode_stage_module.c
@@ -32,7 +42,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../cache/kv_page_cache.c \
 	../../cache/kv_page_store.c
 MODULE_CUDA_SOURCE := source/spark_dsv4_resident_decode_stage_cuda.cu
-MODULE_COMPILE_FLAGS := -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u -DSPARK_DSV4_PRO_BUILD=1 $(PRO_EXPERT_CODEC_FLAG)
+MODULE_COMPILE_FLAGS := -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u -DSPARK_DSV4_PRO_BUILD=1 $(PRO_EXPERT_CODEC_FLAG) $(PRO_KV_CODEC_FLAG)
 
 # Keep the module graph relative to this directory. The checkout path contains
 # spaces on the development Mac, so absolute source lists are not shell-safe.

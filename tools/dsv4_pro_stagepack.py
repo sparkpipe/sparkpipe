@@ -46,6 +46,7 @@ PRO_ATTN_HEADS = 128
 PRO_OUTPUT_GROUPS = 16
 PRO_OUTPUT_RANK = 1024
 PRO_MTP_PACKED = 3  # GA: three DSpark draft layers
+PRO_KV_CODEC_OVERRIDE = None  # set by --kv-codec in pro_parse_args
 
 # 64 entries = 61 layers + the DSpark draft layer + 2 spare zeros; mirrors
 # the GA config (deepseek-ai/DeepSeek-V4-Pro-0813) compress_ratios.
@@ -230,9 +231,11 @@ def pro_build_records(contract: Mapping[str, object], first_layer: int,
 
 def pro_pack_header(records, first_layer: int, layer_count: int,
                     file_bytes: int, codecs) -> bytes:
-    # The header declares the MODEL's packed MTP count (1 for Pro), not
-    # whether this particular slice carries the MTP records.
+    # The header declares the MODEL's packed MTP count (3 for the GA DSpark
+    # stage), not whether this particular slice carries the MTP records.
     packed_mtp_layer_count = PRO_MTP_PACKED
+    if PRO_KV_CODEC_OVERRIDE is not None:
+        codecs = (codecs[0], codecs[1], PRO_KV_CODEC_OVERRIDE)
     return flash.HEADER_STRUCT.pack(
         0x34565344, flash.FORMAT_VERSION, flash.HEADER_STRUCT.size,
         flash.ENTRY_STRUCT.size, flash.CODEC_ABI_VERSION, *codecs,
@@ -250,6 +253,7 @@ def pro_validate_source_identity(model_dir: Path, contract, records=None,
 
 
 def pro_parse_args(argv=None) -> argparse.Namespace:
+    global PRO_KV_CODEC_OVERRIDE
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--model-dir", type=Path)
@@ -259,6 +263,11 @@ def pro_parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--layer-count", type=int)
     parser.add_argument("--inspect", action="store_true")
     parser.add_argument("--sha256", action="store_true")
+    parser.add_argument("--kv-codec", choices=("bf16", "fp8_e4m3"),
+                        default=None,
+                        help="override the pack header's KV cache codec id "
+                             "(bf16 -> 1, fp8_e4m3 -> 5); payloads are "
+                             "unchanged - the cache is runtime data")
     parser.add_argument("--contract", type=Path,
                         default=flash.CONTRACT_PATH)
     arguments = parser.parse_args(argv)
@@ -271,6 +280,11 @@ def pro_parse_args(argv=None) -> argparse.Namespace:
         parser.error("--model-dir requires --first-layer and --layer-count")
     elif arguments.sha256:
         parser.error("--sha256 requires --verify-pack")
+    PRO_KV_CODEC_OVERRIDE = None
+    if arguments.kv_codec == "fp8_e4m3":
+        PRO_KV_CODEC_OVERRIDE = flash.CODEC_IDS["fp8_e4m3"]
+    elif arguments.kv_codec == "bf16":
+        PRO_KV_CODEC_OVERRIDE = flash.CODEC_IDS["bf16"]
     return arguments
 
 
