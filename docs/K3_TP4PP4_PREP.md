@@ -154,3 +154,32 @@ the module's capacity request scales them by first_layer/layer_count).
      the warm step runs in ~56 ms.
   5. The full-cluster end-to-end run itself: needs a spark ring reservation
      (live runs are not allowed without one), then `tools/fleet_swap.sh k3`.
+
+## Device-direct collective + TP16 round (2026-08-16)
+
+- The adapter parses a `device_collective` JSON object (backend nccl |
+  hidden_transport, `backend_module_path`, `local_host`,
+  `collective_identifier`, `listen_port`, timeouts, `peer_hosts`),
+  builds the topology, calls SparkTpDeviceCollectiveApplyTopology, and
+  hands the runner the completed config. The runner attaches the K3
+  combine kernels ONLY for the hidden-transport backend (NCCL's config
+  validation rejects non-null combine functions).
+- The per-layer hook's device branch packs attention_out | hidden |
+  shared_out into ONE fused rows x 3x7168 buffer and issues one
+  stream-ordered all-reduce whose completion folds the summed segments
+  into the AttnRes partial on the same stream - no sync, no host staging.
+- NCCL lib staged: every spark's runtime root now has
+  `lib/runtime_libs/libnccl.so.2` (identical sha256 bf23e731102d8ec2,
+  copied from the DSV4 Flash runtime), and the regenerated per-rank
+  configs point `backend_module_path` at it. All 16 adapter.json
+  restaged with `world_size`: 16 and the device tier section; every rank
+  shares control port 64620 (the fetchers dial rank 0's host on their own
+  control_port_base value).
+- Adapter .so rebuilt (nvcc sm_121a gate PASS), restaged to all 16 sparks
+  (identical sha256 037628ca7dc8ea40). Single-spark step gate re-PASS:
+  bit-deterministic, warm step 54.8 ms.
+- TP16-ready geometry landed: the adapter derives the PP stage split from
+  world_size/tp_degree (16/16 -> PP1), the module takes slice bounds from
+  the pack manifest via SPARK_K3_MODULE_DERIVE_SLICE, the bound-layer cap
+  is 93, and the generator emits TP16 configs (16 peers, no host tier -
+  its 4-rank cap). NCCL + hidden transport both support degree 16.

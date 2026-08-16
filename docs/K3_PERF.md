@@ -20,11 +20,25 @@ Measured on sparka, real rank pack, stage 0 (24 layers), 1 token:
    three syncs become one and the wire utilization triples. The host-TCP
    tier implements it; the device tier replaces the whole block with one
    stream-ordered combine (no sync at all).
-3. **The device-direct tier**: spark_tp_device_collective.h exposes
-   SparkTpDeviceCollectiveCombineTp4Bf16 - the purpose-built TP4 BF16
-   combine. Wiring the runner's hook to it (a config flag selects the
-   tier) removes every sync and every host staging copy on the hot path.
-4. **Overlap**: the next layer's norm/qkv projections do not depend on the
+3. **The device-direct tier (LANDED)**: the adapter parses a
+   `device_collective` object (backend nccl | hidden_transport, peer
+   hosts, ports, timeouts), applies the topology, and hands the runner a
+   completed config. The runner creates the collective with the K3 combine
+   kernels (hidden transport) or plain NCCL, and the per-layer hook issues
+   ONE stream-ordered all-reduce of the fused 3x7168 buffer with a
+   completion that folds the summed segments into the AttnRes partial on
+   the same stream. No sync, no host staging, no H2D on the hot path.
+   NCCL's unique id bootstraps through the shared control port (64620);
+   the host TCP tier stays available as the TP4 fallback and is skipped
+   for TP16 (its 4-rank cap).
+4. **TP16-ready geometry (LANDED)**: the adapter derives the PP stage
+   split from `world_size / tp_degree` (16/16 -> PP1), the module takes
+   slice bounds from the pack manifest when the runner passes
+   SPARK_K3_MODULE_DERIVE_SLICE, the bound-layer cap is 93, and the
+   generator emits TP16 configs (16 peer hosts, no host tier). The degree
+   divisibility audit below holds; the w2 k-tile split stays unbalanced
+   until the TILE_K=64 variant lands.
+5. **Overlap**: the next layer's norm/qkv projections do not depend on the
    partial; splitting the slice's per-layer sequence around the collective
    (aux stream + events) hides the AR behind the next layer's prologue.
    Best done together with the graph capture (the finite shape set).
