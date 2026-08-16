@@ -44,7 +44,18 @@ Work items, in order:
    assignments now use wide_value.
 5. LANDED: tests/test_k3_interleave_gemm.cu gained the TILE_K=32
    numerical case (same logical weights on the 16-byte-row grid, same
-   expected values; the encode diagnostic covers both tile sizes).
+   expected values; the encode diagnostic covers both tile sizes). GATE
+   PASS on sparka: direct + indirect + tile_k 32, and the single-spark
+   step gate re-PASSES bit-deterministic (the 128-tile paths are
+   regression-clean).
+6. The extra 16-byte-row couplings the gate flushed out, all fixed:
+   LmTensorMapPlanBuild rejected SWIZZLE_NONE for non-INT tensors (now
+   allowed for 16-byte boxes); LmLaunchPlanBuild priced the cell rows at
+   64 bytes and rejected the 16-byte pitch (now TILE_K/2 and explicit);
+   the runtime's staged B geometry hardcoded depth 64 (the mbarrier
+   expect was 4x the arriving bytes - a hang, fixed to TILE_K/2);
+   LmMxfp4::Fragment read through the swizzle xor (span 0 on 16-byte
+   rows - reads a linear byte instead).
 6. Then TP16 deployment: pack the full model with expert_tile_k 32, slice
    16 ways, and the existing TP16 configs/NCCL degree 16 carry it.
 
