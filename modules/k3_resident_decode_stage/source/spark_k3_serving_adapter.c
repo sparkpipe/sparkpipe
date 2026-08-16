@@ -16,6 +16,13 @@ typedef struct SparkK3ServingState
 	void *completion_context;
 	char *pack_path;
 	uint32_t max_rows;
+	/* the device-direct tier's config + topology (zeroed when the host
+	 * TCP tier is in use) */
+	SparkTpDeviceCollectiveConfig device_config;
+	SparkTpDeviceCollectiveTopology device_topology;
+	char device_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
+		[SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
+	int device_collective_present;
 	/* per-submit host-converted arrays */
 	uint32_t *positions_host;
 	uint32_t *context_host;
@@ -76,6 +83,80 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	/* Zero lets the runner supply K3GlobalKv::kPageBytes (the CUDA-side
 	 * geometry the adapter cannot see without the device headers). */
 	state->runner_config.kv_page_bytes = 0u;
+	/* The device-direct tier: an optional "device_collective" object. */
+	{
+		int32_t dev = SparkJsonFindObjectMember(&doc, root, "device_collective");
+		if ( dev >= 0 )
+		{
+			uint32_t hidden = K3ServingJsonU32(&doc, root, "hidden", 7168u);
+			memset(&state->device_config, 0, sizeof(state->device_config));
+			memset(&state->device_topology, 0, sizeof(state->device_topology));
+			state->device_topology.abi_version =
+				SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
+			state->device_topology.descriptor_bytes =
+				SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
+			state->device_config.abi_version =
+				SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+			int32_t backend_token = SparkJsonFindObjectMember(&doc, dev, "backend");
+			if ( backend_token < 0 )
+				{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+			if ( SparkJsonStringEquals(&doc, backend_token, "nccl") )
+				state->device_config.backend_kind =
+					SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL;
+			else if ( SparkJsonStringEquals(&doc, backend_token, "hidden_transport") )
+				state->device_config.backend_kind =
+					SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
+			else
+				{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+			int32_t module_token = SparkJsonFindObjectMember(&doc, dev, "backend_module_path");
+			if ( module_token >= 0 )
+				SparkJsonCopyString(&doc, module_token,
+					(char **)&state->device_config.backend_module_path);
+			int32_t host_token = SparkJsonFindObjectMember(&doc, dev, "local_host");
+			if ( host_token >= 0 )
+				SparkJsonCopyString(&doc, host_token,
+					(char **)&state->device_config.local_host);
+			uint64_t dev_id = 0u;
+			int32_t id_token = SparkJsonFindObjectMember(&doc, dev, "collective_identifier");
+			if ( id_token >= 0 )
+				SparkJsonGetUInt64(&doc, id_token, &dev_id);
+			state->device_config.collective_identifier = dev_id;
+			state->device_config.control_port_base =
+				K3ServingJsonU32(&doc, dev, "listen_port", 0u);
+			state->device_config.connect_timeout_milli =
+				K3ServingJsonU32(&doc, dev, "connect_timeout_milli", 5000u);
+			state->device_config.operation_timeout_milli =
+				K3ServingJsonU32(&doc, dev, "operation_timeout_milli", 30000u);
+			state->device_config.operation_kind =
+				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+			state->device_config.credit_count = 4u;
+			state->device_config.local_hidden_dimension = 3u * hidden;
+			state->device_config.max_active_sequence_count =
+				state->runner_config.max_input_row_count;
+			int32_t hosts_token = SparkJsonFindObjectMember(&doc, dev, "peer_hosts");
+			uint32_t peer_count = hosts_token >= 0 ?
+				SparkJsonGetArrayElementCount(&doc, hosts_token) : 0u;
+			if ( peer_count == 0u ||
+				peer_count > SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE )
+				{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+			state->device_topology.rank_count = peer_count;
+			for ( uint32_t i = 0u; i < peer_count; ++i )
+			{
+				int32_t peer = SparkJsonGetArrayElement(&doc, hosts_token, i);
+				char *text = 0;
+				if ( peer < 0 ||
+					SparkJsonCopyString(&doc, peer, &text) != SPARK_STATUS_OK )
+					{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+				strncpy(state->device_hosts[i], text,
+					SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES - 1u);
+				free(text);
+				state->device_topology.rank_hosts[i] = state->device_hosts[i];
+			}
+			/* The runner completes the config (degree/rank/combine functions)
+			 * and applies the topology. */
+			state->device_collective_present = 1;
+		}
+	}
 	state->runner_config.rank_pack_path = state->pack_path;
 	state->runner_config.execution_stream = configuration->execution_stream;
 	state->runner_config.multiprocessors = 48u;
@@ -120,6 +201,17 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 		}
 		memcpy(state->collective_config.peers, state->peers, sizeof(state->peers));
 		state->runner_config.tp_collective = &state->collective_config;
+	}
+	if ( state->device_collective_present != 0 )
+	{
+		state->device_config.tp_degree = state->runner_config.tp_degree;
+		state->device_config.tp_rank = state->runner_config.tp_rank;
+		state->device_config.registration_cuda_stream =
+			configuration->execution_stream;
+		if ( SparkTpDeviceCollectiveApplyTopology(&state->device_topology,
+			&state->device_config) != SPARK_STATUS_OK )
+			{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+		state->runner_config.device_collective = &state->device_config;
 	}
 	SparkJsonDocumentDestroy(&doc);
 	return SPARK_STATUS_OK;

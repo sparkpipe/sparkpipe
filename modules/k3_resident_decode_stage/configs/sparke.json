@@ -17,5 +17,21 @@
       "10.20.0.24:65622",
       "10.20.0.25:65623"
     ]
+  },
+  "hidden": 7168,
+  "device_collective": {
+    "backend": "nccl",
+    "backend_module_path": "/usr/lib/aarch64-linux-gnu/libnccl.so",
+    "local_host": "sparke",
+    "collective_identifier": 1,
+    "listen_port": 64620,
+    "connect_timeout_milli": 5000,
+    "operation_timeout_milli": 30000,
+    "peer_hosts": [
+      "10.20.0.22",
+      "10.20.0.23",
+      "10.20.0.24",
+      "10.20.0.25"
+    ]
   }
 }

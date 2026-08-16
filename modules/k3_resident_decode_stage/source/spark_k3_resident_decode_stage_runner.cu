@@ -415,9 +415,16 @@ SparkStatus SparkK3StageRunnerInitialize(
 			(uint64_t)state->fused_rows * 3u * K3_HIDDEN * 2u);
 		SparkTpDeviceCollectiveConfig device_config =
 			*configuration->device_collective;
-		device_config.combine_bf16_function = K3RunnerCombineBf16;
-		device_config.combine_tp4_bf16_function = K3RunnerCombineTp4Bf16;
-		device_config.combine_context = state;
+		/* The K3 combine kernels replace the transport's math for the
+		 * hidden-transport backend; NCCL reduces in the library, and its
+		 * config validation rejects non-null combine functions. */
+		if ( device_config.backend_kind ==
+			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
+		{
+			device_config.combine_bf16_function = K3RunnerCombineBf16;
+			device_config.combine_tp4_bf16_function = K3RunnerCombineTp4Bf16;
+			device_config.combine_context = state;
+		}
 		status = SparkTpDeviceCollectiveCreate(&device_config,
 			&state->device_collective);
 		if ( status != SPARK_STATUS_OK )

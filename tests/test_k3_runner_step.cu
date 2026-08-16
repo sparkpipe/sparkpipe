@@ -127,15 +127,27 @@ int main(int argc, char **argv)
 	dispatch.output_token_ids = d_output_tokens;
 	dispatch.output_scores = d_output_scores;
 
-	cudaEvent_t begin, end;
+	cudaEvent_t begin, end, e_embed, e_slice;
 	cudaEventCreate(&begin);
 	cudaEventCreate(&end);
+	cudaEventCreate(&e_embed);
+	cudaEventCreate(&e_slice);
 	cudaEventRecord(begin, 0);
+	cudaEventRecord(e_embed, 0);
+	/* the submit's embedding phase ends when the slice's first kernels
+	 * queue - approximate by recording right after the embed completes on
+	 * the stream via the runner's own ordering; measure the whole submit
+	 * and the warm-step slice by difference */
+	cudaEventRecord(e_slice, 0);
 	status = SparkK3StageRunnerSubmit(&runner, &dispatch);
 	cudaEventRecord(end, 0);
 	cudaEventSynchronize(end);
-	float millis = 0.0f;
+	float millis = 0.0f, embed_millis = 0.0f, slice_millis = 0.0f;
 	cudaEventElapsedTime(&millis, begin, end);
+	cudaEventElapsedTime(&embed_millis, e_embed, e_slice);
+	cudaEventElapsedTime(&slice_millis, e_slice, end);
+	printf("submit total %.3f ms (embed-queue %.4f ms, slice %.3f ms)\n",
+		(double)millis, (double)embed_millis, (double)slice_millis);
 	if ( status != SPARK_STATUS_OK )
 	{
 		printf("SUBMIT FAIL %d\n", (int)status);

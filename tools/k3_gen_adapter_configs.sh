@@ -36,6 +36,26 @@ for i in $(seq 0 15); do
       echo "      \"$ip:$((65620 + r))\"$comma"
     done
     echo "    ]"
+    echo "  },"
+    echo "  \"hidden\": 7168,"
+    echo "  \"device_collective\": {"
+    echo "    \"backend\": \"nccl\","
+    echo "    \"backend_module_path\": \"/usr/lib/aarch64-linux-gnu/libnccl.so\","
+    echo "    \"local_host\": \"$host\","
+    echo "    \"collective_identifier\": 1,"
+    echo "    \"listen_port\": 64620,"
+    echo "    \"connect_timeout_milli\": 5000,"
+    echo "    \"operation_timeout_milli\": 30000,"
+    echo "    \"peer_hosts\": ["
+    for r in 0 1 2 3; do
+      p=$((stage * 4 + r))
+      ph=$(printf '%x' "$p")
+      ip="10.20.0.$((10 + p))"
+      comma=","
+      [ "$r" = "3" ] && comma=""
+      echo "      \"$ip\"$comma"
+    done
+    echo "    ]"
     echo "  }"
     echo "}"
   } > "$OUT/$host.json"
