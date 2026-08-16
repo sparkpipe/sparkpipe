@@ -10,7 +10,6 @@
 set -euo pipefail
 
 TARGET="${1:?usage: migrate_dev_system.sh TARGET_HOST}"
-DEV_ROOT="/home/\$(whoami)/dsh"
 REPO_URL="https://github.com/sparkpipe/sparkpipe.git"
 PAT_ENV="/Users/mac/sparkpipe/.env"
 
@@ -19,7 +18,10 @@ if [[ ! -f "$PAT_ENV" ]]; then
 fi
 [[ -f "$PAT_ENV" ]] || { echo "PAT env missing" >&2; exit 2; }
 
-ssh -o BatchMode=yes "$TARGET" "mkdir -p '$DEV_ROOT'" || { echo "target unreachable" >&2; exit 3; }
+REMOTE_HOME="$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$TARGET" 'echo $HOME')" || { echo "target unreachable" >&2; exit 3; }
+DEV_ROOT="$REMOTE_HOME/dsh"
+
+ssh -o BatchMode=yes "$TARGET" "mkdir -p '$DEV_ROOT'" || { echo "mkdir failed" >&2; exit 3; }
 
 # Clone the canonical repo (branch dsv4-dspark-speculative = the continuing work)
 ssh -o BatchMode=yes "$TARGET" "
@@ -29,7 +31,7 @@ ssh -o BatchMode=yes "$TARGET" "
         git clone -q --no-tags --single-branch --branch main '$REPO_URL' sparkpipe
     fi
     cd sparkpipe
-    git fetch -q origin dsv4-dspark-speculative
+    git fetch -q origin dsv4-dspark-speculative:refs/remotes/origin/dsv4-dspark-speculative
     if [[ ! -d ../sparkpipe-dsv4 ]]; then
         git worktree add -q ../sparkpipe-dsv4 origin/dsv4-dspark-speculative
     fi
@@ -37,8 +39,8 @@ ssh -o BatchMode=yes "$TARGET" "
 
 # Credential: the PAT wrapper reads GITHUB_PAT from SPARKPIPE_PAT_FILE or the
 # session .env. Copy the .env verbatim (never echo its contents).
-ssh -o BatchMode=yes "$TARGET" "mkdir -p '/home/\$(whoami)/sparkpipe'"
-scp -q -o BatchMode=yes "$PAT_ENV" "$TARGET:/home/\$(ssh -o BatchMode=yes "$TARGET" whoami)/sparkpipe/.env"
+ssh -o BatchMode=yes "$TARGET" "mkdir -p '$REMOTE_HOME/sparkpipe'"
+scp -q -o BatchMode=yes "$PAT_ENV" "$TARGET:$REMOTE_HOME/sparkpipe/.env"
 
 # Verify
 ssh -o BatchMode=yes "$TARGET" "
