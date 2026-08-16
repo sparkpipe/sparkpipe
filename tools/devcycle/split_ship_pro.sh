@@ -16,10 +16,11 @@ for host in "${HOSTS[@]}"; do
 from pathlib import Path
 import importlib.util
 import sys
-spec = importlib.util.spec_from_file_location('sh', '/home/sparkb/pro-repo/tools/dsv4_pro_tp16_stagepack.py')
+spec = importlib.util.spec_from_file_location('sh', '/home/sparkb/pro-repo/tools/dsv4_tp16_stagepack.py')
 sh = importlib.util.module_from_spec(spec)
 sys.modules['sh'] = sh
 spec.loader.exec_module(sh)
+sh.apply_model_geometry('pro')
 sh.TP_DEGREE = 4
 result = sh.shard_pack(Path('$INPUT'), Path('$WORK/$name'), $((rank % 4)), 4, $((rank / 4)))
 print('shard', $rank, 'ok', str(result.get('sha256', '?'))[:16])
