@@ -2,27 +2,19 @@
 
 set -eu
 
-<<<<<<< HEAD
 if [ -n "${SPARKPIPE_PAT_FILE:-}" ]; then
     pat_file=$SPARKPIPE_PAT_FILE
-elif [ -r /Users/cem/sparkpipe/.env ]; then
-    pat_file=/Users/cem/sparkpipe/.env
 else
-    pat_file=/Users/mac/sparkpipe/.env
+    pat_file=
+    for candidate in /Users/cem/sparkpipe/.env /Users/mac/sparkpipe/.env; do
+        if [ -r "$candidate" ]; then
+            pat_file=$candidate
+            break
+        fi
+    done
 fi
-if [ ! -r "$pat_file" ]; then
-    printf '%s\n' "missing SparkPipe PAT file: $pat_file" >&2
-=======
-pat_file=
-for candidate in /Users/cem/sparkpipe/.env /Users/mac/sparkpipe/.env; do
-    if [ -r "$candidate" ]; then
-        pat_file=$candidate
-        break
-    fi
-done
-if [ -z "$pat_file" ]; then
-    printf '%s\n' "missing SparkPipe PAT file (tried /Users/cem/sparkpipe/.env and /Users/mac/sparkpipe/.env)" >&2
->>>>>>> 8d9ccc78 (tools: devcycle fail-fast harness, fleet probe, multi-session coordination doc, PAT wrapper path fallback)
+if [ -z "$pat_file" ] || [ ! -r "$pat_file" ]; then
+    printf '%s\n' "missing SparkPipe PAT file (tried SPARKPIPE_PAT_FILE, /Users/cem/sparkpipe/.env, /Users/mac/sparkpipe/.env)" >&2
     exit 2
 fi
 

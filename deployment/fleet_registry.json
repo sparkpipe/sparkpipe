@@ -5,22 +5,12 @@
     "qwen27b": {
       "tier": "always-on",
       "scope": "band",
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0e6b50d9 (coordination: record TP4/TP8 topologies and DSV4 Flash pool (spark3-7))
       "hosts": [
         "spark0",
         "spark1",
         "spark2",
         "spark3"
       ],
-<<<<<<< HEAD
-=======
-      "hosts": ["spark0", "spark1", "spark2", "spark3"],
->>>>>>> 3d779832 (coordination: big-model swap mechanism (registry + fleet_swap.sh + updated doc))
-=======
->>>>>>> 0e6b50d9 (coordination: record TP4/TP8 topologies and DSV4 Flash pool (spark3-7))
       "rank_count": 4,
       "runtime_root": "/home/{host}/sparkdata/qwen38.bf16.pp16",
       "pack_dir": "/home/{host}/sparkdata/qwen38.bf16.pp16/packs",
@@ -34,22 +24,12 @@
     "dsv4-flash": {
       "tier": "always-on",
       "scope": "band",
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0e6b50d9 (coordination: record TP4/TP8 topologies and DSV4 Flash pool (spark3-7))
       "hosts": [
         "spark4",
         "spark5",
         "spark6",
         "spark7"
       ],
-<<<<<<< HEAD
-=======
-      "hosts": ["spark4", "spark5", "spark6", "spark7"],
->>>>>>> 3d779832 (coordination: big-model swap mechanism (registry + fleet_swap.sh + updated doc))
-=======
->>>>>>> 0e6b50d9 (coordination: record TP4/TP8 topologies and DSV4 Flash pool (spark3-7))
       "rank_count": 4,
       "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
       "pack_dir": "/home/{host}/sparkdata/dsv4_flash.fp8.pp13.b16/packs",
@@ -64,10 +44,6 @@
     "glm52": {
       "tier": "big",
       "scope": "band",
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0e6b50d9 (coordination: record TP4/TP8 topologies and DSV4 Flash pool (spark3-7))
       "hosts": [
         "spark8",
         "spark9",
@@ -78,12 +54,6 @@
         "sparke",
         "sparkf"
       ],
-<<<<<<< HEAD
-=======
-      "hosts": ["spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
->>>>>>> 3d779832 (coordination: big-model swap mechanism (registry + fleet_swap.sh + updated doc))
-=======
->>>>>>> 0e6b50d9 (coordination: record TP4/TP8 topologies and DSV4 Flash pool (spark3-7))
       "rank_count": 8,
       "runtime_root": "/home/{host}/sparkdata/glm52.fp8.pp13",
       "pack_dir": "/home/{host}/sparkdata/glm52.fp8.pp13/packs",
@@ -97,10 +67,6 @@
     "dsv4-pro": {
       "tier": "big",
       "scope": "fleet",
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0e6b50d9 (coordination: record TP4/TP8 topologies and DSV4 Flash pool (spark3-7))
       "hosts": [
         "spark0",
         "spark1",
@@ -119,12 +85,6 @@
         "sparke",
         "sparkf"
       ],
-<<<<<<< HEAD
-=======
-      "hosts": ["spark0","spark1","spark2","spark3","spark4","spark5","spark6","spark7","spark8","spark9","sparka","sparkb","sparkc","sparkd","sparke","sparkf"],
->>>>>>> 3d779832 (coordination: big-model swap mechanism (registry + fleet_swap.sh + updated doc))
-=======
->>>>>>> 0e6b50d9 (coordination: record TP4/TP8 topologies and DSV4 Flash pool (spark3-7))
       "rank_count": 16,
       "runtime_root": "/home/{host}/sparkdata/dsv4_pro.tp4pp4",
       "pack_dir": "/home/{host}/sparkdata/dsv4_pro.tp4pp4/packs",
@@ -137,10 +97,6 @@
     "k3": {
       "tier": "big",
       "scope": "fleet",
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0e6b50d9 (coordination: record TP4/TP8 topologies and DSV4 Flash pool (spark3-7))
       "hosts": [
         "spark0",
         "spark1",
@@ -159,12 +115,6 @@
         "sparke",
         "sparkf"
       ],
-<<<<<<< HEAD
-=======
-      "hosts": ["spark0","spark1","spark2","spark3","spark4","spark5","spark6","spark7","spark8","spark9","sparka","sparkb","sparkc","sparkd","sparke","sparkf"],
->>>>>>> 3d779832 (coordination: big-model swap mechanism (registry + fleet_swap.sh + updated doc))
-=======
->>>>>>> 0e6b50d9 (coordination: record TP4/TP8 topologies and DSV4 Flash pool (spark3-7))
       "rank_count": 16,
       "runtime_root": "/home/{host}/sparkdata/k3.mxfp4.tp4pp4",
       "pack_dir": "/home/{host}/sparkdata/k3.mxfp4.tp4pp4/packs",
@@ -174,7 +124,6 @@
       "owner": "k3 session - verify everything",
       "status": "placeholder",
       "notes": "K3 is the heaviest model. Swapping it in evicts every other model including the always-on tier (scope=fleet). Its own swap-out restores the previous fleet state from the saved snapshot."
-<<<<<<< HEAD
     },
     "qwen38max": {
       "tier": "big",
@@ -206,8 +155,6 @@
       "owner": "qwen38-max session (qwen38-max-tp4pp4 branch)",
       "status": "placeholder",
       "notes": "Qwen3.8-2.4T-A95B TP4xPP4, vendor FP8 experts + BF16 spine. Fleet scope: mutually exclusive with dsv4-pro and k3 via tools/fleet_swap.sh. Next free port block after dsv4-pro (20480) and k3 (21480)."
-=======
->>>>>>> 3d779832 (coordination: big-model swap mechanism (registry + fleet_swap.sh + updated doc))
     }
   }
 }
