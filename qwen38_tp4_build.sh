@@ -45,7 +45,7 @@ cp build/sparkpipe_model_residentd "$OUT/"
 cp build/sparkpipe_model_batch "$OUT/"
 cp build/libqwen36_serving_adapter.so "$OUT/model_serving_adapter.so"
 cp build/libhidden_transport_spark_host_rdma_verbs.so "$OUT/hidden_transport.so"
-cp -a "$OUT/driver"/. "$OUT/"
+rm -rf "$OUT/link_units"; cp -a "$OUT/driver"/. "$OUT/"
 python3 tools/generate_model_resident_deployment.py \
     --specification examples/deployments/qwen36_tp4_host_rdma.spec.json \
     --output "$OUT/model_resident.json"
