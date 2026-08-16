@@ -11,7 +11,7 @@
 #   --skip-packs  deploy bins/libs/configs only (use while the split runs)
 set -euo pipefail
 
-BUILD_HOST="sparkb"
+BUILD_HOST="spark1"
 BUILD_DIR="${BUILD_DIR:-/tmp/devcycle-pro-build-ga0813}"
 RUNTIME_DIR_NAME="dsv4_pro.tp4pp4"
 HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
@@ -37,6 +37,11 @@ cp "${ROOT}/examples/deployments/dsv4_pro_tp4_pp4_stage.json" /tmp/pro-deploy/ds
 
 rank=0
 for host in "${HOSTS[@]}"; do
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=6 "${host}" "echo ok" >/dev/null 2>&1; then
+        echo "deployed ${host} rank=${rank} SKIPPED (unreachable)"
+        rank=$((rank + 1))
+        continue
+    fi
     root="/home/${host}/sparkdata/${RUNTIME_DIR_NAME}"
     ssh -o BatchMode=yes "${host}" "mkdir -p ${root}/bin ${root}/lib ${root}/config ${root}/kv ${root}/packs" || exit 1
     scp -q -o BatchMode=yes /tmp/pro-deploy/sparkpipe_model_residentd /tmp/pro-deploy/sparkpipe_model_batch "${host}:${root}/bin/" || exit 1
