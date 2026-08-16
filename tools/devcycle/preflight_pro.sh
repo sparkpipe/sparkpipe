@@ -6,7 +6,7 @@ set -euo pipefail
 
 HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
 ROOT_NAME="dsv4_pro.tp4pp4"
-EXPECTED_SHA="43914327517f3a73"
+EXPECTED_SHA="5d6ee5bf53e3dfd5"  # GA 0813 driver
 EXPECTED_CONFIG_SHA="0c7103acc7ab59b872bef10db450711c4ca4fb94d81d6017efcccab36c38780b"
 EXPECTED_STAGE_SHA="7bdc343786885f1a5b3f2d78acfe6791105ca97335e0662ab95ce1084a34e57a"
 
