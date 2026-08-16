@@ -6,6 +6,7 @@
 // restores exactly.
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 
@@ -84,6 +85,39 @@ int main(int argc, char **argv)
 	config.kv_pages_per_sequence = 2u;
 	config.kv_page_bytes = K3GlobalKv::kPageBytes;
 	config.rank_pack_path = argv[1];
+	/* --tp4 <rank>: the real TP4 runner with the HOST-tier collective over
+	 * 127.0.0.1 peers - four local processes all-reduce exactly as the
+	 * deployment does, offline (single spark, no ring). */
+	SparkTpCollectiveConfig collective;
+	SparkTpCollectivePeer peers[4];
+	int tp4 = 0;
+	for ( int i = 2; i < argc; ++i )
+		if ( strcmp(argv[i], "--tp4") == 0 && i + 1 < argc )
+		{
+			tp4 = 1;
+			config.tp_degree = 4u;
+			config.tp_rank = (uint32_t)atoi(argv[i + 1]);
+		}
+	if ( tp4 )
+	{
+		memset(&collective, 0, sizeof(collective));
+		memset(peers, 0, sizeof(peers));
+		collective.abi_version = SPARK_TP_COLLECTIVE_ABI_VERSION;
+		collective.tp_degree = 4u;
+		collective.tp_rank = config.tp_rank;
+		collective.listen_port = (uint16_t)(65620u + config.tp_rank);
+		collective.connect_timeout_milli = 8000u;
+		collective.operation_timeout_milli = 30000u;
+		collective.collective_identifier = 1u;
+		for ( int r = 0; r < 4; ++r )
+		{
+			snprintf(peers[r].host_name, sizeof(peers[r].host_name), "127.0.0.1");
+			peers[r].port = (uint16_t)(65620u + (uint32_t)r);
+		}
+		memcpy(collective.peers, peers, sizeof(peers));
+		config.tp_collective = &collective;
+		config.layer_collective_override = 0; /* the runner's real TP hook */
+	}
 	/* A real (non-legacy) stream: the legacy default stream cannot capture,
 	 * and the graph path is what this gate now exercises (step 2 replays
 	 * the captured slice). */
@@ -91,7 +125,7 @@ int main(int argc, char **argv)
 	cudaStreamCreate(&runner_stream);
 	config.execution_stream = runner_stream;
 	config.flags |= SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS;
-	config.layer_collective_override = NoopHook;
+	config.layer_collective_override = tp4 ? 0 : NoopHook;
 	int multiprocessors = 0;
 	cudaDeviceGetAttribute(&multiprocessors, cudaDevAttrMultiProcessorCount, 0);
 	config.multiprocessors = (uint32_t)multiprocessors;
