@@ -30,6 +30,36 @@ Correctness and capacity findings live in QWEN38_MAX_AUDIT.md.
   3. Dense linears already take the tensor-core path at B >= 16 through
      SparkLmHostLaunchBatchedLinear; no work needed there.
 
+## 1b0. Prefill + output performance estimates (16-spark ring)
+
+Anchors (measured on spark4): B=1 GDN layer 8.45 ms (175 GB/s effective,
+scalar-latency-bound); B=16 26.9 ms; B=256 261.6 ms (~500-566 GB/s effective
+for the tile-path expert reads); full single-rank model 94 ms/token at B=256
+= 10.6 tok/s. Per-token weight volume (replicated): dense spine ~0.87 GB
+per layer + experts 838 MB (10/512) + shared ~100 MB = ~1.35 GB/layer,
+135.5 GB through 92 layers.
+
+| Path | Aggregate tok/s | Per-sequence | Notes |
+|---|---|---|---|
+| OUTPUT today (replicated TP, PP4 pipeline, B=256) | ~39 | 0.78 s/token (B=1) | 23-layer bottleneck stage 6.0 s + screened head ~0.5 s; transport negligible |
+| OUTPUT TP16 expert+head parallel, measured-bandwidth kernels, B=16 | ~57 | ~56 ms/token | per-rank 1.68 GB/layer at ~550 GB/s |
+| OUTPUT TP16 B=32 | ~114 | ~56 ms/token | same per-step cost, double the batch |
+| OUTPUT TP16 B=16 after the tile-kernel occupancy fix (~900 GB/s) | ~93 | ~34 ms/token | the documented 100+ route |
+| OUTPUT TP16 B=32 after the fix | ~186 | ~34 ms/token | |
+| PREFILL today | ~1.3 prompt-tok/s | prompt = N decode steps | prefill frames refused; prompt feeds one token per 0.78 s step |
+| PREFILL after phase-2 kernels, replicated PP4 | ~40 | - | weight-bound: 606 MB/token/layer x 23-layer stage = 13.9 GB/token ~ 25 ms |
+| PREFILL after phase-2 kernels, TP16 | ~102 | - | per-rank 58 MB/token/layer x 92 = 5.4 GB/token ~ 9.8 ms at 550 GB/s; dense amortizes to zero at prompt scale |
+| PREFILL TP16 after the occupancy fix | ~165 | - | ~6 ms/token toward 900 GB/s |
+
+Prefill assumptions: chunked GDN (64-token chunks) + causal GQA as planned in
+the phase-2 scope; prefill is weight-bound - the quadratic causal-attention
+K/V reads stay below 10% of the weight traffic up to ~32K prompts (at TP16
+one KV head per rank: L^2/2 x 512 B per attention layer). The last-stage
+head adds ~0.5 s per B=256 output step on the screened path (vocab-parallel
+quartering that is the next head-scale step). All TP16 numbers assume the
+collective wiring and head-sliced projections land as planned; the residual
+all-reduce is 16 KB per row (0.5% of the weight traffic).
+
 ## 1b. Batch saturation measured (the honest single-node ceiling)
 
 | B | full step (1 GDN layer) | GDN only (MoE disabled) | MoE share |

@@ -218,8 +218,8 @@
     },
     {
       "path": "docs/QWEN38_MAX_PERF.md",
-      "sha256": "47d67c235e22521bdb5f106f34c74cc1a25bc38cc0588451ff0b8a5cdb28d433",
-      "size_bytes": 9033
+      "sha256": "39884e68197cc5431bfc79598ae0b11ac997224ebaeea5717db7c114235bd7ad",
+      "size_bytes": 11211
     },
     {
       "path": "docs/QWEN38_MAX_PERF_AUDIT.md",
@@ -4520,5 +4520,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 14704250
+  "total_bytes": 14706428
 }
