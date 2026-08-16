@@ -244,36 +244,16 @@ int main(int argc, char **argv)
 	cudaMemcpy(h_hidden_graph, d_hidden, (uint64_t)K3_HIDDEN * 2u,
 		cudaMemcpyDeviceToHost);
 	/* Step 3: a pure replay (the graph exists) - the steady-state decode
-	 * cost and the capture-fidelity check: the SAME graph, the SAME
-	 * recurrent state, must reproduce step 2 exactly. */
+	 * cost. The recurrent state advances per submit, so neither the step-2
+	 * nor the step-3 output is bit-comparable against an earlier step; the
+	 * capture-fidelity check below compares the graph's step-2 against a
+	 * DIRECT step-2 at the SAME state (a no-capture runner). */
 	cudaEventRecord(begin, runner_stream);
 	status = SparkK3StageRunnerSubmit(&runner, &dispatch);
 	cudaEventRecord(end, runner_stream);
 	cudaEventSynchronize(end);
 	cudaEventElapsedTime(&millis, begin, end);
 	printf("step 3: %.3f ms (graph replay)\n", (double)millis);
-	cudaMemcpy(h_hidden_graph, d_hidden, (uint64_t)K3_HIDDEN * 2u,
-		cudaMemcpyDeviceToHost);
-	uint32_t graph_mismatches = 0u;
-	for ( uint32_t i = 0u; i < K3_HIDDEN; ++i )
-	{
-		uint32_t a = h_hidden_graph[i], b = h_hidden[i];
-		uint32_t diff = a > b ? a - b : b - a;
-		uint32_t limit = i >= 6144u ? 64u : 4u;
-		if ( diff > limit )
-		{
-			if ( graph_mismatches < 8u )
-				printf("  replay mismatch[%u] step2=%04x step3=%04x\n", i, b, a);
-			graph_mismatches++;
-		}
-	}
-	printf("replay-replay (step 3 vs step 2): %u mismatches beyond ULP limit\n",
-		graph_mismatches);
-	if ( graph_mismatches != 0u )
-	{
-		printf("REPLAY REPLAY MISMATCH %u\n", graph_mismatches);
-		return 1;
-	}
 	SparkK3StageRunnerDestroy(&runner);
 	status = SparkK3StageRunnerInitialize(&runner, &config);
 	if ( status != SPARK_STATUS_OK )
@@ -309,6 +289,49 @@ int main(int argc, char **argv)
 		}
 	}
 	printf("fresh-run vs step 1: %u mismatches beyond 4 ULP\n", mismatches);
+
+	/* CAPTURE FIDELITY: a no-capture runner's DIRECT step 2 runs at the same
+	 * recurrent state as the main runner's captured step 2 (both are the
+	 * second submit on a fresh runner) - the graph must reproduce it. */
+	SparkK3StageRunner direct_runner;
+	SparkK3StageRunnerConfiguration direct_config = config;
+	direct_config.flags &= ~SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS;
+	status = SparkK3StageRunnerInitialize(&direct_runner, &direct_config);
+	if ( status != SPARK_STATUS_OK )
+	{
+		printf("DIRECT INIT FAIL %d\n", (int)status);
+		return 1;
+	}
+	status = SparkK3StageRunnerSubmit(&direct_runner, &dispatch);
+	status = SparkK3StageRunnerSubmit(&direct_runner, &dispatch);
+	if ( status != SPARK_STATUS_OK )
+	{
+		printf("DIRECT STEP2 FAIL %d\n", (int)status);
+		return 1;
+	}
+	cudaMemcpy(h_hidden_second, d_hidden, (uint64_t)K3_HIDDEN * 2u,
+		cudaMemcpyDeviceToHost);
+	uint32_t graph_mismatches = 0u;
+	for ( uint32_t i = 0u; i < K3_HIDDEN; ++i )
+	{
+		uint32_t a = h_hidden_graph[i], b = h_hidden_second[i];
+		uint32_t diff = a > b ? a - b : b - a;
+		uint32_t limit = i >= 6144u ? 64u : 4u;
+		if ( diff > limit )
+		{
+			if ( graph_mismatches < 8u )
+				printf("  graph-vs-direct[%u] graph=%04x direct=%04x\n", i, a, b);
+			graph_mismatches++;
+		}
+	}
+	printf("graph step 2 vs direct step 2: %u mismatches beyond ULP limit\n",
+		graph_mismatches);
+	if ( graph_mismatches != 0u )
+	{
+		printf("GRAPH FIDELITY MISMATCH %u\n", graph_mismatches);
+		return 1;
+	}
+	SparkK3StageRunnerDestroy(&direct_runner);
 
 	if ( finite == K3_HIDDEN && sum != 0.0f && mismatches == 0u )
 	{
