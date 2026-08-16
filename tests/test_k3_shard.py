@@ -232,7 +232,7 @@ def main():
             parts = []
             for r in range(4):
                 try:
-                    parts.append(k3_shard.Slicer(pack32, {}, 4, r).route(name))
+                    parts.append(k3_shard.Slicer(pack32, {}, 4, r).route(name)[0])
                 except k3_shard.ShardFailure as failure:
                     print(f"  FAIL {name} rank {r}: {failure}")
                     failures += 1
