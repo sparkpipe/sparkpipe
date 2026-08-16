@@ -102,6 +102,13 @@ must not be used for the final measured decode.
 
 ## Status log
 
+- R12: GA build complete on sparkb (driver 5d6ee5bf..., b1 archive
+  04f37403...), identity bump to ga0813, deploy/preflight repointed,
+  measured DRAM bandwidth 250-273 GB/s (bw_probe.cu), hardware validator
+  ported to main's merged kernel API (GateScores/GateSelect/MoeRoute,
+  QueryHeadRms+Rope, KvPost/IndexerPost splits) + mismatch diagnostics.
+  The GA-hdr val4 pack (preview weights, GA pack header) built on spark3;
+  its timed validation run is pending sparkb's ssh return.
 - R11: packer + module load the GA MTP (3 draft layers, main-proj,
   markov/confidence heads, ratios 64); record dry-run vs the GA index:
   211 records, 0 missing; module b1 builds clean.
