@@ -4068,6 +4068,14 @@ static SparkStatus SparkDsv4ModuleRunDsparkHead(
 		"dspark_head"));
 }
 
+#define DSPARK_S0_TRACE(tag) do { \
+	cudaError_t trace_error_ = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream); \
+	if ( trace_error_ != cudaSuccess ) \
+		fprintf(stderr,"dspark_s0_hang_after=" tag " error=%d tp_rank=%u\n",(int)trace_error_,state->tp_rank); \
+	else \
+		fprintf(stderr,"dspark_s0_ok=" tag " tp_rank=%u\n",state->tp_rank); \
+} while (0)
+
 static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -4107,6 +4115,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 			slot->dspark_x_bf16,block,streams,dim,state->multiprocessor_count);
 	for (index = 0u; index < block; index++)
 		slot->dspark_host_row_positions[index] = anchor_position + 1u + index;
+	DSPARK_S0_TRACE("prelude");
 	for (stage = 0u; error == cudaSuccess &&
 		stage < SPARK_DSV4_MODEL_MTP_LAYER_COUNT; stage++)
 	{
@@ -4153,6 +4162,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 					SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,
 				SPARK_DSV4_MODEL_KV_QUANT_BLOCK,
 				SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
+		DSPARK_S0_TRACE("qkv");
 		/* draft attention: window ring + block kvs, non-causal, sink in
 		 * the denominator */
 		if ( error == cudaSuccess )
@@ -4194,6 +4204,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 			error = SparkDsv4LaunchHcPost(stream,slot->delta_bf16,
 				slot->residual_bf16,slot->post_f32,slot->comb_f32,
 				slot->dspark_x_bf16,block,streams,dim);
+		DSPARK_S0_TRACE("attn_compose");
 		/* hc_pre (ffn) + ffn norm + MoE */
 		if ( error == cudaSuccess )
 			error = SparkDsv4ModuleHcEnter(slot,slot->dspark_x_bf16,
@@ -4214,9 +4225,9 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 			error = SparkDsv4LaunchHcPost(stream,slot->ffn_accum_bf16,
 				slot->residual_bf16,slot->post_f32,slot->comb_f32,
 				slot->dspark_x_bf16,block,streams,dim);
+		DSPARK_S0_TRACE("moe");
 		/* the target position's kv enters this draft layer's ring at
 		 * anchor_position % window */
-		slot->input_token_ids[0] = 0u;
 		{
 			uint32_t host_lane = lane_index;
 			uint64_t host_position = anchor_position;
