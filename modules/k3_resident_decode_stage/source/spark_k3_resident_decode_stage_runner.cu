@@ -617,12 +617,15 @@ SparkStatus SparkK3StageRunnerInitialize(
 		state->vocab_slice_rows = state->vocab;
 	/* The TP contract: sharded ranks defer the partial epilogues to the hook. */
 	state->dispatch.buffers->tp_sharded = configuration->tp_degree > 1u ? 1u : 0u;
+	/* The hook registers unconditionally: at tp_degree 1 it no-ops (the
+	 * layer folds its own projections) except for the env-gated state dumps
+	 * the equivalence bisect reads. */
+	state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
+	state->dispatch.slice_state->collective_context = state;
 	if ( configuration->tp_degree > 1u )
 	{
 		if ( configuration->tp_collective == 0 )
 			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INVALID_ARGUMENT; }
-		state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
-		state->dispatch.slice_state->collective_context = state;
 		fprintf(stderr, "sparkpipe_k3: creating host collective tp=%u rank=%u port=%u\n",
 			configuration->tp_degree, configuration->tp_rank,
 			configuration->tp_collective->listen_port);
