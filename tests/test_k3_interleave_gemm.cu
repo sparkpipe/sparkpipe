@@ -140,6 +140,7 @@ static void BuildInterleavedWeights32(uint8_t *bytes)
 }
 
 #define TEST_WIDE_OUT 7168u  /* 56 neuron tiles over 48 SMs: the second wave */
+#define TEST_PLAIN_K 3072u   /* the o_proj's real k extent: 24 k-tiles */
 #define TEST_WIDE_CELLS (TEST_WIDE_OUT / 16u)
 #define TEST_WIDE_ROWS_PER_EXPERT (TEST_K_TILES * TEST_WIDE_CELLS * 17u)
 #define TEST_WIDE_EXPERT_BYTES ((size_t)TEST_WIDE_ROWS_PER_EXPERT * 64u)
@@ -489,13 +490,43 @@ int main(void)
 		/* EIGHT RUNS of the same launch: the real tail is nondeterministic
 		 * (the full-run sums swing across runs), so a race shows as the
 		 * per-iteration mismatch counts moving. */
+		/* the real-k activation + weight for the wide case */
+		uint16_t *d_packed_plain = 0;
+		cudaMalloc(&d_packed_plain, TEST_PACKED * TEST_PLAIN_K * 2u);
+		{
+			uint16_t *tmp = (uint16_t *)malloc(TEST_PACKED * TEST_PLAIN_K * 2u);
+			for ( p = 0u; p < TEST_PACKED; ++p )
+				for ( k = 0u; k < TEST_PLAIN_K; ++k )
+					tmp[p * TEST_PLAIN_K + k] = HostFloatToBf16(
+						(float)(((int32_t)((p * TEST_PLAIN_K + k) * 37u) % 11u) - 5) * 0.25f);
+			cudaMemcpy(d_packed_plain, tmp, TEST_PACKED * TEST_PLAIN_K * 2u,
+				cudaMemcpyHostToDevice);
+			free(tmp);
+		}
+		uint16_t *h_weight_plaink = (uint16_t *)malloc((size_t)plain_rows * TEST_PLAIN_K * 2u);
+		uint16_t *d_weight_plaink = 0;
+		uint16_t *h_out_plaink = (uint16_t *)malloc(TEST_PACKED * plain_rows * 2u);
+		for ( n = 0u; n < plain_rows; ++n )
+			for ( k = 0u; k < TEST_PLAIN_K; ++k )
+				h_weight_plaink[n * TEST_PLAIN_K + k] = HostFloatToBf16((float)(n + 1u));
+		cudaMalloc(&d_weight_plaink, (size_t)plain_rows * TEST_PLAIN_K * 2u);
+		cudaMemcpy(d_weight_plaink, h_weight_plaink,
+			(size_t)plain_rows * TEST_PLAIN_K * 2u, cudaMemcpyHostToDevice);
+		LmGemmArguments gemmk;
+		memset(&gemmk, 0, sizeof(gemmk));
+		gemmk.scale_a = LmScaleTensorNone();
+		gemmk.scale_b = LmScaleTensorNone();
+		gemmk.group_row_offset = d_dense_offset_plain;
+		gemmk.group_tile_prefix = 0;
+		gemmk.prefix_built = 0u;
+		gemmk.output_bf16 = d_out_plain;
 		for ( uint32_t iteration = 0u; iteration < 8u; ++iteration )
 		{
 		uint32_t iter_failures = 0u, iter_tail = 0u, iter_head = 0u;
 		status = LmGemmWeightOnlyLaunch<
 			LmBf16Format, TEST_TILE_N, TEST_STAGES, TEST_WARPS>(
-			&gemm, d_packed, d_weight_plain, TEST_PACKED, TEST_PACKED, 1u,
-			1u, TEST_IN, plain_rows, (uint32_t)multiprocessors,
+			&gemmk, d_packed_plain, d_weight_plaink, TEST_PACKED, TEST_PACKED, 1u,
+			1u, TEST_PLAIN_K, plain_rows, (uint32_t)multiprocessors,
 			false, (cudaStream_t)0);
 		if ( status != LM_LAUNCH_OK ) { printf("FAIL plain wide launch %d\n", status); return 1; }
 		err = cudaDeviceSynchronize();
@@ -504,10 +535,12 @@ int main(void)
 			TEST_PACKED * plain_rows * 2u, cudaMemcpyDeviceToHost);
 		for ( p = 0u; p < TEST_PACKED; ++p )
 		{
-			uint32_t token = h_source_map[p];
 			float row_sum = 0.0f;
-			for ( k = 0u; k < TEST_IN; ++k )
-				row_sum += (double)HostBf16ToFloat(HostFloatToBf16(h_activation[token * TEST_IN + k]));
+			for ( k = 0u; k < TEST_PLAIN_K; ++k )
+			{
+				int32_t v = ((int32_t)((p * TEST_PLAIN_K + k) * 37u) % 11u) - 5;
+				row_sum += (double)HostBf16ToFloat(HostFloatToBf16((float)v * 0.25f));
+			}
 			for ( n = 0u; n < plain_rows; ++n )
 			{
 				float expect = row_sum * (float)(n + 1u);
@@ -531,10 +564,14 @@ int main(void)
 		if ( plain_failures != 0u )
 			failures++;
 		cudaFree(d_weight_plain);
+		cudaFree(d_weight_plaink);
+		cudaFree(d_packed_plain);
 		cudaFree(d_out_plain);
 		cudaFree(d_dense_offset_plain);
 		free(h_weight_plain);
+		free(h_weight_plaink);
 		free(h_out_plain);
+		free(h_out_plaink);
 	}
 
 	if ( failures == 0u )
