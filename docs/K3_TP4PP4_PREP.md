@@ -178,6 +178,18 @@ the module's capacity request scales them by first_layer/layer_count).
 - Adapter .so rebuilt (nvcc sm_121a gate PASS), restaged to all 16 sparks
   (identical sha256 037628ca7dc8ea40). Single-spark step gate re-PASS:
   bit-deterministic, warm step 54.8 ms.
+- Two-phase layer collective landed: the hook fires after the attention
+  half AND after the MLP half - required for correctness (the MLP-side
+  AttnRes retrieval reads the POST-attention partial, which the old single
+  post-MLP hook could not provide to the sharded path), and each phase's
+  fold lands on the submission stream (no legacy default stream).
+- Per-shape CUDA-graph capture landed: warm-direct first submit, capture
+  on the second, replay after; gated on a non-default stream and a
+  capture-safe tier (NCCL or tp_degree 1). The single-spark gate now
+  validates it: graph-replay vs direct launch 0 mismatches, pure replay
+  54.2 ms (the path is weight-bandwidth-bound; the capture removes the
+  ~55 ms serialized host enqueue per step). Configs carry
+  `capture_graphs`: 1.
 - TP16-ready geometry landed: the adapter derives the PP stage split from
   world_size/tp_degree (16/16 -> PP1), the module takes slice bounds from
   the pack manifest via SPARK_K3_MODULE_DERIVE_SLICE, the bound-layer cap

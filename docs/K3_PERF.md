@@ -5,8 +5,18 @@ Measured on sparka, real rank pack, stage 0 (24 layers), 1 token:
 - Cold first step: ~2.5 s - one-time JIT, tensor-map encodes, shared-memory
   opt-ins. Amortises to nothing in steady state.
 - Warm step: **55.5 ms** = 2.3 ms/layer. The slice issues ~35 kernels per
-  layer (~840 per step), so ~66 us per launch - the path is LAUNCH-BOUND,
-  not compute-bound (the GEMM ridge analysis says compute is ~60x spare).
+  layer (~840 per step, ~66 us of host enqueue each - the HOST spent ~55 ms
+  enqueueing each step).
+- Graph replay of the captured slice: **54.2 ms** (step 3 in the gate) -
+  bit-identical output. The kernels themselves take ~54 ms, so the path is
+  MEMORY-BANDWIDTH-BOUND on weight streaming, not launch-bound: each layer
+  streams ~0.8-1 GB of BF16 spine + MXFP4 expert weights per token through
+  the persistent GEMMs (LPDDR5X ~273 GB/s => ~2.3 ms/layer). The capture's
+  win is real but wall-clock-side: it removes the ~55 ms serialized host
+  enqueue from every submit, roughly halving the per-step wall time at B1
+  and freeing the host thread for the residentd loop and the other ranks.
+  Steady-state decode: ~55 ms per stage per token (the PP4 stages
+  pipeline), i.e. ~18 tokens/s for the 16-spark K3.
 
 ## Improvements, in dependency order
 
