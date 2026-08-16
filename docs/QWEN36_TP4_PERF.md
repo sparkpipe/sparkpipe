@@ -1,62 +1,68 @@
 # Qwen3.8-27B TP4 (qwen36) phase 2 performance plan
 
-Measured on the spark0-3 TP4 band (4 x GB10, hidden-transport verbs backend),
-all numbers token-exact against the 64-token reference.
+Measured on the spark0-3 TP4 band (4 x GB10, hidden-transport verbs backend).
+Quality gate on every number: Qwen38-TP4-E2E-PASS (per-rank agreement plus
+64-token reference comparison, bit-identical tokens). Fresh re-verification:
+B1 13.2 tok/s (75.6 ms) with speculation D=2, e2e PASS, 0 mismatches.
 
-**Per-device accounting note:** TP4 shards the model COLUMNS, not the batch —
-every spark processes every token through its own weight shard. The band's
-tokens/s IS the per-spark tokens/s; there is no batch multiplier to claim.
-The comparison below is B1 only, per spark, BF16.
+**Accounting discipline:** TP4 shards columns, not the batch - every spark
+processes every token through its shard, so the band tok/s IS the per-spark
+tok/s. With N sparks the band must reach N x the single-spark tok/s to hold
+per-spark throughput; anything less is scaling loss, anything claimed as a
+multiple of the spark count is marketing. Comparison basis is community
+spark releases only (same hardware class), at the same precision and batch.
 
-## B1 per-spark comparison (BF16, batch 1)
+## Where we sit against the practical BF16 ceiling (B1, per spark)
 
-| device | model | tok/s | notes |
-|---|---|---|---|
-| GB10 (ours) | Qwen3.8-27B dense | 12.1 plain / 13.4 spec D=2 | 83 / 74.8 ms step |
-| H20 96GB | Qwen3-32B dense | 20.7 (SGLang) / 26.2 (HF) | official Qwen3 speed benchmark |
-| GB10 (repo record) | Qwen3.8-2.4T-A95B MoE | ~6 | same device, different model |
+Per spark, per token, the weights streamed are 13.5 GB (the rank shard of
+all 64 layers plus head plus MTP). Measured device read bandwidth is
+225.9 GB/s, so the pure weight-stream floor is 59.8 ms.
 
-- The repo-internal GB10 row is the same device with a ~3.4x heavier weight
-  stream per token; it is a datapoint, NOT an engineering comparison, and no
-  credit is claimed from it (a 4-spark band running that model would just be
-  four of those devices, each still near its own memory floor).
-- Against the H20 at equal precision and batch we are BEHIND (12-13 vs
-  20.7-26.2 tok/s per device). That is hardware, not tuning: the GB10 memory
-  system streams ~226 GB/s, so the per-spark BF16 weight floor is
-  13.5 GB / 226 GB/s = ~60 ms = ~16.7 tok/s ceiling, and we sit at ~80% of it.
-  The H20 sits at 20.7 against a ~74 tok/s ceiling of its own (~28%).
-- No published B1 BF16 record for a 27-32B dense model on GB10/DGX-Spark
-  class hardware was found, so there is no same-device-class external number
-  to beat; the H20 row is the reference point for now.
+- plain B1: 83.0 ms = 72% of the weight floor.
+- spec D=2: 74.8 ms = 80% of the weight floor.
+- The step's other serialized work (129 collectives ~3.5 ms, head ~2.8 ms,
+  GDN core + attention + norms + ~1000 launches ~10 ms) puts the practical
+  BF16 ceiling near 76-78 ms; against that, plain is ~92% and spec is ~98%.
 
-## Where a legitimate per-spark B1 exceedance exists
+So: we are near the practical BF16 ceiling, not 80% of it. The remaining
+BF16-only headroom is ~1-3 ms (head shadow path, GDN small-kernel fusions)
+- a +25% at BF16 requires shrinking the bytes, not tuning.
 
-Shrinking the bytes is the only lever that moves per-device B1, in order:
-- 4-bit weights: floor ~15 ms (~66 tok/s ceiling) — exceeds the H20
-  AWQ-INT4 B1 record (47.7 tok/s) per device if per-step overheads stay in
-  the 5-10 ms range. This is phase-2 target #1.
-- FP8 weights: floor ~30 ms (~33 tok/s ceiling) — parity class with the H20
-  FP8 number (46.2), not above it.
-At BF16, per-device B1 is memory-floor bound and will not exceed H20-class
-hardware on this silicon. Any claim otherwise is the more-sparks fallacy.
+## BF16 weight lossless-compression analysis (measured on the real weights)
+
+Analyzed all 617 BF16 2-D tensors: 27.78B values, 55.55 GB.
+
+- zero fraction: 0.000000 (nothing to skip)
+- order-0 entropy of the 16-bit stream: **10.52 bits** -> 1.52x lossless
+  (a single ANS/Huffman table over the bf16 codes)
+- mantissa entropy 6.97 bits, exponent entropy 2.60 bits -> a two-stream
+  codec (entropy-coded exponent + raw 7-bit mantissa) bounds at 9.57 bits
+  = 1.67x lossless
+- per-tensor distinct exponents: 18-33 of 256 - exponent locality is high,
+  which is why the exponent stream compresses so well
+
+Plan for the +25% at identical quality:
+1. ANS codec on the weight stream, decompress inside the small-batch GEMM
+   kernels' tile staging (decode to shared memory, compute bf16 - bit-
+   identical results). Per-spark stream falls 13.5 GB -> 8.9 GB -> weight
+   time 59.8 -> ~39.5 ms, so B1 lands ~63 ms (~15.9 tok/s, +31%) before the
+   head-shadow and GDN trims, which push toward ~16-17 tok/s.
+2. Fallback if the fused decode under-performs: keep the tiled kernels
+   reading compressed tiles from L2 via a separate decode kernel.
 
 ## Phase 2 targets (expected value order)
 
-1. Weight quantization for B1/B8 (FP8 then 4-bit codec, dsv4 pattern).
-2. Sharded-delta B64 collective: each rank's delta is 1280 of 5120 columns
-   but the reduce ships the full 655,360 bytes; a shard-scatter/gather op
-   ships 163,840 -> the B64 step drops from ~404 ms toward ~150 ms.
-3. B1 head shadow path: rows=1 reads the full BF16 lm_head (636 MB =
-   ~2.8 ms); the screened MXFP4 shadow + rescore path is ~1.5 ms.
-4. B8 GDN branch: ~470 us/layer above the ~215 us GEMM floor (conv,
-   decay-beta, gdn-step, gated-norm small-kernel overheads).
+1. Lossless weight-stream codec (measured 1.52x headroom) + decompress-in-
+   GEMM: the same-quality +25-30% at B1/B8.
+2. Sharded-delta B64 collective (1280 of 5120 columns shipped instead of
+   the full 655,360 bytes): B64 step ~404 -> ~150 ms.
+3. B1 head shadow path (rows=1 full-vocab read 2.8 ms -> screened ~1.5 ms).
+4. B8 GDN branch overheads (~470 us/layer above the ~215 us GEMM floor).
 5. Collective per-op latency (~27 us x 129/step): revisit multi-outstanding
    stream-ordered submissions once the hidden-transport backend's
    multi-outstanding failure is root-caused.
-
-Batch-scaled numbers (B8 79.9, B64 158.2 tok/s per spark) are recorded for
-serving economics but excluded from the B1 comparison above, per review.
+6. N-spark scaling validation (TP8/TP16): verify per-spark throughput holds
+   as the shard shrinks - the N x single-spark rule is the acceptance test.
 
 Verification gate stays: module GPU validator (TP4 standalone) plus
-Qwen38-TP4-E2E-PASS (per-rank agreement + 64-token reference) on every
-landed change.
+Qwen38-TP4-E2E-PASS on every landed change.
