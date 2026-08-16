@@ -409,7 +409,7 @@ static __device__ __forceinline__ uint64_t SparkQwen38AttnTokenBase(const uint32
 
 
 // One token's logit: lanes pair-load the cached key against the shared
-// query, warp-reduce, fixed 1/sqrt(128) scale.
+// query, warp-reduce, fixed 1/sqrt(head_dim) = 1/16 scale.
 
 
 static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, const void *kv_cache_bf16, const uint32_t *block_indices, const uint32_t *block_counts, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t lane_stride, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank)
@@ -875,16 +875,25 @@ static __global__ void SparkQwen38ChunkPrepareKernel(const void *conv_out_bf16, 
 // per head, thread per column.
 static __global__ void SparkQwen38ChunkSolveKernel(SparkQwen38ChunkWorkspaceView views, uint32_t token_count)
 {
+	/* The oracle snapshots the ORIGINAL row (T[i,:i] = A[i,:i] + A[i,:i] x
+	 * T[:i,:i]) BEFORE the row's columns update. Reading live A[row,e]
+	 * entries races the other columns' writes and folds extra powers of A
+	 * into the transform, so each row is staged first, barrier, then
+	 * applied - exactly the reference's clone-then-sum. */
+	__shared__ float solve_row[SPARK_QWEN38_CUDA_CHUNK];
 	uint32_t head = blockIdx.x,column = threadIdx.x,row,element;
 	uint64_t mat_base = SparkQwen38ChunkHeadOffset(head,SPARK_QWEN38_CUDA_CHUNK * SPARK_QWEN38_CUDA_CHUNK);
 	float accumulator;
 	for (row = 1; row < token_count; row++)
 	{
 		if ( column < row )
+			solve_row[column] = views.attn[mat_base + ((uint64_t)row * SPARK_QWEN38_CUDA_CHUNK) + column];
+		__syncthreads();
+		if ( column < row )
 		{
-			accumulator = views.attn[mat_base + ((uint64_t)row * SPARK_QWEN38_CUDA_CHUNK) + column];
+			accumulator = solve_row[column];
 			for (element = 0; element < row; element++)
-				accumulator += (views.attn[mat_base + ((uint64_t)row * SPARK_QWEN38_CUDA_CHUNK) + element] * views.attn[mat_base + ((uint64_t)element * SPARK_QWEN38_CUDA_CHUNK) + column]);
+				accumulator += (solve_row[element] * views.attn[mat_base + ((uint64_t)element * SPARK_QWEN38_CUDA_CHUNK) + column]);
 			views.attn[mat_base + ((uint64_t)row * SPARK_QWEN38_CUDA_CHUNK) + column] = accumulator;
 		}
 		__syncthreads();
@@ -1412,12 +1421,22 @@ extern "C" cudaError_t SparkQwen38LaunchHeadArgmax(cudaStream_t stream, const vo
 	return(cudaGetLastError());
 }
 /*
- * Routed MoE execution, Qwen 3.8: BF16 router gate -> per-row top-k selection
- * -> common grouped-MoE kernels over MXFP4-E2M1 experts -> weighted pair
- * reduce into the hidden accumulator; BF16 shared expert with a learned
- * per-dimension sigmoid gate. All launchers are stream-ordered.
+ * Routed MoE execution, Qwen 3.8: BF16 router gate -> per-row top-k
+ * selection with softmax-renormalized weights -> common grouped-MoE kernels
+ * over FP8 experts -> weighted pair reduce (overwrite semantics: the
+ * mixture starts fresh) into the delta buffer; BF16 shared expert with the
+ * learned scalar sigmoid gate (Linear(hidden,1) on the MoE input). All
+ * launchers are stream-ordered.
  */
 #define SPARK_QWEN38_ROUTER_SORT_CAPACITY 512u
+
+static __device__ __forceinline__ float SparkQwen38WarpReduceMax(float value)
+{
+	#pragma unroll
+	for (uint32_t offset = SPARK_LM_WARP_LANES >> 1u; offset != 0u; offset >>= 1u)
+		value = fmaxf(value,__shfl_down_sync(0xffffffffu,value,offset));
+	return(value);
+}
 
 static __global__ void SparkQwen38GateSelectKernel(
     const float *scores_f32,
@@ -1481,21 +1500,32 @@ static __global__ void SparkQwen38GateSelectKernel(
     selected_score = rank < topk && selected_expert < expert_count &&
         !isnan(row_scores[selected_expert])
         ? row_scores[selected_expert]
-        : 0.0f;
+        : -INFINITY;
     if ( threadIdx.x < SPARK_LM_WARP_LANES )
     {
-        selected_total = SparkLmWarpReduceSum(selected_score);
-        selected_total = __shfl_sync(0xffffffffu, selected_total, 0u);
+        /* Softmax over the chosen top-k, the Qwen3_5MoeTopKRouter form:
+         * routing_weights = softmax(logits) then topk then renormalize
+         * over the selected experts. Raw logits divided by their sum (the
+         * old code) made every negative logit a negative mixture weight.
+         * Non-selected lanes hold -INFINITY, so the warp max and sum see
+         * exactly the top-k and their exp() contributes zero. */
+        float max_score = SparkQwen38WarpReduceMax(selected_score);
+        float exp_score;
+        max_score = __shfl_sync(0xffffffffu, max_score, 0u);
+        exp_score = __expf(selected_score - max_score);
+        selected_total = __shfl_sync(
+            0xffffffffu,
+            SparkLmWarpReduceSum(exp_score),
+            0u);
         if ( rank < topk )
         {
             indices_u32[((uint64_t)row * topk) + rank] = selected_expert;
-            /* The dsv4 normalization guard, verbatim semantics: a zero or
-             * non-finite total (all-equal or all-NaN logits) yields zero
+            /* A zero or non-finite total (all-NaN logits) yields zero
              * weights instead of NaN, which would poison the pair reduce
              * and the next layer's gate scores. */
             weights_f32[((uint64_t)row * topk) + rank] =
                 selected_total > 0.0f
-                ? route_scale * selected_score / selected_total
+                ? route_scale * exp_score / selected_total
                 : 0.0f;
         }
     }
@@ -1514,15 +1544,25 @@ static __global__ void SparkQwen38SwiGluKernel(const void *gate_bf16, void *up_b
 		SparkLmFloatToBf16(up_bf16,((uint64_t)row_count * dimension) - 1u,SparkLmSwish(SparkLmBf16ToFloat(gate_bf16,((uint64_t)row_count * dimension) - 1u)) * SparkLmBf16ToFloat(up_bf16,((uint64_t)row_count * dimension) - 1u));
 }
 
-static __global__ void SparkQwen38SharedGateKernel(void *accum_bf16, const void *gate_weight_bf16, uint32_t row_count, uint32_t dimension)
+/* Shared-expert gate: the checkpoint's shared_expert_gate is a
+ * Linear(hidden, 1) (Qwen3_5MoeSparseMoeBlock: sigmoid(gate(normed_input))
+ * times the shared output). One scalar per row computed from the MoE input,
+ * NOT sigmoid(weight[d]) per channel. */
+static __global__ void SparkQwen38SharedGateKernel(void *accum_bf16, const void *gate_weight_bf16, const void *gate_input_bf16, uint32_t row_count, uint32_t dimension)
 {
-	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
-	uint64_t total = (uint64_t)row_count * dimension;
-	float gate;
-	if ( index >= total )
+	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+	uint32_t row = blockIdx.x;
+	uint64_t row_base = (uint64_t)row * dimension;
+	uint64_t index;
+	float logit = 0.0f,gate;
+	if ( row >= row_count )
 		return;
-	gate = SparkLmSigmoid(SparkLmBf16ToFloat(gate_weight_bf16,(uint32_t)(index % dimension)));
-	SparkLmFloatToBf16(accum_bf16,index,gate * SparkLmBf16ToFloat(accum_bf16,index));
+	for (index = threadIdx.x; index < dimension; index += blockDim.x)
+		logit = fmaf(SparkLmBf16ToFloat(gate_input_bf16,row_base + index),SparkLmBf16ToFloat(gate_weight_bf16,index),logit);
+	logit = SparkLmBlockReduceSum(logit,reduce_scratch);
+	gate = SparkLmSigmoid(logit);
+	for (index = threadIdx.x; index < dimension; index += blockDim.x)
+		SparkLmFloatToBf16(accum_bf16,row_base + index,gate * SparkLmBf16ToFloat(accum_bf16,row_base + index));
 }
 
 extern "C" cudaError_t SparkQwen38LaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, uint32_t row_count, uint32_t expert_count, uint32_t topk, float route_scale, uint32_t *indices_u32, float *weights_f32)
@@ -1560,6 +1600,14 @@ extern "C" cudaError_t SparkQwen38LaunchMoePairReduce(cudaStream_t stream, const
 	return(SparkLmHostLaunchMoePairReduce(stream,slot_out_bf16,inverse_map,pair_weights_f32,accum_bf16,row_count,SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,hidden_dimension));
 }
 
+/* The routed-MoE mixture must START from zero: the attention/GDN delta was
+ * already folded into hidden by the fused residual norm, and accumulating
+ * on top of it would apply that delta twice per layer. */
+extern "C" cudaError_t SparkQwen38LaunchMoePairReduceOverwrite(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *output_bf16, uint32_t row_count, uint32_t hidden_dimension)
+{
+	return(SparkLmHostLaunchMoePairReduceOverwrite(stream,slot_out_bf16,inverse_map,pair_weights_f32,output_bf16,row_count,SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,hidden_dimension));
+}
+
 extern "C" cudaError_t SparkQwen38LaunchSwiGlu(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension)
 {
 	uint32_t threads = 256u;
@@ -1569,12 +1617,9 @@ extern "C" cudaError_t SparkQwen38LaunchSwiGlu(cudaStream_t stream, const void *
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen38LaunchSharedGate(cudaStream_t stream, void *accum_bf16, const void *gate_weight_bf16, uint32_t row_count, uint32_t dimension)
+extern "C" cudaError_t SparkQwen38LaunchSharedGate(cudaStream_t stream, void *accum_bf16, const void *gate_weight_bf16, const void *gate_input_bf16, uint32_t row_count, uint32_t dimension)
 {
-	uint32_t threads = 256u;
-	uint64_t total = (uint64_t)row_count * dimension;
-	uint32_t blocks = (uint32_t)((total + threads - 1u) / threads);
-	SparkQwen38SharedGateKernel<<<(blocks == 0u ? 1u : blocks), threads, 0, stream>>>(accum_bf16,gate_weight_bf16,row_count,dimension);
+	SparkQwen38SharedGateKernel<<<row_count, SPARK_LM_CTA_THREADS, 0, stream>>>(accum_bf16,gate_weight_bf16,gate_input_bf16,row_count,dimension);
 	return(cudaGetLastError());
 }
 

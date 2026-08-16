@@ -974,6 +974,7 @@ extern cudaError_t SparkQwen38LaunchMoeRoute(cudaStream_t stream, const uint32_t
 extern cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, const SparkQwen38LinearView *w1, const SparkQwen38LinearView *w3, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *activated_bf16, uint32_t rows, uint32_t expert_width, float limit, uint32_t multiprocessor_count);
 extern cudaError_t SparkQwen38LaunchExpertDown(cudaStream_t stream, const SparkQwen38LinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count);
 extern cudaError_t SparkQwen38LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension);
+extern cudaError_t SparkQwen38LaunchMoePairReduceOverwrite(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *output_bf16, uint32_t row_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen38LaunchGroupedExpertLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, const uint32_t *group_tile_prefix, void *output_bf16, uint32_t source_row_count, uint32_t multiprocessor_count);
 extern cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, void *output_bf16, uint32_t source_row_count);
 /* The MoE switches from the scalar grouped path to the tensor-core tile
@@ -981,7 +982,7 @@ extern cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(cudaStream_t stream,
  * in the common kernel header. */
 #define SPARK_QWEN38_MODULE_MOE_TILE_ROWS 16u
 extern cudaError_t SparkQwen38LaunchSwiGlu(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension);
-extern cudaError_t SparkQwen38LaunchSharedGate(cudaStream_t stream, void *accum_bf16, const void *gate_weight_bf16, uint32_t row_count, uint32_t dimension);
+extern cudaError_t SparkQwen38LaunchSharedGate(cudaStream_t stream, void *accum_bf16, const void *gate_weight_bf16, const void *gate_input_bf16, uint32_t row_count, uint32_t dimension);
 
 static SparkStatus SparkQwen38ModuleAllocateSlot(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot)
 {
@@ -1137,10 +1138,11 @@ static SparkStatus SparkQwen38ModuleRunAttnLayer(SparkQwen38ModuleState *state, 
 }
 
 /*
- * Routed MoE + shared expert, the layer's FFN side. delta_bf16 accumulates
- * the routed expert output (weighted pair reduce) and then the shared expert
- * output (gate-multiplied), and the fused residual norm folds the previous
- * residual plus delta into the next normalized input.
+ * Routed MoE + shared expert, the layer's FFN side. The fused residual norm
+ * already folded the attention/GDN delta into hidden, so delta_bf16 is
+ * OVERWRITTEN by the routed expert mixture (weighted pair reduce from zero)
+ * and then accumulates the shared expert output (scalar-gate-multiplied)
+ * before the final residual add.
  */
 static SparkStatus SparkQwen38ModuleRunMoe(SparkQwen38ModuleState *state, SparkQwen38ModuleSlot *slot, const void *mlp_norm_bf16, const SparkQwen38MoeWeights *weights, uint32_t rows)
 {
@@ -1179,7 +1181,7 @@ static SparkStatus SparkQwen38ModuleRunMoe(SparkQwen38ModuleState *state, SparkQ
 		}
 	}
 	if ( error == cudaSuccess )
-		error = SparkQwen38LaunchMoePairReduce(stream,slot->moe_slot_out_bf16,slot->moe_inverse_u32,slot->moe_weights_f32,slot->delta_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION);
+		error = SparkQwen38LaunchMoePairReduceOverwrite(stream,slot->moe_slot_out_bf16,slot->moe_inverse_u32,slot->moe_weights_f32,slot->delta_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION);
 	if ( error == cudaSuccess )
 		error = SparkQwen38LaunchLinear(stream,&weights->shared_gate,slot->normalized_bf16,slot->shared_gate_bf16,rows);
 	if ( error == cudaSuccess )
@@ -1189,7 +1191,7 @@ static SparkStatus SparkQwen38ModuleRunMoe(SparkQwen38ModuleState *state, SparkQ
 	if ( error == cudaSuccess )
 		error = SparkQwen38LaunchLinear(stream,&weights->shared_down,slot->shared_up_bf16,slot->shared_down_bf16,rows);
 	if ( error == cudaSuccess )
-		error = SparkQwen38LaunchSharedGate(stream,slot->shared_down_bf16,weights->shared_gate_weight_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION);
+		error = SparkQwen38LaunchSharedGate(stream,slot->shared_down_bf16,weights->shared_gate_weight_bf16,slot->normalized_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION);
 	if ( error == cudaSuccess )
 		error = SparkQwen38LaunchResidualAdd(stream,slot->delta_bf16,slot->shared_down_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION);
 	if ( error == cudaSuccess )

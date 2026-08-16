@@ -94,9 +94,9 @@ typedef struct SparkQwen38LinearView
 /*
  * Gated DeltaNet layer weights, PINNED against transformers main
  * modeling_qwen3_5 (2026-07). The qkv projection is ONE fused tensor whose
- * rows are conv channel order: query (2048) | key (2048) | value (6144); its
- * output feeds the depthwise causal conv (kernel 4, NO bias, silu on the
- * conv output) directly, then splits. beta and decay are separate 48-row
+ * rows are conv channel order: query (2048) | key (2048) | value (16384,
+ * 128 heads x 128); its output feeds the depthwise causal conv (kernel 4,
+ * NO bias, silu on the conv output) directly, then splits. beta and decay are separate 48-row
  * projections: beta = sigmoid(b); per-head log decay
  * g = -exp(a_log) * softplus(a + dt_bias), fp32 math. Inside the delta rule
  * q and k are L2-normalized per head. The gated norm is per-value-head
