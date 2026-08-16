@@ -1775,6 +1775,21 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(
 	scale_stride = (rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u;
 	m_blocks = (source_row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
 	n_tiles = (uint32_t)(rows_per_expert / SPARK_LM_TILE_N);
+	if ( m_blocks >= 2u )
+	{
+		/* M-loop at multi-m-tile shapes: the plain grid launches m_blocks x
+		 * n_tiles x experts CTAs, most empty (a group averages ~5 rows), at
+		 * ~1.25 us of launch/retire each - the measured B=256 collapse. The
+		 * m-loop covers the group in chunks and stages each k-strip once. */
+		return(SparkLmHostLaunchGroupedExpertTileMloop(
+			stream,
+			SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,
+			view->weight_payload,(const uint8_t *)view->weight_scale_e8m0,
+			payload_stride,scale_stride,
+			input_bf16,source_row_map,group_row_offset,output_bf16,
+			view->input_dimension,(uint32_t)rows_per_expert,
+			SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT));
+	}
 	SparkLmExpertTileAllKernel<32u><<<dim3(m_blocks,n_tiles,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT),SPARK_LM_CTA_THREADS,0u,stream>>>(
 		SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,
 		view->weight_payload,(const uint8_t *)view->weight_scale_e8m0,

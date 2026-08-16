@@ -42,12 +42,30 @@ Baseline (one GDN layer, l1 pack, B=16 / B=256):
   the documented CTA-serialization regression; B=16 runs the same bytes
   at ~804 GB/s), GDN step + per-head CTAs ~50+ ms, dense now ~6 ms.
 
+## The big win: grouped-expert m-loop (landed, measured)
+
+Root cause found: the grouped expert grid launches m_blocks x n_tiles x
+512 experts CTAs where m_blocks = ceil(rows/16). At B=256 a group averages
+~5 rows, so ~122K of the 131K CTAs are empty m-tiles, each costing ~1.25 us
+of launch/retire - the measured 233 GB/s collapse (the B-scaling fit:
+B=64/128/256 dead-CTA deltas 33K/68K at 1.24/1.28 us each).
+
+SparkLmExpertTileAllMloopKernel: grid (1, n_tiles, experts), each CTA walks
+its expert's group in chunks of 8 m-tiles and shares each k-stage's staged
+weight strip across the chunk. Measured (MoE-only / full layer):
+  B=256: 187.0 -> 57.4 ms MoE-only (-69%); full 247.2 -> 122.4 ms (-50%)
+  B=128: 99.6 -> 35.0 (-65%); full ~140 -> ~66 ms (-53%)
+  B=64:  58.8 -> ~25 (-57%)
+  B=32:  25.7 -> 15.5 (-40%)
+  B=16:  15.1 -> 14.1 (neutral-to-better)
+The replicated B=256 expert stream now runs at ~745 GB/s effective - the
+800+ GB/s regime the TP16 estimates assumed, so those estimates stand.
+
 ## Next levers, in order (all quantization-free)
 
-1. cp.async double-buffered grouped-expert tile kernel: the measured
-   233 -> 804 GB/s spread between B=256 and B=16 CTA shapes is pure
-   staging serialization; pipelining the decode+MMA loop is the fix and
-   the single biggest remaining win (~187 -> ~55 ms at B=256).
+1. (DONE above) grouped-expert m-loop. Remaining expert-path items:
+   cp.async staging to hide the producer load latency fully (the next
+   increment on top of the m-loop).
 2. TP16 activation (collective wiring + head-sliced projections): cuts
    every per-step byte count 16x and, by the same CTA-count mechanism,
    lands every batch in the high-efficiency regime.
