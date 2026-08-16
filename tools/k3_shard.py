@@ -33,8 +33,12 @@ from glm52, each earned by the architecture:
   interleaved tensor with the scales riding along
   expert w2 input-splits on whole 128-element k-tiles - a contiguous row
   range per expert per rank. V1 split K on 32-element groups; the interleave
-  coarsens that to the k-tile, so K3's 24 w2 k-tiles admit TP 1/2/4/8 and
-  TP16 is REFUSED, not approximated
+  coarsens that to the k-tile, so K3's 24 w2 k-tiles admit TP 1/2/4/8. TP16
+  is REFUSED: the down k-slice must equal the intermediate the rank's w1
+  slice computed (192 = 96+96 gate|up elements at TP16 = 1.5 tiles), and an
+  unbalanced whole-tile split would consume elements the rank never
+  computed. The fix is the 64-element half-tile repack (pack V3), which
+  gives the down the granularity the gate|up halves need
 """
 import json
 import mmap
@@ -325,23 +329,29 @@ class Slicer:
 
     def _expert_down(self, name, raw, meta):
         """w2 input-splits on whole 128-element k-tiles: a contiguous row
-        range per expert per rank. When the tile count does not divide the
-        degree (K3's 24 tiles at TP16), the split is UNBALANCED: the first
-        remainder ranks take one extra tile - the per-rank grid stays valid
-        (whole tiles, scales riding along) and the rank dims the layer reads
-        make the imbalance explicit. The balanced alternative is the
-        64-element half-tile repack, a pack-format change."""
+        range per expert per rank. The k axis IS the gate|up intermediate
+        (gate 1536 | up 1536 in 12+12 tiles), and a rank's down k-slice must
+        equal the intermediate its w1 slice computed - the gate|up output
+        split gives every rank 96 cells per half (a half-tile of 64 elements
+        at TP16), so a whole-tile down split can never line up with it: an
+        unbalanced tile split (ranks taking 1 or 2 tiles) would consume
+        elements the rank never computed. TP16 therefore REFUSES here until
+        the 64-element half-tile repack (pack V3: tile_k 64, 32-byte cell
+        rows) gives the down a granularity that matches the gate|up halves.
+        The degree check below is the honest gate for every other degree
+        (TP 2/4/8 split 24 tiles evenly)."""
         degree, rank = self.degree, self.rank
         geom = self.entry_of(name)["interleave"]
         experts, k_tiles = geom["experts"], geom["k_tiles"]
-        if k_tiles < degree:
+        if k_tiles % degree != 0:
             raise ShardFailure(
-                f"{name}: {k_tiles} 128-element k-tiles cannot cover "
-                f"{degree} ranks even unbalanced")
-        per = k_tiles // degree
-        rem = k_tiles % degree
-        take = per + (1 if rank < rem else 0)
-        t0 = rank * per + (rank if rank < rem else rem)
+                f"{name}: {k_tiles} 128-element k-tiles do not split "
+                f"{degree} ways, and an unbalanced whole-tile split cannot "
+                f"match the gate|up output split (a rank would consume "
+                f"intermediate elements it never computed) - TP16 needs the "
+                f"64-element half-tile repack before the expert w2 shards")
+        take = k_tiles // degree
+        t0 = rank * take
         tile_rows = geom["cells"] * geom["cell_rows"]
         row_bytes, rpe = geom["row_bytes"], geom["rows_per_expert"]
         out = bytearray()
