@@ -207,11 +207,11 @@ static int32_t LmGemmEncodeWeightMap(
     return LmGemmTensorMapCached(weight, &request);
 }
 
-// INTERLEAVED WEIGHT MAP - pack V2 mxfp4_ws_interleaved_v1 (K3). The B
+// INTERLEAVED WEIGHT MAP - pack format mxfp4_ws_interleaved_v1. The B
 // operand is the 17-row cell grid, described as a rank-3 UINT8 byte tensor:
 // 64-byte rows, rows_per_expert = k_tiles * cells * 17 rows per expert, one
 // group per expert, box [64 bytes, 17 * (TILE_N/16) rows, 1], 64B swizzle.
-// The packer's interleave grid (tools/k3_pack.py) asserts this closes with
+// The packer's interleave grid asserts this closes with
 // zero padding, and the kernel's produce coordinate
 // (k_tile * cells + neuron_base/16) * 17 is this layout's row index. The
 // 128-element pack k-tile is the grid's k unit, so the launcher passes
@@ -649,7 +649,7 @@ static int32_t LmGemmWeightOnlyIndirectLaunch(
 		input_dimension,output_dimension,multiprocessors,true,stream));
 }
 
-// INTERLEAVED B LAUNCHERS (K3 pack V2 mxfp4_ws_interleaved_v1). TILE_K is
+// INTERLEAVED B LAUNCHERS (pack format mxfp4_ws_interleaved_v1). TILE_K is
 // forced to the pack grid's 128-element k-tile - one staged box per k step,
 // scales riding the cell row - so these never pass through
 // LmGemmWeightOnlyLaunchMode's tile_k selection. The indirect variant is the

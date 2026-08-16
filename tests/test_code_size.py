@@ -156,8 +156,14 @@ from pathlib import Path
 # additive path, and the devcycle coordination harness; the DRY consolidation
 # on the unified branch removes the duplicated Pro TP16 stagepack and
 # re-parameterizes the TP4xPP4 driver; 158323 is the exact count after that
-# consolidation lands. Ceiling moves to the exact count.
-CEILING = 158323
+# consolidation lands.
+# The main wave landed after that consolidation adds the K3 TP4 runner,
+# dispatch, pack probe, and deploy/compile-gate tooling (#666), the GLM52
+# B8 and B16 batch classes with adapter variant-bucket fixes (#668, #669),
+# and the GLM52 accuracy fixes (#665); the unified branch folds it in as-is
+# (the shared-gemm provenance rename is line-neutral). 162375 is the exact
+# count after the integration; ceiling moves with it.
+CEILING = 162375
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
