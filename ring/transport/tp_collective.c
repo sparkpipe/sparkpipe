@@ -506,6 +506,7 @@ static SparkStatus SparkTpCollectiveListen(
     collective->listen_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (collective->listen_socket < 0)
     {
+        fprintf(stderr, "sparkpipe_tp: listen socket() errno=%d (%s)\n", errno, strerror(errno));
         return SPARK_STATUS_IO_ERROR;
     }
 
@@ -535,6 +536,8 @@ static SparkStatus SparkTpCollectiveListen(
             (struct sockaddr *)&listen_address,
             sizeof(listen_address)) != 0)
     {
+        fprintf(stderr, "sparkpipe_tp: listen bind(%u) errno=%d (%s)\n",
+            (uint32_t)listen_port, errno, strerror(errno));
         return SPARK_STATUS_IO_ERROR;
     }
 
