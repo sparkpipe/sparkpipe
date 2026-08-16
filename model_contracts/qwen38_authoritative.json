@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "model_id": "Qwen/Qwen3.8-2.4T-A95B",
+  "architecture": "GatedDeltaNet hybrid, routed MoE",
+  "sources": {
+    "checkpoint_config": "local FP8 checkpoint /home/spark9/extnvme/models/hf/Qwen/Qwen3.8-2.4T-A95B-FP8 (HASH_VERIFY.json: 224/224 files verified, manifest_sha256 8825c2e711da1194066f85c6d689053ece88597bc1a0f850b65841d42e1441b3)",
+    "variant_note": "the vendor-shipped FP8 release: routed experts F8_E4M3 with per-block scale_inv (block 128x128, activation dynamic), everything else BF16. Experts are per-expert tensors (E.gate_proj/up_proj/down_proj + weight_scale_inv), not the fused gate_up stack of the BF16 release.",
+    "known_gaps": [
+      "vision tower and multimodal input out of scope by contract (text decode path only)",
+      "mrope sections degenerate to plain rope for text-only decode",
+      "MTP execution not enabled by the first driver revision"
+    ],
+    "precision_policy": "vendor FP8 experts kept AS SHIPPED (F8_E4M3 + F32 block-128 scales; scale_inv stored verbatim as the multiplier plane, matching the common FP8_E4M3_F32B128 kernel path); non-expert weights, activations, KV and the final head BF16; GDN recurrent state FP32"
+  },
+  "model": {
+    "hidden_dimension": 8192,
+    "layer_count": 92,
+    "vocabulary_size": 248320,
+    "rms_norm_epsilon": 1e-06,
+    "mtp_layer_count": 1,
+    "maximum_context_tokens": 262144
+  },
+  "hybrid_attention": {
+    "period": 4,
+    "full_phase": 3,
+    "gdn_layer_count": 69,
+    "full_layer_count": 23
+  },
+  "gdn": {
+    "key_head_count": 16,
+    "value_head_count": 128,
+    "key_dimension": 128,
+    "value_dimension": 128,
+    "short_conv_kernel": 4,
+    "state_element_type": "fp32"
+  },
+  "attention": {
+    "query_head_count": 64,
+    "kv_head_count": 4,
+    "head_dimension": 256,
+    "rope_dimension": 64,
+    "rope_theta": 10000000.0,
+    "rope_convention": "partial_rotary_first_dims",
+    "output_gate": true
+  },
+  "moe": {
+    "routed_expert_count": 512,
+    "shared_expert_count": 1,
+    "experts_per_token": 10,
+    "expert_intermediate_dimension": 2048,
+    "activation": "swiglu",
+    "router_aux_loss_coef": 0.001
+  },
+  "precision": {
+    "routed_expert_weight_codec": "fp8_e4m3",
+    "routed_expert_scale": "f32_block_128x128_scale_inv",
+    "non_expert_weight_format": "bf16",
+    "activation_format": "bf16",
+    "kv_cache_codec": "bf16",
+    "accumulator_format": "fp32"
+  },
+  "cache": {
+    "kv_element_bits": 16,
+    "kv_page_slots": 64
+  },
+  "qualification": {
+    "cuda_target": "sm_121a",
+    "status": "NOT_MEASURED",
+    "production_ready": false
+  }
+}

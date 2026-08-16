@@ -1,0 +1,400 @@
+{
+  "claim_boundary": "rank0 CUPTI categories diagnose the accepted candidate but contain instrumentation overhead; only the retained non-instrumented three-run 39.009 tok/s result is the end-to-end baseline",
+  "exact_token_health": {
+    "measured_profiled": {
+      "canonical_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+      "decode_seconds_after_first": 3.533543083,
+      "decode_tokens_per_second": 35.9412626411721,
+      "exact": true,
+      "le_u32_sha256": "52737f6bafea66d96f579b41fbd439212a63dd362683a505065ebdafd8bed9c3",
+      "path": "/private/tmp/dsv4-combined-da7f-4fbf00fc-cupti-measured-o128.json",
+      "sha256": "4d8c6b5c8920383becb85c932877d9871f917a1b205e8965d38533593eaeac5d",
+      "token_count": 128,
+      "ttft_seconds": 3.916366542
+    },
+    "restored_normal": {
+      "canonical_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+      "decode_seconds_after_first": 3.219244791,
+      "decode_tokens_per_second": 39.450246329528035,
+      "exact": true,
+      "le_u32_sha256": "52737f6bafea66d96f579b41fbd439212a63dd362683a505065ebdafd8bed9c3",
+      "path": "/private/tmp/dsv4-combined-da7f-4fbf00fc-restored-normal-o128.json",
+      "sha256": "1fae75ae2ceada37b59348694737c26b88e20469bfb490482b7e65a53459d80c",
+      "token_count": 128,
+      "ttft_seconds": 3.713015792
+    },
+    "warm_profiled": {
+      "canonical_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+      "decode_seconds_after_first": 3.534432042,
+      "decode_tokens_per_second": 35.932222911870035,
+      "exact": true,
+      "le_u32_sha256": "52737f6bafea66d96f579b41fbd439212a63dd362683a505065ebdafd8bed9c3",
+      "path": "/private/tmp/dsv4-combined-da7f-4fbf00fc-cupti-warm-o128.json",
+      "sha256": "71fcef797b0e24af69e6d6685269a548f16a12bdad60a0323a25696abb1718fb",
+      "token_count": 128,
+      "ttft_seconds": 3.903259
+    }
+  },
+  "exposed_gap_shape": {
+    "captured_non_inter_request_gap_ms_per_model_step": 6.120761631372549,
+    "collective_shaped_gap_ms_per_model_step": 4.467346329411765,
+    "collective_shaped_percent_of_captured_gaps": 72.98677188332174,
+    "collective_shaped_percent_of_instrumented_steady_decode_wall": 16.044397999845085,
+    "collector_printed_transition_limit": 64,
+    "paths": [
+      {
+        "gap_count_per_model_step": 89.72745098039216,
+        "gap_ms_per_model_step": 1.9637156705882353,
+        "path": "_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj -> _Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj"
+      },
+      {
+        "gap_count_per_model_step": 85.82745098039216,
+        "gap_ms_per_model_step": 1.6062056019607842,
+        "path": "_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj -> _Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj"
+      },
+      {
+        "gap_count_per_model_step": 33.43333333333333,
+        "gap_ms_per_model_step": 0.6750853019607843,
+        "path": "_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj -> _Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj"
+      },
+      {
+        "gap_count_per_model_step": 9.48235294117647,
+        "gap_ms_per_model_step": 0.22233975490196078,
+        "path": "_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj -> _Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj"
+      }
+    ],
+    "phase_caveat": "transition aggregate spans serialized B1 prefill and decode model steps; the steady-decode busy union is reported separately"
+  },
+  "instrumentation": {
+    "boundaries": 510,
+    "instrumentation_wall_overhead_vs_accepted_baseline_percent": 8.61640089382994,
+    "instrumented_steady_decode_ms": 27.843651905511813,
+    "library_path": "/private/tmp/dsv4-combined-da7f-4fbf00fc-cupti-injection.so",
+    "library_sha256": "ca7fdd922e36265c99dd2655b7d6286667733ddc910cef330c980f7e62851669",
+    "measured_instrumented_tokens_per_second": 35.9412626411721,
+    "method": "two consecutive O128 requests; second request steady decode is boundary windows 382 through 508 inclusive",
+    "raw_log": "/private/tmp/dsv4-combined-da7f-4fbf00fc-cupti-rank0.log",
+    "raw_log_sha256": "ee0cd13d89fc4c0fc6ae1bf86283a537b6eca90ae8f579e221a9653b279354c7",
+    "source_path": "/private/tmp/dsv4-combined-da7f-4fbf00fc-cupti-injection.cpp",
+    "source_sha256": "b49a1e00850ae38f144b711eb0b35ef749b609c1961866a0e23fc8b1cf8b7f5b",
+    "summary": {
+      "busy_ns": 11135985942,
+      "dropped": 0,
+      "kernels": 1086850,
+      "names": 63,
+      "span_ns": 48898495052,
+      "total_ns": 13499167577
+    }
+  },
+  "kernel_sum_composition": {
+    "categories": [
+      {
+        "category": "dense_and_projection_gemv",
+        "percent_of_summed_kernel_time": 38.64930750612345,
+        "summed_kernel_ms_per_model_step": 10.202180837254902
+      },
+      {
+        "category": "routed_expert_compute",
+        "percent_of_summed_kernel_time": 21.077385215122305,
+        "summed_kernel_ms_per_model_step": 5.5637554568627445
+      },
+      {
+        "category": "attention_and_kv",
+        "percent_of_summed_kernel_time": 10.81135286272862,
+        "summed_kernel_ms_per_model_step": 2.85385131372549
+      },
+      {
+        "category": "weight_readahead",
+        "percent_of_summed_kernel_time": 9.484125042123383,
+        "summed_kernel_ms_per_model_step": 2.503505625490196
+      },
+      {
+        "category": "routing_and_gate",
+        "percent_of_summed_kernel_time": 7.928487637903308,
+        "summed_kernel_ms_per_model_step": 2.0928671137254904
+      },
+      {
+        "category": "compressor_and_hc",
+        "percent_of_summed_kernel_time": 5.109629552341155,
+        "summed_kernel_ms_per_model_step": 1.3487787509803921
+      },
+      {
+        "category": "output_head",
+        "percent_of_summed_kernel_time": 3.0361616071790314,
+        "summed_kernel_ms_per_model_step": 0.8014495411764706
+      },
+      {
+        "category": "collective_local_combine_and_pack",
+        "percent_of_summed_kernel_time": 2.214116508590863,
+        "summed_kernel_ms_per_model_step": 0.584455931372549
+      },
+      {
+        "category": "norm_and_embedding",
+        "percent_of_summed_kernel_time": 1.5542718867109027,
+        "summed_kernel_ms_per_model_step": 0.4102780588235294
+      },
+      {
+        "category": "setup_and_bookkeeping",
+        "percent_of_summed_kernel_time": 0.13516218117698406,
+        "summed_kernel_ms_per_model_step": 0.035678492156862744
+      }
+    ],
+    "interpretation": "composition of summed recurring kernel durations; concurrent kernels overlap, so these are not exclusive wall-clock percentages",
+    "normalization_model_steps": 510,
+    "recurring_threshold_count": 254,
+    "summed_kernel_ms_per_model_step": 26.39680112156863,
+    "top_kernel_families": [
+      {
+        "kernel_family": "SparkLmLinearKernel",
+        "launches_per_model_step": 171.0,
+        "percent_of_summed_kernel_time": 14.646394231851522,
+        "summed_kernel_ms_per_model_step": 3.866179556862745
+      },
+      {
+        "kernel_family": "SparkLmSm121B1ExpertW13Kernel",
+        "launches_per_model_step": 43.0,
+        "percent_of_summed_kernel_time": 12.472379849206225,
+        "summed_kernel_ms_per_model_step": 3.2923093039215687
+      },
+      {
+        "kernel_family": "SparkLmWeightReadAheadKernel",
+        "launches_per_model_step": 129.0,
+        "percent_of_summed_kernel_time": 9.484125042123383,
+        "summed_kernel_ms_per_model_step": 2.503505625490196
+      },
+      {
+        "kernel_family": "SparkLmSm121B1ExpertW2Kernel",
+        "launches_per_model_step": 43.0,
+        "percent_of_summed_kernel_time": 7.633967043047022,
+        "summed_kernel_ms_per_model_step": 2.015123098039216
+      },
+      {
+        "kernel_family": "SparkLmBf16LinearPairKernel",
+        "launches_per_model_step": 62.0,
+        "percent_of_summed_kernel_time": 7.542550262008976,
+        "summed_kernel_ms_per_model_step": 1.9909919921568628
+      },
+      {
+        "kernel_family": "SparkLmStridedLinearKernel",
+        "launches_per_model_step": 43.0,
+        "percent_of_summed_kernel_time": 6.882266831759715,
+        "summed_kernel_ms_per_model_step": 1.8166982882352942
+      },
+      {
+        "kernel_family": "SparkLmSm121FusedDenseW13GemvKernel",
+        "launches_per_model_step": 43.0,
+        "percent_of_summed_kernel_time": 5.319439266352007,
+        "summed_kernel_ms_per_model_step": 1.4041618039215686
+      },
+      {
+        "kernel_family": "SparkDsv4GateScoresKernel",
+        "launches_per_model_step": 43.0,
+        "percent_of_summed_kernel_time": 4.776600154429348,
+        "summed_kernel_ms_per_model_step": 1.260869643137255
+      },
+      {
+        "kernel_family": "SparkDsv4SparseAttnKernel",
+        "launches_per_model_step": 43.0,
+        "percent_of_summed_kernel_time": 4.7124230896447035,
+        "summed_kernel_ms_per_model_step": 1.2439289509803921
+      },
+      {
+        "kernel_family": "SparkLmFp8LinearPairKernel",
+        "launches_per_model_step": 43.0,
+        "percent_of_summed_kernel_time": 4.258656914151229,
+        "summed_kernel_ms_per_model_step": 1.1241491960784313
+      },
+      {
+        "kernel_family": "SparkLmHeadCertifiedFp8ScoreKernel",
+        "launches_per_model_step": 1.0,
+        "percent_of_summed_kernel_time": 2.6726060059619052,
+        "summed_kernel_ms_per_model_step": 0.7054824921568628
+      },
+      {
+        "kernel_family": "SparkDsv4HcMixSplitKFinalizeKernel",
+        "launches_per_model_step": 86.0,
+        "percent_of_summed_kernel_time": 2.1257233856693136,
+        "summed_kernel_ms_per_model_step": 0.561122974509804
+      },
+      {
+        "kernel_family": "LmRouteBuildKernel",
+        "launches_per_model_step": 43.0,
+        "percent_of_summed_kernel_time": 1.9940040087620325,
+        "summed_kernel_ms_per_model_step": 0.5263532725490196
+      },
+      {
+        "kernel_family": "SparkDsv4AccumAddTp4TreeKernel",
+        "launches_per_model_step": 129.0,
+        "percent_of_summed_kernel_time": 1.8499901682828477,
+        "summed_kernel_ms_per_model_step": 0.48833822549019607
+      },
+      {
+        "kernel_family": "SparkDsv4RopeKernel",
+        "launches_per_model_step": 150.0,
+        "percent_of_summed_kernel_time": 1.5457610292501802,
+        "summed_kernel_ms_per_model_step": 0.40803146470588236
+      },
+      {
+        "kernel_family": "SparkLmRmsNormKernel",
+        "launches_per_model_step": 173.0,
+        "percent_of_summed_kernel_time": 1.5390329635672673,
+        "summed_kernel_ms_per_model_step": 0.4062554705882353
+      },
+      {
+        "kernel_family": "SparkDsv4CompressStepKernel",
+        "launches_per_model_step": 62.0,
+        "percent_of_summed_kernel_time": 1.29559523695382,
+        "summed_kernel_ms_per_model_step": 0.3419956980392157
+      },
+      {
+        "kernel_family": "SparkDsv4IndexerScoreKernel",
+        "launches_per_model_step": 21.0,
+        "percent_of_summed_kernel_time": 1.2402889811476483,
+        "summed_kernel_ms_per_model_step": 0.3273966156862745
+      },
+      {
+        "kernel_family": "SparkDsv4GateSelectKernel",
+        "launches_per_model_step": 43.0,
+        "percent_of_summed_kernel_time": 1.1578834747119269,
+        "summed_kernel_ms_per_model_step": 0.3056441980392157
+      },
+      {
+        "kernel_family": "SparkDsv4SparseAttnMergeKernel",
+        "launches_per_model_step": 43.0,
+        "percent_of_summed_kernel_time": 1.1095984276547557,
+        "summed_kernel_ms_per_model_step": 0.29289849019607844
+      }
+    ]
+  },
+  "non_instrumented_baseline": {
+    "accepted_ms_per_token": 25.634850424410903,
+    "accepted_three_run_mean_tokens_per_second": 39.00939476704516,
+    "note": "authoritative end-to-end baseline; CUPTI-instrumented throughput is not a baseline",
+    "source": "/private/tmp/dsv4-combined-winners-full-ring-receipt.json",
+    "source_sha256": "cc7e21e94f1161cfde78eae5f533d3bb5e213c6c0d660346b25d0ab55cea96ab",
+    "token_hash": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083"
+  },
+  "ranked_next_exact_quality_experiments": [
+    {
+      "evidence": "collective-shaped transitions account for about 4.47 ms per profiled model step and 73 percent of captured non-inter-request exposed gaps",
+      "experiment": "predeclared rolling collective program with permanent producer leases and one terminal callback",
+      "quality_contract": "transport/scheduling only; BF16 payload and arithmetic unchanged",
+      "rank": 1
+    },
+    {
+      "evidence": "routed-expert kernels sum to 5.56 ms per step; W13 plus W2 alone are 5.31 ms and are effectively unchanged from control",
+      "experiment": "production-shape persistent routed-expert W13/W2 kernel schedule",
+      "quality_contract": "retain decoded weights, FP32 accumulation order, and BF16 output bits",
+      "rank": 2
+    },
+    {
+      "evidence": "dense and projection GEMVs are 38.65 percent of summed recurring kernel time, 10.20 ms per step before overlap",
+      "experiment": "persistent multi-tensor dense/projection GEMV bundles with exact accumulation order",
+      "quality_contract": "no additional quantization of spine activations, KV, or outputs",
+      "rank": 3
+    },
+    {
+      "evidence": "129 read-ahead launches sum to 2.50 ms per step and border the largest exposed collective gap families",
+      "experiment": "persistent weight-prefetch queue scheduled under collective waits",
+      "quality_contract": "copy/scheduling policy only; bytes and consumers unchanged",
+      "rank": 4
+    },
+    {
+      "evidence": "routing and gate kernels sum to 2.09 ms per step across 129 launches",
+      "experiment": "fuse GateScores, GateSelect, and RouteBuild into an exact routed-gate program",
+      "quality_contract": "identical FP32 scores, top-k decisions, expert order, and route tables",
+      "rank": 5
+    }
+  ],
+  "restore": {
+    "all_four_candidate_ranks_ready_after_normal_restart": true,
+    "all_four_control_listeners_untouched": true,
+    "candidate_port": 18180,
+    "control_pids_rank0_to_rank3": [
+      214277,
+      887753,
+      879887,
+      2981550
+    ],
+    "control_port": 18080,
+    "normal_candidate_pids_rank0_to_rank3": [
+      279824,
+      951696,
+      978742,
+      3064802
+    ],
+    "profiled_rank0_pid": 277018
+  },
+  "schema": "sparkpipe.dsv4.tp4_b1.accepted_candidate_profile.v1",
+  "source": {
+    "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+    "driver": "580.159.03",
+    "driver_sha256": "4fbf00fc4198bf767acc631aa7819d9b793bac79eac10946c2e68c89d6f48f19",
+    "gpu": "NVIDIA GB10 sm_121a",
+    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    "runtime_root": "/tmp/dsv4-combined-da7f-4fbf00fc-runtime",
+    "topology": "TP4 PP1 spark4-spark7"
+  },
+  "status": "profile_complete_candidate_restored_exact",
+  "steady_decode_union": {
+    "first_request": {
+      "busy_union_ms": {
+        "mean": 22.043232244094487,
+        "median": 21.842334,
+        "p95": 22.446941
+      },
+      "busy_union_percent": 79.13268746313864,
+      "count": 127,
+      "idle_ms": {
+        "mean": 5.812806708661418,
+        "median": 5.060715,
+        "p95": 9.722623
+      },
+      "idle_percent": 20.867312536861363,
+      "period_ms": {
+        "mean": 27.856038952755906,
+        "median": 26.926719,
+        "p95": 31.940732
+      }
+    },
+    "interpretation": "busy is the union of concurrent kernel intervals; idle is exposed wall time with no rank0 GPU kernel",
+    "second_request": {
+      "busy_union_ms": {
+        "mean": 22.057194157480314,
+        "median": 21.858786,
+        "p95": 22.520543
+      },
+      "busy_union_percent": 79.21803588240509,
+      "count": 127,
+      "idle_ms": {
+        "mean": 5.786457748031496,
+        "median": 5.009248,
+        "p95": 9.948704
+      },
+      "idle_percent": 20.78196411759491,
+      "period_ms": {
+        "mean": 27.843651905511813,
+        "median": 26.952834,
+        "p95": 31.924085
+      }
+    }
+  },
+  "repository_copy": {
+    "cupti_log_path": "cupti-rank0.log",
+    "cupti_log_sha256": "c73842c94fc58c3a3123e667841a8e097408463d7c7f0a3f48937e8c54710df5",
+    "cupti_source_path": "cupti-injection.cpp",
+    "cupti_source_sha256": "b49a1e00850ae38f144b711eb0b35ef749b609c1961866a0e23fc8b1cf8b7f5b",
+    "redaction": "six startup-only private fabric addresses replaced; all CUPTI measurements are byte-identical to the raw log identified under instrumentation"
+  },
+  "timestamp_utc": "2026-08-14T21:27:19.403053+00:00",
+  "workload": {
+    "batch": "B1 one request",
+    "batch_path": "/private/tmp/dsv4-caller-poll-o128-batch.json",
+    "batch_sha256": "ad47693813d04ed65fc67178ab2d783e633282c14ed5445f092f67939aa40b7d",
+    "decode_measurement": "interval after first output token; prompt KV is then resident",
+    "output_tokens": 128,
+    "prompt_tokens": 128,
+    "speculation": false
+  }
+}

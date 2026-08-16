@@ -1,5 +1,13 @@
 #pragma once
 
+/*
+ * Pro builds define SPARK_DSV4_PRO_BUILD and get the Pro geometry through
+ * the model-generic name space; Flash builds are unchanged by this guard.
+ */
+#if defined(SPARK_DSV4_PRO_BUILD)
+#include "sparkpipe/spark_dsv4_pro_model_aliases.h"
+#else
+
 #include <stdint.h>
 
 #include "sparkpipe/spark_weight_codec.h"
@@ -10,7 +18,7 @@
 
 #define SPARK_DSV4_MODEL_HIDDEN_DIMENSION 4096u
 #define SPARK_DSV4_MODEL_LAYER_COUNT 43u
-#define SPARK_DSV4_MODEL_MTP_LAYER_COUNT 0u
+#define SPARK_DSV4_MODEL_MTP_LAYER_COUNT 3u
 #define SPARK_DSV4_MODEL_VOCAB_COUNT 129280u
 #define SPARK_DSV4_MODEL_QUERY_LORA_RANK 1024u
 #define SPARK_DSV4_MODEL_OUTPUT_LORA_RANK 1024u
@@ -26,6 +34,12 @@
 #define SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION 2048u
 #define SPARK_DSV4_MODEL_HASH_ROUTED_LAYER_COUNT 3u
 #define SPARK_DSV4_MODEL_CHECKPOINT_DSPARK_LAYER_COUNT 3u
+#define SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE 5u
+#define SPARK_DSV4_MODEL_DSPARK_NOISE_TOKEN_ID 128799u
+#define SPARK_DSV4_MODEL_DSPARK_MARKOV_RANK 256u
+#define SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT 3u
+#define SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_FIRST \
+	(SPARK_DSV4_MODEL_LAYER_COUNT - SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT)
 #define SPARK_DSV4_MODEL_MAX_POSITIONS 1048576u
 #define SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT 64u
 #define SPARK_DSV4_MODEL_ATTN_KV_HEAD_COUNT 1u
@@ -36,8 +50,8 @@
 #define SPARK_DSV4_MODEL_HC_SINKHORN_ITERATIONS 20u
 #define SPARK_DSV4_MODEL_DRIVER_MODEL_ID "deepseek.v4.flash.resident-decode-stage-firmware"
 #define SPARK_DSV4_MODEL_DRIVER_REVISION "h4096-l43-dsa-e256k6-hash3-v129280-ga0731-v4"
-#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256 "580be57d5a58ba55c820941b18abdf8a9010ce9c7a43754b6908e3c4ccc27063"
-#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B1 "dd6e9fd0c238c9ae28c16d5276a2d49f112097c0682e142b0b86bfa7eb5b334c"
+#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256 "a9bb380ea0aec73be3859950201f4d547a3ae6545c2cc901061b8524d7c21a85"
+#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B1 "78b6bbe69e99b769c37e1f26d002d8c9450aa9e69dc9f0b0442915a43858a754"
 #define SPARK_DSV4_MODEL_MODULE_ID "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.v4"
 #define SPARK_DSV4_MODEL_MODULE_TARGET "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16"
 #define SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION SPARK_DSV4_MODEL_HEAD_DIMENSION
@@ -74,12 +88,16 @@
 #define SPARK_DSV4_MODEL_LAYER_KIND_HCA 2u
 #define SPARK_DSV4_MODEL_LAYER_KIND_INVALID UINT32_MAX
 
-static const uint16_t SparkDsv4ModelCompressionRatios[43u] =
+#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B8 "fbd61a28aa5e5e871ec1b7222fe5cffb2ae2d164d66c18815757ed276700b056"
+#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B16 "67a46fc9b0ea63a719a15e907401c963f02cd0bb129ff6ec23eab710c704cad5"
+#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B32 "55307fa15f0d7c6acfa615cc8614aa176e6bb4acd69b47337ab1e6f620d14118"
+#define SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B64 "a675a37bb646adf5dd77b613f34cdd8395df589c2f84f2211c48dfafc21c183b"
+static const uint16_t SparkDsv4ModelCompressionRatios[46u] =
 {
     0u, 0u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u,
     4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u,
     4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u,
-    4u, 128u, 4u, 128u, 4u, 128u, 4u
+    4u, 128u, 4u, 128u, 4u, 128u, 4u, 0u, 0u, 0u
 };
 
 static inline uint16_t SparkDsv4ModelBackboneCompressionRatio(uint32_t layer_index)
@@ -91,7 +109,7 @@ static inline uint16_t SparkDsv4ModelBackboneCompressionRatio(uint32_t layer_ind
 
 static inline uint16_t SparkDsv4ModelMtpCompressionRatio(void)
 {
-	return(UINT16_MAX);
+	return(SparkDsv4ModelCompressionRatios[SPARK_DSV4_MODEL_LAYER_COUNT]);
 }
 
 #define SPARK_DSV4_MODEL_MTP_LAYER_KIND SPARK_DSV4_MODEL_LAYER_KIND_SWA
@@ -108,3 +126,5 @@ static inline uint32_t SparkDsv4ModelLayerKind(uint32_t layer_index)
 		return(SPARK_DSV4_MODEL_LAYER_KIND_HCA);
 	return(SPARK_DSV4_MODEL_LAYER_KIND_INVALID);
 }
+
+#endif /* SPARK_DSV4_PRO_BUILD */

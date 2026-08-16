@@ -885,9 +885,15 @@ static SparkStatus SparkTpDeviceCollectiveOpenStep(
     uint32_t partner_rank;
     SparkStatus status;
 
+    /* The ^3 pairing is the TP4 counter-rotating split ring's route at
+     * index 2; every other route is a recursive-doubling round whose
+     * partner is 2^step away. Guarding on the algorithm mask keeps TP4
+     * unchanged and gives TP8/TP16 their correct third round (^4). */
     partner_rank = config->tp_rank ^
-        (step_index == SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX ?
-            3u : 1u << step_index);
+        (step_index == SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX &&
+         (SparkTpDeviceCollectiveAlgorithmMask(config) &
+          SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) !=
+             0u ? 3u : 1u << step_index);
     if (config->tp_rank < partner_rank)
     {
         status = SparkTpDeviceCollectiveOpenSession(

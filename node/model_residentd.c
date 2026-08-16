@@ -236,6 +236,7 @@ static void SparkModelResidentdFailLocked(
 	runtime->failed_work_kind = route != 0 ? route->submission.work_kind : 0u;
 	runtime->failed_submission_id = route != 0 ? route->submission_id : 0u;
 	atomic_store(&runtime->failed_status,(uint32_t)status);
+	fprintf(stderr, "model_residentd route_failed status=%d reason=%u work_kind=%u submission=%llu\n", (int)status, reason, route != 0 ? route->submission.work_kind : 0u, route != 0 ? (unsigned long long)route->submission_id : 0ull);
 }
 
 static void SparkModelResidentdSignal(int32_t signal_number)
@@ -1027,7 +1028,7 @@ static void SparkModelResidentdCompletion(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 		failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_IDENTITY;
 	}
-	if ( status == SPARK_STATUS_OK && completion->accepted_token_count > route->submission.new_token_count )
+	if ( status == SPARK_STATUS_OK && completion->accepted_token_count > route->submission.new_token_count + runtime->adapter_library.adapter_interface.descriptor->max_speculative_token_count )
 	{
 		status = SPARK_STATUS_SCHEMA_ERROR;
 		failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ACCEPTED_TOKENS;
@@ -2425,7 +2426,48 @@ static SparkStatus SparkModelResidentdProgressRoute(
 			if ( status == SPARK_STATUS_BUSY )
 				return(SPARK_STATUS_OK);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+			{
+				/* A refused route is a per-route outcome, not a daemon
+				 * failure: queue a failed completion for the client and let
+				 * the route drain through the normal completion path. */
+				pthread_mutex_lock(&runtime->mutex);
+				if ( route->active != 0u && route->state ==
+					SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER )
+				{
+					(void)SparkModelResidentdRemoveCommittedLocked(runtime,
+						route);
+					memset(&route->completion,0,sizeof(route->completion));
+					route->completion.abi_version =
+						SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+					route->completion.descriptor_bytes =
+						SPARK_MODEL_SERVING_COMPLETION_BYTES;
+					route->completion.status = (uint32_t)status;
+					route->completion.submission_id =
+						route->submission.submission_id;
+					route->completion.request_id =
+						route->submission.request_id;
+					route->completion.sequence_id =
+						route->submission.sequence_id;
+					route->completion.sequence_position =
+						route->submission.sequence_position;
+					route->completion.control_generation =
+						route->submission.control_generation;
+					route->completion.transaction_id =
+						route->submission.transaction_id;
+					route->completion.dispatch_generation =
+						route->submission.dispatch_generation;
+					route->completion.request_generation =
+						route->submission.request_generation;
+					route->completion.step_generation =
+						route->submission.step_generation;
+					route->completion.residency =
+						route->submission.residency;
+					route->state =
+						SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
+				}
+				pthread_mutex_unlock(&runtime->mutex);
+				return(SPARK_STATUS_OK);
+			}
 			*adapter_submitted = 1u;
 			SparkModelResidentdWake(runtime);
 			continue;

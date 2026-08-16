@@ -32,6 +32,7 @@ typedef enum cudaStreamCaptureMode
 #define cudaErrorInvalidValue 1
 #define cudaErrorMemoryAllocation 2
 #define cudaErrorNotReady 34
+#define cudaDevAttrMultiProcessorCount 16
 #define cudaStreamDefault 0u
 #define cudaStreamNonBlocking 1u
 #define cudaEventDefault 0u
@@ -82,6 +83,7 @@ cudaError_t cudaStreamWaitEvent(
     cudaEvent_t event,
     unsigned int flags);
 cudaError_t cudaDeviceSynchronize(void);
+cudaError_t cudaDeviceGetAttribute(int *value, int attribute, int device);
 cudaError_t cudaEventCreate(cudaEvent_t *event);
 cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event, unsigned int flags);
 cudaError_t cudaEventDestroy(cudaEvent_t event);

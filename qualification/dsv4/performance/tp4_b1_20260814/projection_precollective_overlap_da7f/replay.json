@@ -1,0 +1,33 @@
+{
+  "schema": "sparkpipe.dsv4.projection-precollective-overlap-run.v1",
+  "run": "replay",
+  "source_base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "host": "spark1",
+  "device": "NVIDIA GB10",
+  "driver": "580.159.03",
+  "cuda_arch": "sm_121a",
+  "rows": 1,
+  "tp_degree": 4,
+  "layers": 43,
+  "csa_layers": 21,
+  "collective_payload_bytes": 8192,
+  "alternating_control_candidate_pairs": 31,
+  "results": [
+    {
+      "collective_target_ns": 44000,
+      "collective_actual_mean_ns": 44026,
+      "exact_all_bf16_and_metadata": true,
+      "control_median_ms": 5.146592,
+      "candidate_median_ms": 4.753760,
+      "gain_percent": 8.263612
+    },
+    {
+      "collective_target_ns": 60000,
+      "collective_actual_mean_ns": 60013,
+      "exact_all_bf16_and_metadata": true,
+      "control_median_ms": 5.877248,
+      "candidate_median_ms": 5.431456,
+      "gain_percent": 8.207596
+    }
+  ]
+}

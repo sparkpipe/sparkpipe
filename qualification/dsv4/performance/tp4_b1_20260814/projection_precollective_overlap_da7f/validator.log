@@ -1,0 +1,2 @@
+dsv4_stage ready stage=1/13 slice=3+3 compress=3 csa=1 lanes=1 max_seq=4736 graphs=0 backing=0 page_kib=1536.0 state_gib=0.188 device_gib=10.6
+dsv4_validation PASS config=056da5f4e95d94bcb879407fdd63db5f5e67a58443e9433c5d3c5d403bc77adc stage=1 slice=3+3 rows=1 nonzero_hidden=16384 output_token=4294967295

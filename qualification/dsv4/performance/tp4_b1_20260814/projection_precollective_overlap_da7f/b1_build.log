@@ -1,0 +1,12 @@
+host=spark1
+device=NVIDIA GB10
+driver=580.159.03
+cuda_arch=sm_121a
+batch_bucket=1
+build_directory=/tmp/dsv4-projection-final2-20260814/build/objects
+archive=/tmp/dsv4-projection-final2-20260814/build/libdsv4_resident_decode_stage_b1.a
+archive_sha256=aa7e8991b19ca38e49135bfd0508bd69801b79777adde86d488003a2bbecf11c
+module_source_sha256=907ae652cef32bda9f13c24525c1662d70fa8310ddd6edb04a11ea67c375eb8e
+cuda_source_sha256=aed6f6e34a075075fe5611e57af00337f73c3e0210718dede37633e15568f06b
+validator_source_sha256=bd1b0f2fad0c5342b4c2a3f6467582427151ea3958c5813286b40098e79b52a5
+exit_code=0

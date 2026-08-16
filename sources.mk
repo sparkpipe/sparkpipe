@@ -67,6 +67,9 @@ SPARKPIPE_GLM52_SOURCES := \
 SPARKPIPE_QWEN36_SOURCES := \
     model-families/qwen36/src/spark_qwen36_work_control.c
 
+SPARKPIPE_QWEN38_SOURCES := \
+    model-families/qwen38/src/spark_qwen38_work_control.c
+
 SPARKPIPE_DSV4_SOURCES := \
     model-families/dsv4/src/spark_dsv4_parallel_shape.c \
     model-families/dsv4/src/spark_dsv4_cache_plan.c \

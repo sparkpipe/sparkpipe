@@ -81,6 +81,25 @@ struct Glm52LayerBuffers
     // tensor produces the [gate | up] layout two launches would. Zero means
     // unknown or non-contiguous, which takes the two-launch path.
     uint32_t dense_gate_up_fused;
+
+    // Tensor-parallel sharding. The pack stores per-rank shards of the row- or
+    // column-sharded projections, so every projection dimension the kernels
+    // price must come from here rather than the full-model constant; tp_degree
+    // == 1 recovers the single-rank geometry. Replicated tensors (norms, q_a,
+    // kv_a, kv_b, indexer, router, correction) keep their full dims and the KV
+    // cache keeps all heads on every rank.
+    uint32_t tp_degree;
+    uint32_t tp_rank;
+    uint32_t attn_heads;
+    uint32_t q_b_rows;
+    uint32_t attn_output_columns;
+    uint32_t dense_gate_up_rows;
+    uint32_t dense_intermediate;
+    uint32_t expert_w1_rows;
+    uint32_t expert_intermediate;
+    uint32_t shared_gate_up_rows;
+    uint32_t shared_intermediate;
+    uint32_t head_vocabulary;
     const void *expert_w1_weight;
     const void *expert_w1_scale;
     const void *expert_w2_weight;
@@ -470,8 +489,8 @@ static int32_t Glm52LayerAttention(
         buffers->dense_tile_prefix,
         rows,
         GLM52_QUERY_A_DIM,
-        GLM52_ATTN_HEADS * (GLM52_QK_NOPE_DIM + GLM52_ROPE_DIM),
-        GLM52_ATTN_HEADS * (GLM52_QK_NOPE_DIM + GLM52_ROPE_DIM),
+        buffers->q_b_rows,
+        buffers->q_b_rows,
         0u,
         multiprocessors,
         stream);
@@ -514,14 +533,14 @@ static int32_t Glm52LayerAttention(
     LM_LAUNCH(
         (LmExtractRopePerHeadKernel<
             GLM52_LAYER_THREADS,LM_ROPE_INTERLEAVED>),
-        dim3(rows, GLM52_ATTN_HEADS),
+        dim3(rows, buffers->attn_heads),
         GLM52_LAYER_THREADS,
         0,
         stream,
         buffers->q_bf16,
         buffers->query_rope_bf16,
         buffers->positions,
-        GLM52_ATTN_HEADS,
+        buffers->attn_heads,
         GLM52_QK_NOPE_DIM + GLM52_ROPE_DIM,
         GLM52_QK_NOPE_DIM,
         GLM52_ROPE_DIM,
@@ -545,14 +564,14 @@ static int32_t Glm52LayerAttention(
             GLM52_LATENT,
             GLM52_QK_NOPE_DIM + GLM52_ROPE_DIM,
             0u>),
-        dim3(rows, GLM52_ATTN_HEADS),
+        dim3(rows, buffers->attn_heads),
         GLM52_LAYER_THREADS,
         0,
         stream,
         buffers->q_bf16,
         (const uint16_t *)buffers->kv_b_key_transposed_weight,
         buffers->query_latent_bf16,
-        GLM52_ATTN_HEADS,
+        buffers->attn_heads,
         rows);
     LM_LAUNCH(
         (LmKvStoreKernel<Glm52Kv, GLM52_LAYER_THREADS>),
@@ -572,7 +591,7 @@ static int32_t Glm52LayerAttention(
             GLM52_ATTN_THREADS,
             GLM52_LATENT,
             GLM52_ROPE_DIM>),
-        dim3(rows, GLM52_ATTN_HEADS),
+        dim3(rows, buffers->attn_heads),
         GLM52_ATTN_THREADS,
         0,
         stream,
@@ -583,7 +602,7 @@ static int32_t Glm52LayerAttention(
         buffers->context_length,
         selected_positions,
         selected_position_count,
-        GLM52_ATTN_HEADS,
+        buffers->attn_heads,
         buffers->qk_scale,
         buffers->attention_latent_bf16,
         buffers->row_positions);
@@ -591,14 +610,14 @@ static int32_t Glm52LayerAttention(
     LM_LAUNCH(
         (LmPerHeadProjectKernel<
             GLM52_LAYER_THREADS,GLM52_LATENT,GLM52_VALUE_DIM>),
-        dim3(rows, GLM52_ATTN_HEADS),
+        dim3(rows, buffers->attn_heads),
         GLM52_LAYER_THREADS,
         0,
         stream,
         buffers->attention_latent_bf16,
         (const uint16_t *)buffers->kv_b_value_weight,
         buffers->attention_value_bf16,
-        GLM52_ATTN_HEADS,
+        buffers->attn_heads,
         rows);
 
     return Glm52LaunchBf16Linear(
@@ -608,7 +627,7 @@ static int32_t Glm52LayerAttention(
         buffers->dense_row_offset,
         buffers->dense_tile_prefix,
         rows,
-        GLM52_ATTN_HEADS * GLM52_VALUE_DIM,
+        buffers->attn_output_columns,
         GLM52_HIDDEN,
         GLM52_HIDDEN,
         0u,
@@ -651,11 +670,12 @@ static int32_t Glm52LayerDenseMlp(
 
     if (buffers->dense_gate_up_fused != 0u)
     {
-        // Bind proved the up rows sit immediately behind the gate rows, so one
-        // GEMM over the concatenated tensor writes the [gate | up] layout
-        // directly - the two-launch form below re-reads the normed activation
-        // and pays a second launch for the same weight bytes. Per-element math
-        // is identical either way; only the launch count differs.
+        // The pack stores the dense gate-up stack as [up | gate] (matching the
+        // routed-expert convention), so one GEMM over the concatenated tensor
+        // writes that [up | gate] layout directly and LmSiluMulKernel runs with
+        // gate_first=false - the two-launch form below re-reads the normed
+        // activation and pays a second launch for the same weight bytes.
+        // Per-element math is identical either way; only the launch count differs.
         status = Glm52LaunchBf16Linear(
             buffers->normed_bf16,
             buffers->dense_gate_weight,
@@ -664,8 +684,8 @@ static int32_t Glm52LayerDenseMlp(
             buffers->dense_tile_prefix,
             rows,
             GLM52_HIDDEN,
-            GLM52_DENSE_INTERMEDIATE * 2u,
-            GLM52_DENSE_INTERMEDIATE * 2u,
+            buffers->dense_gate_up_rows,
+            buffers->dense_gate_up_rows,
             0u,
             multiprocessors,
             stream);
@@ -684,8 +704,8 @@ static int32_t Glm52LayerDenseMlp(
             buffers->dense_tile_prefix,
             rows,
             GLM52_HIDDEN,
-            GLM52_DENSE_INTERMEDIATE,
-            GLM52_DENSE_INTERMEDIATE * 2u,
+            buffers->dense_intermediate,
+            buffers->dense_gate_up_rows,
             0u,
             multiprocessors,
             stream);
@@ -701,9 +721,9 @@ static int32_t Glm52LayerDenseMlp(
             buffers->dense_tile_prefix,
             rows,
             GLM52_HIDDEN,
-            GLM52_DENSE_INTERMEDIATE,
-            GLM52_DENSE_INTERMEDIATE * 2u,
-            GLM52_DENSE_INTERMEDIATE,
+            buffers->dense_intermediate,
+            buffers->dense_gate_up_rows,
+            buffers->dense_intermediate,
             multiprocessors,
             stream);
         if (status != LM_LAUNCH_OK)
@@ -720,8 +740,8 @@ static int32_t Glm52LayerDenseMlp(
         stream,
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
-        GLM52_DENSE_INTERMEDIATE,
-        true);
+        buffers->dense_intermediate,
+        false);
 
     return Glm52LaunchBf16Linear(
         buffers->intermediate_bf16,
@@ -730,7 +750,7 @@ static int32_t Glm52LayerDenseMlp(
         buffers->dense_row_offset,
         buffers->dense_tile_prefix,
         rows,
-        GLM52_DENSE_INTERMEDIATE,
+        buffers->dense_intermediate,
         GLM52_HIDDEN,
         GLM52_HIDDEN,
         0u,
@@ -848,7 +868,7 @@ static int32_t Glm52LayerMoe(
         buffers->group_row_offset,
         buffers->route_packed_row,
         buffers->route_source_token,
-        GLM52_GATE_UP_DIM,
+        buffers->expert_w1_rows,
         GLM52_HIDDEN,
         GLM52_LAYER_TILE_N,
         buffers->group_tile_prefix_w1,
@@ -864,7 +884,7 @@ static int32_t Glm52LayerMoe(
     gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(
         buffers->expert_w1_scale,
         GLM52_EXPERTS,
-        GLM52_GATE_UP_DIM,
+        buffers->expert_w1_rows,
         GLM52_HIDDEN);
     gemm.prefix_built = 1u;
     gemm.group_row_offset = buffers->group_row_offset;
@@ -885,7 +905,7 @@ static int32_t Glm52LayerMoe(
             GLM52_TOP_K,
             GLM52_EXPERTS,
             GLM52_HIDDEN,
-            GLM52_GATE_UP_DIM,
+            buffers->expert_w1_rows,
             multiprocessors,
             stream);
     if (status != LM_LAUNCH_OK)
@@ -901,7 +921,7 @@ static int32_t Glm52LayerMoe(
         stream,
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
-        GLM52_EXPERT_INTERMEDIATE,
+        buffers->expert_intermediate,
         false);
 
     memset(&gemm, 0, sizeof(gemm));
@@ -910,7 +930,7 @@ static int32_t Glm52LayerMoe(
         buffers->expert_w2_scale,
         GLM52_EXPERTS,
         GLM52_HIDDEN,
-        GLM52_EXPERT_INTERMEDIATE);
+        buffers->expert_intermediate);
     gemm.prefix_built = 1u;
     gemm.group_row_offset = buffers->group_row_offset;
     gemm.group_tile_prefix = buffers->group_tile_prefix_w2;
@@ -927,7 +947,7 @@ static int32_t Glm52LayerMoe(
             rows,
             GLM52_TOP_K,
             GLM52_EXPERTS,
-            GLM52_EXPERT_INTERMEDIATE,
+            buffers->expert_intermediate,
             GLM52_HIDDEN,
             multiprocessors,
             true,
@@ -961,8 +981,8 @@ static int32_t Glm52LayerMoe(
         buffers->dense_tile_prefix,
         rows,
         GLM52_HIDDEN,
-        GLM52_EXPERT_INTERMEDIATE * 2u,
-        GLM52_EXPERT_INTERMEDIATE * 2u,
+        buffers->shared_gate_up_rows,
+        buffers->shared_gate_up_rows,
         0u,
         multiprocessors,
         stream);
@@ -978,8 +998,8 @@ static int32_t Glm52LayerMoe(
         stream,
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
-        GLM52_EXPERT_INTERMEDIATE,
-        true);
+        buffers->shared_intermediate,
+        false);
     status = Glm52LaunchBf16Linear(
         buffers->intermediate_bf16,
         buffers->shared_down_weight,
@@ -987,7 +1007,7 @@ static int32_t Glm52LayerMoe(
         buffers->dense_row_offset,
         buffers->dense_tile_prefix,
         rows,
-        GLM52_EXPERT_INTERMEDIATE,
+        buffers->shared_intermediate,
         GLM52_HIDDEN,
         GLM52_HIDDEN,
         0u,

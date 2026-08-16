@@ -9,10 +9,20 @@
 #include "inference/kernels/weight_codec.cuh"
 #include "runtime/gemm.cuh"
 
+#include <cooperative_groups.h>
 #include <math.h>
 #include <stdio.h>
 
-#define SPARK_DSV4_ROUTER_SORT_CAPACITY SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT
+/* Bitonic sort needs a power of two; pad to the next one (Pro has 384
+ * experts). The router pads non-existent experts with zero keys, which
+ * sort below every real key, so the top-k tail still selects real experts. */
+#if SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= 256u
+#define SPARK_DSV4_ROUTER_SORT_CAPACITY 256u
+#elif SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= 512u
+#define SPARK_DSV4_ROUTER_SORT_CAPACITY 512u
+#else
+#define SPARK_DSV4_ROUTER_SORT_CAPACITY 1024u
+#endif
 #define SPARK_DSV4_EXPERT_STAGES 4u
 #define SPARK_DSV4_EXPERT_WARPS 8u
 #define SPARK_DSV4_HC_ELEMENT_TILE 256u
@@ -246,12 +256,11 @@ static __global__ void SparkDsv4QuantSimKernel(void *data_bf16, uint32_t row_cou
 // Adjacent-pair rotation on the LAST rope_dim entries of every head; the
 // inverse conjugates - the attention output's de-rotation. One block per
 // (row, head), threads over pairs; freqs are the layer's YaRN table.
-static __device__ __forceinline__ void SparkDsv4RopeRow(
+static __device__ __forceinline__ void SparkDsv4RopePair(
 	void *data_bf16,const float *freqs_f32,const uint64_t *row_positions,
 	uint32_t row,uint32_t head,uint32_t head_count,uint32_t head_dim,
-	uint32_t rope_dim,uint32_t inverse)
+	uint32_t rope_dim,uint32_t pair,uint32_t inverse)
 {
-	uint32_t pair = threadIdx.x;
 	uint64_t base;
 	float angle,cosine,sine,real,imaginary;
 	if ( pair >= rope_dim / 2u )
@@ -266,6 +275,15 @@ static __device__ __forceinline__ void SparkDsv4RopeRow(
 	SparkLmFloatToBf16(data_bf16,base + 1u,real * sine + imaginary * cosine);
 }
 
+static __device__ __forceinline__ void SparkDsv4RopeRow(
+	void *data_bf16,const float *freqs_f32,const uint64_t *row_positions,
+	uint32_t row,uint32_t head,uint32_t head_count,uint32_t head_dim,
+	uint32_t rope_dim,uint32_t inverse)
+{
+	SparkDsv4RopePair(data_bf16,freqs_f32,row_positions,row,head,head_count,
+		head_dim,rope_dim,threadIdx.x,inverse);
+}
+
 static __global__ void SparkDsv4RopeKernel(void *data_bf16, const float *freqs_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t head_count, uint32_t head_dim, uint32_t rope_dim, uint32_t inverse)
 {
 	uint32_t row = blockIdx.x,head = blockIdx.y;
@@ -276,14 +294,13 @@ static __global__ void SparkDsv4RopeKernel(void *data_bf16, const float *freqs_f
 }
 
 // The unweighted per-head query rms the reference applies before rope.
-static __global__ void SparkDsv4QueryHeadRmsKernel(void *data_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dim, float epsilon)
+static __device__ __forceinline__ void SparkDsv4QueryHeadRmsRow(
+	void *data_bf16,uint32_t row,uint32_t head,uint32_t head_count,
+	uint32_t head_dim,float epsilon,float *reduce_scratch)
 {
-	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
-	uint32_t row = blockIdx.x,head = blockIdx.y,element;
+	uint32_t element;
 	uint64_t base = (((uint64_t)row * head_count) + head) * head_dim;
 	float value,total = 0.0f,inverse;
-	if ( row >= row_count || head >= head_count )
-		return;
 	for (element = threadIdx.x; element < head_dim; element += blockDim.x)
 	{
 		value = SparkLmBf16ToFloat(data_bf16,base + element);
@@ -293,6 +310,55 @@ static __global__ void SparkDsv4QueryHeadRmsKernel(void *data_bf16, uint32_t row
 	inverse = rsqrtf(total / (float)head_dim + epsilon);
 	for (element = threadIdx.x; element < head_dim; element += blockDim.x)
 		SparkLmFloatToBf16(data_bf16,base + element,SparkLmBf16ToFloat(data_bf16,base + element) * inverse);
+}
+
+static __global__ void SparkDsv4QueryHeadRmsKernel(void *data_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dim, float epsilon)
+{
+	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+	uint32_t row = blockIdx.x,head = blockIdx.y;
+	if ( row >= row_count || head >= head_count )
+		return;
+	SparkDsv4QueryHeadRmsRow(data_bf16,row,head,head_count,head_dim,epsilon,
+		reduce_scratch);
+}
+
+static __global__ void SparkDsv4QueryHeadRmsRopeKernel(
+	void *data_bf16,const float *freqs_f32,const uint64_t *row_positions,
+	uint32_t row_count,uint32_t head_count,uint32_t head_dim,
+	uint32_t rope_dim,float epsilon,uint32_t inverse)
+{
+	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+	uint32_t row = blockIdx.x,head = blockIdx.y;
+	if ( row >= row_count || head >= head_count )
+		return;
+	SparkDsv4QueryHeadRmsRow(data_bf16,row,head,head_count,head_dim,epsilon,
+		reduce_scratch);
+	__syncthreads();
+	SparkDsv4RopeRow(data_bf16,freqs_f32,row_positions,row,head,head_count,
+		head_dim,rope_dim,inverse);
+}
+
+static __global__ void SparkDsv4KvPostKernel(
+	void *data_bf16,const void *gain_bf16,const float *freqs_f32,
+	const uint64_t *row_positions,uint32_t row_count,uint32_t head_dim,
+	uint32_t rope_dim,uint32_t quant_width,uint32_t quant_block,float epsilon,
+	uint32_t inverse)
+{
+	extern __shared__ float staged_input[];
+	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+	uint32_t row = blockIdx.x,warp = threadIdx.x / SPARK_LM_WARP_LANES;
+	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	if ( row >= row_count )
+		return;
+	SparkLmRmsNormRow(data_bf16,gain_bf16,data_bf16,row,head_dim,epsilon,
+		staged_input,reduce_scratch);
+	__syncthreads();
+	if ( warp * quant_block < quant_width )
+		SparkDsv4QuantSimGroup(data_bf16,row,warp,lane,head_dim,quant_width,
+			quant_block,448.0f,0u);
+	else if ( warp == SPARK_LM_CTA_WARPS - 1u )
+		SparkDsv4RopePair(data_bf16,freqs_f32,row_positions,row,0u,1u,
+			head_dim,rope_dim,lane,inverse);
 }
 
 // In-place Hadamard rotation scaled n^-0.5 on power-of-two vectors; one
@@ -329,6 +395,32 @@ static __global__ void SparkDsv4HadamardKernel(void *data_bf16, uint32_t vector_
 	if ( vector >= vector_count )
 		return;
 	SparkDsv4HadamardRow(data_bf16,vector,width,hadamard_shared);
+}
+
+static __global__ void SparkDsv4IndexerPostKernel(
+	void *data_bf16,const float *freqs_f32,const uint64_t *row_positions,
+	uint32_t row_count,uint32_t head_count,uint32_t head_dim,
+	uint32_t rope_dim,uint32_t quant_block,uint32_t inverse)
+{
+	extern __shared__ float hadamard_shared[];
+	uint32_t row = blockIdx.x,head = blockIdx.y;
+	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
+	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	uint32_t vector;
+	void *head_data;
+	if ( row >= row_count || head >= head_count )
+		return;
+	SparkDsv4RopeRow(data_bf16,freqs_f32,row_positions,row,head,head_count,
+		head_dim,rope_dim,inverse);
+	__syncthreads();
+	vector = row * head_count + head;
+	SparkDsv4HadamardRow(data_bf16,vector,head_dim,hadamard_shared);
+	__syncthreads();
+	head_data = (uint8_t *)data_bf16 +
+		(uint64_t)vector * head_dim * sizeof(uint16_t);
+	if ( warp * quant_block < head_dim )
+		SparkDsv4QuantSimGroup(head_data,0u,warp,lane,head_dim,head_dim,
+			quant_block,SPARK_DSV4_MODEL_FP4_MAX,1u);
 }
 
 static __device__ __forceinline__ uint32_t SparkDsv4SparseAttnActiveSplitCount(
@@ -850,11 +942,16 @@ static __device__ __forceinline__ float SparkDsv4PoolOverlapChannel(const float 
  * keeps different lanes parallel without racing a lane's recurrent state.
  * State layout per lane: [coff*ratio slots][coff*d ch] f32.
  */
-static __global__ void SparkDsv4CompressStepKernel(const float *kv_f32, const float *score_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlapped, uint32_t width, void *emit_bf16, uint32_t *emitted)
+static __global__ void SparkDsv4CompressStepKernel(const void *kv_bf16,
+	const void *score_bf16,const float *ape_f32,float *kv_state_f32,
+	float *score_state_f32,uint64_t state_lane_stride,
+	const uint32_t *row_lane_indices,const uint64_t *row_positions,
+	uint32_t row_count,uint32_t ratio,uint32_t overlapped,uint32_t width,
+	void *emit_bf16,uint32_t *emitted)
 {
 	uint32_t row = blockIdx.x,coff = overlapped != 0u ? 2u : 1u,channels = coff * width,channel;
 	uint32_t slot,boundary,lane,previous;
-	uint64_t state_base;
+	uint64_t ape_base,source,state_base;
 	float *kv_state,*score_state;
 	float pooled;
 	if ( row >= row_count )
@@ -872,10 +969,15 @@ static __global__ void SparkDsv4CompressStepKernel(const float *kv_f32, const fl
 			continue;
 		slot = (uint32_t)(row_positions[row] % ratio);
 		boundary = (row_positions[row] + 1u) % ratio == 0u ? 1u : 0u;
+		ape_base = (row_positions[row] % ratio) * channels;
 		for (channel=threadIdx.x; channel<channels; channel+=blockDim.x)
 		{
-			kv_state[((overlapped != 0u ? ratio : 0u) + slot) * channels + channel] = kv_f32[(uint64_t)row * channels + channel];
-			score_state[((overlapped != 0u ? ratio : 0u) + slot) * channels + channel] = score_f32[(uint64_t)row * channels + channel];
+			source = (uint64_t)row * channels + channel;
+			kv_state[((overlapped != 0u ? ratio : 0u) + slot) * channels +
+				channel] = SparkLmBf16ToFloat(kv_bf16,source);
+			score_state[((overlapped != 0u ? ratio : 0u) + slot) * channels +
+				channel] = SparkLmBf16ToFloat(score_bf16,source) +
+				__ldg(ape_f32 + ape_base + channel);
 		}
 		__syncthreads();
 		if ( threadIdx.x == 0u )
@@ -1079,24 +1181,35 @@ static __global__ void SparkDsv4BuildAttentionIndicesKernel(
 // loop per row.  Keep the shared activation broadcast, but make the expert
 // tile the grid-y axis so every warp owns one expert and the launch exposes
 // the full SM parallelism without changing the arithmetic.
+static __device__ __forceinline__ void SparkDsv4GateScoreExpert(
+	const float *gate_shared,const void *weight_bf16,float *scores_f32,
+	uint32_t input_dimension,uint32_t expert_count,uint32_t expert,
+	uint32_t lane)
+{
+	float accumulator;
+	if ( expert >= expert_count )
+		return;
+	accumulator = SparkLmDotRowBf16(gate_shared,weight_bf16,expert,
+		input_dimension,lane);
+	accumulator = SparkLmWarpReduceSum(accumulator);
+	if ( lane == 0u )
+		scores_f32[expert] = sqrtf(SparkLmSoftplus(accumulator));
+}
+
 static __global__ void SparkDsv4GateScoresKernel(const void *weight_bf16, const void *input_bf16, float *scores_f32, uint32_t row_count, uint32_t input_dimension, uint32_t expert_count)
 {
 	extern __shared__ float gate_shared[];
 	uint32_t row = blockIdx.x,warp_count = blockDim.x / SPARK_LM_WARP_LANES;
 	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
 	uint32_t expert = blockIdx.y * warp_count + warp,element;
-	float accumulator;
 	if ( row >= row_count )
 		return;
 	for (element = threadIdx.x; element < input_dimension; element += blockDim.x)
 		gate_shared[element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + element);
 	__syncthreads();
-	if ( expert >= expert_count )
-		return;
-	accumulator = SparkLmDotRowBf16(gate_shared,weight_bf16,expert,input_dimension,lane);
-	accumulator = SparkLmWarpReduceSum(accumulator);
-	if ( lane == 0u )
-		scores_f32[((uint64_t)row * expert_count) + expert] = sqrtf(SparkLmSoftplus(accumulator));
+	SparkDsv4GateScoreExpert(gate_shared,weight_bf16,
+		scores_f32 + (uint64_t)row * expert_count,input_dimension,expert_count,
+		expert,lane);
 }
 
 /*
@@ -1194,6 +1307,127 @@ static __global__ void SparkDsv4GateSelectKernel(
                 : 0.0f;
         }
     }
+}
+
+static __device__ void SparkDsv4GateSelectShared(
+	const float *scores_f32,const float *bias_f32,
+	const uint32_t *tid2eid_u32,const uint32_t *token_ids,uint32_t topk,
+	float route_scale,uint32_t *indices_u32,float *weights_f32,
+	uint64_t *ordered_keys,uint32_t *selected_u32)
+{
+	uint64_t selected_key;
+	uint32_t expert,rank = threadIdx.x,selected_expert;
+	float selected_score,selected_total;
+	if ( tid2eid_u32 != 0 )
+		selected_expert = rank < topk ?
+			tid2eid_u32[(uint64_t)token_ids[0] * topk + rank] : UINT32_MAX;
+	else
+	{
+		for (expert=threadIdx.x; expert<SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT;
+			expert+=blockDim.x)
+			ordered_keys[expert] = SparkLmOrderedTopKKey(scores_f32[expert] +
+				(bias_f32 != 0 ? bias_f32[expert] : 0.0f),expert);
+		__syncthreads();
+		SparkLmBitonicSortKeysAscending<SPARK_DSV4_ROUTER_SORT_CAPACITY>(
+			ordered_keys);
+		selected_key = rank < topk ? ordered_keys[
+			SPARK_DSV4_ROUTER_SORT_CAPACITY - 1u - rank] : 0u;
+		selected_expert = selected_key != 0u ?
+			UINT32_MAX - (uint32_t)selected_key : UINT32_MAX;
+	}
+	selected_score = rank < topk &&
+		selected_expert < SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT ?
+		scores_f32[selected_expert] : 0.0f;
+	if ( threadIdx.x < SPARK_LM_WARP_LANES )
+	{
+		selected_total = SparkLmWarpReduceSum(selected_score);
+		selected_total = __shfl_sync(0xffffffffu,selected_total,0u);
+		if ( rank < topk )
+		{
+			indices_u32[rank] = selected_expert;
+			selected_u32[rank] = selected_expert;
+			weights_f32[rank] = selected_total > 0.0f ?
+				selected_score / selected_total * route_scale : 0.0f;
+		}
+	}
+}
+
+static __device__ void SparkDsv4GateRouteBuildShared(
+	const uint32_t *route_expert,uint32_t topk,uint32_t *group_row_offset,
+	uint32_t *route_packed_row,uint32_t *route_source_token,uint32_t tile_m,
+	uint32_t neuron_tiles_up,uint32_t *tile_prefix_up,
+	uint32_t neuron_tiles_down,uint32_t *tile_prefix_down,uint32_t *count)
+{
+	uint32_t index,expert,packed;
+	for (index=threadIdx.x; index<SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT;
+		index+=blockDim.x)
+		count[index] = 0u;
+	__syncthreads();
+	for (index=threadIdx.x; index<topk; index+=blockDim.x)
+		atomicAdd(&count[route_expert[index]],1u);
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+	{
+		uint32_t total = 0u,held,up = 0u,down = 0u,row_tiles;
+		for (index=0u; index<SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT; index++)
+		{
+			held = count[index];
+			group_row_offset[index] = total;
+			count[index] = total;
+			total += held;
+			row_tiles = (held + tile_m - 1u) / tile_m;
+			tile_prefix_up[index] = up;
+			tile_prefix_down[index] = down;
+			up += row_tiles * neuron_tiles_up;
+			down += row_tiles * neuron_tiles_down;
+		}
+		group_row_offset[SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT] = total;
+		tile_prefix_up[SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT] = up;
+		tile_prefix_down[SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT] = down;
+	}
+	__syncthreads();
+	for (index=threadIdx.x; index<topk; index+=blockDim.x)
+	{
+		expert = route_expert[index];
+		packed = atomicAdd(&count[expert],1u);
+		route_packed_row[index] = packed;
+		route_source_token[packed] = 0u;
+	}
+}
+
+static __global__ void SparkDsv4GateRouteCooperativeKernel(
+	const void *weight_bf16,const void *input_bf16,float *scores_f32,
+	const float *bias_f32,const uint32_t *tid2eid_u32,
+	const uint32_t *token_ids,uint32_t topk,float route_scale,
+	uint32_t *indices_u32,float *weights_f32,uint32_t *group_row_offset,
+	uint32_t *route_packed_row,uint32_t *route_source_token,uint32_t tile_m,
+	uint32_t neuron_tiles_up,uint32_t *tile_prefix_up,
+	uint32_t neuron_tiles_down,uint32_t *tile_prefix_down)
+{
+	extern __shared__ float gate_shared[];
+	__shared__ uint32_t selected_u32[SPARK_LM_MOE_MAX_TOPK];
+	cooperative_groups::grid_group grid = cooperative_groups::this_grid();
+	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
+	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	uint32_t expert = blockIdx.x * SPARK_LM_CTA_WARPS + warp,element;
+	for (element=threadIdx.x; element<SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
+		element+=blockDim.x)
+		gate_shared[element] = SparkLmBf16ToFloat(input_bf16,element);
+	__syncthreads();
+	SparkDsv4GateScoreExpert(gate_shared,weight_bf16,scores_f32,
+		SPARK_DSV4_MODEL_HIDDEN_DIMENSION,
+		SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,expert,lane);
+	grid.sync();
+	if ( blockIdx.x != 0u )
+		return;
+	SparkDsv4GateSelectShared(scores_f32,bias_f32,tid2eid_u32,token_ids,
+		topk,route_scale,indices_u32,weights_f32,(uint64_t *)gate_shared,
+		selected_u32);
+	__syncthreads();
+	SparkDsv4GateRouteBuildShared(selected_u32,topk,group_row_offset,
+		route_packed_row,route_source_token,tile_m,neuron_tiles_up,
+		tile_prefix_up,neuron_tiles_down,tile_prefix_down,
+		(uint32_t *)gate_shared);
 }
 
 // The swiglu clamp on gathered gate/up rows, routing weight folded in:
@@ -1314,6 +1548,7 @@ static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const voi
     uint32_t bounded_slot_count;
     uint32_t physical_page;
     uint32_t query_element;
+	uint32_t cta_first_slot;
     uint64_t q_base;
     uint64_t kv_base;
     float total;
@@ -1322,13 +1557,21 @@ static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const voi
     float2 key_pair[maximum_pairs_per_lane];
 
     row = blockIdx.x;
-    warp = threadIdx.x / SPARK_LM_WARP_LANES;
-    lane = threadIdx.x % SPARK_LM_WARP_LANES;
-    slot = (blockIdx.y * SPARK_LM_CTA_WARPS) + warp;
     if (row >= row_count)
     {
         return;
     }
+	bounded_slot_count = slot_counts[row] < max_slots
+		? slot_counts[row]
+		: max_slots;
+	cta_first_slot = blockIdx.y * SPARK_LM_CTA_WARPS;
+	if (cta_first_slot >= bounded_slot_count)
+	{
+		return;
+	}
+	warp = threadIdx.x / SPARK_LM_WARP_LANES;
+	lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	slot = cta_first_slot + warp;
     q_base = (uint64_t)row * head_count * head_dim;
     for (pair_index = threadIdx.x;
          pair_index < ((head_count * head_dim) >> 1u);
@@ -1342,19 +1585,8 @@ static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const voi
     }
     __syncthreads();
 
-    if (slot >= max_slots)
-    {
-        return;
-    }
-    bounded_slot_count = slot_counts[row] < max_slots
-        ? slot_counts[row]
-        : max_slots;
     if (slot >= bounded_slot_count)
     {
-        if (lane == 0u)
-        {
-            scores_f32[((uint64_t)row * max_slots) + slot] = -3.0e38f;
-        }
         return;
     }
 
@@ -1446,6 +1678,7 @@ static __global__ void SparkDsv4TopKKernel(const float *scores_f32, const uint32
     __shared__ uint32_t valid_count;
     __shared__ uint32_t selected_cursor;
     __shared__ uint32_t remaining_rank;
+	__shared__ uint32_t direct_sort_width;
     uint32_t row = blockIdx.x;
     uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
     uint32_t slot;
@@ -1463,6 +1696,70 @@ static __global__ void SparkDsv4TopKKernel(const float *scores_f32, const uint32
     bounded_slot_count = slot_counts[row] < max_slots
         ? slot_counts[row]
         : max_slots;
+	if (bounded_slot_count <= topk)
+	{
+		if (threadIdx.x == 0u)
+		{
+			valid_count = 0u;
+			sort_width = 1u;
+			while (sort_width < bounded_slot_count)
+			{
+				sort_width <<= 1u;
+			}
+			direct_sort_width = sort_width;
+		}
+		__syncthreads();
+		sort_width = direct_sort_width;
+		for (slot = threadIdx.x; slot < sort_width; slot += blockDim.x)
+		{
+			uint64_t key = slot < bounded_slot_count
+				? SparkDsv4OrderedTopKKey(scores[slot], slot)
+				: 0u;
+			selected_keys[slot] = key;
+			if (key != 0u)
+			{
+				atomicAdd(&valid_count, 1u);
+			}
+		}
+		__syncthreads();
+		selected_count = valid_count;
+		for (uint32_t size = 2u; size <= sort_width; size <<= 1u)
+		{
+			for (uint32_t stride = size >> 1u; stride != 0u; stride >>= 1u)
+			{
+				for (slot = threadIdx.x; slot < sort_width; slot += blockDim.x)
+				{
+					uint32_t partner = slot ^ stride;
+					if (partner > slot)
+					{
+						uint64_t left = selected_keys[slot];
+						uint64_t right = selected_keys[partner];
+						uint32_t ascending = (slot & size) != 0u ? 1u : 0u;
+						uint32_t swap = ascending != 0u ? left > right : left < right;
+						if (swap != 0u)
+						{
+							selected_keys[slot] = right;
+							selected_keys[partner] = left;
+						}
+					}
+				}
+				__syncthreads();
+			}
+		}
+		for (slot = threadIdx.x; slot < topk; slot += blockDim.x)
+		{
+			int32_t selected_index = -1;
+			if (slot < selected_count)
+			{
+				uint32_t original_slot = 0xffffffffu -
+					(uint32_t)selected_keys[slot];
+				selected_index = (int32_t)original_slot + offset;
+			}
+			indices_out[((uint64_t)row * out_row_stride) + slot] =
+				selected_index;
+		}
+		return;
+	}
     if (threadIdx.x == 0u)
     {
         valid_count = 0u;
@@ -1609,6 +1906,11 @@ static __global__ void SparkDsv4TopKKernel(const float *scores_f32, const uint32
  * flattened mean square - the norm applied to the mix, exactly the
  * reference order. One block per row, one warp per mix row.
  */
+/* Pro tiles the HcMix staging: 4096 floats = 16 KB shared, safely under the
+ * GB10 99 KB dynamic-shared limit for any hidden size. Flash builds ignore it. */
+#define SPARK_DSV4_HC_MIX_TILE 4096u
+#define SPARK_LM_HC_MIX_ROWS_PER_WARP 3u
+
 static __global__ void SparkDsv4HcMixKernel(const void *streams_bf16, const float *fn_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, float epsilon)
 {
 	extern __shared__ float hc_shared[];
@@ -1617,6 +1919,57 @@ static __global__ void SparkDsv4HcMixKernel(const void *streams_bf16, const floa
 	float value,total = 0.0f,inverse,accumulator;
 	if ( row >= row_count )
 		return;
+#if defined(SPARK_DSV4_PRO_BUILD)
+	/* Pro's flat dimension (4 streams x 7168 = 28672 floats = 112 KB) exceeds
+	 * the GB10 dynamic-shared limit (101376 B), so tile the staging. Flash
+	 * builds keep the original single-pass path. */
+	float mix_accum[SPARK_LM_HC_MIX_ROWS_PER_WARP];
+	uint32_t tile,tile_end,tile_elements,mix_index,mix_row;
+	total = 0.0f;
+	mix_index = 0u;
+	for (mix = warp; mix < mix_rows; mix += SPARK_LM_CTA_WARPS)
+	{
+		mix_accum[mix_index] = 0.0f;
+		mix_index++;
+	}
+	for (tile = 0u; tile < flat_dimension; tile += SPARK_DSV4_HC_MIX_TILE)
+	{
+		tile_end = tile + SPARK_DSV4_HC_MIX_TILE < flat_dimension ?
+			tile + SPARK_DSV4_HC_MIX_TILE : flat_dimension;
+		tile_elements = tile_end - tile;
+		for (element = threadIdx.x; element < tile_elements; element += blockDim.x)
+		{
+			value = SparkLmBf16ToFloat(streams_bf16,
+				((uint64_t)row * flat_dimension) + tile + element);
+			hc_shared[element] = value;
+			total += value * value;
+		}
+		__syncthreads();
+		mix_index = 0u;
+		for (mix = warp; mix < mix_rows; mix += SPARK_LM_CTA_WARPS)
+		{
+			mix_row = mix;
+			accumulator = 0.0f;
+			for (element = lane; element < tile_elements; element += SPARK_LM_WARP_LANES)
+				accumulator += hc_shared[element] *
+					fn_f32[((uint64_t)mix_row * flat_dimension) + tile + element];
+			accumulator = SparkLmWarpReduceSum(accumulator);
+			if ( lane == 0u )
+				mix_accum[mix_index] += accumulator;
+			mix_index++;
+		}
+		__syncthreads();
+	}
+	total = SparkLmBlockReduceSum(total,reduce_scratch);
+	inverse = rsqrtf(total / (float)flat_dimension + epsilon);
+	mix_index = 0u;
+	for (mix = warp; mix < mix_rows; mix += SPARK_LM_CTA_WARPS)
+	{
+		if ( lane == 0u )
+			mixes_f32[((uint64_t)row * mix_rows) + mix] = mix_accum[mix_index] * inverse;
+		mix_index++;
+	}
+#else
 	for (element = threadIdx.x; element < flat_dimension; element += blockDim.x)
 	{
 		value = SparkLmBf16ToFloat(streams_bf16,((uint64_t)row * flat_dimension) + element);
@@ -1634,6 +1987,7 @@ static __global__ void SparkDsv4HcMixKernel(const void *streams_bf16, const floa
 		if ( lane == 0u )
 			mixes_f32[((uint64_t)row * mix_rows) + mix] = accumulator * inverse;
 	}
+#endif
 }
 
 static __global__ void SparkDsv4HcMixSplitKKernel(const void *streams_bf16, const float *fn_f32, float *partials_f32, uint32_t row_count, uint32_t flat_dimension)
@@ -1805,10 +2159,15 @@ static __global__ void SparkDsv4HcSplitSinkhornKernel(const float *mixes_f32, co
 
 // Stream reduction by pre, expansion by post + transposed comb, and the
 // sigmoid head reduction - three small element kernels.
-static __global__ void SparkDsv4HcPreReduceKernel(const void *streams_bf16, const float *pre_f32, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension, uint32_t tiles_per_row)
+static __global__ void SparkDsv4HcPreReduceKernel(
+	const void *streams_bf16,const float *pre_f32,void *reduced_bf16,
+	void *residual_bf16,uint32_t row_count,uint32_t hc,uint32_t dimension,
+	uint32_t tiles_per_row)
 {
 	uint32_t row = blockIdx.y;
 	uint32_t tile = blockIdx.x,element,stream;
+	uint64_t index;
+	__nv_bfloat16 raw;
 	float value;
 	if ( row >= row_count )
 		return;
@@ -1817,7 +2176,13 @@ static __global__ void SparkDsv4HcPreReduceKernel(const void *streams_bf16, cons
 	{
 		value = 0.0f;
 		for (stream = 0; stream < hc; stream++)
-			value += pre_f32[((uint64_t)row * hc) + stream] * SparkLmBf16ToFloat(streams_bf16,(((uint64_t)row * hc) + stream) * dimension + element);
+		{
+			index = (((uint64_t)row * hc) + stream) * dimension + element;
+			raw = ((const __nv_bfloat16 *)streams_bf16)[index];
+			((__nv_bfloat16 *)residual_bf16)[index] = raw;
+			value += pre_f32[((uint64_t)row * hc) + stream] *
+				__bfloat162float(raw);
+		}
 		SparkLmFloatToBf16(reduced_bf16,((uint64_t)row * dimension) + element,value);
 	}
 }
@@ -1871,17 +2236,6 @@ static __global__ void SparkDsv4HcHeadReduceKernel(const void *streams_bf16, con
 		}
 		SparkLmFloatToBf16(reduced_bf16,((uint64_t)row * dimension) + element,value);
 	}
-}
-
-// Score = wgate output plus the in-group ape row - the ape add the
-// reference folds before pooling.
-static __global__ void SparkDsv4ApeAddKernel(float *score_f32, const float *ape_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t channels)
-{
-	uint32_t row = blockIdx.x,channel;
-	if ( row >= row_count )
-		return;
-	for (channel = threadIdx.x; channel < channels; channel += blockDim.x)
-		score_f32[((uint64_t)row * channels) + channel] += ape_f32[((uint64_t)(row_positions[row] % ratio) * channels) + channel];
 }
 
 // bf16 rows widened to f32 (times a scalar) for the compressor's fp32
@@ -2137,6 +2491,13 @@ extern "C" cudaError_t SparkDsv4LaunchHeadShadowQuantize(cudaStream_t stream, co
 	return(SparkLmHostLaunchHeadShadowQuantize<SPARK_LM_HEAD_SHADOW_GROUP>(stream,head_bf16,shadow_payload,shadow_scale,error_norm,candidate_count,hidden_dimension));
 }
 
+extern "C" cudaError_t SparkDsv4LaunchHeadCertifiedFp8Quantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, float *shadow_scale_f32, float *cert_norm_f32, uint32_t candidate_count, uint32_t hidden_dimension)
+{
+	return(SparkLmHostLaunchHeadCertifiedFp8Quantize(stream,head_bf16,
+		shadow_payload,shadow_scale_f32,cert_norm_f32,candidate_count,
+		hidden_dimension));
+}
+
 // Screened exact head, the mimo25 pattern; replaces the block-per-row
 // full scan outright - dsv4 never carried the intermediate tiled form.
 extern "C" cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
@@ -2156,6 +2517,17 @@ extern "C" cudaError_t SparkDsv4LaunchHeadScreenedArgmaxSharded(cudaStream_t str
 		head_weight_bf16,shadow_payload,shadow_scale,error_norm,logits_bf16,
 		candidate_ids,candidate_counts,output_token_ids,output_scores,
 		candidate_offset,row_count,candidate_count,hidden_dimension));
+}
+
+extern "C" cudaError_t SparkDsv4LaunchHeadCertifiedFp8B1Sharded(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const float *shadow_scale_f32, const float *cert_norm_f32, void *scratch, uint32_t *candidate_ids, uint32_t *screened_count, uint32_t *output_token_id, float *output_score, uint32_t candidate_offset, uint32_t row_count, uint32_t vocabulary_count, uint32_t hidden_dimension)
+{
+	cudaError_t status = SparkDsv4RequireNativeDecodeShape(row_count);
+	if ( status != cudaSuccess )
+		return(status);
+	return(SparkLmHostLaunchHeadCertifiedFp8B1WithScore(stream,hidden_bf16,
+		head_weight_bf16,shadow_payload,shadow_scale_f32,cert_norm_f32,scratch,
+		candidate_ids,screened_count,output_token_id,output_score,
+		candidate_offset,row_count,vocabulary_count,hidden_dimension));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchHeadMaxlocPack(cudaStream_t stream, const float *scores, const uint32_t *token_ids, uint64_t *maxloc, uint32_t row_count)
@@ -2242,6 +2614,77 @@ extern "C" cudaError_t SparkDsv4LaunchQueryHeadRms(cudaStream_t stream, void *da
 	return(cudaGetLastError());
 }
 
+extern "C" cudaError_t SparkDsv4LaunchQueryHeadRmsRope(
+	cudaStream_t stream,void *data_bf16,const float *freqs_f32,
+	const uint64_t *row_positions,uint32_t row_count,uint32_t head_count,
+	uint32_t head_dim,uint32_t rope_dim,float epsilon)
+{
+	dim3 grid(row_count,head_count);
+	uint32_t inverse = 0u;
+	if ( data_bf16 == 0 || freqs_f32 == 0 || row_positions == 0 ||
+		row_count == 0u ||
+		row_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT ||
+		head_count == 0u || head_count > SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT ||
+		(SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT % head_count) != 0u ||
+		head_dim != SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION ||
+		rope_dim != SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION ||
+		epsilon != SPARK_DSV4_MODEL_RMS_NORM_EPSILON )
+		return(cudaErrorInvalidValue);
+	SparkDsv4QueryHeadRmsRopeKernel<<<grid,SPARK_LM_CTA_THREADS,0u,stream>>>(
+		data_bf16,freqs_f32,row_positions,row_count,head_count,head_dim,
+		rope_dim,epsilon,inverse);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchKvPost(
+	cudaStream_t stream,void *data_bf16,const void *gain_bf16,
+	const float *freqs_f32,const uint64_t *row_positions,uint32_t row_count,
+	uint32_t head_dim,uint32_t rope_dim,uint32_t quant_width,
+	uint32_t quant_block,float epsilon)
+{
+	uint32_t inverse = 0u;
+	if ( data_bf16 == 0 || gain_bf16 == 0 || freqs_f32 == 0 ||
+		row_positions == 0 || row_count == 0u ||
+		row_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT ||
+		head_dim != SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION ||
+		rope_dim != SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION ||
+		quant_width != head_dim - rope_dim ||
+		quant_block != SPARK_DSV4_MODEL_KV_QUANT_BLOCK ||
+		(quant_width + quant_block - 1u) / quant_block + 1u !=
+			SPARK_LM_CTA_WARPS ||
+		epsilon != SPARK_DSV4_MODEL_RMS_NORM_EPSILON )
+		return(cudaErrorInvalidValue);
+	SparkDsv4KvPostKernel<<<row_count,SPARK_LM_CTA_THREADS,
+		head_dim * (uint32_t)sizeof(float),stream>>>(data_bf16,gain_bf16,
+		freqs_f32,row_positions,row_count,head_dim,rope_dim,quant_width,
+		quant_block,epsilon,inverse);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchIndexerPost(
+	cudaStream_t stream,void *data_bf16,const float *freqs_f32,
+	const uint64_t *row_positions,uint32_t row_count,uint32_t head_count,
+	uint32_t head_dim,uint32_t rope_dim,uint32_t quant_block)
+{
+	dim3 grid(row_count,head_count);
+	uint32_t inverse = 0u;
+	if ( data_bf16 == 0 || freqs_f32 == 0 || row_positions == 0 ||
+		row_count == 0u ||
+		row_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT ||
+		head_count != SPARK_DSV4_MODEL_INDEX_HEAD_COUNT ||
+		head_dim != SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION ||
+		rope_dim != SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION ||
+		quant_block != SPARK_DSV4_MODEL_FP4_QUANT_BLOCK ||
+		head_dim % quant_block != 0u ||
+		head_dim / quant_block > SPARK_LM_CTA_WARPS )
+		return(cudaErrorInvalidValue);
+	SparkDsv4IndexerPostKernel<<<grid,SPARK_LM_CTA_THREADS,
+		head_dim * (uint32_t)sizeof(float),stream>>>(data_bf16,freqs_f32,
+		row_positions,row_count,head_count,head_dim,rope_dim,quant_block,
+		inverse);
+	return(cudaGetLastError());
+}
+
 extern "C" cudaError_t SparkDsv4LaunchHadamard(cudaStream_t stream, void *data_bf16, uint32_t vector_count, uint32_t width)
 {
     if (data_bf16 == 0 || vector_count == 0u || width == 0u ||
@@ -2304,12 +2747,33 @@ extern "C" cudaError_t SparkDsv4ConfigureCudaKernels(uint32_t *multiprocessor_co
             SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION));
     if (error == cudaSuccess)
     {
+        uint32_t hc_mix_shared_elements;
+#if defined(SPARK_DSV4_PRO_BUILD)
+        hc_mix_shared_elements = SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS <
+            SPARK_DSV4_HC_MIX_TILE ? SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS :
+            SPARK_DSV4_HC_MIX_TILE;
+#else
+        hc_mix_shared_elements = SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS;
+#endif
         error = cudaFuncSetAttribute(
             SparkDsv4HcMixKernel,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
-            (int)(SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
-                sizeof(float)));
+            (int)(hc_mix_shared_elements * sizeof(float)));
     }
+#if defined(SPARK_DSV4_PRO_BUILD)
+    /* Pro's output composition (16 groups x 1024 = 16384) stages 64 KB of
+     * activations in the decode LinearKernel - over the 48 KB default.
+     * Opt the exact instantiation in; Flash's 8192-wide input never needs
+     * this and keeps its original attribute set. */
+    if ( error == cudaSuccess )
+        error = cudaFuncSetAttribute(
+            SparkLmLinearKernel<128u,
+                SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC,
+                SPARK_LM_CTA_WARPS>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)((uint64_t)SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT *
+                SPARK_DSV4_MODEL_OUTPUT_LORA_RANK * sizeof(float)));
+#endif
     return error;
 }
 
@@ -2414,20 +2878,23 @@ extern "C" cudaError_t SparkDsv4LaunchWiden(cudaStream_t stream, const void *inp
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkDsv4LaunchApeAdd(cudaStream_t stream, float *score_f32, const float *ape_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t channels)
+extern "C" cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream,
+	const void *kv_bf16,const void *score_bf16,const float *ape_f32,
+	float *kv_state_f32,float *score_state_f32,uint64_t state_lane_stride,
+	const uint32_t *row_lane_indices,const uint64_t *row_positions,
+	uint32_t row_count,uint32_t ratio,uint32_t overlapped,uint32_t width,
+	void *emit_bf16,uint32_t *emitted)
 {
-	SparkDsv4ApeAddKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(score_f32,ape_f32,row_positions,row_count,ratio,channels);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream, const float *kv_f32, const float *score_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlapped, uint32_t width, void *emit_bf16, uint32_t *emitted)
-{
-	if ( kv_f32 == 0 || score_f32 == 0 || kv_state_f32 == 0 ||
-		score_state_f32 == 0 || row_lane_indices == 0 || row_positions == 0 ||
-		row_count == 0u || ratio == 0u || width == 0u || emit_bf16 == 0 ||
-		emitted == 0 || overlapped > 1u )
+	if ( kv_bf16 == 0 || score_bf16 == 0 || ape_f32 == 0 ||
+		kv_state_f32 == 0 || score_state_f32 == 0 ||
+		row_lane_indices == 0 || row_positions == 0 || row_count == 0u ||
+		ratio == 0u || width == 0u || emit_bf16 == 0 || emitted == 0 ||
+		overlapped > 1u )
 		return(cudaErrorInvalidValue);
-	SparkDsv4CompressStepKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(kv_f32,score_f32,kv_state_f32,score_state_f32,state_lane_stride,row_lane_indices,row_positions,row_count,ratio,overlapped,width,emit_bf16,emitted);
+	SparkDsv4CompressStepKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(
+		kv_bf16,score_bf16,ape_f32,kv_state_f32,score_state_f32,
+		state_lane_stride,row_lane_indices,row_positions,row_count,ratio,
+		overlapped,width,emit_bf16,emitted);
 	return(cudaGetLastError());
 }
 
@@ -2491,14 +2958,20 @@ extern "C" cudaError_t SparkDsv4LaunchBuildAttentionIndices(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkDsv4LaunchGateScores(cudaStream_t stream, const SparkDsv4LinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count)
+static cudaError_t SparkDsv4LaunchGateScoresSequence(cudaStream_t stream,
+	const SparkDsv4LinearView *gate,const void *input_bf16,float *scores_f32,
+	uint32_t row_count)
 {
 	dim3 grid(row_count,(gate->rows + (SPARK_LM_CTA_THREADS / SPARK_LM_WARP_LANES) - 1u) / (SPARK_LM_CTA_THREADS / SPARK_LM_WARP_LANES));
 	SparkDsv4GateScoresKernel<<<grid,SPARK_LM_CTA_THREADS,gate->columns * (uint32_t)sizeof(float),stream>>>(gate->payload,input_bf16,scores_f32,row_count,gate->columns,gate->rows);
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkDsv4LaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, const uint32_t *tid2eid_u32, const uint32_t *token_ids, uint32_t row_count, uint32_t expert_count, uint32_t topk, float route_scale, uint32_t *indices_u32, float *weights_f32)
+static cudaError_t SparkDsv4LaunchGateSelectSequence(cudaStream_t stream,
+	const float *scores_f32,const float *bias_f32,
+	const uint32_t *tid2eid_u32,const uint32_t *token_ids,
+	uint32_t row_count,uint32_t expert_count,uint32_t topk,float route_scale,
+	uint32_t *indices_u32,float *weights_f32)
 {
     if (scores_f32 == 0 || indices_u32 == 0 ||
         weights_f32 == 0 || row_count == 0u || expert_count == 0u ||
@@ -2559,9 +3032,102 @@ static cudaError_t SparkDsv4GemmStatus(const char *site, int32_t status)
 	return(cudaErrorInvalidValue);
 }
 
-extern "C" cudaError_t SparkDsv4LaunchMoeRoute(cudaStream_t stream, const uint32_t *route_expert, uint32_t rows, uint32_t expert_width, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2)
+static cudaError_t SparkDsv4LaunchMoeRouteSequence(cudaStream_t stream,
+	const uint32_t *route_expert,uint32_t rows,uint32_t expert_width,
+	uint32_t *group_row_offset,uint32_t *route_packed_row,
+	uint32_t *route_source_token,uint32_t *group_tile_prefix_w1,
+	uint32_t *group_tile_prefix_w2)
 {
 	return(SparkDsv4GemmStatus("route",LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,expert_width,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SparkLmSm121ExpertW13TileN(rows),SparkLmSm121ExpertW2TileN(rows),group_tile_prefix_w1,group_tile_prefix_w2,stream)));
+}
+
+static cudaError_t SparkDsv4LaunchGateRouteCooperative(
+	cudaStream_t stream,const SparkDsv4LinearView *gate,
+	const void *input_bf16,float *scores_f32,const float *bias_f32,
+	const uint32_t *tid2eid_u32,const uint32_t *token_ids,uint32_t topk,
+	float route_scale,uint32_t *indices_u32,float *weights_f32,
+	uint32_t expert_width,uint32_t *group_row_offset,
+	uint32_t *route_packed_row,uint32_t *route_source_token,
+	uint32_t *group_tile_prefix_w1,uint32_t *group_tile_prefix_w2)
+{
+	const void *weight_bf16 = gate->payload;
+	uint32_t blocks = (gate->rows + SPARK_LM_CTA_WARPS - 1u) /
+		SPARK_LM_CTA_WARPS;
+	uint32_t tile_m = LmLaunchGroupedTileM(1u,topk,gate->rows);
+	uint32_t neuron_tiles_up = (expert_width +
+		SparkLmSm121ExpertW13TileN(1u) - 1u) /
+		SparkLmSm121ExpertW13TileN(1u);
+	uint32_t neuron_tiles_down = (SPARK_DSV4_MODEL_HIDDEN_DIMENSION +
+		SparkLmSm121ExpertW2TileN(1u) - 1u) /
+		SparkLmSm121ExpertW2TileN(1u);
+	void *arguments[] = {&weight_bf16,&input_bf16,&scores_f32,&bias_f32,
+		&tid2eid_u32,&token_ids,&topk,&route_scale,&indices_u32,&weights_f32,
+		&group_row_offset,&route_packed_row,&route_source_token,&tile_m,
+		&neuron_tiles_up,&group_tile_prefix_w1,&neuron_tiles_down,
+		&group_tile_prefix_w2};
+	return(cudaLaunchCooperativeKernel(
+		(void *)SparkDsv4GateRouteCooperativeKernel,dim3(blocks),
+		dim3(SPARK_LM_CTA_THREADS),arguments,
+		gate->columns * sizeof(float),stream));
+}
+
+static cudaError_t SparkDsv4LaunchGateRouteBatched(
+	cudaStream_t stream,const SparkDsv4LinearView *gate,
+	const void *input_bf16,float *scores_f32,const float *bias_f32,
+	const uint32_t *tid2eid_u32,const uint32_t *token_ids,uint32_t row_count,
+	uint32_t expert_count,uint32_t topk,float route_scale,
+	uint32_t *indices_u32,float *weights_f32,uint32_t expert_width,
+	uint32_t *group_row_offset,uint32_t *route_packed_row,
+	uint32_t *route_source_token,uint32_t *group_tile_prefix_w1,
+	uint32_t *group_tile_prefix_w2)
+{
+	cudaError_t error = SparkDsv4LaunchGateScoresSequence(stream,gate,
+		input_bf16,scores_f32,row_count);
+	if ( error == cudaSuccess )
+		error = SparkDsv4LaunchGateSelectSequence(stream,scores_f32,bias_f32,
+			tid2eid_u32,token_ids,row_count,expert_count,topk,route_scale,
+			indices_u32,weights_f32);
+	if ( error == cudaSuccess )
+		error = SparkDsv4LaunchMoeRouteSequence(stream,indices_u32,row_count,
+			expert_width,group_row_offset,route_packed_row,route_source_token,
+			group_tile_prefix_w1,group_tile_prefix_w2);
+	return(error);
+}
+
+extern "C" cudaError_t SparkDsv4LaunchGateRoute(
+	cudaStream_t stream,const SparkDsv4LinearView *gate,
+	const void *input_bf16,float *scores_f32,const float *bias_f32,
+	const uint32_t *tid2eid_u32,const uint32_t *token_ids,uint32_t row_count,
+	uint32_t expert_count,uint32_t topk,float route_scale,
+	uint32_t *indices_u32,float *weights_f32,uint32_t expert_width,
+	uint32_t *group_row_offset,uint32_t *route_packed_row,
+	uint32_t *route_source_token,uint32_t *group_tile_prefix_w1,
+	uint32_t *group_tile_prefix_w2)
+{
+	if ( gate == 0 || gate->payload == 0 || input_bf16 == 0 ||
+		scores_f32 == 0 || token_ids == 0 || indices_u32 == 0 ||
+		weights_f32 == 0 || group_row_offset == 0 || route_packed_row == 0 ||
+		route_source_token == 0 || group_tile_prefix_w1 == 0 ||
+		group_tile_prefix_w2 == 0 || row_count == 0u ||
+		row_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT ||
+		gate->weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 ||
+		gate->rows != SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT ||
+		gate->columns != SPARK_DSV4_MODEL_HIDDEN_DIMENSION ||
+		expert_count != SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT ||
+		topk != SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN || expert_width == 0u ||
+		route_scale != SPARK_DSV4_MODEL_ROUTED_SCALING_FACTOR ||
+		((bias_f32 == 0) == (tid2eid_u32 == 0)) )
+		return(cudaErrorInvalidValue);
+	if ( row_count == 1u )
+		return(SparkDsv4LaunchGateRouteCooperative(stream,gate,input_bf16,
+			scores_f32,bias_f32,tid2eid_u32,token_ids,topk,route_scale,
+			indices_u32,weights_f32,expert_width,group_row_offset,
+			route_packed_row,route_source_token,group_tile_prefix_w1,
+			group_tile_prefix_w2));
+	return(SparkDsv4LaunchGateRouteBatched(stream,gate,input_bf16,scores_f32,
+		bias_f32,tid2eid_u32,token_ids,row_count,expert_count,topk,route_scale,
+		indices_u32,weights_f32,expert_width,group_row_offset,route_packed_row,
+		route_source_token,group_tile_prefix_w1,group_tile_prefix_w2));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchExpertUp(cudaStream_t stream, const SparkDsv4LinearView *stacked, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t multiprocessor_count)
@@ -2797,7 +3363,13 @@ extern "C" cudaError_t SparkDsv4LaunchTopK(cudaStream_t stream, const float *sco
 
 extern "C" cudaError_t SparkDsv4LaunchHcMix(cudaStream_t stream, const void *streams_bf16, const float *fn_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, float epsilon)
 {
+#if defined(SPARK_DSV4_PRO_BUILD)
+	uint32_t shared_elements = flat_dimension < SPARK_DSV4_HC_MIX_TILE ?
+		flat_dimension : SPARK_DSV4_HC_MIX_TILE;
+	SparkDsv4HcMixKernel<<<row_count,SPARK_LM_CTA_THREADS,shared_elements * (uint32_t)sizeof(float),stream>>>(streams_bf16,fn_f32,mixes_f32,row_count,flat_dimension,mix_rows,epsilon);
+#else
 	SparkDsv4HcMixKernel<<<row_count,SPARK_LM_CTA_THREADS,flat_dimension * (uint32_t)sizeof(float),stream>>>(streams_bf16,fn_f32,mixes_f32,row_count,flat_dimension,mix_rows,epsilon);
+#endif
 	return(cudaGetLastError());
 }
 
@@ -2822,17 +3394,23 @@ extern "C" cudaError_t SparkDsv4LaunchHcMixSplitKSinkhorn(cudaStream_t stream, c
 	return(error);
 }
 
-extern "C" cudaError_t SparkDsv4LaunchHcPreReduce(cudaStream_t stream, const void *streams_bf16, const float *pre_f32, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension)
+extern "C" cudaError_t SparkDsv4LaunchHcPreReduce(
+	cudaStream_t stream,const void *streams_bf16,const float *pre_f32,
+	void *reduced_bf16,void *residual_bf16,uint32_t row_count,uint32_t hc,
+	uint32_t dimension)
 {
 	dim3 grid;
 	uint32_t tiles_per_row,dimension_tiles;
-	if ( row_count == 0u || dimension == 0u )
+	if ( streams_bf16 == 0 || pre_f32 == 0 || reduced_bf16 == 0 ||
+		residual_bf16 == 0 || row_count == 0u || hc == 0u || dimension == 0u )
 		return(cudaErrorInvalidValue);
 	tiles_per_row = (SPARK_DSV4_HC_MINIMUM_BLOCKS + row_count - 1u) / row_count;
 	dimension_tiles = (dimension + SPARK_DSV4_HC_ELEMENT_TILE - 1u) / SPARK_DSV4_HC_ELEMENT_TILE;
 	tiles_per_row = tiles_per_row < dimension_tiles ? tiles_per_row : dimension_tiles;
 	grid = dim3(tiles_per_row,row_count);
-	SparkDsv4HcPreReduceKernel<<<grid,SPARK_DSV4_HC_ELEMENT_TILE,0,stream>>>(streams_bf16,pre_f32,reduced_bf16,row_count,hc,dimension,tiles_per_row);
+	SparkDsv4HcPreReduceKernel<<<grid,SPARK_DSV4_HC_ELEMENT_TILE,0,stream>>>(
+		streams_bf16,pre_f32,reduced_bf16,residual_bf16,row_count,hc,
+		dimension,tiles_per_row);
 	return(cudaGetLastError());
 }
 
@@ -2855,3 +3433,4 @@ extern "C" cudaError_t SparkDsv4LaunchHcHeadReduce(cudaStream_t stream, const vo
 	SparkDsv4HcHeadReduceKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(streams_bf16,mixes_f32,scale,base_f32,epsilon,reduced_bf16,row_count,hc,dimension);
 	return(cudaGetLastError());
 }
+#include "spark_dsv4_dspark_kernels.cuh"
