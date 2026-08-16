@@ -454,9 +454,9 @@ static int32_t LmGemmLaunchAsymmetric(
     if constexpr ( INTERLEAVED_B )
     {
         // The staged B geometry IS the cell grid: 17 rows per 16 neurons,
-        // each row 64 bytes of UINT8.
+        // each row TILE_K/2 bytes of UINT8 (64 at TILE_K 128, 16 at 32).
         weight_geometry.rows = 17u * (TILE_N / 16u);
-        weight_geometry.depth = 64u;
+        weight_geometry.depth = TILE_K / 2u;
         weight_geometry.element_bits = 8u;
     }
     else
