@@ -186,7 +186,7 @@ extern "C" int32_t Glm52HeadFullVocab(
         norm_weight_bf16,
         head_weight_bf16,
         0,
-        GLM52_VOCAB,
+        buffers->head_vocabulary,
         rows,
         stream);
 }

@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION 1u
+#define SPARK_GLM52_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION 3u
 
 const SparkModelServingAdapterInterface *
 SparkModelServingAdapterGetInterface(void);

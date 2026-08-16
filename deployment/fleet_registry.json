@@ -55,14 +55,15 @@
         "sparkf"
       ],
       "rank_count": 8,
-      "runtime_root": "/home/{host}/sparkdata/glm52.fp8.pp13",
-      "pack_dir": "/home/{host}/sparkdata/glm52.fp8.pp13/packs",
+      "runtime_root": "/home/{host}/sparkdata/glm52.tp8.fp8",
+      "pack_dir": "/home/{host}/sparkdata/glm52.tp8.fp8/packs",
       "control_port_base": 19480,
       "collective_port_base": 63620,
       "transport_control_base": 60700,
-      "owner": "glm52 session - verify runtime_root and fill deployment specifics",
-      "status": "placeholder",
-      "topology": "TP8"
+      "owner": "glm52 session",
+      "status": "active",
+      "topology": "TP8",
+      "notes": "Single-stage TP8 resident decode, BF16 spine + FP8 experts. Rank packs glm52_tp8_rank0N.fp8.glms52sp (rank 0 = spark8 ... rank 7 = sparkf)."
     },
     "dsv4-pro": {
       "tier": "big",

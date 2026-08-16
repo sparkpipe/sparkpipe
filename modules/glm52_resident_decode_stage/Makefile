@@ -44,6 +44,11 @@ MODULE_TARGET := cuda.sm121.glm52.resident_decode_stage.bf16.expert_$(EXPERT_COD
 MODEL_HEADER := ../../model-families/glm52/include/sparkpipe/spark_glm52_model.h
 MODULE_ENTRY_PREFIX := SparkGlm52ResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_glm52_resident_decode_stage_module.c
+MODULE_ADDITIONAL_HOST_SOURCES := \
+	../../ring/transport/hidden_transport.c \
+	../../ring/transport/tp_collective.c \
+	../../ring/transport/tp_device_collective.c \
+	../../ring/transport/tp_device_collective_nccl.c
 MODULE_CUDA_SOURCE := source/spark_glm52_resident_decode_stage_cuda.cu
 MODULE_COMPILE_FLAGS := -DGLM52_EXPERT_WEIGHT_CODEC=$(GLM52_EXPERT_CODEC_ID) -DGLM52_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM52_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM52_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"
 
@@ -94,7 +99,7 @@ adapter:
 	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
 	@mkdir -p "$(BUILD_DIRECTORY)"
 	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC $(ADAPTER_SHARED_FLAGS) \
-		$(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) \
+		-I$(REPOSITORY_ROOT)/src $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) \
 		source/spark_glm52_serving_adapter.c \
 		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
 		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \

@@ -78,6 +78,7 @@ typedef struct SparkGlm52ExecutionSlot
 	uint32_t *head_candidate_token;
 	uint32_t *output_token;
 	float *output_score;
+	uint64_t *head_maxloc_u64;
 	uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix_w1;
 	uint32_t *group_tile_prefix_w2;
@@ -89,6 +90,8 @@ typedef struct SparkGlm52CudaWave
 	uint32_t stage_index;
 	uint32_t first_layer_index;
 	uint32_t layer_count;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
 	uint32_t row_count;
 	uint32_t maximum_context;
 	uint32_t resident_sequence_capacity;
@@ -127,6 +130,14 @@ extern "C" {
 #endif
 
 int32_t SparkGlm52LaunchCudaWave(const SparkGlm52CudaWave *wave);
+int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave);
+int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave);
+cudaError_t SparkGlm52LaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
+cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
+cudaError_t SparkGlm52LaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
+cudaError_t SparkGlm52LaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
 int32_t SparkGlm52ConfigureCudaModule(uint32_t *multiprocessor_count);
 
 #ifdef __cplusplus
