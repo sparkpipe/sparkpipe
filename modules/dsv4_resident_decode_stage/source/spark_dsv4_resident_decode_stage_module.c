@@ -200,6 +200,8 @@ struct SparkDsv4ModuleSlot
 	 * every rank (identical math, no draft collectives); the verify rides
 	 * the standard TP island chain at bucket width. */
 	uint32_t dspark_armed;
+	uint32_t dspark_verify_rows;
+	uint32_t dspark_host_draft_tokens[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP];
 	uint32_t *dspark_draft_token_ids;
 	uint32_t *dspark_verify_token_ids;
 	uint32_t *dspark_input_token_ids;
@@ -2379,6 +2381,71 @@ static SparkStatus SparkDsv4ModuleStageRows(
 
 static SparkStatus SparkDsv4ModuleDsparkDrive(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
 
+/* DSpark verify expansion: stage 8 rows of the single lane (anchor +
+ * SPEC_STEP drafts) through the slot's pinned staging, so the B8 islands
+ * replay one batched verify frame. Runs after the draft on the submission
+ * path; the draft tokens arrive device-side in dspark_draft_token_ids. */
+static SparkStatus SparkDsv4ModuleExpandDsparkVerify(
+	SparkDsv4ModuleState *state,
+	SparkDsv4ModuleSlot *slot,
+	const SparkModelDriverFrame *frame,
+	uint32_t lane_index,
+	uint32_t anchor_token_id,
+	uint64_t anchor_position)
+{
+	const uint32_t rows = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u;
+	(void)state;
+	(void)frame;
+	uint32_t host_tokens[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u];
+	uint32_t host_lanes[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u];
+	uint64_t host_positions[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u];
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error;
+	uint32_t row;
+	host_tokens[0] = anchor_token_id;
+	error = cudaMemcpyAsync(host_tokens + 1u,slot->dspark_draft_token_ids,
+		SPARK_DSV4_MODEL_DSPARK_SPEC_STEP * sizeof(uint32_t),
+		cudaMemcpyDeviceToHost,stream);
+	if ( error == cudaSuccess )
+		error = cudaStreamSynchronize(stream);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+			"dspark_verify_tokens"));
+	for (row = 0u; row < SPARK_DSV4_MODEL_DSPARK_SPEC_STEP; row++)
+		slot->dspark_host_draft_tokens[row] = host_tokens[1u + row];
+	for (row = 0u; row < rows; row++)
+	{
+		host_lanes[row] = lane_index;
+		host_positions[row] = anchor_position + 1u + row;
+		slot->host_input_token_ids[row] = host_tokens[row];
+		slot->host_row_lane_indices[row] = lane_index;
+		slot->host_row_positions[row] = host_positions[row];
+		slot->host_row_emit_positions[row] = host_positions[row] + 1u >= SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO ? host_positions[row] + 1u - SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO : 0u;
+		slot->host_row_emit_positions_hca[row] = host_positions[row] + 1u >= SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO ? host_positions[row] + 1u - SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO : 0u;
+	}
+	error = cudaMemcpy2DAsync(slot->input_token_ids,
+		(uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint32_t),
+		slot->host_input_token_ids,
+		(uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint32_t),
+		(uint64_t)rows * sizeof(uint32_t),3u,cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpy2DAsync(slot->row_positions,
+		(uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint64_t),
+		slot->host_row_positions,
+		(uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint64_t),
+		(uint64_t)rows * sizeof(uint64_t),3u,cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpy2DAsync(slot->row_lane_indices,
+		(uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint32_t),
+		slot->host_row_lane_indices,
+		(uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint32_t),
+		(uint64_t)rows * sizeof(uint32_t),3u,cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		slot->dspark_verify_rows = rows;
+	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+		"dspark_verify_expand"));
+}
+
 static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkModelDriverFrame *frame, const SparkDsv4ResidentDecodeStageFrameContext *context)
 {
 	const uint32_t *token_ids,*row_lane_indices;
@@ -2420,6 +2487,19 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 					state->dspark_lane_position[lane_index]);
 				if ( dspark_status != SPARK_STATUS_OK )
 					fprintf(stderr,"dspark_drive_failed status=%u tp_rank=%u lane=%u\n",(uint32_t)dspark_status,state->tp_rank,lane_index);
+				else
+				{
+					/* k=7 verify expansion: stage SPEC_STEP+1 rows of the lane
+					 * (anchor + drafts) instead of the 1-row submission */
+					SparkStatus expand_status = SparkDsv4ModuleExpandDsparkVerify(
+						state,slot,frame,lane_index,
+						state->dspark_lane_anchor[lane_index],
+						state->dspark_lane_position[lane_index]);
+					if ( expand_status != SPARK_STATUS_OK )
+						fprintf(stderr,"dspark_verify_expand_failed status=%u tp_rank=%u\n",(uint32_t)expand_status,state->tp_rank);
+					else
+						return(SPARK_STATUS_OK);
+				}
 			}
 		}
 	}
@@ -4285,6 +4365,8 @@ static SparkStatus SparkDsv4ModuleRunFrame(
 	SparkStatus status;
 	prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? context->prefill_batch : 0;
 	rows = prefill != 0 ? prefill->row_count : context->decode_batch->row_count;
+	if ( prefill == 0 && slot->dspark_verify_rows != 0u )
+		rows = slot->dspark_verify_rows;
 	/* A full-width prefill wave has exactly one row per active lane.  Its
 	 * causal attention is therefore the decode attention operation, and all
 	 * row values already live in slot-owned staging before this function.
