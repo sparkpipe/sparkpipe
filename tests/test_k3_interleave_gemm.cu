@@ -469,25 +469,27 @@ int main(void)
 		cudaMalloc(&d_out_plain, TEST_PACKED * plain_rows * 2u);
 		cudaMemcpy(d_weight_plain, h_weight_plain,
 			(size_t)plain_rows * TEST_IN * 2u, cudaMemcpyHostToDevice);
-		uint32_t *d_group_prefix_plain = 0;
-		uint32_t h_group_prefix_plain[TEST_EXPERTS + 1u] =
-			{ 0u, plain_rows / TEST_TILE_N, 2u * (plain_rows / TEST_TILE_N) };
-		cudaMalloc(&d_group_prefix_plain, sizeof(h_group_prefix_plain));
-		cudaMemcpy(d_group_prefix_plain, h_group_prefix_plain,
-			sizeof(h_group_prefix_plain), cudaMemcpyHostToDevice);
+		/* THE REAL PROJECTION SHAPE: the ungrouped dense case (group_count 1,
+		 * no prefix) - the o_proj's exact launch, whose 56-tile second wave
+		 * the equivalence gate found wrong. */
+		uint32_t *d_dense_offset_plain = 0;
+		uint32_t h_dense_offset_plain[2u] = { 0u, TEST_PACKED };
+		cudaMalloc(&d_dense_offset_plain, sizeof(h_dense_offset_plain));
+		cudaMemcpy(d_dense_offset_plain, h_dense_offset_plain,
+			sizeof(h_dense_offset_plain), cudaMemcpyHostToDevice);
 		LmGemmArguments gemm;
 		memset(&gemm, 0, sizeof(gemm));
 		gemm.scale_a = LmScaleTensorNone();
 		gemm.scale_b = LmScaleTensorNone();
-		gemm.group_row_offset = d_group_offset;
-		gemm.group_tile_prefix = d_group_prefix_plain;
-		gemm.prefix_built = 1u;
+		gemm.group_row_offset = d_dense_offset_plain;
+		gemm.group_tile_prefix = 0;
+		gemm.prefix_built = 0u;
 		gemm.output_bf16 = d_out_plain;
 		status = LmGemmWeightOnlyLaunch<
 			LmBf16Format, TEST_TILE_N, TEST_STAGES, TEST_WARPS>(
-			&gemm, d_packed, d_weight_plain, TEST_PACKED, TEST_TOKENS, TEST_TOP_K,
-			TEST_EXPERTS, TEST_IN, plain_rows, (uint32_t)multiprocessors,
-			true, (cudaStream_t)0);
+			&gemm, d_packed, d_weight_plain, TEST_PACKED, TEST_PACKED, 1u,
+			1u, TEST_IN, plain_rows, (uint32_t)multiprocessors,
+			false, (cudaStream_t)0);
 		if ( status != LM_LAUNCH_OK ) { printf("FAIL plain wide launch %d\n", status); return 1; }
 		err = cudaDeviceSynchronize();
 		if ( err != cudaSuccess ) { printf("FAIL plain wide sync %d\n", (int)err); return 1; }
@@ -522,7 +524,7 @@ int main(void)
 			failures++;
 		cudaFree(d_weight_plain);
 		cudaFree(d_out_plain);
-		cudaFree(d_group_prefix_plain);
+		cudaFree(d_dense_offset_plain);
 		free(h_weight_plain);
 		free(h_out_plain);
 	}
