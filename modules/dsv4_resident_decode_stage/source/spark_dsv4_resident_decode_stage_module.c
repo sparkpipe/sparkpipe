@@ -3919,7 +3919,10 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 	status = SparkDsv4ModuleRunDsparkDraft(state,slot,lane_index,
 		anchor_token_id,anchor_position);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"dspark_draft_forward_failed status=%u tp_rank=%u\n",(uint32_t)status,state->tp_rank);
 		return(status);
+	}
 	for (index = 0u; index < block && error == cudaSuccess; index++)
 	{
 		uint32_t host_prev = prev_token;
@@ -3949,6 +3952,8 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 		if ( error == cudaSuccess )
 			error = cudaStreamSynchronize(stream);
 	}
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_markov_chain_failed error=%d tp_rank=%u index=%u\n",(int)error,state->tp_rank,index);
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 		"dspark_markov_chain"));
 }
