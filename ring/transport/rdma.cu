@@ -1266,13 +1266,22 @@ static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(
     status = SparkHiddenSparkHostRdmaDiscoverDevice(local_host,
         state->verbs_port,device_name,sizeof(device_name),&state->gid_index);
     if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr,
+            "hidden_spark_rdma_discover_failed local_host=%s port=%u status=%d\n",
+            local_host,(uint32_t)state->verbs_port,(int)status);
         return status;
+    }
     devices = ibv_get_device_list(&count);
     if (devices == 0)
+    {
+        fprintf(stderr,"hidden_spark_rdma_device_list_null local_host=%s\n",local_host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
     if (count <= 0)
     {
         ibv_free_device_list(devices);
+        fprintf(stderr,"hidden_spark_rdma_device_list_empty local_host=%s\n",local_host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     selected_device = 0;
@@ -1285,6 +1294,7 @@ static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(
     if (selected_device == 0)
     {
         ibv_free_device_list(devices);
+        fprintf(stderr,"hidden_spark_rdma_device_missing local_host=%s want=%s\n",local_host,device_name);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     (void)snprintf(state->verbs_device_name,
@@ -1292,7 +1302,10 @@ static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(
     state->verbs_context = ibv_open_device(selected_device);
     ibv_free_device_list(devices);
     if (state->verbs_context == 0)
+    {
+        fprintf(stderr,"hidden_spark_rdma_open_failed local_host=%s device=%s\n",local_host,device_name);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
     state->protection_domain = ibv_alloc_pd(state->verbs_context);
     if (state->protection_domain == 0)
     {
