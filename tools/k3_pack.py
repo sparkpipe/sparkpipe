@@ -575,12 +575,15 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
         raise PackFailure(f"invalid slice {first_layer}+{layer_count} of {layers}")
     experts = config["num_experts"]
     # The .get default evaluates eagerly, so the fallback chain must be
-    # stepped: the released checkpoint names the key num_experts_per_token,
-    # the mini fixtures num_experts_per_tok, and a config carrying neither
-    # must fail loudly here, not in a dict default.
+    # stepped WITHOUT a default: the released checkpoint names the key
+    # num_experts_per_token, the mini fixtures num_experts_per_tok, and a
+    # config carrying neither fails loudly here.
     top_k = config.get("num_experts_per_tok")
     if top_k is None:
-        top_k = config.get("num_experts_per_token", config["num_experts_per_tok"])
+        top_k = config.get("num_experts_per_token")
+    if top_k is None:
+        raise PackFailure("config carries neither num_experts_per_tok nor "
+                          "num_experts_per_token")
     latent = config["routed_expert_hidden_size"]
     inter = config["moe_intermediate_size"]
     shared = config.get("num_shared_experts", 1) * inter
