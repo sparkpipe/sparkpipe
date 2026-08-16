@@ -132,7 +132,10 @@ int main(int argc, char **argv)
 	cudaStreamCreate(&runner_stream);
 	config.execution_stream = runner_stream;
 	config.flags |= SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS;
-	config.layer_collective_override = tp4 ? 0 : NoopHook;
+	/* tp4 keeps the runner's real TP hook; the pp1 equivalence legs keep
+	 * it too (it no-ops at tp_degree 1 except the env-gated dumps); the
+	 * plain gate keeps the diagnostic no-op. */
+	config.layer_collective_override = (tp4 || pp1) ? 0 : NoopHook;
 	int multiprocessors = 0;
 	cudaDeviceGetAttribute(&multiprocessors, cudaDevAttrMultiProcessorCount, 0);
 	config.multiprocessors = (uint32_t)multiprocessors;
