@@ -365,6 +365,12 @@ struct SparkDsv4ModuleState
 	void *dspark_ring_bf16;
 	uint64_t dspark_ring_lane_stride;
 	uint64_t dspark_ring_layer_stride;
+	/* Lane-level draft state: the anchor step's taps + token/position, so any
+	 * pipeline slot can run the next draft (slots cycle across submissions). */
+	void *dspark_tap_store_bf16;
+	uint8_t dspark_lane_ready[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t dspark_lane_anchor[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t dspark_lane_position[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkDsv4LinearView lm_head_view;
 	uint8_t *head_shadow_payload;
 	uint8_t *head_shadow_scale;
@@ -1625,6 +1631,15 @@ static SparkStatus SparkDsv4ModuleAllocatePools(SparkDsv4ModuleState *state)
 		return(status);
 	if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
 	{
+		uint64_t tap_store_elements = (uint64_t)state->resident_sequence_capacity *
+			SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT *
+			SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
+		status = SparkStageModuleDeviceAllocate(&state->ledger,
+			tap_store_elements * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,
+			&state->dspark_tap_store_bf16);
+	}
+	if ( status == SPARK_STATUS_OK && SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
+	{
 		/* Replicated draft ring: one 128-slot sliding window per draft
 		 * layer per resident lane, bf16 512-wide kv. */
 		uint64_t ring_layer_elements = (uint64_t)SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS *
@@ -2374,30 +2389,38 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 	row_lane_indices = prefill != 0u ? context->prefill_batch->row_lane_indices : context->decode_batch->row_lane_indices;
 	row_positions = prefill != 0u ? context->prefill_batch->row_positions : context->decode_batch->row_positions;
 	row_count = prefill != 0u ? context->prefill_batch->row_count : context->decode_batch->row_count;
-	/* DSpark: the previous step armed this slot; run the draft on the
-	 * submission path (host syncs are legal here, unlike the completion
-	 * callback). The draft's stream work precedes this frame's staging, so
-	 * the frame's H2D staging overwrites the shared staging arrays. */
-	if ( prefill == 0u && slot->dspark_armed != 0u &&
-		state->dspark_enabled != 0u && row_count == 1u )
+	/* DSpark: if the previous step published a ready lane, run the draft
+	 * from the LANE store on the submission path (host syncs are legal
+	 * here, unlike the completion callback). */
+	fprintf(stderr,"dspark_staging tp_rank=%u prefill=%u enabled=%u rows=%u\n",state->tp_rank,prefill,state->dspark_enabled,row_count);
+	if ( prefill == 0u && state->dspark_enabled != 0u && row_count == 1u )
 	{
-		uint64_t anchor_position = 0u;
 		uint32_t lane_index = 0u;
 		cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
-		cudaError_t error = cudaMemcpyAsync(&anchor_position,row_positions,
-			sizeof(uint64_t),cudaMemcpyDeviceToHost,stream);
-		if ( error == cudaSuccess )
-			error = cudaMemcpyAsync(&lane_index,row_lane_indices,
-				sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+		cudaError_t error = cudaMemcpyAsync(&lane_index,row_lane_indices,
+			sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 		if ( error == cudaSuccess )
 			error = cudaStreamSynchronize(stream);
-		slot->dspark_armed = 0u;
-		if ( error == cudaSuccess && anchor_position != 0u )
+		if ( error == cudaSuccess && lane_index < state->resident_sequence_capacity &&
+			state->dspark_lane_ready[lane_index] != 0u )
 		{
-			SparkStatus dspark_status = SparkDsv4ModuleDsparkDrive(state,slot,
-				lane_index,slot->host_output_token_ids[0],anchor_position - 1u);
-			if ( dspark_status != SPARK_STATUS_OK )
-				fprintf(stderr,"dspark_drive_failed status=%u tp_rank=%u\n",(uint32_t)dspark_status,state->tp_rank);
+			uint64_t tap_bytes = (uint64_t)SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT *
+				SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
+				SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+			state->dspark_lane_ready[lane_index] = 0u;
+			error = cudaMemcpyAsync(slot->dspark_tap_bf16,
+				(uint8_t *)state->dspark_tap_store_bf16 + (uint64_t)lane_index * tap_bytes,
+				tap_bytes,cudaMemcpyDeviceToDevice,stream);
+			if ( error == cudaSuccess )
+				error = cudaStreamSynchronize(stream);
+			if ( error == cudaSuccess )
+			{
+				SparkStatus dspark_status = SparkDsv4ModuleDsparkDrive(state,slot,
+					lane_index,state->dspark_lane_anchor[lane_index],
+					state->dspark_lane_position[lane_index]);
+				if ( dspark_status != SPARK_STATUS_OK )
+					fprintf(stderr,"dspark_drive_failed status=%u tp_rank=%u lane=%u\n",(uint32_t)dspark_status,state->tp_rank,lane_index);
+			}
 		}
 	}
 	return(SparkDsv4ModuleStageRows(state,slot,token_ids,row_lane_indices,row_positions,row_count,frame->active_slot_count));
@@ -3360,13 +3383,37 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 			"tp_head_maxloc_finish");
-	/* DSpark: the anchor step only ARMS the slot; the draft runs on the
-	 * NEXT submission's staging path (the completion callback must never
-	 * touch the engine stream or block - see PR #649). */
+	/* DSpark: publish the anchor step's taps + token to the LANE store
+	 * (slots cycle across submissions, so the next draft runs from state,
+	 * not from this slot). The D2D tap copy rides the stream before the
+	 * completion callback fires. */
 	if ( status == SPARK_STATUS_OK && continuation->rows == 1u &&
 		continuation->chain_step_count == 1u &&
 		state->dspark_enabled != 0u )
-		slot->dspark_armed = 1u;
+	{
+		SparkDsv4AsyncCompletion *async;
+		uint32_t slot_index = (uint32_t)(slot - state->slots);
+		uint32_t lane_index;
+		async = &state->completions[slot_index];
+		lane_index = async->lane_indices[0];
+		fprintf(stderr,"dspark_publish tp_rank=%u lane=%u rows=%u chain=%u\n",state->tp_rank,lane_index,continuation->rows,continuation->chain_step_count);
+		if ( lane_index < state->resident_sequence_capacity )
+		{
+			uint64_t tap_bytes = (uint64_t)SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT *
+				SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
+				SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+			error = cudaMemcpyAsync(
+				(uint8_t *)state->dspark_tap_store_bf16 + (uint64_t)lane_index * tap_bytes,
+				slot->dspark_tap_bf16,tap_bytes,cudaMemcpyDeviceToDevice,
+				(cudaStream_t)slot->cuda_stream);
+			if ( error == cudaSuccess )
+			{
+				state->dspark_lane_anchor[lane_index] = slot->host_output_token_ids[0];
+				state->dspark_lane_position[lane_index] = async->lane_next_positions[0] - 1u;
+				state->dspark_lane_ready[lane_index] = 1u;
+			}
+		}
+	}
 	SparkDsv4ModuleFinishContinuationTerminal(continuation,status);
 }
 
@@ -3490,6 +3537,12 @@ static void SparkDsv4ModuleContinueLayers(void *context,SparkStatus status)
 					SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,
 				continuation->rows,SPARK_DSV4_MODEL_HC_STREAM_COUNT,
 				SPARK_DSV4_MODEL_HIDDEN_DIMENSION,state->multiprocessor_count);
+			if ( error != cudaSuccess )
+				fprintf(stderr,"dspark_tap_launch_failed error=%d tp_rank=%u\n",(int)error,state->tp_rank);
+			if ( error == cudaSuccess )
+				error = cudaStreamSynchronize(stream);
+			if ( error != cudaSuccess )
+				fprintf(stderr,"dspark_tap_async_failed error=%d tp_rank=%u layer=%u\n",(int)error,state->tp_rank,continuation->layer_index);
 			status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 				"dspark_tap");
 		}
@@ -3938,6 +3991,7 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 	cudaError_t error = cudaSuccess;
 	SparkStatus status;
 	uint32_t index,prev_token = anchor_token_id;
+	fprintf(stderr,"dspark_drive_entry tp_rank=%u lane=%u anchor=%u pos=%llu\n",state->tp_rank,lane_index,anchor_token_id,(unsigned long long)anchor_position);
 	status = SparkDsv4ModuleRunDsparkDraft(state,slot,lane_index,
 		anchor_token_id,anchor_position);
 	if ( status != SPARK_STATUS_OK )
@@ -3945,6 +3999,9 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 		fprintf(stderr,"dspark_draft_forward_failed status=%u tp_rank=%u\n",(uint32_t)status,state->tp_rank);
 		return(status);
 	}
+	error = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_draft_async_failed error=%d tp_rank=%u\n",(int)error,state->tp_rank);
 	for (index = 0u; index < block && error == cudaSuccess; index++)
 	{
 		uint32_t host_prev = prev_token;
@@ -4192,6 +4249,9 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				slot->row_positions,1u,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
 				anchor_position % SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS,0u,
 				SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS);
+		error = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+		if ( error != cudaSuccess )
+			fprintf(stderr,"dspark_stage_sync_failed error=%d tp_rank=%u stage=%u\n",(int)error,state->tp_rank,stage);
 	}
 	if ( error != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
