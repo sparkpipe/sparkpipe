@@ -409,8 +409,10 @@ SparkStatus SparkModelServingAdapterValidateRuntimeSubmission(
 	SparkStatus status;
 	uint32_t lane;
 	status = SparkModelServingAdapterValidateRuntimeLimits(descriptor,runtime_limits);
+	(void)fprintf(stderr,"GLM52-DBG vsub limits rc=%d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterValidateSubmission(descriptor,submission);
+	(void)fprintf(stderr,"GLM52-DBG vsub submission rc=%d\n",(int)status);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->lane_count > runtime_limits->max_active_sequence_count || submission->row_count > runtime_limits->max_input_row_count )

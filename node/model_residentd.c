@@ -1612,13 +1612,17 @@ static SparkStatus SparkModelResidentdBindRoute(
 	input_sideband_bytes = status == SPARK_STATUS_OK && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.input_sideband_bytes_per_sequence : 0u;
 	output_sideband_bytes = status == SPARK_STATUS_OK && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.output_sideband_bytes_per_sequence : 0u;
 	if ( status == SPARK_STATUS_OK && (hidden_bytes + input_sideband_bytes > runtime->rank_plan.input_max_packet_bytes || hidden_bytes + output_sideband_bytes > runtime->rank_plan.output_max_packet_bytes) )
+	{
+		(void)fprintf(stderr,"GLM52-DBG residentd bind packet rc=%d hidden=%llu in=%llu out=%llu capin=%llu capout=%llu\n",(int)SPARK_STATUS_CAPACITY_EXCEEDED,(unsigned long long)hidden_bytes,(unsigned long long)input_sideband_bytes,(unsigned long long)output_sideband_bytes,(unsigned long long)runtime->rank_plan.input_max_packet_bytes,(unsigned long long)runtime->rank_plan.output_max_packet_bytes);
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	if ( status == SPARK_STATUS_OK )
 	{
 		pthread_mutex_lock(&runtime->mutex);
 		status = SparkModelResidentdClaimResidentSlotsLocked(runtime,route);
 		pthread_mutex_unlock(&runtime->mutex);
 	}
+	(void)fprintf(stderr,"GLM52-DBG residentd bind rc=%d decision=%u\n",(int)status,decision_required);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u )
@@ -1715,6 +1719,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 		status = submission.submission_id == runtime->client.last_submission_id ? SPARK_STATUS_DUPLICATE : SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterPrepareSubmission(&runtime->adapter_library.adapter_interface,runtime->adapter_state,&submission);
+	(void)fprintf(stderr,"GLM52-DBG residentd process_submission rc=%d decision=%u work=%u rows=%u lanes=%u\n",(int)status,decision_required,submission.work_kind,submission.row_count,submission.lane_count);
 	cache_transactional =
 		(runtime->adapter_library.adapter_interface.descriptor->capability_flags &
 		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
@@ -1914,7 +1919,10 @@ static SparkStatus SparkModelResidentdProcessDecision(
 	if ( route == 0 )
 		status = SPARK_STATUS_NOT_FOUND;
 	if ( status == SPARK_STATUS_OK && (route->decision_required == 0u || route->state != SPARK_MODEL_RESIDENTD_ROUTE_RESERVED || route->submission.control_generation != decision->control_generation || route->submission.transaction_id != decision->transaction_id || route->submission.dispatch_generation != decision->dispatch_generation) )
+	{
+		(void)fprintf(stderr,"GLM52-DBG decision mismatch sid=%llu dreq=%u state=%u cg=%llu/%llu txn=%llu/%llu disp=%llu/%llu kind=%u\n",(unsigned long long)decision->submission_id,route->decision_required,route->state,(unsigned long long)route->submission.control_generation,(unsigned long long)decision->control_generation,(unsigned long long)route->submission.transaction_id,(unsigned long long)decision->transaction_id,(unsigned long long)route->submission.dispatch_generation,(unsigned long long)decision->dispatch_generation,decision->decision);
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	}
 	slot_index = status == SPARK_STATUS_OK ? route->slot_index : UINT32_MAX;
 	if ( status == SPARK_STATUS_OK )
 		route->state = SPARK_MODEL_RESIDENTD_ROUTE_RESOLVING;

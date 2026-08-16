@@ -755,7 +755,10 @@ SparkStatus SparkModelPipelineClientSubmit(
 		return((SparkStatus)pipeline->failed_status);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(pipeline->adapter_descriptor,&pipeline->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
+	{
+		(void)fprintf(stderr,"GLM52-DBG client validate_submission rc=%d lanes=%u rows=%u active=%u tps=%u work=%u slot=%u\n",(int)status,submission->lane_count,submission->row_count,submission->active_sequence_count,submission->tokens_per_sequence,submission->work_kind,submission->active_sequence_count != 0u ? submission->lanes[0].resident_sequence_slot : 0u);
 		return(status);
+	}
 	if ( submission->submission_id <= pipeline->last_submission_id )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelPipelineClientPreflight(pipeline,&failed_stage_index);
@@ -786,6 +789,7 @@ SparkStatus SparkModelPipelineClientSubmit(
 			pipeline->clients[rank],submission);
 		if ( status != SPARK_STATUS_OK )
 		{
+			(void)fprintf(stderr,"GLM52-DBG client prepare rank=%u rc=%d work=%u\n",rank,(int)status,submission->work_kind);
 			SparkModelPipelineClientRecordFailure(transaction,status);
 			SparkModelPipelineClientSetFailure(pipeline,status,rank);
 			break;

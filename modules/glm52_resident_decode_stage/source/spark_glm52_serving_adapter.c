@@ -192,10 +192,10 @@ static SparkStatus SparkGlm52ServingLoadTpAlgorithms(
 		else
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	/* direct_all_to_all requires exactly 4 ranks (the collective's DA2A
-	 * geometry), so TP8 runs recursive_doubling + counter-rotating split
-	 * ring only. */
-	if ( count != 2u || mask != (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING | SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) )
+	/* The collective implements split-ring and direct-all-to-all only at
+	 * tp_degree 4, so TP8 runs recursive_doubling alone and the two
+	 * algorithm-specific thresholds must be zero. */
+	if ( count != 1u || mask != SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	topology->algorithm_mask = mask;
 	return(SPARK_STATUS_OK);
@@ -434,10 +434,8 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 				"split_ring_min_payload_bytes",
 				&state->tp_collective_topology.split_ring_min_payload_bytes);
 		if ( status == SPARK_STATUS_OK &&
-			(state->tp_collective_topology.direct_all_to_all_max_payload_bytes == 0u ||
-			 state->tp_collective_topology.split_ring_min_payload_bytes == 0u ||
-			 state->tp_collective_topology.direct_all_to_all_max_payload_bytes >=
-				state->tp_collective_topology.split_ring_min_payload_bytes) )
+			(state->tp_collective_topology.direct_all_to_all_max_payload_bytes != 0u ||
+			 state->tp_collective_topology.split_ring_min_payload_bytes != 0u) )
 			status = SPARK_STATUS_SCHEMA_ERROR;
 		if ( status == SPARK_STATUS_OK )
 			status = SparkGlm52ServingLoadTpRailHosts(document,object,
@@ -622,8 +620,9 @@ static void SparkGlm52ServingDriverCompletion(
 		completion.residency = driver_completion->residency;
 	else
 		state->orphan_completion_count++;
-	if ( state->stage_index + 1u == SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT && completion.status == SPARK_STATUS_OK )
+	if ( state->stage_index + 1u == SPARK_GLM52_SERVING_STAGE_COUNT && completion.status == SPARK_STATUS_OK )
 	{
+		(void)fprintf(stderr,"GLM52-DBG completion emit tok=%u pos=%llu work=%u\n",pending->output_token_ids[pending->last_row_by_lane[0]],(unsigned long long)pending->sequence_position,pending->work_kind);
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->active_sequence_count;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
@@ -803,16 +802,15 @@ static SparkStatus SparkGlm52ServingValidateBoundaries(
 	const SparkGlm52ServingState *state,
 	const SparkModelServingSubmission *submission)
 {
-	uint64_t boundary_bytes,sideband_bytes;
-	uint32_t sideband_input,sideband_output;
+	uint64_t boundary_bytes;
 	boundary_bytes = (uint64_t)submission->row_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
-	sideband_bytes = (uint64_t)submission->row_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SIDEBAND_BYTES_PER_ROW;
-	sideband_input = SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index);
-	sideband_output = SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->stage_index);
-	if ( (state->stage_index != 0u && (submission->hidden_input_address == 0 || submission->hidden_input_bytes < boundary_bytes)) || (state->stage_index == 0u && (submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u)) || (state->stage_index + 1u < SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT && (submission->hidden_output_address == 0 || submission->hidden_output_bytes < boundary_bytes)) || (state->stage_index + 1u == SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT && (submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u)) )
+	/* Every TP8 fanout rank runs the full single-stage firmware: it owns the
+	 * embedding and the head, so it accepts no hidden boundaries and no DSA
+	 * sidebands. */
+	if ( submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( (sideband_input != 0u && (submission->boundary_sideband_input_address == 0 || submission->boundary_sideband_input_bytes < sideband_bytes)) || (sideband_input == 0u && (submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u)) || (sideband_output != 0u && (submission->boundary_sideband_output_address == 0 || submission->boundary_sideband_output_bytes < sideband_bytes)) || (sideband_output == 0u && (submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u)) )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	(void)boundary_bytes;
+	(void)state;
 	return(SPARK_STATUS_OK);
 }
 
@@ -851,7 +849,7 @@ static void SparkGlm52ServingBuildFrame(
 	batch->descriptor_bytes = sizeof(*batch);
 	batch->row_count = submission->row_count;
 	batch->active_sequence_count = submission->active_sequence_count;
-	batch->token_ids = state->stage_index == 0u ? submission->token_ids : 0;
+	batch->token_ids = submission->token_ids;
 	batch->row_resident_slots = pending->resident_slots;
 	batch->row_positions = submission->row_positions;
 	batch->row_sequence_ids = submission->row_sequence_ids;
@@ -859,10 +857,6 @@ static void SparkGlm52ServingBuildFrame(
 	context->abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);
 	context->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
-	context->flags |= state->stage_index != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT : 0u;
-	context->flags |= state->stage_index + 1u < SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT : 0u;
-	context->flags |= SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index) != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_INPUT : 0u;
-	context->flags |= SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->stage_index) != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT : 0u;
 	context->batch = batch;
 	context->hidden_input_bf16 = submission->hidden_input_address;
 	context->hidden_input_bytes = submission->hidden_input_bytes;
@@ -873,12 +867,9 @@ static void SparkGlm52ServingBuildFrame(
 	context->sideband_output = submission->boundary_sideband_output_address;
 	context->sideband_output_bytes = submission->boundary_sideband_output_bytes;
 	memset(buffer,0,sizeof(*buffer));
-	if ( state->stage_index + 1u == SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT )
-	{
-		buffer->flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
-		buffer->address = pending->output_token_ids;
-		buffer->bytes = (uint64_t)submission->row_count * sizeof(uint32_t);
-	}
+	buffer->flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
+	buffer->address = pending->output_token_ids;
+	buffer->bytes = (uint64_t)submission->row_count * sizeof(uint32_t);
 	memset(frame,0,sizeof(*frame));
 	frame->request_id = submission->request_id;
 	frame->sequence_id = submission->sequence_id;
@@ -892,8 +883,8 @@ static void SparkGlm52ServingBuildFrame(
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	frame->program_id = state->program->program_id;
 	frame->execution_stream = state->execution_stream;
-	frame->buffers = state->stage_index + 1u == SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT ? buffer : 0;
-	frame->buffer_count = state->stage_index + 1u == SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT ? 1u : 0u;
+	frame->buffers = buffer;
+	frame->buffer_count = 1u;
 	frame->residency = submission->residency;
 	frame->user_context = context;
 	frame->completion_function = SparkGlm52ServingDriverCompletion;
@@ -927,7 +918,10 @@ static SparkStatus SparkGlm52ServingAdmit(
 	if ( SparkModelDriverAdmissionDecisionIsValid(&decision) == 0u )
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( decision.accepted == 0u )
+	{
+		(void)fprintf(stderr,"GLM52-DBG admit reject reason=%u rows=%u active=%u pos=%llu\n",decision.rejection_reason,request.new_token_count,request.active_slot_count,(unsigned long long)request.sequence_position);
 		return(decision.rejection_reason == SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY ? SPARK_STATUS_BUSY : SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	return(SparkModelDriverApplyAdmissionDecision(&decision,frame));
 }
 

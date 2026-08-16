@@ -783,6 +783,7 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 			if ( status != SPARK_STATUS_OK )
 				return(status);
 			token_index = lane * completion->tokens_per_sequence + step;
+			(void)fprintf(stderr,"GLM52-DBG engine accept tok=%u pos=%llu gen=%u\n",completion->token_ids[token_index],(unsigned long long)completion->sequence_position,request->generated_token_count);
 			if ( SparkModelBatchAcceptToken(engine,request,
 				completion->token_ids[token_index]) != SPARK_STATUS_OK )
 				return(SPARK_STATUS_CAPACITY_EXCEEDED);

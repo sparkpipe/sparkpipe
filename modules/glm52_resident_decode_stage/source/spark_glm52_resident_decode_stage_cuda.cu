@@ -147,8 +147,10 @@ static __device__ __forceinline__ float2 SparkGlm52LoadBf16Pair(const void *base
 
 static __device__ __forceinline__ void SparkGlm52StoreBf16Pair(void *base,uint64_t element,float x,float y)
 {
-	uint32_t packed = (__float2uint_rn(x) & UINT32_C(0xffff0000)) |
-		(__float2uint_rn(y) >> 16u);
+	/* Little-endian pair layout: x occupies the LOW 16 bits, y the HIGH,
+	 * matching SparkGlm52LoadBf16Pair. */
+	uint32_t packed = (__float2uint_rn(y) & UINT32_C(0xffff0000)) |
+		(__float2uint_rn(x) >> 16u);
 	((uint32_t *)base)[element] = packed;
 }
 

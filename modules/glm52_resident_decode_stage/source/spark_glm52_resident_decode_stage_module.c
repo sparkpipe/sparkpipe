@@ -964,7 +964,14 @@ static SparkStatus SparkGlm52ModuleCombineBf16(
 	void *cuda_stream)
 {
 	cudaError_t error;
+	uint16_t sample[8] = {0u,0u,0u,0u,0u,0u,0u,0u};
 	(void)combine_context;
+	error = cudaMemcpyAsync(sample,source_device,4u * sizeof(uint16_t),cudaMemcpyDeviceToHost,(cudaStream_t)cuda_stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(sample + 4u,destination_device,4u * sizeof(uint16_t),cudaMemcpyDeviceToHost,(cudaStream_t)cuda_stream);
+	if ( error == cudaSuccess )
+		error = cudaStreamSynchronize((cudaStream_t)cuda_stream);
+	(void)fprintf(stderr,"GLM52-DBG combine src=%u %u %u %u dst=%u %u %u %u width=%u\n",(unsigned)sample[0],(unsigned)sample[1],(unsigned)sample[2],(unsigned)sample[3],(unsigned)sample[4],(unsigned)sample[5],(unsigned)sample[6],(unsigned)sample[7],hidden_dimension);
 	error = SparkGlm52LaunchAccumAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension);
 	return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"tp_all_reduce_sum"));
 }
@@ -1227,6 +1234,12 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
 		}
+		{
+			uint16_t sample[4] = {0u,0u,0u,0u};
+			(void)cudaMemcpyAsync(sample,chain->slot->hidden_bf16,sizeof(sample),cudaMemcpyDeviceToHost,(cudaStream_t)chain->slot->stream);
+			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+			(void)fprintf(stderr,"GLM52-DBG hidden pre-reduce %u %u %u %u\n",(unsigned)sample[0],(unsigned)sample[1],(unsigned)sample[2],(unsigned)sample[3]);
+		}
 		chain->stage = SPARK_GLM52_CHAIN_STAGE_ATTENTION;
 		chain->next_layer = 0u;
 		launch_status = SparkGlm52ModuleReduceHidden(chain);
@@ -1245,6 +1258,12 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm52TpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM52_CHAIN_STAGE_REDUCE_ATTENTION:
+		{
+			uint16_t sample[4] = {0u,0u,0u,0u};
+			(void)cudaMemcpyAsync(sample,chain->slot->hidden_bf16,sizeof(sample),cudaMemcpyDeviceToHost,(cudaStream_t)chain->slot->stream);
+			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+			(void)fprintf(stderr,"GLM52-DBG hidden post-reduce layer=%u %u %u %u %u\n",chain->next_layer,(unsigned)sample[0],(unsigned)sample[1],(unsigned)sample[2],(unsigned)sample[3]);
+		}
 		chain->stage = SPARK_GLM52_CHAIN_STAGE_MLP;
 		SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
@@ -1278,6 +1297,11 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
 		}
+		{
+			uint64_t local_packed = 0u;
+			(void)cudaMemcpy(&local_packed,chain->slot->head_maxloc_u64,sizeof(local_packed),cudaMemcpyDeviceToHost);
+			(void)fprintf(stderr,"GLM52-DBG head local packed=%016llx\n",(unsigned long long)local_packed);
+		}
 		chain->stage = SPARK_GLM52_CHAIN_STAGE_REDUCE_HEAD;
 		launch_status = SparkGlm52ModuleReduceHeadMax(chain);
 		if ( launch_status != SPARK_STATUS_OK )
@@ -1287,6 +1311,12 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		error = SparkGlm52LaunchHeadMaxlocUnpack((cudaStream_t)chain->slot->stream,chain->slot->head_maxloc_u64,chain->slot->output_token,chain->wave_rows);
 		if ( error == cudaSuccess && state->owns_final_head != 0u )
 			error = cudaMemcpyAsync(chain->slot->host_output_token_ids + chain->first_row,chain->slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)chain->slot->stream);
+		if ( error == cudaSuccess && state->owns_final_head != 0u )
+		{
+			uint64_t final_packed = 0u;
+			(void)cudaMemcpy(&final_packed,chain->slot->head_maxloc_u64,sizeof(final_packed),cudaMemcpyDeviceToHost);
+			(void)fprintf(stderr,"GLM52-DBG head final packed=%016llx tok=%u\n",(unsigned long long)final_packed,chain->slot->host_output_token_ids[chain->first_row]);
+		}
 		launch_status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"tp_head_unpack");
 		if ( launch_status != SPARK_STATUS_OK )
 		{
@@ -1563,6 +1593,7 @@ SparkStatus SparkGlm52ResidentDecodeStageAdmit(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	available = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
 	SparkStageModuleAdmissionDecisionInitialize(decision,available);
+	(void)fprintf(stderr,"GLM52-DBG module admit begin available=%u rows=%u active=%u pos=%llu\n",available,request->new_token_count,request->active_slot_count,(unsigned long long)request->sequence_position);
 	if ( request->descriptor_bytes < sizeof(*request) || request->program_id == 0u )
 		return(SPARK_STATUS_ABI_MISMATCH);
 	prefill = (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
