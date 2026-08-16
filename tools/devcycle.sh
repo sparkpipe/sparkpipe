@@ -64,7 +64,7 @@ TEMPLATE_STAGE="$SCRIPT_DIR/devcycle/templates/dsv4_flash_tp4_stage.template.jso
 RELEASE_GIT_COMMIT="da7f91090c0d40729352b4e4180ad231971c90a2"
 RELEASE_GENERATION="20260815000000"
 
-BUILD_HOST="sparkf"
+BUILD_HOST="spark4"
 BUILD_CHECKOUT="/tmp/sparkpipe-devcycle"
 
 # ---------------------------------------------------------------------------
