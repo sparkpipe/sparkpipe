@@ -238,8 +238,20 @@ static __global__ void SparkQwen38AttnPrepareKernel(
     uint32_t attn_layer_ordinal,
     uint64_t cache_layer_stride,
     uint64_t cache_block_stride,
-    float epsilon)
+    float epsilon,
+    uint32_t tp_degree,
+    uint32_t tp_rank)
 {
+    /* Head-parallel geometry: rank r owns query heads
+     * [r*local_heads, (r+1)*local_heads) and the matching local KV head
+     * slice, so each rank's paged cache holds exactly 1/tp_degree of the
+     * KV heads. tp_degree 1 reproduces the replicated layout exactly. */
+    const uint32_t local_heads =
+        SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree;
+    const uint32_t local_kv_heads =
+        SPARK_QWEN38_MODEL_ATTN_KV_HEAD_COUNT / tp_degree;
+    const uint32_t local_token_elements =
+        2u * local_kv_heads * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION;
     __shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
     __shared__ float query_shared[SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION];
     __shared__ float key_shared[SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION];
@@ -263,19 +275,20 @@ static __global__ void SparkQwen38AttnPrepareKernel(
     float inverse_rms;
 
     row = blockIdx.y;
-    head = blockIdx.x;
+    head = (tp_rank * local_heads) + blockIdx.x;
     column = threadIdx.x;
     kv_head = head / SPARK_QWEN38_CUDA_ATTN_GROUP;
     if (row >= row_count ||
-        head >= SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT ||
+        blockIdx.x >= local_heads ||
         column >= SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION)
     {
         return;
     }
 
     query_base =
-        ((uint64_t)row * 2u * SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION) +
-        ((uint64_t)head * 2u * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
+        ((uint64_t)row * 2u * (uint64_t)local_heads *
+            SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION) +
+        ((uint64_t)blockIdx.x * 2u * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
     value = SparkLmBf16ToFloat(q_fused_bf16, query_base + column);
     sum_squares = SparkLmBlockReduceSum(
         value * value,
@@ -318,14 +331,16 @@ static __global__ void SparkQwen38AttnPrepareKernel(
         query_base + column,
         query_shared[column]);
 
-    if ((head % SPARK_QWEN38_CUDA_ATTN_GROUP) != 0u)
+    if ((blockIdx.x % SPARK_QWEN38_CUDA_ATTN_GROUP) != 0u)
     {
         return;
     }
 
     key_base =
-        ((uint64_t)row * SPARK_QWEN38_MODEL_ATTN_KV_DIMENSION) +
-        ((uint64_t)kv_head * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
+        ((uint64_t)row * (uint64_t)local_kv_heads *
+            SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION) +
+        ((uint64_t)(kv_head - (tp_rank * local_kv_heads)) *
+            SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
     value = SparkLmBf16ToFloat(k_bf16, key_base + column);
     sum_squares = SparkLmBlockReduceSum(
         value * value,
@@ -361,15 +376,17 @@ static __global__ void SparkQwen38AttnPrepareKernel(
     cache_base =
         ((uint64_t)block * cache_block_stride) +
         ((uint64_t)attn_layer_ordinal * cache_layer_stride) +
-        ((uint64_t)offset * SPARK_QWEN38_MODEL_ATTN_CACHE_TOKEN_ELEMENTS) +
-        ((uint64_t)kv_head * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
+        ((uint64_t)offset * local_token_elements) +
+        ((uint64_t)(kv_head - (tp_rank * local_kv_heads)) *
+            SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
     SparkLmFloatToBf16(
         kv_cache_bf16,
         cache_base + column,
         key_shared[column]);
     SparkLmFloatToBf16(
         kv_cache_bf16,
-        cache_base + SPARK_QWEN38_MODEL_ATTN_KV_DIMENSION + column,
+        cache_base + ((uint64_t)local_kv_heads *
+            SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION) + column,
         SparkLmBf16ToFloat(v_bf16, key_base + column));
 }
 
@@ -382,10 +399,10 @@ static __global__ void SparkQwen38AttnPrepareKernel(
  * registers. One pass, no per-token barriers, one staged merge at the
  * end where the gate multiplies the normalized output.
  */
-static __device__ __forceinline__ uint64_t SparkQwen38AttnTokenBase(const uint32_t *block_indices, uint64_t lane_base, uint32_t token, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t kv_head)
+static __device__ __forceinline__ uint64_t SparkQwen38AttnTokenBase(const uint32_t *block_indices, uint64_t lane_base, uint32_t token, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t local_kv_head, uint32_t local_token_elements)
 {
 	uint32_t block = __ldg(block_indices + lane_base + (token / SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS));
-	return(((uint64_t)block * cache_block_stride) + ((uint64_t)attn_layer_ordinal * cache_layer_stride) + ((uint64_t)(token % SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) * SPARK_QWEN38_MODEL_ATTN_CACHE_TOKEN_ELEMENTS) + ((uint64_t)kv_head * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION));
+	return(((uint64_t)block * cache_block_stride) + ((uint64_t)attn_layer_ordinal * cache_layer_stride) + ((uint64_t)(token % SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) * local_token_elements) + ((uint64_t)local_kv_head * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION));
 }
 
 // Cross-warp merge with the fused sigmoid gate applied at the store.
@@ -395,8 +412,17 @@ static __device__ __forceinline__ uint64_t SparkQwen38AttnTokenBase(const uint32
 // query, warp-reduce, fixed 1/sqrt(128) scale.
 
 
-static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, const void *kv_cache_bf16, const uint32_t *block_indices, const uint32_t *block_counts, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t lane_stride, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride)
+static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, const void *kv_cache_bf16, const uint32_t *block_indices, const uint32_t *block_counts, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t lane_stride, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank)
 {
+    /* Head-parallel geometry, mirroring the prepare kernel: local query
+     * heads per rank and the rank's local KV head slice; tp_degree 1 is
+     * the replicated layout. */
+    const uint32_t local_heads =
+        SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree;
+    const uint32_t local_kv_heads =
+        SPARK_QWEN38_MODEL_ATTN_KV_HEAD_COUNT / tp_degree;
+    const uint32_t local_token_elements =
+        2u * local_kv_heads * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION;
     const uint32_t heads_per_cta = SPARK_QWEN38_CUDA_ATTN_HEADS_PER_CTA;
     __shared__ float q_shared[
         SPARK_QWEN38_CUDA_ATTN_HEADS_PER_CTA *
@@ -452,13 +478,12 @@ static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, con
             0u,
         "grouped attention CTAs must not cross KV-head ownership");
     row = blockIdx.y;
-    head_base = blockIdx.x * heads_per_cta;
+    head_base = (tp_rank * local_heads) + (blockIdx.x * heads_per_cta);
     kv_head = head_base / SPARK_QWEN38_CUDA_ATTN_GROUP;
     warp = threadIdx.x / SPARK_LM_WARP_LANES;
     lane = threadIdx.x % SPARK_LM_WARP_LANES;
     if (row >= row_count ||
-        head_base + heads_per_cta >
-            SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT)
+        ((blockIdx.x + 1u) * heads_per_cta) > local_heads)
     {
         return;
     }
@@ -482,8 +507,9 @@ static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, con
             local_head = element / SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION;
             partial = element % SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION;
             out_base =
-                ((uint64_t)row * SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION) +
-                ((uint64_t)(head_base + local_head) *
+                ((uint64_t)row * (uint64_t)local_heads *
+                    SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION) +
+                ((uint64_t)((blockIdx.x * heads_per_cta) + local_head) *
                     SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
             SparkLmFloatToBf16(
                 head_out_bf16,
@@ -497,8 +523,10 @@ static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, con
     {
         head = head_base + local_head;
         q_base =
-            ((uint64_t)row * 2u * SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION) +
-            ((uint64_t)head * 2u * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
+            ((uint64_t)row * 2u * (uint64_t)local_heads *
+                SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION) +
+            ((uint64_t)((blockIdx.x * heads_per_cta) + local_head) *
+                2u * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
         for (element = threadIdx.x;
              element < SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION;
              element += blockDim.x)
@@ -539,7 +567,8 @@ static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, con
             attn_layer_ordinal,
             cache_layer_stride,
             cache_block_stride,
-            kv_head);
+            kv_head - (tp_rank * local_kv_heads),
+            local_token_elements);
         #pragma unroll
         for (local_head = 0u; local_head < heads_per_cta; ++local_head)
         {
@@ -622,7 +651,8 @@ static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, con
         {
             value_pair = SparkLmLoadBf16Pair(
                 kv_cache_bf16,
-                ((token_base + SPARK_QWEN38_MODEL_ATTN_KV_DIMENSION) >> 1u) +
+                ((token_base + ((uint64_t)local_kv_heads *
+                    SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION)) >> 1u) +
                     (pair * SPARK_LM_WARP_LANES) + lane);
             #pragma unroll
             for (local_head = 0u;
@@ -704,11 +734,15 @@ static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, con
     {
         head = head_base + local_head;
         q_base =
-            ((uint64_t)row * 2u * SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION) +
-            ((uint64_t)head * 2u * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
+            ((uint64_t)row * 2u * (uint64_t)local_heads *
+                SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION) +
+            ((uint64_t)((blockIdx.x * heads_per_cta) + local_head) *
+                2u * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
         out_base =
-            ((uint64_t)row * SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION) +
-            ((uint64_t)head * SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
+            ((uint64_t)row * (uint64_t)local_heads *
+                SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION) +
+            ((uint64_t)((blockIdx.x * heads_per_cta) + local_head) *
+                SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION);
         for (element = threadIdx.x;
              element < SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION;
              element += blockDim.x)
@@ -1208,17 +1242,21 @@ extern "C" cudaError_t SparkQwen38LaunchGatedNorm(cudaStream_t stream, const voi
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen38LaunchAttnPrepare(cudaStream_t stream, void *q_fused_bf16, const void *k_bf16, const void *v_bf16, const SparkQwen38AttnLayerWeights *weights, void *kv_cache_bf16, const uint32_t *slot_mapping, const uint64_t *row_positions, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, float epsilon)
+extern "C" cudaError_t SparkQwen38LaunchAttnPrepare(cudaStream_t stream, void *q_fused_bf16, const void *k_bf16, const void *v_bf16, const SparkQwen38AttnLayerWeights *weights, void *kv_cache_bf16, const uint32_t *slot_mapping, const uint64_t *row_positions, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, float epsilon, uint32_t tp_degree, uint32_t tp_rank)
 {
-	dim3 grid(SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT,row_count,1u);
-	SparkQwen38AttnPrepareKernel<<<grid,SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION,0,stream>>>(q_fused_bf16,k_bf16,v_bf16,weights->query_norm_weight_bf16,weights->key_norm_weight_bf16,kv_cache_bf16,slot_mapping,row_positions,row_count,attn_layer_ordinal,cache_layer_stride,cache_block_stride,epsilon);
+	if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || (SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MODEL_ATTN_KV_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MODEL_ATTN_KV_HEAD_COUNT / tp_degree) == 0u )
+		return(cudaErrorInvalidValue);
+	dim3 grid(SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree,row_count,1u);
+	SparkQwen38AttnPrepareKernel<<<grid,SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION,0,stream>>>(q_fused_bf16,k_bf16,v_bf16,weights->query_norm_weight_bf16,weights->key_norm_weight_bf16,kv_cache_bf16,slot_mapping,row_positions,row_count,attn_layer_ordinal,cache_layer_stride,cache_block_stride,epsilon,tp_degree,tp_rank);
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen38LaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen38KvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride)
+extern "C" cudaError_t SparkQwen38LaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen38KvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank)
 {
+    if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || (SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MODEL_ATTN_KV_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MODEL_ATTN_KV_HEAD_COUNT / tp_degree) == 0u )
+        return(cudaErrorInvalidValue);
     dim3 grid(
-        SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT /
+        (SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree) /
             SPARK_QWEN38_CUDA_ATTN_HEADS_PER_CTA,
         row_count,
         1u);
@@ -1242,7 +1280,9 @@ extern "C" cudaError_t SparkQwen38LaunchAttnDecode(cudaStream_t stream, const vo
         table->lane_stride,
         attn_layer_ordinal,
         cache_layer_stride,
-        cache_block_stride);
+        cache_block_stride,
+        tp_degree,
+        tp_rank);
     return cudaGetLastError();
 }
 
