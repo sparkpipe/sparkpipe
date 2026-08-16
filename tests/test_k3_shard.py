@@ -81,7 +81,7 @@ def main():
         # decay|gate bottleneck among them
         for name in ("model.norm.weight", "model.layers.0.attn_norm_weight",
                      "model.layers.1.mla_kv_a_weight",
-                     "model.layers.0.router_weight",
+                     "model.layers.1.router_weight",
                      "model.layers.0.kda_decay_down_weight"):
             a, b = both(name)
             if not (a == b == full(name)):
@@ -90,7 +90,7 @@ def main():
         # output rows concatenate: vocab shard and a head-block shard
         for name in ("model.embed_tokens.weight",
                      "model.layers.1.mla_q_up_weight",
-                     "model.layers.0.routed_down_weight"):
+                     "model.layers.1.routed_down_weight"):
             if b"".join(both(name)) != full(name):
                 print(f"  FAIL {name}: output shards do not reassemble")
                 failures += 1
@@ -122,13 +122,13 @@ def main():
         # input columns interleave: the all-reduce-closed projections
         for name, rows in (("model.layers.0.kda_out_weight", cfg["hidden"]),
                            ("model.layers.1.mla_out_weight", cfg["hidden"]),
-                           ("model.layers.0.routed_up_weight", cfg["hidden"]),
-                           ("model.layers.0.shared_w2_weight", cfg["hidden"])):
+                           ("model.layers.1.routed_up_weight", cfg["hidden"]),
+                           ("model.layers.1.shared_w2_weight", cfg["hidden"])):
             if join_cols(both(name), rows) != full(name):
                 print(f"  FAIL {name}: input shards do not reassemble")
                 failures += 1
         # concatenated gate|up: per half, and per expert for w1
-        name = "model.layers.0.shared_w1_weight"
+        name = "model.layers.1.shared_w1_weight"
         a, b = both(name)
         half = len(a) // 2
         rebuilt = a[:half] + b[:half] + a[half:] + b[half:]
@@ -138,7 +138,7 @@ def main():
         # interleaved expert w1: per (expert, k-tile) the rank carries its
         # gate cell range then its up cell range; the full tensor's tile is
         # all gate cells then all up cells, ranks in order
-        name = "model.layers.0.expert_w1_weight"
+        name = "model.layers.1.expert_w1_weight"
         geom = full_manifest["tensors"][name]["interleave"]
         cells, k_tiles = geom["cells"], geom["k_tiles"]
         chunk = (cells // 2 // 2) * geom["cell_rows"] * geom["row_bytes"]
@@ -167,7 +167,7 @@ def main():
             failures += 1
         # interleaved expert w2: whole 128-element k-tiles, a contiguous row
         # range per expert per rank
-        name = "model.layers.0.expert_w2_weight"
+        name = "model.layers.1.expert_w2_weight"
         geom = full_manifest["tensors"][name]["interleave"]
         a, b = both(name)
         rank_expert = len(a) // experts
@@ -189,7 +189,7 @@ def main():
         # interleave forces (TP<=8 for K3's 24 tiles, TP16 excluded)
         slicer = k3_shard.Slicer(pack, {}, 4, 0)
         try:
-            slicer.route("model.layers.0.expert_w2_weight")
+            slicer.route("model.layers.1.expert_w2_weight")
             print("  FAIL a k-tile-indivisible degree sliced w2 silently")
             failures += 1
         except k3_shard.ShardFailure as failure:
