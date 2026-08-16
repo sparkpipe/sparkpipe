@@ -75,5 +75,10 @@ SPARKPIPE_DSV4_SOURCES := \
     model-families/dsv4/src/spark_dsv4_cache_plan.c \
     model-families/dsv4/src/spark_dsv4_cache_arena.c
 
+SPARKPIPE_K3_SOURCES := \
+    modules/k3_resident_decode_stage/source/spark_k3_pack_load.c \
+    modules/k3_resident_decode_stage/source/spark_k3_bind.c \
+    modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c
+
 SPARKPIPE_DEPLOYMENT_SOURCES := \
     deployment/src/spark_release.c

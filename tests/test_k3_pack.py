@@ -42,12 +42,17 @@ def bf16(shape):
 
 
 def write_safetensors(path, tensors):
+    # The released Kimi-K3 checkpoint prefixes every tensor with
+    # "language_model.", and the packer's source names follow it; the
+    # fixture's own dict stays unprefixed (its keys are the test's manifest
+    # names), so the written header carries the prefix.
     header, offset = {}, 0
     blobs = []
     for name, (dtype, array) in tensors.items():
         raw = array.tobytes()
-        header[name] = {"dtype": dtype, "shape": list(array.shape),
-                        "data_offsets": [offset, offset + len(raw)]}
+        header["language_model." + name] = {
+            "dtype": dtype, "shape": list(array.shape),
+            "data_offsets": [offset, offset + len(raw)]}
         blobs.append(raw)
         offset += len(raw)
     encoded = json.dumps(header, separators=(",", ":")).encode()
@@ -84,7 +89,7 @@ def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=128, inter=
     t["model.output_attn_res_proj.weight"] = ("BF16", bf16((1, hidden)))
     for layer, kind in enumerate(config["layer_types"]):
         p = f"model.layers.{layer}."
-        a, m = p + "self_attn.", p + "mlp."
+        a = p + "self_attn."
         t[p + "input_layernorm.weight"] = ("BF16", bf16((hidden,)))
         t[p + "post_attention_layernorm.weight"] = ("BF16", bf16((hidden,)))
         for res in ("self_attention_res", "mlp_res"):
@@ -102,8 +107,9 @@ def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=128, inter=
                 t[a + "dt_bias"] = ("BF16", bf16((kda_dim,)))
             t[a + "A_log"] = ("F32", rng.standard_normal(128).astype(np.float32))
             t[a + "b_proj.weight"] = ("BF16", bf16((kda_heads, hidden)))
-            t[a + "g_a_proj.weight"] = ("BF16", bf16((kda_head, hidden)))
-            t[a + "g_b_proj.weight"] = ("BF16", bf16((kda_dim, kda_head)))
+            # released checkpoint (full_rank_output_gate): the gate is the
+            # full-rank g_proj; the old low-rank g_a/g_b pair does not exist
+            t[a + "g_proj.weight"] = ("BF16", bf16((kda_dim, hidden)))
             t[a + "o_norm.weight"] = (
                 "F32", rng.standard_normal(kda_head).astype(np.float32))
             t[a + "o_proj.weight"] = ("BF16", bf16((hidden, kda_dim)))
@@ -114,9 +120,18 @@ def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=128, inter=
             t[a + "kv_a_proj_with_mqa.weight"] = ("BF16", bf16((kv_lora + rope, hidden)))
             t[a + "kv_a_layernorm.weight"] = ("BF16", bf16((kv_lora,)))
             t[a + "kv_b_proj.weight"] = ("BF16", bf16((heads * (nope + v_head), kv_lora)))
-            t[a + "g_a_proj.weight"] = ("BF16", bf16((v_head, hidden)))
-            t[a + "g_b_proj.weight"] = ("BF16", bf16((heads * v_head, v_head)))
+            # released checkpoint (full_rank_output_gate): full-rank g_proj
+            t[a + "g_proj.weight"] = ("BF16", bf16((heads * v_head, hidden)))
             t[a + "o_proj.weight"] = ("BF16", bf16((hidden, heads * v_head)))
+        if layer == 0:
+            # the dense replacement layer: one full-width MLP under the
+            # mlp.gate_proj naming, no router, no experts
+            dense_inter = 256
+            t[p + "mlp.gate_proj.weight"] = ("BF16", bf16((dense_inter, hidden)))
+            t[p + "mlp.up_proj.weight"] = ("BF16", bf16((dense_inter, hidden)))
+            t[p + "mlp.down_proj.weight"] = ("BF16", bf16((hidden, dense_inter)))
+            continue
+        m = p + "block_sparse_moe."
         t[m + "gate.weight"] = ("BF16", bf16((experts, hidden)))
         t[m + "gate.e_score_correction_bias"] = (
             "F32", rng.standard_normal(experts).astype(np.float32))
@@ -197,35 +212,50 @@ def main():
                 "output_dim_heads":
             print("  FAIL fused q|k|v|beta section table or shard class")
             failures += 1
-        want = src[a + "f_a_proj.weight"][1].tobytes() + \
-            src[a + "g_a_proj.weight"][1].tobytes()
-        if tensor(p + "kda_decay_gate_down_weight") != want:
-            print("  FAIL fused decay|gate down is not the sections concatenated")
+        # released checkpoint (full_rank_output_gate): decay_down is the
+        # standalone 128-wide replicated bottleneck - no gate fusion
+        want = src[a + "f_a_proj.weight"][1].tobytes()
+        if tensor(p + "kda_decay_down_weight") != want:
+            print("  FAIL decay_down is not the checkpoint's f_a_proj")
             failures += 1
-        for gone in ("kda_q_weight", "kda_beta_weight", "kda_decay_down_weight",
+        for gone in ("kda_q_weight", "kda_beta_weight",
+                     "kda_decay_gate_down_weight",
                      "expert_w1_scale", "expert_w2_scale"):
             if p + gone in entries:
                 print(f"  FAIL {gone} must not exist in V2")
                 failures += 1
-        # the expert stream: payload and scales interleaved per the reference
-        # grid, gate first then up, experts-major
+        # the dense layer's MLP: gate|up concatenated gate-first, down whole
+        dense_inter = 256
+        want = src["model.layers.0.mlp.gate_proj.weight"][1].tobytes() + \
+            src["model.layers.0.mlp.up_proj.weight"][1].tobytes()
+        if tensor("model.layers.0.dense_gate_up_weight") != want:
+            print("  FAIL dense gate|up is not gate-first concatenated")
+            failures += 1
+        if tensor("model.layers.0.dense_down_weight") != \
+                src["model.layers.0.mlp.down_proj.weight"][1].tobytes():
+            print("  FAIL dense down is not bit-preserved")
+            failures += 1
+        # the expert stream (layer 1, a routed layer): payload and scales
+        # interleaved per the reference grid, gate first then up,
+        # experts-major
         latent, inter, experts = 128, 128, 4
+        p1, m1 = "model.layers.1.", "model.layers.1.block_sparse_moe."
         pay = np.stack([np.concatenate(
-            [src[f"{p}mlp.experts.{e}.w1.weight"][1],
-             src[f"{p}mlp.experts.{e}.w3.weight"][1]]) for e in range(experts)])
+            [src[f"{m1}experts.{e}.w1.weight"][1],
+             src[f"{m1}experts.{e}.w3.weight"][1]]) for e in range(experts)])
         sc = np.stack([np.concatenate(
-            [src[f"{p}mlp.experts.{e}.w1.weight_scale"][1],
-             src[f"{p}mlp.experts.{e}.w3.weight_scale"][1]]) for e in range(experts)])
+            [src[f"{m1}experts.{e}.w1.weight_scale"][1],
+             src[f"{m1}experts.{e}.w3.weight_scale"][1]]) for e in range(experts)])
         want = interleave_reference(pay, sc, experts, 2 * inter, latent)
-        if tensor(p + "expert_w1_weight") != want:
+        if tensor(p1 + "expert_w1_weight") != want:
             print("  FAIL expert w1 is not the interleaved gate-first stream")
             failures += 1
-        pay = np.stack([src[f"{p}mlp.experts.{e}.w2.weight"][1]
+        pay = np.stack([src[f"{m1}experts.{e}.w2.weight"][1]
                         for e in range(experts)])
-        sc = np.stack([src[f"{p}mlp.experts.{e}.w2.weight_scale"][1]
+        sc = np.stack([src[f"{m1}experts.{e}.w2.weight_scale"][1]
                        for e in range(experts)])
         want = interleave_reference(pay, sc, experts, latent, inter)
-        if tensor(p + "expert_w2_weight") != want:
+        if tensor(p1 + "expert_w2_weight") != want:
             print("  FAIL expert w2 is not the interleaved stream")
             failures += 1
         for packed, source in (

@@ -156,6 +156,7 @@ DSV4_PRO_TP4_PP4_B1_SERVING_ADAPTER := build/libdsv4_pro_tp4_pp4_b1_serving_adap
 DSV4_PRO_TP4_PP4_SERVING_TOPOLOGY_FLAGS := -DSPARK_DSV4_SERVING_TOPOLOGY=404 -DSPARK_DSV4_PRO_BUILD=1
 DSV4_PRO_TP4_PP4_B1_SERVING_TOPOLOGY_FLAGS := $(DSV4_PRO_TP4_PP4_SERVING_TOPOLOGY_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=1u
 QWEN36_SERVING_ADAPTER := build/libqwen36_serving_adapter.$(SHARED_LIBRARY_EXT)
+K3_SERVING_ADAPTER := build/libk3_serving_adapter.$(SHARED_LIBRARY_EXT)
 QWEN36_MODEL_DESCRIPTION := examples/model_descriptions/qwen36_resident_decode_stage_firmware.json
 QWEN36_MODEL_REVISION ?= bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1
 QWEN36_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN36_MODEL_DESCRIPTION)"; else shasum -a 256 "$(QWEN36_MODEL_DESCRIPTION)"; fi | awk '{print $$1}')
@@ -377,7 +378,7 @@ TEST_VALIDATOR_CHANGED := build/test_module_validator_identity_changed
 
 # Model CUDA modules are immutable artifacts selected by an explicit model
 # package. Host builds never guess a codec or silently skip a CUDA artifact.
-all: $(LIBRARIES) tools $(DSV4_SERVING_ADAPTER) $(DSV4_TP4_B1_SERVING_ADAPTER) $(DSV4_TP4_PP4_SERVING_ADAPTER) $(DSV4_TP4_PP4_B1_SERVING_ADAPTER) $(QWEN36_SERVING_ADAPTER)
+all: $(LIBRARIES) tools $(DSV4_SERVING_ADAPTER) $(DSV4_TP4_B1_SERVING_ADAPTER) $(DSV4_TP4_PP4_SERVING_ADAPTER) $(DSV4_TP4_PP4_B1_SERVING_ADAPTER) $(QWEN36_SERVING_ADAPTER) $(K3_SERVING_ADAPTER)
 
 tools: $(TOOL_BINARIES) $(DSV4_SERVING_ADAPTER) $(DSV4_TP4_PP4_SERVING_ADAPTER) $(QWEN36_SERVING_ADAPTER)
 
@@ -741,6 +742,11 @@ build/test_dsv4_tp4_pp4_serving_adapter: tests/test_dsv4_tp4_pp4_serving_adapter
 
 build/test_qwen36_serving_adapter: tests/test_qwen36_serving_adapter.c tests/fixtures/qwen36_serving_adapter_config.json tests/fixtures/qwen36_serving_adapter_config_stale.json tests/fixtures/qwen36_serving_adapter_config_absolute.json tests/fixtures/qwen36_serving_adapter_config_overrun.json $(QWEN36_SERVING_ADAPTER) $(TEST_QWEN36_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include -DTEST_QWEN36_SERVING_ADAPTER_PATH=\"$(QWEN36_SERVING_ADAPTER)\" -DTEST_QWEN36_SERVING_DRIVER_PATH=\"$(TEST_QWEN36_SERVING_DRIVER_MODULE)\" -DTEST_QWEN36_SERVING_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config.json\" -DTEST_QWEN36_SERVING_STALE_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_stale.json\" -DTEST_QWEN36_SERVING_ABSOLUTE_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_absolute.json\" -DTEST_QWEN36_SERVING_OVERRUN_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_overrun.json\" $(CFLAGS) tests/test_qwen36_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+# The K3 adapter links the CUDA serving TUs (runner, dispatch, driver) with
+# nvcc, so the rule is the single-spark gate's link line plus the shared libs.
+$(K3_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c ring/transport/tp_collective.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_model_resident_end_to_end: tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c build/sparkpipe_model_residentd $(DSV4_SERVING_ADAPTER) $(TEST_DSV4_SERVING_DRIVER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_DSV4_SERVING_ADAPTER_PATH=\"$(DSV4_SERVING_ADAPTER)\" -DTEST_DSV4_SERVING_DRIVER_PATH=\"$(TEST_DSV4_SERVING_DRIVER_MODULE)\" -DTEST_DSV4_SERVING_CONFIG_PATH=\"tests/fixtures/dsv4_serving_adapter_config.json\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

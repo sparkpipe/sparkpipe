@@ -51,11 +51,17 @@
 
 // Bytes the launcher must request and pass. Constexpr so a host can compute it
 // without a device query and so it cannot drift from what the kernel carves.
-template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES>
+template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, bool INTERLEAVED_B = false>
 static __host__ __device__ constexpr uint32_t LmGemmSharedBytes(void)
 {
+	// Interleaved B stages the cell grid: per pack k-tile, TILE_N/16 cells of
+	// 17 rows x (TILE_K/2) bytes (16 payload rows + one scale row: 64-byte
+	// rows at TILE_K 128, 16-byte rows at TILE_K 32).
+	constexpr uint32_t b_bytes = INTERLEAVED_B
+		? (17u * (TILE_N / 16u) * (TILE_K / 2u))
+		: LmTileBytes(TILE_N,TILE_K,FormatB::kStoredBits);
 	return((STAGES * LmTileBytes(TILE_M,TILE_K,FormatA::kStoredBits))
-		+ (STAGES * LmTileBytes(TILE_N,TILE_K,FormatB::kStoredBits))
+		+ (STAGES * b_bytes)
 		+ (STAGES * 8u));
 }
 
@@ -128,7 +134,7 @@ struct LmGemmArguments
 // happen anyway - (v - bias) * scale becomes one fma against a precomputed
 // -bias*scale. Formats already in a real numeric form skip it. Both branches are
 // on a compile-time constant, so only one exists in any instantiation.
-template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARPS>
+template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARPS, bool INTERLEAVED_B = false>
 static __device__ void LmGemmConsume(
     float (*total)[4],
     const uint8_t *stage_a,
@@ -158,7 +164,12 @@ static __device__ void LmGemmConsume(
     const uint32_t m_frags = TILE_M / FormatA::kMmaM;
     const uint32_t n_frags = TILE_N / WARPS / FormatA::kMmaN;
     const uint32_t pitch_a = LmTileBytes(1u, TILE_K, FormatA::kStoredBits);
-    const uint32_t pitch_b = LmTileBytes(1u, TILE_K, FormatB::kStoredBits);
+    // Interleaved B stages (TILE_K/2)-byte cell rows: payload rows at
+    // (c*17 + r) * pitch_b, the cell's scale row at (c*17 + 16) * pitch_b.
+    // The plain path keeps the [neuron, k] plane pitch.
+    const uint32_t pitch_b = INTERLEAVED_B
+        ? (TILE_K / 2u)
+        : LmTileBytes(1u, TILE_K, FormatB::kStoredBits);
     const uint32_t steps = TILE_K / FormatA::kMmaK;
     uint32_t step, mi, ni, neuron, k_base, reg;
     uint32_t a[4], b[2];
@@ -186,12 +197,33 @@ static __device__ void LmGemmConsume(
                     0u,
                     scale_row,
                     global_k_base + local_k);
-                a[reg] = FormatA::Fragment(
-                    stage_a,
-                    local_row,
-                    local_k,
-                    pitch_a,
-                    scale);
+                if constexpr ( INTERLEAVED_B && TILE_K == 128u )
+                {
+                    // The two-block A stage: block 0 holds k 0..63 of every
+                    // row, block 1 (TILE_M * 128 bytes in) k 64..127. The
+                    // per-row swizzle selector is r % 8 in both blocks
+                    // because block 1 begins TILE_M sectors in and TILE_M is
+                    // a multiple of 8 - the same selector LmSwizzledOffset
+                    // derives from pitch 128. Pairs never cross the block
+                    // boundary: the mma's A k values are even, and 64 is a
+                    // block start. TILE_K 32 rows are single 64-byte blocks
+                    // and take the ordinary path below.
+                    a[reg] = FormatA::Fragment(
+                        stage_a + ((local_k >= 64u) ? (TILE_M * 128u) : 0u),
+                        local_row,
+                        local_k & 63u,
+                        128u,
+                        scale);
+                }
+                else
+                {
+                    a[reg] = FormatA::Fragment(
+                        stage_a,
+                        local_row,
+                        local_k,
+                        pitch_a,
+                        scale);
+                }
             }
             for (ni = 0u; ni < n_frags; ++ni)
             {
@@ -203,17 +235,57 @@ static __device__ void LmGemmConsume(
                         neuron + FormatB::OperandBRow(lane);
                     const uint32_t local_k =
                         k_base + FormatB::OperandBK(lane, reg);
-                    const float scale = LmScaleTensorLoad(
-                        &scale_b,
-                        group_index,
-                        neuron_base + local_row,
-                        global_k_base + local_k);
-                    b[reg] = FormatB::Fragment(
-                        stage_b,
-                        local_row,
-                        local_k,
-                        pitch_b,
-                        scale);
+                    if constexpr ( INTERLEAVED_B )
+                    {
+                        // THE INTERLEAVED SCALE IS THE STAGED CELL ROW, NOT A
+                        // FAR PLANE. The 64-byte scale row holds sixteen
+                        // 4-byte E8M0 scales (one per 32-element group of the
+                        // 128-element pack k-tile), so the scale for neuron n
+                        // at k group g is byte n*4 + g of row c*17 + 16 - read
+                        // THROUGH THE SAME 64B-SWIZZLE XOR every other staged
+                        // access uses (the TMA permutes the staged row; a
+                        // linear byte index reads the wrong neuron's scale).
+                        const uint32_t cell = local_row / 16u;
+                        const uint32_t r16 = local_row % 16u;
+                        // The 64-byte scale row holds sixteen 4-byte E8M0
+                        // scales: byte r16*4 + g where g is the 32-element
+                        // group WITHIN THIS 128-element k tile - local_k
+                        // already carries k_base, so the group is local_k/32,
+                        // and adding k_base again strides past the row for
+                        // the k tile's second half (the bug this comment
+                        // documents: steps 4..7 read neuron r16+1's scales
+                        // and neuron 15 read the next row's payload).
+                        // TILE_K 128: four 32-element groups, read through
+                        // the 64B-swizzle XOR. TILE_K 32: one group, linear
+                        // (the map carries SWIZZLE_NONE).
+                        const uint32_t scale_byte = (TILE_K == 128u)
+                            ? LmSwizzledOffset((cell * 17u) + 16u,
+                                (r16 * 4u) + (local_k / 32u),
+                                pitch_b, 64u)
+                            : ((cell * 17u) + 16u) * pitch_b + r16;
+                        const float scale = FormatB::ScaleDecode(
+                            stage_b[scale_byte]);
+                        b[reg] = FormatB::Fragment(
+                            stage_b,
+                            (cell * 17u) + r16,
+                            local_k,
+                            pitch_b,
+                            scale);
+                    }
+                    else
+                    {
+                        const float scale = LmScaleTensorLoad(
+                            &scale_b,
+                            group_index,
+                            neuron_base + local_row,
+                            global_k_base + local_k);
+                        b[reg] = FormatB::Fragment(
+                            stage_b,
+                            local_row,
+                            local_k,
+                            pitch_b,
+                            scale);
+                    }
                 }
                 LmMmaBf16(total[(mi * n_frags) + ni], a, b);
             }
@@ -276,7 +348,7 @@ static __device__ __forceinline__ void LmGemmZero(float (*acc)[4], uint32_t coun
 // is the full input width in FormatA storage: it addresses the UN-gathered
 // tensor, whose rows are input_dimension wide, not the TILE_K-wide box the TMA
 // descriptor paces out.
-template<class FormatA, uint32_t TILE_M, uint32_t TILE_K, bool INDIRECT_A, uint32_t ACTIVATION_CODEC>
+template<class FormatA, uint32_t TILE_M, uint32_t TILE_K, bool INDIRECT_A, uint32_t ACTIVATION_CODEC, bool INTERLEAVED_B = false>
 static __device__ __forceinline__ void LmGemmProduce(
     const LmGemmArguments &args,
     const LmTileGeometry *geometry_a,
@@ -295,6 +367,8 @@ static __device__ __forceinline__ void LmGemmProduce(
 {
     if constexpr ( ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE )
     {
+        static_assert(!INTERLEAVED_B,
+            "the activation codec and interleaved B do not combine");
         LmPipelineProduceManualA<FormatA,TILE_M,TILE_K,ACTIVATION_CODEC>(
             geometry_a,geometry_b,tensor_map_b,
             (const uint8_t *)args.activation_bytes,args.source_row_map,
@@ -305,17 +379,19 @@ static __device__ __forceinline__ void LmGemmProduce(
     }
     if constexpr ( INDIRECT_A )
     {
-        LmPipelineProduceIndirectA<FormatA>(
+        LmPipelineProduceIndirectA<FormatA,TILE_K,INTERLEAVED_B>(
             geometry_a,geometry_b,tensor_map_b,
             (const uint8_t *)args.activation_bytes,args.source_row_map,
             args.source_row_count,args.input_dimension,
             stage_a,stage_b,barrier,row_base,row_limit,
-            neuron_base,k_tile,group,grouped);
+            neuron_base,k_tile,group,grouped,
+            args.output_dimension / 16u);
         return;
     }
-    LmPipelineProduce(
+    LmPipelineProduce<TILE_K>(
         geometry_a,geometry_b,tensor_map_a,tensor_map_b,
-        stage_a,stage_b,barrier,row_base,neuron_base,k_tile,group,grouped);
+        stage_a,stage_b,barrier,row_base,neuron_base,k_tile,group,grouped,
+        INTERLEAVED_B,args.output_dimension / 16u);
 }
 
 // The persistent grid walks tiles strided by gridDim, so it is sized to the
@@ -327,7 +403,7 @@ static __device__ __forceinline__ void LmGemmProduce(
 //
 // Not static: a model's unity.cu names this in an explicit instantiation, and
 // explicit instantiation of an internal symbol is ill-formed.
-template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uint32_t WARPS, bool INDIRECT_A = false, uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE>
+template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uint32_t WARPS, bool INDIRECT_A = false, uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE, bool INTERLEAVED_B = false>
 __global__ __launch_bounds__(WARPS * LM_WARP_LANES, 1)
 void LmGemmKernel(
     __grid_constant__ const LmGemmArguments args,
@@ -341,8 +417,21 @@ void LmGemmKernel(
         LmTileKIsTmaLoadable(TILE_K,FormatA::kStoredBits,FormatA::kTmaSwizzle),
         "the activation row pitch is not TMA-loadable");
     static_assert(
-        LmTileKIsTmaLoadable(TILE_K,FormatB::kStoredBits,FormatB::kTmaSwizzle),
+        !INTERLEAVED_B || LmTileKIsTmaLoadable(TILE_K / 2u,8u,TILE_K == 128u),
+        "the interleaved cell row is not TMA-loadable");
+    static_assert(
+        INTERLEAVED_B || LmTileKIsTmaLoadable(TILE_K,FormatB::kStoredBits,FormatB::kTmaSwizzle),
         "the weight row pitch is not TMA-loadable");
+    // THE INTERLEAVED PATH LINES UP WITH THE PACK GRID BY CONSTRUCTION: the
+    // pack's k-tile is TILE_K elements (TILE_K/2 payload bytes + scale bytes
+    // per cell row), so a GEMM k step must cover exactly one pack k-tile and
+    // the tile must be a whole number of 16-neuron cells.
+    static_assert(!INTERLEAVED_B || TILE_K == 128u || TILE_K == 32u,
+        "interleaved B stages one pack k-tile (128 or 32 elements) per box");
+    static_assert(!INTERLEAVED_B || (TILE_N % 16u) == 0u,
+        "interleaved B tiles a whole number of 16-neuron cells");
+    static_assert(!INTERLEAVED_B || (TILE_M % 8u) == 0u,
+        "the two-block A stage needs TILE_M sectors-aligned rows");
     static_assert(
         LmPipelineSharedBytesSplit(
             TILE_M,
@@ -371,16 +460,18 @@ void LmGemmKernel(
     extern __shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t lm_shared[];
     const uint32_t a_bytes =
         LmTileBytes(TILE_M, TILE_K, FormatA::kStoredBits);
-    const uint32_t b_bytes =
-        LmTileBytes(TILE_N, TILE_K, FormatB::kStoredBits);
+    // Interleaved B stages the 17-row cell grid (17 * TILE_N/16 rows of
+    // TILE_K/2 bytes per pack k-tile); the plain path keeps the [neuron, k]
+    // plane.
+    constexpr uint32_t b_stride = INTERLEAVED_B
+        ? (17u * (TILE_N / 16u) * (TILE_K / 2u))
+        : LmTileBytes(TILE_N, TILE_K, FormatB::kStoredBits);
     uint8_t (*stage_a)[LmTileBytes(TILE_M, TILE_K, FormatA::kStoredBits)] =
         (uint8_t (*)[LmTileBytes(TILE_M, TILE_K, FormatA::kStoredBits)])
             lm_shared;
-    uint8_t (*stage_b)[LmTileBytes(TILE_N, TILE_K, FormatB::kStoredBits)] =
-        (uint8_t (*)[LmTileBytes(TILE_N, TILE_K, FormatB::kStoredBits)])
-            (lm_shared + (STAGES * a_bytes));
+    uint8_t *stage_b_base = lm_shared + (STAGES * a_bytes);
     uint64_t *barrier =
-        (uint64_t *)(lm_shared + (STAGES * (a_bytes + b_bytes)));
+        (uint64_t *)(lm_shared + (STAGES * (a_bytes + b_stride)));
     const uint32_t count =
         (TILE_M / FormatA::kMmaM) *
         (TILE_N / WARPS / FormatA::kMmaN);
@@ -430,14 +521,14 @@ void LmGemmKernel(
              stage + 1u < STAGES && stage < k_tiles;
              ++stage)
         {
-            LmGemmProduce<FormatA,TILE_M,TILE_K,INDIRECT_A,ACTIVATION_CODEC>(
+            LmGemmProduce<FormatA,TILE_M,TILE_K,INDIRECT_A,ACTIVATION_CODEC,INTERLEAVED_B>(
                 args,
                 &geometry_a,
                 &geometry_b,
                 &tensor_map_a,
                 &tensor_map_b,
                 stage_a[stage],
-                stage_b[stage],
+                stage_b_base + (stage * b_stride),
                 &barrier[stage],
                 row_base,
                 row_limit,
@@ -452,14 +543,14 @@ void LmGemmKernel(
             ahead = LmPipelineAhead(k, STAGES);
             if (ahead < k_tiles)
             {
-                LmGemmProduce<FormatA,TILE_M,TILE_K,INDIRECT_A,ACTIVATION_CODEC>(
+                LmGemmProduce<FormatA,TILE_M,TILE_K,INDIRECT_A,ACTIVATION_CODEC,INTERLEAVED_B>(
                     args,
                     &geometry_a,
                     &geometry_b,
                     &tensor_map_a,
                     &tensor_map_b,
                     stage_a[ahead % STAGES],
-                    stage_b[ahead % STAGES],
+                    stage_b_base + ((ahead % STAGES) * b_stride),
                     &barrier[ahead % STAGES],
                     row_base,
                     row_limit,
@@ -480,10 +571,11 @@ void LmGemmKernel(
                 TILE_M,
                 TILE_N,
                 TILE_K,
-                WARPS>(
+                WARPS,
+                INTERLEAVED_B>(
                     total,
                     stage_a[stage],
-                    stage_b[stage],
+                    stage_b_base + (stage * b_stride),
                     args.scale_a,
                     args.scale_b,
                     args.source_row_map,

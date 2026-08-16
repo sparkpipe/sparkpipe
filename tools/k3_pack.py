@@ -68,6 +68,7 @@ does not divide - each is a PackFailure naming what and where.
 """
 import json
 import math
+import os
 import struct
 import sys
 from pathlib import Path
@@ -464,12 +465,36 @@ def q_fold_absorb(q_b_raw, kv_b_raw, heads, nope, rope, v_head, kv_lora,
 # -- the pack itself ------------------------------------------------------------
 
 class Pack:
-    def __init__(self, out_path):
-        self.handle = open(out_path, "wb")
+    """Sequential payload writer with a side journal: every entry is appended
+    to <out>.journal only AFTER its bytes are on disk, so a killed run can
+    resume by re-walking the journal, truncating to the last complete tensor,
+    and skipping already-emitted tensors (the emission order is deterministic,
+    so re-generated entries and offsets are byte-identical)."""
+    def __init__(self, out_path, resume=False):
+        self.journal_path = str(out_path) + ".journal"
         self.manifest = {}
         self.offset = 0
+        if resume and os.path.exists(self.journal_path):
+            with open(self.journal_path, "r", encoding="utf-8") as journal:
+                for line in journal:
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    name = record["name"]
+                    self.manifest[name] = record["entry"]
+                    self.offset = record["end"]
+            self.handle = open(out_path, "r+b")
+            self.handle.truncate(self.offset)
+            self.handle.seek(0, 2)
+        else:
+            self.handle = open(out_path, "wb")
+            with open(self.journal_path, "w", encoding="utf-8"):
+                pass
+        self.journal = open(self.journal_path, "a", encoding="utf-8")
 
     def add(self, name, payload, kind, shape, extra=None):
+        if name in self.manifest:
+            return
         pad = (-self.offset) % ALIGN
         if pad:
             self.handle.write(b"\0" * pad)
@@ -482,6 +507,15 @@ class Pack:
         self.manifest[name] = entry
         self.handle.write(raw)
         self.offset += len(raw)
+        self.journal.write(json.dumps({"name": name, "entry": entry,
+                                       "end": self.offset},
+                                      separators=(",", ":")) + "\n")
+        self.journal.flush()
+
+    def close(self):
+        self.journal.close()
+        self.handle.close()
+        os.unlink(self.journal_path)
 
 
 def validate_layout(manifest, config):
@@ -526,13 +560,30 @@ def validate_layout(manifest, config):
                                   f"section bases cannot stay {ALIGN}B-aligned")
 
 
-def pack_model(model_dir, out_path):
+def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
+                expert_tile_k=TILE_K):
     reader = SafetensorDir(model_dir)
     config = json.loads((Path(model_dir) / "config.json").read_text())
+    # The Kimi-K3 checkpoint nests the model config under text_config.
+    if isinstance(config.get("text_config"), dict):
+        config = config["text_config"]
     hidden = config["hidden_size"]
     layers = config["num_hidden_layers"]
+    if layer_count is None:
+        layer_count = layers
+    if first_layer + layer_count > layers or first_layer < 0 or layer_count <= 0:
+        raise PackFailure(f"invalid slice {first_layer}+{layer_count} of {layers}")
     experts = config["num_experts"]
-    top_k = config["num_experts_per_tok"]
+    # The .get default evaluates eagerly, so the fallback chain must be
+    # stepped WITHOUT a default: the released checkpoint names the key
+    # num_experts_per_token, the mini fixtures num_experts_per_tok, and a
+    # config carrying neither fails loudly here.
+    top_k = config.get("num_experts_per_tok")
+    if top_k is None:
+        top_k = config.get("num_experts_per_token")
+    if top_k is None:
+        raise PackFailure("config carries neither num_experts_per_tok nor "
+                          "num_experts_per_token")
     latent = config["routed_expert_hidden_size"]
     inter = config["moe_intermediate_size"]
     shared = config.get("num_shared_experts", 1) * inter
@@ -549,44 +600,67 @@ def pack_model(model_dir, out_path):
     kda_dim = kda_heads * kda_head
     kernel = config["linear_attn_config"]["short_conv_kernel_size"] \
         if "linear_attn_config" in config else 4
-    types = config["layer_types"]
+    if "layer_types" in config:
+        types = config["layer_types"]
+    else:
+        # Kimi-K3 names the layer map inside linear_attn_config as two
+        # one-indexed lists; everything else defaults to the 3:1 period.
+        lac = config.get("linear_attn_config", {})
+        types = ["full_attention"] * layers
+        for i in lac.get("kda_layers", []):
+            if 1 <= i <= layers:
+                types[i - 1] = "linear_attention"
     if len(types) != layers:
         raise PackFailure("layer_types does not cover num_hidden_layers")
     # The interleave grid prices both expert GEMMs up front; a checkpoint the
-    # grid does not divide fails before a byte is written.
-    w1_geom = interleave_geometry(2 * inter, latent, experts)
-    w2_geom = interleave_geometry(latent, inter, experts)
+    # grid does not divide fails before a byte is written. The tile_k choice
+    # is the shard granularity: 128 admits TP 1/2/4/8 on the experts, 32
+    # admits TP16 (224 = 7 x 32 for the w1 k, 192 = 6 x 32 for the w2 k).
+    w1_geom = interleave_geometry(2 * inter, latent, experts,
+                                  tile_k=expert_tile_k)
+    w2_geom = interleave_geometry(latent, inter, experts,
+                                  tile_k=expert_tile_k)
 
     payload_path = Path(str(out_path) + ".payload")
-    pack = Pack(payload_path)
+    pack = Pack(payload_path, resume=payload_path.exists())
     L = "model.layers.{}."
+    SL = "language_model.model.layers.{}."
 
     def bf(dst, src, shape=None):
+        if dst in pack.manifest:
+            return
         pack.add(dst, reader.bf16(src, shape), KIND_BF16,
                  shape if shape is not None else [0])
 
     # model level, in consumption order: the embedding first, the closing
-    # norm, output retrieval and head last.
-    bf("model.embed_tokens.weight", "model.embed_tokens.weight",
-       (config["vocab_size"], hidden))
+    # norm, output retrieval and head last. The embedding rides stage zero
+    # only; the closing globals ride the last stage only.
+    if first_layer == 0:
+        bf("model.embed_tokens.weight", "language_model.model.embed_tokens.weight",
+           (config["vocab_size"], hidden))
 
-    for layer in range(layers):
+    for layer in range(first_layer, first_layer + layer_count):
         p = L.format(layer)
+        sp = SL.format(layer)
         linear = types[layer] == "linear_attention"
-        bf(p + "attn_norm_weight", p + "input_layernorm.weight", (hidden,))
-        g = reader.bf16(p + "self_attention_res_norm.weight", (hidden,))
-        w = reader.bf16(p + "self_attention_res_proj.weight", (1, hidden))
+        bf(p + "attn_norm_weight", sp + "input_layernorm.weight", (hidden,))
+        g = reader.bf16(sp + "self_attention_res_norm.weight", (hidden,))
+        w = reader.bf16(sp + "self_attention_res_proj.weight", (1, hidden))
         pack.add(p + "attnres_attn_weight", gamma_fold_bf16(w, g, hidden),
                  KIND_BF16, [1, hidden])
         if linear:
-            a = p + "self_attn."
+            a = sp + "self_attn."
             # THE FUSED WIDE TENSOR, OUTPUT_DIM_HEADS CLASS. q|k|v|beta as
             # one [sum_out, hidden] BF16 tensor: one GEMM over normed_bf16
             # replaces four launches, and the section table in the manifest
             # is the split contract.
-            sections, rows = kda_fused_qkvb_sections(kda_heads, kda_head,
-                                                     kda_head)
-            fused = b"".join((
+            if p + "kda_qkv_beta_weight" in pack.manifest:
+                fused = b""
+                sections, rows = [], 0
+            else:
+                sections, rows = kda_fused_qkvb_sections(kda_heads, kda_head,
+                                                         kda_head)
+                fused = b"".join((
                 reader.bf16(a + "q_proj.weight", (kda_dim, hidden)),
                 reader.bf16(a + "k_proj.weight", (kda_dim, hidden)),
                 reader.bf16(a + "v_proj.weight", (kda_dim, hidden)),
@@ -599,17 +673,15 @@ def pack_model(model_dir, out_path):
                                  (kda_dim, 1, kernel))
                 pack.add(p + f"kda_{conv}_conv_weight", raw, KIND_F32,
                          [kda_dim, kernel])
-            # THE FUSED REPLICATED TENSOR. decay_down and gate_down are the
-            # low-rank bottlenecks the TP table replicates; fusing them keeps
-            # the second wide GEMM to one launch without mixing shard classes
-            # into kda_qkv_beta_weight.
-            sections, rows = kda_fused_decay_gate_down_sections(kda_head)
-            fused = b"".join((
-                reader.bf16(a + "f_a_proj.weight", (kda_head, hidden)),
-                reader.bf16(a + "g_a_proj.weight", (kda_head, hidden))))
-            pack.add(p + "kda_decay_gate_down_weight", fused, KIND_BF16,
-                     [rows, hidden], {"sections": sections,
-                                      "shard_class": "replicated"})
+            # RELEASED CHECKPOINT (full_rank_output_gate): decay_down is the
+            # standalone 128-wide replicated bottleneck and the gate is the
+            # checkpoint's full-rank g_proj, unchanged. The old low-rank
+            # g_a/g_b pair and the decay|gate fusion do not exist in this
+            # checkpoint (docs/K3_GATE_RECONCILIATION.md).
+            pack.add(p + "kda_decay_down_weight",
+                     reader.bf16(a + "f_a_proj.weight", (kda_head, hidden)),
+                     KIND_BF16, [kda_head, hidden],
+                     {"shard_class": "replicated"})
             bf(p + "kda_decay_up_weight", a + "f_b_proj.weight",
                (kda_dim, kda_head))
             pack.add(p + "kda_decay_bias", reader.f32(a + "dt_bias", (kda_dim,)),
@@ -617,14 +689,16 @@ def pack_model(model_dir, out_path):
             head_log_scale = reader.f32(a + "A_log", (A_LOG_SOURCE_HEADS,))
             pack.add(p + "kda_head_log_scale", head_log_scale[:kda_heads * 4],
                      KIND_F32, [kda_heads])
-            bf(p + "kda_gate_up_weight", a + "g_b_proj.weight",
-               (kda_dim, kda_head))
+            pack.add(p + "kda_gate_weight",
+                     reader.bf16(a + "g_proj.weight", (kda_dim, hidden)),
+                     KIND_BF16, [kda_dim, hidden],
+                     {"shard_class": "output_dim_heads"})
             pack.add(p + "kda_out_norm_weight",
                      reader.f32(a + "o_norm.weight", (kda_head,)),
                      KIND_F32, [kda_head])
             bf(p + "kda_out_weight", a + "o_proj.weight", (hidden, kda_dim))
         else:
-            a = p + "self_attn."
+            a = sp + "self_attn."
             bf(p + "mla_q_down_weight", a + "q_a_proj.weight", (q_lora, hidden))
             bf(p + "mla_q_norm_weight", a + "q_a_layernorm.weight", (q_lora,))
             bf(p + "mla_kv_a_weight", a + "kv_a_proj_with_mqa.weight",
@@ -640,24 +714,28 @@ def pack_model(model_dir, out_path):
                      [heads * (kv_lora + rope), q_lora])
             pack.add(p + "mla_kv_b_value_weight", value, KIND_BF16,
                      [heads * v_head, kv_lora])
-            bf(p + "mla_gate_down_weight", a + "g_a_proj.weight", (v_head, hidden))
-            bf(p + "mla_gate_up_weight", a + "g_b_proj.weight",
-               (heads * v_head, v_head))
+            pack.add(p + "mla_gate_weight",
+                     reader.bf16(a + "g_proj.weight", (heads * v_head, hidden)),
+                     KIND_BF16, [heads * v_head, hidden],
+                     {"shard_class": "output_dim_heads"})
             bf(p + "mla_out_weight", a + "o_proj.weight", (hidden, heads * v_head))
-        bf(p + "mlp_norm_weight", p + "post_attention_layernorm.weight", (hidden,))
-        g = reader.bf16(p + "mlp_res_norm.weight", (hidden,))
-        w = reader.bf16(p + "mlp_res_proj.weight", (1, hidden))
+        bf(p + "mlp_norm_weight", sp + "post_attention_layernorm.weight", (hidden,))
+        g = reader.bf16(sp + "mlp_res_norm.weight", (hidden,))
+        w = reader.bf16(sp + "mlp_res_proj.weight", (1, hidden))
         pack.add(p + "attnres_mlp_weight", gamma_fold_bf16(w, g, hidden),
                  KIND_BF16, [1, hidden])
-        m = p + "mlp."
+        # Routed layers ship their MoE under block_sparse_moe; the dense
+        # replacement layer keeps the mlp.gate_proj naming.
+        dense_m = sp + "mlp."
+        m = sp + "block_sparse_moe."
         if m + "gate.weight" not in reader.names():
             # the dense layer: one MLP, no router, no experts
-            w1 = reader.bf16(m + "gate_proj.weight")
-            w3 = reader.bf16(m + "up_proj.weight")
+            w1 = reader.bf16(dense_m + "gate_proj.weight")
+            w3 = reader.bf16(dense_m + "up_proj.weight")
             dense_inter = len(w1) // (hidden * 2)
             pack.add(p + "dense_gate_up_weight", w1 + w3, KIND_BF16,
                      [2 * dense_inter, hidden])
-            down = reader.bf16(m + "down_proj.weight")
+            down = reader.bf16(dense_m + "down_proj.weight")
             pack.add(p + "dense_down_weight", down, KIND_BF16,
                      [hidden, len(down) // (hidden * 2)])
             continue
@@ -673,7 +751,8 @@ def pack_model(model_dir, out_path):
         # concat, w2 = down) but there is no separate scale plane to bind,
         # shard or prefetch. Geometry was validated before the layer loop.
         w1_pay, w1_sc, w2_pay, w2_sc = [], [], [], []
-        for e in range(experts):
+        experts_done = p + "expert_w1_weight" in pack.manifest
+        for e in range(0 if experts_done else experts):
             base = m + f"experts.{e}."
             g_name, g_scale = quant_pair(reader, base + "w1")
             u_name, u_scale = quant_pair(reader, base + "w3")
@@ -690,14 +769,16 @@ def pack_model(model_dir, out_path):
             w1_sc.append(gs + us)
             w2_pay.append(d)
             w2_sc.append(ds)
-        pack.add(p + "expert_w1_weight",
-                 interleave(b"".join(w1_pay), b"".join(w1_sc), w1_geom),
-                 KIND_MXFP4_INTERLEAVED, [experts, 2 * inter, latent],
-                 {"interleave": w1_geom, "shard_class": "concat_output"})
-        pack.add(p + "expert_w2_weight",
-                 interleave(b"".join(w2_pay), b"".join(w2_sc), w2_geom),
-                 KIND_MXFP4_INTERLEAVED, [experts, latent, inter],
-                 {"interleave": w2_geom, "shard_class": "input_dim"})
+        if p + "expert_w1_weight" not in pack.manifest:
+            pack.add(p + "expert_w1_weight",
+                     interleave(b"".join(w1_pay), b"".join(w1_sc), w1_geom),
+                     KIND_MXFP4_INTERLEAVED, [experts, 2 * inter, latent],
+                     {"interleave": w1_geom, "shard_class": "concat_output"})
+        if p + "expert_w2_weight" not in pack.manifest:
+            pack.add(p + "expert_w2_weight",
+                     interleave(b"".join(w2_pay), b"".join(w2_sc), w2_geom),
+                     KIND_MXFP4_INTERLEAVED, [experts, latent, inter],
+                     {"interleave": w2_geom, "shard_class": "input_dim"})
         s1 = reader.bf16(m + "shared_experts.gate_proj.weight", (shared, hidden))
         s3 = reader.bf16(m + "shared_experts.up_proj.weight", (shared, hidden))
         pack.add(p + "shared_w1_weight", s1 + s3, KIND_BF16, [2 * shared, hidden])
@@ -709,18 +790,19 @@ def pack_model(model_dir, out_path):
            (hidden, latent))
         bf(p + "routed_norm_weight", m + "routed_expert_norm.weight", (latent,))
 
-    bf("model.norm.weight", "model.norm.weight", (hidden,))
-    gamma = reader.bf16("model.output_attn_res_norm.weight", (hidden,))
-    proj = reader.bf16("model.output_attn_res_proj.weight", (1, hidden))
-    pack.add("model.attnres_out_weight", gamma_fold_bf16(proj, gamma, hidden),
-             KIND_BF16, [1, hidden])
-    bf("lm_head.weight", "lm_head.weight", (config["vocab_size"], hidden))
+    if first_layer + layer_count == layers:
+        bf("model.norm.weight", "language_model.model.norm.weight", (hidden,))
+        gamma = reader.bf16("language_model.model.output_attn_res_norm.weight", (hidden,))
+        proj = reader.bf16("language_model.model.output_attn_res_proj.weight", (1, hidden))
+        pack.add("model.attnres_out_weight", gamma_fold_bf16(proj, gamma, hidden),
+                 KIND_BF16, [1, hidden])
+        bf("lm_head.weight", "language_model.lm_head.weight", (config["vocab_size"], hidden))
 
     validate_layout(pack.manifest, {"hidden": hidden})
 
-    pack.handle.flush()
-    pack.handle.close()
-    echo = {"hidden": hidden, "layers": layers, "experts": experts,
+    pack.close()
+    echo = {"hidden": hidden, "layers": layer_count, "first_layer": first_layer,
+            "total_layers": layers, "experts": experts,
             "top_k": top_k, "latent": latent, "intermediate": inter,
             "group": GROUP, "vocab": config["vocab_size"],
             "kda_heads": kda_heads, "kda_head": kda_head, "heads": heads,
@@ -755,11 +837,20 @@ def pack_model(model_dir, out_path):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("usage: k3_pack.py <checkpoint_dir> <out.pack>")
+    if len(sys.argv) not in (3, 5, 6):
+        print("usage: k3_pack.py <checkpoint_dir> <out.pack> "
+              "[first_layer layer_count [expert_tile_k]]")
         return 2
     try:
-        echo, manifest = pack_model(sys.argv[1], sys.argv[2])
+        if len(sys.argv) == 6:
+            echo, manifest = pack_model(sys.argv[1], sys.argv[2],
+                                        int(sys.argv[3]), int(sys.argv[4]),
+                                        int(sys.argv[5]))
+        elif len(sys.argv) == 5:
+            echo, manifest = pack_model(sys.argv[1], sys.argv[2],
+                                        int(sys.argv[3]), int(sys.argv[4]))
+        else:
+            echo, manifest = pack_model(sys.argv[1], sys.argv[2])
     except PackFailure as failure:
         print(f"PACK FAILURE: {failure}")
         return 1

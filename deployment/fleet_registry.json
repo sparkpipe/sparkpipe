@@ -120,11 +120,11 @@
       "runtime_root": "/home/{host}/sparkdata/k3.mxfp4.tp4pp4",
       "pack_dir": "/home/{host}/sparkdata/k3.mxfp4.tp4pp4/packs",
       "control_port_base": 21480,
-      "collective_port_base": 65620,
+      "collective_port_base": 61620,
       "transport_control_base": 62700,
-      "owner": "k3 session - verify everything",
-      "status": "placeholder",
-      "notes": "K3 is the heaviest model. Swapping it in evicts every other model including the always-on tier (scope=fleet). Its own swap-out restores the previous fleet state from the saved snapshot."
+      "owner": "k3 session (tp4xpp4)",
+      "status": "packs-deployed",
+      "notes": "16 TP4 rank packs sha256-verified on all sparks at pack_dir 2026-08-15. Kernels + runner + serving adapter gated on sm_121a; single-spark decode gate passes bit-deterministic. Live run awaits the ring reservation."
     },
     "qwen38max": {
       "tier": "big",

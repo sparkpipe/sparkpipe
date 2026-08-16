@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdio>
 #include "inference/kernels/gemm.cuh"
 #include "runtime/gemm_descriptor_cache.h"
 #include "runtime/launch.h"
@@ -48,7 +49,8 @@ template<
 	uint32_t STAGES,
 	uint32_t WARPS,
 	bool INDIRECT_A = false,
-	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE>
+	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE,
+	bool INTERLEAVED_B = false>
 static cudaError_t LmGemmOptIn(uint32_t shared_bytes)
 {
     static std::mutex grant_mutex;
@@ -78,7 +80,8 @@ static cudaError_t LmGemmOptIn(uint32_t shared_bytes)
 				STAGES,
 				WARPS,
 					INDIRECT_A,
-					ACTIVATION_CODEC>,
+					ACTIVATION_CODEC,
+					INTERLEAVED_B>,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)shared_bytes);
         if (status == cudaSuccess)
@@ -96,7 +99,8 @@ template<
 	uint32_t STAGES,
 	uint32_t WARPS,
 	bool INDIRECT_A = false,
-	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE>
+	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE,
+	bool INTERLEAVED_B = false>
 static cudaError_t LmGemmLaunchTile(
     const LmGemmArguments &args,
     const CUtensorMap &activation_map,
@@ -113,7 +117,8 @@ static cudaError_t LmGemmLaunchTile(
         TILE_M,
         TILE_N,
         TILE_K,
-        STAGES>();
+        STAGES,
+        INTERLEAVED_B>();
     cudaError_t status;
 
     static_assert(
@@ -128,7 +133,8 @@ static cudaError_t LmGemmLaunchTile(
 			STAGES,
 			WARPS,
 			INDIRECT_A,
-			ACTIVATION_CODEC>(shared);
+			ACTIVATION_CODEC,
+			INTERLEAVED_B>(shared);
     if (status != cudaSuccess)
         return status;
     LmGemmKernel<
@@ -140,7 +146,8 @@ static cudaError_t LmGemmLaunchTile(
 		STAGES,
 		WARPS,
 			INDIRECT_A,
-			ACTIVATION_CODEC>
+			ACTIVATION_CODEC,
+			INTERLEAVED_B>
         <<<plan.grid_blocks, plan.block_threads, shared, stream>>>(
             args,
             activation_map,
@@ -200,6 +207,43 @@ static int32_t LmGemmEncodeWeightMap(
     return LmGemmTensorMapCached(weight, &request);
 }
 
+// INTERLEAVED WEIGHT MAP - pack V2 mxfp4_ws_interleaved_v1 (K3). The B
+// operand is the 17-row cell grid, described as a rank-3 UINT8 byte tensor:
+// 64-byte rows, rows_per_expert = k_tiles * cells * 17 rows per expert, one
+// group per expert, box [64 bytes, 17 * (TILE_N/16) rows, 1], 64B swizzle.
+// The packer's interleave grid (tools/k3_pack.py) asserts this closes with
+// zero padding, and the kernel's produce coordinate
+// (k_tile * cells + neuron_base/16) * 17 is this layout's row index. The
+// 128-element pack k-tile is the grid's k unit, so the launcher passes
+// TILE_K == 128 for these operands.
+static int32_t LmGemmEncodeWeightMapInterleaved(
+    CUtensorMap *weight,
+    const void *weight_bytes,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t group_count,
+    uint32_t tile_n,
+    uint32_t tile_k)
+{
+    LmTensorMapRequest request;
+    const uint32_t k_tiles = input_dimension / tile_k;
+    const uint32_t cells = output_dimension / 16u;
+    // 128-element tiles stage 64-byte cell rows (64B swizzle); 32-element
+    // tiles stage 16-byte rows, which LmTensorMapBoxSwizzleBytes maps to
+    // SWIZZLE_NONE.
+    const uint32_t cell_row_bytes = tile_k / 2u;
+
+    memset(&request, 0, sizeof(request));
+    request.global_address = weight_bytes;
+    request.rows = (uint64_t)k_tiles * cells * 17u;
+    request.columns = cell_row_bytes;
+    request.groups = group_count;
+    request.box_rows = 17u * (tile_n / 16u);
+    request.box_columns = cell_row_bytes;
+    request.element_bits = 8u;
+    return LmGemmTensorMapCached(weight, &request);
+}
+
 template<
     class FormatA,
     class FormatB,
@@ -208,7 +252,8 @@ template<
 	uint32_t STAGES,
 	uint32_t WARPS,
 	bool INDIRECT_A = false,
-	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE>
+	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE,
+	bool INTERLEAVED_B = false>
 static int32_t LmGemmLaunchAsymmetric(
     LmGemmArguments *args,
     const void *activation_bytes,
@@ -251,6 +296,15 @@ static int32_t LmGemmLaunchAsymmetric(
 	}
 	else if ( args->source_row_map != 0 || args->source_row_count != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
+	if constexpr ( INTERLEAVED_B )
+	{
+		// The interleaved grid's k unit is the pack k-tile (128 or 32
+		// elements), and its cell is 16 neurons; a launch on any other shape
+		// would stage partial cells and misaddress every scale row.
+		if ( (TILE_K != 128u && TILE_K != 32u) || (TILE_N % 16u) != 0u ||
+			(input_dimension % TILE_K) != 0u || (output_dimension % 16u) != 0u )
+			return(LM_LAUNCH_ERR_SHAPE);
+	}
     if (grouped)
     {
         uint64_t expected_packed_rows = (uint64_t)tokens * top_k;
@@ -268,10 +322,14 @@ static int32_t LmGemmLaunchAsymmetric(
     }
     if ((args->output_bf16 == 0) == (args->output_f32 == 0))
     {
+        fprintf(stderr, "sparkpipe_gemm: output plane unset in=%u out=%u\n",
+            input_dimension, output_dimension);
         return LM_LAUNCH_ERR_OUTPUT;
     }
     if (args->output_f32 != 0 && args->accumulate_bf16 != 0)
     {
+        fprintf(stderr, "sparkpipe_gemm: f32 output with bf16 accumulate in=%u out=%u\n",
+            input_dimension, output_dimension);
         return LM_LAUNCH_ERR_OUTPUT;
     }
     if (args->output_row_stride == 0u)
@@ -282,6 +340,9 @@ static int32_t LmGemmLaunchAsymmetric(
         output_dimension >
             args->output_row_stride - args->output_column_offset)
     {
+        fprintf(stderr, "sparkpipe_gemm: output slice out=%u offset=%u stride=%u in=%u\n",
+            output_dimension, args->output_column_offset,
+            args->output_row_stride, input_dimension);
         return LM_LAUNCH_ERR_OUTPUT;
     }
     status = LmGemmValidateScaleTensor<FormatA>(
@@ -293,14 +354,20 @@ static int32_t LmGemmLaunchAsymmetric(
     {
         return status;
     }
-    status = LmGemmValidateScaleTensor<FormatB>(
-        &args->scale_b,
-        group_count,
-        output_dimension,
-        input_dimension);
-    if (status != LM_LAUNCH_OK)
+    if constexpr ( !INTERLEAVED_B )
     {
-        return status;
+        // Interleaved B carries its scales IN the staged cell row, so no
+        // LmScaleTensor describes them - the far-plane validation applies
+        // only to the plain path, where a hole would decode wrong scales.
+        status = LmGemmValidateScaleTensor<FormatB>(
+            &args->scale_b,
+            group_count,
+            output_dimension,
+            input_dimension);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
     }
     if ((input_dimension % TILE_K) != 0u)
     {
@@ -321,6 +388,7 @@ static int32_t LmGemmLaunchAsymmetric(
     shape.tile_n = TILE_N;
     shape.tile_k = TILE_K;
     shape.stages = STAGES;
+    shape.interleaved_b = INTERLEAVED_B ? 1u : 0u;
     status = LmLaunchPlanBuild(&shape, multiprocessors, &plan);
     if (status != LM_LAUNCH_OK)
         return status;
@@ -328,28 +396,47 @@ static int32_t LmGemmLaunchAsymmetric(
     memset(&activation_map, 0, sizeof(activation_map));
 	if constexpr ( !INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE )
     {
+        // A TILE_K=128 BF16 row is 256 bytes, wider than any hardware
+        // swizzle: the interleaved direct path stages it as TWO 128-byte
+        // boxes (produce), so the map's box is half a row.
         status = LmGemmEncodeActivationMap(
             &activation_map,
             activation_bytes,
             packed_rows,
             input_dimension,
             plan.tile_m,
-            TILE_K,
+            (INTERLEAVED_B && TILE_K == 128u) ? (TILE_K / 2u) : TILE_K,
             FormatA::kStoredBits);
         if (status != LM_TM_ENCODE_OK)
             return LM_LAUNCH_ERR_MAP;
     }
-    status = LmGemmEncodeWeightMap(
-        &weight_map,
-        weight_bytes,
-        input_dimension,
-        output_dimension,
-        group_count,
-        TILE_N,
-        TILE_K,
-        FormatB::kStoredBits);
-    if (status != LM_TM_ENCODE_OK)
-        return LM_LAUNCH_ERR_MAP;
+    if constexpr ( INTERLEAVED_B )
+    {
+        status = LmGemmEncodeWeightMapInterleaved(
+            &weight_map,
+            weight_bytes,
+            input_dimension,
+            output_dimension,
+            group_count,
+            TILE_N,
+            TILE_K);
+        if (status != LM_TM_ENCODE_OK)
+            return LM_LAUNCH_ERR_MAP;
+    }
+    else
+    {
+        status = LmGemmEncodeWeightMap(
+            &weight_map,
+            weight_bytes,
+            input_dimension,
+            output_dimension,
+            group_count,
+            TILE_N,
+            TILE_K,
+            FormatB::kStoredBits);
+        if (status != LM_TM_ENCODE_OK)
+            return LM_LAUNCH_ERR_MAP;
+    }
 
     args->group_count = group_count;
     args->input_dimension = input_dimension;
@@ -372,9 +459,20 @@ static int32_t LmGemmLaunchAsymmetric(
     activation_geometry.rows = plan.tile_m;
     activation_geometry.depth = TILE_K;
     activation_geometry.element_bits = FormatA::kStoredBits;
-    weight_geometry.rows = TILE_N;
-    weight_geometry.depth = TILE_K;
-    weight_geometry.element_bits = FormatB::kStoredBits;
+    if constexpr ( INTERLEAVED_B )
+    {
+        // The staged B geometry IS the cell grid: 17 rows per 16 neurons,
+        // each row TILE_K/2 bytes of UINT8 (64 at TILE_K 128, 16 at 32).
+        weight_geometry.rows = 17u * (TILE_N / 16u);
+        weight_geometry.depth = TILE_K / 2u;
+        weight_geometry.element_bits = 8u;
+    }
+    else
+    {
+        weight_geometry.rows = TILE_N;
+        weight_geometry.depth = TILE_K;
+        weight_geometry.element_bits = FormatB::kStoredBits;
+    }
 
     switch (plan.tile_m)
     {
@@ -388,7 +486,8 @@ static int32_t LmGemmLaunchAsymmetric(
 					STAGES,
 					WARPS,
 					INDIRECT_A,
-					ACTIVATION_CODEC>(
+					ACTIVATION_CODEC,
+					INTERLEAVED_B>(
                     *args,
                     activation_map,
                     weight_map,
@@ -409,7 +508,8 @@ static int32_t LmGemmLaunchAsymmetric(
 					STAGES,
 					WARPS,
 					INDIRECT_A,
-					ACTIVATION_CODEC>(
+					ACTIVATION_CODEC,
+					INTERLEAVED_B>(
                     *args,
                     activation_map,
                     weight_map,
@@ -430,7 +530,8 @@ static int32_t LmGemmLaunchAsymmetric(
 					STAGES,
 					WARPS,
 					INDIRECT_A,
-					ACTIVATION_CODEC>(
+					ACTIVATION_CODEC,
+					INTERLEAVED_B>(
                     *args,
                     activation_map,
                     weight_map,
@@ -544,6 +645,66 @@ static int32_t LmGemmWeightOnlyIndirectLaunch(
 	cudaStream_t stream)
 {
 	return(LmGemmWeightOnlyLaunchMode<WeightFormat,TILE_N,STAGES,WARPS,true,ACTIVATION_CODEC>(
+		args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,group_count,
+		input_dimension,output_dimension,multiprocessors,true,stream));
+}
+
+// INTERLEAVED B LAUNCHERS (K3 pack V2 mxfp4_ws_interleaved_v1). TILE_K is
+// forced to the pack grid's 128-element k-tile - one staged box per k step,
+// scales riding the cell row - so these never pass through
+// LmGemmWeightOnlyLaunchMode's tile_k selection. The indirect variant is the
+// w1 path (un-gathered latent through the route map); the direct variant is
+// the w2 path, whose already-packed SiTU output stages as two 128-byte TMA
+// boxes per row (a 256-byte BF16 row has no single hardware swizzle).
+template<
+	class WeightFormat,
+	uint32_t TILE_N,
+	uint32_t STAGES,
+	uint32_t WARPS,
+	uint32_t TILE_K = 128u>
+static int32_t LmGemmWeightOnlyInterleavedLaunch(
+	LmGemmArguments *args,
+	const void *activation_bf16,
+	const void *weight_bytes,
+	uint32_t packed_rows,
+	uint32_t tokens,
+	uint32_t top_k,
+	uint32_t group_count,
+	uint32_t input_dimension,
+	uint32_t output_dimension,
+	uint32_t multiprocessors,
+	bool grouped,
+	cudaStream_t stream)
+{
+	return(LmGemmLaunchAsymmetric<
+		LmBf16Format,WeightFormat,TILE_N,TILE_K,STAGES,WARPS,
+		false,SPARK_ACTIVATION_CODEC_NONE,true>(
+		args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,group_count,
+		input_dimension,output_dimension,multiprocessors,grouped,stream));
+}
+
+template<
+	class WeightFormat,
+	uint32_t TILE_N,
+	uint32_t STAGES,
+	uint32_t WARPS,
+	uint32_t TILE_K = 128u>
+static int32_t LmGemmWeightOnlyIndirectInterleavedLaunch(
+	LmGemmArguments *args,
+	const void *activation_bf16,
+	const void *weight_bytes,
+	uint32_t packed_rows,
+	uint32_t tokens,
+	uint32_t top_k,
+	uint32_t group_count,
+	uint32_t input_dimension,
+	uint32_t output_dimension,
+	uint32_t multiprocessors,
+	cudaStream_t stream)
+{
+	return(LmGemmLaunchAsymmetric<
+		LmBf16Format,WeightFormat,TILE_N,TILE_K,STAGES,WARPS,
+		true,SPARK_ACTIVATION_CODEC_NONE,true>(
 		args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,group_count,
 		input_dimension,output_dimension,multiprocessors,true,stream));
 }
