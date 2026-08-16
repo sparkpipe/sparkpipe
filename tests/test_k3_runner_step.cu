@@ -109,10 +109,15 @@ int main(int argc, char **argv)
 		collective.connect_timeout_milli = 8000u;
 		collective.operation_timeout_milli = 30000u;
 		collective.collective_identifier = 1u;
-		for ( int r = 0; r < 4; ++r )
+		/* the peers are STEP-ordered: step s pairs with tp_rank ^ (1 << s),
+		 * and the slots past step_count must stay zero (the validator
+		 * rejects them) */
+		for ( int step = 0; step < 2; ++step )
 		{
-			snprintf(peers[r].host_name, sizeof(peers[r].host_name), "127.0.0.1");
-			peers[r].port = (uint16_t)(65620u + (uint32_t)r);
+			uint32_t partner = config.tp_rank ^ (1u << (uint32_t)step);
+			snprintf(peers[step].host_name, sizeof(peers[step].host_name),
+				"127.0.0.1");
+			peers[step].port = (uint16_t)(65620u + partner);
 		}
 		memcpy(collective.peers, peers, sizeof(peers));
 		config.tp_collective = &collective;
