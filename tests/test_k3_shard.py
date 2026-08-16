@@ -55,9 +55,10 @@ def main():
     failures = 0
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
-        # latent 128 = one w1 k-tile; inter 256 = two w2 k-tiles, so TP 2 is
-        # exact and TP 4 must refuse on heads AND on k-tiles
-        mini_checkpoint(root, latent=128, inter=256)
+        # latent 256 = two w1 k-tiles; inter 256 = two w2 k-tiles, so TP 2
+        # is exact (one k-tile per rank on both expert tensors) and TP 4
+        # must refuse on heads AND on k-tiles
+        mini_checkpoint(root, latent=256, inter=256)
         pack = root / "mini.pack"
         run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
                               str(root), str(pack)], capture_output=True, text=True)
@@ -211,7 +212,7 @@ def main():
     # k, 192 = 6 x 32 for the w2 k) slices at TP 4 the same way, and a
     # degree its tile counts do not divide still refuses with the tile size
     # named.
-    mini_checkpoint(root, latent=128, inter=256)
+    mini_checkpoint(root, latent=256, inter=256)
     pack32 = root / "mini32.pack"
     run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
                           str(root), str(pack32), "0", "3", "32"],
