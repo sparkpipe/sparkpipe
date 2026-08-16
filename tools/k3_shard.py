@@ -379,7 +379,8 @@ class Slicer:
         priced = k3_pack.interleave_geometry(
             out_dim if out_dim is not None else geom["out_dim"],
             k_dim if k_dim is not None else geom["k_dim"],
-            geom["experts"])
+            geom["experts"],
+            tile_k=geom["tile_k"])
         meta["interleave"] = priced
         if "shape" in meta and len(meta["shape"]) == 3:
             meta["shape"] = [priced["experts"], priced["out_dim"],
