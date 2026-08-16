@@ -263,7 +263,7 @@ def main():
                             for base in (r * take_out, half + r * take_out):
                                 row0 = (t * cells + base) * geom["cell_rows"]
                                 want += block[row0 * geom["row_bytes"]:
-                                             (row0 + chunk)]
+                                             row0 * geom["row_bytes"] + chunk]
                     if bytes(want) != parts[r]:
                         print(f"  FAIL {name}: rank {r} 32-tile diagonal subgrid")
                         failures += 1

@@ -190,6 +190,19 @@ the module's capacity request scales them by first_layer/layer_count).
   54.2 ms (the path is weight-bandwidth-bound; the capture removes the
   ~55 ms serialized host enqueue per step). Configs carry
   `capture_graphs`: 1.
+- CRITICAL re-slice finding: the pre-fix sharder never sliced the expert
+  w1's K axis - every rank pack kept all 28 k-tiles, so ranks 1-3's
+  gate|up GEMM paired their latent slices with rank 0's weights. The
+  sharder now takes the DIAGONAL subgrid (the rank's k-tiles x its
+  gate|up cells - the cross subgrids are read by no GEMM), the w2 keeps
+  its contiguous k-tile take (the SiTU intermediate slice IS contiguous),
+  and reprices carry the pack tile_k. THE DEPLOYED RANK PACKS MUST BE
+  RE-SLICED from the stage packs (still in /tmp on spark1/4/8/c) with the
+  fixed sharder and re-deployed before the end-to-end run - the new rank
+  packs are ~1/4 smaller on w1, so the re-deploy replaces rather than
+  appends. TP16 additionally needs 32-element expert tiles (the packer
+  now takes expert_tile_k; 224 = 7 x 32 and 192 = 6 x 32) plus the
+  TILE_K=32 INTERLEAVED_B GEMM variant before TP16 packs can be consumed.
 - TP16 sharder audit: the earlier "unbalanced w2" split was INCONSISTENT -
   the gate|up output split gives each rank 192 intermediate elements
   (96+96, the halves must correspond element-wise), while the unbalanced
