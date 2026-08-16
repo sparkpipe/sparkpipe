@@ -30,35 +30,41 @@ Correctness and capacity findings live in QWEN38_MAX_AUDIT.md.
   3. Dense linears already take the tensor-core path at B >= 16 through
      SparkLmHostLaunchBatchedLinear; no work needed there.
 
-## 1b0. Prefill + output performance estimates (16-spark ring)
+## 1b0. Prefill + output performance estimates (16-spark ring, rev 2)
 
-Anchors (measured on spark4): B=1 GDN layer 8.45 ms (175 GB/s effective,
-scalar-latency-bound); B=16 26.9 ms; B=256 261.6 ms (~500-566 GB/s effective
-for the tile-path expert reads); full single-rank model 94 ms/token at B=256
-= 10.6 tok/s. Per-token weight volume (replicated): dense spine ~0.87 GB
-per layer + experts 838 MB (10/512) + shared ~100 MB = ~1.35 GB/layer,
-135.5 GB through 92 layers.
+Rev 2 corrects rev 1's full-expert-set assumption: the grouped tile path
+reads ONLY the experts a batch touches, so per-step expert bytes follow
+E_touched x 83.8 MB (per expert: w1+w3 = 67 MB + w2 = 16.8 MB FP8), not the
+whole set. Model anchors, both measured on spark4: replicated B=16 touches
+~137 experts -> 11.5 GB in 14.3 ms = 804 GB/s effective; replicated B=256
+touches ~508 -> 42.6 GB in 182.5 ms = 233 GB/s. Efficiency tracks the CTA
+count per layer (2192 vs 8128), and TP16 keeps every batch in the low-CTA
+high-efficiency regime (138 CTAs/layer at B=16 up to 512 at B=256), so
+~800 GB/s applies across TP16 batches; the occupancy fix aims for ~900.
 
-| Path | Aggregate tok/s | Per-sequence | Notes |
+| Path | Aggregate | Per-sequence (B=1) | Notes |
 |---|---|---|---|
-| OUTPUT today (replicated TP, PP4 pipeline, B=256) | ~39 | 0.78 s/token (B=1) | 23-layer bottleneck stage 6.0 s + screened head ~0.5 s; transport negligible |
-| OUTPUT TP16 expert+head parallel, measured-bandwidth kernels, B=16 | ~57 | ~56 ms/token | per-rank 1.68 GB/layer at ~550 GB/s |
-| OUTPUT TP16 B=32 | ~114 | ~56 ms/token | same per-step cost, double the batch |
-| OUTPUT TP16 B=16 after the tile-kernel occupancy fix (~900 GB/s) | ~93 | ~34 ms/token | the documented 100+ route |
-| OUTPUT TP16 B=32 after the fix | ~186 | ~34 ms/token | |
-| PREFILL today | ~1.3 prompt-tok/s | prompt = N decode steps | prefill frames refused; prompt feeds one token per 0.78 s step |
-| PREFILL after phase-2 kernels, replicated PP4 | ~40 | - | weight-bound: 606 MB/token/layer x 23-layer stage = 13.9 GB/token ~ 25 ms |
-| PREFILL after phase-2 kernels, TP16 | ~102 | - | per-rank 58 MB/token/layer x 92 = 5.4 GB/token ~ 9.8 ms at 550 GB/s; dense amortizes to zero at prompt scale |
-| PREFILL TP16 after the occupancy fix | ~165 | - | ~6 ms/token toward 900 GB/s |
+| OUTPUT today (TP4xPP4 replicated, B=256) | ~39 tok/s | 0.78 s/token | measured anchors; 23-layer stage 6.0 s + screened head ~0.5 s |
+| OUTPUT TP16, B=16 | ~190 tok/s | ~55 ms/token (~18 tok/s) | 721 MB experts/layer -> 0.90 ms -> 83 ms/step |
+| OUTPUT TP16, B=32 | ~220 tok/s | ~55 ms/token | 1.25 GB -> 1.56 ms -> 144 ms/step |
+| OUTPUT TP16, B=64 | ~290 tok/s | - | 1.91 GB -> 2.39 ms -> 220 ms/step |
+| OUTPUT TP16, B=256 | ~450-500 tok/s | - | 2.68 GB -> 3.35 ms -> 308 ms/step; capped by the screened head (~500) |
+| OUTPUT TP16 full-context ceiling (ctx 262144) | ~130 tok/s ANY B | ~7.5 ms/token | attention-bound: ctx x 1 KB per attn layer x 23 = 6.0 GB/token per rank |
+| OUTPUT TP16 ctx 32768 | ~1.0K tok/s ceiling | ~0.9 ms/token | attention per token 0.75 GB |
+| PREFILL today | ~1.3 prompt-tok/s | prompt = N decode steps | prefill frames refused |
+| PREFILL after phase-2 kernels, replicated PP4 | ~1K tok/s | - | 52 GB per 64-chunk (experts 30.6 GB dominate) ~ 65 ms |
+| PREFILL after phase-2 kernels, TP16, 4K prompt | ~5K tok/s | - | ~10.4 GB/chunk ~ 13 ms; experts 1.91 GB + attention 3.0 GB + dense 5.1 GB |
+| PREFILL TP16, 32K prompt | ~1.6K tok/s | - | attention-bound: ~24.1 GB of the 31.5 GB per chunk |
 
-Prefill assumptions: chunked GDN (64-token chunks) + causal GQA as planned in
-the phase-2 scope; prefill is weight-bound - the quadratic causal-attention
-K/V reads stay below 10% of the weight traffic up to ~32K prompts (at TP16
-one KV head per rank: L^2/2 x 512 B per attention layer). The last-stage
-head adds ~0.5 s per B=256 output step on the screened path (vocab-parallel
-quartering that is the next head-scale step). All TP16 numbers assume the
-collective wiring and head-sliced projections land as planned; the residual
-all-reduce is 16 KB per row (0.5% of the weight traffic).
+Prefill notes: chunk-64 batches sit in the high-efficiency CTA regime;
+weights amortize across the chunk (dense 5.1 GB once per chunk), so prefill
+is NOT B=1-shaped. The quadratic causal-attention reads (per rank, one KV
+head: L^2/2 x 512 B per attention layer) overtake the expert traffic past
+~16K prompts, capping long-prompt prefill at ~1.6K tok/s at TP16. The
+last-stage screened head adds ~2 ms/token (B>=2) and caps the output at
+~500 tok/s until the head goes vocab-parallel. All TP16 rows assume the
+collective wiring + head-sliced projections land; the residual all-reduce
+is 16 KB/row (0.5% of the weight traffic) and does not move these numbers.
 
 ## 1b. Batch saturation measured (the honest single-node ceiling)
 
