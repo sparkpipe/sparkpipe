@@ -85,7 +85,21 @@ Measured on sparka, real rank pack, stage 0 (24 layers), 1 token:
    in, tensor-map encodes are steady-state cache hits. The single-spark
    gate now replays the captured slice and compares it against the direct
    launch (0 mismatches beyond the ULP limits).
-7. **Overlap** (revised): the per-layer ARs sit on the critical path for
+7. **AR overhead audit, 2026-08-16 (second pass)**: the per-phase
+   payloads are now SIZED to the phase (the submission carries the element
+   count - phase 0 ships ONE 14 KB segment instead of the 3-segment 43 KB
+   frame, cutting its wire bytes 3x), and the embedding exchange runs on
+   the NCCL tier (one slot-encoded stream-ordered all-reduce; no sync, no
+   host staging). Remaining, in order of value: (a) the slot-encoded
+   full-width all-reduce moves 4x the minimal bytes - a reduce-scatter +
+   all-gather pair would halve the per-rank wire traffic; (b) the head
+   exchange still uses the host tier (its f32 slots have no NCCL f32
+   collective - a bf16-splittable slot layout or an f32 NCCL op would move
+   it); (c) the hidden-transport tier cannot narrow its pre-registered
+   frame (the per-submission count is NCCL-only). The per-layer structure
+   stays 2 ARs on the critical path (the correctness requirement), so the
+   B1 AR budget is 2 x NCCL-tree latency (~5-15 us) per layer.
+8. **Overlap** (revised): the per-layer ARs sit on the critical path for
    B1 decode by construction - the MLP-side retrieval needs the summed
    attention output and the next layer needs the summed MLP outputs - so
    there is no compute to hide them behind. The AR-overhead reductions are
