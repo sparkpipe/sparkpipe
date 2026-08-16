@@ -25,27 +25,26 @@ Work items, in order:
    cells) and w2 on whole tiles, both at the pack's tile_k, repricing
    carries tile_k; the refusal names the tile size. tests/test_k3_shard.py
    proves the diagonal at 128- and 32-tile packs and the refusal.
-3. The GEMM wave (runtime/gemm.cuh + inference/kernels/gemm.cuh +
-   inference/kernels/tile.cuh):
-   - the interleaved launcher template gains TILE_K (currently forced 128);
-   - LmGemmSharedBytes: b_bytes = 17 x (TILE_N/16) x (TILE_K/2);
-   - the INTERLEAVED_B staging at TILE_K 32: 16-byte cell rows -> the B
-     tensor map uses SWIZZLE_NONE (a 16-byte box inner dim cannot carry the
-     64-byte swizzle); the scale read is byte r16 + 0 of row c*17 + 16,
-     linear (no swizzle XOR, one group per tile);
-   - the A side at TILE_K 32 stays the single-block stage (32 BF16 = 64
-     bytes, the ordinary 64-byte swizzle) - the two-block hack exists only
-     for the 128-byte rows;
-   - static_assert TILE_K == 128 becomes TILE_K == 128 || TILE_K == 32;
-   - runtime/gemm.cuh's interleaved encode path takes the swizzle from the
-     variant.
-4. The dispatch + layer: a per-tensor tile_k field (filled from the
-   manifest's interleave.tile_k) selects the 128- or 32-tile instantiation
-   at the w1/w2 launch sites; unity.cu gains the TILE_K=32 explicit
-   instantiations.
-5. tests/test_k3_interleave_gemm.cu: a 32-tile numerical case against the
-   128-tile reference (same payload, different tiling -> bit-identical
-   products).
+3. LANDED: the GEMM wave (runtime/gemm.cuh + inference/kernels/gemm.cuh +
+   inference/kernels/tile.cuh). The interleaved launchers take TILE_K (128
+   default, 32 for the TP16 grid); LmGemmSharedBytes and the kernel's
+   b_stride scale with TILE_K/2; the B map at 32 carries 16-byte rows and
+   LmTensorMapBoxSwizzleBytes maps them to SWIZZLE_NONE automatically; the
+   consume's scale read is linear at 32 (one E8M0 byte per neuron) and the
+   64B-swizzle XOR at 128; the two-block A stage is gated on TILE_K == 128
+   (32-element BF16 rows are 64 bytes and take the ordinary single box);
+   the runtime encode takes tile_k; the static asserts admit 128 | 32.
+   The adapter .so compile-gate PASSES on sparka (sm_121a).
+4. LANDED: the dispatch + layer. K3LayerWeights/K3LayerBuffers carry
+   expert_tile_k; SparkK3PackLoadInterleaveTileK reads the manifest's
+   per-tensor interleave.tile_k; the dispatch fills it and the w1/w2
+   launch sites select the 32- or 128-tile instantiation. unity.cu gained
+   the six TILE_K=32 instantiations. Also fixed on the way: the pack
+   loader's uint64 offset fix read the unwritten uint32_t value - the
+   assignments now use wide_value.
+5. LANDED: tests/test_k3_interleave_gemm.cu gained the TILE_K=32
+   numerical case (same logical weights on the 16-byte-row grid, same
+   expected values; the encode diagnostic covers both tile sizes).
 6. Then TP16 deployment: pack the full model with expert_tile_k 32, slice
    16 ways, and the existing TP16 configs/NCCL degree 16 carry it.
 
