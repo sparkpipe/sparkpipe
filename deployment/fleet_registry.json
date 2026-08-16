@@ -115,7 +115,7 @@
    "runtime_root": "/home/{host}/sparkdata/k3.mxfp4.tp4pp4",
    "pack_dir": "/home/{host}/sparkdata/k3.mxfp4.tp4pp4/packs",
    "control_port_base": 21480,
-   "collective_port_base": 65620,
+   "collective_port_base": 61620,
    "transport_control_base": 62700,
    "owner": "k3 session (tp4xpp4)",
    "status": "packs-deployed",

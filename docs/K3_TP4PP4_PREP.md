@@ -46,7 +46,7 @@ are always allowed regardless of slot state.
   the next build item, followed by the TP4xPP4 deployment and the
   torch-reference numerical gate.
 - Fleet coordination adopted (PR #649): K3 registry entry filled
-  (owner, verified shard/pack layout, K3 port block 21480/65620/62700,
+  (owner, verified shard/pack layout, K3 port block 21480/61620/62700,
   fleet scope); fleet_swap.sh status verified; branch pushed to origin.
 - All four PP stage packs RUNNING in parallel on their stage nodes with
   the fixed packer: stage0 (0+24) spark1, stage1 (24+23) spark4,
@@ -190,6 +190,16 @@ the module's capacity request scales them by first_layer/layer_count).
   54.2 ms (the path is weight-bandwidth-bound; the capture removes the
   ~55 ms serialized host enqueue per step). Configs carry
   `capture_graphs`: 1.
+- OFFLINE TP4 EQUIVALENCE GATE (the ring-free cross-rank validation):
+  five single-spark runs of the same token - the full pack at tp_degree 1
+  and the four rank packs at tp_degree 1 - and the check that the rank
+  dumps SUM to the full dump (the exact contract the TP4 all-reduce
+  ships): tools/k3_tp4_equivalence_check.py. The runner's pack
+  registration is now CHUNKED (48 GB strides, with the matching
+  unregister): the driver's total registration budget (~96 GB) rejects a
+  full-stage pack (393 GB) in one call, so the equivalence legs run on a
+  4-layer slice pack (layers 0-3: dense-KDA + routed MLA + routed KDA +
+  routed MLA, ~65 GB, registers) via the gate's new --pp1 derive mode.
 - RE-SLICE COMPLETE (2026-08-16): all four stage packs re-sliced with the
   fixed sharder (552/537/534/534 tensors x 4 ranks) and the corrected rank
   packs REDEPLOYED to all 16 sparks with sha256 verification (stage 0:

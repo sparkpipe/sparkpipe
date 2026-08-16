@@ -63,7 +63,7 @@ for i in $(seq 0 15); do
     if [ "$TP" = "4" ]; then
       echo "  ,"
       echo "  \"tp_collective\": {"
-      echo "    \"listen_port\": $((65620 + rank)),"
+      echo "    \"listen_port\": $((61620 + rank)),"
       echo "    \"connect_timeout_milli\": 5000,"
       echo "    \"operation_timeout_milli\": 30000,"
       echo "    \"collective_identifier\": 1,"
@@ -74,7 +74,7 @@ for i in $(seq 0 15); do
         ip="10.20.0.$((10 + p))"
         comma=","
         [ "$r" = "3" ] && comma=""
-        echo "      \"$ip:$((65620 + r))\"$comma"
+        echo "      \"$ip:$((61620 + r))\"$comma"
       done
       echo "    ]"
       echo "  }"

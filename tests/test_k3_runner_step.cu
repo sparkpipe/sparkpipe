@@ -105,7 +105,9 @@ int main(int argc, char **argv)
 		collective.abi_version = SPARK_TP_COLLECTIVE_ABI_VERSION;
 		collective.tp_degree = 4u;
 		collective.tp_rank = config.tp_rank;
-		collective.listen_port = (uint16_t)(65620u + config.tp_rank);
+		/* uint16 port field: 65620 would truncate to 84 - the localhost
+		 * gate uses 61620, the fleet block that actually fits */
+		collective.listen_port = (uint16_t)(61620u + config.tp_rank);
 		collective.connect_timeout_milli = 8000u;
 		collective.operation_timeout_milli = 30000u;
 		collective.collective_identifier = 1u;
@@ -117,7 +119,7 @@ int main(int argc, char **argv)
 			uint32_t partner = config.tp_rank ^ (1u << (uint32_t)step);
 			snprintf(peers[step].host_name, sizeof(peers[step].host_name),
 				"127.0.0.1");
-			peers[step].port = (uint16_t)(65620u + partner);
+			peers[step].port = (uint16_t)(61620u + partner);
 		}
 		memcpy(collective.peers, peers, sizeof(peers));
 		config.tp_collective = &collective;
