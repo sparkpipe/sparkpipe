@@ -1448,6 +1448,99 @@ static __global__ void SparkQwen36SmallBatchTiledKernel(const void *weight_bf16,
 	}
 }
 
+/*
+ * Fused FFN gate+up+swiglu for the decode microbatch (rows 5..8): one block
+ * of 32 warps per 64-neuron tile computes BOTH projections from one staged
+ * input and applies the swiglu in-register, so each weight matrix streams
+ * once, the input stages once, and the separate swiglu kernel (with its
+ * gate/up memory round trip) disappears. The dots use the same lane-strided
+ * pair order and shfl-down tree as SparkLmDotRowBf16/SparkLmWarpReduceSum,
+ * and the activation is SparkLmSwish(gate)*up rounded to bf16 with
+ * __float2bfloat16 - bit-identical to the separate kernels.
+ */
+#define SPARK_QWEN36_SMALL_BATCH_FFN_TILE_N 64u
+
+static __global__ void SparkQwen36SmallBatchFfnGateUpKernel(const void *gate_weight_bf16, const void *up_weight_bf16, const void *input_bf16, void *gated_up_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	extern __shared__ __nv_bfloat16 tile[];
+	__nv_bfloat16 *gate_tile = tile;
+	__nv_bfloat16 *up_tile = tile + (SPARK_QWEN36_SMALL_BATCH_FFN_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK);
+	__nv_bfloat16 *input_tile = up_tile + (SPARK_QWEN36_SMALL_BATCH_FFN_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK);
+	const uint32_t neuron_base = blockIdx.x * SPARK_QWEN36_SMALL_BATCH_FFN_TILE_N;
+	const uint32_t thread = threadIdx.x;
+	const uint32_t warp = thread >> 5u;
+	const uint32_t lane = thread & 31u;
+	const uint32_t row = warp & 7u;
+	uint32_t k_base, neuron, p;
+	float value_g, value_u;
+	float acc_g[16];
+	float acc_u[16];
+	#pragma unroll
+	for (p = 0u; p < 16u; p++)
+	{
+		acc_g[p] = 0.0f;
+		acc_u[p] = 0.0f;
+	}
+	for (k_base = 0u; k_base < input_dimension; k_base += SPARK_QWEN36_SMALL_BATCH_K_CHUNK)
+	{
+		/* two 64x128 weight tiles (1024 uint4s each) + 8x128 input tile */
+		((uint4 *)gate_tile)[thread] = __ldg(((const uint4 *)gate_weight_bf16) + ((((uint64_t)(neuron_base + (thread >> 4u)) * input_dimension) + k_base) >> 3u) + (thread & 15u));
+		((uint4 *)up_tile)[thread] = __ldg(((const uint4 *)up_weight_bf16) + ((((uint64_t)(neuron_base + (thread >> 4u)) * input_dimension) + k_base) >> 3u) + (thread & 15u));
+		if ( thread < 128u && (thread >> 4u) < row_count )
+			((uint4 *)input_tile)[thread] = __ldg(((const uint4 *)input_bf16) + ((((uint64_t)(thread >> 4u) * input_dimension) + k_base) >> 3u) + (thread & 15u));
+		else if ( thread < 128u )
+			((uint4 *)input_tile)[thread] = make_uint4(0u, 0u, 0u, 0u);
+		__syncthreads();
+		#pragma unroll
+		for (p = 0u; p < 16u; p++)
+		{
+			neuron = ((warp >> 3u) << 4u) + p;
+			acc_g[p] = fmaf(__bfloat162float(gate_tile[(neuron << 7u) + (lane << 1u)]), __bfloat162float(input_tile[(row << 7u) + (lane << 1u)]), acc_g[p]);
+			acc_g[p] = fmaf(__bfloat162float(gate_tile[(neuron << 7u) + (lane << 1u) + 1u]), __bfloat162float(input_tile[(row << 7u) + (lane << 1u) + 1u]), acc_g[p]);
+			acc_g[p] = fmaf(__bfloat162float(gate_tile[(neuron << 7u) + 64u + (lane << 1u)]), __bfloat162float(input_tile[(row << 7u) + 64u + (lane << 1u)]), acc_g[p]);
+			acc_g[p] = fmaf(__bfloat162float(gate_tile[(neuron << 7u) + 64u + (lane << 1u) + 1u]), __bfloat162float(input_tile[(row << 7u) + 64u + (lane << 1u) + 1u]), acc_g[p]);
+			acc_u[p] = fmaf(__bfloat162float(up_tile[(neuron << 7u) + (lane << 1u)]), __bfloat162float(input_tile[(row << 7u) + (lane << 1u)]), acc_u[p]);
+			acc_u[p] = fmaf(__bfloat162float(up_tile[(neuron << 7u) + (lane << 1u) + 1u]), __bfloat162float(input_tile[(row << 7u) + (lane << 1u) + 1u]), acc_u[p]);
+			acc_u[p] = fmaf(__bfloat162float(up_tile[(neuron << 7u) + 64u + (lane << 1u)]), __bfloat162float(input_tile[(row << 7u) + 64u + (lane << 1u)]), acc_u[p]);
+			acc_u[p] = fmaf(__bfloat162float(up_tile[(neuron << 7u) + 64u + (lane << 1u) + 1u]), __bfloat162float(input_tile[(row << 7u) + 64u + (lane << 1u) + 1u]), acc_u[p]);
+		}
+		__syncthreads();
+	}
+	#pragma unroll
+	for (p = 0u; p < 16u; p++)
+	{
+		neuron = ((warp >> 3u) << 4u) + p;
+		value_g = acc_g[p];
+		value_g += __shfl_down_sync(0xffffffffu, value_g, 16u);
+		value_g += __shfl_down_sync(0xffffffffu, value_g, 8u);
+		value_g += __shfl_down_sync(0xffffffffu, value_g, 4u);
+		value_g += __shfl_down_sync(0xffffffffu, value_g, 2u);
+		value_g += __shfl_down_sync(0xffffffffu, value_g, 1u);
+		value_u = acc_u[p];
+		value_u += __shfl_down_sync(0xffffffffu, value_u, 16u);
+		value_u += __shfl_down_sync(0xffffffffu, value_u, 8u);
+		value_u += __shfl_down_sync(0xffffffffu, value_u, 4u);
+		value_u += __shfl_down_sync(0xffffffffu, value_u, 2u);
+		value_u += __shfl_down_sync(0xffffffffu, value_u, 1u);
+		if ( lane == 0u && row < row_count && neuron_base + neuron < output_dimension )
+		{
+			/* The separate path rounds the gate and up dots to bf16 before the
+			 * swiglu reads them, so round here too for bit-exactness. */
+			float gate_rounded = __bfloat162float(__float2bfloat16(value_g));
+			float up_rounded = __bfloat162float(__float2bfloat16(value_u));
+			((__nv_bfloat16 *)gated_up_bf16)[((uint64_t)row * output_dimension) + neuron_base + neuron] = __float2bfloat16(SparkLmSwish(gate_rounded) * up_rounded);
+		}
+	}
+}
+
+extern "C" cudaError_t SparkQwen36LaunchFfnGateUp(cudaStream_t stream, const void *gate_weight_bf16, const void *up_weight_bf16, const void *input_bf16, void *gated_up_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	uint32_t blocks = (output_dimension + SPARK_QWEN36_SMALL_BATCH_FFN_TILE_N - 1u) / SPARK_QWEN36_SMALL_BATCH_FFN_TILE_N;
+	size_t shared_bytes = (size_t)(2u * SPARK_QWEN36_SMALL_BATCH_FFN_TILE_N + SPARK_QWEN36_SMALL_BATCH_MAX_ROWS) * SPARK_QWEN36_SMALL_BATCH_K_CHUNK * sizeof(__nv_bfloat16);
+	SparkQwen36SmallBatchFfnGateUpKernel<<<blocks, 1024u, shared_bytes, stream>>>(gate_weight_bf16, up_weight_bf16, input_bf16, gated_up_bf16, row_count, input_dimension, output_dimension);
+	return(cudaGetLastError());
+}
+
 extern "C" cudaError_t SparkQwen36LaunchSmallBatchLinear(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
 	uint32_t blocks = (output_dimension + SPARK_QWEN36_SMALL_BATCH_TILE_N - 1u) / SPARK_QWEN36_SMALL_BATCH_TILE_N;

@@ -97,7 +97,12 @@ static SparkStatus SparkQwen36TpSubmit(SparkQwen36TpState *tp, void *buffer, uin
 	submission.completion_context = &pending;
 	status = u64_max != 0u ? SparkTpDeviceCollectiveSubmitU64Max(&tp->collective,&submission) : SparkTpDeviceCollectiveSubmitBf16(&tp->collective,&submission);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "%s submit_failed status=%d rows=%u ordinal=%llu\n",
+			SPARK_QWEN36_TP_TAG, (int)status, count,
+			(unsigned long long)(tp->next_ordinal - 1u));
 		return status;
+	}
 	/* Wait for the stream-ordered completion: the NCCL backend publishes at
 	 * submit time; the transport backend publishes once the reduction is
 	 * folded and the consumer stream is ordered after it. */
@@ -108,6 +113,10 @@ static SparkStatus SparkQwen36TpSubmit(SparkQwen36TpState *tp, void *buffer, uin
 			sched_yield();
 		spin++;
 	}
+	if ( pending.status != SPARK_STATUS_OK )
+		fprintf(stderr, "%s completion_failed status=%d rows=%u ordinal=%llu\n",
+			SPARK_QWEN36_TP_TAG, (int)pending.status, count,
+			(unsigned long long)(tp->next_ordinal - 1u));
 	return (SparkStatus)pending.status;
 }
 
@@ -199,8 +208,12 @@ SparkStatus SparkQwen36TpInitialize(
 			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL |
 			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
 		configuration.rail_count = 2u;
-		configuration.direct_all_to_all_max_payload_bytes = 81920u;
-		configuration.split_ring_min_payload_bytes = 655360u;
+		/* B64 deltas (64 x 5120 x 2 = 655360 bytes) fit one credit region,
+		 * so direct all-to-all covers every serving payload: one hop instead
+		 * of the recursive two-step. Serving never selects the split ring
+		 * (its pairwise 200.x rail is reserved). */
+		configuration.direct_all_to_all_max_payload_bytes = 655360u;
+		configuration.split_ring_min_payload_bytes = 8388608u;
 		configuration.step_rail_indices[0] = 0u;
 		configuration.step_rail_indices[1] = 1u;
 		configuration.step_rail_indices[2] = 1u;

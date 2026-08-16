@@ -149,57 +149,49 @@ typedef struct SparkQwen36ModuleState
 	atomic_ullong rejected_count;
 	atomic_ullong failed_count;
 	atomic_ullong tokens_emitted;
-	/* decode-frame GPU phase profiling (SPARK_QWEN36_PROFILE=1): cudaEvent
-	 * pairs on the slot stream, GPU-side timestamps. */
+	/* decode-frame GPU phase profiling (SPARK_QWEN36_PROFILE=1). The host
+	 * blocks inside every TP reduce spin, which drains the queued GPU work, so
+	 * the spin durations measure the GPU execution of the phase between two
+	 * reduces: GDN branch, ATTN branch, FFN, and the head tail. */
 	uint32_t profile_enabled;
-	cudaEvent_t profile_events[8][2];
-	double profile_totals[8];
+	uint64_t profile_gdn_spin_nanos;
+	uint64_t profile_attn_spin_nanos;
+	uint64_t profile_ffn_spin_nanos;
+	uint64_t profile_head_spin_nanos;
+	uint64_t profile_frame_nanos;
 	uint32_t profile_frame_count;
 } SparkQwen36ModuleState;
 
-#define SPARK_QWEN36_PROFILE_NORM 0u
-#define SPARK_QWEN36_PROFILE_GDN_BODY 1u
-#define SPARK_QWEN36_PROFILE_ATTN_BODY 2u
-#define SPARK_QWEN36_PROFILE_FFN_BODY 3u
-#define SPARK_QWEN36_PROFILE_REDUCE_BRANCH 4u
-#define SPARK_QWEN36_PROFILE_REDUCE_FFN 5u
-#define SPARK_QWEN36_PROFILE_HEAD 6u
-#define SPARK_QWEN36_PROFILE_REDUCE_HEAD 7u
-#define SPARK_QWEN36_PROFILE_PHASE_COUNT 8u
-
-static void SparkQwen36ProfileRecord(SparkQwen36ModuleState *state, uint32_t phase, uint32_t begin, cudaStream_t stream)
+static uint64_t SparkQwen36ProfileNow(void)
 {
-	if ( state->profile_enabled != 0u )
-		cudaEventRecord(state->profile_events[phase][begin != 0u ? 1u : 0u], stream);
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
 }
 
-static void SparkQwen36ProfilePrint(SparkQwen36ModuleState *state)
+static void SparkQwen36ProfilePrint(SparkQwen36ModuleState *state, uint64_t frame_nanos)
 {
-	uint32_t phase;
-	for (phase = 0u; phase < SPARK_QWEN36_PROFILE_PHASE_COUNT; phase++)
-	{
-		float elapsed = 0.0f;
-		cudaEventElapsedTime(&elapsed, state->profile_events[phase][0], state->profile_events[phase][1]);
-		state->profile_totals[phase] += (double)elapsed;
-	}
+	state->profile_frame_nanos += frame_nanos;
 	state->profile_frame_count++;
 	if ( (state->profile_frame_count & 7u) == 0u || state->profile_frame_count == 1u )
-		fprintf(stderr, "%s gpu_profile frames=%u norm_ms=%.2f gdn_ms=%.2f attn_ms=%.2f ffn_ms=%.2f red_branch_ms=%.2f red_ffn_ms=%.2f head_ms=%.2f red_head_ms=%.2f\n",
+		fprintf(stderr, "%s gpu_spin_profile frames=%u frame_ms=%.2f gdn_ms=%.2f attn_ms=%.2f ffn_ms=%.2f head_ms=%.2f\n",
 			SPARK_QWEN36_MODULE_TAG, state->profile_frame_count,
-			state->profile_totals[SPARK_QWEN36_PROFILE_NORM],
-			state->profile_totals[SPARK_QWEN36_PROFILE_GDN_BODY],
-			state->profile_totals[SPARK_QWEN36_PROFILE_ATTN_BODY],
-			state->profile_totals[SPARK_QWEN36_PROFILE_FFN_BODY],
-			state->profile_totals[SPARK_QWEN36_PROFILE_REDUCE_BRANCH],
-			state->profile_totals[SPARK_QWEN36_PROFILE_REDUCE_FFN],
-			state->profile_totals[SPARK_QWEN36_PROFILE_HEAD],
-			state->profile_totals[SPARK_QWEN36_PROFILE_REDUCE_HEAD]);
+			(double)state->profile_frame_nanos / 1000000.0,
+			(double)state->profile_gdn_spin_nanos / 1000000.0,
+			(double)state->profile_attn_spin_nanos / 1000000.0,
+			(double)state->profile_ffn_spin_nanos / 1000000.0,
+			(double)state->profile_head_spin_nanos / 1000000.0);
 }
 
 extern cudaError_t SparkQwen36ConfigureCudaKernels(void);
 extern cudaError_t SparkQwen36LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkQwen36LaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQwen36LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
+/* Small-batch GEMM geometry, mirrors the cuda translation unit. */
+#define SPARK_QWEN36_SMALL_BATCH_MAX_ROWS 8u
+#define SPARK_QWEN36_SMALL_BATCH_TILE_N 64u
+#define SPARK_QWEN36_SMALL_BATCH_K_CHUNK 128u
+extern cudaError_t SparkQwen36LaunchFfnGateUp(cudaStream_t stream, const void *gate_weight_bf16, const void *up_weight_bf16, const void *input_bf16, void *gated_up_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension);
 extern cudaError_t SparkQwen36LaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count);
 extern cudaError_t SparkQwen36LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen36GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen36GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal);
 extern cudaError_t SparkQwen36LaunchDecayBeta(cudaStream_t stream, const void *decay_pre_bf16, const void *beta_pre_bf16, const SparkQwen36GdnLayerWeights *weights, float *log_decay_f32, float *beta_f32, uint32_t row_count);
@@ -574,9 +566,13 @@ static SparkStatus SparkQwen36ModuleInitializeTp(SparkQwen36ModuleState *state)
  * execute synchronization covers every collective in flight. */
 static SparkStatus SparkQwen36ModuleTpReduceDelta(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, uint32_t rows)
 {
+	SparkStatus status;
 	if ( state->tp_degree <= 1u )
 		return(SPARK_STATUS_OK);
-	return SparkQwen36TpReduceHidden(&state->tp,slot->delta_bf16,rows,slot->cuda_stream);
+	status = SparkQwen36TpReduceHidden(&state->tp,slot->delta_bf16,rows,slot->cuda_stream);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr, "%s tp_reduce_delta_failed status=%d rows=%u\n", SPARK_QWEN36_MODULE_TAG, (int)status, rows);
+	return status;
 }
 
 static SparkStatus SparkQwen36ModuleAllocatePools(SparkQwen36ModuleState *state)
@@ -739,10 +735,16 @@ static cudaError_t SparkQwen36ModuleRunGdnCoreDecode(SparkQwen36ModuleState *sta
 	SparkQwen36GdnStatePool pool = state->gdn_pool;
 	pool.state_cold_by_row = slot->row_cold;
 	error = SparkQwen36LaunchConvUpdate(stream,slot->qkv_bf16,weights,slot->conv_out_bf16,&pool,slot->row_lane_indices,rows,ordinal);
+	if ( error != cudaSuccess && rows >= 32u )
+		fprintf(stderr, "%s gdn_core conv_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchDecayBeta(stream,slot->decay_pre_bf16,slot->beta_pre_bf16,weights,slot->log_decay_f32,slot->beta_f32,rows);
+	if ( error != cudaSuccess && rows >= 32u )
+		fprintf(stderr, "%s gdn_core decaybeta_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchGdnStep(stream,slot->conv_out_bf16,slot->log_decay_f32,slot->beta_f32,&pool,slot->core_bf16,slot->row_lane_indices,rows,ordinal);
+	if ( error != cudaSuccess && rows >= 32u )
+		fprintf(stderr, "%s gdn_core gdnstep_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
 	return(error);
 }
 
@@ -775,25 +777,40 @@ static SparkStatus SparkQwen36ModuleRunGdnLayer(SparkQwen36ModuleState *state, S
 	uint32_t ordinal = state->gdn_ordinal_by_layer[layer];
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_GDN_BODY, 1u, stream);
 	error = SparkQwen36LaunchLinear(stream,&weights->qkv,slot->normalized_bf16,slot->qkv_bf16,rows);
+	if ( error != cudaSuccess && rows >= 32u )
+		fprintf(stderr, "%s gdn_qkv_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchLinear(stream,&weights->gate,slot->normalized_bf16,slot->z_bf16,rows);
+	if ( error != cudaSuccess && rows >= 32u )
+		fprintf(stderr, "%s gdn_gate_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchLinear(stream,&weights->beta,slot->normalized_bf16,slot->beta_pre_bf16,rows);
+	if ( error != cudaSuccess && rows >= 32u )
+		fprintf(stderr, "%s gdn_beta_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchLinear(stream,&weights->decay,slot->normalized_bf16,slot->decay_pre_bf16,rows);
+	if ( error != cudaSuccess && rows >= 32u )
+		fprintf(stderr, "%s gdn_decay_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
 	if ( error == cudaSuccess )
 		error = prefill != 0 ? SparkQwen36ModuleRunGdnCorePrefill(state,slot,weights,prefill->lane_index,rows,ordinal) : SparkQwen36ModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
+	if ( error != cudaSuccess && rows >= 32u )
+		fprintf(stderr, "%s gdn_core_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchGatedNorm(stream,slot->core_bf16,slot->z_bf16,weights,slot->gated_bf16,rows,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
+	if ( error != cudaSuccess && rows >= 32u )
+		fprintf(stderr, "%s gatednorm_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchLinear(stream,&weights->output,slot->gated_bf16,slot->delta_bf16,rows);
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_GDN_BODY, 0u, stream);
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_REDUCE_BRANCH, 1u, stream);
-	if ( error == cudaSuccess && SparkQwen36ModuleTpReduceDelta(state,slot,rows) != SPARK_STATUS_OK )
-		error = cudaErrorUnknown;
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_REDUCE_BRANCH, 0u, stream);
+	if ( error != cudaSuccess && rows >= 32u )
+		fprintf(stderr, "%s gdn_output_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
+	{
+		uint64_t spin_start = state->profile_enabled != 0u ? SparkQwen36ProfileNow() : 0ull;
+		if ( error == cudaSuccess && SparkQwen36ModuleTpReduceDelta(state,slot,rows) != SPARK_STATUS_OK )
+			error = cudaErrorUnknown;
+		if ( state->profile_enabled != 0u )
+			state->profile_gdn_spin_nanos += SparkQwen36ProfileNow() - spin_start;
+	}
 	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"gdn_layer"));
 }
 
@@ -812,7 +829,6 @@ static SparkStatus SparkQwen36ModuleRunAttnLayer(SparkQwen36ModuleState *state, 
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_ATTN_BODY, 1u, stream);
 	error = SparkQwen36LaunchLinear(stream,&weights->query,slot->normalized_bf16,slot->q_fused_bf16,rows);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchLinear(stream,&weights->key,slot->normalized_bf16,slot->k_bf16,rows);
@@ -824,11 +840,13 @@ static SparkStatus SparkQwen36ModuleRunAttnLayer(SparkQwen36ModuleState *state, 
 		error = SparkQwen36LaunchAttnDecode(stream,slot->q_fused_bf16,state->kv_cache_bf16,table,rows_view->row_lane_indices,rows_view->context_lengths,slot->head_out_bf16,rows,ordinal,state->cache_layer_stride,state->cache_block_stride);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchLinear(stream,&weights->output,slot->head_out_bf16,slot->delta_bf16,rows);
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_ATTN_BODY, 0u, stream);
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_REDUCE_BRANCH, 1u, stream);
-	if ( error == cudaSuccess && SparkQwen36ModuleTpReduceDelta(state,slot,rows) != SPARK_STATUS_OK )
-		error = cudaErrorUnknown;
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_REDUCE_BRANCH, 0u, stream);
+	{
+		uint64_t spin_start = state->profile_enabled != 0u ? SparkQwen36ProfileNow() : 0ull;
+		if ( error == cudaSuccess && SparkQwen36ModuleTpReduceDelta(state,slot,rows) != SPARK_STATUS_OK )
+			error = cudaErrorUnknown;
+		if ( state->profile_enabled != 0u )
+			state->profile_attn_spin_nanos += SparkQwen36ProfileNow() - spin_start;
+	}
 	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"attn_layer"));
 }
 
@@ -836,21 +854,40 @@ static SparkStatus SparkQwen36ModuleRunFfn(SparkQwen36ModuleState *state, SparkQ
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_FFN_BODY, 1u, stream);
+	const char *ffn_gate_env;
 	error = SparkQwen36LaunchFusedResidualRmsNorm(stream,slot->hidden_bf16,slot->delta_bf16,mlp_norm_bf16,slot->normalized_bf16,rows,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
-	if ( error == cudaSuccess )
-		error = SparkQwen36LaunchLinear(stream,&weights->gate,slot->normalized_bf16,slot->ffn_gate_bf16,rows);
-	if ( error == cudaSuccess )
-		error = SparkQwen36LaunchLinear(stream,&weights->up,slot->normalized_bf16,slot->ffn_up_bf16,rows);
-	if ( error == cudaSuccess )
-		error = SparkQwen36LaunchSwiGlu(stream,slot->ffn_gate_bf16,slot->ffn_up_bf16,rows,state->tp.ffn_intermediate);
+	ffn_gate_env = getenv("SPARK_QWEN36_SMALL_BATCH_GEMM");
+	if ( error == cudaSuccess && (ffn_gate_env == 0 || strcmp(ffn_gate_env, "0") != 0) &&
+		rows >= 5u && rows <= SPARK_QWEN36_SMALL_BATCH_MAX_ROWS &&
+		weights->gate.weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
+		weights->up.weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
+		weights->gate.input_dimension == weights->up.input_dimension &&
+		weights->gate.output_dimension == weights->up.output_dimension &&
+		(weights->gate.input_dimension % SPARK_QWEN36_SMALL_BATCH_K_CHUNK) == 0u &&
+		(weights->gate.output_dimension % SPARK_QWEN36_SMALL_BATCH_TILE_N) == 0u )
+	{
+		/* fused gate+up+swiglu: both projections stream once and the product
+		 * lands directly in ffn_up_bf16, bit-identical to the three kernels */
+		error = SparkQwen36LaunchFfnGateUp(stream,weights->gate.weight_payload,weights->up.weight_payload,slot->normalized_bf16,slot->ffn_up_bf16,rows,weights->gate.input_dimension,weights->gate.output_dimension);
+	}
+	else
+	{
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchLinear(stream,&weights->gate,slot->normalized_bf16,slot->ffn_gate_bf16,rows);
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchLinear(stream,&weights->up,slot->normalized_bf16,slot->ffn_up_bf16,rows);
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchSwiGlu(stream,slot->ffn_gate_bf16,slot->ffn_up_bf16,rows,state->tp.ffn_intermediate);
+	}
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchLinear(stream,&weights->down,slot->ffn_up_bf16,slot->delta_bf16,rows);
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_FFN_BODY, 0u, stream);
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_REDUCE_FFN, 1u, stream);
-	if ( error == cudaSuccess && SparkQwen36ModuleTpReduceDelta(state,slot,rows) != SPARK_STATUS_OK )
-		error = cudaErrorUnknown;
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_REDUCE_FFN, 0u, stream);
+	{
+		uint64_t spin_start = state->profile_enabled != 0u ? SparkQwen36ProfileNow() : 0ull;
+		if ( error == cudaSuccess && SparkQwen36ModuleTpReduceDelta(state,slot,rows) != SPARK_STATUS_OK )
+			error = cudaErrorUnknown;
+		if ( state->profile_enabled != 0u )
+			state->profile_ffn_spin_nanos += SparkQwen36ProfileNow() - spin_start;
+	}
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchResidualAdd(stream,slot->hidden_bf16,slot->delta_bf16,rows,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"ffn"));
@@ -860,9 +897,7 @@ static SparkStatus SparkQwen36ModuleRunLayer(SparkQwen36ModuleState *state, Spar
 {
 	SparkQwen36AttnRowsView rows_view;
 	SparkStatus status;
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_NORM, 1u, (cudaStream_t)slot->cuda_stream);
 	cudaError_t error = SparkQwen36LaunchRmsNorm((cudaStream_t)slot->cuda_stream,slot->hidden_bf16,state->attention_norm_by_layer[layer],slot->normalized_bf16,rows,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_NORM, 0u, (cudaStream_t)slot->cuda_stream);
 	rows_view.slot_mapping = slot->slot_mapping;
 	rows_view.row_positions = slot->row_positions;
 	rows_view.row_lane_indices = slot->row_lane_indices;
@@ -1443,17 +1478,18 @@ static cudaError_t SparkQwen36ModuleEmitHead(SparkQwen36ModuleState *state, Spar
 	uint32_t out_index = state->owns_embedding != 0u ? 1u : 0u,head_rows = prefill != 0 && emit_all == 0u ? 1u : rows;
 	const void *head_hidden = head_rows == 1u && rows != 1u ? (const void *)((const uint8_t *)slot->hidden_bf16 + ((uint64_t)(rows - 1u) * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES)) : slot->hidden_bf16;
 	cudaError_t error;
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_HEAD, 1u, stream);
 	error = SparkQwen36LaunchRmsNorm(stream,head_hidden,state->final_norm_weight_bf16,slot->normalized_bf16,head_rows,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchHeadScreenedArgmaxScore(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->output_token_ids,slot->head_scores_f32,state->tp_rank * state->tp.head_rows,head_rows,state->tp.head_rows);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchHeadMaxLocPack(stream,slot->head_scores_f32,slot->output_token_ids,slot->head_maxloc_u64,head_rows);
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_HEAD, 0u, stream);
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_REDUCE_HEAD, 1u, stream);
-	if ( error == cudaSuccess && SparkQwen36TpReduceU64Max(&state->tp,slot->head_maxloc_u64,head_rows,stream) != SPARK_STATUS_OK )
-		error = cudaErrorUnknown;
-	SparkQwen36ProfileRecord(state, SPARK_QWEN36_PROFILE_REDUCE_HEAD, 0u, stream);
+	{
+		uint64_t spin_start = state->profile_enabled != 0u ? SparkQwen36ProfileNow() : 0ull;
+		if ( error == cudaSuccess && SparkQwen36TpReduceU64Max(&state->tp,slot->head_maxloc_u64,head_rows,stream) != SPARK_STATUS_OK )
+			error = cudaErrorUnknown;
+		if ( state->profile_enabled != 0u )
+			state->profile_head_spin_nanos += SparkQwen36ProfileNow() - spin_start;
+	}
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchHeadMaxLocUnpack(stream,slot->head_maxloc_u64,slot->output_token_ids,head_rows);
 	if ( error == cudaSuccess )
@@ -1756,6 +1792,7 @@ static void SparkQwen36ModuleInvalidateLaneSequenceContinuity(
 
 static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, SparkQwen36ResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, const SparkQwen36PrefillFrameView *prefill, uint32_t rows)
 {
+	uint64_t frame_start = state->profile_enabled != 0u ? SparkQwen36ProfileNow() : 0ull;
 	SparkStatus status = SparkQwen36ModuleUploadRows(state,slot,context,frame,prefill,rows);
 	uint32_t layer;
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u )
@@ -1769,7 +1806,7 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
 	if ( state->profile_enabled != 0u )
-		SparkQwen36ProfilePrint(state);
+		SparkQwen36ProfilePrint(state, SparkQwen36ProfileNow() - frame_start);
 	return(status);
 }
 
@@ -2158,16 +2195,6 @@ SparkStatus SparkQwen36ResidentDecodeStageInitialize(
     {
         const char *profile_env = getenv("SPARK_QWEN36_PROFILE");
         state->profile_enabled = profile_env != 0 && strcmp(profile_env, "0") != 0 ? 1u : 0u;
-        if ( state->profile_enabled != 0u )
-        {
-            uint32_t profile_phase, profile_edge;
-            for (profile_phase = 0u; profile_phase < SPARK_QWEN36_PROFILE_PHASE_COUNT; profile_phase++)
-                for (profile_edge = 0u; profile_edge < 2u; profile_edge++)
-                    if ( cudaEventCreateWithFlags(&state->profile_events[profile_phase][profile_edge], cudaEventDefault) != cudaSuccess )
-                        state->profile_enabled = 0u;
-            if ( state->profile_enabled != 0u )
-                fprintf(stderr, "%s gpu_profile enabled\n", SPARK_QWEN36_MODULE_TAG);
-        }
     }
     atomic_init(&state->submitted_count, 0u);
     atomic_init(&state->completed_count, 0u);
