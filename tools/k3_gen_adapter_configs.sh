@@ -38,6 +38,7 @@ for i in $(seq 0 15); do
     echo "  \"max_rows\": 16,"
     echo "  \"resident_capacity\": 16,"
     echo "  \"kv_pages\": 2,"
+    echo "  \"capture_graphs\": 1,"
     echo "  \"hidden\": 7168,"
     echo "  \"device_collective\": {"
     echo "    \"backend\": \"nccl\","

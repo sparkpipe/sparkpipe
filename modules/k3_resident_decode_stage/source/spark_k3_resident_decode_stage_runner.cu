@@ -202,7 +202,131 @@ typedef struct SparkK3RunnerState
 	uint32_t max_context;
 	uint32_t multiprocessors;
 	uint64_t kv_page_bytes;
+	/* captured slice graphs, keyed by rows (sequences = rows, commit = 1,
+	 * packed_rows = rows * K3_TOP_K - all deterministic per shape) */
+	struct
+	{
+		cudaGraphExec_t executable;
+		uint32_t rows;
+		uint32_t warm;
+		uint32_t live;
+	} graphs[4];
+	uint32_t graph_capture_enabled;
+	uint32_t graphs_broken;
 } SparkK3RunnerState;
+
+/* The dense-offset kernel + the whole slice launch form the capture unit. */
+static int32_t K3RunnerLaunchSliceDirect(SparkK3RunnerState *state,
+	SparkK3StepInput *in, uint32_t rows, uint32_t sequences,
+	uint32_t packed_rows, cudaStream_t stream)
+{
+	K3RunnerDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, rows);
+	return SparkK3DispatchStep(&state->dispatch, in, rows, sequences, 1u,
+		packed_rows, state->max_context, state->multiprocessors, stream);
+}
+
+/* Capture-safe only with no collective (tp_degree 1: the layer folds its own
+ * projections and the hook no-ops) or with the NCCL device tier (the host
+ * tiers' syncs and host staging are not replayable), and never on the legacy
+ * default stream. */
+static uint32_t K3RunnerGraphsEligible(const SparkK3RunnerState *state,
+	cudaStream_t stream)
+{
+	if ( state->graph_capture_enabled == 0u || state->graphs_broken != 0u ||
+		stream == 0 )
+		return 0u;
+	if ( state->device_collective_created == 0 )
+		return 1u;
+	return state->device_collective.backend_kind ==
+		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL ? 1u : 0u;
+}
+
+static int32_t K3RunnerLaunchSliceGraph(SparkK3RunnerState *state,
+	SparkK3StepInput *in, uint32_t rows, uint32_t sequences,
+	uint32_t packed_rows, cudaStream_t stream)
+{
+	SparkK3RunnerState *s = state;
+	uint32_t i;
+	for ( i = 0u; i < 4u; ++i )
+	{
+		if ( s->graphs[i].live != 0u && s->graphs[i].rows == rows )
+		{
+			if ( s->graphs[i].executable != 0 )
+			{
+				cudaError_t error = cudaGraphLaunch(s->graphs[i].executable,
+					stream);
+				return error == cudaSuccess ? SPARK_K3_DISPATCH_OK :
+					SPARK_K3_DISPATCH_ERR_CUDA;
+			}
+			/* first sighting was the warm run; capture now */
+			break;
+		}
+	}
+	/* First sighting of this shape: run the warm step DIRECT (the shared-memory
+	 * opt-ins and tensor-map encodes must precede capture), slot it, and
+	 * capture on the next submit. */
+	if ( i == 4u )
+	{
+		for ( i = 0u; i < 4u; ++i )
+			if ( s->graphs[i].live == 0u )
+			{
+				s->graphs[i].rows = rows;
+				s->graphs[i].warm = 1u;
+				s->graphs[i].live = 1u;
+				break;
+			}
+		return K3RunnerLaunchSliceDirect(s, in, rows, sequences,
+			packed_rows, stream);
+	}
+	cudaGraph_t graph = 0;
+	cudaError_t begin_error = cudaStreamBeginCapture(stream,
+		cudaStreamCaptureModeRelaxed);
+	if ( begin_error != cudaSuccess )
+		{ s->graphs_broken = 1u; return K3RunnerLaunchSliceDirect(s, in, rows, sequences, packed_rows, stream); }
+	int32_t status = K3RunnerLaunchSliceDirect(s, in, rows, sequences,
+		packed_rows, stream);
+	cudaError_t end_error = cudaStreamEndCapture(stream, &graph);
+	if ( end_error != cudaSuccess || status != SPARK_K3_DISPATCH_OK || graph == 0 )
+	{
+		/* An invalidated capture discards the recorded work - the step did
+		 * NOT execute. Run it directly and disable the graph path. */
+		if ( graph != 0 )
+			(void)cudaGraphDestroy(graph);
+		s->graphs_broken = 1u;
+		return K3RunnerLaunchSliceDirect(s, in, rows, sequences, packed_rows, stream);
+	}
+	cudaGraphExec_t executable = 0;
+	cudaError_t instantiate_error = cudaGraphInstantiate(&executable, graph, 0ull);
+	(void)cudaGraphDestroy(graph);
+	if ( instantiate_error != cudaSuccess )
+	{
+		s->graphs_broken = 1u;
+		return K3RunnerLaunchSliceDirect(s, in, rows, sequences, packed_rows, stream);
+	}
+	/* store (reuse the warm slot when found, else the first free one) */
+	for ( i = 0u; i < 4u; ++i )
+		if ( s->graphs[i].live != 0u && s->graphs[i].rows == rows )
+		{
+			s->graphs[i].executable = executable;
+			return cudaGraphLaunch(executable, stream) == cudaSuccess ?
+				SPARK_K3_DISPATCH_OK : SPARK_K3_DISPATCH_ERR_CUDA;
+		}
+	for ( i = 0u; i < 4u; ++i )
+		if ( s->graphs[i].live == 0u )
+		{
+			s->graphs[i].executable = executable;
+			s->graphs[i].rows = rows;
+			s->graphs[i].warm = 1u;
+			s->graphs[i].live = 1u;
+			return cudaGraphLaunch(executable, stream) == cudaSuccess ?
+				SPARK_K3_DISPATCH_OK : SPARK_K3_DISPATCH_ERR_CUDA;
+		}
+	/* no slot: keep the executable orphaned-safe by launching, then leak-free
+	 * teardown cannot reach it - destroy immediately and run direct */
+	(void)cudaGraphExecDestroy(executable);
+	s->graphs_broken = 1u;
+	return K3RunnerLaunchSliceDirect(s, in, rows, sequences, packed_rows, stream);
+}
 
 static uint32_t K3RunnerFirstLayer(uint32_t stage_index)
 {
@@ -372,6 +496,9 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->max_rows = configuration->max_input_row_count;
 	state->max_context = configuration->resident_sequence_capacity;
 	state->multiprocessors = configuration->multiprocessors;
+	state->graph_capture_enabled =
+		(configuration->flags & SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS) != 0u ?
+		1u : 0u;
 	/* Zero kv_page_bytes means the K3 latent KV geometry (the adapter is
 	 * CUDA-free and cannot see it). */
 	if ( configuration->kv_page_bytes == 0u )
@@ -618,10 +745,14 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.output_score = state->output_score;
 	(void)dense_offsets;
 	/* Device-side dense offsets: no host traffic on the hot path (the
-	 * CUDA-graph capture contract; a per-step H2D would sync). */
-	K3RunnerDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, rows);
-	status = SparkK3DispatchStep(&state->dispatch, &in, rows, sequences,
-		1u, packed_rows, state->max_context, state->multiprocessors, stream);
+	 * CUDA-graph capture contract; a per-step H2D would sync). The slice
+	 * runs through the per-shape graph when capture is eligible. */
+	if ( K3RunnerGraphsEligible(state, stream) != 0u )
+		status = K3RunnerLaunchSliceGraph(state, &in, rows, sequences,
+			packed_rows, stream);
+	else
+		status = K3RunnerLaunchSliceDirect(state, &in, rows, sequences,
+			packed_rows, stream);
 	if ( status != SPARK_K3_DISPATCH_OK )
 		return SPARK_STATUS_INTERNAL_ERROR;
 	/* The head stage commits the tokens. */
@@ -702,6 +833,9 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 		SparkTpCollectiveDestroy(&state->collective);
 	if ( state->device_collective_created != 0 )
 		SparkTpDeviceCollectiveDestroy(&state->device_collective);
+	for ( uint32_t i = 0u; i < 4u; ++i )
+		if ( state->graphs[i].live != 0u && state->graphs[i].executable != 0 )
+			(void)cudaGraphExecDestroy(state->graphs[i].executable);
 	cudaFree(state->fused_device);
 	SparkK3DispatchDestroy(&state->dispatch);
 	/* The dispatch registered the pack mmap for UVA weight access; a

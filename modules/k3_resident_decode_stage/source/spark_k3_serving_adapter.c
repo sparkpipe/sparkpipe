@@ -91,6 +91,8 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 		configuration->runtime_limits.resident_sequence_capacity);
 	state->runner_config.kv_pages_per_sequence =
 		K3ServingJsonU32(&doc, root, "kv_pages", 2u);
+	if ( K3ServingJsonU32(&doc, root, "capture_graphs", 0u) != 0u )
+		state->runner_config.flags |= SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS;
 	/* Zero lets the runner supply K3GlobalKv::kPageBytes (the CUDA-side
 	 * geometry the adapter cannot see without the device headers). */
 	state->runner_config.kv_page_bytes = 0u;

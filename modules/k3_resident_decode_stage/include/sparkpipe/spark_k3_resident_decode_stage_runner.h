@@ -32,8 +32,17 @@ extern "C" {
     ((uint32_t)sizeof(SparkK3StageRunner))
 
 #define SPARK_K3_STAGE_RUNNER_FLAG_TENSOR_PARALLEL 0x00000001u
+/* Capture the per-shape slice launch (dense offsets + all layers) into a
+ * CUDA graph and replay it on later submits. Requires a non-default
+ * execution stream and a capture-safe tier (NCCL device collective, or
+ * tp_degree 1 with no collective); otherwise the runner stays on direct
+ * launches. The first submit of a shape warms (shared-memory opt-ins +
+ * tensor-map encodes must precede capture); the second captures; replays
+ * follow. */
+#define SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS 0x00000002u
 #define SPARK_K3_STAGE_RUNNER_KNOWN_FLAGS \
-    (SPARK_K3_STAGE_RUNNER_FLAG_TENSOR_PARALLEL)
+    (SPARK_K3_STAGE_RUNNER_FLAG_TENSOR_PARALLEL | \
+     SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS)
 
 typedef struct SparkK3StageRunnerConfiguration
 {

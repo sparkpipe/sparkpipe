@@ -76,7 +76,13 @@ int main(int argc, char **argv)
 	config.kv_pages_per_sequence = 2u;
 	config.kv_page_bytes = K3GlobalKv::kPageBytes;
 	config.rank_pack_path = argv[1];
-	config.execution_stream = 0;
+	/* A real (non-legacy) stream: the legacy default stream cannot capture,
+	 * and the graph path is what this gate now exercises (step 2 replays
+	 * the captured slice). */
+	cudaStream_t runner_stream = 0;
+	cudaStreamCreate(&runner_stream);
+	config.execution_stream = runner_stream;
+	config.flags |= SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS;
 	config.layer_collective_override = NoopHook;
 	int multiprocessors = 0;
 	cudaDeviceGetAttribute(&multiprocessors, cudaDevAttrMultiProcessorCount, 0);
@@ -111,6 +117,7 @@ int main(int argc, char **argv)
 
 	uint16_t h_hidden[K3_HIDDEN];
 	uint16_t h_hidden_second[K3_HIDDEN];
+	uint16_t h_hidden_graph[K3_HIDDEN];
 	memset(&dispatch, 0, sizeof(dispatch));
 	dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
@@ -134,15 +141,15 @@ int main(int argc, char **argv)
 	cudaEventCreate(&end);
 	cudaEventCreate(&e_embed);
 	cudaEventCreate(&e_slice);
-	cudaEventRecord(begin, 0);
-	cudaEventRecord(e_embed, 0);
+	cudaEventRecord(begin, runner_stream);
+	cudaEventRecord(e_embed, runner_stream);
 	/* the submit's embedding phase ends when the slice's first kernels
 	 * queue - approximate by recording right after the embed completes on
 	 * the stream via the runner's own ordering; measure the whole submit
 	 * and the warm-step slice by difference */
-	cudaEventRecord(e_slice, 0);
+	cudaEventRecord(e_slice, runner_stream);
 	status = SparkK3StageRunnerSubmit(&runner, &dispatch);
-	cudaEventRecord(end, 0);
+	cudaEventRecord(end, runner_stream);
 	cudaEventSynchronize(end);
 	float millis = 0.0f, embed_millis = 0.0f, slice_millis = 0.0f;
 	cudaEventElapsedTime(&millis, begin, end);
@@ -170,12 +177,38 @@ int main(int argc, char **argv)
 	/* Determinism: a FRESH runner with the same input must reproduce step
 	 * 1 byte for byte. (Running the same runner twice legitimately differs:
 	 * the recurrent state advances and the cache fills.) */
-	cudaEventRecord(begin, 0);
+	/* Step 2 runs through the graph path: the runner captured the slice on
+	 * this submit (step 1 warmed it) and replays the executable. Its output
+	 * must match the direct-launch step 1 - the capture-replay numerics
+	 * gate. */
+	cudaEventRecord(begin, runner_stream);
 	status = SparkK3StageRunnerSubmit(&runner, &dispatch);
-	cudaEventRecord(end, 0);
+	cudaEventRecord(end, runner_stream);
 	cudaEventSynchronize(end);
 	cudaEventElapsedTime(&millis, begin, end);
-	printf("step 2: %.3f ms (warm)\n", (double)millis);
+	printf("step 2: %.3f ms (graph capture+replay)\n", (double)millis);
+	cudaMemcpy(h_hidden_graph, d_hidden, (uint64_t)K3_HIDDEN * 2u,
+		cudaMemcpyDeviceToHost);
+	uint32_t graph_mismatches = 0u;
+	for ( uint32_t i = 0u; i < K3_HIDDEN; ++i )
+	{
+		uint32_t a = h_hidden[i], b = h_hidden_graph[i];
+		uint32_t diff = a > b ? a - b : b - a;
+		uint32_t limit = i >= 6144u ? 64u : 4u;
+		if ( diff > limit )
+		{
+			if ( graph_mismatches < 8u )
+				printf("  graph mismatch[%u] run1=%04x run2=%04x\n", i, a, b);
+			graph_mismatches++;
+		}
+	}
+	printf("graph-replay vs step 1: %u mismatches beyond ULP limit\n",
+		graph_mismatches);
+	if ( graph_mismatches != 0u )
+	{
+		printf("GRAPH REPLAY MISMATCH %u\n", graph_mismatches);
+		return 1;
+	}
 	SparkK3StageRunnerDestroy(&runner);
 	status = SparkK3StageRunnerInitialize(&runner, &config);
 	if ( status != SPARK_STATUS_OK )
