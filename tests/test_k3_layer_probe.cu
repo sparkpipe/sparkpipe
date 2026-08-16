@@ -26,9 +26,11 @@ __global__ static void SnapKernel(const uint16_t *src, uint16_t *dst, uint32_t c
 
 static uint32_t g_hook_count = 0u;
 
-static void ProbeHook(void *context, void *stream_void, uint32_t layer)
+static void ProbeHook(void *context, void *stream_void, uint32_t layer,
+	uint32_t phase)
 {
 	(void)context;
+	(void)phase;
 	g_hook_count++;
 	SnapKernel<<<(K3_HIDDEN + 255u) / 256u, 256u, 0, (cudaStream_t)stream_void>>>(
 		g_probe_buffers->hidden_bf16,

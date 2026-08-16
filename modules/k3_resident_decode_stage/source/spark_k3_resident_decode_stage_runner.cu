@@ -37,15 +37,20 @@ __global__ static void K3RunnerDenseOffsetsKernel(uint32_t *offsets, uint32_t ro
 }
 
 // The stream-ordered completion the device tier's submission carries: fold
-// the summed fused segments into the AttnRes partial with the fused-epilogue
-// rule, then free the heap context.
+// the summed fused segment(s) into the AttnRes partial with the
+// fused-epilogue rule (SET at a boundary restart, ADD otherwise), then free
+// the heap context. The folds land on the SUBMISSION's stream, so the order
+// (NCCL kernels, then folds, then the next consumer) holds without the
+// legacy default stream.
 typedef struct SparkK3RunnerTpContext
 {
 	K3LayerBuffers *buffers;
 	uint16_t *fused;
+	cudaStream_t stream;
 	uint32_t rows;
 	uint32_t boundary;
 	uint32_t segments;
+	uint32_t phase;
 } SparkK3RunnerTpContext;
 
 static void K3RunnerTpCompletion(void *context,
@@ -57,33 +62,42 @@ static void K3RunnerTpCompletion(void *context,
 	uint32_t rows = tp->rows;
 	uint32_t elements = rows * K3_HIDDEN;
 	uint16_t *fused = tp->fused;
-	/* the completion runs stream-ordered on the collective's stream; the
-	 * adds land on the same stream via the default */
-	if ( tp->boundary != 0u )
-		K3PartialSet(b, fused, rows, 0);
+	if ( tp->phase == 0u )
+	{
+		/* the attention segment: restart at a boundary, accumulate otherwise */
+		if ( tp->boundary != 0u )
+			K3PartialSet(b, fused, rows, tp->stream);
+		else
+			K3PartialAdd(b, fused, rows, tp->stream);
+	}
 	else
-		K3PartialAdd(b, fused, rows, 0);
-	K3PartialAdd(b, fused + elements, rows, 0);
-	if ( tp->segments == 3u )
-		K3PartialAdd(b, fused + 2u * elements, rows, 0);
+	{
+		/* the MLP segment(s): routed_up (the dense_down at layer 0) and the
+		 * shared_w2 always accumulate on top of the restart */
+		K3PartialAdd(b, fused, rows, tp->stream);
+		if ( tp->segments == 2u )
+			K3PartialAdd(b, fused + elements, rows, tp->stream);
+	}
 	delete tp;
 }
 
-// The fused per-layer collective's pack: attention_out | hidden | shared_out
-// land contiguously so ONE combine covers the layer's three sharded
-// projections.
+// The per-phase pack: phase 0 stages attention_out, phase 1 stages hidden
+// (routed_up / dense_down) and, for routed layers, shared_out after it.
 __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 	const uint16_t *hidden,const uint16_t *shared,uint16_t *fused,
-	uint32_t rows,uint32_t segments)
+	uint32_t rows,uint32_t phase,uint32_t segments)
 {
 	uint32_t i = (blockIdx.x * blockDim.x) + threadIdx.x;
 	uint32_t elements = rows * K3_HIDDEN;
-	if ( i < elements )
-	{
+	if ( i >= elements )
+		return;
+	if ( phase == 0u )
 		fused[i] = attention[i];
-		fused[elements + i] = hidden[i];
-		if ( segments == 3u )
-			fused[2u * elements + i] = shared[i];
+	else
+	{
+		fused[i] = hidden[i];
+		if ( segments == 2u )
+			fused[elements + i] = shared[i];
 	}
 }
 
@@ -231,10 +245,14 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 	return SPARK_STATUS_OK;
 }
 
-// The slice's per-layer hook. Attention_out for every layer (kda_out at
-// KDA layers, mla_out at MLA), hidden for the MoE routed_up (and layer 0's
-// dense_down), shared_out for the MoE shared_w2.
-static void K3RunnerLayerCollective(void *context, void *stream_void, uint32_t layer)
+// The slice's per-layer hook, fired in two phases. Phase 0 all-reduces
+// and folds the attention output (kda_out / mla_out) BEFORE the MLP-side
+// retrieval, whose partial mix must contain the post-attention contribution;
+// phase 1 does the MoE's routed_up (layer 0's dense_down) and, for routed
+// layers, the shared_w2. At tp_degree 1 the layer folded its own projections
+// (tp_sharded = 0) and the hook is a no-op.
+static void K3RunnerLayerCollective(void *context, void *stream_void,
+	uint32_t layer, uint32_t phase)
 {
 	SparkK3RunnerState *state = (SparkK3RunnerState *)context;
 	K3LayerBuffers *b = state->dispatch.buffers;
@@ -242,21 +260,25 @@ static void K3RunnerLayerCollective(void *context, void *stream_void, uint32_t l
 	uint32_t rows = state->rows;
 	uint32_t boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u;
 	uint32_t elements = rows * K3_HIDDEN;
-	uint32_t segments = layer == 0u ? 2u : 3u;
+	uint32_t segments = phase == 0u ? 1u : (layer == 0u ? 1u : 2u);
+	if ( b->tp_sharded == 0u )
+		return;
 	if ( state->device_collective_created != 0 )
 	{
 		/* THE DEVICE TIER: one pack kernel + ONE stream-ordered combine
-		 * submission; the completion folds the summed segments into the
-		 * partial on the stream. No sync, no host staging. */
+		 * submission per phase; the completion folds the summed segment(s)
+		 * into the partial on the same stream. No sync, no host staging. */
 		K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
 			b->attention_out_bf16,b->hidden_bf16,b->shared_out_bf16,
-			state->fused_device,rows,segments);
+			state->fused_device,rows,phase,segments);
 		SparkK3RunnerTpContext *completion_context = new SparkK3RunnerTpContext;
 		completion_context->fused = state->fused_device;
 		completion_context->buffers = b;
+		completion_context->stream = stream;
 		completion_context->rows = rows;
 		completion_context->boundary = boundary;
 		completion_context->segments = segments;
+		completion_context->phase = phase;
 		SparkTpDeviceCollectiveSubmission submission;
 		memset(&submission, 0, sizeof(submission));
 		submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -276,38 +298,44 @@ static void K3RunnerLayerCollective(void *context, void *stream_void, uint32_t l
 	}
 	if ( state->collective_created != 0 )
 	{
-		/* THE FUSED PER-LAYER COLLECTIVE: one message of
-		 * attention_out | hidden | shared_out instead of three separate
-		 * exchanges - three syncs become one, and the 43 KB message uses
-		 * the wire far better than three 14 KB ones. The host tier syncs
-		 * once; the device tier replaces this whole block with one
-		 * stream-ordered combine. */
+		/* THE HOST TIER: per-phase stage + all-reduce + upload + fold. Two
+		 * exchanges per layer instead of one - the ordering the MLP-side
+		 * retrieval needs - the device tier replaces this whole block with
+		 * two stream-ordered combines. */
 		cudaStreamSynchronize(stream);
-		cudaMemcpy(state->staging_values, b->attention_out_bf16,
-			(uint64_t)elements * 2u, cudaMemcpyDeviceToHost);
-		cudaMemcpy(state->staging_values + elements, b->hidden_bf16,
-			(uint64_t)elements * 2u, cudaMemcpyDeviceToHost);
-		if ( segments == 3u )
-			cudaMemcpy(state->staging_values + 2u * elements, b->shared_out_bf16,
+		if ( phase == 0u )
+		{
+			cudaMemcpy(state->staging_values, b->attention_out_bf16,
 				(uint64_t)elements * 2u, cudaMemcpyDeviceToHost);
-		SparkTpCollectiveAllReduceSumBf16(&state->collective,
-			state->staging_values, (uint64_t)segments * elements,
-			state->staging_scratch);
-		cudaMemcpy(b->attention_out_bf16, state->staging_values,
-			(uint64_t)elements * 2u, cudaMemcpyHostToDevice);
-		cudaMemcpy(b->hidden_bf16, state->staging_values + elements,
-			(uint64_t)elements * 2u, cudaMemcpyHostToDevice);
-		if ( segments == 3u )
-			cudaMemcpy(b->shared_out_bf16, state->staging_values + 2u * elements,
+			SparkTpCollectiveAllReduceSumBf16(&state->collective,
+				state->staging_values, elements, state->staging_scratch);
+			cudaMemcpy(b->attention_out_bf16, state->staging_values,
 				(uint64_t)elements * 2u, cudaMemcpyHostToDevice);
+			if ( boundary != 0u )
+				K3PartialSet(b, b->attention_out_bf16, rows, stream);
+			else
+				K3PartialAdd(b, b->attention_out_bf16, rows, stream);
+		}
+		else
+		{
+			cudaMemcpy(state->staging_values, b->hidden_bf16,
+				(uint64_t)elements * 2u, cudaMemcpyDeviceToHost);
+			if ( segments == 2u )
+				cudaMemcpy(state->staging_values + elements, b->shared_out_bf16,
+					(uint64_t)elements * 2u, cudaMemcpyDeviceToHost);
+			SparkTpCollectiveAllReduceSumBf16(&state->collective,
+				state->staging_values, (uint64_t)segments * elements,
+				state->staging_scratch);
+			cudaMemcpy(b->hidden_bf16, state->staging_values,
+				(uint64_t)elements * 2u, cudaMemcpyHostToDevice);
+			if ( segments == 2u )
+				cudaMemcpy(b->shared_out_bf16, state->staging_values + elements,
+					(uint64_t)elements * 2u, cudaMemcpyHostToDevice);
+			K3PartialAdd(b, b->hidden_bf16, rows, stream);
+			if ( segments == 2u )
+				K3PartialAdd(b, b->shared_out_bf16, rows, stream);
+		}
 	}
-	if ( boundary != 0u )
-		K3PartialSet(b, b->attention_out_bf16, rows, stream);
-	else
-		K3PartialAdd(b, b->attention_out_bf16, rows, stream);
-	K3PartialAdd(b, b->hidden_bf16, rows, stream);
-	if ( segments == 3u )
-		K3PartialAdd(b, b->shared_out_bf16, rows, stream);
 }
 SparkStatus SparkK3StageRunnerInitialize(
 	SparkK3StageRunner *runner,

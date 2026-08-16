@@ -12,9 +12,11 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 
-static void NoopHook(void *context, void *stream, uint32_t layer)
+static void NoopHook(void *context, void *stream, uint32_t layer,
+	uint32_t phase)
 {
 	(void)context;
+	(void)phase;
 	(void)stream;
 	(void)layer;
 }

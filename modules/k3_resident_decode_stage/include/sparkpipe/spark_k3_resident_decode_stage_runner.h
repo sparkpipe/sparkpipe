@@ -57,14 +57,16 @@ typedef struct SparkK3StageRunnerConfiguration
      * adapter fills it from its configuration file. */
     const SparkTpCollectiveConfig *tp_collective;
     /* Optional DEVICE-DIRECT tier: when non-null the per-layer hook packs
-     * the three sharded projections and submits ONE stream-ordered combine
+     * each phase's sharded projections and submits a stream-ordered combine
      * through SparkTpDeviceCollectiveSubmitBf16 (no syncs, no host
      * staging); the host TCP tier above remains the fallback. */
     const SparkTpDeviceCollectiveConfig *device_collective;
     /* Diagnostic override: when set, the slice's layer_collective hook is
      * THIS callback instead of the TP all-reduce (even at tp_degree 1), so
-     * a test can observe the stream per layer on the exact serving path. */
-    void (*layer_collective_override)(void *context, void *stream, uint32_t layer);
+     * a test can observe the stream per layer on the exact serving path.
+     * phase 0 = after the attention half, phase 1 = after the MLP half. */
+    void (*layer_collective_override)(void *context, void *stream,
+        uint32_t layer, uint32_t phase);
     void *layer_collective_context;
 } SparkK3StageRunnerConfiguration;
 

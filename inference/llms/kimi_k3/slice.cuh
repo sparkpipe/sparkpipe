@@ -150,7 +150,12 @@ struct K3SliceState
 	// all-reduce is wrong by one layer's residual. Null skips it, which is
 	// every single-rank contract (the host harnesses, the numerical gates,
 	// and a PP-only deployment).
-	void (*layer_collective)(void *context, void *stream, uint32_t layer);
+	/* phase 0 fires after the attention half (before the MLP-side
+	 * retrieval, which reads the POST-attention partial), phase 1 after the
+	 * MLP half. The hook all-reduces the phase's sharded outputs and folds
+	 * the sums into the partial. */
+	void (*layer_collective)(void *context, void *stream, uint32_t layer,
+		uint32_t phase);
 	void *collective_context;
 };
 
@@ -371,8 +376,15 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
-		if ( boundary != 0u )
+		/* the sharded path defers the restart to the phase-0 hook, whose
+		 * completion sets the SUMMED attention output into the partial */
+		if ( boundary != 0u && buffers->tp_sharded == 0u )
 			K3PartialSet(buffers,buffers->attention_out_bf16,rows,stream);
+		// The sharded attention output all-reduces and folds BEFORE the
+		// MLP-side retrieval: the retrieval's partial mix must contain the
+		// post-attention contribution on every rank.
+		if ( state->layer_collective != 0 )
+			state->layer_collective(state->collective_context,stream,layer,0u);
 		// MLP-side retrieval, over the post-append bank and the post-attention
 		// partial. It runs at layer 0 as well: b_0 is in the bank by then.
 		K3AttnRes(buffers,buffers->attnres_mlp_weight,
@@ -387,7 +399,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		if ( state->layer_collective != 0 )
-			state->layer_collective(state->collective_context,stream,layer);
+			state->layer_collective(state->collective_context,stream,layer,1u);
 		// THE DRAFTER READS THE STREAM, AND THE PARTIAL IS THE STREAM. What
 		// flows between blocks under AttnRes is the running partial - the next
 		// block's first act is a retrieval that REPLACES its input - so the
