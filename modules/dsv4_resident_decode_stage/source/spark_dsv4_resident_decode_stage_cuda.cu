@@ -2391,8 +2391,7 @@ extern "C" cudaError_t SparkDsv4ConfigureCudaKernels(uint32_t *multiprocessor_co
     if ( error == cudaSuccess )
         error = cudaFuncSetAttribute(
             SparkLmLinearKernel<128u,
-                SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC,
-                SPARK_LM_CTA_WARPS>,
+                SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC>,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)((uint64_t)SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT *
                 SPARK_DSV4_MODEL_OUTPUT_LORA_RANK * sizeof(float)));
