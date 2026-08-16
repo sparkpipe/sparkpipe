@@ -549,6 +549,11 @@ extern cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, const
 extern cudaError_t SparkQwen38LaunchExpertDown(cudaStream_t stream, const SparkQwen38LinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count);
 extern cudaError_t SparkQwen38LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen38LaunchGroupedExpertLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, const uint32_t *group_tile_prefix, void *output_bf16, uint32_t source_row_count, uint32_t multiprocessor_count);
+extern cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, void *output_bf16, uint32_t source_row_count);
+/* The MoE switches from the scalar grouped path to the tensor-core tile
+ * path (SparkLmExpertTileAllKernel) at a full 16-row M-tile; SPARK_LM_TILE
+ * in the common kernel header. */
+#define SPARK_QWEN38_MODULE_MOE_TILE_ROWS 16u
 extern cudaError_t SparkQwen38LaunchSwiGlu(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension);
 extern cudaError_t SparkQwen38LaunchSharedGate(cudaStream_t stream, void *accum_bf16, const void *gate_weight_bf16, uint32_t row_count, uint32_t dimension);
 
@@ -723,13 +728,30 @@ static SparkStatus SparkQwen38ModuleRunMoe(SparkQwen38ModuleState *state, SparkQ
 	if ( error == cudaSuccess )
 		error = SparkQwen38LaunchMoeRoute(stream,slot->moe_indices_u32,rows,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION,slot->moe_group_offset_u32,slot->moe_inverse_u32,slot->moe_grouped_rows_u32,slot->moe_tile_prefix_w1_u32,slot->moe_tile_prefix_w2_u32);
 	if ( error == cudaSuccess )
-		error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_gate_packed_bf16,rows,state->multiprocessor_count);
-	if ( error == cudaSuccess )
-		error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_slot_up_bf16,rows,state->multiprocessor_count);
-	if ( error == cudaSuccess )
-		error = SparkQwen38LaunchSwiGlu(stream,slot->moe_gate_packed_bf16,slot->moe_slot_up_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION);
-	if ( error == cudaSuccess )
-		error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,state->multiprocessor_count);
+	{
+		if ( rows >= SPARK_QWEN38_MODULE_MOE_TILE_ROWS )
+		{
+			/* Tensor-core tile path: gridDim.z spans the experts, FP8
+			 * decodes to BF16 fragments under wmma mma_sync. */
+			error = SparkQwen38LaunchGroupedExpertTileLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_gate_packed_bf16,rows);
+			if ( error == cudaSuccess )
+				error = SparkQwen38LaunchGroupedExpertTileLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_slot_up_bf16,rows);
+			if ( error == cudaSuccess )
+				error = SparkQwen38LaunchSwiGlu(stream,slot->moe_gate_packed_bf16,slot->moe_slot_up_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION);
+			if ( error == cudaSuccess )
+				error = SparkQwen38LaunchGroupedExpertTileLinear(stream,&weights->experts_w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN);
+		}
+		else
+		{
+			error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_gate_packed_bf16,rows,state->multiprocessor_count);
+			if ( error == cudaSuccess )
+				error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_slot_up_bf16,rows,state->multiprocessor_count);
+			if ( error == cudaSuccess )
+				error = SparkQwen38LaunchSwiGlu(stream,slot->moe_gate_packed_bf16,slot->moe_slot_up_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION);
+			if ( error == cudaSuccess )
+				error = SparkQwen38LaunchGroupedExpertLinear(stream,&weights->experts_w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN,state->multiprocessor_count);
+		}
+	}
 	if ( error == cudaSuccess )
 		error = SparkQwen38LaunchMoePairReduce(stream,slot->moe_slot_out_bf16,slot->moe_inverse_u32,slot->moe_weights_f32,slot->delta_bf16,rows,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION);
 	if ( error == cudaSuccess )

@@ -1,10 +1,10 @@
 {
   "schema_version": 3,
   "model_revision": "d2dc35658bcf77e66643428cb52e774cc3b5bd29",
-  "stage_pack_path": "packs/qwen38_fp8_tp4_pp4_stage.spstage",
+  "stage_pack_path": "packs/qwen38_fp8_tp16_stage.spstage",
   "max_sequence_positions": 262144,
-  "tp_degree": 4,
-  "cuda_graph_count_by_pp_stage": [1, 1, 1, 1],
+  "tp_degree": 16,
+  "cuda_graph_count_by_pp_stage": [1],
   "tp_collective": {
     "backend": "hidden_transport",
     "backend_module_path": "lib/hidden_transport.so",

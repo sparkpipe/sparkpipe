@@ -61,21 +61,16 @@
 #define SPARK_QWEN38_SERVING_TARGET \
 	"cuda.sm121.qwen38.resident_decode_stage.fp8"
 #define SPARK_QWEN38_SERVING_PROGRAM_NAME "resident_decode"
-/* World ranks in the TP4xPP4 deployment: stage_index is the world rank,
- * pp_stage = stage_index / TP_DEGREE. Pipeline boundaries (hidden in/out,
- * token in/out) are PP boundaries; the descriptor's stage_layer_counts is
- * indexed by PP stage. The TP-rank tensor sharding (column/row-parallel
- * hidden slices and the router/expert all-reduces) is OUTSTANDING and lands
- * with the rank-local packs. */
+/* 16 world ranks; stage_index is the world rank. The TP degree is a
+ * RUNTIME value from the stage configuration ("tp_degree": 4 -> TP4xPP4,
+ * 16 -> TP16xPP1), so one adapter serves both topologies. Pipeline
+ * boundaries (hidden in/out, token in/out) are PP boundaries and the
+ * per-PP-stage layer counts derive from the degree. The TP-rank tensor
+ * sharding (column/row-parallel hidden slices and the router/expert
+ * all-reduces) is OUTSTANDING and lands with the rank-local packs. */
 #define SPARK_QWEN38_SERVING_STAGE_COUNT 16u
-#define SPARK_QWEN38_SERVING_TP_DEGREE 4u
-#define SPARK_QWEN38_SERVING_PP_STAGE_COUNT \
-	(SPARK_QWEN38_SERVING_STAGE_COUNT / SPARK_QWEN38_SERVING_TP_DEGREE)
-
-static uint32_t SparkQwen38ServingPpStageIndex(uint32_t world_rank)
-{
-	return(world_rank / SPARK_QWEN38_SERVING_TP_DEGREE);
-}
+#define SPARK_QWEN38_SERVING_DEFAULT_TP_DEGREE 4u
+#define SPARK_QWEN38_SERVING_MAX_PP_STAGE_COUNT 4u
 /* Serving caps context at the model's native 262144 until the KV-tier
  * plan lands; the module's KV pool is sized from the deployment's
  * kv_block_count, and the cap merely refuses configs past the model. */
@@ -95,7 +90,8 @@ static const char *const SparkQwen38ServingConfigurationMembers[] =
 	"schema_version",
 	"model_revision",
 	"stage_pack_path",
-	"max_sequence_positions"
+	"max_sequence_positions",
+	"tp_degree"
 };
 
 typedef struct SparkQwen38ServingPending
@@ -162,6 +158,9 @@ typedef struct SparkQwen38ServingState
 	void *execution_stream;
 	char stage_pack_path[SPARK_INTERNAL_PATH_BYTES];
 	uint32_t stage_index;
+	uint32_t tp_degree;
+	uint32_t pp_stage_count;
+	uint32_t stage_layer_counts[SPARK_QWEN38_SERVING_MAX_PP_STAGE_COUNT];
 	uint32_t first_layer_index;
 	uint32_t stage_layer_count;
 	uint32_t stage_attn_layer_count;
@@ -187,6 +186,16 @@ typedef struct SparkQwen38ServingState
 	SparkQwen38ServingTransportShim shim;
 	SparkQwen38ServingPending pending[SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkQwen38ServingState;
+
+static uint32_t SparkQwen38ServingPpStageIndex(const SparkQwen38ServingState *state, uint32_t world_rank)
+{
+	return(state->tp_degree != 0u ? world_rank / state->tp_degree : world_rank / SPARK_QWEN38_SERVING_DEFAULT_TP_DEGREE);
+}
+
+static uint32_t SparkQwen38ServingPpStageCount(const SparkQwen38ServingState *state)
+{
+	return(state->pp_stage_count != 0u ? state->pp_stage_count : SPARK_QWEN38_SERVING_STAGE_COUNT / SPARK_QWEN38_SERVING_DEFAULT_TP_DEGREE);
+}
 
 static const SparkModelServingAdapterDescriptor SparkQwen38ServingDescriptor =
 {
@@ -216,7 +225,7 @@ static const SparkModelServingAdapterDescriptor SparkQwen38ServingDescriptor =
 	.model_revision = QWEN38_MODEL_REVISION,
 	.driver_program_name = SPARK_QWEN38_SERVING_PROGRAM_NAME,
 	.artifact_sha256 = QWEN38_CONTRACT_SHA256,
-	.stage_layer_counts = {23u,23u,23u,23u},
+	.stage_layer_counts = {0u,0u,0u,0u},
 	.minimum_efficient_submission_row_count = 0u
 };
 
@@ -265,6 +274,10 @@ static SparkStatus SparkQwen38ServingLoadConfiguration(
 	token = status == SPARK_STATUS_OK ? SparkQwen38ServingJsonMember(&document,root,"model_revision") : -1;
 	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,QWEN38_MODEL_REVISION)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen38ServingJsonUnsigned(&document,root,"tp_degree",&state->tp_degree);
+	if ( status == SPARK_STATUS_OK && (state->tp_degree == 0u || SPARK_QWEN38_SERVING_STAGE_COUNT % state->tp_degree != 0u || state->tp_degree > SPARK_QWEN38_SERVING_STAGE_COUNT) )
+		status = SPARK_STATUS_SCHEMA_ERROR;
 	token = status == SPARK_STATUS_OK ? SparkQwen38ServingJsonMember(&document,root,"stage_pack_path") : -1;
 	if ( status == SPARK_STATUS_OK )
 		status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(&document,token,&relative_stage_pack_path);
@@ -277,13 +290,13 @@ static SparkStatus SparkQwen38ServingLoadConfiguration(
 	return(status);
 }
 
-static uint32_t SparkQwen38ServingFirstLayer(uint32_t stage_index)
+static uint32_t SparkQwen38ServingFirstLayer(const SparkQwen38ServingState *state, uint32_t stage_index)
 {
 	uint32_t index,first_layer,pp_stage;
 	first_layer = 0u;
-	pp_stage = SparkQwen38ServingPpStageIndex(stage_index);
+	pp_stage = SparkQwen38ServingPpStageIndex(state,stage_index);
 	for (index=0u; index<pp_stage; index++)
-		first_layer += SparkQwen38ServingDescriptor.stage_layer_counts[index];
+		first_layer += state->stage_layer_counts[index];
 	return(first_layer);
 }
 
@@ -382,8 +395,8 @@ static SparkStatus SparkQwen38ServingValidateBoundaries(
 	uint64_t boundary_bytes;
 	uint32_t pp_stage;
 	boundary_bytes = (uint64_t)submission->row_count * SPARK_QWEN38_MODEL_HIDDEN_BF16_BYTES;
-	pp_stage = SparkQwen38ServingPpStageIndex(state->stage_index);
-	if ( (pp_stage != 0u && (submission->hidden_input_address == 0 || submission->hidden_input_bytes < boundary_bytes)) || (pp_stage == 0u && (submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u)) || (pp_stage + 1u < SPARK_QWEN38_SERVING_PP_STAGE_COUNT && (submission->hidden_output_address == 0 || submission->hidden_output_bytes < boundary_bytes)) || (pp_stage + 1u == SPARK_QWEN38_SERVING_PP_STAGE_COUNT && (submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u)) )
+	pp_stage = SparkQwen38ServingPpStageIndex(state,state->stage_index);
+	if ( (pp_stage != 0u && (submission->hidden_input_address == 0 || submission->hidden_input_bytes < boundary_bytes)) || (pp_stage == 0u && (submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u)) || (pp_stage + 1u < SparkQwen38ServingPpStageCount(state) && (submission->hidden_output_address == 0 || submission->hidden_output_bytes < boundary_bytes)) || (pp_stage + 1u == SparkQwen38ServingPpStageCount(state) && (submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u)) )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
 }
@@ -712,13 +725,13 @@ static void SparkQwen38ServingBuildFrame(
 		context->flags |= SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE;
 		context->kv_block_table = &state->block_table;
 	}
-	if ( SparkQwen38ServingPpStageIndex(state->stage_index) != 0u )
+	if ( SparkQwen38ServingPpStageIndex(state,state->stage_index) != 0u )
 	{
 		context->flags |= SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT;
 		context->hidden_input_transport_session = (SparkHiddenTransportSession *)&state->shim;
 		context->hidden_input_post_receive_function = SparkQwen38ServingPostReceive;
 	}
-	if ( SparkQwen38ServingPpStageIndex(state->stage_index) + 1u < SPARK_QWEN38_SERVING_PP_STAGE_COUNT )
+	if ( SparkQwen38ServingPpStageIndex(state,state->stage_index) + 1u < SparkQwen38ServingPpStageCount(state) )
 	{
 		context->flags |= SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT;
 		context->hidden_output_transport_session = (SparkHiddenTransportSession *)&state->shim;
@@ -774,16 +787,16 @@ static void SparkQwen38ServingBuildFrame(
 		context->decode_batch = decode_batch;
 	}
 	memset(buffers,0,sizeof(SparkModelDriverBuffer[2]));
-	if ( SparkQwen38ServingPpStageIndex(state->stage_index) == 0u )
+	if ( SparkQwen38ServingPpStageIndex(state,state->stage_index) == 0u )
 	{
 		buffers[0].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
 		buffers[0].address = pending->frame_token_ids;
 		buffers[0].bytes = (uint64_t)frame_rows * sizeof(uint32_t);
 	}
-	if ( SparkQwen38ServingPpStageIndex(state->stage_index) + 1u == SPARK_QWEN38_SERVING_PP_STAGE_COUNT )
+	if ( SparkQwen38ServingPpStageIndex(state,state->stage_index) + 1u == SparkQwen38ServingPpStageCount(state) )
 	{
 		uint32_t out_index;
-		out_index = SparkQwen38ServingPpStageIndex(state->stage_index) == 0u ? 1u : 0u;
+		out_index = SparkQwen38ServingPpStageIndex(state,state->stage_index) == 0u ? 1u : 0u;
 		buffers[out_index].slot = 1u;
 		buffers[out_index].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
 		buffers[out_index].address = pending->frame_output_ids;
@@ -802,8 +815,8 @@ static void SparkQwen38ServingBuildFrame(
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	frame->program_id = state->program->program_id;
 	frame->execution_stream = state->execution_stream;
-	frame->buffers = SparkQwen38ServingPpStageIndex(state->stage_index) == 0u || SparkQwen38ServingPpStageIndex(state->stage_index) + 1u == SPARK_QWEN38_SERVING_PP_STAGE_COUNT ? buffers : 0;
-	frame->buffer_count = (SparkQwen38ServingPpStageIndex(state->stage_index) == 0u ? 1u : 0u) + (SparkQwen38ServingPpStageIndex(state->stage_index) + 1u == SPARK_QWEN38_SERVING_PP_STAGE_COUNT ? 1u : 0u);
+	frame->buffers = SparkQwen38ServingPpStageIndex(state,state->stage_index) == 0u || SparkQwen38ServingPpStageIndex(state,state->stage_index) + 1u == SparkQwen38ServingPpStageCount(state) ? buffers : 0;
+	frame->buffer_count = (SparkQwen38ServingPpStageIndex(state,state->stage_index) == 0u ? 1u : 0u) + (SparkQwen38ServingPpStageIndex(state,state->stage_index) + 1u == SparkQwen38ServingPpStageCount(state) ? 1u : 0u);
 	frame->residency = submission->residency;
 	frame->user_context = context;
 	frame->completion_function = SparkQwen38ServingDriverCompletion;
@@ -864,7 +877,7 @@ static SparkStatus SparkQwen38ServingRunFrame(
 		status = state->program->submit(state->driver_instance,&frame);
 	if ( status == SPARK_STATUS_OK )
 		status = pending->frame_status;
-	if ( status == SPARK_STATUS_OK && SparkQwen38ServingPpStageIndex(state->stage_index) + 1u == SPARK_QWEN38_SERVING_PP_STAGE_COUNT )
+	if ( status == SPARK_STATUS_OK && SparkQwen38ServingPpStageIndex(state,state->stage_index) + 1u == SparkQwen38ServingPpStageCount(state) )
 	{
 		if ( prefill != 0u )
 			pending->output_token_ids[lane] = (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u ? pending->frame_output_ids[0] : 0u;
@@ -902,7 +915,7 @@ static void SparkQwen38ServingComplete(
 	completion.accepted_token_count = (uint32_t)(pending->accepted_token_count > UINT32_MAX ? UINT32_MAX : pending->accepted_token_count);
 	completion.queue_delay_ns = pending->queue_delay_ns;
 	completion.service_time_ns = pending->service_time_ns;
-	if ( SparkQwen38ServingPpStageIndex(state->stage_index) + 1u == SPARK_QWEN38_SERVING_PP_STAGE_COUNT && status == SPARK_STATUS_OK )
+	if ( SparkQwen38ServingPpStageIndex(state,state->stage_index) + 1u == SparkQwen38ServingPpStageCount(state) && status == SPARK_STATUS_OK )
 	{
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->active_sequence_count;
@@ -1165,9 +1178,7 @@ static SparkStatus SparkQwen38ServingInitialize(
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->stage_index = configuration->stage_index;
-	state->first_layer_index = SparkQwen38ServingFirstLayer(configuration->stage_index);
-	state->stage_layer_count = SparkQwen38ServingDescriptor.stage_layer_counts[configuration->stage_index];
-	state->stage_attn_layer_count = SparkQwen38ServingStageAttentionLayers(state->first_layer_index,state->stage_layer_count);
+	state->tp_degree = SPARK_QWEN38_SERVING_DEFAULT_TP_DEGREE;
 	state->pipeline_slot_count = configuration->runtime_limits.max_inflight_submission_count;
 	state->max_active_sequence_count = configuration->runtime_limits.max_active_sequence_count;
 	state->max_input_row_count = configuration->runtime_limits.max_input_row_count;
@@ -1184,6 +1195,19 @@ static SparkStatus SparkQwen38ServingInitialize(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
+		/* PP geometry derives from the config's tp_degree: TP4 -> four
+		 * stages of 23 layers, TP16 -> one stage of 92. */
+		uint32_t pp,base,extra;
+		state->pp_stage_count = SPARK_QWEN38_SERVING_STAGE_COUNT / state->tp_degree;
+		if ( state->pp_stage_count > SPARK_QWEN38_SERVING_MAX_PP_STAGE_COUNT )
+			state->pp_stage_count = SPARK_QWEN38_SERVING_MAX_PP_STAGE_COUNT;
+		base = SPARK_QWEN38_MODEL_LAYER_COUNT / state->pp_stage_count;
+		extra = SPARK_QWEN38_MODEL_LAYER_COUNT % state->pp_stage_count;
+		for (pp = 0u; pp < state->pp_stage_count; pp++)
+			state->stage_layer_counts[pp] = base + (pp < extra ? 1u : 0u);
+		state->first_layer_index = SparkQwen38ServingFirstLayer(state,configuration->stage_index);
+		state->stage_layer_count = state->stage_layer_counts[SparkQwen38ServingPpStageIndex(state,configuration->stage_index)];
+		state->stage_attn_layer_count = SparkQwen38ServingStageAttentionLayers(state->first_layer_index,state->stage_layer_count);
 		state->max_sequence_positions = max_sequence_positions;
 		state->blocks_per_lane = (max_sequence_positions + SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 		state->kv_block_count = state->resident_sequence_capacity * state->blocks_per_lane;

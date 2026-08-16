@@ -1644,3 +1644,52 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertLinear(
 		output_bf16,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT,
 		view->input_dimension,rows_per_expert,multiprocessor_count));
 }
+
+/*
+ * Grouped FP8 expert linear on the TENSOR-CORE tile path:
+ * SparkLmExpertTileAllKernel spans the 512 experts on gridDim.z, decodes
+ * FP8_E4M3 block-128 weights to BF16 fragments (the vendor scale layout,
+ * verbatim) and consumes them through wmma mma_sync. This is the same
+ * kernel the dense batched path uses; only the grouped host launcher was
+ * missing. Used at rows >= 16, where every M-tile is full - below that the
+ * M=16 padding re-reads each expert's weight tile sixteen times and the
+ * scalar grouped path wins.
+ *
+ * source_row_map is the route's packed->source token table for w1/w3
+ * (indirect A reads), or 0 for w2 whose input is already expert-major
+ * packed (identity). group_row_offset is the per-expert packed range.
+ */
+extern "C" cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(
+	cudaStream_t stream,
+	const SparkQwen38LinearView *view,
+	const void *input_bf16,
+	const uint32_t *source_row_map,
+	const uint32_t *group_row_offset,
+	void *output_bf16,
+	uint32_t source_row_count)
+{
+	uint64_t rows_per_expert;
+	uint64_t payload_stride,scale_stride;
+	uint32_t m_blocks,n_tiles;
+	if ( view == 0 || input_bf16 == 0 || group_row_offset == 0 || output_bf16 == 0 ||
+		view->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
+		view->output_dimension % SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT != 0u ||
+		view->input_dimension % 64u != 0u ||
+		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
+		source_row_count == 0u )
+		return(cudaErrorInvalidValue);
+	rows_per_expert = (uint64_t)view->output_dimension / SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT;
+	if ( rows_per_expert % SPARK_LM_TILE_N != 0u )
+		return(cudaErrorInvalidValue);
+	payload_stride = rows_per_expert * view->input_dimension;
+	scale_stride = (rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u;
+	m_blocks = (source_row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
+	n_tiles = (uint32_t)(rows_per_expert / SPARK_LM_TILE_N);
+	SparkLmExpertTileAllKernel<32u><<<dim3(m_blocks,n_tiles,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT),SPARK_LM_CTA_THREADS,0u,stream>>>(
+		SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,
+		view->weight_payload,(const uint8_t *)view->weight_scale_e8m0,
+		payload_stride,scale_stride,
+		input_bf16,source_row_map,group_row_offset,output_bf16,
+		view->input_dimension,(uint32_t)rows_per_expert);
+	return(cudaGetLastError());
+}
