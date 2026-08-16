@@ -5239,7 +5239,13 @@ static SparkStatus SparkHiddenSparkHostRdmaConfigureRoute(
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     state->is_sender = state->local_rank == state->source_rank ? 1u : 0u;
     if (state->is_sender == 0u && state->local_rank != state->sink_rank)
+    {
+        fprintf(stderr,
+            "hidden_spark_rdma_configure_rank_mismatch local=%d source=%d sink=%d route=%s source_host=%s sink_host=%s\n",
+            state->local_rank,state->source_rank,state->sink_rank,
+            endpoint->route_name,endpoint->source_host,endpoint->sink_host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
     return SPARK_STATUS_OK;
 }
 
