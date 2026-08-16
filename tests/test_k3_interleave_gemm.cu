@@ -213,7 +213,7 @@ int main(void)
 		int32_t s1 = LmGemmEncodeActivationMap(&act_map, d_packed, TEST_PACKED,
 			TEST_IN, 16u, 64u, LmBf16Format::kStoredBits);
 		int32_t s2 = LmGemmEncodeWeightMapInterleaved(&wgt_map, d_weight,
-			TEST_IN, TEST_OUT, TEST_EXPERTS, TEST_TILE_N);
+			TEST_IN, TEST_OUT, TEST_EXPERTS, TEST_TILE_N, 128u);
 		printf("encode act=%d interleaved-weight=%d\n", s1, s2);
 	}
 
