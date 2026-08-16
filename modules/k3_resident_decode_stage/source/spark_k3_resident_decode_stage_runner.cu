@@ -561,7 +561,11 @@ SparkStatus SparkK3StageRunnerInitialize(
 			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INVALID_ARGUMENT; }
 		state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
 		state->dispatch.slice_state->collective_context = state;
+		fprintf(stderr, "sparkpipe_k3: creating host collective tp=%u rank=%u port=%u\n",
+			configuration->tp_degree, configuration->tp_rank,
+			configuration->tp_collective->listen_port);
 		status = SparkTpCollectiveCreate(configuration->tp_collective,&state->collective);
+		fprintf(stderr, "sparkpipe_k3: host collective create -> %d\n", (int)status);
 		if ( status != SPARK_STATUS_OK )
 			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return status; }
 		state->collective_created = 1;
