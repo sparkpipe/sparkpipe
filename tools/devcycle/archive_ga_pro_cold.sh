@@ -21,13 +21,15 @@ if [[ "${1:-}" == "--initial" ]]; then
     exit 0
 fi
 
-echo "archive_ga_pro_cold: waiting for the GA download to complete on $SOURCE_HOST"
+echo "archive_ga_pro_cold: waiting for the GA download completion pass on $SOURCE_HOST"
 while true; do
-    if ssh -o BatchMode=yes "$SOURCE_HOST"         "grep -q 'GA-DOWNLOAD-DONE' /tmp/ga-download.log 2>/dev/null"; then
+    if ssh -o BatchMode=yes "$SOURCE_HOST"         "grep -q 'FINISH-GA-DOWNLOAD' /tmp/finish-ga-download.log 2>/dev/null"; then
         break
     fi
     sleep 300
 done
+echo "archive_ga_pro_cold: waiting for the stage-1 rsync to settle"
+while pgrep -f 'rsync -a --info=progress2' >/dev/null 2>&1; do sleep 60; done
 echo "archive_ga_pro_cold: download complete; verifying shard sizes against the HF tree"
 
 ssh -o BatchMode=yes "$SOURCE_HOST" 'python3 - <<"PYEOF"
@@ -63,8 +65,7 @@ dest, started = sys.argv[1], sys.argv[2]
 files = []
 with open(os.path.join(dest, "ARCHIVE-SHA256SUMS")) as f:
     for line in f:
-        digest, path = line.rstrip("
-").split("  ", 1)
+        digest, path = line.rstrip("\n").split("  ", 1)
         size = os.path.getsize(os.path.join(dest, path.lstrip("./")))
         files.append({"path": path.lstrip("./"), "sha256": digest, "size": size})
 published = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -74,8 +75,7 @@ manifest = {
 }
 with open(os.path.join(dest, "MODEL_MANIFEST.json"), "w") as f:
     json.dump(manifest, f, indent=2)
-    f.write("
-")
+    f.write("\n")
 source_bytes = sum(e["size"] for e in files)
 receipt = {
     "format": "ds4-model-cold-archive-v1",
@@ -93,8 +93,7 @@ receipt = {
 }
 with open(os.path.join(dest, "ARCHIVE-RECEIPT.json"), "w") as f:
     json.dump(receipt, f, indent=2)
-    f.write("
-")
+    f.write("\n")
 status = {
     "files_done": len(files),
     "state": "complete",
@@ -103,8 +102,7 @@ status = {
 }
 with open(os.path.join(dest, "DOWNLOAD_STATUS.json"), "w") as f:
     json.dump(status, f, indent=2)
-    f.write("
-")
+    f.write("\n")
 print(json.dumps(receipt, indent=2))
 PYEOF
 
