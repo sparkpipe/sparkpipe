@@ -324,6 +324,7 @@ struct SparkDsv4ModuleState
 	uint32_t topk_column_count;
 	uint32_t index_slot_capacity;
 	uint32_t multiprocessor_count;
+	uint32_t dspark_enabled;
 	/* Sparse-attention partials: one slot per (row, head-group, split)
 	 * block; sized for max(multiprocessor_count, bucket_rows * head_groups)
 	 * so multi-wave grids stay within the allocation. */
@@ -866,6 +867,7 @@ static SparkStatus SparkDsv4ModuleConfigure(
 			host_services->kv_backing_maximum_bytes;
 	}
 	state->mtp_armed = 0u;
+	state->dspark_enabled = 0u;
 	status = SparkDsv4ModuleInitializeTpCollective(state,context);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -3335,7 +3337,7 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 	 * and acceptance replace this driver. */
 	if ( status == SPARK_STATUS_OK && continuation->rows == 1u &&
 		continuation->chain_step_count == 1u &&
-		SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
+		state->dspark_enabled != 0u )
 	{
 		SparkDsv4AsyncCompletion *async;
 		uint32_t slot_index = (uint32_t)(slot - state->slots);
