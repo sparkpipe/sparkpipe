@@ -74,7 +74,7 @@ def main() -> None:
     )
     mimo = read("inference/llms/mimo_2_5/layer.cuh")
     require(dsv4, "float *moe_scores_f32;", "DSV4 FP32 router output")
-    require(dsv4, "SparkDsv4LaunchMoeRoute", "DSV4 device grouping")
+    require(dsv4, "SparkDsv4LaunchGateRoute", "DSV4 fused routing entrypoint")
     require(dsv4, "SparkDsv4LaunchFusedExpertW13Act",
             "DSV4 fused indirect grouped expert W13 plus activation")
     require(dsv4, "SparkDsv4LaunchFusedSharedW13Act",
