@@ -119,6 +119,7 @@ typedef struct SparkQwen36ServingSpecState
 	uint32_t snapshot_index;
 	uint32_t draft_token_count;
 	uint32_t accepted_count;
+	uint32_t chain_dead;
 	uint32_t draft_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t emitted_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t committed_ids[SPARK_QWEN36_SERVING_MAX_COMMITTED_TOKENS];
@@ -160,6 +161,7 @@ typedef struct SparkQwen36ServingPending
 	uint32_t spec_active;
 	uint32_t spec_tokens_per_sequence;
 	uint32_t spec_total_accepted;
+	uint32_t spec_chain_dead;
 } SparkQwen36ServingPending;
 
 /* Per-frame transport shim state. The module calls post_receive/send through
@@ -1229,19 +1231,28 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		mtp_draft.sequence_id = sequence;
 		mtp_draft.row_token_ids = pending->frame_token_ids;
 		status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,0u,&token,&position,&sequence,1u,0u,submission->sequence_id,submission->sequence_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER,&mtp_draft,0,1u + draft_count);
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr, "qwen36_spec_diag decode_frame_failed lane=%u status=%d\n", lane, (int)status);
 		if ( status == SPARK_STATUS_OK )
 		{
 			spec->committed_ids[0] = pending->frame_output_ids[0];
 			for (draft=0u; draft<draft_count; draft++)
 				spec->draft_ids[draft] = pending->frame_output_ids[1u + draft];
+			/* The first draft predicts the just-committed position. If it
+			 * disagrees with the model's own emission, the verify frame would
+			 * ingest a wrong token and poison every emitted id, so the chain
+			 * is dead: commit the model token alone and skip verify/replay. */
+			spec->chain_dead = spec->draft_ids[0] != spec->committed_ids[0] ? 1u : 0u;
 		}
-		if ( status == SPARK_STATUS_OK )
+		if ( status == SPARK_STATUS_OK && spec->chain_dead == 0u )
 		{
 			memset(&gdn_snapshot,0,sizeof(gdn_snapshot));
 			gdn_snapshot.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 			gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
 			gdn_snapshot.snapshot_index = spec->snapshot_index;
 			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,spec->draft_ids,0,0,draft_count,spec->base_position,sequence,spec->base_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY,0,&gdn_snapshot,draft_count);
+			if ( status != SPARK_STATUS_OK )
+				fprintf(stderr, "qwen36_spec_diag verify_frame_failed lane=%u status=%d\n", lane, (int)status);
 		}
 		if ( status == SPARK_STATUS_OK )
 		{
@@ -1250,19 +1261,33 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			spec->accepted_count = 0u;
 			while ( spec->accepted_count + 1u < draft_count && spec->emitted_ids[spec->accepted_count] == spec->draft_ids[spec->accepted_count + 1u] )
 				spec->accepted_count++;
+			fprintf(stderr, "qwen36_spec_diag C0=%u accepted=%u drafts=[%u,%u,%u,%u] emitted=[%u,%u,%u,%u]\n",
+				spec->committed_ids[0], spec->accepted_count,
+				spec->draft_ids[0], spec->draft_ids[1], spec->draft_ids[2], spec->draft_ids[3],
+				spec->emitted_ids[0], spec->emitted_ids[1], spec->emitted_ids[2], spec->emitted_ids[3]);
 		}
 	}
 	min_accepted = 0u;
+	pending->spec_chain_dead = 0u;
 	if ( status == SPARK_STATUS_OK )
 	{
 		min_accepted = draft_count - 1u;
 		for (lane=0u; lane<submission->active_sequence_count; lane++)
+		{
+			if ( pending->spec[lane].chain_dead != 0u )
+				pending->spec_chain_dead = 1u;
 			if ( pending->spec[lane].accepted_count < min_accepted )
 				min_accepted = pending->spec[lane].accepted_count;
-		pending->spec_tokens_per_sequence = min_accepted + 3u;
-		pending->spec_total_accepted = min_accepted * submission->active_sequence_count;
+		}
+		/* A dead chain's verify output is poisoned, so a batch with any dead
+		 * lane commits the model token alone for every lane (speculation is
+		 * simply not credited this round; tokens stay exact). */
+		if ( pending->spec_chain_dead != 0u )
+			min_accepted = 0u;
+		pending->spec_tokens_per_sequence = pending->spec_chain_dead != 0u ? 1u : min_accepted + 3u;
+		pending->spec_total_accepted = pending->spec_chain_dead != 0u ? 0u : min_accepted * submission->active_sequence_count;
 	}
-	for (lane=0u; status == SPARK_STATUS_OK && lane<submission->active_sequence_count; lane++)
+	for (lane=0u; status == SPARK_STATUS_OK && pending->spec_chain_dead == 0u && lane<submission->active_sequence_count; lane++)
 	{
 		SparkQwen36ServingSpecState *spec;
 		uint32_t slot;
@@ -1271,16 +1296,22 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		uint64_t replay_base;
 		spec = &pending->spec[lane];
 		slot = spec->resident_slot;
-		replay_rows = min_accepted + 1u;
-		for (draft=0u; draft<min_accepted; draft++)
-			replay_tokens[draft] = spec->draft_ids[1u + draft];
-		replay_tokens[min_accepted] = spec->emitted_ids[min_accepted];
-		replay_base = spec->base_position + 1u;
+		/* The snapshot restores the GDN state to BEFORE the first drafted
+		 * position, so the replay must re-walk it too: the committed token
+		 * (draft 0, already checked against C0), the accepted drafts, and the
+		 * correction. */
+		replay_rows = min_accepted + 2u;
+		for (draft=0u; draft<=min_accepted; draft++)
+			replay_tokens[draft] = spec->draft_ids[draft];
+		replay_tokens[min_accepted + 1u] = spec->emitted_ids[min_accepted];
+		replay_base = spec->base_position;
 		memset(&gdn_snapshot,0,sizeof(gdn_snapshot));
 		gdn_snapshot.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 		gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
 		gdn_snapshot.snapshot_index = spec->snapshot_index;
 		status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST,0,&gdn_snapshot,1u);
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr, "qwen36_spec_diag replay_frame_failed lane=%u status=%d\n", lane, (int)status);
 		if ( status == SPARK_STATUS_OK )
 		{
 			for (draft=0u; draft<min_accepted; draft++)
