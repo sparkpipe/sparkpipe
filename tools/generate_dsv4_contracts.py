@@ -216,6 +216,7 @@ def render_header(
             ("DSPARK_NOISE_TOKEN_ID", contract["dspark"]["noise_token_id"]),
             ("DSPARK_MARKOV_RANK", contract["dspark"]["markov_rank"]),
             ("DSPARK_TARGET_LAYER_COUNT", len(contract["dspark"]["target_layer_ids"])),
+            ("DSPARK_TARGET_LAYER_FIRST", contract["dspark"]["target_layer_ids"][0]),
             ("MAX_POSITIONS", model["maximum_context_tokens"]),
             ("ATTN_QUERY_HEAD_COUNT", model["attention_head_count"]),
             ("ATTN_KV_HEAD_COUNT", model["kv_head_count"]),

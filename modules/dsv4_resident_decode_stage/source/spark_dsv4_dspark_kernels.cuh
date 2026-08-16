@@ -243,12 +243,11 @@ extern "C" cudaError_t SparkDsv4LaunchDsparkAttention(cudaStream_t stream,
 static __global__ void SparkDsv4DsparkMarkovBiasAccumKernel(
 	const uint16_t *logits_bf16,const uint16_t *markov_w2_bf16,
 	const uint16_t *markov_embed_bf16,float *logits_f32,
-	uint32_t vocab_count,uint32_t rank,uint32_t position)
+	uint32_t vocab_offset,uint32_t shard_count,uint32_t rank,uint32_t position)
 {
 	uint32_t element_index;
-	uint32_t vocab_stride = (vocab_count + blockDim.x - 1u) / blockDim.x;
 	for (element_index = blockIdx.x * blockDim.x + threadIdx.x;
-		element_index < vocab_count;
+		element_index < shard_count;
 		element_index += gridDim.x * blockDim.x)
 	{
 		float bias = 0.0f;
@@ -256,37 +255,39 @@ static __global__ void SparkDsv4DsparkMarkovBiasAccumKernel(
 		for (k = 0u; k < rank; k++)
 			bias = fmaf(
 				SparkLmBf16ToFloat(markov_w2_bf16,
-					((uint64_t)element_index * rank) + k),
+					((uint64_t)(vocab_offset + element_index) * rank) + k),
 				SparkLmBf16ToFloat(markov_embed_bf16,k),bias);
-		logits_f32[((uint64_t)position * vocab_count) + element_index] =
+		logits_f32[((uint64_t)position * shard_count) + element_index] =
 			SparkLmBf16ToFloat(logits_bf16,
-				((uint64_t)position * vocab_count) + element_index) + bias;
+				((uint64_t)position * shard_count) + element_index) + bias;
 	}
 }
 
 extern "C" cudaError_t SparkDsv4LaunchDsparkMarkovBiasAccum(cudaStream_t stream,
 	const void *logits_bf16,const void *markov_w2_bf16,
-	const void *markov_embed_bf16,float *logits_f32,uint32_t vocab_count,
-	uint32_t rank,uint32_t position,uint32_t multiprocessor_count)
+	const void *markov_embed_bf16,float *logits_f32,uint32_t vocab_offset,
+	uint32_t shard_count,uint32_t rank,uint32_t position,
+	uint32_t multiprocessor_count)
 {
 	if ( stream == 0 || logits_bf16 == 0 || markov_w2_bf16 == 0 ||
-		markov_embed_bf16 == 0 || logits_f32 == 0 || vocab_count == 0u ||
+		markov_embed_bf16 == 0 || logits_f32 == 0 || shard_count == 0u ||
 		rank == 0u || multiprocessor_count == 0u )
 		return(cudaErrorInvalidValue);
 	SparkDsv4DsparkMarkovBiasAccumKernel<<<multiprocessor_count,
 		SPARK_LM_CTA_THREADS,0u,stream>>>((const uint16_t *)logits_bf16,
 		(const uint16_t *)markov_w2_bf16,(const uint16_t *)markov_embed_bf16,
-		logits_f32,vocab_count,rank,position);
+		logits_f32,vocab_offset,shard_count,rank,position);
 	return(cudaGetLastError());
 }
 
 /* Greedy argmax over a full-vocab f32 logits row. */
 static __global__ void SparkDsv4DsparkArgmaxKernel(const float *logits_f32,
-	uint32_t vocab_count,uint32_t *output_token_id)
+	uint32_t shard_count,uint32_t vocab_offset,uint32_t *output_token_id,
+	float *output_score)
 {
 	uint32_t element_index,best = 0u;
 	float best_score = -3.0e38f;
-	for (element_index = threadIdx.x; element_index < vocab_count;
+	for (element_index = threadIdx.x; element_index < shard_count;
 		element_index += blockDim.x)
 	{
 		float score = logits_f32[element_index];
@@ -314,18 +315,22 @@ static __global__ void SparkDsv4DsparkArgmaxKernel(const float *logits_f32,
 			__syncthreads();
 		}
 		if ( threadIdx.x == 0u )
-			*output_token_id = shared_ids[0u];
+		{
+			*output_token_id = vocab_offset + shared_ids[0u];
+			*output_score = shared_scores[0u];
+		}
 	}
 }
 
 extern "C" cudaError_t SparkDsv4LaunchDsparkArgmax(cudaStream_t stream,
-	const float *logits_f32,uint32_t vocab_count,uint32_t *output_token_id)
+	const float *logits_f32,uint32_t shard_count,uint32_t vocab_offset,
+	uint32_t *output_token_id,float *output_score)
 {
 	if ( stream == 0 || logits_f32 == 0 || output_token_id == 0 ||
-		vocab_count == 0u )
+		output_score == 0 || shard_count == 0u )
 		return(cudaErrorInvalidValue);
 	SparkDsv4DsparkArgmaxKernel<<<1u,SPARK_LM_CTA_THREADS,0u,stream>>>(
-		logits_f32,vocab_count,output_token_id);
+		logits_f32,shard_count,vocab_offset,output_token_id,output_score);
 	return(cudaGetLastError());
 }
 
@@ -368,6 +373,47 @@ extern "C" cudaError_t SparkDsv4LaunchDsparkTapMean(cudaStream_t stream,
 		SparkDsv4DsparkTapMeanKernel<<<blocks,SPARK_LM_CTA_THREADS,0u,
 			stream>>>((const uint16_t *)streams_bf16,(uint16_t *)tap_bf16,
 			row_count,stream_count,dimension);
+	}
+	return(cudaGetLastError());
+}
+
+/* Expand a [rows x dim] bf16 block into [rows x streams x dim] (each stream
+ * a copy), the draft block's input expansion (reference: x.unsqueeze(2)
+ * .repeat(1,1,hc_mult,1)). */
+static __global__ void SparkDsv4DsparkExpandStreamsKernel(
+	const uint16_t *input_bf16,uint16_t *output_bf16,uint32_t row_count,
+	uint32_t stream_count,uint32_t dimension)
+{
+	uint32_t element_index,row,stream_index;
+	for (element_index = blockIdx.x * blockDim.x + threadIdx.x;
+		element_index < row_count * dimension;
+		element_index += gridDim.x * blockDim.x)
+	{
+		row = element_index / dimension;
+		for (stream_index = 0u; stream_index < stream_count; stream_index++)
+			SparkLmStoreBf16(output_bf16,
+				((uint64_t)row * stream_count + stream_index) * dimension +
+					(element_index - row * dimension),
+				SparkLmBf16ToFloat(input_bf16,element_index));
+	}
+}
+
+extern "C" cudaError_t SparkDsv4LaunchExpandStreams(cudaStream_t stream,
+	const void *input_bf16,void *output_bf16,uint32_t row_count,
+	uint32_t stream_count,uint32_t dimension,uint32_t multiprocessor_count)
+{
+	if ( stream == 0 || input_bf16 == 0 || output_bf16 == 0 ||
+		row_count == 0u || stream_count == 0u || dimension == 0u ||
+		multiprocessor_count == 0u )
+		return(cudaErrorInvalidValue);
+	{
+		uint32_t blocks = ((uint64_t)row_count * dimension +
+			SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS;
+		if ( blocks > multiprocessor_count )
+			blocks = multiprocessor_count;
+		SparkDsv4DsparkExpandStreamsKernel<<<blocks,SPARK_LM_CTA_THREADS,0u,
+			stream>>>((const uint16_t *)input_bf16,
+			(uint16_t *)output_bf16,row_count,stream_count,dimension);
 	}
 	return(cudaGetLastError());
 }
