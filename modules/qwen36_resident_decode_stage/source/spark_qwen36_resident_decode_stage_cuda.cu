@@ -1349,11 +1349,11 @@ extern "C" cudaError_t SparkQwen36LaunchRmsNorm(cudaStream_t stream, const void 
  *   u16 id_table[1 << id_bits]       (escape rid -> symbol value)
  *   u32 chunk_count                  (== (rows/64) * (cols/128))
  *   u32 chunk_offsets[chunk_count]   (relative to the payload base)
- *   chunks: u32 states[64], u16 lens[64], then byte-interleaved data
- *           (byte j of substream i at 384 + j*64 + i), 4B padded.
+ *   chunks: u32 states[128], u16 lens[128], then byte-interleaved data
+ *           (byte j of substream i at 768 + j*128 + i), 4B padded.
  *
  * Codec: canonical rANS per tensor, M = 4096 (l = 12), 8-bit renorm with
- * the 2^23 bound; 64 substreams x 128 values per 8192-value tile; the
+ * the 2^23 bound; 128 substreams x 64 values per 8192-value tile; the
  * escape is followed by 2 bytes of raw symbol id in the lane stream.
  * The arithmetic reproduces the original weight bits exactly, so the dots
  * remain bit-identical to the library scalar path.
@@ -1361,10 +1361,10 @@ extern "C" cudaError_t SparkQwen36LaunchRmsNorm(cudaStream_t stream, const void 
 #define SPARK_QWEN36_RANS_SLOTS 4096u
 #define SPARK_QWEN36_RANS_L 12u
 #define SPARK_QWEN36_RANS_BOUND (1u << 23)
-#define SPARK_QWEN36_RANS_SUBSTREAMS 64u
-#define SPARK_QWEN36_RANS_SUB_LEN 128u
-#define SPARK_QWEN36_RANS_HEADER_BYTES 384u
-#define SPARK_QWEN36_RANS_STAGE_BYTES 12288u
+#define SPARK_QWEN36_RANS_SUBSTREAMS 128u
+#define SPARK_QWEN36_RANS_SUB_LEN 64u
+#define SPARK_QWEN36_RANS_HEADER_BYTES 768u
+#define SPARK_QWEN36_RANS_STAGE_BYTES 13312u
 
 static __device__ void SparkQwen36RansBuildTable(uint32_t *s_sf, uint16_t *s_c, const uint32_t *entries3, uint32_t ndirect)
 {
@@ -1382,7 +1382,7 @@ static __device__ void SparkQwen36RansBuildTable(uint32_t *s_sf, uint16_t *s_c, 
 	}
 }
 
-/* Decode this warp's half (32 substreams x 128 values) of one staged chunk. */
+/* Decode this warp's quarter (32 substreams x 64 values) of one staged chunk. */
 static __device__ void SparkQwen36RansDecodeTileHalf(const uint32_t *s_sf, const uint16_t *s_c, const uint8_t *stage, const uint16_t *id_table, uint32_t half, __nv_bfloat16 *tile)
 {
 	const uint32_t lane = threadIdx.x & 31u;
@@ -1440,9 +1440,10 @@ static __global__ void SparkQwen36SmallBatchTiledRansKernel(const void *weight_r
 	extern __shared__ uint8_t rans_shared[];
 	uint32_t *s_sf = (uint32_t *)rans_shared;                    /* 4096 x 4B */
 	uint16_t *s_c = (uint16_t *)(rans_shared + 16384u);          /* 4096 x 2B */
-	uint8_t *stage = rans_shared + 24576u;                       /* 1 x 13KB */
-	__nv_bfloat16 *weight_tile = (__nv_bfloat16 *)(rans_shared + 37888u); /* 2 x 16KB */
-	__nv_bfloat16 *input_tile = weight_tile + 2u * SPARK_QWEN36_SMALL_BATCH_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK;
+	uint8_t *stage = rans_shared + 24576u;                       /* 1 x 23KB */
+	__nv_bfloat16 *weight_tile = (__nv_bfloat16 *)(rans_shared + 44576u); /* 3 x 16KB */
+	__nv_bfloat16 *input_tile = weight_tile + 3u * SPARK_QWEN36_SMALL_BATCH_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK;
+	uint32_t *tile_ready = (uint32_t *)(input_tile + SPARK_QWEN36_SMALL_BATCH_MAX_ROWS * SPARK_QWEN36_SMALL_BATCH_K_CHUNK);
 	const uint32_t GROUP_SHIFT = (ROWS == 2u) ? 1u : ((ROWS == 4u) ? 2u : 3u);
 	const uint32_t GROUPS = 32u >> GROUP_SHIFT;
 	const uint32_t PER_GROUP = SPARK_QWEN36_SMALL_BATCH_TILE_N / GROUPS;
@@ -1461,49 +1462,51 @@ static __global__ void SparkQwen36SmallBatchTiledRansKernel(const void *weight_r
 	const uint16_t *id_table = (const uint16_t *)(payload + 4u + 12u * (uint64_t)(ndirect + 1u) + 4u);
 	const uint32_t chunk_count = *(const uint32_t *)(payload + 4u + 12u * (uint64_t)(ndirect + 1u) + 4u + ((uint64_t)1u << id_bits) * 2u);
 	const uint32_t *offsets = (const uint32_t *)(payload + 4u + 12u * (uint64_t)(ndirect + 1u) + 4u + ((uint64_t)1u << id_bits) * 2u + 4u);
-	const uint8_t *chunks = (const uint8_t *)(offsets + chunk_count);
+	/* the offsets are payload-absolute; the chunks live at payload + offset */
 	const uint32_t tiles_per_row = input_dimension >> 7u;
 	#pragma unroll
 	for ( p = 0u; p < 32u; p++ )
 		acc[p] = 0.0f;
+	if ( thread < 4u )
+		tile_ready[thread] = 0u;
 	SparkQwen36RansBuildTable(s_sf, s_c, entries3, ndirect);
 	__syncthreads();
-	/* startup: the decode warps stage + decode tile 0 into buffer 0 */
-	if ( warp >= 28u && blockIdx.x * tiles_per_row < chunk_count )
+	if ( warp >= 28u )
 	{
-		const uint32_t ti = blockIdx.x * tiles_per_row;
-		const uint32_t off = offsets[ti];
-		const uint32_t end = (ti + 1u < chunk_count) ? offsets[ti + 1u] : (uint32_t)payload_bytes;
-		SparkQwen36RansStageChunk(stage, chunks + off, end - off);
-		SparkQwen36RansDecodeTileHalf(s_sf, s_c, stage, id_table, warp - 28u, weight_tile);
-		__threadfence_block();
-	}
-	__syncthreads();
-	for ( k_base = 0u; k_base < input_dimension; k_base += SPARK_QWEN36_SMALL_BATCH_K_CHUNK )
-	{
-		const uint32_t ki = k_base >> 7u;
-		/* the decode warps: stage + decode the tile ki+1 into the buffer (ki+1)&1 */
-		if ( warp >= 28u )
+		/* the free-running decode: the tiles 0..tiles_per_row-1, two ahead;
+		 * each warp decodes one quarter (32 substreams) of the tile and
+		 * bumps the per-buffer ready counter under a block fence. */
+		const uint32_t base_ti = blockIdx.x * tiles_per_row;
+		for ( uint32_t t = 0u; base_ti + t < chunk_count && t < tiles_per_row; t++ )
 		{
-			const uint32_t ti = blockIdx.x * tiles_per_row + ki + 1u;
-			if ( ki + 1u < tiles_per_row && ti < chunk_count )
-			{
-				const uint32_t off = offsets[ti];
-				const uint32_t end = (ti + 1u < chunk_count) ? offsets[ti + 1u] : (uint32_t)payload_bytes;
-				SparkQwen36RansStageChunk(stage, chunks + off, end - off);
-				SparkQwen36RansDecodeTileHalf(s_sf, s_c, stage, id_table, warp - 28u, weight_tile + ((ki + 1u) & 1u) * SPARK_QWEN36_SMALL_BATCH_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK);
-				__threadfence_block();
-			}
+			const uint32_t ti = base_ti + t;
+			const uint32_t off = offsets[ti];
+			const uint32_t end = (ti + 1u < chunk_count) ? offsets[ti + 1u] : (uint32_t)payload_bytes;
+			SparkQwen36RansStageChunk(stage, payload + off, end - off);
+			SparkQwen36RansDecodeTileHalf(s_sf, s_c, stage, id_table, warp - 28u, weight_tile + (t % 3u) * SPARK_QWEN36_SMALL_BATCH_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK);
+			__threadfence_block();
+			atomicAdd(&tile_ready[t % 3u], 1u);
 		}
-		if ( warp < 28u )
+	}
+	else
+	{
+		for ( k_base = 0u; k_base < input_dimension; k_base += SPARK_QWEN36_SMALL_BATCH_K_CHUNK )
 		{
+			const uint32_t ki = k_base >> 7u;
 			/* 8x128 input tile: threads 0..127; pad rows past row_count. */
 			if ( thread < 128u && (thread >> 4u) < row_count )
 				((uint4 *)input_tile)[thread] = __ldg(((const uint4 *)input_bf16) + ((((uint64_t)(thread >> 4u) * input_dimension) + k_base) >> 3u) + (thread & 15u));
 			else if ( thread < 128u )
 				((uint4 *)input_tile)[thread] = make_uint4(0u, 0u, 0u, 0u);
 			asm volatile("bar.sync 1, 896;");
-			const __nv_bfloat16 *wt = weight_tile + (ki & 1u) * SPARK_QWEN36_SMALL_BATCH_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK;
+			/* wait for the tile ki (the four decode quarters) */
+			if ( warp == 0u )
+			{
+				while ( *(volatile uint32_t *)&tile_ready[ki % 3u] != 4u ) {}
+				tile_ready[ki % 3u] = 0u;
+			}
+			asm volatile("bar.sync 1, 896;");
+			const __nv_bfloat16 *wt = weight_tile + (ki % 3u) * SPARK_QWEN36_SMALL_BATCH_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK;
 			#pragma unroll
 			for ( p = 0u; p < PER_GROUP; p++ )
 			{
@@ -1570,10 +1573,11 @@ static __global__ void SparkQwen36SmallBatchTiledRansKernel(const void *weight_r
 	}
 }
 
+
 extern "C" cudaError_t SparkQwen36LaunchSmallBatchLinearRans(cudaStream_t stream, const void *weight_rans, uint64_t payload_bytes, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
 	uint32_t blocks = (output_dimension + SPARK_QWEN36_SMALL_BATCH_TILE_N - 1u) / SPARK_QWEN36_SMALL_BATCH_TILE_N;
-	size_t shared_bytes = 37888u + (size_t)(2u * SPARK_QWEN36_SMALL_BATCH_TILE_N + SPARK_QWEN36_SMALL_BATCH_MAX_ROWS) * SPARK_QWEN36_SMALL_BATCH_K_CHUNK * sizeof(__nv_bfloat16);
+	size_t shared_bytes = 44576u + (size_t)(3u * SPARK_QWEN36_SMALL_BATCH_TILE_N + SPARK_QWEN36_SMALL_BATCH_MAX_ROWS) * SPARK_QWEN36_SMALL_BATCH_K_CHUNK * sizeof(__nv_bfloat16) + 64u;
 	cudaFuncSetAttribute((const void *)SparkQwen36SmallBatchTiledRansKernel<8u>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared_bytes);
 	cudaFuncSetAttribute((const void *)SparkQwen36SmallBatchTiledRansKernel<4u>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared_bytes);
 	cudaFuncSetAttribute((const void *)SparkQwen36SmallBatchTiledRansKernel<2u>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared_bytes);
@@ -1582,8 +1586,12 @@ extern "C" cudaError_t SparkQwen36LaunchSmallBatchLinearRans(cudaStream_t stream
 	else if ( row_count <= 4u )
 		SparkQwen36SmallBatchTiledRansKernel<4u><<<blocks, 1024u, shared_bytes, stream>>>(weight_rans, input_bf16, output_bf16, row_count, input_dimension, output_dimension, payload_bytes);
 	else
+	{
 		SparkQwen36SmallBatchTiledRansKernel<8u><<<blocks, 1024u, shared_bytes, stream>>>(weight_rans, input_bf16, output_bf16, row_count, input_dimension, output_dimension, payload_bytes);
-	return(cudaGetLastError());
+		cudaError_t e = cudaGetLastError();
+		if (e != cudaSuccess) fprintf(stderr, "rans_launch rows=%u blocks=%u shared=%zu err=%s\n", row_count, blocks, shared_bytes, cudaGetErrorString(e));
+		return(e);
+	}
 }
 
 
