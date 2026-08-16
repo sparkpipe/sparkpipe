@@ -13,9 +13,12 @@
   once. No parallel copies of tooling, adapters, or kernels.
 - **Gates:** `test_dry_law.py`, `test_code_size.py`,
   `test_must_work_targets.py`, the contract `--check` generators, and the
-  CUDA 13 sm_121a compile gate all pass on `unified`. The DRY gates are
-  wired into the CI workflow on the `unified-ci-wiring` companion commit;
-  it needs a `workflow`-scoped PAT to push, so it lands separately.
+  CUDA 13 sm_121a compile gate all pass on `unified`. CI evidence: the
+  draft tracking PR (#670, never merged) runs the full compile gate on
+  every `unified` push; it is green at `a83ce4e` (4m38s). The DRY gates
+  are additionally wired into the CI workflow on the `unified-ci-wiring`
+  companion commit; that needs a `workflow`-scoped PAT to push, so it
+  lands separately.
 - **Convergence:** as the six drivers stabilise and their consolidations
   land on main, `unified` and `main` become the same tree. Until then,
   sessions may rebase onto `unified` at any point; `unified` is the
@@ -60,3 +63,11 @@
   lines removed) and the TP4xPP4 driver pair into
   `tools/dsv4_tp4_pp4_stagepacks.py` (`--model`), updating the devcycle
   pro scripts to the single sharder.
+- Reconciled `tools/generate_dsv4_contracts.py` with the merged Pro
+  reality (first-light BF16 activations, FP8-E4M3 expert codec
+  selectability, the Pro alias guard in the Flash header, the first-light
+  note): all generated files now reproduce byte-exact, so the
+  verify-contracts CI step that was failing every session PR passes again.
+  Same fix proposed to main as PR #671 (CLEAN). Refreshed the two stale
+  DSV4 host tests to the current packer contract (3 packed draft layers,
+  format version 4).
