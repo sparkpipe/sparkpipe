@@ -348,11 +348,46 @@ static uint32_t K3RunnerLayerCount(uint32_t stage_index)
 // stage to the host, all-reduce in place, upload. The sync-per-projection is
 // the host-collective tier's known cost; the device-direct tier replaces it
 // without changing this file's contract.
+static void K3RunnerEmbedCompletion(void *context,
+	const SparkTpDeviceCollectiveCompletion *completion)
+{
+	(void)context;
+	(void)completion;
+}
+
 static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t stream,
 	const uint16_t *device_values, uint32_t rows)
 {
 	SparkStatus status;
 	uint32_t elements = rows * K3_HIDDEN;
+	if ( state->device_collective_created != 0 &&
+		state->device_collective.backend_kind ==
+			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
+	{
+		/* THE DEVICE TIER: the embedding is slot-encoded (the out-of-slice
+		 * rank contributes zero), so ONE stream-ordered all-reduce of the
+		 * rows x K3_HIDDEN buffer IS the embedding exchange - no sync, no
+		 * host staging. The buffer reduces in place; nothing folds. NCCL
+		 * only: the hidden-transport tier cannot narrow its pre-registered
+		 * frame. */
+		SparkTpDeviceCollectiveSubmission submission;
+		memset(&submission, 0, sizeof(submission));
+		submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+		submission.descriptor_bytes = sizeof(submission);
+		submission.slot_index = 0u;
+		submission.active_sequence_count = rows;
+		submission.flags =
+			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+		submission.ordinal = state->tp_next_ordinal++;
+		submission.reserved0 = elements;
+		submission.local_device = device_values;
+		submission.full_device = (void *)device_values;
+		submission.cuda_stream = stream;
+		submission.completion_function = K3RunnerEmbedCompletion;
+		submission.completion_context = 0;
+		return SparkTpDeviceCollectiveSubmitBf16(&state->device_collective,
+			&submission);
+	}
 	if ( state->collective_created == 0 )
 		return SPARK_STATUS_OK;
 	cudaError_t error = cudaStreamSynchronize(stream);
@@ -479,6 +514,10 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		submission.flags =
 			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 		submission.ordinal = state->tp_next_ordinal++;
+		/* the per-phase payload, not the 3-segment frame: phase 0 ships ONE
+		 * segment (14 KB per row), phase 1 one or two - the fixed frame
+		 * tripled phase 0's bytes on the wire */
+		submission.reserved0 = elements * segments;
 		submission.local_device = state->fused_device;
 		submission.full_device = state->fused_device;
 		submission.cuda_stream = stream;

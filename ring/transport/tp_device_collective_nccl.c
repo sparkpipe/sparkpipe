@@ -807,8 +807,10 @@ SparkStatus SparkTpDeviceCollectiveNcclSubmitBf16(SparkTpDeviceCollective *colle
 	uint64_t element_count;
 	if ( collective == 0 || submission == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	element_count = (uint64_t)submission->active_sequence_count *
-		collective->local_hidden_dimension;
+	element_count = submission->reserved0 != 0u
+		? (uint64_t)submission->reserved0
+		: (uint64_t)submission->active_sequence_count *
+			collective->local_hidden_dimension;
 	return(SparkTpNcclSubmitAllReduce(collective,submission,element_count,
 		SPARK_TP_NCCL_DATA_TYPE_BF16,SPARK_TP_NCCL_REDUCTION_SUM));
 }
