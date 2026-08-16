@@ -41,10 +41,8 @@
 
 ## Known gaps
 
-- `tests/test_dry_law.py` does not scan `inference/kernels/`, where the
-  shared kernel headers carry model-provenance comments. Extending the gate
-  there needs the comment sweep first; it is coordinated with the sessions
-  whose branches edit those files, and lands once they are quiet.
+- CI wiring for the DRY gates is prepared on `unified-ci-wiring` and
+  blocked only on a `workflow`-scoped PAT.
 
 ## Landing so far
 
@@ -54,6 +52,9 @@
 - The CI wiring for `test_dry_law.py` and `test_code_size.py` is prepared
   on the `unified-ci-wiring` companion commit; it needs a
   `workflow`-scoped PAT to push, so it lands separately.
+- Extended `test_dry_law.py` to scan `inference/kernels/` and swept the
+  shared kernel headers' model-provenance comments to model-neutral
+  phrasing (55 comment lines; no code change).
 - Consolidated the DSV4 Pro TP16 stagepack copy into the parameterized
   `tools/dsv4_tp16_stagepack.py` (`--model flash|pro`; 426 duplicated
   lines removed) and the TP4xPP4 driver pair into

@@ -23,6 +23,7 @@ COMMON = (
     "runtime",
     "deployment",
     "inference/stage",
+    "inference/kernels",
 )
 MODEL_TOKEN = re.compile(
     r"glm(?:5[_-]?2|52)|kimi|(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)|"

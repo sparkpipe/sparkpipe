@@ -1533,8 +1533,8 @@
     },
     {
       "path": "inference/kernels/attn.cuh",
-      "sha256": "165c6a984622fac6162257927c9bb85751450daf7598298344c82d25c1c0ad56",
-      "size_bytes": 28847
+      "sha256": "5cfa13e568534a44024ecfe0b0823782cc7c3d0377edf46936a95f3ff199d5bc",
+      "size_bytes": 28849
     },
     {
       "path": "inference/kernels/dtype.cuh",
@@ -1568,8 +1568,8 @@
     },
     {
       "path": "inference/kernels/formats/mxfp4.cuh",
-      "sha256": "36e8f810f49f74f085130a311b930484be4c566eec8e0ba3303a6d69585f9d1e",
-      "size_bytes": 3857
+      "sha256": "94dc549c0efe0aeca5708bb6810e54af2b9499fa68b6376769d3b93e28ab2d06",
+      "size_bytes": 3877
     },
     {
       "path": "inference/kernels/formats/nvfp4.cuh",
@@ -1583,13 +1583,13 @@
     },
     {
       "path": "inference/kernels/gqa.cuh",
-      "sha256": "caf763ad0d5c048f4eeaff7b157c47dffcfca48585a35cfdd7539370c84f500f",
-      "size_bytes": 11232
+      "sha256": "af4ebb5c17143d6f8ff66e1936de81059b84bb8d4402c4f9fce14d5f6d2c1761",
+      "size_bytes": 11258
     },
     {
       "path": "inference/kernels/graph.cuh",
-      "sha256": "d523a381da63e99a042c7858cd262c734a403448bd35493bdab0672363ebd663",
-      "size_bytes": 6565
+      "sha256": "4114353dbb70d512f1f54b87c892778512b8e20de4355c0d9d20a01dd2889e71",
+      "size_bytes": 6561
     },
     {
       "path": "inference/kernels/head.cuh",
@@ -1603,8 +1603,8 @@
     },
     {
       "path": "inference/kernels/layer_kind.cuh",
-      "sha256": "2b37def2c9e12d677091ec958e1bcf69f96b4fc21f010cd5500e0bb77358af76",
-      "size_bytes": 2412
+      "sha256": "170b4f2b07f7c8ba44c5aaf1be6a058b6164880c5e68e8dbb28bde1f8c817b7a",
+      "size_bytes": 2418
     },
     {
       "path": "inference/kernels/layout.cuh",
@@ -1613,28 +1613,28 @@
     },
     {
       "path": "inference/kernels/linear_attn.cuh",
-      "sha256": "43a0d0e039b3f4402ba2db284b6045e3d3e34ec9fb7b2bb00b4bcae0285acb4f",
-      "size_bytes": 30499
+      "sha256": "d51df3c7d55c092daf4ebe7e07d0101a94fbd5d9a0e3e74f832c53b49cf0c472",
+      "size_bytes": 30556
     },
     {
       "path": "inference/kernels/mma.cuh",
-      "sha256": "c8c3d6fd231e08820ca992d7c63d600c57fda4bbdeb2d1928d98d6fdf4d98bea",
-      "size_bytes": 20111
+      "sha256": "2b3c6211481d42276e54f1dca32f189a5e8f7a7ce09ec83dfb24b1b5a6f056c1",
+      "size_bytes": 20123
     },
     {
       "path": "inference/kernels/norm.cuh",
-      "sha256": "230598eca3e39d12649aa82bb02fdc6f8b8dcb1dcbc4bdeeaec35778109b9c03",
-      "size_bytes": 26173
+      "sha256": "6068f883657bd7d101d1d5743e867a73dddabc7ef788020d00333290c89a38d4",
+      "size_bytes": 26239
     },
     {
       "path": "inference/kernels/project.cuh",
-      "sha256": "70a419b615d23bcb371ebc9475064fb613dff2b19a768b74d3d2319c0311a072",
-      "size_bytes": 23378
+      "sha256": "42bc3f41a3dd49c661dace39c5577fa98e22d357ae76637b7d1d4c2f42a696ab",
+      "size_bytes": 23398
     },
     {
       "path": "inference/kernels/route.cuh",
-      "sha256": "55752d8c1b5ced2d74b9d814cab3901bdc2afaaff80fdbe9cd4ccab99d8608f4",
-      "size_bytes": 9666
+      "sha256": "ce5ced3e7e41e4920e040c32c8a4f3e22e0d86d6cd73e182c602780cf35931b0",
+      "size_bytes": 9674
     },
     {
       "path": "inference/kernels/scale.cuh",
@@ -1643,8 +1643,8 @@
     },
     {
       "path": "inference/kernels/speculate.cuh",
-      "sha256": "cc518b2cdd7d555f957df4020f218a9c4f08942290fa7af1ad3cf83af7d0332f",
-      "size_bytes": 6429
+      "sha256": "b8cabcf981c9e5337f87ddd019e1a5ff7e72309f70b14501f8b48d856b35dbdb",
+      "size_bytes": 6427
     },
     {
       "path": "inference/kernels/tensor_map.cuh",
@@ -1653,8 +1653,8 @@
     },
     {
       "path": "inference/kernels/tile.cuh",
-      "sha256": "5cef7c3af0266aa11f4c66ef8d93456c1bbd65dad2f641b0b372d4a56a1c2a71",
-      "size_bytes": 20041
+      "sha256": "b60ebe61e71e3bf6bb1864d605bea4490bf96408926e3361129799e0c8a7cb8c",
+      "size_bytes": 20034
     },
     {
       "path": "inference/kernels/tma.cuh",
@@ -1663,8 +1663,8 @@
     },
     {
       "path": "inference/kernels/topk.cuh",
-      "sha256": "ee7c9ced0d6ccf75a37271c7d10c0b7c297ca8684d4ef7b529fb4d86aa3e07a4",
-      "size_bytes": 13183
+      "sha256": "70ff7452eb3aeac8546c207fd290e2436e824ee8a41c958fedd9d32d452d317e",
+      "size_bytes": 13206
     },
     {
       "path": "inference/kernels/weight_codec.cuh",
@@ -4483,8 +4483,8 @@
     },
     {
       "path": "tests/test_dry_law.py",
-      "sha256": "68aa671548f3c9f7b0b38b302a0d5e4650c9fd6026bde687195f32204c74fbb9",
-      "size_bytes": 1583
+      "sha256": "262298f8160eba55fb500f1c55574089dd9fa1d91b3cb2e838a9f4b17964664e",
+      "size_bytes": 1608
     },
     {
       "path": "tests/test_dsv4_cache_plan.c",
@@ -5995,5 +5995,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 21340519
+  "total_bytes": 21340771
 }

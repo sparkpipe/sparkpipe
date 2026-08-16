@@ -4,8 +4,8 @@
 //
 // These were written five times in this tree: once per family, plus the shared
 // library nobody calls. Every copy is the same reduction with the model's
-// dimension baked in as a constant - glm52's RmsNormKernel is 62 lines carrying
-// seven SPARK_GLM52_MODEL_* references, none of which changes what it computes.
+// dimension baked in as a constant - the GLM-class RmsNormKernel is 62 lines carrying
+// seven SPARK_GLM_MODEL_* references, none of which changes what it computes.
 //
 // The dimension is a runtime argument here rather than a template parameter, and
 // that is deliberate: unlike a tile shape it sizes nothing at compile time, so
@@ -81,7 +81,7 @@ __global__ __launch_bounds__(THREADS, 1)
 // ROW STRIDE IS EXPLICIT AND HAS NO DEFAULT.
 //
 // This computed base = blockIdx.x * dimension, which assumes a row is exactly
-// as wide as the slice being normalised. K3's kv_a norm covers the 512-element
+// as wide as the slice being normalised. The KDA model's kv_a norm covers the 512-element
 // latent of a 576-element row, so row 1's "latent" was row 0's rope tail plus
 // 448 elements of row 1. Correct at rows == 1 and corrupt for every batch above
 // it - the shape of bug that passes a single-row test.
@@ -165,8 +165,8 @@ void LmSiluMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 	}
 }
 
-// SiTU, the activation Kimi K3 runs on all 93 layers. From the released
-// modeling_kimi_linear.py:
+// SiTU, the activation the KDA model runs on all 93 layers. From the released
+// the released modeling file:
 //
 //     situ_a = beta * tanh(gate / beta) * sigmoid(gate)
 //     up     = linear_beta * tanh(up / linear_beta)      when linear_beta is set
@@ -207,8 +207,8 @@ void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 
 // Sigmoid a row of router logits in place, bf16 in and float out.
 //
-// K3's router activation is sigmoid, not softmax: config.json sets
-// moe_router_activation_func and modeling_kimi_linear.py branches on it. The
+// The KDA model's router activation is sigmoid, not softmax: config.json sets
+// moe_router_activation_func and the released modeling file branches on it. The
 // difference matters beyond the curve - sigmoid scores are independent per
 // expert, so the top-k weights do not sum to one before renormalisation, which
 // is why moe_renormalize exists at all.
@@ -227,8 +227,8 @@ void LmSigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16, float *__rest
 
 // Gate an attention output elementwise by a sigmoid of its own projection.
 //
-// TWO MODELS NEED THIS AND NEITHER COULD HAVE IT. Qwen 3.6's reference calls its
-// full-attention path GATED attention and sets attn_output_gate; Kimi K3 sets
+// TWO MODELS NEED THIS AND NEITHER COULD HAVE IT. The GDN model's reference calls its
+// full-attention path GATED attention and sets attn_output_gate; the KDA model sets
 // mla_use_output_gate. Both were recorded as unimplemented gaps against a kernel
 // library that had no gate at all.
 //
@@ -270,7 +270,7 @@ void LmQuantiseRowsKernel(const uint16_t *__restrict__ input_bf16, const uint32_
 	// LmBf16Format declares kScaleGroup zero, correctly - it is not quantised.
 	// A caller that hands this kernel such a format has already divided a width
 	// by it to size the grid, and that division is where the fault appears:
-	// twenty call sites in K3 the moment its non-expert projections moved to
+	// twenty call sites in the KDA model the moment its non-expert projections moved to
 	// BF16 to match the checkpoint's recipe. The instance is fixed at the
 	// caller; this is the class.
 	static_assert(Format::kScaleGroup > 0u,
@@ -467,7 +467,7 @@ void LmCopyRowsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__rest
 // Attention Residuals: retrieve from a bank of block representations instead of
 // reading one accumulated stream.
 //
-// Report eq. 8-10 and modeling_kimi_linear.py's _apply_attn_res. Each layer has
+// Report eq. 8-10 and the released modeling file's _apply_attn_res. Each layer has
 // a learnable pseudo-query; the keys and values are the block representations
 // plus the running partial sum of the current block, with the token embedding
 // always present as b_0.
@@ -524,7 +524,7 @@ void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__r
 			score[source] = dot;
 		__syncthreads();
 	}
-	// Softmax over a handful of candidates: nine at K3's block size. One thread
+	// Softmax over a handful of candidates: nine at the KDA block size. One thread
 	// is the right shape here - a block reduction over nine values costs more in
 	// barriers than it saves.
 	if ( threadIdx.x == 0u )
