@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <execinfo.h>
 #include <string.h>
 #include <time.h>
 #include <sys/socket.h>
@@ -231,6 +232,9 @@ static void SparkModelResidentdFailLocked(
 {
 	if ( atomic_load(&runtime->failed_status) != SPARK_STATUS_OK )
 		return;
+	fprintf(stderr,"C1DBG residentd-fail status=%d reason=%u route_state=%u work_kind=%u\n",
+		(int)status,(unsigned)reason,
+		runtime->failed_route_state, runtime->failed_work_kind);
 	runtime->failed_reason = reason;
 	runtime->failed_route_state = route != 0 ? route->state : 0u;
 	runtime->failed_work_kind = route != 0 ? route->submission.work_kind : 0u;
@@ -1309,8 +1313,16 @@ static void SparkModelResidentdCloseClientLocked(
 					&runtime->sequence_slots[index].lease);
 			}
 	if ( live_lease != 0u && SparkModelResidentdStop == 0 )
+	{
+		void *frames[16];
+		int frame_count = backtrace(frames,16);
+		fprintf(stderr,"C1DBG lease-disconnect path init_phase=%s client_fd=%d\n",
+			runtime->initialize_phase != 0 ? runtime->initialize_phase : "none",
+			runtime->client.fd);
+		backtrace_symbols_fd(frames,frame_count,2);
 		SparkModelResidentdFailLocked(runtime,SPARK_STATUS_IO_ERROR,
 			SPARK_MODEL_RESIDENTD_FAILURE_CLIENT_LEASE_DISCONNECT,0);
+	}
 	if ( runtime->client.fd >= 0 )
 		close(runtime->client.fd);
 	runtime->client.fd = -1;
@@ -1706,15 +1718,20 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	uint32_t cache_committed,cache_prepared,cache_transactional;
 	wire = (const SparkModelResidentIpcSubmit *)message;
 	status = SparkModelResidentIpcDecodeSubmission(message,message_bytes,&submission);
+	fprintf(stderr,"C1DBG submit decode status=%d work=%u rows=%u seq=%u tps=%u\n",(int)status,(unsigned)submission.work_kind,(unsigned)submission.row_count,(unsigned)submission.active_sequence_count,(unsigned)submission.tokens_per_sequence);
 	if ( status == SPARK_STATUS_OK && decision_required == 0u )
 		status = SparkModelResidentIpcValidateDirectSubmitDescriptor(
 			runtime->adapter_library.adapter_interface.descriptor);
+	fprintf(stderr,"C1DBG submit descriptor status=%d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterValidateRuntimeSubmission(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&submission);
+	fprintf(stderr,"C1DBG submit limits status=%d\n",(int)status);
 	if ( status == SPARK_STATUS_OK && submission.submission_id <= runtime->client.last_submission_id )
 		status = submission.submission_id == runtime->client.last_submission_id ? SPARK_STATUS_DUPLICATE : SPARK_STATUS_INVALID_ARGUMENT;
+	fprintf(stderr,"C1DBG submit dup status=%d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterPrepareSubmission(&runtime->adapter_library.adapter_interface,runtime->adapter_state,&submission);
+	fprintf(stderr,"C1DBG submit prepare status=%d\n",(int)status);
 	cache_transactional =
 		(runtime->adapter_library.adapter_interface.descriptor->capability_flags &
 		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |

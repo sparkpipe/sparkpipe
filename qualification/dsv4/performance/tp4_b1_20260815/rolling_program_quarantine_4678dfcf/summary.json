@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-15",
+  "status": "quarantined_pending_current_source_hardware_validation",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "isolated_worktree": "/private/tmp/dsv4-collective-owned-send-poc",
+  "identity": {
+    "patch_sha256": "9ed365260fd9ba08c75372699b51628f246054fe5f39cbb5dbfebd886b609bc3",
+    "transport_source_sha256": "4678dfcf1ba8afde38b8851b1be1a02c37389d9689978c21194c4e11ab40ee81",
+    "header_source_sha256": "cb3b7d2f306b21526bef171364b907510298ca28f379a84747d7805b76474235",
+    "dsv4_module_source_sha256": "67c78782ea5d5ef230023535fd88059f2fdcb8b0a2c601120ee822e95674fbff",
+    "dsv4_cuda_source_sha256": "e169360531fccf3524ca05834ae86b69571697e6299436ddfc391c45778bb98e"
+  },
+  "design": {
+    "dedicated_operation_streams": true,
+    "recursive_all_step_reservations": true,
+    "hot_start_allocation": false,
+    "hot_start_graph_recapture": false,
+    "hot_start_node_patching": false,
+    "legacy_submission_stacked_under_program": false
+  },
+  "focused_tests": [
+    "build/test_tp_device_collective",
+    "build/test_dsv4_tp_program_graph_contract",
+    "build/test_dsv4_tp16_serving_adapter",
+    "build/test_dsv4_tp4_pp4_serving_adapter",
+    "tests/test_dsv4_module_host_syntax.py",
+    "tests/test_dsv4_collective_producer_lease_source.py",
+    "tests/test_dsv4_tp_program_graph_source.py",
+    "tests/test_dsv4_driver_source_contracts.py",
+    "tests/test_dsv4_contracts.py",
+    "git diff --check"
+  ],
+  "preceding_revision_live_evidence": {
+    "provenance_matches_frozen_source": false,
+    "b1_direct_tp4_microseconds_per_collective": 36.88075,
+    "rearmed_second_launch_microseconds_per_collective": 34.7335,
+    "b1_improvement_percent": 0.94,
+    "split_8_mib_microseconds_per_collective": 1592.809,
+    "bf16_mismatches": 0,
+    "ga_stage8_tp1_smoke": "PASS"
+  },
+  "acceptance_blockers": [
+    "Run the final 4678dfcf transport source on the Spark hardware.",
+    "Execute the exact runtime descriptor {active_sequence_count=1024, hidden_dimension=4096}; the existing B1024 receipt executed {1,4194304}.",
+    "Refresh live receipts so embedded transport, characterizer, header, and binary hashes match the frozen source.",
+    "Repeat exact DSV4 O24 and alternating O128 end-to-end validation after integration."
+  ],
+  "decision": "preserve the patch and receipts in-repo, but do not integrate into the selected lean production source"
+}

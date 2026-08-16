@@ -64,9 +64,8 @@ extern "C" {
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT 61u
 #define SPARK_DSV4_WEIGHT_READ_AHEAD_MAX_BLOCK_COUNT 48u
 #define SPARK_DSV4_WEIGHT_READ_AHEAD_THREAD_COUNT 256u
-/* TP graphs are fixed stage-local islands, counted per pipeline slot. */
-#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_ISLAND_COUNT \
-	(3u * SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT + 1u)
+/* Every sealed TP decode program owns one producer and one consumer graph. */
+#define SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PROGRAM_GRAPH_COUNT 2u
 /* TP1 retains the older shape cache and its independent capacity ceiling. */
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT 64u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT 16u
@@ -110,9 +109,9 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 	uint32_t tp_collective_control_port_base;
 	/*
 	 * TP1: optional dynamic decode-shape cache capacity; zero keeps eager
-	 * execution. TP>1: exact number of prewarmed stage-local graph islands
-	 * PER PIPELINE SLOT. It must equal 3 * layer_count + 1; zero, a short
-	 * count, capture failure, or an unsealed entry fails initialization.
+	 * execution. TP>1: exact number of prewarmed graph executables per
+	 * pipeline slot. Every sealed program owns one producer graph and one
+	 * consumer graph; any other count fails initialization.
 	 */
 	uint32_t cuda_graph_count;
 	const char *stage_pack_path;
@@ -121,13 +120,13 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES \
 	((uint32_t)sizeof(SparkDsv4ResidentDecodeStageNodeContext))
 
-static inline uint32_t SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(
+static inline uint32_t SparkDsv4ResidentDecodeStageTpProgramGraphsPerSlot(
 	uint32_t local_layer_count)
 {
 	if ( local_layer_count == 0u ||
 		local_layer_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT )
 		return(0u);
-	return(3u * local_layer_count + 1u);
+	return(SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PROGRAM_GRAPH_COUNT);
 }
 
 static inline uint32_t SparkDsv4ResidentDecodeStageNativeTpWidthSupported(
@@ -145,6 +144,23 @@ typedef struct SparkDsv4LinearView
 	const void *payload;
 	const void *scale_data;
 } SparkDsv4LinearView;
+
+#define SPARK_DSV4_EXACT_BF16_MIRROR_SPAN_COUNT 2u
+
+typedef struct SparkDsv4ExactBf16MirrorSpan
+{
+	void *destination_device;
+	uint64_t source_offset_bytes;
+	uint64_t byte_count;
+} SparkDsv4ExactBf16MirrorSpan;
+
+typedef struct SparkDsv4ExactBf16MirrorTarget
+{
+	uint32_t span_count;
+	uint32_t reserved0;
+	SparkDsv4ExactBf16MirrorSpan spans[
+		SPARK_DSV4_EXACT_BF16_MIRROR_SPAN_COUNT];
+} SparkDsv4ExactBf16MirrorTarget;
 
 typedef struct SparkDsv4CompressorWeights
 {

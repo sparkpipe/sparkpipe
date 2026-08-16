@@ -96,7 +96,7 @@ int main(void)
 	assert(adapter_state != 0);
 	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) ==
 		SPARK_STATUS_OK);
-	assert(snapshot.kv_token_capacity == 130u);
+	assert(snapshot.kv_token_capacity == 2u);
 	memset(&lane,0,sizeof(lane));
 	lane.request_id = 900u;
 	lane.request_generation = 1u;

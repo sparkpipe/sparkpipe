@@ -216,7 +216,7 @@ TEST_NAMES := \
     test_driver_compiler \
     test_orchestrator \
 	test_dsv4_lane_continuity \
-	test_dsv4_tp_graph_contract \
+	test_dsv4_tp_program_graph_contract \
 	test_dsv4_pool_layout \
 	test_dsv4_paged_cache \
     test_dsv4_stage_runner \
@@ -242,7 +242,8 @@ PYTHON_TESTS := \
 	tests/test_dsv4_stage_source.py \
 	tests/test_dsv4_stagepack.py \
 	tests/test_dsv4_tp_async_source.py \
-	tests/test_dsv4_tp_graph_islands_source.py \
+	tests/test_dsv4_collective_producer_lease_source.py \
+	tests/test_dsv4_tp_program_graph_source.py \
 	tests/test_dsv4_tp4_decode_roofline.py \
 	tests/test_dsv4_tp4_pp4_perf_estimate.py \
 	tests/test_dsv4_tp4_pp4_stagepack.py \
@@ -501,10 +502,13 @@ hardware_cuda_tools:
 	fi
 
 build/spark_tp_device_collective_characterize: tools/hardware/spark_tp_device_collective_characterize.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -ldl -lpthread -o $@
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -lcuda -ldl -lpthread -o $@
 
 build/spark_dsv4_tp4_tree_bitwise: tools/hardware/spark_dsv4_tp4_tree_bitwise.cu modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/common/include -Imodules/dsv4_resident_decode_stage/include -Imodules/dsv4_resident_decode_stage/source -Imodel-families/dsv4/include -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u -include model-families/dsv4/include/sparkpipe/spark_dsv4_model.h $^ -L$(CUDA_HOME)/lib64 -lcudart -o $@
+
+build/test_dsv4_exact_bf16_mirror: tests/test_dsv4_exact_bf16_mirror.cu modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/common/include -Imodules/dsv4_resident_decode_stage/include -Imodules/dsv4_resident_decode_stage/source -Imodel-families/dsv4/include -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1u -include model-families/dsv4/include/sparkpipe/spark_dsv4_model.h $^ -L$(CUDA_HOME)/lib64 -lcudart -o $@
 
 build/spark_dsv4_compressor_emission_bitwise: tools/hardware/spark_dsv4_compressor_emission_bitwise.cu modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/common/include -Imodules/dsv4_resident_decode_stage/include -Imodules/dsv4_resident_decode_stage/source -Imodel-families/dsv4/include -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u -include model-families/dsv4/include/sparkpipe/spark_dsv4_model.h $^ -L$(CUDA_HOME)/lib64 -lcudart -o $@
@@ -822,7 +826,7 @@ build/test_dsv4_stage_runner: tests/test_dsv4_stage_runner.c modules/dsv4_reside
 build/test_dsv4_lane_continuity: tests/test_dsv4_lane_continuity.c modules/dsv4_resident_decode_stage/source/spark_dsv4_lane_continuity.h
 	$(CC) $(CPPFLAGS) -Imodules/dsv4_resident_decode_stage/source $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_dsv4_tp_graph_contract: tests/test_dsv4_tp_graph_contract.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h
+build/test_dsv4_tp_program_graph_contract: tests/test_dsv4_tp_program_graph_contract.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h
 	$(CC) $(DSV4_INCLUDE_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dsv4_pool_layout: tests/test_dsv4_pool_layout.c modules/dsv4_resident_decode_stage/source/spark_dsv4_pool_layout.h

@@ -121,7 +121,7 @@ def main() -> int:
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_tp4_stage.json").read_text(encoding="utf-8")
     )
-    assert tp4_stage["cuda_graph_count_by_pp_stage"] == [130]
+    assert tp4_stage["cuda_graph_count_by_pp_stage"] == [2]
     assert tp4_stage["tp_collective"]["backend"] == "hidden_transport"
     assert tp4_stage["tp_collective"]["peer_hosts"] == [
         f"spark{index:x}-mgmt" for index in range(4)]

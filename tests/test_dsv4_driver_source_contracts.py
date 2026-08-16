@@ -100,7 +100,9 @@ def main() -> None:
 	require(header, "SPARK_DSV4_MODEL_OUTPUT_COMPOSITION_ACTIVATION_CODEC SPARK_ACTIVATION_CODEC_NONE", "output-composition activation codec")
 	require(dtype, "return((uint8_t)encoded);", "scalar E4M3 low-byte result")
 	require(activation, "LmActivationStageFp8Qdq", "shared in-tile activation codec")
-	require(common, "SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC>", "dense activation codec propagation")
+	require(common,
+		"SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC,",
+		"dense activation codec propagation")
 	require(common, "SparkLmStridedLinearKernel<GROUP_SIZE,ACTIVATION_CODEC>", "strided activation codec propagation")
 	reject(common, "SPARK_LM_SCALAR_NEURONS_PER_WARP", "slower scalar activation reuse")
 	require(cuda, "SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC", "BF16 spine launch specialization")
@@ -195,8 +197,8 @@ def main() -> None:
 	require(module,
 		"SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16",
 		"full-hidden TP sum collective")
-	require(module, "submission.local_device = device_bf16;",
-		"in-place full-hidden TP reduction")
+	require(module, "step->full_device = (void *)step->local_device;",
+		"in-place full-hidden TP program reduction")
 	require(cuda, "SparkDsv4LaunchIndexerScore", "lightning indexer")
 	require(cuda, "SparkDsv4BuildAttentionIndicesKernel", "device attention-index assembly")
 	require(cuda, "attention_slots = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS +",
@@ -212,7 +214,11 @@ def main() -> None:
 	require(cuda, "pooled = 0.0f;", "initialized non-emitting compressor row")
 	require(cuda, "if ( row_lane_indices[previous] == lane )", "single compressor CTA per lane")
 	require(cuda, "for (; row<row_count; row++)", "ordered same-lane compressor rows")
-	require(module, "channels = weights->overlap * cache_width;", "HCA single-width compressor channels")
+	require(cuda, "channels = coff * width", "HCA single-width compressor channels")
+	require(cuda, "SparkLmBf16ToFloat(kv_bf16,source)", "fused compressor KV widening")
+	require(cuda, "SparkLmBf16ToFloat(score_bf16,source) +", "fused compressor score widening")
+	require(cuda, "__ldg(ape_f32 + ape_base + channel)", "fused compressor APE add")
+	reject(module + cuda, "SparkDsv4LaunchApeAdd", "separate compressor APE launch")
 	require(module, "overlapped = weights->overlap > 1u ? 1u : 0u;", "CSA-only compressor overlap")
 	require(paged_cache, "SparkDsv4PagedPoolBuildLayout(configuration->first_layer_index", "DSV4 page geometry")
 	require(paged_cache, "SparkKvPageCacheBeginLaneTransaction", "generic transactional page lifecycle binding")
@@ -347,31 +353,30 @@ def main() -> None:
 		"unbounded callback launch geometry")
 	reject(stage_common + common + module + cuda, "cudaMemPrefetchAsync",
 		"managed-memory migration in device-weight read-ahead")
-	read_ahead_reduce = function_body(module,
-		"static SparkStatus SparkDsv4ModuleReduceHiddenReadAhead(")
-	read_ahead_arm = read_ahead_reduce.index("SparkStageModuleCudaReadAheadArm(")
-	if read_ahead_arm > read_ahead_reduce.index(
-		"status = SparkDsv4ModuleReduceHidden(", read_ahead_arm):
-		raise SystemExit("DSV4 read-ahead must arm before collective publication")
-	continuation_source = module[module.rindex(
-		"static void SparkDsv4ModuleContinueLayers("):]
-	continuation = function_body(continuation_source,
-		"static void SparkDsv4ModuleContinueLayers(")
-	if continuation.index("SparkStageModuleCudaReadAheadJoin(") > \
-		continuation.index("if ( continuation->side == 0u )"):
-		raise SystemExit("DSV4 read-ahead must join before the next graph island")
-	require(module, "layer->attn.wq_b.payload",
+	program_collective = function_body(module,
+		"static SparkStatus SparkDsv4ModuleCaptureProducerCollective(")
+	publication = program_collective.index("producer.producer_ready_device")
+	read_ahead_arm = program_collective.index(
+		"SparkDsv4ModuleCaptureReadAhead(")
+	collective_wait = program_collective.index("producer.result_ready_device")
+	read_ahead_join = program_collective.index(
+		"SparkStageModuleCudaReadAheadJoin(")
+	if not publication < read_ahead_arm < collective_wait < read_ahead_join:
+		raise SystemExit(
+			"DSV4 TP program must hide read-ahead inside the collective window")
+	tp_layer = function_body(module,
+		"static SparkStatus SparkDsv4ModuleCaptureTpLayer(")
+	require(tp_layer, "layer->attn.wq_b.payload",
 		"projection collective read-ahead target")
-	require(module, "layer->attn.wq_b.scale_data",
+	require(tp_layer, "layer->attn.wq_b.scale_data",
 		"projection collective scale read-ahead target")
-	require(module, "SparkDsv4StagePackScaleBytes(layer->attn.wq_b.weight_format",
+	require(tp_layer, "SparkDsv4StagePackScaleBytes(layer->attn.wq_b.weight_format",
 		"projection scale read-ahead extent")
-	reject(continuation, "scale_data", "scaled HC read-ahead target")
-	require(continuation, "SparkDsv4ModuleHcFunctionBytes(),0,0u",
+	require(tp_layer, "SparkDsv4ModuleHcFunctionBytes(),0,0u",
 		"single-range HC read-ahead")
-	require(module, "layer->hc.ffn_fn_f32",
+	require(tp_layer, "layer->hc.ffn_fn_f32",
 		"attention collective read-ahead target")
-	require(module, "continuation->layer_index + 1u].hc.attn_fn_f32",
+	require(tp_layer, "next_layer->hc.attn_fn_f32",
 		"FFN collective next-layer read-ahead target")
 	reject(module, "experts_w1.payload", "all-expert read-ahead sweep")
 	reject(module, "SparkDsv4ModuleHostTopkFill", "host-built attention indices")
@@ -399,6 +404,7 @@ def main() -> None:
 	require(validator, "SPARK_BATCH_BUCKET < SPARK_DSV4_VALIDATION_REFERENCE_FIXTURE_ROW_COUNT", "bucket-safe retained-reference prefix")
 	require(validator, "SparkDsv4ValidationReadPrefix", "verified full fixture with bucket prefix")
 	require(validator, "frame->batch.row_count = SPARK_DSV4_VALIDATION_ROW_COUNT;", "CUDA decode batch")
+	require(validator, "frame->frame.tokens_per_sequence = 1u;", "complete CUDA validator frame shape")
 	reject(validator, "SPARK_DSV4_VALIDATION_HEAD_ROW_COUNT - 1u", "non-native DSV4 head validation width")
 	require(validator, "SparkDsv4ValidationRequireCuda(error,\"head_cuda\")", "CUDA head failure detail")
 	require(validator, "if ( row_count == 1u )\n\t\treturn(UINT32_MAX);", "B1 direct-head validation sentinel")

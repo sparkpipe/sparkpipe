@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 12u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 15u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 6u
@@ -31,6 +31,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING 0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING \
     0x00000002u
@@ -48,6 +49,20 @@ extern "C" {
     0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_KNOWN_FLAGS \
     SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION
+#define SPARK_TP_DEVICE_COLLECTIVE_PRODUCER_SPAN_COUNT 2u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_MAX_STEP_COUNT 4096u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_STORAGE_ALIGNMENT 64u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_RUN_STATE_WORD_COUNT 2u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_PRODUCER_STATE_INDEX 0u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_CONSUMER_STATE_INDEX 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_RUN_RESET 0u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_RUN_ACTIVE 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_RUN_GRAPH_DRAINED 2u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_CONSUMER_GRAPH_DRAINED 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_CONSUMER_PHASE_MAX_COUNT 6u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_CONSUMER_SPAN_MAX_COUNT 2u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_SPAN_ADD_BF16 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_SPAN_COPY_BF16 2u
 
 #define SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_PHASE_SUBMIT_BUILDING 1u
@@ -59,6 +74,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_PHASE_TERMINAL_READY 7u
 #define SPARK_TP_DEVICE_COLLECTIVE_PHASE_CALLBACK_CLAIMED 8u
 #define SPARK_TP_DEVICE_COLLECTIVE_PHASE_RELEASE_PENDING 9u
+#define SPARK_TP_DEVICE_COLLECTIVE_PHASE_PRODUCER_LEASED 10u
 
 typedef struct SparkTpDeviceCollectiveCreditBinding
 {
@@ -107,6 +123,148 @@ typedef struct SparkTpDeviceCollectiveSubmission
     void *completion_context;
 } SparkTpDeviceCollectiveSubmission;
 
+typedef struct SparkTpDeviceCollectiveProducerSpan
+{
+    void *destination_device;
+    uint64_t source_offset_bytes;
+    uint64_t byte_count;
+} SparkTpDeviceCollectiveProducerSpan;
+
+/* A lease owns one transport credit until it is submitted, cancelled, or the
+ * submitted operation completes. The producer mirrors the exact final BF16
+ * bytes identified by spans into destination_device. Event handles are
+ * stable for the lifetime of the collective and owned by the transport. */
+typedef struct SparkTpDeviceCollectiveProducerLease
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t credit_index;
+    uint32_t span_count;
+    uint32_t active_sequence_count;
+    uint32_t algorithm;
+    uint64_t ordinal;
+    uint64_t generation;
+    uint64_t source_bytes;
+    void *producer_ready_event;
+    void *consumer_ready_event;
+    SparkTpDeviceCollectiveProducerSpan spans[
+        SPARK_TP_DEVICE_COLLECTIVE_PRODUCER_SPAN_COUNT];
+} SparkTpDeviceCollectiveProducerLease;
+
+typedef struct SparkTpDeviceCollectiveProgramStep
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t slot_index;
+	uint32_t active_sequence_count;
+	uint32_t operation_kind;
+	uint32_t reserved0;
+	uint64_t ordinal;
+	const void *local_device;
+	void *full_device;
+	void *cuda_stream;
+} SparkTpDeviceCollectiveProgramStep;
+
+typedef struct SparkTpDeviceCollectiveProgramProducerStep
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t step_index;
+	uint32_t credit_index;
+	uint32_t span_count;
+	uint32_t operation_kind;
+	uint64_t ordinal;
+	uint64_t generation;
+	uint64_t completion_generation;
+	uint64_t required_send_reuse_generation;
+	uint32_t *producer_ready_device;
+	uint32_t *result_ready_device;
+	uint32_t *send_reuse_device;
+	SparkTpDeviceCollectiveProducerSpan spans[
+		SPARK_TP_DEVICE_COLLECTIVE_PRODUCER_SPAN_COUNT];
+} SparkTpDeviceCollectiveProgramProducerStep;
+
+typedef struct SparkTpDeviceCollectiveProgramConsumerStep
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t step_index;
+	uint32_t credit_index;
+	uint32_t tp_rank;
+	uint32_t active_sequence_count;
+	uint32_t hidden_dimension;
+	uint32_t operation_kind;
+	uint32_t algorithm;
+	uint32_t phase_count;
+	uint64_t ordinal;
+	uint64_t generation;
+	void *destination_device;
+	const void *rank_devices[
+		SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT];
+	uint32_t *receive_ready_device;
+	uint32_t *completion_device;
+} SparkTpDeviceCollectiveProgramConsumerStep;
+
+typedef struct SparkTpDeviceCollectiveProgramConsumerSpan
+{
+	const void *source_device;
+	uint64_t destination_offset_bytes;
+	uint32_t element_count;
+	uint32_t operation;
+} SparkTpDeviceCollectiveProgramConsumerSpan;
+
+typedef struct SparkTpDeviceCollectiveProgramConsumerPhase
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t step_index;
+	uint32_t phase_index;
+	uint32_t receive_span_count;
+	uint32_t next_send_span_count;
+	uint64_t generation;
+	void *destination_device;
+	uint32_t *receive_ready_device;
+	uint32_t *completion_device;
+	SparkTpDeviceCollectiveProgramConsumerSpan receive_spans[
+		SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_CONSUMER_SPAN_MAX_COUNT];
+	SparkTpDeviceCollectiveProducerSpan next_send_spans[
+		SPARK_TP_DEVICE_COLLECTIVE_PROGRAM_CONSUMER_SPAN_MAX_COUNT];
+} SparkTpDeviceCollectiveProgramConsumerPhase;
+
+typedef struct SparkTpDeviceCollectiveProgramConfig
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t step_count;
+	uint32_t window_count;
+	const SparkTpDeviceCollectiveProgramStep *steps;
+	uint32_t *producer_ready_host;
+	uint32_t *receive_ready_host;
+	uint32_t *result_ready_host;
+	uint32_t *send_reuse_host;
+	uint32_t *producer_ready_device;
+	uint32_t *receive_ready_device;
+	uint32_t *result_ready_device;
+	uint32_t *send_reuse_device;
+	uint32_t *run_state_host;
+	uint32_t *run_state_device;
+	void *storage;
+	uint64_t storage_bytes;
+	SparkTpDeviceCollectiveCompletionFunction terminal_completion_function;
+	void *terminal_completion_context;
+} SparkTpDeviceCollectiveProgramConfig;
+
+typedef struct SparkTpDeviceCollectiveProgram
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t step_count;
+	uint32_t window_count;
+	uint64_t base_ordinal;
+	uint64_t storage_bytes;
+	void *implementation;
+} SparkTpDeviceCollectiveProgram;
+
 typedef void (*SparkTpDeviceCollectiveFailureObservedFunction)(
     void *hook_context,
     uint32_t credit_index,
@@ -144,6 +302,15 @@ typedef SparkStatus (*SparkTpDeviceCollectiveCombineTp4Bf16Function)(
     uint32_t tp_rank,
     uint32_t active_sequence_count,
     uint32_t hidden_dimension,
+    void *cuda_stream);
+
+typedef SparkStatus (*SparkTpDeviceCollectiveCombineTp4U64MaxFunction)(
+    void *combine_context,
+    uint64_t *destination_device,
+    const uint64_t *const rank_devices[
+        SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT],
+    uint32_t tp_rank,
+    uint32_t element_count,
     void *cuda_stream);
 
 typedef SparkStatus (*SparkTpDeviceCollectiveCombineU64MaxFunction)(
@@ -214,6 +381,8 @@ typedef struct SparkTpDeviceCollectiveConfig
         combine_relay_bf16_function;
     SparkTpDeviceCollectiveCombineTp4Bf16Function
         combine_tp4_bf16_function;
+    SparkTpDeviceCollectiveCombineTp4U64MaxFunction
+        combine_tp4_u64_max_function;
     SparkTpDeviceCollectiveCombineU64MaxFunction combine_u64_max_function;
     void *combine_context;
     const SparkTpDeviceCollectiveDebugHooks *debug_hooks;
@@ -271,6 +440,73 @@ SparkStatus SparkTpDeviceCollectiveSliceTopology(
 SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);
+
+SparkStatus SparkTpDeviceCollectiveAcquireBf16ProducerLease(
+    SparkTpDeviceCollective *collective,
+    uint64_t ordinal,
+    uint32_t active_sequence_count,
+    SparkTpDeviceCollectiveProducerLease *lease_out);
+
+SparkStatus SparkTpDeviceCollectiveRecordBf16ProducerReady(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveProducerLease *lease,
+    void *cuda_stream);
+
+SparkStatus SparkTpDeviceCollectiveCancelBf16ProducerLease(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveProducerLease *lease);
+
+SparkStatus SparkTpDeviceCollectiveSubmitLeasedBf16(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveProducerLease *lease,
+    const SparkTpDeviceCollectiveSubmission *submission);
+
+/* Program preparation is a startup operation. It copies immutable mixed
+ * reduction step descriptors into caller-owned, aligned storage, resolves
+ * every producer span, and selects each step's algorithm from the collective
+ * payload catalog. Device graph generations are program-local, so one graph
+ * can be relaunched after zero-allocation rearm. The producer graph resets the
+ * four generation arrays and both run-state words, then publishes RUN_ACTIVE.
+ * The producer and consumer graphs publish their distinct drained words after
+ * their final wait and combine. */
+SparkStatus SparkTpDeviceCollectiveProgramStorageBytes(
+	uint32_t step_count,
+	uint64_t *storage_bytes_out);
+
+SparkStatus SparkTpDeviceCollectivePrepareProgram(
+	SparkTpDeviceCollective *collective,
+	const SparkTpDeviceCollectiveProgramConfig *config,
+	SparkTpDeviceCollectiveProgram *program_out);
+
+SparkStatus SparkTpDeviceCollectiveGetProgramProducerStep(
+	const SparkTpDeviceCollectiveProgram *program,
+	uint32_t step_index,
+	SparkTpDeviceCollectiveProgramProducerStep *producer_step_out);
+
+SparkStatus SparkTpDeviceCollectiveGetProgramConsumerStep(
+	const SparkTpDeviceCollectiveProgram *program,
+	uint32_t step_index,
+	SparkTpDeviceCollectiveProgramConsumerStep *consumer_step_out);
+
+SparkStatus SparkTpDeviceCollectiveGetProgramConsumerPhase(
+	const SparkTpDeviceCollectiveProgram *program,
+	uint32_t step_index,
+	uint32_t phase_index,
+	SparkTpDeviceCollectiveProgramConsumerPhase *consumer_phase_out);
+
+SparkStatus SparkTpDeviceCollectiveStartProgram(
+	SparkTpDeviceCollectiveProgram *program);
+
+SparkStatus SparkTpDeviceCollectiveCancelProgram(
+	SparkTpDeviceCollectiveProgram *program,
+	SparkStatus status);
+
+SparkStatus SparkTpDeviceCollectiveRearmProgram(
+	SparkTpDeviceCollectiveProgram *program,
+	uint64_t base_ordinal);
+
+SparkStatus SparkTpDeviceCollectiveDestroyProgram(
+	SparkTpDeviceCollectiveProgram *program);
 
 SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     SparkTpDeviceCollective *collective,

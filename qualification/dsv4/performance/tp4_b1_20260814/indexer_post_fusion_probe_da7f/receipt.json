@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "experiment": "dsv4_indexer_rope_hadamard_fp4_quantsim_exact_fusion",
+  "status": "REPEATABLE_EXACT_ISOLATED_GAIN",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "host": "spark2",
+  "gpu": "NVIDIA GB10",
+  "driver": "580.159.03",
+  "compute_capability": "12.1",
+  "workload": {
+    "applicable_csa_layers": 21,
+    "total_model_layers": 43,
+    "rows": 1,
+    "tp_degree": 4,
+    "replicated_index_heads_per_rank": 64,
+    "index_head_dimension": 128,
+    "index_dimension": 8192,
+    "rope_dimension": 64,
+    "fp4_quant_block": 32,
+    "l2_flush_bytes_before_trial": 134217728
+  },
+  "control": "one production forward-RoPE launch, one production Hadamard launch, and one production FP4 quantize-dequantize simulation launch per CSA layer",
+  "candidate": "one CTA per index head and one launch per CSA layer; identical forward RoPE, explicit BF16 store/reload, identical Hadamard, explicit BF16 store/reload, then four production-equivalent FP4 quantization groups",
+  "measurement": {
+    "independent_process_runs": 3,
+    "alternating_pairs_per_run": 31,
+    "warmups_per_run": 4,
+    "all_index_q_output_bytes_exact": true,
+    "run_median_results": [
+      {
+        "control_ms": 0.258848,
+        "candidate_ms": 0.129440,
+        "gain_percent": 49.993824
+      },
+      {
+        "control_ms": 0.259520,
+        "candidate_ms": 0.129952,
+        "gain_percent": 49.926018
+      },
+      {
+        "control_ms": 0.258688,
+        "candidate_ms": 0.129920,
+        "gain_percent": 49.777336
+      }
+    ],
+    "control_mean_of_medians_ms": 0.259018667,
+    "candidate_mean_of_medians_ms": 0.129770667,
+    "aggregate_gain_percent": 49.899106371,
+    "absolute_saving_ms_per_model_step": 0.129248000,
+    "all_independent_median_deltas_positive": true
+  },
+  "decision": {
+    "isolated_gate": "PASS",
+    "production_integration": "PENDING",
+    "full_ring_end_to_end": "NOT_MEASURED",
+    "quality": "no precision or quantization change; both intermediate BF16 rounding points and the checkpoint-declared FP4 simulation are byte exact"
+  },
+  "build": {
+    "cuda_target": "compute_121a_to_sm_121a",
+    "optimization": "O3",
+    "batch_contract": 1024
+  },
+  "identity": {
+    "probe_source": "/private/tmp/dsv4_indexer_post_fusion_probe.cu",
+    "probe_source_sha256": "ec86cd26efb25421ec6a95542e7d69662d1468ea95d360248a7d1e162f35387f",
+    "binary_sha256": "e9626061800d5c3504ecc031193958f501fadcf0eb193ecd7b8a809ea5a1e5d3",
+    "included_production_cuda_sha256": "f7567db38531a37dfce43c7b61112391ceec90c605adc2a76d731b6e60978bc8",
+    "production_module_sha256": "b93cb76837e93edf7757b4167c5dcb514bf4d0a6654586e19b74efad03848887",
+    "model_contract_sha256": "f0548623bd83d360b9d0db2fbd314167449de67850be35aef1e2676222481675",
+    "run_log_sha256": [
+      "6a45d05f12dcad10771ec2c03b282ec180119a0f168dc49574dc2f615e0119a5",
+      "6bfbc0e548733fc33d1b2ecf6741a751e5e746f5d6d9e66a4f3516093d9932f6",
+      "9ef7e14e1f644106eaae09aa0a1665a9ae31ee1782e041676435d0da19b3af7f"
+    ]
+  }
+}
