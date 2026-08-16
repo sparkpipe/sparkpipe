@@ -3831,9 +3831,11 @@ static __global__ void SparkLmExpertTileAllKernel(uint32_t weight_format, const 
 	const void *payload = (const uint8_t *)payload_base + ((uint64_t)expert * payload_expert_stride_bytes);
 	const void *scale = (const uint8_t *)scale_base + ((uint64_t)expert * scale_expert_stride_bytes);
 	const void *input = grouped_rows != 0 ? input_bf16 : (const void *)((const uint8_t *)input_bf16 + ((uint64_t)offset * input_dimension * 2u));
+	const uint32_t *row_map = grouped_rows != 0 ? grouped_rows + offset : 0;
+	void *output = (void *)((uint8_t *)output_bf16 + ((uint64_t)offset * output_dimension * 2u));
 	if ( (blockIdx.x * SPARK_LM_TILE) >= count )
 		return;
-	SparkLmExpertTileDispatch<GROUP_SIZE>(weight_format,payload,scale,input,grouped_rows != 0 ? grouped_rows + offset : 0,(void *)((uint8_t *)output_bf16 + ((uint64_t)offset * output_dimension * 2u)),count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
+	SparkLmExpertTileDispatch<GROUP_SIZE>(weight_format,payload,scale,input,row_map,output,count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
 }
 
 /*

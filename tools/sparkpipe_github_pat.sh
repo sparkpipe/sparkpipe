@@ -2,7 +2,13 @@
 
 set -eu
 
-pat_file=/Users/mac/sparkpipe/.env
+if [ -n "${SPARKPIPE_PAT_FILE:-}" ]; then
+    pat_file=$SPARKPIPE_PAT_FILE
+elif [ -r /Users/cem/sparkpipe/.env ]; then
+    pat_file=/Users/cem/sparkpipe/.env
+else
+    pat_file=/Users/mac/sparkpipe/.env
+fi
 if [ ! -r "$pat_file" ]; then
     printf '%s\n' "missing SparkPipe PAT file: $pat_file" >&2
     exit 2
