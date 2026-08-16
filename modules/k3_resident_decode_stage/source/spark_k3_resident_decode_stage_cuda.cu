@@ -104,6 +104,9 @@ int32_t SparkK3DispatchRegisterPack(SparkK3Pack *pack)
 {
 	cudaError_t err = cudaHostRegister((void *)pack->mapping, pack->file_bytes,
 		cudaHostRegisterDefault);
+	if ( err != cudaSuccess )
+		fprintf(stderr, "sparkpipe_k3: cudaHostRegister %llu bytes -> %s\n",
+			(unsigned long long)pack->file_bytes, cudaGetErrorString(err));
 	return(err == cudaSuccess ? SPARK_K3_DISPATCH_OK : SPARK_K3_DISPATCH_ERR_REGISTER);
 }
 
