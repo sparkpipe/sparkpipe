@@ -858,8 +858,7 @@ static int SparkDsv4ValidationPostExact(
 		for (index=0u; index<elements; index++)
 			if ( buffers->control[index] != buffers->candidate[index] )
 			{
-				fprintf(stderr,"%s mismatch_index=%u control=%04x candidate=%04x
-",message,index,(unsigned)buffers->control[index],(unsigned)buffers->candidate[index]);
+				fprintf(stderr,"%s mismatch_index=%u control=%04x candidate=%04x\n",message,index,(unsigned)buffers->control[index],(unsigned)buffers->candidate[index]);
 				break;
 			}
 		return(SparkDsv4ValidationRequire(0,message));
