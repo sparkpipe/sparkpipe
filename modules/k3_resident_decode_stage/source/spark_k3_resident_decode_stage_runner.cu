@@ -760,8 +760,10 @@ SparkStatus SparkK3StageRunnerSubmit(
 			packed_rows, stream);
 	if ( status != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: slice dispatch failed %d\n", status); return SPARK_STATUS_INTERNAL_ERROR; }
-	/* The head stage commits the tokens. */
-	if ( runner->owns_final_head != 0u )
+	/* The head stage commits the tokens - only when the pack actually
+	 * carries the head weight (a PP1 slice pack lacks it, and the
+	 * equivalence legs run such packs with stage_count 1). */
+	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
 	{
 		status = K3Head(b, state->head_norm_weight, state->head_weight, 0,
 			state->vocab_slice_rows, rows, stream);
