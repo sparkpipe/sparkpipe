@@ -209,6 +209,32 @@ int main(int argc, char **argv)
 		printf("GRAPH REPLAY MISMATCH %u\n", graph_mismatches);
 		return 1;
 	}
+	/* Step 3: a pure replay (the graph exists) - the steady-state decode
+	 * cost and a second replay-replay determinism sample. */
+	cudaEventRecord(begin, runner_stream);
+	status = SparkK3StageRunnerSubmit(&runner, &dispatch);
+	cudaEventRecord(end, runner_stream);
+	cudaEventSynchronize(end);
+	cudaEventElapsedTime(&millis, begin, end);
+	printf("step 3: %.3f ms (graph replay)\n", (double)millis);
+	cudaMemcpy(h_hidden_graph, d_hidden, (uint64_t)K3_HIDDEN * 2u,
+		cudaMemcpyDeviceToHost);
+	graph_mismatches = 0u;
+	for ( uint32_t i = 0u; i < K3_HIDDEN; ++i )
+	{
+		uint32_t a = h_hidden[i], b = h_hidden_graph[i];
+		uint32_t diff = a > b ? a - b : b - a;
+		uint32_t limit = i >= 6144u ? 64u : 4u;
+		if ( diff > limit )
+			graph_mismatches++;
+	}
+	printf("replay-replay vs step 1: %u mismatches beyond ULP limit\n",
+		graph_mismatches);
+	if ( graph_mismatches != 0u )
+	{
+		printf("REPLAY REPLAY MISMATCH %u\n", graph_mismatches);
+		return 1;
+	}
 	SparkK3StageRunnerDestroy(&runner);
 	status = SparkK3StageRunnerInitialize(&runner, &config);
 	if ( status != SPARK_STATUS_OK )
