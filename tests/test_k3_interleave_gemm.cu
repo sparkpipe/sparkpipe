@@ -547,6 +547,8 @@ int main(void)
 				float got = (double)HostBf16ToFloat(h_out_plain[p * plain_rows + n]);
 				if ( fabsf(got - expect) > 0.03f * fabsf(expect) + 1e-3f )
 				{
+					if ( iter_failures < 8u )
+						printf("PLAINK mismatch p=%u n=%u got=%g expect=%g\n", p, n, got, expect);
 					iter_failures++;
 					if ( n >= 6144u )
 						iter_tail++;
