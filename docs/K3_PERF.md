@@ -16,10 +16,13 @@ Measured on sparka, real rank pack, stage 0 (24 layers), 1 token:
    host traffic is the collective tier's staging. Target: the ~3.3k
    launches/token become one graph replay per shape.
 2. **The fused per-layer collective (LANDED)**: attention_out | hidden |
-   shared_out pack into ONE 43 KB message instead of three 14 KB ones -
-   three syncs become one and the wire utilization triples. The host-TCP
-   tier implements it; the device tier replaces the whole block with one
-   stream-ordered combine (no sync at all).
+   shared_out pack into contiguous 14 KB segments instead of three
+   separate exchanges - the two-phase split (item 5) ships attention_out
+   alone before the MLP-side retrieval and hidden | shared_out after the
+   MLP, so each exchange carries the largest frame its phase allows and
+   the wire utilization stays high. The host-TCP tier implements it; the
+   device tier replaces the whole block with stream-ordered combines (no
+   sync at all).
 3. **The device-direct tier (LANDED)**: the adapter parses a
    `device_collective` object (backend nccl | hidden_transport, peer
    hosts, ports, timeouts), applies the topology, and hands the runner a
@@ -38,10 +41,34 @@ Measured on sparka, real rank pack, stage 0 (24 layers), 1 token:
    generator emits TP16 configs (16 peer hosts, no host tier). The degree
    divisibility audit below holds; the w2 k-tile split stays unbalanced
    until the TILE_K=64 variant lands.
-5. **Overlap**: the next layer's norm/qkv projections do not depend on the
-   partial; splitting the slice's per-layer sequence around the collective
-   (aux stream + events) hides the AR behind the next layer's prologue.
-   Best done together with the graph capture (the finite shape set).
+5. **Two-phase layer collective (LANDED)**: the hook now fires after the
+   attention half (phase 0) AND after the MLP half (phase 1). Phase 0 is
+   required for correctness, not just speed: the MLP-side AttnRes retrieval
+   is documented to read the POST-attention partial, and the old single
+   post-MLP hook let the sharded path retrieve a partial missing the
+   attention contribution. Each phase packs and all-reduces its own
+   segment(s) with the fold landing on the submission's stream (no legacy
+   default stream), and at tp_degree 1 the hook no-ops because the layer
+   folds its own projections.
+6. **Per-shape CUDA-graph capture (LANDED, gated)**: the runner captures
+   the dense-offset kernel + the whole slice into a cudaGraphExec_t keyed
+   by rows (warm-direct first submit, capture on the second, replay after),
+   gated on a non-default stream and a capture-safe tier (NCCL device
+   collective or tp_degree 1; the host tiers' syncs/staging are not
+   replayable and self-disable the path). The slice audit (in slice.cuh)
+   held: no host traffic on the layer path, host-resolved branches bake
+   in, tensor-map encodes are steady-state cache hits. The single-spark
+   gate now replays the captured slice and compares it against the direct
+   launch (0 mismatches beyond the ULP limits).
+7. **Overlap** (revised): the per-layer ARs sit on the critical path for
+   B1 decode by construction - the MLP-side retrieval needs the summed
+   attention output and the next layer needs the summed MLP outputs - so
+   there is no compute to hide them behind. The AR-overhead reductions are
+   the fused messages, the device-direct tier, and the graph capture
+   above. Remaining ideas: a per-submission payload width (the collective
+   currently fixes local_hidden_dimension at create time, so a 1-segment
+   phase still ships the 3-segment frame) and the balanced TP16 w2
+   half-tile repack.
 
 ## TP16 readiness audit (degree 16 divisibility)
 

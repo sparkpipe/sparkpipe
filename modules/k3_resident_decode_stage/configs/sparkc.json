@@ -7,6 +7,7 @@
   "max_rows": 16,
   "resident_capacity": 16,
   "kv_pages": 2,
+  "capture_graphs": 1,
   "hidden": 7168,
   "device_collective": {
     "backend": "nccl",
