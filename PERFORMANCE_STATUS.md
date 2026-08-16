@@ -563,3 +563,46 @@ gate.
 The Station comparison requires the same checkpoint, precision, request shape,
 context, output length, batching policy, and timing boundary on both systems.
 No analytical memory-bandwidth ratio closes that gate.
+
+### GLM 5.2 TP8 B1 single-stream + B8 multi-sequence (2026-08-16)
+
+Merged-main accuracy fixes (#663 TP8 support, #665 head-offset + gate-up order)
+deployed on the TP8 fanout band spark8-sparkf (8 ranks, BF16 spine + FP8
+experts, recursive-doubling collective). Layer 0 and layer 3 outputs were
+verified against a CPU torch reference of the BF16 master (0.2-0.9% RMS
+agreement; layer 3 includes the router + correction-bias top-8 + FP8 expert
+path). All runs emit the identical token stream.
+
+| Field | Measured configuration |
+| --- | --- |
+| Model | zai-org/GLM-5.2 |
+| Checkpoint revision | b4734de4facf877f85769a911abafc5283eab3d9 |
+| Kernel target | cuda.sm121.glm52.resident_decode_stage.bf16.expert_fp8 |
+| Topology | TP8 fanout on spark8 through sparkf; no PP, no speculation |
+| Workload A (single-stream) | B1/B8: one 6-token prompt, one request, 128 output tokens |
+| Workload B (serving aggregate) | B8: 8 concurrent sequences x 32 output tokens (256 total) |
+| Timed boundary | Process start to terminal (includes prefill + connect) |
+| Included | Scheduler, model kernels, TP collectives, runtime IPC |
+| Precision route | Exact target above; no speculative draft model |
+
+| Workload | Tokens | Wall time | Throughput |
+| ---: | ---: | ---: | ---: |
+| A: single-stream decode (B1, clean fleet) | 128 | 18.52 s | 6.91 tok/s |
+| A: single-stream decode (B8 class, batched prefill) | 128 | 18.73 s | 6.83 tok/s |
+| B: 8-sequence aggregate (B8 class) | 256 | 5.89 s | 43.46 tok/s |
+
+The single-stream path is bandwidth-bound: per token it reads ~15.7 GB of FP8
+expert weights plus ~6 GB of BF16 spine at the 273 GB/s LPDDR5x limit (~80 ms
+hard floor), plus ~31 ms of TP collectives (158 reduces/token, median 912 us)
+and ~25 ms of kernel launch + compute overhead. The B8 class amortizes the same
+weight bytes across eight rows, which is what lifts the aggregate to 43.46
+tok/s. Next: reduce-path and launch-overhead squeezes toward the single-stream
+ceiling, and dspark speculative decode (draft weights must be trained first;
+the base checkpoint ships none).
+
+| Receipt | SHA-256 |
+| --- | --- |
+| [glm52-b128d.stderr](qualification/glm52/performance/tp8_b8_20260816/glm52-b128d.stderr) | 4519f1b8a5f4639916e81d374c4fdf7c92cd500fc0ffa8569636df0ad278fe06 |
+| [glm52-toks.txt](qualification/glm52/performance/tp8_b8_20260816/glm52-toks.txt) | bc9edad1edcb6fcebf2aadb42c2dd1b85549bfdfc7ee8a0d6d2dca2a1d32b7c8 |
+| [glm52-b8.stdout](qualification/glm52/performance/tp8_b8_20260816/glm52-b8.stdout) | 29bea03aad86124aae5e0521afdb34262b173f6e0fb8595f630f410b81a525f7 |
+| [glm52-multi.stdout](qualification/glm52/performance/tp8_b8_20260816/glm52-multi.stdout) | 5740de2f83cdb93237fc5c12a4a96b6393e856c39793f682e8a2c2318846c0d9 |

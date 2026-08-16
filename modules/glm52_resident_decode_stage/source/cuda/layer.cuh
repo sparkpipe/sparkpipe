@@ -215,6 +215,15 @@ static int32_t Glm52LayerIndexer(
     {
         return LM_LAUNCH_OK;
     }
+    /* The DSA selection is bypassed entirely while the context fits the
+     * selection width (the top-k selects every position), so the indexer's
+     * projections, norms, rope and cache store are pure overhead there.
+     * Skip the whole launch sequence and save ~8 kernel launches per
+     * full-indexer layer on every short-context token. */
+    if (context <= GLM52_DSA_SELECTED)
+    {
+        return LM_LAUNCH_OK;
+    }
     if (buffers == 0 || rows == 0u || context == 0u ||
         buffers->positions == 0 || buffers->sequence_of_row == 0 ||
         buffers->context_length == 0 ||
