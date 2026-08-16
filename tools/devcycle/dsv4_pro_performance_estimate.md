@@ -2,10 +2,15 @@
 
 Analytical estimate for the 16-spark ring (GB10, sm_121a, 1 GPU/host,
 MXFP4-E2M1 experts, FP8 non-expert weights, BF16 activations/KV, 100G RDMA
-all-to-all + 200G paired rails). Anchors: the GB10 memory bandwidth the
-kernel library prices against (273 GB/s, model-families/common/.../
-spark_lm_kernels.cuh MXFP4 comment), and the Flash TP4 control measurement
-(40.46 tok/s, h4096/l43/e256) as the scaling-law cross-check.
+all-to-all + 200G paired rails). Anchors:
+- MEASURED DRAM bandwidth on sparkb (tools/devcycle/bw_probe.cu): 272.7 GB/s
+  at 64 MB working set, 250.7 GB/s at 256 MB (DRAM-resident) - the kernel
+  library's 273 GB/s pricing comment is the L2-resident number; DRAM
+  streaming is ~250 GB/s.
+- Flash TP4 control measurement (40.46 tok/s, h4096/l43/e256) as the
+  scaling-law cross-check.
+- MXFP4 experts are 4-bit DATA plus E8M0 scales (1 B per 32 elements), so
+  the effective expert cost is ~6 bits/element, not 4.
 
 ## Weight traffic (the binding constraint)
 
@@ -13,17 +18,17 @@ Per token per layer, TP4 (per-rank reads):
 
 | Component | Bytes | Note |
 | --- | --- | --- |
-| Top-6 routed experts (w1+w2+w3, MXFP4 0.5 B/elem + E8M0 scales) | ~198 MB | 6 x 33 MB; the router changes the set every token, so no cross-token reuse |
+| Top-6 routed experts (w1+w2+w3: 4-bit data + E8M0 scales = ~6 bits/elem) | ~210 MB | 6 x 35 MB; the router changes the set every token, so no cross-token reuse |
 | Attention q/kv/o projections (FP8, rank-sharded) | ~75 MB | wq_b 25 MB + wo_a/b 46 MB dominate |
 | Shared experts + gate + HC + compressor/indexer | ~30 MB | |
-| **Total per layer** | **~303 MB** | |
-| **Total per token (61 layers)** | **~18.5 GB** | |
+| **Total per layer** | **~315 MB** | |
+| **Total per token (61 layers)** | **~19.2 GB** | |
 
-At 273 GB/s effective DRAM bandwidth: **~68 ms/token** weight streaming.
-The cross-check: Flash at the same per-layer structure reads ~6.9 GB/token
-(h4096/l43/e256 scales everything down ~2.7x) -> ~25 ms/token -> 40 tok/s,
-matching the measured 40.46 tok/s control. The model therefore scales the
-Pro estimate the same way.
+At the MEASURED 250 GB/s DRAM streaming bandwidth: **~77 ms/token** weight
+streaming. The cross-check: Flash at the same per-layer structure reads
+~6.9 GB/token (h4096/l43/e256 scales everything down ~2.7x) -> ~28 ms/token
+-> 36 tok/s vs its measured 40.46 tok/s - within ~12%, validating the model
+(the difference is L2 reuse of the dense projections the model ignores).
 
 Non-weight overheads per token: 122 TP all-reduces (14 KB each, mapped-host
 zero-copy + progress thread) ~2.5-5 ms; 3 PP boundary hops ~0.2 ms; control
@@ -31,9 +36,9 @@ plane ~1-2 ms. Total ~4-7 ms — second order vs 68 ms.
 
 ## Decode (output) estimate
 
-- **Main-model-only decode: ~68-75 ms/token -> 13-15 tok/s.** This is what
+- **Main-model-only decode: ~77-82 ms/token -> 12-13 tok/s.** This is what
   the first GA ring run will measure (the DSpark draft execution is not yet
-  wired). The O128 benchmark's 128 output tokens -> ~9-10 s of decode.
+  wired). The O128 benchmark's 128 output tokens -> ~10-11 s of decode.
 - **With the DSpark speculative stage (the GA's design):** the draft block
   costs ~0.5-1 ms (3 draft layers x ~250 MB reads amortized over 5 draft
   tokens + one head pass), so each main step emits 1 + 5 x acceptance
@@ -47,12 +52,12 @@ Weights amortize across the 128 rows. The router's per-row top-6 union over
 128 rows covers ~330 of 384 experts, so the expert reads grow to
 ~1.8 GB/layer but serve all 128 rows:
 
-- Expert weights: ~110 GB total batch
+- Expert weights: ~115 GB total batch (4-bit + scales)
 - Dense weights: ~6.4 GB total batch
-- **~117 GB / 273 GB/s ~ 430 ms**, plus 122 collectives of 1.8 MB
+- **~121 GB / 250 GB/s ~ 485 ms**, plus 122 collectives of 1.8 MB
   (~7 ms), attention waves (~1-2 ms), pipeline fill (~10-20 ms)
 
-**Prefill: ~0.45-0.6 s for the 128-token prompt -> ~210-280 tok/s
+**Prefill: ~0.5-0.7 s for the 128-token prompt -> ~180-250 tok/s
 prefill throughput; TTFT ~0.5-0.7 s.**
 
 ## What moves these numbers
