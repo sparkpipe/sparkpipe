@@ -136,31 +136,40 @@ def main():
         if rebuilt != full(name):
             print("  FAIL shared gate|up halves do not reassemble gate-first")
             failures += 1
-        # interleaved expert w1: per (expert, k-tile) the rank carries its
-        # gate cell range then its up cell range; the full tensor's tile is
-        # all gate cells then all up cells, ranks in order - and the K AXIS
-        # splits too: each rank owns its k-tile range (the rank's latent
-        # slice addresses only its tiles), reassembled tile range by tile
+        # interleaved expert w1: BOTH axes split - the rank owns its k-tile
+        # range (its latent slice) AND its gate|up cell ranges (its
+        # intermediate slice), so the shard is the DIAGONAL subgrid (its
+        # tiles x its cells); the cross subgrids are held by no rank because
+        # no GEMM reads them. The check extracts that subgrid from the full
+        # tensor per rank instead of reassembling.
         name = "model.layers.1.expert_w1_weight"
         geom = full_manifest["tensors"][name]["interleave"]
         cells, k_tiles = geom["cells"], geom["k_tiles"]
-        chunk = (cells // 2 // 2) * geom["cell_rows"] * geom["row_bytes"]
+        half = cells // 2
+        take_k = k_tiles // 2
+        take_out = half // 2
+        chunk = take_out * geom["cell_rows"] * geom["row_bytes"]
         experts = cfg["experts"]
         a, b = both(name)
-        take_k = k_tiles // 2
         rank_expert = take_k * 2 * chunk
         if len(a) != experts * rank_expert:
             print(f"  FAIL {name}: rank shard is not a valid interleave")
             failures += 1
-        # each k-tile belongs to ONE rank, so the full tensor is the rank
-        # shards concatenated (tile 0's rank first), like the w2 below
-        rebuilt = bytearray()
-        for e in range(experts):
-            rebuilt += a[e * rank_expert:(e + 1) * rank_expert]
-            rebuilt += b[e * rank_expert:(e + 1) * rank_expert]
-        if bytes(rebuilt) != full(name):
-            print(f"  FAIL {name}: interleaved cell shards do not reassemble")
-            failures += 1
+        rpe = geom["rows_per_expert"]
+        row_bytes = geom["row_bytes"]
+        for r, shard in ((0, a), (1, b)):
+            want = bytearray()
+            for e in range(experts):
+                block = full(name)[e * rpe * row_bytes:
+                                 (e + 1) * rpe * row_bytes]
+                for t in range(r * take_k, (r + 1) * take_k):
+                    for base in (r * take_out, half + r * take_out):
+                        row0 = (t * cells + base) * geom["cell_rows"]
+                        want += block[row0 * row_bytes:
+                                     row0 * row_bytes + chunk]
+            if bytes(want) != shard:
+                print(f"  FAIL {name}: rank {r} is not the diagonal subgrid")
+                failures += 1
         rank_geom = ranks[0][0]["tensors"][name]["interleave"]
         if rank_geom["out_dim"] != geom["out_dim"] // 2 or \
                 rank_geom["k_dim"] != geom["k_dim"] // 2 or \
