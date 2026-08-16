@@ -99,3 +99,59 @@ New kernel work:
 
 Until this migration lands, the staged deployment is PREVIEW-baseline and
 must not be used for the final measured decode.
+
+## Status log
+
+- R11: packer + module load the GA MTP (3 draft layers, main-proj,
+  markov/confidence heads, ratios 64); record dry-run vs the GA index:
+  211 records, 0 missing; module b1 builds clean.
+- R11: DSpark CUDA kernels land and compile (in
+  spark_dsv4_resident_decode_stage_cuda.cu, guarded by
+  SPARK_DSV4_MODEL_MTP_LAYER_COUNT > 0):
+  SparkDsv4DSparkLaunchMeanReduction (hc-stream mean capture for the
+  target layers), SparkDsv4DSparkLaunchMainKvWrite (rolling main-KV
+  window write), SparkDsv4DSparkLaunchAttention (draft attention over the
+  main-KV window + causal draft KV, online softmax + sink). First-cut
+  approximations (documented in the kernels): BF16 draft KV, no rotary on
+  the draft path, no fp8 activation quantization - safe because drafts are
+  verified against the main model before acceptance.
+
+## DSpark module wiring spec (next implementation step)
+
+State (per slot, allocated from the ledger): dspark_capture_bf16[3] (layers
+58-60 post-layer hc means), dspark_main_bf16 (main_proj + main_norm
+output), dspark_main_kv_bf16[3] (128 x 512 BF16 rolling windows),
+dspark_draft_q/kv/o buffers (5 rows), dspark_draft_streams (5 x 4 x 7168),
+dspark_valid_counts (129..133), dspark_draft_ids + dspark_draft_tokens.
+
+Chain (final stage, decode frames, after the main head emission):
+1. main_proj: dense FP8 linear (21504 -> 7168) over the concatenated
+   captures -> RMS main_norm -> dspark_main_bf16. (Existing linear + norm
+   launches.)
+2. Draft ids: [accepted token, noise x 4]; embed via the existing
+   embedding gather -> 5 x 7168; replicate to 4 hc streams.
+3. For each draft layer i (mtp.0/1/2):
+   a. main_kv = kv_norm(wkv_i(main_bf16)) -> SparkDsv4DSparkLaunchMainKvWrite
+      into the rolling slot (sequence position % 128). (wkv = existing
+      dense FP8 linear, kv_norm = existing RMS.)
+   b. Draft attention side: HcEnter(mtp hc attn params) -> attn_norm ->
+      wq_a/wq_b (draft q) -> wkv + kv_norm (draft kv) ->
+      SparkDsv4DSparkLaunchAttention(window, draft_kv, valid_counts,
+      mtp sink, 1/sqrt(512)) -> wo_a/wo_b -> attn-side hidden all-reduce
+      (5 rows) -> HcPost.
+   c. FFN side: HcEnter(mtp hc ffn) -> ffn_norm -> gate route (bias gate)
+      -> routed experts (top-6, mtp experts) -> shared -> ffn-side
+      all-reduce -> HcPost.
+   d. Continue with the existing TP continuation machinery (a draft
+      continuation mirroring SparkDsv4ModuleContinueLayers with
+      state->mtp_layers[i]).
+4. Draft head: HcEnter/mix + HcHeadReduce with mtp.2's hc_head params ->
+   RMS mtp.2.norm -> the SHARED head (screened argmax, 5 rows,
+   vocab-sharded) -> U64 maxloc pack -> 5 draft tokens + (later) the
+   Markov bias and confidence head (both reuse existing kernels; markov
+   w2 = head-style GEMV over 512, confidence = 1x7680 GEMV).
+
+The acceptance/verification policy lives client-side (compare draft logits
+with the main model per position); the module only emits drafts + (later)
+confidence.
+

@@ -2948,3 +2948,161 @@ extern "C" cudaError_t SparkDsv4LaunchHcHeadReduce(cudaStream_t stream, const vo
 	SparkDsv4HcHeadReduceKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(streams_bf16,mixes_f32,scale,base_f32,epsilon,reduced_bf16,row_count,hc,dimension);
 	return(cudaGetLastError());
 }
+
+/* --- DSpark speculative-stage kernels (GA DeepSeek-V4-Pro-0813) ------------
+ * First cut: BF16 throughout, no rotary on the draft path, no fp8 activation
+ * quantization. The draft proposals are verified against the main model
+ * before acceptance, so these approximations cannot corrupt the output
+ * stream; they only affect the acceptance rate. */
+
+#if SPARK_DSV4_MODEL_MTP_LAYER_COUNT > 0u
+
+/* Mean of the hc hyper-connection streams: hc rows of BF16 -> one BF16 row.
+ * This is the python h.mean(dim=2) capture for dspark_target_layer_ids. */
+static __global__ void SparkDsv4DSparkMeanReductionKernel(
+	const void *streams_bf16,void *mean_bf16,uint32_t hc,uint32_t dimension)
+{
+	const uint32_t element = threadIdx.x + blockIdx.x * blockDim.x;
+	uint32_t stream;
+	float total;
+	if ( element >= dimension )
+		return;
+	total = 0.0f;
+	for (stream=0u; stream<hc; stream++)
+		total += SparkLmBf16ToFloat(streams_bf16,(uint64_t)stream * dimension + element);
+	SparkLmFloatToBf16(mean_bf16,element,total / (float)hc);
+}
+
+extern "C" cudaError_t SparkDsv4DSparkLaunchMeanReduction(cudaStream_t stream, const void *streams_bf16, void *mean_bf16, uint32_t hc, uint32_t dimension)
+{
+	uint32_t blocks = (dimension + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS;
+	if ( streams_bf16 == 0 || mean_bf16 == 0 || hc == 0u || dimension == 0u )
+		return(cudaErrorInvalidValue);
+	SparkDsv4DSparkMeanReductionKernel<<<blocks,SPARK_LM_CTA_THREADS,0,stream>>>(streams_bf16,mean_bf16,hc,dimension);
+	return(cudaGetLastError());
+}
+
+/* Copy one BF16 row of the projected main stream into the rolling window
+ * slot of a draft layer's main-KV cache. */
+static __global__ void SparkDsv4DSparkMainKvWriteKernel(
+	const void *main_kv_bf16,void *window_bf16,uint32_t slot,uint32_t slots,
+	uint32_t dimension)
+{
+	const uint32_t element = threadIdx.x + blockIdx.x * blockDim.x;
+	if ( element >= dimension )
+		return;
+	((uint16_t *)window_bf16)[(uint64_t)slot * dimension + element] =
+		((const uint16_t *)main_kv_bf16)[element];
+	(void)slots;
+}
+
+extern "C" cudaError_t SparkDsv4DSparkLaunchMainKvWrite(cudaStream_t stream, const void *main_kv_bf16, void *window_bf16, uint32_t slot, uint32_t slots, uint32_t dimension)
+{
+	uint32_t blocks = (dimension + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS;
+	if ( main_kv_bf16 == 0 || window_bf16 == 0 || slot >= slots || dimension == 0u )
+		return(cudaErrorInvalidValue);
+	SparkDsv4DSparkMainKvWriteKernel<<<blocks,SPARK_LM_CTA_THREADS,0,stream>>>(main_kv_bf16,window_bf16,slot,slots,dimension);
+	return(cudaGetLastError());
+}
+
+/* Draft attention: every draft query row attends over the main-stream KV
+ * window (window_rows) plus the draft rows up to its own index (causal),
+ * against the shared single KV head. One CTA per (row, 4-head group);
+ * one warp per head; online softmax with the attention sink. */
+static __global__ void SparkDsv4DSparkAttentionKernel(
+	const void *q_bf16,
+	const void *window_bf16,
+	const void *draft_kv_bf16,
+	const uint32_t *valid_counts,
+	const float *sink_f32,
+	float scale,
+	void *out_bf16,
+	uint32_t row_count,
+	uint32_t head_count,
+	uint32_t head_dim,
+	uint32_t window_rows)
+{
+	static const uint32_t heads_per_cta = 4u;
+	extern __shared__ float query_shared[];
+	const uint32_t row = blockIdx.x;
+	const uint32_t first_head = blockIdx.y * heads_per_cta;
+	const uint32_t warp_index = threadIdx.x / SPARK_LM_WARP_LANES;
+	const uint32_t lane_index = threadIdx.x % SPARK_LM_WARP_LANES;
+	const uint32_t head = first_head + warp_index;
+	uint32_t valid,j;
+	float running_max,running_den;
+	float accumulator[SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION /
+		SPARK_LM_WARP_LANES];
+	if ( row >= row_count || head >= head_count )
+		return;
+	/* Stage the four query heads (each head_dim elements). */
+	for (j=threadIdx.x; j<heads_per_cta * head_dim; j+=blockDim.x)
+		query_shared[j] = SparkLmBf16ToFloat(q_bf16,
+			((uint64_t)row * head_count + first_head) * head_dim + j);
+	__syncthreads();
+	valid = min(__ldg(valid_counts + row),window_rows + row_count);
+	running_max = -INFINITY;
+	running_den = 0.0f;
+	for (j=0u; j<head_dim / SPARK_LM_WARP_LANES; j++)
+		accumulator[j] = 0.0f;
+	for (j=0u; j<valid; j++)
+	{
+		float score = 0.0f;
+		uint32_t k;
+		const uint16_t *kv_row = (const uint16_t *)(j < window_rows ?
+			(const uint8_t *)window_bf16 + (uint64_t)j * head_dim *
+			sizeof(uint16_t) :
+			(const uint8_t *)draft_kv_bf16 + (uint64_t)(j - window_rows) *
+			head_dim * sizeof(uint16_t));
+		for (k=0u; k<head_dim; k+=SPARK_LM_WARP_LANES)
+			score += query_shared[warp_index * head_dim + k + lane_index] *
+				SparkLmBf16ToFloat(kv_row,k + lane_index);
+		score *= scale;
+		for (k=16u; k!=0u; k>>=1u)
+			score += __shfl_xor_sync(0xffffffffu,score,k);
+		{
+			float maximum = running_max > score ? running_max : score;
+			float rescale = expf(running_max - maximum);
+			running_den = running_den * rescale + 1.0f;
+			for (k=0u; k<head_dim / SPARK_LM_WARP_LANES; k++)
+				accumulator[k] *= rescale;
+			for (k=0u; k<head_dim / SPARK_LM_WARP_LANES; k++)
+				accumulator[k] += expf(score - maximum) *
+					SparkLmBf16ToFloat(kv_row,k * SPARK_LM_WARP_LANES +
+						lane_index);
+			running_max = maximum;
+		}
+	}
+	/* Attention sink: an extra position with score sink_f32[head]. */
+	{
+		float sink = sink_f32 != 0 ? sink_f32[head] : 0.0f;
+		float score = sink * scale;
+		float maximum = running_max > score ? running_max : score;
+		float rescale = expf(running_max - maximum);
+		running_den = running_den * rescale + expf(score - maximum);
+		for (j=0u; j<head_dim / SPARK_LM_WARP_LANES; j++)
+			accumulator[j] *= rescale;
+	}
+	float inverse = 1.0f / running_den;
+	for (j=0u; j<head_dim / SPARK_LM_WARP_LANES; j++)
+		SparkLmFloatToBf16(out_bf16,((uint64_t)row * head_count + head) *
+			head_dim + j * SPARK_LM_WARP_LANES + lane_index,
+			accumulator[j] * inverse);
+}
+
+extern "C" cudaError_t SparkDsv4DSparkLaunchAttention(cudaStream_t stream, const void *q_bf16, const void *window_bf16, const void *draft_kv_bf16, const uint32_t *valid_counts, const float *sink_f32, float scale, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dim, uint32_t window_rows)
+{
+	dim3 grid;
+	uint32_t shared_bytes;
+	if ( q_bf16 == 0 || window_bf16 == 0 || draft_kv_bf16 == 0 ||
+		valid_counts == 0 || out_bf16 == 0 ||
+		row_count == 0u || head_count == 0u || head_dim == 0u ||
+		(head_dim % SPARK_LM_WARP_LANES) != 0u || window_rows == 0u )
+		return(cudaErrorInvalidValue);
+	grid = dim3(row_count,(head_count + 3u) / 4u);
+	shared_bytes = 4u * head_dim * sizeof(float);
+	SparkDsv4DSparkAttentionKernel<<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(q_bf16,window_bf16,draft_kv_bf16,valid_counts,sink_f32,scale,out_bf16,row_count,head_count,head_dim,window_rows);
+	return(cudaGetLastError());
+}
+
+#endif /* SPARK_DSV4_MODEL_MTP_LAYER_COUNT > 0u */
