@@ -2362,6 +2362,8 @@ static SparkStatus SparkDsv4ModuleStageRows(
 	return(status);
 }
 
+static SparkStatus SparkDsv4ModuleDsparkDrive(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
+
 static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkModelDriverFrame *frame, const SparkDsv4ResidentDecodeStageFrameContext *context)
 {
 	const uint32_t *token_ids,*row_lane_indices;
@@ -2372,6 +2374,32 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 	row_lane_indices = prefill != 0u ? context->prefill_batch->row_lane_indices : context->decode_batch->row_lane_indices;
 	row_positions = prefill != 0u ? context->prefill_batch->row_positions : context->decode_batch->row_positions;
 	row_count = prefill != 0u ? context->prefill_batch->row_count : context->decode_batch->row_count;
+	/* DSpark: the previous step armed this slot; run the draft on the
+	 * submission path (host syncs are legal here, unlike the completion
+	 * callback). The draft's stream work precedes this frame's staging, so
+	 * the frame's H2D staging overwrites the shared staging arrays. */
+	if ( prefill == 0u && slot->dspark_armed != 0u &&
+		state->dspark_enabled != 0u && row_count == 1u )
+	{
+		uint64_t anchor_position = 0u;
+		uint32_t lane_index = 0u;
+		cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+		cudaError_t error = cudaMemcpyAsync(&anchor_position,row_positions,
+			sizeof(uint64_t),cudaMemcpyDeviceToHost,stream);
+		if ( error == cudaSuccess )
+			error = cudaMemcpyAsync(&lane_index,row_lane_indices,
+				sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+		if ( error == cudaSuccess )
+			error = cudaStreamSynchronize(stream);
+		slot->dspark_armed = 0u;
+		if ( error == cudaSuccess && anchor_position != 0u )
+		{
+			SparkStatus dspark_status = SparkDsv4ModuleDsparkDrive(state,slot,
+				lane_index,slot->host_output_token_ids[0],anchor_position - 1u);
+			if ( dspark_status != SPARK_STATUS_OK )
+				fprintf(stderr,"dspark_drive_failed status=%u tp_rank=%u\n",(uint32_t)dspark_status,state->tp_rank);
+		}
+	}
 	return(SparkDsv4ModuleStageRows(state,slot,token_ids,row_lane_indices,row_positions,row_count,frame->active_slot_count));
 }
 
@@ -3332,20 +3360,13 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 			"tp_head_maxloc_finish");
-	/* DSpark measurement hook: after the anchor token finalizes, run the
-	 * draft forward + markov chain synchronously. The speculative verify
-	 * and acceptance replace this driver. */
+	/* DSpark: the anchor step only ARMS the slot; the draft runs on the
+	 * NEXT submission's staging path (the completion callback must never
+	 * touch the engine stream or block - see PR #649). */
 	if ( status == SPARK_STATUS_OK && continuation->rows == 1u &&
 		continuation->chain_step_count == 1u &&
 		state->dspark_enabled != 0u )
-	{
-		SparkDsv4AsyncCompletion *async;
-		uint32_t slot_index = (uint32_t)(slot - state->slots);
-		async = &state->completions[slot_index];
-		status = SparkDsv4ModuleDsparkDrive(state,slot,
-			async->lane_indices[0],slot->host_output_token_ids[0],
-			async->lane_next_positions[0] - 1u);
-	}
+		slot->dspark_armed = 1u;
 	SparkDsv4ModuleFinishContinuationTerminal(continuation,status);
 }
 
@@ -3901,10 +3922,9 @@ static SparkStatus SparkDsv4ModuleRunPrefillHead(SparkDsv4ModuleState *state, Sp
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"prefill_head"));
 }
 
-/* Stream-ordered draft forward (measurement hook): the launches ride the
- * engine stream after the anchor head completes; no host sync inside the
- * completion path. The markov chain, cross-rank sample reduce, and the
- * verify/acceptance loop replace this driver in the speculative step. */
+/* DSpark drive, submission-path (host syncs allowed): the draft forward
+ * plus the sequential markov chain with per-rank greedy samples. The
+ * cross-rank sample reduce and the verify/acceptance loop follow. */
 static SparkStatus SparkDsv4ModuleDsparkDrive(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -3912,11 +3932,52 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 	uint32_t anchor_token_id,
 	uint64_t anchor_position)
 {
-	SparkStatus status = SparkDsv4ModuleRunDsparkDraft(state,slot,lane_index,
+	const uint32_t block = SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE;
+	uint32_t rows_per_rank = state->vocabulary_rows_per_rank;
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error = cudaSuccess;
+	SparkStatus status;
+	uint32_t index,prev_token = anchor_token_id;
+	status = SparkDsv4ModuleRunDsparkDraft(state,slot,lane_index,
 		anchor_token_id,anchor_position);
 	if ( status != SPARK_STATUS_OK )
+	{
 		fprintf(stderr,"dspark_draft_forward_failed status=%u tp_rank=%u\n",(uint32_t)status,state->tp_rank);
-	return(status);
+		return(status);
+	}
+	for (index = 0u; index < block && error == cudaSuccess; index++)
+	{
+		uint32_t host_prev = prev_token;
+		error = cudaMemcpyAsync(slot->input_token_ids,&host_prev,
+			sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+		if ( error == cudaSuccess )
+			error = SparkDsv4LaunchEmbeddingGather(stream,slot->input_token_ids,
+				state->mtp.markov_w1.payload,slot->dspark_main_x_bf16,1u,
+				SPARK_DSV4_MODEL_DSPARK_MARKOV_RANK);
+		if ( error == cudaSuccess )
+			error = SparkDsv4LaunchDsparkMarkovBiasAccum(stream,
+				slot->dspark_logits_bf16,state->mtp.markov_w2.payload,
+				slot->dspark_main_x_bf16,slot->dspark_logits_f32,
+				state->vocabulary_row_start,rows_per_rank,
+				SPARK_DSV4_MODEL_DSPARK_MARKOV_RANK,index,
+				state->multiprocessor_count);
+		if ( error == cudaSuccess )
+			error = SparkDsv4LaunchDsparkArgmax(stream,
+				slot->dspark_logits_f32 + (uint64_t)index * rows_per_rank,
+				rows_per_rank,state->vocabulary_row_start,
+				slot->dspark_draft_token_ids + index,
+				slot->dspark_scores_f32 + index);
+		if ( error == cudaSuccess )
+			error = cudaMemcpyAsync(&prev_token,
+				slot->dspark_draft_token_ids + index,sizeof(uint32_t),
+				cudaMemcpyDeviceToHost,stream);
+		if ( error == cudaSuccess )
+			error = cudaStreamSynchronize(stream);
+	}
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_markov_chain_failed error=%d tp_rank=%u index=%u\n",(int)error,state->tp_rank,index);
+	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+		"dspark_markov_chain"));
 }
 
 static SparkStatus SparkDsv4ModuleRunDsparkHead(
