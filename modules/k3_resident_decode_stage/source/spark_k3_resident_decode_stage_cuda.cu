@@ -395,7 +395,10 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 		K3_FILL_RANK(base + 3u, "mla_out_weight", &d->buffers->mla_out_input, 1);
 		K3_FILL_RANK(base + 1u, "routed_down_weight", &d->buffers->routed_down_rows, 0);
 		K3_FILL_RANK(base + 1u, "routed_up_weight", &d->buffers->routed_up_input, 1);
-		K3_FILL_RANK(base + 1u, "expert_w1_weight", &d->buffers->expert_w1_output, 0);
+		/* the w1's shape is [experts, out, k]: the OUTPUT is slot 1, not the
+		 * expert count in slot 0 (that fill made the up-GEMM's output width
+		 * the expert count, and the equivalence gate caught it) */
+		K3_FILL_RANK(base + 1u, "expert_w1_weight", &d->buffers->expert_w1_output, 1);
 		K3_FILL_RANK(base + 1u, "shared_w1_weight", &d->buffers->shared_w1_rows, 0);
 		K3_FILL_RANK(base + 1u, "shared_w2_weight", &d->buffers->shared_w2_input, 1);
 		/* the w2's k extent is the third shape slot ([experts, out, k]) */
