@@ -1,0 +1,17 @@
+load=fp8_query_kv
+load=bf16_csa_compressor
+load=bf16_hca_compressor
+load=bf16_csa_index
+exact=all_non_swa_layers_all_policies
+capture=production
+capture=candidate_grid_8
+capture=candidate_grid_12
+capture=candidate_grid_16
+capture=candidate_grid_20
+capture=candidate_grid_24
+capture=candidate_grid_32
+capture=candidate_grid_40
+capture=candidate_grid_48
+capture=candidate_grid_64
+discovery=full_43_layer_graph
+validation=grid_64

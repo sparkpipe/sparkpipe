@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-15",
+  "status": "rejected_exact_full_ring_regression",
+  "measurement_kind": "direct_interleaved_end_to_end_cached_kv_decode",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "workload": {
+    "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    "adapter_id": "spark.dsv4.flash-0731.serving-adapter.tp4.v1",
+    "layout": "TP4",
+    "ranks": [
+      "spark4",
+      "spark5",
+      "spark6",
+      "spark7"
+    ],
+    "stage_count": 4,
+    "batch_size": 1,
+    "request_count": 1,
+    "prompt_tokens": 128,
+    "generated_tokens": 128,
+    "batch_sha256": "ad47693813d04ed65fc67178ab2d783e633282c14ed5445f092f67939aa40b7d",
+    "speculation": false,
+    "prefill": "resident cached prompt KV",
+    "timed_intervals": 127,
+    "linear_weight_codec": 5,
+    "expert_weight_codec": 7,
+    "kv_cache_codec": 1
+  },
+  "comparison": {
+    "control": "canonical Query plus fixed runtime-inverse KV and indexer post fusions with the serial attention prologue",
+    "candidate": "same retained compute stack with the projection-precollective overlap production schedule"
+  },
+  "correctness": {
+    "token_count": 128,
+    "token_vector_encoding": "comma-separated decimal token IDs plus trailing newline",
+    "token_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+    "all_control_runs_exact": true,
+    "all_candidate_runs_exact": true,
+    "all_process_status_zero": true,
+    "short_gate_token_count": 24,
+    "short_gate_token_csv_newline_sha256": "18cd1dfc7c7fce04adf200916184cee952a185367412a1780c0d28486c42cbd8"
+  },
+  "identity": {
+    "control_driver_sha256": "07c63b069c066694fb184f3ebd807e9f28f364d1b929389549df9d659f49dc1d",
+    "candidate_driver_sha256": "5e0a3b1447798c80b6737e38dfceb9a775a888c0d48f780eff52f79f5cc9ffad",
+    "control_runtime_root": "/tmp/dsv4-kv-indexer-fixed-07c63b06-runtime",
+    "candidate_runtime_root": "/tmp/dsv4-integrated-kv-indexer-5e0a3b14-runtime",
+    "candidate_compiled_program_sha256": "4fad617f6e20299c95daf603b2ea8906afa7120a202dca54c57c64774581f82a"
+  },
+  "result": {
+    "control_tokens_per_second": [
+      40.43451609789255,
+      40.37243305001518,
+      40.44222673100543
+    ],
+    "candidate_tokens_per_second": [
+      40.17892593189008,
+      39.98592306598205,
+      40.385590706415464
+    ],
+    "paired_delta_percent": [
+      -0.6321088779291495,
+      -0.9573611368784873,
+      -0.14004180572614322
+    ],
+    "control_mean_tokens_per_second": 40.416391959637714,
+    "candidate_mean_tokens_per_second": 40.183479901429195,
+    "aggregate_delta_percent": -0.5762811743342255,
+    "positive_pairs": 0,
+    "pair_count": 3,
+    "directly_measured": true
+  },
+  "receipt_sha256": {
+    "dsv4-integrated-kv-indexer-5e0a3b14-exact-o24.json": "8ea257b961dedf6f3563aa1d67841a16f5f75c37c1cc5671ef99265fe2c78a26",
+    "integrated-vs-kv-pair1-control-o128.json": "90e34a0aa62ed78578c23f2be7739213486f7e1dcb86486ce3686f706b1f9e78",
+    "integrated-vs-kv-pair1-candidate-o128.json": "d4ce4431c473d971d7ba5a2ac01f47148669329aef92fb61cc9d32c2767014f4",
+    "integrated-vs-kv-pair2-control-o128.json": "a0aa21bfdf04f0c06eef6d74557e549318677be686b5fd382042e9fd3417e079",
+    "integrated-vs-kv-pair2-candidate-o128.json": "1bfd89dc7780219968b2823d8c14806c829455ce8557cd1c8a2c6eb590b25351",
+    "integrated-vs-kv-pair3-control-o128.json": "21ec9b4c991134fa20990f4804696865cb856cc3c81a4d061fec602a32de7477",
+    "integrated-vs-kv-pair3-candidate-o128.json": "dfa7bf38ee6eb1b528937b0ef67786cff0d1051119d5b3e2868ed70becaa2630"
+  },
+  "decision": "reject the production overlap and restore the exact serial attention-prologue schedule; retain the isolated PoC evidence as a negative transfer result"
+}
