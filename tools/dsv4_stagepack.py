@@ -663,24 +663,24 @@ def build_records(contract: Mapping[str, object], first_layer: int, layer_count:
             # tensor set, plus stage extras below.
             for stage in range(packed_mtp_layer_count):
                 add_layer_records(records, ratios, MTP_LAYER_FIRST + stage)
-            add_record(records, KIND_MTP_MAIN_PROJ, MTP_LAYER_FIRST, WEIGHT_FP8, 4096, 3 * 4096,
+            add_record(records, KIND_MTP_MAIN_PROJ, GLOBAL_LAYER, WEIGHT_FP8, 4096, 3 * 4096,
                        ("mtp.0.main_proj.weight",), ("mtp.0.main_proj.scale",))
-            add_record(records, KIND_MTP_MAIN_NORM, MTP_LAYER_FIRST, WEIGHT_BF16, 1, 4096,
+            add_record(records, KIND_MTP_MAIN_NORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
                        ("mtp.0.main_norm.weight",))
             last = MTP_LAYER_FIRST + packed_mtp_layer_count - 1
-            add_record(records, KIND_MTP_FINAL_NORM, last, WEIGHT_BF16, 1, 4096,
+            add_record(records, KIND_MTP_FINAL_NORM, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096,
                        (f"mtp.{last - MTP_LAYER_FIRST}.norm.weight",))
-            add_record(records, KIND_MTP_HC_HEAD_FN, last, WEIGHT_F32, 4, 16384,
+            add_record(records, KIND_MTP_HC_HEAD_FN, GLOBAL_LAYER, WEIGHT_F32, 4, 16384,
                        (f"mtp.{last - MTP_LAYER_FIRST}.hc_head_fn",))
-            add_record(records, KIND_MTP_HC_HEAD_BASE, last, WEIGHT_F32, 1, 4,
+            add_record(records, KIND_MTP_HC_HEAD_BASE, GLOBAL_LAYER, WEIGHT_F32, 1, 4,
                        (f"mtp.{last - MTP_LAYER_FIRST}.hc_head_base",))
-            add_record(records, KIND_MTP_HC_HEAD_SCALE, last, WEIGHT_F32, 1, 1,
+            add_record(records, KIND_MTP_HC_HEAD_SCALE, GLOBAL_LAYER, WEIGHT_F32, 1, 1,
                        (f"mtp.{last - MTP_LAYER_FIRST}.hc_head_scale",))
-            add_record(records, KIND_MTP_MARKOV_W1, last, WEIGHT_BF16, 129280, 256,
+            add_record(records, KIND_MTP_MARKOV_W1, GLOBAL_LAYER, WEIGHT_BF16, 129280, 256,
                        (f"mtp.{last - MTP_LAYER_FIRST}.markov_head.markov_w1.weight",))
-            add_record(records, KIND_MTP_MARKOV_W2, last, WEIGHT_BF16, 129280, 256,
+            add_record(records, KIND_MTP_MARKOV_W2, GLOBAL_LAYER, WEIGHT_BF16, 129280, 256,
                        (f"mtp.{last - MTP_LAYER_FIRST}.markov_head.markov_w2.weight",))
-            add_record(records, KIND_MTP_CONFIDENCE_PROJ, last, WEIGHT_BF16, 1, 4096 + 256,
+            add_record(records, KIND_MTP_CONFIDENCE_PROJ, GLOBAL_LAYER, WEIGHT_BF16, 1, 4096 + 256,
                        (f"mtp.{last - MTP_LAYER_FIRST}.confidence_head.proj.weight",))
     return records
 
