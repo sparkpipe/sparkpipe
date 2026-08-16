@@ -22,13 +22,12 @@ import sys
 
 def load(path):
     raw = open(path, "rb").read()
-    values = struct.unpack("<%dH" % (len(raw) // 2), raw)
-    return [v if v < 0x8000 else v - 0x10000 for v in values]
+    return struct.unpack("<%dH" % (len(raw) // 2), raw)
 
 
 def bf16_to_f32(bits):
-    # sign-extended int16 -> fp32
-    return float(bits) / 256.0
+    # BF16 is fp32's top 16 bits: widen and reinterpret
+    return struct.unpack("<f", struct.pack("<I", bits << 16))[0]
 
 
 def main():
