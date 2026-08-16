@@ -325,28 +325,31 @@ class Slicer:
 
     def _expert_down(self, name, raw, meta):
         """w2 input-splits on whole 128-element k-tiles: a contiguous row
-        range per expert per rank. The interleave coarsened V1's 32-element
-        K groups to the k-tile, so a degree that does not divide the tile
-        count is refused - for K3's 24 tiles that excludes TP16."""
+        range per expert per rank. When the tile count does not divide the
+        degree (K3's 24 tiles at TP16), the split is UNBALANCED: the first
+        remainder ranks take one extra tile - the per-rank grid stays valid
+        (whole tiles, scales riding along) and the rank dims the layer reads
+        make the imbalance explicit. The balanced alternative is the
+        64-element half-tile repack, a pack-format change."""
         degree, rank = self.degree, self.rank
         geom = self.entry_of(name)["interleave"]
         experts, k_tiles = geom["experts"], geom["k_tiles"]
-        if k_tiles % degree != 0:
+        if k_tiles < degree:
             raise ShardFailure(
-                f"{name}: {k_tiles} 128-element k-tiles do not split "
-                f"{degree} ways; the interleaved grid coarsened the K split "
-                f"from 32-element groups to whole k-tiles, and a partial "
-                f"tile would strand its co-tiled scales")
+                f"{name}: {k_tiles} 128-element k-tiles cannot cover "
+                f"{degree} ranks even unbalanced")
         per = k_tiles // degree
-        t0 = rank * per
+        rem = k_tiles % degree
+        take = per + (1 if rank < rem else 0)
+        t0 = rank * per + (rank if rank < rem else rem)
         tile_rows = geom["cells"] * geom["cell_rows"]
         row_bytes, rpe = geom["row_bytes"], geom["rows_per_expert"]
         out = bytearray()
         for e in range(experts):
             block = raw[e * rpe * row_bytes:(e + 1) * rpe * row_bytes]
             out += block[t0 * tile_rows * row_bytes:
-                         (t0 + per) * tile_rows * row_bytes]
-        self._reprice_interleave(name, meta, k_dim=geom["k_dim"] // degree)
+                         (t0 + take) * tile_rows * row_bytes]
+        self._reprice_interleave(name, meta, k_dim=take * 128)
         return bytes(out)
 
     def _reprice_interleave(self, name, meta, out_dim=None, k_dim=None):

@@ -22,6 +22,17 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 
+// The dense GEMM's row offsets are [0, rows] per step; a device-side write
+// keeps the hot path free of host traffic (the CUDA-graph capture contract).
+__global__ static void K3RunnerDenseOffsetsKernel(uint32_t *offsets, uint32_t rows)
+{
+	if ( threadIdx.x == 0u )
+	{
+		offsets[0] = 0u;
+		offsets[1] = rows;
+	}
+}
+
 typedef struct SparkK3RunnerState
 {
 	SparkK3ModuleState module;
@@ -38,6 +49,9 @@ typedef struct SparkK3RunnerState
 	uint16_t *staging_values;
 	uint16_t *staging_scratch;
 	uint32_t staging_capacity;
+	/* the fused per-layer collective packs attention_out | hidden |
+	 * shared_out into one staging buffer (3 x rows x K3_HIDDEN) */
+	uint32_t fused_capacity;
 	/* head candidate slot exchange: rows x (2 * tp_degree) floats */
 	float *head_slots_host;
 	float *head_slots_device;
@@ -117,20 +131,42 @@ static void K3RunnerLayerCollective(void *context, void *stream_void, uint32_t l
 	cudaStream_t stream = (cudaStream_t)stream_void;
 	uint32_t rows = state->rows;
 	uint32_t boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u;
-	if ( K3RunnerReduceBf16(state, stream, b->attention_out_bf16, rows) != SPARK_STATUS_OK )
-		return;
+	uint32_t elements = rows * K3_HIDDEN;
+	uint32_t segments = layer == 0u ? 2u : 3u;
+	if ( state->collective_created != 0 )
+	{
+		/* THE FUSED PER-LAYER COLLECTIVE: one message of
+		 * attention_out | hidden | shared_out instead of three separate
+		 * exchanges - three syncs become one, and the 43 KB message uses
+		 * the wire far better than three 14 KB ones. The host tier syncs
+		 * once; the device tier replaces this whole block with one
+		 * stream-ordered combine. */
+		cudaStreamSynchronize(stream);
+		cudaMemcpy(state->staging_values, b->attention_out_bf16,
+			(uint64_t)elements * 2u, cudaMemcpyDeviceToHost);
+		cudaMemcpy(state->staging_values + elements, b->hidden_bf16,
+			(uint64_t)elements * 2u, cudaMemcpyDeviceToHost);
+		if ( segments == 3u )
+			cudaMemcpy(state->staging_values + 2u * elements, b->shared_out_bf16,
+				(uint64_t)elements * 2u, cudaMemcpyDeviceToHost);
+		SparkTpCollectiveAllReduceSumBf16(&state->collective,
+			state->staging_values, (uint64_t)segments * elements,
+			state->staging_scratch);
+		cudaMemcpy(b->attention_out_bf16, state->staging_values,
+			(uint64_t)elements * 2u, cudaMemcpyHostToDevice);
+		cudaMemcpy(b->hidden_bf16, state->staging_values + elements,
+			(uint64_t)elements * 2u, cudaMemcpyHostToDevice);
+		if ( segments == 3u )
+			cudaMemcpy(b->shared_out_bf16, state->staging_values + 2u * elements,
+				(uint64_t)elements * 2u, cudaMemcpyHostToDevice);
+	}
 	if ( boundary != 0u )
 		K3PartialSet(b, b->attention_out_bf16, rows, stream);
 	else
 		K3PartialAdd(b, b->attention_out_bf16, rows, stream);
-	if ( K3RunnerReduceBf16(state, stream, b->hidden_bf16, rows) != SPARK_STATUS_OK )
-		return;
 	K3PartialAdd(b, b->hidden_bf16, rows, stream);
-	if ( layer == 0u )
-		return;
-	if ( K3RunnerReduceBf16(state, stream, b->shared_out_bf16, rows) != SPARK_STATUS_OK )
-		return;
-	K3PartialAdd(b, b->shared_out_bf16, rows, stream);
+	if ( segments == 3u )
+		K3PartialAdd(b, b->shared_out_bf16, rows, stream);
 }
 SparkStatus SparkK3StageRunnerInitialize(
 	SparkK3StageRunner *runner,
@@ -241,9 +277,10 @@ SparkStatus SparkK3StageRunnerInitialize(
 			state->head_weight = (const uint16_t *)SparkK3PackPayload(&state->module.pack,&entry);
 	}
 	/* Host staging + head slots + the per-step device arrays. */
-	state->staging_capacity = configuration->max_input_row_count * K3_HIDDEN;
+	state->staging_capacity = configuration->max_input_row_count * 3u * K3_HIDDEN;
 	state->staging_values = new uint16_t[state->staging_capacity];
 	state->staging_scratch = new uint16_t[state->staging_capacity];
+	state->fused_capacity = state->staging_capacity;
 	state->head_slots_capacity = configuration->max_input_row_count * 2u * configuration->tp_degree;
 	state->head_slots_host = new float[state->head_slots_capacity];
 	cudaMalloc(&state->head_slots_device,(uint64_t)state->head_slots_capacity * 4u);
@@ -376,9 +413,10 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.head_candidate_token = state->head_candidate_token;
 	in.output_token = state->output_token;
 	in.output_score = state->output_score;
-	dense_offsets[0] = 0u;
-	dense_offsets[1] = rows;
-	cudaMemcpy(state->dense_row_offset, dense_offsets, 8u, cudaMemcpyHostToDevice);
+	(void)dense_offsets;
+	/* Device-side dense offsets: no host traffic on the hot path (the
+	 * CUDA-graph capture contract; a per-step H2D would sync). */
+	K3RunnerDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, rows);
 	status = SparkK3DispatchStep(&state->dispatch, &in, rows, sequences,
 		1u, packed_rows, state->max_context, state->multiprocessors, stream);
 	if ( status != SPARK_K3_DISPATCH_OK )
