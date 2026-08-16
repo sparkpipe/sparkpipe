@@ -172,8 +172,48 @@ def pro_build_records(contract: Mapping[str, object], first_layer: int,
                          ("embed.weight",))
     for layer in range(first_layer, first_layer + layer_count):
         pro_add_layer_records(records, PRO_RATIOS, layer)
+    if PRO_MTP_PACKED != 0:
+        # GA DSpark speculative stage: three full draft layers
+        # (mtp.0/mtp.1/mtp.2); mtp.0 adds the main-stream projection,
+        # mtp.2 carries the draft heads (norm, Markov, confidence, HC).
+        # The module replicates the complete draft block into every rank
+        # pack, so every slice carries it.
+        flash.add_record(records, flash.KIND_MTP_MAIN_NORM,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
+                         PRO_HIDDEN, ("mtp.0.main_norm.weight",))
+        flash.add_linear(records, flash.KIND_MTP_MAIN_PROJ, "mtp.0",
+                         flash.GLOBAL_LAYER, PRO_HIDDEN,
+                         PRO_DSPARK_TARGET_LAYER_COUNT * PRO_HIDDEN,
+                         flash.WEIGHT_FP8, "main_proj")
+        pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 0)
+        pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 1)
+        pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 2)
+        flash.add_record(records, flash.KIND_MTP_FINAL_NORM,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
+                         PRO_HIDDEN, ("mtp.2.norm.weight",))
+        flash.add_record(records, flash.KIND_MTP_MARKOV_W1,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_BF16, PRO_VOCAB,
+                         PRO_MARKOV_RANK,
+                         ("mtp.2.markov_head.markov_w1.weight",))
+        flash.add_record(records, flash.KIND_MTP_MARKOV_W2,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_BF16, PRO_VOCAB,
+                         PRO_MARKOV_RANK,
+                         ("mtp.2.markov_head.markov_w2.weight",))
+        flash.add_record(records, flash.KIND_MTP_CONFIDENCE_PROJ,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
+                         PRO_HIDDEN + PRO_MARKOV_RANK,
+                         ("mtp.2.confidence_head.proj.weight",))
+        flash.add_record(records, flash.KIND_MTP_HC_HEAD_FN,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_F32, 4,
+                         4 * PRO_HIDDEN, ("mtp.2.hc_head_fn",))
+        flash.add_record(records, flash.KIND_MTP_HC_HEAD_BASE,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_F32, 1, 4,
+                         ("mtp.2.hc_head_base",))
+        flash.add_record(records, flash.KIND_MTP_HC_HEAD_SCALE,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_F32, 1, 1,
+                         ("mtp.2.hc_head_scale",))
     if first_layer + layer_count == total_layers:
-        if first_layer != 0 and PRO_MTP_PACKED != 0:
+        if first_layer != 0:
             flash.add_record(records, flash.KIND_EMBEDDING,
                              flash.GLOBAL_LAYER, flash.WEIGHT_BF16, PRO_VOCAB,
                              PRO_HIDDEN, ("embed.weight",))
@@ -188,44 +228,6 @@ def pro_build_records(contract: Mapping[str, object], first_layer: int,
                          flash.WEIGHT_F32, 1, 4, ("hc_head_base",))
         flash.add_record(records, flash.KIND_HC_HEAD_SCALE, flash.GLOBAL_LAYER,
                          flash.WEIGHT_F32, 1, 1, ("hc_head_scale",))
-        if PRO_MTP_PACKED != 0:
-            # GA DSpark speculative stage: three full draft layers
-            # (mtp.0/mtp.1/mtp.2); mtp.0 adds the main-stream projection,
-            # mtp.2 carries the draft heads (norm, Markov, confidence, HC).
-            flash.add_record(records, flash.KIND_MTP_MAIN_NORM,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
-                             PRO_HIDDEN, ("mtp.0.main_norm.weight",))
-            flash.add_linear(records, flash.KIND_MTP_MAIN_PROJ, "mtp.0",
-                             flash.GLOBAL_LAYER, PRO_HIDDEN,
-                             PRO_DSPARK_TARGET_LAYER_COUNT * PRO_HIDDEN,
-                             flash.WEIGHT_FP8, "main_proj")
-            pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 0)
-            pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 1)
-            pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 2)
-            flash.add_record(records, flash.KIND_MTP_FINAL_NORM,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
-                             PRO_HIDDEN, ("mtp.2.norm.weight",))
-            flash.add_record(records, flash.KIND_MTP_MARKOV_W1,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_BF16, PRO_VOCAB,
-                             PRO_MARKOV_RANK,
-                             ("mtp.2.markov_head.markov_w1.weight",))
-            flash.add_record(records, flash.KIND_MTP_MARKOV_W2,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_BF16, PRO_VOCAB,
-                             PRO_MARKOV_RANK,
-                             ("mtp.2.markov_head.markov_w2.weight",))
-            flash.add_record(records, flash.KIND_MTP_CONFIDENCE_PROJ,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
-                             PRO_HIDDEN + PRO_MARKOV_RANK,
-                             ("mtp.2.confidence_head.proj.weight",))
-            flash.add_record(records, flash.KIND_MTP_HC_HEAD_FN,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_F32, 4,
-                             4 * PRO_HIDDEN, ("mtp.2.hc_head_fn",))
-            flash.add_record(records, flash.KIND_MTP_HC_HEAD_BASE,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_F32, 1, 4,
-                             ("mtp.2.hc_head_base",))
-            flash.add_record(records, flash.KIND_MTP_HC_HEAD_SCALE,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_F32, 1, 1,
-                             ("mtp.2.hc_head_scale",))
     return records
 
 

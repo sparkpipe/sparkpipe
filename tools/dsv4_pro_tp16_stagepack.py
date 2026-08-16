@@ -23,7 +23,7 @@ from typing import Callable, List, Sequence, Tuple
 HEADER = struct.Struct("<16I2Q")
 ENTRY = struct.Struct("<6I2Q")
 MAGIC = 0x34565344
-VERSION = 3
+VERSION = 4
 TP_DEGREE = 16
 HIDDEN = 7168
 QUERY_DIM = 65536
@@ -63,8 +63,24 @@ KIND_LM_HEAD = 37
 KIND_HC_HEAD_FN = 38
 KIND_HC_HEAD_BASE = 39
 KIND_HC_HEAD_SCALE = 40
+KIND_MTP_MAIN_PROJ = 41
+KIND_MTP_MAIN_NORM = 42
+KIND_MTP_FINAL_NORM = 43
+KIND_MTP_HC_HEAD_FN = 44
+KIND_MTP_HC_HEAD_BASE = 45
+KIND_MTP_HC_HEAD_SCALE = 46
+KIND_MTP_MARKOV_W1 = 47
+KIND_MTP_MARKOV_W2 = 48
+KIND_MTP_CONFIDENCE_PROJ = 49
+KIND_MTP_SET = frozenset((
+    KIND_MTP_MAIN_PROJ, KIND_MTP_MAIN_NORM, KIND_MTP_FINAL_NORM,
+    KIND_MTP_HC_HEAD_FN, KIND_MTP_HC_HEAD_BASE, KIND_MTP_HC_HEAD_SCALE,
+    KIND_MTP_MARKOV_W1, KIND_MTP_MARKOV_W2, KIND_MTP_CONFIDENCE_PROJ,
+))
 
 GLOBAL_LAYER = 0xFFFFFFFF
+MTP_LAYER_FIRST = 0xFFFFFFFB
+MTP_LAYER_COUNT_MAX = 3
 
 
 class PackFailure(RuntimeError):
@@ -209,6 +225,9 @@ def selected_global(kind: int, rank: int, pp_stages: int = 1,
                     pp_stage: int = 0) -> bool:
     if kind == KIND_EMBEDDING:
         return pp_stage == 0
+    if kind in KIND_MTP_SET:
+        # The DSpark draft block replicates in full to every rank.
+        return True
     if pp_stage + 1 != pp_stages:
         return False
     if kind in (KIND_FINAL_NORM, KIND_LM_HEAD, KIND_HC_HEAD_FN,
@@ -269,6 +288,12 @@ def plan_entry(entry: Tuple[int, ...], rank: int, pp_stages: int = 1,
                pp_stage: int = 0) -> Tuple[Tuple[int, ...], List[int], int, int]:
     kind, layer, weight, rows, columns, reserved, payload, scale = entry
     first_layer, layer_count = layer_slice(pp_stages, pp_stage)
+    if MTP_LAYER_FIRST <= layer < MTP_LAYER_FIRST + MTP_LAYER_COUNT_MAX:
+        # Draft transformer layers replicate byte-for-byte to every rank
+        # (the MTP range is packed unsharded in the full pack).
+        indices = list(range(rows))
+        return ((kind, layer, weight, rows, columns, reserved, 0, 0),
+                indices, 0, scale_bytes(weight, rows, columns))
     if layer == GLOBAL_LAYER:
         if not selected_global(kind, rank, pp_stages, pp_stage):
             raise PackFailure("filtered")
