@@ -66,7 +66,13 @@ struct LmMxfp4
 	}
 	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float scale)
 	{
-		float2 pair = LmNvfp4Pair(tile[LmSwizzledOffset(row,k >> 1u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes))]);
+		// 16-byte rows (the interleaved 32-element k-tile) carry no hardware
+		// swizzle and are read linearly; every wider row keeps the span xor.
+		const uint32_t span = LmSwizzleSpanFor(row_pitch_bytes);
+		const uint32_t byte = span != 0u
+			? LmSwizzledOffset(row,k >> 1u,row_pitch_bytes,span)
+			: (row * row_pitch_bytes) + (k >> 1u);
+		float2 pair = LmNvfp4Pair(tile[byte]);
 		return(LmPackBf16Pair(pair.x * scale,pair.y * scale));
 	}
 };
