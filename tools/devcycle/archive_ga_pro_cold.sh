@@ -59,6 +59,8 @@ echo "archive_ga_pro_cold: full sha256 pass over the archive"
 total_bytes="$(awk '{print $1}' "$DEST/ARCHIVE-SHA256SUMS" | wc -l)"
 total_files="$(wc -l < "$DEST/ARCHIVE-SHA256SUMS")"
 
+python3 /tmp/ga_cold_manifest.py "$DEST" "$STARTED_AT" || exit 1
+exit 0
 python3 - "$DEST" "$STARTED_AT" <<'PYEOF'
 import hashlib, json, os, sys
 dest, started = sys.argv[1], sys.argv[2]
