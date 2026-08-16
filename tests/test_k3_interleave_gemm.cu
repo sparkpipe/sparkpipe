@@ -485,6 +485,13 @@ int main(void)
 		gemm.group_tile_prefix = 0;
 		gemm.prefix_built = 0u;
 		gemm.output_bf16 = d_out_plain;
+		uint32_t plain_failures = 0u, plain_tail = 0u, plain_head = 0u;
+		/* EIGHT RUNS of the same launch: the real tail is nondeterministic
+		 * (the full-run sums swing across runs), so a race shows as the
+		 * per-iteration mismatch counts moving. */
+		for ( uint32_t iteration = 0u; iteration < 8u; ++iteration )
+		{
+		uint32_t iter_failures = 0u, iter_tail = 0u, iter_head = 0u;
 		status = LmGemmWeightOnlyLaunch<
 			LmBf16Format, TEST_TILE_N, TEST_STAGES, TEST_WARPS>(
 			&gemm, d_packed, d_weight_plain, TEST_PACKED, TEST_PACKED, 1u,
@@ -495,7 +502,6 @@ int main(void)
 		if ( err != cudaSuccess ) { printf("FAIL plain wide sync %d\n", (int)err); return 1; }
 		cudaMemcpy(h_out_plain, d_out_plain,
 			TEST_PACKED * plain_rows * 2u, cudaMemcpyDeviceToHost);
-		uint32_t plain_failures = 0u, plain_tail = 0u, plain_head = 0u;
 		for ( p = 0u; p < TEST_PACKED; ++p )
 		{
 			uint32_t token = h_source_map[p];
@@ -508,18 +514,20 @@ int main(void)
 				float got = (double)HostBf16ToFloat(h_out_plain[p * plain_rows + n]);
 				if ( fabsf(got - expect) > 0.03f * fabsf(expect) + 1e-3f )
 				{
-					if ( plain_failures < 8u )
-						printf("PLAIN mismatch p=%u n=%u got=%g expect=%g\n", p, n, got, expect);
-					plain_failures++;
+					iter_failures++;
 					if ( n >= 6144u )
-						plain_tail++;
+						iter_tail++;
 					else
-						plain_head++;
+						iter_head++;
 				}
 			}
 		}
-		printf("plain 7168: %u total mismatches (head %u, tail %u)\n",
-			plain_failures, plain_head, plain_tail);
+		printf("plain iter %u: %u mismatches (head %u, tail %u)\n",
+			iteration, iter_failures, iter_head, iter_tail);
+		plain_failures += iter_failures;
+		plain_tail += iter_tail;
+		plain_head += iter_head;
+		}
 		if ( plain_failures != 0u )
 			failures++;
 		cudaFree(d_weight_plain);
