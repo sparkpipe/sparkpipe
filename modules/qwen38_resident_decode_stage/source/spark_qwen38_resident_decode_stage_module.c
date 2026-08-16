@@ -1071,9 +1071,12 @@ extern cudaError_t SparkQwen38LaunchMoePairReduceOverwrite(cudaStream_t stream, 
 extern cudaError_t SparkQwen38LaunchGroupedExpertLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, const uint32_t *group_tile_prefix, void *output_bf16, uint32_t source_row_count, uint32_t multiprocessor_count);
 extern cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, void *output_bf16, uint32_t source_row_count);
 /* The MoE switches from the scalar grouped path to the tensor-core tile
- * path (SparkLmExpertTileAllKernel) at a full 16-row M-tile; SPARK_LM_TILE
- * in the common kernel header. */
-#define SPARK_QWEN38_MODULE_MOE_TILE_ROWS 16u
+ * path (SparkLmExpertTileAllKernel / SparkLmExpertTileAllMloopKernel) at
+ * 8 rows. Measured on spark4: tile-at-1/2/4 LOSES (the 512-expert grid's
+ * ~8K dead CTAs dominate a tiny batch), tile-at-8 wins 36.4 -> 21.7 ms,
+ * tile-at-12 wins 54.5 -> 23.9 ms. The dense linears use the force-tile
+ * path at every batch instead (no expert dimension, no dead CTAs). */
+#define SPARK_QWEN38_MODULE_MOE_TILE_ROWS 8u
 extern cudaError_t SparkQwen38LaunchSwiGlu(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension);
 extern cudaError_t SparkQwen38LaunchSharedGate(cudaStream_t stream, void *accum_bf16, const void *gate_weight_bf16, const void *gate_input_bf16, uint32_t row_count, uint32_t dimension);
 

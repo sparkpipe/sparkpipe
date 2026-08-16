@@ -73,6 +73,26 @@ The replicated B=256 expert stream now runs at ~745 GB/s effective - the
    next attempt should follow a profile, not a model.
 4. CUDA-graph capture of the layer sequence (launch overhead, B<=16).
 
-Net measured improvement this round: ~5% end-to-end at B=256 (dense
-m-loop), with the honest finding that the MoE tile kernel is the wall
-and its fix is item 1.
+## Per-request latency round (measured, landed)
+
+The user requirement: per-request decode >= 10 tok/s. Replicated per-request
+is 92 layers x step_time, so every small-batch step millisecond matters.
+
+Landed and measured (one GDN layer, replicated, B=1..12):
+- MoE tile gate lowered 16 -> 8 rows: B=8 36.4 -> 17.7 ms, B=12 54.5 ->
+  21.0 ms (the 512-expert tile grid's dead CTAs still dominate below 8,
+  so B<8 keeps the scalar path - measured tile-at-1/2/4 LOSES).
+- Dense force-tile at B<16 measured and REVERTED (B=1 8.53 -> 12.8 ms -
+  the pipelined tile body's per-CTA sync chain loses to the scalar path
+  at tiny batches).
+- Expert-stride m-loop: the grouped m-loop now launches a fixed
+  64 x n_tiles CTA budget with each CTA walking several experts (empty
+  experts cost cycles, not launches) - folds the empty-expert dead-CTA
+  cost at every batch.
+
+Per-request today (92 layers): B=1 8.44 ms/layer -> 1.29 tok/s; B=8
+17.7 -> 0.61 tok/s (2x better than the 0.30 before this round). The
+remaining gap to 10+ tok/s per request is the replicated per-token
+weight volume (1.35 GB/layer): TP16 sharding cuts it 16x (est. 12-18
+no-spec, 30-70 with dSpark) - the collective wiring is the next
+increment and the per-request blocker.

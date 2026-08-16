@@ -3850,8 +3850,14 @@ static __global__ void SparkLmExpertTileMloopKernel(const void *weight_payload, 
  * each - the measured 233 GB/s collapse. Caller: qwen38 grouped FP8
  * experts via SparkLmHostLaunchGroupedExpertTileMloop. */
 template <uint32_t GROUP_SIZE>
-static __global__ void SparkLmExpertTileAllMloopKernel(uint32_t weight_format, const void *payload_base, const void *scale_base, uint64_t payload_expert_stride_bytes, uint64_t scale_expert_stride_bytes, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
+static __global__ void SparkLmExpertTileAllMloopKernel(uint32_t weight_format, const void *payload_base, const void *scale_base, uint64_t payload_expert_stride_bytes, uint64_t scale_expert_stride_bytes, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t expert_count)
 {
+    /* Expert-stride loop: one CTA walks several experts so the launch uses
+     * a fixed CTA budget instead of 512 experts x n_tiles whose empty CTAs
+     * dominate small batches (measured ~1.25 us each). */
+    uint32_t expert;
+    for (expert = blockIdx.z; expert < expert_count; expert += gridDim.z)
+    {
     const uint32_t M_GROUP = 8u;
     __shared__ __nv_bfloat16 tile_input[2u][
         M_GROUP * SPARK_LM_TILE * SPARK_LM_TILE_K];
@@ -3878,19 +3884,23 @@ static __global__ void SparkLmExpertTileAllMloopKernel(uint32_t weight_format, c
         16,
         16,
         float> frag_accum[M_GROUP];
-    uint32_t expert = blockIdx.z;
-    uint32_t offset = expert_offsets[expert];
-    uint32_t count = expert_offsets[expert + 1u] - offset;
-    const uint8_t *payload = (const uint8_t *)payload_base + ((uint64_t)expert * payload_expert_stride_bytes);
-    const uint8_t *scale = (const uint8_t *)scale_base + ((uint64_t)expert * scale_expert_stride_bytes);
-    const uint32_t *row_map = grouped_rows != 0 ? grouped_rows + offset : 0;
-    void *output = (void *)((uint8_t *)output_bf16 + ((uint64_t)offset * output_dimension * 2u));
     uint32_t warp_index = threadIdx.x / SPARK_LM_WARP_LANES;
     uint32_t neuron_base = blockIdx.y * SPARK_LM_TILE_N;
-    uint32_t chunk_base,chunk_m,m,row_limit,entry,row,k_base,k_step,next_k_base;
-    uint32_t current_buffer = 0u,next_buffer,slot,neuron;
+    uint32_t offset,count,chunk_base,chunk_m,m,row_limit,entry,row,k_base,k_step,next_k_base;
+    uint32_t current_buffer,next_buffer,slot,neuron;
+    const uint8_t *payload;
+    const uint8_t *scale;
+    const uint32_t *row_map;
+    void *output;
+    offset = expert_offsets[expert];
+    count = expert_offsets[expert + 1u] - offset;
     if (count == 0u)
-        return;
+        continue;
+    payload = (const uint8_t *)payload_base + ((uint64_t)expert * payload_expert_stride_bytes);
+    scale = (const uint8_t *)scale_base + ((uint64_t)expert * scale_expert_stride_bytes);
+    row_map = grouped_rows != 0 ? grouped_rows + offset : 0;
+    output = (void *)((uint8_t *)output_bf16 + ((uint64_t)offset * output_dimension * 2u));
+    current_buffer = 0u;
     for (chunk_base = 0u; chunk_base < count; chunk_base += M_GROUP * SPARK_LM_TILE)
     {
         chunk_m = (count - chunk_base + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
@@ -4022,6 +4032,7 @@ static __global__ void SparkLmExpertTileAllMloopKernel(uint32_t weight_format, c
             }
             __syncthreads();
         }
+    }
     }
 }
 
@@ -4749,8 +4760,12 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinearMloop(cudaStream_t strea
 /* Grouped m-loop launch: qwen38 grouped FP8 experts. */
 static inline cudaError_t SparkLmHostLaunchGroupedExpertTileMloop(cudaStream_t stream, uint32_t weight_format, const void *payload_base, const void *scale_base, uint64_t payload_stride, uint64_t scale_stride, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t expert_count)
 {
-	dim3 grid(1u,(output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N,expert_count);
-	SparkLmExpertTileAllMloopKernel<32u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,payload_base,scale_base,payload_stride,scale_stride,input_bf16,grouped_rows,expert_offsets,output_bf16,input_dimension,output_dimension);
+	/* Expert-stride CTA budget: 64 columns x n_tiles CTAs, each walking up
+	 * to expert_count/64 experts - empty experts cost a few cycles instead
+	 * of a launch. */
+	uint32_t budget = expert_count < 64u ? expert_count : 64u;
+	dim3 grid(1u,(output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N,budget);
+	SparkLmExpertTileAllMloopKernel<32u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,payload_base,scale_base,payload_stride,scale_stride,input_bf16,grouped_rows,expert_offsets,output_bf16,input_dimension,output_dimension,expert_count);
 	return(cudaGetLastError());
 }
 
