@@ -190,6 +190,21 @@ the module's capacity request scales them by first_layer/layer_count).
   54.2 ms (the path is weight-bandwidth-bound; the capture removes the
   ~55 ms serialized host enqueue per step). Configs carry
   `capture_graphs`: 1.
+- RE-SLICE COMPLETE (2026-08-16): all four stage packs re-sliced with the
+  fixed sharder (552/537/534/534 tensors x 4 ranks) and the corrected rank
+  packs REDEPLOYED to all 16 sparks with sha256 verification (stage 0:
+  ~53.6 GB x 4 on spark0-3, stage 1: ~52.4 GB on spark4-7, stage 2: ~52.4
+  GB on spark8-b, stage 3: ~52.9 GB on sparkc-f - the diagonal w1 halves
+  the old 98 GB packs). The single-spark gate re-PASSES bit-deterministic
+  against the new rank pack, and the adapter .so with the whole TILE_K=32
+  wave is restaged fleet-wide (11ab1d2caf2a).
+- TP16 pack path COMPLETE at the code level: the packer takes
+  expert_tile_k (32 closes: 16B payload = 16 rows x 1 scale byte), the
+  sharder slices 16 ways at the pack's tile_k (w1 diagonal: 7 x 32 k
+  tiles x its cells; w2 k: 6 x 32), and the serving tier's TILE_K=32
+  INTERLEAVED_B GEMM (SWIZZLE_NONE 16-byte cell rows, linear scale reads,
+  single-block A) is numerically gated. Producing the full-model TP16
+  pack is a packer run away when the TP16 deployment is scheduled.
 - CRITICAL re-slice finding: the pre-fix sharder never sliced the expert
   w1's K axis - every rank pack kept all 28 k-tiles, so ranks 1-3's
   gate|up GEMM paired their latent slices with rank 0's weights. The
