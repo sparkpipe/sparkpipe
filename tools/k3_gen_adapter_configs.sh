@@ -68,13 +68,15 @@ for i in $(seq 0 15); do
       echo "    \"operation_timeout_milli\": 30000,"
       echo "    \"collective_identifier\": 1,"
       echo "    \"peers\": ["
-      for r in 0 1 2 3; do
-        p=$((stage * 4 + r))
-        ph=$(printf '%x' "$p")
+      # STEP-ordered: peers[s] pairs with tp_rank ^ (1 << s) - the
+      # collective dials its step partners by array index, not rank
+      for s in 0 1; do
+        partner=$((rank ^ (1 << s)))
+        p=$((stage * 4 + partner))
         ip="10.20.0.$((10 + p))"
         comma=","
-        [ "$r" = "3" ] && comma=""
-        echo "      \"$ip:$((61620 + r))\"$comma"
+        [ "$s" = "1" ] && comma=""
+        echo "      \"$ip:$((61620 + partner))\"$comma"
       done
       echo "    ]"
       echo "  }"
