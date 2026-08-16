@@ -215,6 +215,9 @@ struct K3LayerBuffers
 	// would read scale bytes as payload. The kernels wave that teaches the
 	// grouped GEMM the cell lifts the refusal; the contract is at the check.
 	uint32_t expert_interleave;
+	/* the pack's interleave k-tile (128 or 32 elements): selects the
+	 * INTERLEAVED_B GEMM instantiation in K3LayerLatentMoe */
+	uint32_t expert_tile_k;
 	const void *shared_w1_weight;
 	const void *shared_w1_scale;
 	const void *shared_w2_weight;
@@ -821,11 +824,20 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	gemm.source_row_map = b->route_source_token;
 	gemm.source_row_count = rows;
 	if ( b->expert_interleave != 0u )
-		status = LmGemmWeightOnlyIndirectInterleavedLaunch<
-			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-			&gemm,b->latent_bf16,b->expert_w1_weight,packed_rows,rows,
-			K3_TOP_K,K3_EXPERTS,moe_in,moe_out,
-			multiprocessors,stream);
+	{
+		if ( b->expert_tile_k == 32u )
+			status = LmGemmWeightOnlyIndirectInterleavedLaunch<
+				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS,32u>(
+				&gemm,b->latent_bf16,b->expert_w1_weight,packed_rows,rows,
+				K3_TOP_K,K3_EXPERTS,moe_in,moe_out,
+				multiprocessors,stream);
+		else
+			status = LmGemmWeightOnlyIndirectInterleavedLaunch<
+				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+				&gemm,b->latent_bf16,b->expert_w1_weight,packed_rows,rows,
+				K3_TOP_K,K3_EXPERTS,moe_in,moe_out,
+				multiprocessors,stream);
+	}
 	else
 		status = LmGemmWeightOnlyIndirectLaunch<
 			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
@@ -851,11 +863,20 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	gemm.output_bf16 = b->gate_up_bf16;
 	const uint32_t w2_in = K3_RANK_DIM(b,expert_w2_input,K3_EXPERT_INTERMEDIATE);
 	if ( b->expert_interleave != 0u )
-		status = LmGemmWeightOnlyInterleavedLaunch<
-			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-			&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-			K3_TOP_K,K3_EXPERTS,moe_in,w2_in,
-			multiprocessors,true,stream);
+	{
+		if ( b->expert_tile_k == 32u )
+			status = LmGemmWeightOnlyInterleavedLaunch<
+				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS,32u>(
+				&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
+				K3_TOP_K,K3_EXPERTS,moe_in,w2_in,
+				multiprocessors,true,stream);
+		else
+			status = LmGemmWeightOnlyInterleavedLaunch<
+				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+				&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
+				K3_TOP_K,K3_EXPERTS,moe_in,w2_in,
+				multiprocessors,true,stream);
+	}
 	else
 		status = LmGemmWeightOnlyLaunch<
 			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(

@@ -75,6 +75,11 @@ SparkStatus SparkK3PackOpen(const char *path, SparkK3Pack *pack);
 void SparkK3PackClose(SparkK3Pack *pack);
 SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name,
 	SparkK3PackEntry *entry);
+/* The interleaved tensor's k-tile width (128 or 32 elements), read from the
+ * manifest's per-tensor interleave geometry; the serving tier picks the
+ * matching INTERLEAVED_B GEMM instantiation from it. */
+SparkStatus SparkK3PackLoadInterleaveTileK(SparkK3Pack *pack, const char *name,
+	uint32_t *tile_k);
 const void *SparkK3PackPayload(const SparkK3Pack *pack,
 	const SparkK3PackEntry *entry);
 

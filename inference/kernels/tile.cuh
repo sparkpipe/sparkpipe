@@ -202,6 +202,7 @@ static __device__ __forceinline__ void LmPipelineProduceWeightInterleaved(
 		(int32_t)group_index);
 }
 
+template<uint32_t TILE_K>
 static __device__ __forceinline__ void LmPipelineProduce(
     const LmTileGeometry *a,
     const LmTileGeometry *b,
@@ -233,7 +234,7 @@ static __device__ __forceinline__ void LmPipelineProduce(
 		LmPipelineProduceWeight(a,b,tensor_map_b,stage_b,barrier,k_byte_b,neuron_base,group_index,grouped);
 	if ( threadIdx.x != 0u )
 		return;
-	if ( interleaved_b )
+	if ( interleaved_b && TILE_K == 128u )
 	{
 		// A TILE_K=128 BF16 row is 256 bytes and no hardware swizzle spans
 		// it, and a TMA box stages its rows at the BOX's width - so the two
@@ -241,6 +242,7 @@ static __device__ __forceinline__ void LmPipelineProduce(
 		// row. The stage is therefore TWO BLOCKS of [TILE_M rows x 128
 		// bytes]: block 0 holds k 0..63 of every row, block 1 k 64..127,
 		// and the consume addresses (block, row, k & 63) with pitch 128.
+		// TILE_K 32 rows are 64 bytes and take the single-box path below.
 		// The K coordinate advances WITH THE K TILE: the x coordinates are
 		// k_byte_a and k_byte_a + 128, the destination bases are stage_a
 		// and stage_a + TILE_M * 128. Both blocks' per-row swizzle selector
@@ -288,7 +290,7 @@ static __device__ __forceinline__ void LmPipelineProduce(
 // wrong output. The trap is the other half of that guard: a mapped row past
 // source_row_count means the route build wrote past its own arrays, and a
 // wild bulk copy faults or, worse, does not.
-template<class FormatA, bool INTERLEAVED_B = false>
+template<class FormatA, uint32_t TILE_K, bool INTERLEAVED_B = false>
 static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 	const LmTileGeometry *a,
 	const LmTileGeometry *b,
@@ -332,13 +334,14 @@ static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 			asm volatile("trap;\n");
 		source_offset = ((uint64_t)source_row * ((input_dimension * FormatA::kStoredBits) / 8u))
 			+ (k_tile * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
-		if constexpr ( INTERLEAVED_B )
+		if constexpr ( INTERLEAVED_B && TILE_K == 128u )
 		{
 			// THE TWO-BLOCK A STAGE (see LmPipelineProduce's interleaved
 			// arm): chunks 0..7 are k 0..63 and land in block 0, chunks
 			// 8..15 are k 64..127 in block 1, each block [rows x 128]
 			// with the r % 8 per-row selector the consume derives from
-			// pitch 128.
+			// pitch 128. TILE_K 32 rows (64 bytes) take the ordinary
+			// path below.
 			const uint32_t a_block_bytes =
 				LmTileBytes(a->rows,64u,a->element_bits);
 			destination_offset = ((chunk / 8u) * a_block_bytes)

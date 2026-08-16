@@ -88,6 +88,9 @@ struct K3LayerWeights
 	// kernels-wave contract that lifts it are in K3LayerLatentMoe. The zero
 	// path exists for the host recorders, which bind no weights at all.
 	uint32_t expert_interleave;
+	/* the pack's interleave k-tile (128 or 32 elements); the MoE launches
+	 * pick the matching INTERLEAVED_B GEMM instantiation */
+	uint32_t expert_tile_k;
 	const void *shared_w1_weight;
 	const void *shared_w1_scale;
 	const void *shared_w2_weight;
@@ -219,6 +222,7 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->expert_w1_weight = weights->expert_w1_weight;
 	buffers->expert_w2_weight = weights->expert_w2_weight;
 	buffers->expert_interleave = weights->expert_interleave;
+	buffers->expert_tile_k = weights->expert_tile_k;
 	buffers->shared_w1_weight = weights->shared_w1_weight;
 	buffers->shared_w1_scale = weights->shared_w1_scale;
 	buffers->shared_w2_weight = weights->shared_w2_weight;

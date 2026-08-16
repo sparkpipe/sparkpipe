@@ -55,9 +55,10 @@ template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_
 static __host__ __device__ constexpr uint32_t LmGemmSharedBytes(void)
 {
 	// Interleaved B stages the cell grid: per pack k-tile, TILE_N/16 cells of
-	// 17 rows x 64 bytes (16 payload rows + one scale row).
+	// 17 rows x (TILE_K/2) bytes (16 payload rows + one scale row: 64-byte
+	// rows at TILE_K 128, 16-byte rows at TILE_K 32).
 	constexpr uint32_t b_bytes = INTERLEAVED_B
-		? (17u * (TILE_N / 16u) * 64u)
+		? (17u * (TILE_N / 16u) * (TILE_K / 2u))
 		: LmTileBytes(TILE_N,TILE_K,FormatB::kStoredBits);
 	return((STAGES * LmTileBytes(TILE_M,TILE_K,FormatA::kStoredBits))
 		+ (STAGES * b_bytes)
@@ -163,11 +164,11 @@ static __device__ void LmGemmConsume(
     const uint32_t m_frags = TILE_M / FormatA::kMmaM;
     const uint32_t n_frags = TILE_N / WARPS / FormatA::kMmaN;
     const uint32_t pitch_a = LmTileBytes(1u, TILE_K, FormatA::kStoredBits);
-    // Interleaved B stages 64-byte cell rows: payload rows at (c*17 + r) * 64,
-    // the cell's scale row at (c*17 + 16) * 64. The plain path keeps the
-    // [neuron, k] plane pitch.
+    // Interleaved B stages (TILE_K/2)-byte cell rows: payload rows at
+    // (c*17 + r) * pitch_b, the cell's scale row at (c*17 + 16) * pitch_b.
+    // The plain path keeps the [neuron, k] plane pitch.
     const uint32_t pitch_b = INTERLEAVED_B
-        ? 64u
+        ? (TILE_K / 2u)
         : LmTileBytes(1u, TILE_K, FormatB::kStoredBits);
     const uint32_t steps = TILE_K / FormatA::kMmaK;
     uint32_t step, mi, ni, neuron, k_base, reg;
@@ -196,7 +197,7 @@ static __device__ void LmGemmConsume(
                     0u,
                     scale_row,
                     global_k_base + local_k);
-                if constexpr ( INTERLEAVED_B )
+                if constexpr ( INTERLEAVED_B && TILE_K == 128u )
                 {
                     // The two-block A stage: block 0 holds k 0..63 of every
                     // row, block 1 (TILE_M * 128 bytes in) k 64..127. The
@@ -205,7 +206,8 @@ static __device__ void LmGemmConsume(
                     // a multiple of 8 - the same selector LmSwizzledOffset
                     // derives from pitch 128. Pairs never cross the block
                     // boundary: the mma's A k values are even, and 64 is a
-                    // block start.
+                    // block start. TILE_K 32 rows are single 64-byte blocks
+                    // and take the ordinary path below.
                     a[reg] = FormatA::Fragment(
                         stage_a + ((local_k >= 64u) ? (TILE_M * 128u) : 0u),
                         local_row,
@@ -253,10 +255,16 @@ static __device__ void LmGemmConsume(
                         // the k tile's second half (the bug this comment
                         // documents: steps 4..7 read neuron r16+1's scales
                         // and neuron 15 read the next row's payload).
-                        const float scale = FormatB::ScaleDecode(
-                            stage_b[LmSwizzledOffset((cell * 17u) + 16u,
+                        // TILE_K 128: four 32-element groups, read through
+                        // the 64B-swizzle XOR. TILE_K 32: one group, linear
+                        // (the map carries SWIZZLE_NONE).
+                        const uint32_t scale_byte = (TILE_K == 128u)
+                            ? LmSwizzledOffset((cell * 17u) + 16u,
                                 (r16 * 4u) + (local_k / 32u),
-                                pitch_b, 64u)]);
+                                pitch_b, 64u)
+                            : ((cell * 17u) + 16u) * pitch_b + r16;
+                        const float scale = FormatB::ScaleDecode(
+                            stage_b[scale_byte]);
                         b[reg] = FormatB::Fragment(
                             stage_b,
                             (cell * 17u) + r16,
@@ -371,7 +379,7 @@ static __device__ __forceinline__ void LmGemmProduce(
     }
     if constexpr ( INDIRECT_A )
     {
-        LmPipelineProduceIndirectA<FormatA,INTERLEAVED_B>(
+        LmPipelineProduceIndirectA<FormatA,TILE_K,INTERLEAVED_B>(
             geometry_a,geometry_b,tensor_map_b,
             (const uint8_t *)args.activation_bytes,args.source_row_map,
             args.source_row_count,args.input_dimension,
@@ -380,7 +388,7 @@ static __device__ __forceinline__ void LmGemmProduce(
             args.output_dimension / 16u);
         return;
     }
-    LmPipelineProduce(
+    LmPipelineProduce<TILE_K>(
         geometry_a,geometry_b,tensor_map_a,tensor_map_b,
         stage_a,stage_b,barrier,row_base,neuron_base,k_tile,group,grouped,
         INTERLEAVED_B,args.output_dimension / 16u);
@@ -409,17 +417,17 @@ void LmGemmKernel(
         LmTileKIsTmaLoadable(TILE_K,FormatA::kStoredBits,FormatA::kTmaSwizzle),
         "the activation row pitch is not TMA-loadable");
     static_assert(
-        !INTERLEAVED_B || LmTileKIsTmaLoadable(64u,8u,true),
-        "the interleaved 64-byte cell row is not TMA-loadable");
+        !INTERLEAVED_B || LmTileKIsTmaLoadable(TILE_K / 2u,8u,TILE_K == 128u),
+        "the interleaved cell row is not TMA-loadable");
     static_assert(
         INTERLEAVED_B || LmTileKIsTmaLoadable(TILE_K,FormatB::kStoredBits,FormatB::kTmaSwizzle),
         "the weight row pitch is not TMA-loadable");
     // THE INTERLEAVED PATH LINES UP WITH THE PACK GRID BY CONSTRUCTION: the
-    // pack's k-tile is 128 elements (64 payload bytes + 64 scale bytes per
-    // cell), so a GEMM k step must cover exactly one pack k-tile and the
-    // tile must be a whole number of 16-neuron cells.
-    static_assert(!INTERLEAVED_B || TILE_K == 128u,
-        "interleaved B stages one 128-element pack k-tile per box");
+    // pack's k-tile is TILE_K elements (TILE_K/2 payload bytes + scale bytes
+    // per cell row), so a GEMM k step must cover exactly one pack k-tile and
+    // the tile must be a whole number of 16-neuron cells.
+    static_assert(!INTERLEAVED_B || TILE_K == 128u || TILE_K == 32u,
+        "interleaved B stages one pack k-tile (128 or 32 elements) per box");
     static_assert(!INTERLEAVED_B || (TILE_N % 16u) == 0u,
         "interleaved B tiles a whole number of 16-neuron cells");
     static_assert(!INTERLEAVED_B || (TILE_M % 8u) == 0u,
@@ -452,10 +460,11 @@ void LmGemmKernel(
     extern __shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t lm_shared[];
     const uint32_t a_bytes =
         LmTileBytes(TILE_M, TILE_K, FormatA::kStoredBits);
-    // Interleaved B stages the 17-row cell grid (17 * TILE_N/16 rows of 64
-    // bytes per pack k-tile); the plain path keeps the [neuron, k] plane.
+    // Interleaved B stages the 17-row cell grid (17 * TILE_N/16 rows of
+    // TILE_K/2 bytes per pack k-tile); the plain path keeps the [neuron, k]
+    // plane.
     constexpr uint32_t b_stride = INTERLEAVED_B
-        ? (17u * (TILE_N / 16u) * 64u)
+        ? (17u * (TILE_N / 16u) * (TILE_K / 2u))
         : LmTileBytes(TILE_N, TILE_K, FormatB::kStoredBits);
     uint8_t (*stage_a)[LmTileBytes(TILE_M, TILE_K, FormatA::kStoredBits)] =
         (uint8_t (*)[LmTileBytes(TILE_M, TILE_K, FormatA::kStoredBits)])

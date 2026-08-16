@@ -221,19 +221,24 @@ static int32_t LmGemmEncodeWeightMapInterleaved(
     uint32_t input_dimension,
     uint32_t output_dimension,
     uint32_t group_count,
-    uint32_t tile_n)
+    uint32_t tile_n,
+    uint32_t tile_k)
 {
     LmTensorMapRequest request;
-    const uint32_t k_tiles = input_dimension / 128u;
+    const uint32_t k_tiles = input_dimension / tile_k;
     const uint32_t cells = output_dimension / 16u;
+    // 128-element tiles stage 64-byte cell rows (64B swizzle); 32-element
+    // tiles stage 16-byte rows, which LmTensorMapBoxSwizzleBytes maps to
+    // SWIZZLE_NONE.
+    const uint32_t cell_row_bytes = tile_k / 2u;
 
     memset(&request, 0, sizeof(request));
     request.global_address = weight_bytes;
     request.rows = (uint64_t)k_tiles * cells * 17u;
-    request.columns = 64u;
+    request.columns = cell_row_bytes;
     request.groups = group_count;
     request.box_rows = 17u * (tile_n / 16u);
-    request.box_columns = 64u;
+    request.box_columns = cell_row_bytes;
     request.element_bits = 8u;
     return LmGemmTensorMapCached(weight, &request);
 }
@@ -292,11 +297,11 @@ static int32_t LmGemmLaunchAsymmetric(
 		return(LM_LAUNCH_ERR_SHAPE);
 	if constexpr ( INTERLEAVED_B )
 	{
-		// The interleaved grid's k unit is the 128-element pack k-tile, and
-		// its cell is 16 neurons; a launch on any other shape would stage
-		// partial cells and misaddress every scale row.
-		if ( TILE_K != 128u || (TILE_N % 16u) != 0u ||
-			(input_dimension % 128u) != 0u || (output_dimension % 16u) != 0u )
+		// The interleaved grid's k unit is the pack k-tile (128 or 32
+		// elements), and its cell is 16 neurons; a launch on any other shape
+		// would stage partial cells and misaddress every scale row.
+		if ( (TILE_K != 128u && TILE_K != 32u) || (TILE_N % 16u) != 0u ||
+			(input_dimension % TILE_K) != 0u || (output_dimension % 16u) != 0u )
 			return(LM_LAUNCH_ERR_SHAPE);
 	}
     if (grouped)
@@ -392,7 +397,7 @@ static int32_t LmGemmLaunchAsymmetric(
             packed_rows,
             input_dimension,
             plan.tile_m,
-            INTERLEAVED_B ? (TILE_K / 2u) : TILE_K,
+            (INTERLEAVED_B && TILE_K == 128u) ? (TILE_K / 2u) : TILE_K,
             FormatA::kStoredBits);
         if (status != LM_TM_ENCODE_OK)
             return LM_LAUNCH_ERR_MAP;
@@ -405,7 +410,8 @@ static int32_t LmGemmLaunchAsymmetric(
             input_dimension,
             output_dimension,
             group_count,
-            TILE_N);
+            TILE_N,
+            TILE_K);
         if (status != LM_TM_ENCODE_OK)
             return LM_LAUNCH_ERR_MAP;
     }
@@ -646,7 +652,8 @@ template<
 	class WeightFormat,
 	uint32_t TILE_N,
 	uint32_t STAGES,
-	uint32_t WARPS>
+	uint32_t WARPS,
+	uint32_t TILE_K = 128u>
 static int32_t LmGemmWeightOnlyInterleavedLaunch(
 	LmGemmArguments *args,
 	const void *activation_bf16,
@@ -662,7 +669,7 @@ static int32_t LmGemmWeightOnlyInterleavedLaunch(
 	cudaStream_t stream)
 {
 	return(LmGemmLaunchAsymmetric<
-		LmBf16Format,WeightFormat,TILE_N,128u,STAGES,WARPS,
+		LmBf16Format,WeightFormat,TILE_N,TILE_K,STAGES,WARPS,
 		false,SPARK_ACTIVATION_CODEC_NONE,true>(
 		args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,group_count,
 		input_dimension,output_dimension,multiprocessors,grouped,stream));
@@ -672,7 +679,8 @@ template<
 	class WeightFormat,
 	uint32_t TILE_N,
 	uint32_t STAGES,
-	uint32_t WARPS>
+	uint32_t WARPS,
+	uint32_t TILE_K = 128u>
 static int32_t LmGemmWeightOnlyIndirectInterleavedLaunch(
 	LmGemmArguments *args,
 	const void *activation_bf16,
@@ -687,7 +695,7 @@ static int32_t LmGemmWeightOnlyIndirectInterleavedLaunch(
 	cudaStream_t stream)
 {
 	return(LmGemmLaunchAsymmetric<
-		LmBf16Format,WeightFormat,TILE_N,128u,STAGES,WARPS,
+		LmBf16Format,WeightFormat,TILE_N,TILE_K,STAGES,WARPS,
 		true,SPARK_ACTIVATION_CODEC_NONE,true>(
 		args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,group_count,
 		input_dimension,output_dimension,multiprocessors,true,stream));

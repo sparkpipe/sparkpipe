@@ -180,12 +180,12 @@ SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name,
 	if ( field_token < 0 ||
 		SparkJsonGetUInt64(&pack->private_state->document, field_token, &wide_value) != SPARK_STATUS_OK )
 		return(SPARK_STATUS_VALIDATION_FAILED);
-	entry->payload_offset = (uint64_t)value;
+	entry->payload_offset = wide_value;
 	field_token = SparkJsonFindObjectMember(&pack->private_state->document, member_token, "bytes");
 	if ( field_token < 0 ||
 		SparkJsonGetUInt64(&pack->private_state->document, field_token, &wide_value) != SPARK_STATUS_OK )
 		return(SPARK_STATUS_VALIDATION_FAILED);
-	entry->bytes = (uint64_t)value;
+	entry->bytes = wide_value;
 	field_token = SparkJsonFindObjectMember(&pack->private_state->document, member_token, "kind");
 	if ( field_token < 0 )
 		return(SPARK_STATUS_VALIDATION_FAILED);
@@ -213,6 +213,31 @@ SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name,
 	if ( pack->payload_base + entry->payload_offset + entry->bytes >
 		pack->file_bytes )
 		return(SPARK_STATUS_VALIDATION_FAILED);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkK3PackLoadInterleaveTileK(SparkK3Pack *pack,
+	const char *name, uint32_t *tile_k)
+{
+	int32_t root, tensors_token, member_token, interleave_token, field_token;
+	uint32_t value;
+	if ( pack == 0 || name == 0 || tile_k == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	root = SparkJsonGetRootToken(&pack->private_state->document);
+	tensors_token = SparkJsonFindObjectMember(&pack->private_state->document, root, "tensors");
+	if ( tensors_token < 0 )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	member_token = SparkJsonFindObjectMember(&pack->private_state->document, tensors_token, name);
+	if ( member_token < 0 )
+		return(SPARK_STATUS_NOT_FOUND);
+	interleave_token = SparkJsonFindObjectMember(&pack->private_state->document, member_token, "interleave");
+	if ( interleave_token < 0 )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	field_token = SparkJsonFindObjectMember(&pack->private_state->document, interleave_token, "tile_k");
+	if ( field_token < 0 ||
+		SparkJsonGetUInt32(&pack->private_state->document, field_token, &value) != SPARK_STATUS_OK )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	*tile_k = value;
 	return(SPARK_STATUS_OK);
 }
 

@@ -299,6 +299,17 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 				*(const void **)((char *)w + k3_weight_binds[i].offset) = payload;
 		}
 		w->expert_interleave = bound->layer_is_dense ? 0u : 1u;
+		w->expert_tile_k = 128u;
+		if ( w->expert_interleave != 0u )
+		{
+			char w1_name[128];
+			uint32_t tile_k = 0u;
+			snprintf(w1_name, sizeof(w1_name), "model.layers.%u.expert_w1_weight",
+				d->first_layer + off);
+			if ( SparkK3PackLoadInterleaveTileK(pack, w1_name, &tile_k) == SPARK_STATUS_OK &&
+				(tile_k == 128u || tile_k == 32u) )
+				w->expert_tile_k = tile_k;
+		}
 		status = k3_require(pack, bound, k3_required_every,
 			(uint32_t)(sizeof(k3_required_every) / sizeof(k3_required_every[0])));
 		if ( status != SPARK_K3_DISPATCH_OK )
