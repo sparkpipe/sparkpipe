@@ -14,8 +14,9 @@ layer's closing all-reduce combines (SparkTpCollectiveAllReduceSumF32 is that
 collective on this ring), replicated tensors load whole. K3's departures
 from glm52, each earned by the architecture:
 
-  the low-rank bottlenecks REPLICATE, and V2 fuses the two KDA ones into
-  kda_decay_gate_down_weight (docs/K3_PACK_FORMAT_V2.md): their 128-wide
+  the low-rank bottlenecks REPLICATE: the KDA decay_down is the
+  checkpoint's standalone 128-wide f_a_proj (the released checkpoint has no
+  fused decay|gate pair): its 128-wide
   output is what every rank's up half reads in full, and slicing 128 sixteen
   ways buys nothing but a collective
   the kv_a latent path replicates, which is what keeps the latent KV cache

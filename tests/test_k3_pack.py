@@ -107,8 +107,9 @@ def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=128, inter=
                 t[a + "dt_bias"] = ("BF16", bf16((kda_dim,)))
             t[a + "A_log"] = ("F32", rng.standard_normal(128).astype(np.float32))
             t[a + "b_proj.weight"] = ("BF16", bf16((kda_heads, hidden)))
-            t[a + "g_a_proj.weight"] = ("BF16", bf16((kda_head, hidden)))
-            t[a + "g_b_proj.weight"] = ("BF16", bf16((kda_dim, kda_head)))
+            # released checkpoint (full_rank_output_gate): the gate is the
+            # full-rank g_proj; the old low-rank g_a/g_b pair does not exist
+            t[a + "g_proj.weight"] = ("BF16", bf16((kda_dim, hidden)))
             t[a + "o_norm.weight"] = (
                 "F32", rng.standard_normal(kda_head).astype(np.float32))
             t[a + "o_proj.weight"] = ("BF16", bf16((hidden, kda_dim)))
@@ -202,12 +203,14 @@ def main():
                 "output_dim_heads":
             print("  FAIL fused q|k|v|beta section table or shard class")
             failures += 1
-        want = src[a + "f_a_proj.weight"][1].tobytes() + \
-            src[a + "g_a_proj.weight"][1].tobytes()
-        if tensor(p + "kda_decay_gate_down_weight") != want:
-            print("  FAIL fused decay|gate down is not the sections concatenated")
+        # released checkpoint (full_rank_output_gate): decay_down is the
+        # standalone 128-wide replicated bottleneck - no gate fusion
+        want = src[a + "f_a_proj.weight"][1].tobytes()
+        if tensor(p + "kda_decay_down_weight") != want:
+            print("  FAIL decay_down is not the checkpoint's f_a_proj")
             failures += 1
-        for gone in ("kda_q_weight", "kda_beta_weight", "kda_decay_down_weight",
+        for gone in ("kda_q_weight", "kda_beta_weight",
+                     "kda_decay_gate_down_weight",
                      "expert_w1_scale", "expert_w2_scale"):
             if p + gone in entries:
                 print(f"  FAIL {gone} must not exist in V2")

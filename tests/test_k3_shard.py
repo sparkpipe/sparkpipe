@@ -82,7 +82,7 @@ def main():
         for name in ("model.norm.weight", "model.layers.0.attn_norm_weight",
                      "model.layers.1.mla_kv_a_weight",
                      "model.layers.0.router_weight",
-                     "model.layers.0.kda_decay_gate_down_weight"):
+                     "model.layers.0.kda_decay_down_weight"):
             a, b = both(name)
             if not (a == b == full(name)):
                 print(f"  FAIL {name}: replication is not replication")
