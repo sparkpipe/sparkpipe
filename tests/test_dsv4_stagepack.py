@@ -32,27 +32,41 @@ def main() -> int:
 
     assert pack.HEADER_STRUCT.size == 80
     assert pack.ENTRY_STRUCT.size == 40
-    assert pack.FORMAT_VERSION == 3
+    assert pack.FORMAT_VERSION == 4
     assert pack.WEIGHT_FP4 == 3
     assert pack.WEIGHT_FP8 == 4
     assert contract["dspark"]["layer_count"] == 3
-    assert contract["model"]["mtp_layer_count"] == 0
-    assert contract["runtime"]["packed_mtp_layer_count"] == 0
+    assert contract["model"]["mtp_layer_count"] == 3
+    assert contract["runtime"]["packed_mtp_layer_count"] == 3
 
+    # The packed checkpoint now carries the three DSpark draft layers
+    # (sliding-window, 24 records each) plus nine MTP global records
+    # (main projection/norm, final norm, three HC heads, two Markov heads,
+    # confidence projection). The backbone record math is unchanged.
     full = pack.build_records(contract, 0, 43)
     expected = sum(
         24 + (4 if ratios[layer] != 0 else 0) + (6 if ratios[layer] == 4 else 0)
         for layer in range(43)
-    ) + 1 + 5
+    ) + 1 + 5 + 3 * 24 + 9
     assert len(full) == expected
 
+    # A non-first slice that owns the model tail re-adds the embedding
+    # (the MTP draft needs the embedding copy) and carries the full MTP set.
     final_stage = pack.build_records(contract, 41, 2)
-    assert not any(record.kind == pack.KIND_EMBEDDING for record in final_stage)
-    assert len(final_stage) == 67
-    assert all(record.layer != pack.MTP_LAYER for record in final_stage)
-    assert all("mtp." not in name for record in final_stage
-               for name in record.source_names + record.scale_names)
-    assert sum(record.kind == pack.KIND_GATE_BIAS for record in final_stage) == 2
+    assert any(record.kind == pack.KIND_EMBEDDING for record in final_stage)
+    # ratios[41] = 128 -> 28 records; ratios[42] = 4 -> 34 records.
+    assert len(final_stage) == 28 + 34 + 1 + 5 + 3 * 24 + 9
+    assert sum(pack.is_mtp_layer(record.layer) for record in final_stage) == 3 * 24
+    assert all(any("mtp." in name for name in record.source_names + record.scale_names)
+               for record in final_stage if pack.is_mtp_layer(record.layer))
+    assert sum(record.kind in (pack.KIND_MTP_MAIN_PROJ, pack.KIND_MTP_MAIN_NORM,
+                               pack.KIND_MTP_FINAL_NORM, pack.KIND_MTP_HC_HEAD_FN,
+                               pack.KIND_MTP_HC_HEAD_BASE, pack.KIND_MTP_HC_HEAD_SCALE,
+                               pack.KIND_MTP_MARKOV_W1, pack.KIND_MTP_MARKOV_W2,
+                               pack.KIND_MTP_CONFIDENCE_PROJ)
+               for record in final_stage) == 9
+    # Two backbone gate biases (layers 41-42) plus one per draft layer.
+    assert sum(record.kind == pack.KIND_GATE_BIAS for record in final_stage) == 5
 
     fp8_scales = pack.expand_fp8_scale(
         MemorySource(bytes(range(4))), "scale", 256, 256
@@ -69,7 +83,7 @@ def main() -> int:
     assert expert.scale_bytes == 256 * 2048 * (4096 // 32)
 
     entries, file_bytes = pack.make_directory(final_stage)
-    assert file_bytes == 8219895692
+    assert file_bytes == 20145261560
     assert entries[0].payload_offset == pack.HEADER_STRUCT.size + pack.ENTRY_STRUCT.size * len(entries)
     assert entries[-1].payload_offset + entries[-1].record.payload_bytes + entries[-1].record.scale_bytes == file_bytes
     for previous, current in zip(entries, entries[1:]):
@@ -129,7 +143,8 @@ def main() -> int:
         assert result["validated"] is True
         assert result["first_layer"] == 41
         assert result["layer_count"] == 2
-        assert pack.HEADER_STRUCT.unpack(path.read_bytes()[:pack.HEADER_STRUCT.size])[15] == 0
+        # Header field 15 carries the packed draft-layer count.
+        assert pack.HEADER_STRUCT.unpack(path.read_bytes()[:pack.HEADER_STRUCT.size])[15] == 3
         assert result["expert_weight_codec_id"] == pack.CODEC_IDS["mxfp4_e2m1"]
         assert pack.main(["--verify-pack", str(path)]) == 0
         with path.open("r+b") as file:
