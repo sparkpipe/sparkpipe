@@ -137,14 +137,17 @@ def main():
             failures += 1
         # interleaved expert w1: per (expert, k-tile) the rank carries its
         # gate cell range then its up cell range; the full tensor's tile is
-        # all gate cells then all up cells, ranks in order
+        # all gate cells then all up cells, ranks in order - and the K AXIS
+        # splits too: each rank owns its k-tile range (the rank's latent
+        # slice addresses only its tiles), reassembled tile range by tile
         name = "model.layers.1.expert_w1_weight"
         geom = full_manifest["tensors"][name]["interleave"]
         cells, k_tiles = geom["cells"], geom["k_tiles"]
         chunk = (cells // 2 // 2) * geom["cell_rows"] * geom["row_bytes"]
         experts = cfg["experts"]
         a, b = both(name)
-        rank_expert = k_tiles * 2 * chunk
+        take_k = k_tiles // 2
+        rank_expert = take_k * 2 * chunk
         if len(a) != experts * rank_expert:
             print(f"  FAIL {name}: rank shard is not a valid interleave")
             failures += 1
@@ -152,7 +155,7 @@ def main():
         for e in range(experts):
             ea = a[e * rank_expert:(e + 1) * rank_expert]
             eb = b[e * rank_expert:(e + 1) * rank_expert]
-            for t in range(k_tiles):
+            for t in range(take_k):
                 at = t * 2 * chunk
                 rebuilt += ea[at:at + chunk] + eb[at:at + chunk]
                 rebuilt += ea[at + chunk:at + 2 * chunk] + \
@@ -162,10 +165,11 @@ def main():
             failures += 1
         rank_geom = ranks[0][0]["tensors"][name]["interleave"]
         if rank_geom["out_dim"] != geom["out_dim"] // 2 or \
+                rank_geom["k_dim"] != geom["k_dim"] // 2 or \
                 rank_geom["tensor_bytes"] != len(a):
             print(f"  FAIL {name}: rank interleave geometry is not repriced")
             failures += 1
-        # interleaved expert w2: whole 128-element k-tiles, a contiguous row
+        # interleaved expert w2: whole k-tiles, a contiguous row
         # range per expert per rank
         name = "model.layers.1.expert_w2_weight"
         geom = full_manifest["tensors"][name]["interleave"]
@@ -202,6 +206,48 @@ def main():
                              capture_output=True, text=True)
         if run.returncode == 0 or "FAILURE" not in run.stdout:
             print("  FAIL a misaligned degree was not refused")
+            failures += 1
+    # A 32-element-tile pack (the TP16 granularity: 224 = 7 x 32 for the w1
+    # k, 192 = 6 x 32 for the w2 k) slices at TP 4 the same way, and a
+    # degree its tile counts do not divide still refuses with the tile size
+    # named.
+    mini_checkpoint(root, latent=128, inter=256)
+    pack32 = root / "mini32.pack"
+    run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
+                          str(root), str(pack32), "0", "3", "32"],
+                         capture_output=True, text=True)
+    if run.returncode != 0:
+        print("FAIL 32-tile pack:", run.stdout[-300:])
+        return 1
+    full32, f32 = read_pack(pack32)
+    # the mini's two heads refuse the CLI at TP 4 before the experts, so the
+    # expert split is driven per tensor through route()
+    for name in ("model.layers.1.expert_w1_weight",
+                 "model.layers.1.expert_w2_weight"):
+        geom = full32["tensors"][name]["interleave"]
+        if geom["tile_k"] != 32:
+            print(f"  FAIL {name}: 32-tile pack reports tile_k {geom['tile_k']}")
+            failures += 1
+        parts = []
+        for r in range(4):
+            try:
+                parts.append(k3_shard.Slicer(pack32, {}, 4, r).route(name))
+            except k3_shard.ShardFailure as failure:
+                print(f"  FAIL {name} rank {r}: {failure}")
+                failures += 1
+                parts = []
+                break
+        if parts and b"".join(parts) != f32(name):
+            print(f"  FAIL {name}: 32-tile k shards do not reassemble")
+            failures += 1
+    slicer = k3_shard.Slicer(pack32, {}, 16, 0)
+    try:
+        slicer.route("model.layers.1.expert_w2_weight")
+        print("  FAIL a 32-tile k-indivisible degree sliced silently")
+        failures += 1
+    except k3_shard.ShardFailure as failure:
+        if "32-element" not in str(failure):
+            print(f"  FAIL 32-tile refusal does not name the tile size: {failure}")
             failures += 1
     print(f"tensors sharded {len(full_manifest['tensors'])} x 2 ranks")
     if failures:

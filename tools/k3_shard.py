@@ -28,18 +28,18 @@ from glm52, each earned by the architecture:
   the concatenated gate|up tensors (shared, dense, and every expert's w1)
   slice EACH HALF and re-concatenate per rank, or the SiTU kernel's
   gate-first contract breaks at every rank boundary
-  expert w1 is the V2 interleaved grid (64B rows, 16 payload + 1 scale row
-  per 16-neuron cell per 128-element k-tile): it output-splits on whole
-  16-neuron cells per gate|up half, so each rank's shard is itself a valid
-  interleaved tensor with the scales riding along
-  expert w2 input-splits on whole 128-element k-tiles - a contiguous row
-  range per expert per rank. V1 split K on 32-element groups; the interleave
-  coarsens that to the k-tile, so K3's 24 w2 k-tiles admit TP 1/2/4/8. TP16
-  is REFUSED: the down k-slice must equal the intermediate the rank's w1
-  slice computed (192 = 96+96 gate|up elements at TP16 = 1.5 tiles), and an
-  unbalanced whole-tile split would consume elements the rank never
-  computed. The fix is the 64-element half-tile repack (pack V3), which
-  gives the down the granularity the gate|up halves need
+  expert w1 is the V2 interleaved grid (16 payload + 1 scale row per
+  16-neuron cell per k-tile): it output-splits on whole 16-neuron cells
+  per gate|up half AND input-splits on whole k-tiles - the rank's latent
+  slice addresses only its own tiles, so keeping the whole k axis would
+  pair a rank's activations with rank 0's weights
+  expert w2 input-splits on whole k-tiles - a contiguous row range per
+  expert per rank. The rank's SiTU intermediate slice IS contiguous (the
+  gate|up halves share cell offsets), so the contiguous take matches it.
+  K3's 128-element tiles admit TP 1/2/4/8 on both experts; TP16 is
+  REFUSED unless the pack carries 32-element tiles (224 = 7 x 32 for the
+  w1 k, 192 = 6 x 32 for the w2 k - the packer's interleave_geometry
+  already closes at tile_k 32)
 """
 import json
 import mmap
@@ -303,54 +303,65 @@ class Slicer:
         """w1 output-splits on whole 16-neuron cells, each gate|up half on
         its own: per (expert, k-tile) the rank takes its gate cell range then
         its up cell range, so the shard is itself a valid interleaved tensor
-        whose gate-first order survives every rank boundary."""
+        whose gate-first order survives every rank boundary. THE K SIDE
+        SPLITS TOO: the activation the GEMM feeds is the rank's latent slice
+        (moe_in columns), so the rank's shard carries only ITS k-tiles -
+        keeping the whole k axis would pair the rank's latent slice with
+        rank 0's weights."""
         degree, rank = self.degree, self.rank
         geom = self.entry_of(name)["interleave"]
         experts, cells = geom["experts"], geom["cells"]
         k_tiles, cell_rows, row_bytes = (geom["k_tiles"], geom["cell_rows"],
                                          geom["row_bytes"])
+        tile_k = geom["tile_k"]
         rpe = geom["rows_per_expert"]
         half = cells // 2  # the gate|up boundary is a cell boundary
         if half % degree != 0:
             raise ShardFailure(
                 f"{name}: {half} 16-neuron cells per gate|up half do not "
                 f"split {degree} ways")
-        take = half // degree
-        lo = rank * take
+        if k_tiles % degree != 0:
+            raise ShardFailure(
+                f"{name}: {k_tiles} {tile_k}-element k-tiles do not split "
+                f"{degree} ways - the rank's latent slice cannot address "
+                f"whole k-tiles (pack the experts with a smaller tile_k)")
+        take_out = half // degree
+        take_k = k_tiles // degree
+        lo = rank * take_out
+        t0 = rank * take_k
         out = bytearray()
         for e in range(experts):
             block = raw[e * rpe * row_bytes:(e + 1) * rpe * row_bytes]
-            for t in range(k_tiles):
+            for t in range(t0, t0 + take_k):
                 for base in (lo, half + lo):
                     row0 = (t * cells + base) * cell_rows
                     out += block[row0 * row_bytes:
-                                 (row0 + take * cell_rows) * row_bytes]
-        self._reprice_interleave(name, meta, out_dim=geom["out_dim"] // degree)
+                                 (row0 + take_out * cell_rows) * row_bytes]
+        self._reprice_interleave(name, meta,
+                                 out_dim=geom["out_dim"] // degree,
+                                 k_dim=take_k * tile_k)
         return bytes(out)
 
     def _expert_down(self, name, raw, meta):
-        """w2 input-splits on whole 128-element k-tiles: a contiguous row
-        range per expert per rank. The k axis IS the gate|up intermediate
-        (gate 1536 | up 1536 in 12+12 tiles), and a rank's down k-slice must
-        equal the intermediate its w1 slice computed - the gate|up output
-        split gives every rank 96 cells per half (a half-tile of 64 elements
-        at TP16), so a whole-tile down split can never line up with it: an
-        unbalanced tile split (ranks taking 1 or 2 tiles) would consume
-        elements the rank never computed. TP16 therefore REFUSES here until
-        the 64-element half-tile repack (pack V3: tile_k 64, 32-byte cell
-        rows) gives the down a granularity that matches the gate|up halves.
-        The degree check below is the honest gate for every other degree
-        (TP 2/4/8 split 24 tiles evenly)."""
+        """w2 input-splits on whole k-tiles (tile_k from the pack geometry):
+        a contiguous row range per expert per rank. The k axis IS the SiTU
+        intermediate, and a rank's slice of it is CONTIGUOUS - the gate|up
+        halves share cell offsets, so situ(gate[o..]) x up[o..] produces the
+        global intermediate's contiguous range [o..] - the contiguous tile
+        take is exactly the rank's slice. K3's 128-tile packs therefore
+        admit TP 1/2/4/8; TP16 needs 32-element tiles (224 = 7 x 32 for the
+        w1 k, 192 = 6 x 32 for the w2 k) and refuses here until the pack
+        carries them."""
         degree, rank = self.degree, self.rank
         geom = self.entry_of(name)["interleave"]
         experts, k_tiles = geom["experts"], geom["k_tiles"]
+        tile_k = geom["tile_k"]
         if k_tiles % degree != 0:
             raise ShardFailure(
-                f"{name}: {k_tiles} 128-element k-tiles do not split "
-                f"{degree} ways, and an unbalanced whole-tile split cannot "
-                f"match the gate|up output split (a rank would consume "
-                f"intermediate elements it never computed) - TP16 needs the "
-                f"64-element half-tile repack before the expert w2 shards")
+                f"{name}: {k_tiles} {tile_k}-element k-tiles do not split "
+                f"{degree} ways - the rank's intermediate slice cannot "
+                f"address whole k-tiles (pack the experts with a smaller "
+                f"tile_k; TP16 needs 32-element tiles)")
         take = k_tiles // degree
         t0 = rank * take
         tile_rows = geom["cells"] * geom["cell_rows"]
@@ -360,7 +371,7 @@ class Slicer:
             block = raw[e * rpe * row_bytes:(e + 1) * rpe * row_bytes]
             out += block[t0 * tile_rows * row_bytes:
                          (t0 + take) * tile_rows * row_bytes]
-        self._reprice_interleave(name, meta, k_dim=take * 128)
+        self._reprice_interleave(name, meta, k_dim=take * tile_k)
         return bytes(out)
 
     def _reprice_interleave(self, name, meta, out_dim=None, k_dim=None):

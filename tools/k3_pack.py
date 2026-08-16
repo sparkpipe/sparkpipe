@@ -560,7 +560,8 @@ def validate_layout(manifest, config):
                                   f"section bases cannot stay {ALIGN}B-aligned")
 
 
-def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
+def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
+                expert_tile_k=TILE_K):
     reader = SafetensorDir(model_dir)
     config = json.loads((Path(model_dir) / "config.json").read_text())
     # The Kimi-K3 checkpoint nests the model config under text_config.
@@ -609,9 +610,13 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
     if len(types) != layers:
         raise PackFailure("layer_types does not cover num_hidden_layers")
     # The interleave grid prices both expert GEMMs up front; a checkpoint the
-    # grid does not divide fails before a byte is written.
-    w1_geom = interleave_geometry(2 * inter, latent, experts)
-    w2_geom = interleave_geometry(latent, inter, experts)
+    # grid does not divide fails before a byte is written. The tile_k choice
+    # is the shard granularity: 128 admits TP 1/2/4/8 on the experts, 32
+    # admits TP16 (224 = 7 x 32 for the w1 k, 192 = 6 x 32 for the w2 k).
+    w1_geom = interleave_geometry(2 * inter, latent, experts,
+                                  tile_k=expert_tile_k)
+    w2_geom = interleave_geometry(latent, inter, experts,
+                                  tile_k=expert_tile_k)
 
     payload_path = Path(str(out_path) + ".payload")
     pack = Pack(payload_path, resume=payload_path.exists())
@@ -829,11 +834,16 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None):
 
 
 def main():
-    if len(sys.argv) not in (3, 5):
-        print("usage: k3_pack.py <checkpoint_dir> <out.pack> [first_layer layer_count]")
+    if len(sys.argv) not in (3, 5, 6):
+        print("usage: k3_pack.py <checkpoint_dir> <out.pack> "
+              "[first_layer layer_count [expert_tile_k]]")
         return 2
     try:
-        if len(sys.argv) == 5:
+        if len(sys.argv) == 6:
+            echo, manifest = pack_model(sys.argv[1], sys.argv[2],
+                                        int(sys.argv[3]), int(sys.argv[4]),
+                                        int(sys.argv[5]))
+        elif len(sys.argv) == 5:
             echo, manifest = pack_model(sys.argv[1], sys.argv[2],
                                         int(sys.argv[3]), int(sys.argv[4]))
         else:
