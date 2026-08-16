@@ -1,0 +1,426 @@
+{
+  "content_hash": "19efd5f78faf3a1b",
+  "contract": {
+    "path": "model_contracts/qwen36_authoritative.json",
+    "sha256": "557ddcce81fbc0ffe911b4c65c8be8799606ee4fd4f56d0ff2d8e7babc892126"
+  },
+  "datafile": "qwen36.TP4.19efd5f78faf3a1b.json",
+  "degree": 4,
+  "family": "qwen36",
+  "geometry_hash": "ff786ac12a1d6e13",
+  "kind": "sparkpipe.model_recipe",
+  "kv_entry_prefix": "qwen36.TP4.ff786ac12a1d6e13/",
+  "kv_geometry": {
+    "attention_period": 4,
+    "full_layer_count": 16,
+    "full_phase": 3,
+    "gdn_layer_count": 48,
+    "gdn_state": {
+      "key_dimension": 128,
+      "key_head_count": 16,
+      "short_conv_kernel": 4,
+      "state_element_type": "fp32",
+      "value_dimension": 128,
+      "value_head_count": 48
+    },
+    "head_dimension": 256,
+    "kv_element_bits": 16,
+    "kv_head_count": 4,
+    "kv_page_slots": 64,
+    "layer_count": 64,
+    "layout": "gqa_full_kv_bf16+gdn_recurrent_state_fp32",
+    "rope_convention": "partial_rotary_first_dims",
+    "rope_dimension": 64,
+    "rope_theta": 10000000.0
+  },
+  "model": "qwen36",
+  "schema_version": 1,
+  "strategy": "TP",
+  "topology": {
+    "mode": "dual_switch",
+    "name": "dual_switch_16node_production",
+    "node_names": [
+      "spark-00",
+      "spark-01",
+      "spark-02",
+      "spark-03"
+    ],
+    "nodes": 4,
+    "source": "examples/topologies/dual_switch_16node_production.json"
+  },
+  "tp": {
+    "collective": "all_reduce_sum_f32 closes every input-dimension split (SparkTpCollectiveAllReduceSumF32 on this ring)",
+    "ranks": [
+      {
+        "node": "spark-00",
+        "rank": 0,
+        "slices": {
+          "dense_down": [
+            0,
+            4352
+          ],
+          "dense_gate_up": [
+            0,
+            4352
+          ],
+          "embed_and_head": [
+            0,
+            62080
+          ],
+          "heads_in:full_o": [
+            0,
+            1536
+          ],
+          "heads_in:gdn_out": [
+            0,
+            1536
+          ],
+          "heads_out:full_kv": [
+            0,
+            256
+          ],
+          "heads_out:full_q": [
+            0,
+            3072
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            512
+          ],
+          "heads_out:gdn_v": [
+            0,
+            1536
+          ]
+        }
+      },
+      {
+        "node": "spark-01",
+        "rank": 1,
+        "slices": {
+          "dense_down": [
+            4352,
+            4352
+          ],
+          "dense_gate_up": [
+            4352,
+            4352
+          ],
+          "embed_and_head": [
+            62080,
+            62080
+          ],
+          "heads_in:full_o": [
+            1536,
+            1536
+          ],
+          "heads_in:gdn_out": [
+            1536,
+            1536
+          ],
+          "heads_out:full_kv": [
+            256,
+            256
+          ],
+          "heads_out:full_q": [
+            3072,
+            3072
+          ],
+          "heads_out:gdn_qk": [
+            512,
+            512
+          ],
+          "heads_out:gdn_v": [
+            1536,
+            1536
+          ]
+        }
+      },
+      {
+        "node": "spark-02",
+        "rank": 2,
+        "slices": {
+          "dense_down": [
+            8704,
+            4352
+          ],
+          "dense_gate_up": [
+            8704,
+            4352
+          ],
+          "embed_and_head": [
+            124160,
+            62080
+          ],
+          "heads_in:full_o": [
+            3072,
+            1536
+          ],
+          "heads_in:gdn_out": [
+            3072,
+            1536
+          ],
+          "heads_out:full_kv": [
+            512,
+            256
+          ],
+          "heads_out:full_q": [
+            6144,
+            3072
+          ],
+          "heads_out:gdn_qk": [
+            1024,
+            512
+          ],
+          "heads_out:gdn_v": [
+            3072,
+            1536
+          ]
+        }
+      },
+      {
+        "node": "spark-03",
+        "rank": 3,
+        "slices": {
+          "dense_down": [
+            13056,
+            4352
+          ],
+          "dense_gate_up": [
+            13056,
+            4352
+          ],
+          "embed_and_head": [
+            186240,
+            62080
+          ],
+          "heads_in:full_o": [
+            4608,
+            1536
+          ],
+          "heads_in:gdn_out": [
+            4608,
+            1536
+          ],
+          "heads_out:full_kv": [
+            768,
+            256
+          ],
+          "heads_out:full_q": [
+            9216,
+            3072
+          ],
+          "heads_out:gdn_qk": [
+            1536,
+            512
+          ],
+          "heads_out:gdn_v": [
+            4608,
+            1536
+          ]
+        }
+      }
+    ],
+    "shard_classes": [
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 3072,
+          "status": "sharded"
+        },
+        "head_count": 24,
+        "instances_per_model": null,
+        "match": [
+          "full_attn.q_proj.weight"
+        ],
+        "name": "heads_out:full_q",
+        "note": "24 query heads split at degrees 1/2/4/8 only; at 16/13 the recipe replicates attention and the MLP carries the sharding",
+        "quant_group": null,
+        "scope": "per_full_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 256,
+          "status": "sharded"
+        },
+        "head_count": 4,
+        "instances_per_model": null,
+        "match": [
+          "full_attn.k_proj.weight",
+          "full_attn.v_proj.weight"
+        ],
+        "name": "heads_out:full_kv",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_full_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 1024
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 1536,
+          "status": "sharded"
+        },
+        "head_count": 24,
+        "instances_per_model": null,
+        "match": [
+          "full_attn.o_proj.weight"
+        ],
+        "name": "heads_in:full_o",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_full_layer",
+        "shard_class": "INPUT_DIM_HEADS",
+        "split": "input_heads",
+        "split_extent": 6144
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 512,
+          "status": "sharded"
+        },
+        "head_count": 16,
+        "instances_per_model": null,
+        "match": [
+          "gdn.q_proj.weight",
+          "gdn.k_proj.weight"
+        ],
+        "name": "heads_out:gdn_qk",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_gdn_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 2048
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 1536,
+          "status": "sharded"
+        },
+        "head_count": 48,
+        "instances_per_model": null,
+        "match": [
+          "gdn.v_proj.weight"
+        ],
+        "name": "heads_out:gdn_v",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_gdn_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 6144
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 1536,
+          "status": "sharded"
+        },
+        "head_count": 48,
+        "instances_per_model": null,
+        "match": [
+          "gdn.out_proj.weight"
+        ],
+        "name": "heads_in:gdn_out",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_gdn_layer",
+        "shard_class": "INPUT_DIM_HEADS",
+        "split": "input_heads",
+        "split_extent": 6144
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 4352,
+          "status": "sharded"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "mlp.gate_proj.weight",
+          "mlp.up_proj.weight"
+        ],
+        "name": "dense_gate_up",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM",
+        "split": "output",
+        "split_extent": 17408
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 4352,
+          "status": "sharded"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "mlp.down_proj.weight"
+        ],
+        "name": "dense_down",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "INPUT_DIM",
+        "split": "input",
+        "split_extent": 17408
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 62080,
+          "status": "sharded"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "model.embed_tokens.weight",
+          "lm_head.weight"
+        ],
+        "name": "embed_and_head",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_model",
+        "shard_class": "OUTPUT_DIM",
+        "split": "output",
+        "split_extent": 248320
+      },
+      {
+        "degree_resolution": {
+          "reason": "norms, short-conv state, the GDN forget/write gates (which have no producer yet - see the contract's known_gaps) and the MTP layer",
+          "rows_per_rank": null,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "layernorm",
+          "norm.weight",
+          "conv",
+          "gate",
+          "model.norm.weight",
+          "mtp."
+        ],
+        "name": "replicated",
+        "note": "norms, short-conv state, the GDN forget/write gates (which have no producer yet - see the contract's known_gaps) and the MTP layer",
+        "quant_group": null,
+        "scope": "mixed",
+        "shard_class": "REPLICATED",
+        "split": "none",
+        "split_extent": null
+      }
+    ],
+    "unclassified_policy": "refuse"
+  }
+}
