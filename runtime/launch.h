@@ -153,7 +153,7 @@ static uint32_t LmLaunchSharedBytes(const LmLaunchShape *shape, uint32_t tile_m)
 	uint32_t bits_a = shape->stored_bits_a != 0u ? shape->stored_bits_a : shape->stored_bits;
 	uint32_t a = (tile_m * shape->tile_k * bits_a) / 8u;
 	uint32_t b = shape->interleaved_b != 0u
-		? (17u * (shape->tile_n / 16u) * 64u)
+		? (17u * (shape->tile_n / 16u) * (shape->tile_k / 2u))
 		: (shape->tile_n * shape->tile_k * shape->stored_bits) / 8u;
 	return((shape->stages * (a + b)) + (shape->stages * 8u));
 }
@@ -186,11 +186,13 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 		return(LM_LAUNCH_ERR_SHARED);
 	// The row pitch decides the swizzle span, and the descriptor must be built
 	// with the same one the kernel applies. Both come from here. The
-	// interleaved launch stages 64-byte cell rows, so its weight pitch equals
-	// its span like every other path.
+	// interleaved launch stages (tile_k/2)-byte cell rows - 64 bytes at
+	// TILE_K 128, whose pitch equals its span, and 16 bytes at TILE_K 32,
+	// which carries no hardware swizzle (SWIZZLE_NONE).
 	pitch = (shape->tile_k * shape->stored_bits) / 8u;
 	plan->swizzle_span = LmSwizzleSpanFor(pitch);
-	if ( plan->swizzle_span == 0u || pitch != plan->swizzle_span )
+	if ( (plan->swizzle_span == 0u || pitch != plan->swizzle_span) &&
+		!(shape->interleaved_b != 0u && pitch == 16u) )
 		return(LM_LAUNCH_ERR_MAP);
 	// The activation pitch must be swizzleable in its own right when the widths
 	// differ; the weight span above does not vouch for it. A TILE_K=128 BF16
