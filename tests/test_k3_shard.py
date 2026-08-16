@@ -152,15 +152,12 @@ def main():
         if len(a) != experts * rank_expert:
             print(f"  FAIL {name}: rank shard is not a valid interleave")
             failures += 1
+        # each k-tile belongs to ONE rank, so the full tensor is the rank
+        # shards concatenated (tile 0's rank first), like the w2 below
         rebuilt = bytearray()
         for e in range(experts):
-            ea = a[e * rank_expert:(e + 1) * rank_expert]
-            eb = b[e * rank_expert:(e + 1) * rank_expert]
-            for t in range(take_k):
-                at = t * 2 * chunk
-                rebuilt += ea[at:at + chunk] + eb[at:at + chunk]
-                rebuilt += ea[at + chunk:at + 2 * chunk] + \
-                    eb[at + chunk:at + 2 * chunk]
+            rebuilt += a[e * rank_expert:(e + 1) * rank_expert]
+            rebuilt += b[e * rank_expert:(e + 1) * rank_expert]
         if bytes(rebuilt) != full(name):
             print(f"  FAIL {name}: interleaved cell shards do not reassemble")
             failures += 1
