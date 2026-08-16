@@ -86,11 +86,29 @@
  * replay prefill (GDN_RESTORE_FIRST). Disabled, the adapter is the previous
  * non-speculating path unchanged. */
 #define SPARK_QWEN36_SERVING_SPECULATE_ENV "SPARK_QWEN36_SERVING_SPECULATE"
+#define SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_ENV "SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT"
 /* Draft tokens requested per MTP_DRAFT_AFTER frame. The module caps this at
  * SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS and sizes its draft
- * ids array by the same constant. */
+ * ids array by the same constant. The verify prefill costs one full-model row
+ * walk per draft, so the profitable depth is a tunable: env-overridable via
+ * SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT (1..8). */
 #define SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT \
 	SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS
+
+static uint32_t SparkQwen36ServingSpeculativeDraftCount(void)
+{
+	const char *value = getenv(SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_ENV);
+	/* Measured optimum on TP4: D=2 (13.1 tok/s at B1) beats D=1/D=4/D=8 and
+	 * the non-spec baseline (12.1). */
+	uint32_t count = 2u;
+	if ( value != 0 )
+	{
+		uint32_t parsed = (uint32_t)strtoul(value,0,0);
+		if ( parsed >= 1u && parsed <= SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS )
+			count = parsed;
+	}
+	return(count);
+}
 /* GDN snapshot slots. The two-phase min-accept schedule keeps one verify
  * snapshot in flight per lane, capped by the module's slot ceiling; a lane
  * index is the snapshot slot it uses. */
@@ -754,7 +772,7 @@ static SparkStatus SparkQwen36ServingExtendSpeculativeCoverage(
 		for (row=0u; row<submission->row_count; row++)
 			if ( submission->row_lane_indices[row] == lane )
 				position = submission->row_positions[row];
-		end_position = position + (uint64_t)SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT + 2u;
+		end_position = position + (uint64_t)SparkQwen36ServingSpeculativeDraftCount() + 2u;
 		required = (end_position + SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 		if ( required > state->blocks_per_lane )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -773,7 +791,7 @@ static SparkStatus SparkQwen36ServingExtendSpeculativeCoverage(
 		for (row=0u; row<submission->row_count; row++)
 			if ( submission->row_lane_indices[row] == lane )
 				position = submission->row_positions[row];
-		end_position = position + (uint64_t)SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT + 2u;
+		end_position = position + (uint64_t)SparkQwen36ServingSpeculativeDraftCount() + 2u;
 		status = SparkQwen36ServingCoverLane(state,slot,end_position);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
@@ -1201,7 +1219,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 	uint32_t draft_count;
 	uint32_t min_accepted;
 	SparkStatus status;
-	draft_count = SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT;
+	draft_count = SparkQwen36ServingSpeculativeDraftCount();
 	pending->spec_active = 1u;
 	memset(pending->spec,0,sizeof(pending->spec));
 	status = SPARK_STATUS_OK;
@@ -1390,7 +1408,10 @@ static SparkStatus SparkQwen36ServingSubmit(
 		return(SPARK_STATUS_BUSY);
 	speculate = 0u;
 	status = SparkQwen36ServingCoverSubmission(state,submission);
-	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && SparkQwen36ServingSpeculationEnabled() != 0u && SparkQwen36ServingOwnsFinalHead(state) != 0u && submission->active_sequence_count <= SPARK_QWEN36_SERVING_GDN_SNAPSHOT_SLOTS )
+	/* B1 only: the per-lane chain is serial by contract, so batched decodes
+	 * (B2+) would serialize D+2 extra full-model walks per lane and lose to
+	 * the plain batched path (measured). */
+	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && SparkQwen36ServingSpeculationEnabled() != 0u && SparkQwen36ServingOwnsFinalHead(state) != 0u && submission->active_sequence_count == 1u )
 	{
 		status = SparkQwen36ServingExtendSpeculativeCoverage(state,submission);
 		if ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
