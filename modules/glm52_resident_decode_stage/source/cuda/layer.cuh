@@ -670,11 +670,12 @@ static int32_t Glm52LayerDenseMlp(
 
     if (buffers->dense_gate_up_fused != 0u)
     {
-        // Bind proved the up rows sit immediately behind the gate rows, so one
-        // GEMM over the concatenated tensor writes the [gate | up] layout
-        // directly - the two-launch form below re-reads the normed activation
-        // and pays a second launch for the same weight bytes. Per-element math
-        // is identical either way; only the launch count differs.
+        // The pack stores the dense gate-up stack as [up | gate] (matching the
+        // routed-expert convention), so one GEMM over the concatenated tensor
+        // writes that [up | gate] layout directly and LmSiluMulKernel runs with
+        // gate_first=false - the two-launch form below re-reads the normed
+        // activation and pays a second launch for the same weight bytes.
+        // Per-element math is identical either way; only the launch count differs.
         status = Glm52LaunchBf16Linear(
             buffers->normed_bf16,
             buffers->dense_gate_weight,
@@ -740,7 +741,7 @@ static int32_t Glm52LayerDenseMlp(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
         buffers->dense_intermediate,
-        true);
+        false);
 
     return Glm52LaunchBf16Linear(
         buffers->intermediate_bf16,
@@ -998,7 +999,7 @@ static int32_t Glm52LayerMoe(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
         buffers->shared_intermediate,
-        true);
+        false);
     status = Glm52LaunchBf16Linear(
         buffers->intermediate_bf16,
         buffers->shared_down_weight,
