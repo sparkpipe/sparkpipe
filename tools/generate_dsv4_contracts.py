@@ -109,7 +109,7 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
 
     require_equal(contract["schema_version"], 1, f"{variant} schema version")
     require_equal(contract["architecture"], "DeepseekV4ForCausalLM", f"{variant} architecture")
-    expected_mtp_layer_count = 0 if variant == "flash" else 1
+    expected_mtp_layer_count = 3 if variant == "flash" else 1
     packed_mtp_layer_count = contract.get("runtime", {}).get(
         "packed_mtp_layer_count", model["mtp_layer_count"])
     require_equal(model["mtp_layer_count"], expected_mtp_layer_count, f"{variant} MTP layer count")
@@ -132,8 +132,8 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
     if variant == "flash":
         require_equal(contract["model_id"], "deepseek-ai/DeepSeek-V4-Flash-0731", "Flash source model")
         require_equal(contract["source_revision"], "7872f01b1d1fe23eabc4c98b48bffcef5a386062", "Flash source revision")
-        require_equal(packed_mtp_layer_count, 0, "Flash packed MTP layer count")
-        require_equal(contract["runtime"]["speculative_decoding"], "disabled", "Flash speculative decoding")
+        require_equal(packed_mtp_layer_count, 3, "Flash packed MTP layer count")
+        require_equal(contract["runtime"]["speculative_decoding"], "enabled", "Flash speculative decoding")
         require_equal(contract["dspark"]["checkpoint_namespace"], "mtp", "Flash DSpark checkpoint namespace")
         require_equal(contract["dspark"]["layer_count"], 3, "Flash DSpark layer count")
         require_equal(contract["dspark"]["block_size"], 5, "Flash DSpark block size")
@@ -141,8 +141,8 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
         require_equal(contract["dspark"]["target_layer_ids"], [40, 41, 42], "Flash DSpark target layers")
         require_equal(contract["dspark"]["markov_rank"], 256, "Flash DSpark Markov rank")
         require_equal(contract["dspark"]["tensor_counts"], [1568, 1565, 1572], "Flash DSpark tensor counts")
-        require_equal(contract["dspark"]["packed"], False, "Flash DSpark packing")
-        require_equal(contract["dspark"]["execution_supported"], False, "Flash DSpark execution")
+        require_equal(contract["dspark"]["packed"], True, "Flash DSpark packing")
+        require_equal(contract["dspark"]["execution_supported"], True, "Flash DSpark execution")
         require_equal(contract["source_index_sha256"], "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b", "Flash source index hash")
         require_equal(contract["source_tensor_count"], 72317, "Flash source tensor count")
         validate_flash_source_files(contract)
@@ -178,7 +178,8 @@ def c_float(value: float) -> str:
 
 def render_header(
         variant: str, contract: dict[str, Any], description_sha256: str = "",
-        b1_description_sha256: str = "") -> str:
+        b1_description_sha256: str = "",
+        bucket_shas: dict | None = None) -> str:
     model = contract["model"]
     attention = contract["attention"]
     hyper_connections = contract["hyper_connections"]
@@ -211,6 +212,11 @@ def render_header(
     if variant == "flash":
         defines = common_defines + [
             ("CHECKPOINT_DSPARK_LAYER_COUNT", contract["dspark"]["layer_count"]),
+            ("DSPARK_BLOCK_SIZE", contract["dspark"]["block_size"]),
+            ("DSPARK_NOISE_TOKEN_ID", contract["dspark"]["noise_token_id"]),
+            ("DSPARK_MARKOV_RANK", contract["dspark"]["markov_rank"]),
+            ("DSPARK_TARGET_LAYER_COUNT", len(contract["dspark"]["target_layer_ids"])),
+            ("DSPARK_TARGET_LAYER_FIRST", contract["dspark"]["target_layer_ids"][0]),
             ("MAX_POSITIONS", model["maximum_context_tokens"]),
             ("ATTN_QUERY_HEAD_COUNT", model["attention_head_count"]),
             ("ATTN_KV_HEAD_COUNT", model["kv_head_count"]),
@@ -289,6 +295,10 @@ def render_header(
             f"#define {prefix}_LAYER_KIND_INVALID UINT32_MAX",
             "",
         ])
+        if bucket_shas is not None:
+            for bucket in sorted(bucket_shas.keys()):
+                lines.append(
+                    f"#define {prefix}_DESCRIPTION_SHA256_B{bucket} {json.dumps(bucket_shas[bucket])}")
     else:
         lines.extend([
             f"#define {prefix}_RMS_NORM_EPSILON {c_float(model['rms_norm_epsilon'])}",
@@ -524,12 +534,24 @@ def main() -> int:
         description_sha256 = hashlib.sha256(description.encode("utf-8")).hexdigest()
         b1_description_sha256 = hashlib.sha256(
             b1_description.encode("utf-8")).hexdigest()
+        bucket_shas: dict[int, str] = {}
+        if variant == "flash":
+            for bucket in (8, 16, 32, 64):
+                bucket_description = render_flash_model_description(
+                    contract, bucket)
+                bucket_shas[bucket] = hashlib.sha256(
+                    bucket_description.encode("utf-8")).hexdigest()
         outputs = {
             header_path: render_header(
                 variant, contract, description_sha256,
-                b1_description_sha256),
+                b1_description_sha256, bucket_shas),
             normalized_path: render_normalized_contract(variant, contract),
         }
+        if variant == "flash":
+            for bucket in (8, 16, 32, 64):
+                outputs[ROOT / "examples" / "model_descriptions" /
+                    f"dsv4_resident_decode_stage_firmware_b{bucket}.json"] = (
+                        render_flash_model_description(contract, bucket))
         if variant == "flash":
             outputs[FLASH_DESCRIPTION_PATH] = description
             outputs[FLASH_B1_DESCRIPTION_PATH] = b1_description

@@ -18,7 +18,8 @@
       "collective_port_base": 61620,
       "transport_control_base": 58700,
       "owner": "qwen session - verify runtime_root and fill deployment specifics",
-      "status": "placeholder"
+      "status": "active",
+      "topology": "TP4"
     },
     "dsv4-flash": {
       "tier": "always-on",
@@ -36,7 +37,9 @@
       "collective_port_base": 62620,
       "transport_control_base": 59700,
       "owner": "dsv4-flash session (devcycle)",
-      "status": "active"
+      "status": "active",
+      "topology": "TP4",
+      "notes": "Pool is spark3-7: measurement quartet spark4-7, spark3 spare for single-rank debug."
     },
     "glm52": {
       "tier": "big",
@@ -58,7 +61,8 @@
       "collective_port_base": 63620,
       "transport_control_base": 60700,
       "owner": "glm52 session - verify runtime_root and fill deployment specifics",
-      "status": "placeholder"
+      "status": "placeholder",
+      "topology": "TP8"
     },
     "dsv4-pro": {
       "tier": "big",

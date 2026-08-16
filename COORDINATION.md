@@ -11,9 +11,11 @@ Scope: the six parallel model sessions sharing the 16-Spark fleet
   collective listen/peer ports, a transport control port, an RDMA fabric
   share, and a KV backing directory. Nothing else conflicts.
 - Measured resident footprints: DSV4 Flash TP4 ~38.5 GB device + 11 GB pack
+- Measured resident footprints: DSV4 Flash TP4 ~38.5 GB device + 11 GB pack
   per rank; Qwen 27B PP16 ~2.9 GB pack per rank. Two or three models fit in
-  one node's memory. **Memory is not the constraint; measurement cleanliness
+  one node memory. **Memory is not the constraint; measurement cleanliness
   and big-model mutual exclusion are.**
+
 
 ## The isolation model: tiers, scopes, and one current big model
 
@@ -83,11 +85,16 @@ big band 19480 / 63620 / 60700; fleet slot 20480 / 64620 / 61700; K3
 
 ## Time slices
 
-30-minute exclusive measurement windows on the big band (spark8-f), and
-whole-fleet windows for fleet-scope models (during which the always-on
-models pause). Priority order decides the queue; a window that starts late
-ends on time. Every receipt records the fleet state at run time
-(`tools/devcycle/fleet_status.sh` output).
+30-minute exclusive measurement windows, scheduled on the shared hosts
+(spark8-f for four-host topologies; all 16 for TP16/PP16 topologies, in
+which case the always-on models pause on their hosts for the window).
+
+- Priority order decides the queue. DSV4 Flash is currently leading-edge:
+  half the slots.
+- A window that starts late ends on time; no overruns into the next slot.
+- A session that only needs its always-on hosts (DSV4 Flash, Qwen 27B) does
+  not consume a slot.
+- Every receipt records the fleet state at run time (see probe below).
 
 ## Repository conventions
 
