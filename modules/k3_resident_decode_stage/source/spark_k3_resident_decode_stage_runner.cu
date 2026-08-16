@@ -16,7 +16,9 @@
 // winner reduces locally.
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
@@ -161,6 +163,7 @@ typedef struct SparkK3RunnerState
 	int collective_created;
 	SparkTpDeviceCollective device_collective;
 	int device_collective_created;
+	uint32_t tp_rank;
 	uint16_t *fused_device;
 	uint32_t fused_rows;
 	uint64_t tp_next_ordinal;
@@ -376,6 +379,62 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 // phase 1 does the MoE's routed_up (layer 0's dense_down) and, for routed
 // layers, the shared_w2. At tp_degree 1 the layer folded its own projections
 // (tp_sharded = 0) and the hook is a no-op.
+/* ENV-GATED STATE DUMPS for the offline equivalence bisect: K3_HOOK_DUMP =
+ * a path prefix; the hook writes the raw BF16 states per rank/layer/phase
+ * (attention_out, hidden, shared_out, the AttnRes partial). The tp_degree 1
+ * leg dumps at the hook entry (the layer's own values); the TP4 legs dump
+ * again after the all-reduce and the fold - the two are directly
+ * comparable. */
+static const char *K3RunnerDumpPrefix(void)
+{
+	static const char *prefix = 0;
+	static int checked = 0;
+	if ( checked == 0 )
+	{
+		prefix = getenv("K3_HOOK_DUMP");
+		checked = 1;
+	}
+	return prefix;
+}
+
+static void K3RunnerDumpTensor(const char *prefix, uint32_t rank,
+	uint32_t layer, uint32_t phase, const char *stage, const char *name,
+	const uint16_t *device, uint32_t elements)
+{
+	char path[320];
+	FILE *file;
+	snprintf(path, sizeof(path), "%s_r%u_l%u_p%u_%s_%s.bin",
+		prefix, rank, layer, phase, stage, name);
+	file = fopen(path, "wb");
+	if ( file == 0 )
+		return;
+	{
+		std::vector<uint16_t> host(elements);
+		cudaMemcpy(host.data(), device, (uint64_t)elements * 2u,
+			cudaMemcpyDeviceToHost);
+		fwrite(host.data(), 2u, elements, file);
+	}
+	fclose(file);
+}
+
+static void K3RunnerHookDump(SparkK3RunnerState *state, uint32_t rank,
+	uint32_t layer, uint32_t phase, const char *stage, uint32_t elements)
+{
+	const char *prefix = K3RunnerDumpPrefix();
+	K3LayerBuffers *b;
+	if ( prefix == 0 || prefix[0] == '\0' )
+		return;
+	b = state->dispatch.buffers;
+	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "attn_out",
+		b->attention_out_bf16, elements);
+	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "hidden",
+		b->hidden_bf16, elements);
+	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "shared",
+		b->shared_out_bf16, elements);
+	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "partial",
+		b->attnres_partial_bf16, elements);
+}
+
 static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint32_t layer, uint32_t phase)
 {
@@ -386,6 +445,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint32_t boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u;
 	uint32_t elements = rows * K3_HIDDEN;
 	uint32_t segments = phase == 0u ? 1u : (layer == 0u ? 1u : 2u);
+	K3RunnerHookDump(state, state->tp_rank, layer, phase, "pre", elements);
 	if ( b->tp_sharded == 0u )
 		return;
 	if ( state->device_collective_created != 0 )
@@ -460,6 +520,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			if ( segments == 2u )
 				K3PartialAdd(b, b->shared_out_bf16, rows, stream);
 		}
+		K3RunnerHookDump(state, state->tp_rank, layer, phase, "post", elements);
 	}
 }
 SparkStatus SparkK3StageRunnerInitialize(
@@ -493,6 +554,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 	runner->owns_embedding = configuration->stage_index == 0u ? 1u : 0u;
 	runner->owns_final_head = configuration->stage_index + 1u == configuration->stage_count ? 1u : 0u;
 	runner->private_state = state;
+	state->tp_rank = configuration->tp_rank;
 	state->stream = (cudaStream_t)configuration->execution_stream;
 	state->max_rows = configuration->max_input_row_count;
 	state->max_context = configuration->resident_sequence_capacity;
@@ -725,6 +787,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 			return SPARK_STATUS_INTERNAL_ERROR;
 		if ( K3RunnerReduceBf16(state, stream, b->hidden_bf16, rows) != SPARK_STATUS_OK )
 			return SPARK_STATUS_INTERNAL_ERROR;
+		K3RunnerHookDump(state, runner->tp_rank, 0u, 0u, "embed", rows * K3_HIDDEN);
 	}
 	else
 	{
