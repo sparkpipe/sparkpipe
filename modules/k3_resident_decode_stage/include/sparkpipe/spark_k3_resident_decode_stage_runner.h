@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_tp_collective.h"
+#include "sparkpipe/spark_tp_device_collective.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,6 +56,11 @@ typedef struct SparkK3StageRunnerConfiguration
      * The runner owns no connection state outside this config; the serving
      * adapter fills it from its configuration file. */
     const SparkTpCollectiveConfig *tp_collective;
+    /* Optional DEVICE-DIRECT tier: when non-null the per-layer hook packs
+     * the three sharded projections and submits ONE stream-ordered combine
+     * through SparkTpDeviceCollectiveSubmitBf16 (no syncs, no host
+     * staging); the host TCP tier above remains the fallback. */
+    const SparkTpDeviceCollectiveConfig *device_collective;
     /* Diagnostic override: when set, the slice's layer_collective hook is
      * THIS callback instead of the TP all-reduce (even at tp_degree 1), so
      * a test can observe the stream per layer on the exact serving path. */

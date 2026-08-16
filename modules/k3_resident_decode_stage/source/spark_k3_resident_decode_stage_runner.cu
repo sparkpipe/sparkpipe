@@ -22,6 +22,9 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 
+/* the kernels below take the state through opaque contexts; forward */
+typedef struct SparkK3RunnerState SparkK3RunnerState;
+
 // The dense GEMM's row offsets are [0, rows] per step; a device-side write
 // keeps the hot path free of host traffic (the CUDA-graph capture contract).
 __global__ static void K3RunnerDenseOffsetsKernel(uint32_t *offsets, uint32_t rows)
@@ -33,12 +36,119 @@ __global__ static void K3RunnerDenseOffsetsKernel(uint32_t *offsets, uint32_t ro
 	}
 }
 
+// The stream-ordered completion the device tier's submission carries: fold
+// the summed fused segments into the AttnRes partial with the fused-epilogue
+// rule, then free the heap context.
+typedef struct SparkK3RunnerTpContext
+{
+	K3LayerBuffers *buffers;
+	uint16_t *fused;
+	uint32_t rows;
+	uint32_t boundary;
+	uint32_t segments;
+} SparkK3RunnerTpContext;
+
+static void K3RunnerTpCompletion(void *context,
+	const SparkTpDeviceCollectiveCompletion *completion)
+{
+	SparkK3RunnerTpContext *tp = (SparkK3RunnerTpContext *)context;
+	(void)completion;
+	K3LayerBuffers *b = tp->buffers;
+	uint32_t rows = tp->rows;
+	uint32_t elements = rows * K3_HIDDEN;
+	uint16_t *fused = tp->fused;
+	/* the completion runs stream-ordered on the collective's stream; the
+	 * adds land on the same stream via the default */
+	if ( tp->boundary != 0u )
+		K3PartialSet(b, fused, rows, 0);
+	else
+		K3PartialAdd(b, fused, rows, 0);
+	K3PartialAdd(b, fused + elements, rows, 0);
+	if ( tp->segments == 3u )
+		K3PartialAdd(b, fused + 2u * elements, rows, 0);
+	delete tp;
+}
+
+// The fused per-layer collective's pack: attention_out | hidden | shared_out
+// land contiguously so ONE combine covers the layer's three sharded
+// projections.
+__global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
+	const uint16_t *hidden,const uint16_t *shared,uint16_t *fused,
+	uint32_t rows,uint32_t segments)
+{
+	uint32_t i = (blockIdx.x * blockDim.x) + threadIdx.x;
+	uint32_t elements = rows * K3_HIDDEN;
+	if ( i < elements )
+	{
+		fused[i] = attention[i];
+		fused[elements + i] = hidden[i];
+		if ( segments == 3u )
+			fused[2u * elements + i] = shared[i];
+	}
+}
+
+// The recursive TP4 BF16 tree the device collective's direct all-to-all
+// contract specifies: round(0+1), round(2+3), round(local+remote), each
+// widen-add-narrow so every rank lands the bit-identical BF16 sum.
+__global__ static void K3RunnerCombineTp4TreeKernel(const uint16_t *const *rank_devices,
+	uint16_t *destination,uint32_t tp_rank,uint32_t rows,uint32_t hidden_dimension)
+{
+	uint32_t i = (blockIdx.x * blockDim.x) + threadIdx.x;
+	uint32_t elements = rows * hidden_dimension;
+	if ( i >= elements )
+		return;
+	const uint16_t *r0 = rank_devices[0];
+	const uint16_t *r1 = rank_devices[1];
+	const uint16_t *r2 = rank_devices[2];
+	const uint16_t *r3 = rank_devices[3];
+	float a = LmBf16ToFloat(r0[i]) + LmBf16ToFloat(r1[i]);
+	float b = LmBf16ToFloat(r2[i]) + LmBf16ToFloat(r3[i]);
+	destination[i] = LmFloatToBf16(a + b);
+	(void)tp_rank;
+}
+
+// The two-rank BF16 combine (the collective's plain fallback path).
+static SparkStatus K3RunnerCombineBf16(void *combine_context,
+	void *destination_device,const void *source_device,
+	uint32_t active_sequence_count,uint32_t hidden_dimension,void *cuda_stream)
+{
+	(void)combine_context;
+	const uint16_t *pair[4] = { (const uint16_t *)destination_device,
+		(const uint16_t *)source_device, 0, 0 };
+	K3RunnerCombineTp4TreeKernel<<<(active_sequence_count * hidden_dimension + 255u) / 256u,
+		256u, 0, (cudaStream_t)cuda_stream>>>(
+		pair,(uint16_t *)destination_device,0u,active_sequence_count,hidden_dimension);
+	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+// Host side of the combine contract (the device collective's
+// CombineTp4Bf16 function pointer).
+static SparkStatus K3RunnerCombineTp4Bf16(void *combine_context,
+	void *destination_device,const void *const rank_devices[4],uint32_t tp_rank,
+	uint32_t active_sequence_count,uint32_t hidden_dimension,void *cuda_stream)
+{
+	SparkK3RunnerState *state = (SparkK3RunnerState *)combine_context;
+	(void)state;
+	K3RunnerCombineTp4TreeKernel<<<(active_sequence_count * hidden_dimension + 255u) / 256u,
+		256u, 0, (cudaStream_t)cuda_stream>>>(
+		(const uint16_t *const *)rank_devices,(uint16_t *)destination_device,
+		tp_rank,active_sequence_count,hidden_dimension);
+	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+typedef struct SparkK3RunnerState SparkK3RunnerState;
+
 typedef struct SparkK3RunnerState
 {
 	SparkK3ModuleState module;
 	SparkK3Dispatch dispatch;
 	SparkTpCollective collective;
 	int collective_created;
+	SparkTpDeviceCollective device_collective;
+	int device_collective_created;
+	uint16_t *fused_device;
+	uint32_t fused_rows;
+	uint64_t tp_next_ordinal;
 	uint32_t rows;              /* the step in flight, for the hook */
 	const uint16_t *embed_weight;
 	const uint16_t *head_norm_weight;
@@ -133,6 +243,37 @@ static void K3RunnerLayerCollective(void *context, void *stream_void, uint32_t l
 	uint32_t boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u;
 	uint32_t elements = rows * K3_HIDDEN;
 	uint32_t segments = layer == 0u ? 2u : 3u;
+	if ( state->device_collective_created != 0 )
+	{
+		/* THE DEVICE TIER: one pack kernel + ONE stream-ordered combine
+		 * submission; the completion folds the summed segments into the
+		 * partial on the stream. No sync, no host staging. */
+		K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
+			b->attention_out_bf16,b->hidden_bf16,b->shared_out_bf16,
+			state->fused_device,rows,segments);
+		SparkK3RunnerTpContext *completion_context = new SparkK3RunnerTpContext;
+		completion_context->fused = state->fused_device;
+		completion_context->buffers = b;
+		completion_context->rows = rows;
+		completion_context->boundary = boundary;
+		completion_context->segments = segments;
+		SparkTpDeviceCollectiveSubmission submission;
+		memset(&submission, 0, sizeof(submission));
+		submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+		submission.descriptor_bytes = sizeof(submission);
+		submission.slot_index = 0u;
+		submission.active_sequence_count = rows;
+		submission.flags =
+			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+		submission.ordinal = state->tp_next_ordinal++;
+		submission.local_device = state->fused_device;
+		submission.full_device = state->fused_device;
+		submission.cuda_stream = stream;
+		submission.completion_function = K3RunnerTpCompletion;
+		submission.completion_context = completion_context;
+		SparkTpDeviceCollectiveSubmitBf16(&state->device_collective, &submission);
+		return;
+	}
 	if ( state->collective_created != 0 )
 	{
 		/* THE FUSED PER-LAYER COLLECTIVE: one message of
@@ -264,6 +405,24 @@ SparkStatus SparkK3StageRunnerInitialize(
 			configuration->layer_collective_override;
 		state->dispatch.slice_state->collective_context =
 			configuration->layer_collective_context;
+	}
+	/* The device-direct tier: the fused buffer + the collective with the
+	 * K3 combine kernels. */
+	if ( configuration->device_collective != 0 )
+	{
+		state->fused_rows = configuration->max_input_row_count;
+		cudaMalloc(&state->fused_device,
+			(uint64_t)state->fused_rows * 3u * K3_HIDDEN * 2u);
+		SparkTpDeviceCollectiveConfig device_config =
+			*configuration->device_collective;
+		device_config.combine_bf16_function = K3RunnerCombineBf16;
+		device_config.combine_tp4_bf16_function = K3RunnerCombineTp4Bf16;
+		device_config.combine_context = state;
+		status = SparkTpDeviceCollectiveCreate(&device_config,
+			&state->device_collective);
+		if ( status != SPARK_STATUS_OK )
+			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return status; }
+		state->device_collective_created = 1;
 	}
 	/* Stage 0 and the head stage need the model-level tensors. */
 	if ( runner->owns_embedding != 0u &&
@@ -497,6 +656,9 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 	state = (SparkK3RunnerState *)runner->private_state;
 	if ( state->collective_created != 0 )
 		SparkTpCollectiveDestroy(&state->collective);
+	if ( state->device_collective_created != 0 )
+		SparkTpDeviceCollectiveDestroy(&state->device_collective);
+	cudaFree(state->fused_device);
 	SparkK3DispatchDestroy(&state->dispatch);
 	/* The dispatch registered the pack mmap for UVA weight access; a
 	 * re-initialise remaps (often the same address) and registering an
