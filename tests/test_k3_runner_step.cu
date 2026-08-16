@@ -271,16 +271,15 @@ int main(int argc, char **argv)
 	uint32_t mismatches = 0u;
 	for ( uint32_t i = 0u; i < K3_HIDDEN; ++i )
 	{
-		/* KNOWN RESIDUAL VARIANCE (under investigation): fresh runs differ
-		 * by up to ~14 BF16 ULP in hidden[6144..7167] - the second wave of
-		 * the persistent-grid GEMM tiles - while the first 6144 elements
-		 * match exactly. The gate accepts 64 ULP (~1.5%) in the tail and
-		 * rejects anything larger, which is what a corrupted restore or an
-		 * uninitialised pool produces. The layer-localisation probe pins
-		 * the exact kernel next. */
+		/* THE TAIL VARIANCE IS FIXED: the KDA o_proj ran its GEMM in place
+		 * (output = attention_out = its own A), so a second-wave tile's A
+		 * reads raced the first-wave stores. The o_proj now lands in
+		 * hidden_bf16 (layer.cuh) and every column must match to 4 ULP,
+		 * head and tail alike - the old 64-ULP tail exemption masked exactly
+		 * this race and is gone. */
 		uint32_t a = h_hidden[i], b = h_hidden_second[i];
 		uint32_t diff = a > b ? a - b : b - a;
-		uint32_t limit = i >= 6144u ? 64u : 4u;
+		uint32_t limit = 4u;
 		if ( diff > limit )
 		{
 			if ( mismatches < 16u )
@@ -316,7 +315,7 @@ int main(int argc, char **argv)
 	{
 		uint32_t a = h_hidden_graph[i], b = h_hidden_second[i];
 		uint32_t diff = a > b ? a - b : b - a;
-		uint32_t limit = i >= 6144u ? 64u : 4u;
+		uint32_t limit = 4u;
 		if ( diff > limit )
 		{
 			if ( graph_mismatches < 8u )

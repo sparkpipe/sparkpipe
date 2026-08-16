@@ -497,8 +497,14 @@ int main(void)
 			uint16_t *tmp = (uint16_t *)malloc(TEST_PACKED * TEST_PLAIN_K * 2u);
 			for ( p = 0u; p < TEST_PACKED; ++p )
 				for ( k = 0u; k < TEST_PLAIN_K; ++k )
-					tmp[p * TEST_PLAIN_K + k] = HostFloatToBf16(
-						(float)(((int32_t)((p * TEST_PLAIN_K + k) * 37u) % 11u) - 5) * 0.25f);
+				{
+					/* THE SIGNEDNESS TRAP: (int32_t)(...) % 11u - 5 performs the
+					 * subtraction in UNSIGNED space, wrapping the intended
+					 * negatives to ~4.29e9 (bf16 0x4E80). Store the residue in
+					 * an int32 first so the -5 is signed. */
+					int32_t v = ((int32_t)((p * TEST_PLAIN_K + k) * 37u) % 11u) - 5;
+					tmp[p * TEST_PLAIN_K + k] = HostFloatToBf16((float)v * 0.25f);
+				}
 			cudaMemcpy(d_packed_plain, tmp, TEST_PACKED * TEST_PLAIN_K * 2u,
 				cudaMemcpyHostToDevice);
 			free(tmp);

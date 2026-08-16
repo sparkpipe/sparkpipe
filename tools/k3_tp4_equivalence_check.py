@@ -31,12 +31,13 @@ def bf16_to_f32(bits):
 
 
 def main():
-    if len(sys.argv) != 6:
-        print("usage: k3_tp4_equivalence_check.py FULL R0 R1 R2 R3")
+    direct = len(sys.argv) == 7 and sys.argv[6] == "--direct"
+    if len(sys.argv) != 6 and not direct:
+        print("usage: k3_tp4_equivalence_check.py FULL R0 R1 R2 R3 [--direct]")
         return 2
     full = load(sys.argv[1])
-    ranks = [load(p) for p in sys.argv[2:]]
-    if len(sys.argv) >= 7 and sys.argv[6] == "--direct":
+    ranks = [load(p) for p in sys.argv[2:6]]
+    if direct:
         # the TP4 dumps are the POST-all-reduce full-width hidden (each rank
         # already holds the summed vector), so compare one rank directly
         # against the full instead of summing the ranks

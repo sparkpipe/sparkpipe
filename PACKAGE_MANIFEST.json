@@ -1,5 +1,5 @@
 {
-  "file_count": 899,
+  "file_count": 901,
   "files": [
     {
       "path": ".gitattributes",
@@ -4357,6 +4357,16 @@
       "size_bytes": 16667
     },
     {
+      "path": "tools/k3_tp4_equivalence_check.py",
+      "sha256": "e13739052047120a8917a389d1549e2839bee2901582e471ee6ef0148606b1b9",
+      "size_bytes": 2950
+    },
+    {
+      "path": "tools/k3_tp4pp4_perf_estimate.py",
+      "sha256": "afd23c11d5e034ba1d13c054ae9825cb9bc4dcd35d3e57ec38285ac57ae4cb44",
+      "size_bytes": 11173
+    },
+    {
       "path": "tools/length_gate.py",
       "sha256": "aff25a9666c152e861aa5432bd3940ead29548cf572f3facf213d8df25205a9b",
       "size_bytes": 1088
@@ -4500,5 +4510,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 14669691
+  "total_bytes": 14683814
 }

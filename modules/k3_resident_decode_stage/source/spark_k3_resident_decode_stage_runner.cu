@@ -486,6 +486,12 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint32_t boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u;
 	uint32_t elements = rows * K3_HIDDEN;
 	uint32_t segments = phase == 0u ? 1u : (layer == 0u ? 1u : 2u);
+	/* THE KDA PHASE-0 SOURCE IS hidden_bf16, NOT attention_out: the o_proj
+	 * writes its output there (the in-place GEMM fix in layer.cuh). The MLA
+	 * o_proj still lands in attention_out. */
+	uint16_t *phase0_source =
+		(K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT)
+			? b->hidden_bf16 : b->attention_out_bf16;
 	K3RunnerHookDump(state, state->tp_rank, layer, phase, "pre", elements);
 	if ( b->tp_sharded == 0u )
 		return;
@@ -495,7 +501,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		 * submission per phase; the completion folds the summed segment(s)
 		 * into the partial on the same stream. No sync, no host staging. */
 		K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
-			b->attention_out_bf16,b->hidden_bf16,b->shared_out_bf16,
+			phase0_source,b->hidden_bf16,b->shared_out_bf16,
 			state->fused_device,rows,phase,segments);
 		SparkK3RunnerTpContext *completion_context = new SparkK3RunnerTpContext;
 		completion_context->fused = state->fused_device;
@@ -535,16 +541,16 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		cudaStreamSynchronize(stream);
 		if ( phase == 0u )
 		{
-			cudaMemcpy(state->staging_values, b->attention_out_bf16,
+			cudaMemcpy(state->staging_values, phase0_source,
 				(uint64_t)elements * 2u, cudaMemcpyDeviceToHost);
 			SparkTpCollectiveAllReduceSumBf16(&state->collective,
 				state->staging_values, elements, state->staging_scratch);
-			cudaMemcpy(b->attention_out_bf16, state->staging_values,
+			cudaMemcpy(phase0_source, state->staging_values,
 				(uint64_t)elements * 2u, cudaMemcpyHostToDevice);
 			if ( boundary != 0u )
-				K3PartialSet(b, b->attention_out_bf16, rows, stream);
+				K3PartialSet(b, phase0_source, rows, stream);
 			else
-				K3PartialAdd(b, b->attention_out_bf16, rows, stream);
+				K3PartialAdd(b, phase0_source, rows, stream);
 		}
 		else
 		{

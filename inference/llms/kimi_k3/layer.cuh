@@ -677,8 +677,17 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	// back-to-back projection.
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,b->gate_bf16,rank_v);
+	// THE O_PROJ MUST NOT WRITE OVER ITS OWN INPUT. The persistent GEMM stages
+	// A per k-tile while storing finished output tiles into the output buffer:
+	// with attention_out as both, a second-wave tile's A reads race the
+	// first-wave stores of columns 0..7167 and its k-sums pick up another
+	// tile's outputs (nondeterministic, tail-concentrated - the fresh-run
+	// determinism gate's known variance). hidden_bf16 is idle here: the
+	// MLP-side retrieval overwrites it next, so the projection lands in a
+	// scratch nothing reads before it is replaced. The MLA path is already
+	// safe (value_bf16 in, attention_out out - distinct buffers).
 	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->kda_out_weight,b->kda_out_scale,
-		b->attention_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
+		b->hidden_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
 		rows,K3_RANK_DIM(b,kda_out_input,K3_KDA_V_DIM),K3_HIDDEN,multiprocessors,stream));
 }
 
