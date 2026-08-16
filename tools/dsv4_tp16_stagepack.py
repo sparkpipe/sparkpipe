@@ -23,7 +23,9 @@ from typing import Callable, List, Sequence, Tuple
 HEADER = struct.Struct("<16I2Q")
 ENTRY = struct.Struct("<6I2Q")
 MAGIC = 0x34565344
-VERSION = 3
+VERSION = 4
+MTP_LAYER_FIRST = 0xFFFFFFFB
+MTP_LAYER_COUNT_MAX = 3
 TP_DEGREE = 16
 HIDDEN = 4096
 QUERY_DIM = 32768
@@ -269,6 +271,12 @@ def plan_entry(entry: Tuple[int, ...], rank: int, pp_stages: int = 1,
                pp_stage: int = 0) -> Tuple[Tuple[int, ...], List[int], int, int]:
     kind, layer, weight, rows, columns, reserved, payload, scale = entry
     first_layer, layer_count = layer_slice(pp_stages, pp_stage)
+    if MTP_LAYER_FIRST <= layer < MTP_LAYER_FIRST + MTP_LAYER_COUNT_MAX:
+        # DSpark draft layers are REPLICATED full-width on every rank:
+        # keep every MTP entry unchanged (the draft runs replicated with
+        # zero draft collectives).
+        return ((kind, layer, weight, rows, columns, reserved, 0, 0),
+                list(range(rows)), 0, scale_bytes(weight, rows, columns))
     if layer == GLOBAL_LAYER:
         if not selected_global(kind, rank, pp_stages, pp_stage):
             raise PackFailure("filtered")

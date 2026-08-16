@@ -1,0 +1,12 @@
+{
+  "bytes": 10730184936,
+  "contract_source_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+  "expert_weight_codec_id": 7,
+  "file": "/home/spark1/sparkdata/dsv4_flash.fp8.pp13.b16/packs/dsv4_flash_stage.spstage",
+  "first_layer": 3,
+  "kv_cache_codec_id": 1,
+  "layer_count": 3,
+  "linear_weight_codec_id": 5,
+  "tensor_count": 90,
+  "validated": true
+}

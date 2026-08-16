@@ -35,6 +35,7 @@ RUNTIME_KEYS = {
 }
 TOPOLOGY_KEYS = {
     "rank_hosts",
+    "transport_hosts",
     "stage_indices",
     "runtime_dataset",
     "node_target",
@@ -253,6 +254,14 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
         raise DeploymentError("rank hosts must be unique and stages a permutation")
     if specification["transport"]["control_port_base"] > 65535 - len(hosts) + 1:
         raise DeploymentError("transport control port range exceeds 65535")
+    transport_hosts = topology.get("transport_hosts")
+    if transport_hosts is None:
+        transport_hosts = hosts
+    else:
+        if not isinstance(transport_hosts, list) or len(transport_hosts) != len(hosts):
+            raise DeploymentError("topology.transport_hosts must match rank_hosts length")
+        transport_hosts = [text_value(entry, f"topology.transport_hosts[{index}]")
+                           for index, entry in enumerate(transport_hosts)]
     coordinator = integer_value(
         specification["coordinator_rank_index"], "coordinator_rank_index", 0,
         len(hosts) - 1)
@@ -299,7 +308,7 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
             "stage_index": stage,
             "runtime_root": runtime_root,
             "node_target": node_target,
-            "transport_host": host,
+            "transport_host": transport_hosts[rank],
             "adapter_configuration_path": adapter_path,
             "kv_backing_directory": backing_path,
             "kv_backing_maximum_bytes": backing_maximum_bytes,

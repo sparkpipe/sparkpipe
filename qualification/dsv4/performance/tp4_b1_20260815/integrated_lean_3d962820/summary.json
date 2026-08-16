@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-15",
+  "status": "integrated_source_revalidated_exact_positive_observation",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "workload": {
+    "layout": "TP4",
+    "ranks": ["spark4", "spark5", "spark6", "spark7"],
+    "batch_size": 1,
+    "request_count": 1,
+    "prompt_tokens": 128,
+    "generated_tokens": 128,
+    "speculation": false,
+    "prefill": "resident cached prompt KV",
+    "timed_intervals": 127
+  },
+  "comparison": {
+    "control": "previous lean canonical-Query plus fused KV and indexer build",
+    "candidate": "integrated source after removal of rejected projection-precollective overlap",
+    "semantic_difference": "none in the production module; source is byte-identical",
+    "optimization_attribution": "none; retain the positive observation but do not invent code credit"
+  },
+  "correctness": {
+    "token_count": 128,
+    "token_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+    "all_control_runs_exact": true,
+    "all_candidate_runs_exact": true,
+    "short_gate_token_count": 24,
+    "short_gate_token_csv_newline_sha256": "18cd1dfc7c7fce04adf200916184cee952a185367412a1780c0d28486c42cbd8"
+  },
+  "identity": {
+    "control_driver_sha256": "07c63b069c066694fb184f3ebd807e9f28f364d1b929389549df9d659f49dc1d",
+    "candidate_driver_sha256": "3d962820608fbad251aa50b7650dba2ab4b1d19ec378251c0e0ee36922e7fce4",
+    "candidate_archive_sha256": "99fb279d3ef02f8b351a6737fc11dbe0f4c5e8b7d723f4fc1e45c38c917b4a35",
+    "candidate_model_package_sha256": "664a213dfe2924dafd490ff4bb7a4dc84ba77f167f63cecc20305decbe04c53c",
+    "candidate_cuda_source_sha256": "81dc95083e353f6a0edf991d31c5a6f36731aafd0a36069104e2957e1cd52311",
+    "candidate_module_source_sha256": "4b6d7636869dd9820877513eebfba80c351ab85b7b0a4d7a920dbda4a92e421e",
+    "candidate_validator_source_sha256": "f9c6d83b6bad0def16897eac8775b49372238a8c265ff504c58dfc68a7ef2cdd"
+  },
+  "result": {
+    "control_tokens_per_second": [40.40802934791518, 40.34162314395565, 39.701142615296355],
+    "candidate_tokens_per_second": [40.419298240665896, 40.482668687545335, 40.463944614099624],
+    "paired_delta_percent": [0.027887756301, 0.349627834969, 1.921360314978],
+    "control_mean_tokens_per_second": 40.15026503572239,
+    "candidate_mean_tokens_per_second": 40.45530384743696,
+    "aggregate_observed_delta_percent": 0.759742959214,
+    "positive_pairs": 3,
+    "pair_count": 3
+  },
+  "receipt_sha256": {
+    "dsv4-integrated-lean-3d962820-exact-o24.json": "d41a3d94245452c6efd61ee8a26a380e249eca7982c3915054f6945ebd59e83b",
+    "integrated-lean-vs-kv-pair1-candidate-o128.json": "67a289b7de3814afa0c421f8f53fafc7cabbca6f7b896f609a7b782dc6268cc7",
+    "integrated-lean-vs-kv-pair1-control-o128.json": "4eecc6c3a66e84a028f09a2430d833b42983793d40b49a86d665711c2098aba5",
+    "integrated-lean-vs-kv-pair2-candidate-o128.json": "d1d73ed1e4b6b86de9e0bfcd8847495d42c93d9b8b05d4b489957f6e06900792",
+    "integrated-lean-vs-kv-pair2-control-o128.json": "1582ac67411dc283bb62399a57c3bd08832dd8ac5f2259f35cc77507842f316d",
+    "integrated-lean-vs-kv-pair3-candidate-o128.json": "6b2160c7c179b318133f1392264d2243101e29d8aa843a8a552488465c0a65c1",
+    "integrated-lean-vs-kv-pair3-control-o128.json": "060da187416f4f07a9e4a47c84e17799cca6dbe3a71370a3634602c73ba6383e"
+  },
+  "decision": "keep the integrated lean source; its live exact revalidation is positive, but the semantically identical control means no separate code optimization is attributed"
+}

@@ -57,20 +57,31 @@ fi
 require_source_digest "${SPARK_QWEN36_CUDA_VALIDATOR_SHA256:-}" "${cuda_validator}" "Qwen36 CUDA validator"
 require_source_digest "${SPARK_QWEN36_CPU_ORACLE_SHA256:-}" "${cpu_oracle}" "Qwen36 CPU oracle"
 
-# The module tier is a stage-0 slice mid-pipeline (hidden output transport is
-# mandatory there), the KV block table must span max_active_sequence_count
-# lanes, and the validator drives eight lanes of one block each.
+# The KV block table must span max_active_sequence_count lanes and the
+# validator drives eight lanes of one block each. Degree 1 validates the
+# stage-0 mid-pipeline tier (hidden output transport mandatory); a TP degree
+# validates the whole-stack tier instead: rank 0 in standalone collective
+# mode (the build host has no peer group), so consistency and determinism
+# gate here while cross-rank numerics gate at the band E2E run.
 require_configuration_value SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION 1
 require_configuration_value SPARK_QWEN36_STAGE_INDEX 0
 require_configuration_value SPARK_QWEN36_STAGE_FIRST_LAYER 0
 require_configuration_value SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES 8
-if (( ${SPARK_QWEN36_STAGE_COUNT:-0} < 2 )); then
-    echo "qwen36 hardware validation requires SPARK_QWEN36_STAGE_COUNT >= 2 (mid-pipeline stage 0)" >&2
-    exit 2
-fi
-if (( ${SPARK_QWEN36_STAGE_LAYER_COUNT:-0} < 4 || ${SPARK_QWEN36_STAGE_LAYER_COUNT:-64} >= 64 )); then
-    echo "qwen36 hardware validation requires 4 <= SPARK_QWEN36_STAGE_LAYER_COUNT < 64 (GDN and full attention, no final head)" >&2
-    exit 2
+if [[ "${SPARK_QWEN36_TP_DEGREE:-1}" != "1" ]]; then
+    require_configuration_value SPARK_QWEN36_TP_RANK 0
+    require_configuration_value SPARK_QWEN36_TP_STANDALONE 1
+    require_configuration_value SPARK_QWEN36_STAGE_COUNT 1
+    require_configuration_value SPARK_QWEN36_STAGE_LAYER_COUNT 64
+    require_configuration_value SPARK_QWEN36_STAGE_MTP 0
+else
+    if (( ${SPARK_QWEN36_STAGE_COUNT:-0} < 2 )); then
+        echo "qwen36 hardware validation requires SPARK_QWEN36_STAGE_COUNT >= 2 (mid-pipeline stage 0)" >&2
+        exit 2
+    fi
+    if (( ${SPARK_QWEN36_STAGE_LAYER_COUNT:-0} < 4 || ${SPARK_QWEN36_STAGE_LAYER_COUNT:-64} >= 64 )); then
+        echo "qwen36 hardware validation requires 4 <= SPARK_QWEN36_STAGE_LAYER_COUNT < 64 (GDN and full attention, no final head)" >&2
+        exit 2
+    fi
 fi
 if (( ${SPARK_QWEN36_STAGE_KV_BLOCKS:-0} < 8 )); then
     echo "qwen36 hardware validation requires SPARK_QWEN36_STAGE_KV_BLOCKS >= 8" >&2
