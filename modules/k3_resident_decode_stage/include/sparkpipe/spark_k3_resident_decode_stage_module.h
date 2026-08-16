@@ -20,7 +20,12 @@ extern "C" {
  * gates.
  */
 
-#define SPARK_K3_MODULE_MAX_BOUND_LAYERS 24u
+/* The full K3 stack (93 layers) must fit one bound slice for the PP1
+ * placements (TP16); the PP4 stages bind at most 24. */
+#define SPARK_K3_MODULE_MAX_BOUND_LAYERS 93u
+/* Pass as first_layer/layer_count to SparkK3ModuleInitialize to take the
+ * slice bounds from the pack manifest (PP1 / TP16 placements). */
+#define SPARK_K3_MODULE_DERIVE_SLICE UINT32_MAX
 
 typedef struct SparkK3ModuleState
 {

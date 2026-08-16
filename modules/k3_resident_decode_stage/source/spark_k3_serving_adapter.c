@@ -66,9 +66,20 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	 * node per rank, like the DSV4 hybrid); the runner wants the PP stage
 	 * and the TP placement, derived here: world_rank = pp*4 + tp. */
 	state->runner_config.tp_degree = K3ServingJsonU32(&doc, root, "tp_degree", 1u);
-	state->runner_config.stage_index = configuration->stage_index / state->runner_config.tp_degree;
-	state->runner_config.stage_count = 4u;
-	state->runner_config.tp_rank = configuration->stage_index % state->runner_config.tp_degree;
+	/* world_rank = pp_stage * tp_degree + tp_rank; the deployment's world
+	 * size fixes the PP stage count (4 for TP4xPP4, 1 for TP16). */
+	{
+		uint32_t world_size = K3ServingJsonU32(&doc, root, "world_size", 16u);
+		if ( state->runner_config.tp_degree == 0u ||
+			world_size % state->runner_config.tp_degree != 0u )
+			{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+		state->runner_config.stage_index =
+			configuration->stage_index / state->runner_config.tp_degree;
+		state->runner_config.stage_count =
+			world_size / state->runner_config.tp_degree;
+		state->runner_config.tp_rank =
+			configuration->stage_index % state->runner_config.tp_degree;
+	}
 	state->runner_config.max_active_sequence_count =
 		K3ServingJsonU32(&doc, root, "max_sequences",
 		configuration->runtime_limits.max_active_sequence_count);
@@ -162,7 +173,14 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	state->runner_config.rank_pack_path = state->pack_path;
 	state->runner_config.execution_stream = configuration->execution_stream;
 	state->runner_config.multiprocessors = 48u;
-	if ( state->runner_config.tp_degree > 1u )
+	/* The host TCP tier caps at SPARK_TP_COLLECTIVE_MAX_STEPS ranks; wider
+	 * placements (TP16) must carry a device_collective. When the device tier
+	 * is present the host tier is optional (a fallback for TP4). */
+	if ( state->runner_config.tp_degree > SPARK_TP_COLLECTIVE_MAX_STEPS &&
+		state->device_collective_present == 0 )
+		{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+	if ( state->runner_config.tp_degree > 1u &&
+		state->device_collective_present == 0 )
 	{
 		int32_t coll = SparkJsonFindObjectMember(&doc, root, "tp_collective");
 		if ( coll < 0 )

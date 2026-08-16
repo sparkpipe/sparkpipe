@@ -2,26 +2,15 @@
   "stage_pack_path": "/home/spark7/sparkdata/k3.mxfp4.tp4pp4/packs/k3.stage1.rank03.pack",
   "tp_degree": 4,
   "tp_rank": 3,
+  "world_size": 16,
   "max_sequences": 16,
   "max_rows": 16,
   "resident_capacity": 16,
   "kv_pages": 2,
-  "tp_collective": {
-    "listen_port": 65623,
-    "connect_timeout_milli": 5000,
-    "operation_timeout_milli": 30000,
-    "collective_identifier": 1,
-    "peers": [
-      "10.20.0.14:65620",
-      "10.20.0.15:65621",
-      "10.20.0.16:65622",
-      "10.20.0.17:65623"
-    ]
-  },
   "hidden": 7168,
   "device_collective": {
     "backend": "nccl",
-    "backend_module_path": "/usr/lib/aarch64-linux-gnu/libnccl.so",
+    "backend_module_path": "lib/runtime_libs/libnccl.so.2",
     "local_host": "spark7",
     "collective_identifier": 1,
     "listen_port": 64620,
@@ -32,6 +21,19 @@
       "10.20.0.15",
       "10.20.0.16",
       "10.20.0.17"
+    ]
+  }
+  ,
+  "tp_collective": {
+    "listen_port": 65623,
+    "connect_timeout_milli": 5000,
+    "operation_timeout_milli": 30000,
+    "collective_identifier": 1,
+    "peers": [
+      "10.20.0.14:65620",
+      "10.20.0.15:65621",
+      "10.20.0.16:65622",
+      "10.20.0.17:65623"
     ]
   }
 }

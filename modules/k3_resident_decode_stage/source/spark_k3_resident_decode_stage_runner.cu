@@ -320,8 +320,9 @@ SparkStatus SparkK3StageRunnerInitialize(
 	if ( runner == 0 || configuration == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ( configuration->abi_version != SPARK_K3_STAGE_RUNNER_ABI_VERSION ||
-		configuration->stage_index >= 4u ||
-		configuration->stage_count != 4u ||
+		configuration->stage_index >= configuration->stage_count ||
+		(configuration->stage_count != 1u &&
+			configuration->stage_count != 4u) ||
 		configuration->rank_pack_path == 0 ||
 		configuration->max_active_sequence_count == 0u ||
 		configuration->max_input_row_count == 0u )
@@ -351,11 +352,19 @@ SparkStatus SparkK3StageRunnerInitialize(
 		state->kv_page_bytes = configuration->kv_page_bytes;
 	runner->stats.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	runner->stats.descriptor_bytes = (uint32_t)sizeof(SparkK3StageRunnerStats);
-	/* Pack + bind + pools + device objects. */
-	status = SparkK3ModuleInitialize(&state->module,
-		configuration->rank_pack_path,
-		K3RunnerFirstLayer(configuration->stage_index),
-		K3RunnerLayerCount(configuration->stage_index));
+	/* Pack + bind + pools + device objects. The PP4 placement checks the
+	 * pack slice against the stage tables; the PP1 placement (TP16) takes
+	 * the slice bounds from the pack manifest itself. */
+	{
+		uint32_t first_layer = configuration->stage_count == 4u ?
+			K3RunnerFirstLayer(configuration->stage_index) :
+			SPARK_K3_MODULE_DERIVE_SLICE;
+		uint32_t layer_count = configuration->stage_count == 4u ?
+			K3RunnerLayerCount(configuration->stage_index) :
+			SPARK_K3_MODULE_DERIVE_SLICE;
+		status = SparkK3ModuleInitialize(&state->module,
+			configuration->rank_pack_path, first_layer, layer_count);
+	}
 	if ( status != SPARK_STATUS_OK )
 		{ delete state; return status; }
 	if ( SparkK3DispatchCreate(&state->dispatch,&state->module.sizing,

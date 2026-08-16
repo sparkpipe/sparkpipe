@@ -1,62 +1,83 @@
 #!/usr/bin/env bash
-# k3_gen_adapter_configs.sh OUT_DIR — emit the 16 per-rank serving adapter
-# configs (rank <host>.json) with the pack paths and the TP4 collective
-# topology. The ring's static IPs are 10.20.0.(10+i) for spark index i
-# (0..9, a..f).
+# k3_gen_adapter_configs.sh OUT_DIR [TP_DEGREE] — emit the per-rank serving
+# adapter configs (rank <host>.json) with the pack paths, the world size, the
+# optional host TCP TP collective (TP4) and the device-direct collective.
+# TP_DEGREE 4 = TP4xPP4 (four PP stages of four ranks), 16 = TP16 (one PP
+# stage of sixteen ranks). The ring's static IPs are 10.20.0.(10+i) for spark
+# index i (0..9, a..f). Every rank shares one NCCL control port: the fetchers
+# dial rank 0's host on their OWN control_port_base value.
 set -euo pipefail
-OUT="${1:?usage: k3_gen_adapter_configs.sh OUT_DIR}"
+OUT="${1:?usage: k3_gen_adapter_configs.sh OUT_DIR [TP_DEGREE]}"
+TP="${2:-4}"
+case "$TP" in
+  4) WORLD=16 ;;
+  16) WORLD=16 ;;
+  *) echo "unsupported tp degree $TP (4 or 16)" >&2; exit 1 ;;
+esac
+STAGES=$((WORLD / TP))
+RT_ROOT=sparkdata/k3.mxfp4.tp4pp4
+[ "$TP" = "16" ] && RT_ROOT=sparkdata/k3.mxfp4.tp16
 mkdir -p "$OUT"
 for i in $(seq 0 15); do
   hex=$(printf '%x' "$i")
   host="spark$hex"
-  stage=$((i / 4))
-  rank=$((i % 4))
-  pack="/home/$host/sparkdata/k3.mxfp4.tp4pp4/packs/k3.stage${stage}.rank0${rank}.pack"
+  stage=$((i / TP))
+  rank=$((i % TP))
+  if [ "$TP" = "4" ]; then
+    pack="/home/$host/sparkdata/k3.mxfp4.tp4pp4/packs/k3.stage${stage}.rank0${rank}.pack"
+  else
+    pack="/home/$host/sparkdata/k3.mxfp4.tp16/packs/k3.stage0.rank$(printf '%02d' "$rank").pack"
+  fi
   {
     echo "{"
     echo "  \"stage_pack_path\": \"$pack\","
-    echo "  \"tp_degree\": 4,"
+    echo "  \"tp_degree\": $TP,"
     echo "  \"tp_rank\": $rank,"
+    echo "  \"world_size\": $WORLD,"
     echo "  \"max_sequences\": 16,"
     echo "  \"max_rows\": 16,"
     echo "  \"resident_capacity\": 16,"
     echo "  \"kv_pages\": 2,"
-    echo "  \"tp_collective\": {"
-    echo "    \"listen_port\": $((65620 + rank)),"
-    echo "    \"connect_timeout_milli\": 5000,"
-    echo "    \"operation_timeout_milli\": 30000,"
-    echo "    \"collective_identifier\": 1,"
-    echo "    \"peers\": ["
-    for r in 0 1 2 3; do
-      p=$((stage * 4 + r))
-      ph=$(printf '%x' "$p")
-      ip="10.20.0.$((10 + p))"
-      comma=","
-      [ "$r" = "3" ] && comma=""
-      echo "      \"$ip:$((65620 + r))\"$comma"
-    done
-    echo "    ]"
-    echo "  },"
     echo "  \"hidden\": 7168,"
     echo "  \"device_collective\": {"
     echo "    \"backend\": \"nccl\","
-    echo "    \"backend_module_path\": \"/usr/lib/aarch64-linux-gnu/libnccl.so\","
+    echo "    \"backend_module_path\": \"lib/runtime_libs/libnccl.so.2\","
     echo "    \"local_host\": \"$host\","
     echo "    \"collective_identifier\": 1,"
     echo "    \"listen_port\": 64620,"
     echo "    \"connect_timeout_milli\": 5000,"
     echo "    \"operation_timeout_milli\": 30000,"
     echo "    \"peer_hosts\": ["
-    for r in 0 1 2 3; do
-      p=$((stage * 4 + r))
+    first=1
+    for r in $(seq 0 $((TP - 1))); do
+      p=$((stage * TP + r))
       ph=$(printf '%x' "$p")
       ip="10.20.0.$((10 + p))"
       comma=","
-      [ "$r" = "3" ] && comma=""
+      [ "$r" = "$((TP - 1))" ] && comma=""
       echo "      \"$ip\"$comma"
     done
     echo "    ]"
     echo "  }"
+    if [ "$TP" = "4" ]; then
+      echo "  ,"
+      echo "  \"tp_collective\": {"
+      echo "    \"listen_port\": $((65620 + rank)),"
+      echo "    \"connect_timeout_milli\": 5000,"
+      echo "    \"operation_timeout_milli\": 30000,"
+      echo "    \"collective_identifier\": 1,"
+      echo "    \"peers\": ["
+      for r in 0 1 2 3; do
+        p=$((stage * 4 + r))
+        ph=$(printf '%x' "$p")
+        ip="10.20.0.$((10 + p))"
+        comma=","
+        [ "$r" = "3" ] && comma=""
+        echo "      \"$ip:$((65620 + r))\"$comma"
+      done
+      echo "    ]"
+      echo "  }"
+    fi
     echo "}"
   } > "$OUT/$host.json"
   echo "wrote $OUT/$host.json"
