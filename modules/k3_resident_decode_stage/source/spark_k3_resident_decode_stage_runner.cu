@@ -15,6 +15,7 @@
 // the rank slots IS the all-gather of the four local argmaxes and the
 // winner reduces locally.
 
+#include <cstdio>
 #include <cstring>
 
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
@@ -527,11 +528,12 @@ SparkStatus SparkK3StageRunnerInitialize(
 		configuration->max_input_row_count,
 		configuration->kv_pages_per_sequence,
 		state->kv_page_bytes, 0) != SPARK_K3_DISPATCH_OK )
-		{ SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
-	if ( SparkK3DispatchRegisterPack(&state->module.pack) != SPARK_K3_DISPATCH_OK ||
-		SparkK3DispatchBindWeights(&state->dispatch,&state->module.pack,
+		{ fprintf(stderr, "sparkpipe_k3: dispatch create failed\n"); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+	if ( SparkK3DispatchRegisterPack(&state->module.pack) != SPARK_K3_DISPATCH_OK )
+		{ fprintf(stderr, "sparkpipe_k3: pack register failed (%llu bytes)\n", (unsigned long long)state->module.pack.file_bytes); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+	if ( SparkK3DispatchBindWeights(&state->dispatch,&state->module.pack,
 			state->module.bound,state->module.bound_count) != SPARK_K3_DISPATCH_OK )
-		{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+		{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
 	/* The page tables start all-zero (every position maps to physical page
 	 * 0); the serving tier owns the real mappings and rewrites them before
 	 * publishing a step, but an uninitialised table would be a wild read. */
