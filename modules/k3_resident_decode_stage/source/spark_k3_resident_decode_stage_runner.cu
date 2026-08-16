@@ -436,9 +436,9 @@ static void K3RunnerHookDump(SparkK3RunnerState *state, uint32_t rank,
 	/* the MLA intermediates: the per-head query (rows x rank q dim) and the
 	 * gated value (rows x rank v dim) */
 	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "query",
-		b->query_bf16, rows * K3_RANK_DIM(b, mla_q_up_rows, K3_MLA_Q_DIM));
+		b->query_bf16, state->rows * K3_RANK_DIM(b, mla_q_up_rows, K3_MLA_Q_DIM));
 	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "value",
-		b->value_bf16, rows * K3_RANK_DIM(b, mla_out_input, K3_MLA_OUT_DIM));
+		b->value_bf16, state->rows * K3_RANK_DIM(b, mla_out_input, K3_MLA_OUT_DIM));
 }
 
 static void K3RunnerLayerCollective(void *context, void *stream_void,
