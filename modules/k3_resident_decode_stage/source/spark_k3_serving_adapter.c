@@ -150,7 +150,9 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 				strncpy(state->device_hosts[i], text,
 					SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES - 1u);
 				free(text);
-				state->device_topology.rank_hosts[i] = state->device_hosts[i];
+				memcpy(state->device_topology.rank_hosts[i],
+					state->device_hosts[i],
+					SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES);
 			}
 			/* The runner completes the config (degree/rank/combine functions)
 			 * and applies the topology. */
