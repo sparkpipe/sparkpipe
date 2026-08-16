@@ -1,6 +1,7 @@
 # SparkPipe multi-session development coordination
 
-Scope: the six parallel model sessions sharing the 16-Spark fleet
+Scope: the six parallel model sessions — DSV4 Flash, DSV4 Pro, GLM 5.2,
+K3, Qwen 3.8 Max, and Qwen 3.8 27B — sharing the 16-Spark fleet
 (spark0-9, sparka-f) and the shared `sparkpipe` repository.
 
 ## Fleet facts
@@ -10,7 +11,6 @@ Scope: the six parallel model sessions sharing the 16-Spark fleet
 - A residentd deployment claims, per rank: GPU memory, a TCP control port,
   collective listen/peer ports, a transport control port, an RDMA fabric
   share, and a KV backing directory. Nothing else conflicts.
-- Measured resident footprints: DSV4 Flash TP4 ~38.5 GB device + 11 GB pack
 - Measured resident footprints: DSV4 Flash TP4 ~38.5 GB device + 11 GB pack
   per rank; Qwen 27B PP16 ~2.9 GB pack per rank. Two or three models fit in
   one node memory. **Memory is not the constraint; measurement cleanliness
@@ -25,7 +25,7 @@ Every model is registered in
 
 | Model | Tier | Scope | Hosts |
 | --- | --- | --- | --- |
-| Qwen 27B | always-on | band | spark0-3 |
+| Qwen 3.8 27B (3.6 deprecated) | always-on | band | spark0-3 |
 | DSV4 Flash | always-on | band | spark4-7 |
 | GLM 5.2 | big | band | spark8-f |
 | DSV4 Pro | big | fleet | spark0-f |
@@ -64,7 +64,7 @@ runtime root, pack dir) via PR, then swapping.
 ## Port registry (inside the model registry)
 
 Ports are assigned per model in `fleet_registry.json` so two deployments
-never share a host AND a port. Current blocks: Qwen 27B control 17480 /
+never share a host AND a port. Current blocks: Qwen 3.8 27B control 17480 /
 collective 61620 / transport 58700; DSV4 Flash 18480 / 62620 / 59700;
 big band 19480 / 63620 / 60700; fleet slot 20480 / 64620 / 61700; K3
 21480 / 61620 / 62700.
@@ -80,20 +80,42 @@ big band 19480 / 63620 / 60700; fleet slot 20480 / 64620 / 61700; K3
   residentds ON THOSE HOSTS ONLY (via the swap script if it is the big
   model, or a targeted stop for the sibling always-on model). Model
   promotion is <60 s, so swapping is cheap. Restore after the window.
-- Always-on bands (DSV4 Flash on spark4-7, Qwen 27B on spark0-3) measure
+- Always-on bands (DSV4 Flash on spark4-7, Qwen 3.8 27B on spark0-3) measure
   without consuming a time slice whenever their band is otherwise idle.
 
-## Time slices
+## Ring windows and the hourly progress rule (directive 2026-08-16)
 
-30-minute exclusive measurement windows, scheduled on the shared hosts
-(spark8-f for four-host topologies; all 16 for TP16/PP16 topologies, in
-which case the always-on models pause on their hosts for the window).
+Windows are **60 minutes** and exclusive on the hosts involved. There are
+four ring reservations, mutually exclusive on the hosts they need:
 
-- Priority order decides the queue. DSV4 Flash is currently leading-edge:
-  half the slots.
+1. **Triplet — current holder.** GLM 5.2 (spark8-f) + DSV4 Flash (spark4-7)
+   + Qwen 3.8 27B (spark0-3): the resident working set. It has held the
+   ring exclusively for a day. Under the continuation rule it keeps it
+   only while each hour produces an artifact.
+2. **DSV4 Pro — next holder.** Verified packs on all 16 ranks (1926
+   tensors, 61 layers, verify-pack PASS), residentd boots across the fleet,
+   single-spark val4 + valtail PASS with the first real Pro token (48774),
+   and its ring-day plan prerequisites are done (128-row prefill batching
+   landed pre-ring). Next milestone: the TP4xPP4 end-to-end run plus the
+   numerical gate. Its plan expects ~25-60 tok/s decode at this gate.
+3. **Qwen 3.8 Max — after DSV4 Pro.** Single-spark decode works on real
+   packs (compute-sanitizer clean). Before a fleet window is worth the
+   swap it needs TP4 rank-local packs and the torch/HF reference harness.
+4. **K3 — after Qwen 3.8 Max.** Still land-locked: the full-model pack
+   (393 GB) exceeds the driver budget and chunked registration is still
+   being fixed. It needs a successful real-weight decode before a fleet
+   window.
+
+**Continuation rule.** A window holder keeps the hosts only while it keeps
+making progress. At the end of each hour it must have produced a durable
+artifact: a landed commit on `origin`, a retained receipt under
+`qualification/`, a new measured row in `PERFORMANCE_STATUS.md`, or a CI
+gate turning green. A silent hour = preemption: swap out through
+`tools/fleet_swap.sh` and move to the back of the queue.
+
 - A window that starts late ends on time; no overruns into the next slot.
-- A session that only needs its always-on hosts (DSV4 Flash, Qwen 27B) does
-  not consume a slot.
+- The hourly rule applies to every measured window — fleet, big-band, and
+  always-on bands.
 - Every receipt records the fleet state at run time (see probe below).
 
 ## Repository conventions
@@ -116,3 +138,26 @@ which case the always-on models pause on their hosts for the window).
 `tools/devcycle/fleet_status.sh` prints one line per host: which residentd
 (rank + cwd) is running, or free. Run it before every measured window and
 include its output with receipts.
+
+## Directive: Qwen 3.6 is deprecated (2026-08-16)
+
+The Qwen line is **3.8**: Qwen 3.8 Max (`Qwen/Qwen3.8-2.4T-A95B`) and
+Qwen 3.8 27B, which replaces Qwen 3.6 27B.
+
+- `model-families/qwen36`, `modules/qwen36_resident_decode_stage`,
+  `tools/qwen36_stagepack.py`, and the `qwen36_27b_bf16` must-work
+  target are frozen as deprecated. No new 3.6-specific qualification work.
+- `model_contracts/must_work_targets.json`: replace `qwen36_27b_bf16`
+  with the Qwen 3.8 27B target (exact checkpoint id + revision pinned from
+  the checkpoint; update `tests/test_must_work_targets.py` in the same
+  PR). This is a gate-breaking change; land it in one PR.
+- Qwen 3.8 27B gets its own authoritative contract and family facts. Never
+  reuse the Qwen 3.8 Max header constants — different checkpoints,
+  different geometry.
+- The `qwen27b` fleet-registry entry already points at a
+  `qwen38.bf16.pp16` runtime root. Finish that migration: owner,
+  runtime_root, pack dir, and ports.
+- The qwen36 TP4 phase-2 plan (PR #661) re-bases to the 3.8 27B
+  checkpoint. 3.6 measurements stay as datapoints, not release evidence.
+- `qualification/ds4_eval`: drop the Qwen 3.6-27B-FP8 reference profile;
+  the replacement profile is Qwen 3.8 27B.
