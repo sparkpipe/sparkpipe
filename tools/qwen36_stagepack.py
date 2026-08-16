@@ -410,7 +410,12 @@ def build_tp_plan(ref, degree, rank):
             return None  # replicated per the recipe
         return None
     if ref.layer == MTP_LAYER:
-        return None  # the MTP chain is replicated
+        # The MTP decoder reuses the per-layer kinds: its attention and FFN
+        # tensors slice exactly like main layers (the fc and the three norms
+        # live at the GLOBAL layer and replicate). Fall through to the
+        # kind-based plan below; layer norms hit the trailing None.
+        if ref.kind in (KIND_MTP_FC, KIND_MTP_EMBED_NORM, KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM):
+            return None
     if ref.kind in (KIND_FFN_GATE, KIND_FFN_UP):
         off, count = tp_window(FFN_INTERMEDIATE, degree, rank)
         return TpSlice(off, count, 0, HIDDEN)

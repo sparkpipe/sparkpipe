@@ -509,24 +509,12 @@ static inline int32_t SparkQwen36StagePackResolvedShape(uint32_t tensor_kind, ui
 {
 	if ( SparkQwen36StagePackTensorShapeOf(tensor_kind,shape) < 0 )
 		return(-1);
-	/* The MTP chain is replicated under TP (no shard), so its entries keep
-	 * the full-model shapes even when the same kinds are sharded on main
-	 * layers. */
-	if ( layer_index != SPARK_QWEN36_STAGEPACK_MTP_LAYER )
-		SparkQwen36StagePackApplyTpShard(tensor_kind,tp_degree,shape);
+	/* The MTP decoder's attention/FFN tensors shard exactly like main
+	 * layers (the fc and the three norms live at the GLOBAL layer and keep
+	 * full shapes via the default case below). */
+	SparkQwen36StagePackApplyTpShard(tensor_kind,tp_degree,shape);
 	if ( layer_index == SPARK_QWEN36_STAGEPACK_MTP_LAYER )
 		return((is_global == 0u && (shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_EVERY_LAYER || shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_ATTN_LAYER)) ? 0 : -6);
-	if ( (shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_GLOBAL) != (is_global != 0u) )
-		return(-2);
-	if ( is_global != 0u )
-		return(0);
-	if ( layer_index >= SPARK_QWEN36_MODEL_LAYER_COUNT )
-		return(-3);
-	if ( shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_GDN_LAYER && SPARK_QWEN36_MODEL_LAYER_IS_GDN(layer_index) == 0u )
-		return(-4);
-	if ( shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_ATTN_LAYER && SPARK_QWEN36_MODEL_LAYER_IS_GDN(layer_index) != 0u )
-		return(-5);
-	return(0);
 }
 
 static inline uint64_t SparkQwen36StagePackPayloadBytes(uint32_t weight_format, uint32_t rows, uint32_t columns)

@@ -242,8 +242,12 @@ static SparkStatus SparkQwen36ModuleConfigure(SparkQwen36ModuleState *state)
 		fprintf(stderr,"%s config_slice_invalid stage=%u/%u slice=%u+%u\n",SPARK_QWEN36_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
+	/* MTP is TP-safe: the pack slices the MTP decoder's attention/FFN
+	 * exactly like main layers, the fc and norms replicate, the decoder
+	 * pass reuses the reduced RunAttnLayer/RunFfn, and the draft argmax
+	 * reduces the sharded head with a u64 maxloc. */
 	if ( state->tp_rank >= state->tp_degree ||
-		(state->tp_degree > 1u && (state->stage_count != 1u || state->stage_index != 0u || state->first_layer_index != 0u || state->layer_count != SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT || state->mtp_armed != 0u)) )
+		(state->tp_degree > 1u && (state->stage_count != 1u || state->stage_index != 0u || state->first_layer_index != 0u || state->layer_count != SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT)) )
 	{
 		fprintf(stderr,"%s config_tp_invalid degree=%u rank=%u stage=%u/%u slice=%u+%u\n",SPARK_QWEN36_MODULE_TAG,state->tp_degree,state->tp_rank,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1544,7 +1548,19 @@ static SparkStatus SparkQwen36ModuleRunMtpArgmaxRow(SparkQwen36ModuleState *stat
 	const void *row_hidden = (const uint8_t *)slot->hidden_bf16 + ((uint64_t)row * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES);
 	cudaError_t error;
 	error = SparkQwen36LaunchRmsNorm(stream,row_hidden,state->mtp.final_norm_weight_bf16,slot->normalized_bf16,1u,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
-	if ( error == cudaSuccess )
+	if ( error == cudaSuccess && state->tp_degree > 1u )
+	{
+		/* TP4: argmax over the rank's head shard, then the u64 maxloc
+		 * collective picks the global winner across ranks. */
+		error = SparkQwen36LaunchHeadScreenedArgmaxScore(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->mtp_draft_ids + draft_index,slot->head_scores_f32,state->tp_rank * state->tp.head_rows,1u,state->tp.head_rows);
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchHeadMaxLocPack(stream,slot->head_scores_f32,slot->mtp_draft_ids + draft_index,slot->head_maxloc_u64,1u);
+		if ( error == cudaSuccess && SparkQwen36TpReduceU64Max(&state->tp,slot->head_maxloc_u64,1u,stream) != SPARK_STATUS_OK )
+			error = cudaErrorUnknown;
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchHeadMaxLocUnpack(stream,slot->head_maxloc_u64,slot->mtp_draft_ids + draft_index,1u);
+	}
+	else if ( error == cudaSuccess )
 		error = SparkQwen36LaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->mtp_draft_ids + draft_index,1u,SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"mtp_argmax"));
 }
