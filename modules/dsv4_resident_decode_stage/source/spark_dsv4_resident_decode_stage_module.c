@@ -202,6 +202,12 @@ struct SparkDsv4ModuleSlot
 	uint32_t dspark_armed;
 	uint32_t *dspark_draft_token_ids;
 	uint32_t *dspark_verify_token_ids;
+	uint32_t *dspark_input_token_ids;
+	uint64_t *dspark_row_positions;
+	uint32_t *dspark_row_lane_indices;
+	float *dspark_scores_f32;
+	uint32_t dspark_host_input_token_ids[SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE];
+	uint64_t dspark_host_row_positions[SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE];
 	void *dspark_x_bf16;
 	void *dspark_q_attn_bf16;
 	void *dspark_o_ranks_bf16;
@@ -1862,6 +1868,14 @@ static SparkStatus SparkDsv4ModuleAllocateDspark(SparkDsv4ModuleState *state, Sp
 	status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_draft_token_ids);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_verify_token_ids);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_input_token_ids);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint64_t),(void **)&slot->dspark_row_positions);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_row_lane_indices);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(float),(void **)&slot->dspark_scores_f32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,block * SPARK_DSV4_MODEL_HC_STREAM_COUNT * dim * bf16,&slot->dspark_x_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -3908,10 +3922,13 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 		return(status);
 	for (index = 0u; index < block && error == cudaSuccess; index++)
 	{
-		slot->input_token_ids[0] = prev_token;
-		error = SparkDsv4LaunchEmbeddingGather(stream,slot->input_token_ids,
-			state->mtp.markov_w1.payload,slot->dspark_main_x_bf16,1u,
-			SPARK_DSV4_MODEL_DSPARK_MARKOV_RANK);
+		uint32_t host_prev = prev_token;
+		error = cudaMemcpyAsync(slot->input_token_ids,&host_prev,
+			sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+		if ( error == cudaSuccess )
+			error = SparkDsv4LaunchEmbeddingGather(stream,slot->input_token_ids,
+				state->mtp.markov_w1.payload,slot->dspark_main_x_bf16,1u,
+				SPARK_DSV4_MODEL_DSPARK_MARKOV_RANK);
 		if ( error == cudaSuccess )
 			error = SparkDsv4LaunchDsparkMarkovBiasAccum(stream,
 				slot->dspark_logits_bf16,state->mtp.markov_w2.payload,
@@ -3924,7 +3941,7 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 				slot->dspark_logits_f32 + (uint64_t)index * rows_per_rank,
 				rows_per_rank,state->vocabulary_row_start,
 				slot->dspark_draft_token_ids + index,
-				slot->head_scores_f32 + index);
+				slot->dspark_scores_f32 + index);
 		if ( error == cudaSuccess )
 			error = cudaMemcpyAsync(&prev_token,
 				slot->dspark_draft_token_ids + index,sizeof(uint32_t),
@@ -3992,16 +4009,20 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 			dim,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 	/* block input: embed([anchor, noise x (block-1)]) expanded x streams */
 	for (index = 0u; index < block; index++)
-		slot->input_token_ids[index] = index == 0u ? anchor_token_id :
+		slot->dspark_host_input_token_ids[index] = index == 0u ? anchor_token_id :
 			SPARK_DSV4_MODEL_DSPARK_NOISE_TOKEN_ID;
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchEmbeddingGather(stream,slot->input_token_ids,
 			state->token_embedding_bf16,slot->dspark_q_attn_bf16,block,dim);
 	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->dspark_row_positions,
+			slot->dspark_host_row_positions,block * sizeof(uint64_t),
+			cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchExpandStreams(stream,slot->dspark_q_attn_bf16,
 			slot->dspark_x_bf16,block,streams,dim,state->multiprocessor_count);
 	for (index = 0u; index < block; index++)
-		slot->row_positions[index] = anchor_position + 1u + index;
+		slot->dspark_host_row_positions[index] = anchor_position + 1u + index;
 	for (stage = 0u; error == cudaSuccess &&
 		stage < SPARK_DSV4_MODEL_MTP_LAYER_COUNT; stage++)
 	{
@@ -4039,8 +4060,15 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
 				SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,0u);
 		if ( error == cudaSuccess )
-			error = SparkDsv4ModuleRunKvPost(slot,stream,layer,
-				state->base_freqs_f32,block);
+			error = SparkDsv4LaunchKvPost(stream,slot->kv_bf16,
+				layer->attn.kv_norm_weight_bf16,state->base_freqs_f32,
+				slot->dspark_row_positions,block,
+				SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
+				SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,
+				SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION -
+					SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,
+				SPARK_DSV4_MODEL_KV_QUANT_BLOCK,
+				SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 		/* draft attention: window ring + block kvs, non-causal, sink in
 		 * the denominator */
 		if ( error == cudaSuccess )
@@ -4105,8 +4133,15 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 		/* the target position's kv enters this draft layer's ring at
 		 * anchor_position % window */
 		slot->input_token_ids[0] = 0u;
-		slot->row_lane_indices[0] = lane_index;
-		slot->row_positions[0] = anchor_position;
+		{
+			uint32_t host_lane = lane_index;
+			uint64_t host_position = anchor_position;
+			error = cudaMemcpyAsync(slot->row_lane_indices,&host_lane,
+				sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+			if ( error == cudaSuccess )
+				error = cudaMemcpyAsync(slot->row_positions,&host_position,
+					sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
+		}
 		if ( error == cudaSuccess )
 			error = SparkDsv4LaunchFp8LinearPair(stream,&layer->attn.wq_a,
 				&layer->attn.wkv,slot->dspark_main_x_bf16,slot->delta_bf16,
