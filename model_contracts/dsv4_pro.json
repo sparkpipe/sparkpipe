@@ -115,15 +115,14 @@
   "precision": {
     "accumulator_format": "fp32",
     "kv_cache_codec": "bf16",
-    "non_expert_activation_format": "bf16",
+    "non_expert_activation_format": "fp8_e4m3",
     "non_expert_linear_weight_codec": "fp8_e4m3",
     "non_expert_linear_weight_format": "fp8_e4m3_block_128x128",
     "output_composition_activation_format": "bf16",
     "residual_norm_storage_format": "bf16",
     "routed_expert_activation_format": "fp8_e4m3",
     "routed_expert_weight_codec": "mxfp4_e2m1",
-    "scale_format": "ue8m0",
-    "_first_light_note": "non-expert activations run BF16 to match the Flash-validated kernel set; checkpoint declares fp8 e4m3 activations - fp8 activations are a follow-up"
+    "scale_format": "ue8m0"
   },
   "qualification": {
     "cuda_target": "sm_121a",

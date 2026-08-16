@@ -206,8 +206,8 @@ struct SparkDsv4ModuleSlot
 	uint64_t *dspark_row_positions;
 	uint32_t *dspark_row_lane_indices;
 	float *dspark_scores_f32;
-	uint32_t dspark_host_input_token_ids[SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE];
-	uint64_t dspark_host_row_positions[SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE];
+	uint32_t dspark_host_input_token_ids[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP];
+	uint64_t dspark_host_row_positions[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP];
 	void *dspark_x_bf16;
 	void *dspark_q_attn_bf16;
 	void *dspark_o_ranks_bf16;
@@ -1880,7 +1880,7 @@ static SparkStatus SparkDsv4ModuleAllocateSlotTail(SparkDsv4ModuleState *state, 
 
 static SparkStatus SparkDsv4ModuleAllocateDspark(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot)
 {
-	uint64_t block = SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION,vocab = SPARK_DSV4_MODEL_VOCAB_COUNT,qdim = SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,bf16 = SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	uint64_t block = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION,vocab = SPARK_DSV4_MODEL_VOCAB_COUNT,qdim = SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,bf16 = SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 	SparkStatus status;
 	status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_draft_token_ids);
 	if ( status == SPARK_STATUS_OK )
@@ -3985,7 +3985,7 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 	uint32_t anchor_token_id,
 	uint64_t anchor_position)
 {
-	const uint32_t block = SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE;
+	const uint32_t block = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP;
 	uint32_t rows_per_rank = state->vocabulary_rows_per_rank;
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error = cudaSuccess;
@@ -4083,7 +4083,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 	uint32_t anchor_token_id,
 	uint64_t anchor_position)
 {
-	const uint32_t block = SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE;
+	const uint32_t block = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP;
 	const uint32_t streams = SPARK_DSV4_MODEL_HC_STREAM_COUNT;
 	const uint32_t dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
