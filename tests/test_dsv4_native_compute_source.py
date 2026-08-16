@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMMON = ROOT / "model-families/common/include/sparkpipe/spark_lm_kernels.cuh"
 DSV4 = ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu"
 MODULE = ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c"
+HEAD_SCREEN = ROOT / "include/sparkpipe/spark_head_screen.h"
 MMA = ROOT / "inference/kernels/mma.cuh"
 ROUTE = ROOT / "inference/kernels/route.cuh"
 
@@ -53,6 +54,7 @@ def main() -> int:
     common = COMMON.read_text(encoding="utf-8")
     dsv4 = DSV4.read_text(encoding="utf-8")
     module = MODULE.read_text(encoding="utf-8")
+    head_contract = HEAD_SCREEN.read_text(encoding="utf-8")
     mma = MMA.read_text(encoding="utf-8")
     route = ROUTE.read_text(encoding="utf-8")
 
@@ -82,16 +84,121 @@ def main() -> int:
     route_build = body(route, "LmRouteBuild")
     require(route_build, "tile_n_up", "independent W13 route tile")
     require(route_build, "tile_n_down", "independent W2 route tile")
-    route_launch = body(dsv4, "SparkDsv4LaunchMoeRoute")
-    require(route_launch, "SparkLmSm121ExpertW13TileN(rows)",
+    route_launch = body(dsv4, "SparkDsv4LaunchGateRouteCooperative")
+    require(route_launch, "SparkLmSm121ExpertW13TileN(1u)",
             "shared W13 tile policy")
-    require(route_launch, "SparkLmSm121ExpertW2TileN(rows)",
+    require(route_launch, "SparkLmSm121ExpertW2TileN(1u)",
             "shared W2 tile policy")
     require(common, "#define SPARK_LM_SM121_B1_EXPERT_W2_TILE_N 128u",
             "measured B1 W2 N128 tile")
     require(common,
             "#define SPARK_LM_SM121_B1_EXPERT_W2_BLOCKS_PER_SM 4u",
             "measured B1 W2 four-CTA occupancy")
+    require(common,
+            "#define SPARK_LM_SM121_B1_DENSE_W13_CTA_THREADS 1024u",
+            "measured B1 shared W13 32-warp CTA")
+    gate_route = body(dsv4, "SparkDsv4LaunchGateRoute")
+    require(gate_route, "if ( row_count == 1u )",
+            "runtime cooperative B1 gate-route selection")
+    require(gate_route, "SparkDsv4LaunchGateRouteCooperative",
+            "cooperative B1 gate-route path")
+    require(gate_route, "SparkDsv4LaunchGateRouteBatched",
+            "B2-B1024 gate-route path")
+    forbid(gate_route, "#if", "compile-time gate-route feature fork")
+    cooperative_gate = body(dsv4, "SparkDsv4GateRouteCooperativeKernel")
+    require(cooperative_gate, "cooperative_groups::this_grid()",
+            "one cooperative gate-score grid")
+    require(cooperative_gate, "grid.sync()",
+            "score completion before exact route selection")
+    require(cooperative_gate, "SparkDsv4GateSelectShared",
+            "exact fused top-k selection")
+    require(cooperative_gate, "SparkDsv4GateRouteBuildShared",
+            "exact fused route table build")
+    forbid(cooperative_gate, "SparkDsv4GateScoresKernel<<<",
+           "wrapped legacy gate-score launch")
+    run_moe = body(module, "SparkDsv4ModuleRunMoe")
+    if run_moe.count("SparkDsv4LaunchGateRoute(") != 1:
+        raise AssertionError("production MoE must issue one gate-route entrypoint")
+    forbid(run_moe, "SparkDsv4LaunchGateScores",
+           "split production gate-score launch")
+    forbid(run_moe, "SparkDsv4LaunchGateSelect",
+           "split production gate-select launch")
+    forbid(run_moe, "SparkDsv4LaunchMoeRoute",
+           "split production route-build launch")
+    validator = (ROOT / "modules/dsv4_resident_decode_stage/validation/"
+                 "spark_dsv4_resident_decode_stage_cuda_validation.cu").read_text(
+                     encoding="utf-8")
+    gate_validation = body(validator, "SparkDsv4ValidationGateRouteRunCase")
+    require(gate_validation, "SparkDsv4LaunchGateRoute(cudaStreamPerThread",
+            "production-entrypoint gate-route validation")
+    require(gate_validation, "score_expected", "score-route tie fixture")
+    require(gate_validation, "hash_expected", "hash-route fixture")
+    require(body(validator, "main"), "SparkDsv4ValidationGateRouteB1()",
+            "mandatory hardware gate-route validation")
+
+    query_kernel = body(dsv4, "SparkDsv4QueryHeadRmsRopeKernel")
+    require(dsv4, "uint32_t rope_dim,float epsilon,uint32_t inverse)",
+            "query runtime RoPE-direction kernel contract")
+    require(query_kernel, "head_dim,rope_dim,inverse",
+            "query runtime direction reaches the shared primitive")
+    forbid(query_kernel, "head_dim,rope_dim,0u",
+           "query constant-folded RoPE direction")
+    query_rms = query_kernel.index("SparkDsv4QueryHeadRmsRow")
+    query_boundary = query_kernel.index("__syncthreads()", query_rms)
+    query_rope = query_kernel.index("SparkDsv4RopeRow", query_boundary)
+    if not query_rms < query_boundary < query_rope:
+        raise AssertionError("query fusion must preserve the BF16 RMS boundary before RoPE")
+    kv_kernel = body(dsv4, "SparkDsv4KvPostKernel")
+    require(dsv4, "float epsilon,\n\tuint32_t inverse)",
+            "KV runtime RoPE-direction kernel contract")
+    require(kv_kernel, "head_dim,rope_dim,lane,inverse",
+            "KV runtime direction reaches the shared primitive")
+    forbid(kv_kernel, "head_dim,rope_dim,lane,0u",
+           "KV constant-folded RoPE direction")
+    kv_rms = kv_kernel.index("SparkLmRmsNormRow")
+    kv_boundary = kv_kernel.index("__syncthreads()", kv_rms)
+    require(kv_kernel, "warp * quant_block < quant_width",
+            "disjoint KV quantization warps")
+    require(kv_kernel, "warp == SPARK_LM_CTA_WARPS - 1u",
+            "disjoint KV RoPE warp")
+    require(kv_kernel, "448.0f,0u", "exact KV FP8 quantization simulation")
+    if not kv_rms < kv_boundary < kv_kernel.index("SparkDsv4QuantSimGroup"):
+        raise AssertionError("KV fusion must preserve the BF16 RMS boundary")
+    for launcher in ("SparkDsv4LaunchQueryHeadRmsRope", "SparkDsv4LaunchKvPost"):
+        launch_body = body(dsv4, launcher)
+        require(launch_body,
+                "SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT",
+                f"{launcher} B1-B1024 shape gate")
+        forbid(launch_body, "#if", f"{launcher} compile-time feature fork")
+        require(launch_body, "uint32_t inverse = 0u;",
+                f"{launcher} runtime forward-direction launch argument")
+    query_production = body(module, "SparkDsv4ModuleRunQueryProjection")
+    forbid(query_production, "SparkDsv4LaunchQueryHeadRmsRope(",
+           "fused production query path in the KV-indexer bisection")
+    require(query_production, "SparkDsv4LaunchQueryHeadRms(",
+            "canonical production query RMS")
+    require(query_production, "SparkDsv4LaunchRope(",
+            "canonical production query RoPE")
+    if not query_production.index("SparkDsv4LaunchQueryHeadRms(") < \
+            query_production.index("SparkDsv4LaunchRope("):
+        raise AssertionError("canonical query RMS must complete before RoPE")
+    kv_production = body(module, "SparkDsv4ModuleRunKvPost")
+    require(kv_production, "SparkDsv4LaunchKvPost(",
+            "one-launch KV post-processing")
+    for legacy in ("SparkDsv4LaunchRmsNorm(", "SparkDsv4LaunchRope(",
+                   "SparkDsv4LaunchQuantSim("):
+        forbid(kv_production, legacy, "sequential production KV post-processing")
+    query_validation = body(validator, "SparkDsv4ValidationQueryPostCase")
+    require(query_validation, "SparkDsv4LaunchQueryHeadRms(",
+            "query fusion control")
+    require(query_validation, "SparkDsv4LaunchQueryHeadRmsRope(",
+            "query fusion candidate")
+    kv_validation = body(validator, "SparkDsv4ValidationKvPostCase")
+    for call in ("SparkDsv4LaunchRmsNorm(", "SparkDsv4LaunchRope(",
+                 "SparkDsv4LaunchQuantSim(", "SparkDsv4LaunchKvPost("):
+        require(kv_validation, call, "KV fusion exact hardware comparison")
+    require(body(validator, "main"), "SparkDsv4ValidationPostFusions()",
+            "mandatory post-fusion hardware validation")
 
     fused = body(common, "SparkLmSm121FusedExpertW13Kernel")
     if fused.count("SparkLmSm121StageMxf8<TILE_M>(") != 1:
@@ -231,9 +338,21 @@ def main() -> int:
     require(dense_dispatch, "SparkLmHostLaunchBatchedLinear", "B1 GEMV route")
     require(dense_dispatch, "SparkLmHostLaunchSm121NativeLinear", "B8/B1024 native route")
     scalar_dispatch = body(common, "SparkLmHostLaunchBatchedLinear")
-    require(scalar_dispatch, "SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC>",
+    require(scalar_dispatch,
+            "SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC,\n"
+            "\t\t\tSPARK_LM_CTA_WARPS>",
             "measured one-neuron B1 projection route")
+    scalar_kernel = body(common, "SparkLmLinearKernel")
+    require(scalar_kernel, "blockIdx.y * CTA_WARPS",
+            "caller-selected scalar projection geometry")
+    require(scalar_dispatch, "SPARK_LM_CTA_THREADS",
+            "measured 256-thread B1 projection launch")
+    forbid(scalar_dispatch, "SPARK_LM_SCALAR_CTA_THREADS",
+           "unmeasured 1024-thread B1 projection launch")
     head_screen = body(common, "SparkLmHostLaunchHeadScreenedArgmaxWithScore")
+    require(head_screen,
+            "SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_SCALAR_CTA_WARPS",
+            "screened-head scalar kernel geometry")
     require(head_screen, "SPARK_LM_SCALAR_CTA_WARPS",
             "screened-head scalar grid geometry")
     require(head_screen, "SPARK_LM_SCALAR_CTA_THREADS",
@@ -245,6 +364,15 @@ def main() -> int:
             "true-B1 shared W13 dispatch")
     require(dense_w13_dispatch, "SparkLmSm121FusedDenseW13GemvKernel",
             "B1 shared W13 GEMV")
+    require(dense_w13_dispatch,
+            "SPARK_LM_SM121_B1_DENSE_W13_CTA_THREADS",
+            "B1 shared W13 measured launch geometry")
+    require(dense_w13_dispatch,
+            "SPARK_LM_SM121_B1_DENSE_W13_CTA_WARPS",
+            "B1 shared W13 measured grid geometry")
+    dense_w13_gemv = body(common, "SparkLmSm121FusedDenseW13GemvKernel")
+    require(dense_w13_gemv, "SPARK_LM_SM121_B1_DENSE_W13_CTA_WARPS",
+            "B1 shared W13 measured neuron geometry")
     require(dense_w13_dispatch, "SparkLmSm121FusedDenseW13Kernel",
             "B8/B1024 shared W13 tensor route")
     strided_launch = body(dsv4, "SparkDsv4LaunchStridedLinear")
@@ -276,6 +404,59 @@ def main() -> int:
             "parallel exact vocabulary scan")
     require(direct_head, "SparkLmHeadRescoreArgmaxKernel",
             "exact partial argmax reduction")
+    certified_quantize = body(common, "SparkLmHostLaunchHeadCertifiedFp8Quantize")
+    require(certified_quantize, "SparkLmHeadCertifiedFp8QuantizeKernel",
+            "shared certified FP8 shadow construction")
+    certified_score = body(common, "SparkLmHeadCertifiedFp8ScoreKernel")
+    require(certified_score, "const uint4 *", "contiguous 16-byte FP8 row loads")
+    require(certified_score, "LmE4m3PairToFloat2",
+            "packed native E4M3 pair decode")
+    require(certified_score, "cert_norm_f32", "groupwise certified bounds")
+    certified_screen = body(common, "SparkLmHeadCertifiedScreenKernel")
+    require(certified_screen, "candidate_ids[atomicAdd(&cursor,1u)]",
+            "full B1 rank-local candidate capacity")
+    forbid(certified_screen, "SPARK_LM_HEAD_SCREEN_CAP",
+           "no overflowing compatibility scan at B1")
+    certified_rescore = body(common, "SparkLmHeadCertifiedRescoreKernel")
+    require(certified_rescore, "SparkLmDotRowBf16",
+            "untouched BF16 target rescore")
+    certified_reduce = body(common, "SparkLmHeadCertifiedReduceKernel")
+    require(certified_reduce, "*output_score = best_score[0]",
+            "exact BF16 score emission")
+    certified_launch = body(common, "SparkLmHostLaunchHeadCertifiedFp8B1WithScore")
+    require(certified_launch, "row_count != 1u", "explicit B1 shape contract")
+    require(certified_launch, "SparkLmHeadCertifiedFp8ScoreKernel",
+            "certified B1 screen launch")
+    require(certified_launch, "SparkLmHeadCertifiedRescoreKernel",
+            "parallel exact B1 candidate rescore")
+    require(certified_launch, "SparkLmHeadCertifiedFp8ScratchView",
+            "single model-neutral scratch layout")
+    forbid(certified_launch, "SPARK_LM_HEAD_FALLBACK",
+           "no legacy fallback contract in certified B1 path")
+    scratch_size = body(head_contract, "SparkHeadCertifiedFp8ScratchBytes")
+    require(scratch_size, "2u * vocabulary_rows", "coarse and bound storage")
+    require(scratch_size, "2u * SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT",
+            "exact rescore partial storage")
+    require(body(module, "SparkDsv4ModuleBuildHeadShadow"),
+            "SparkHeadCertifiedFp8PayloadBytes",
+            "model-neutral certified-shadow sizing")
+    slot_tail = body(module, "SparkDsv4ModuleAllocateSlotTail")
+    require(slot_tail, "SparkHeadCertifiedFp8ScratchBytes",
+            "dedicated certified-head scratch allocation")
+    require(slot_tail, "&slot->head_certified_scratch",
+            "dedicated certified-head scratch pointer")
+    require(slot_tail, "&slot->head_candidate_ids_u32",
+            "separate certified-head candidate allocation")
+    require(slot_tail, "SparkHeadCertifiedFp8CandidateBytes",
+            "full rank-local candidate allocation size")
+    project_head = body(module, "SparkDsv4ModuleProjectHead")
+    require(project_head, "if ( error == cudaSuccess && rows == 1u )",
+            "runtime B1 algorithm selection")
+    require(project_head, "SparkDsv4LaunchHeadCertifiedFp8B1Sharded",
+            "certified B1 head route")
+    require(project_head, "state->head_certified_fp8_norm_f32,slot->head_certified_scratch",
+            "dedicated certified scratch launch argument")
+    forbid(project_head, "#if", "no compile-time B1 feature fork")
     require(body(dsv4, "SparkDsv4HeadMaxlocPackKernel"),
             "UINT32_MAX - token_ids[row]", "lower-token maxloc tie break")
     require(body(module, "SparkDsv4ModuleReduceHeadMax"),
