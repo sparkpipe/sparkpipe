@@ -453,9 +453,83 @@ int main(void)
 		free(h_out_wide);
 	}
 
+	// --- THE PLAIN-PATH SECOND-WAVE PROBE: a BF16 weight [7168, TEST_IN]
+	// whose rows are the column index + 1 (so every output column carries a
+	// distinct value) - the o_proj-style dense GEMM, 56 tiles over 48 SMs. ---
+	{
+		const uint32_t plain_rows = TEST_WIDE_OUT;
+		uint16_t *h_weight_plain = (uint16_t *)malloc((size_t)plain_rows * TEST_IN * 2u);
+		uint16_t *d_weight_plain = 0;
+		uint16_t *d_out_plain = 0;
+		uint16_t *h_out_plain = (uint16_t *)malloc(TEST_PACKED * plain_rows * 2u);
+		for ( n = 0u; n < plain_rows; ++n )
+			for ( k = 0u; k < TEST_IN; ++k )
+				h_weight_plain[n * TEST_IN + k] = HostFloatToBf16((float)(n + 1u));
+		cudaMalloc(&d_weight_plain, (size_t)plain_rows * TEST_IN * 2u);
+		cudaMalloc(&d_out_plain, TEST_PACKED * plain_rows * 2u);
+		cudaMemcpy(d_weight_plain, h_weight_plain,
+			(size_t)plain_rows * TEST_IN * 2u, cudaMemcpyHostToDevice);
+		uint32_t *d_group_prefix_plain = 0;
+		uint32_t h_group_prefix_plain[TEST_EXPERTS + 1u] =
+			{ 0u, plain_rows / TEST_TILE_N, 2u * (plain_rows / TEST_TILE_N) };
+		cudaMalloc(&d_group_prefix_plain, sizeof(h_group_prefix_plain));
+		cudaMemcpy(d_group_prefix_plain, h_group_prefix_plain,
+			sizeof(h_group_prefix_plain), cudaMemcpyHostToDevice);
+		LmGemmArguments gemm;
+		memset(&gemm, 0, sizeof(gemm));
+		gemm.scale_a = LmScaleTensorNone();
+		gemm.scale_b = LmScaleTensorNone();
+		gemm.group_row_offset = d_group_offset;
+		gemm.group_tile_prefix = d_group_prefix_plain;
+		gemm.prefix_built = 1u;
+		gemm.output_bf16 = d_out_plain;
+		status = LmGemmWeightOnlyLaunch<
+			LmBf16Format, TEST_TILE_N, TEST_STAGES, TEST_WARPS>(
+			&gemm, d_packed, d_weight_plain, TEST_PACKED, TEST_TOKENS, TEST_TOP_K,
+			TEST_EXPERTS, TEST_IN, plain_rows, (uint32_t)multiprocessors,
+			true, (cudaStream_t)0);
+		if ( status != LM_LAUNCH_OK ) { printf("FAIL plain wide launch %d\n", status); return 1; }
+		err = cudaDeviceSynchronize();
+		if ( err != cudaSuccess ) { printf("FAIL plain wide sync %d\n", (int)err); return 1; }
+		cudaMemcpy(h_out_plain, d_out_plain,
+			TEST_PACKED * plain_rows * 2u, cudaMemcpyDeviceToHost);
+		uint32_t plain_failures = 0u, plain_tail = 0u, plain_head = 0u;
+		for ( p = 0u; p < TEST_PACKED; ++p )
+		{
+			uint32_t token = h_source_map[p];
+			float row_sum = 0.0f;
+			for ( k = 0u; k < TEST_IN; ++k )
+				row_sum += (double)HostBf16ToFloat(HostFloatToBf16(h_activation[token * TEST_IN + k]));
+			for ( n = 0u; n < plain_rows; ++n )
+			{
+				float expect = row_sum * (float)(n + 1u);
+				float got = (double)HostBf16ToFloat(h_out_plain[p * plain_rows + n]);
+				if ( fabsf(got - expect) > 0.03f * fabsf(expect) + 1e-3f )
+				{
+					if ( plain_failures < 8u )
+						printf("PLAIN mismatch p=%u n=%u got=%g expect=%g\n", p, n, got, expect);
+					plain_failures++;
+					if ( n >= 6144u )
+						plain_tail++;
+					else
+						plain_head++;
+				}
+			}
+		}
+		printf("plain 7168: %u total mismatches (head %u, tail %u)\n",
+			plain_failures, plain_head, plain_tail);
+		if ( plain_failures != 0u )
+			failures++;
+		cudaFree(d_weight_plain);
+		cudaFree(d_out_plain);
+		cudaFree(d_group_prefix_plain);
+		free(h_weight_plain);
+		free(h_out_plain);
+	}
+
 	if ( failures == 0u )
 	{
-		printf("k3 interleave gemm gate PASS (direct + indirect + tile_k 32 + second wave)\n");
+		printf("k3 interleave gemm gate PASS (direct + indirect + tile_k 32 + second wave + plain)\n");
 		return 0;
 	}
 	printf("k3 interleave gemm gate FAIL: %u mismatches\n", failures);
