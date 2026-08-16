@@ -203,7 +203,7 @@ static __global__ void SparkDsv4DsparkAttentionKernel(
 	while ( element_index < active_head_count * head_dim )
 	{
 		local_head = element_index / head_dim;
-		SparkLmStoreBf16(out_bf16,
+		SparkLmFloatToBf16(out_bf16,
 			(((uint64_t)position * head_count) + first_head + local_head) *
 				head_dim + (element_index - local_head * head_dim),
 			merge_accumulator[element_index]);
@@ -353,7 +353,7 @@ static __global__ void SparkDsv4DsparkTapMeanKernel(
 			sum += SparkLmBf16ToFloat(streams_bf16,
 				((uint64_t)row * stream_count + stream_index) * dimension +
 					(element_index - row * dimension));
-		SparkLmStoreBf16(tap_bf16,element_index,sum / (float)stream_count);
+		SparkLmFloatToBf16(tap_bf16,element_index,sum / (float)stream_count);
 	}
 }
 
@@ -391,7 +391,7 @@ static __global__ void SparkDsv4DsparkExpandStreamsKernel(
 	{
 		row = element_index / dimension;
 		for (stream_index = 0u; stream_index < stream_count; stream_index++)
-			SparkLmStoreBf16(output_bf16,
+			SparkLmFloatToBf16(output_bf16,
 				((uint64_t)row * stream_count + stream_index) * dimension +
 					(element_index - row * dimension),
 				SparkLmBf16ToFloat(input_bf16,element_index));
