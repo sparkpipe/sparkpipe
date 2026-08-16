@@ -20,6 +20,6 @@ INC="-I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-fami
     modules/k3_resident_decode_stage/source/spark_k3_bind.c \
     modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c \
     runtime/json.c runtime/filesystem.c src/spark_status.c \
-    ring/transport/tp_collective.c ring/transport/tp_device_collective.c \
+    build/libsparkpipe_model_common.a \
     -Xcompiler -pthread -ldl -lcuda -lcudart -o /tmp/k3_single_step
 /tmp/k3_single_step "$PACK"
