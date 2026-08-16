@@ -42,12 +42,17 @@ def bf16(shape):
 
 
 def write_safetensors(path, tensors):
+    # The released Kimi-K3 checkpoint prefixes every tensor with
+    # "language_model.", and the packer's source names follow it; the
+    # fixture's own dict stays unprefixed (its keys are the test's manifest
+    # names), so the written header carries the prefix.
     header, offset = {}, 0
     blobs = []
     for name, (dtype, array) in tensors.items():
         raw = array.tobytes()
-        header[name] = {"dtype": dtype, "shape": list(array.shape),
-                        "data_offsets": [offset, offset + len(raw)]}
+        header["language_model." + name] = {
+            "dtype": dtype, "shape": list(array.shape),
+            "data_offsets": [offset, offset + len(raw)]}
         blobs.append(raw)
         offset += len(raw)
     encoded = json.dumps(header, separators=(",", ":")).encode()
