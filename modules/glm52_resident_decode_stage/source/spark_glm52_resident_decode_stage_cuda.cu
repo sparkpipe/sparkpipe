@@ -298,8 +298,17 @@ static void SparkGlm52BindLayer(
 	buffers->q_b_weight = weight->q_b_bf16;
 	buffers->kv_a_weight = weight->kv_a_bf16;
 	buffers->kv_a_norm_weight = weight->kv_a_norm_bf16;
-	buffers->kv_b_key_transposed_weight = weight->kv_b_key_transposed_bf16;
-	buffers->kv_b_value_weight = weight->kv_b_value_bf16;
+	/* kv_b is replicated across ranks, but each rank computes only its own
+	 * attn_heads local query heads, and the per-head projection kernels index
+	 * the weight by LOCAL head id. Offset both per-head tensors to this
+	 * rank's head slice (global head tp_rank*attn_heads). */
+	{
+		uint64_t head_offset = (uint64_t)wave->tp_rank * buffers->attn_heads;
+		uint64_t key_head_stride = (uint64_t)GLM52_LATENT * GLM52_QK_NOPE_DIM;
+		uint64_t value_head_stride = (uint64_t)GLM52_VALUE_DIM * GLM52_LATENT;
+		buffers->kv_b_key_transposed_weight = (const uint16_t *)weight->kv_b_key_transposed_bf16 + head_offset * key_head_stride;
+		buffers->kv_b_value_weight = (const uint16_t *)weight->kv_b_value_bf16 + head_offset * value_head_stride;
+	}
 	buffers->index_q_weight = weight->index_q_bf16;
 	buffers->index_k_weight = weight->index_k_bf16;
 	buffers->index_head_weight = weight->index_head_bf16;
