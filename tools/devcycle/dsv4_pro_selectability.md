@@ -57,6 +57,17 @@ MXFP4 grid), so FP8-expert packs are VARIANT artifacts, never the baseline.
 | Sharder (rank packs) | done (TP4/PP4) | MISSING - the sharder's FP4 column slicing assumes 2-elements-per-byte; an FP8-aware sharder variant is needed before rank-level FP8 packs. |
 | GPU validation | done (val4 + valtail, real token) | not possible until the kernel variant exists |
 
+## Verified conversion result (round 11)
+
+tools/dsv4_pro_expert_requant.py converted the val4 slice pack on spark3:
+/home/spark3/pro-repo/dsv4_pro.val4.fp8experts.spstage - 108,151,344,456
+bytes (source 57,382,440,264), header codecs (fp8_e4m3, fp8_e4m3, bf16),
+12 expert records (4 layers x W1/W2/W3) converted to FP8-E4M3 with per-128
+F32 scales, and all 107 non-expert records byte-identical to the source
+(verified by direct payload comparison). The same tool converts the full
+pack or any rank slice; wall time ~6 min per expert record (~70 min for the
+full 865 GB pack).
+
 ## Registry and naming
 
 The fleet registry entry "dsv4-pro" describes the TP4xPP4/mxfp4 deployment.
