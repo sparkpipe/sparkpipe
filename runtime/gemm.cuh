@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdio>
 #include "inference/kernels/gemm.cuh"
 #include "runtime/gemm_descriptor_cache.h"
 #include "runtime/launch.h"
@@ -321,10 +322,14 @@ static int32_t LmGemmLaunchAsymmetric(
     }
     if ((args->output_bf16 == 0) == (args->output_f32 == 0))
     {
+        fprintf(stderr, "sparkpipe_gemm: output plane unset in=%u out=%u\n",
+            input_dimension, output_dimension);
         return LM_LAUNCH_ERR_OUTPUT;
     }
     if (args->output_f32 != 0 && args->accumulate_bf16 != 0)
     {
+        fprintf(stderr, "sparkpipe_gemm: f32 output with bf16 accumulate in=%u out=%u\n",
+            input_dimension, output_dimension);
         return LM_LAUNCH_ERR_OUTPUT;
     }
     if (args->output_row_stride == 0u)
@@ -335,6 +340,9 @@ static int32_t LmGemmLaunchAsymmetric(
         output_dimension >
             args->output_row_stride - args->output_column_offset)
     {
+        fprintf(stderr, "sparkpipe_gemm: output slice out=%u offset=%u stride=%u in=%u\n",
+            output_dimension, args->output_column_offset,
+            args->output_row_stride, input_dimension);
         return LM_LAUNCH_ERR_OUTPUT;
     }
     status = LmGemmValidateScaleTensor<FormatA>(
