@@ -124,6 +124,9 @@ void SparkK3DispatchDestroy(SparkK3Dispatch *d);
 
 /* Pin the pack mmap into UVA so kernel-visible weight pointers work. */
 int32_t SparkK3DispatchRegisterPack(SparkK3Pack *pack);
+/* Reverse the registration in the same chunk stride; re-initialising after a
+ * destroy must not register an already-registered region. */
+void SparkK3DispatchUnregisterPack(SparkK3Pack *pack);
 
 /* Fill the device K3LayerWeights table from the binder output and set the two
  * model-level buffer fields. Validates that every layer's required names

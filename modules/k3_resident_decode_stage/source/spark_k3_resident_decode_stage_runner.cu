@@ -529,14 +529,11 @@ SparkStatus SparkK3StageRunnerInitialize(
 		configuration->kv_pages_per_sequence,
 		state->kv_page_bytes, 0) != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: dispatch create failed\n"); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
-	/* The pack mmap registers for UVA weight access; on the GB10 the GPU and
-	 * host share the DRAM, so an unregistered mapping is still reachable from
-	 * the device (the tensor maps read it directly). The registration is
-	 * therefore advisory here: a full-model pack (393 GB) can exceed the
-	 * driver's registration budget where a rank pack (53 GB) fits, and the
-	 * equivalence gate proves the unregistered path's numerics. */
+	/* The pack mmap registers (in chunks) for UVA weight access: the tensor
+	 * maps encode the registered addresses, so a failed registration is
+	 * fatal - the unregistered path cannot launch the GEMMs. */
 	if ( SparkK3DispatchRegisterPack(&state->module.pack) != SPARK_K3_DISPATCH_OK )
-		fprintf(stderr, "sparkpipe_k3: pack register skipped (%llu bytes) - GB10 unified memory reads the mapping directly\n", (unsigned long long)state->module.pack.file_bytes);
+		{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
 	if ( SparkK3DispatchBindWeights(&state->dispatch,&state->module.pack,
 			state->module.bound,state->module.bound_count) != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
@@ -851,7 +848,7 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 	 * already-registered region fails, so the runner unregisters before the
 	 * munmap. */
 	if ( state->module.pack.mapping != 0 )
-		cudaHostUnregister((void *)state->module.pack.mapping);
+		SparkK3DispatchUnregisterPack(&state->module.pack);
 	SparkK3ModuleDestroy(&state->module);
 	delete[] state->staging_values;
 	delete[] state->staging_scratch;

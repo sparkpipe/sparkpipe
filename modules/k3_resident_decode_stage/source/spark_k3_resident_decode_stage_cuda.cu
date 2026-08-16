@@ -100,14 +100,48 @@ static int32_t k3_require(const SparkK3Pack *pack, const SparkK3BoundLayer *boun
 	return SPARK_K3_DISPATCH_OK;
 }
 
+/* A rank pack (53 GB) registers in one call; the full-model pack (393 GB)
+ * exceeds the driver's single-call registration budget, so the mapping
+ * registers in whole chunks. The chunk stride must tile the mapping exactly
+ * or the destroy-side unregister loop cannot reverse it. */
+#define SPARK_K3_REGISTER_CHUNK_BYTES (48ull << 30)
+
 int32_t SparkK3DispatchRegisterPack(SparkK3Pack *pack)
 {
-	cudaError_t err = cudaHostRegister((void *)pack->mapping, pack->file_bytes,
-		cudaHostRegisterDefault);
-	if ( err != cudaSuccess )
-		fprintf(stderr, "sparkpipe_k3: cudaHostRegister %llu bytes -> %s\n",
-			(unsigned long long)pack->file_bytes, cudaGetErrorString(err));
-	return(err == cudaSuccess ? SPARK_K3_DISPATCH_OK : SPARK_K3_DISPATCH_ERR_REGISTER);
+	uint64_t offset;
+	for ( offset = 0u; offset < pack->file_bytes;
+		offset += SPARK_K3_REGISTER_CHUNK_BYTES )
+	{
+		uint64_t bytes = pack->file_bytes - offset;
+		if ( bytes > SPARK_K3_REGISTER_CHUNK_BYTES )
+			bytes = SPARK_K3_REGISTER_CHUNK_BYTES;
+		cudaError_t err = cudaHostRegister((void *)(pack->mapping + offset),
+			(size_t)bytes, cudaHostRegisterDefault);
+		if ( err != cudaSuccess )
+		{
+			fprintf(stderr, "sparkpipe_k3: cudaHostRegister chunk %llu/%llu -> %s\n",
+				(unsigned long long)offset, (unsigned long long)pack->file_bytes,
+				cudaGetErrorString(err));
+			SparkK3DispatchUnregisterPack(pack);
+			return SPARK_K3_DISPATCH_ERR_REGISTER;
+		}
+	}
+	return SPARK_K3_DISPATCH_OK;
+}
+
+void SparkK3DispatchUnregisterPack(SparkK3Pack *pack)
+{
+	uint64_t offset;
+	if ( pack == 0 || pack->mapping == 0 )
+		return;
+	for ( offset = 0u; offset < pack->file_bytes;
+		offset += SPARK_K3_REGISTER_CHUNK_BYTES )
+	{
+		uint64_t bytes = pack->file_bytes - offset;
+		if ( bytes > SPARK_K3_REGISTER_CHUNK_BYTES )
+			bytes = SPARK_K3_REGISTER_CHUNK_BYTES;
+		(void)cudaHostUnregister((void *)(pack->mapping + offset));
+	}
 }
 
 /* One aligned carve out of the scratch blob. 16-byte alignment keeps every
