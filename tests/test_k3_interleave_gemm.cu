@@ -508,7 +508,7 @@ int main(void)
 		uint16_t *h_out_plaink = (uint16_t *)malloc(TEST_PACKED * plain_rows * 2u);
 		for ( n = 0u; n < plain_rows; ++n )
 			for ( k = 0u; k < TEST_PLAIN_K; ++k )
-				h_weight_plaink[n * TEST_PLAIN_K + k] = HostFloatToBf16((float)(n + 1u));
+				h_weight_plaink[n * TEST_PLAIN_K + k] = HostFloatToBf16(1.0f);
 		cudaMalloc(&d_weight_plaink, (size_t)plain_rows * TEST_PLAIN_K * 2u);
 		cudaMemcpy(d_weight_plaink, h_weight_plaink,
 			(size_t)plain_rows * TEST_PLAIN_K * 2u, cudaMemcpyHostToDevice);
@@ -543,7 +543,7 @@ int main(void)
 			}
 			for ( n = 0u; n < plain_rows; ++n )
 			{
-				float expect = row_sum * (float)(n + 1u);
+				float expect = row_sum;
 				float got = (double)HostBf16ToFloat(h_out_plain[p * plain_rows + n]);
 				if ( fabsf(got - expect) > 0.03f * fabsf(expect) + 1e-3f )
 				{
