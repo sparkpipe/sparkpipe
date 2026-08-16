@@ -85,27 +85,26 @@ big band 19480 / 63620 / 60700; fleet slot 20480 / 64620 / 61700; K3
 
 ## Ring windows and the hourly progress rule (directive 2026-08-16)
 
-Windows are **60 minutes** and exclusive on the hosts involved. The queue
-is ordered by release proximity:
+Windows are **60 minutes** and exclusive on the hosts involved. There are
+four ring reservations, mutually exclusive on the hosts they need:
 
-1. **DSV4 Flash** (spark4-7, always-on): leading edge. The only model with
-   retained clean merged-main hardware receipts, plus a branch candidate
-   above the vLLM TP4 reference. Holds priority for measured windows and
-   measures on its own band without consuming a slot.
-2. **DSV4 Pro** (fleet): next fleet window. Verified FP8-expert packs on
-   all 16 ranks (regen byte-identical), residentd boots across the fleet,
-   single-spark valtail PASS and first token. Its next milestone is the
-   fleet TP4xPP4 end-to-end run.
-3. **Qwen 3.8 Max** (fleet): queued after DSV4 Pro. Single-spark
-   validation done; prerequisites before its window are TP4 rank-local
-   packs and the torch/HF reference harness.
-4. **K3** (fleet): queued. Kernel bring-up progressing; claims a window
-   when it presents a runnable gate (real-weight pack + first-layer
-   numerical gate).
-5. **GLM 5.2** (spark8-f, big band): keeps its band for clean-main
-   re-qualification (TP8 additive landings).
-6. **Qwen 3.8 27B** (spark0-3, always-on): keeps its band while the
-   3.6 → 3.8 migration lands (contract and packer work are host-side).
+1. **Triplet — current holder.** GLM 5.2 (spark8-f) + DSV4 Flash (spark4-7)
+   + Qwen 3.8 27B (spark0-3): the resident working set. It has held the
+   ring exclusively for a day. Under the continuation rule it keeps it
+   only while each hour produces an artifact.
+2. **DSV4 Pro — next holder.** Verified packs on all 16 ranks (1926
+   tensors, 61 layers, verify-pack PASS), residentd boots across the fleet,
+   single-spark val4 + valtail PASS with the first real Pro token (48774),
+   and its ring-day plan prerequisites are done (128-row prefill batching
+   landed pre-ring). Next milestone: the TP4xPP4 end-to-end run plus the
+   numerical gate. Its plan expects ~25-60 tok/s decode at this gate.
+3. **Qwen 3.8 Max — after DSV4 Pro.** Single-spark decode works on real
+   packs (compute-sanitizer clean). Before a fleet window is worth the
+   swap it needs TP4 rank-local packs and the torch/HF reference harness.
+4. **K3 — after Qwen 3.8 Max.** Still land-locked: the full-model pack
+   (393 GB) exceeds the driver budget and chunked registration is still
+   being fixed. It needs a successful real-weight decode before a fleet
+   window.
 
 **Continuation rule.** A window holder keeps the hosts only while it keeps
 making progress. At the end of each hour it must have produced a durable
