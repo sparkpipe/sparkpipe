@@ -235,9 +235,38 @@ def main():
                     failures += 1
                     parts = []
                     break
-            if parts and b"".join(parts) != f32(name):
-                print(f"  FAIL {name}: 32-tile k shards do not reassemble")
-                failures += 1
+            if not parts:
+                continue
+            rpe = geom["rows_per_expert"] * geom["row_bytes"]
+            if name.endswith("expert_w2_weight"):
+                # k-only split: per expert, the ranks' tile ranges concatenate
+                rebuilt = bytearray()
+                for e in range(geom["experts"]):
+                    for r in range(4):
+                        per = len(parts[r]) // geom["experts"]
+                        rebuilt += parts[r][e * per:(e + 1) * per]
+                if bytes(rebuilt) != f32(name):
+                    print(f"  FAIL {name}: 32-tile k shards do not reassemble")
+                    failures += 1
+            else:
+                # both axes: the shard is the diagonal subgrid per rank
+                cells, k_tiles = geom["cells"], geom["k_tiles"]
+                half = cells // 2
+                take_k = k_tiles // 4
+                take_out = half // 4
+                chunk = take_out * geom["cell_rows"] * geom["row_bytes"]
+                for r in range(4):
+                    want = bytearray()
+                    for e in range(geom["experts"]):
+                        block = f32(name)[e * rpe:(e + 1) * rpe]
+                        for t in range(r * take_k, (r + 1) * take_k):
+                            for base in (r * take_out, half + r * take_out):
+                                row0 = (t * cells + base) * geom["cell_rows"]
+                                want += block[row0 * geom["row_bytes"]:
+                                             (row0 + chunk)]
+                    if bytes(want) != parts[r]:
+                        print(f"  FAIL {name}: rank {r} 32-tile diagonal subgrid")
+                        failures += 1
         slicer = k3_shard.Slicer(pack32, {}, 16, 0)
         try:
             slicer.route("model.layers.1.expert_w2_weight")
