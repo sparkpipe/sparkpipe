@@ -30,6 +30,29 @@ Correctness and capacity findings live in QWEN38_MAX_AUDIT.md.
   3. Dense linears already take the tensor-core path at B >= 16 through
      SparkLmHostLaunchBatchedLinear; no work needed there.
 
+## 1b. Batch saturation measured (the honest single-node ceiling)
+
+| B | full step (1 GDN layer) | GDN only (MoE disabled) | MoE share |
+|---|---|---|---|
+| 16 | 26.9 ms | 12.6 ms | 14.3 ms |
+| 256 | 261.6 ms | 79.1 ms | 182.5 ms |
+
+- Aggregate throughput saturates at ~10.5 tok/s (B=256, 92-layer
+  extrapolation). Two distinct B-scaling defects hold it there:
+  1. **The grouped MoE tile kernel re-decodes each expert's weight tile
+     once per M-tile.** At B=256 every (expert, N-tile) is decoded 16
+     times instead of once: 182.5 ms vs the 27 ms weight-read floor. The
+     fix is an M-loop inside the CTA (one decode, all M-tiles) - a
+     common-kernel change to SparkLmExpertTileAllKernel.
+  2. The GDN path costs ~0.3 ms/token from per-(row,head) kernel launch
+     overhead (GdnStep/GatedNorm/conv: ~330 small blocks per token) -
+     the CUDA-graph capture that removes it entirely.
+- With BOTH fixed, the single-node ceiling rises to the weight-stream
+  floor: ~27 ms/layer for 25.8 GB of FP8 experts => B/2.5s tok/s, i.e.
+  ~100 tok/s at B=256 single-node. Expert-parallel TP16 (below) reaches
+  the same aggregate at B=16-32 because each rank streams only 1.6 GB
+  per layer.
+
 ## 2. TP16 vs TP4xPP4: the collective schedule that makes all-reduce cheap
 
 Per layer, per token, the tensors that cross TP ranks:
@@ -120,13 +143,34 @@ layer and the per-token cost drops to ~1 us.
 - TP16 removes all PP handoffs (one stage) and shrinks nothing else: the
   schedule above is the same 16-node ring either way.
 
-## 4. Implementation order
+## 4. The path to 100+ tok/s (measured, concrete)
+
+Two complementary routes, both grounded in the measurements above:
+
+A. Single node, batch serving (no fleet needed):
+   - Fix the MoE tile M-loop re-decode (common kernel) + CUDA-graph the
+     GDN path => ~27 ms/layer floor => B=256 gives ~100 tok/s aggregate.
+
+B. Fleet, TP16 expert-parallel (the per-sequence win):
+   - Each rank holds 32 experts = 1.61 GB/layer => ~1.8 ms/layer per rank
+     => 92 layers = 165 ms/step => 6 tok/s at B=1, 97 tok/s at B=16,
+     194 tok/s at B=32 - with the T1-T4 collective schedule the
+     all-reduce sits fully under that compute.
+
+## 5. Implementation order
 
 1. (done) Grouped FP8 tensor-core tile path at B >= 16 - measured.
-2. Capacity decision: MXFP4 experts vs more nodes vs expert paging.
-3. FP8 B1 expert kernel (or adopt the sm121 MXFP4 ones) - the B=1 lever.
-4. Multi-slot async dispatch; drop the per-frame stream sync.
-5. Replicate the router gate in the packer (8 MB duplicate, trivial).
-6. TP rank-local packs + T2/T3 collective schedule + T4 (split-ring
-   overlap, async sends, gpudirect spec).
-7. Fleet window: measure, then tune the ring/rail split against reality.
+2. (done) Batch saturation bisect: MoE tile M-loop re-decode and GDN
+   launch overhead are the two B-scaling defects.
+3. Capacity decision: MXFP4 experts vs more nodes vs expert paging
+   (148 GB/rank at FP8 does not fit; MXFP4 fits AND unlocks the sm121
+   B1 kernels).
+4. Common kernel: M-loop inside SparkLmExpertTileAllKernel (one weight
+   decode per (expert, N-tile)) - coordinated with the other sessions.
+5. CUDA graphs for the GDN layer sequence; multi-slot async dispatch;
+   drop the per-frame stream sync.
+6. FP8 B1 expert kernel (or adopt the sm121 MXFP4 ones) - the B=1 lever.
+7. Replicate the router gate in the packer (8 MB duplicate, trivial).
+8. TP rank-local packs (expert shards + column slices) + T2/T3 collective
+   schedule + T4 (split-ring overlap, async sends, gpudirect spec).
+9. Fleet window: measure, then tune the ring/rail split against reality.
