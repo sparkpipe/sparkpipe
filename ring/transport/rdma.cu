@@ -764,6 +764,9 @@ static SparkStatus SparkHiddenSparkHostRdmaResolveHostDeadline(
             free(request);
             if (result_code != 0 || result == 0)
             {
+                fprintf(stderr,
+                    "hidden_spark_rdma_control_resolve_failed host=%s port=%s code=%d\n",
+                    request->host,request->port,result_code);
                 if (result != 0)
                     freeaddrinfo(result);
                 return SPARK_STATUS_ROUTE_NOT_FOUND;
