@@ -606,3 +606,23 @@ the base checkpoint ships none).
 | [glm52-toks.txt](qualification/glm52/performance/tp8_b8_20260816/glm52-toks.txt) | bc9edad1edcb6fcebf2aadb42c2dd1b85549bfdfc7ee8a0d6d2dca2a1d32b7c8 |
 | [glm52-b8.stdout](qualification/glm52/performance/tp8_b8_20260816/glm52-b8.stdout) | 29bea03aad86124aae5e0521afdb34262b173f6e0fb8595f630f410b81a525f7 |
 | [glm52-multi.stdout](qualification/glm52/performance/tp8_b8_20260816/glm52-multi.stdout) | 5740de2f83cdb93237fc5c12a4a96b6393e856c39793f682e8a2c2318846c0d9 |
+
+### GLM 5.2 TP8 B16 16-sequence aggregate (2026-08-16)
+
+The B16 batch class (16 rows per wave, resident_sequence_capacity 16, 8 GiB KV
+backing) lifts the serving aggregate further: the same weight bytes amortize
+across sixteen rows. Sequence 1 emits the identical retained token stream.
+
+| Workload | Tokens | Wall time | Throughput |
+| ---: | ---: | ---: | ---: |
+| 16-sequence aggregate, run 1 | 512 | 6.74 s | 75.96 tok/s |
+| 16-sequence aggregate, run 2 | 512 | 6.77 s | 75.63 tok/s |
+| 16-sequence aggregate, run 3 | 512 | 6.82 s | 75.07 tok/s |
+| Mean | 512 | 6.78 s | 75.55 tok/s |
+
+| Receipt | SHA-256 |
+| --- | --- |
+| [glm52-b16.stdout](qualification/glm52/performance/tp8_b16_20260816/glm52-b16.stdout) | 0f74a5775de854ccadf57ac2b46b3e878e88aeecdef93d83298096f704652b44 |
+| [glm52-b16.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16.stderr) | 2d606c22af465762952d0f9ba51c82a14c8e8885a7a30df4985cca403c260b21 |
+| [glm52-b16-r1.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16-r1.stderr) | 9483ab63383a267903c771eb10caa182af3ff847543a7d080f198e512d51436a |
+| [glm52-b16-r2.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16-r2.stderr) | cdf2d247e59adce83d8102741786860be4a0b5f87ba086ecd11d74f361b873a5 |
