@@ -515,6 +515,17 @@ static inline int32_t SparkQwen36StagePackResolvedShape(uint32_t tensor_kind, ui
 	SparkQwen36StagePackApplyTpShard(tensor_kind,tp_degree,shape);
 	if ( layer_index == SPARK_QWEN36_STAGEPACK_MTP_LAYER )
 		return((is_global == 0u && (shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_EVERY_LAYER || shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_ATTN_LAYER)) ? 0 : -6);
+	if ( (shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_GLOBAL) != (is_global != 0u) )
+		return(-2);
+	if ( is_global != 0u )
+		return(0);
+	if ( layer_index >= SPARK_QWEN36_MODEL_LAYER_COUNT )
+		return(-3);
+	if ( shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_GDN_LAYER && SPARK_QWEN36_MODEL_LAYER_IS_GDN(layer_index) == 0u )
+		return(-4);
+	if ( shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_ATTN_LAYER && SPARK_QWEN36_MODEL_LAYER_IS_GDN(layer_index) != 0u )
+		return(-5);
+	return(0);
 }
 
 static inline uint64_t SparkQwen36StagePackPayloadBytes(uint32_t weight_format, uint32_t rows, uint32_t columns)
