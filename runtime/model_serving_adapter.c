@@ -409,10 +409,8 @@ SparkStatus SparkModelServingAdapterValidateRuntimeSubmission(
 	SparkStatus status;
 	uint32_t lane;
 	status = SparkModelServingAdapterValidateRuntimeLimits(descriptor,runtime_limits);
-	(void)fprintf(stderr,"GLM52-DBG vsub limits rc=%d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterValidateSubmission(descriptor,submission);
-	(void)fprintf(stderr,"GLM52-DBG vsub submission rc=%d\n",(int)status);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->lane_count > runtime_limits->max_active_sequence_count || submission->row_count > runtime_limits->max_input_row_count )
@@ -564,7 +562,7 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 	const SparkModelServingCompletion *completion)
 {
 	SparkStatus status;
-	uint32_t final_stage,has_tokens;
+	uint32_t final_stage,has_tokens,parallel,hybrid;
 	status = SparkModelServingAdapterValidateCompletionResidency(descriptor,expected_residency,completion);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -576,9 +574,25 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 		return(has_tokens == 0u && tokens_per_sequence == 0u ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
 	final_stage = descriptor->stage_count - 1u;
-	if ( stage_index != final_stage )
+	/* Pure parallel fanout (TP without PP) emits tokens from EVERY rank: each
+	 * rank runs the whole stack, so the non-final-stage token prohibition
+	 * applies only to transported pipelines. */
+	parallel = (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u ? 1u : 0u;
+	hybrid = (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ? 1u : 0u;
+	if ( stage_index != final_stage && (parallel == 0u || hybrid != 0u) )
 		return(has_tokens == 0u && completion->tokens_per_sequence == 0u ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
-	return(has_tokens != 0u && completion->tokens_per_sequence == tokens_per_sequence && active_sequence_count <= UINT32_MAX / tokens_per_sequence && completion->token_count == active_sequence_count * tokens_per_sequence ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
+	/* Speculative completions may commit up to max_speculative_token_count
+	 * extra tokens per sequence beyond the submission's count; the exact
+	 * yield rides accepted_token_count. */
+	if ( has_tokens != 0u &&
+		completion->tokens_per_sequence >= tokens_per_sequence &&
+		completion->tokens_per_sequence <= tokens_per_sequence + descriptor->max_speculative_token_count &&
+		active_sequence_count <= UINT32_MAX / completion->tokens_per_sequence &&
+		completion->token_count == active_sequence_count * completion->tokens_per_sequence )
+		return(SPARK_STATUS_OK);
+	return(SPARK_STATUS_SCHEMA_ERROR);
 }
 
 SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(

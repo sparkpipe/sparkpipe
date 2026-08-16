@@ -327,7 +327,6 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 	object = SparkGlm52ServingJsonMember(document,root,"tp_collective");
 	if ( object < 0 || !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	(void)fprintf(stderr,"GLM52-DBG tc object ok\n");
 	token = SparkGlm52ServingJsonMember(document,object,"backend");
 	if ( token < 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -343,7 +342,6 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 		state->tp_collective_backend_kind);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	(void)fprintf(stderr,"GLM52-DBG tc members ok\n");
 	relative_backend_path = 0;
 	token = SparkGlm52ServingJsonMember(document,object,"backend_module_path");
 	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR :
@@ -355,7 +353,6 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 	free(relative_backend_path);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	(void)fprintf(stderr,"GLM52-DBG tc backend path ok\n");
 	token = SparkGlm52ServingJsonMember(document,object,"collective_identifier");
 	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt64(document,token,&collective_identifier);
 	if ( status != SPARK_STATUS_OK )
@@ -363,12 +360,10 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 	/* Identifier zero is the degraded single-rank bringup mode: the module
 	 * keeps the pack's tp geometry but runs with every reduce elided. */
 	state->tp_collective_identifier = collective_identifier;
-	(void)fprintf(stderr,"GLM52-DBG tc identifier ok\n");
 	status = SparkGlm52ServingJsonUnsigned(document,object,"listen_port",&port);
 	if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
 	state->tp_listen_port = (uint16_t)port;
-	(void)fprintf(stderr,"GLM52-DBG tc listen ok\n");
 	status = SparkGlm52ServingJsonUnsigned(document,object,"connect_timeout_milli",&state->tp_connect_timeout_milli);
 	if ( status != SPARK_STATUS_OK || state->tp_connect_timeout_milli == 0u )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
@@ -411,7 +406,6 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 		state->tp_peer_ports[index] = (uint16_t)port;
 	}
 	state->tp_collective_control_port_base = state->tp_peer_ports[0];
-	(void)fprintf(stderr,"GLM52-DBG tc ports ok\n");
 	for (index=1u; index<count; index++)
 	{
 		if ( state->tp_peer_ports[index] !=
@@ -421,10 +415,8 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 	if ( state->tp_collective_backend_kind ==
 		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 	{
-		(void)fprintf(stderr,"GLM52-DBG tc adaptive begin\n");
 		status = SparkGlm52ServingLoadTpAlgorithms(document,object,
 			&state->tp_collective_topology);
-		(void)fprintf(stderr,"GLM52-DBG tc algorithms rc=%d\n",(int)status);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkGlm52ServingJsonUnsigned(document,object,
 				"direct_all_to_all_max_payload_bytes",
@@ -622,7 +614,6 @@ static void SparkGlm52ServingDriverCompletion(
 		state->orphan_completion_count++;
 	if ( state->stage_index + 1u == SPARK_GLM52_SERVING_STAGE_COUNT && completion.status == SPARK_STATUS_OK )
 	{
-		(void)fprintf(stderr,"GLM52-DBG completion emit tok=%u pos=%llu work=%u\n",pending->output_token_ids[pending->last_row_by_lane[0]],(unsigned long long)pending->sequence_position,pending->work_kind);
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->active_sequence_count;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
@@ -919,7 +910,6 @@ static SparkStatus SparkGlm52ServingAdmit(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( decision.accepted == 0u )
 	{
-		(void)fprintf(stderr,"GLM52-DBG admit reject reason=%u rows=%u active=%u pos=%llu\n",decision.rejection_reason,request.new_token_count,request.active_slot_count,(unsigned long long)request.sequence_position);
 		return(decision.rejection_reason == SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY ? SPARK_STATUS_BUSY : SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	return(SparkModelDriverApplyAdmissionDecision(&decision,frame));

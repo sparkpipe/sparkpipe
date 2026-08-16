@@ -89,15 +89,6 @@ static int32_t SparkGlm52CudaStatus(cudaError_t status)
 	return(status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-static void SparkGlm52DbgStage(const char *name,int32_t status)
-{
-	const char *text;
-	if ( status == LM_LAUNCH_OK )
-		return;
-	text = cudaGetErrorString(cudaGetLastError());
-	(void)fprintf(stderr,"GLM52-DBG stage=%s status=%d cuda=%s\n",name,(int)status,text != 0 ? text : "n/a");
-}
-
 /* Cross-rank head argmax: pack (score, token) into one u64 per row so the
  * TP collective can reduce-max it. The score's float bits are order-mapped
  * (negative-safe); the token is inverted so equal scores keep the LOWEST
@@ -138,19 +129,20 @@ static __global__ void SparkGlm52HeadMaxlocUnpackKernel(
 
 static __device__ __forceinline__ float2 SparkGlm52LoadBf16Pair(const void *base,uint64_t element)
 {
+	/* Little-endian pair layout: x occupies the LOW 16 bits, y the HIGH.
+	 * The bits are REINTERPRETED (int_as_float), never integer-converted:
+	 * BF16 lives in the top 16 bits of the float's bit pattern. */
 	uint32_t packed = ((const uint32_t *)base)[element];
 	float2 pair;
-	pair.x = __uint2float_rn((packed & UINT32_C(0x0000ffff)) << 16u);
-	pair.y = __uint2float_rn(packed & UINT32_C(0xffff0000));
+	pair.x = __int_as_float((int32_t)((packed & UINT32_C(0x0000ffff)) << 16u));
+	pair.y = __int_as_float((int32_t)(packed & UINT32_C(0xffff0000)));
 	return(pair);
 }
 
 static __device__ __forceinline__ void SparkGlm52StoreBf16Pair(void *base,uint64_t element,float x,float y)
 {
-	/* Little-endian pair layout: x occupies the LOW 16 bits, y the HIGH,
-	 * matching SparkGlm52LoadBf16Pair. */
-	uint32_t packed = (__float2uint_rn(y) & UINT32_C(0xffff0000)) |
-		(__float2uint_rn(x) >> 16u);
+	uint32_t packed = (__float_as_uint(y) & UINT32_C(0xffff0000)) |
+		(__float_as_uint(x) >> 16u);
 	((uint32_t *)base)[element] = packed;
 }
 
@@ -379,11 +371,6 @@ static int32_t SparkGlm52RunLayerAttention(const SparkGlm52CudaWave *wave,uint32
 	layer = wave->first_layer_index + local_layer;
 	SparkGlm52BindLayer(wave,local_layer,&buffers);
 	status = Glm52LayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
-	if ( status != LM_LAUNCH_OK )
-	{
-		SparkGlm52DbgStage("attention",status);
-		(void)fprintf(stderr,"GLM52-DBG layer=%u rows=%u ctx=%u\n",layer,wave->row_count,wave->maximum_context);
-	}
 	return(status);
 }
 
@@ -396,11 +383,6 @@ static int32_t SparkGlm52RunLayerMlp(const SparkGlm52CudaWave *wave,uint32_t loc
 	packed_rows = wave->row_count * GLM52_TOP_K;
 	SparkGlm52BindLayer(wave,local_layer,&buffers);
 	status = layer < GLM52_FIRST_ROUTED_LAYER ? Glm52LayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream) : Glm52LayerMoe<GLM52_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
-	if ( status != LM_LAUNCH_OK )
-	{
-		SparkGlm52DbgStage(layer < GLM52_FIRST_ROUTED_LAYER ? "dense_mlp" : "moe",status);
-		(void)fprintf(stderr,"GLM52-DBG layer=%u rows=%u ctx=%u\n",layer,wave->row_count,wave->maximum_context);
-	}
 	return(status);
 }
 
@@ -437,10 +419,7 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 		SparkGlm52BindLayer(wave,wave->layer_count - 1u,&buffers);
 		status = Glm52HeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
 		if ( status != LM_LAUNCH_OK )
-		{
-			SparkGlm52DbgStage("head",status);
 			return(status);
-		}
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
 		error = SparkGlm52LaunchHeadMaxlocPack(stream,slot->output_score,slot->output_token,slot->head_maxloc_u64,wave->row_count,rank_offset);
 	}
@@ -474,7 +453,6 @@ extern "C" int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave)
 		status = SparkGlm52StageWaveMetadata(wave);
 	if ( status == LM_LAUNCH_OK )
 		status = SparkGlm52StageWaveBoundary(wave);
-	SparkGlm52DbgStage("wave_begin",status);
 	return(status);
 }
 
@@ -513,7 +491,6 @@ extern "C" int32_t SparkGlm52LaunchCudaWave(const SparkGlm52CudaWave *wave)
 		status = SparkGlm52RunLayers(wave);
 	if ( status == LM_LAUNCH_OK )
 		status = SparkGlm52RunHead(wave);
-	SparkGlm52DbgStage("wave",status);
 	return(status);
 }
 
