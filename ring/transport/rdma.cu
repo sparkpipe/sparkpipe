@@ -5355,6 +5355,10 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
     }
     if (state->is_sender == 0u && state->local_rank != state->sink_rank)
     {
+        fprintf(stderr,
+            "hidden_spark_rdma_receiver_rank_mismatch local_rank=%u sink_rank=%u source_rank=%u route=%s\n",
+            state->local_rank,state->sink_rank,state->source_rank,
+            state->endpoint.route_name);
         SparkHiddenSparkHostRdmaDestroyState(state);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
