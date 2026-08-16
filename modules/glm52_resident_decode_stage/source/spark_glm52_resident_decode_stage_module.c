@@ -1139,7 +1139,7 @@ static void SparkGlm52ModuleTpCompletion(
 	SparkGlm52TpChainAdvance(chain,completion->status);
 }
 
-static SparkStatus SparkGlm52ModuleReduceHidden(SparkGlm52TpChain *chain)
+static SparkStatus SparkGlm52ModuleReduceHidden(SparkGlm52TpChain *chain,void *device_bf16)
 {
 	SparkGlm52ModuleState *state;
 	SparkTpDeviceCollectiveSubmission submission;
@@ -1160,8 +1160,8 @@ static SparkStatus SparkGlm52ModuleReduceHidden(SparkGlm52TpChain *chain)
 	submission.active_sequence_count = chain->wave_rows;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;
-	submission.local_device = chain->slot->hidden_bf16;
-	submission.full_device = chain->slot->hidden_bf16;
+	submission.local_device = device_bf16;
+	submission.full_device = device_bf16;
 	submission.cuda_stream = chain->slot->stream;
 	submission.completion_function = SparkGlm52ModuleTpCompletion;
 	submission.completion_context = chain;
@@ -1242,7 +1242,8 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		}
 		chain->stage = SPARK_GLM52_CHAIN_STAGE_ATTENTION;
 		chain->next_layer = 0u;
-		launch_status = SparkGlm52ModuleReduceHidden(chain);
+		/* The embedding wrote the partial stream into hidden_bf16. */
+		launch_status = SparkGlm52ModuleReduceHidden(chain,chain->slot->hidden_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm52TpChainFail(chain,launch_status);
 		return;
@@ -1253,7 +1254,10 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 			return;
 		}
 		chain->stage = SPARK_GLM52_CHAIN_STAGE_REDUCE_ATTENTION;
-		launch_status = SparkGlm52ModuleReduceHidden(chain);
+		/* The attention writes its partial output into attention_out_bf16,
+		 * NOT hidden_bf16: the hidden buffer still holds the pre-attention
+		 * stream and must not be reduced again. */
+		launch_status = SparkGlm52ModuleReduceHidden(chain,chain->slot->attention_out_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm52TpChainFail(chain,launch_status);
 		return;
@@ -1274,7 +1278,8 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 			return;
 		}
 		chain->stage = SPARK_GLM52_CHAIN_STAGE_REDUCE_MLP;
-		launch_status = SparkGlm52ModuleReduceHidden(chain);
+		/* The MLP finalize writes its partial stream into hidden_bf16. */
+		launch_status = SparkGlm52ModuleReduceHidden(chain,chain->slot->hidden_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm52TpChainFail(chain,launch_status);
 		return;
