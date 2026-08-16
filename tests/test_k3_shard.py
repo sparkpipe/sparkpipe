@@ -208,48 +208,48 @@ def main():
         if run.returncode == 0 or "FAILURE" not in run.stdout:
             print("  FAIL a misaligned degree was not refused")
             failures += 1
-    # A 32-element-tile pack (the TP16 granularity: 224 = 7 x 32 for the w1
-    # k, 192 = 6 x 32 for the w2 k) slices at TP 4 the same way, and a
-    # degree its tile counts do not divide still refuses with the tile size
-    # named.
-    mini_checkpoint(root, latent=256, inter=256)
-    pack32 = root / "mini32.pack"
-    run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
-                          str(root), str(pack32), "0", "3", "32"],
-                         capture_output=True, text=True)
-    if run.returncode != 0:
-        print("FAIL 32-tile pack:", run.stdout[-300:])
-        return 1
-    full32, f32 = read_pack(pack32)
-    # the mini's two heads refuse the CLI at TP 4 before the experts, so the
-    # expert split is driven per tensor through route()
-    for name in ("model.layers.1.expert_w1_weight",
-                 "model.layers.1.expert_w2_weight"):
-        geom = full32["tensors"][name]["interleave"]
-        if geom["tile_k"] != 32:
-            print(f"  FAIL {name}: 32-tile pack reports tile_k {geom['tile_k']}")
-            failures += 1
-        parts = []
-        for r in range(4):
-            try:
-                parts.append(k3_shard.Slicer(pack32, {}, 4, r).route(name))
-            except k3_shard.ShardFailure as failure:
-                print(f"  FAIL {name} rank {r}: {failure}")
+        # A 32-element-tile pack (the TP16 granularity: 224 = 7 x 32 for the w1
+        # k, 192 = 6 x 32 for the w2 k) slices at TP 4 the same way, and a
+        # degree its tile counts do not divide still refuses with the tile size
+        # named.
+        mini_checkpoint(root, latent=256, inter=256)
+        pack32 = root / "mini32.pack"
+        run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
+                              str(root), str(pack32), "0", "3", "32"],
+                             capture_output=True, text=True)
+        if run.returncode != 0:
+            print("FAIL 32-tile pack:", run.stdout[-300:])
+            return 1
+        full32, f32 = read_pack(pack32)
+        # the mini's two heads refuse the CLI at TP 4 before the experts, so the
+        # expert split is driven per tensor through route()
+        for name in ("model.layers.1.expert_w1_weight",
+                     "model.layers.1.expert_w2_weight"):
+            geom = full32["tensors"][name]["interleave"]
+            if geom["tile_k"] != 32:
+                print(f"  FAIL {name}: 32-tile pack reports tile_k {geom['tile_k']}")
                 failures += 1
-                parts = []
-                break
-        if parts and b"".join(parts) != f32(name):
-            print(f"  FAIL {name}: 32-tile k shards do not reassemble")
+            parts = []
+            for r in range(4):
+                try:
+                    parts.append(k3_shard.Slicer(pack32, {}, 4, r).route(name))
+                except k3_shard.ShardFailure as failure:
+                    print(f"  FAIL {name} rank {r}: {failure}")
+                    failures += 1
+                    parts = []
+                    break
+            if parts and b"".join(parts) != f32(name):
+                print(f"  FAIL {name}: 32-tile k shards do not reassemble")
+                failures += 1
+        slicer = k3_shard.Slicer(pack32, {}, 16, 0)
+        try:
+            slicer.route("model.layers.1.expert_w2_weight")
+            print("  FAIL a 32-tile k-indivisible degree sliced silently")
             failures += 1
-    slicer = k3_shard.Slicer(pack32, {}, 16, 0)
-    try:
-        slicer.route("model.layers.1.expert_w2_weight")
-        print("  FAIL a 32-tile k-indivisible degree sliced silently")
-        failures += 1
-    except k3_shard.ShardFailure as failure:
-        if "32-element" not in str(failure):
-            print(f"  FAIL 32-tile refusal does not name the tile size: {failure}")
-            failures += 1
+        except k3_shard.ShardFailure as failure:
+            if "32-element" not in str(failure):
+                print(f"  FAIL 32-tile refusal does not name the tile size: {failure}")
+                failures += 1
     print(f"tensors sharded {len(full_manifest['tensors'])} x 2 ranks")
     if failures:
         print(f"\nFAIL ({failures})")
