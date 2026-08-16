@@ -49,8 +49,15 @@ Measured on sparka, real rank pack, stage 0 (24 layers), 1 token:
    slice bounds from the pack manifest when the runner passes
    SPARK_K3_MODULE_DERIVE_SLICE, the bound-layer cap is 93, and the
    generator emits TP16 configs (16 peer hosts, no host tier). The degree
-   divisibility audit below holds; the w2 k-tile split stays unbalanced
-   until the TILE_K=64 variant lands.
+   divisibility audit below holds. The expert w2 remains the ONE TP16
+   blocker: its 24 k-tiles cannot split 16 ways in whole tiles, and an
+   unbalanced whole-tile split CANNOT match the gate|up output split (a
+   rank's down k-slice must equal the intermediate its w1 slice computed -
+   192 = 96+96 elements at TP16 = 1.5 tiles) - the sharder now REFUSES
+   TP16 loudly instead of emitting inconsistent packs, and the fix is the
+   64-element half-tile repack (pack V3 + a TILE_K=64 INTERLEAVED_B
+   variant). Everything else (configs, NCCL degree 16, geometry, pools)
+   is staged.
 5. **Two-phase layer collective (LANDED)**: the hook now fires after the
    attention half (phase 0) AND after the MLP half (phase 1). Phase 0 is
    required for correctness, not just speed: the MLP-side AttnRes retrieval

@@ -190,6 +190,24 @@ the module's capacity request scales them by first_layer/layer_count).
   54.2 ms (the path is weight-bandwidth-bound; the capture removes the
   ~55 ms serialized host enqueue per step). Configs carry
   `capture_graphs`: 1.
+- TP16 sharder audit: the earlier "unbalanced w2" split was INCONSISTENT -
+  the gate|up output split gives each rank 192 intermediate elements
+  (96+96, the halves must correspond element-wise), while the unbalanced
+  down split consumed 128 or 256 k-elements, so a rank would read
+  intermediate elements it never computed. No whole-tile scheme fixes
+  TP16 (the gate half is 12 tiles, < 16 ranks); the sharder now REFUSES
+  TP16 loudly and the fix is the 64-element half-tile repack (pack V3 +
+  TILE_K=64 interleave variant). Everything else TP16 (configs, NCCL
+  degree 16, geometry) stays staged.
+- Test suite reconciled with the released checkpoint: the packer's top_k
+  fallback no longer KeyErrors on num_experts_per_tok-only configs (the
+  eager .get default), and the mini fixtures now carry the
+  language_model. prefix, the dense layer-0 MLP, the full-rank KDA/MLA
+  g_proj, and the block_sparse_moe nesting. test_k3_pack (66 tensors,
+  byte-exact) and test_k3_shard (66 x 2 ranks, every class reassembles,
+  the k-tile-indivisible degree refused) PASS on sparka; the adapter
+  smoke PASSES through the PP1 derive path (world_size 1) on the real
+  rank pack.
 - TP16-ready geometry landed: the adapter derives the PP stage split from
   world_size/tp_degree (16/16 -> PP1), the module takes slice bounds from
   the pack manifest via SPARK_K3_MODULE_DERIVE_SLICE, the bound-layer cap
