@@ -38,20 +38,24 @@ Correctness and capacity findings live in QWEN38_MAX_AUDIT.md.
 | 256 | 261.6 ms | 79.1 ms | 182.5 ms |
 
 - Aggregate throughput saturates at ~10.5 tok/s (B=256, 92-layer
-  extrapolation). Two distinct B-scaling defects hold it there:
-  1. **The grouped MoE tile kernel re-decodes each expert's weight tile
-     once per M-tile.** At B=256 every (expert, N-tile) is decoded 16
-     times instead of once: 182.5 ms vs the 27 ms weight-read floor. The
-     fix is an M-loop inside the CTA (one decode, all M-tiles) - a
-     common-kernel change to SparkLmExpertTileAllKernel.
+  extrapolation). The bisect plus one experiment isolate why:
+  1. **The MoE tile path is CTA-latency bound, not weight-bandwidth
+     bound.** At B=256 each expert has ~5 rows (one M-tile), so the
+     25.8 GB is read once; the 182.5 ms comes from ~65K CTAs whose
+     serial K-loops (decode + MMA per k-stage) leave the SM under-
+     occupied. An M-loop variant (one CTA per (expert, N-tile), all
+     M-tiles inside) was implemented and MEASURED: it REGRESSED
+     (276.9 ms) - fewer, longer CTAs starve parallelism. The fix is
+     more resident CTAs per SM (deeper software pipelining / smaller
+     shared footprint), a common-kernel optimization.
   2. The GDN path costs ~0.3 ms/token from per-(row,head) kernel launch
      overhead (GdnStep/GatedNorm/conv: ~330 small blocks per token) -
      the CUDA-graph capture that removes it entirely.
-- With BOTH fixed, the single-node ceiling rises to the weight-stream
-  floor: ~27 ms/layer for 25.8 GB of FP8 experts => B/2.5s tok/s, i.e.
-  ~100 tok/s at B=256 single-node. Expert-parallel TP16 (below) reaches
-  the same aggregate at B=16-32 because each rank streams only 1.6 GB
-  per layer.
+- With BOTH fixed the single-node ceiling rises toward the weight-stream
+  floor (~27 ms/layer), i.e. ~B/2.5s tok/s -> ~100 tok/s at B=256.
+  Expert-parallel TP16 (below) reaches the same aggregate at B=16-32
+  because each rank streams only 1.6 GB per layer - and its per-rank
+  CTA counts shrink 16x, which also cures defect 1.
 
 ## 2. TP16 vs TP4xPP4: the collective schedule that makes all-reduce cheap
 
