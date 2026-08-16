@@ -67,7 +67,15 @@ int main(int argc, char **argv)
 	config.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	config.descriptor_bytes = (uint32_t)sizeof(config);
 	config.stage_index = 0u;
-	config.stage_count = 4u;
+	/* --pp1 derives the slice bounds from the pack manifest (the TP16
+	 * placement's mode); the default keeps the PP4 stage tables. */
+	{
+		int pp1 = 0;
+		for ( int i = 2; i < argc; ++i )
+			if ( strcmp(argv[i], "--pp1") == 0 )
+				pp1 = 1;
+		config.stage_count = pp1 ? 1u : 4u;
+	}
 	config.tp_degree = 1u;
 	config.tp_rank = 0u;
 	config.max_active_sequence_count = 1u;
