@@ -120,8 +120,8 @@ def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=128, inter=
             t[a + "kv_a_proj_with_mqa.weight"] = ("BF16", bf16((kv_lora + rope, hidden)))
             t[a + "kv_a_layernorm.weight"] = ("BF16", bf16((kv_lora,)))
             t[a + "kv_b_proj.weight"] = ("BF16", bf16((heads * (nope + v_head), kv_lora)))
-            t[a + "g_a_proj.weight"] = ("BF16", bf16((v_head, hidden)))
-            t[a + "g_b_proj.weight"] = ("BF16", bf16((heads * v_head, v_head)))
+            # released checkpoint (full_rank_output_gate): full-rank g_proj
+            t[a + "g_proj.weight"] = ("BF16", bf16((heads * v_head, hidden)))
             t[a + "o_proj.weight"] = ("BF16", bf16((hidden, heads * v_head)))
         if layer == 0:
             # the dense replacement layer: one full-width MLP under the
