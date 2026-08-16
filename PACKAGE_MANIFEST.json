@@ -1,5 +1,5 @@
 {
-  "file_count": 903,
+  "file_count": 905,
   "files": [
     {
       "path": ".gitattributes",
@@ -205,6 +205,11 @@
       "path": "docs/QWEN38_MAX_AUDIT.md",
       "sha256": "76b3df72a6370ed4bdf383ffab2649be606a0df758fda225149f04b8b7e6ff48",
       "size_bytes": 10621
+    },
+    {
+      "path": "docs/QWEN38_MAX_KERNEL_SPEED.md",
+      "sha256": "868233fca33d5a064d7161c9bd769429b45e5c3f9e43435caa1dff2ec2ae00a8",
+      "size_bytes": 3147
     },
     {
       "path": "docs/QWEN38_MAX_KV.md",
@@ -1693,8 +1698,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_lm_kernels.cuh",
-      "sha256": "8fd793598550a4615b39c78d406b33daf2153fa9f5daa9932d7bc42ce5a8681c",
-      "size_bytes": 189318
+      "sha256": "2e7eb1b183d1862d9218b762feeec84d97d43ed8132992845422278202296ee6",
+      "size_bytes": 198186
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_row_compaction.cuh",
@@ -2183,13 +2188,13 @@
     },
     {
       "path": "modules/qwen38_resident_decode_stage/source/spark_qwen38_resident_decode_stage_cuda.cu",
-      "sha256": "b9bea0eb4a1d2387211303945c2274b4b98c6657d0f34e70061d48d331fd7d3d",
-      "size_bytes": 82710
+      "sha256": "bdb0b6749cf426cc5a20aaebaae3b17ed8cb77ef22bb82186e4db426333f710a",
+      "size_bytes": 83258
     },
     {
       "path": "modules/qwen38_resident_decode_stage/source/spark_qwen38_resident_decode_stage_module.c",
-      "sha256": "1c15f5a20eb85ab043933c7f9d5c2c5792cb7908b9f06250ca421e8c24c88ce5",
-      "size_bytes": 99215
+      "sha256": "bf250b90958d9374b05fa4bfedda99d138a8f620f6a0a24f86a532191a65d631",
+      "size_bytes": 99638
     },
     {
       "path": "modules/qwen38_resident_decode_stage/source/spark_qwen38_serving_adapter.c",
@@ -4422,6 +4427,11 @@
       "size_bytes": 28455
     },
     {
+      "path": "tools/qwen38_timing_probe.c",
+      "sha256": "6efee8fa49a4c8531020e7b2aafe791710e2ecf27cedd353ce8e39535b2f6147",
+      "size_bytes": 3966
+    },
+    {
       "path": "tools/runtime/apply_runtime_completion_overlay.py",
       "sha256": "cb2acd339aa467bdc904cd43d839111b881bb0a802437385d8a91016b017195b",
       "size_bytes": 4065
@@ -4520,5 +4530,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 14706941
+  "total_bytes": 14723893
 }

@@ -1203,6 +1203,11 @@ extern "C" cudaError_t SparkQwen38LaunchRmsNorm(cudaStream_t stream, const void 
 
 extern "C" cudaError_t SparkQwen38LaunchLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
+	/* The dense BF16 spine at B>=32 uses the M-group tile: the plain grid
+	 * re-reads each weight strip once per m-tile (16x at B=256); the
+	 * m-loop stages it once per k-stage for eight m-tiles. */
+	if ( view->weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 && row_count >= 2u * SPARK_LM_TILE && view->input_dimension > SPARK_LM_TILE_K && view->output_dimension != 0u )
+		return(SparkLmHostLaunchBatchedLinearMloop(stream,view->weight_payload,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 }
 

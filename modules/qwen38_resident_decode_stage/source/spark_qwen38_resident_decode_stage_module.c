@@ -106,6 +106,10 @@ typedef struct SparkQwen38ModuleState
 	uint32_t multiprocessor_count;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
+	/* Measurement aids (timing probe bisect): skip one block of the layer
+	 * to price the GDN/attention half vs the MoE half. Default 0. */
+	uint32_t debug_skip_gdn;
+	uint32_t debug_skip_moe;
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
 	uint32_t kv_block_count;
@@ -207,6 +211,8 @@ static SparkStatus SparkQwen38ModuleConfigure(SparkQwen38ModuleState *state)
 		if ( state->tp_rank >= state->tp_degree || (SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT % state->tp_degree) != 0u || (SPARK_QWEN38_MODEL_ATTN_KV_HEAD_COUNT % state->tp_degree) != 0u )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
+	state->debug_skip_gdn = getenv("SPARK_QWEN38_STAGE_DEBUG_SKIP_GDN") != 0 ? 1u : 0u;
+	state->debug_skip_moe = getenv("SPARK_QWEN38_STAGE_DEBUG_SKIP_MOE") != 0 ? 1u : 0u;
 	status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MODULE_TAG,"SPARK_QWEN38_STAGE_COUNT",1u,SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT,&state->stage_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MODULE_TAG,"SPARK_QWEN38_STAGE_INDEX",0u,SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT - 1u,&state->stage_index);
@@ -1306,9 +1312,9 @@ static SparkStatus SparkQwen38ModuleRunLayer(SparkQwen38ModuleState *state, Spar
 	rows_view.row_lane_indices = slot->row_lane_indices;
 	rows_view.context_lengths = slot->context_lengths;
 	status = SparkStageModuleCudaStatus(SPARK_QWEN38_MODULE_TAG,error,"attention_norm");
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && state->debug_skip_gdn == 0u )
 		status = SPARK_QWEN38_MODEL_LAYER_IS_GDN(layer) != 0u ? SparkQwen38ModuleRunGdnLayer(state,slot,layer,rows) : SparkQwen38ModuleRunAttnLayer(state,slot,table,&state->attn_by_layer[layer],state->attn_ordinal_by_layer[layer],&rows_view,rows);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && state->debug_skip_moe == 0u )
 		status = SparkQwen38ModuleRunMoe(state,slot,state->mlp_norm_by_layer[layer],&state->moe_by_layer[layer],rows);
 	return(status);
 }
