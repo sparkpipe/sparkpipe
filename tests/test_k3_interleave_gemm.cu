@@ -139,6 +139,35 @@ static void BuildInterleavedWeights32(uint8_t *bytes)
 	}
 }
 
+#define TEST_WIDE_OUT 7168u  /* 56 neuron tiles over 48 SMs: the second wave */
+#define TEST_WIDE_CELLS (TEST_WIDE_OUT / 16u)
+#define TEST_WIDE_ROWS_PER_EXPERT (TEST_K_TILES * TEST_WIDE_CELLS * 17u)
+#define TEST_WIDE_EXPERT_BYTES ((size_t)TEST_WIDE_ROWS_PER_EXPERT * 64u)
+
+static void BuildInterleavedWeightsWide(uint8_t *bytes)
+{
+	for ( uint32_t e = 0u; e < TEST_EXPERTS; ++e )
+	{
+		for ( uint32_t t = 0u; t < TEST_K_TILES; ++t )
+		{
+			for ( uint32_t c = 0u; c < TEST_WIDE_CELLS; ++c )
+			{
+				uint8_t *cell = bytes + (size_t)e * TEST_WIDE_EXPERT_BYTES
+					+ ((size_t)t * TEST_WIDE_CELLS + c) * 17u * 64u;
+				for ( uint32_t r = 0u; r < 16u; ++r )
+					for ( uint32_t b = 0u; b < 64u; ++b )
+						cell[r * 64u + b] = 0x22u; /* 1.0, 1.0 */
+				for ( uint32_t n = 0u; n < 16u; ++n )
+				{
+					uint8_t code = ( e == 1u || c != 0u ) ? 126u : 127u;
+					for ( uint32_t g = 0u; g < 4u; ++g )
+						cell[16u * 64u + n * 4u + g] = code;
+				}
+			}
+		}
+	}
+}
+
 static float ExpectedValue(const float *a_row, uint32_t neuron)
 {
 	// a_row is the fp32 source row; the GEMM input is its BF16 rounding, so
@@ -351,9 +380,73 @@ int main(void)
 		free(h_weight32);
 	}
 
+	// --- THE SECOND-WAVE PROBE: 7168 output columns = 56 neuron tiles over
+	// the persistent grid's 48 SMs, so tiles 48..55 form the second wave.
+	// The tail's correctness is what the equivalence gate found broken. ---
+	{
+		uint8_t *h_weight_wide = (uint8_t *)malloc(TEST_WIDE_EXPERT_BYTES * TEST_EXPERTS);
+		uint8_t *d_weight_wide = 0;
+		uint16_t *d_out_wide = 0;
+		uint16_t *h_out_wide = (uint16_t *)malloc(TEST_PACKED * TEST_WIDE_OUT * sizeof(uint16_t));
+		BuildInterleavedWeightsWide(h_weight_wide);
+		cudaMalloc(&d_weight_wide, TEST_WIDE_EXPERT_BYTES * TEST_EXPERTS);
+		cudaMalloc(&d_out_wide, TEST_PACKED * TEST_WIDE_OUT * sizeof(uint16_t));
+		cudaMemcpy(d_weight_wide, h_weight_wide, TEST_WIDE_EXPERT_BYTES * TEST_EXPERTS,
+			cudaMemcpyHostToDevice);
+		LmGemmArguments gemm;
+		memset(&gemm, 0, sizeof(gemm));
+		gemm.scale_a = LmScaleTensorNone();
+		gemm.scale_b = LmScaleTensorNone();
+		gemm.group_row_offset = d_group_offset;
+		gemm.group_tile_prefix = d_group_prefix;
+		gemm.prefix_built = 1u;
+		gemm.output_bf16 = d_out_wide;
+		status = LmGemmWeightOnlyInterleavedLaunch<
+			LmMxfp4, TEST_TILE_N, TEST_STAGES, TEST_WARPS>(
+			&gemm, d_packed, d_weight_wide, TEST_PACKED, TEST_TOKENS, TEST_TOP_K,
+			TEST_EXPERTS, TEST_IN, TEST_WIDE_OUT, (uint32_t)multiprocessors,
+			true, (cudaStream_t)0);
+		if ( status != LM_LAUNCH_OK ) { printf("FAIL wide launch %d\n", status); return 1; }
+		err = cudaDeviceSynchronize();
+		if ( err != cudaSuccess ) { printf("FAIL wide sync %d\n", (int)err); return 1; }
+		cudaMemcpy(h_out_wide, d_out_wide,
+			TEST_PACKED * TEST_WIDE_OUT * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+		uint32_t wide_failures = 0u, tail_failures = 0u, head_failures = 0u;
+		for ( p = 0u; p < TEST_PACKED; ++p )
+		{
+			uint32_t expert = p / TEST_TOP_K;
+			uint32_t token = h_source_map[p];
+			float base = ExpectedValue(&h_activation[token * TEST_IN], 0u);
+			for ( n = 0u; n < TEST_WIDE_OUT; ++n )
+			{
+				float scale = (expert == 1u) ? 0.5f : (n < 16u ? 1.0f : 0.5f);
+				float expect = base * scale;
+				float got = (double)HostBf16ToFloat(h_out_wide[p * TEST_WIDE_OUT + n]);
+				if ( fabsf(got - expect) > 0.03f * fabsf(expect) + 1e-3f )
+				{
+					if ( wide_failures < 8u )
+						printf("WIDE mismatch p=%u n=%u got=%g expect=%g\n", p, n, got, expect);
+					wide_failures++;
+					if ( n >= 6144u )
+						tail_failures++;
+					else
+						head_failures++;
+				}
+			}
+		}
+		printf("wide 7168: %u total mismatches (head %u, tail %u)\n",
+			wide_failures, head_failures, tail_failures);
+		if ( head_failures != 0u || tail_failures != 0u )
+			failures++;
+		cudaFree(d_weight_wide);
+		cudaFree(d_out_wide);
+		free(h_weight_wide);
+		free(h_out_wide);
+	}
+
 	if ( failures == 0u )
 	{
-		printf("k3 interleave gemm gate PASS (direct + indirect + tile_k 32)\n");
+		printf("k3 interleave gemm gate PASS (direct + indirect + tile_k 32 + second wave)\n");
 		return 0;
 	}
 	printf("k3 interleave gemm gate FAIL: %u mismatches\n", failures);
