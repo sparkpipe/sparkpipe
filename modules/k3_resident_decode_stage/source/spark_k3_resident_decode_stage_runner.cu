@@ -759,7 +759,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 		status = K3RunnerLaunchSliceDirect(state, &in, rows, sequences,
 			packed_rows, stream);
 	if ( status != SPARK_K3_DISPATCH_OK )
-		return SPARK_STATUS_INTERNAL_ERROR;
+		{ fprintf(stderr, "sparkpipe_k3: slice dispatch failed %d\n", status); return SPARK_STATUS_INTERNAL_ERROR; }
 	/* The head stage commits the tokens. */
 	if ( runner->owns_final_head != 0u )
 	{
