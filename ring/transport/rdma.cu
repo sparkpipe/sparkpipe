@@ -810,6 +810,10 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
             state->control_port_base + (uint32_t)state->sink_rank);
         if (state->listen_fd < 0)
         {
+            fprintf(stderr,
+                "hidden_spark_rdma_control_listen_failed port=%u route=%s errno=%d\n",
+                state->control_port_base + (uint32_t)state->sink_rank,
+                state->endpoint.route_name,errno);
             return SPARK_STATUS_ROUTE_NOT_FOUND;
         }
         status = SparkHiddenSparkHostRdmaSetNonblocking(state->listen_fd);
@@ -1090,7 +1094,10 @@ static SparkStatus SparkHiddenSparkHostRdmaResolveIpv4(
     hints.ai_socktype = SOCK_STREAM;
     addresses = 0;
     if (getaddrinfo(host,0,&hints,&addresses) != 0 || addresses == 0)
+    {
+        fprintf(stderr,"hidden_spark_rdma_ipv4_resolve_failed host=%s\n",host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
     address = (struct sockaddr_in *)addresses->ai_addr;
     *address_out = address->sin_addr;
     freeaddrinfo(addresses);
@@ -1196,10 +1203,14 @@ static SparkStatus SparkHiddenSparkHostRdmaDiscoverDevice(
         return status;
     devices = ibv_get_device_list(&count);
     if (devices == 0)
+    {
+        fprintf(stderr,"hidden_spark_rdma_list_null host=%s\n",local_host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
     if (count <= 0)
     {
         ibv_free_device_list(devices);
+        fprintf(stderr,"hidden_spark_rdma_list_empty host=%s\n",local_host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     selected_device = 0;
