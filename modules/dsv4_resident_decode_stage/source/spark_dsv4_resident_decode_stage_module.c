@@ -2675,14 +2675,10 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 					{
 						/* k=7 verify expansion: stage SPEC_STEP+1 rows of the lane
 						 * (anchor + drafts) instead of the 1-row submission */
-						SparkStatus expand_status = SparkDsv4ModuleExpandDsparkVerify(
-							state,slot,frame,lane_index,
-							state->dspark_lane_anchor[lane_index],
-							state->dspark_lane_position[lane_index]);
-						if ( expand_status != SPARK_STATUS_OK )
-							fprintf(stderr,"dspark_verify_expand_failed status=%u tp_rank=%u\n",(uint32_t)expand_status,state->tp_rank);
-						else
-							return(SPARK_STATUS_OK);
+						SparkStatus expand_status = SPARK_STATUS_BUSY; /* DEBUG: drive-without-expansion probe */
+						(void)expand_status;
+						(void)lane_index;
+						fprintf(stderr,"dspark_probe_drive_no_expand tp_rank=%u\n",state->tp_rank);
 					}
 				}
 			}
