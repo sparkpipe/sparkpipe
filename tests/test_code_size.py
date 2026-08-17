@@ -285,7 +285,11 @@ from pathlib import Path
 # between halves) - the mechanically-correct 9-AR-point TP16 replay plan. The
 # recurrent state-carry numerical bug is tracked separately. 166509 is the
 # exact count.
-CEILING = 166509
+# The qwen36 KV predicate fix lands (+5): a passing KV check now marks the
+# decision ACCEPTED explicitly (an untouched decision kept its init
+# rejection_reason and every passing admit was silently rejected - the
+# module_admit smoke's real root cause). 166514 is the exact count.
+CEILING = 166514
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

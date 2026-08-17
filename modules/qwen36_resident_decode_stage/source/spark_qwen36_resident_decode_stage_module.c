@@ -2060,6 +2060,11 @@ static SparkStatus SparkQwen36AdmissionKvPredicate(
             SPARK_MODEL_DRIVER_ADMISSION_REJECTED_KV_CAPACITY,
             decision->available_dispatch_slot_count);
     }
+    else
+    {
+        decision->accepted = 1u;
+        decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
+    }
     return SPARK_STATUS_OK;
 }
 
