@@ -564,3 +564,41 @@ landing P-D-03/P-D-06.
 4. Every card must stay contract-complete; a field you cannot yet state is
    written "TBD (reason)", never silently inferred (the "correct at rows==1"
    bug class, `inference/kernels/norm.cuh:81-90`).
+---
+
+# 6. Non-speculation kernel cards (GEMM / infrastructure)
+
+### G-TK32 TILE_K=32 BF16 GEMM fallback (dense/routed projections)
+`inference/kernels/gemm.cuh` (kernel, already TILE_K-generic) + `runtime/launch.h`
+`LmGemmSelectTileK` + `runtime/gemm.cuh` `LmGemmLaunchTileK`.
+
+- **requestor:** k3 model agent (via coordinator) - unblocks the serial-TP16
+  correctness run.
+- **op:** run the symmetric BF16 GEMM at TILE_K=32 when the format's preferred
+  K tile does not divide `input_dimension`; 32 is the floor (a 32-element BF16
+  row is 64 bytes, the smallest TMA-swizzleable span, and a whole number of BF16
+  MMA K=16 steps).
+- **shapes:** TP16 rank-sliced K extents that are 32-multiples but not
+  `kTileK`-multiples - K3: routed_up 224 = 7*32 (BF16 kTileK 64), dense_down
+  2112 = 66*32 and expert-w2 192 = 6*32 (MXFP4 kTileK 128); full dims
+  3584/3072/33792 div 16 (`inference/llms/kimi_k3/config.h:92-94`).
+- **dtypes:** BF16 activations + BF16 weights (symmetric `LmGemmLaunch<Format>`);
+  the weight-only MXFP4 path is already covered by the landed INTERLEAVED_B
+  TILE_K=32 wave (`inference/llms/kimi_k3/unity.cu:52-59`).
+- **precision route:** unchanged - BF16 decode -> fp32 MMA; only the K-tile depth
+  changes, never the arithmetic.
+- **target number:** correctness (unblock partials); perf NOT_MEASURED.
+- **current measured:** NOT_MEASURED.
+- **reference:** the existing TILE_K=64 BF16 GEMM
+  (`inference/kernels/formats/bf16.cuh:20`); the landed INTERLEAVED_B TILE_K=32
+  wave (`inference/kernels/gemm.cuh:429-430`).
+- **implementation:** `LmGemmSelectTileK(preferred, input)` (`runtime/launch.h`)
+  returns the preferred tile, 32, or 0; `LmGemmLaunchTileK` (`runtime/gemm.cuh`)
+  dispatches to `LmGemmLaunch<Format,TILE_N,32u,...>` on the fallback. Pinned
+  host-side by `tests/test_gemm_tile_k_fallback.c`.
+- **K3 integration (K3 agent, out of lane):** (1) switch the BF16 projection
+  helper `K3Project` (`inference/llms/kimi_k3/layer.cuh:398`) to
+  `LmGemmLaunchTileK<Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>`;
+  (2) instantiate the TILE_K=32 symmetric BF16 kernel in
+  `inference/llms/kimi_k3/unity.cu` (mirror lines 38-40 at TILE_K 32u).
+

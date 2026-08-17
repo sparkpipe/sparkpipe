@@ -80,6 +80,24 @@
 #define LM_LAUNCH_TILE_MIN 16u
 #define LM_LAUNCH_TILE_MAX 64u
 
+// TILE_K FALLBACK (GEMM-008). A tensor-parallel rank slice can make
+// input_dimension a multiple of 32 without being a multiple of the format's
+// preferred K tile: a rank-sliced 224 = 7*32 against a 64-element BF16 tile,
+// and 2112 = 66*32 / 192 = 6*32 against a 128-element MXFP4 tile. LmGemmKernel
+// divides input_dimension by TILE_K, so a non-dividing
+// TILE_K drops the tail (wrong output, no crash). The fallback floor is 32: a
+// 32-element BF16 row is 64 bytes - the smallest TMA-swizzleable span - and 32
+// is a whole number of BF16 MMA K (16) steps. Returns 0 when no supported tile
+// divides the input, so the caller can report LM_LAUNCH_ERR_SHAPE.
+static inline uint32_t LmGemmSelectTileK(uint32_t preferred_tile_k, uint32_t input_dimension)
+{
+	if ( (input_dimension % preferred_tile_k) == 0u )
+		return(preferred_tile_k);
+	if ( (input_dimension % 32u) == 0u )
+		return(32u);
+	return(0u);
+}
+
 typedef struct LmLaunchShape
 {
 	uint32_t tokens,top_k,expert_count,input_dimension,output_dimension;

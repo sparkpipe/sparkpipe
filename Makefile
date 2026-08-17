@@ -221,6 +221,7 @@ TEST_NAMES := \
 	test_dsv4_parallel_shape \
     test_dspark_drafter_pin \
     test_dsv4_pro_dspark_drafter_pin \
+    test_gemm_tile_k_fallback \
     test_serial_tp_replay \
     test_speculation_policy_pin \
     test_speculation_tree_pin \
@@ -852,6 +853,9 @@ build/test_dspark_drafter_pin: tests/test_dspark_drafter_pin.c $(COMMON_LIBRARY)
 
 build/test_dsv4_pro_dspark_drafter_pin: tests/test_dsv4_pro_dspark_drafter_pin.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_gemm_tile_k_fallback: tests/test_gemm_tile_k_fallback.c runtime/launch.h inference/kernels/layout.cuh | build
+	$(CXX) -x c++ -D__host__= -D__device__= $(CPPFLAGS) $(CXXFLAGS) -Wno-unused-function $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_serial_tp_replay: tests/test_serial_tp_replay.c tests/serial_tp_replay.c tests/serial_tp_replay.h | build
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) tests/test_serial_tp_replay.c tests/serial_tp_replay.c $(LDFLAGS) $(LDLIBS) -o $@

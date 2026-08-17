@@ -262,7 +262,11 @@ from pathlib import Path
 # pack layout (w2=[latent N, inter K]) at all three launch sites, and the
 # sharder output-splits w2 on whole 16-neuron cells (TP16 diagonal subgrid,
 # [224,192] per rank instead of full 3584). 166250 is the exact count.
-CEILING = 166250
+# The TILE_K=32 GEMM fallback lands (+58): LmGemmSelectTileK (preferred/32/0)
+# + LmGemmLaunchTileK in the shared launcher with a host-safe pinning test;
+# the kernel body was already TILE_K-generic. Unblocks K3 serial-TP16. 166308
+# is the exact count.
+CEILING = 166308
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
