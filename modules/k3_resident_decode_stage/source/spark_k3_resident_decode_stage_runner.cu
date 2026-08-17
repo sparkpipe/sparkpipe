@@ -54,6 +54,7 @@ typedef struct SparkK3RunnerTpContext
 	uint32_t boundary;
 	uint32_t segments;
 	uint32_t phase;
+	uint32_t gate_up_elements;
 } SparkK3RunnerTpContext;
 
 static void K3RunnerTpCompletion(void *context,
@@ -65,6 +66,16 @@ static void K3RunnerTpCompletion(void *context,
 	uint32_t rows = tp->rows;
 	uint32_t elements = rows * K3_HIDDEN;
 	uint16_t *fused = tp->fused;
+	if ( tp->phase == 2u )
+	{
+		/* the gate|up segment: write the SUMMED partial back into the scratch
+		 * the w1 half left it in, so SiTU runs on the full-width gate|up */
+		cudaMemcpyAsync(b->gate_up_bf16, fused,
+			(uint64_t)tp->gate_up_elements * 2u,
+			cudaMemcpyDeviceToDevice, tp->stream);
+		delete tp;
+		return;
+	}
 	if ( tp->phase == 0u )
 	{
 		/* the attention segment: restart at a boundary, accumulate otherwise */
@@ -85,13 +96,22 @@ static void K3RunnerTpCompletion(void *context,
 }
 
 // The per-phase pack: phase 0 stages attention_out, phase 1 stages hidden
-// (routed_up / dense_down) and, for routed layers, shared_out after it.
+// (routed_up / dense_down) and, for routed layers, shared_out after it, phase 2
+// stages the w1 gate|up partial (packed_rows x 2*intermediate wide).
 __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
-	const uint16_t *hidden,const uint16_t *shared,uint16_t *fused,
-	uint32_t rows,uint32_t phase,uint32_t segments)
+	const uint16_t *hidden,const uint16_t *shared,const uint16_t *gate_up,
+	uint16_t *fused,uint32_t rows,uint32_t phase,uint32_t segments,
+	uint32_t gate_up_elements)
 {
 	uint32_t i = (blockIdx.x * blockDim.x) + threadIdx.x;
 	uint32_t elements = rows * K3_HIDDEN;
+	if ( phase == 2u )
+	{
+		if ( i >= gate_up_elements )
+			return;
+		fused[i] = gate_up[i];
+		return;
+	}
 	if ( i >= elements )
 		return;
 	if ( phase == 0u )
@@ -500,21 +520,68 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	K3RunnerHookDump(state, state->tp_rank, layer, phase, "pre", elements);
 	if ( b->tp_sharded == 0u )
 		return;
-	/* PRODUCTION TODO: the gate_up all-reduce. The replay harness folds the
-	 * w1 gate|up partial host-side (test_k3_serial_tp.cu) before SiTU; the
-	 * serving collective must add the same point - packed_rows x 2*inter
-	 * elements, wider than the current 3*hidden host staging buffer - before
-	 * tp_sharded=1 MoE numerics match the full model. */
+	/* THE w1 GATE|UP ALL-REDUCE. The input-split w1 emits a FULL-width gate|up
+	 * partial (packed_rows x 2*intermediate), and SiTU is non-linear, so the
+	 * partial must be summed BEFORE SiTU. This is the point the replay harness
+	 * folds host-side; the serving tier does it here (NCCL honours reserved0;
+	 * the hidden-transport tier keeps its pre-registered 7168 frame). */
 	if ( phase == 2u )
+	{
+		const uint32_t gate_up_elements =
+			rows * K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u);
+		if ( state->device_collective_created != 0 )
+		{
+			K3RunnerFusedPackKernel<<<(gate_up_elements + 255u) / 256u,
+				256u, 0, stream>>>(
+				0, 0, 0, b->gate_up_bf16, state->fused_device,
+				rows, 2u, 1u, gate_up_elements);
+			SparkK3RunnerTpContext *completion_context = new SparkK3RunnerTpContext;
+			completion_context->fused = state->fused_device;
+			completion_context->buffers = b;
+			completion_context->stream = stream;
+			completion_context->rows = rows;
+			completion_context->boundary = 0u;
+			completion_context->segments = 1u;
+			completion_context->phase = 2u;
+			completion_context->gate_up_elements = gate_up_elements;
+			SparkTpDeviceCollectiveSubmission submission;
+			memset(&submission, 0, sizeof(submission));
+			submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+			submission.descriptor_bytes = sizeof(submission);
+			submission.slot_index = 0u;
+			submission.active_sequence_count = rows;
+			submission.flags =
+				SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+			submission.ordinal = state->tp_next_ordinal++;
+			submission.reserved0 = gate_up_elements;
+			submission.local_device = state->fused_device;
+			submission.full_device = state->fused_device;
+			submission.cuda_stream = stream;
+			submission.completion_function = K3RunnerTpCompletion;
+			submission.completion_context = completion_context;
+			SparkTpDeviceCollectiveSubmitBf16(&state->device_collective, &submission);
+			return;
+		}
+		if ( state->collective_created != 0 )
+		{
+			cudaStreamSynchronize(stream);
+			cudaMemcpy(state->staging_values, b->gate_up_bf16,
+				(uint64_t)gate_up_elements * 2u, cudaMemcpyDeviceToHost);
+			SparkTpCollectiveAllReduceSumBf16(&state->collective,
+				state->staging_values, gate_up_elements, state->staging_scratch);
+			cudaMemcpy(b->gate_up_bf16, state->staging_values,
+				(uint64_t)gate_up_elements * 2u, cudaMemcpyHostToDevice);
+		}
 		return;
+	}
 	if ( state->device_collective_created != 0 )
 	{
 		/* THE DEVICE TIER: one pack kernel + ONE stream-ordered combine
 		 * submission per phase; the completion folds the summed segment(s)
 		 * into the partial on the same stream. No sync, no host staging. */
 		K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
-			phase0_source,b->hidden_bf16,b->shared_out_bf16,
-			state->fused_device,rows,phase,segments);
+			phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
+			state->fused_device,rows,phase,segments,0u);
 		SparkK3RunnerTpContext *completion_context = new SparkK3RunnerTpContext;
 		completion_context->fused = state->fused_device;
 		completion_context->buffers = b;
@@ -523,6 +590,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		completion_context->boundary = boundary;
 		completion_context->segments = segments;
 		completion_context->phase = phase;
+		completion_context->gate_up_elements = 0u;
 		SparkTpDeviceCollectiveSubmission submission;
 		memset(&submission, 0, sizeof(submission));
 		submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -712,8 +780,12 @@ SparkStatus SparkK3StageRunnerInitialize(
 	if ( configuration->device_collective != 0 )
 	{
 		state->fused_rows = configuration->max_input_row_count;
+		/* The fused stage must hold the widest per-phase payload: the w1
+		 * gate|up is packed_rows x 2*intermediate (24576 u16 at B1), wider
+		 * than the 3*hidden frame the phase 0/1 hooks used. */
 		cudaMalloc(&state->fused_device,
-			(uint64_t)state->fused_rows * 3u * K3_HIDDEN * 2u);
+			(uint64_t)state->fused_rows * K3_TOP_K *
+			(K3_EXPERT_INTERMEDIATE * 2u) * 2u);
 		SparkTpDeviceCollectiveConfig device_config =
 			*configuration->device_collective;
 		/* The K3 combine kernels replace the transport's math for the
@@ -743,8 +815,11 @@ SparkStatus SparkK3StageRunnerInitialize(
 		if ( SparkK3PackLoadEntry(&state->module.pack,"lm_head.weight",&entry) == 0 )
 			state->head_weight = (const uint16_t *)SparkK3PackPayload(&state->module.pack,&entry);
 	}
-	/* Host staging + head slots + the per-step device arrays. */
-	state->staging_capacity = configuration->max_input_row_count * 3u * K3_HIDDEN;
+	/* Host staging + head slots + the per-step device arrays. The stage must
+	 * hold the widest per-phase payload - the w1 gate|up (packed_rows x
+	 * 2*intermediate = 24576 u16 at B1) is wider than the 3*hidden frame. */
+	state->staging_capacity = configuration->max_input_row_count *
+		K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u);
 	state->staging_values = new uint16_t[state->staging_capacity];
 	state->staging_scratch = new uint16_t[state->staging_capacity];
 	state->fused_capacity = state->staging_capacity;

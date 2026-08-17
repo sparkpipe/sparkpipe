@@ -312,7 +312,11 @@ from pathlib import Path
 # double-counted anchor (folded by the 1-row frame continuity), and the
 # completion schema gate applies to DECODE only (RELEASE carries
 # tokens_per_sequence == 0 by contract). 166576 is the exact count.
-CEILING = 166576
+# The k3 production phase-2 collective lands (+75): the gate|up all-reduce
+# before SiTU with the widened fused/staging buffers (24576 u16) - the
+# production-side completion of the SiTU numerics fix. 166651 is the exact
+# count.
+CEILING = 166651
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
