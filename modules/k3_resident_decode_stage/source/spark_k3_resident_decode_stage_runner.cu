@@ -500,6 +500,13 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	K3RunnerHookDump(state, state->tp_rank, layer, phase, "pre", elements);
 	if ( b->tp_sharded == 0u )
 		return;
+	/* PRODUCTION TODO: the gate_up all-reduce. The replay harness folds the
+	 * w1 gate|up partial host-side (test_k3_serial_tp.cu) before SiTU; the
+	 * serving collective must add the same point - packed_rows x 2*inter
+	 * elements, wider than the current 3*hidden host staging buffer - before
+	 * tp_sharded=1 MoE numerics match the full model. */
+	if ( phase == 2u )
+		return;
 	if ( state->device_collective_created != 0 )
 	{
 		/* THE DEVICE TIER: one pack kernel + ONE stream-ordered combine
@@ -1046,7 +1053,15 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 	if ( phase == 0u )
 		cudaMemcpy(b->hidden_bf16, hidden_input_bf16,
 			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
-	if ( partial_input_bf16 != 0 )
+	if ( phase == 2u )
+	{
+		/* MoE rest: feed the all-reduced gate|up back into the scratch the w1
+		 * half left it in, so SiTU runs on the summed partial. */
+		cudaMemcpy(b->gate_up_bf16, partial_input_bf16,
+			(uint64_t)packed_rows * (K3_EXPERT_INTERMEDIATE * 2u) * 2u,
+			cudaMemcpyDeviceToDevice);
+	}
+	else if ( partial_input_bf16 != 0 )
 		cudaMemcpy(b->attnres_partial_bf16, partial_input_bf16,
 			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
 	/* Fill the per-step device tensors the normal dispatch step would set
@@ -1080,17 +1095,25 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 		return SPARK_STATUS_INTERNAL_ERROR;
 	}
 	/* Capture the rank's CONTRIBUTION (the un-folded input-sharded projection
-	 * output), NOT the folded partial. Phase 0's destination differs by kind:
-	 * the KDA o_proj lands in hidden_bf16, the MLA o_proj in attention_out_bf16.
-	 * Phase 1 = hidden_bf16 (routed_up / dense_down) plus shared_out_bf16
-	 * (shared_w2) on MoE layers. The harness sums these across ranks and folds
-	 * the sum; the replicated partial is only the retrieval's read. */
+	 * output), NOT the folded partial. Phase 1 on a MoE layer is the w1 half
+	 * and captures the gate|up partial (packed_rows x 2*inter); every other
+	 * phase captures hidden_bf16 (kda_out/dense_down/routed_up), with
+	 * attention_out_bf16 for the MLA phase 0 and shared_out_bf16 added on the
+	 * MoE rest (phase 2). The harness sums these across ranks and folds the
+	 * sum; the replicated partial is only the retrieval's read. */
+	if ( phase == 1u && layer >= K3_FIRST_ROUTED_LAYER )
+	{
+		cudaMemcpy(partial_output_bf16, b->gate_up_bf16,
+			(uint64_t)packed_rows * (K3_EXPERT_INTERMEDIATE * 2u) * 2u,
+			cudaMemcpyDeviceToDevice);
+		return SPARK_STATUS_OK;
+	}
 	const uint16_t *phase0_source = (phase == 0u &&
 		K3_LAYER_KIND(layer) == LM_LAYER_LATENT)
 		? b->attention_out_bf16 : b->hidden_bf16;
 	cudaMemcpy(partial_output_bf16, phase0_source,
 		(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
-	if ( phase == 1u && layer >= K3_FIRST_ROUTED_LAYER )
+	if ( phase == 2u )
 		LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),
 			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
 			K3_LAYER_THREADS, 0, stream,

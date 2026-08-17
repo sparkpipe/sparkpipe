@@ -33,6 +33,18 @@ static uint32_t LmLaunchGroupedTileM(uint32_t tokens, uint32_t top_k, uint32_t e
 	return(64u);
 }
 
+// THE REAL TILE-K FALLBACK, COPIED. LmGemmLaunchTileK (the GEMM-008 shim)
+// selects TILE_K from input_dimension exactly as the real launch.h does, so
+// the recorded launch matches the dispatch the serving tier would make.
+static inline uint32_t LmGemmSelectTileK(uint32_t preferred_tile_k, uint32_t input_dimension)
+{
+	if ( (input_dimension % preferred_tile_k) == 0u )
+		return(preferred_tile_k);
+	if ( (input_dimension % 32u) == 0u )
+		return(32u);
+	return(0u);
+}
+
 // THE HOST NO-OP, COPIED. The real launch.h defines this under both branches:
 // the device one grants dynamic shared past 48 KiB, the host one has no launch
 // to attribute and returns OK. The K3 layer calls it through K3DeltaRuleOptIn,

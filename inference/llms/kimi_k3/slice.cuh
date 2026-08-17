@@ -399,7 +399,17 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		if ( layer < K3_FIRST_ROUTED_LAYER )
 			status = K3LayerDenseMlp<Format>(buffers,rows,multiprocessors,stream);
 		else
-			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream);
+		{
+			/* w1 -> (gate_up all-reduce) -> SiTU rest. The production
+			 * collective's gate_up point is phase 2 (TODO in the runner: it
+			 * needs a packed_rows*2*intermediate-wide stage, wider than the
+			 * current 3*hidden host buffer). */
+			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
+			if ( status == LM_LAUNCH_OK && state->layer_collective != 0 )
+				state->layer_collective(state->collective_context,stream,layer,2u);
+			if ( status == LM_LAUNCH_OK )
+				status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
+		}
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		if ( state->layer_collective != 0 )
@@ -479,11 +489,23 @@ static int32_t K3LaunchSliceHalf(const K3LayerWeights *weights, const K3SliceSta
 			K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
 		return(LM_LAUNCH_OK);
 	}
-	K3AttnRes(buffers,buffers->attnres_mlp_weight,
-		(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
 	if ( layer < K3_FIRST_ROUTED_LAYER )
+	{
+		K3AttnRes(buffers,buffers->attnres_mlp_weight,
+			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
 		return(K3LayerDenseMlp<Format>(buffers,rows,multiprocessors,stream));
-	return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream));
+	}
+	/* MoE: phase 1 = the MLP-side retrieval + the gate|up w1 partial, phase 2
+	 * = the SiTU->w2->finalize->routed_up->shared rest. The harness (and the
+	 * production collective) all-reduce gate_up_bf16 between the two so SiTU
+	 * runs on the summed gate|up, not a rank's partial. */
+	if ( phase == 1u )
+	{
+		K3AttnRes(buffers,buffers->attnres_mlp_weight,
+			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
+		return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u));
+	}
+	return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u));
 }
 
 // Fold the accepted prefix of a verify step into the real state, with the

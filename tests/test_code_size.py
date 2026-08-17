@@ -303,7 +303,12 @@ from pathlib import Path
 # The residentd poll-gating fix lands (+4): POLLOUT is always requested for a
 # connected client so the queued hello ACK flushes in the same iteration that
 # read the HELLO - the last k-sweep gate. 166527 is the exact count.
-CEILING = 166527
+# The k3 SiTU-sharding fix lands (+38): w1 becomes input-split (full cell
+# axis) and w2 output-split (full k axis) so gate|up is all-reduced BEFORE
+# the non-linear SiTU - the production diagonal layout applied SiTU to
+# rank-sliced partials (sum(SiTU(p)) != SiTU(sum(p))). 166565 is the exact
+# count.
+CEILING = 166565
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

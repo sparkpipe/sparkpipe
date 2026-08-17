@@ -136,57 +136,15 @@ def main():
         if rebuilt != full(name):
             print("  FAIL shared gate|up halves do not reassemble gate-first")
             failures += 1
-        # interleaved expert w1: BOTH axes split - the rank owns its k-tile
-        # range (its latent slice) AND its gate|up cell ranges (its
-        # intermediate slice), so the shard is the DIAGONAL subgrid (its
-        # tiles x its cells); the cross subgrids are held by no rank because
-        # no GEMM reads them. The check extracts that subgrid from the full
-        # tensor per rank instead of reassembling.
+        # interleaved expert w1: the K INPUT-SPLITS (the rank's latent slice)
+        # and the OUTPUT stays FULL - the rank's gate|up partial is the full
+        # cell range over only its k-tiles, all-reduced before SiTU.
         name = "model.layers.1.expert_w1_weight"
         geom = full_manifest["tensors"][name]["interleave"]
         cells, k_tiles = geom["cells"], geom["k_tiles"]
-        half = cells // 2
         take_k = k_tiles // 2
-        take_out = half // 2
-        chunk = take_out * geom["cell_rows"] * geom["row_bytes"]
+        chunk = cells * geom["cell_rows"] * geom["row_bytes"]
         experts = cfg["experts"]
-        a, b = both(name)
-        rank_expert = take_k * 2 * chunk
-        if len(a) != experts * rank_expert:
-            print(f"  FAIL {name}: rank shard is not a valid interleave")
-            failures += 1
-        rpe = geom["rows_per_expert"]
-        row_bytes = geom["row_bytes"]
-        for r, shard in ((0, a), (1, b)):
-            want = bytearray()
-            for e in range(experts):
-                block = full(name)[e * rpe * row_bytes:
-                                 (e + 1) * rpe * row_bytes]
-                for t in range(r * take_k, (r + 1) * take_k):
-                    for base in (r * take_out, half + r * take_out):
-                        row0 = (t * cells + base) * geom["cell_rows"]
-                        want += block[row0 * row_bytes:
-                                     row0 * row_bytes + chunk]
-            if bytes(want) != shard:
-                print(f"  FAIL {name}: rank {r} is not the diagonal subgrid")
-                failures += 1
-        rank_geom = ranks[0][0]["tensors"][name]["interleave"]
-        if rank_geom["out_dim"] != geom["out_dim"] // 2 or \
-                rank_geom["k_dim"] != geom["k_dim"] // 2 or \
-                rank_geom["tensor_bytes"] != len(a):
-            print(f"  FAIL {name}: rank interleave geometry is not repriced")
-            failures += 1
-        # interleaved expert w2: BOTH axes split - the rank owns its k-tile
-        # range (its SiTU intermediate slice) AND its latent cell range (its
-        # output slice), so the shard is the DIAGONAL subgrid, exactly like
-        # w1 but without the gate|up halves. The check extracts that subgrid
-        # from the full tensor per rank instead of reassembling.
-        name = "model.layers.1.expert_w2_weight"
-        geom = full_manifest["tensors"][name]["interleave"]
-        cells, k_tiles = geom["cells"], geom["k_tiles"]
-        take_k = k_tiles // 2
-        take_out = cells // 2
-        chunk = take_out * geom["cell_rows"] * geom["row_bytes"]
         a, b = both(name)
         rank_expert = take_k * chunk
         if len(a) != experts * rank_expert:
@@ -200,29 +158,63 @@ def main():
                 block = full(name)[e * rpe * row_bytes:
                                  (e + 1) * rpe * row_bytes]
                 for t in range(r * take_k, (r + 1) * take_k):
-                    row0 = (t * cells + r * take_out) * geom["cell_rows"]
+                    row0 = t * cells * geom["cell_rows"]
                     want += block[row0 * row_bytes:
                                  row0 * row_bytes + chunk]
             if bytes(want) != shard:
-                print(f"  FAIL {name}: rank {r} is not the diagonal subgrid")
+                print(f"  FAIL {name}: rank {r} is not the input-split subgrid")
                 failures += 1
         rank_geom = ranks[0][0]["tensors"][name]["interleave"]
-        if rank_geom["out_dim"] != geom["out_dim"] // 2 or \
+        if rank_geom["out_dim"] != geom["out_dim"] or \
                 rank_geom["k_dim"] != geom["k_dim"] // 2 or \
                 rank_geom["tensor_bytes"] != len(a):
             print(f"  FAIL {name}: rank interleave geometry is not repriced")
             failures += 1
-        # the w2 K split refuses a degree its k-tiles do not divide, even
+        # interleaved expert w2: the CELL axis OUTPUT-SPLITS (the rank's
+        # latent slice) and the INPUT stays FULL - after the gate_up
+        # all-reduce the SiTU intermediate is full, so the rank's latent cells
+        # read the whole intermediate k axis.
+        name = "model.layers.1.expert_w2_weight"
+        geom = full_manifest["tensors"][name]["interleave"]
+        cells, k_tiles = geom["cells"], geom["k_tiles"]
+        take_out = cells // 2
+        chunk = take_out * geom["cell_rows"] * geom["row_bytes"]
+        a, b = both(name)
+        rank_expert = k_tiles * chunk
+        if len(a) != experts * rank_expert:
+            print(f"  FAIL {name}: rank shard is not a valid interleave")
+            failures += 1
+        rpe = geom["rows_per_expert"]
+        row_bytes = geom["row_bytes"]
+        for r, shard in ((0, a), (1, b)):
+            want = bytearray()
+            for e in range(experts):
+                block = full(name)[e * rpe * row_bytes:
+                                 (e + 1) * rpe * row_bytes]
+                for t in range(k_tiles):
+                    row0 = (t * cells + r * take_out) * geom["cell_rows"]
+                    want += block[row0 * row_bytes:
+                                 row0 * row_bytes + chunk]
+            if bytes(want) != shard:
+                print(f"  FAIL {name}: rank {r} is not the output-split subgrid")
+                failures += 1
+        rank_geom = ranks[0][0]["tensors"][name]["interleave"]
+        if rank_geom["out_dim"] != geom["out_dim"] // 2 or \
+                rank_geom["k_dim"] != geom["k_dim"] or \
+                rank_geom["tensor_bytes"] != len(a):
+            print(f"  FAIL {name}: rank interleave geometry is not repriced")
+            failures += 1
+        # the w1 K split refuses a degree its k-tiles do not divide, even
         # behind the CLI's earlier head refusal - the granularity trade the
         # interleave forces (TP<=8 for K3's 24 tiles, TP16 excluded)
         slicer = k3_shard.Slicer(pack, {}, 4, 0)
         try:
-            slicer.route("model.layers.1.expert_w2_weight")
-            print("  FAIL a k-tile-indivisible degree sliced w2 silently")
+            slicer.route("model.layers.1.expert_w1_weight")
+            print("  FAIL a k-tile-indivisible degree sliced w1 silently")
             failures += 1
         except k3_shard.ShardFailure as failure:
             if "k-tiles" not in str(failure):
-                print(f"  FAIL w2 refusal does not name the cause: {failure}")
+                print(f"  FAIL w1 refusal does not name the cause: {failure}")
                 failures += 1
         # TP 4 must refuse: two heads, and two k-tiles per rank is not whole
         run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_shard.py"),
@@ -265,44 +257,42 @@ def main():
                 continue
             rpe = geom["rows_per_expert"] * geom["row_bytes"]
             if name.endswith("expert_w2_weight"):
-                # both axes: the diagonal subgrid per rank, no gate|up halves
+                # cell OUTPUT-SPLITS, input stays FULL: the rank's latent
+                # cells read the whole intermediate k axis
                 cells, k_tiles = geom["cells"], geom["k_tiles"]
-                take_k = k_tiles // 4
                 take_out = cells // 4
                 chunk = take_out * geom["cell_rows"] * geom["row_bytes"]
                 for r in range(4):
                     want = bytearray()
                     for e in range(geom["experts"]):
                         block = f32(name)[e * rpe:(e + 1) * rpe]
-                        for t in range(r * take_k, (r + 1) * take_k):
+                        for t in range(k_tiles):
                             row0 = (t * cells + r * take_out) * geom["cell_rows"]
                             want += block[row0 * geom["row_bytes"]:
                                          row0 * geom["row_bytes"] + chunk]
                     if bytes(want) != parts[r]:
-                        print(f"  FAIL {name}: rank {r} 32-tile diagonal subgrid")
+                        print(f"  FAIL {name}: rank {r} 32-tile output-split subgrid")
                         failures += 1
             else:
-                # both axes: the shard is the diagonal subgrid per rank
+                # k INPUT-SPLITS, output stays FULL: the gate|up partial
+                # covers the full cell range over only the rank's k-tiles
                 cells, k_tiles = geom["cells"], geom["k_tiles"]
-                half = cells // 2
                 take_k = k_tiles // 4
-                take_out = half // 4
-                chunk = take_out * geom["cell_rows"] * geom["row_bytes"]
+                chunk = cells * geom["cell_rows"] * geom["row_bytes"]
                 for r in range(4):
                     want = bytearray()
                     for e in range(geom["experts"]):
                         block = f32(name)[e * rpe:(e + 1) * rpe]
                         for t in range(r * take_k, (r + 1) * take_k):
-                            for base in (r * take_out, half + r * take_out):
-                                row0 = (t * cells + base) * geom["cell_rows"]
-                                want += block[row0 * geom["row_bytes"]:
-                                             row0 * geom["row_bytes"] + chunk]
+                            row0 = t * cells * geom["cell_rows"]
+                            want += block[row0 * geom["row_bytes"]:
+                                         row0 * geom["row_bytes"] + chunk]
                     if bytes(want) != parts[r]:
-                        print(f"  FAIL {name}: rank {r} 32-tile diagonal subgrid")
+                        print(f"  FAIL {name}: rank {r} 32-tile input-split subgrid")
                         failures += 1
         slicer = k3_shard.Slicer(pack32, {}, 16, 0)
         try:
-            slicer.route("model.layers.1.expert_w2_weight")
+            slicer.route("model.layers.1.expert_w1_weight")
             print("  FAIL a 32-tile k-indivisible degree sliced silently")
             failures += 1
         except k3_shard.ShardFailure as failure:

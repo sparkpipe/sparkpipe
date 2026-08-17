@@ -300,14 +300,13 @@ class Slicer:
         return bytes(out)
 
     def _expert_gate_up(self, name, raw, meta):
-        """w1 output-splits on whole 16-neuron cells, each gate|up half on
-        its own: per (expert, k-tile) the rank takes its gate cell range then
-        its up cell range, so the shard is itself a valid interleaved tensor
-        whose gate-first order survives every rank boundary. THE K SIDE
-        SPLITS TOO: the activation the GEMM feeds is the rank's latent slice
-        (moe_in columns), so the rank's shard carries only ITS k-tiles -
-        keeping the whole k axis would pair the rank's latent slice with
-        rank 0's weights."""
+        """w1 INPUT-SPLITS on whole k-tiles and keeps the OUTPUT FULL. Each
+        rank's latent slice feeds a FULL-width gate|up partial, which the
+        layer all-reduces BEFORE the non-linear SiTU - sum(SiTU(p)) !=
+        SiTU(sum(p)), so applying SiTU to a rank-sliced (diagonal) partial
+        changes the model. The gate|up cell order is untouched (gate cells
+        first, then up cells), so the SiTU's first/second-half split stays
+        the full-model one."""
         degree, rank = self.degree, self.rank
         geom = self.entry_of(name)["interleave"]
         experts, cells = geom["experts"], geom["cells"]
@@ -315,42 +314,33 @@ class Slicer:
                                          geom["row_bytes"])
         tile_k = geom["tile_k"]
         rpe = geom["rows_per_expert"]
-        half = cells // 2  # the gate|up boundary is a cell boundary
-        if half % degree != 0:
-            raise ShardFailure(
-                f"{name}: {half} 16-neuron cells per gate|up half do not "
-                f"split {degree} ways")
         if k_tiles % degree != 0:
             raise ShardFailure(
                 f"{name}: {k_tiles} {tile_k}-element k-tiles do not split "
                 f"{degree} ways - the rank's latent slice cannot address "
                 f"whole k-tiles (pack the experts with a smaller tile_k)")
-        take_out = half // degree
         take_k = k_tiles // degree
-        lo = rank * take_out
         t0 = rank * take_k
         out = bytearray()
         for e in range(experts):
             block = raw[e * rpe * row_bytes:(e + 1) * rpe * row_bytes]
             for t in range(t0, t0 + take_k):
-                for base in (lo, half + lo):
-                    row0 = (t * cells + base) * cell_rows
-                    out += block[row0 * row_bytes:
-                                 (row0 + take_out * cell_rows) * row_bytes]
+                row0 = t * cells * cell_rows
+                out += block[row0 * row_bytes:
+                             (row0 + cells * cell_rows) * row_bytes]
         self._reprice_interleave(name, meta,
-                                 out_dim=geom["out_dim"] // degree,
+                                 out_dim=geom["out_dim"],
                                  k_dim=take_k * tile_k)
         return bytes(out)
 
     def _expert_down(self, name, raw, meta):
-        """w2 output-splits on whole 16-neuron cells AND input-splits on whole
-        k-tiles - the DIAGONAL subgrid, exactly like w1. The rank's latent
-        OUTPUT slice addresses only its own cells (routed_up reads latent /
-        degree) and its SiTU intermediate slice addresses only its own
-        k-tiles, so the cross subgrids are read by no GEMM. K3's 128-tile
-        packs admit TP 1/2/4/8; TP16 needs 32-element tiles (224 = 14 x 16
-        cells for the w2 out, 192 = 6 x 32 for the w2 k) and refuses here
-        until the pack carries them."""
+        """w2 OUTPUT-SPLITS on whole 16-neuron cells and keeps the INPUT
+        FULL. After the gate_up all-reduce the SiTU intermediate is FULL on
+        every rank, so each rank's latent OUTPUT cells address the whole
+        intermediate k axis - the input-split (diagonal) form would pair the
+        rank's latent cells with the rank's intermediate only, discarding the
+        cross terms. The input axis stays the full k-tile range; only the
+        cell axis slices."""
         degree, rank = self.degree, self.rank
         geom = self.entry_of(name)["interleave"]
         experts, cells, k_tiles = geom["experts"], geom["cells"], geom["k_tiles"]
@@ -360,28 +350,20 @@ class Slicer:
                 f"{name}: {cells} 16-neuron cells do not split "
                 f"{degree} ways - the rank's latent slice cannot address "
                 f"whole cells")
-        if k_tiles % degree != 0:
-            raise ShardFailure(
-                f"{name}: {k_tiles} {tile_k}-element k-tiles do not split "
-                f"{degree} ways - the rank's intermediate slice cannot "
-                f"address whole k-tiles (pack the experts with a smaller "
-                f"tile_k; TP16 needs 32-element tiles)")
         take_out = cells // degree
-        take_k = k_tiles // degree
         c0 = rank * take_out
-        t0 = rank * take_k
         cell_rows, row_bytes, rpe = (geom["cell_rows"], geom["row_bytes"],
                                      geom["rows_per_expert"])
         out = bytearray()
         for e in range(experts):
             block = raw[e * rpe * row_bytes:(e + 1) * rpe * row_bytes]
-            for t in range(t0, t0 + take_k):
+            for t in range(k_tiles):
                 row0 = (t * cells + c0) * cell_rows
                 out += block[row0 * row_bytes:
                              (row0 + take_out * cell_rows) * row_bytes]
         self._reprice_interleave(name, meta,
                                  out_dim=take_out * 16,
-                                 k_dim=take_k * tile_k)
+                                 k_dim=k_tiles * tile_k)
         return bytes(out)
 
     def _reprice_interleave(self, name, meta, out_dim=None, k_dim=None):

@@ -22,6 +22,11 @@
 #include "inference/llms/kimi_k3/layer.cuh"
 #include "serial_tp_replay.h"
 
+/* The w1 gate|up partial is FULL-width (2 * intermediate) per packed row, so
+ * the gate|up all-reduce between the w1 half and the SiTU rest is this wide. */
+static const uint64_t GATE_UP_ELEMENTS =
+	(uint64_t)K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u);
+
 struct K3ReplayContext
 {
 	const char **rank_packs;
@@ -59,7 +64,9 @@ static int k3_run_rank(uint32_t rank, const uint16_t *input_bf16,
 {
 	(void)input_bf16; (void)input_elements;
 	K3ReplayContext *ctx = (K3ReplayContext *)context;
-	if ( partial_elements != K3_HIDDEN )
+	const uint64_t elements = (ctx->phase == 1u && ctx->layer >= K3_FIRST_ROUTED_LAYER)
+		? GATE_UP_ELEMENTS : (uint64_t)K3_HIDDEN;
+	if ( partial_elements != elements )
 		return -1;
 	SparkStatus status = SparkK3StageRunnerStepHalf(&ctx->runners[rank],
 		ctx->layer, ctx->phase,
@@ -68,7 +75,7 @@ static int k3_run_rank(uint32_t rank, const uint16_t *input_bf16,
 	if ( status != SPARK_STATUS_OK )
 		return -1;
 	cudaError_t err = cudaMemcpy(partial_out_bf16, ctx->d_out,
-		(uint64_t)K3_HIDDEN * 2u, cudaMemcpyDeviceToHost);
+		elements * 2u, cudaMemcpyDeviceToHost);
 	return err == cudaSuccess ? 0 : -1;
 }
 
@@ -199,8 +206,8 @@ int main(int argc, char **argv)
 	printf("16 rank runners initialized (pre-loaded)\n");
 
 	cudaMalloc(&ctx.d_hidden, (uint64_t)K3_HIDDEN * 2u);
-	cudaMalloc(&ctx.d_partial, (uint64_t)K3_HIDDEN * 2u);
-	cudaMalloc(&ctx.d_out, (uint64_t)K3_HIDDEN * 2u);
+	cudaMalloc(&ctx.d_partial, GATE_UP_ELEMENTS * 2u);
+	cudaMalloc(&ctx.d_out, GATE_UP_ELEMENTS * 2u);
 
 	{
 		SparkK3Pack pack;
@@ -231,34 +238,58 @@ int main(int argc, char **argv)
 	budget.held_bytes = 0u;
 	budget.peak_held_bytes = 0u;
 
-	std::vector<uint16_t> partials((uint64_t)16u * K3_HIDDEN);
-	std::vector<uint16_t> contribution(K3_HIDDEN);
+	std::vector<uint16_t> partials(16u * GATE_UP_ELEMENTS);
+	std::vector<uint16_t> contribution(GATE_UP_ELEMENTS);
+	std::vector<uint16_t> full_gate_up(GATE_UP_ELEMENTS);
 	std::vector<float> full_partial_f32(K3_HIDDEN, 0.0f);
 	std::vector<uint16_t> full_partial_bf16(K3_HIDDEN);
 
 	for ( uint32_t layer = 0u; layer < 4u; ++layer )
 	{
-		for ( uint32_t phase = 0u; phase < 2u; ++phase )
+		/* Dense layer 0 has no gate|up all-reduce; MoE layers run phase 0
+		 * (attention), phase 1 (w1 gate|up partial) and phase 2 (the SiTU->
+		 * routed_up->shared rest). */
+		const uint32_t phases = (layer < K3_FIRST_ROUTED_LAYER) ? 2u : 3u;
+		for ( uint32_t phase = 0u; phase < phases; ++phase )
 		{
 			ctx.layer = layer;
 			ctx.phase = phase;
-			for ( uint32_t k = 0u; k < K3_HIDDEN; ++k )
-				full_partial_bf16[k] = spark_serial_tp_f32_to_bf16(full_partial_f32[k]);
-			cudaMemcpy(ctx.d_partial, full_partial_bf16.data(),
-				(uint64_t)K3_HIDDEN * 2u, cudaMemcpyHostToDevice);
-			int rc = spark_serial_tp_sweep(16u, K3_HIDDEN, 0, 0u, partials.data(),
+			const uint64_t elements =
+				(phase == 1u && layer >= K3_FIRST_ROUTED_LAYER)
+					? GATE_UP_ELEMENTS : (uint64_t)K3_HIDDEN;
+			/* Phase 2 feeds the all-reduced gate|up; every other phase feeds the
+			 * replicated AttnRes partial (the retrieval's read). */
+			if ( phase == 2u )
+				cudaMemcpy(ctx.d_partial, full_gate_up.data(),
+					GATE_UP_ELEMENTS * 2u, cudaMemcpyHostToDevice);
+			else
+			{
+				for ( uint32_t k = 0u; k < K3_HIDDEN; ++k )
+					full_partial_bf16[k] = spark_serial_tp_f32_to_bf16(full_partial_f32[k]);
+				cudaMemcpy(ctx.d_partial, full_partial_bf16.data(),
+					(uint64_t)K3_HIDDEN * 2u, cudaMemcpyHostToDevice);
+			}
+			int rc = spark_serial_tp_sweep(16u, elements, 0, 0u, partials.data(),
 				&hooks, &ctx, &budget);
 			if ( rc != 0 )
 			{
 				printf("SWEEP FAIL %d at layer %u phase %u\n", rc, layer, phase);
 				return 1;
 			}
-			/* Each rank captured its CONTRIBUTION (the un-folded input-sharded
-			 * projection output); the rank-order fp32 sum is the full
-			 * contribution, folded into the partial exactly as the model's
-			 * fused epilogue would. */
-			spark_serial_tp_all_reduce_sum_bf16(partials.data(), 16u, K3_HIDDEN,
+			spark_serial_tp_all_reduce_sum_bf16(partials.data(), 16u, elements,
 				contribution.data());
+			if ( phase == 1u && layer >= K3_FIRST_ROUTED_LAYER )
+			{
+				/* The gate|up all-reduce: its sum feeds SiTU in phase 2, it does
+				 * not fold into the AttnRes partial. */
+				memcpy(full_gate_up.data(), contribution.data(),
+					(size_t)GATE_UP_ELEMENTS * 2u);
+				printf("  L%uP%u gate_up[0..2] = %.6g %.6g %.6g\n", layer, phase,
+					(double)spark_serial_tp_bf16_to_f32(full_gate_up[0]),
+					(double)spark_serial_tp_bf16_to_f32(full_gate_up[1]),
+					(double)spark_serial_tp_bf16_to_f32(full_gate_up[2]));
+				continue;
+			}
 			for ( uint32_t k = 0u; k < K3_HIDDEN; ++k )
 				full_partial_f32[k] += spark_serial_tp_bf16_to_f32(contribution[k]);
 			printf("  L%uP%u partial[0..2] = %.6g %.6g %.6g\n", layer, phase,

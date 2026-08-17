@@ -773,10 +773,13 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 }
 
 template<class Format>
-static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream, uint32_t phase)
 {
 	LmGemmArguments gemm;
 	int32_t status;
+	const uint32_t moe_in = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
+	if ( phase == 0u )
+	{
 	// THE INTERLEAVED EXPERT STREAM. Pack V2 ships expert_w{1,2}_weight as
 	// mxfp4_ws_interleaved_v1: payload and E8M0 scales co-tiled in 17-row
 	// cells, one stream (docs/K3_PACK_FORMAT_V2.md). The kernels wave is
@@ -805,11 +808,12 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// cannot pack what it cannot see without a sync on the hot path, and until
 	// this call nothing packed it at all - every harness filled the arrays by
 	// hand, which is the precise shape of a driver that cannot exist.
-	const uint32_t moe_in = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
-	const uint32_t moe_out = K3_RANK_DIM(b,expert_w1_output,K3_EXPERT_INTERMEDIATE * 2u);
+	/* w1 INPUT-SPLITS: its output is the FULL gate|up width, all-reduced
+	 * before SiTU (the diagonal output-split applied SiTU to a partial). */
+	const uint32_t w1_out = K3_EXPERT_INTERMEDIATE * 2u;
 	status = LmRouteBuild<K3_LAYER_THREADS,K3_EXPERTS>(
 		b->route_expert,rows,packed_rows,K3_TOP_K,b->group_row_offset,
-		b->route_packed_row,b->route_source_token,moe_out,
+		b->route_packed_row,b->route_source_token,w1_out,
 		moe_in,K3_LAYER_TILE_N,b->group_tile_prefix_w1,
 		b->group_tile_prefix_w2,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -853,28 +857,33 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 			status = LmGemmWeightOnlyIndirectInterleavedLaunch<
 				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS,32u>(
 				&gemm,b->latent_bf16,b->expert_w1_weight,packed_rows,rows,
-				K3_TOP_K,K3_EXPERTS,moe_in,moe_out,
+				K3_TOP_K,K3_EXPERTS,moe_in,w1_out,
 				multiprocessors,stream);
 		else
 			status = LmGemmWeightOnlyIndirectInterleavedLaunch<
 				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 				&gemm,b->latent_bf16,b->expert_w1_weight,packed_rows,rows,
-				K3_TOP_K,K3_EXPERTS,moe_in,moe_out,
+				K3_TOP_K,K3_EXPERTS,moe_in,w1_out,
 				multiprocessors,stream);
 	}
 	else
 		status = LmGemmWeightOnlyIndirectLaunch<
 			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 			&gemm,b->latent_bf16,b->expert_w1_weight,packed_rows,rows,
-			K3_TOP_K,K3_EXPERTS,moe_in,moe_out,
+			K3_TOP_K,K3_EXPERTS,moe_in,w1_out,
 			multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	/* The gate_up partial is all-reduced between this half and the next: the
+	 * serial-TP replay (and the production collective) fold the summed
+	 * gate|up into this buffer before phase 1 runs SiTU on it. */
+		return(LM_LAUNCH_OK);
+	}
 	// SiTU, not SwiGLU. Both betas, in the order the report gives them: 4 caps
 	// the gate branch and 25 the up branch, and swapping them runs.
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,
-		K3_RANK_DIM(b,expert_w2_input,K3_EXPERT_INTERMEDIATE),
+		K3_EXPERT_INTERMEDIATE,
 		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	// The SiTU output is already expert-major: no gather, no quantise, the
 	// rows feed the down-projection as they are. The scale descriptor stays
@@ -885,7 +894,9 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	gemm.scale_b = LmScaleTensorNone();
 	gemm.group_tile_prefix = b->group_tile_prefix_w2;
 	gemm.output_bf16 = b->gate_up_bf16;
-	const uint32_t w2_in = K3_RANK_DIM(b,expert_w2_input,K3_EXPERT_INTERMEDIATE);
+	/* w2 OUTPUT-SPLITS: its input is the FULL SiTU intermediate, and its
+	 * output is the rank's latent cells (moe_in), not a full-width partial. */
+	const uint32_t w2_in = K3_EXPERT_INTERMEDIATE;
 	if ( b->expert_interleave != 0u )
 	{
 		if ( b->expert_tile_k == 32u )

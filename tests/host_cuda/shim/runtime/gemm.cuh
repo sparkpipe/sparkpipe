@@ -177,6 +177,65 @@ static int32_t LmGemmWeightOnlyIndirectLaunch(
         stream);
 }
 
+// INTERLEAVED_B recorder shims: the pack V2 interleaved launchers record the
+// same way as the plain weight-only launchers (the host layer gate only
+// inspects dataflow, not the staged cell grid), at the interleaved TILE_K.
+template<
+    class WeightFormat,
+    uint32_t TILE_N,
+    uint32_t STAGES,
+    uint32_t WARPS,
+    uint32_t TILE_K = 128u>
+static int32_t LmGemmWeightOnlyInterleavedLaunch(
+    LmGemmArguments *args,
+    const void *activation_bf16,
+    const void *weight_bytes,
+    uint32_t packed_rows,
+    uint32_t tokens,
+    uint32_t top_k,
+    uint32_t group_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t multiprocessors,
+    bool grouped,
+    cudaStream_t stream)
+{
+    return LmGemmLaunchAsymmetric<
+        LmBf16Format,WeightFormat,TILE_N,TILE_K,STAGES,WARPS>(
+            args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,
+            group_count,input_dimension,output_dimension,multiprocessors,
+            grouped,stream);
+}
+
+template<
+    class WeightFormat,
+    uint32_t TILE_N,
+    uint32_t STAGES,
+    uint32_t WARPS,
+    uint32_t TILE_K = 128u>
+static int32_t LmGemmWeightOnlyIndirectInterleavedLaunch(
+    LmGemmArguments *args,
+    const void *activation_bf16,
+    const void *weight_bytes,
+    uint32_t packed_rows,
+    uint32_t tokens,
+    uint32_t top_k,
+    uint32_t group_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    if (args == 0 || args->source_row_map == 0 ||
+        args->source_row_count != tokens)
+        return LM_LAUNCH_ERR_SHAPE;
+    args->activation_bytes = activation_bf16;
+    return LmGemmWeightOnlyInterleavedLaunch<WeightFormat,TILE_N,STAGES,WARPS,TILE_K>(
+        args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,
+        group_count,input_dimension,output_dimension,multiprocessors,true,
+        stream);
+}
+
 template<
     class Format,
     uint32_t TILE_N,
