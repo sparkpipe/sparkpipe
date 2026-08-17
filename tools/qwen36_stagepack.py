@@ -48,7 +48,7 @@ from spark_pack_common import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONTRACT = ROOT / "model_contracts" / "qwen36_authoritative.json"
+DEFAULT_CONTRACT = ROOT / "model_contracts" / "qwen38_27b_authoritative.json"
 INDEX_NAME = "model.safetensors.index.json"
 CONFIG_NAME = "config.json"
 
