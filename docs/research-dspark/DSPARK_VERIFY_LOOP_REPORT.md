@@ -383,3 +383,102 @@ acceptance, does not affect the output distribution").
 - Probe protocol that works: drive-without-expansion (the pad after the
   drive) reproduces the no-drive stream exactly, isolating the corruption
   to the expansion path; the expansion staging probe confirms the values.
+
+## 12. Fresh-binary session 2026-08-17 (deploy hygiene + the draft TP fixes)
+
+### Deploy and build hygiene (the stale-binary era ends)
+- The `build_remote.sh ... 2>&1 | tail -1` job wrapper masked build failures
+  (pipeline exit = tail's 0). The module had a broken `if (0u) { /*...*/`
+  gate (the rollback-disabled probe) that swallowed the expansion's closing
+  brace: `-Werror` build failures went unnoticed and the ranks kept running
+  STALE drivers - every earlier probe measurement is untrustworthy.
+- The runtime loads `lib/*.so` RELATIVE to the residentd CWD - the previous
+  "top-level" deploys were inert. The verified deploy = rm-then-scp into
+  `lib/` + `bin/` + sha256 verification on every rank.
+- First trustworthy data points (fresh build, saves active + restores
+  disabled): the pad path is exact; the verify expansion produced
+  `48582,223,18,90,1457,...` - diverging at the first verify frame.
+
+### TP acceptance deadlock (fixed)
+- With accepted=1 on one rank only (its local head shard contained the true
+  token), the ranks advanced differently and the next frame deadlocked.
+- Root cause: the draft's markov chain samples the rank-LOCAL lm_head shard
+  (`dspark_draft_token_ids` per rank: 1665/46113/80437/121099 = the four
+  vocab shard ranges) with NO cross-rank reduce; the acceptance compare ran
+  against the REDUCED main-head tokens on every rank.
+- Fix: per-markov-index U64Max allreduce of the packed (score, token) pair
+  (`HeadMaxlocPack/Unpack` + `SparkTpDeviceCollectiveSubmitU64Max`), plus a
+  per-layer bf16 allreduce of the draft MoE partials (the MTP expert tensors
+  are quarter-width TP shards: 524288 = 256 x 2048 rows), plus the draft
+  rope reading `dspark_row_positions` (it read the previous frame's
+  `row_positions`). Draft tokens are now identical across ranks.
+- The collective credit slots only free after the transport worker consumes
+  the terminal phase: each draft collective now polls
+  `SparkTpDeviceCollectiveOperationPhase` back to FREE before the next
+  submit (7 markov + 3 MoE collectives per frame).
+
+### The verify-frame corruption bisect (in progress)
+- With the FULL draft drive: the first verify frame's row 0 = 18 (true:
+  2892); row 6 = 2892. With the drive SKIPPED: row 0 = 2892 EXACT - the
+  draft's execution corrupts the verify frame.
+- Device-side staging probe (`dspark_devstage`): the staged device rows are
+  exact (tokens/positions/lanes/pages all correct), so the staging is not
+  the corruptor.
+- Bisect trap: the drive-skip gate was left active across the "forward-only",
+  "head-enabled", and "markov-reduce-off" probes - those runs skipped the
+  WHOLE drive and their "exact" results only re-confirmed the drive-skip
+  baseline. The valid contrast remains full-drive=corrupt vs no-drive=exact.
+- Current build: the drive re-enabled with the markov reduce switched to a
+  dedicated `dspark_maxloc_u64` buffer (it previously shared
+  `head_maxloc_u64` with the verify frame's head path - the prime suspect
+  for the corruption).
+- The secondary CSA gap: with garbage draft rows (drive skipped), the stream
+  is exact for ~6 frames then diverges - the speculative rows' ring/compressed
+  pollution is invisible below the sliding window (4096) but the indexer/
+  pooling picks it up; the accepted-prefix replay fix (§11) still stands.
+
+## 13. Fresh-binary session 2026-08-17 (part 2: the draft TP fixes land)
+
+### The corruptor chain (all on the FRESH deploy pipeline, hashes verified)
+- Full drive + NO markov reduce: the first verify frame is EXACT (row 0 =
+  2892). The bisect isolated the corruption to the per-index markov U64Max
+  collectives - and the mechanism is the machinery's WRITE SIZE: the ops
+  reuse the credit bindings sized for the hidden reduce (rows x 4096 bf16),
+  so each rows=1 op at entry i overwrote [i..i+big]. The fix: a per-op 64 KB
+  headroom buffer (block x 8192 x u64). With that, the stream is EXACT for
+  11 tokens (48582,223,2892,201,223,20,28,539,223,21,28) - the first exact
+  speculative run of the fresh binary.
+- The rows=8 variant of the same reduce LATCHES a collective failure
+  (status 4) - rows=1 with the big buffer is the working form.
+- The rollback restores (re-enabled) are NOT the frame-1 corruptor - the
+  pad frame's boundary state is count=0 (probe-verified), so its restore is
+  a no-op; the earlier "restores corrupt" readings were the markov-buffer
+  overflow in disguise.
+- The rollback entry probe: pad frame count=0 rows=0,0 hca=0; the verify
+  frames count=2 rows=(2,6),(1,5),(0,4) hca=UINT32_MAX - the boundary
+  bookkeeping is as designed.
+
+### Accepted-prefix replay (implemented, needs debugging)
+- CompressStep now saves each row's (kv, score) projections to per-layer
+  save regions (the signature change re-records the islands); the
+  completion replays the accepted prefix: restore the CSA current windows
+  (new pre-frame save) + re-run CompressStep/KvEmission over rows
+  0..accepted from the saved projections.
+- The save stride must span the FRAME row count (SPEC_STEP+1=8), not
+  SPEC_STEP - the first cut overlapped the per-layer regions and regressed
+  to the degenerate stream.
+- With the stride fixed the stream is exact for 7 tokens then diverges at
+  position 134 (4911 vs 539) - the replay changes the state the anchor-28
+  frame reads. Open questions: the replay's HCA ring writes (no HCA
+  current-window save yet), the replay's interplay with the accepted
+  boundary frames, and the indexer's own ring/cache pollution (the
+  indexer compressor is not replayed).
+
+### Standing state
+- Branch head: the draft MoE allreduce + the markov U64Max reduce (64 KB
+  per-op buffer) + the replay (stride-fixed) + the rollback restores on.
+- Best exact run: the pre-replay build, 11/24 tokens exact, 8.9 tok/s,
+  acceptance ~2/23 steps. The O24 gate hash still unmet (best a47ec4c1).
+- Next: debug the replay at position 134 (probe the CSA ring + the page's
+  compressed entries after each replay), then the acceptance rate, then the
+  latency (the draft's per-stage + per-index host syncs dominate ~115 ms).
