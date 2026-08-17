@@ -2713,11 +2713,9 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 					error = cudaStreamSynchronize(stream);
 				if ( error == cudaSuccess )
 				{
-					SparkStatus dspark_status = SPARK_STATUS_OK;
-					/* DEBUG drive-skip probe */ if (0u)
-						dspark_status = SparkDsv4ModuleDsparkDrive(state,slot,
-							lane_index,state->dspark_lane_anchor[lane_index],
-							state->dspark_lane_position[lane_index]);
+					SparkStatus dspark_status = SparkDsv4ModuleDsparkDrive(state,slot,
+						lane_index,state->dspark_lane_anchor[lane_index],
+						state->dspark_lane_position[lane_index]);
 					if ( dspark_status != SPARK_STATUS_OK )
 						fprintf(stderr,"dspark_drive_failed status=%u tp_rank=%u lane=%u\n",(uint32_t)dspark_status,state->tp_rank,lane_index);
 					else
