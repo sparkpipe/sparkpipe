@@ -200,6 +200,7 @@ Drop-in unit (`/etc/systemd/system/sparkpipe_model_residentd.service.d/10-oom-gu
 [Service]
 MemoryHigh=100G
 MemoryMax=108G
+MemorySwapMax=0
 OOMScoreAdjust=500
 Restart=on-failure
 RestartSec=5s
@@ -207,12 +208,23 @@ WatchdogSec=30s
 StartLimitIntervalSec=60
 StartLimitBurst=3
 ```
+- **LIVE-FIRE PROVEN on spark2 (2026-08-17):** `MemoryMax` ALONE does not contain an
+  OOM - the 64GB swap absorbs the overflow (allocator to ~100GB against MemoryMax=90G
+  exited 0, MemAvailable recovered in ~24s), which would present as swap-thrash slow
+  freeze, not a kill. `MemoryMax=1G + MemorySwapMax=1G` kills CLEANLY at the cap
+  (systemd-run result oom-kill, dmesg CONSTRAINT_MEMCG, peak exactly 1.0G/1023.9M) with
+  the box fully responsive - ssh + telemetry + tailscale alive, no reboot. So
+  `MemorySwapMax=0` (no swap for model cgroups) is REQUIRED, not optional: model
+  weights must never swap on these nodes.
 - `OOMScoreAdjust=500` makes the model services die FIRST under pressure; sshd and
   systemd stay at their (negative) systemd defaults so the management path survives.
 - `MemoryHigh` throttles before `MemoryMax` hard-kills; `MemoryMax` is the backstop.
 - `Restart=on-failure` + `WatchdogSec=30s` replaces the current
   `setsid -f bin/sparkpipe_model_residentd` / `pkill` pattern (`tools/fleet_swap.sh:63-78`)
   so a hung decode is killed + restarted, not a box freeze.
+- **The drop-in is INERT until the base unit exists:** `sparkpipe_model_residentd.service`
+  does not exist (residentd is setsid-launched), so `systemctl show` reports
+  MemoryMax=infinity. The fleet_swap.sh -> systemctl conversion is the prerequisite.
 - Optional belt-and-suspenders: `earlyoom` (or systemd-oomd) to preemptively kill the
   biggest memory hog before the kernel OOM-killer can hard-hang the node.
 
