@@ -1,5 +1,5 @@
 {
-  "file_count": 16780,
+  "file_count": 16781,
   "files": [
     {
       "path": ".agents/AGENT_CHARTER.md",
@@ -49193,8 +49193,8 @@
     },
     {
       "path": ".agents/packer-core/tools/qwen38_stagepack.py",
-      "sha256": "ba98d788432bc0dd3e91cd0ef6ca6a7b440a50ad6098b8180b2945b8071da74b",
-      "size_bytes": 28455
+      "sha256": "f9a1391f4ccf0625a2b0cf5ff52a386d8e99b3987a45287185980ddb4f849550",
+      "size_bytes": 25203
     },
     {
       "path": ".agents/packer-core/tools/qwen38_timing_probe.c",
@@ -63658,8 +63658,8 @@
     },
     {
       "path": ".agents/scheduler/docs/PROPOSAL_RING_WINDOW_HOOK.md",
-      "sha256": "e3cdde34e90d57b065f6655f49ee46599ca5a04a03810d719426a635046fba7b",
-      "size_bytes": 8255
+      "sha256": "c3b6f30e9a913fd095a41128cee0e5333ff738c99c58352b719c1c36591f9085",
+      "size_bytes": 7439
     },
     {
       "path": ".agents/scheduler/docs/QWEN36_TP4_PERF.md",
@@ -77797,6 +77797,11 @@
       "size_bytes": 27674
     },
     {
+      "path": "docs/PROPOSAL_RING_WINDOW_HOOK.md",
+      "sha256": "c3b6f30e9a913fd095a41128cee0e5333ff738c99c58352b719c1c36591f9085",
+      "size_bytes": 7439
+    },
+    {
       "path": "docs/QWEN36_TP4_PERF.md",
       "sha256": "65b225b398266d47c4d13bb523d2a4201ef049ba05a991a7e33e8a9b1e3252f3",
       "size_bytes": 3629
@@ -83905,5 +83910,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 336975870
+  "total_bytes": 336979241
 }
