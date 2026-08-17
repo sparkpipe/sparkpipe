@@ -3636,6 +3636,7 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 				state->dspark_lane_position[lane_index] =
 					async->lane_next_positions[0] - 1u;
 				state->dspark_lane_ready[lane_index] = 1u;
+				fprintf(stderr,"dspark_publish tp_rank=%u lane=%u anchor=%u out0=%u accepted=%u pos=%llu rows=%u verify=%u\n",state->tp_rank,lane_index,state->dspark_lane_anchor[lane_index],slot->host_output_token_ids[0],accepted,(unsigned long long)state->dspark_lane_position[lane_index],continuation->rows,continuation->dspark_verify);
 			}
 		}
 	}
