@@ -4628,6 +4628,21 @@ static SparkStatus SparkDsv4ModuleFinishFrameContinuation(
 		status = SparkDsv4ModuleReplayTpIsland(state,slot,
 			3u * state->layer_count,continuation->rows);
 		if ( status == SPARK_STATUS_OK &&
+			continuation->dspark_verify != 0u &&
+			state->participates_final_head != 0u )
+		{
+			uint32_t local_tokens[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u];
+			cudaError_t probe_error = cudaMemcpyAsync(local_tokens,
+				slot->output_token_ids,(uint64_t)(SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u) * sizeof(uint32_t),
+				cudaMemcpyDeviceToHost,(cudaStream_t)slot->cuda_stream);
+			if ( probe_error == cudaSuccess )
+				probe_error = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+			if ( probe_error == cudaSuccess )
+				fprintf(stderr,"dspark_head_local tp_rank=%u tokens=%u,%u,%u,%u,%u,%u,%u,%u rows=%u\n",state->tp_rank,local_tokens[0],local_tokens[1],local_tokens[2],local_tokens[3],local_tokens[4],local_tokens[5],local_tokens[6],local_tokens[7],continuation->rows);
+			else
+				fprintf(stderr,"dspark_head_probe_failed error=%d\n",(int)probe_error);
+		}
+		if ( status == SPARK_STATUS_OK &&
 			state->participates_final_head != 0u )
 		{
 			status = SparkDsv4ModuleReduceHeadMax(continuation);
