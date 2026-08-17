@@ -4562,7 +4562,8 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 	error = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
 	if ( error != cudaSuccess )
 		fprintf(stderr,"dspark_draft_async_failed error=%d tp_rank=%u\n",(int)error,state->tp_rank);
-	/* DEBUG forward-only probe */ if (0u) { /*
+	/* DEBUG forward-only probe */ if (0u)
+	{
 	for (index = 0u; index < block && error == cudaSuccess; index++)
 	{
 		uint32_t host_prev = prev_token;
@@ -4640,7 +4641,7 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 		if ( error == cudaSuccess )
 			error = cudaStreamSynchronize(stream);
 	}
-	*/ }
+	}
 	if ( error != cudaSuccess )
 		fprintf(stderr,"dspark_markov_chain_failed error=%d tp_rank=%u index=%u\n",(int)error,state->tp_rank,index);
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
