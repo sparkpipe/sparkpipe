@@ -5083,6 +5083,7 @@ static inline uint32_t SparkLmSm121B1Fp8LinearPairPolicy(
 	uint64_t work = (uint64_t)input_dimension * combined_output_dimension;
 	return(row_count == 1u && work >= SPARK_LM_FP8_PAIR_WIDE_MINIMUM_WORK ?
 		SPARK_LM_PAIR_POLICY_FLAT_16 : SPARK_LM_PAIR_POLICY_FLAT_8);
+}
 
 /* M-group dense launch: BF16 only, at least two m-tiles, K past one
  * tile so the pipelined loop engages. Caller: qwen38 dense linears. */
