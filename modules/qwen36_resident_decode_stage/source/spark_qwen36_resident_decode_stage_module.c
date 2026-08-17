@@ -300,9 +300,20 @@ static SparkStatus SparkQwen36ModuleValidateEntry(SparkQwen36ModuleState *state,
 {
 	SparkQwen36StagePackTensorShape shape;
 	uint32_t global = entry->layer_index == SPARK_QWEN36_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
+	memset(&shape, 0, sizeof(shape));
 	if ( SparkQwen36StagePackResolvedShape(entry->tensor_kind,global != 0u ? 0u : entry->layer_index,global,state->tp_degree,&shape) != 0 || entry->rows != shape.rows || entry->columns != shape.columns )
+	{
+		fprintf(stderr,"%s dbg_shape kind=%u layer=%u rows=%u/%u cols=%u/%u\n",SPARK_QWEN36_MODULE_TAG,entry->tensor_kind,entry->layer_index,entry->rows,shape.rows,entry->columns,shape.columns);
 		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( shape.quantizable != 0u )
+	}
+	if ( entry->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16_RANS )
+	{
+		if ( shape.quantizable == 0u )
+			return(SPARK_STATUS_VALIDATION_FAILED);
+		if ( (entry->rows % 64u) != 0u || (entry->columns % 128u) != 0u || entry->scale_bytes != 0u || entry->scale_group_size != 0u )
+			return(SPARK_STATUS_VALIDATION_FAILED);
+	}
+	else if ( shape.quantizable != 0u )
 	{
 		if ( entry->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 && entry->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
 			return(SPARK_STATUS_VALIDATION_FAILED);
@@ -311,7 +322,7 @@ static SparkStatus SparkQwen36ModuleValidateEntry(SparkQwen36ModuleState *state,
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if ( entry->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ? entry->scale_group_size != 32u : entry->scale_group_size != 0u )
 		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( entry->payload_bytes != SparkQwen36StagePackPayloadBytes(entry->weight_format,entry->rows,entry->columns) || entry->scale_bytes != SparkQwen36StagePackScaleBytes(entry->weight_format,entry->rows,entry->columns) )
+	if ( entry->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16_RANS && (entry->payload_bytes != SparkQwen36StagePackPayloadBytes(entry->weight_format,entry->rows,entry->columns) || entry->scale_bytes != SparkQwen36StagePackScaleBytes(entry->weight_format,entry->rows,entry->columns)) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if ( entry->payload_offset > file_bytes || entry->payload_bytes > file_bytes - entry->payload_offset )
 		return(SPARK_STATUS_VALIDATION_FAILED);

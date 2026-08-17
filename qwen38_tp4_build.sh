@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # qwen36 TP4 whole-stack build: module archive + TP4 GPU validation + driver
 set -euo pipefail
-ROOT=/home/sparkd/sparkpipe-qwen
-PACKS=/home/sparkd/sparkdata/qwen38.bf16.tp4/packs
-OUT=/home/sparkd/sparkdata/qwen38.bf16.tp4/build
+ROOT=/home/spark0/sparkpipe
+PACKS=/home/spark0/sparkdata/qwen38.bf16.tp4/packs
+OUT=/home/spark0/sparkdata/qwen38.bf16.tp4/build
 export NVCC=/usr/local/cuda/bin/nvcc
 cd "$ROOT"
 mkdir -p "$OUT"
