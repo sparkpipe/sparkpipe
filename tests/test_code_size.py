@@ -188,7 +188,10 @@ from pathlib import Path
 # (GLM52 module shrinks to the 80 tap-plan lines; aliases keep consumers
 # untouched) and adds its pinning test; 165975 is the exact count after it
 # lands. Ceiling moves with it.
-CEILING = 165975
+# The glm52 contract generator gains the PP tap-plan constants in its
+# emission table; 165977 is the exact count after it lands. Ceiling moves
+# with it.
+CEILING = 165977
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
