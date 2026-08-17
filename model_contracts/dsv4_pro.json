@@ -64,6 +64,8 @@
       4,
       128,
       4,
+      0,
+      0,
       0
     ],
     "index_head_count": 64,
@@ -75,9 +77,16 @@
     "yarn_original_context_tokens": 65536
   },
   "generated": {
-    "compression_ratio_interpretation": "first layer_count entries are backbone layers; final entry is the one declared MTP layer",
+    "compression_ratio_interpretation": "first 61 entries are backbone layers; the draft layers are ratio-0 DSpark blocks and do not index the table",
     "header": "model-families/dsv4/include/sparkpipe/spark_dsv4_pro_model.h",
     "variant": "pro"
+  },
+  "dspark": {
+    "block_size": 5,
+    "draft_layer_count": 3,
+    "markov_rank": 512,
+    "noise_token_id": 128799,
+    "target_layer_ids": [58, 59, 60]
   },
   "hyper_connections": {
     "epsilon": 1e-06,
@@ -91,7 +100,7 @@
     "kv_head_count": 1,
     "layer_count": 61,
     "maximum_context_tokens": 1048576,
-    "mtp_layer_count": 1,
+    "mtp_layer_count": 3,
     "output_group_count": 16,
     "output_lora_rank": 1024,
     "qk_rope_head_dimension": 64,
@@ -115,14 +124,15 @@
   "precision": {
     "accumulator_format": "fp32",
     "kv_cache_codec": "bf16",
-    "non_expert_activation_format": "fp8_e4m3",
+    "non_expert_activation_format": "bf16",
     "non_expert_linear_weight_codec": "fp8_e4m3",
     "non_expert_linear_weight_format": "fp8_e4m3_block_128x128",
     "output_composition_activation_format": "bf16",
     "residual_norm_storage_format": "bf16",
     "routed_expert_activation_format": "fp8_e4m3",
     "routed_expert_weight_codec": "mxfp4_e2m1",
-    "scale_format": "ue8m0"
+    "scale_format": "ue8m0",
+    "_first_light_note": "non-expert activations run BF16 to match the Flash-validated kernel set; checkpoint declares fp8 e4m3 activations - fp8 activations are a follow-up"
   },
   "qualification": {
     "cuda_target": "sm_121a",
@@ -130,5 +140,5 @@
     "status": "NOT_MEASURED"
   },
   "schema_version": 1,
-  "source_revision": "official Hugging Face config observed 2026-07-31"
+  "source_revision": "GA release deepseek-ai/DeepSeek-V4-Pro-0813 (HF, 2026-08-13)"
 }

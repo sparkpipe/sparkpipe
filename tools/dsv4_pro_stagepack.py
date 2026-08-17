@@ -45,10 +45,16 @@ PRO_HEAD_DIM = 512
 PRO_ATTN_HEADS = 128
 PRO_OUTPUT_GROUPS = 16
 PRO_OUTPUT_RANK = 1024
-PRO_MTP_PACKED = 1
+PRO_MTP_PACKED = 3  # GA: three DSpark draft layers
+PRO_KV_CODEC_OVERRIDE = None  # set by --kv-codec in pro_parse_args
 
-# 62 entries = 61 layers + 1 MTP layer; mirrors SparkDsv4ProCompressionRatios.
-PRO_RATIOS = [128, 128] + ([4, 128] * 29) + [4, 0]
+# 64 entries = 61 layers + the DSpark draft layer + 2 spare zeros; mirrors
+# the GA config (deepseek-ai/DeepSeek-V4-Pro-0813) compress_ratios.
+PRO_RATIOS = [128, 128] + ([4, 128] * 29) + [4, 0, 0, 0]
+
+# GA DSpark speculative-stage constants.
+PRO_DSPARK_TARGET_LAYER_COUNT = 3   # dspark_target_layer_ids = [58, 59, 60]
+PRO_MARKOV_RANK = 512               # dspark_markov_rank
 
 flash.CONTRACT_PATH = ROOT / "model_contracts" / "dsv4_pro.json"
 flash.FP4_EXPERTS = PRO_EXPERTS
@@ -166,8 +172,48 @@ def pro_build_records(contract: Mapping[str, object], first_layer: int,
                          ("embed.weight",))
     for layer in range(first_layer, first_layer + layer_count):
         pro_add_layer_records(records, PRO_RATIOS, layer)
+    if PRO_MTP_PACKED != 0:
+        # GA DSpark speculative stage: three full draft layers
+        # (mtp.0/mtp.1/mtp.2); mtp.0 adds the main-stream projection,
+        # mtp.2 carries the draft heads (norm, Markov, confidence, HC).
+        # The module replicates the complete draft block into every rank
+        # pack, so every slice carries it.
+        flash.add_record(records, flash.KIND_MTP_MAIN_NORM,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
+                         PRO_HIDDEN, ("mtp.0.main_norm.weight",))
+        flash.add_linear(records, flash.KIND_MTP_MAIN_PROJ, "mtp.0",
+                         flash.GLOBAL_LAYER, PRO_HIDDEN,
+                         PRO_DSPARK_TARGET_LAYER_COUNT * PRO_HIDDEN,
+                         flash.WEIGHT_FP8, "main_proj")
+        pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 0)
+        pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 1)
+        pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER_FIRST + 2)
+        flash.add_record(records, flash.KIND_MTP_FINAL_NORM,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
+                         PRO_HIDDEN, ("mtp.2.norm.weight",))
+        flash.add_record(records, flash.KIND_MTP_MARKOV_W1,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_BF16, PRO_VOCAB,
+                         PRO_MARKOV_RANK,
+                         ("mtp.2.markov_head.markov_w1.weight",))
+        flash.add_record(records, flash.KIND_MTP_MARKOV_W2,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_BF16, PRO_VOCAB,
+                         PRO_MARKOV_RANK,
+                         ("mtp.2.markov_head.markov_w2.weight",))
+        flash.add_record(records, flash.KIND_MTP_CONFIDENCE_PROJ,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
+                         PRO_HIDDEN + PRO_MARKOV_RANK,
+                         ("mtp.2.confidence_head.proj.weight",))
+        flash.add_record(records, flash.KIND_MTP_HC_HEAD_FN,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_F32, 4,
+                         4 * PRO_HIDDEN, ("mtp.2.hc_head_fn",))
+        flash.add_record(records, flash.KIND_MTP_HC_HEAD_BASE,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_F32, 1, 4,
+                         ("mtp.2.hc_head_base",))
+        flash.add_record(records, flash.KIND_MTP_HC_HEAD_SCALE,
+                         flash.GLOBAL_LAYER, flash.WEIGHT_F32, 1, 1,
+                         ("mtp.2.hc_head_scale",))
     if first_layer + layer_count == total_layers:
-        if first_layer != 0 and PRO_MTP_PACKED != 0:
+        if first_layer != 0:
             flash.add_record(records, flash.KIND_EMBEDDING,
                              flash.GLOBAL_LAYER, flash.WEIGHT_BF16, PRO_VOCAB,
                              PRO_HIDDEN, ("embed.weight",))
@@ -182,42 +228,16 @@ def pro_build_records(contract: Mapping[str, object], first_layer: int,
                          flash.WEIGHT_F32, 1, 4, ("hc_head_base",))
         flash.add_record(records, flash.KIND_HC_HEAD_SCALE, flash.GLOBAL_LAYER,
                          flash.WEIGHT_F32, 1, 1, ("hc_head_scale",))
-        if PRO_MTP_PACKED != 0:
-            flash.add_record(records, flash.KIND_MTP_E_PROJ,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_FP8, PRO_HIDDEN,
-                             PRO_HIDDEN, ("mtp.0.e_proj.weight",),
-                             ("mtp.0.e_proj.scale",))
-            flash.add_record(records, flash.KIND_MTP_H_PROJ,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_FP8, PRO_HIDDEN,
-                             PRO_HIDDEN, ("mtp.0.h_proj.weight",),
-                             ("mtp.0.h_proj.scale",))
-            flash.add_record(records, flash.KIND_MTP_ENORM,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
-                             PRO_HIDDEN, ("mtp.0.enorm.weight",))
-            flash.add_record(records, flash.KIND_MTP_HNORM,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
-                             PRO_HIDDEN, ("mtp.0.hnorm.weight",))
-            flash.add_record(records, flash.KIND_MTP_FINAL_NORM,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_BF16, 1,
-                             PRO_HIDDEN, ("mtp.0.norm.weight",))
-            flash.add_record(records, flash.KIND_MTP_HC_HEAD_FN,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_F32, 4,
-                             4 * PRO_HIDDEN, ("mtp.0.hc_head_fn",))
-            flash.add_record(records, flash.KIND_MTP_HC_HEAD_BASE,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_F32, 1, 4,
-                             ("mtp.0.hc_head_base",))
-            flash.add_record(records, flash.KIND_MTP_HC_HEAD_SCALE,
-                             flash.GLOBAL_LAYER, flash.WEIGHT_F32, 1, 1,
-                             ("mtp.0.hc_head_scale",))
-            pro_add_layer_records(records, PRO_RATIOS, flash.MTP_LAYER)
     return records
 
 
 def pro_pack_header(records, first_layer: int, layer_count: int,
                     file_bytes: int, codecs) -> bytes:
-    # The header declares the MODEL's packed MTP count (1 for Pro), not
-    # whether this particular slice carries the MTP records.
+    # The header declares the MODEL's packed MTP count (3 for the GA DSpark
+    # stage), not whether this particular slice carries the MTP records.
     packed_mtp_layer_count = PRO_MTP_PACKED
+    if PRO_KV_CODEC_OVERRIDE is not None:
+        codecs = (codecs[0], codecs[1], PRO_KV_CODEC_OVERRIDE)
     return flash.HEADER_STRUCT.pack(
         0x34565344, flash.FORMAT_VERSION, flash.HEADER_STRUCT.size,
         flash.ENTRY_STRUCT.size, flash.CODEC_ABI_VERSION, *codecs,
@@ -235,6 +255,7 @@ def pro_validate_source_identity(model_dir: Path, contract, records=None,
 
 
 def pro_parse_args(argv=None) -> argparse.Namespace:
+    global PRO_KV_CODEC_OVERRIDE
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--model-dir", type=Path)
@@ -244,6 +265,11 @@ def pro_parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--layer-count", type=int)
     parser.add_argument("--inspect", action="store_true")
     parser.add_argument("--sha256", action="store_true")
+    parser.add_argument("--kv-codec", choices=("bf16", "fp8_e4m3"),
+                        default=None,
+                        help="override the pack header's KV cache codec id "
+                             "(bf16 -> 1, fp8_e4m3 -> 5); payloads are "
+                             "unchanged - the cache is runtime data")
     parser.add_argument("--contract", type=Path,
                         default=flash.CONTRACT_PATH)
     arguments = parser.parse_args(argv)
@@ -256,15 +282,47 @@ def pro_parse_args(argv=None) -> argparse.Namespace:
         parser.error("--model-dir requires --first-layer and --layer-count")
     elif arguments.sha256:
         parser.error("--sha256 requires --verify-pack")
+    PRO_KV_CODEC_OVERRIDE = None
+    if arguments.kv_codec == "fp8_e4m3":
+        PRO_KV_CODEC_OVERRIDE = flash.CODEC_IDS["fp8_e4m3"]
+    elif arguments.kv_codec == "bf16":
+        PRO_KV_CODEC_OVERRIDE = flash.CODEC_IDS["bf16"]
     return arguments
 
 
 # Patch the flash module's geometry-bearing functions, then reuse its main().
+MTP_PREFIXES = {
+    flash.MTP_LAYER_FIRST + 0: "mtp.0",
+    flash.MTP_LAYER_FIRST + 1: "mtp.1",
+    flash.MTP_LAYER_FIRST + 2: "mtp.2",
+}
+
+
+def pro_source_prefix(layer: int) -> str:
+    # GA: three DSpark draft layers under the mtp.0/mtp.1/mtp.2 namespaces.
+    if layer in MTP_PREFIXES:
+        return MTP_PREFIXES[layer]
+    return f"layers.{layer}"
+
+
+_flash_layer_kind = flash.layer_kind
+
+
+def pro_layer_kind(ratios: Sequence[int], layer: int) -> int:
+    # All three draft layers are ratio-0 DSpark blocks: no compressor, no
+    # indexer (kind 0), regardless of the ratio table tail.
+    if layer in MTP_PREFIXES:
+        return 0
+    return _flash_layer_kind(ratios, layer)
+
+
 flash.add_layer_records = pro_add_layer_records
 flash.build_records = pro_build_records
 flash.pack_header = pro_pack_header
 flash.validate_source_identity = pro_validate_source_identity
 flash.parse_args = pro_parse_args
+flash.source_prefix = pro_source_prefix
+flash.layer_kind = pro_layer_kind
 
 if __name__ == "__main__":
     raise SystemExit(flash.main())

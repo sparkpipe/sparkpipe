@@ -39,7 +39,7 @@ make -j4 \
 ARCHIVE_SHA="$(sha256sum "${ARCHIVE}" | cut -d' ' -f1)"
 build/sparkpipe_module_publish \
     --library "${MODULE_LIB}" \
-    --module spark.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h7168.l61.e384.k6.ga0731.v1 \
+    --module spark.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h7168.l61.e384.k6.ga0813.v1 \
     --target cuda.sm121.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16 \
     --link-unit "${ARCHIVE}" \
     --recipe merged-main.dsv4.pro.tp4-pp4.b1024.static-sm121.live-pending.v1 \

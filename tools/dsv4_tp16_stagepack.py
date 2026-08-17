@@ -110,6 +110,20 @@ KIND_LM_HEAD = 37
 KIND_HC_HEAD_FN = 38
 KIND_HC_HEAD_BASE = 39
 KIND_HC_HEAD_SCALE = 40
+KIND_MTP_MAIN_PROJ = 41
+KIND_MTP_MAIN_NORM = 42
+KIND_MTP_FINAL_NORM = 43
+KIND_MTP_HC_HEAD_FN = 44
+KIND_MTP_HC_HEAD_BASE = 45
+KIND_MTP_HC_HEAD_SCALE = 46
+KIND_MTP_MARKOV_W1 = 47
+KIND_MTP_MARKOV_W2 = 48
+KIND_MTP_CONFIDENCE_PROJ = 49
+KIND_MTP_SET = frozenset((
+    KIND_MTP_MAIN_PROJ, KIND_MTP_MAIN_NORM, KIND_MTP_FINAL_NORM,
+    KIND_MTP_HC_HEAD_FN, KIND_MTP_HC_HEAD_BASE, KIND_MTP_HC_HEAD_SCALE,
+    KIND_MTP_MARKOV_W1, KIND_MTP_MARKOV_W2, KIND_MTP_CONFIDENCE_PROJ,
+))
 
 GLOBAL_LAYER = 0xFFFFFFFF
 
@@ -256,6 +270,9 @@ def selected_global(kind: int, rank: int, pp_stages: int = 1,
                     pp_stage: int = 0) -> bool:
     if kind == KIND_EMBEDDING:
         return pp_stage == 0
+    if kind in KIND_MTP_SET:
+        # The DSpark draft extras replicate in full to every rank.
+        return True
     if pp_stage + 1 != pp_stages:
         return False
     if kind in (KIND_FINAL_NORM, KIND_LM_HEAD, KIND_HC_HEAD_FN,
