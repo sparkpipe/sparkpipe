@@ -845,9 +845,13 @@ static void SparkDsv4ServingDriverCompletion(
 		completion.residency = driver_completion->residency;
 	completion.accepted_token_count = driver_completion->accepted_token_count;
 	/* DSpark verify frames emit 1..tokens_per_sequence tokens depending on
-	 * acceptance; the module's completion carries the actual count. */
-	if ( matches != 0u && (driver_completion->tokens_per_sequence == 0u ||
-		driver_completion->tokens_per_sequence > pending->tokens_per_sequence) )
+	 * acceptance; the module's completion carries the actual count. Release
+	 * frames carry no tokens at all, so the zero bound applies only to the
+	 * token-bearing work kinds. */
+	if ( matches != 0u && pending->work_kind !=
+		SPARK_MODEL_SERVING_WORK_KIND_RELEASE &&
+		(driver_completion->tokens_per_sequence == 0u ||
+		 driver_completion->tokens_per_sequence > pending->tokens_per_sequence) )
 		completion.status = SPARK_STATUS_SCHEMA_ERROR;
 	completion.queue_delay_ns = driver_completion->queue_delay_ns;
 	completion.service_time_ns = driver_completion->service_time_ns;
