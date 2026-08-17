@@ -1721,7 +1721,7 @@ extern "C" cudaError_t SparkQwen38ConfigureCudaKernels(void)
      * the widest qwen38 input is the 16384-wide attention/GDN output
      * projection (64KB of floats), past the 48KB static ceiling. */
     return cudaFuncSetAttribute(
-        (const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE>,
+        (const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_CTA_WARPS>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         (int)(SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION * sizeof(float)));
 }
