@@ -510,3 +510,27 @@ REJECTED_BUSY ? BUSY : CAPACITY_EXCEEDED), dropping the DEADLINE and
 UNSUPPORTED_SHAPE distinctions that SparkModelDriverAdmissionDecisionStatus
 carries. The proposed SparkAdmissionMergeDecision fixes it by construction;
 the per-adapter collapse is scheduled for migration phase C.
+
+---
+
+## Implementation status (landed, coordinator-verified)
+
+- Core landed: `include/sparkpipe/spark_admission.h` (210 lines, table +
+  inline `SparkAdmissionEvaluateShape` ladder) and `src/spark_admission.c`
+  (188 lines, builders/evaluate/apply/cost/merge), wired into CORE_LIBRARY
+  via `sources.mk`.
+- Phase A: `test_dry_law.py` PASS (shared files model-neutral);
+  `test_must_work_targets.py` PASS (adapter/stage-runner pinning tests).
+- Phase B: serving wrappers now return the driver's rich rejection mapping
+  instead of the BUSY/CAPACITY ternary; `SparkAdmissionMergeDecision` +
+  `SparkAdmissionDecisionCost` are promoted shared symbols.
+- Phase C: glm52/qwen38 adapters collapsed to `FromSubmission`;
+  qwen36/dsv4 stage runner + serving builder collapsed to `FromFrame`;
+  qwen36 + glm52 module gates collapsed to `EvaluateShape` (qwen36 keeps a
+  KV predicate for its prefill `RangeFits` check).
+- NOT collapsed (recorded reasons): dsv4 module gate (release path +
+  per-lane KV prepare/commit/abort exceed the ladder contract) and qwen38
+  module gate (stub has no slot accounting; collapses when the qwen38
+  activation chain lands).
+- Code size: net +319, ceiling moved to 165304 with justification in
+  `tests/test_code_size.py`.

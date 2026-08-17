@@ -195,10 +195,13 @@ from pathlib import Path
 # and five packers migrate onto it (net -144); 166142 is the exact count
 # after it lands. Ceiling moves with it.
 # tools/devcycle (host-recovery / fleet-ops scripts) is reclassified out of
-# the authored-code budget (-1157); 164985 is the exact count after it. The
-# ceiling moves DOWN with the reclassification so future engine-code growth
-# is policed against the true current size.
-CEILING = 164985
+# the authored-code budget (-1157); 164985 is the exact count after it.
+# The admission core lands (spark_admission.h 210 + spark_admission.c 188)
+# and collapses four serving-adapter admit wrappers + two module gates onto
+# it (net +319: +148 wrapper lines, -227 deleted); 165304 is the exact count
+# after it lands. The ceiling moves with it: the core is the DRY base the
+# KV seam, scheduler tables, and model gates build on.
+CEILING = 165304
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -9,6 +9,7 @@
 #include "sparkpipe/spark_dsv4_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_dsv4_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
+#include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_tp_device_collective.h"
@@ -1204,39 +1205,6 @@ static SparkStatus SparkDsv4ServingValidateSubmission(
 	return(SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count));
 }
 
-static void SparkDsv4ServingBuildCacheAdmission(
-	const SparkDsv4ServingAdapterState *state,
-	const SparkModelServingSubmission *submission,
-	const SparkModelDriverCacheLane *cache_lanes,
-	uint32_t admission_flags,
-	SparkModelDriverAdmissionRequest *request)
-{
-	memset(request,0,sizeof(*request));
-	request->descriptor_bytes = sizeof(*request);
-	request->program_id = state->program->program_id;
-	request->submission_id = submission->submission_id;
-	request->control_generation = submission->control_generation;
-	request->transaction_id = submission->transaction_id;
-	request->request_generation = submission->request_generation;
-	request->step_generation = submission->step_generation;
-	request->request_id = submission->request_id;
-	request->sequence_id = submission->sequence_id;
-	request->sequence_position = submission->sequence_position;
-	request->deadline_time_ns = submission->deadline_time_ns;
-	request->active_slot_count = submission->active_sequence_count;
-	request->new_token_count = submission->new_token_count;
-	request->priority = submission->priority;
-	request->frame_flags = submission->work_kind ==
-		SPARK_MODEL_SERVING_WORK_KIND_PREFILL ?
-		SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL :
-		submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE ?
-		SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE : 0u;
-	request->admission_flags = admission_flags;
-	request->cache_lane_count = submission->active_sequence_count;
-	request->cache_lanes = cache_lanes;
-	request->residency = submission->residency;
-}
-
 static SparkStatus SparkDsv4ServingPrefetch(
 	void *adapter_state,
 	const SparkModelServingSubmission *submissions,
@@ -1264,11 +1232,12 @@ static SparkStatus SparkDsv4ServingPrefetch(
 				&cache_lane_count);
 		if ( status == SPARK_STATUS_OK )
 		{
-			SparkDsv4ServingBuildCacheAdmission(state,&submissions[index],
-				SparkDsv4ServingPrefetchLanes,
+			status = SparkAdmissionRequestFromSubmission(state->program->program_id,
+				&submissions[index],SparkDsv4ServingPrefetchLanes,
 				SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE,&request);
-			status = SparkModelDriverEvaluateAdmission(state->driver.interface,
-				state->driver_instance,&request,&decision);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkAdmissionEvaluate(state->driver.interface,
+					state->driver_instance,&request,&decision);
 		}
 	}
 	return(status);
@@ -1304,9 +1273,11 @@ static SparkStatus SparkDsv4ServingResolvePrefetch(
 	admission_flag = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ?
 		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT :
 		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
-	SparkDsv4ServingBuildCacheAdmission(state,submission,
-		SparkDsv4ServingPrefetchLanes,admission_flag,&request);
-	return(SparkModelDriverEvaluateAdmission(state->driver.interface,
+	status = SparkAdmissionRequestFromSubmission(state->program->program_id,
+		submission,SparkDsv4ServingPrefetchLanes,admission_flag,&request);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	return(SparkAdmissionEvaluate(state->driver.interface,
 		state->driver_instance,&request,&decision));
 }
 
@@ -1319,9 +1290,11 @@ static SparkStatus SparkDsv4ServingSubmitRelease(
 	SparkModelDriverAdmissionDecision decision;
 	SparkModelDriverFrame frame;
 	SparkStatus status;
-	SparkDsv4ServingBuildCacheAdmission(state,submission,pending->cache_lanes,
-		0u,&request);
-	status = SparkModelDriverEvaluateAdmission(state->driver.interface,
+	status = SparkAdmissionRequestFromSubmission(state->program->program_id,
+		submission,pending->cache_lanes,0u,&request);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkAdmissionEvaluate(state->driver.interface,
 		state->driver_instance,&request,&decision);
 	if ( status != SPARK_STATUS_OK )
 		return(status);

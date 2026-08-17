@@ -14,6 +14,7 @@
 
 #include "sparkpipe/spark_qwen36_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "spark_qwen36_stagepack_format.h"
@@ -2028,15 +2029,49 @@ SparkStatus SparkQwen36ResidentDecodeStageExecute(
     return status;
 }
 
+static void SparkQwen36AdmissionCost(
+    void *context,
+    const SparkModelDriverAdmissionRequest *request,
+    SparkModelDriverAdmissionDecision *decision)
+{
+    SparkQwen36ModuleState *state = (SparkQwen36ModuleState *)context;
+    (void)state;
+    decision->host_staging_bytes = (uint64_t)request->new_token_count *
+        (sizeof(uint32_t) *
+             (uint64_t)(state->owns_embedding + state->owns_final_head + 3u) +
+         sizeof(uint64_t));
+    decision->device_memcpy_bytes = decision->host_staging_bytes;
+}
+
+static SparkStatus SparkQwen36AdmissionKvPredicate(
+    void *context,
+    const SparkModelDriverAdmissionRequest *request,
+    SparkModelDriverAdmissionDecision *decision)
+{
+    (void)context;
+    if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u &&
+        SparkModelDriverRangeFitsWithinCapacity(
+            request->sequence_position,
+            request->new_token_count,
+            SPARK_QWEN36_MODEL_MAXIMUM_CONTEXT_TOKENS) == 0u)
+    {
+        SparkModelDriverRejectAdmission(
+            decision,
+            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_KV_CAPACITY,
+            decision->available_dispatch_slot_count);
+    }
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkQwen36ResidentDecodeStageAdmit(
     void *module_state,
     const SparkModelDriverAdmissionRequest *request,
     SparkModelDriverAdmissionDecision *decision)
 {
-    const uint32_t known_frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
     SparkQwen36ModuleState *state;
+    SparkAdmissionPolicyTable table;
     uint32_t available_slot_count;
-    uint32_t is_prefill;
+    SparkStatus status;
 
     state = (SparkQwen36ModuleState *)module_state;
     if (state == 0 || request == 0 || decision == 0)
@@ -2046,76 +2081,32 @@ SparkStatus SparkQwen36ResidentDecodeStageAdmit(
     available_slot_count = SparkStageModuleSlotCountFree(
         state->slot_states,
         state->pipeline_slot_count);
-    SparkStageModuleAdmissionDecisionInitialize(
-        decision,
-        available_slot_count);
-    if (request->descriptor_bytes < (uint32_t)sizeof(*request) ||
-        request->program_id == 0u)
+    memset(&table, 0, sizeof(table));
+    table.abi_version = SPARK_ADMISSION_ABI_VERSION;
+    table.descriptor_bytes = (uint32_t)sizeof(table);
+    table.max_active_sequence_count = state->max_active_sequence_count;
+    table.max_input_row_count = state->max_active_sequence_count;
+    table.max_sequence_positions = SPARK_QWEN36_MODEL_MAXIMUM_CONTEXT_TOKENS;
+    table.flags = SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT |
+        SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS;
+    table.predicate = SparkQwen36AdmissionKvPredicate;
+    table.predicate_context = state;
+    table.cost = SparkQwen36AdmissionCost;
+    table.cost_context = state;
+    status = SparkAdmissionEvaluateShape(
+        &table, available_slot_count, request, decision);
+    if (status != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_ABI_MISMATCH;
+        return status;
     }
-
-    is_prefill = (request->frame_flags &
-                  SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u
-        ? 1u
-        : 0u;
-    if ((request->frame_flags & ~known_frame_flags) != 0u ||
-        (request->frame_flags &
-         SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) != 0u ||
-        request->active_slot_count == 0u ||
-        request->active_slot_count > state->max_active_sequence_count ||
-        request->new_token_count == 0u ||
-        request->new_token_count > state->max_active_sequence_count ||
-        (is_prefill != 0u && request->active_slot_count != 1u) ||
-        (is_prefill == 0u &&
-         request->new_token_count != request->active_slot_count))
+    if (decision->accepted == 0u)
     {
-        SparkStageModuleAdmissionDecisionReject(
-            decision,
-            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);
         atomic_fetch_add_explicit(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
-        return SPARK_STATUS_OK;
     }
-    if ((is_prefill != 0u &&
-         SparkModelDriverRangeFitsWithinCapacity(
-             request->sequence_position,
-             request->new_token_count,
-             SPARK_QWEN36_MODEL_MAXIMUM_CONTEXT_TOKENS) == 0u) ||
-        (is_prefill == 0u &&
-         request->sequence_position >=
-             SPARK_QWEN36_MODEL_MAXIMUM_CONTEXT_TOKENS))
-    {
-        SparkStageModuleAdmissionDecisionReject(
-            decision,
-            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_KV_CAPACITY);
-        atomic_fetch_add_explicit(
-            &state->rejected_count,
-            1u,
-            memory_order_relaxed);
-        return SPARK_STATUS_OK;
-    }
-    if (available_slot_count == 0u)
-    {
-        SparkStageModuleAdmissionDecisionReject(
-            decision,
-            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY);
-        atomic_fetch_add_explicit(
-            &state->rejected_count,
-            1u,
-            memory_order_relaxed);
-        return SPARK_STATUS_OK;
-    }
-
-    SparkStageModuleAdmissionDecisionAccept(decision);
-    decision->host_staging_bytes = (uint64_t)request->new_token_count *
-        (sizeof(uint32_t) *
-             (uint64_t)(state->owns_embedding + state->owns_final_head + 3u) +
-         sizeof(uint64_t));
-    decision->device_memcpy_bytes = decision->host_staging_bytes;
-    return SPARK_STATUS_OK;
+    return status;
 }
 
 SparkStatus SparkQwen36ResidentDecodeStageSnapshot(

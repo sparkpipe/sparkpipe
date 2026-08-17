@@ -40,6 +40,7 @@
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_json.h"
+#include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_qwen38_model.h"
 #include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
@@ -846,27 +847,13 @@ static SparkStatus SparkQwen38ServingAdmit(
 	SparkModelDriverAdmissionRequest request;
 	SparkModelDriverAdmissionDecision decision;
 	SparkStatus status;
-	memset(&request,0,sizeof(request));
-	request.descriptor_bytes = sizeof(request);
-	request.program_id = state->program->program_id;
-	request.request_id = frame->request_id;
-	request.sequence_id = frame->sequence_id;
-	request.sequence_position = frame->sequence_position;
-	request.deadline_time_ns = frame->deadline_time_ns;
-	request.active_slot_count = frame->active_slot_count;
-	request.new_token_count = frame->new_token_count;
-	request.priority = frame->priority;
-	request.frame_flags = frame->flags;
-	request.residency = submission->residency;
-	SparkModelDriverInitializeAdmissionDecision(&decision);
-	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
+	(void)submission;
+	status = SparkAdmissionRequestFromFrame(
+		state->program->program_id,frame,0,0u,&request);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( SparkModelDriverAdmissionDecisionIsValid(&decision) == 0u )
-		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( decision.accepted == 0u )
-		return(decision.rejection_reason == SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY ? SPARK_STATUS_BUSY : SPARK_STATUS_CAPACITY_EXCEEDED);
-	return(SparkModelDriverApplyAdmissionDecision(&decision,frame));
+	return(SparkAdmissionEvaluateAndApply(
+		state->driver.interface,state->driver_instance,&request,frame,&decision));
 }
 
 static SparkStatus SparkQwen38ServingRunFrame(

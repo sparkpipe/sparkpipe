@@ -15,6 +15,7 @@
 SPARKPIPE_CORE_SOURCES := \
     src/spark_status.c \
     src/spark_sha256.c \
+    src/spark_admission.c \
     runtime/filesystem.c \
     runtime/json.c
 

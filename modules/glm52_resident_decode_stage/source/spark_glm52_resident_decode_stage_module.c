@@ -11,6 +11,7 @@
 
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #include "spark_glm52_stagepack_format.h"
@@ -1551,43 +1552,46 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
 	return(status);
 }
 
+static void SparkGlm52AdmissionCost(
+	void *context,
+	const SparkModelDriverAdmissionRequest *request,
+	SparkModelDriverAdmissionDecision *decision)
+{
+	(void)context;
+	decision->host_staging_bytes = (uint64_t)request->new_token_count *
+		(sizeof(uint32_t) * 3u + sizeof(uint64_t) * 2u);
+	decision->device_memcpy_bytes = decision->host_staging_bytes;
+}
+
 SparkStatus SparkGlm52ResidentDecodeStageAdmit(
 	void *module_state,
 	const SparkModelDriverAdmissionRequest *request,
 	SparkModelDriverAdmissionDecision *decision)
 {
 	SparkGlm52ModuleState *state;
-	uint32_t available,prefill;
+	SparkAdmissionPolicyTable table;
+	uint32_t available;
+	SparkStatus status;
 	state = (SparkGlm52ModuleState *)module_state;
 	if ( state == 0 || request == 0 || decision == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	available = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
-	SparkStageModuleAdmissionDecisionInitialize(decision,available);
-	if ( request->descriptor_bytes < sizeof(*request) || request->program_id == 0u )
-		return(SPARK_STATUS_ABI_MISMATCH);
-	prefill = (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
-	if ( (request->frame_flags & ~(SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL | SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID)) != 0u || request->active_slot_count == 0u || request->active_slot_count > state->resident_sequence_capacity || request->new_token_count == 0u || request->new_token_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || (prefill == 0u && request->new_token_count != request->active_slot_count) )
-	{
-		SparkStageModuleAdmissionDecisionReject(decision,SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);
+	memset(&table,0,sizeof(table));
+	table.abi_version = SPARK_ADMISSION_ABI_VERSION;
+	table.descriptor_bytes = (uint32_t)sizeof(table);
+	table.max_active_sequence_count = state->resident_sequence_capacity;
+	table.max_input_row_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
+	table.max_sequence_positions = state->max_sequence_positions;
+	table.flags = SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS |
+		SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG;
+	table.cost = SparkGlm52AdmissionCost;
+	table.cost_context = state;
+	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( decision->accepted == 0u )
 		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-		return(SPARK_STATUS_OK);
-	}
-	if ( request->sequence_position >= state->max_sequence_positions )
-	{
-		SparkStageModuleAdmissionDecisionReject(decision,SPARK_MODEL_DRIVER_ADMISSION_REJECTED_KV_CAPACITY);
-		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-		return(SPARK_STATUS_OK);
-	}
-	if ( available == 0u )
-	{
-		SparkStageModuleAdmissionDecisionReject(decision,SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY);
-		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-		return(SPARK_STATUS_OK);
-	}
-	SparkStageModuleAdmissionDecisionAccept(decision);
-	decision->host_staging_bytes = (uint64_t)request->new_token_count * (sizeof(uint32_t) * 3u + sizeof(uint64_t) * 2u);
-	decision->device_memcpy_bytes = decision->host_staging_bytes;
-	return(SPARK_STATUS_OK);
+	return(status);
 }
 
 SparkStatus SparkGlm52ResidentDecodeStageSnapshot(
