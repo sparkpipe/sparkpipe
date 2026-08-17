@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 diagnostics/
 tools/devcycle/drivers/
+.agents/

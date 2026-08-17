@@ -187,7 +187,11 @@ CEILING = 165905
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
-EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'qualification', '__pycache__'}
+# .agents holds per-model agent worktrees (full clones of this tree);
+# their copies are tooling infrastructure, not authored source, and must
+# never move the counter.
+EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'qualification',
+                      '__pycache__', '.agents'}
 
 
 def main():
