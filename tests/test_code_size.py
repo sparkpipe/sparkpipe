@@ -316,7 +316,11 @@ from pathlib import Path
 # before SiTU with the widened fused/staging buffers (24576 u16) - the
 # production-side completion of the SiTU numerics fix. 166651 is the exact
 # count.
-CEILING = 166651
+# The k3 phase-1 gemm init fix lands (+7): the fresh K3LayerLatentMoe call's
+# w2 launch now memsets and sets every field the grouped GEMM reads (the
+# uninitialised scale_a returned -41 on the golden's first MoE layer).
+# 166658 is the exact count.
+CEILING = 166658
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

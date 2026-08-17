@@ -889,11 +889,18 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// rows feed the down-projection as they are. The scale descriptor stays
 	// None for the reason written at the w1 launch: the scales are co-tiled
 	// in the stream and no LmScaleTensor can address them today.
+	/* Phase 1 is a fresh K3LayerLatentMoe call, so the local gemm is
+	 * uninitialised here: re-init the fields the w2 grouped launch reads
+	 * (scale_a, group_row_offset, prefix_built) exactly as the w1 launch did. */
+	memset(&gemm, 0, sizeof(gemm));
+	gemm.scale_a = LmScaleTensorNone();
+	gemm.scale_b = LmScaleTensorNone();
+	gemm.group_row_offset = b->group_row_offset;
+	gemm.group_tile_prefix = b->group_tile_prefix_w2;
+	gemm.prefix_built = 1u;
+	gemm.output_bf16 = b->gate_up_bf16;
 	gemm.source_row_map = 0;
 	gemm.source_row_count = 0u;
-	gemm.scale_b = LmScaleTensorNone();
-	gemm.group_tile_prefix = b->group_tile_prefix_w2;
-	gemm.output_bf16 = b->gate_up_bf16;
 	/* w2 OUTPUT-SPLITS: its input is the FULL SiTU intermediate, and its
 	 * output is the rank's latent cells (moe_in), not a full-width partial. */
 	const uint32_t w2_in = K3_EXPERT_INTERMEDIATE;
