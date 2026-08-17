@@ -1053,6 +1053,11 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 	 * (the half step bypasses SparkK3DispatchStep). The routing arrays are
 	 * consumed by the MoE path; the dense/group prefixes by every GEMM. */
 	b->dense_row_offset = state->dense_row_offset;
+	/* The non-grouped GEMMs derive their row extent from
+	 * dense_row_offset[1]-[0] (the dispatch step's launch wrote it; the half
+	 * step bypasses that launch), so write [0, rows] here or every dense
+	 * projection sees zero rows and the AttnRes fold never happens. */
+	K3RunnerDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, rows);
 	b->dense_tile_prefix = state->dense_tile_prefix;
 	b->group_row_offset = state->group_row_offset;
 	b->group_tile_prefix_w1 = state->group_tile_prefix_w1;
@@ -1076,12 +1081,10 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 	}
 	/* Capture the rank's CONTRIBUTION (the un-folded input-sharded projection
 	 * output), NOT the folded partial. Phase 0's destination differs by kind:
-	 * the KDA o_proj lands in hidden_bf16, the MLA o_proj in attention_out_bf16
-	 * (its value_bf16 input forbids in-place; the layer_collective hook's
-	 * phase0_source above makes the same distinction). Phase 1 = hidden_bf16
-	 * (routed_up / dense_down) plus shared_out_bf16 (shared_w2) on MoE layers.
-	 * The harness sums these across ranks; the replicated partial is only the
-	 * retrieval's read, and its fold is ignored. */
+	 * the KDA o_proj lands in hidden_bf16, the MLA o_proj in attention_out_bf16.
+	 * Phase 1 = hidden_bf16 (routed_up / dense_down) plus shared_out_bf16
+	 * (shared_w2) on MoE layers. The harness sums these across ranks and folds
+	 * the sum; the replicated partial is only the retrieval's read. */
 	const uint16_t *phase0_source = (phase == 0u &&
 		K3_LAYER_KIND(layer) == LM_LAYER_LATENT)
 		? b->attention_out_bf16 : b->hidden_bf16;

@@ -1,11 +1,11 @@
-// K3 serial-TP16 replay, per-projection TP plan (docs/serial_tp_replay.md +
+// K3 serial-TP16 replay, per-half TP plan (docs/serial_tp_replay.md +
 // docs/SERIAL_TP16_K3_PER_LAYER_PLAN.md): the runner's StepHalf runs ONE
 // layer-half per rank with the FULL hidden + FULL AttnRes partial replicated
 // in and the rank's CONTRIBUTION (the un-folded input-sharded projection
-// output) copied out. The harness sweeps the 16 ranks per half and host-sums
-// the contributions between halves, reconstructing the full hidden layer by
-// layer. 9 AR points for the 4-layer slice: 1 embedding + 2 per layer
-// (phase 0 = attention, phase 1 = MLP).
+// output) copied out. The harness sweeps the 16 ranks per half, host-sums the
+// contributions (rank-order fp32 + RNE), and folds the sum into the partial.
+// 8 halves for the 4-layer slice: 2 per layer (phase 0 = attention,
+// phase 1 = MLP).
 //
 // The 16 runners are PRE-LOADED (K3 has recurrent KDA state and a cross-layer
 // AttnRes bank that must persist across halves), so the harness's load/free
@@ -253,15 +253,18 @@ int main(int argc, char **argv)
 				printf("SWEEP FAIL %d at layer %u phase %u\n", rc, layer, phase);
 				return 1;
 			}
+			/* Each rank captured its CONTRIBUTION (the un-folded input-sharded
+			 * projection output); the rank-order fp32 sum is the full
+			 * contribution, folded into the partial exactly as the model's
+			 * fused epilogue would. */
 			spark_serial_tp_all_reduce_sum_bf16(partials.data(), 16u, K3_HIDDEN,
 				contribution.data());
-			printf("  L%uP%u contrib[0..2] = %.6g %.6g %.6g\n", layer, phase,
-				(double)spark_serial_tp_bf16_to_f32(contribution[0]),
-				(double)spark_serial_tp_bf16_to_f32(contribution[1]),
-				(double)spark_serial_tp_bf16_to_f32(contribution[2]));
 			for ( uint32_t k = 0u; k < K3_HIDDEN; ++k )
 				full_partial_f32[k] += spark_serial_tp_bf16_to_f32(contribution[k]);
-			printf("layer %u phase %u summed\n", layer, phase);
+			printf("  L%uP%u partial[0..2] = %.6g %.6g %.6g\n", layer, phase,
+				(double)full_partial_f32[0],
+				(double)full_partial_f32[1],
+				(double)full_partial_f32[2]);
 		}
 	}
 

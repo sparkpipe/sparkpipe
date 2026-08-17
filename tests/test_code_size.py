@@ -297,7 +297,10 @@ from pathlib import Path
 # EMITTED count (1 + accepted, clamped) instead of the coordinator-rank chain
 # width - the batch side already mirrored this (c8f76e5), closing the final
 # spec-continuation divergence. 166522 is the exact count.
-CEILING = 166522
+# The k3 dense_row_offset fix lands (+1): the half-step path now writes the
+# per-step dense offsets (was fresh-zero, so every grouped GEMM produced zero
+# rows - the real missing-fold root cause). 166523 is the exact count.
+CEILING = 166523
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
