@@ -344,3 +344,32 @@ acceptance, does not affect the output distribution").
   committed.
 - Next: the compressor rollback, then the draft latency (the per-markov-step
   host syncs + the tap syncs dominate the ~120 ms steps).
+
+## 11. Rollback probes 2026-08-17 (continued)
+
+- Draft-disabled probe (the pure pad path, 0 drive entries): the emitted
+  stream matches the 8-lane baseline EXACTLY for the first 11 tokens
+  (48582,223,2892,201,223,20,28,539,223,21,28), diverging at the 12th - the
+  first CSA boundary frame. So the pad path is exact and the remaining
+  divergence is confined to the compressor rollback.
+- The draft-ENABLED run degenerates to token 20 from the 2nd decode: the
+  draft forward's execution corrupts the verify frame's shared slot state.
+  The draft uses the shared slot buffers (reduced/normalized/mixes/kv/etc),
+  which the islands overwrite - the persistent corruptor is yet to be
+  isolated (the bisect candidate: the draft's CacheScatter ring writes and
+  the markov embedding gather on slot->input_token_ids).
+- The CSA previous-window restore is INCOMPLETE for the mixed-boundary case
+  (the first boundary accepted + the second rejected): the restore must
+  replay the ACCEPTED rows' state updates (the position writes + the
+  accepted boundary's shift + its emission) on top of the pre-frame state.
+  The replay needs the rows' per-layer compressor projections, which the
+  recorded islands overwrite - the fix is a CompressStep kernel extension
+  that also copies its inputs to a per-slot projections save region (the
+  signature change re-records the islands, which the existing capture
+  already supports), then the host-side per-layer replay: memcpy the
+  accepted rows' projections into the scratch + CompressStep(rows=accepted+1)
+  + KvEmission against the restored state and the real cache.
+- The baseline check: the 8-lane batch on the same build completes (status
+  0) with the per-request stream matching the DSpark pad path; the pinned
+  hash oracle remains unavailable on the current fleet (the old control
+  binaries no longer initialize).
