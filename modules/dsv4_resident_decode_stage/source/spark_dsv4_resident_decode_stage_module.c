@@ -4893,9 +4893,8 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 	if ( error != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 			"dspark_draft_forward"));
-	/* DEBUG forward-only probe */ if (0u)
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDsv4ModuleRunDsparkHead(state,slot,block);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ModuleRunDsparkHead(state,slot,block);
 	return(status);
 }
 
