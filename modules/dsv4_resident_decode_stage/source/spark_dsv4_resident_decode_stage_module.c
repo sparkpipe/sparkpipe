@@ -4284,20 +4284,28 @@ static SparkStatus SparkDsv4ModuleRunDsparkHead(
 		SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS,
 		SPARK_DSV4_MODEL_HC_STREAM_COUNT,
 		SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_head_fail stage=hc_mix error=%d\n",(int)error);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchHcHeadReduce(stream,slot->dspark_x_bf16,
 			slot->mixes_f32,state->hc_head_scale_value,
 			state->mtp.hc_head_base_f32,SPARK_DSV4_MODEL_HC_EPSILON,
 			slot->reduced_bf16,block,SPARK_DSV4_MODEL_HC_STREAM_COUNT,
 			SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_head_fail stage=hc_head_reduce error=%d\n",(int)error);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchRmsNorm(stream,slot->reduced_bf16,
 			state->mtp.final_norm_weight_bf16,slot->normalized_bf16,block,
 			SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_head_fail stage=rms_norm error=%d\n",(int)error);
 	/* base logits over this rank's lm_head shard */
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchLinear(stream,&state->lm_head_view,
 			slot->normalized_bf16,slot->dspark_logits_bf16,block);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_head_fail stage=linear error=%d\n",(int)error);
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 		"dspark_head"));
 }
