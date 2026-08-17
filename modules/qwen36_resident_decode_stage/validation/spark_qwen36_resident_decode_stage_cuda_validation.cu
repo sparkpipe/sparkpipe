@@ -1065,6 +1065,25 @@ static int SparkQwen36ValCheckModule(void)
 	SparkStatus status;
 	if (SparkQwen36ValModuleInitialize(&module) != 0)
 		return(1);
+	/* Admission and snapshot smoke: a decode admit must accept, and the
+	 * snapshot must show the completed frames. */
+	memset(&admission,0,sizeof(admission));
+	admission.descriptor_bytes = sizeof(admission);
+	admission.program_id = 1u;
+	admission.frame_flags = 0u;
+	admission.new_token_count = 1u;
+	admission.active_slot_count = 1u;
+	memset(&decision,0,sizeof(decision));
+	decision.descriptor_bytes = sizeof(decision);
+	status = SparkQwen36ResidentDecodeStageAdmit(module.state,&admission,&decision);
+	if (status != SPARK_STATUS_OK || decision.accepted == 0u)
+		return(SparkQwen36ValFail("module_admit","rejected"));
+	memset(&snapshot,0,sizeof(snapshot));
+	SparkModelDriverInitializeRuntimeSnapshot(&snapshot,1u);
+	status = SparkQwen36ResidentDecodeStageSnapshot(module.state,1u,&snapshot);
+	if (status != SPARK_STATUS_OK)
+		return(SparkQwen36ValFail("module_snapshot","status"));
+	printf("qwen36_validation check=module_admit_snapshot admit=ok snapshot=ok\n");
 	for (index = 0u; index < SPARK_QWEN36_VALIDATION_PREFILL_TOKENS; index++)
 		module.token_ids[index] = 1000u + (index * 37u) % 200000u;
 	module.positions[0] = 0u;
@@ -1161,27 +1180,7 @@ static int SparkQwen36ValCheckModule(void)
 		cudaFree(rerun.device_counts);
 		printf("qwen36_validation check=module_determinism bit_exact=1\n");
 	}
-	/* Admission and snapshot smoke: a decode admit must accept, and the
-	 * snapshot must show the completed frames. */
-	memset(&admission,0,sizeof(admission));
-	admission.descriptor_bytes = sizeof(admission);
-	admission.program_id = 1u;
-	admission.frame_flags = 0u;
-	admission.new_token_count = 1u;
-	admission.active_slot_count = 1u;
-	memset(&decision,0,sizeof(decision));
-	decision.descriptor_bytes = sizeof(decision);
-	status = SparkQwen36ResidentDecodeStageAdmit(module.state,&admission,&decision);
-	if (status != SPARK_STATUS_OK || decision.accepted == 0u)
-		return(SparkQwen36ValFail("module_admit","rejected"));
-	memset(&snapshot,0,sizeof(snapshot));
-	SparkModelDriverInitializeRuntimeSnapshot(&snapshot,1u);
-	status = SparkQwen36ResidentDecodeStageSnapshot(module.state,1u,&snapshot);
-	if (status != SPARK_STATUS_OK)
-		return(SparkQwen36ValFail("module_snapshot","status"));
-	printf("qwen36_validation check=module_admit_snapshot admit=ok snapshot=ok\n");
-	SparkQwen36ResidentDecodeStageDestroy(module.state);
-	cudaFree(module.device_blocks);
+	SparkQwen36ResidentDecodeStageDestroy(module.state);	cudaFree(module.device_blocks);
 	cudaFree(module.device_counts);
 	return(0);
 }
