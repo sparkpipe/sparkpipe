@@ -247,7 +247,13 @@ from pathlib import Path
 # overridable bucket knob (buckets 6/9/11 added to the allowlist + firmware
 # JSONs + serving-adapter sha map + build scripts) so k=5/8/10 drivers build
 # alongside k=7 for the DSpark sweep. 165956 is the exact count.
-CEILING = 165956
+# The dsv4-pro DSpark native-pass skeleton lands (+268): pinned drafter
+# shapes (128 attn heads / 1 MLA KV head / 512 head-dim / 3072 intermediate
+# from the GA rank-pack geometry), two new kernels (mean-reduction, main-KV
+# window write, confidence) + the mHC draft chain wired behind the MTP guard,
+# and the deployment-spec dataset names fixed (stale .b1024/.bf16 paths).
+# 166224 is the exact count.
+CEILING = 166224
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

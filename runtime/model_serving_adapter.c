@@ -591,7 +591,7 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 		return(SPARK_STATUS_OK);
 	/* Speculative completions: the submission carries the CHAIN width
 	 * (tokens_per_sequence), while the actual yield rides
-	 * accepted_token_count. DSpark-style verify emits 1..chain_width
+	 * accepted_token_count. Draft-chain verify emits 1..chain_width
 	 * tokens per sequence (partial acceptance), so the lower bound is 1;
 	 * the upper bound is the chain width plus the speculative allowance. */
 	if ( has_tokens != 0u &&

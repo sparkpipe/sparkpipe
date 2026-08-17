@@ -3434,3 +3434,7 @@ extern "C" cudaError_t SparkDsv4LaunchHcHeadReduce(cudaStream_t stream, const vo
 	return(cudaGetLastError());
 }
 #include "spark_dsv4_dspark_kernels.cuh"
+#if defined(SPARK_DSV4_MODEL_MTP_LAYER_COUNT) && (SPARK_DSV4_MODEL_MTP_LAYER_COUNT > 0u)
+#include "spark_dsv4_dspark_pro_kernels.cuh"
+#include "spark_dsv4_dspark_pro_chain.cuh"
+#endif

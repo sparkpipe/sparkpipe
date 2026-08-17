@@ -765,7 +765,7 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 	{
 		/* The lease must land on the position the engine actually advanced
 		 * to: the completion's token count, not the submission's chain
-		 * width (DSpark bursts emit fewer tokens than the speculative
+		 * width (draft bursts emit fewer tokens than the speculative
 		 * chain on rejection). */
 		uint32_t completed_tokens = route->completion.tokens_per_sequence;
 		if ( completed_tokens == 0u )

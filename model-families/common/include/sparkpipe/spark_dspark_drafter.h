@@ -65,8 +65,10 @@
 #include "sparkpipe/spark_dsv4_pro_model.h"
 /* DSV4 Pro GA 0813 drafter (model_contracts/dsv4_pro_authoritative.json
  * dspark block): 3 draft layers at taps {58,59,60}, block 5, markov 512,
- * noise token 128799. Draft attention heads/intermediate are not declared
- * by the contract yet - zero until the Pro session pins them. */
+ * noise token 128799. Draft shapes pinned from the GA 0813 rank pack
+ * (spark0 dsv4_pro_tp4_pp4_stage.spstage): the mtp.0/1/2 draft layers are
+ * full-width mHC blocks - 128 attn heads x 512 head-dim, 1 KV head (MLA),
+ * 3072 expert intermediate, 384 experts (identical to the main layer). */
 #define SPARK_DSPARK_HIDDEN_DIMENSION SPARK_DSV4_PRO_HIDDEN_DIMENSION
 #define SPARK_DSPARK_MAXIMUM_CONTEXT_TOKENS SPARK_DSV4_PRO_MAXIMUM_CONTEXT_TOKENS
 #define SPARK_DSPARK_FULL_VOCAB_SIZE SPARK_DSV4_PRO_VOCAB_COUNT
@@ -79,10 +81,10 @@
 #define SPARK_DSPARK_BLOCK_SIZE 5u
 #define SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT 8u
 #define SPARK_DSPARK_MARKOV_RANK 512u
-#define SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION 0u /* not declared yet */
-#define SPARK_DSPARK_DRAFT_ATTENTION_HEAD_COUNT 0u /* not declared yet */
-#define SPARK_DSPARK_DRAFT_KV_HEAD_COUNT 0u /* not declared yet */
-#define SPARK_DSPARK_DRAFT_HEAD_DIMENSION 0u /* not declared yet */
+#define SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION 3072u /* pack EXP_W1 rows 1179648 / 384 experts = 3072 (mtp.0/1/2) */
+#define SPARK_DSPARK_DRAFT_ATTENTION_HEAD_COUNT 128u /* pack WQ_B rows 65536 / head_dim 512 = 128 (mtp.0/1/2) */
+#define SPARK_DSPARK_DRAFT_KV_HEAD_COUNT 1u /* MLA: pack WKV rows 512 = head_dim (single KV head) */
+#define SPARK_DSPARK_DRAFT_HEAD_DIMENSION 512u /* pack WKV rows 512; draft attn scale 1/sqrt(512) */
 #define SPARK_DSPARK_MAX_ANCHORS 1024u
 #else
 #error "select a DSpark drafter target: define SPARK_DSPARK_TARGET_GLM52, SPARK_DSPARK_TARGET_K3, or SPARK_DSPARK_TARGET_DSV4_PRO_0813"
