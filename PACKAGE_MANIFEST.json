@@ -1,5 +1,5 @@
 {
-  "file_count": 1258,
+  "file_count": 1259,
   "files": [
     {
       "path": ".gitattributes",
@@ -83,8 +83,8 @@
     },
     {
       "path": "UNIFIED.md",
-      "sha256": "1cd47deee7934e3e76f470c7c06a51fc37a90c394747ed62e9dbdf8ba60f52e9",
-      "size_bytes": 3678
+      "sha256": "8d08a25346cadc90b577849ddf3ffd502532900498d7c982fb3f8cd8a90446b3",
+      "size_bytes": 4313
     },
     {
       "path": "cache/cache.h",
@@ -295,6 +295,11 @@
       "path": "docs/SPARK_HOST_RDMA_DOORBELL.md",
       "sha256": "0c32981f874cfba48341e61edbbc70bb891dd7ffa3d6d670372d8db9c6c9e49e",
       "size_bytes": 2911
+    },
+    {
+      "path": "docs/SPECULATION_AUDIT.md",
+      "sha256": "6ab87269cb3ba91b1a408fb45e9014ae25b52ef98bbe2fc5d76f3523f23851f5",
+      "size_bytes": 6466
     },
     {
       "path": "docs/archive/AUDIT_2026-07-29_BANDWIDTH_PATH.md",
@@ -6295,5 +6300,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 23760474
+  "total_bytes": 23767575
 }
