@@ -276,7 +276,11 @@ from pathlib import Path
 # The qwen36 validator admits TP1 full-width into the whole-stack tier and
 # derives head_stage from STAGE_COUNT (+6); the TP1 topology knob's validation
 # path. 166322 is the exact count.
-CEILING = 166322
+# The client continuation-lease fix lands (+8): the lease advances by the
+# COMPLETION's emitted count (1+accepted) instead of the submission's chain
+# width, mirroring the residentd - the last gate before the dsv4-flash
+# k-sweep. 166330 is the exact count.
+CEILING = 166330
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
