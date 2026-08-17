@@ -311,3 +311,36 @@ acceptance, does not affect the output distribution").
   it is ever read (the next frame's rows re-scatter the same slots), so no
   page-content rollback is needed; the page-list commit truncates at the
   accepted context via CompleteLane.
+
+## 10. Session results 2026-08-17 (fleet: spark8-f down; dev system on spark4)
+
+- Cluster restored: the init route_not_found was a STALE hidden_transport.so on
+  the ranks (the deploy scp silently failed on the busy file). A clean
+  rm+scp+restart brought all 4 ranks ready. Fleet notes: the second rail
+  re-negotiated 200G->100G; new roceP2p1s0f0/f1 NICs appear/disappear on the
+  nodes; spark8-f (GLM band + old build host) are down for days.
+- End-to-end DSpark pipeline RUNS on B8: prefills stream, the verify
+  expansion stages 8 rows, the acceptance loop runs on every rank
+  (accepted=0/1 observed - the first cross-rank acceptances), bursts emit
+  1+accepted tokens, the residentd lease + the TP-fanout completion
+  validation accept partial-accept yields.
+- Fixes landed this session: 7-row native decode shape whitelisted (the draft
+  head's Linear rejected the serving block); the release completion carries no
+  tokens (the adapter gate); EVERY rank D2Hs the REDUCED head tokens for the
+  verify acceptance (the non-head ranks previously accepted on stale host
+  buffers - the lane store diverged across the TP group); the speculative
+  completion lower bound relaxed to 1.
+- Measured: the O24 batch completes (status 0) at 8.35 tok/s with the
+  fallback-heavy path; the gate hash still mismatches - see the remaining gap.
+- REMAINING GAP (exactness): the CSA/HCA compressed-attention state. The CSA
+  (ratio 4, overlapped, 21 layers, per-layer position-keyed ring state) gets
+  speculative rows' contributions and a boundary-row ring SHIFT during the
+  verify frame. The fix = per-frame save of the compressed states + the
+  emission slots, then restore + re-apply the ACCEPTED rows (the replay needs
+  the rows' per-layer compressor projections, which the recorded islands
+  cannot expose - either a verify-specific island variant with the compressor
+  writes to a scratch state, or the host-side replay with the projections
+  saved by a modified kernel). The scaffolding (the slot save buffers) is
+  committed.
+- Next: the compressor rollback, then the draft latency (the per-markov-step
+  host syncs + the tap syncs dominate the ~120 ms steps).
