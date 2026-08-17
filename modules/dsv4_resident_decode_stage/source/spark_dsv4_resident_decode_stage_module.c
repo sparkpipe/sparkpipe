@@ -3639,6 +3639,45 @@ static SparkStatus SparkDsv4ModuleContinueResidentChain(
 
 static SparkStatus SparkDsv4ModuleDsparkDrive(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
 static SparkStatus SparkDsv4ModuleRunDsparkDraft(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
+static void SparkDsv4ModuleDsparkDraftCollectiveComplete(void *context,const SparkTpDeviceCollectiveCompletion *completion)
+{
+	(void)context;
+	(void)completion;
+}
+
+/* TP allreduce (SUM, bf16) over the draft's MoE output: the MTP expert
+ * tensors are quarter-width shards per rank, so each rank's ffn_accum
+ * holds a partial sum; the stream-ordered allreduce completes it. */
+static SparkStatus SparkDsv4ModuleDsparkReduceMoeOutput(
+	SparkDsv4ModuleState *state,
+	SparkDsv4ModuleSlot *slot,
+	uint32_t rows)
+{
+	SparkTpDeviceCollectiveSubmission submission;
+	uint64_t ordinal;
+	if ( state->tp_degree == 1u )
+		return(SPARK_STATUS_OK);
+	if ( state->tp_device_collective_initialized == 0u )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,
+		memory_order_relaxed);
+	memset(&submission,0,sizeof(submission));
+	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	submission.descriptor_bytes = sizeof(submission);
+	submission.slot_index = (uint32_t)(slot - state->slots);
+	submission.active_sequence_count = rows;
+	submission.flags =
+		SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+	submission.ordinal = ordinal;
+	submission.local_device = slot->ffn_accum_bf16;
+	submission.full_device = slot->ffn_accum_bf16;
+	submission.cuda_stream = slot->cuda_stream;
+	submission.completion_function =
+		SparkDsv4ModuleDsparkDraftCollectiveComplete;
+	submission.completion_context = 0;
+	return(SparkTpDeviceCollectiveSubmitBf16(
+		&state->tp_device_collective,&submission));
+}
 
 static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 {
@@ -4480,6 +4519,51 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 				rows_per_rank,state->vocabulary_row_start,
 				slot->dspark_draft_token_ids + index,
 				slot->dspark_scores_f32 + index);
+		/* The markov sample covers only this rank's lm_head shard:
+		 * reduce the (score, token) pair across the TP group so every
+		 * rank's chain input and verify staging see the same global
+		 * draft token. Stream-ordered: pack -> allreduce -> unpack, then
+		 * the existing D2H picks up the reduced token. */
+		if ( error == cudaSuccess && state->tp_degree > 1u &&
+			state->tp_device_collective_initialized != 0u )
+		{
+			SparkTpDeviceCollectiveSubmission submission;
+			SparkStatus reduce_status;
+			uint64_t ordinal;
+			error = SparkDsv4LaunchHeadMaxlocPack(stream,
+				slot->dspark_scores_f32 + index,
+				slot->dspark_draft_token_ids + index,
+				slot->head_maxloc_u64 + index,1u);
+			if ( error == cudaSuccess )
+			{
+				ordinal = atomic_fetch_add_explicit(
+					&state->tp_next_ordinal,1u,memory_order_relaxed);
+				memset(&submission,0,sizeof(submission));
+				submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+				submission.descriptor_bytes = sizeof(submission);
+				submission.slot_index = (uint32_t)(slot - state->slots);
+				submission.active_sequence_count = 1u;
+				submission.flags =
+					SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+				submission.ordinal = ordinal;
+				submission.local_device = slot->head_maxloc_u64 + index;
+				submission.full_device = slot->head_maxloc_u64 + index;
+				submission.cuda_stream = stream;
+				submission.completion_function =
+					SparkDsv4ModuleDsparkDraftCollectiveComplete;
+				submission.completion_context = 0;
+				reduce_status = SparkTpDeviceCollectiveSubmitU64Max(
+					&state->tp_device_collective,&submission);
+				if ( reduce_status != SPARK_STATUS_OK )
+				{
+					fprintf(stderr,"dspark_draft_reduce_failed status=%u tp_rank=%u index=%u\n",(uint32_t)reduce_status,state->tp_rank,index);
+					return(reduce_status);
+				}
+				error = SparkDsv4LaunchHeadMaxlocUnpack(stream,
+					slot->head_maxloc_u64 + index,
+					slot->dspark_draft_token_ids + index,1u);
+			}
+		}
 		if ( error == cudaSuccess )
 			error = cudaMemcpyAsync(&prev_token,
 				slot->dspark_draft_token_ids + index,sizeof(uint32_t),
@@ -4616,7 +4700,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 		if ( error == cudaSuccess )
 			error = SparkDsv4LaunchRope(stream,slot->dspark_q_attn_bf16,
-				state->base_freqs_f32,slot->row_positions,block,
+				state->base_freqs_f32,slot->dspark_row_positions,block,
 				SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT,
 				SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
 				SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,0u);
@@ -4645,7 +4729,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS);
 		if ( error == cudaSuccess )
 			error = SparkDsv4LaunchRope(stream,slot->dspark_q_attn_bf16,
-				state->base_freqs_f32,slot->row_positions,block,
+				state->base_freqs_f32,slot->dspark_row_positions,block,
 				SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT,
 				SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
 				SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,1u);
@@ -4686,6 +4770,9 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 		{
 			status = SparkDsv4ModuleRunMoe(state,slot,layer,
 				SPARK_DSV4_STAGEPACK_MTP_LAYER(stage),block);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkDsv4ModuleDsparkReduceMoeOutput(
+					state,slot,block);
 			if ( status != SPARK_STATUS_OK )
 				break;
 		}
