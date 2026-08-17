@@ -30,10 +30,10 @@ shapes (already pinned for GLM52/K3; partially declared for DSV4 Pro 0813).
 | verify positions | 8 (= block+1) | 8 (= block+1) | 8 (spec step+1) |
 | aux/tap layer ids | {8,23,39,55,70} | {7,23,51,67,83} | {58,59,60} |
 | draft layers | 5 | 5 | 3 |
-| attention heads | 64 | 64 | **0 (not declared)** |
-| KV heads | 64 | 16 (GQA) | **0 (not declared)** |
-| head dim | 64 | 64 | **0 (not declared)** |
-| intermediate | 12288 | 14336 | **0 (not declared)** |
+| attention heads | 64 | 64 | **0 → pin mtp.1 (§4.8)** |
+| KV heads | 64 | 16 (GQA) | **0 → pin mtp.1 (§4.8)** |
+| head dim | 64 | 64 | **512 (expect; confirm §4.8)** |
+| intermediate | 12288 | 14336 | **0 → pin mtp.1 (§4.8)** |
 | markov rank | 256 | 256 | 512 |
 | mask/noise token | 154856 | 163824 | 128799 |
 | rope theta | 8000000.0 | 10000.0 | compressed 160000.0 |
@@ -46,7 +46,10 @@ DSV4 Pro 0813 `spark_dspark_drafter.h:64-86` +
 `model_contracts/dsv4_pro_authoritative.json:32-42` (markov 512, noise 128799,
 taps {58,59,60}; "Draft attention heads/intermediate are not declared by the
 contract yet - zero until the Pro session pins them",
-`spark_dspark_drafter.h:68-69`).
+`spark_dspark_drafter.h:68-69`). The four Pro "0" cells are the DRAFT (mtp)
+model's own geometry — distinct from the main model's 128 heads / 1 KV head /
+head dim 512 / expert intermediate 3072 (`spark_dsv4_pro_model.h:31-36`) — and
+are pinned from the GA mtp layer weight shapes, not the main constants (§4.8).
 
 ---
 
@@ -396,7 +399,161 @@ policy and the verifier is a kernel" (`speculate.cuh:12-13`).
 
 ---
 
-## 4. How model agents edit these cards
+---
+
+# 4. DSV4 Pro DSpark native pass (P-D-01..06) — reviewed
+Requested by the dsv4-pro agent in `docs/PROPOSAL_DSV4_PRO_DSPARK_PASS.md`
+(landed `e9abfc2`); reviewed and completed by the CUDA-KERNELS agent below.
+All six are **NOT_MEASURED** and every card is **blocked on the §0 draft-head/
+intermediate pin** (P-D-03 names `head_count`); see §4.8. Pro draft context:
+3-layer mHC block (`mtp_layer_count 3`, `dsv4_pro_authoritative.json:9`),
+hidden 7168, markov 512, noise 128799, taps {58,59,60}
+(`dsv4_pro_authoritative.json:32-42`), draft KV BF16 with no rotary
+(first-light, `PROPOSAL_DSV4_PRO_DSPARK_PASS.md:44-46`).
+
+### P-D-01 mean-reduce (tap capture)
+- **requestor:** dsv4-pro model agent.
+- **op:** mean over the 4 hyper-connection streams of the post-layer hidden for
+  tap layers 58-60 → `[3][7168]` mean taps (reference `h.mean(dim=2)`).
+- **shapes:** rows 5 (block), dim 7168, 3 taps; 4 hc streams
+  (`spark_dsv4_pro_model.h:39`).
+- **dtypes:** bf16 in/out; fp32 sum then /4 → bf16.
+- **precision route:** bf16 → fp32 sum over streams → /4 → bf16 (RNE).
+- **target number / current measured:** NOT_MEASURED (proposal headline: main-only
+  12-13 tok/s → draft ~45-60 tok/s, `PROPOSAL_DSV4_PRO_DSPARK_PASS.md:3-4`).
+- **reference:** `inference/model.py` DSparkBlock tap.
+- **review:** REUSE `SparkDsv4LaunchDsparkTapMean` (D4-D-04) with `dimension`
+  7168, `stream_count` 4 — the Flash kernel is runtime-parameterized
+  (`spark_dsv4_dspark_kernels.cuh:339-358`). No new kernel.
+
+### P-D-02 main-KV write
+- **requestor:** dsv4-pro model agent.
+- **op:** `kv_norm(wkv(main))` → rolling main-KV window `[128][512]` at
+  `seq % 128` (the draft attention's window source).
+- **shapes:** window 128 slots × head-dim 512 bf16; one row per step.
+- **dtypes:** bf16 in/out; kv_norm = per-head RMSNorm, fp32 → bf16.
+- **precision route:** bf16 → fp32 norm → bf16 → window write (bit-preserving store).
+- **target number / current measured:** NOT_MEASURED.
+- **reference:** `inference/model.py` main KV + kv_norm; `mtp` checkpoint tensors.
+- **review:** NEW — Flash has no standalone rolling-window writer; its draft reads
+  the main model's ring directly (`spark_dsv4_dspark_kernels.cuh:103-107`). Small
+  write kernel.
+
+### P-D-03 draft attention
+- **requestor:** dsv4-pro model agent.
+- **op:** online softmax over the main-KV window (128) + the draft's own KV (5),
+  with `attn_sink` in the denominator; scale `1/sqrt(head_dim)`.
+- **shapes:** `head_count` = **TBD (§4.8)**, `head_dim` 512, window 128,
+  block/rows 5, 256 threads (mirrors D4-D-01).
+- **dtypes:** bf16 q/kv/out; f32 sink; fp32 online-softmax accumulation.
+- **precision route:** bf16 → fp32 qk (fma) → ×1/sqrt(512) → online softmax → sink
+  into denominator → value sum → bf16.
+- **target number / current measured:** NOT_MEASURED.
+- **reference:** `inference/model.py` DSparkAttention.
+- **review:** REUSE `SparkDsv4LaunchDsparkAttention` (D4-D-01) with
+  `head_count`=pinned, `head_dim` 512, `window` 128, `block` 5. Two caveats:
+  (1) the accumulator is sized off `SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION` (512)
+  so it is compatible with Pro (`spark_dsv4_dspark_kernels.cuh:32-34`);
+  (2) Flash attention is NON-causal in-block (`spark_dsv4_dspark_kernels.cuh:13`)
+  while P-D-03 wants CAUSAL draft KV — needs a `causal` flag or a Pro variant.
+
+### P-D-04 markov bias
+- **requestor:** dsv4-pro model agent.
+- **op:** `logits += markov_w2[vocab_shard][512] · markov_embed[512]` accumulated
+  into the draft head logits (f32).
+- **shapes:** vocab shard (129280 across TP) × rank 512; position 0..4.
+- **dtypes:** bf16 logits/w2/embed; f32 out (fma over rank).
+- **precision route:** bf16 → fp32, rank-length fma, added to bf16 logit upcast → f32.
+- **target number / current measured:** NOT_MEASURED.
+- **reference:** `inference/model.py` DSparkMarkovHead; `markov_w2` `[vocab × 512]`
+  (`PROPOSAL_DSV4_PRO_DSPARK_PASS.md:16-17`).
+- **review:** REUSE `SparkDsv4LaunchDsparkMarkovBiasAccum` (D4-D-02) with
+  `rank` 512 (runtime arg). The "head U64 max" combine is real (vocab-sharded
+  head), NOT a draft-attention/FFN all-reduce.
+
+### P-D-05 confidence
+- **requestor:** dsv4-pro model agent.
+- **op:** `sigmoid(dot([hidden | markov_embed], w) + b)`, one scalar per position.
+- **shapes:** input dim = hidden + markov = 7168 + 512 = 7680 (matches the
+  proposal's `1 x 7680`); output 1 f32.
+- **dtypes:** bf16 features/weight/bias; fp32 dot; f32 out.
+- **precision route:** bf16 → fp32 dot → +bias → sigmoid → f32.
+- **target number / current measured:** NOT_MEASURED.
+- **reference:** `confidence_head.proj` / `bias`; confidence-with-markov
+  (`inference/llms/kimi_k3/dspark.h:76-83`).
+- **review:** NEW — Flash has no confidence kernel. Port GLM52
+  `SparkGlm52DsparkConfidenceBatchKernel` (G52-D-11) with input 7680
+  (`spark_glm52_dspark_draft_backend.cu:799-855`, `22-23`).
+
+### P-D-06 draft mHC layer forward
+- **requestor:** dsv4-pro model agent.
+- **op:** 3 × (draft attention + FFN: bias-gate top-6 mtp experts) over the 5
+  draft rows, mirroring the main layer kinds.
+- **shapes:** mirrors the main layer geometry per layer kind; 5 rows.
+- **dtypes:** mixed (main-layer precision: FP8 experts MXFP4, BF16 spine, per
+  `spark_dsv4_pro_model.h:47-65`).
+- **precision route:** main-layer continuation arithmetic on `state->mtp_layers[i]`.
+- **target number / current measured:** NOT_MEASURED.
+- **reference:** `SparkDsv4ModuleContinueLayers` over `state->mtp_layers[i]`
+  (`PROPOSAL_DSV4_PRO_DSPARK_PASS.md:53-56`).
+- **review:** NOT a new kernel — reuse the existing main-layer continuation on
+  `state->mtp_layers[i]` (the proposal's §3 step 3 already says "continuation
+  mirroring `SparkDsv4ModuleContinueLayers`"). The "FFN-side all-reduce" is the
+  existing TP reduce and is inapplicable if the draft is single-rank (§4.8).
+
+---
+
+### 4.8 Answers to the pro agent's open questions
+
+**Q1 — what should pin the four 0 constants (`spark_dspark_drafter.h:82-85`)?**
+
+They are the DRAFT (mtp) model's own transformer geometry, distinct from the main
+model's 128 heads / 1 KV head / head dim 512 / expert intermediate 3072
+(`spark_dsv4_pro_model.h:31-36`). Pin them from the GA checkpoint's mtp layer
+WEIGHT SHAPES — the only authoritative source, never prose:
+
+- `DRAFT_ATTENTION_HEAD_COUNT` = `mtp.1.self_attn.q_proj.weight` output dim ÷ head_dim
+- `DRAFT_KV_HEAD_COUNT`      = `mtp.1.self_attn.k_proj.weight` output dim ÷ head_dim
+- `DRAFT_HEAD_DIMENSION`     = head dim (expect **512**: the draft attends the
+  main's 512-wide KV window — the proposal already uses scale 1/sqrt(512) and
+  window 128×512)
+- `DRAFT_INTERMEDIATE_DIMENSION` = `mtp.1.mlp.gate_proj.weight` output dim
+
+Land it DRY/generator-consistent so it cannot silently drift (the K3 "64 vs 16 KV
+heads" lesson, `inference/llms/kimi_k3/dspark.h:29-31`): (1) add the four fields
+to the `dsv4_pro_authoritative.json` dspark block (`:32-42`); (2) extend
+`tools/generate_dsv4_contracts.py` to emit them — today it emits only
+block/layer/markov/noise (`:222-228`, `:274-279`) and requires only those in the
+Pro block (`:166-170`), so `--check` will NOT reproduce a hand-edited header;
+(3) write the four into `spark_dspark_drafter.h:82-85`; (4) add a pinning test
+mirroring `tests/test_dspark_drafter_pin.c` so the Pro table is asserted, not
+assumed.
+
+**Q2 — launcher surface vs the Flash dspark kernels?**
+
+Reuse the Flash kernels wherever they are runtime-parameterized (they are), and add
+a new launcher only where Flash has nothing:
+
+| Card | Disposition | Target |
+| --- | --- | --- |
+| P-D-01 | reuse | `SparkDsv4LaunchDsparkTapMean` (dim 7168, streams 4) |
+| P-D-02 | new | no Flash rolling-window writer |
+| P-D-03 | reuse + `causal` flag | `SparkDsv4LaunchDsparkAttention` (heads=pin, dim 512, window 128, block 5) |
+| P-D-04 | reuse | `SparkDsv4LaunchDsparkMarkovBiasAccum` (rank 512) |
+| P-D-05 | new (port G52-D-11) | no Flash confidence kernel |
+| P-D-06 | reuse (wiring only) | `SparkDsv4ModuleContinueLayers` on `mtp_layers[i]` |
+
+**Q3 (flagged, not asked) — single-rank vs all-reduce.** The Flash draft runs on
+ONE rank, communication-free (`spark_dsv4_dspark_kernels.cuh:1-4`). The proposal's
+P-D-03 "attn-side all-reduce (5 rows)" and P-D-06 "FFN-side all-reduce" therefore
+do not apply unless the Pro draft is deliberately TP-sharded — a divergence from
+Flash that needs explicit justification. The only real cross-rank collective on the
+draft path is the vocab-sharded head U64 maxloc (P-D-04). Resolve this before
+landing P-D-03/P-D-06.
+
+---
+
+## 5. How model agents edit these cards
 
 1. Change `requestor` to your lane, keep `op` one line.
 2. Replace `target number` with the concrete number to beat and its baseline
