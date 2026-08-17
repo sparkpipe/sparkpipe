@@ -770,9 +770,12 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 		 * verify burst emits fewer tokens than the admitted chain; the
 		 * batch side (c8f76e5) already mirrors this, so both leases must
 		 * advance by the same count. */
-		uint32_t completed_tokens = route->completion.accepted_token_count + 1u;
-		if ( completed_tokens > route->completion.tokens_per_sequence &&
-			route->completion.tokens_per_sequence != 0u )
+		/* accepted_token_count already includes the anchor (the module sets it
+		 * to 1 + accepted), so it IS the emitted count — no +1. */
+		uint32_t completed_tokens = route->completion.accepted_token_count;
+		if ( completed_tokens == 0u ||
+			(completed_tokens > route->completion.tokens_per_sequence &&
+			 route->completion.tokens_per_sequence != 0u) )
 			completed_tokens = route->completion.tokens_per_sequence;
 		status = SparkModelContinuationLeaseDecodePosition(
 			lane->context_token_count,
