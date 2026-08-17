@@ -64,3 +64,28 @@ Both were fixed in place on spark0/spark2 with sed for this measurement; the fix
   (mirroring the production `sparkpipe_model_residentd.service`); stopped + reset
   all units afterward. Transient units are cleaned up; the sed edits remain on the
   two hosts (they are the correct production fix, flagged for propagation).
+
+
+---
+
+## P2 two-rank bring-up (2026-08-17, after spark2 RoCE recovery)
+
+Booted rank 0 (spark0) + rank 2 (spark2) simultaneously under the 108G cgroup.
+Result (145s window, crossing the 120s absent-peer open timeout):
+
+| Host (rank) | Transport | Memory peak | Result |
+|---|---|---|---|
+| spark0 (rank 0) | `fabric_ready` rocep1s0f1 gid 3 | ~70 MiB | PP-boundary timeout `rank0_to_rank4_hidden` (stage-1 absent) -> `phase=transport_open` busy |
+| spark2 (rank 2) | `fabric_ready` rocep1s0f1 gid 3 | ~69 MiB | PP-boundary timeout `rank2_to_rank6_hidden` (stage-1 absent) -> `phase=transport_open` busy |
+
+**Transport open: PASS on both ranks** — including spark2, whose recovered 100G
+rail (rocep1s0f1) now opens at the residentd level (the prior P2 attempt failed
+with `fabric_invalid matching_active_100g_count=0`). No rank0<->rank2 error.
+
+**Collective smoke (TP edge): NOT EXERCISED.** The TP4xPP4 topology opens the
+PP boundary (next stage) first; with stage 1 (ranks 4-7) absent, both ranks
+correctly stall at `phase=transport_open` on the 120s boundary timeout and never
+reach the TP collective edge open. Exercising the rank0<->rank2 TP edge needs all
+4 stage-0 ranks (spark0-3), or a TP-only (no PP) topology. No rank0<->rank2
+failure was observed — the only timeouts were to absent stage-1 peers.
+
