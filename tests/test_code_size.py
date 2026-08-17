@@ -207,7 +207,16 @@ from pathlib import Path
 # consume; 165476 is the exact count after it lands. The DRY payoff (four
 # per-model fills -> one) realizes as model agents migrate onto it, so the
 # seam is additive now, net-negative later.
-CEILING = 165476
+# The GLM52 JIT-KV migration lands the complete unit: the model-family KV
+# geometry fill (spark_glm52_kv_geometry.h), the block-major Glm52Kv geometry
+# (layer.cuh), and the resident-stage rewrite (SparkGlm52PageCopy copy
+# primitive, SparkGlm52KvInitialize -> SparkKvBackendInitialize, and the
+# SparkGlm52AdmissionPredicate prepare/commit/abort tail). It is additive now:
+# the kernel's identity device page_table and the kv_cache device pool (now the
+# arena's key_device_base) are still the kernel's view, so the raw-init deletion
+# arrives with the page_table data-flow follow-up, not here. 165735 is the exact
+# count.
+CEILING = 165735
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

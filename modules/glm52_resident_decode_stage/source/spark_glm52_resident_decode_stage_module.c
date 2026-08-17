@@ -12,6 +12,8 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_admission.h"
+#include "sparkpipe/spark_kv_model_table.h"
+#include "sparkpipe/spark_glm52_kv_geometry.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #include "spark_glm52_stagepack_format.h"
@@ -87,6 +89,20 @@ struct SparkGlm52ModuleState
 	uint8_t *index_cache;
 	uint64_t index_layer_stride_bytes;
 	uint32_t *page_table;
+	SparkKvCacheArena kv_arena;
+	SparkKvPageCache kv_page_cache;
+	SparkKvPageStore kv_page_store;
+	SparkKvCacheBlock *kv_blocks;
+	uint32_t *kv_resident_slot_logical_block_indices;
+	SparkKvPageCacheEntry *kv_entries;
+	SparkKvPageCacheSequence *kv_sequences;
+	uint32_t *kv_hash_bucket_heads;
+	uint32_t *kv_entry_indices_by_logical_page;
+	uint8_t *kv_page_staging;
+	uint32_t *kv_lane_logical_pages;
+	uint32_t *kv_lane_page_count;
+	uint32_t *kv_lane_mutable_page;
+	uint32_t *kv_lane_mutation_flags;
 	SparkGlm52ExecutionSlot slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkGlm52AsyncCompletion completions[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -638,6 +654,100 @@ static SparkStatus SparkGlm52BuildPageTable(SparkGlm52ModuleState *state)
 	return(status);
 }
 
+static SparkStatus SparkGlm52PageCopy(
+	void *context,
+	uint32_t direction,
+	uintptr_t device_address,
+	void *host_address,
+	uint64_t bytes)
+{
+	SparkGlm52ModuleState *state;
+	cudaError_t error;
+	state = (SparkGlm52ModuleState *)context;
+	if ( state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
+		error = cudaMemcpyAsync(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost,(cudaStream_t)state->execution_stream);
+	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
+		error = cudaMemcpyAsync((void *)device_address,host_address,(size_t)bytes,cudaMemcpyHostToDevice,(cudaStream_t)state->execution_stream);
+	else
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"kv_page_copy"));
+}
+
+static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
+{
+	SparkKvModelTable table;
+	uint64_t block_bytes;
+	uint64_t lane_page_entries;
+	char backing_path[256];
+	SparkStatus status;
+	block_bytes = (uint64_t)SPARK_GLM52_KV_BLOCK_TOKEN_COUNT *
+		(uint64_t)state->layer_count * SPARK_GLM52_KV_ARENA_HEAD_DIM *
+		SPARK_GLM52_KV_BYTES_PER_SCALAR;
+	lane_page_entries = (uint64_t)state->resident_sequence_capacity *
+		state->pages_per_sequence;
+	state->kv_blocks = (SparkKvCacheBlock *)calloc(state->page_count,sizeof(*state->kv_blocks));
+	state->kv_resident_slot_logical_block_indices = (uint32_t *)calloc(state->page_count,sizeof(*state->kv_resident_slot_logical_block_indices));
+	state->kv_entries = (SparkKvPageCacheEntry *)calloc(state->page_count,sizeof(*state->kv_entries));
+	state->kv_sequences = (SparkKvPageCacheSequence *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_sequences));
+	state->kv_hash_bucket_heads = (uint32_t *)calloc(state->page_count,sizeof(*state->kv_hash_bucket_heads));
+	state->kv_entry_indices_by_logical_page = (uint32_t *)calloc(state->page_count,sizeof(*state->kv_entry_indices_by_logical_page));
+	state->kv_page_staging = (uint8_t *)malloc((size_t)block_bytes);
+	state->kv_lane_logical_pages = (uint32_t *)calloc((size_t)lane_page_entries,sizeof(*state->kv_lane_logical_pages));
+	state->kv_lane_page_count = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_page_count));
+	state->kv_lane_mutable_page = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutable_page));
+	state->kv_lane_mutation_flags = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutation_flags));
+	if ( state->kv_blocks == 0 || state->kv_resident_slot_logical_block_indices == 0 || state->kv_entries == 0 || state->kv_sequences == 0 || state->kv_hash_bucket_heads == 0 || state->kv_entry_indices_by_logical_page == 0 || state->kv_page_staging == 0 || state->kv_lane_logical_pages == 0 || state->kv_lane_page_count == 0 || state->kv_lane_mutable_page == 0 || state->kv_lane_mutation_flags == 0 )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+
+	memset(&table,0,sizeof(table));
+	table.abi_version = SPARK_KV_MODEL_TABLE_ABI_VERSION;
+	table.descriptor_bytes = SPARK_KV_MODEL_TABLE_BYTES;
+	SparkGlm52KvFillCapacityRequest(&table.capacity_request);
+
+	table.arena_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	table.arena_configuration.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	table.arena_configuration.logical_block_count = state->page_count;
+	table.arena_configuration.block_token_count = SPARK_GLM52_KV_BLOCK_TOKEN_COUNT;
+	table.arena_configuration.resident_block_capacity = state->page_count;
+	table.arena_configuration.layer_count = state->layer_count;
+	table.arena_configuration.kv_head_count = SPARK_GLM52_KV_ARENA_KV_HEAD_COUNT;
+	table.arena_configuration.head_dim = SPARK_GLM52_KV_ARENA_HEAD_DIM;
+	table.arena_configuration.bytes_per_scalar = SPARK_GLM52_KV_BYTES_PER_SCALAR;
+	table.arena_configuration.key_device_base = state->kv_cache;
+	table.arena_configuration.blocks = state->kv_blocks;
+	table.arena_configuration.resident_slot_logical_block_indices = state->kv_resident_slot_logical_block_indices;
+
+	table.page_store_config.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
+	table.page_store_config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
+	table.page_store_config.flags = SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS;
+	table.page_store_config.logical_page_capacity = state->page_count;
+	table.page_store_config.transfer_capacity = 2u;
+	table.page_store_config.page_bytes = block_bytes;
+	table.page_store_config.maximum_backing_bytes = block_bytes;
+	(void)snprintf(backing_path,sizeof(backing_path),"/tmp/sparkpipe_glm52_kv_%s",state->model_revision);
+	table.page_store_config.backing_path = backing_path;
+	table.page_store_config.staging_address = state->kv_page_staging;
+	table.page_store_config.staging_bytes = block_bytes;
+	table.page_store_config.copy_function = SparkGlm52PageCopy;
+	table.page_store_config.copy_context = state;
+
+	table.sequence_capacity = state->resident_sequence_capacity;
+	table.entry_capacity = state->page_count;
+	table.hash_bucket_count = state->page_count;
+	table.entries = state->kv_entries;
+	table.sequences = state->kv_sequences;
+	table.hash_bucket_heads = state->kv_hash_bucket_heads;
+	table.entry_indices_by_logical_page = state->kv_entry_indices_by_logical_page;
+	table.model_id = "glm52";
+	table.model_revision = state->model_revision;
+	table.cache_layout_fingerprint = "compressed-key-value-bf16-block-major";
+
+	status = SparkKvBackendInitialize(&table,&state->kv_arena,&state->kv_page_cache,&state->kv_page_store);
+	return(status);
+}
+
 static SparkStatus SparkGlm52AllocateCaches(SparkGlm52ModuleState *state)
 {
 	uint64_t main_page_bytes,index_page_bytes;
@@ -654,11 +764,15 @@ static SparkStatus SparkGlm52AllocateCaches(SparkGlm52ModuleState *state)
 	status = SparkGlm52BuildPageTable(state);
 	main_page_bytes = 64u * (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t);
 	index_page_bytes = 64u * (uint64_t)SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION * sizeof(uint16_t);
-	state->kv_layer_stride_bytes = (uint64_t)state->page_count * main_page_bytes;
+	/* Block-major pool: one 64-token block holds all layers contiguously; the
+	 * per-layer pool base the kernel receives is kv_cache + layer *
+	 * main_page_bytes, and the block stride (main_page_bytes * layer_count) is
+	 * the shared arena's default. */
+	state->kv_layer_stride_bytes = main_page_bytes;
 	state->index_layer_stride_bytes = (uint64_t)state->page_count * index_page_bytes;
-	if ( status != SPARK_STATUS_OK || state->kv_layer_stride_bytes == 0u || state->kv_layer_stride_bytes > UINT64_MAX / state->layer_count )
+	if ( status != SPARK_STATUS_OK || state->kv_layer_stride_bytes == 0u || state->page_count > UINT64_MAX / (main_page_bytes * state->layer_count) )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_CAPACITY_EXCEEDED : status);
-	main_total = state->kv_layer_stride_bytes * state->layer_count;
+	main_total = (uint64_t)state->page_count * main_page_bytes * state->layer_count;
 	status = SparkStageModuleDeviceAllocate(&state->ledger,main_total,(void **)&state->kv_cache);
 	if ( status == SPARK_STATUS_OK && state->index_layer_count != 0u )
 	{
@@ -667,7 +781,69 @@ static SparkStatus SparkGlm52AllocateCaches(SparkGlm52ModuleState *state)
 		index_total = state->index_layer_stride_bytes * state->index_layer_count;
 		status = SparkStageModuleDeviceAllocate(&state->ledger,index_total,(void **)&state->index_cache);
 	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52KvInitialize(state);
 	return(status);
+}
+
+static SparkStatus SparkGlm52AdmissionPredicate(
+	void *context,
+	const SparkModelDriverAdmissionRequest *request,
+	SparkModelDriverAdmissionDecision *decision)
+{
+	SparkGlm52ModuleState *state;
+	const SparkModelDriverCacheLane *lane;
+	uint32_t lane_index;
+	uint32_t mutation_flags;
+	SparkStatus status;
+	state = (SparkGlm52ModuleState *)context;
+	if ( state == 0 || request == 0 || decision == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
+	{
+		for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
+		{
+			lane = &request->cache_lanes[lane_index];
+			status = SparkKvPageCacheReleaseLane(&state->kv_page_cache,lane->resident_sequence_slot,lane->sequence_id);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+		}
+		decision->accepted = 1u;
+		decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
+		return(SPARK_STATUS_OK);
+	}
+	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) != 0u )
+	{
+		for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
+		{
+			lane = &request->cache_lanes[lane_index];
+			status = SparkKvPageCachePrepareLane(&state->kv_page_cache,lane,state->kv_lane_logical_pages + (uint64_t)lane->resident_sequence_slot * state->pages_per_sequence,state->pages_per_sequence,&state->kv_lane_page_count[lane->resident_sequence_slot]);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+		}
+	}
+	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) != 0u )
+	{
+		for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
+		{
+			lane = &request->cache_lanes[lane_index];
+			status = SparkKvPageCacheBeginLaneTransaction(&state->kv_page_cache,lane,&state->kv_lane_mutable_page[lane->resident_sequence_slot],&mutation_flags);
+			state->kv_lane_mutation_flags[lane->resident_sequence_slot] = mutation_flags;
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+		}
+	}
+	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) != 0u )
+	{
+		for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
+		{
+			lane = &request->cache_lanes[lane_index];
+			status = SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,lane,state->kv_lane_mutation_flags[lane->resident_sequence_slot]);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+		}
+	}
+	return(SPARK_STATUS_OK);
 }
 
 static uint32_t SparkGlm52RoundMajorWaveRows(
@@ -1584,6 +1760,8 @@ SparkStatus SparkGlm52ResidentDecodeStageAdmit(
 	table.max_sequence_positions = state->max_sequence_positions;
 	table.flags = SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS |
 		SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG;
+	table.predicate = SparkGlm52AdmissionPredicate;
+	table.predicate_context = state;
 	table.cost = SparkGlm52AdmissionCost;
 	table.cost_context = state;
 	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
@@ -1628,8 +1806,21 @@ void SparkGlm52ResidentDecodeStageDestroy(void *module_state)
 	(void)cudaStreamSynchronize((cudaStream_t)state->execution_stream);
 	if ( state->tp_device_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
+		SparkKvPageStoreDestroy(&state->kv_page_store);
 	SparkGlm52ReleaseSlotHost(state);
 	SparkStageModuleLedgerRelease(&state->ledger);
+	free(state->kv_blocks);
+	free(state->kv_resident_slot_logical_block_indices);
+	free(state->kv_entries);
+	free(state->kv_sequences);
+	free(state->kv_hash_bucket_heads);
+	free(state->kv_entry_indices_by_logical_page);
+	free(state->kv_page_staging);
+	free(state->kv_lane_logical_pages);
+	free(state->kv_lane_page_count);
+	free(state->kv_lane_mutable_page);
+	free(state->kv_lane_mutation_flags);
 	free(state);
 }
 
