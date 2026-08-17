@@ -536,3 +536,21 @@ SparkKvModelTable as the single token-free fill point is APPROVED in
 principle (it matches the repo's table-driven pattern); it becomes
 landable once the scheduler agent confirms or counters the three 2.3
 offers. The 2.3 A/B/C sign-off is routed to the scheduler agent.
+
+---
+
+## Scheduler sign-off (2026-08-17, recorded by coordinator)
+
+- (A) CONFIRMED: scheduler consumes only page budgets +
+  cache_block_token_count; SparkKvModelTable lives in
+  SparkKvBackendInitialize in the resident/driver loader.
+- (B) COUNTERED (narrow): SparkNvmeTierWillBeResidentBy stays
+  scheduler-side as a LOOKAHEAD/PLANNING query (topology-switch resume +
+  tier prefetch), NOT an admission query. Admission remains on the batch
+  engine's pure fit functions; ALL/PARTIAL/NONE is prefetch-timing
+  confidence, never a capacity gate.
+- (C) CONFIRMED: scheduler supplies target resident count + protected set;
+  KV core picks victims by reuse score with
+  protected_logical_block_indices from the caller.
+
+SparkKvModelTable is now FULLY APPROVED as the single fill point.

@@ -1,5 +1,5 @@
 {
-  "file_count": 16781,
+  "file_count": 16783,
   "files": [
     {
       "path": ".agents/AGENT_CHARTER.md",
@@ -63433,8 +63433,8 @@
     },
     {
       "path": ".agents/scheduler/PACKAGE_MANIFEST.json",
-      "sha256": "3cf268dc6ea90dacdf410733bc78eff9615b2db5afde6c24dce871624a4a4d03",
-      "size_bytes": 3540118
+      "sha256": "34905c2e259fde95121f14920b3cb2fa8b321761432f30640af180eea6f60284",
+      "size_bytes": 3542348
     },
     {
       "path": ".agents/scheduler/PERFORMANCE_STATUS.md",
@@ -63448,8 +63448,8 @@
     },
     {
       "path": ".agents/scheduler/SHA256SUMS",
-      "sha256": "2ed18aa3306a1bf82b9de8de1e8b7d57549b7b6f7d80100f6031d150f0dd1963",
-      "size_bytes": 2312109
+      "sha256": "6089737a8c528bb21696dfec3531e9467b4f53f573947018c1d5fd04cc9e4d1f",
+      "size_bytes": 2313681
     },
     {
       "path": ".agents/scheduler/SPEC.md",
@@ -63655,6 +63655,16 @@
       "path": ".agents/scheduler/docs/PROPOSAL_ADMISSION_CORE.md",
       "sha256": "21c2a939c2a01754640cc77a3301dd7900d8b4578f24f9f4f40509eb218067b9",
       "size_bytes": 28014
+    },
+    {
+      "path": ".agents/scheduler/docs/PROPOSAL_DSV4_TREE_ADOPTION.md",
+      "sha256": "2b06b5faaa4e0ebeb2f67137831627d0b7b121770db38bd1a922d471f4b431c1",
+      "size_bytes": 10144
+    },
+    {
+      "path": ".agents/scheduler/docs/PROPOSAL_KV_SEAM.md",
+      "sha256": "c09706c69183da146a6d33bc59d2910f8281cc8cf9064963c420ba48bb780a74",
+      "size_bytes": 27674
     },
     {
       "path": ".agents/scheduler/docs/PROPOSAL_RING_WINDOW_HOOK.md",
@@ -77793,8 +77803,8 @@
     },
     {
       "path": "docs/PROPOSAL_KV_SEAM.md",
-      "sha256": "c09706c69183da146a6d33bc59d2910f8281cc8cf9064963c420ba48bb780a74",
-      "size_bytes": 27674
+      "sha256": "c3d4457749d9427f6d8e7337d8e853c92c73af5b5b4592d25b432a1a5a689832",
+      "size_bytes": 28458
     },
     {
       "path": "docs/PROPOSAL_RING_WINDOW_HOOK.md",
@@ -83910,5 +83920,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 336979241
+  "total_bytes": 337021645
 }
