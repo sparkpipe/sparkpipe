@@ -27,13 +27,25 @@ verified against the shard headers on disk:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import struct
 import sys
 import tempfile
+
+# Make the sibling shared packer core importable however this tool is loaded.
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from spark_pack_common import (  # noqa: E402
+    PackFailure,
+    SafetensorsSource as _BaseSafetensorsSource,
+    align_up,
+    sha256_file,
+    spark_pack_replicated_draft_rows,
+    write_receipt,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONTRACT = ROOT / "model_contracts" / "qwen36_authoritative.json"
@@ -99,23 +111,8 @@ LANGUAGE_PREFIX = "model.language_model."
 MTP_PREFIX = "mtp."
 
 
-class PackFailure(Exception):
-    pass
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        while True:
-            chunk = file.read(CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def align(offset: int) -> int:
-    return (offset + PAYLOAD_ALIGNMENT - 1) & ~(PAYLOAD_ALIGNMENT - 1)
+    return align_up(offset, PAYLOAD_ALIGNMENT)
 
 
 def is_gdn_layer(layer_index: int) -> bool:
@@ -263,27 +260,11 @@ def expected_tensor_count(first_layer: int, layer_count: int) -> int:
     return tensors
 
 
-class SafetensorsSource:
-    """The checkpoint's shards: index, per-shard headers, payload streams."""
-
-    def __init__(self, checkpoint: Path):
-        self.checkpoint = checkpoint
-        index_path = checkpoint / INDEX_NAME
-        config_path = checkpoint / CONFIG_NAME
-        if not index_path.is_file():
-            raise PackFailure(f"missing {index_path}")
-        if not config_path.is_file():
-            raise PackFailure(f"missing {config_path}")
-        self.index_sha256 = sha256_file(index_path)
-        self.config_sha256 = sha256_file(config_path)
-        index = json.loads(index_path.read_text())
-        self.weight_map = index["weight_map"]
-        self.config = json.loads(config_path.read_text())
-        self.headers: dict[str, dict] = {}
-        self.data_start: dict[str, int] = {}
+class SafetensorsSource(_BaseSafetensorsSource):
+    """The checkpoint's shards: shared index/header/payload resolution plus
+    the model's text_config expectations and per-layer type checks."""
 
     def check_config(self) -> None:
-        text = self.config.get("text_config", {})
         expectations = {
             "hidden_size": HIDDEN, "num_hidden_layers": LAYER_COUNT,
             "num_attention_heads": ATTN_QUERY_HEADS,
@@ -297,11 +278,8 @@ class SafetensorsSource:
             "full_attention_interval": ATTENTION_PERIOD,
             "attn_output_gate": True, "tie_word_embeddings": False,
         }
-        for key, expected in expectations.items():
-            if text.get(key) != expected:
-                raise PackFailure(
-                    f"config.json text_config.{key}={text.get(key)!r}, expected {expected!r} "
-                    "- this is not the checkpoint this packer is for")
+        super().check_config(expectations, section="text_config")
+        text = self.config.get("text_config", {})
         layer_types = text.get("layer_types", [])
         if len(layer_types) == LAYER_COUNT:
             for layer, layer_type in enumerate(layer_types):
@@ -309,44 +287,8 @@ class SafetensorsSource:
                 if layer_type != want:
                     raise PackFailure(f"config layer_types[{layer}]={layer_type!r}, expected {want!r}")
 
-    def shard_header(self, shard: str) -> dict:
-        if shard not in self.headers:
-            path = self.checkpoint / shard
-            if not path.is_file():
-                raise PackFailure(f"missing shard {shard}")
-            with path.open("rb") as file:
-                header_bytes = struct.unpack("<Q", file.read(8))[0]
-                header = json.loads(file.read(header_bytes))
-            self.headers[shard] = header
-            self.data_start[shard] = 8 + header_bytes
-        return self.headers[shard]
-
-    def resolve(self, name: str) -> tuple[str, dict, int]:
-        """(shard, metadata, absolute payload offset) for a tensor."""
-        if name not in self.weight_map:
-            raise PackFailure(f"tensor not in checkpoint index: {name}")
-        shard = self.weight_map[name]
-        header = self.shard_header(shard)
-        if name not in header:
-            raise PackFailure(f"tensor {name} not in shard {shard}")
-        meta = header[name]
-        return shard, meta, self.data_start[shard] + meta["data_offsets"][0]
-
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
-        shard, meta, offset = self.resolve(ref.name)
-        if meta["dtype"] != "BF16":
-            raise PackFailure(f"{ref.name}: dtype {meta['dtype']}, expected BF16")
-        shape = meta["shape"]
-        # The conv weight arrives [channels, 1, kernel]; the singleton drops.
-        if len(shape) == 3 and shape[1] == 1:
-            shape = [shape[0], shape[2]]
-        if len(shape) == 1:
-            shape = [1, shape[0]]
-        if shape != [ref.rows, ref.columns]:
-            raise PackFailure(
-                f"{ref.name}: checkpoint shape {meta['shape']}, pack expects "
-                f"[{ref.rows}, {ref.columns}] for kind {ref.kind}")
-        return shard, meta, offset
+        return super().check_shape(ref.name, ref.rows, ref.columns)
 
 
 # Qwen3_5RMSNorm applies x * (1 + weight) with zero-initialized weights and
@@ -395,9 +337,20 @@ def tp_window(total, degree, rank):
     width = total // degree
     return (rank * width, width)
 
+# The qwen MTP replicated-draft table: the fc + three norms live at the
+# GLOBAL layer and replicate; the MTP decoder's per-layer kinds slice.
+QWEN_MTP_KINDS = frozenset((KIND_MTP_FC, KIND_MTP_EMBED_NORM,
+                            KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM))
+
+
 def build_tp_plan(ref, degree, rank):
     """Return (row_slice, col_slice, packed_rows, packed_cols). None = replicated."""
     if degree <= 1:
+        return None
+    if spark_pack_replicated_draft_rows(
+            ref.kind, ref.layer, draft_layer_first=MTP_LAYER,
+            draft_layer_count=MTP_LAYERS, global_kinds=QWEN_MTP_KINDS,
+            draft_layer_kinds_slice=True):
         return None
     if ref.layer == GLOBAL_LAYER:
         if ref.kind == KIND_LM_HEAD:
@@ -406,16 +359,10 @@ def build_tp_plan(ref, degree, rank):
         if ref.kind == KIND_EMBEDDING:
             return None  # replicated: no collective broadcast yet; the
                         # gather path reads the full table on every rank
-        if ref.kind == KIND_MTP_FC:
-            return None  # replicated per the recipe
         return None
-    if ref.layer == MTP_LAYER:
-        # The MTP decoder reuses the per-layer kinds: its attention and FFN
-        # tensors slice exactly like main layers (the fc and the three norms
-        # live at the GLOBAL layer and replicate). Fall through to the
-        # kind-based plan below; layer norms hit the trailing None.
-        if ref.kind in (KIND_MTP_FC, KIND_MTP_EMBED_NORM, KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM):
-            return None
+    # The MTP decoder reuses the per-layer kinds: attention and FFN tensors
+    # slice exactly like main layers (the fc and the three norms live at the
+    # GLOBAL layer and replicate). Fall through to the kind-based plan below.
     if ref.kind in (KIND_FFN_GATE, KIND_FFN_UP):
         off, count = tp_window(FFN_INTERMEDIATE, degree, rank)
         return TpSlice(off, count, 0, HIDDEN)
@@ -478,7 +425,7 @@ def write_batch(out, source_path, offset, byte_count, mode):
 def copy_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, plan, out) -> None:
     """Stream one tensor's payload (optionally TP-sliced), upcasting BF16 to
     F32 where the pack says, folding +1 into the standard-norm weights."""
-    path = source.checkpoint / source.weight_map[ref.name]
+    path = source.root / source.weight_map[ref.name]
     mode = 2 if ref.weight_format == WEIGHT_F32 else (
         1 if ref.kind in NORM_PLUS_ONE_KINDS else 0)
     if plan is None:
@@ -732,7 +679,7 @@ def main() -> int:
                      args.tp_degree, args.tp_rank)
     if not args.dry_run:
         receipt_path = args.receipt or Path(str(args.output) + ".receipt.json")
-        receipt_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+        write_receipt(result, receipt_path, suffix=None)
         print(f"qwen36_stagepack receipt {receipt_path}")
     return 0
 

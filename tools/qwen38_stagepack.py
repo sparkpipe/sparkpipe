@@ -32,7 +32,6 @@ this revision packs whole PP-stage slices.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -40,6 +39,18 @@ from pathlib import Path
 import struct
 import sys
 import tempfile
+
+# Make the sibling shared packer core importable however this tool is loaded.
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from spark_pack_common import (  # noqa: E402
+    PackFailure,
+    SafetensorsSource as _BaseSafetensorsSource,
+    align_up,
+    sha256_file,
+    write_receipt,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONTRACT = ROOT / "model_contracts" / "qwen38_authoritative.json"
@@ -106,25 +117,6 @@ BF16_BYTES = 2
 F32_BYTES = 4
 
 MTP_PREFIX = "mtp."
-
-
-class PackFailure(Exception):
-    pass
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        while True:
-            chunk = file.read(CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def align(offset: int) -> int:
-    return (offset + PAYLOAD_ALIGNMENT - 1) & ~(PAYLOAD_ALIGNMENT - 1)
 
 
 def is_gdn_layer(layer_index: int) -> bool:
@@ -282,21 +274,9 @@ def build_inventory(first_layer: int, layer_count: int) -> list[TensorRef]:
     return refs
 
 
-class SafetensorsSource:
-    def __init__(self, checkpoint: Path):
-        self.checkpoint = checkpoint
-        index_path = checkpoint / INDEX_NAME
-        config_path = checkpoint / CONFIG_NAME
-        if not index_path.is_file():
-            raise PackFailure(f"missing {index_path}")
-        if not config_path.is_file():
-            raise PackFailure(f"missing {config_path}")
-        self.index_sha256 = sha256_file(index_path)
-        self.config_sha256 = sha256_file(config_path)
-        self.weight_map = json.loads(index_path.read_text())["weight_map"]
-        self.config = json.loads(config_path.read_text())
-        self.headers: dict[str, dict] = {}
-        self.data_start: dict[str, int] = {}
+class SafetensorsSource(_BaseSafetensorsSource):
+    """qwen38 checkpoint reader: shared index/header/payload resolution plus
+    the model's config expectations and FP8-expert shape checks."""
 
     def check_config(self) -> None:
         expectations = {
@@ -315,33 +295,7 @@ class SafetensorsSource:
             "full_attention_interval": ATTENTION_PERIOD,
             "attn_output_gate": True, "tie_word_embeddings": False,
         }
-        for key, expected in expectations.items():
-            if self.config.get(key) != expected:
-                raise PackFailure(
-                    f"config.json {key}={self.config.get(key)!r}, expected {expected!r} "
-                    "- this is not the checkpoint this packer is for")
-
-    def shard_header(self, shard: str) -> dict:
-        if shard not in self.headers:
-            path = self.checkpoint / shard
-            if not path.is_file():
-                raise PackFailure(f"missing shard {shard}")
-            with path.open("rb") as file:
-                header_bytes = struct.unpack("<Q", file.read(8))[0]
-                header = json.loads(file.read(header_bytes))
-            self.headers[shard] = header
-            self.data_start[shard] = 8 + header_bytes
-        return self.headers[shard]
-
-    def resolve(self, name: str) -> tuple[str, dict, int]:
-        if name not in self.weight_map:
-            raise PackFailure(f"tensor not in checkpoint index: {name}")
-        shard = self.weight_map[name]
-        header = self.shard_header(shard)
-        if name not in header:
-            raise PackFailure(f"tensor {name} not in shard {shard}")
-        meta = header[name]
-        return shard, meta, self.data_start[shard] + meta["data_offsets"][0]
+        super().check_config(expectations)
 
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
         if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
@@ -355,33 +309,7 @@ class SafetensorsSource:
             if scale_meta["dtype"] != "BF16":
                 raise PackFailure(f"{scale_name}: dtype {scale_meta['dtype']}, expected BF16")
             return shard, meta, offset
-        shard, meta, offset = self.resolve(ref.name)
-        if meta["dtype"] != "BF16":
-            raise PackFailure(f"{ref.name}: dtype {meta['dtype']}, expected BF16")
-        shape = meta["shape"]
-        if len(shape) == 3:
-            experts, expert_rows, columns = shape
-            if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
-                if experts != EXPERT_COUNT or columns != ref.columns:
-                    raise PackFailure(
-                        f"{ref.name}: 3-D shape {shape}, pack expects "
-                        f"[{EXPERT_COUNT}, ?, {ref.columns}] for kind {ref.kind}")
-                if ref.kind == KIND_MOE_DOWN:
-                    want_rows = ref.rows // EXPERT_COUNT
-                    if expert_rows != want_rows:
-                        raise PackFailure(f"{ref.name}: down_proj rows {expert_rows}, expected {want_rows}")
-                elif ref.slice_start + ref.slice_rows > expert_rows:
-                    raise PackFailure(f"{ref.name}: slice {ref.slice_start}+{ref.slice_rows} exceeds {expert_rows}")
-                return shard, meta, offset
-        if len(shape) == 3 and shape[1] == 1:
-            shape = [shape[0], shape[2]]
-        if len(shape) == 1:
-            shape = [1, shape[0]]
-        if shape != [ref.rows, ref.columns]:
-            raise PackFailure(
-                f"{ref.name}: checkpoint shape {meta['shape']}, pack expects "
-                f"[{ref.rows}, {ref.columns}] for kind {ref.kind}")
-        return shard, meta, offset
+        return super().check_shape(ref.name, ref.rows, ref.columns)
 
 
 # -- MXFP4-E2M1 quantization ----------------------------------------------------
@@ -444,7 +372,7 @@ def quantize_mxfp4_e2m1(values: list[float]) -> tuple[bytearray, bytearray]:
 
 
 def copy_bf16_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, out) -> None:
-    path = source.checkpoint / source.weight_map[ref.name]
+    path = source.root / source.weight_map[ref.name]
     elements = ref.rows * ref.columns
     source_bytes = elements * BF16_BYTES
     with path.open("rb") as file:
@@ -480,7 +408,7 @@ def copy_fp8_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
     for e in range(experts):
         name = ref.name.replace("{e}", str(e))
         shard, meta, off = source.resolve(name)
-        with (source.checkpoint / shard).open("rb") as f:
+        with (source.root / shard).open("rb") as f:
             f.seek(off)
             raw = f.read(rows_per_expert * ref.columns)
         if len(raw) != rows_per_expert * ref.columns:
@@ -489,7 +417,7 @@ def copy_fp8_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
         payload[base:base + len(raw)] = raw
         scale_name = name + "_scale_inv"
         s_shard, s_meta, s_off = source.resolve(scale_name)
-        with (source.checkpoint / s_shard).open("rb") as f:
+        with (source.root / s_shard).open("rb") as f:
             f.seek(s_off)
             sraw = f.read(scale_rows * scale_cols * 2)
         s16 = np.frombuffer(sraw, dtype="<u2").astype(np.uint32)
@@ -518,10 +446,10 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         else:
             payload_bytes = ref.rows * ref.columns * (BF16_BYTES if ref.weight_format == WEIGHT_BF16 else F32_BYTES)
             scale_bytes = 0
-        payload_offset = align(cursor)
+        payload_offset = align_up(cursor, PAYLOAD_ALIGNMENT)
         plans.append((ref, offset, payload_offset, payload_bytes, scale_bytes))
         cursor = payload_offset + payload_bytes + scale_bytes
-    payload_base = align(HEADER_BYTES + len(plans) * ENTRY_BYTES)
+    payload_base = align_up(HEADER_BYTES + len(plans) * ENTRY_BYTES, PAYLOAD_ALIGNMENT)
     file_bytes = payload_base + cursor
 
     header = HEADER_STRUCT.pack(
@@ -577,7 +505,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             wrote = temp.tell() - before
             if wrote != payload_bytes + scale_bytes:
                 raise PackFailure(f"payload size mismatch on {ref.name}: {wrote} != {payload_bytes + scale_bytes}")
-            pad = align(temp.tell()) - temp.tell()
+            pad = align_up(temp.tell(), PAYLOAD_ALIGNMENT) - temp.tell()
             if pad:
                 temp.write(b"\0" * pad)
         temp.flush()
@@ -620,7 +548,7 @@ def main() -> int:
                      args.first_layer, args.layer_count, receipt, args.dry_run)
     if not args.dry_run:
         receipt_path = args.receipt or Path(str(args.output) + ".receipt.json")
-        receipt_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+        write_receipt(result, receipt_path, suffix=None)
         print(f"qwen38_stagepack receipt {receipt_path}")
     return 0
 

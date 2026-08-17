@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-import hashlib
 import json
 from pathlib import Path
 import os
@@ -25,6 +24,13 @@ import struct
 import sys
 import tempfile
 from typing import BinaryIO, Dict, Iterable, List, Mapping, Sequence, Tuple
+
+# Make the sibling shared packer core importable however this tool is loaded
+# (standalone, via `import tools.dsv4_stagepack`, or via another tool).
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from spark_pack_common import PackFailure, align_up, sha256_file  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,10 +119,6 @@ FP4_EXPERTS = 256
 COPY_CHUNK = 16 * 1024 * 1024
 
 
-class PackFailure(RuntimeError):
-    """A source or wire-contract error that must stop pack generation."""
-
-
 @dataclass(frozen=True)
 class TensorMeta:
     dtype: str
@@ -176,16 +178,6 @@ def load_contract(path: Path = CONTRACT_PATH) -> Mapping[str, object]:
         return json.loads(path.read_text(encoding="utf-8"))
     except OSError as error:
         raise PackFailure(f"cannot read DSV4 contract: {path}") from error
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        while True:
-            chunk = file.read(COPY_CHUNK)
-            if not chunk:
-                return digest.hexdigest()
-            digest.update(chunk)
 
 
 def record_tensor_names(records: Iterable[Record]) -> List[str]:
@@ -365,10 +357,6 @@ def validate_source_identity(model_dir: Path, contract: Mapping[str, object],
         _validate_reduced_source(
             model_dir, contract, source_files, records, first_layer, layer_count)
     return str(expected)
-
-
-def align_up(value: int, alignment: int = 8) -> int:
-    return (value + alignment - 1) // alignment * alignment
 
 
 def product(shape: Sequence[int]) -> int:

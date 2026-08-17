@@ -24,14 +24,25 @@ The serving path never opens the checkpoints; this is setup-time code.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import struct
+import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import torch
 from safetensors import safe_open
+
+# Make the sibling shared packer core importable however this tool is loaded.
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from spark_pack_common import (  # noqa: E402
+    PackFailure,
+    align_up,
+    sha256_bytes,
+    tp_shard_range,
+)
 
 MAGIC = 0x32534C47
 FORMAT_VERSION = 3
@@ -87,10 +98,6 @@ EXPERT_COUNT = 256
 SPINE_REVISION = "b4734de4facf877f85769a911abafc5283eab3d9"
 
 
-class PackFailure(RuntimeError):
-    pass
-
-
 def load_contract(repo_root: Path) -> Dict[str, Any]:
     return json.loads((repo_root / "model_contracts" / "glm52.json").read_text())
 
@@ -120,10 +127,6 @@ class Reader:
 
     def close(self) -> None:
         self.handles.clear()
-
-
-def align_up(value: int, alignment: int) -> int:
-    return ((value + alignment - 1) // alignment) * alignment
 
 
 def to_bytes(t: torch.Tensor) -> bytes:
@@ -184,20 +187,14 @@ class Packer:
         """This TP rank's row slice; whole tensors when tp_degree == 1."""
         if self.tp_degree <= 1:
             return t
-        rows = t.shape[0]
-        if rows % self.tp_degree != 0:
-            raise PackFailure(f"rows {rows} not divisible by tp degree {self.tp_degree}")
-        count = rows // self.tp_degree
-        return t[self.tp_rank * count:(self.tp_rank + 1) * count, :].contiguous()
+        start, count = tp_shard_range(t.shape[0], self.tp_degree, self.tp_rank)
+        return t[start:start + count, :].contiguous()
 
     def shard_cols(self, t: torch.Tensor) -> torch.Tensor:
         if self.tp_degree <= 1:
             return t
-        cols = t.shape[1]
-        if cols % self.tp_degree != 0:
-            raise PackFailure(f"cols {cols} not divisible by tp degree {self.tp_degree}")
-        count = cols // self.tp_degree
-        return t[:, self.tp_rank * count:(self.tp_rank + 1) * count].contiguous()
+        start, count = tp_shard_range(t.shape[1], self.tp_degree, self.tp_rank)
+        return t[:, start:start + count].contiguous()
 
     # -- plan construction -------------------------------------------------
 
@@ -434,10 +431,6 @@ class Packer:
                     for chunk in item.produce_scale():
                         f.write(chunk)
         return file_bytes
-
-
-def sha256_bytes(data: bytes) -> bytes:
-    return hashlib.sha256(data).digest()
 
 
 def main() -> int:

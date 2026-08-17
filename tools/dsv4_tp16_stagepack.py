@@ -13,12 +13,23 @@ expert tensor is never loaded wholesale into host memory.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import struct
+import sys
 import tempfile
 from typing import Callable, List, Sequence, Tuple
+
+# Make the sibling shared packer core importable whether this script runs
+# standalone, via `import tools.dsv4_tp16_stagepack`, or via importlib.
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from spark_pack_common import (  # noqa: E402
+    PackFailure,
+    sha256_file,
+    spark_pack_replicated_draft_rows,
+)
 
 
 HEADER = struct.Struct("<16I2Q")
@@ -126,10 +137,6 @@ KIND_MTP_SET = frozenset((
 ))
 
 GLOBAL_LAYER = 0xFFFFFFFF
-
-
-class PackFailure(RuntimeError):
-    pass
 
 
 def payload_bytes(weight: int, rows: int, columns: int) -> int:
@@ -270,7 +277,9 @@ def selected_global(kind: int, rank: int, pp_stages: int = 1,
                     pp_stage: int = 0) -> bool:
     if kind == KIND_EMBEDDING:
         return pp_stage == 0
-    if kind in KIND_MTP_SET:
+    if spark_pack_replicated_draft_rows(
+            kind, GLOBAL_LAYER, draft_layer_first=MTP_LAYER_FIRST,
+            draft_layer_count=MTP_LAYER_COUNT_MAX, global_kinds=KIND_MTP_SET):
         # The DSpark draft extras replicate in full to every rank.
         return True
     if pp_stage + 1 != pp_stages:
@@ -279,16 +288,6 @@ def selected_global(kind: int, rank: int, pp_stages: int = 1,
                 KIND_HC_HEAD_BASE, KIND_HC_HEAD_SCALE):
         return True
     return True
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        while True:
-            data = file.read(16 * 1024 * 1024)
-            if not data:
-                return digest.hexdigest()
-            digest.update(data)
 
 
 def copy_payload(source, destination, offset: int, weight: int, rows: int,
@@ -333,8 +332,9 @@ def plan_entry(entry: Tuple[int, ...], rank: int, pp_stages: int = 1,
                pp_stage: int = 0) -> Tuple[Tuple[int, ...], List[int], int, int]:
     kind, layer, weight, rows, columns, reserved, payload, scale = entry
     first_layer, layer_count = layer_slice(pp_stages, pp_stage)
-    if (MTP_ENABLED and
-            MTP_LAYER_FIRST <= layer < MTP_LAYER_FIRST + MTP_LAYER_COUNT_MAX):
+    if (MTP_ENABLED and spark_pack_replicated_draft_rows(
+            kind, layer, draft_layer_first=MTP_LAYER_FIRST,
+            draft_layer_count=MTP_LAYER_COUNT_MAX, global_kinds=KIND_MTP_SET)):
         # DSpark draft layers are REPLICATED full-width on every rank:
         # keep every MTP entry unchanged (the draft runs replicated with
         # zero draft collectives).
