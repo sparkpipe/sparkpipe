@@ -55,7 +55,10 @@ static int k3_load_shard(uint32_t rank, void *context)
 	config.stage_index = 0u;
 	config.stage_count = 1u;            /* --pp1 derive: slice bounds from the pack */
 	config.tp_degree = 1u;
-	config.tp_rank = 0u;
+	/* tp_rank drives the embedding slot offset (rank * vocab_slice_rows):
+	 * each rank's embed is its own vocab slice, so an out-of-slice token
+	 * contributes zero and the rank-sum reconstructs the full embedding. */
+	config.tp_rank = rank;
 	config.max_active_sequence_count = 1u;
 	config.max_input_row_count = 1u;
 	config.resident_sequence_capacity = 1u;
