@@ -5098,6 +5098,35 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinearMloop(cudaStream_t strea
 	return(cudaGetLastError());
 }
 
+/* TP all-reduce combine: destination += source, one block per row, bf16
+ * pairs added in f32 - the SparkTpDeviceCollective combine callback shape.
+ * dsv4/glm52/qwen36/qwen38 each carried a per-family copy before this
+ * shared launcher; new callers use it directly. */
+static __global__ void SparkLmAccumAddBf16Kernel(void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
+{
+	uint32_t row = blockIdx.x;
+	uint64_t pair_base = ((uint64_t)row * width) >> 1u;
+	uint64_t pair_count = width >> 1u;
+	uint64_t pair;
+	float2 dst,src;
+	if ( row >= row_count )
+		return;
+	for (pair = threadIdx.x; pair < pair_count; pair += blockDim.x)
+	{
+		dst = SparkLmLoadBf16Pair(destination_bf16,pair_base + pair);
+		src = SparkLmLoadBf16Pair(source_bf16,pair_base + pair);
+		SparkLmStoreBf16Pair(destination_bf16,pair_base + pair,dst.x + src.x,dst.y + src.y);
+	}
+}
+
+static inline cudaError_t SparkLmHostLaunchAccumAddBf16(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
+{
+	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u || width == 0u || (width & 1u) != 0u )
+		return(cudaErrorInvalidValue);
+	SparkLmAccumAddBf16Kernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(destination_bf16,source_bf16,row_count,width);
+	return(cudaGetLastError());
+}
+
 /* Grouped m-loop launch: qwen38 grouped FP8 experts. */
 static inline cudaError_t SparkLmHostLaunchGroupedExpertTileMloop(cudaStream_t stream, uint32_t weight_format, const void *payload_base, const void *scale_base, uint64_t payload_stride, uint64_t scale_stride, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t expert_count)
 {

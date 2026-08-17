@@ -1,5 +1,5 @@
 {
-  "file_count": 1258,
+  "file_count": 1259,
   "files": [
     {
       "path": ".gitattributes",
@@ -245,6 +245,11 @@
       "path": "docs/QWEN38_MAX_AUDIT.md",
       "sha256": "76b3df72a6370ed4bdf383ffab2649be606a0df758fda225149f04b8b7e6ff48",
       "size_bytes": 10621
+    },
+    {
+      "path": "docs/QWEN38_MAX_DRY.md",
+      "sha256": "f032158b497af90a5ae4f6ab06b9fe38ce151a18c5e9949273dd3a6974a7842e",
+      "size_bytes": 3850
     },
     {
       "path": "docs/QWEN38_MAX_KERNEL_SPEED.md",
@@ -1988,8 +1993,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_lm_kernels.cuh",
-      "sha256": "13d679141fc614f4605854dde72901a477d77caaa5b49472e03ba351fda34814",
-      "size_bytes": 225298
+      "sha256": "d4c2cbc5a9accdd7ef8bb30e65c0c279ff8dddc7abbc0d86b21c6a4bd419974d",
+      "size_bytes": 226629
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_row_compaction.cuh",
@@ -2658,13 +2663,13 @@
     },
     {
       "path": "modules/qwen38_resident_decode_stage/source/spark_qwen38_resident_decode_stage_cuda.cu",
-      "sha256": "dc661f693384fd6665a8b2e18bcf315a4521958b87b60e057f75cb040cc3f88e",
-      "size_bytes": 86155
+      "sha256": "5ba7adc197484d7eb927688413361afbb2a6c16bb278d2f7740af7f75f0faf71",
+      "size_bytes": 85360
     },
     {
       "path": "modules/qwen38_resident_decode_stage/source/spark_qwen38_resident_decode_stage_module.c",
-      "sha256": "6c9c5b494e4d0cd9409c3ac760ef2f165c214b5a754d4fd46ac8678fce0fcc36",
-      "size_bytes": 113943
+      "sha256": "e739b93f78b8bc123d737eb41cb63da52ec5876ab425ee9e2de48c54467abb8b",
+      "size_bytes": 113789
     },
     {
       "path": "modules/qwen38_resident_decode_stage/source/spark_qwen38_serving_adapter.c",
@@ -6295,5 +6300,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 23761128
+  "total_bytes": 23765360
 }

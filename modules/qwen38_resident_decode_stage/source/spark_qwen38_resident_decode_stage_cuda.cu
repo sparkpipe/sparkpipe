@@ -1400,32 +1400,12 @@ extern "C" cudaError_t SparkQwen38LaunchEmbeddingGather(cudaStream_t stream, con
 	return(cudaGetLastError());
 }
 
-/* TP all-reduce combine: destination += source, one block per row, bf16
- * pairs added in f32 - the SparkTpDeviceCollective combine callback for
- * the hidden_transport backend. */
-static __global__ void SparkQwen38TpCombineAddKernel(void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
-{
-	uint32_t row = blockIdx.x;
-	uint64_t pair_base = ((uint64_t)row * width) >> 1u;
-	uint64_t pair_count = width >> 1u;
-	uint64_t pair;
-	float2 dst,src;
-	if ( row >= row_count )
-		return;
-	for (pair = threadIdx.x; pair < pair_count; pair += blockDim.x)
-	{
-		dst = SparkLmLoadBf16Pair(destination_bf16,pair_base + pair);
-		src = SparkLmLoadBf16Pair(source_bf16,pair_base + pair);
-		SparkLmStoreBf16Pair(destination_bf16,pair_base + pair,dst.x + src.x,dst.y + src.y);
-	}
-}
-
+/* TP all-reduce combine: forwards to the shared SparkLmHostLaunchAccumAddBf16
+ * (the per-family copy was removed in the DRY consolidation; the other
+ * families migrate their copies next). */
 extern "C" cudaError_t SparkQwen38LaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
 {
-	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u || width == 0u || (width & 1u) != 0u )
-		return(cudaErrorInvalidValue);
-	SparkQwen38TpCombineAddKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(destination_bf16,source_bf16,row_count,width);
-	return(cudaGetLastError());
+	return(SparkLmHostLaunchAccumAddBf16(stream,destination_bf16,source_bf16,row_count,width));
 }
 
 extern "C" cudaError_t SparkQwen38LaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)

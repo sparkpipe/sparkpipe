@@ -599,14 +599,8 @@ static SparkStatus SparkQwen38ModuleAllocateSlotHostMirrors(SparkQwen38ModuleSta
  * logical block). Provider "none" keeps the all-resident behavior.
  * ------------------------------------------------------------------------*/
 
-static uint64_t SparkQwen38ModuleFingerprint(const void *bytes, uint64_t count, uint64_t basis)
-{
-	const uint8_t *data = (const uint8_t *)bytes;
-	uint64_t hash = basis,index;
-	for (index = 0; index < count; index++)
-		hash = (hash ^ data[index]) * 1099511628211ull;
-	return(hash);
-}
+/* Geometry fingerprints use the shared SparkHashBytes (FNV-1a) from
+ * spark_status.h instead of a per-family copy of the same loop. */
 
 static SparkStatus SparkQwen38ModuleOpenKvTier(SparkQwen38ModuleState *state, const SparkFirmwareModuleHostServices *host_services)
 {
@@ -641,12 +635,12 @@ static SparkStatus SparkQwen38ModuleOpenKvTier(SparkQwen38ModuleState *state, co
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	SparkQwen38StagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count);
-	model_fp = SparkQwen38ModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
+	model_fp = SparkHashBytes(14695981039346656037ull,&geometry,(uint32_t)sizeof(geometry));
 	block_record_elements = SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN38_MODEL_ATTN_CACHE_TOKEN_ELEMENTS * state->attn_layer_count;
 	layout_bits[0] = block_record_elements;
 	layout_bits[1] = SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 	layout_bits[2] = state->kv_block_count;
-	layout_fp = SparkQwen38ModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
+	layout_fp = SparkHashBytes(model_fp,layout_bits,(uint32_t)sizeof(layout_bits));
 	block_record_bytes = (uint64_t)block_record_elements * SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES;
 	staging_bytes = block_record_bytes * SPARK_QWEN38_MODULE_KV_STAGING_RECORDS;
 	/* The resident pool is a window: clamp the device pool to the physical
