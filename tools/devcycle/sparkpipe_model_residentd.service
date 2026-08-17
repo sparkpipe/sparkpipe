@@ -22,6 +22,8 @@
 [Unit]
 Description=SparkPipe model residentd (managed by tools/fleet_swap.sh)
 After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -33,8 +35,6 @@ StandardError=append:/tmp/fleet-swap-residentd.log
 StandardInput=null
 Restart=on-failure
 RestartSec=5s
-StartLimitIntervalSec=60
-StartLimitBurst=3
 MemoryHigh=100G
 MemoryMax=108G
 MemorySwapMax=0
