@@ -93,6 +93,11 @@ biggest duplication) -> 4 (removes the guard cluster the CI already tripped
 over) -> 2 -> 3 -> 5. Every step keeps `speculate.cuh` untouched and pins
 the GLM52 case byte-identical before moving on.
 
+Status: **step 1 landed** (`spark_dspark_drafter.h` per-model tables, GLM52
+backend on neutral names, pinning test) and **step 2 landed**
+(`include/sparkpipe/spark_speculation_tree.h` machinery with the GLM52
+shape pinned in the family header). Steps 3-5 remain.
+
 ## Explicitly NOT generalized
 
 - The drafter forward kernels themselves (draft attention, Markov chain,

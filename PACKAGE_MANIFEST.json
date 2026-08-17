@@ -298,8 +298,8 @@
     },
     {
       "path": "docs/SPECULATION_AUDIT.md",
-      "sha256": "6ab87269cb3ba91b1a408fb45e9014ae25b52ef98bbe2fc5d76f3523f23851f5",
-      "size_bytes": 6466
+      "sha256": "05e19a629eb6e6a72b4ab948e43e8281851ce9493e7ebae0ea0e7ae9781961af",
+      "size_bytes": 6730
     },
     {
       "path": "docs/archive/AUDIT_2026-07-29_BANDWIDTH_PATH.md",
@@ -6320,5 +6320,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 23783494
+  "total_bytes": 23783758
 }
