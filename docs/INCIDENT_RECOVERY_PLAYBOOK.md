@@ -80,30 +80,38 @@ root cause closed.
 
 ## 4. Recovery decision tree
 
-Given (a) no in-band login, (b) no BMC/IPMI, (c) user 10,000 miles away with
-smart plugs and a one-shot GRUB `fsck.mode=skip` path:
+Constraints: no in-band login (emergency sshd is nologin-gated, §2), no
+BMC/IPMI, user 10,000 miles away with smart plugs. The one-shot GRUB
+`fsck.mode=skip` entry **cannot be staged yet** — GRUB config lives on the
+hosts' boot disks, unreachable while wedged — so it becomes available only
+after first login. Recovery is therefore two phases.
 
-1. **WAIT-FOR-FSCK** — already exhausted. 14 h at stage 2 (`bootwatch:1,390`)
-   with no movement ⇒ not progressing. Keep as a background poll only; do not
-   treat as the recovery path.
-2. **SMART-PLUG REBOOT + one-shot fsck.mode=skip** — the action. **Critical
-   nuance:** a plain power-cycle will reboot straight back into the same fsck
-   stall; the reboot must carry the one-shot `fsck.mode=skip` (or
-   `fsck.repair=no`) on the GRUB cmdline so the dirty NVMe skips fsck and the
-   host reaches login. Then run the fsck manually once the host is up (see §5).
-   This requires the one-shot skip to be pre-staged in GRUB on each host (a
-   fallback menuentry / grub-env flag), because with no console there is no
-   other way to inject it at boot. Confirm the one-shot mechanism exists before
-   cycling power; otherwise you burn a power-cycle for nothing.
-   - Order the band: do **one host first** (spark8), validate the full return
-     checklist (§5), then fan out to the remaining 7. Do not power-cycle all 8
-     blind at once — you want one clean reference recovery.
-3. **RESEAT / physical console** — not available at 10,000 miles. Only escalate
-   to on-site hands if smart-plug + fsck.mode=skip fails on ≥2 attempts per host
-   and the host still sits at stage ≤2.
+**Phase 0 — break the wedge (now):**
+1. **WAIT-FOR-FSCK** — exhausted (14 h, no stage movement, `bootwatch:1,390`);
+   keep only as a background poll.
+2. **PLAIN SMART-PLUG CYCLE on ONE host (spark8 first).** A plain cycle is a
+   lottery until the one-shot exists: it either re-enters the fsck stall or the
+   host completes boot (if the filesystem has since recovered, or plug timing
+   changes the boot path). It costs nothing and might just work; a single host
+   keeps blast radius to one node and yields a clean reference recovery.
+   - spark8 returns (stage 3/4) → run §5 in full, then Phase 1.
+   - spark8 does NOT return after ~2 cycles → do not blind-cycle all 8; hold
+     and escalate (reseat / on-site is the only remaining lever).
+3. **RESEAT / physical console** — last resort; not available at 10,000 miles.
 
-Once each host returns, apply the permanent fix (§5 step 2) so a future dirty
-NVMe can never re-block boot.
+**Phase 1 — make the next wedge cheap (immediately after ANY host returns):**
+- Land the permanent fix (nofail + fs_passno=0, `/tmp/ds4_fastboot_fix.sh`) on
+  the returned host first — from then on every future power-cycle boots fast
+  forever, so a dirty data NVMe can never re-wedge that host.
+- Pre-stage the one-shot GRUB fallback
+  (`tools/devcycle/stage_ds4_fastboot_grub.sh`: a `ds4-fastboot` menuentry +
+  `grub-reboot` flag) on the returned host, then fan it out to all 8. After
+  that a future wedge is breakable by smart plug alone: `sudo grub-reboot
+  ds4-fastboot` while healthy, then a plug cycle.
+
+**Mechanics:** the coordinator owns the persistent watcher (bash-4, log
+`/tmp/ds4_bootwatch.log`) and will notify SYSADMIN when a host reaches stage
+3/4; SYSADMIN then drives §5 for that host through the coordinator.
 
 ---
 
@@ -119,6 +127,7 @@ Run per host `H`; tick all before moving to the next host.
    kv/nvme/raid, and /home) now has `nofail` + `x-systemd.device-timeout=10s`
    and `fs_passno=0` in `/etc/fstab` (`/tmp/ds4_fastboot_fix.sh:26-35`);
    root/boot/var/usr/tmp/var-log untouched (:15). Confirm `systemctl daemon-reload`.
+2b. **Pre-stage the GRUB one-shot fallback.** `scp tools/devcycle/stage_ds4_fastboot_grub.sh $H:/tmp/ && ssh $H 'sudo /tmp/stage_ds4_fastboot_grub.sh'` — installs a `ds4-fastboot` menuentry (fsck.mode=skip fsck.repair=no) + `update-grub`, then verifies it landed in `/boot/grub/grub.cfg`. Do this on every host once any host is up (Phase 1); until it exists, a wedged host can only be broken by plain power-cycle lottery.
 3. **NVMe mounts.** `ssh $H 'df -h; mount | grep -iE "extnvme|sparkdata|nvme|raid"'`
    — every GLM52 data volume present and rw, and
    `ls -d /home/$H/sparkdata/glm52.tp8.fp8` exists (runtime_root,
@@ -155,8 +164,12 @@ nc -z -G2 -w2 10.20.0.X 2222                                   # emergency sshd 
 ssh -p2222 -o BatchMode=yes sparkemerg@10.20.0.X true         # nologin still blocking?
 
 # land the permanent fix (post-recovery)
-scp /tmp/ds4_fastboot_fix.sh "$H":/tmp/
+scp tools/devcycle/ds4_fastboot_fix.sh "$H":/tmp/
 ssh "$H" 'sudo /tmp/ds4_fastboot_fix.sh'
+
+# pre-stage the GRUB one-shot fallback (Phase 1, post-recovery)
+scp tools/devcycle/stage_ds4_fastboot_grub.sh "$H":/tmp/
+ssh "$H" 'sudo /tmp/stage_ds4_fastboot_grub.sh'
 
 # verify mounts + networking + telemetry
 ssh "$H" 'df -h; mount | grep -iE "extnvme|sparkdata|nvme|raid"; ip -4 addr; ls -la /tmp/ds4_telemetry'
@@ -167,4 +180,5 @@ Key file references (all read, no edits): `/tmp/ds4_bootwatch.log`,
 `/Users/mac/.local/libexec/ds4-spark-management/spark_ssh_failover.json`,
 `/Users/mac/.local/libexec/ds4-spark-management/ds4_spark_ssh_proxy.py`,
 `~/.ssh/config`, `tools/devcycle/fleet_registry.json`,
-`tools/fleet_swap.sh`.
+`tools/fleet_swap.sh`, `tools/devcycle/ds4_fastboot_fix.sh`,
+`tools/devcycle/stage_ds4_fastboot_grub.sh`.

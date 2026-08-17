@@ -194,7 +194,11 @@ from pathlib import Path
 # The shared packer core lands (tools/spark_pack_common.py, 309 lines)
 # and five packers migrate onto it (net -144); 166142 is the exact count
 # after it lands. Ceiling moves with it.
-CEILING = 166142
+# tools/devcycle (host-recovery / fleet-ops scripts) is reclassified out of
+# the authored-code budget (-1157); 164985 is the exact count after it. The
+# ceiling moves DOWN with the reclassification so future engine-code growth
+# is policed against the true current size.
+CEILING = 164985
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
@@ -202,7 +206,10 @@ EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
 # their copies are tooling infrastructure, not authored source, and must
 # never move the counter.
 EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'qualification',
-                      '__pycache__', '.agents'}
+                      '__pycache__', '.agents', 'devcycle'}
+# tools/devcycle holds host-recovery / fleet-ops scripts (GRUB staging,
+# fstab fastboot fix): operational infrastructure, not serving-engine
+# source, and must never consume the authored-code budget.
 
 
 def main():
