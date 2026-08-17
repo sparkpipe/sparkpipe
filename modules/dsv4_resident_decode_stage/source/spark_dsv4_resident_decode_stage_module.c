@@ -2387,6 +2387,7 @@ static SparkStatus SparkDsv4ModuleStageRows(
 	return(status);
 }
 
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
 static SparkStatus SparkDsv4ModuleDsparkDrive(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
 
 /* DSpark verify expansion: stage 8 rows of the single lane (anchor +
@@ -2483,6 +2484,7 @@ static SparkStatus SparkDsv4ModuleExpandDsparkVerify(
 	}
 	return(status);
 }
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
 
 /* Pad a staged single row up to BUCKET rows by duplicating row 0 at the
  * same position (the islands only replay bucket-width shapes; identical
@@ -3512,8 +3514,10 @@ static SparkStatus SparkDsv4ModuleContinueResidentChain(
 	return(SparkDsv4ModuleStartLayers(continuation));
 }
 
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
 static SparkStatus SparkDsv4ModuleDsparkDrive(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
 static SparkStatus SparkDsv4ModuleRunDsparkDraft(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
 
 static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 {
@@ -4275,6 +4279,7 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 }
 #endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
 
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
 static SparkStatus SparkDsv4ModuleRunDsparkHead(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -4313,6 +4318,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkHead(
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 		"dspark_head"));
 }
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
 
 #define DSPARK_S0_TRACE(tag) do { \
 	cudaError_t trace_error_ = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream); \
@@ -4322,6 +4328,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkHead(
 		fprintf(stderr,"dspark_s0_ok=" tag " tp_rank=%u\n",state->tp_rank); \
 } while (0)
 
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
 static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -4521,6 +4528,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 		status = SparkDsv4ModuleRunDsparkHead(state,slot,block);
 	return(status);
 }
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
 
 static SparkStatus SparkDsv4ModuleRunFrame(
 	SparkDsv4ModuleState *state,
