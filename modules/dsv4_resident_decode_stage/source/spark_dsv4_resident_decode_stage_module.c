@@ -1905,7 +1905,7 @@ static SparkStatus SparkDsv4ModuleAllocateDspark(SparkDsv4ModuleState *state, Sp
 	 * entry i writes [i..i+7], so the buffer spans block + 8 entries */
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,
-			(2u * block) * sizeof(uint64_t),(void **)&slot->dspark_maxloc_u64);
+			(2u * block + 4096u) * sizeof(uint64_t),(void **)&slot->dspark_maxloc_u64);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
 			cudaMemsetAsync(slot->dspark_maxloc_u64,0,
@@ -3849,6 +3849,7 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 			{
 				uint32_t boundary,ordinal,csa_layer,kind,row;
 				uint32_t boundary_rejected = 0u;
+				fprintf(stderr,"dspark_rollback_entry tp_rank=%u lane=%u accepted=%u count=%u rows=%u,%u hca=%u\n",state->tp_rank,lane_index,accepted,slot->dspark_boundary_count,slot->dspark_boundary_rows[0],slot->dspark_boundary_rows[1],slot->dspark_hca_boundary_row);
 				const uint64_t channels = 2u * SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION;
 				const uint64_t window_floats = (uint64_t)SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO * channels;
 				const uint64_t slot_bytes = SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
