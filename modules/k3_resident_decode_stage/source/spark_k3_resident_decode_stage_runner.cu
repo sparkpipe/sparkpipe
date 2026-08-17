@@ -1075,11 +1075,17 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 		return SPARK_STATUS_INTERNAL_ERROR;
 	}
 	/* Capture the rank's CONTRIBUTION (the un-folded input-sharded projection
-	 * output), NOT the folded partial: phase 0 = hidden_bf16 (kda_out / mla_out),
-	 * phase 1 = hidden_bf16 (routed_up / dense_down) plus shared_out_bf16
-	 * (shared_w2) on MoE layers. The harness sums these across ranks; the
-	 * replicated partial is only the retrieval's read, and its fold is ignored. */
-	cudaMemcpy(partial_output_bf16, b->hidden_bf16,
+	 * output), NOT the folded partial. Phase 0's destination differs by kind:
+	 * the KDA o_proj lands in hidden_bf16, the MLA o_proj in attention_out_bf16
+	 * (its value_bf16 input forbids in-place; the layer_collective hook's
+	 * phase0_source above makes the same distinction). Phase 1 = hidden_bf16
+	 * (routed_up / dense_down) plus shared_out_bf16 (shared_w2) on MoE layers.
+	 * The harness sums these across ranks; the replicated partial is only the
+	 * retrieval's read, and its fold is ignored. */
+	const uint16_t *phase0_source = (phase == 0u &&
+		K3_LAYER_KIND(layer) == LM_LAYER_LATENT)
+		? b->attention_out_bf16 : b->hidden_bf16;
+	cudaMemcpy(partial_output_bf16, phase0_source,
 		(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
 	if ( phase == 1u && layer >= K3_FIRST_ROUTED_LAYER )
 		LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),
