@@ -892,20 +892,20 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 			status = LmGemmWeightOnlyInterleavedLaunch<
 				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS,32u>(
 				&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-				K3_TOP_K,K3_EXPERTS,moe_in,w2_in,
+				K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
 				multiprocessors,true,stream);
 		else
 			status = LmGemmWeightOnlyInterleavedLaunch<
 				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 				&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-				K3_TOP_K,K3_EXPERTS,moe_in,w2_in,
+				K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
 				multiprocessors,true,stream);
 	}
 	else
 		status = LmGemmWeightOnlyLaunch<
 			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 			&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-			K3_TOP_K,K3_EXPERTS,moe_in,w2_in,
+			K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
 			multiprocessors,true,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);

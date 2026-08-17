@@ -258,7 +258,11 @@ from pathlib import Path
 # generated model header, the neutral drafter table remaps to the Pro macros,
 # and a pinning test mirrors test_dspark_drafter_pin.c. 166240 is the exact
 # count.
-CEILING = 166240
+# The k3 w2 sharder+layer fix lands (+10): the w2 GEMM arg order matches the
+# pack layout (w2=[latent N, inter K]) at all three launch sites, and the
+# sharder output-splits w2 on whole 16-neuron cells (TP16 diagonal subgrid,
+# [224,192] per rank instead of full 3584). 166250 is the exact count.
+CEILING = 166250
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
