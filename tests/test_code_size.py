@@ -242,8 +242,8 @@ from pathlib import Path
 # The serial-TP replay harness lands (tests/serial_tp_replay.{h,c} + pinning
 # test + design doc): host collective emulation for iterative single-spark
 # correctness runs while the fleet is down. Harness body is in tests/ (excluded);
-# only the Makefile wiring (+4) counts. 165855 is the exact count.
-CEILING = 165855
+# only the Makefile wiring (+5) counts. 165856 is the exact count.
+CEILING = 165856
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
