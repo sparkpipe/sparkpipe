@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <cuda_runtime.h>
 
@@ -100,6 +101,7 @@ struct SparkGlm52ModuleState
 	atomic_ullong host_callback_completion_count;
 	SparkTpDeviceCollective tp_device_collective;
 	uint32_t tp_device_collective_initialized;
+	uint32_t debug_timing;
 	SparkTpDeviceCollectiveCreditBinding tp_credit_bindings[SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT];
 	uint32_t tp_credit_binding_count;
 	void *tp_credit_send_bf16;
@@ -169,6 +171,7 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	 * runs with every reduce elided and the math is rank-local. Real
 	 * deployments always set a non-zero identifier. */
 	state->tp_collective_disabled = context->tp_collective_identifier == 0u ? 1u : 0u;
+	state->debug_timing = getenv("GLM52_TIMING") != 0 ? 1u : 0u;
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
 	state->max_sequence_positions = context->max_sequence_positions;
@@ -892,6 +895,14 @@ typedef struct SparkGlm52TpChain
 	uint32_t stage;
 	uint32_t next_layer;
 	uint32_t active;
+	uint32_t timing_enabled;
+	uint32_t timing_valid;
+	struct timespec timing_last;
+	double timing_begin_ms;
+	double timing_attention_ms;
+	double timing_mlp_ms;
+	double timing_head_ms;
+	double timing_total_ms;
 } SparkGlm52TpChain;
 
 static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status);
@@ -1185,6 +1196,38 @@ static SparkStatus SparkGlm52ModuleReduceHeadMax(SparkGlm52TpChain *chain)
 	return(SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission));
 }
 
+static void SparkGlm52TimingMark(SparkGlm52TpChain *chain)
+{
+	struct timespec now;
+	double delta;
+	if ( chain == 0 || chain->timing_enabled == 0u || chain->timing_valid == 0u )
+		return;
+	(void)clock_gettime(CLOCK_MONOTONIC,&now);
+	delta = ((double)(now.tv_sec - chain->timing_last.tv_sec)) * 1000.0 + ((double)(now.tv_nsec - chain->timing_last.tv_nsec)) / 1000000.0;
+	chain->timing_last = now;
+	chain->timing_total_ms += delta;
+	switch ( chain->stage )
+	{
+	case SPARK_GLM52_CHAIN_STAGE_BEGIN:
+		chain->timing_begin_ms += delta;
+		break;
+	case SPARK_GLM52_CHAIN_STAGE_ATTENTION:
+	case SPARK_GLM52_CHAIN_STAGE_REDUCE_ATTENTION:
+		chain->timing_attention_ms += delta;
+		break;
+	case SPARK_GLM52_CHAIN_STAGE_MLP:
+	case SPARK_GLM52_CHAIN_STAGE_REDUCE_MLP:
+		chain->timing_mlp_ms += delta;
+		break;
+	case SPARK_GLM52_CHAIN_STAGE_HEAD:
+	case SPARK_GLM52_CHAIN_STAGE_REDUCE_HEAD:
+		chain->timing_head_ms += delta;
+		break;
+	default:
+		break;
+	}
+}
+
 static void SparkGlm52TpChainFail(SparkGlm52TpChain *chain,SparkStatus status)
 {
 	SparkGlm52ModuleState *state;
@@ -1208,6 +1251,7 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 	if ( chain == 0 || chain->active == 0u )
 		return;
 	state = chain->state;
+	SparkGlm52TimingMark(chain);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkGlm52TpChainFail(chain,status);
@@ -1292,6 +1336,15 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		{
 			SparkGlm52TpChainFail(chain,launch_status);
 			return;
+		}
+		if ( chain->timing_enabled != 0u )
+		{
+			(void)fprintf(stderr,"GLM52-TIME wave_end total=%.1fms begin=%.1fms attn=%.1fms mlp=%.1fms head=%.1fms\n",chain->timing_total_ms,chain->timing_begin_ms,chain->timing_attention_ms,chain->timing_mlp_ms,chain->timing_head_ms);
+			chain->timing_begin_ms = 0.0;
+			chain->timing_attention_ms = 0.0;
+			chain->timing_mlp_ms = 0.0;
+			chain->timing_head_ms = 0.0;
+			chain->timing_total_ms = 0.0;
 		}
 		if ( chain->next_wave_row < chain->batch->row_count )
 		{
@@ -1518,6 +1571,12 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	chain->slot = slot;
 	chain->slot_index = slot_index;
 	chain->frame = frame;
+	chain->timing_enabled = state->debug_timing;
+	if ( chain->timing_enabled != 0u )
+	{
+		(void)clock_gettime(CLOCK_MONOTONIC,&chain->timing_last);
+		chain->timing_valid = 1u;
+	}
 	chain->context = context;
 	chain->batch = batch;
 	chain->first_row = 0u;
