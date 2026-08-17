@@ -219,6 +219,13 @@ struct SparkDsv4ModuleSlot
 	void *dspark_tap_bf16;
 	void *dspark_tap_ring_bf16;
 	void *dspark_verify_tap_bf16;
+	/* CSA/HCA boundary-emission rollback: the verify frame's rows may
+	 * overwrite the compressed-cache emission slots; save them before the
+	 * frame and restore when the boundary row is rejected. */
+	uint8_t dspark_boundary_save[2u][SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION * 2u];
+	uint32_t dspark_boundary_row[2u];
+	uint32_t dspark_boundary_layer[2u];
+	uint32_t dspark_boundary_save_count;
 	void *dspark_logits_bf16;
 	float *dspark_logits_f32;
 };
