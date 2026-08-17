@@ -886,26 +886,32 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	gemm.group_tile_prefix = b->group_tile_prefix_w2;
 	gemm.output_bf16 = b->gate_up_bf16;
 	const uint32_t w2_in = K3_RANK_DIM(b,expert_w2_input,K3_EXPERT_INTERMEDIATE);
+	// THE W2 DIMS: input = the rank's SiTU intermediate slice (w2_in),
+	// output = the rank's latent slice (moe_in). These two were SWAPPED -
+	// input=moe_in/output=w2_in transposes the interleaved grid (7x48 cells
+	// read as the pack's 6x56) and the finalize then reads moe_in columns of
+	// a w2_in-wide output - plausible wrong numbers on every MoE layer, which
+	// the spine-only 1-layer gate could not see.
 	if ( b->expert_interleave != 0u )
 	{
 		if ( b->expert_tile_k == 32u )
 			status = LmGemmWeightOnlyInterleavedLaunch<
 				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS,32u>(
 				&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-				K3_TOP_K,K3_EXPERTS,moe_in,w2_in,
+				K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
 				multiprocessors,true,stream);
 		else
 			status = LmGemmWeightOnlyInterleavedLaunch<
 				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 				&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-				K3_TOP_K,K3_EXPERTS,moe_in,w2_in,
+				K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
 				multiprocessors,true,stream);
 	}
 	else
 		status = LmGemmWeightOnlyLaunch<
 			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 			&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-			K3_TOP_K,K3_EXPERTS,moe_in,w2_in,
+			K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
 			multiprocessors,true,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
