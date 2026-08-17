@@ -947,7 +947,8 @@ static __global__ void SparkDsv4CompressStepKernel(const void *kv_bf16,
 	float *score_state_f32,uint64_t state_lane_stride,
 	const uint32_t *row_lane_indices,const uint64_t *row_positions,
 	uint32_t row_count,uint32_t ratio,uint32_t overlapped,uint32_t width,
-	void *emit_bf16,uint32_t *emitted)
+	void *emit_bf16,uint32_t *emitted,uint16_t *save_kv_bf16,
+	uint16_t *save_score_bf16)
 {
 	uint32_t row = blockIdx.x,coff = overlapped != 0u ? 2u : 1u,channels = coff * width,channel;
 	uint32_t slot,boundary,lane,previous;
@@ -973,6 +974,10 @@ static __global__ void SparkDsv4CompressStepKernel(const void *kv_bf16,
 		for (channel=threadIdx.x; channel<channels; channel+=blockDim.x)
 		{
 			source = (uint64_t)row * channels + channel;
+			if ( save_kv_bf16 != 0 )
+				save_kv_bf16[source] = ((const uint16_t *)kv_bf16)[source];
+			if ( save_score_bf16 != 0 )
+				save_score_bf16[source] = ((const uint16_t *)score_bf16)[source];
 			kv_state[((overlapped != 0u ? ratio : 0u) + slot) * channels +
 				channel] = SparkLmBf16ToFloat(kv_bf16,source);
 			score_state[((overlapped != 0u ? ratio : 0u) + slot) * channels +
@@ -2883,7 +2888,7 @@ extern "C" cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream,
 	float *kv_state_f32,float *score_state_f32,uint64_t state_lane_stride,
 	const uint32_t *row_lane_indices,const uint64_t *row_positions,
 	uint32_t row_count,uint32_t ratio,uint32_t overlapped,uint32_t width,
-	void *emit_bf16,uint32_t *emitted)
+	void *emit_bf16,uint32_t *emitted,void *save_kv_bf16,void *save_score_bf16)
 {
 	if ( kv_bf16 == 0 || score_bf16 == 0 || ape_f32 == 0 ||
 		kv_state_f32 == 0 || score_state_f32 == 0 ||
@@ -2894,7 +2899,8 @@ extern "C" cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream,
 	SparkDsv4CompressStepKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(
 		kv_bf16,score_bf16,ape_f32,kv_state_f32,score_state_f32,
 		state_lane_stride,row_lane_indices,row_positions,row_count,ratio,
-		overlapped,width,emit_bf16,emitted);
+		overlapped,width,emit_bf16,emitted,(uint16_t *)save_kv_bf16,
+		(uint16_t *)save_score_bf16);
 	return(cudaGetLastError());
 }
 
