@@ -293,7 +293,11 @@ from pathlib import Path
 # lease with the CURRENT client generation (not the route-reservation-time
 # one), so reconnects during async spec bursts no longer leave a stale
 # lease_client_generation - the last k-sweep gate. 166519 is the exact count.
-CEILING = 166519
+# The residentd-side lease advance fix lands (+3): advance by the completion's
+# EMITTED count (1 + accepted, clamped) instead of the coordinator-rank chain
+# width - the batch side already mirrored this (c8f76e5), closing the final
+# spec-continuation divergence. 166522 is the exact count.
+CEILING = 166522
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

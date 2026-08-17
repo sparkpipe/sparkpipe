@@ -765,12 +765,15 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 	{
 		/* The lease must land on the position the engine actually advanced
-		 * to: the completion's token count, not the submission's chain
-		 * width (draft bursts emit fewer tokens than the speculative
-		 * chain on rejection). */
-		uint32_t completed_tokens = route->completion.tokens_per_sequence;
-		if ( completed_tokens == 0u )
-			completed_tokens = route->submission.tokens_per_sequence;
+		 * to: the completion's EMITTED count (1 + accepted), not the
+		 * coordinator-rank chain width (spec bucket = 8). A partial-accept
+		 * verify burst emits fewer tokens than the admitted chain; the
+		 * batch side (c8f76e5) already mirrors this, so both leases must
+		 * advance by the same count. */
+		uint32_t completed_tokens = route->completion.accepted_token_count + 1u;
+		if ( completed_tokens > route->completion.tokens_per_sequence &&
+			route->completion.tokens_per_sequence != 0u )
+			completed_tokens = route->completion.tokens_per_sequence;
 		status = SparkModelContinuationLeaseDecodePosition(
 			lane->context_token_count,
 			completed_tokens,&next_sequence_position);
