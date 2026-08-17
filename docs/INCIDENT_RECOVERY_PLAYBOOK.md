@@ -94,14 +94,19 @@ user manually recovers **sparkf first**, then the rest in the order the user bri
 them up. Each host is SYSADMIN's to drive through §5 as it appears.
 
 **Once any host reaches full login (stage 4), in this order:**
-1. **Pre-stage the GRUB `fsck.mode=skip` one-shot — PRIMARY recovery lever (§5 step 2).**
-   It skips ALL fsck including root, so a future root-fsck wedge is breakable by
-   smart plug alone (`sudo grub-reboot ds4-fastboot` while healthy, then a plug cycle).
-   Do this on EVERY host at full login: spark0-7 as they come up, spark1 + the 8
-   after manual recovery.
-2. **Land the OOM guardrails (§7) — PRIMARY preventive.** Keep the node from OOMing
-   in the first place so root never gets dirtied by a hard power-cycle.
-3. **Data-mount `fs_passno=0` hygiene (§5 step 3) — secondary.** Helps a dirty DATA
+1. **Stage the GRUB `fsck.mode=skip` entry AS DEFAULT — PRIMARY recovery lever (§5 step 2).**
+   Default mode makes EVERY boot skip ALL fsck including root, so a dirty-root
+   wedge can never block boot again — and it needs NO per-boot re-arming (the
+   old one-shot grub-reboot scheme consumed itself after one boot). Manual fsck
+   moves to maintenance windows. Do this on EVERY host at full login: spark0-7
+   as they come up, spark1 + the 8 after manual recovery.
+2. **Install the fleet root key (§6.1) — emergency access.** Root pubkey on both
+   main sshd (22) and emergency sshd (2222) so a wedged host still admits root
+   (pam_nologin exempts root; the key is what was missing).
+3. **Land the OOM guardrails (§7) — preventive containment.** They do NOT stop the
+   model OOMing (a 108G cap still kills the process); they stop the BOX from
+   freezing so no hard power-cycle is ever needed. Verified live on spark2.
+4. **Data-mount `fs_passno=0` hygiene (§5 step 3) — secondary.** Helps a dirty DATA
    disk only; it is NOT the wedge fix.
 
 **Reseat / physical console** — last resort, not available at 10,000 miles.
@@ -113,11 +118,16 @@ them up. Each host is SYSADMIN's to drive through §5 as it appears.
 Run per host `H`; tick all before moving to the next host.
 
 1. **Full login (stage 4).** `ssh -o BatchMode=yes -o ConnectTimeout=8 $H true` exits 0.
-2. **Pre-stage the GRUB one-shot (PRIMARY recovery lever).**
+2. **Stage the GRUB skip-fsck entry AS DEFAULT (PRIMARY recovery lever).**
    `scp tools/devcycle/stage_ds4_fastboot_grub.sh $H:/tmp/ && ssh $H 'sudo /tmp/stage_ds4_fastboot_grub.sh'`
-   — installs the `ds4-fastboot` menuentry (`fsck.mode=skip fsck.repair=no`) +
-   `update-grub` + verifies. This is what makes a future ROOT wedge breakable by
-   smart plug. Apply on every host, including spark0-7 as they come up.
+   — default mode: installs the `ds4-fastboot` menuentry (`fsck.mode=skip
+   fsck.repair=no`), sets `GRUB_DEFAULT=ds4-fastboot`, `update-grub`, and
+   verifies `set default="ds4-fastboot"` in grub.cfg. EVERY boot then skips all
+   fsck (including root) with NO re-arming needed. Verify with
+   `ssh $H 'sudo /tmp/stage_ds4_fastboot_grub.sh --check'`. The old one-shot
+   mode (`--one-shot` + grub-reboot) is still available but must be re-armed
+   after every boot - do not use it for the permanent fix. Apply on every host,
+   including spark0-7 as they come up.
 3. **Data-mount hygiene (NOT the wedge fix).**
    `scp tools/devcycle/ds4_fastboot_fix.sh $H:/tmp/ && ssh $H 'sudo /tmp/ds4_fastboot_fix.sh'`
    — adds `nofail` + `fs_passno=0` to a dirty DATA disk. Marginal on this fleet
