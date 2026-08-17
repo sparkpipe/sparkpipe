@@ -1,5 +1,5 @@
 {
-  "file_count": 16746,
+  "file_count": 16748,
   "files": [
     {
       "path": ".agents/AGENT_CHARTER.md",
@@ -63627,6 +63627,11 @@
       "size_bytes": 1969
     },
     {
+      "path": ".agents/scheduler/docs/SCHEDULER_SUBSYSTEM_BOUNDARY.md",
+      "sha256": "9d882f3636cdfdd60785f5c22be9c0de2ace159d9966d9fe5b9dab42a2c44d58",
+      "size_bytes": 25401
+    },
+    {
       "path": ".agents/scheduler/docs/SPARK_HOST_RDMA_DOORBELL.md",
       "sha256": "0c32981f874cfba48341e61edbbc70bb891dd7ffa3d6d670372d8db9c6c9e49e",
       "size_bytes": 2911
@@ -77612,6 +77617,11 @@
       "size_bytes": 1609
     },
     {
+      "path": "docs/KERNEL_PLAYBOOK.md",
+      "sha256": "90d5b71d837f6e0fcf64e98569053a3b3b5833d6b3c2ab68f0f109a1987cb595",
+      "size_bytes": 33238
+    },
+    {
       "path": "docs/MODEL_SUPPORT.md",
       "sha256": "3e95eb5d2e2faac4996e3e8e50f8eeb4837c2fb21a4155fd9aeee1735b5fc5f7",
       "size_bytes": 3053
@@ -83735,5 +83745,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 316366367
+  "total_bytes": 316425006
 }
