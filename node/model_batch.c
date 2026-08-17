@@ -315,7 +315,11 @@ static void SparkModelBatchWriteEvent(
 	SparkModelBatchOutput *output;
 	int32_t written;
 	output = (SparkModelBatchOutput *)event_context;
-	written = fprintf(stdout,"{\"schema_version\":1,\"event\":\"%s\",\"status\":%u,\"request_id\":%llu,\"sequence_id\":%llu,\"request_handle\":%llu,\"token_id\":%u,\"token_index\":%u,\"generated_token_count\":%u,\"stop_token\":%s}\n",SparkModelBatchEventName(event->kind),event->status,(unsigned long long)event->request_id,(unsigned long long)event->sequence_id,(unsigned long long)event->request_handle,event->token_id,event->token_index,event->generated_token_count,(event->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) != 0u ? "true" : "false");
+	written = fprintf(stdout,"{\"schema_version\":1,\"event\":\"%s\",\"status\":%u,\"request_id\":%llu,\"sequence_id\":%llu,\"request_handle\":%llu,\"token_id\":%u,\"token_index\":%u,\"generated_token_count\":%u,\"stop_token\":%s",SparkModelBatchEventName(event->kind),event->status,(unsigned long long)event->request_id,(unsigned long long)event->sequence_id,(unsigned long long)event->request_handle,event->token_id,event->token_index,event->generated_token_count,(event->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) != 0u ? "true" : "false");
+	if ( written >= 0 && event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED )
+		written = fprintf(stdout,",\"model_extension_kind\":%u,\"first_draft_miss\":%u,\"first_draft_policy\":%u",event->model_extension_kind,event->first_draft_miss_count,event->first_draft_policy);
+	if ( written >= 0 )
+		written = fprintf(stdout,"}\n");
 	if ( written < 0 || fflush(stdout) != 0 )
 		output->write_failed = 1u;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED || event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED || event->kind == SPARK_MODEL_BATCH_EVENT_ERROR )
