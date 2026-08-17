@@ -1487,7 +1487,9 @@ static __global__ void __launch_bounds__(1024u, 1u) SparkQwen36SmallBatchTiledRa
 			SparkQwen36RansStageChunk(stage, payload + off, end - off);
 			SparkQwen36RansDecodeTileHalf(s_sf, s_c, stage, id_table, warp - 28u, weight_tile + (t % 3u) * SPARK_QWEN36_SMALL_BATCH_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK);
 			__threadfence_block();
-			atomicAdd(&tile_ready[t % 3u], 1u);
+			__syncwarp();
+			if ( lane == 0u )
+				atomicAdd(&tile_ready[t % 3u], 1u);
 			asm volatile("bar.sync 3, 128;");
 		}
 	}
@@ -1536,7 +1538,7 @@ static __global__ void __launch_bounds__(1024u, 1u) SparkQwen36SmallBatchTiledRa
 				}
 			}
 			asm volatile("bar.sync 2, 896;");
-			if ( warp == 0u )
+			if ( warp == 0u && lane == 0u )
 			{
 				__threadfence_block();
 				atomicAdd(&tile_done[ki % 3u], 1u);
