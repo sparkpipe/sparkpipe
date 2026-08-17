@@ -3339,7 +3339,13 @@ static cudaError_t SparkDsv4ModuleRunAttentionProjectedPrologue(SparkDsv4ModuleS
 			state->compress_score_state_f32 +
 			state->compress_score_state_offset_by_layer[layer_index],state_stride,
 			cache,lane_stride,SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS,
-			SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,rows);
+			SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,rows,
+			slot->dspark_projection_kv_save != 0 ?
+				(uint8_t *)slot->dspark_projection_kv_save +
+					state->dspark_projection_save_offset_by_layer[layer_index] : 0,
+			slot->dspark_projection_score_save != 0 ?
+				(uint8_t *)slot->dspark_projection_score_save +
+					state->dspark_projection_save_offset_by_layer[layer_index] : 0);
 	if ( error == cudaSuccess )
 		error = SparkDsv4ModuleRunQueryRankPost(slot,primary,layer,rows);
 	if ( error == cudaSuccess )
