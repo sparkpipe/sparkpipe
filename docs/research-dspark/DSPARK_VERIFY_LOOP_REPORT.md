@@ -373,3 +373,13 @@ acceptance, does not affect the output distribution").
   0) with the per-request stream matching the DSpark pad path; the pinned
   hash oracle remains unavailable on the current fleet (the old control
   binaries no longer initialize).
+- Expansion staging probe: the staged rows are EXACT (engine_tok == row0_tok,
+  row0_pos == anchor+1 == the engine's next row position) - the staging is
+  not the corruptor. The remaining expansion-only differences to bisect:
+  (a) the CSA/HCA rollback saves (the submission-path D2D reads - suspect
+  the addressing), (b) the rollback restores (the completion-path D2D
+  writes), (c) the verify_accept acceptance path, (d) the 8 distinct rows'
+  positions (the drafts at Q+3..Q+9) versus the pad's 8 identical rows.
+- Probe protocol that works: drive-without-expansion (the pad after the
+  drive) reproduces the no-drive stream exactly, isolating the corruption
+  to the expansion path; the expansion staging probe confirms the values.
