@@ -763,9 +763,16 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 	next_sequence_position = lane->context_token_count;
 	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 	{
+		/* The lease must land on the position the engine actually advanced
+		 * to: the completion's token count, not the submission's chain
+		 * width (DSpark bursts emit fewer tokens than the speculative
+		 * chain on rejection). */
+		uint32_t completed_tokens = route->completion.tokens_per_sequence;
+		if ( completed_tokens == 0u )
+			completed_tokens = route->submission.tokens_per_sequence;
 		status = SparkModelContinuationLeaseDecodePosition(
 			lane->context_token_count,
-			route->submission.tokens_per_sequence,&next_sequence_position);
+			completed_tokens,&next_sequence_position);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}

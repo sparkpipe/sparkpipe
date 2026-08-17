@@ -66,6 +66,7 @@
     "markov_rank": 256,
     "noise_token_id": 128799,
     "packed": true,
+    "serving_block_size": 7,
     "target_layer_ids": [
       40,
       41,
