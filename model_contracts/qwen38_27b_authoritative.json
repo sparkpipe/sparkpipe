@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "model_id": "Qwen/Qwen3.8-27B",
+  "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "revision_date": "2026-08-14",
+  "source": "https://huggingface.co/Qwen/Qwen3.8-27B",
+  "fp8_variant": {
+    "model_id": "Qwen/Qwen3.8-27B-FP8",
+    "revision": "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+    "source": "https://huggingface.co/Qwen/Qwen3.8-27B-FP8",
+    "note": "the survey's precision-matched serving target; not yet packable (packer consumes BF16 safetensors today)"
+  },
+  "architecture": "GatedDeltaNet hybrid, dense FFN, multimodal (image-text-to-text)",
+  "sources": {
+    "checkpoint_config": "config.json text_config, AUDITED 2026-08-17 (curl of the pinned revision)",
+    "geometry_note": "text decode path geometry is IDENTICAL to Qwen3.6-27B: hidden 5120, 64 layers, 3:1 GDN:attention, dense FFN 17408, MTP 1, vocab 248320. Qwen3.8-27B is a re-checkpoint of the same 27B dense hybrid, now multimodal (vision tower + model.language_model.* nesting + top-level mtp.*).",
+    "known_gaps": [
+      "vision tower and multimodal input out of scope by contract (text decode path only)",
+      "mrope_interleaved sections [11,11,10] degenerate to plain rope for text-only decode",
+      "MTP execution gated behind SPARK_QWEN36_SERVING_SPECULATE (not enabled by default)"
+    ],
+    "precision_policy": "all weights and activations BF16, GEMM accumulation and GDN recurrent state FP32 (mamba_ssm_dtype float32)"
+  },
+  "model": {
+    "hidden_dimension": 5120,
+    "layer_count": 64,
+    "vocabulary_size": 248320,
+    "rms_norm_epsilon": 1e-06,
+    "dense_intermediate_dimension": 17408,
+    "mtp_layer_count": 1,
+    "maximum_context_tokens": 262144
+  },
+  "hybrid_attention": {
+    "period": 4,
+    "full_phase": 3,
+    "gdn_layer_count": 48,
+    "full_layer_count": 16
+  },
+  "gdn": {
+    "key_head_count": 16,
+    "value_head_count": 48,
+    "key_dimension": 128,
+    "value_dimension": 128,
+    "short_conv_kernel": 4,
+    "state_element_type": "fp32"
+  },
+  "attention": {
+    "query_head_count": 24,
+    "kv_head_count": 4,
+    "head_dimension": 256,
+    "rope_dimension": 64,
+    "rope_theta": 10000000.0,
+    "rope_convention": "partial_rotary_first_dims",
+    "output_gate": true
+  },
+  "precision": {
+    "weight_format": "bf16",
+    "activation_format": "bf16",
+    "accumulator_format": "fp32"
+  },
+  "cache": {
+    "kv_element_bits": 16,
+    "kv_page_slots": 64
+  },
+  "qualification": {
+    "cuda_target": "sm_121a",
+    "status": "NOT_MEASURED",
+    "production_ready": false
+  }
+}
