@@ -54,6 +54,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     cache/kv_cache.c \
 	cache/kv_page_cache.c \
 	cache/kv_page_store.c \
+	cache/kv_model_table.c \
     cache/prefix_cache.c \
     cache/store/kv_store.c \
     cache/store/stage_kv_client.c \

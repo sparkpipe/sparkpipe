@@ -201,7 +201,13 @@ from pathlib import Path
 # it (net +319: +148 wrapper lines, -227 deleted); 165304 is the exact count
 # after it lands. The ceiling moves with it: the core is the DRY base the
 # KV seam, scheduler tables, and model gates build on.
-CEILING = 165304
+# The KV seam lands SparkKvModelTable + SparkKvBackendInitialize
+# (spark_kv_model_table.h 74 + cache/kv_model_table.c 93, +4 Makefile,
+# +1 sources.mk) as the single token-free fill point all four model adopters
+# consume; 165476 is the exact count after it lands. The DRY payoff (four
+# per-model fills -> one) realizes as model agents migrate onto it, so the
+# seam is additive now, net-negative later.
+CEILING = 165476
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
