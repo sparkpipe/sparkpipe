@@ -289,7 +289,11 @@ from pathlib import Path
 # decision ACCEPTED explicitly (an untouched decision kept its init
 # rejection_reason and every passing admit was silently rejected - the
 # module_admit smoke's real root cause). 166514 is the exact count.
-CEILING = 166514
+# The continuation-lease generation fix lands (+5): the residentd fences the
+# lease with the CURRENT client generation (not the route-reservation-time
+# one), so reconnects during async spec bursts no longer leave a stale
+# lease_client_generation - the last k-sweep gate. 166519 is the exact count.
+CEILING = 166519
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

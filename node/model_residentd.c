@@ -748,6 +748,7 @@ static SparkStatus SparkModelResidentdReleaseResidentSlotsLocked(
 }
 
 static SparkStatus SparkModelResidentdCompleteContinuationLease(
+	SparkModelResidentdRuntime *runtime,
 	SparkModelResidentdRoute *route,
 	const SparkModelServingLane *lane,
 	SparkModelResidentdSequenceSlot *slot)
@@ -776,8 +777,12 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
+	/* The lease must be fenced by the CURRENT client generation, not the
+		 * route's (captured at reservation): the ASYNC verify completion can
+		 * land after a reconnect, which would leave the route's generation
+		 * stale and reject the next continuation. */
 	return(SparkModelContinuationLeaseEstablish(&slot->lease,
-		route->client_generation,route->submission.control_generation,
+		runtime->client.generation,route->submission.control_generation,
 		next_sequence_position,lane->step_generation));
 }
 
@@ -818,7 +823,7 @@ static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(
 		if ( (descriptor->capability_flags &
 			SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u )
 		{
-			status = SparkModelResidentdCompleteContinuationLease(route,lane,slot);
+			status = SparkModelResidentdCompleteContinuationLease(runtime,route,lane,slot);
 			if ( status != SPARK_STATUS_OK )
 				return(status);
 		}
