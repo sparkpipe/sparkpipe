@@ -53,8 +53,28 @@
 #error "QWEN36_CONTRACT_SHA256 must identify the exact package contract"
 #endif
 
-#define SPARK_QWEN36_SERVING_ADAPTER_ID \
-	"spark.qwen36.serving-adapter.tp4.v1"
+/* Serving topology build knob. SPARK_QWEN36_SERVING_TP_DEGREE is the single
+ * switch and may be overridden on the compile line (-D...=N):
+ *   4 (default) = shipped TP4 whole-stack build (4 TP ranks; unchanged).
+ *   1           = TP1 single-rank full-width build.
+ *   0           = legacy PP layer-slice build (not shipped).
+ * Every downstream constant derives from it; the TP4 default is byte-for-byte
+ * the prior build. */
+#ifndef SPARK_QWEN36_SERVING_TP_DEGREE
+#define SPARK_QWEN36_SERVING_TP_DEGREE 4u
+#endif
+/* TP mode = single-stage whole stack: every rank runs module stage 1/1 and
+ * owns both the embedding and the head; no hidden boundaries. */
+#define SPARK_QWEN36_SERVING_TP (SPARK_QWEN36_SERVING_TP_DEGREE >= 1u)
+#if SPARK_QWEN36_SERVING_TP_DEGREE == 1u
+#define SPARK_QWEN36_SERVING_ADAPTER_ID "spark.qwen36.serving-adapter.tp1.v1"
+#define SPARK_QWEN36_SERVING_STAGE_COUNT 1u
+#define SPARK_QWEN36_SERVING_STAGE_LAYER_COUNTS {64u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u}
+#else
+#define SPARK_QWEN36_SERVING_ADAPTER_ID "spark.qwen36.serving-adapter.tp4.v1"
+#define SPARK_QWEN36_SERVING_STAGE_COUNT 4u
+#define SPARK_QWEN36_SERVING_STAGE_LAYER_COUNTS {64u,64u,64u,64u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u}
+#endif
 #define SPARK_QWEN36_SERVING_MODEL_ID "Qwen/Qwen3.8-27B"
 #define SPARK_QWEN36_SERVING_DRIVER_MODEL_ID \
 	"alibaba.qwen3.6-27b.resident-decode-stage-firmware"
@@ -62,11 +82,6 @@
 #define SPARK_QWEN36_SERVING_TARGET \
 	"cuda.sm121.qwen36.resident_decode_stage.bf16"
 #define SPARK_QWEN36_SERVING_PROGRAM_NAME "resident_decode"
-#define SPARK_QWEN36_SERVING_STAGE_COUNT 4u
-/* TP4: the residentd rank is the TP rank; every rank runs the whole stack
- * (module stage 1/1) and owns both the embedding and the head. */
-#define SPARK_QWEN36_SERVING_TP4 1u
-#define SPARK_QWEN36_SERVING_TP_DEGREE 4u
 /* The owner's KV-limit decision: serving caps context at 8192 positions
  * until the long-context KV plan lands, far under the module's 256K admit
  * ceiling. The KV pool is sized from this cap, so a conforming deployment
@@ -292,7 +307,7 @@ static const SparkModelServingAdapterDescriptor SparkQwen36ServingDescriptor =
 	.model_revision = QWEN36_MODEL_REVISION,
 	.driver_program_name = SPARK_QWEN36_SERVING_PROGRAM_NAME,
 	.artifact_sha256 = QWEN36_CONTRACT_SHA256,
-	.stage_layer_counts = {64u,64u,64u,64u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u},
+	.stage_layer_counts = SPARK_QWEN36_SERVING_STAGE_LAYER_COUNTS,
 	.minimum_efficient_submission_row_count = 0u
 };
 
@@ -356,7 +371,7 @@ static SparkStatus SparkQwen36ServingLoadConfiguration(
 static uint32_t SparkQwen36ServingFirstLayer(uint32_t stage_index)
 {
 	uint32_t index,first_layer;
-#if SPARK_QWEN36_SERVING_TP4
+#if SPARK_QWEN36_SERVING_TP
 	(void)stage_index;
 	return(0u);
 #endif
@@ -394,7 +409,7 @@ static SparkStatus SparkQwen36ServingSetEnvironment(
 	do { snprintf(value,sizeof(value),"%u",(uint32_t)(number)); SPARK_QWEN36_SERVING_SET_TEXT(name,value); } while (0)
 	SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION","1");
 	SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_PACK_PATH",state->stage_pack_path);
-#if SPARK_QWEN36_SERVING_TP4
+#if SPARK_QWEN36_SERVING_TP
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_COUNT",1u);
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_INDEX",0u);
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_FIRST_LAYER",0u);
@@ -476,13 +491,13 @@ static SparkStatus SparkQwen36ServingValidateRowOrder(
 	return(row == submission->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-/* TP4 stage-position helpers: every rank owns the embedding and the head
- * and no rank sends or receives hidden boundaries. Degree-1/PP builds keep
- * the original stage-slice derivations. */
+/* TP stage-position helpers (degree >= 1): every rank owns the embedding and
+ * the head and no rank sends or receives hidden boundaries. The legacy PP
+ * build (degree 0) keeps the original stage-slice derivations. */
 static uint32_t SparkQwen36ServingOwnsEmbedding(const SparkQwen36ServingState *state)
 {
 	(void)state;
-#if SPARK_QWEN36_SERVING_TP4
+#if SPARK_QWEN36_SERVING_TP
 	return(1u);
 #else
 	return(state->stage_index == 0u ? 1u : 0u);
@@ -492,7 +507,7 @@ static uint32_t SparkQwen36ServingOwnsEmbedding(const SparkQwen36ServingState *s
 static uint32_t SparkQwen36ServingOwnsFinalHead(const SparkQwen36ServingState *state)
 {
 	(void)state;
-#if SPARK_QWEN36_SERVING_TP4
+#if SPARK_QWEN36_SERVING_TP
 	return(1u);
 #else
 	return(state->stage_index + 1u == SPARK_QWEN36_SERVING_STAGE_COUNT ? 1u : 0u);
@@ -502,7 +517,7 @@ static uint32_t SparkQwen36ServingOwnsFinalHead(const SparkQwen36ServingState *s
 static uint32_t SparkQwen36ServingNeedsHiddenOutput(const SparkQwen36ServingState *state)
 {
 	(void)state;
-#if SPARK_QWEN36_SERVING_TP4
+#if SPARK_QWEN36_SERVING_TP
 	return(0u);
 #else
 	return(state->stage_index + 1u < SPARK_QWEN36_SERVING_STAGE_COUNT ? 1u : 0u);

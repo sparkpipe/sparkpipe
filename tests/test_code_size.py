@@ -234,7 +234,12 @@ from pathlib import Path
 # build gate publishes MTP_LAYER_COUNT=1 GDN_SNAPSHOT_SLOT_COUNT=8 so the GPU
 # validator exercises the MTP chain + GDN snapshot path it never ran before.
 # 165836 is the exact count.
-CEILING = 165836
+# The qwen36 TP1 serving-adapter build switch lands (+15):
+# SPARK_QWEN36_SERVING_TP_DEGREE becomes a #ifndef-overridable knob (4 default
+# TP4 unchanged / 1 TP1 single-rank / 0 legacy PP), and adapter_id, stage_count,
+# and stage_layer_counts derive from it so a TP1 adapter compiles from the same
+# source with zero TP4 behavior change. 165851 is the exact count.
+CEILING = 165851
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
