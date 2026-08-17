@@ -2,11 +2,12 @@
  * Fixture driver for the qwen36 serving adapter test. Emulates the compiled
  * model_driver.so shape: descriptor/flags/profile the adapter pins, create
  * reading the strict process environment the adapter must set (the qwen36
- * module's real configuration channel), submit_return completion, the
- * first-class hidden transport callbacks (post_receive gathers, send
- * scatters - echoed so the test sees a round trip), and the head stage's
- * token emission. kv_token_capacity doubles as the observation channel for
- * the KV pool size the adapter derived (blocks x block tokens).
+ * module's real configuration channel), submit_return completion, and the
+ * head stage's token emission. TP4: every rank owns the embedding and the
+ * head, so a frame carries token ids in (buffer 0) and head tokens out
+ * (buffer 1) with no hidden transport. kv_token_capacity doubles as the
+ * observation channel for the KV pool size the adapter derived (blocks x
+ * block tokens).
  */
 
 #include <stdlib.h>
@@ -26,7 +27,9 @@
 #error "QWEN36_CONTRACT_SHA256 must match the adapter build"
 #endif
 
-#define TEST_QWEN36_DRIVER_STAGE_COUNT 13u
+/* TP4: the adapter sets a single module stage (SPARK_QWEN36_STAGE_COUNT=1,
+ * STAGE_INDEX=0) on every rank. */
+#define TEST_QWEN36_DRIVER_STAGE_COUNT 1u
 #define TEST_QWEN36_DRIVER_CAPTURE_ROWS 16u
 
 typedef struct TestQwen36ServingDriver
@@ -37,11 +40,6 @@ typedef struct TestQwen36ServingDriver
 	uint32_t kv_block_count;
 	uint64_t submitted_count;
 	uint64_t completed_count;
-	/* Device memory: on a CUDA host the adapter's transport shim moves
-	 * hidden rows with real device-to-device copies, so the patterned
-	 * stage-0 payload must live on device too. The cuda stub makes this a
-	 * plain malloc on hosts without CUDA. */
-	void *capture;
 } TestQwen36ServingDriver;
 
 static SparkStatus TestQwen36ServingDriverSubmit(
@@ -51,7 +49,7 @@ static SparkStatus TestQwen36ServingDriverSubmit(
 static const SparkModelDriverProgramProfile TestQwen36ServingDriverProfile =
 {
 	.descriptor_bytes = sizeof(SparkModelDriverProgramProfile),
-	.profile_flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
+	.profile_flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
 	.max_inflight = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
 	.max_active_slots = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_new_tokens = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
@@ -62,7 +60,7 @@ static const SparkModelDriverProgramProfile TestQwen36ServingDriverProfile =
 static const SparkModelDriverProgramDescriptor TestQwen36ServingDriverProgram =
 {
 	.program_id = 1u,
-	.flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
+	.flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
 	.max_inflight = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
 	.name = "resident_decode",
 	.profile = &TestQwen36ServingDriverProfile,
@@ -122,11 +120,6 @@ static SparkStatus TestQwen36ServingDriverCreate(
 	driver = (TestQwen36ServingDriver *)calloc(1u,sizeof(*driver));
 	if ( driver == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( cudaMalloc(&driver->capture,(size_t)(TEST_QWEN36_DRIVER_CAPTURE_ROWS * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES)) != cudaSuccess )
-	{
-		free(driver);
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	}
 	driver->completion_function = request->completion_function;
 	driver->completion_context = request->completion_context;
 	driver->stage_index = stage_index;
@@ -141,7 +134,6 @@ static void TestQwen36ServingDriverDestroy(void *driver_instance)
 	driver = (TestQwen36ServingDriver *)driver_instance;
 	if ( driver == 0 )
 		return;
-	(void)cudaFree(driver->capture);
 	free(driver);
 }
 
@@ -167,9 +159,8 @@ static SparkStatus TestQwen36ServingDriverSubmit(
 	TestQwen36ServingDriver *driver;
 	SparkQwen36ResidentDecodeStageFrameContext *context;
 	SparkModelDriverCompletion completion;
-	SparkHiddenTransportPacket packet;
 	uint32_t prefill,rows,row;
-	uint64_t hidden_bytes;
+	uint32_t *tokens;
 	driver = (TestQwen36ServingDriver *)driver_instance;
 	if ( driver == 0 || frame == 0 || frame->user_context == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -195,59 +186,21 @@ static SparkStatus TestQwen36ServingDriverSubmit(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE) == 0u || context->kv_block_table == 0 || context->kv_block_table->physical_block_indices == 0 || context->kv_block_table->host_physical_block_indices == 0 || context->kv_block_table->host_lane_physical_block_counts == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	hidden_bytes = (uint64_t)rows * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES;
-	if ( driver->stage_index != 0u )
-	{
-		if ( (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) == 0u || context->hidden_input_post_receive_function == 0 )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( context->hidden_input_post_receive_function(context->hidden_input_transport_session,&context->hidden_input_packet) != SPARK_STATUS_OK )
-			return(SPARK_STATUS_IO_ERROR);
-		if ( context->hidden_input_packet.active_sequence_count != rows || context->hidden_input_packet.hidden_dimension != SPARK_QWEN36_MODEL_HIDDEN_DIMENSION || context->hidden_input_packet.hidden_bf16 == 0 )
-			return(SPARK_STATUS_VALIDATION_FAILED);
-		/* Echo the received packet unchanged. The pointer is the adapter's
-		 * device-side gather (or the submission boundary itself); a host
-		 * copy out of it is exactly what segfaults a CUDA host. */
-		if ( cudaMemcpy(driver->capture,context->hidden_input_packet.hidden_bf16,(size_t)hidden_bytes,cudaMemcpyDeviceToDevice) != cudaSuccess )
-			return(SPARK_STATUS_IO_ERROR);
-	}
+	/* TP4: every rank owns the embedding and the head, so a frame carries the
+	 * token ids in (buffer 0) and the head tokens out (buffer 1) with no
+	 * hidden transport. */
+	if ( (context->flags & (SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT)) != 0u || context->hidden_input_post_receive_function != 0 || context->hidden_output_send_function != 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( frame->buffer_count != 2u || frame->buffers[0].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_READ || frame->buffers[0].address == 0 || frame->buffers[0].bytes < (uint64_t)rows * sizeof(uint32_t) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( frame->buffers[1].slot != 1u || frame->buffers[1].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || frame->buffers[1].address == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	tokens = (uint32_t *)frame->buffers[1].address;
+	if ( prefill != 0u )
+		tokens[0] = 4242u;
 	else
-	{
-		if ( (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u || context->hidden_input_post_receive_function != 0 )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( frame->buffer_count == 0u || frame->buffers[0].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_READ || frame->buffers[0].address == 0 || frame->buffers[0].bytes < (uint64_t)rows * sizeof(uint32_t) )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( cudaMemset(driver->capture,0x5a,(size_t)hidden_bytes) != cudaSuccess )
-			return(SPARK_STATUS_IO_ERROR);
-	}
-	if ( driver->stage_index + 1u == TEST_QWEN36_DRIVER_STAGE_COUNT )
-	{
-		uint32_t out_index;
-		uint32_t *tokens;
-		out_index = driver->stage_index == 0u ? 1u : 0u;
-		if ( frame->buffer_count != out_index + 1u || frame->buffers[out_index].slot != 1u || frame->buffers[out_index].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || frame->buffers[out_index].address == 0 )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		tokens = (uint32_t *)frame->buffers[out_index].address;
-		if ( prefill != 0u )
-			tokens[0] = 4242u;
-		else
-			for (row=0u; row<rows; row++)
-				tokens[row] = 4200u + row;
-	}
-	else
-	{
-		if ( (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) == 0u || context->hidden_output_send_function == 0 )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		memset(&packet,0,sizeof(packet));
-		packet.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
-		packet.descriptor_bytes = SPARK_HIDDEN_TRANSPORT_PACKET_BYTES;
-		packet.active_sequence_count = rows;
-		packet.hidden_dimension = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
-		packet.bytes_per_sequence = SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES;
-		packet.hidden_bf16 = driver->capture;
-		packet.cuda_stream = frame->execution_stream;
-		if ( context->hidden_output_send_function(context->hidden_output_transport_session,&packet) != SPARK_STATUS_OK )
-			return(SPARK_STATUS_IO_ERROR);
-	}
+		for (row=0u; row<rows; row++)
+			tokens[row] = 4200u + row;
 	driver->submitted_count++;
 	driver->completed_count++;
 	memset(&completion,0,sizeof(completion));
