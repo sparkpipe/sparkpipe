@@ -266,7 +266,11 @@ from pathlib import Path
 # + LmGemmLaunchTileK in the shared launcher with a host-safe pinning test;
 # the kernel body was already TILE_K-generic. Unblocks K3 serial-TP16. 166308
 # is the exact count.
-CEILING = 166308
+# dsv4-flash spec-completion fixes land (+1): lane advance 1+accepted
+# unconditionally, max_speculative_token_count = SPEC_STEP (not block size),
+# and the completion schema gate widened by the speculative allowance.
+# 166309 is the exact count.
+CEILING = 166309
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

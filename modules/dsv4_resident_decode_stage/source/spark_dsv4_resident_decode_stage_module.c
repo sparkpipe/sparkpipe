@@ -3590,11 +3590,11 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 			async->completion.tokens_per_sequence = 1u + accepted;
 			async->tokens_per_sequence = 1u + accepted;
 			async->emitted_token_count = 1u + accepted;
-			if ( accepted != 0u )
-			{
-				async->lane_next_positions[0] += accepted;
-				async->cache_lanes[0].context_token_count += accepted;
-			}
+			/* A spec verify step ALWAYS commits at least the anchor/bonus
+			 * token, so the lane advances by 1 + accepted (never 0), matching
+			 * the completion's tokens_per_sequence = 1 + accepted. */
+			async->lane_next_positions[0] += 1u + accepted;
+			async->cache_lanes[0].context_token_count += 1u + accepted;
 		}
 		if ( lane_index < state->resident_sequence_capacity )
 		{
