@@ -967,7 +967,7 @@ static void SparkDsv4ModuleBuildOrdinals(SparkDsv4ModuleState *state)
 			state->dspark_projection_save_offset_by_layer[layer] =
 				projection_save_bytes;
 			projection_save_bytes +=
-				(uint64_t)SPARK_DSV4_MODEL_DSPARK_SPEC_STEP * channels *
+				(uint64_t)(SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u) * channels *
 				SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 		}
 		if ( kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
