@@ -2,10 +2,10 @@
 # qwen36 TP4 band deploy: spark0-3, simultaneous start, batch E2E on request
 set -euo pipefail
 RUNTIME_NAME=qwen38.bf16.tp4
-BUILD=/home/sparkd/sparkdata/$RUNTIME_NAME/build
+BUILD=/home/spark0/sparkdata/$RUNTIME_NAME/build
 HOSTS=(spark0 spark1 spark2 spark3)
-PACKS=/home/sparkd/sparkdata/$RUNTIME_NAME/packs
-COMMIT=$(cd /home/sparkd/sparkpipe-qwen && git rev-parse HEAD)
+PACKS=/home/spark0/sparkdata/$RUNTIME_NAME/packs
+COMMIT=$(cd /home/spark0/sparkpipe && git rev-parse HEAD)
 GENERATION=$(date -u +%Y%m%d%H%M%S)
 # TCP NCCL pinned to the 100G rail (enp1s0f1np1, 10.10.100.0/24) so the
 # ring never selects the mgmt/wifi/tailscale interfaces.

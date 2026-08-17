@@ -43,6 +43,12 @@
       "kind": "tcp",
       "host_template": "{host}",
       "port": 17480
-    }
+    },
+    "transport_hosts": [
+      "spark0-fabric",
+      "spark1-fabric",
+      "spark2-fabric",
+      "spark3-fabric"
+    ]
   }
 }
