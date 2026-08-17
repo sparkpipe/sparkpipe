@@ -21,7 +21,9 @@
     "markov_rank": 256,
     "mask_token_id": 154856,
     "max_anchors": 1024,
-    "maximum_speculative_token_count": 7
+    "maximum_speculative_token_count": 7,
+    "pp_stage_count": 13,
+    "pp_stage_layer_count": 6
   },
   "eos_token_ids": {
     "end_of_text": 154820,

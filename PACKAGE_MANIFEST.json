@@ -1,5 +1,5 @@
 {
-  "file_count": 2676,
+  "file_count": 2675,
   "files": [
     {
       "path": ".agents/MODEL_AGENT_BRIEF.md",
@@ -20,11 +20,6 @@
       "path": ".agents/glm52/.gitignore",
       "sha256": "d76772342a87714b5d8fae94817293d347ecf8c599643999e259e8f722e4000d",
       "size_bytes": 85
-    },
-    {
-      "path": ".agents/glm52/.scratch_inc/sparkpipe/spark_speculation_policy.h",
-      "sha256": "5ffb1dd5de4fa2505c423ceeaac63f3e6c7c7330ac7e5efa1ccab1d315bc3ae4",
-      "size_bytes": 9906
     },
     {
       "path": ".agents/glm52/.tshome/Library/Application Support/tailscale/ssh_known_hosts",
@@ -9228,8 +9223,8 @@
     },
     {
       "path": "model_contracts/glm52.json",
-      "sha256": "7f5754c9f7e630bf5a9da39ee610b7349f02f6b9c6c49b10027841fb778e012a",
-      "size_bytes": 1730
+      "sha256": "54bfe8b5ae6f40c5ca113f17f2f15fbaf9bf52b8f4fd464426f8258d21af5d00",
+      "size_bytes": 1787
     },
     {
       "path": "model_contracts/k3.json",
@@ -12983,8 +12978,8 @@
     },
     {
       "path": "tools/glm52_model_contract.py",
-      "sha256": "4d7ed48b988a3871a525dccbde04fd438aafeb23636c1d3ca59b111696160283",
-      "size_bytes": 19576
+      "sha256": "8fe0db755974b8cb92a49239e6bb59e4ed480674dba9416e36ef92c6a7fef773",
+      "size_bytes": 19718
     },
     {
       "path": "tools/glm52_patch_bf16_codec.py",
@@ -13385,5 +13380,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 50039463
+  "total_bytes": 50029756
 }
