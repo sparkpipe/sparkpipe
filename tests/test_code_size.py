@@ -226,7 +226,15 @@ from pathlib import Path
 # The completion-tail now surfaces publish/rollback failures (page-cache status
 # flows into async->completion.status instead of (void)) (+2); 165781 is the
 # exact count.
-CEILING = 165781
+# The qwen36 speculation fix lands (+55): verify/replay frames feed the
+# committed token C0 instead of the redundant first draft (a first-draft miss
+# no longer poisons or zeroes the chain), the gate becomes a named
+# configurable policy (recover default / strict legacy for A/B), misses are
+# surfaced in telemetry + the completion model_extension receipt, and the
+# build gate publishes MTP_LAYER_COUNT=1 GDN_SNAPSHOT_SLOT_COUNT=8 so the GPU
+# validator exercises the MTP chain + GDN snapshot path it never ran before.
+# 165836 is the exact count.
+CEILING = 165836
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

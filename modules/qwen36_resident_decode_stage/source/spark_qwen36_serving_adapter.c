@@ -110,6 +110,22 @@ static uint32_t SparkQwen36ServingSpeculativeDraftCount(void)
 	}
 	return(count);
 }
+/* First-draft policy for the MTP chain. draft[0] predicts the just-committed
+ * position, so it is redundant with the committed token C0 and is never fed to
+ * the verify/replay frames (C0 is fed in its place). "recover" (default)
+ * records a first-draft miss as telemetry and keeps speculating; "strict"
+ * preserves the legacy behavior (a miss declares the chain dead and zeroes
+ * speculation) for A/B comparison. */
+#define SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY_ENV "SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY"
+#define SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY_RECOVER 0u
+#define SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY_STRICT 1u
+static uint32_t SparkQwen36ServingSpecFirstDraftPolicy(void)
+{
+	const char *value = getenv(SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY_ENV);
+	if ( value != 0 && strcmp(value,"strict") == 0 )
+		return(SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY_STRICT);
+	return(SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY_RECOVER);
+}
 /* GDN snapshot slots. The two-phase min-accept schedule keeps one verify
  * snapshot in flight per lane, capped by the module's slot ceiling; a lane
  * index is the snapshot slot it uses. */
@@ -139,10 +155,21 @@ typedef struct SparkQwen36ServingSpecState
 	uint32_t draft_token_count;
 	uint32_t accepted_count;
 	uint32_t chain_dead;
+	uint32_t first_draft_miss;
 	uint32_t draft_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t emitted_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t committed_ids[SPARK_QWEN36_SERVING_MAX_COMMITTED_TOKENS];
 } SparkQwen36ServingSpecState;
+
+/* Completion model_extension payload: speculation-reason telemetry so the
+ * resident receipt records WHY a first-draft miss happened (and which policy
+ * was in effect), not only the accepted-token count. */
+#define SPARK_QWEN36_SERVING_EXTENSION_KIND 0x5136u /* "Q6" */
+typedef struct SparkQwen36ServingSpecTelemetry
+{
+	uint32_t first_draft_miss_count;   /* lanes where draft[0] != committed C0 */
+	uint32_t first_draft_policy;       /* RECOVER or STRICT (see above) */
+} SparkQwen36ServingSpecTelemetry;
 
 typedef struct SparkQwen36ServingPending
 {
@@ -181,6 +208,7 @@ typedef struct SparkQwen36ServingPending
 	uint32_t spec_tokens_per_sequence;
 	uint32_t spec_total_accepted;
 	uint32_t spec_chain_dead;
+	uint32_t spec_first_draft_miss;
 } SparkQwen36ServingPending;
 
 /* Per-frame transport shim state. The module calls post_receive/send through
@@ -1205,9 +1233,13 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 	uint32_t lane,draft;
 	uint32_t draft_count;
 	uint32_t min_accepted;
+	uint32_t first_draft_policy;
+	uint32_t verify_tokens[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	SparkStatus status;
 	draft_count = SparkQwen36ServingSpeculativeDraftCount();
+	first_draft_policy = SparkQwen36ServingSpecFirstDraftPolicy();
 	pending->spec_active = 1u;
+	pending->spec_first_draft_miss = 0u;
 	memset(pending->spec,0,sizeof(pending->spec));
 	status = SPARK_STATUS_OK;
 	for (lane=0u; status == SPARK_STATUS_OK && lane<submission->active_sequence_count; lane++)
@@ -1243,11 +1275,14 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			spec->committed_ids[0] = pending->frame_output_ids[0];
 			for (draft=0u; draft<draft_count; draft++)
 				spec->draft_ids[draft] = pending->frame_output_ids[1u + draft];
-			/* The first draft predicts the just-committed position. If it
-			 * disagrees with the model's own emission, the verify frame would
-			 * ingest a wrong token and poison every emitted id, so the chain
-			 * is dead: commit the model token alone and skip verify/replay. */
-			spec->chain_dead = spec->draft_ids[0] != spec->committed_ids[0] ? 1u : 0u;
+			/* draft[0] predicts the just-committed position, so it is redundant
+			 * with C0 and is never fed to verify/replay (C0 is fed in its place).
+			 * A first-draft miss is recorded in telemetry + the receipt; only the
+			 * strict policy turns it into a dead chain (legacy zero-speculation). */
+			spec->first_draft_miss = spec->draft_ids[0] != spec->committed_ids[0] ? 1u : 0u;
+			spec->chain_dead = (spec->first_draft_miss != 0u && first_draft_policy == SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY_STRICT) ? 1u : 0u;
+			if ( spec->first_draft_miss != 0u )
+				fprintf(stderr, "qwen36_spec first_draft_miss lane=%u C0=%u draft0=%u policy=%s\n", lane, spec->committed_ids[0], spec->draft_ids[0], first_draft_policy == SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY_STRICT ? "strict" : "recover");
 		}
 		if ( status == SPARK_STATUS_OK && spec->chain_dead == 0u )
 		{
@@ -1255,7 +1290,13 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			gdn_snapshot.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 			gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
 			gdn_snapshot.snapshot_index = spec->snapshot_index;
-			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,spec->draft_ids,0,0,draft_count,spec->base_position,sequence,spec->base_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY,0,&gdn_snapshot,draft_count);
+			/* Feed C0 (not draft[0]) as the first verify row: draft[0]
+			 * predicts the already-committed position, so it is redundant
+			 * and a first-draft miss must not poison the rest of the chain. */
+			verify_tokens[0] = spec->committed_ids[0];
+			for (draft=1u; draft<draft_count; draft++)
+				verify_tokens[draft] = spec->draft_ids[draft];
+			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,verify_tokens,0,0,draft_count,spec->base_position,sequence,spec->base_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY,0,&gdn_snapshot,draft_count);
 			if ( status != SPARK_STATUS_OK )
 				fprintf(stderr, "qwen36_spec_diag verify_frame_failed lane=%u status=%d\n", lane, (int)status);
 		}
@@ -1281,6 +1322,8 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		{
 			if ( pending->spec[lane].chain_dead != 0u )
 				pending->spec_chain_dead = 1u;
+			if ( pending->spec[lane].first_draft_miss != 0u )
+				pending->spec_first_draft_miss++;
 			if ( pending->spec[lane].accepted_count < min_accepted )
 				min_accepted = pending->spec[lane].accepted_count;
 		}
@@ -1303,10 +1346,11 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		slot = spec->resident_slot;
 		/* The snapshot restores the GDN state to BEFORE the first drafted
 		 * position, so the replay must re-walk it too: the committed token
-		 * (draft 0, already checked against C0), the accepted drafts, and the
-		 * correction. */
+		 * C0, the accepted drafts, and the correction. draft[0] is not used
+		 * (it predicted the already-committed position). */
 		replay_rows = min_accepted + 2u;
-		for (draft=0u; draft<=min_accepted; draft++)
+		replay_tokens[0] = spec->committed_ids[0];
+		for (draft=1u; draft<=min_accepted; draft++)
 			replay_tokens[draft] = spec->draft_ids[draft];
 		replay_tokens[min_accepted + 1u] = spec->emitted_ids[min_accepted];
 		replay_base = spec->base_position;
@@ -1371,6 +1415,17 @@ static void SparkQwen36ServingComplete(
 			for (index=0u; index<completion.token_count; index++)
 				completion.token_ids[index] = pending->output_token_ids[index];
 		}
+	}
+	if ( pending->spec_active != 0u )
+	{
+		SparkQwen36ServingSpecTelemetry telemetry;
+		memset(&telemetry,0,sizeof(telemetry));
+		telemetry.first_draft_miss_count = pending->spec_first_draft_miss;
+		telemetry.first_draft_policy = SparkQwen36ServingSpecFirstDraftPolicy();
+		completion.completion_flags |= SPARK_MODEL_SERVING_COMPLETION_FLAG_MODEL_EXTENSION;
+		completion.model_extension_kind = SPARK_QWEN36_SERVING_EXTENSION_KIND;
+		completion.model_extension_bytes = sizeof(telemetry);
+		memcpy(completion.model_extension,&telemetry,sizeof(telemetry));
 	}
 	pending->active = 0u;
 	state->completion_function(state->completion_context,&completion);
