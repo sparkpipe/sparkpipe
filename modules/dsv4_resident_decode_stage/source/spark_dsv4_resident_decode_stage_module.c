@@ -219,13 +219,17 @@ struct SparkDsv4ModuleSlot
 	void *dspark_tap_bf16;
 	void *dspark_tap_ring_bf16;
 	void *dspark_verify_tap_bf16;
-	/* CSA/HCA boundary-emission rollback: the verify frame's rows may
-	 * overwrite the compressed-cache emission slots; save them before the
-	 * frame and restore when the boundary row is rejected. */
-	uint8_t dspark_boundary_save[2u][SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION * 2u];
-	uint32_t dspark_boundary_row[2u];
-	uint32_t dspark_boundary_layer[2u];
-	uint32_t dspark_boundary_save_count;
+	/* CSA/HCA compressed-state rollback: the verify frame's rows write the
+	 * position-keyed ring (self-cleaning), but a REJECTED boundary row's
+	 * overlap-shift moves speculative content into the CSA previous windows
+	 * and its emission lands in the compressed cache. Save the CSA previous
+	 * windows + every compressor's boundary emission slots before the
+	 * frame; restore them after when the boundary row is rejected. */
+	uint8_t *dspark_csa_previous_save;
+	uint8_t *dspark_emission_save;
+	uint32_t dspark_boundary_rows[2u];
+	uint32_t dspark_boundary_count;
+	uint32_t dspark_hca_boundary_row;
 	void *dspark_logits_bf16;
 	float *dspark_logits_f32;
 };
@@ -1920,6 +1924,20 @@ static SparkStatus SparkDsv4ModuleAllocateDspark(SparkDsv4ModuleState *state, Sp
 		status = SparkStageModuleDeviceAllocate(&state->ledger,block * SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT * dim * bf16,&slot->dspark_tap_ring_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u) * SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT * dim * bf16,&slot->dspark_verify_tap_bf16);
+	/* CSA previous windows: csa_layer_count x 2 (kv+score) x ratio(4) x
+	 * channels(2 x head dim) floats. Boundary emission slots:
+	 * compress_layer_count x 2 x head-dim bf16 entries. */
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,
+			(uint64_t)state->csa_layer_count * 2u *
+			SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO *
+			(2u * SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION) * sizeof(float),
+			(void **)&slot->dspark_csa_previous_save);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,
+			(uint64_t)state->compress_layer_count * 2u *
+			SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION * bf16,
+			(void **)&slot->dspark_emission_save);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,block * vocab * bf16,&slot->dspark_logits_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -2483,6 +2501,95 @@ static SparkStatus SparkDsv4ModuleExpandDsparkVerify(
 	else
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 			"dspark_verify_expand");
+	/* Compressed-state rollback saves: the CSA previous windows (kv + score)
+	 * and every compressor layer's boundary emission slots, so a rejected
+	 * boundary row can be undone at the completion. */
+	if ( status == SPARK_STATUS_OK )
+	{
+		const uint64_t channels = 2u * SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION;
+		const uint64_t window_floats = (uint64_t)SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO * channels;
+		const uint64_t slot_bytes = SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+		uint32_t boundary,layer,csa_layer,ordinal,kind;
+		slot->dspark_boundary_count = 0u;
+		slot->dspark_hca_boundary_row = UINT32_MAX;
+		for (row = 0u; row < rows; row++)
+			if ( (host_positions[row] + 1u) % SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO == 0u )
+			{
+				slot->dspark_boundary_rows[slot->dspark_boundary_count] = row;
+				slot->dspark_boundary_count++;
+			}
+		for (row = 0u; row < rows; row++)
+			if ( (host_positions[row] + 1u) % SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO == 0u )
+			{
+				slot->dspark_hca_boundary_row = row;
+				break;
+			}
+		csa_layer = 0u;
+		ordinal = 0u;
+		for (layer = state->first_layer_index;
+			layer < state->first_layer_index + state->layer_count &&
+			error == cudaSuccess; layer++)
+		{
+			kind = SparkDsv4ModelLayerKind(layer);
+			if ( kind == SPARK_DSV4_MODEL_LAYER_KIND_SWA )
+				continue;
+			if ( kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
+			{
+				const void *kv_source = (const uint8_t *)state->compress_kv_state_f32 +
+					state->compress_state_offset_by_layer[layer] * sizeof(float);
+				const void *score_source = (const uint8_t *)state->compress_score_state_f32 +
+					state->compress_score_state_offset_by_layer[layer] * sizeof(float);
+				error = cudaMemcpyAsync(
+					slot->dspark_csa_previous_save + (uint64_t)csa_layer * 2u * window_floats * sizeof(float),
+					kv_source,window_floats * sizeof(float),cudaMemcpyDeviceToDevice,stream);
+				if ( error == cudaSuccess )
+					error = cudaMemcpyAsync(
+						slot->dspark_csa_previous_save + ((uint64_t)csa_layer * 2u + 1u) * window_floats * sizeof(float),
+						score_source,window_floats * sizeof(float),cudaMemcpyDeviceToDevice,stream);
+				csa_layer++;
+			}
+			for (boundary = 0u; boundary < slot->dspark_boundary_count &&
+				error == cudaSuccess; boundary++)
+			{
+				row = slot->dspark_boundary_rows[boundary];
+				uint64_t position = host_positions[row];
+				uint64_t slot64 = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS +
+					((position % SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS) /
+					 (kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA ?
+					  SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO :
+					  SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO));
+				const void *source = (const uint8_t *)state->kv_cache_bf16 +
+					(uint64_t)state->cache_offset_by_layer[layer] * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES +
+					(uint64_t)slot->host_row_lane_indices[row] *
+						state->cache_lane_stride_by_layer[layer] * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES +
+					slot64 * slot_bytes;
+				error = cudaMemcpyAsync(
+					slot->dspark_emission_save + ((uint64_t)ordinal * 2u + boundary) * slot_bytes,
+					source,slot_bytes,cudaMemcpyDeviceToDevice,stream);
+			}
+			if ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_HCA &&
+				slot->dspark_hca_boundary_row != UINT32_MAX )
+			{
+				row = slot->dspark_hca_boundary_row;
+				uint64_t position = host_positions[row];
+				uint64_t slot64 = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS +
+					((position % SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS) /
+					 SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO);
+				const void *source = (const uint8_t *)state->kv_cache_bf16 +
+					(uint64_t)state->cache_offset_by_layer[layer] * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES +
+					(uint64_t)slot->host_row_lane_indices[row] *
+						state->cache_lane_stride_by_layer[layer] * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES +
+					slot64 * slot_bytes;
+				error = cudaMemcpyAsync(
+					slot->dspark_emission_save + (uint64_t)ordinal * 2u * slot_bytes,
+					source,slot_bytes,cudaMemcpyDeviceToDevice,stream);
+			}
+			ordinal++;
+		}
+		if ( error != cudaSuccess )
+			status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+				"dspark_rollback_save");
+	}
 	if ( status == SPARK_STATUS_OK )
 	{
 		slot->dspark_verify_rows = rows;
@@ -3606,6 +3713,96 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 			{
 				async->lane_next_positions[0] += accepted;
 				async->cache_lanes[0].context_token_count += accepted;
+			}
+			/* Compressed-state rollback: a rejected boundary row's
+			 * overlap-shift moved speculative content into the CSA
+			 * previous windows and its emission polluted the compressed
+			 * cache; undo both. The accepted rows' position-keyed slots
+			 * stay (they hold the true prefix). */
+			{
+				uint32_t boundary,ordinal,csa_layer,kind,row;
+				uint32_t boundary_rejected = 0u;
+				const uint64_t channels = 2u * SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION;
+				const uint64_t window_floats = (uint64_t)SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO * channels;
+				const uint64_t slot_bytes = SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+				for (boundary = 0u; boundary < slot->dspark_boundary_count; boundary++)
+					if ( slot->dspark_boundary_rows[boundary] > accepted )
+						boundary_rejected = 1u;
+				csa_layer = 0u;
+				ordinal = 0u;
+				for (layer = state->first_layer_index;
+					layer < state->first_layer_index + state->layer_count &&
+					error == cudaSuccess; layer++)
+				{
+					kind = SparkDsv4ModelLayerKind(layer);
+					if ( kind == SPARK_DSV4_MODEL_LAYER_KIND_SWA )
+						continue;
+					if ( kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA &&
+						boundary_rejected != 0u )
+					{
+						void *kv_dest = (uint8_t *)state->compress_kv_state_f32 +
+							state->compress_state_offset_by_layer[layer] * sizeof(float);
+						void *score_dest = (uint8_t *)state->compress_score_state_f32 +
+							state->compress_score_state_offset_by_layer[layer] * sizeof(float);
+						error = cudaMemcpyAsync(kv_dest,
+							slot->dspark_csa_previous_save + (uint64_t)csa_layer * 2u * window_floats * sizeof(float),
+							window_floats * sizeof(float),cudaMemcpyDeviceToDevice,
+							(cudaStream_t)slot->cuda_stream);
+						if ( error == cudaSuccess )
+							error = cudaMemcpyAsync(score_dest,
+								slot->dspark_csa_previous_save + ((uint64_t)csa_layer * 2u + 1u) * window_floats * sizeof(float),
+								window_floats * sizeof(float),cudaMemcpyDeviceToDevice,
+								(cudaStream_t)slot->cuda_stream);
+						csa_layer++;
+					}
+					else if ( kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
+						csa_layer++;
+					for (boundary = 0u; boundary < slot->dspark_boundary_count &&
+						error == cudaSuccess; boundary++)
+					{
+						if ( slot->dspark_boundary_rows[boundary] <= accepted )
+							continue;
+						row = slot->dspark_boundary_rows[boundary];
+						uint64_t position = slot->host_row_positions[row];
+						uint64_t slot64 = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS +
+							((position % SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS) /
+							 (kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA ?
+							  SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO :
+							  SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO));
+						void *dest = (uint8_t *)state->kv_cache_bf16 +
+							(uint64_t)state->cache_offset_by_layer[layer] * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES +
+							(uint64_t)slot->host_row_lane_indices[row] *
+								state->cache_lane_stride_by_layer[layer] * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES +
+							slot64 * slot_bytes;
+						error = cudaMemcpyAsync(dest,
+							slot->dspark_emission_save + ((uint64_t)ordinal * 2u + boundary) * slot_bytes,
+							slot_bytes,cudaMemcpyDeviceToDevice,
+							(cudaStream_t)slot->cuda_stream);
+					}
+					if ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_HCA &&
+						slot->dspark_hca_boundary_row != UINT32_MAX &&
+						slot->dspark_hca_boundary_row > accepted )
+					{
+						row = slot->dspark_hca_boundary_row;
+						uint64_t position = slot->host_row_positions[row];
+						uint64_t slot64 = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS +
+							((position % SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS) /
+							 SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO);
+						void *dest = (uint8_t *)state->kv_cache_bf16 +
+							(uint64_t)state->cache_offset_by_layer[layer] * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES +
+							(uint64_t)slot->host_row_lane_indices[row] *
+								state->cache_lane_stride_by_layer[layer] * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES +
+							slot64 * slot_bytes;
+						error = cudaMemcpyAsync(dest,
+							slot->dspark_emission_save + (uint64_t)ordinal * 2u * slot_bytes,
+							slot_bytes,cudaMemcpyDeviceToDevice,
+							(cudaStream_t)slot->cuda_stream);
+					}
+					ordinal++;
+				}
+				if ( error != cudaSuccess )
+					status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+						"dspark_rollback_restore");
 			}
 		}
 		if ( lane_index < state->resident_sequence_capacity )
