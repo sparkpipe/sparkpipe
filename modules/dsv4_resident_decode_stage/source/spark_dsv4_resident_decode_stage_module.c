@@ -4,6 +4,7 @@
 
 #include <math.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -3645,6 +3646,33 @@ static void SparkDsv4ModuleDsparkDraftCollectiveComplete(void *context,const Spa
 	(void)completion;
 }
 
+/* The draft submits collectives back-to-back on one stream; the credit
+ * slot frees only after the transport worker consumes the terminal phase,
+ * so poll the operation back to FREE before the next submit. */
+static SparkStatus SparkDsv4ModuleDsparkWaitCollectiveFree(
+	SparkDsv4ModuleState *state,
+	uint64_t ordinal)
+{
+	uint32_t spins;
+	for (spins = 0u; spins < 4000000u; spins++)
+	{
+		uint32_t phase = UINT32_MAX,failure = 0u;
+		SparkStatus status = SparkTpDeviceCollectiveOperationPhase(
+			&state->tp_device_collective,ordinal,&phase,&failure);
+		if ( failure != 0u )
+			return(SPARK_STATUS_IO_ERROR);
+		if ( status == SPARK_STATUS_NOT_FOUND )
+			return(SPARK_STATUS_OK);
+		if ( status == SPARK_STATUS_OK &&
+			phase == SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE )
+			return(SPARK_STATUS_OK);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		sched_yield();
+	}
+	return(SPARK_STATUS_BUSY);
+}
+
 /* TP allreduce (SUM, bf16) over the draft's MoE output: the MTP expert
  * tensors are quarter-width shards per rank, so each rank's ffn_accum
  * holds a partial sum; the stream-ordered allreduce completes it. */
@@ -3675,8 +3703,13 @@ static SparkStatus SparkDsv4ModuleDsparkReduceMoeOutput(
 	submission.completion_function =
 		SparkDsv4ModuleDsparkDraftCollectiveComplete;
 	submission.completion_context = 0;
-	return(SparkTpDeviceCollectiveSubmitBf16(
-		&state->tp_device_collective,&submission));
+	{
+		SparkStatus status = SparkTpDeviceCollectiveSubmitBf16(
+			&state->tp_device_collective,&submission);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		return(SparkDsv4ModuleDsparkWaitCollectiveFree(state,ordinal));
+	}
 }
 
 static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
@@ -4554,6 +4587,9 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 				submission.completion_context = 0;
 				reduce_status = SparkTpDeviceCollectiveSubmitU64Max(
 					&state->tp_device_collective,&submission);
+				if ( reduce_status == SPARK_STATUS_OK )
+					reduce_status = SparkDsv4ModuleDsparkWaitCollectiveFree(
+						state,ordinal);
 				if ( reduce_status != SPARK_STATUS_OK )
 				{
 					fprintf(stderr,"dspark_draft_reduce_failed status=%u tp_rank=%u index=%u\n",(uint32_t)reduce_status,state->tp_rank,index);
