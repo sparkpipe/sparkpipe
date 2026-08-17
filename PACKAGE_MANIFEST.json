@@ -1,5 +1,5 @@
 {
-  "file_count": 16769,
+  "file_count": 16772,
   "files": [
     {
       "path": ".agents/AGENT_CHARTER.md",
@@ -13,8 +13,8 @@
     },
     {
       "path": ".agents/ROSTER.md",
-      "sha256": "2ede7309f82a86e76b175746ca107e7762c52c63a0f875467a92e253c64f45a3",
-      "size_bytes": 1433
+      "sha256": "9754bb109a0bab9039082c0df3da96753bf68e9c16eec543a690249355fcf4b9",
+      "size_bytes": 1431
     },
     {
       "path": ".agents/cuda-kernels/.gitattributes",
@@ -63423,8 +63423,8 @@
     },
     {
       "path": ".agents/scheduler/PACKAGE_MANIFEST.json",
-      "sha256": "2315f69b2ff4196f55f5589b0ec5ccfb997f398a61f35cce823b26fef4ccf313",
-      "size_bytes": 3537122
+      "sha256": "3cf268dc6ea90dacdf410733bc78eff9615b2db5afde6c24dce871624a4a4d03",
+      "size_bytes": 3540118
     },
     {
       "path": ".agents/scheduler/PERFORMANCE_STATUS.md",
@@ -63438,8 +63438,8 @@
     },
     {
       "path": ".agents/scheduler/SHA256SUMS",
-      "sha256": "030a0d271ce8b3758889258d1f3f33aa04d50a7177a9fa12bb91bfaa0c42e1cc",
-      "size_bytes": 2310298
+      "sha256": "2ed18aa3306a1bf82b9de8de1e8b7d57549b7b6f7d80100f6031d150f0dd1963",
+      "size_bytes": 2312109
     },
     {
       "path": ".agents/scheduler/SPEC.md",
@@ -63607,9 +63607,19 @@
       "size_bytes": 1609
     },
     {
+      "path": ".agents/scheduler/docs/KERNEL_CONTRACT_CARDS.md",
+      "sha256": "d8bd8f4eb9c9e7f3eb96dc7b816d0fe2586b87c6f9cd8821dd294ba882657f98",
+      "size_bytes": 21313
+    },
+    {
       "path": ".agents/scheduler/docs/KERNEL_PLAYBOOK.md",
       "sha256": "90d5b71d837f6e0fcf64e98569053a3b3b5833d6b3c2ab68f0f109a1987cb595",
       "size_bytes": 33238
+    },
+    {
+      "path": ".agents/scheduler/docs/KVCACHE_SUBSYSTEM_BOUNDARY.md",
+      "sha256": "e6efda1ba90103a1b17559e21448764c6cca93ab11ad3c9330f2b2cbbcc117a0",
+      "size_bytes": 26309
     },
     {
       "path": ".agents/scheduler/docs/MODEL_SUPPORT.md",
@@ -63633,8 +63643,8 @@
     },
     {
       "path": ".agents/scheduler/docs/PROPOSAL_ADMISSION_CORE.md",
-      "sha256": "eab7f9e4856dceeff3988d9b3b79a3edffed3404341974a51fbbf131d38ae3cd",
-      "size_bytes": 27483
+      "sha256": "21c2a939c2a01754640cc77a3301dd7900d8b4578f24f9f4f40509eb218067b9",
+      "size_bytes": 28014
     },
     {
       "path": ".agents/scheduler/docs/QWEN36_TP4_PERF.md",
@@ -70688,8 +70698,8 @@
     },
     {
       "path": ".agents/speculation/docs/PROPOSAL_DSV4_TREE_ADOPTION.md",
-      "sha256": "be535c16713507b4b71f5f8540788c8a70de104b3d9c85bf67d3d38bd637b469",
-      "size_bytes": 9694
+      "sha256": "49df4c1fc97d7e3c9281d3c4ff5c635f744b4eff83e773df310c77ccc6b6f135",
+      "size_bytes": 9673
     },
     {
       "path": ".agents/speculation/docs/QWEN36_TP4_PERF.md",
@@ -77742,6 +77752,11 @@
       "size_bytes": 28014
     },
     {
+      "path": "docs/PROPOSAL_DSV4_TREE_ADOPTION.md",
+      "sha256": "2b06b5faaa4e0ebeb2f67137831627d0b7b121770db38bd1a922d471f4b431c1",
+      "size_bytes": 10144
+    },
+    {
       "path": "docs/QWEN36_TP4_PERF.md",
       "sha256": "65b225b398266d47c4d13bb523d2a4201ef049ba05a991a7e33e8a9b1e3252f3",
       "size_bytes": 3629
@@ -83850,5 +83865,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 336728453
+  "total_bytes": 336791534
 }
