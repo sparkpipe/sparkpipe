@@ -103,6 +103,10 @@ struct SparkGlm52ModuleState
 	uint32_t *kv_lane_page_count;
 	uint32_t *kv_lane_mutable_page;
 	uint32_t *kv_lane_mutation_flags;
+	SparkModelDriverCacheLane *kv_lane_cache_lanes;
+	const char *kv_backing_directory;
+	uint64_t kv_backing_maximum_bytes;
+	char kv_backing_default[256];
 	SparkGlm52ExecutionSlot slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkGlm52AsyncCompletion completions[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -175,12 +179,17 @@ static SparkStatus SparkGlm52ModuleConfigure(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->model_revision == 0 || strcmp(configuration->model_revision,context->model_revision) != 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
+	/* Lenient: existing serving configs may omit the backing fields. The
+	 * page-store backing then falls back to a default path in
+	 * SparkGlm52KvInitialize; a configured value is used as-is. */
 	state->stage_index = context->stage_index;
 	state->first_layer_index = context->first_layer_index;
 	state->layer_count = context->layer_count;
 	state->expert_weight_codec = context->expert_weight_codec;
 	state->tp_degree = context->tp_degree;
 	state->tp_rank = context->tp_rank;
+	state->kv_backing_directory = context->kv_backing_directory;
+	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
 	/* Identifier zero names a degraded single-rank bringup mode: the pack
 	 * keeps its real tp geometry but no collective peers exist, so the chain
 	 * runs with every reduce elided and the math is rank-local. Real
@@ -680,7 +689,6 @@ static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
 	SparkKvModelTable table;
 	uint64_t block_bytes;
 	uint64_t lane_page_entries;
-	char backing_path[256];
 	SparkStatus status;
 	block_bytes = (uint64_t)SPARK_GLM52_KV_BLOCK_TOKEN_COUNT *
 		(uint64_t)state->layer_count * SPARK_GLM52_KV_ARENA_HEAD_DIM *
@@ -698,7 +706,8 @@ static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
 	state->kv_lane_page_count = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_page_count));
 	state->kv_lane_mutable_page = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutable_page));
 	state->kv_lane_mutation_flags = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutation_flags));
-	if ( state->kv_blocks == 0 || state->kv_resident_slot_logical_block_indices == 0 || state->kv_entries == 0 || state->kv_sequences == 0 || state->kv_hash_bucket_heads == 0 || state->kv_entry_indices_by_logical_page == 0 || state->kv_page_staging == 0 || state->kv_lane_logical_pages == 0 || state->kv_lane_page_count == 0 || state->kv_lane_mutable_page == 0 || state->kv_lane_mutation_flags == 0 )
+	state->kv_lane_cache_lanes = (SparkModelDriverCacheLane *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_cache_lanes));
+	if ( state->kv_blocks == 0 || state->kv_resident_slot_logical_block_indices == 0 || state->kv_entries == 0 || state->kv_sequences == 0 || state->kv_hash_bucket_heads == 0 || state->kv_entry_indices_by_logical_page == 0 || state->kv_page_staging == 0 || state->kv_lane_logical_pages == 0 || state->kv_lane_page_count == 0 || state->kv_lane_mutable_page == 0 || state->kv_lane_mutation_flags == 0 || state->kv_lane_cache_lanes == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 
 	memset(&table,0,sizeof(table));
@@ -725,9 +734,21 @@ static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
 	table.page_store_config.logical_page_capacity = state->page_count;
 	table.page_store_config.transfer_capacity = 2u;
 	table.page_store_config.page_bytes = block_bytes;
-	table.page_store_config.maximum_backing_bytes = block_bytes;
-	(void)snprintf(backing_path,sizeof(backing_path),"/tmp/sparkpipe_glm52_kv_%s",state->model_revision);
-	table.page_store_config.backing_path = backing_path;
+	if ( state->kv_backing_directory != 0 && state->kv_backing_directory[0] != '\0' )
+		table.page_store_config.backing_path = state->kv_backing_directory;
+	else
+	{
+		/* Fallback for serving configs that predate the backing fields: keep
+		 * the store functional with a well-known default (the page store
+		 * opens the path once; it does not retain the pointer). */
+		(void)snprintf(state->kv_backing_default,sizeof(state->kv_backing_default),
+			"/tmp/sparkpipe_glm52_kv_%s",state->model_revision);
+		table.page_store_config.backing_path = state->kv_backing_default;
+	}
+	table.page_store_config.maximum_backing_bytes =
+		state->kv_backing_maximum_bytes >= block_bytes
+			? state->kv_backing_maximum_bytes
+			: block_bytes;
 	table.page_store_config.staging_address = state->kv_page_staging;
 	table.page_store_config.staging_bytes = block_bytes;
 	table.page_store_config.copy_function = SparkGlm52PageCopy;
@@ -799,6 +820,15 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 	state = (SparkGlm52ModuleState *)context;
 	if ( state == 0 || request == 0 || decision == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	/* Remember each lane's full identity for the completion tail (CompleteLane
+	 * / RollbackLaneTransaction run after the kernel writes KV, keyed by
+	 * resident slot). */
+	for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
+	{
+		lane = &request->cache_lanes[lane_index];
+		if ( lane->resident_sequence_slot < state->resident_sequence_capacity )
+			state->kv_lane_cache_lanes[lane->resident_sequence_slot] = *lane;
+	}
 	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 	{
 		for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
@@ -1592,13 +1622,18 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 			atomic_store_explicit(&state->lane_bound[resident],async->lane_bound[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_sequence_ids[resident],async->lane_sequence_ids[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_next_positions[resident],async->lane_next_positions[lane],memory_order_release);
+			(void)SparkKvPageCacheCompleteLane(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident]);
 		}
 		atomic_fetch_add_explicit(&state->completed_count,1u,memory_order_relaxed);
 	}
 	else
 	{
 		for (lane=0u; lane<async->lane_count; lane++)
-			atomic_store_explicit(&state->lane_bound[async->lane_indices[lane]],0u,memory_order_release);
+		{
+			resident = async->lane_indices[lane];
+			(void)SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident],state->kv_lane_mutation_flags[resident]);
+			atomic_store_explicit(&state->lane_bound[resident],0u,memory_order_release);
+		}
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	}
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
@@ -1821,6 +1856,7 @@ void SparkGlm52ResidentDecodeStageDestroy(void *module_state)
 	free(state->kv_lane_page_count);
 	free(state->kv_lane_mutable_page);
 	free(state->kv_lane_mutation_flags);
+	free(state->kv_lane_cache_lanes);
 	free(state);
 }
 

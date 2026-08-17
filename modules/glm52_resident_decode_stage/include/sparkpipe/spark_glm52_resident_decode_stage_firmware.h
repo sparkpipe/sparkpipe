@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 3u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 4u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
 /*
@@ -74,6 +74,10 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
 	uint32_t tp_collective_control_port_base;
 	SparkTpDeviceCollectiveTopology tp_collective_topology;
 	const char *tp_collective_backend_module_path;
+	/* JIT-KV page-store host backing (flows from the serving adapter's
+	 * kv_backing_directory / kv_backing_maximum_bytes). */
+	const char *kv_backing_directory;
+	uint64_t kv_backing_maximum_bytes;
 } SparkGlm52ResidentDecodeStageNodeContext;
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES \

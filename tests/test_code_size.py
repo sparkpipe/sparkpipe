@@ -218,7 +218,12 @@ from pathlib import Path
 # count.
 # fleet_swap.sh converts the residentd launch from setsid to systemctl (+2)
 # so the OOM guardrail cgroup actually applies; 165737 is the exact count.
-CEILING = 165737
+# The GLM52 JIT-KV completion half lands (frame-completion CompleteLane /
+# RollbackLaneTransaction in the async callback, kv_backing_directory flows
+# from the serving config with a lenient default, ABI 3->4) (+42); the
+# net-negative deletion still rides with the page-table data-flow unit.
+# 165779 is the exact count.
+CEILING = 165779
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

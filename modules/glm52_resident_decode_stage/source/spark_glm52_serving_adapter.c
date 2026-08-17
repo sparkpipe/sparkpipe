@@ -779,6 +779,8 @@ static SparkStatus SparkGlm52ServingInitialize(
 		state->node_context.tp_collective_control_port_base = state->tp_collective_control_port_base;
 		state->node_context.tp_collective_topology = state->tp_collective_topology;
 		state->node_context.tp_collective_backend_module_path = state->tp_collective_backend_path;
+		state->node_context.kv_backing_directory = configuration->kv_backing_directory;
+		state->node_context.kv_backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
 		status = SparkGlm52ServingLoadDriver(state,configuration);
 	}
 	if ( status != SPARK_STATUS_OK )
