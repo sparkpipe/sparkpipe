@@ -589,11 +589,13 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 	if ( stage_index != final_stage && has_tokens == 0u &&
 		completion->tokens_per_sequence == 0u )
 		return(SPARK_STATUS_OK);
-	/* Speculative completions may commit up to max_speculative_token_count
-	 * extra tokens per sequence beyond the submission's count; the exact
-	 * yield rides accepted_token_count. */
+	/* Speculative completions: the submission carries the CHAIN width
+	 * (tokens_per_sequence), while the actual yield rides
+	 * accepted_token_count. DSpark-style verify emits 1..chain_width
+	 * tokens per sequence (partial acceptance), so the lower bound is 1;
+	 * the upper bound is the chain width plus the speculative allowance. */
 	if ( has_tokens != 0u &&
-		completion->tokens_per_sequence >= tokens_per_sequence &&
+		completion->tokens_per_sequence >= 1u &&
 		completion->tokens_per_sequence <= tokens_per_sequence + descriptor->max_speculative_token_count &&
 		active_sequence_count <= UINT32_MAX / completion->tokens_per_sequence &&
 		completion->token_count == active_sequence_count * completion->tokens_per_sequence )
