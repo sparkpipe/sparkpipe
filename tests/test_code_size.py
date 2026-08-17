@@ -273,7 +273,10 @@ from pathlib import Path
 # The k3 GEMM integration lands (+7): K3Project switches to LmGemmLaunchTileK
 # and unity.cu instantiates the TILE_K=32 kernel variants - the K3 half of the
 # fallback. 166316 is the exact count.
-CEILING = 166316
+# The qwen36 validator admits TP1 full-width into the whole-stack tier and
+# derives head_stage from STAGE_COUNT (+6); the TP1 topology knob's validation
+# path. 166322 is the exact count.
+CEILING = 166322
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

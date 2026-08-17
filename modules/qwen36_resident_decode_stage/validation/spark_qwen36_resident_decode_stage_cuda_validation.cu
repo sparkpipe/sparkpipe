@@ -910,12 +910,15 @@ static int SparkQwen36ValModuleInitialize(SparkQwen36ValModule *module)
 	SparkFirmwareModuleConfiguration configuration;
 	SparkFirmwareModuleHostServices host_services;
 	SparkStatus status;
-	const char *tp_degree_text;
+	const char *stage_count_text;
 	uint32_t lane;
 	cudaError_t error;
 	memset(module,0,sizeof(*module));
-	tp_degree_text = getenv("SPARK_QWEN36_TP_DEGREE");
-	module->head_stage = tp_degree_text != 0 && strcmp(tp_degree_text,"1") != 0 ? 1u : 0u;
+	/* head_stage: the stage owns the final head iff it is the whole-stack
+	 * last stage (STAGE_COUNT == 1), independent of TP_DEGREE (TP1
+	 * full-width is whole-stack and owns the head). */
+	stage_count_text = getenv("SPARK_QWEN36_STAGE_COUNT");
+	module->head_stage = stage_count_text != 0 && strcmp(stage_count_text,"1") == 0 ? 1u : 0u;
 	for (lane = 0u; lane < SPARK_QWEN36_VALIDATION_KV_LANES; lane++)
 	{
 		module->host_blocks[lane] = lane;

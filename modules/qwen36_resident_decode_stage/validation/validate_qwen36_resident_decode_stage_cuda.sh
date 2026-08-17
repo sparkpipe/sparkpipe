@@ -67,7 +67,10 @@ require_configuration_value SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION 1
 require_configuration_value SPARK_QWEN36_STAGE_INDEX 0
 require_configuration_value SPARK_QWEN36_STAGE_FIRST_LAYER 0
 require_configuration_value SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES 8
-if [[ "${SPARK_QWEN36_TP_DEGREE:-1}" != "1" ]]; then
+# Whole-stack tier: TP-sharded (TP_DEGREE != 1) OR TP1 full-width
+# standalone (TP_DEGREE == 1 with TP_STANDALONE == 1). The TP1 topology
+# knob postdates the original >1 restriction.
+if [[ "${SPARK_QWEN36_TP_DEGREE:-1}" != "1" ]] || [[ "${SPARK_QWEN36_TP_STANDALONE:-0}" == "1" ]]; then
     require_configuration_value SPARK_QWEN36_TP_RANK 0
     require_configuration_value SPARK_QWEN36_TP_STANDALONE 1
     require_configuration_value SPARK_QWEN36_STAGE_COUNT 1
