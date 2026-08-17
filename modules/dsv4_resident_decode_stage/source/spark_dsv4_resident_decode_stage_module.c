@@ -2489,6 +2489,7 @@ static SparkStatus SparkDsv4ModuleExpandDsparkVerify(
  * rows write identical KV and produce identical outputs, so only row 0's
  * token is emitted). Used for 1-row prefill frames and the draft-failed
  * decode fallback on the B8 bucket. */
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
 static SparkStatus SparkDsv4ModulePadDuplicateRows(
 	SparkDsv4ModuleSlot *slot,
 	uint32_t rows)
@@ -2513,6 +2514,7 @@ static SparkStatus SparkDsv4ModulePadDuplicateRows(
 	}
 	return(status);
 }
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
 
 static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkModelDriverFrame *frame, const SparkDsv4ResidentDecodeStageFrameContext *context)
 {
@@ -4212,6 +4214,7 @@ static SparkStatus SparkDsv4ModuleRunPrefillHead(SparkDsv4ModuleState *state, Sp
 /* DSpark drive, submission-path (host syncs allowed): the draft forward
  * plus the sequential markov chain with per-rank greedy samples. The
  * cross-rank sample reduce and the verify/acceptance loop follow. */
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
 static SparkStatus SparkDsv4ModuleDsparkDrive(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -4270,6 +4273,7 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 		"dspark_markov_chain"));
 }
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
 
 static SparkStatus SparkDsv4ModuleRunDsparkHead(
 	SparkDsv4ModuleState *state,
