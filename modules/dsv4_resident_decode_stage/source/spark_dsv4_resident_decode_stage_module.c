@@ -4590,6 +4590,7 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 		 * rank's chain input and verify staging see the same global
 		 * draft token. Stream-ordered: pack -> allreduce -> unpack, then
 		 * the existing D2H picks up the reduced token. */
+		/* DEBUG markov-reduce-off probe */ if (0u) { /*
 		if ( error == cudaSuccess && state->tp_degree > 1u &&
 			state->tp_device_collective_initialized != 0u )
 		{
@@ -4633,6 +4634,7 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 					slot->dspark_draft_token_ids + index,1u);
 			}
 		}
+		*/ }
 		if ( error == cudaSuccess )
 			error = cudaMemcpyAsync(&prev_token,
 				slot->dspark_draft_token_ids + index,sizeof(uint32_t),
