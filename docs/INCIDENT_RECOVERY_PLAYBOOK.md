@@ -151,6 +151,8 @@ Run per host `H`; tick all before moving to the next host.
    `free` and wait for the coordinator's reservation.
 9. **Root-cause closeout.** `ssh $H 'journalctl -b -u systemd-fsck* -u local-fs.target'`
    — confirm the blocking unit is root fsck; attach to the incident record.
+10. **Install + enable the post-boot fsck health check.** `scp tools/devcycle/sparkpipe_fsck_health.sh tools/devcycle/sparkpipe-fsck-health.service $H:/tmp/ && ssh $H 'sudo cp /tmp/sparkpipe_fsck_health.sh /usr/local/bin/ && sudo chmod 0755 /usr/local/bin/sparkpipe_fsck_health.sh && sudo cp /tmp/sparkpipe-fsck-health.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now sparkpipe-fsck-health.service'` — oneshot that is now the fleet's fsck mechanism (root READ-ONLY: tune2fs -l + dmesg scan + e2fsck -n; data volumes WRITE-mode: unmount → fsck -f -y → remount); writes `/var/lib/sparkpipe/fsck-health/last.json` + syslog. Verify: `ssh $H 'cat /var/lib/sparkpipe/fsck-health/last.json'`.
+    - **NEEDS-REPAIR (root) = schedule a maintenance boot, NOT panic** (e2fsck -n on a mounted rw root can false-positive): (a) find the normal (non-skip) GRUB entry — `ssh $H 'grep menuentry /boot/grub/grub.cfg'` (pick the first that is not ds4-fastboot); (b) `ssh $H 'sudo grub-reboot <normal-entry>'`; (c) reboot in the user-approved maintenance window for a real unmounted root fsck; (d) afterward the skip DEFAULT re-applies automatically on the next boot (the one-shot was consumed), so no re-apply is needed — re-run `stage_ds4_fastboot_grub.sh` only to confirm `set default="ds4-fastboot"`.
 
 ---
 
