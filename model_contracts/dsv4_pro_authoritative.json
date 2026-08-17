@@ -38,7 +38,11 @@
       59,
       60
     ],
-    "markov_rank": 512
+    "markov_rank": 512,
+    "draft_attention_head_count": 128,
+    "draft_kv_head_count": 1,
+    "draft_head_dimension": 512,
+    "draft_intermediate_dimension": 3072
   },
   "hyper_connections": {
     "stream_count": 4,

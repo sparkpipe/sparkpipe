@@ -253,7 +253,12 @@ from pathlib import Path
 # window write, confidence) + the mHC draft chain wired behind the MTP guard,
 # and the deployment-spec dataset names fixed (stale .b1024/.bf16 paths).
 # 166224 is the exact count.
-CEILING = 166224
+# The dsv4-pro DSpark pinning path lands (+16): the four draft shapes move into
+# dsv4_pro_authoritative.json + the contract generator (byte-exact) + the
+# generated model header, the neutral drafter table remaps to the Pro macros,
+# and a pinning test mirrors test_dspark_drafter_pin.c. 166240 is the exact
+# count.
+CEILING = 166240
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

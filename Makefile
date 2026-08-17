@@ -30,7 +30,7 @@ DSV4_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/includ
 K3_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include
 MIMO25_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/mimo25/include
 MODEL_FAMILY_INCLUDE_FLAGS := \
-    \
+    -Imodel-families/common/include \
     -Imodel-families/glm52/include \
     -Imodel-families/qwen36/include \
     -Imodel-families/qwen38/include \
@@ -220,6 +220,7 @@ TEST_NAMES := \
     test_dsv4_cache_plan \
 	test_dsv4_parallel_shape \
     test_dspark_drafter_pin \
+    test_dsv4_pro_dspark_drafter_pin \
     test_serial_tp_replay \
     test_speculation_policy_pin \
     test_speculation_tree_pin \
@@ -847,6 +848,9 @@ build/test_glm52_stagepack: tests/test_glm52_stagepack.c modules/glm52_resident_
 		$(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dspark_drafter_pin: tests/test_dspark_drafter_pin.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv4_pro_dspark_drafter_pin: tests/test_dsv4_pro_dspark_drafter_pin.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_serial_tp_replay: tests/test_serial_tp_replay.c tests/serial_tp_replay.c tests/serial_tp_replay.h | build

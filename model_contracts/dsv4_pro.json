@@ -78,6 +78,10 @@
   },
   "dspark": {
     "block_size": 5,
+    "draft_attention_head_count": 128,
+    "draft_head_dimension": 512,
+    "draft_intermediate_dimension": 3072,
+    "draft_kv_head_count": 1,
     "draft_layer_count": 3,
     "markov_rank": 512,
     "noise_token_id": 128799,

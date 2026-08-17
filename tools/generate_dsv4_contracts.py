@@ -168,6 +168,10 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
         require_equal(contract["dspark"]["noise_token_id"], 128799, "Pro DSpark noise token")
         require_equal(contract["dspark"]["target_layer_ids"], [58, 59, 60], "Pro DSpark target layers")
         require_equal(contract["dspark"]["markov_rank"], 512, "Pro DSpark Markov rank")
+        require_equal(contract["dspark"]["draft_attention_head_count"], 128, "Pro DSpark draft attention heads")
+        require_equal(contract["dspark"]["draft_kv_head_count"], 1, "Pro DSpark draft KV heads")
+        require_equal(contract["dspark"]["draft_head_dimension"], 512, "Pro DSpark draft head dimension")
+        require_equal(contract["dspark"]["draft_intermediate_dimension"], 3072, "Pro DSpark draft intermediate dimension")
     else:
         raise ValueError(f"unknown DSV4 variant: {variant}")
 
@@ -277,6 +281,10 @@ def render_header(
             lines.append(f"#define {prefix}_DSPARK_TARGET_LAYER_COUNT {len(dspark['target_layer_ids'])}u")
             lines.append(f"#define {prefix}_DSPARK_MARKOV_RANK {dspark['markov_rank']}u")
             lines.append(f"#define {prefix}_DSPARK_NOISE_TOKEN_ID {dspark['noise_token_id']}u")
+            lines.append(f"#define {prefix}_DSPARK_ATTENTION_HEAD_COUNT {dspark['draft_attention_head_count']}u")
+            lines.append(f"#define {prefix}_DSPARK_KV_HEAD_COUNT {dspark['draft_kv_head_count']}u")
+            lines.append(f"#define {prefix}_DSPARK_HEAD_DIMENSION {dspark['draft_head_dimension']}u")
+            lines.append(f"#define {prefix}_DSPARK_INTERMEDIATE_DIMENSION {dspark['draft_intermediate_dimension']}u")
         if variant == "flash" and suffix == "DSPARK_SPEC_STEP":
             # Overridable per-build (-DSPARK_DSV4_MODEL_DSPARK_SPEC_STEP=<k>u) for
             # the k-sweep (k=5/7/8/10); the header default stays serving_block_size.
