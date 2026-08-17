@@ -3541,8 +3541,12 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 	if ( error == cudaSuccess && status == SPARK_STATUS_OK &&
 		continuation->chain_step_count > 1u )
 		status = SparkDsv4ModuleRecordResidentToken(continuation,0u);
+	/* The verify frame's acceptance runs on EVERY rank (the lane store and
+	 * the cache advance must agree across the TP group), so every rank
+	 * copies the REDUCED head tokens to the host; the head rank's copy is
+	 * the one the adapter publishes. */
 	if ( error == cudaSuccess && status == SPARK_STATUS_OK &&
-		state->owns_final_head != 0u )
+		(state->owns_final_head != 0u || continuation->dspark_verify != 0u) )
 		error = cudaMemcpyAsync(slot->host_output_token_ids,
 			continuation->chain_step_count > 1u ? slot->resident_token_ids :
 			slot->output_token_ids,(uint64_t)continuation->rows *
