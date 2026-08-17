@@ -3727,7 +3727,7 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 				async->lane_next_positions[0] += accepted;
 				async->cache_lanes[0].context_token_count += accepted;
 			}
-			/* DEBUG rollback-disabled probe */ if (0u) { /*
+			/* Compressed-state rollback: a rejected boundary row's
 			 * overlap-shift moved speculative content into the CSA
 			 * previous windows and its emission polluted the compressed
 			 * cache; undo both. The accepted rows' position-keyed slots
