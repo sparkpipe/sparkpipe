@@ -20,6 +20,21 @@ The glm52_stagepack torch-based reader (TensorSource.load) is a third
 reader style; it folds only once the torch dependency is contained
 behind the shared core's shard-reader interface.
 
+Corrections from the GLM52 agent's inventory (grep-verified):
+- The GLM52 packers are DRAFT-FREE (0 mtp/draft/dspark tokens). They pack
+  the 78 base layers only; the DSpark draft is a separate model via
+  tools/glm52_dspark_manifest.py and the MTP layer is a separate weight
+  file. The replicated-draft rule is therefore a DSV4+qwen consolidation,
+  NOT a GLM52 consumer.
+- tools/glm52_resident_pack_common.py (99 lines) is a DORMANT seed already
+  holding PackFailure/SafetensorReader/align_up/tp_shard_range - imported
+  by nothing and side-effect-loading the GLM52 contract at import. It is
+  the natural starting point for the neutral module once the side-effect
+  import is removed.
+- PackFailure drift: RuntimeError in 6 files, Exception in qwen36/qwen38
+  (inconsistent), plain ValueError in glm52_stagepack. The shared core
+  standardizes on RuntimeError.
+
 ## Proposed module layout (tools/spark_pack_common.py)
 
 \`\`\`python

@@ -1,10 +1,10 @@
 {
-  "file_count": 15335,
+  "file_count": 15336,
   "files": [
     {
       "path": ".agents/AGENT_CHARTER.md",
-      "sha256": "356a9f3fd8aba2cf58ef82b158647d2ac14d503893e167822be8699762b5f30e",
-      "size_bytes": 2161
+      "sha256": "f5c6d0ea68dcb6fad381f4f87398545be8de23ff4a4221ec5abeb9248cdc2c64",
+      "size_bytes": 2471
     },
     {
       "path": ".agents/MODEL_AGENT_BRIEF.md",
@@ -21360,6 +21360,11 @@
       "path": ".agents/glm52/docs/PAIRED_DUAL_LINK_ALLREDUCE.md",
       "sha256": "e340e7062618a9720d429c7ad03c1e10a86e260369e2d59619f0ee2812812c36",
       "size_bytes": 5723
+    },
+    {
+      "path": ".agents/glm52/docs/PROPOSAL_spark_pack_common.md",
+      "sha256": "c3655abd8bbe16fda2d0b4b40c4d4a00cdf6636fd22d55736996e113c1a6cafb",
+      "size_bytes": 13422
     },
     {
       "path": ".agents/glm52/docs/PROPOSAL_spark_speculation_policy.c",
@@ -70573,8 +70578,8 @@
     },
     {
       "path": "docs/PACKER_CORE_PLAN.md",
-      "sha256": "ec2616c9956ae1e4e78fedeaa066acdf121f373ec90ac486909f71a86c418019",
-      "size_bytes": 4124
+      "sha256": "73a906ebcfbf579e3e45ada8fe44c3edd3741fcd02e7651db0a93b81dbbb42cb",
+      "size_bytes": 4991
     },
     {
       "path": "docs/PAIRED_DUAL_LINK_ALLREDUCE.md",
@@ -76680,5 +76685,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 285643050
+  "total_bytes": 285657649
 }
