@@ -1,5 +1,5 @@
 {
-  "file_count": 16753,
+  "file_count": 16758,
   "files": [
     {
       "path": ".agents/AGENT_CHARTER.md",
@@ -13,8 +13,8 @@
     },
     {
       "path": ".agents/ROSTER.md",
-      "sha256": "4bc2cad936b6ca6ceee5224acdc149e9e79f3d51d2b6cba1e1f9f1a7be56e9aa",
-      "size_bytes": 1377
+      "sha256": "bb90438df53a0af1b6f60178e9b9cea3fb47233fc3705f6c651d5f987b84495c",
+      "size_bytes": 1378
     },
     {
       "path": ".agents/cuda-kernels/.gitattributes",
@@ -35442,6 +35442,11 @@
       "size_bytes": 1609
     },
     {
+      "path": ".agents/kv-cache/docs/KVCACHE_SUBSYSTEM_BOUNDARY.md",
+      "sha256": "3fb4146f0d9a0ecdb692b841cb47351b64d28877482deebe45713f9ffec820cf",
+      "size_bytes": 25305
+    },
+    {
       "path": ".agents/kv-cache/docs/MODEL_SUPPORT.md",
       "sha256": "3e95eb5d2e2faac4996e3e8e50f8eeb4837c2fb21a4155fd9aeee1735b5fc5f7",
       "size_bytes": 3053
@@ -63383,8 +63388,8 @@
     },
     {
       "path": ".agents/scheduler/PACKAGE_MANIFEST.json",
-      "sha256": "bc42a3b5aeb51684000819637de8135574c8c221e2017bb011471adad4c101a0",
-      "size_bytes": 537678
+      "sha256": "2315f69b2ff4196f55f5589b0ec5ccfb997f398a61f35cce823b26fef4ccf313",
+      "size_bytes": 3537122
     },
     {
       "path": ".agents/scheduler/PERFORMANCE_STATUS.md",
@@ -63398,8 +63403,8 @@
     },
     {
       "path": ".agents/scheduler/SHA256SUMS",
-      "sha256": "670aa172bbf1e7ae96fa8223692f06c633320213c923bd61e13db10eef614161",
-      "size_bytes": 341694
+      "sha256": "030a0d271ce8b3758889258d1f3f33aa04d50a7177a9fa12bb91bfaa0c42e1cc",
+      "size_bytes": 2310298
     },
     {
       "path": ".agents/scheduler/SPEC.md",
@@ -63567,6 +63572,11 @@
       "size_bytes": 1609
     },
     {
+      "path": ".agents/scheduler/docs/KERNEL_PLAYBOOK.md",
+      "sha256": "90d5b71d837f6e0fcf64e98569053a3b3b5833d6b3c2ab68f0f109a1987cb595",
+      "size_bytes": 33238
+    },
+    {
       "path": ".agents/scheduler/docs/MODEL_SUPPORT.md",
       "sha256": "3e95eb5d2e2faac4996e3e8e50f8eeb4837c2fb21a4155fd9aeee1735b5fc5f7",
       "size_bytes": 3053
@@ -63575,6 +63585,11 @@
       "path": ".agents/scheduler/docs/MODULE_MAP.md",
       "sha256": "a0a48ff5776d56b8a13da2113e953c5ec6002c0cae5cd2595b83d026f43d279e",
       "size_bytes": 3045
+    },
+    {
+      "path": ".agents/scheduler/docs/PACKER_CORE_PLAN.md",
+      "sha256": "73a906ebcfbf579e3e45ada8fe44c3edd3741fcd02e7651db0a93b81dbbb42cb",
+      "size_bytes": 4991
     },
     {
       "path": ".agents/scheduler/docs/PAIRED_DUAL_LINK_ALLREDUCE.md",
@@ -63650,6 +63665,11 @@
       "path": ".agents/scheduler/docs/SPECULATION_AUDIT.md",
       "sha256": "05e19a629eb6e6a72b4ab948e43e8281851ce9493e7ebae0ea0e7ae9781961af",
       "size_bytes": 6730
+    },
+    {
+      "path": ".agents/scheduler/docs/SPECULATION_SUBSYSTEM_BOUNDARY.md",
+      "sha256": "39707d4b9c2e8ef32e1a7813a55e1998b6f220d85319388547f9afb236d6ec17",
+      "size_bytes": 14892
     },
     {
       "path": ".agents/scheduler/docs/archive/AUDIT_2026-07-29_BANDWIDTH_PATH.md",
@@ -77642,6 +77662,11 @@
       "size_bytes": 33238
     },
     {
+      "path": "docs/KVCACHE_SUBSYSTEM_BOUNDARY.md",
+      "sha256": "e6efda1ba90103a1b17559e21448764c6cca93ab11ad3c9330f2b2cbbcc117a0",
+      "size_bytes": 26309
+    },
+    {
       "path": "docs/MODEL_SUPPORT.md",
       "sha256": "3e95eb5d2e2faac4996e3e8e50f8eeb4837c2fb21a4155fd9aeee1735b5fc5f7",
       "size_bytes": 3053
@@ -83770,5 +83795,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 326441631
+  "total_bytes": 331514415
 }
