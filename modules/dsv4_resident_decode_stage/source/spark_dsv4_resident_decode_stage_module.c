@@ -2653,7 +2653,7 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 			error = cudaStreamSynchronize(stream);
 		if ( error == cudaSuccess && lane_index < state->resident_sequence_capacity )
 		{
-			if ( prefill == 0u && state->dspark_lane_ready[lane_index] != 0u )
+			if ( prefill == 0u && state->dspark_lane_ready[lane_index] != 0u && 0u /* DEBUG: draft disabled */ )
 			{
 				uint64_t tap_bytes = (uint64_t)SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT *
 					SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
