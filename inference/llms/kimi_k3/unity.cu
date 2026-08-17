@@ -38,6 +38,13 @@ static_assert(K3GlobalKv::kGrows == true, "the global layers still page");
 template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 16u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 32u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 64u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+// TILE_K=32 BF16-BF16 (the GEMM-008 fallback): the TP16 rank-sliced dense/routed
+// projections carry inputs that are 32-multiples but not 64-multiples
+// (dense_down 2112, routed_up 224, shared_w2 384), so LmGemmLaunchTileK
+// re-launches these at K 32 - the smallest TMA-swizzleable BF16 row.
+template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 16u, K3_TILE_N, 32u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 32u, K3_TILE_N, 32u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 64u, K3_TILE_N, 32u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 16u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 32u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 64u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);

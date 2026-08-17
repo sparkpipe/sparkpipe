@@ -270,7 +270,10 @@ from pathlib import Path
 # unconditionally, max_speculative_token_count = SPEC_STEP (not block size),
 # and the completion schema gate widened by the speculative allowance.
 # 166309 is the exact count.
-CEILING = 166309
+# The k3 GEMM integration lands (+7): K3Project switches to LmGemmLaunchTileK
+# and unity.cu instantiates the TILE_K=32 kernel variants - the K3 half of the
+# fallback. 166316 is the exact count.
+CEILING = 166316
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

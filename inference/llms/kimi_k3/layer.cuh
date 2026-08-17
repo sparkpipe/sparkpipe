@@ -395,7 +395,7 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = destination;
 	gemm.accumulate_bf16 = accumulate;
-	return(LmGemmLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+	return(LmGemmLaunchTileK<Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 		&gemm,source,weight,rows,rows,1u,1u,
 		input_dimension,output_dimension,multiprocessors,false,stream));
 }
