@@ -300,7 +300,10 @@ from pathlib import Path
 # The k3 dense_row_offset fix lands (+1): the half-step path now writes the
 # per-step dense offsets (was fresh-zero, so every grouped GEMM produced zero
 # rows - the real missing-fold root cause). 166523 is the exact count.
-CEILING = 166523
+# The residentd poll-gating fix lands (+4): POLLOUT is always requested for a
+# connected client so the queued hello ACK flushes in the same iteration that
+# read the HELLO - the last k-sweep gate. 166527 is the exact count.
+CEILING = 166527
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

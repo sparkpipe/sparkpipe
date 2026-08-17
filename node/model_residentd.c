@@ -2606,7 +2606,11 @@ static SparkStatus SparkModelResidentdBuildPollFds(
 	fds[0].events = runtime->client.fd < 0 ? POLLIN : 0;
 	fds[1].fd = runtime->client.fd;
 	fds[1].events = runtime->client.fd >= 0 && runtime->client.close_after_output == 0u ? POLLIN : 0;
-	if ( runtime->client.fd >= 0 && runtime->client.output_count != 0u )
+	/* A queued ACK (e.g. the hello ACK written by ProcessHello in the same
+	 * iteration that reads the HELLO) must be flushed in THIS poll, or the
+	 * batch's connect-timeout can expire before the next iteration. Always
+	 * request POLLOUT while the client is connected and open for output. */
+	if ( runtime->client.fd >= 0 && runtime->client.close_after_output == 0u )
 		fds[1].events |= POLLOUT;
 	pthread_mutex_unlock(&runtime->mutex);
 	fds[2].fd = runtime->wake_read_fd;
