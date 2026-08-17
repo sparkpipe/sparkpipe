@@ -1,5 +1,5 @@
 {
-  "file_count": 2667,
+  "file_count": 2668,
   "files": [
     {
       "path": ".agents/MODEL_AGENT_BRIEF.md",
@@ -7182,6 +7182,11 @@
       "size_bytes": 1994
     },
     {
+      "path": "docs/DRY_CONSOLIDATION_PLAN.md",
+      "sha256": "8c47c92da72c67c2a672c34e1f16e73cdd147fbd16ef220f16bd2d385487eb08",
+      "size_bytes": 3393
+    },
+    {
       "path": "docs/DSPARK_DSV4_FLASH_DESIGN.md",
       "sha256": "4b4ed3b246ce7609364ecc579b9ee48aabccc4aa90ad90d9bad9475a1b360d63",
       "size_bytes": 9330
@@ -13340,5 +13345,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 49482339
+  "total_bytes": 49485732
 }
