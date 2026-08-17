@@ -2501,7 +2501,7 @@ static SparkStatus SparkDsv4ModuleExpandDsparkVerify(
 	else
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 			"dspark_verify_expand");
-	/* Compressed-state rollback saves: the CSA previous windows (kv + score)
+	/* DEBUG rollback-disabled probe */ if (0u) { /*
 	 * and every compressor layer's boundary emission slots, so a rejected
 	 * boundary row can be undone at the completion. */
 	if ( status == SPARK_STATUS_OK )
@@ -3727,7 +3727,7 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 				async->lane_next_positions[0] += accepted;
 				async->cache_lanes[0].context_token_count += accepted;
 			}
-			/* Compressed-state rollback: a rejected boundary row's
+			/* DEBUG rollback-disabled probe */ if (0u) { /*
 			 * overlap-shift moved speculative content into the CSA
 			 * previous windows and its emission polluted the compressed
 			 * cache; undo both. The accepted rows' position-keyed slots
