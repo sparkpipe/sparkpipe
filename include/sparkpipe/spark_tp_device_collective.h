@@ -98,6 +98,13 @@ typedef struct SparkTpDeviceCollectiveSubmission
     /* A stream-ordered callback may enqueue dependent work on cuda_stream.
      * It must not read full_device from the host before synchronizing. */
     uint32_t flags;
+    /* The per-submission element count. Zero keeps the collective's fixed
+     * frame (active_sequence_count x local_hidden_dimension); a non-zero
+     * value narrows THIS submission to that many BF16 elements - the routed-MoE
+     * phase-0 hook all-reduces one 7168-element segment while the frame
+     * holds three, and shipping the full frame tripled its bytes. Only the
+     * NCCL backend honours the override (its per-call count is free); the
+     * hidden-transport tier keeps the pre-registered frame. */
     uint32_t reserved0;
     uint64_t ordinal;
     const void *local_device;

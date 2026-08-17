@@ -629,18 +629,31 @@ static void SparkQwen38ServingCommitSubmission(
 	}
 }
 
+/* Upload only the lanes the submission touched: the first cut moved the
+ * whole lane_count x lane_stride table (8 MB at 512 x 4096) every step;
+ * a lane slice is 16 KB and only the frame's lanes are read on device. */
 static SparkStatus SparkQwen38ServingUploadBlockTable(
-	const SparkQwen38ServingState *state)
+	const SparkQwen38ServingState *state,
+	const SparkModelServingSubmission *submission)
 {
-	cudaError_t error;
-	uint64_t indices_bytes,counts_bytes;
+	cudaError_t error = cudaSuccess;
+	uint64_t lane_slice_bytes,counts_bytes;
+	uint32_t lane,slot;
 	if ( state->stage_attn_layer_count == 0u )
 		return(SPARK_STATUS_OK);
-	indices_bytes = (uint64_t)state->max_active_sequence_count * state->blocks_per_lane * sizeof(uint32_t);
+	lane_slice_bytes = (uint64_t)state->blocks_per_lane * sizeof(uint32_t);
 	counts_bytes = (uint64_t)state->max_active_sequence_count * sizeof(uint32_t);
-	error = cudaMemcpy(state->device_block_indices,state->host_block_indices,(size_t)indices_bytes,cudaMemcpyHostToDevice);
+	for (lane=0u; error == cudaSuccess && lane<submission->active_sequence_count; lane++)
+	{
+		slot = submission->lanes[lane].resident_sequence_slot;
+		if ( slot >= state->max_active_sequence_count )
+			continue;
+		error = cudaMemcpyAsync((uint8_t *)state->device_block_indices + ((uint64_t)slot * lane_slice_bytes),(const uint8_t *)state->host_block_indices + ((uint64_t)slot * lane_slice_bytes),(size_t)lane_slice_bytes,cudaMemcpyHostToDevice,(cudaStream_t)state->execution_stream);
+	}
 	if ( error == cudaSuccess )
-		error = cudaMemcpy(state->device_block_counts,state->lane_block_counts,(size_t)counts_bytes,cudaMemcpyHostToDevice);
+		error = cudaMemcpyAsync(state->device_block_counts,state->lane_block_counts,(size_t)counts_bytes,cudaMemcpyHostToDevice,(cudaStream_t)state->execution_stream);
+	if ( error == cudaSuccess )
+		error = cudaStreamSynchronize((cudaStream_t)state->execution_stream);
 	if ( error != cudaSuccess )
 		return(SPARK_STATUS_IO_ERROR);
 	return(SPARK_STATUS_OK);
@@ -945,7 +958,7 @@ static SparkStatus SparkQwen38ServingSubmit(
 		return(SPARK_STATUS_BUSY);
 	status = SparkQwen38ServingCoverSubmission(state,submission);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen38ServingUploadBlockTable(state);
+		status = SparkQwen38ServingUploadBlockTable(state,submission);
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 		status = SparkQwen38ServingRunFrame(state,submission,pending,0u,0u,0u,submission->row_count);
 	else if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )

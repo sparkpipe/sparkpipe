@@ -764,6 +764,9 @@ static SparkStatus SparkHiddenSparkHostRdmaResolveHostDeadline(
             free(request);
             if (result_code != 0 || result == 0)
             {
+                fprintf(stderr,
+                    "hidden_spark_rdma_control_resolve_failed host=%s port=%s code=%d\n",
+                    request->host,request->port,result_code);
                 if (result != 0)
                     freeaddrinfo(result);
                 return SPARK_STATUS_ROUTE_NOT_FOUND;
@@ -807,6 +810,10 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
             state->control_port_base + (uint32_t)state->sink_rank);
         if (state->listen_fd < 0)
         {
+            fprintf(stderr,
+                "hidden_spark_rdma_control_listen_failed port=%u route=%s errno=%d\n",
+                state->control_port_base + (uint32_t)state->sink_rank,
+                state->endpoint.route_name,errno);
             return SPARK_STATUS_ROUTE_NOT_FOUND;
         }
         status = SparkHiddenSparkHostRdmaSetNonblocking(state->listen_fd);
@@ -1087,7 +1094,10 @@ static SparkStatus SparkHiddenSparkHostRdmaResolveIpv4(
     hints.ai_socktype = SOCK_STREAM;
     addresses = 0;
     if (getaddrinfo(host,0,&hints,&addresses) != 0 || addresses == 0)
+    {
+        fprintf(stderr,"hidden_spark_rdma_ipv4_resolve_failed host=%s\n",host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
     address = (struct sockaddr_in *)addresses->ai_addr;
     *address_out = address->sin_addr;
     freeaddrinfo(addresses);
@@ -1193,10 +1203,14 @@ static SparkStatus SparkHiddenSparkHostRdmaDiscoverDevice(
         return status;
     devices = ibv_get_device_list(&count);
     if (devices == 0)
+    {
+        fprintf(stderr,"hidden_spark_rdma_list_null host=%s\n",local_host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
     if (count <= 0)
     {
         ibv_free_device_list(devices);
+        fprintf(stderr,"hidden_spark_rdma_list_empty host=%s\n",local_host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     selected_device = 0;
@@ -1266,13 +1280,22 @@ static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(
     status = SparkHiddenSparkHostRdmaDiscoverDevice(local_host,
         state->verbs_port,device_name,sizeof(device_name),&state->gid_index);
     if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr,
+            "hidden_spark_rdma_discover_failed local_host=%s port=%u status=%d\n",
+            local_host,(uint32_t)state->verbs_port,(int)status);
         return status;
+    }
     devices = ibv_get_device_list(&count);
     if (devices == 0)
+    {
+        fprintf(stderr,"hidden_spark_rdma_device_list_null local_host=%s\n",local_host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
     if (count <= 0)
     {
         ibv_free_device_list(devices);
+        fprintf(stderr,"hidden_spark_rdma_device_list_empty local_host=%s\n",local_host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     selected_device = 0;
@@ -1285,6 +1308,7 @@ static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(
     if (selected_device == 0)
     {
         ibv_free_device_list(devices);
+        fprintf(stderr,"hidden_spark_rdma_device_missing local_host=%s want=%s\n",local_host,device_name);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     (void)snprintf(state->verbs_device_name,
@@ -1292,7 +1316,10 @@ static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(
     state->verbs_context = ibv_open_device(selected_device);
     ibv_free_device_list(devices);
     if (state->verbs_context == 0)
+    {
+        fprintf(stderr,"hidden_spark_rdma_open_failed local_host=%s device=%s\n",local_host,device_name);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
     state->protection_domain = ibv_alloc_pd(state->verbs_context);
     if (state->protection_domain == 0)
     {
@@ -5223,7 +5250,13 @@ static SparkStatus SparkHiddenSparkHostRdmaConfigureRoute(
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     state->is_sender = state->local_rank == state->source_rank ? 1u : 0u;
     if (state->is_sender == 0u && state->local_rank != state->sink_rank)
+    {
+        fprintf(stderr,
+            "hidden_spark_rdma_configure_rank_mismatch local=%d source=%d sink=%d route=%s source_host=%s sink_host=%s\n",
+            state->local_rank,state->source_rank,state->sink_rank,
+            endpoint->route_name,endpoint->source_host,endpoint->sink_host);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
     return SPARK_STATUS_OK;
 }
 
@@ -5342,6 +5375,10 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
     }
     if (state->is_sender == 0u && state->local_rank != state->sink_rank)
     {
+        fprintf(stderr,
+            "hidden_spark_rdma_receiver_rank_mismatch local_rank=%u sink_rank=%u source_rank=%u route=%s\n",
+            state->local_rank,state->sink_rank,state->source_rank,
+            state->endpoint.route_name);
         SparkHiddenSparkHostRdmaDestroyState(state);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }

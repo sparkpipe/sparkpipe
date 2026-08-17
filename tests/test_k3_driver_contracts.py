@@ -166,14 +166,19 @@ def main():
     # -- pack V2: the V1 projection fields are gone, the fused ones bind ------
     for stale in ("kda_q_weight", "kda_q_scale", "kda_k_weight", "kda_k_scale",
                   "kda_v_weight", "kda_v_scale", "kda_beta_weight",
-                  "kda_decay_down_weight", "kda_gate_down_weight",
+                  "kda_gate_down_weight",
                   "expert_w1_scale", "expert_w2_scale"):
         for name, text in (("layer.cuh", layer), ("slice.cuh", slice_)):
             if re.search(r"\b" + stale + r"\b", text):
                 print(f"  FAIL {name} still names {stale}; pack V2 does not "
                       f"emit it - the fused tensors are the only bind")
                 failures += 1
-    for field in ("kda_qkv_beta_weight", "kda_decay_gate_down_weight"):
+    # Released checkpoint (docs/K3_GATE_RECONCILIATION.md): q|k|v|beta is
+    # the fused wide tensor; decay_down stays a standalone 128-wide
+    # bottleneck and the gate is the checkpoint's full-rank g_proj - the
+    # low-rank decay|gate fusion does not exist in this checkpoint.
+    for field in ("kda_qkv_beta_weight", "kda_decay_down_weight",
+                  "kda_gate_weight"):
         if f"const void *{field};" not in layer:
             print(f"  FAIL K3LayerBuffers lost {field}")
             failures += 1
@@ -189,10 +194,11 @@ def main():
     # -- the KDA projection block: two wide GEMMs plus one section split ------
     kda = function_body(re.sub(r"//[^\n]*", "", layer), "K3LayerKda")
     wide = len(re.findall(r"K3Project<\w+>\(b,b->normed_bf16", kda))
-    if wide != 2:
+    if wide != 3:
         print(f"  FAIL {wide} projection GEMMs read normed_bf16 in K3LayerKda; "
-              f"pack V2 fuses the six into exactly two wide ones, so the "
-              f"launch count drops by four per KDA layer")
+              f"the released checkpoint keeps qkv_beta fused with "
+              f"decay_down standalone and the full-rank gate (docs/"
+              f"K3_GATE_RECONCILIATION.md), so exactly three wide GEMMs run")
         failures += 1
     if kda.count("LM_LAUNCH((K3SplitFusedProjectionsKernel<K3_LAYER_THREADS>)") != 1:
         print("  FAIL the fused projections lost their section split; every "

@@ -61,11 +61,19 @@ class ShardFailure(RuntimeError):
 REPLICATED = {
     "attn_norm_weight", "mlp_norm_weight", "attnres_attn_weight",
     "attnres_mlp_weight", "router_weight", "router_bias",
-    "kda_decay_down_weight", "kda_decay_bias",
-    "kda_head_log_scale", "kda_out_norm_weight",
+    "kda_decay_down_weight", "kda_out_norm_weight",
     "mla_q_down_weight", "mla_q_norm_weight", "mla_kv_a_weight",
-    "mla_kv_a_norm_weight", "routed_norm_weight",
+    "mla_kv_a_norm_weight",
 }
+# 1-D tensors on the KDA head axis: the rank's heads are a contiguous range,
+# so these take the rank's own slice rather than rank 0's. The decay bias is
+# per (head, channel) and the A_log scale per head - both only matter past
+# position 0 (the state starts zero), which is why a position-0 gate cannot
+# see a mis-slice here, and why they must not ride REPLICATED.
+HEAD_1D = {"kda_decay_bias", "kda_head_log_scale"}
+# 1-D tensors on the latent axis: the routed norm scales the rank's own
+# latent slice before the up-projection, so rank r reads [r*896, (r+1)*896).
+LATENT_1D = {"routed_norm_weight"}
 MODEL_REPLICATED = {"model.norm.weight", "model.attnres_out_weight"}
 # output-dimension, sliced on whole head blocks: (head elements, row bytes)
 OUTPUT_HEADS = {
@@ -231,6 +239,22 @@ class Slicer:
             shape(cols=(heads * head_block(kind, geo)) // degree)
             return slice_cols(raw, len(raw) // in_bytes, in_bytes,
                               rank * per, (rank + 1) * per), meta
+        if field in HEAD_1D:
+            if len(raw) % degree != 0:
+                raise ShardFailure(
+                    f"{name}: {len(raw)} bytes do not split {degree} ways")
+            per = len(raw) // degree
+            if "shape" in meta and meta["shape"]:
+                meta["shape"][0] //= degree
+            return raw[rank * per:(rank + 1) * per], meta
+        if field in LATENT_1D:
+            if cfg["latent"] % degree != 0:
+                raise ShardFailure(
+                    f"{name}: latent {cfg['latent']} does not split {degree} ways")
+            per = len(raw) // degree
+            if "shape" in meta and meta["shape"]:
+                meta["shape"][0] //= degree
+            return raw[rank * per:(rank + 1) * per], meta
         if field in OUTPUT_DIM:
             shape(rows=cfg["latent"] // degree)
             return slice_rows(raw, cfg["latent"], rank, degree), meta
@@ -343,35 +367,48 @@ class Slicer:
         return bytes(out)
 
     def _expert_down(self, name, raw, meta):
-        """w2 input-splits on whole k-tiles (tile_k from the pack geometry):
-        a contiguous row range per expert per rank. The k axis IS the SiTU
-        intermediate, and a rank's slice of it is CONTIGUOUS - the gate|up
-        halves share cell offsets, so situ(gate[o..]) x up[o..] produces the
-        global intermediate's contiguous range [o..] - the contiguous tile
-        take is exactly the rank's slice. K3's 128-tile packs therefore
-        admit TP 1/2/4/8; TP16 needs 32-element tiles (224 = 7 x 32 for the
-        w1 k, 192 = 6 x 32 for the w2 k) and refuses here until the pack
-        carries them."""
+        """w2 splits on BOTH axes, the same diagonal subgrid as w1: per
+        (expert, k-tile) the rank takes its k-tile range AND its out-cell
+        range. The k axis is the SiTU intermediate (the contiguous gate|up
+        take); the OUT axis is the latent, and the rank's w2 must produce
+        exactly the latent slice its routed_down wrote - keeping the whole
+        out axis would make every rank compute rank 0's latent columns
+        (there is no output_column_offset on this launch). Both axes must
+        divide: 128-tile packs admit TP 1/2/4/8 (24 k-tiles, 224 cells);
+        TP16 needs 32-element tiles (96 k-tiles, 224 cells - both split 16
+        ways) and refuses here until the pack carries them."""
         degree, rank = self.degree, self.rank
         geom = self.entry_of(name)["interleave"]
-        experts, k_tiles = geom["experts"], geom["k_tiles"]
+        experts, cells = geom["experts"], geom["cells"]
+        k_tiles, cell_rows, row_bytes = (geom["k_tiles"], geom["cell_rows"],
+                                         geom["row_bytes"])
         tile_k = geom["tile_k"]
+        rpe = geom["rows_per_expert"]
         if k_tiles % degree != 0:
             raise ShardFailure(
                 f"{name}: {k_tiles} {tile_k}-element k-tiles do not split "
                 f"{degree} ways - the rank's intermediate slice cannot "
                 f"address whole k-tiles (pack the experts with a smaller "
                 f"tile_k; TP16 needs 32-element tiles)")
-        take = k_tiles // degree
-        t0 = rank * take
-        tile_rows = geom["cells"] * geom["cell_rows"]
-        row_bytes, rpe = geom["row_bytes"], geom["rows_per_expert"]
+        if cells % degree != 0:
+            raise ShardFailure(
+                f"{name}: {cells} 16-neuron out cells do not split "
+                f"{degree} ways - the rank's latent slice cannot address "
+                f"whole cells")
+        take_k = k_tiles // degree
+        take_out = cells // degree
+        t0 = rank * take_k
+        lo = rank * take_out
         out = bytearray()
         for e in range(experts):
             block = raw[e * rpe * row_bytes:(e + 1) * rpe * row_bytes]
-            out += block[t0 * tile_rows * row_bytes:
-                         (t0 + take) * tile_rows * row_bytes]
-        self._reprice_interleave(name, meta, k_dim=take * tile_k)
+            for t in range(t0, t0 + take_k):
+                row0 = (t * cells + lo) * cell_rows
+                out += block[row0 * row_bytes:
+                             (row0 + take_out * cell_rows) * row_bytes]
+        self._reprice_interleave(name, meta,
+                                 out_dim=geom["out_dim"] // degree,
+                                 k_dim=take_k * tile_k)
         return bytes(out)
 
     def _reprice_interleave(self, name, meta, out_dim=None, k_dim=None):

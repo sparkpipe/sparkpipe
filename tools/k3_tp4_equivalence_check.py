@@ -31,11 +31,24 @@ def bf16_to_f32(bits):
 
 
 def main():
-    if len(sys.argv) != 6:
-        print("usage: k3_tp4_equivalence_check.py FULL R0 R1 R2 R3")
+    direct = len(sys.argv) == 7 and sys.argv[6] == "--direct"
+    if len(sys.argv) != 6 and not direct:
+        print("usage: k3_tp4_equivalence_check.py FULL R0 R1 R2 R3 [--direct]")
         return 2
     full = load(sys.argv[1])
-    ranks = [load(p) for p in sys.argv[2:]]
+    ranks = [load(p) for p in sys.argv[2:6]]
+    if direct:
+        # the TP4 dumps are the POST-all-reduce full-width hidden (each rank
+        # already holds the summed vector), so compare one rank directly
+        # against the full instead of summing the ranks
+        for r in range(4):
+            if ranks[r] != ranks[0]:
+                print("FAIL: rank dumps differ (the all-reduce is not bit-identical)")
+                return 1
+        got_values = [bf16_to_f32(ranks[0][k]) for k in range(len(full))]
+    else:
+        got_values = [sum(bf16_to_f32(r[k]) for r in ranks)
+                      for k in range(len(full))]
     if not (len(full) == len(ranks[0]) == len(ranks[1]) == len(ranks[2])
             == len(ranks[3])):
         print("FAIL: dump lengths differ")
@@ -44,7 +57,7 @@ def main():
     worst = 0.0
     worst_col = -1
     for k in range(len(full)):
-        got = sum(bf16_to_f32(r[k]) for r in ranks)
+        got = got_values[k]
         expect = bf16_to_f32(full[k])
         delta = abs(got - expect)
         rel = delta / max(abs(expect), 0.25)

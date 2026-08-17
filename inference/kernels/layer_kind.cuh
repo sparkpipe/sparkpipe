@@ -3,17 +3,17 @@
 // Which attention a layer runs.
 //
 // Four of six models alternate attention kinds by layer index and each said so
-// differently: mimo_2_5 had an enum with no selector, qwen_3_6 and kimi_k3 had
-// the same boolean predicate under two names, deepseek_v4 had nothing at all
-// and exported one entry point for three kinds. glm5_2 is uniform and so never
+// differently: one family had an enum with no selector, two families had
+// the same boolean predicate under two names, a fourth had nothing at all
+// and exported one entry point for three kinds. A fifth is uniform and so never
 // needed to say anything.
 //
 // Eight distinct kinds across the six collapse to these six, because CSA and
-// HCA are one mechanism at two compression rates, and gated DeltaNet and Kimi
+// HCA are one mechanism at two compression rates, and gated DeltaNet and Delta Attention
 // Delta Attention are one recurrence with two gate parameterisations.
 //
 // A MODEL DECLARES A FUNCTION OF THE LAYER INDEX, NOT A TABLE. Three of the
-// four patterns are periodic and one is not quite - deepseek_v4 has two
+// four patterns are periodic and one is not quite - the HCA family has two
 // exceptional layers at the front and alternates after. A macro taking the
 // index expresses both; a literal array expresses both too but has to be
 // written out 43 or 61 times and kept in step with LAYERS by hand.

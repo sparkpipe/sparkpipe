@@ -176,21 +176,38 @@ def main():
                 rank_geom["tensor_bytes"] != len(a):
             print(f"  FAIL {name}: rank interleave geometry is not repriced")
             failures += 1
-        # interleaved expert w2: whole k-tiles, a contiguous row
-        # range per expert per rank
+        # interleaved expert w2: BOTH axes split, the same diagonal
+        # subgrid as w1 - the rank owns its k-tile range (its SiTU
+        # intermediate slice) AND its out-cell range (its latent slice), so
+        # no GEMM reads a column the rank did not write.
         name = "model.layers.1.expert_w2_weight"
         geom = full_manifest["tensors"][name]["interleave"]
+        cells, k_tiles = geom["cells"], geom["k_tiles"]
+        take_k = k_tiles // 2
+        take_out = cells // 2
+        chunk = take_out * geom["cell_rows"] * geom["row_bytes"]
         a, b = both(name)
-        rank_expert = len(a) // experts
-        rebuilt = bytearray()
-        for e in range(experts):
-            rebuilt += a[e * rank_expert:(e + 1) * rank_expert]
-            rebuilt += b[e * rank_expert:(e + 1) * rank_expert]
-        if bytes(rebuilt) != full(name):
-            print(f"  FAIL {name}: the k-tile shards do not reassemble")
+        rank_expert = take_k * chunk
+        if len(a) != experts * rank_expert:
+            print(f"  FAIL {name}: rank shard is not a valid interleave")
             failures += 1
+        rpe = geom["rows_per_expert"]
+        row_bytes = geom["row_bytes"]
+        for r, shard in ((0, a), (1, b)):
+            want = bytearray()
+            for e in range(experts):
+                block = full(name)[e * rpe * row_bytes:
+                                 (e + 1) * rpe * row_bytes]
+                for t in range(r * take_k, (r + 1) * take_k):
+                    row0 = (t * cells + r * take_out) * geom["cell_rows"]
+                    want += block[row0 * row_bytes:
+                                 row0 * row_bytes + chunk]
+            if bytes(want) != shard:
+                print(f"  FAIL {name}: rank {r} is not the diagonal subgrid")
+                failures += 1
         rank_geom = ranks[0][0]["tensors"][name]["interleave"]
-        if rank_geom["k_dim"] != geom["k_dim"] // 2 or \
+        if rank_geom["out_dim"] != geom["out_dim"] // 2 or \
+                rank_geom["k_dim"] != geom["k_dim"] // 2 or \
                 rank_geom["k_tiles"] != geom["k_tiles"] // 2 or \
                 rank_geom["tensor_bytes"] != len(a):
             print(f"  FAIL {name}: rank interleave geometry is not repriced")
@@ -248,15 +265,22 @@ def main():
                 continue
             rpe = geom["rows_per_expert"] * geom["row_bytes"]
             if name.endswith("expert_w2_weight"):
-                # k-only split: per expert, the ranks' tile ranges concatenate
-                rebuilt = bytearray()
-                for e in range(geom["experts"]):
-                    for r in range(4):
-                        per = len(parts[r]) // geom["experts"]
-                        rebuilt += parts[r][e * per:(e + 1) * per]
-                if bytes(rebuilt) != f32(name):
-                    print(f"  FAIL {name}: 32-tile k shards do not reassemble")
-                    failures += 1
+                # both axes: the shard is the diagonal subgrid per rank
+                cells, k_tiles = geom["cells"], geom["k_tiles"]
+                take_k = k_tiles // 4
+                take_out = cells // 4
+                chunk = take_out * geom["cell_rows"] * geom["row_bytes"]
+                for r in range(4):
+                    want = bytearray()
+                    for e in range(geom["experts"]):
+                        block = f32(name)[e * rpe:(e + 1) * rpe]
+                        for t in range(r * take_k, (r + 1) * take_k):
+                            row0 = (t * cells + r * take_out) * geom["cell_rows"]
+                            want += block[row0 * geom["row_bytes"]:
+                                         row0 * geom["row_bytes"] + chunk]
+                    if bytes(want) != parts[r]:
+                        print(f"  FAIL {name}: rank {r} 32-tile diagonal subgrid")
+                        failures += 1
             else:
                 # both axes: the shard is the diagonal subgrid per rank
                 cells, k_tiles = geom["cells"], geom["k_tiles"]

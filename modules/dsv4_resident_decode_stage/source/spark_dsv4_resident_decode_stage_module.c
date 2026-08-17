@@ -200,14 +200,17 @@ struct SparkDsv4ModuleSlot
 	 * every rank (identical math, no draft collectives); the verify rides
 	 * the standard TP island chain at bucket width. */
 	uint32_t dspark_armed;
+	uint32_t dspark_verify_rows;
+	uint32_t dspark_verify_accept;
+	uint32_t dspark_host_draft_tokens[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP];
 	uint32_t *dspark_draft_token_ids;
 	uint32_t *dspark_verify_token_ids;
 	uint32_t *dspark_input_token_ids;
 	uint64_t *dspark_row_positions;
 	uint32_t *dspark_row_lane_indices;
 	float *dspark_scores_f32;
-	uint32_t dspark_host_input_token_ids[SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE];
-	uint64_t dspark_host_row_positions[SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE];
+	uint32_t dspark_host_input_token_ids[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP];
+	uint64_t dspark_host_row_positions[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP];
 	void *dspark_x_bf16;
 	void *dspark_q_attn_bf16;
 	void *dspark_o_ranks_bf16;
@@ -215,6 +218,7 @@ struct SparkDsv4ModuleSlot
 	void *dspark_main_x_bf16;
 	void *dspark_tap_bf16;
 	void *dspark_tap_ring_bf16;
+	void *dspark_verify_tap_bf16;
 	void *dspark_logits_bf16;
 	float *dspark_logits_f32;
 };
@@ -365,6 +369,12 @@ struct SparkDsv4ModuleState
 	void *dspark_ring_bf16;
 	uint64_t dspark_ring_lane_stride;
 	uint64_t dspark_ring_layer_stride;
+	/* Lane-level draft state: the anchor step's taps + token/position, so any
+	 * pipeline slot can run the next draft (slots cycle across submissions). */
+	void *dspark_tap_store_bf16;
+	uint8_t dspark_lane_ready[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t dspark_lane_anchor[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t dspark_lane_position[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkDsv4LinearView lm_head_view;
 	uint8_t *head_shadow_payload;
 	uint8_t *head_shadow_scale;
@@ -867,7 +877,7 @@ static SparkStatus SparkDsv4ModuleConfigure(
 			host_services->kv_backing_maximum_bytes;
 	}
 	state->mtp_armed = 0u;
-	state->dspark_enabled = 0u;
+	state->dspark_enabled = 1u;
 	status = SparkDsv4ModuleInitializeTpCollective(state,context);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -1625,6 +1635,15 @@ static SparkStatus SparkDsv4ModuleAllocatePools(SparkDsv4ModuleState *state)
 		return(status);
 	if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
 	{
+		uint64_t tap_store_elements = (uint64_t)state->resident_sequence_capacity *
+			SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT *
+			SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
+		status = SparkStageModuleDeviceAllocate(&state->ledger,
+			tap_store_elements * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,
+			&state->dspark_tap_store_bf16);
+	}
+	if ( status == SPARK_STATUS_OK && SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
+	{
 		/* Replicated draft ring: one 128-slot sliding window per draft
 		 * layer per resident lane, bf16 512-wide kv. */
 		uint64_t ring_layer_elements = (uint64_t)SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS *
@@ -1865,7 +1884,7 @@ static SparkStatus SparkDsv4ModuleAllocateSlotTail(SparkDsv4ModuleState *state, 
 
 static SparkStatus SparkDsv4ModuleAllocateDspark(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot)
 {
-	uint64_t block = SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION,vocab = SPARK_DSV4_MODEL_VOCAB_COUNT,qdim = SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,bf16 = SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	uint64_t block = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION,vocab = SPARK_DSV4_MODEL_VOCAB_COUNT,qdim = SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,bf16 = SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 	SparkStatus status;
 	status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_draft_token_ids);
 	if ( status == SPARK_STATUS_OK )
@@ -1892,6 +1911,8 @@ static SparkStatus SparkDsv4ModuleAllocateDspark(SparkDsv4ModuleState *state, Sp
 		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT * dim * bf16,&slot->dspark_tap_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,block * SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT * dim * bf16,&slot->dspark_tap_ring_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u) * SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT * dim * bf16,&slot->dspark_verify_tap_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,block * vocab * bf16,&slot->dspark_logits_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -1963,8 +1984,12 @@ static SparkStatus SparkDsv4ModuleValidateFrameShape(
 		 (state->tp_degree <= 1u || state->pp_stage_count != 1u)) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree > 1u &&
-		(frame->active_slot_count != SPARK_BATCH_BUCKET ||
-		 frame->new_token_count != SPARK_BATCH_BUCKET) )
+		!((frame->active_slot_count == SPARK_BATCH_BUCKET &&
+		   frame->new_token_count == SPARK_BATCH_BUCKET) ||
+		  (SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u &&
+		   state->dspark_enabled != 0u &&
+		   frame->active_slot_count == 1u &&
+		   frame->new_token_count == 1u)) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	*is_prefill_out = is_prefill;
 	return(SPARK_STATUS_OK);
@@ -2362,6 +2387,137 @@ static SparkStatus SparkDsv4ModuleStageRows(
 	return(status);
 }
 
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
+static SparkStatus SparkDsv4ModuleDsparkDrive(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
+
+/* DSpark verify expansion: stage 8 rows of the single lane (anchor +
+ * SPEC_STEP drafts) through the slot's pinned staging, so the B8 islands
+ * replay one batched verify frame. Runs after the draft on the submission
+ * path; the draft tokens arrive device-side in dspark_draft_token_ids. */
+/* Copy the staged row arrays (3 x u32 + 3 x u64, the exact layout
+ * StageRowCopies records) for the verify expansion's rows. */
+static cudaError_t SparkDsv4ModuleStageVerifyRowCopies(
+	SparkDsv4ModuleSlot *slot,uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint64_t pitch32 = (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint32_t);
+	uint64_t pitch64 = (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint64_t);
+	cudaError_t error;
+	error = cudaMemcpy2DAsync(slot->input_token_ids,pitch32,
+		slot->host_input_token_ids,pitch32,(uint64_t)rows * sizeof(uint32_t),
+		3u,cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpy2DAsync(slot->row_positions,pitch64,
+			slot->host_row_positions,pitch64,(uint64_t)rows * sizeof(uint64_t),
+			3u,cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpy2DAsync(slot->initialize_page_indices,
+			(uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * sizeof(uint32_t),
+			slot->host_initialize_page_indices,
+			(uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * sizeof(uint32_t),
+			sizeof(uint32_t),2u,cudaMemcpyHostToDevice,stream);
+	return(error);
+}
+
+/* DSpark verify expansion: stage 8 rows of the single lane (anchor +
+ * SPEC_STEP drafts) through the slot's pinned staging, so the B8 islands
+ * replay one batched verify frame. Runs after the draft on the submission
+ * path; the draft tokens arrive device-side in dspark_draft_token_ids.
+ * Each row's physical page resolves from the prepared page table exactly
+ * like SparkDsv4ModuleStageRowValues (row_lane_indices = physical page). */
+static SparkStatus SparkDsv4ModuleExpandDsparkVerify(
+	SparkDsv4ModuleState *state,
+	SparkDsv4ModuleSlot *slot,
+	const SparkModelDriverFrame *frame,
+	uint32_t lane_index,
+	uint32_t anchor_token_id,
+	uint64_t anchor_position)
+{
+	const uint32_t rows = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u;
+	uint32_t host_tokens[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u];
+	uint64_t host_positions[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u];
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error;
+	uint32_t row,page,physical_page;
+	SparkStatus status;
+	(void)frame;
+	host_tokens[0] = anchor_token_id;
+	error = cudaMemcpyAsync(host_tokens + 1u,slot->dspark_draft_token_ids,
+		SPARK_DSV4_MODEL_DSPARK_SPEC_STEP * sizeof(uint32_t),
+		cudaMemcpyDeviceToHost,stream);
+	if ( error == cudaSuccess )
+		error = cudaStreamSynchronize(stream);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+			"dspark_verify_tokens"));
+	for (row = 0u; row < SPARK_DSV4_MODEL_DSPARK_SPEC_STEP; row++)
+		slot->dspark_host_draft_tokens[row] = host_tokens[1u + row];
+	for (row = 0u; row < rows; row++)
+	{
+		host_positions[row] = anchor_position + 1u + row;
+		if ( host_positions[row] >= state->max_sequence_positions )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		page = (uint32_t)(host_positions[row] /
+			SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS);
+		if ( page >= state->paged_cache.lane_page_capacity )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		physical_page = slot->host_physical_page_table[page];
+		if ( physical_page >= state->physical_page_capacity )
+			return(SPARK_STATUS_BUSY);
+		slot->host_input_token_ids[row] = host_tokens[row];
+		slot->host_row_lane_indices[row] = physical_page;
+		slot->host_row_page_table_indices[row] = lane_index;
+		slot->host_row_positions[row] = host_positions[row];
+		slot->host_row_emit_positions[row] = host_positions[row] + 1u >= SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO ? host_positions[row] + 1u - SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO : 0u;
+		slot->host_row_emit_positions_hca[row] = host_positions[row] + 1u >= SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO ? host_positions[row] + 1u - SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO : 0u;
+	}
+	error = SparkDsv4ModuleStageVerifyRowCopies(slot,rows);
+	if ( error == cudaSuccess )
+		status = SparkDsv4ModuleInitializeFramePages(state,slot,1u);
+	else
+		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+			"dspark_verify_expand");
+	if ( status == SPARK_STATUS_OK )
+	{
+		slot->dspark_verify_rows = rows;
+		slot->dspark_verify_accept = 1u;
+	}
+	return(status);
+}
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
+
+/* Pad a staged single row up to BUCKET rows by duplicating row 0 at the
+ * same position (the islands only replay bucket-width shapes; identical
+ * rows write identical KV and produce identical outputs, so only row 0's
+ * token is emitted). Used for 1-row prefill frames and the draft-failed
+ * decode fallback on the B8 bucket. */
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
+static SparkStatus SparkDsv4ModulePadDuplicateRows(
+	SparkDsv4ModuleSlot *slot,
+	uint32_t rows)
+{
+	uint32_t row;
+	SparkStatus status;
+	for (row = 1u; row < rows; row++)
+	{
+		slot->host_input_token_ids[row] = slot->host_input_token_ids[0];
+		slot->host_row_lane_indices[row] = slot->host_row_lane_indices[0];
+		slot->host_row_page_table_indices[row] = slot->host_row_page_table_indices[0];
+		slot->host_row_positions[row] = slot->host_row_positions[0];
+		slot->host_row_emit_positions[row] = slot->host_row_emit_positions[0];
+		slot->host_row_emit_positions_hca[row] = slot->host_row_emit_positions_hca[0];
+	}
+	status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
+		SparkDsv4ModuleStageVerifyRowCopies(slot,rows),"dspark_pad_rows");
+	if ( status == SPARK_STATUS_OK )
+	{
+		slot->dspark_verify_rows = rows;
+		slot->dspark_verify_accept = 0u;
+	}
+	return(status);
+}
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
+
 static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkModelDriverFrame *frame, const SparkDsv4ResidentDecodeStageFrameContext *context)
 {
 	const uint32_t *token_ids,*row_lane_indices;
@@ -2372,6 +2528,72 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 	row_lane_indices = prefill != 0u ? context->prefill_batch->row_lane_indices : context->decode_batch->row_lane_indices;
 	row_positions = prefill != 0u ? context->prefill_batch->row_positions : context->decode_batch->row_positions;
 	row_count = prefill != 0u ? context->prefill_batch->row_count : context->decode_batch->row_count;
+	/* DSpark: if the previous step published a ready lane, run the draft
+	 * from the LANE store on the submission path (host syncs are legal
+	 * here, unlike the completion callback). */
+	fprintf(stderr,"dspark_staging tp_rank=%u prefill=%u enabled=%u rows=%u\n",state->tp_rank,prefill,state->dspark_enabled,row_count);
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
+	if ( state->dspark_enabled != 0u && row_count == 1u )
+	{
+		uint32_t lane_index = 0u;
+		cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+		cudaError_t error = cudaMemcpyAsync(&lane_index,row_lane_indices,
+			sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+		if ( error == cudaSuccess )
+			error = cudaStreamSynchronize(stream);
+		if ( error == cudaSuccess && lane_index < state->resident_sequence_capacity )
+		{
+			if ( prefill == 0u && state->dspark_lane_ready[lane_index] != 0u )
+			{
+				uint64_t tap_bytes = (uint64_t)SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT *
+					SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
+					SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+				state->dspark_lane_ready[lane_index] = 0u;
+				error = cudaMemcpyAsync(slot->dspark_tap_bf16,
+					(uint8_t *)state->dspark_tap_store_bf16 + (uint64_t)lane_index * tap_bytes,
+					tap_bytes,cudaMemcpyDeviceToDevice,stream);
+				if ( error == cudaSuccess )
+					error = cudaStreamSynchronize(stream);
+				if ( error == cudaSuccess )
+				{
+					SparkStatus dspark_status = SparkDsv4ModuleDsparkDrive(state,slot,
+						lane_index,state->dspark_lane_anchor[lane_index],
+						state->dspark_lane_position[lane_index]);
+					if ( dspark_status != SPARK_STATUS_OK )
+						fprintf(stderr,"dspark_drive_failed status=%u tp_rank=%u lane=%u\n",(uint32_t)dspark_status,state->tp_rank,lane_index);
+					else
+					{
+						/* k=7 verify expansion: stage SPEC_STEP+1 rows of the lane
+						 * (anchor + drafts) instead of the 1-row submission */
+						SparkStatus expand_status = SparkDsv4ModuleExpandDsparkVerify(
+							state,slot,frame,lane_index,
+							state->dspark_lane_anchor[lane_index],
+							state->dspark_lane_position[lane_index]);
+						if ( expand_status != SPARK_STATUS_OK )
+							fprintf(stderr,"dspark_verify_expand_failed status=%u tp_rank=%u\n",(uint32_t)expand_status,state->tp_rank);
+						else
+							return(SPARK_STATUS_OK);
+					}
+				}
+			}
+			/* Prefill single-lane frames and the decode fallback (lane not
+			 * armed / draft failed): stage the one real row, then pad
+			 * duplicates to bucket width so the islands can replay. */
+			if ( prefill != 0u || slot->dspark_verify_rows == 0u )
+			{
+				SparkStatus stage_status = SparkDsv4ModuleStageRows(state,slot,
+					token_ids,row_lane_indices,row_positions,1u,
+					frame->active_slot_count);
+				if ( stage_status == SPARK_STATUS_OK )
+					stage_status = SparkDsv4ModulePadDuplicateRows(slot,
+						SPARK_BATCH_BUCKET);
+				if ( stage_status == SPARK_STATUS_OK )
+					return(SPARK_STATUS_OK);
+				fprintf(stderr,"dspark_pad_failed status=%u tp_rank=%u prefill=%u\n",(uint32_t)stage_status,state->tp_rank,prefill);
+			}
+		}
+	}
+#endif
 	return(SparkDsv4ModuleStageRows(state,slot,token_ids,row_lane_indices,row_positions,row_count,frame->active_slot_count));
 }
 
@@ -2583,6 +2805,7 @@ struct SparkDsv4TpFrameContinuation
 	uint32_t active;
 	uint32_t chain_step_index;
 	uint32_t chain_step_count;
+	uint32_t dspark_verify;
 };
 
 static void SparkDsv4ModuleTpCompletion(
@@ -3291,8 +3514,10 @@ static SparkStatus SparkDsv4ModuleContinueResidentChain(
 	return(SparkDsv4ModuleStartLayers(continuation));
 }
 
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
 static SparkStatus SparkDsv4ModuleDsparkDrive(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
 static SparkStatus SparkDsv4ModuleRunDsparkDraft(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
 
 static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 {
@@ -3332,19 +3557,93 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 			"tp_head_maxloc_finish");
-	/* DSpark measurement hook: after the anchor token finalizes, run the
-	 * draft forward + markov chain synchronously. The speculative verify
-	 * and acceptance replace this driver. */
-	if ( status == SPARK_STATUS_OK && continuation->rows == 1u &&
-		continuation->chain_step_count == 1u &&
+	/* DSpark acceptance reads the head tokens on the host: the D2H above
+	 * is asynchronous, so fence before touching host_output_token_ids. */
+	if ( status == SPARK_STATUS_OK && state->dspark_enabled != 0u )
+	{
+		cudaError_t sync_error = cudaStreamSynchronize(
+			(cudaStream_t)slot->cuda_stream);
+		if ( sync_error != cudaSuccess )
+			status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
+				sync_error,"dspark_head_sync");
+	}
+	/* DSpark: greedy Leviathan acceptance over the staged rows, burst
+	 * emission, and the anchor step's taps + token to the LANE store
+	 * (slots cycle across submissions, so the next draft runs from state,
+	 * not from this slot). The D2D tap copy rides the stream before the
+	 * completion callback fires. */
+	if ( status == SPARK_STATUS_OK &&
+		(continuation->rows == 1u || continuation->dspark_verify != 0u) &&
 		state->dspark_enabled != 0u )
 	{
 		SparkDsv4AsyncCompletion *async;
 		uint32_t slot_index = (uint32_t)(slot - state->slots);
+		uint32_t lane_index,accepted,layer;
 		async = &state->completions[slot_index];
-		status = SparkDsv4ModuleDsparkDrive(state,slot,
-			async->lane_indices[0],slot->host_output_token_ids[0],
-			async->lane_next_positions[0] - 1u);
+		lane_index = async->lane_indices[0];
+		accepted = 0u;
+		if ( continuation->dspark_verify != 0u )
+		{
+			if ( slot->dspark_verify_accept != 0u )
+			{
+				for (accepted = 0u;
+					accepted < SPARK_DSV4_MODEL_DSPARK_SPEC_STEP; accepted++)
+					if ( slot->host_output_token_ids[accepted] !=
+						slot->dspark_host_draft_tokens[accepted] )
+						break;
+			}
+			fprintf(stderr,"dspark_accept tp_rank=%u lane=%u accepted=%u rows=%u chain=%u\n",state->tp_rank,lane_index,accepted,continuation->rows,continuation->chain_step_count);
+			async->completion.accepted_token_count = 1u + accepted;
+			async->completion.tokens_per_sequence = 1u + accepted;
+			async->tokens_per_sequence = 1u + accepted;
+			async->emitted_token_count = 1u + accepted;
+			if ( accepted != 0u )
+			{
+				async->lane_next_positions[0] += accepted;
+				async->cache_lanes[0].context_token_count += accepted;
+			}
+		}
+		if ( lane_index < state->resident_sequence_capacity )
+		{
+			uint64_t tap_bytes = (uint64_t)SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT *
+				SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
+				SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+			if ( continuation->dspark_verify != 0u )
+			{
+				/* publish the ACCEPTED row's taps from the per-row tap
+				 * buffer (row 0 for the padded fallback frames) */
+				uint64_t row_bytes = SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
+					SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+				for (layer = 0u; layer < SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT; layer++)
+				{
+					const void *source = (const uint8_t *)slot->dspark_verify_tap_bf16 +
+						((uint64_t)layer * (SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u) +
+						 accepted) * SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
+						SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+					error = cudaMemcpyAsync(
+						(uint8_t *)state->dspark_tap_store_bf16 +
+							(uint64_t)lane_index * tap_bytes +
+							layer * row_bytes,
+						source,row_bytes,cudaMemcpyDeviceToDevice,
+						(cudaStream_t)slot->cuda_stream);
+					if ( error != cudaSuccess )
+						break;
+				}
+			}
+			else
+				error = cudaMemcpyAsync(
+					(uint8_t *)state->dspark_tap_store_bf16 + (uint64_t)lane_index * tap_bytes,
+					slot->dspark_tap_bf16,tap_bytes,cudaMemcpyDeviceToDevice,
+					(cudaStream_t)slot->cuda_stream);
+			if ( error == cudaSuccess )
+			{
+				state->dspark_lane_anchor[lane_index] =
+					slot->host_output_token_ids[accepted];
+				state->dspark_lane_position[lane_index] =
+					async->lane_next_positions[0] - 1u;
+				state->dspark_lane_ready[lane_index] = 1u;
+			}
+		}
 	}
 	SparkDsv4ModuleFinishContinuationTerminal(continuation,status);
 }
@@ -3453,22 +3752,37 @@ static void SparkDsv4ModuleContinueLayers(void *context,SparkStatus status)
 				layer,continuation->layer_index,continuation->rows) :
 				SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"ffn_enter");
 		}
-		if ( status == SPARK_STATUS_OK && continuation->rows == 1u &&
+		if ( status == SPARK_STATUS_OK &&
 			SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u &&
 			continuation->layer_index >= SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_FIRST &&
 			continuation->layer_index < SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_FIRST +
-				SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT )
+				SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT &&
+			(continuation->rows == 1u || continuation->dspark_verify != 0u) )
 		{
 			/* Tap the target hidden (mean over the hc streams) at the
-			 * draft's attachment layers for the anchor row. */
-			error = SparkDsv4LaunchDsparkTapMean(stream,slot->streams_bf16,
-				(uint8_t *)slot->dspark_tap_bf16 +
+			 * draft's attachment layers. Verify frames tap ALL staged rows
+			 * (the acceptance loop picks the accepted row afterwards). */
+			uint8_t *tap_dst = (uint8_t *)slot->dspark_tap_bf16 +
+				(uint64_t)(continuation->layer_index -
+					SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_FIRST) *
+				SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
+				SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+			if ( continuation->dspark_verify != 0u )
+				tap_dst = (uint8_t *)slot->dspark_verify_tap_bf16 +
 					(uint64_t)(continuation->layer_index -
 						SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_FIRST) *
+					(SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u) *
 					SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
-					SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,
-				continuation->rows,SPARK_DSV4_MODEL_HC_STREAM_COUNT,
+					SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+			error = SparkDsv4LaunchDsparkTapMean(stream,slot->streams_bf16,
+				tap_dst,continuation->rows,SPARK_DSV4_MODEL_HC_STREAM_COUNT,
 				SPARK_DSV4_MODEL_HIDDEN_DIMENSION,state->multiprocessor_count);
+			if ( error != cudaSuccess )
+				fprintf(stderr,"dspark_tap_launch_failed error=%d tp_rank=%u\n",(int)error,state->tp_rank);
+			if ( error == cudaSuccess )
+				error = cudaStreamSynchronize(stream);
+			if ( error != cudaSuccess )
+				fprintf(stderr,"dspark_tap_async_failed error=%d tp_rank=%u layer=%u\n",(int)error,state->tp_rank,continuation->layer_index);
 			status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 				"dspark_tap");
 		}
@@ -3901,10 +4215,10 @@ static SparkStatus SparkDsv4ModuleRunPrefillHead(SparkDsv4ModuleState *state, Sp
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"prefill_head"));
 }
 
-/* Stream-ordered draft forward (measurement hook): the launches ride the
- * engine stream after the anchor head completes; no host sync inside the
- * completion path. The markov chain, cross-rank sample reduce, and the
- * verify/acceptance loop replace this driver in the speculative step. */
+/* DSpark drive, submission-path (host syncs allowed): the draft forward
+ * plus the sequential markov chain with per-rank greedy samples. The
+ * cross-rank sample reduce and the verify/acceptance loop follow. */
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
 static SparkStatus SparkDsv4ModuleDsparkDrive(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -3912,13 +4226,60 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 	uint32_t anchor_token_id,
 	uint64_t anchor_position)
 {
-	SparkStatus status = SparkDsv4ModuleRunDsparkDraft(state,slot,lane_index,
+	const uint32_t block = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP;
+	uint32_t rows_per_rank = state->vocabulary_rows_per_rank;
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error = cudaSuccess;
+	SparkStatus status;
+	uint32_t index,prev_token = anchor_token_id;
+	fprintf(stderr,"dspark_drive_entry tp_rank=%u lane=%u anchor=%u pos=%llu\n",state->tp_rank,lane_index,anchor_token_id,(unsigned long long)anchor_position);
+	status = SparkDsv4ModuleRunDsparkDraft(state,slot,lane_index,
 		anchor_token_id,anchor_position);
 	if ( status != SPARK_STATUS_OK )
+	{
 		fprintf(stderr,"dspark_draft_forward_failed status=%u tp_rank=%u\n",(uint32_t)status,state->tp_rank);
-	return(status);
+		return(status);
+	}
+	error = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_draft_async_failed error=%d tp_rank=%u\n",(int)error,state->tp_rank);
+	for (index = 0u; index < block && error == cudaSuccess; index++)
+	{
+		uint32_t host_prev = prev_token;
+		error = cudaMemcpyAsync(slot->input_token_ids,&host_prev,
+			sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+		if ( error == cudaSuccess )
+			error = SparkDsv4LaunchEmbeddingGather(stream,slot->input_token_ids,
+				state->mtp.markov_w1.payload,slot->dspark_main_x_bf16,1u,
+				SPARK_DSV4_MODEL_DSPARK_MARKOV_RANK);
+		if ( error == cudaSuccess )
+			error = SparkDsv4LaunchDsparkMarkovBiasAccum(stream,
+				slot->dspark_logits_bf16,state->mtp.markov_w2.payload,
+				slot->dspark_main_x_bf16,slot->dspark_logits_f32,
+				state->vocabulary_row_start,rows_per_rank,
+				SPARK_DSV4_MODEL_DSPARK_MARKOV_RANK,index,
+				state->multiprocessor_count);
+		if ( error == cudaSuccess )
+			error = SparkDsv4LaunchDsparkArgmax(stream,
+				slot->dspark_logits_f32 + (uint64_t)index * rows_per_rank,
+				rows_per_rank,state->vocabulary_row_start,
+				slot->dspark_draft_token_ids + index,
+				slot->dspark_scores_f32 + index);
+		if ( error == cudaSuccess )
+			error = cudaMemcpyAsync(&prev_token,
+				slot->dspark_draft_token_ids + index,sizeof(uint32_t),
+				cudaMemcpyDeviceToHost,stream);
+		if ( error == cudaSuccess )
+			error = cudaStreamSynchronize(stream);
+	}
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_markov_chain_failed error=%d tp_rank=%u index=%u\n",(int)error,state->tp_rank,index);
+	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+		"dspark_markov_chain"));
 }
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
 
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
 static SparkStatus SparkDsv4ModuleRunDsparkHead(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -3932,24 +4293,42 @@ static SparkStatus SparkDsv4ModuleRunDsparkHead(
 		SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS,
 		SPARK_DSV4_MODEL_HC_STREAM_COUNT,
 		SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_head_fail stage=hc_mix error=%d\n",(int)error);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchHcHeadReduce(stream,slot->dspark_x_bf16,
 			slot->mixes_f32,state->hc_head_scale_value,
 			state->mtp.hc_head_base_f32,SPARK_DSV4_MODEL_HC_EPSILON,
 			slot->reduced_bf16,block,SPARK_DSV4_MODEL_HC_STREAM_COUNT,
 			SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_head_fail stage=hc_head_reduce error=%d\n",(int)error);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchRmsNorm(stream,slot->reduced_bf16,
 			state->mtp.final_norm_weight_bf16,slot->normalized_bf16,block,
 			SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_head_fail stage=rms_norm error=%d\n",(int)error);
 	/* base logits over this rank's lm_head shard */
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchLinear(stream,&state->lm_head_view,
 			slot->normalized_bf16,slot->dspark_logits_bf16,block);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"dspark_head_fail stage=linear error=%d\n",(int)error);
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 		"dspark_head"));
 }
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
 
+#define DSPARK_S0_TRACE(tag) do { \
+	cudaError_t trace_error_ = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream); \
+	if ( trace_error_ != cudaSuccess ) \
+		fprintf(stderr,"dspark_s0_hang_after=" tag " error=%d tp_rank=%u\n",(int)trace_error_,state->tp_rank); \
+	else \
+		fprintf(stderr,"dspark_s0_ok=" tag " tp_rank=%u\n",state->tp_rank); \
+} while (0)
+
+#if SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u
 static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -3957,7 +4336,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 	uint32_t anchor_token_id,
 	uint64_t anchor_position)
 {
-	const uint32_t block = SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE;
+	const uint32_t block = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP;
 	const uint32_t streams = SPARK_DSV4_MODEL_HC_STREAM_COUNT;
 	const uint32_t dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -3977,18 +4356,23 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 	for (index = 0u; index < block; index++)
 		slot->dspark_host_input_token_ids[index] = index == 0u ? anchor_token_id :
 			SPARK_DSV4_MODEL_DSPARK_NOISE_TOKEN_ID;
+	for (index = 0u; index < block; index++)
+		slot->dspark_host_row_positions[index] = anchor_position + 1u + index;
 	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchEmbeddingGather(stream,slot->input_token_ids,
-			state->token_embedding_bf16,slot->dspark_q_attn_bf16,block,dim);
+		error = cudaMemcpyAsync(slot->input_token_ids,
+			slot->dspark_host_input_token_ids,block * sizeof(uint32_t),
+			cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(slot->dspark_row_positions,
 			slot->dspark_host_row_positions,block * sizeof(uint64_t),
 			cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
+		error = SparkDsv4LaunchEmbeddingGather(stream,slot->input_token_ids,
+			state->token_embedding_bf16,slot->dspark_q_attn_bf16,block,dim);
+	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchExpandStreams(stream,slot->dspark_q_attn_bf16,
 			slot->dspark_x_bf16,block,streams,dim,state->multiprocessor_count);
-	for (index = 0u; index < block; index++)
-		slot->dspark_host_row_positions[index] = anchor_position + 1u + index;
+	DSPARK_S0_TRACE("prelude");
 	for (stage = 0u; error == cudaSuccess &&
 		stage < SPARK_DSV4_MODEL_MTP_LAYER_COUNT; stage++)
 	{
@@ -4035,6 +4419,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 					SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,
 				SPARK_DSV4_MODEL_KV_QUANT_BLOCK,
 				SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
+		DSPARK_S0_TRACE("qkv");
 		/* draft attention: window ring + block kvs, non-causal, sink in
 		 * the denominator */
 		if ( error == cudaSuccess )
@@ -4076,6 +4461,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 			error = SparkDsv4LaunchHcPost(stream,slot->delta_bf16,
 				slot->residual_bf16,slot->post_f32,slot->comb_f32,
 				slot->dspark_x_bf16,block,streams,dim);
+		DSPARK_S0_TRACE("attn_compose");
 		/* hc_pre (ffn) + ffn norm + MoE */
 		if ( error == cudaSuccess )
 			error = SparkDsv4ModuleHcEnter(slot,slot->dspark_x_bf16,
@@ -4096,9 +4482,9 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 			error = SparkDsv4LaunchHcPost(stream,slot->ffn_accum_bf16,
 				slot->residual_bf16,slot->post_f32,slot->comb_f32,
 				slot->dspark_x_bf16,block,streams,dim);
+		DSPARK_S0_TRACE("moe");
 		/* the target position's kv enters this draft layer's ring at
 		 * anchor_position % window */
-		slot->input_token_ids[0] = 0u;
 		{
 			uint32_t host_lane = lane_index;
 			uint64_t host_position = anchor_position;
@@ -4131,6 +4517,9 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				slot->row_positions,1u,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
 				anchor_position % SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS,0u,
 				SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS);
+		error = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+		if ( error != cudaSuccess )
+			fprintf(stderr,"dspark_stage_sync_failed error=%d tp_rank=%u stage=%u\n",(int)error,state->tp_rank,stage);
 	}
 	if ( error != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
@@ -4139,6 +4528,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 		status = SparkDsv4ModuleRunDsparkHead(state,slot,block);
 	return(status);
 }
+#endif /* SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u */
 
 static SparkStatus SparkDsv4ModuleRunFrame(
 	SparkDsv4ModuleState *state,
@@ -4149,18 +4539,22 @@ static SparkStatus SparkDsv4ModuleRunFrame(
 	const SparkDsv4PrefillBatchView *prefill;
 	const void *input_streams_bf16;
 	void *output_streams_bf16;
-	uint32_t rows;
+	uint32_t rows,is_prefill;
 	SparkStatus status;
 	prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? context->prefill_batch : 0;
+	is_prefill = prefill != 0 ? 1u : 0u;
 	rows = prefill != 0 ? prefill->row_count : context->decode_batch->row_count;
+	if ( slot->dspark_verify_rows != 0u )
+		rows = slot->dspark_verify_rows;
 	/* A full-width prefill wave has exactly one row per active lane.  Its
 	 * causal attention is therefore the decode attention operation, and all
 	 * row values already live in slot-owned staging before this function.
-	 * Drop the stack-owned view before any asynchronous TP continuation. */
+	 * Drop the stack-owned view before any asynchronous TP continuation.
+	 * The DSpark bucket-8 padding stages single-lane prefills to bucket
+	 * width, so rows == SPARK_BATCH_BUCKET is the only gate left. */
 	if ( prefill != 0 && state->tp_degree > 1u )
 	{
-		if ( rows != SPARK_BATCH_BUCKET ||
-			prefill->active_sequence_count != SPARK_BATCH_BUCKET )
+		if ( rows != SPARK_BATCH_BUCKET )
 			return(SPARK_STATUS_UNSUPPORTED);
 		prefill = 0;
 	}
@@ -4207,9 +4601,15 @@ static SparkStatus SparkDsv4ModuleRunFrame(
 		continuation->rows = rows;
 		continuation->layer_index = state->first_layer_index;
 		continuation->active = 1u;
-		continuation->chain_step_count =
-			(frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u ?
-			frame->tokens_per_sequence : 1u;
+		/* DSpark verify frames replace the engine's sequential chain
+		 * (tokens_per_sequence) with ONE parallel 8-row verify forward;
+		 * the acceptance loop at the head decides how many of the staged
+		 * rows become emitted tokens. */
+		continuation->dspark_verify = is_prefill == 0u &&
+			slot->dspark_verify_rows != 0u ? 1u : 0u;
+		continuation->chain_step_count = is_prefill != 0u ? 1u :
+			(continuation->dspark_verify != 0u ? 1u :
+			 frame->tokens_per_sequence);
 		status = SparkDsv4ModuleValidateResidentChain(continuation);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDsv4ModuleStartLayers(continuation);
@@ -4868,6 +5268,8 @@ static void SparkDsv4ModuleCompleteAsync(void *context)
 	state = async != 0 ? async->state : 0;
 	if ( state == 0 || async->slot_index >= state->pipeline_slot_count )
 		return;
+	state->slots[async->slot_index].dspark_verify_rows = 0u;
+	state->slots[async->slot_index].dspark_verify_accept = 0u;
 	if ( SparkDsv4ModuleFinishCachePages(async,
 		async->completion.status == SPARK_STATUS_OK ? 1u : 0u) !=
 		SPARK_STATUS_OK )
@@ -5213,8 +5615,12 @@ static uint32_t SparkDsv4ModuleAdmissionShapeSupported(
 	if ( releasing != 0u )
 		return(preparing == 0u && request->new_token_count == 0u ? 1u : 0u);
 	if ( state->tp_degree > 1u &&
-		(request->active_slot_count != SPARK_BATCH_BUCKET ||
-		 request->new_token_count != SPARK_BATCH_BUCKET) )
+		!((request->active_slot_count == SPARK_BATCH_BUCKET &&
+		   request->new_token_count == SPARK_BATCH_BUCKET) ||
+		  (SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u &&
+		   state->dspark_enabled != 0u &&
+		   request->active_slot_count == 1u &&
+		   request->new_token_count == 1u)) )
 		return(0u);
 	if ( request->new_token_count == 0u ||
 		request->new_token_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT ||

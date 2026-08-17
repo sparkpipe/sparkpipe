@@ -1,5 +1,47 @@
 # K3 serving-path performance audit and improvement plan
 
+## 2026-08-17: the tail nondeterminism root cause (FIXED)
+
+The fresh-run gate's known tail variance (hidden[6144..7167], ~14 ULP,
+across runs AND across the TP4-vs-full equivalence) was the KDA o_proj
+running its weight-only GEMM with output == input == attention_out_bf16.
+The persistent GEMM stages A per k-tile while storing finished output tiles
+into the output buffer, so a second-wave tile's A reads race the first-wave
+stores of columns 0..7167 and its k-sums pick up another tile's outputs.
+Localised by per-phase dumps: q/k/v, gate, decay logits, retention, beta
+and the state pool were bit-identical across processes while the o_proj
+output moved (8 runs, 6 distinct outputs) - and the pre-norm and post-gate
+attention were bit-identical, which is what pinned the race to the
+projection itself. Fixed in layer.cuh (o_proj lands in hidden_bf16, which
+the MLP-side retrieval overwrites next; the tp1 boundary partial-set and
+the TP4 phase-0 hook source follow the layer kind - the MLA path already
+used distinct buffers). The gate's 64-ULP tail exemption is gone: fresh-run
+determinism and capture fidelity now hold at 4 ULP everywhere, and the TP4
+4-rank sum equals the full-stage run to bf16 rounding.
+
+The earlier "plain BF16 GEMM breaks at K >= 512" was a test artifact, not
+a kernel bug: the gate's plain probe filled its activation pattern with
+(((int32_t)x % 11u) - 5), whose subtraction happens in UNSIGNED space and
+wraps the intended negatives to ~4.29e9 (bf16 0x4E80). The GEMM was summing
+poisoned test data faithfully - verified byte-exact across processes at
+every real K extent (7168/12288/33792) by the determinism probes.
+
+## Prefill + decode performance estimate
+
+tools/k3_tp4pp4_perf_estimate.py derives both numbers from the deployed
+rank-pack manifest inventory (per-layer tensor bytes) and the repo's
+273 GB/s x 0.65 bandwidth convention, anchored to the measured 55.5 ms
+stage step:
+
+- Decode (output, B1): measured 18.0 tok/s (55.5 ms/stage); the roofline
+  lands at 48.6 ms (20.6 tok/s) - the path is bandwidth-bound on the dense
+  spine + the top-16 expert stream + the fp32 KDA state read/write.
+- Prefill: 92 tok/s at B8 rising to 1537 tok/s at B1024 steady state
+  (single-prompt latency 0.35 s -> 2.66 s); the expert stream saturates at
+  B=56 (896/16) and the KDA state becomes the dominant term at large batch.
+- TP16 (PP1): decode 20.2 tok/s at 49.5 ms token latency (~4x lower latency
+  than the pipelined TP4xPP4 at the same throughput); prefill parity.
+
 Measured on sparka, real rank pack, stage 0 (24 layers), 1 token:
 
 - Cold first step: ~2.5 s - one-time JIT, tensor-map encodes, shared-memory
@@ -85,7 +127,21 @@ Measured on sparka, real rank pack, stage 0 (24 layers), 1 token:
    in, tensor-map encodes are steady-state cache hits. The single-spark
    gate now replays the captured slice and compares it against the direct
    launch (0 mismatches beyond the ULP limits).
-7. **Overlap** (revised): the per-layer ARs sit on the critical path for
+7. **AR overhead audit, 2026-08-16 (second pass)**: the per-phase
+   payloads are now SIZED to the phase (the submission carries the element
+   count - phase 0 ships ONE 14 KB segment instead of the 3-segment 43 KB
+   frame, cutting its wire bytes 3x), and the embedding exchange runs on
+   the NCCL tier (one slot-encoded stream-ordered all-reduce; no sync, no
+   host staging). Remaining, in order of value: (a) the slot-encoded
+   full-width all-reduce moves 4x the minimal bytes - a reduce-scatter +
+   all-gather pair would halve the per-rank wire traffic; (b) the head
+   exchange still uses the host tier (its f32 slots have no NCCL f32
+   collective - a bf16-splittable slot layout or an f32 NCCL op would move
+   it); (c) the hidden-transport tier cannot narrow its pre-registered
+   frame (the per-submission count is NCCL-only). The per-layer structure
+   stays 2 ARs on the critical path (the correctness requirement), so the
+   B1 AR budget is 2 x NCCL-tree latency (~5-15 us) per layer.
+8. **Overlap** (revised): the per-layer ARs sit on the critical path for
    B1 decode by construction - the MLP-side retrieval needs the summed
    attention output and the next layer needs the summed MLP outputs - so
    there is no compute to hide them behind. The AR-overhead reductions are

@@ -88,7 +88,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 	uint32_t index,size,stride;
 	for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
 	{
-		// THE BIAS SELECTS; IT DOES NOT WEIGH. Kimi K3's router adds a per-expert
+		// THE BIAS SELECTS; IT DOES NOT WEIGH. The KDA model's router adds a per-expert
 		// correction bias to pick the top-k and then gathers the mixture weights
 		// from the UNBIASED scores - the report is explicit that omitting b from
 		// p_i,j is what lets it "regulate dispatch without altering the mixture
@@ -115,7 +115,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 	// the reference groups scores_for_choice rather than scores, so the
 	// select-versus-weigh split holds one level up as well.
 	//
-	// GROUPS == 1 is the whole of Kimi K3, and the compiler removes this.
+	// GROUPS == 1 is the whole of the KDA model, and the compiler removes this.
 	if ( GROUPS > 1u && GROUPS > TOP_GROUPS )
 	{
 		__shared__ uint32_t group_key[LM_TOPK_MAX_GROUPS];
@@ -198,7 +198,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 	if ( RENORMALISE && out_values != 0 )
 	{
 		// moe_renormalize: divide the k gates by their sum so they sum to one.
-		// K3 sets it; the report's routed_scaling_factor then multiplies a
+		// the KDA model sets it; the report's routed_scaling_factor then multiplies a
 		// normalised mixture, which is why that factor being 1.0 makes the
 		// multiply a no-op rather than merely a small number.
 		__shared__ float reduction[LM_TOPK_SMALL_LIMIT];

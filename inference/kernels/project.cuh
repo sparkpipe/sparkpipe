@@ -6,7 +6,7 @@
 // This is a separate module from attention because the pattern outlives any one
 // model's attention. A projection that goes down to a low rank, normalises
 // there, and comes back up is how every MLA-family model compresses its query
-// and KV paths - DeepSeek V2 through V4, GLM 5.2, Kimi K3 - and the only thing
+// and KV paths - the V2-through-V4 lineage, the GLM class, the KDA class - and the only thing
 // that differs between them is the ranks.
 //
 // TWO FORMS OF THE SAME PROJECTION, AND WHY BOTH EXIST.
@@ -489,7 +489,7 @@ void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layou
 
 // Split a fused per-head query|gate row into its two halves.
 //
-// Qwen 3.6's attention query projection carries the output gate INSIDE the
+// The GDN model's attention query projection carries the output gate INSIDE the
 // query section: each head's 2 * head_dimension rows are head_dimension of
 // query then head_dimension of gate (config.h, attn_output_gate). The query
 // half feeds RoPE and attention, the gate half LmOutputGateKernel after

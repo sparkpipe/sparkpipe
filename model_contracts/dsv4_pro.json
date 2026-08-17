@@ -64,6 +64,8 @@
       4,
       128,
       4,
+      0,
+      0,
       0
     ],
     "index_head_count": 64,
@@ -74,8 +76,19 @@
     "yarn_factor": 16,
     "yarn_original_context_tokens": 65536
   },
+  "dspark": {
+    "block_size": 5,
+    "draft_layer_count": 3,
+    "markov_rank": 512,
+    "noise_token_id": 128799,
+    "target_layer_ids": [
+      58,
+      59,
+      60
+    ]
+  },
   "generated": {
-    "compression_ratio_interpretation": "first layer_count entries are backbone layers; final entry is the one declared MTP layer",
+    "compression_ratio_interpretation": "first 61 entries are backbone layers; the draft layers are ratio-0 DSpark blocks and do not index the table",
     "header": "model-families/dsv4/include/sparkpipe/spark_dsv4_pro_model.h",
     "variant": "pro"
   },
@@ -91,7 +104,7 @@
     "kv_head_count": 1,
     "layer_count": 61,
     "maximum_context_tokens": 1048576,
-    "mtp_layer_count": 1,
+    "mtp_layer_count": 3,
     "output_group_count": 16,
     "output_lora_rank": 1024,
     "qk_rope_head_dimension": 64,
@@ -99,7 +112,7 @@
     "rms_norm_epsilon": 1e-06,
     "vocabulary_size": 129280
   },
-  "model_id": "deepseek-ai/DeepSeek-V4-Pro",
+  "model_id": "deepseek-ai/DeepSeek-V4-Pro-0813",
   "moe": {
     "expert_intermediate_dimension": 3072,
     "experts_per_token": 6,
@@ -131,5 +144,5 @@
     "status": "NOT_MEASURED"
   },
   "schema_version": 1,
-  "source_revision": "official Hugging Face config observed 2026-07-31"
+  "source_revision": "GA release deepseek-ai/DeepSeek-V4-Pro-0813 (HF, 2026-08-13)"
 }

@@ -150,7 +150,32 @@ from pathlib import Path
 # targets relative and therefore valid in space-containing workspaces. This is
 # not generated output or a model-specific copy of common serving code; 154239
 # is the exact count after the landing.
-CEILING = 154239
+# The multi-session wave (merged as one span) adds the DSV4 Pro bring-up
+# (stagepacks, requant tool, runbook tooling), the Qwen 3.8 Max family and
+# resident stage, the Qwen TP4 deployment/bench tooling, the GLM52 TP8
+# additive path, and the devcycle coordination harness; the DRY consolidation
+# on the unified branch removes the duplicated Pro TP16 stagepack and
+# re-parameterizes the TP4xPP4 driver; 158323 is the exact count after that
+# consolidation lands.
+# The main wave landed after that consolidation adds the K3 TP4 runner,
+# dispatch, pack probe, and deploy/compile-gate tooling (#666), the GLM52
+# B8 and B16 batch classes with adapter variant-bucket fixes (#668, #669),
+# and the GLM52 accuracy fixes (#665); the unified branch folds it in as-is
+# (the shared-gemm provenance rename is line-neutral). 162375 is the exact
+# count after the integration; ceiling moves with it.
+# The DSV4 contract reconciliation teaches the generator the merged Pro
+# reality (first-light BF16 activations, FP8-expert codec selectability,
+# the Pro alias guard in the Flash header, the first-light note in the
+# normalized contract) so --check reproduces the checked-in files
+# byte-exact; 162411 is the exact count after it lands. Ceiling moves
+# with it.
+# The six-session integration wave (K3 TP4 layer-0, DSV4 DSpark
+# speculative loop, DSV4 Pro GA migration, Qwen 3.8 Max phase 2, Qwen TP4
+# phase 2, DSpark design docs) lands on the unified branch as merged
+# session machinery, plus the generator reconciliation for the GA 0813
+# checkpoint (3 packed draft layers, KV codec selectability); 165675 is
+# the exact count after the integration. Ceiling moves with it.
+CEILING = 165675
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
