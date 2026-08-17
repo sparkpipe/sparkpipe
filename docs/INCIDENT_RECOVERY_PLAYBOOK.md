@@ -118,7 +118,8 @@ them up. Each host is SYSADMIN's to drive through §5 as it appears.
 Run per host `H`; tick all before moving to the next host.
 
 1. **Full login (stage 4).** `ssh -o BatchMode=yes -o ConnectTimeout=8 $H true` exits 0.
-2. **Stage the GRUB skip-fsck entry AS DEFAULT (PRIMARY recovery lever).**
+2. **Fabric link check + bounce (every returning host).** `ssh $H 'sudo ethtool enp1s0f0np0 enp1s0f1np1 | grep -i "link detected"'` — the CX7 hotplug power-saving powers the RoCE ports down ~15s after boot, so a returning host often comes up with `Link detected: no`. If no link: `ssh $H 'sudo ip link set enp1s0f0np0 down; sudo ip link set enp1s0f0np0 up; sudo ip link set enp1s0f1np1 down; sudo ip link set enp1s0f1np1 up'` (safe — nothing serving), then `ssh $H 'sudo timeout 30 /usr/local/sbin/ds4-switched-fabric-apply; sudo timeout 30 /usr/local/sbin/ds4-direct-pair-fabric-apply'`. Verify enp1s0f0np0 200G (direct-pair 10.10.200.x/31) + enp1s0f1np1 100G (switched 10.10.100.x/24), RoCE Link ACTIVE. The scripts set `cx7_hotplug=disabled` (remove the CX7 hotplug marker + call mtk-hotplug-handler `boot`, re-powering the ports) — once run, ports stay up.
+3. **Stage the GRUB skip-fsck entry AS DEFAULT (PRIMARY recovery lever).**
    `scp tools/devcycle/stage_ds4_fastboot_grub.sh $H:/tmp/ && ssh $H 'sudo /tmp/stage_ds4_fastboot_grub.sh'`
    — default mode: installs the `ds4-fastboot` menuentry (`fsck.mode=skip
    fsck.repair=no`), sets `GRUB_DEFAULT=ds4-fastboot`, `update-grub`, and
@@ -128,32 +129,32 @@ Run per host `H`; tick all before moving to the next host.
    mode (`--one-shot` + grub-reboot) is still available but must be re-armed
    after every boot - do not use it for the permanent fix. Apply on every host,
    including spark0-7 as they come up.
-3. **Data-mount hygiene (NOT the wedge fix).**
+4. **Data-mount hygiene (NOT the wedge fix).**
    `scp tools/devcycle/ds4_fastboot_fix.sh $H:/tmp/ && ssh $H 'sudo /tmp/ds4_fastboot_fix.sh'`
    — adds `nofail` + `fs_passno=0` to a dirty DATA disk. Marginal on this fleet
    (sparkdata is on root and extnvme is already nofail+automount), but apply for
    hygiene. Use the repo copy (the old /tmp copy had a corrupted Python write line).
-4. **Root + data mounts.** `ssh $H 'df -h; mount | grep -iE "extnvme|sparkdata|nvme|raid"'`
+5. **Root + data mounts.** `ssh $H 'df -h; mount | grep -iE "extnvme|sparkdata|nvme|raid"'`
    — root rw (NOT stuck ro from errors=remount-ro), sparkdata present (runtime_root,
    `fleet_registry.json:58`), extnvme present.
-5. **If you used fsck.mode=skip:** `ssh $H 'sudo fsck -f /dev/nvme0n1p2'` (or
+6. **If you used fsck.mode=skip:** `ssh $H 'sudo fsck -f /dev/nvme0n1p2'` (or
    `xfs_repair`/btrfs equivalent) NOW, while skip is in effect for this boot, and
    record the result. Never leave a skipped root dirty.
-6. **Networking.** mgmt `10.20.0.x` up; fabric `10.10.100.x` up (`ip -4 addr`);
+7. **Networking.** mgmt `10.20.0.x` up; fabric `10.10.100.x` up (`ip -4 addr`);
    `tailscale status` shows `tagged-devices` + `direct`. Flag sparkd/e/f still on
    `experiencenow-ai@`.
-7. **Telemetry.** `ssh $H 'ls -la /tmp/ds4_telemetry'` shows a fresh
+8. **Telemetry.** `ssh $H 'ls -la /tmp/ds4_telemetry'` shows a fresh
    `node_telemetry.csv` (`spark_telemetry_common.py:52`). Restart the collector on
    the Mac if it exited during the outage.
-8. **Model/band restore.** `tools/devcycle/fleet_status.sh` / `tools/fleet_swap.sh status`
+9. **Model/band restore.** `tools/devcycle/fleet_status.sh` / `tools/fleet_swap.sh status`
    — fleet state lives at `/tmp/sparkpipe_fleet_state.json` (authoritative on spark0,
    `tools/fleet_swap.sh:27-28`). Restore `glm52` if it was current; else confirm
    `free` and wait for the coordinator's reservation.
-9. **Root-cause closeout.** `ssh $H 'journalctl -b -u systemd-fsck* -u local-fs.target'`
+10. **Root-cause closeout.** `ssh $H 'journalctl -b -u systemd-fsck* -u local-fs.target'`
    — confirm the blocking unit is root fsck; attach to the incident record.
-10. **Install + enable the post-boot fsck health check.** `scp tools/devcycle/sparkpipe_fsck_health.sh tools/devcycle/sparkpipe-fsck-health.service $H:/tmp/ && ssh $H 'sudo cp /tmp/sparkpipe_fsck_health.sh /usr/local/bin/ && sudo chmod 0755 /usr/local/bin/sparkpipe_fsck_health.sh && sudo cp /tmp/sparkpipe-fsck-health.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now sparkpipe-fsck-health.service'` — oneshot that is now the fleet's fsck mechanism (root READ-ONLY: tune2fs -l + dmesg scan + e2fsck -n; data volumes WRITE-mode: unmount → fsck -f -y → remount); writes `/var/lib/sparkpipe/fsck-health/last.json` + syslog. Verify: `ssh $H 'cat /var/lib/sparkpipe/fsck-health/last.json'`.
+11. **Install + enable the post-boot fsck health check.** `scp tools/devcycle/sparkpipe_fsck_health.sh tools/devcycle/sparkpipe-fsck-health.service $H:/tmp/ && ssh $H 'sudo cp /tmp/sparkpipe_fsck_health.sh /usr/local/bin/ && sudo chmod 0755 /usr/local/bin/sparkpipe_fsck_health.sh && sudo cp /tmp/sparkpipe-fsck-health.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now sparkpipe-fsck-health.service'` — oneshot that is now the fleet's fsck mechanism (root READ-ONLY: tune2fs -l + dmesg scan + e2fsck -n; data volumes WRITE-mode: unmount → fsck -f -y → remount); writes `/var/lib/sparkpipe/fsck-health/last.json` + syslog. Verify: `ssh $H 'cat /var/lib/sparkpipe/fsck-health/last.json'`.
     - **NEEDS-REPAIR (root) = schedule a maintenance boot, NOT panic** (e2fsck -n on a mounted rw root can false-positive): (a) find the normal (non-skip) GRUB entry — `ssh $H 'grep menuentry /boot/grub/grub.cfg'` (pick the first that is not ds4-fastboot); (b) `ssh $H 'sudo grub-reboot <normal-entry>'`; (c) reboot in the user-approved maintenance window for a real unmounted root fsck; (d) afterward the skip DEFAULT re-applies automatically on the next boot (the one-shot was consumed), so no re-apply is needed — re-run `stage_ds4_fastboot_grub.sh` only to confirm `set default="ds4-fastboot"`.
-11. **Deploy the boot-unblock drop-ins (fail-soft on boot).** `scp tools/devcycle/boot-unblock/*.conf $H:/tmp/ && ssh $H 'sudo bash -s'` to copy each to `/etc/systemd/system/<unit>.d/10-boot-timeout.conf` + `sudo systemctl daemon-reload` — `TimeoutStartSec` drop-ins (ds4-switched-fabric/ds4-direct-pair-fabric 120s, ceph template 180s, rbdmap/nvmf-autoconnect/open-iscsi 120s, pollinate 30s) so the fabric/ceph/remote-storage services FAIL SOFT instead of hanging when the fabric/cluster is down. Verify `ssh $H 'systemctl show -p TimeoutStartUSec ds4-switched-fabric.service'` (= 2min).
+12. **Deploy the boot-unblock drop-ins (fail-soft on boot).** `scp tools/devcycle/boot-unblock/*.conf $H:/tmp/ && ssh $H 'sudo bash -s'` to copy each to `/etc/systemd/system/<unit>.d/10-boot-timeout.conf` + `sudo systemctl daemon-reload` — `TimeoutStartSec` drop-ins (ds4-switched-fabric/ds4-direct-pair-fabric 120s, ceph template 180s, rbdmap/nvmf-autoconnect/open-iscsi 120s, pollinate 30s) so the fabric/ceph/remote-storage services FAIL SOFT instead of hanging when the fabric/cluster is down. Verify `ssh $H 'systemctl show -p TimeoutStartUSec ds4-switched-fabric.service'` (= 2min).
     - **spark2 cycle test PROVED (2026-08-17):** (a) the GRUB skip-fsck default is effective (no fsck ran post-cycle); (b) the fleet root key + emergency sshd give IN-BAND recovery (root login on `:2222` works despite nologin — this was impossible during the original incident); (c) `sparkpipe-fsck-health` ran post-boot and classified HEALTHY; (d) the remaining pre-existing (non-fsck) blocker was the fabric→network-online→remote-fs→ceph chain (`ds4-switched-fabric` hangs when the 200G fabric is down), now mitigated by these drop-ins. Manual unblock if ever needed: `systemctl stop ds4-switched-fabric.service ds4-direct-pair-fabric.service ceph.target rbdmap.service nvmf-autoconnect.service open-iscsi.service`.
 
 ---
