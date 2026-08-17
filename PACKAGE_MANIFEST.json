@@ -1,5 +1,5 @@
 {
-  "file_count": 1261,
+  "file_count": 1263,
   "files": [
     {
       "path": ".gitattributes",
@@ -48,8 +48,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "dd1613d9f41565aba3804865ab7140f3a4f629bf3d606379b09412a38a3bd7ba",
-      "size_bytes": 68897
+      "sha256": "a47206216db564f8b31cc7748fc5639e1159266a0269955f2d73dcd3bcaa0c5a",
+      "size_bytes": 69100
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -1687,6 +1687,11 @@
       "size_bytes": 1058
     },
     {
+      "path": "include/sparkpipe/spark_speculation_tree.h",
+      "sha256": "49618195c271c1fa9647594b01527846f27ac3448c264b2921d23ec90136feb4",
+      "size_bytes": 7493
+    },
+    {
       "path": "include/sparkpipe/spark_stage_kv_client.h",
       "sha256": "2f761a7d67738ddb0eb5d20cfb4137e2c028ebafc1797dcdc65782264a0fc5a7",
       "size_bytes": 2485
@@ -2073,8 +2078,8 @@
     },
     {
       "path": "model-families/glm52/include/sparkpipe/spark_glm52_mtp_tree.h",
-      "sha256": "9f67970029c4d1777bd1621dc74d075d2aca22ce50ad2b6cd383f523d4a54f36",
-      "size_bytes": 7815
+      "sha256": "2796cdcb5512170bad16369776f2651be1f59449bd05d7b3c7eb8bb5718fa397",
+      "size_bytes": 6803
     },
     {
       "path": "model-families/glm52/include/sparkpipe/spark_glm52_rope.h",
@@ -4663,8 +4668,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "52aae66c75beda9931a169273e968d982e29d02191498fbfe13d70c8949d754f",
-      "size_bytes": 13193
+      "sha256": "10e271e929db6cd9699a7b95d362f05881fa560299fccee7bc05b6394739cb3d",
+      "size_bytes": 13454
     },
     {
       "path": "tests/test_config_coverage.py",
@@ -5440,6 +5445,11 @@
       "path": "tests/test_spark_transport_probe.py",
       "sha256": "827990d59beca37fb4fecd0d0a046232cee6defb4915dce8e25ab29e4e6d5d92",
       "size_bytes": 3756
+    },
+    {
+      "path": "tests/test_speculation_tree_pin.c",
+      "sha256": "52ec74fb1b80b1e7ac4b0a2a3e9cad274d9bf1494f8db112183b6b92eb0e10d2",
+      "size_bytes": 1725
     },
     {
       "path": "tests/test_stage_module_common.c",
@@ -6310,5 +6320,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 23774824
+  "total_bytes": 23783494
 }

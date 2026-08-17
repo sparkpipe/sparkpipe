@@ -219,6 +219,7 @@ TEST_NAMES := \
     test_dsv4_cache_plan \
 	test_dsv4_parallel_shape \
     test_dspark_drafter_pin \
+    test_speculation_tree_pin \
     test_glm52_dspark \
     test_glm52_mtp_tree \
     test_tp_collective \
@@ -838,6 +839,9 @@ build/test_glm52_stagepack: tests/test_glm52_stagepack.c modules/glm52_resident_
 		$(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dspark_drafter_pin: tests/test_dspark_drafter_pin.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_tree_pin: tests/test_speculation_tree_pin.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_dspark: tests/test_glm52_dspark.c $(COMMON_LIBRARY)

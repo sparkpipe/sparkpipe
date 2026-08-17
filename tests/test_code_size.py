@@ -179,7 +179,11 @@ from pathlib import Path
 # (spark_dspark_drafter.h), the GLM52 selector/alias rewrite, and the
 # pinning test; 165811 is the exact count after it lands. Ceiling moves
 # with it.
-CEILING = 165811
+# The speculation-tree neutralization moves the tree machinery to
+# include/sparkpipe/spark_speculation_tree.h (GLM52 shape stays in the
+# family header with aliases) and adds its pinning test; 165905 is the
+# exact count after it lands. Ceiling moves with it.
+CEILING = 165905
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
