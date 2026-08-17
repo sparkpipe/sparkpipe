@@ -175,7 +175,11 @@ from pathlib import Path
 # session machinery, plus the generator reconciliation for the GA 0813
 # checkpoint (3 packed draft layers, KV codec selectability); 165675 is
 # the exact count after the integration. Ceiling moves with it.
-CEILING = 165675
+# The DSpark drafter neutralization adds the per-model config header
+# (spark_dspark_drafter.h), the GLM52 selector/alias rewrite, and the
+# pinning test; 165811 is the exact count after it lands. Ceiling moves
+# with it.
+CEILING = 165811
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

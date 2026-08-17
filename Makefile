@@ -218,6 +218,7 @@ TEST_NAMES := \
     test_qwen38_work_control \
     test_dsv4_cache_plan \
 	test_dsv4_parallel_shape \
+    test_dspark_drafter_pin \
     test_glm52_dspark \
     test_glm52_mtp_tree \
     test_tp_collective \
@@ -835,6 +836,9 @@ build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c model-families/glm52/incl
 build/test_glm52_stagepack: tests/test_glm52_stagepack.c modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h
 	$(CC) $(GLM52_INCLUDE_FLAGS) -Imodules/glm52_resident_decode_stage/source \
 		$(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dspark_drafter_pin: tests/test_dspark_drafter_pin.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_dspark: tests/test_glm52_dspark.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
