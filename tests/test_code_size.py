@@ -280,7 +280,12 @@ from pathlib import Path
 # COMPLETION's emitted count (1+accepted) instead of the submission's chain
 # width, mirroring the residentd - the last gate before the dsv4-flash
 # k-sweep. 166330 is the exact count.
-CEILING = 166330
+# The k3 per-half serial-TP rework lands (+179): K3LaunchSliceHalf + the
+# stateful runner StepHalf (per-layer phase 0/1 sweeps with host all_reduce
+# between halves) - the mechanically-correct 9-AR-point TP16 replay plan. The
+# recurrent state-carry numerical bug is tracked separately. 166509 is the
+# exact count.
+CEILING = 166509
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

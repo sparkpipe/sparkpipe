@@ -395,9 +395,15 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = destination;
 	gemm.accumulate_bf16 = accumulate;
-	return(LmGemmLaunchTileK<Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,source,weight,rows,rows,1u,1u,
-		input_dimension,output_dimension,multiprocessors,false,stream));
+	{
+		int32_t r = LmGemmLaunchTileK<Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+			&gemm,source,weight,rows,rows,1u,1u,
+			input_dimension,output_dimension,multiprocessors,false,stream);
+		if ( r != LM_LAUNCH_OK )
+			fprintf(stderr, "sparkpipe_k3: K3Project shape err in=%u out=%u -> %d\n",
+				input_dimension, output_dimension, r);
+		return(r);
+	}
 }
 
 // The common case: the result has one home. The accumulate tail exists for
@@ -570,7 +576,12 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	// host gate only simulates. An error here stays the loud failure until
 	// then: launching would alias half-width slots into a full-width reader.
 	if ( b->kda_state_bf16 != 0u )
+	{
+		fprintf(stderr, "sparkpipe_k3: KDA bf16-state refusal (flag %u)\n", b->kda_state_bf16);
 		return(LM_LAUNCH_ERR_SHAPE);
+	}
+	fprintf(stderr, "sparkpipe_k3: K3LayerKda enter (heads %u qk %u v %u)\n",
+		rank_heads, rank_qk, rank_v);
 	state_slot_bytes = b->kda_state_bf16 != 0u
 		? K3_KDA_STATE_SLOT_BYTES_BF16 : K3_KDA_STATE_SLOT_BYTES;
 	// THE INPUT IS THE RETRIEVAL, ALONE. Under AttnRes there is no residual

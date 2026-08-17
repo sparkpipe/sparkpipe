@@ -201,6 +201,11 @@ typedef struct SparkK3RunnerState
 	float *output_score;
 	uint32_t *output_token_host;
 	float *output_score_host;
+	/* per-token device tensors for the serial-TP half step (single-token decode) */
+	uint32_t *positions;        /* rows */
+	uint32_t *context_length;   /* rows */
+	uint32_t *sequence_of_row;  /* rows */
+	uint32_t *kda_state_index;  /* sequences */
 	cudaStream_t stream;
 	uint32_t max_rows;
 	uint32_t max_context;
@@ -758,6 +763,19 @@ SparkStatus SparkK3StageRunnerInitialize(
 		(uint64_t)configuration->max_input_row_count * 4u);
 	cudaMalloc(&state->output_score,
 		(uint64_t)configuration->max_input_row_count * 4u);
+	/* per-token tensors for the serial-TP half step (single token, position 0,
+	 * context length 1, sequence 0, state slot 0). */
+	cudaMalloc(&state->positions, 4u);
+	cudaMalloc(&state->context_length, 4u);
+	cudaMalloc(&state->sequence_of_row, 4u);
+	cudaMalloc(&state->kda_state_index, 4u);
+	{
+		uint32_t pos = 0u, ctx = 1u, seq = 0u, st = 0u;
+		cudaMemcpy(state->positions, &pos, 4u, cudaMemcpyHostToDevice);
+		cudaMemcpy(state->context_length, &ctx, 4u, cudaMemcpyHostToDevice);
+		cudaMemcpy(state->sequence_of_row, &seq, 4u, cudaMemcpyHostToDevice);
+		cudaMemcpy(state->kda_state_index, &st, 4u, cudaMemcpyHostToDevice);
+	}
 	state->output_token_host = new uint32_t[configuration->max_input_row_count];
 	state->output_score_host = new float[configuration->max_input_row_count];
 	return SPARK_STATUS_OK;
@@ -992,6 +1010,82 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 	cudaFree(state->head_candidate_score);
 	cudaFree(state->output_token);
 	cudaFree(state->output_score);
+	cudaFree(state->positions);
+	cudaFree(state->context_length);
+	cudaFree(state->sequence_of_row);
+	cudaFree(state->kda_state_index);
 	delete state;
 	runner->private_state = 0;
+}
+
+/* bind.cu's serial-TP half-step ABI (docs/serial_tp_replay.md). */
+extern "C" int32_t K3StageSliceHalf(const void *layer_weights, const void *slice_state, void *layer_buffers, uint32_t layer, uint32_t phase, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, void *stream);
+
+SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t layer, uint32_t phase,
+	const void *hidden_input_bf16, const void *partial_input_bf16, void *partial_output_bf16)
+{
+	SparkK3RunnerState *state;
+	SparkK3Dispatch *d;
+	K3LayerBuffers *b;
+	cudaStream_t stream;
+	uint32_t rows, sequences, packed_rows;
+	int32_t status;
+	if ( runner == 0 || runner->private_state == 0 || partial_output_bf16 == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	state = (SparkK3RunnerState *)runner->private_state;
+	d = &state->dispatch;
+	if ( layer < d->first_layer || layer >= d->first_layer + d->layer_count )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( phase == 0u && hidden_input_bf16 == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	b = d->buffers;
+	stream = state->stream;
+	rows = 1u;            /* the replay is single-token decode (B1) */
+	sequences = 1u;
+	packed_rows = rows * K3_TOP_K;
+	if ( phase == 0u )
+		cudaMemcpy(b->hidden_bf16, hidden_input_bf16,
+			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
+	if ( partial_input_bf16 != 0 )
+		cudaMemcpy(b->attnres_partial_bf16, partial_input_bf16,
+			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
+	/* Fill the per-step device tensors the normal dispatch step would set
+	 * (the half step bypasses SparkK3DispatchStep). The routing arrays are
+	 * consumed by the MoE path; the dense/group prefixes by every GEMM. */
+	b->dense_row_offset = state->dense_row_offset;
+	b->dense_tile_prefix = state->dense_tile_prefix;
+	b->group_row_offset = state->group_row_offset;
+	b->group_tile_prefix_w1 = state->group_tile_prefix_w1;
+	b->group_tile_prefix_w2 = state->group_tile_prefix_w2;
+	b->route_expert = state->route_expert;
+	b->route_packed_row = state->route_packed_row;
+	b->route_source_token = state->route_source_token;
+	b->route_weight = state->route_weight;
+	b->sequence_row_begin = 0; /* identity: row i is sequence i */
+	b->positions = state->positions;
+	b->context_length = state->context_length;
+	b->sequence_of_row = state->sequence_of_row;
+	b->kda_state_index = state->kda_state_index;
+	status = K3StageSliceHalf(d->weights + (layer - d->first_layer), d->slice_state, d->buffers,
+		layer, phase, rows, sequences, 1u, packed_rows, rows, state->multiprocessors, stream);
+	if ( status != LM_LAUNCH_OK )
+	{
+		fprintf(stderr, "sparkpipe_k3: half step layer %u phase %u -> %d\n",
+			layer, phase, status);
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
+	/* Capture the rank's CONTRIBUTION (the un-folded input-sharded projection
+	 * output), NOT the folded partial: phase 0 = hidden_bf16 (kda_out / mla_out),
+	 * phase 1 = hidden_bf16 (routed_up / dense_down) plus shared_out_bf16
+	 * (shared_w2) on MoE layers. The harness sums these across ranks; the
+	 * replicated partial is only the retrieval's read, and its fold is ignored. */
+	cudaMemcpy(partial_output_bf16, b->hidden_bf16,
+		(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
+	if ( phase == 1u && layer >= K3_FIRST_ROUTED_LAYER )
+		LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),
+			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
+			K3_LAYER_THREADS, 0, stream,
+			(uint16_t *)partial_output_bf16,b->shared_out_bf16,
+			(uint16_t *)partial_output_bf16,rows,K3_HIDDEN);
+	return SPARK_STATUS_OK;
 }
