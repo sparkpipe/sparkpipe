@@ -510,26 +510,33 @@ static int32_t K3DeltaRuleOptIn(uint32_t shared_bytes)
 // rows, and a view would make each of them carry the fused pitch. And ONE
 // launch, not one per tensor: launch tax is the B1 cost (roadmap D10/D1), and
 // both sources are ready the moment the second GEMM retires.
+// THE RANK'S SECTION GEOMETRY RIDES THE ARGS (the fused row's section
+// offsets are the rank's row counts, not the full-model constants - the
+// TP4 equivalence gate caught the full-count version reading past the
+// rank's shard).
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint32_t rows)
+void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint32_t rows, uint32_t qk_dim, uint32_t v_dim, uint32_t heads, uint32_t fused_rows)
 {
 	uint32_t row = blockIdx.x,index;
-	uint64_t fused = (uint64_t)row * K3_KDA_QKVB_FUSED_ROWS;
-	uint64_t dense = (uint64_t)row * K3_KDA_QK_DIM;
+	const uint32_t k_offset = qk_dim;
+	const uint32_t v_offset = 2u * qk_dim;
+	const uint32_t beta_offset = v_offset + v_dim;
+	uint64_t fused = (uint64_t)row * fused_rows;
+	uint64_t dense = (uint64_t)row * qk_dim;
 	if ( row >= rows )
 		return;
-	for (index = threadIdx.x; index < K3_KDA_QK_DIM; index += THREADS)
+	for (index = threadIdx.x; index < qk_dim; index += THREADS)
 		query_bf16[dense + index] = qkvb_bf16[fused + index];
-	for (index = threadIdx.x; index < K3_KDA_QK_DIM; index += THREADS)
-		key_bf16[dense + index] = qkvb_bf16[fused + K3_KDA_QKVB_K_OFFSET + index];
-	for (index = threadIdx.x; index < K3_KDA_V_DIM; index += THREADS)
-		value_bf16[((uint64_t)row * K3_KDA_V_DIM) + index] =
-			qkvb_bf16[fused + K3_KDA_QKVB_V_OFFSET + index];
-	// Beta is one element per head: 96 columns at the tail of the fused row.
-	for (index = threadIdx.x; index < K3_KDA_HEADS; index += THREADS)
-		beta_bf16[((uint64_t)row * K3_KDA_HEADS) + index] =
-			qkvb_bf16[fused + K3_KDA_QKVB_BETA_OFFSET + index];
+	for (index = threadIdx.x; index < qk_dim; index += THREADS)
+		key_bf16[dense + index] = qkvb_bf16[fused + k_offset + index];
+	for (index = threadIdx.x; index < v_dim; index += THREADS)
+		value_bf16[((uint64_t)row * v_dim) + index] =
+			qkvb_bf16[fused + v_offset + index];
+	// Beta is one element per head at the tail of the fused row.
+	for (index = threadIdx.x; index < heads; index += THREADS)
+		beta_bf16[((uint64_t)row * heads) + index] =
+			qkvb_bf16[fused + beta_offset + index];
 }
 
 // Kimi Delta Attention, 69 of 93 layers.
@@ -547,6 +554,12 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 {
 	int32_t status;
 	uint32_t state_slot_bytes;
+	// The rank's KDA head geometry: every per-head launch below must use
+	// these, never the full-model constants (the full-count versions read
+	// past the rank's shard).
+	const uint32_t rank_heads = K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS);
+	const uint32_t rank_qk = rank_heads * K3_KDA_KEY_DIM;
+	const uint32_t rank_v = rank_heads * K3_KDA_VALUE_DIM;
 	// THE BF16 STATE OPTION IS REFUSED HERE, DELIBERATELY, FOR NOW. The kernel
 	// variant exists: LmDeltaRuleKernel and LmReplayFoldKernel take the pool's
 	// element type as a template parameter, and tests/test_kda_bf16_state.py
@@ -595,34 +608,36 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 		return(status);
 	LM_LAUNCH((K3SplitFusedProjectionsKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->fused_qkvb_bf16,
-		b->query_bf16,b->key_bf16,b->value_bf16,(uint16_t *)b->kda_beta_logit,rows);
+		b->query_bf16,b->key_bf16,b->value_bf16,(uint16_t *)b->kda_beta_logit,
+		rows,rank_qk,rank_v,rank_heads,
+		K3_RANK_DIM(b,kda_qkvb_rows,K3_KDA_QKVB_FUSED_ROWS));
 	// THE VERIFY STEP KEEPS ITS RAW INPUTS. The convolutions below overwrite
 	// q, k and v in place, so this is the last moment the pre-conv rows exist -
 	// and they are exactly what a fold needs to advance the windows and the
 	// delta state over whatever prefix the sampler accepts.
 	if ( b->replay_conv_q != 0 )
 	{
-		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-			b->query_bf16,b->replay_conv_q,rows,K3_KDA_QK_DIM);
-		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-			b->key_bf16,b->replay_conv_k,rows,K3_KDA_QK_DIM);
-		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_KDA_V_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-			b->value_bf16,b->replay_conv_v,rows,K3_KDA_V_DIM);
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((rank_qk + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			b->query_bf16,b->replay_conv_q,rows,rank_qk);
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((rank_qk + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			b->key_bf16,b->replay_conv_k,rows,rank_qk);
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((rank_v + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			b->value_bf16,b->replay_conv_v,rows,rank_v);
 	}
 	// THREE CONVOLUTIONS, NOT ONE, EACH WITH ITS OWN WINDOW. q, k and v are
 	// separate ShortConvolution modules in the reference; sharing a window
 	// between them would mix three token streams into one and still run.
-	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_q_window,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->kda_q_conv_weight,b->query_bf16,K3_KDA_QK_DIM,sequences,commit);
-	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_k_window,b->kda_state_index,b->sequence_row_begin,0,b->key_bf16,b->kda_k_conv_weight,b->key_bf16,K3_KDA_QK_DIM,sequences,commit);
-	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(K3_KDA_V_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_v_window,b->kda_state_index,b->sequence_row_begin,0,b->value_bf16,b->kda_v_conv_weight,b->value_bf16,K3_KDA_V_DIM,sequences,commit);
+	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(rank_qk + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+		b->kda_q_window,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->kda_q_conv_weight,b->query_bf16,rank_qk,sequences,commit);
+	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(rank_qk + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+		b->kda_k_window,b->kda_state_index,b->sequence_row_begin,0,b->key_bf16,b->kda_k_conv_weight,b->key_bf16,rank_qk,sequences,commit);
+	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(rank_v + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+		b->kda_v_window,b->kda_state_index,b->sequence_row_begin,0,b->value_bf16,b->kda_v_conv_weight,b->value_bf16,rank_v,sequences,commit);
 	// q and k only. The value is not normalised.
-	LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
-		b->query_bf16,K3_KDA_HEADS,rows,K3_RMS_EPSILON);
-	LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
-		b->key_bf16,K3_KDA_HEADS,rows,K3_RMS_EPSILON);
+	LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,rank_heads), K3_LAYER_THREADS, 0, stream,
+		b->query_bf16,rank_heads,rows,K3_RMS_EPSILON);
+	LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,rank_heads), K3_LAYER_THREADS, 0, stream,
+		b->key_bf16,rank_heads,rows,K3_RMS_EPSILON);
 	// The decay logit is low rank: hidden -> head_dim -> heads * head_dim. The
 	// down half already ran inside the fused decay|gate GEMM and the split
 	// left its output in latent_bf16. BF16 ON BOTH HALVES OF THE DECAY
@@ -661,9 +676,18 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	// The gate output has been waiting in gate_bf16 since the early
 	// back-to-back projection.
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-		b->attention_out_bf16,b->gate_bf16,K3_KDA_V_DIM);
+		b->attention_out_bf16,b->gate_bf16,rank_v);
+	// THE O_PROJ MUST NOT WRITE OVER ITS OWN INPUT. The persistent GEMM stages
+	// A per k-tile while storing finished output tiles into the output buffer:
+	// with attention_out as both, a second-wave tile's A reads race the
+	// first-wave stores of columns 0..7167 and its k-sums pick up another
+	// tile's outputs (nondeterministic, tail-concentrated - the fresh-run
+	// determinism gate's known variance). hidden_bf16 is idle here: the
+	// MLP-side retrieval overwrites it next, so the projection lands in a
+	// scratch nothing reads before it is replaced. The MLA path is already
+	// safe (value_bf16 in, attention_out out - distinct buffers).
 	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->kda_out_weight,b->kda_out_scale,
-		b->attention_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
+		b->hidden_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
 		rows,K3_RANK_DIM(b,kda_out_input,K3_KDA_V_DIM),K3_HIDDEN,multiprocessors,stream));
 }
 

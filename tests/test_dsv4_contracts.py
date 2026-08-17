@@ -21,16 +21,23 @@ def main() -> int:
     assert flash["model"]["layer_count"] == 43
     assert pro["model"]["layer_count"] == 61
     assert len(flash["attention"]["compression_ratios"]) == 46
-    assert len(pro["attention"]["compression_ratios"]) == 62
+    assert len(pro["attention"]["compression_ratios"]) == 64
     assert flash["attention"]["compression_ratios"][:2] == [0, 0]
     assert pro["attention"]["compression_ratios"][:2] == [128, 128]
     assert flash["attention"]["compression_ratios"][-3:] == [0, 0, 0]
-    assert flash["model"]["mtp_layer_count"] == 0
+    assert pro["attention"]["compression_ratios"][-3:] == [0, 0, 0]
+    assert flash["model"]["mtp_layer_count"] == 3
     assert flash["dspark"]["layer_count"] == 3
-    assert flash["runtime"]["packed_mtp_layer_count"] == 0
+    assert flash["runtime"]["packed_mtp_layer_count"] == 3
+    assert pro["model"]["mtp_layer_count"] == 3
+    assert pro["dspark"]["draft_layer_count"] == 3
+    assert pro["dspark"]["target_layer_ids"] == [58, 59, 60]
+    assert pro["model_id"] == "deepseek-ai/DeepSeek-V4-Pro-0813"
     assert flash["precision"]["non_expert_activation_format"] == "bf16"
     assert flash["precision"]["routed_expert_activation_format"] == "fp8_e4m3"
-    assert pro["precision"]["non_expert_activation_format"] == "fp8_e4m3"
+    assert pro["precision"]["non_expert_activation_format"] == "bf16"
+    assert pro["precision"]["_first_light_note"].startswith(
+        "non-expert activations run BF16")
     assert flash["source_index_sha256"] == (
         "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b")
     source_files = flash["source_files"]
@@ -46,7 +53,7 @@ def main() -> int:
     assert flash["source_shard_count"] == 48
     header = (ROOT / "model-families" / "dsv4" / "include" / "sparkpipe" /
               "spark_dsv4_model.h").read_text(encoding="utf-8")
-    assert "SparkDsv4ModelCompressionRatios[43u]" in header
+    assert "SparkDsv4ModelCompressionRatios[46u]" in header
     description = json.loads(
         (ROOT / "examples" / "model_descriptions" /
          "dsv4_resident_decode_stage_firmware.json").read_text(encoding="utf-8")

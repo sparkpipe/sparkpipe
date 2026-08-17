@@ -3,8 +3,8 @@
 // Decode attention. RoPE, latent-absorbed attention, and sparse selection.
 //
 // None of this is model-specific, and the version it replaces was named as
-// though it were: SparkGlm52ResidentDecodeStageAbsorbedAttentionKernel, 299
-// lines carrying 52 SPARK_GLM52_* references. Every one of the 52 is a
+// though it were: SparkGlmResidentDecodeStageAbsorbedAttentionKernel, 299
+// lines carrying 52 SPARK_GLM_* references. Every one of the 52 is a
 // dimension, a head count or a cache stride - none changes what is computed. The
 // model belongs in the arguments.
 //
@@ -53,11 +53,11 @@ static __device__ __forceinline__ void LmRopePair(float *low, float *high, float
 // the other is fluent and positionally wrong - the failure the comment above
 // describes, now selectable instead of assumed.
 //
-// Half-split pairs i with i + rope_dim/2. Qwen 3.6 and MiMo 2.5 use this
+// Half-split pairs i with i + rope_dim/2. The GDN model and MiMo 2.5 use this
 // convention and it stays the default, so existing call sites remain explicit
 // only when their checkpoint differs.
 //
-// Interleaved pairs 2i with 2i+1, the view_as_complex layout. DeepSeek V4 and
+// Interleaved pairs 2i with 2i+1, the view_as_complex layout. The V4 model and
 // GLM 5.2 encode their released checkpoints this way; GLM declares the same
 // convention separately for its MLA and DSA indexer.
 enum LmRopePairing

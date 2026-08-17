@@ -237,7 +237,8 @@ TEST_NAMES := \
     test_dsv4_stage_runner \
     test_tensor_map_geometry \
     test_weight_codec \
-    test_topology_switch
+    test_topology_switch \
+    test_qwen38_math_kernels
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
@@ -813,6 +814,11 @@ build/test_qwen36_work_control: tests/test_qwen36_work_control.cpp tests/fixture
 
 build/test_qwen38_work_control: tests/test_qwen38_work_control.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
 	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+
+# Numeric verification of the math-audit fixes: includes the module's CUDA
+# source, so the tested code IS the production code.
+build/test_qwen38_math_kernels: tests/test_qwen38_math_kernels.cu modules/qwen38_resident_decode_stage/source/spark_qwen38_resident_decode_stage_cuda.cu
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38/include -Imodules/qwen38_resident_decode_stage/include -Imodules/qwen38_resident_decode_stage/source $< -L$(CUDA_HOME)/lib64 -lcudart -o $@
 
 build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@

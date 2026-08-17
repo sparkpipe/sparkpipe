@@ -75,6 +75,7 @@ fi
 
 nvcc_path="${NVCC:-nvcc}"
 cuda_architecture="${CUDA_ARCH:-sm_121a}"
+validation_defines="${SPARK_DSV4_VALIDATION_DEFINES:-}"
 if [[ "${cuda_architecture}" != "sm_121a" ]]; then
     echo "DSV4 hardware validation admits only CUDA_ARCH=sm_121a" >&2
     exit 2
@@ -94,6 +95,7 @@ make -C "${repository_root}" \
     --expt-relaxed-constexpr \
     -gencode arch=compute_121a,code=sm_121a \
     "-DSPARK_BATCH_BUCKET=${batch_bucket}" \
+    ${validation_defines:+"${validation_defines}"} \
     -I"${repository_root}/include" \
     -I"${repository_root}/model-families/dsv4/include" \
     -I"${module_directory}/include" \

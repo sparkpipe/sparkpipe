@@ -19,7 +19,7 @@ from it in spark_dsv4_serving_adapter.c:
 
 The root Makefile builds the pro adapter targets per topology
 (DSV4_PRO_TP4_PP4_SERVING_TOPOLOGY_FLAGS etc.). The pack side is already
-topology-parameterized: tools/dsv4_pro_tp4_pp4_stagepacks.py drives the
+topology-parameterized: tools/dsv4_tp4_pp4_stagepacks.py --model pro drives the
 sharder with any TP degree and PP stage count (TP4xPP4 defaults). A new
 topology deployment needs: adapter variant build + rank packs from the full
 pack + a deployment spec with the matching adapter id + stage JSON

@@ -129,23 +129,35 @@ void Qwen38GatedHeadNormKernel(const uint16_t *__restrict__ core_bf16, const uin
 	output_bf16[index] = LmFloatToBf16(value);
 }
 
-// hidden = routed + sigmoid(gate[col]) * shared. The routed sum and the
-// shared expert's down-projection are separate buffers; the gate multiply
-// is qwen38's learned shared_expert_gate, and keeping add+gate in one
-// kernel means the product never round-trips.
+// hidden = routed + sigmoid(dot(normed, gate_weight)) * shared. The
+// checkpoint's shared_expert_gate is Linear(hidden, 1): one scalar per row
+// derived from the MoE's normed input, then broadcast over the shared
+// expert's down-projection - NOT sigmoid(weight[d]) per channel. Keeping
+// add+gate in one kernel means the product never round-trips.
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void Qwen38SharedExpertAddKernel(const uint16_t *__restrict__ routed_bf16, const uint16_t *__restrict__ shared_bf16, const uint16_t *__restrict__ gate_coeff_bf16, uint16_t *__restrict__ hidden_out_bf16, uint32_t row_count, uint32_t dimension)
+void Qwen38SharedExpertAddKernel(const uint16_t *__restrict__ routed_bf16, const uint16_t *__restrict__ shared_bf16, const uint16_t *__restrict__ gate_weight_bf16, const uint16_t *__restrict__ gate_input_bf16, uint16_t *__restrict__ hidden_out_bf16, uint32_t row_count, uint32_t dimension)
 {
-	uint64_t index = ((uint64_t)blockIdx.x * THREADS) + threadIdx.x;
-	uint64_t total = (uint64_t)row_count * dimension;
-	float routed,shared,gate;
-	if ( index >= total )
+	__shared__ float reduce_scratch[THREADS / LM_WARP_LANES];
+	uint32_t row = blockIdx.x;
+	uint64_t row_base = (uint64_t)row * dimension;
+	uint64_t index;
+	float logit = 0.0f,routed,shared,gate;
+	if ( row >= row_count )
 		return;
-	routed = LmBf16ToFloat(routed_bf16[index]);
-	shared = LmBf16ToFloat(shared_bf16[index]);
-	gate = LmBf16ToFloat(gate_coeff_bf16[index % dimension]);
-	hidden_out_bf16[index] = LmFloatToBf16(routed + (shared / (1.0f + __expf(-gate))));
+	if ( threadIdx.x < THREADS / LM_WARP_LANES )
+		reduce_scratch[threadIdx.x] = 0.0f;
+	__syncthreads();
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+		logit = fmaf(LmBf16ToFloat(gate_input_bf16[row_base + index]),LmBf16ToFloat(gate_weight_bf16[index]),logit);
+	logit = LmBlockSum<THREADS>(logit,reduce_scratch);
+	gate = 1.0f / (1.0f + __expf(-logit));
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		routed = LmBf16ToFloat(routed_bf16[row_base + index]);
+		shared = LmBf16ToFloat(shared_bf16[row_base + index]);
+		hidden_out_bf16[row_base + index] = LmFloatToBf16(routed + (gate * shared));
+	}
 }
 
 struct Qwen38LayerBuffers
@@ -487,8 +499,8 @@ static int32_t Qwen38LayerLinear(const Qwen38LayerBuffers *b, uint32_t rows, uin
 }
 
 // The routed MoE + shared expert, every layer's FFN side. Router: plain
-// BF16 gate projection to f32 logits, top-10 renormalised (identity score
-// transform, RENORMALISE on). Experts: FP8_E4M3 block-128, w1 fused
+// BF16 gate projection to f32 logits, row softmax, then top-10 renormalised
+// over the selected experts (the Qwen3_5MoeTopKRouter form). Experts: FP8_E4M3 block-128, w1 fused
 // gate|up (4096 per expert), silu-mul, w2 (8192 per expert), then the
 // weighted pair reduce into hidden (which starts as a copy of the
 // attention-side output). Shared expert: fused gate|up, silu-mul, down,
@@ -515,6 +527,12 @@ static int32_t Qwen38LayerMoe(const Qwen38LayerBuffers *b, uint32_t rows, uint32
 		QWEN38_HIDDEN,QWEN38_EXPERTS,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	// Qwen3_5MoeTopKRouter: softmax over the full logit row, then top-k,
+	// then renormalize over the selected experts. The softmax is monotone,
+	// so the selection is unchanged; the weights become probabilities
+	// instead of raw logits divided by their (possibly negative) sum.
+	LM_LAUNCH((LmHeadSoftmaxKernel<QWEN38_LAYER_THREADS>), rows, QWEN38_LAYER_THREADS, (QWEN38_LAYER_THREADS / LM_WARP_LANES) * sizeof(float), stream,
+		b->router_logits,rows,QWEN38_EXPERTS,1.0f);
 	LM_LAUNCH((LmTopkSmallKernel<QWEN38_LAYER_THREADS,QWEN38_TOP_K,true,1u,1u,LM_TOPK_SCORE_IDENTITY>), rows, QWEN38_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
 		b->router_logits,QWEN38_EXPERTS,b->route_expert,b->route_weight,0,0,1.0f);
 	status = LmRouteBuild<QWEN38_LAYER_THREADS,QWEN38_EXPERTS>(
@@ -573,8 +591,8 @@ static int32_t Qwen38LayerMoe(const Qwen38LayerBuffers *b, uint32_t rows, uint32
 		b->packed_down_bf16,b->route_packed_row,b->route_weight,b->hidden_bf16, rows,QWEN38_TOP_K,QWEN38_HIDDEN);
 	// Shared expert at full width on the same normed input: fused gate|up
 	// (pack-time fuse of the checkpoint's shared_expert.gate_proj and
-	// up_proj), silu-mul, down, then the learned per-channel sigmoid gate
-	// adds it into hidden.
+	// up_proj), silu-mul, down, then the learned scalar sigmoid gate
+	// (Linear(hidden,1) on the normed input) adds it into hidden.
 	gemm.scale_b = Qwen38WeightScale<Format>(
 		b->shared_gate_up_scale,QWEN38_EXPERT_INTERMEDIATE * 2u,QWEN38_HIDDEN);
 	gemm.output_bf16 = b->gate_up_bf16;
@@ -595,8 +613,8 @@ static int32_t Qwen38LayerMoe(const Qwen38LayerBuffers *b, uint32_t rows, uint32
 		QWEN38_EXPERT_INTERMEDIATE,QWEN38_HIDDEN,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LM_LAUNCH((Qwen38SharedExpertAddKernel<QWEN38_LAYER_THREADS>), dim3((rows * QWEN38_HIDDEN + QWEN38_LAYER_THREADS - 1u) / QWEN38_LAYER_THREADS,1u), QWEN38_LAYER_THREADS, 0, stream,
-		b->hidden_bf16,b->shared_out_bf16,(const uint16_t *)b->shared_gate_coeff,b->hidden_bf16,rows,QWEN38_HIDDEN);
+	LM_LAUNCH((Qwen38SharedExpertAddKernel<QWEN38_LAYER_THREADS>), rows, QWEN38_LAYER_THREADS, (QWEN38_LAYER_THREADS / LM_WARP_LANES) * sizeof(float), stream,
+		b->hidden_bf16,b->shared_out_bf16,(const uint16_t *)b->shared_gate_coeff,(const uint16_t *)b->normed_bf16,b->hidden_bf16,rows,QWEN38_HIDDEN);
 	return(LM_LAUNCH_OK);
 }
 

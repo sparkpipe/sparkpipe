@@ -383,7 +383,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		/* the sharded path defers the restart to the phase-0 hook, whose
 		 * completion sets the SUMMED attention output into the partial */
 		if ( boundary != 0u && buffers->tp_sharded == 0u )
-			K3PartialSet(buffers,buffers->attention_out_bf16,rows,stream);
+			K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
 		// The sharded attention output all-reduces and folds BEFORE the
 		// MLP-side retrieval: the retrieval's partial mix must contain the
 		// post-attention contribution on every rank.

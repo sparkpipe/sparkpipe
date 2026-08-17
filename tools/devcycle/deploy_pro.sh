@@ -3,14 +3,16 @@
 # deploy_pro.sh [--skip-packs] — deploy the DSV4 Pro TP4xPP4 runtime to all
 # 16 hosts. Run from the pro worktree on the MacBook.
 #
-#   - runtime artifacts from /tmp/devcycle-pro-build-pro-base on sparkb
+#   - runtime artifacts from /tmp/devcycle-pro-build-ga0813 on sparkb
+#     (the GA 0813 build; set BUILD_DIR to override)
 #   - rank packs from /home/sparkb/sparkdata/dsv4_pro.tp4_pp4.ranks on sparkb
 #   - deployment configs generated from the pro spec in this checkout
 #
 #   --skip-packs  deploy bins/libs/configs only (use while the split runs)
 set -euo pipefail
 
-BUILD_HOST="sparkb"
+BUILD_HOST="spark1"
+BUILD_DIR="${BUILD_DIR:-/tmp/devcycle-pro-build-ga0813}"
 RUNTIME_DIR_NAME="dsv4_pro.tp4pp4"
 HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
 SKIP_PACKS=0
@@ -24,8 +26,8 @@ mkdir -p /tmp/pro-deploy
 
 for artifact in sparkpipe_model_residentd sparkpipe_model_batch model_driver.so \
                 model_serving_adapter.so hidden_transport.so; do
-    scp -q -o BatchMode=yes "${BUILD_HOST}:/tmp/devcycle-pro-build-pro-base/${artifact}" /tmp/pro-deploy/ \
-        || { echo "missing artifact ${artifact} on ${BUILD_HOST}"; exit 1; }
+    scp -q -o BatchMode=yes "${BUILD_HOST}:${BUILD_DIR}/${artifact}" /tmp/pro-deploy/ \
+        || { echo "missing artifact ${artifact} in ${BUILD_DIR} on ${BUILD_HOST}"; exit 1; }
 done
 
 python3 "${ROOT}/tools/generate_model_resident_deployment.py" \
@@ -35,6 +37,11 @@ cp "${ROOT}/examples/deployments/dsv4_pro_tp4_pp4_stage.json" /tmp/pro-deploy/ds
 
 rank=0
 for host in "${HOSTS[@]}"; do
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=6 "${host}" "echo ok" >/dev/null 2>&1; then
+        echo "deployed ${host} rank=${rank} SKIPPED (unreachable)"
+        rank=$((rank + 1))
+        continue
+    fi
     root="/home/${host}/sparkdata/${RUNTIME_DIR_NAME}"
     ssh -o BatchMode=yes "${host}" "mkdir -p ${root}/bin ${root}/lib ${root}/config ${root}/kv ${root}/packs" || exit 1
     scp -q -o BatchMode=yes /tmp/pro-deploy/sparkpipe_model_residentd /tmp/pro-deploy/sparkpipe_model_batch "${host}:${root}/bin/" || exit 1
