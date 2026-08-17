@@ -277,6 +277,13 @@ def render_header(
             lines.append(f"#define {prefix}_DSPARK_TARGET_LAYER_COUNT {len(dspark['target_layer_ids'])}u")
             lines.append(f"#define {prefix}_DSPARK_MARKOV_RANK {dspark['markov_rank']}u")
             lines.append(f"#define {prefix}_DSPARK_NOISE_TOKEN_ID {dspark['noise_token_id']}u")
+        if variant == "flash" and suffix == "DSPARK_SPEC_STEP":
+            # Overridable per-build (-DSPARK_DSV4_MODEL_DSPARK_SPEC_STEP=<k>u) for
+            # the k-sweep (k=5/7/8/10); the header default stays serving_block_size.
+            lines.append(f"#ifndef {prefix}_DSPARK_SPEC_STEP")
+            lines.append(f"#define {prefix}_DSPARK_SPEC_STEP {value}u")
+            lines.append("#endif")
+            continue
         if variant == "flash" and suffix == "DSPARK_TARGET_LAYER_FIRST":
             lines.append(f"#define {prefix}_DSPARK_TARGET_LAYER_FIRST \\")
             lines.append(
@@ -439,7 +446,7 @@ def render_normalized_contract(variant: str, contract: dict[str, Any]) -> str:
 def flash_module_id(batch_bucket: int) -> str:
     if batch_bucket == 1024:
         return FLASH_MODULE_ID
-    if batch_bucket not in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512):
+    if batch_bucket not in (1, 2, 4, 6, 8, 9, 11, 16, 32, 64, 128, 256, 512):
         raise ValueError(f"invalid DSV4 batch bucket: {batch_bucket}")
     return f"{FLASH_MODULE_ID_PREFIX}.b{batch_bucket}.{FLASH_MODULE_ID_SUFFIX}"
 
@@ -596,7 +603,7 @@ def main() -> int:
             b1_description.encode("utf-8")).hexdigest()
         bucket_shas: dict[int, str] = {}
         if variant == "flash":
-            for bucket in (8, 16, 32, 64):
+            for bucket in (6, 8, 9, 11, 16, 32, 64):
                 bucket_description = render_flash_model_description(
                     contract, bucket)
                 bucket_shas[bucket] = hashlib.sha256(
@@ -608,7 +615,7 @@ def main() -> int:
             normalized_path: render_normalized_contract(variant, contract),
         }
         if variant == "flash":
-            for bucket in (8, 16, 32, 64):
+            for bucket in (6, 8, 9, 11, 16, 32, 64):
                 outputs[ROOT / "examples" / "model_descriptions" /
                     f"dsv4_resident_decode_stage_firmware_b{bucket}.json"] = (
                         render_flash_model_description(contract, bucket))

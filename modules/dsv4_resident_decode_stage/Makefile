@@ -23,6 +23,11 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../cache/kv_page_store.c
 MODULE_CUDA_SOURCE := source/spark_dsv4_resident_decode_stage_cuda.cu
 MODULE_COMPILE_FLAGS := -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u
+# DSpark spec-step override for the k-sweep (k=5/7/8/10). Set DSPARK_SPEC_STEP=k
+# on the make command line; the model header default (7) is guarded by #ifndef.
+ifneq ($(DSPARK_SPEC_STEP),)
+MODULE_COMPILE_FLAGS += -DSPARK_DSV4_MODEL_DSPARK_SPEC_STEP=$(DSPARK_SPEC_STEP)u
+endif
 
 # Keep the module graph relative to this directory. The checkout path contains
 # spaces on the development Mac, so absolute source lists are not shell-safe.

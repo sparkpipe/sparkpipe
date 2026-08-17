@@ -243,7 +243,11 @@ from pathlib import Path
 # test + design doc): host collective emulation for iterative single-spark
 # correctness runs while the fleet is down. Harness body is in tests/ (excluded);
 # only the Makefile wiring (+5) counts. 165856 is the exact count.
-CEILING = 165856
+# The dsv4-flash k-sweep plumbing lands (+100): SPEC_STEP becomes an
+# overridable bucket knob (buckets 6/9/11 added to the allowlist + firmware
+# JSONs + serving-adapter sha map + build scripts) so k=5/8/10 drivers build
+# alongside k=7 for the DSpark sweep. 165956 is the exact count.
+CEILING = 165956
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
