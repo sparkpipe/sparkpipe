@@ -4949,9 +4949,15 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				SPARK_DSV4_MODEL_KV_QUANT_BLOCK,
 				SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 		DSPARK_S0_TRACE("qkv");
-		/* draft attention: window ring + block kvs, non-causal, sink in
-		 * the denominator */
+		/* draft attention: the REFERENCE attends min(win, start_pos+1)
+		 * prefix ring slots + the block kvs (get_dspark_topk_idxs), not
+		 * the whole window ring - the unwritten slots would poison the
+		 * softmax. */
 		if ( error == cudaSuccess )
+		{
+			uint64_t ring_slots = anchor_position + 1u <
+				SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS ?
+				anchor_position + 1u : SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS;
 			error = SparkDsv4LaunchDsparkAttention(stream,
 				slot->dspark_q_attn_bf16,
 				state->dspark_ring_bf16,state->dspark_ring_lane_stride,
@@ -4959,8 +4965,8 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				1.0f / sqrtf((float)SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION),
 				slot->dspark_q_attn_bf16,block,
 				SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT,
-				SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
-				SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS);
+				SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,(uint32_t)ring_slots);
+		}
 		if ( error == cudaSuccess )
 			error = SparkDsv4LaunchRope(stream,slot->dspark_q_attn_bf16,
 				state->base_freqs_f32,slot->dspark_row_positions,block,
