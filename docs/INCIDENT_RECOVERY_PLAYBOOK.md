@@ -100,7 +100,7 @@ after first login. Recovery is therefore two phases.
 3. **RESEAT / physical console** — last resort; not available at 10,000 miles.
 
 **Phase 1 — make the next wedge cheap (immediately after ANY host returns):**
-- Land the permanent fix (nofail + fs_passno=0, `/tmp/ds4_fastboot_fix.sh`) on
+- Land the permanent fix (nofail + fs_passno=0, `tools/devcycle/ds4_fastboot_fix.sh`) on
   the returned host first — from then on every future power-cycle boots fast
   forever, so a dirty data NVMe can never re-wedge that host.
 - Pre-stage the one-shot GRUB fallback
@@ -121,12 +121,12 @@ Run per host `H`; tick all before moving to the next host.
 
 1. **Full login (stage 4).** `ssh -o BatchMode=yes -o ConnectTimeout=8 $H true`
    exits 0 (main sshd up, nologin cleared).
-2. **Land the boot-time fsck fix.** `scp /tmp/ds4_fastboot_fix.sh $H:/tmp/ &&
+2. **Land the boot-time fsck fix.** `scp tools/devcycle/ds4_fastboot_fix.sh $H:/tmp/ &&
    ssh $H 'sudo /tmp/ds4_fastboot_fix.sh'` — requires passwordless sudo
-   (`/tmp/ds4_fastboot_fix.sh:6`). Verify: every data mount (extnvme/sparkdata/
+   (`tools/devcycle/ds4_fastboot_fix.sh:6`). Verify: every data mount (extnvme/sparkdata/
    kv/nvme/raid, and /home) now has `nofail` + `x-systemd.device-timeout=10s`
-   and `fs_passno=0` in `/etc/fstab` (`/tmp/ds4_fastboot_fix.sh:26-35`);
-   root/boot/var/usr/tmp/var-log untouched (:15). Confirm `systemctl daemon-reload`.
+   and `fs_passno=0` in `/etc/fstab` (`tools/devcycle/ds4_fastboot_fix.sh:26-35`);
+   root/boot/var/usr/tmp/var-log untouched (:15). Confirm `systemctl daemon-reload`. Use the repo copy — the old `/tmp/ds4_fastboot_fix.sh` had a corrupted Python write line (literal newlines) and must not be run.
 2b. **Pre-stage the GRUB one-shot fallback.** `scp tools/devcycle/stage_ds4_fastboot_grub.sh $H:/tmp/ && ssh $H 'sudo /tmp/stage_ds4_fastboot_grub.sh'` — installs a `ds4-fastboot` menuentry (fsck.mode=skip fsck.repair=no) + `update-grub`, then verifies it landed in `/boot/grub/grub.cfg`. Do this on every host once any host is up (Phase 1); until it exists, a wedged host can only be broken by plain power-cycle lottery.
 3. **NVMe mounts.** `ssh $H 'df -h; mount | grep -iE "extnvme|sparkdata|nvme|raid"'`
    — every GLM52 data volume present and rw, and
@@ -176,7 +176,6 @@ ssh "$H" 'df -h; mount | grep -iE "extnvme|sparkdata|nvme|raid"; ip -4 addr; ls 
 ```
 
 Key file references (all read, no edits): `/tmp/ds4_bootwatch.log`,
-`/tmp/ds4_fastboot_fix.sh`,
 `/Users/mac/.local/libexec/ds4-spark-management/spark_ssh_failover.json`,
 `/Users/mac/.local/libexec/ds4-spark-management/ds4_spark_ssh_proxy.py`,
 `~/.ssh/config`, `tools/devcycle/fleet_registry.json`,
