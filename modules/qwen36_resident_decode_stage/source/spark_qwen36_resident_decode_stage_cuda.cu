@@ -1435,7 +1435,7 @@ static __device__ void SparkQwen36RansStageChunk(uint8_t *stage, const uint8_t *
  * library scalar path bit for bit.
  */
 template <uint32_t ROWS>
-static __global__ void SparkQwen36SmallBatchTiledRansKernel(const void *weight_rans, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension, uint64_t payload_bytes)
+static __global__ void __launch_bounds__(1024u, 1u) SparkQwen36SmallBatchTiledRansKernel(const void *weight_rans, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension, uint64_t payload_bytes)
 {
 	extern __shared__ uint8_t rans_shared[];
 	uint32_t *s_sf = (uint32_t *)rans_shared;                    /* 4096 x 4B */
@@ -1444,6 +1444,7 @@ static __global__ void SparkQwen36SmallBatchTiledRansKernel(const void *weight_r
 	__nv_bfloat16 *weight_tile = (__nv_bfloat16 *)(rans_shared + 44576u); /* 3 x 16KB */
 	__nv_bfloat16 *input_tile = weight_tile + 3u * SPARK_QWEN36_SMALL_BATCH_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK;
 	uint32_t *tile_ready = (uint32_t *)(input_tile + SPARK_QWEN36_SMALL_BATCH_MAX_ROWS * SPARK_QWEN36_SMALL_BATCH_K_CHUNK);
+	uint32_t *tile_done = tile_ready + 4u;
 	const uint32_t GROUP_SHIFT = (ROWS == 2u) ? 1u : ((ROWS == 4u) ? 2u : 3u);
 	const uint32_t GROUPS = 32u >> GROUP_SHIFT;
 	const uint32_t PER_GROUP = SPARK_QWEN36_SMALL_BATCH_TILE_N / GROUPS;
@@ -1467,7 +1468,7 @@ static __global__ void SparkQwen36SmallBatchTiledRansKernel(const void *weight_r
 	#pragma unroll
 	for ( p = 0u; p < 32u; p++ )
 		acc[p] = 0.0f;
-	if ( thread < 4u )
+	if ( thread < 8u )
 		tile_ready[thread] = 0u;
 	SparkQwen36RansBuildTable(s_sf, s_c, entries3, ndirect);
 	__syncthreads();
@@ -1482,10 +1483,12 @@ static __global__ void SparkQwen36SmallBatchTiledRansKernel(const void *weight_r
 			const uint32_t ti = base_ti + t;
 			const uint32_t off = offsets[ti];
 			const uint32_t end = (ti + 1u < chunk_count) ? offsets[ti + 1u] : (uint32_t)payload_bytes;
+			while ( *(volatile uint32_t *)&tile_done[t % 3u] < (t / 3u) ) {}
 			SparkQwen36RansStageChunk(stage, payload + off, end - off);
 			SparkQwen36RansDecodeTileHalf(s_sf, s_c, stage, id_table, warp - 28u, weight_tile + (t % 3u) * SPARK_QWEN36_SMALL_BATCH_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK);
 			__threadfence_block();
 			atomicAdd(&tile_ready[t % 3u], 1u);
+			asm volatile("bar.sync 3, 128;");
 		}
 	}
 	else
@@ -1502,8 +1505,8 @@ static __global__ void SparkQwen36SmallBatchTiledRansKernel(const void *weight_r
 			/* wait for the tile ki (the four decode quarters) */
 			if ( warp == 0u )
 			{
-				while ( *(volatile uint32_t *)&tile_ready[ki % 3u] != 4u ) {}
-				tile_ready[ki % 3u] = 0u;
+				const uint32_t need = 4u * ((ki / 3u) + 1u);
+				while ( *(volatile uint32_t *)&tile_ready[ki % 3u] < need ) {}
 			}
 			asm volatile("bar.sync 1, 896;");
 			const __nv_bfloat16 *wt = weight_tile + (ki % 3u) * SPARK_QWEN36_SMALL_BATCH_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK;
@@ -1533,6 +1536,11 @@ static __global__ void SparkQwen36SmallBatchTiledRansKernel(const void *weight_r
 				}
 			}
 			asm volatile("bar.sync 2, 896;");
+			if ( warp == 0u )
+			{
+				__threadfence_block();
+				atomicAdd(&tile_done[ki % 3u], 1u);
+			}
 		}
 	}
 	/* reduction + store (the warps 0..27) */
@@ -1578,20 +1586,24 @@ extern "C" cudaError_t SparkQwen36LaunchSmallBatchLinearRans(cudaStream_t stream
 {
 	uint32_t blocks = (output_dimension + SPARK_QWEN36_SMALL_BATCH_TILE_N - 1u) / SPARK_QWEN36_SMALL_BATCH_TILE_N;
 	size_t shared_bytes = 44576u + (size_t)(3u * SPARK_QWEN36_SMALL_BATCH_TILE_N + SPARK_QWEN36_SMALL_BATCH_MAX_ROWS) * SPARK_QWEN36_SMALL_BATCH_K_CHUNK * sizeof(__nv_bfloat16) + 64u;
-	cudaFuncSetAttribute((const void *)SparkQwen36SmallBatchTiledRansKernel<8u>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared_bytes);
-	cudaFuncSetAttribute((const void *)SparkQwen36SmallBatchTiledRansKernel<4u>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared_bytes);
-	cudaFuncSetAttribute((const void *)SparkQwen36SmallBatchTiledRansKernel<2u>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared_bytes);
+	cudaError_t ea = cudaFuncSetAttribute((const void *)SparkQwen36SmallBatchTiledRansKernel<8u>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared_bytes);
+	if (ea != cudaSuccess) return ea;
+	ea = cudaFuncSetAttribute((const void *)SparkQwen36SmallBatchTiledRansKernel<4u>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared_bytes);
+	if (ea != cudaSuccess) return ea;
+	ea = cudaFuncSetAttribute((const void *)SparkQwen36SmallBatchTiledRansKernel<2u>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared_bytes);
+	if (ea != cudaSuccess) return ea;
 	if ( row_count <= 2u )
 		SparkQwen36SmallBatchTiledRansKernel<2u><<<blocks, 1024u, shared_bytes, stream>>>(weight_rans, input_bf16, output_bf16, row_count, input_dimension, output_dimension, payload_bytes);
 	else if ( row_count <= 4u )
 		SparkQwen36SmallBatchTiledRansKernel<4u><<<blocks, 1024u, shared_bytes, stream>>>(weight_rans, input_bf16, output_bf16, row_count, input_dimension, output_dimension, payload_bytes);
 	else
-	{
 		SparkQwen36SmallBatchTiledRansKernel<8u><<<blocks, 1024u, shared_bytes, stream>>>(weight_rans, input_bf16, output_bf16, row_count, input_dimension, output_dimension, payload_bytes);
+	{
 		cudaError_t e = cudaGetLastError();
 		if (e != cudaSuccess) fprintf(stderr, "rans_launch rows=%u blocks=%u shared=%zu err=%s\n", row_count, blocks, shared_bytes, cudaGetErrorString(e));
-		return(e);
+		return e;
 	}
+	return cudaSuccess;
 }
 
 
