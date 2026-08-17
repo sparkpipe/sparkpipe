@@ -2594,6 +2594,19 @@ static SparkStatus SparkDsv4ModuleExpandDsparkVerify(
 	{
 		slot->dspark_verify_rows = rows;
 		slot->dspark_verify_accept = 1u;
+		{
+			uint32_t engine_token = 0u;
+			cudaError_t probe_error = cudaMemcpyAsync(&engine_token,
+				frame->buffers[0].address,sizeof(uint32_t),
+				cudaMemcpyDeviceToHost,stream);
+			if ( probe_error == cudaSuccess )
+				probe_error = cudaStreamSynchronize(stream);
+			if ( probe_error == cudaSuccess )
+				fprintf(stderr,"dspark_expand tp_rank=%u engine_tok=%u anchor_pos=%llu row0_tok=%u row0_pos=%llu row1_tok=%u row1_pos=%llu\n",
+					state->tp_rank,engine_token,(unsigned long long)anchor_position,
+					slot->host_input_token_ids[0],(unsigned long long)slot->host_row_positions[0],
+					slot->host_input_token_ids[1],(unsigned long long)slot->host_row_positions[1]);
+		}
 	}
 	return(status);
 }
