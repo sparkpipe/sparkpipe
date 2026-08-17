@@ -62,7 +62,8 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
 
 SPARKPIPE_GLM52_SOURCES := \
 	model-families/glm52/src/spark_glm52_chat_template.c \
-	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c
+	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c \
+	src/spark_speculation_policy.c
 
 SPARKPIPE_QWEN36_SOURCES := \
     model-families/qwen36/src/spark_qwen36_work_control.c

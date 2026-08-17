@@ -219,6 +219,7 @@ TEST_NAMES := \
     test_dsv4_cache_plan \
 	test_dsv4_parallel_shape \
     test_dspark_drafter_pin \
+    test_speculation_policy_pin \
     test_speculation_tree_pin \
     test_glm52_dspark \
     test_glm52_mtp_tree \
@@ -450,8 +451,10 @@ build:
 build/test_modules:
 	mkdir -p build/test_modules
 
+build/obj/src/spark_speculation_policy.o: SPARK_SPECULATION_TARGET_FLAGS = -DSPARK_DSPARK_TARGET_GLM52=1
+
 build/obj/%.o: %.c | build
-	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
+	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(SPARK_SPECULATION_TARGET_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
 $(CORE_LIBRARY): $(CORE_OBJECTS)
 	$(AR) rcs $@ $^
@@ -844,8 +847,11 @@ build/test_dspark_drafter_pin: tests/test_dspark_drafter_pin.c $(COMMON_LIBRARY)
 build/test_speculation_tree_pin: tests/test_speculation_tree_pin.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_dspark: tests/test_glm52_dspark.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_glm52_dspark: tests/test_glm52_dspark.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_policy_pin: tests/test_speculation_policy_pin.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_tokenizer: tests/test_tokenizer.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

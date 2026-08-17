@@ -183,7 +183,12 @@ from pathlib import Path
 # include/sparkpipe/spark_speculation_tree.h (GLM52 shape stays in the
 # family header with aliases) and adds its pinning test; 165905 is the
 # exact count after it lands. Ceiling moves with it.
-CEILING = 165905
+# The dispatch-policy extraction moves the 767-line neutral core into
+# include/sparkpipe/spark_speculation_policy.h + src/spark_speculation_policy.c
+# (GLM52 module shrinks to the 80 tap-plan lines; aliases keep consumers
+# untouched) and adds its pinning test; 165975 is the exact count after it
+# lands. Ceiling moves with it.
+CEILING = 165975
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
