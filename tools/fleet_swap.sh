@@ -48,7 +48,7 @@ stop_model() {
     local model="$1"
     echo "fleet_swap: stopping $model"
     registry_hosts "$model" | while read -r host; do
-        ssh -o BatchMode=yes "$host"             "pkill -f '^bin/sparkpipe_model_residentd' 2>/dev/null || true"             || die "stop on $host failed"
+        ssh -o BatchMode=yes "$host"             "sudo systemctl stop sparkpipe_model_residentd 2>/dev/null || true"             || die "stop on $host failed"
     done
     sleep 2
 }
@@ -61,11 +61,13 @@ start_model() {
         ssh -o BatchMode=yes "$host" "
             test -x '$runtime/bin/sparkpipe_model_residentd' \
                 || { echo "missing residentd for $model on $host: $runtime" >&2; exit 1; }
-            cd '$runtime' &&
-            export LD_LIBRARY_PATH='$runtime/lib':${LD_LIBRARY_PATH:-}
-            setsid -f bin/sparkpipe_model_residentd \
-                --deployment config/model_resident.json --rank-index $rank \
-                >/tmp/fleet-swap-$model-$host.log 2>&1 </dev/null
+            sudo mkdir -p /etc/sparkpipe /etc/systemd/system/sparkpipe_model_residentd.service.d
+            printf 'RUNTIME_ROOT=%s\nRANK_INDEX=%s\nMODEL=%s\nHOST=%s\n' '$runtime' '$rank' '$model' '$host' \
+                | sudo tee /etc/sparkpipe/residentd.env >/dev/null
+            printf '[Service]\nUser=%s\n' \"\$(whoami)\" \
+                | sudo tee /etc/systemd/system/sparkpipe_model_residentd.service.d/10-user.conf >/dev/null
+            sudo systemctl daemon-reload
+            sudo systemctl start sparkpipe_model_residentd
         " || die "start $model on $host failed"
         rank=$((rank + 1))
     done
@@ -97,7 +99,7 @@ cmd_swap() {
               running:{prev:(.current_big//"none"),prev_state:.running}}'             > /tmp/fleet-new-state.json
         # evict all residentds on every host
         for host in "${ALL_HOSTS[@]}"; do
-            ssh -o BatchMode=yes "$host"                 "pkill -f '^bin/sparkpipe_model_residentd' 2>/dev/null || true"                 || die "fleet evict on $host failed"
+            ssh -o BatchMode=yes "$host"                 "sudo systemctl stop sparkpipe_model_residentd 2>/dev/null || true"                 || die "fleet evict on $host failed"
         done
         sleep 2
         start_model "$model"

@@ -1,0 +1,44 @@
+# SparkPipe model residentd - one rank per host, launched by tools/fleet_swap.sh.
+#
+# Replaces the previous 'setsid -f bin/sparkpipe_model_residentd ...' launch so the
+# OOM guardrails below actually apply: a cgroup OOM kills the residentd at the cap
+# instead of letting swap-thrash freeze the box (freeze -> hard power-cycle ->
+# dirty root -> boot wedge). MemorySwapMax=0 is REQUIRED: MemoryMax alone lets the
+# 64GB swap absorb the overflow, and a swap allowance would push the kill past the
+# user's 108G budget (both proven live-fire on spark2, 2026-08-17).
+#
+# Per-model/per-host values are injected by fleet_swap.sh via
+# /etc/sparkpipe/residentd.env before 'systemctl start':
+#   RUNTIME_ROOT   model runtime root (working directory + binary path)
+#   RANK_INDEX     this host's rank (0..N-1)
+#   MODEL          registry model id
+#   HOST           spark host id
+# fleet_swap.sh also writes /etc/systemd/system/sparkpipe_model_residentd.service.d/
+# 10-user.conf with User=<login user> so residentd runs as the same account the
+# ssh launch used (sparkdata file ownership parity), not root.
+#
+# NOTE: no WatchdogSec= - the residentd binary does not sd_notify, and a watchdog
+# on a non-notifying service kills it every interval.
+[Unit]
+Description=SparkPipe model residentd (managed by tools/fleet_swap.sh)
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/sparkpipe/residentd.env
+Environment=LD_LIBRARY_PATH=${RUNTIME_ROOT}/lib
+ExecStart=/bin/sh -c 'cd ${RUNTIME_ROOT} && exec ${RUNTIME_ROOT}/bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index ${RANK_INDEX}'
+StandardOutput=append:/tmp/fleet-swap-residentd.log
+StandardError=append:/tmp/fleet-swap-residentd.log
+StandardInput=null
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=60
+StartLimitBurst=3
+MemoryHigh=100G
+MemoryMax=108G
+MemorySwapMax=0
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

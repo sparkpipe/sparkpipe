@@ -216,7 +216,9 @@ from pathlib import Path
 # arena's key_device_base) are still the kernel's view, so the raw-init deletion
 # arrives with the page_table data-flow follow-up, not here. 165735 is the exact
 # count.
-CEILING = 165735
+# fleet_swap.sh converts the residentd launch from setsid to systemctl (+2)
+# so the OOM guardrail cgroup actually applies; 165737 is the exact count.
+CEILING = 165737
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
