@@ -16,6 +16,10 @@
 #define SPARK_DSV4_PRO_DSPARK_TARGET_LAYER_COUNT 3u
 #define SPARK_DSV4_PRO_DSPARK_MARKOV_RANK 512u
 #define SPARK_DSV4_PRO_DSPARK_NOISE_TOKEN_ID 128799u
+/* Spec step: the anchor's speculative chain is SPEC_STEP drafts + the
+ * anchor itself, so the batched verify island is SPEC_STEP+1 = 8 rows.
+ * Matches the Flash GA geometry (block 5, spec 7). */
+#define SPARK_DSV4_PRO_DSPARK_SPEC_STEP 7u
 #define SPARK_DSV4_PRO_VOCAB_COUNT 129280u
 #define SPARK_DSV4_PRO_QUERY_LORA_RANK 1536u
 #define SPARK_DSV4_PRO_OUTPUT_LORA_RANK 1024u
