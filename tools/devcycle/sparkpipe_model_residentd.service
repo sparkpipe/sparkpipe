@@ -28,7 +28,8 @@ StartLimitBurst=3
 [Service]
 Type=simple
 EnvironmentFile=/etc/sparkpipe/residentd.env
-Environment=LD_LIBRARY_PATH=${RUNTIME_ROOT}/lib
+# LD_LIBRARY_PATH is written into residentd.env by fleet_swap.sh (systemd does
+# not reliably expand EnvironmentFile vars inside Environment= lines).
 ExecStart=/bin/sh -c 'cd ${RUNTIME_ROOT} && exec ${RUNTIME_ROOT}/bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index ${RANK_INDEX}'
 StandardOutput=append:/tmp/fleet-swap-residentd.log
 StandardError=append:/tmp/fleet-swap-residentd.log
