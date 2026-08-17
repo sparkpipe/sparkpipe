@@ -2608,6 +2608,36 @@ static SparkStatus SparkDsv4ModuleExpandDsparkVerify(
 					slot->host_input_token_ids[0],(unsigned long long)slot->host_row_positions[0],
 					slot->host_input_token_ids[1],(unsigned long long)slot->host_row_positions[1]);
 		}
+		/* DEBUG: device-side staging probe - what the islands will read. */
+		{
+			uint32_t dev_tokens[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u];
+			uint64_t dev_positions[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u];
+			uint32_t dev_lanes[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u];
+			uint32_t dev_pages[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u];
+			cudaError_t probe_error = cudaMemcpyAsync(dev_tokens,
+				slot->input_token_ids,(uint64_t)rows * sizeof(uint32_t),
+				cudaMemcpyDeviceToHost,stream);
+			if ( probe_error == cudaSuccess )
+				probe_error = cudaMemcpyAsync(dev_positions,
+					slot->row_positions,(uint64_t)rows * sizeof(uint64_t),
+					cudaMemcpyDeviceToHost,stream);
+			if ( probe_error == cudaSuccess )
+				probe_error = cudaMemcpyAsync(dev_lanes,
+					slot->row_lane_indices,(uint64_t)rows * sizeof(uint32_t),
+					cudaMemcpyDeviceToHost,stream);
+			if ( probe_error == cudaSuccess )
+				probe_error = cudaMemcpyAsync(dev_pages,
+					slot->row_page_table_indices,(uint64_t)rows * sizeof(uint32_t),
+					cudaMemcpyDeviceToHost,stream);
+			if ( probe_error == cudaSuccess )
+				probe_error = cudaStreamSynchronize(stream);
+			if ( probe_error == cudaSuccess )
+				fprintf(stderr,"dspark_devstage tp_rank=%u tok=%u,%u,%u,%u,%u,%u,%u,%u pos=%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu lanes=%u,%u,%u,%u,%u,%u,%u,%u pages=%u,%u,%u,%u,%u,%u,%u,%u\n",
+					state->tp_rank,dev_tokens[0],dev_tokens[1],dev_tokens[2],dev_tokens[3],dev_tokens[4],dev_tokens[5],dev_tokens[6],dev_tokens[7],
+					(unsigned long long)dev_positions[0],(unsigned long long)dev_positions[1],(unsigned long long)dev_positions[2],(unsigned long long)dev_positions[3],(unsigned long long)dev_positions[4],(unsigned long long)dev_positions[5],(unsigned long long)dev_positions[6],(unsigned long long)dev_positions[7],
+					dev_lanes[0],dev_lanes[1],dev_lanes[2],dev_lanes[3],dev_lanes[4],dev_lanes[5],dev_lanes[6],dev_lanes[7],
+					dev_pages[0],dev_pages[1],dev_pages[2],dev_pages[3],dev_pages[4],dev_pages[5],dev_pages[6],dev_pages[7]);
+		}
 	}
 	return(status);
 }
