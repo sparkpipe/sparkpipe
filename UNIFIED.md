@@ -71,3 +71,12 @@
   Same fix proposed to main as PR #671 (CLEAN). Refreshed the two stale
   DSV4 host tests to the current packer contract (3 packed draft layers,
   format version 4).
+- Integrated the six-session wave by merging the active session PRs
+  directly (K3 TP4 layer-0, DSV4 DSpark speculative loop, DSV4 Pro GA 0813
+  migration, Qwen 3.8 Max phase 2, Qwen TP4 phase 2, DSpark design docs;
+  rejected/record-only candidates excluded), then reconciled the generated
+  DSV4 contracts to the GA 0813 checkpoint (3 packed draft layers, KV
+  codec selectability, consistent -0813 identity), aligned the K3 and
+  DSV4 host tests with checkpoint reality, bucket-guarded the DSpark
+  speculation cluster for the gate's bucket-1024 archive build, and
+  re-proved the whole tree through the tracking CI (green, 4m40s).
