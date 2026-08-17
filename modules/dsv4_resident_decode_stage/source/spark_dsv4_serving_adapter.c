@@ -279,7 +279,7 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_DSV4_SERVING_TOPOLOGY_FLAG | SPARK_DSV4_SERVING_EXTRA_CAPABILITY | (SPARK_DSV4_SERVING_TOPOLOGY_FLAG == 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT : 0u) | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | SPARK_DSV4_SERVING_CHAIN_CAPABILITY,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_DSV4_SERVING_TOPOLOGY_FLAG | SPARK_DSV4_SERVING_EXTRA_CAPABILITY | (SPARK_DSV4_SERVING_TOPOLOGY_FLAG == 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT : 0u) | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | SPARK_DSV4_SERVING_CHAIN_CAPABILITY,
 	.stage_count = SPARK_DSV4_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_DSV4_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -293,7 +293,7 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 	.max_input_row_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
 	.max_resident_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_DSV4_SERVING_OUTPUT_TOKEN_CAPACITY,
-	.max_speculative_token_count = 0u,
+	.max_speculative_token_count = SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE,
 	.adapter_id = SPARK_DSV4_SERVING_ADAPTER_ID,
 	.model_id = SPARK_DSV4_SERVING_MODEL_ID,
@@ -844,8 +844,14 @@ static void SparkDsv4ServingDriverCompletion(
 	if ( matches != 0u )
 		completion.residency = driver_completion->residency;
 	completion.accepted_token_count = driver_completion->accepted_token_count;
-	if ( matches != 0u && driver_completion->tokens_per_sequence !=
-		pending->tokens_per_sequence )
+	/* DSpark verify frames emit 1..tokens_per_sequence tokens depending on
+	 * acceptance; the module's completion carries the actual count. Release
+	 * frames carry no tokens at all, so the zero bound applies only to the
+	 * token-bearing work kinds. */
+	if ( matches != 0u && pending->work_kind !=
+		SPARK_MODEL_SERVING_WORK_KIND_RELEASE &&
+		(driver_completion->tokens_per_sequence == 0u ||
+		 driver_completion->tokens_per_sequence > pending->tokens_per_sequence) )
 		completion.status = SPARK_STATUS_SCHEMA_ERROR;
 	completion.queue_delay_ns = driver_completion->queue_delay_ns;
 	completion.service_time_ns = driver_completion->service_time_ns;
@@ -859,9 +865,9 @@ static void SparkDsv4ServingDriverCompletion(
 		pending->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE &&
 		completion.status == SPARK_STATUS_OK )
 	{
-		completion.tokens_per_sequence = pending->tokens_per_sequence;
+		completion.tokens_per_sequence = driver_completion->tokens_per_sequence;
 		completion.token_count = pending->active_sequence_count *
-			pending->tokens_per_sequence;
+			completion.tokens_per_sequence;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 		if ( pending->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 			for (index=0u; index<pending->active_sequence_count; index++)

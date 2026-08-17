@@ -763,9 +763,16 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 	next_sequence_position = lane->context_token_count;
 	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 	{
+		/* The lease must land on the position the engine actually advanced
+		 * to: the completion's token count, not the submission's chain
+		 * width (DSpark bursts emit fewer tokens than the speculative
+		 * chain on rejection). */
+		uint32_t completed_tokens = route->completion.tokens_per_sequence;
+		if ( completed_tokens == 0u )
+			completed_tokens = route->submission.tokens_per_sequence;
 		status = SparkModelContinuationLeaseDecodePosition(
 			lane->context_token_count,
-			route->submission.tokens_per_sequence,&next_sequence_position);
+			completed_tokens,&next_sequence_position);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
@@ -2699,7 +2706,7 @@ int main(int argument_count,char **arguments)
 		if ( configuration.socket_path != 0 )
 			printf("model_residentd ready rank=%u stage=%u inflight=%u active=%u rows=%u resident=%u adapter=%s model=%s revision=%s unix=%s\n",runtime.rank_plan.rank_index,runtime.rank_plan.stage_index,runtime.runtime_limits.max_inflight_submission_count,runtime.runtime_limits.max_active_sequence_count,runtime.runtime_limits.max_input_row_count,runtime.runtime_limits.resident_sequence_capacity,runtime.adapter_library.adapter_interface.descriptor->adapter_id,runtime.adapter_library.adapter_interface.descriptor->model_id,runtime.adapter_library.adapter_interface.descriptor->model_revision,configuration.socket_path);
 		else
-			printf("model_residentd ready rank=%u stage=%u inflight=%u active=%u rows=%u resident=%u adapter=%s model=%s revision=%s tcp=%s:%u\n",runtime.rank_plan.rank_index,runtime.rank_plan.stage_index,runtime.runtime_limits.max_inflight_submission_count,runtime.runtime_limits.max_active_sequence_count,runtime.runtime_limits.max_input_row_count,runtime.runtime_limits.resident_sequence_capacity,runtime.adapter_library.adapter_interface.descriptor->adapter_id,runtime.adapter_library.adapter_interface.descriptor->model_id,runtime.adapter_library.adapter_interface.descriptor->model_revision,configuration.listen_address,configuration.listen_port);
+			printf("model_residentd ready rank=%u stage=%u inflight=%u active=%u rows=%u resident=%u caps=%llx adapter=%s model=%s revision=%s tcp=%s:%u\n",runtime.rank_plan.rank_index,runtime.rank_plan.stage_index,runtime.runtime_limits.max_inflight_submission_count,runtime.runtime_limits.max_active_sequence_count,runtime.runtime_limits.max_input_row_count,runtime.runtime_limits.resident_sequence_capacity,(unsigned long long)runtime.adapter_library.adapter_interface.descriptor->capability_flags,runtime.adapter_library.adapter_interface.descriptor->adapter_id,runtime.adapter_library.adapter_interface.descriptor->model_id,runtime.adapter_library.adapter_interface.descriptor->model_revision,configuration.listen_address,configuration.listen_port);
 		fflush(stdout);
 		status = SparkModelResidentdRun(&runtime);
 		if ( status != SPARK_STATUS_OK )
