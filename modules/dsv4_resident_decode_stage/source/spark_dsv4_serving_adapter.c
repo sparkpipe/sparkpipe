@@ -854,10 +854,16 @@ static void SparkDsv4ServingDriverCompletion(
 	if ( matches != 0u )
 		completion.residency = driver_completion->residency;
 	completion.accepted_token_count = driver_completion->accepted_token_count;
-	/* DSpark verify frames emit 1..tokens_per_sequence tokens depending on
-	 * acceptance; the module's completion carries the actual count. */
-	if ( matches != 0u && (driver_completion->tokens_per_sequence == 0u ||
-		driver_completion->tokens_per_sequence > pending->tokens_per_sequence +
+	/* DSpark verify (DECODE) frames emit 1..tokens_per_sequence tokens
+	 * depending on acceptance; the module's completion carries the actual
+	 * count. PREFILL/RELEASE completions carry tokens_per_sequence == 0u by
+	 * contract and must NOT be fenced by this gate (a RELEASE would otherwise
+	 * be rejected as SCHEMA_ERROR). */
+	if ( matches != 0u &&
+		pending->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE &&
+		(driver_completion->tokens_per_sequence == 0u ||
+		 driver_completion->tokens_per_sequence >
+			pending->tokens_per_sequence +
 			SparkDsv4ServingDescriptor.max_speculative_token_count) )
 		completion.status = SPARK_STATUS_SCHEMA_ERROR;
 	completion.queue_delay_ns = driver_completion->queue_delay_ns;

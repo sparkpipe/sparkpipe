@@ -308,7 +308,11 @@ from pathlib import Path
 # the non-linear SiTU - the production diagonal layout applied SiTU to
 # rank-sliced partials (sum(SiTU(p)) != SiTU(sum(p))). 166565 is the exact
 # count.
-CEILING = 166565
+# dsv4-flash spec-verify fixes land (+11): the lane advance drops the
+# double-counted anchor (folded by the 1-row frame continuity), and the
+# completion schema gate applies to DECODE only (RELEASE carries
+# tokens_per_sequence == 0 by contract). 166576 is the exact count.
+CEILING = 166576
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

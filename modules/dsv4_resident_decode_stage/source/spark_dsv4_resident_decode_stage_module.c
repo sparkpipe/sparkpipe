@@ -3590,11 +3590,16 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 			async->completion.tokens_per_sequence = 1u + accepted;
 			async->tokens_per_sequence = 1u + accepted;
 			async->emitted_token_count = 1u + accepted;
-			/* A spec verify step ALWAYS commits at least the anchor/bonus
-			 * token, so the lane advances by 1 + accepted (never 0), matching
-			 * the completion's tokens_per_sequence = 1 + accepted. */
-			async->lane_next_positions[0] += 1u + accepted;
-			async->cache_lanes[0].context_token_count += 1u + accepted;
+			/* The completion emits 1 + accepted tokens. The anchor (the
+			 * "1") was ALREADY folded into lane_next_positions and the
+			 * cache lane's context_token_count by the 1-row submission's
+			 * frame-continuity advance, so only the accepted bonus drafts
+			 * advance them further here. Advancing by 1 + accepted again
+			 * double-counts the anchor and leaves the residentd's KV page
+			 * prepare BUSY forever on the next step (next_token_position
+			 * lands one past the next submission's sequence_position). */
+			async->lane_next_positions[0] += accepted;
+			async->cache_lanes[0].context_token_count += accepted;
 		}
 		if ( lane_index < state->resident_sequence_capacity )
 		{
