@@ -1,5 +1,5 @@
 {
-  "file_count": 16766,
+  "file_count": 16769,
   "files": [
     {
       "path": ".agents/AGENT_CHARTER.md",
@@ -13,8 +13,8 @@
     },
     {
       "path": ".agents/ROSTER.md",
-      "sha256": "d3db51ac54d334f4b66808f9f4c88aa99b057fbc7778d2bb6ab5329a10c230e0",
-      "size_bytes": 1411
+      "sha256": "2ede7309f82a86e76b175746ca107e7762c52c63a0f875467a92e253c64f45a3",
+      "size_bytes": 1433
     },
     {
       "path": ".agents/cuda-kernels/.gitattributes",
@@ -68,8 +68,8 @@
     },
     {
       "path": ".agents/cuda-kernels/PACKAGE_MANIFEST.json",
-      "sha256": "860b63f4de4fb82f13896a2d3887488543cfe6c1a38fb640b45fbbeeda455567",
-      "size_bytes": 3536188
+      "sha256": "b240d1756a512593df81c097b1a45cf6b409208cb9854ef686a7aeb254626d65",
+      "size_bytes": 3539552
     },
     {
       "path": ".agents/cuda-kernels/PERFORMANCE_STATUS.md",
@@ -83,8 +83,8 @@
     },
     {
       "path": ".agents/cuda-kernels/SHA256SUMS",
-      "sha256": "bf744c1717104a93568ee5f08120e8b18b1b9f6d1e5462e3d6f2bc09615ff16b",
-      "size_bytes": 2309736
+      "sha256": "045b8b7c8ae58fa2518a08b884c2f456009931b0e4f11f81166965894a14d213",
+      "size_bytes": 2311765
     },
     {
       "path": ".agents/cuda-kernels/SPEC.md",
@@ -262,6 +262,11 @@
       "size_bytes": 33238
     },
     {
+      "path": ".agents/cuda-kernels/docs/KVCACHE_SUBSYSTEM_BOUNDARY.md",
+      "sha256": "e6efda1ba90103a1b17559e21448764c6cca93ab11ad3c9330f2b2cbbcc117a0",
+      "size_bytes": 26309
+    },
+    {
       "path": ".agents/cuda-kernels/docs/MODEL_SUPPORT.md",
       "sha256": "3e95eb5d2e2faac4996e3e8e50f8eeb4837c2fb21a4155fd9aeee1735b5fc5f7",
       "size_bytes": 3053
@@ -335,6 +340,11 @@
       "path": ".agents/cuda-kernels/docs/README.md",
       "sha256": "1758c7309b68e398ff87fb0ef36501166883850949bc86a662f7647299c29a94",
       "size_bytes": 1969
+    },
+    {
+      "path": ".agents/cuda-kernels/docs/SCHEDULER_SUBSYSTEM_BOUNDARY.md",
+      "sha256": "9d882f3636cdfdd60785f5c22be9c0de2ace159d9966d9fe5b9dab42a2c44d58",
+      "size_bytes": 25401
     },
     {
       "path": ".agents/cuda-kernels/docs/SPARK_HOST_RDMA_DOORBELL.md",
@@ -77727,6 +77737,11 @@
       "size_bytes": 5723
     },
     {
+      "path": "docs/PROPOSAL_ADMISSION_CORE.md",
+      "sha256": "21c2a939c2a01754640cc77a3301dd7900d8b4578f24f9f4f40509eb218067b9",
+      "size_bytes": 28014
+    },
+    {
       "path": "docs/QWEN36_TP4_PERF.md",
       "sha256": "65b225b398266d47c4d13bb523d2a4201ef049ba05a991a7e33e8a9b1e3252f3",
       "size_bytes": 3629
@@ -83835,5 +83850,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 336643314
+  "total_bytes": 336728453
 }
