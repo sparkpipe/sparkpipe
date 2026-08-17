@@ -106,3 +106,21 @@ shape pinned in the family header). Steps 3-5 remain.
   hot paths before the hardware receipts agree.
 - MTP as an algorithm stays distinct from DSpark only at the draft-source
   policy; everything downstream of the draft is already the same verifier.
+
+## HELLO-gate handshake rejection (b8 residentd, 2026-08-17)
+
+**One-field root cause: `artifact_sha256` (the contract-sha).** The b8 residentd
+rejects the batch's HELLO in `SparkModelResidentIpcValidateHello`
+(`runtime/model_resident_ipc.c:135`), the only hello-path check that compares a
+bucket-derived value. The descriptor's `artifact_sha256` is
+`SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256`, bucket-derived at
+`spark_dsv4_serving_adapter.c:141-143` (`SPARK_BATCH_BUCKET==8u` ->
+`SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B8`), and the B8 constant
+(`fbd61a28...b056`, `spark_dsv4_model.h:95`) is byte-exact against the b8
+firmware JSON (verified by shasum). So the mismatch is a **stale adapter .so**
+(built for a different bucket) whose HELLO `artifact_sha256` differs from the
+b8 descriptor's -- the exact failure `tools/devcycle.sh:334-339` documents
+("a stale adapter .so from the seeded control runtime rejects the candidate").
+Fix: rebuild `model_serving_adapter.so` for `SPARK_BATCH_BUCKET=8` and ship it
+with the driver. The shared handshake code is correct, so the unit gates stay
+green.
