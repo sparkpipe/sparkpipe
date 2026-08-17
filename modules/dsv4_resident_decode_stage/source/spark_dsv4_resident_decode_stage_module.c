@@ -205,6 +205,7 @@ struct SparkDsv4ModuleSlot
 	uint32_t dspark_verify_accept;
 	uint32_t dspark_host_draft_tokens[SPARK_DSV4_MODEL_DSPARK_SPEC_STEP];
 	uint32_t *dspark_draft_token_ids;
+	uint64_t *dspark_maxloc_u64;
 	uint32_t *dspark_verify_token_ids;
 	uint32_t *dspark_input_token_ids;
 	uint64_t *dspark_row_positions;
@@ -1899,6 +1900,8 @@ static SparkStatus SparkDsv4ModuleAllocateDspark(SparkDsv4ModuleState *state, Sp
 	uint64_t block = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION,vocab = SPARK_DSV4_MODEL_VOCAB_COUNT,qdim = SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,bf16 = SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 	SparkStatus status;
 	status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_draft_token_ids);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint64_t),(void **)&slot->dspark_maxloc_u64);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_verify_token_ids);
 	if ( status == SPARK_STATUS_OK )
@@ -4591,7 +4594,6 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 		 * rank's chain input and verify staging see the same global
 		 * draft token. Stream-ordered: pack -> allreduce -> unpack, then
 		 * the existing D2H picks up the reduced token. */
-		/* DEBUG markov-reduce-off probe */ if (0u) { /*
 		if ( error == cudaSuccess && state->tp_degree > 1u &&
 			state->tp_device_collective_initialized != 0u )
 		{
@@ -4601,7 +4603,7 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 			error = SparkDsv4LaunchHeadMaxlocPack(stream,
 				slot->dspark_scores_f32 + index,
 				slot->dspark_draft_token_ids + index,
-				slot->head_maxloc_u64 + index,1u);
+				slot->dspark_maxloc_u64 + index,1u);
 			if ( error == cudaSuccess )
 			{
 				ordinal = atomic_fetch_add_explicit(
@@ -4614,8 +4616,8 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 				submission.flags =
 					SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 				submission.ordinal = ordinal;
-				submission.local_device = slot->head_maxloc_u64 + index;
-				submission.full_device = slot->head_maxloc_u64 + index;
+				submission.local_device = slot->dspark_maxloc_u64 + index;
+				submission.full_device = slot->dspark_maxloc_u64 + index;
 				submission.cuda_stream = stream;
 				submission.completion_function =
 					SparkDsv4ModuleDsparkDraftCollectiveComplete;
@@ -4631,11 +4633,10 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 					return(reduce_status);
 				}
 				error = SparkDsv4LaunchHeadMaxlocUnpack(stream,
-					slot->head_maxloc_u64 + index,
+					slot->dspark_maxloc_u64 + index,
 					slot->dspark_draft_token_ids + index,1u);
 			}
 		}
-		*/ }
 		if ( error == cudaSuccess )
 			error = cudaMemcpyAsync(&prev_token,
 				slot->dspark_draft_token_ids + index,sizeof(uint32_t),
