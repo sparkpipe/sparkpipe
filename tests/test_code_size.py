@@ -239,7 +239,11 @@ from pathlib import Path
 # TP4 unchanged / 1 TP1 single-rank / 0 legacy PP), and adapter_id, stage_count,
 # and stage_layer_counts derive from it so a TP1 adapter compiles from the same
 # source with zero TP4 behavior change. 165851 is the exact count.
-CEILING = 165851
+# The serial-TP replay harness lands (tests/serial_tp_replay.{h,c} + pinning
+# test + design doc): host collective emulation for iterative single-spark
+# correctness runs while the fleet is down. Harness body is in tests/ (excluded);
+# only the Makefile wiring (+4) counts. 165855 is the exact count.
+CEILING = 165855
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
