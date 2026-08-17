@@ -1,5 +1,5 @@
 {
-  "file_count": 2666,
+  "file_count": 2667,
   "files": [
     {
       "path": ".agents/MODEL_AGENT_BRIEF.md",
@@ -195,6 +195,11 @@
       "path": ".agents/glm52/docs/GLM52_B12X_RESIDENT_MOE_PACK.md",
       "sha256": "846480b6cbf2616fa71bdb68a45fdfc52d64f0722d03588c2f0e1b3ac66c649c",
       "size_bytes": 5037
+    },
+    {
+      "path": ".agents/glm52/docs/GLM52_DISPATCH_POLICY_SPLIT.md",
+      "sha256": "08da6ad4e0ab548afb10f8c01a90207011dec5268b21e3128e5e818ef96a5168",
+      "size_bytes": 15771
     },
     {
       "path": ".agents/glm52/docs/GLM52_SM121_REQUIRED_CUDA_MODULE.md",
@@ -9013,8 +9018,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_dspark_drafter.h",
-      "sha256": "d51a78fd290d869ebc03119976e40991970fd0ec642364a0226b61939a6d53c8",
-      "size_bytes": 7103
+      "sha256": "6ad4e65bbf0c79c21055d3de49489f1317b7d4ba5e0ad75f0615776c9ee57fca",
+      "size_bytes": 7259
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_lm_kernels.cuh",
@@ -9088,8 +9093,8 @@
     },
     {
       "path": "model-families/glm52/include/sparkpipe/spark_glm52_model.h",
-      "sha256": "ba71cdfb187b33972671ed490aec467f924abe2bd28219611d39cfbdfef0a4aa",
-      "size_bytes": 5693
+      "sha256": "1a4837df30970e4ecf3e730fa0b72a2b2e45bce823ab4a013831278d87099b19",
+      "size_bytes": 5802
     },
     {
       "path": "model-families/glm52/include/sparkpipe/spark_glm52_mtp_tree.h",
@@ -9343,8 +9348,8 @@
     },
     {
       "path": "modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c",
-      "sha256": "2e9c38d11b0607e9f96de05121c2378e3cd5ee2f961c18f019d0b9a40ed5c027",
-      "size_bytes": 29501
+      "sha256": "28afccb39489eba83ecdfdf3fa6415290cb434eb87e034fbe03d5a9c565d6a88",
+      "size_bytes": 29616
     },
     {
       "path": "modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_draft_backend.cu",
@@ -11723,8 +11728,8 @@
     },
     {
       "path": "tests/test_dspark_drafter_pin.c",
-      "sha256": "6fb4fd161c358339c90547fad05af0607a23a842ffceb366abf29bd5ba00f048",
-      "size_bytes": 1693
+      "sha256": "bff32fae6d78cdc676d5bb420da1f73d332b60c51165d0f7789624f4a59e02d8",
+      "size_bytes": 1873
     },
     {
       "path": "tests/test_dsv4_cache_plan.c",
@@ -13335,5 +13340,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 49466008
+  "total_bytes": 49482339
 }

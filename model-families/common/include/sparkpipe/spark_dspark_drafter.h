@@ -90,6 +90,9 @@
 
 /* Shape-independent constants (one drafter ABI). */
 #define SPARK_DSPARK_ABI_VERSION 3u
+/* Request priority at or above this value selects the realtime confidence
+ * floor. */
+#define SPARK_DSPARK_POLICY_REALTIME_PRIORITY_THRESHOLD 4000000000u
 #define SPARK_DSPARK_CONFIDENCE_MILLI_ONE 1000u
 #define SPARK_DSPARK_DEFAULT_MIN_CONFIDENCE_MILLI 350u
 #define SPARK_DSPARK_DEFAULT_REALTIME_MIN_CONFIDENCE_MILLI 250u

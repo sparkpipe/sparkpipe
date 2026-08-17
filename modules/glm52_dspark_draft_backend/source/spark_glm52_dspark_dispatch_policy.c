@@ -295,8 +295,8 @@ SparkStatus SparkGlm52DsparkBuildDefaultHiddenTapPlan(
     tap_plan->descriptor_bytes = SPARK_DSPARK_HIDDEN_TAP_PLAN_DESCRIPTOR_BYTES;
     tap_plan->aux_layer_count = SPARK_DSPARK_AUX_LAYER_COUNT;
     tap_plan->hidden_dimension = SPARK_DSPARK_HIDDEN_DIMENSION;
-    tap_plan->pp_stage_count = 13u;
-    tap_plan->pp_stage_layer_count = 6u;
+    tap_plan->pp_stage_count = SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT;
+    tap_plan->pp_stage_layer_count = SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNT;
 
     for (tap_index = 0u;
          tap_index < SPARK_DSPARK_AUX_LAYER_COUNT;
@@ -517,7 +517,7 @@ static uint32_t SparkGlm52DsparkConfidenceThresholdForRequest(
     const SparkGlm52DsparkSpeculator *speculator,
     const SparkGlm52DsparkDraftRequest *request)
 {
-    if (request->priority >= 4000000000u)
+    if (request->priority >= SPARK_DSPARK_POLICY_REALTIME_PRIORITY_THRESHOLD)
     {
         return speculator->realtime_minimum_confidence_milli;
     }
