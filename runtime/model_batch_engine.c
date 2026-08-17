@@ -993,12 +993,13 @@ static SparkStatus SparkModelBatchConnectPipeline(
 	SparkModelBatchEngine *engine)
 {
 	SparkModelPipelineClientConfiguration pipeline_configuration;
+	const SparkModelResidentDeploymentNode *coordinator = SparkModelResidentDeploymentFindRank(configuration->deployment,configuration->deployment->coordinator_rank_index);
 	memset(&pipeline_configuration,0,sizeof(pipeline_configuration));
 	pipeline_configuration.abi_version = SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION;
 	pipeline_configuration.descriptor_bytes = SPARK_MODEL_PIPELINE_CLIENT_CONFIGURATION_BYTES;
 	pipeline_configuration.connect_timeout_ms = configuration->connect_timeout_ms;
 	pipeline_configuration.deployment = configuration->deployment;
-	pipeline_configuration.runtime_root = configuration->runtime_root;
+	pipeline_configuration.runtime_root = coordinator != 0 ? coordinator->runtime_root : configuration->runtime_root;
 	pipeline_configuration.submit_result_function = SparkModelBatchSubmitResult;
 	pipeline_configuration.submit_result_context = engine;
 	pipeline_configuration.completion_function = SparkModelBatchCompletion;
