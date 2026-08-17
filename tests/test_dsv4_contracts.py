@@ -21,13 +21,18 @@ def main() -> int:
     assert flash["model"]["layer_count"] == 43
     assert pro["model"]["layer_count"] == 61
     assert len(flash["attention"]["compression_ratios"]) == 46
-    assert len(pro["attention"]["compression_ratios"]) == 62
+    assert len(pro["attention"]["compression_ratios"]) == 64
     assert flash["attention"]["compression_ratios"][:2] == [0, 0]
     assert pro["attention"]["compression_ratios"][:2] == [128, 128]
     assert flash["attention"]["compression_ratios"][-3:] == [0, 0, 0]
+    assert pro["attention"]["compression_ratios"][-3:] == [0, 0, 0]
     assert flash["model"]["mtp_layer_count"] == 3
     assert flash["dspark"]["layer_count"] == 3
     assert flash["runtime"]["packed_mtp_layer_count"] == 3
+    assert pro["model"]["mtp_layer_count"] == 3
+    assert pro["dspark"]["draft_layer_count"] == 3
+    assert pro["dspark"]["target_layer_ids"] == [58, 59, 60]
+    assert pro["model_id"] == "deepseek-ai/DeepSeek-V4-Pro-0813"
     assert flash["precision"]["non_expert_activation_format"] == "bf16"
     assert flash["precision"]["routed_expert_activation_format"] == "fp8_e4m3"
     assert pro["precision"]["non_expert_activation_format"] == "bf16"

@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "model_id": "deepseek-ai/DeepSeek-V4-Pro",
+  "model_id": "deepseek-ai/DeepSeek-V4-Pro-0813",
   "architecture": "DeepseekV4ForCausalLM",
-  "source_revision": "official Hugging Face config observed 2026-07-31",
+  "source_revision": "GA release deepseek-ai/DeepSeek-V4-Pro-0813 (HF, 2026-08-13)",
   "model": {
     "hidden_dimension": 7168,
     "layer_count": 61,
-    "mtp_layer_count": 1,
+    "mtp_layer_count": 3,
     "vocabulary_size": 129280,
     "maximum_context_tokens": 1048576,
     "rms_norm_epsilon": 0.000001,
@@ -27,7 +27,18 @@
     "compressed_rope_theta": 160000,
     "yarn_factor": 16,
     "yarn_original_context_tokens": 65536,
-    "compression_ratios": [128, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0]
+    "compression_ratios": [128, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0, 0, 0]
+  },
+  "dspark": {
+    "layer_count": 3,
+    "block_size": 5,
+    "noise_token_id": 128799,
+    "target_layer_ids": [
+      58,
+      59,
+      60
+    ],
+    "markov_rank": 512
   },
   "hyper_connections": {
     "stream_count": 4,

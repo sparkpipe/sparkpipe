@@ -583,7 +583,7 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ? 1u : 0u;
 	if ( stage_index != final_stage && (parallel == 0u || hybrid != 0u) )
 		return(has_tokens == 0u && completion->tokens_per_sequence == 0u ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
-	/* Pure TP fanout: the DSV4-style adapters publish the token payload only
+	/* Pure TP fanout: the TP-sharded adapters publish the token payload only
 	 * from the final stage (the other ranks carry status alone); a
 	 * status-only completion from a non-final rank is therefore legal. */
 	if ( stage_index != final_stage && has_tokens == 0u &&

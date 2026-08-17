@@ -5067,7 +5067,6 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 	return(cudaGetLastError());
 }
 
-<<<<<<< HEAD
 static inline uint32_t SparkLmSm121B1Bf16LinearPairPolicy(
 	uint32_t row_count,uint32_t input_dimension,uint32_t output_dimension)
 {
@@ -5084,7 +5083,7 @@ static inline uint32_t SparkLmSm121B1Fp8LinearPairPolicy(
 	uint64_t work = (uint64_t)input_dimension * combined_output_dimension;
 	return(row_count == 1u && work >= SPARK_LM_FP8_PAIR_WIDE_MINIMUM_WORK ?
 		SPARK_LM_PAIR_POLICY_FLAT_16 : SPARK_LM_PAIR_POLICY_FLAT_8);
-=======
+
 /* M-group dense launch: BF16 only, at least two m-tiles, K past one
  * tile so the pipelined loop engages. Caller: qwen38 dense linears. */
 static inline cudaError_t SparkLmHostLaunchBatchedLinearMloop(cudaStream_t stream, const void *weight_payload, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
@@ -5108,7 +5107,6 @@ static inline cudaError_t SparkLmHostLaunchGroupedExpertTileMloop(cudaStream_t s
 	dim3 grid(1u,(output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N,budget);
 	SparkLmExpertTileAllMloopKernel<32u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,payload_base,scale_base,payload_stride,scale_stride,input_bf16,grouped_rows,expert_offsets,output_bf16,input_dimension,output_dimension,expert_count);
 	return(cudaGetLastError());
->>>>>>> origin/qwen38-max-phase2
 }
 
 static inline cudaError_t SparkLmHostLaunchBf16LinearPair(

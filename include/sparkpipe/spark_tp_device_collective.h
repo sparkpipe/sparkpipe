@@ -100,7 +100,7 @@ typedef struct SparkTpDeviceCollectiveSubmission
     uint32_t flags;
     /* The per-submission element count. Zero keeps the collective's fixed
      * frame (active_sequence_count x local_hidden_dimension); a non-zero
-     * value narrows THIS submission to that many BF16 elements - the K3
+     * value narrows THIS submission to that many BF16 elements - the routed-MoE
      * phase-0 hook all-reduces one 7168-element segment while the frame
      * holds three, and shipping the full frame tripled its bytes. Only the
      * NCCL backend honours the override (its per-call count is free); the

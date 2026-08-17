@@ -42,8 +42,8 @@ MODEL_GEOMETRY = {
     },
     "pro": {
         "layers": 61,
-        "version": 3,
-        "mtp": False,
+        "version": 4,
+        "mtp": True,
         "hidden": 7168,
         "query_dim": 65536,
         "output_groups": 16,

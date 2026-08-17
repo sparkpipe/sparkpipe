@@ -109,7 +109,7 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
 
     require_equal(contract["schema_version"], 1, f"{variant} schema version")
     require_equal(contract["architecture"], "DeepseekV4ForCausalLM", f"{variant} architecture")
-    expected_mtp_layer_count = 3 if variant == "flash" else 1
+    expected_mtp_layer_count = 3
     packed_mtp_layer_count = contract.get("runtime", {}).get(
         "packed_mtp_layer_count", model["mtp_layer_count"])
     require_equal(model["mtp_layer_count"], expected_mtp_layer_count, f"{variant} MTP layer count")
@@ -154,12 +154,20 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
         require_equal(ratios[:2], [0, 0], "Flash bootstrap attention layers")
         require_equal(ratios[-3:], [0, 0, 0], "Flash DSpark attention layers")
     elif variant == "pro":
+        require_equal(contract["model_id"], "deepseek-ai/DeepSeek-V4-Pro-0813", "Pro source model")
+        require_equal(contract["source_revision"], "GA release deepseek-ai/DeepSeek-V4-Pro-0813 (HF, 2026-08-13)", "Pro source revision")
         require_equal(model["hidden_dimension"], 7168, "Pro hidden dimension")
         require_equal(model["layer_count"], 61, "Pro layer count")
         require_equal(model["attention_head_count"], 128, "Pro attention heads")
         require_equal(moe["routed_expert_count"], 384, "Pro routed experts")
         require_equal(attention["index_top_k"], 1024, "Pro index top-k")
         require_equal(ratios[:2], [128, 128], "Pro bootstrap attention layers")
+        require_equal(ratios[-3:], [0, 0, 0], "Pro DSpark attention layers")
+        require_equal(contract["dspark"]["layer_count"], 3, "Pro DSpark layer count")
+        require_equal(contract["dspark"]["block_size"], 5, "Pro DSpark block size")
+        require_equal(contract["dspark"]["noise_token_id"], 128799, "Pro DSpark noise token")
+        require_equal(contract["dspark"]["target_layer_ids"], [58, 59, 60], "Pro DSpark target layers")
+        require_equal(contract["dspark"]["markov_rank"], 512, "Pro DSpark Markov rank")
     else:
         raise ValueError(f"unknown DSV4 variant: {variant}")
 
@@ -262,6 +270,13 @@ def render_header(
         "",
     ])
     for suffix, value in defines:
+        if variant == "pro" and suffix == "VOCAB_COUNT":
+            dspark = contract["dspark"]
+            lines.append("/* DSpark speculative stage. */")
+            lines.append(f"#define {prefix}_DSPARK_BLOCK_SIZE {dspark['block_size']}u")
+            lines.append(f"#define {prefix}_DSPARK_TARGET_LAYER_COUNT {len(dspark['target_layer_ids'])}u")
+            lines.append(f"#define {prefix}_DSPARK_MARKOV_RANK {dspark['markov_rank']}u")
+            lines.append(f"#define {prefix}_DSPARK_NOISE_TOKEN_ID {dspark['noise_token_id']}u")
         if variant == "flash" and suffix == "DSPARK_TARGET_LAYER_FIRST":
             lines.append(f"#define {prefix}_DSPARK_TARGET_LAYER_FIRST \\")
             lines.append(
@@ -331,7 +346,14 @@ def render_header(
             "#define SPARK_DSV4_PRO_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1",
             "#endif",
             f"#define {prefix}_NON_EXPERT_WEIGHT_CODEC {WEIGHT_CODEC_MACROS[precision['non_expert_linear_weight_codec']]}",
+            "#if defined(SPARK_DSV4_PRO_KV_CODEC_FP8_E4M3)",
+            "/* Variant builds: E4M3 KV cache with UE8M0 block scales (block 64, rope",
+            " * tail kept BF16) - matches the reference act_quant layout; requires the",
+            " * FP8-KV cache kernels and an FP8-KV pack header. Default remains BF16. */",
+            "#define SPARK_DSV4_PRO_KV_CACHE_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3",
+            "#else",
             f"#define {prefix}_KV_CACHE_CODEC {WEIGHT_CODEC_MACROS[precision['kv_cache_codec']]}",
+            "#endif",
             f"#define {prefix}_NON_EXPERT_ACTIVATION_CODEC {activation_codec_macro(precision, 'non_expert_activation_format')}"
             + (" /* first-light: BF16 activations, matching the Flash-validated kernel set */"
                if precision["non_expert_activation_format"] == "bf16" else ""),
@@ -396,10 +418,11 @@ def render_normalized_contract(variant: str, contract: dict[str, Any]) -> str:
         "compression_ratio_interpretation": (
             "first layer_count entries are backbone layers; the following dspark.layer_count entries are checkpoint DSpark layers excluded from runtime"
             if variant == "flash" else
-            "first layer_count entries are backbone layers; final entry is the one declared MTP layer"
+            "first 61 entries are backbone layers; the draft layers are ratio-0 DSpark blocks and do not index the table"
         ),
     }
     if variant == "pro":
+        result["dspark"]["draft_layer_count"] = result["dspark"].pop("layer_count")
         note = result["precision"].pop("_first_light_note")
         body = json.dumps(result, indent=2, sort_keys=True)
         anchor = '    "scale_format": "ue8m0"\n  },\n  "qualification": {'

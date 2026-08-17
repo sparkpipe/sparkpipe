@@ -169,7 +169,13 @@ from pathlib import Path
 # normalized contract) so --check reproduces the checked-in files
 # byte-exact; 162411 is the exact count after it lands. Ceiling moves
 # with it.
-CEILING = 162411
+# The six-session integration wave (K3 TP4 layer-0, DSV4 DSpark
+# speculative loop, DSV4 Pro GA migration, Qwen 3.8 Max phase 2, Qwen TP4
+# phase 2, DSpark design docs) lands on the unified branch as merged
+# session machinery, plus the generator reconciliation for the GA 0813
+# checkpoint (3 packed draft layers, KV codec selectability); 165675 is
+# the exact count after the integration. Ceiling moves with it.
+CEILING = 165675
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
