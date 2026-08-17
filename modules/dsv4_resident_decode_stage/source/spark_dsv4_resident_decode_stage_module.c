@@ -1900,12 +1900,16 @@ static SparkStatus SparkDsv4ModuleAllocateDspark(SparkDsv4ModuleState *state, Sp
 	uint64_t block = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION,vocab = SPARK_DSV4_MODEL_VOCAB_COUNT,qdim = SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION,bf16 = SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 	SparkStatus status;
 	status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_draft_token_ids);
+	/* the collective's u64-max receive/combine writes the frame-width
+	 * (rows=8) payload at the op's full_device base: each per-index op at
+	 * entry i writes [i..i+7], so the buffer spans block + 8 entries */
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint64_t),(void **)&slot->dspark_maxloc_u64);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,
+			(2u * block) * sizeof(uint64_t),(void **)&slot->dspark_maxloc_u64);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
 			cudaMemsetAsync(slot->dspark_maxloc_u64,0,
-				block * sizeof(uint64_t),(cudaStream_t)slot->cuda_stream),
+				(2u * block) * sizeof(uint64_t),(cudaStream_t)slot->cuda_stream),
 			"dspark_maxloc_zero");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,block * sizeof(uint32_t),(void **)&slot->dspark_verify_token_ids);
@@ -4613,11 +4617,7 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 				submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 				submission.descriptor_bytes = sizeof(submission);
 				submission.slot_index = (uint32_t)(slot - state->slots);
-				/* the collective's payload machinery assumes the frame's
-				 * rows=8 shape (a rows=1 U64Max op corrupts its neighbors)
-				 * - reduce the full 8-entry maxloc row with a dummy tail */
-				submission.active_sequence_count =
-					SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u;
+				submission.active_sequence_count = 1u;
 				submission.flags =
 					SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 				submission.ordinal = ordinal;
