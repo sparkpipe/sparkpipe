@@ -223,7 +223,10 @@ from pathlib import Path
 # from the serving config with a lenient default, ABI 3->4) (+42); the
 # net-negative deletion still rides with the page-table data-flow unit.
 # 165779 is the exact count.
-CEILING = 165779
+# The completion-tail now surfaces publish/rollback failures (page-cache status
+# flows into async->completion.status instead of (void)) (+2); 165781 is the
+# exact count.
+CEILING = 165781
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

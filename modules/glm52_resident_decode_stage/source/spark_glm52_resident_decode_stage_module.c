@@ -1622,7 +1622,8 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 			atomic_store_explicit(&state->lane_bound[resident],async->lane_bound[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_sequence_ids[resident],async->lane_sequence_ids[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_next_positions[resident],async->lane_next_positions[lane],memory_order_release);
-			(void)SparkKvPageCacheCompleteLane(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident]);
+			if ( SparkKvPageCacheCompleteLane(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident]) != SPARK_STATUS_OK )
+				async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 		}
 		atomic_fetch_add_explicit(&state->completed_count,1u,memory_order_relaxed);
 	}
@@ -1631,7 +1632,8 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 		for (lane=0u; lane<async->lane_count; lane++)
 		{
 			resident = async->lane_indices[lane];
-			(void)SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident],state->kv_lane_mutation_flags[resident]);
+			if ( SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident],state->kv_lane_mutation_flags[resident]) != SPARK_STATUS_OK )
+				async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 			atomic_store_explicit(&state->lane_bound[resident],0u,memory_order_release);
 		}
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
