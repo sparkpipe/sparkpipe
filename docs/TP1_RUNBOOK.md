@@ -118,3 +118,18 @@ completion `model_extension` (kind `0x5136`) carries `first_draft_miss_count`
 - `clang -fsyntax-only` (both `-DSPARK_QWEN36_SERVING_TP_DEGREE=1` and default) — clean.
 - `tests/test_dry_law.py`, `tests/test_code_size.py` (ceiling bumped +15),
   `tests/test_qwen36_stagepack.py` — green in-clone.
+
+## Checkpoint pin (resolved 2026-08-17, coordinator-recorded)
+
+- Serving target (THIS run): **Qwen/Qwen3.8-27B** (BF16 base, multimodal image-text-to-text)
+- Pinned SHA: `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` (lastModified 2026-08-14)
+- Source: https://huggingface.co/Qwen/Qwen3.8-27B
+- FP8 follow-up variant: Qwen/Qwen3.8-27B-FP8, sha `017b9c7af6b5689d5dd426a76e0bc077eb5ca20a`
+  (https://huggingface.co/Qwen/Qwen3.8-27B-FP8) - needs FP8 packer support, deferred.
+- Geometry: hidden 5120 / 64 layers / FFN 17408 / full_attention_interval 4 / attn 24Q-4KV
+  head_dim 256 (rope 64, theta 1e7) / linear GDN 16 key + 48 value heads x 128 / conv 4 /
+  vocab 248320 / max_position 262144 / mtp_num_hidden_layers 1. Same shape as 3.6-27B;
+  3.8 is a re-checkpoint with multimodal nesting (model.language_model.* + top-level mtp.*).
+- Packer note: tools/qwen36_stagepack.py already re-based to the 3.8 naming
+  (LANGUAGE_PREFIX "model.language_model." + MTP_PREFIX "mtp."); the default pack
+  command should work once the checkpoint is downloaded.
