@@ -1,5 +1,5 @@
 {
-  "file_count": 16772,
+  "file_count": 16780,
   "files": [
     {
       "path": ".agents/AGENT_CHARTER.md",
@@ -13,8 +13,8 @@
     },
     {
       "path": ".agents/ROSTER.md",
-      "sha256": "9754bb109a0bab9039082c0df3da96753bf68e9c16eec543a690249355fcf4b9",
-      "size_bytes": 1431
+      "sha256": "42592505adc7961b9ba979752a838e8d73c401de881a7002f7f4319d9e282179",
+      "size_bytes": 1451
     },
     {
       "path": ".agents/cuda-kernels/.gitattributes",
@@ -35487,6 +35487,11 @@
       "size_bytes": 5723
     },
     {
+      "path": ".agents/kv-cache/docs/PROPOSAL_KV_SEAM.md",
+      "sha256": "91bdf6e100f84a7b115022024c560e4c5975227a648a0b5331c0c306b47871f8",
+      "size_bytes": 27364
+    },
+    {
       "path": ".agents/kv-cache/docs/QWEN36_TP4_PERF.md",
       "sha256": "65b225b398266d47c4d13bb523d2a4201ef049ba05a991a7e33e8a9b1e3252f3",
       "size_bytes": 3629
@@ -48803,8 +48808,8 @@
     },
     {
       "path": ".agents/packer-core/tools/dsv4_tp16_stagepack.py",
-      "sha256": "453e1d3858283d3d24bc5ae30bebde094b7b4e8849bdb416dc168225ab14a900",
-      "size_bytes": 21225
+      "sha256": "50eb0f9329c46d842c124442b2b2355703c673fd1b3ea60663d54e8f385f026a",
+      "size_bytes": 21545
     },
     {
       "path": ".agents/packer-core/tools/dsv4_tp4_decode_roofline.py",
@@ -49235,6 +49240,11 @@
       "path": ".agents/packer-core/tools/spark_node_layout.json",
       "sha256": "89cd1330c7da40cc30d81ee7191224513bc91e46711e052dad09940bc2d41b30",
       "size_bytes": 191
+    },
+    {
+      "path": ".agents/packer-core/tools/spark_pack_common.py",
+      "sha256": "ba499ac63a18007cb4cfcf7d15ef7e4cbca03b8da6cf9ed5a6785713aed900f7",
+      "size_bytes": 12000
     },
     {
       "path": ".agents/packer-core/tools/sparkpipe_api_stress.py",
@@ -63647,6 +63657,11 @@
       "size_bytes": 28014
     },
     {
+      "path": ".agents/scheduler/docs/PROPOSAL_RING_WINDOW_HOOK.md",
+      "sha256": "e3cdde34e90d57b065f6655f49ee46599ca5a04a03810d719426a635046fba7b",
+      "size_bytes": 8255
+    },
+    {
       "path": ".agents/scheduler/docs/QWEN36_TP4_PERF.md",
       "sha256": "65b225b398266d47c4d13bb523d2a4201ef049ba05a991a7e33e8a9b1e3252f3",
       "size_bytes": 3629
@@ -70488,8 +70503,8 @@
     },
     {
       "path": ".agents/speculation/PACKAGE_MANIFEST.json",
-      "sha256": "860b63f4de4fb82f13896a2d3887488543cfe6c1a38fb640b45fbbeeda455567",
-      "size_bytes": 3536188
+      "sha256": "81aff18abcad72b07f7284dd426a7d710ec834927ea39264dd4e938a49b678f1",
+      "size_bytes": 3540675
     },
     {
       "path": ".agents/speculation/PERFORMANCE_STATUS.md",
@@ -70503,8 +70518,8 @@
     },
     {
       "path": ".agents/speculation/SHA256SUMS",
-      "sha256": "bf744c1717104a93568ee5f08120e8b18b1b9f6d1e5462e3d6f2bc09615ff16b",
-      "size_bytes": 2309736
+      "sha256": "8f38a59680264d96c1872d0a7b563dbb5d01471014b83ba674ba3fc587430e39",
+      "size_bytes": 2312444
     },
     {
       "path": ".agents/speculation/SPEC.md",
@@ -70672,9 +70687,19 @@
       "size_bytes": 1609
     },
     {
+      "path": ".agents/speculation/docs/KERNEL_CONTRACT_CARDS.md",
+      "sha256": "d8bd8f4eb9c9e7f3eb96dc7b816d0fe2586b87c6f9cd8821dd294ba882657f98",
+      "size_bytes": 21313
+    },
+    {
       "path": ".agents/speculation/docs/KERNEL_PLAYBOOK.md",
       "sha256": "90d5b71d837f6e0fcf64e98569053a3b3b5833d6b3c2ab68f0f109a1987cb595",
       "size_bytes": 33238
+    },
+    {
+      "path": ".agents/speculation/docs/KVCACHE_SUBSYSTEM_BOUNDARY.md",
+      "sha256": "e6efda1ba90103a1b17559e21448764c6cca93ab11ad3c9330f2b2cbbcc117a0",
+      "size_bytes": 26309
     },
     {
       "path": ".agents/speculation/docs/MODEL_SUPPORT.md",
@@ -70697,9 +70722,14 @@
       "size_bytes": 5723
     },
     {
+      "path": ".agents/speculation/docs/PROPOSAL_ADMISSION_CORE.md",
+      "sha256": "21c2a939c2a01754640cc77a3301dd7900d8b4578f24f9f4f40509eb218067b9",
+      "size_bytes": 28014
+    },
+    {
       "path": ".agents/speculation/docs/PROPOSAL_DSV4_TREE_ADOPTION.md",
-      "sha256": "49df4c1fc97d7e3c9281d3c4ff5c635f744b4eff83e773df310c77ccc6b6f135",
-      "size_bytes": 9673
+      "sha256": "2b06b5faaa4e0ebeb2f67137831627d0b7b121770db38bd1a922d471f4b431c1",
+      "size_bytes": 10144
     },
     {
       "path": ".agents/speculation/docs/QWEN36_TP4_PERF.md",
@@ -70755,6 +70785,11 @@
       "path": ".agents/speculation/docs/README.md",
       "sha256": "1758c7309b68e398ff87fb0ef36501166883850949bc86a662f7647299c29a94",
       "size_bytes": 1969
+    },
+    {
+      "path": ".agents/speculation/docs/SCHEDULER_SUBSYSTEM_BOUNDARY.md",
+      "sha256": "9d882f3636cdfdd60785f5c22be9c0de2ace159d9966d9fe5b9dab42a2c44d58",
+      "size_bytes": 25401
     },
     {
       "path": ".agents/speculation/docs/SPARK_HOST_RDMA_DOORBELL.md",
@@ -77757,6 +77792,11 @@
       "size_bytes": 10144
     },
     {
+      "path": "docs/PROPOSAL_KV_SEAM.md",
+      "sha256": "c09706c69183da146a6d33bc59d2910f8281cc8cf9064963c420ba48bb780a74",
+      "size_bytes": 27674
+    },
+    {
       "path": "docs/QWEN36_TP4_PERF.md",
       "sha256": "65b225b398266d47c4d13bb523d2a4201ef049ba05a991a7e33e8a9b1e3252f3",
       "size_bytes": 3629
@@ -83865,5 +83905,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 336791534
+  "total_bytes": 336975870
 }
