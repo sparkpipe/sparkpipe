@@ -3888,6 +3888,393 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
     }
 }
 
+/* Dense tile with an inner M-group loop: one CTA owns M_GROUP m-tiles of
+ * one n-tile and stages each k-stage's weight strip ONCE, reusing it for
+ * every m-tile's MMA. The plain grid stages the same weight strip once per
+ * m-tile, so B=256 (16 m-blocks) re-reads a dense weight 16x; this cuts
+ * the amplification to ceil(m_blocks/M_GROUP). BF16 only - the qwen38
+ * dense spine; scaled formats keep the original grid. Caller: qwen38's
+ * SparkQwen38LaunchLinear via SparkLmHostLaunchBatchedLinearMloop. */
+#define SPARK_LM_MLOOP_GROUP 8u
+template <uint32_t GROUP_SIZE>
+static __global__ void SparkLmExpertTileMloopKernel(const void *weight_payload, const void *input_bf16, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+    __shared__ __nv_bfloat16 tile_input[2u][
+        SPARK_LM_MLOOP_GROUP * SPARK_LM_TILE * SPARK_LM_TILE_K];
+    __shared__ __nv_bfloat16 tile_weight[2u][
+        SPARK_LM_TILE_N * SPARK_LM_TILE_K];
+    __shared__ float tile_output[SPARK_LM_TILE][SPARK_LM_TILE_N + 8u];
+    nvcuda::wmma::fragment<
+        nvcuda::wmma::matrix_a,
+        16,
+        16,
+        16,
+        __nv_bfloat16,
+        nvcuda::wmma::row_major> frag_input;
+    nvcuda::wmma::fragment<
+        nvcuda::wmma::matrix_b,
+        16,
+        16,
+        16,
+        __nv_bfloat16,
+        nvcuda::wmma::col_major> frag_weight;
+    nvcuda::wmma::fragment<
+        nvcuda::wmma::accumulator,
+        16,
+        16,
+        16,
+        float> frag_accum[SPARK_LM_MLOOP_GROUP];
+    uint32_t warp_index = threadIdx.x / SPARK_LM_WARP_LANES;
+    uint32_t slot_base = blockIdx.x * (SPARK_LM_MLOOP_GROUP * SPARK_LM_TILE);
+    uint32_t neuron_base = blockIdx.y * SPARK_LM_TILE_N;
+    uint32_t valid_m,row_limit,m,entry,row,k_base,k_step,next_k_base;
+    uint32_t current_buffer = 0u,next_buffer,slot,neuron;
+    if (slot_base >= slot_count)
+        return;
+    row_limit = slot_count - slot_base;
+    valid_m = (row_limit + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
+    if (valid_m > SPARK_LM_MLOOP_GROUP)
+        valid_m = SPARK_LM_MLOOP_GROUP;
+    /* Prologue: stage every valid m-tile's first input strip and the
+     * weight strip for k=0. Invalid tiles stage zeros so their accum
+     * fragments stay zero and the epilogue's slot bound drops them. */
+    for (m = 0u; m < valid_m; ++m)
+        for (entry = threadIdx.x; entry < SPARK_LM_TILE * SPARK_LM_TILE_K; entry += blockDim.x)
+        {
+            row = slot_base + (m * SPARK_LM_TILE) + (entry / SPARK_LM_TILE_K);
+            k_base = entry % SPARK_LM_TILE_K;
+            tile_input[0u][(m * SPARK_LM_TILE * SPARK_LM_TILE_K) + entry] =
+                __float2bfloat16(SparkLmBf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + k_base));
+        }
+    for (m = valid_m; m < SPARK_LM_MLOOP_GROUP; ++m)
+        for (entry = threadIdx.x; entry < SPARK_LM_TILE * SPARK_LM_TILE_K; entry += blockDim.x)
+            tile_input[0u][(m * SPARK_LM_TILE * SPARK_LM_TILE_K) + entry] = __float2bfloat16(0.0f);
+    SparkLmTileStageWeightAll<GROUP_SIZE>(
+        SPARK_LM_WEIGHT_FORMAT_BF16,
+        weight_payload,
+        0,
+        neuron_base,
+        0u,
+        input_dimension,
+        output_dimension,
+        tile_weight[0u]);
+    for (m = 0u; m < SPARK_LM_MLOOP_GROUP; ++m)
+        nvcuda::wmma::fill_fragment(frag_accum[m],0.0f);
+    __syncthreads();
+
+    for (k_base = 0u; k_base < input_dimension; k_base += SPARK_LM_TILE_K)
+    {
+        next_k_base = k_base + SPARK_LM_TILE_K;
+        next_buffer = current_buffer ^ 1u;
+
+        if (warp_index < 4u)
+        {
+            for (m = 0u; m < SPARK_LM_MLOOP_GROUP; ++m)
+                for (k_step = 0u; k_step < SPARK_LM_TILE_K / SPARK_LM_TILE; ++k_step)
+                {
+                    nvcuda::wmma::load_matrix_sync(
+                        frag_input,
+                        tile_input[current_buffer] +
+                            (m * SPARK_LM_TILE * SPARK_LM_TILE_K) +
+                            (k_step * SPARK_LM_TILE),
+                        SPARK_LM_TILE_K);
+                    nvcuda::wmma::load_matrix_sync(
+                        frag_weight,
+                        tile_weight[current_buffer] +
+                            (warp_index * SPARK_LM_TILE * SPARK_LM_TILE_K) +
+                            (k_step * SPARK_LM_TILE),
+                        SPARK_LM_TILE_K);
+                    nvcuda::wmma::mma_sync(
+                        frag_accum[m],
+                        frag_input,
+                        frag_weight,
+                        frag_accum[m]);
+                }
+        }
+        else if (next_k_base < input_dimension)
+        {
+            for (m = 0u; m < valid_m; ++m)
+                for (entry = threadIdx.x; entry < SPARK_LM_TILE * SPARK_LM_TILE_K; entry += blockDim.x)
+                {
+                    row = slot_base + (m * SPARK_LM_TILE) + (entry / SPARK_LM_TILE_K);
+                    k_step = entry % SPARK_LM_TILE_K;
+                    tile_input[next_buffer][(m * SPARK_LM_TILE * SPARK_LM_TILE_K) + entry] =
+                        __float2bfloat16(SparkLmBf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + next_k_base + k_step));
+                }
+            SparkLmTileStageWeightProducerHalf<GROUP_SIZE>(
+                SPARK_LM_WEIGHT_FORMAT_BF16,
+                weight_payload,
+                0,
+                neuron_base,
+                next_k_base,
+                input_dimension,
+                output_dimension,
+                4u,
+                0u,
+                tile_weight[next_buffer]);
+        }
+        __syncthreads();
+
+        if (warp_index >= 4u)
+        {
+            for (m = 0u; m < SPARK_LM_MLOOP_GROUP; ++m)
+                for (k_step = 0u; k_step < SPARK_LM_TILE_K / SPARK_LM_TILE; ++k_step)
+                {
+                    nvcuda::wmma::load_matrix_sync(
+                        frag_input,
+                        tile_input[current_buffer] +
+                            (m * SPARK_LM_TILE * SPARK_LM_TILE_K) +
+                            (k_step * SPARK_LM_TILE),
+                        SPARK_LM_TILE_K);
+                    nvcuda::wmma::load_matrix_sync(
+                        frag_weight,
+                        tile_weight[current_buffer] +
+                            (warp_index * SPARK_LM_TILE * SPARK_LM_TILE_K) +
+                            (k_step * SPARK_LM_TILE),
+                        SPARK_LM_TILE_K);
+                    nvcuda::wmma::mma_sync(
+                        frag_accum[m],
+                        frag_input,
+                        frag_weight,
+                        frag_accum[m]);
+                }
+        }
+        else if (next_k_base < input_dimension)
+        {
+            SparkLmTileStageWeightProducerHalf<GROUP_SIZE>(
+                SPARK_LM_WEIGHT_FORMAT_BF16,
+                weight_payload,
+                0,
+                neuron_base,
+                next_k_base,
+                input_dimension,
+                output_dimension,
+                0u,
+                1u,
+                tile_weight[next_buffer]);
+        }
+        __syncthreads();
+        current_buffer = next_buffer;
+    }
+
+    for (m = 0u; m < valid_m; ++m)
+    {
+        nvcuda::wmma::store_matrix_sync(
+            &tile_output[0][warp_index * SPARK_LM_TILE],
+            frag_accum[m],
+            SPARK_LM_TILE_N + 8u,
+            nvcuda::wmma::mem_row_major);
+        __syncthreads();
+        for (entry = threadIdx.x;
+             entry < SPARK_LM_TILE * SPARK_LM_TILE_N;
+             entry += blockDim.x)
+        {
+            slot = slot_base + (m * SPARK_LM_TILE) + (entry / SPARK_LM_TILE_N);
+            neuron = neuron_base + (entry % SPARK_LM_TILE_N);
+            if (slot < slot_count && neuron < output_dimension)
+                SparkLmFloatToBf16(
+                    output_bf16,
+                    ((uint64_t)slot * output_dimension) + neuron,
+                    tile_output[entry / SPARK_LM_TILE_N][entry % SPARK_LM_TILE_N]);
+        }
+        __syncthreads();
+    }
+}
+
+/* Grouped-expert m-loop: grid.x is ONE (n-tiles x experts only), each CTA
+ * walks its expert's row group in chunks of M_GROUP m-tiles, and each
+ * k-stage's weight strip is staged ONCE and shared across the chunk. The
+ * plain grid (m_blocks x n_tiles x experts) launched ~122K empty CTAs at
+ * B=256 (m-tiles beyond a group of ~5 rows) at ~1.25 us of launch/retire
+ * each - the measured 233 GB/s collapse. Caller: qwen38 grouped FP8
+ * experts via SparkLmHostLaunchGroupedExpertTileMloop. */
+template <uint32_t GROUP_SIZE>
+static __global__ void SparkLmExpertTileAllMloopKernel(uint32_t weight_format, const void *payload_base, const void *scale_base, uint64_t payload_expert_stride_bytes, uint64_t scale_expert_stride_bytes, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t expert_count)
+{
+    /* Expert-stride loop: one CTA walks several experts so the launch uses
+     * a fixed CTA budget instead of 512 experts x n_tiles whose empty CTAs
+     * dominate small batches (measured ~1.25 us each). */
+    uint32_t expert;
+    for (expert = blockIdx.z; expert < expert_count; expert += gridDim.z)
+    {
+    const uint32_t M_GROUP = 8u;
+    __shared__ __nv_bfloat16 tile_input[2u][
+        M_GROUP * SPARK_LM_TILE * SPARK_LM_TILE_K];
+    __shared__ __nv_bfloat16 tile_weight[2u][
+        SPARK_LM_TILE_N * SPARK_LM_TILE_K];
+    __shared__ float tile_output[SPARK_LM_TILE][SPARK_LM_TILE_N + 8u];
+    nvcuda::wmma::fragment<
+        nvcuda::wmma::matrix_a,
+        16,
+        16,
+        16,
+        __nv_bfloat16,
+        nvcuda::wmma::row_major> frag_input;
+    nvcuda::wmma::fragment<
+        nvcuda::wmma::matrix_b,
+        16,
+        16,
+        16,
+        __nv_bfloat16,
+        nvcuda::wmma::col_major> frag_weight;
+    nvcuda::wmma::fragment<
+        nvcuda::wmma::accumulator,
+        16,
+        16,
+        16,
+        float> frag_accum[M_GROUP];
+    uint32_t warp_index = threadIdx.x / SPARK_LM_WARP_LANES;
+    uint32_t neuron_base = blockIdx.y * SPARK_LM_TILE_N;
+    uint32_t offset,count,chunk_base,chunk_m,m,row_limit,entry,row,k_base,k_step,next_k_base;
+    uint32_t current_buffer,next_buffer,slot,neuron;
+    const uint8_t *payload;
+    const uint8_t *scale;
+    const uint32_t *row_map;
+    void *output;
+    offset = expert_offsets[expert];
+    count = expert_offsets[expert + 1u] - offset;
+    if (count == 0u)
+        continue;
+    payload = (const uint8_t *)payload_base + ((uint64_t)expert * payload_expert_stride_bytes);
+    scale = (const uint8_t *)scale_base + ((uint64_t)expert * scale_expert_stride_bytes);
+    row_map = grouped_rows != 0 ? grouped_rows + offset : 0;
+    output = (void *)((uint8_t *)output_bf16 + ((uint64_t)offset * output_dimension * 2u));
+    current_buffer = 0u;
+    for (chunk_base = 0u; chunk_base < count; chunk_base += M_GROUP * SPARK_LM_TILE)
+    {
+        chunk_m = (count - chunk_base + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
+        if (chunk_m > M_GROUP)
+            chunk_m = M_GROUP;
+        /* Prologue: stage the chunk's input strips and the k=0 weight. */
+        for (m = 0u; m < chunk_m; ++m)
+        {
+            row_limit = count - (chunk_base + (m * SPARK_LM_TILE));
+            for (entry = threadIdx.x; entry < SPARK_LM_TILE * SPARK_LM_TILE_K; entry += blockDim.x)
+            {
+                row = (entry / SPARK_LM_TILE_K) + (m * SPARK_LM_TILE);
+                k_base = entry % SPARK_LM_TILE_K;
+                if (row < row_limit)
+                    tile_input[0u][(m * SPARK_LM_TILE * SPARK_LM_TILE_K) + entry] =
+                        __float2bfloat16(SparkLmBf16ToFloat(input_bf16,((uint64_t)(row_map != 0 ? row_map[chunk_base + row] : (offset + chunk_base + row)) * input_dimension) + k_base));
+                else
+                    tile_input[0u][(m * SPARK_LM_TILE * SPARK_LM_TILE_K) + entry] = __float2bfloat16(0.0f);
+            }
+        }
+        for (m = chunk_m; m < M_GROUP; ++m)
+            for (entry = threadIdx.x; entry < SPARK_LM_TILE * SPARK_LM_TILE_K; entry += blockDim.x)
+                tile_input[0u][(m * SPARK_LM_TILE * SPARK_LM_TILE_K) + entry] = __float2bfloat16(0.0f);
+        SparkLmTileStageWeightAll<GROUP_SIZE>(
+            weight_format,payload,scale,neuron_base,0u,input_dimension,
+            output_dimension,tile_weight[0u]);
+        for (m = 0u; m < M_GROUP; ++m)
+            nvcuda::wmma::fill_fragment(frag_accum[m],0.0f);
+        __syncthreads();
+
+        for (k_base = 0u; k_base < input_dimension; k_base += SPARK_LM_TILE_K)
+        {
+            next_k_base = k_base + SPARK_LM_TILE_K;
+            next_buffer = current_buffer ^ 1u;
+
+            if (warp_index < 4u)
+            {
+                for (m = 0u; m < chunk_m; ++m)
+                    for (k_step = 0u; k_step < SPARK_LM_TILE_K / SPARK_LM_TILE; ++k_step)
+                    {
+                        nvcuda::wmma::load_matrix_sync(
+                            frag_input,
+                            tile_input[current_buffer] +
+                                (m * SPARK_LM_TILE * SPARK_LM_TILE_K) +
+                                (k_step * SPARK_LM_TILE),
+                            SPARK_LM_TILE_K);
+                        nvcuda::wmma::load_matrix_sync(
+                            frag_weight,
+                            tile_weight[current_buffer] +
+                                (warp_index * SPARK_LM_TILE * SPARK_LM_TILE_K) +
+                                (k_step * SPARK_LM_TILE),
+                            SPARK_LM_TILE_K);
+                        nvcuda::wmma::mma_sync(
+                            frag_accum[m],frag_input,frag_weight,frag_accum[m]);
+                    }
+            }
+            else if (next_k_base < input_dimension)
+            {
+                for (m = 0u; m < chunk_m; ++m)
+                {
+                    row_limit = count - (chunk_base + (m * SPARK_LM_TILE));
+                    for (entry = threadIdx.x; entry < SPARK_LM_TILE * SPARK_LM_TILE_K; entry += blockDim.x)
+                    {
+                        row = (entry / SPARK_LM_TILE_K) + (m * SPARK_LM_TILE);
+                        k_step = entry % SPARK_LM_TILE_K;
+                        if (row < row_limit)
+                            tile_input[next_buffer][(m * SPARK_LM_TILE * SPARK_LM_TILE_K) + entry] =
+                                __float2bfloat16(SparkLmBf16ToFloat(input_bf16,((uint64_t)(row_map != 0 ? row_map[chunk_base + row] : (offset + chunk_base + row)) * input_dimension) + next_k_base + k_step));
+                    }
+                }
+                SparkLmTileStageWeightProducerHalf<GROUP_SIZE>(
+                    weight_format,payload,scale,neuron_base,next_k_base,
+                    input_dimension,output_dimension,4u,0u,
+                    tile_weight[next_buffer]);
+            }
+            __syncthreads();
+
+            if (warp_index >= 4u)
+            {
+                for (m = 0u; m < chunk_m; ++m)
+                    for (k_step = 0u; k_step < SPARK_LM_TILE_K / SPARK_LM_TILE; ++k_step)
+                    {
+                        nvcuda::wmma::load_matrix_sync(
+                            frag_input,
+                            tile_input[current_buffer] +
+                                (m * SPARK_LM_TILE * SPARK_LM_TILE_K) +
+                                (k_step * SPARK_LM_TILE),
+                            SPARK_LM_TILE_K);
+                        nvcuda::wmma::load_matrix_sync(
+                            frag_weight,
+                            tile_weight[current_buffer] +
+                                (warp_index * SPARK_LM_TILE * SPARK_LM_TILE_K) +
+                                (k_step * SPARK_LM_TILE),
+                            SPARK_LM_TILE_K);
+                        nvcuda::wmma::mma_sync(
+                            frag_accum[m],frag_input,frag_weight,frag_accum[m]);
+                    }
+            }
+            else if (next_k_base < input_dimension)
+            {
+                SparkLmTileStageWeightProducerHalf<GROUP_SIZE>(
+                    weight_format,payload,scale,neuron_base,next_k_base,
+                    input_dimension,output_dimension,0u,1u,
+                    tile_weight[next_buffer]);
+            }
+            __syncthreads();
+            current_buffer = next_buffer;
+        }
+
+        for (m = 0u; m < chunk_m; ++m)
+        {
+            nvcuda::wmma::store_matrix_sync(
+                &tile_output[0][warp_index * SPARK_LM_TILE],
+                frag_accum[m],
+                SPARK_LM_TILE_N + 8u,
+                nvcuda::wmma::mem_row_major);
+            __syncthreads();
+            row_limit = count - (chunk_base + (m * SPARK_LM_TILE));
+            for (entry = threadIdx.x; entry < SPARK_LM_TILE * SPARK_LM_TILE_N; entry += blockDim.x)
+            {
+                row = entry / SPARK_LM_TILE_N;
+                slot = chunk_base + (m * SPARK_LM_TILE) + row;
+                neuron = neuron_base + (entry % SPARK_LM_TILE_N);
+                if (row < row_limit && neuron < output_dimension)
+                    SparkLmFloatToBf16(
+                        output,
+                        ((uint64_t)slot * output_dimension) + neuron,
+                        tile_output[row][entry % SPARK_LM_TILE_N]);
+            }
+            __syncthreads();
+        }
+    }
+    }
+}
+
 // Body dispatch keeps independently selectable all-warp and software-pipelined
 // BF16 schedules, chosen by SPARK_LM_EXPERT_TILE_POLICY. Both are live: the
 // AUTOMATIC default selects between them at runtime on input_dimension, so
@@ -4680,6 +5067,7 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 	return(cudaGetLastError());
 }
 
+<<<<<<< HEAD
 static inline uint32_t SparkLmSm121B1Bf16LinearPairPolicy(
 	uint32_t row_count,uint32_t input_dimension,uint32_t output_dimension)
 {
@@ -4696,6 +5084,31 @@ static inline uint32_t SparkLmSm121B1Fp8LinearPairPolicy(
 	uint64_t work = (uint64_t)input_dimension * combined_output_dimension;
 	return(row_count == 1u && work >= SPARK_LM_FP8_PAIR_WIDE_MINIMUM_WORK ?
 		SPARK_LM_PAIR_POLICY_FLAT_16 : SPARK_LM_PAIR_POLICY_FLAT_8);
+=======
+/* M-group dense launch: BF16 only, at least two m-tiles, K past one
+ * tile so the pipelined loop engages. Caller: qwen38 dense linears. */
+static inline cudaError_t SparkLmHostLaunchBatchedLinearMloop(cudaStream_t stream, const void *weight_payload, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	uint32_t m_blocks = (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
+	uint32_t m_groups = (m_blocks + SPARK_LM_MLOOP_GROUP - 1u) / SPARK_LM_MLOOP_GROUP;
+	dim3 grid(m_groups,(output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
+	if ( input_dimension % SPARK_LM_TILE_K != 0u )
+		return(cudaErrorInvalidValue);
+	SparkLmExpertTileMloopKernel<32u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_payload,input_bf16,output_bf16,row_count,input_dimension,output_dimension);
+	return(cudaGetLastError());
+}
+
+/* Grouped m-loop launch: qwen38 grouped FP8 experts. */
+static inline cudaError_t SparkLmHostLaunchGroupedExpertTileMloop(cudaStream_t stream, uint32_t weight_format, const void *payload_base, const void *scale_base, uint64_t payload_stride, uint64_t scale_stride, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t expert_count)
+{
+	/* Expert-stride CTA budget: 64 columns x n_tiles CTAs, each walking up
+	 * to expert_count/64 experts - empty experts cost a few cycles instead
+	 * of a launch. */
+	uint32_t budget = expert_count < 64u ? expert_count : 64u;
+	dim3 grid(1u,(output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N,budget);
+	SparkLmExpertTileAllMloopKernel<32u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,payload_base,scale_base,payload_stride,scale_stride,input_bf16,grouped_rows,expert_offsets,output_bf16,input_dimension,output_dimension,expert_count);
+	return(cudaGetLastError());
+>>>>>>> origin/qwen38-max-phase2
 }
 
 static inline cudaError_t SparkLmHostLaunchBf16LinearPair(
