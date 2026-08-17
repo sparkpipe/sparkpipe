@@ -237,6 +237,7 @@ struct SparkDsv4ModuleSlot
 	uint32_t dspark_hca_boundary_row;
 	void *dspark_logits_bf16;
 	float *dspark_logits_f32;
+	uint64_t dspark_frame_start_ns;
 };
 
 typedef struct SparkDsv4AsyncCompletion
@@ -2766,12 +2767,15 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 					(uint8_t *)state->dspark_tap_store_bf16 + (uint64_t)lane_index * tap_bytes,
 					tap_bytes,cudaMemcpyDeviceToDevice,stream);
 				if ( error == cudaSuccess )
-					error = cudaStreamSynchronize(stream);
-				if ( error == cudaSuccess )
 				{
-					SparkStatus dspark_status = SparkDsv4ModuleDsparkDrive(state,slot,
+					SparkStatus dspark_status;
+					struct timespec t0, t1;
+					clock_gettime(CLOCK_MONOTONIC,&t0);
+					dspark_status = SparkDsv4ModuleDsparkDrive(state,slot,
 						lane_index,state->dspark_lane_anchor[lane_index],
 						state->dspark_lane_position[lane_index]);
+					clock_gettime(CLOCK_MONOTONIC,&t1);
+					fprintf(stderr,"dspark_drive_ms tp_rank=%u ms=%.2f status=%u\n",state->tp_rank,(t1.tv_sec-t0.tv_sec)*1e3+(t1.tv_nsec-t0.tv_nsec)/1e6,(uint32_t)dspark_status);
 					if ( dspark_status != SPARK_STATUS_OK )
 						fprintf(stderr,"dspark_drive_failed status=%u tp_rank=%u lane=%u\n",(uint32_t)dspark_status,state->tp_rank,lane_index);
 					else
@@ -3892,6 +3896,12 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 						slot->dspark_host_draft_tokens[accepted] )
 						break;
 			}
+			{
+				struct timespec ts;
+				clock_gettime(CLOCK_MONOTONIC,&ts);
+				uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+				fprintf(stderr,"dspark_verify_ms tp_rank=%u lane=%u ms=%.2f\n",state->tp_rank,lane_index,(double)(now_ns - slot->dspark_frame_start_ns)/1e6);
+			}
 			fprintf(stderr,"dspark_accept tp_rank=%u lane=%u accepted=%u rows=%u chain=%u\n",state->tp_rank,lane_index,accepted,continuation->rows,continuation->chain_step_count);
 			async->completion.accepted_token_count = 1u + accepted;
 			async->completion.tokens_per_sequence = 1u + accepted;
@@ -4716,12 +4726,11 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 		fprintf(stderr,"dspark_draft_forward_failed status=%u tp_rank=%u\n",(uint32_t)status,state->tp_rank);
 		return(status);
 	}
-	error = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
-	if ( error != cudaSuccess )
-		fprintf(stderr,"dspark_draft_async_failed error=%d tp_rank=%u\n",(int)error,state->tp_rank);
 	for (index = 0u; index < block && error == cudaSuccess; index++)
 	{
 		uint32_t host_prev = prev_token;
+		struct timespec mt0, mt1;
+		clock_gettime(CLOCK_MONOTONIC,&mt0);
 		error = cudaMemcpyAsync(slot->input_token_ids,&host_prev,
 			sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 		if ( error == cudaSuccess )
@@ -4795,6 +4804,12 @@ static SparkStatus SparkDsv4ModuleDsparkDrive(
 				cudaMemcpyDeviceToHost,stream);
 		if ( error == cudaSuccess )
 			error = cudaStreamSynchronize(stream);
+		clock_gettime(CLOCK_MONOTONIC,&mt1);
+		{
+			double ms = (mt1.tv_sec-mt0.tv_sec)*1e3 + (mt1.tv_nsec-mt0.tv_nsec)/1e6;
+			if ( ms > 2.0 )
+				fprintf(stderr,"dspark_markov_ms tp_rank=%u index=%u ms=%.2f\n",state->tp_rank,index,ms);
+		}
 	}
 	if ( error != cudaSuccess )
 		fprintf(stderr,"dspark_markov_chain_failed error=%d tp_rank=%u index=%u\n",(int)error,state->tp_rank,index);
@@ -4841,13 +4856,7 @@ static SparkStatus SparkDsv4ModuleRunDsparkHead(
 		"dspark_head"));
 }
 
-#define DSPARK_S0_TRACE(tag) do { \
-	cudaError_t trace_error_ = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream); \
-	if ( trace_error_ != cudaSuccess ) \
-		fprintf(stderr,"dspark_s0_hang_after=" tag " error=%d tp_rank=%u\n",(int)trace_error_,state->tp_rank); \
-	else \
-		fprintf(stderr,"dspark_s0_ok=" tag " tp_rank=%u\n",state->tp_rank); \
-} while (0)
+#define DSPARK_S0_TRACE(tag) do { } while (0)
 
 static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 	SparkDsv4ModuleState *state,
@@ -5040,9 +5049,6 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				slot->row_positions,1u,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
 				anchor_position % SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS,0u,
 				SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS);
-		error = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
-		if ( error != cudaSuccess )
-			fprintf(stderr,"dspark_stage_sync_failed error=%d tp_rank=%u stage=%u\n",(int)error,state->tp_rank,stage);
 	}
 	if ( error != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
@@ -5132,6 +5138,11 @@ static SparkStatus SparkDsv4ModuleRunFrame(
 		continuation->chain_step_count = is_prefill != 0u ? 1u :
 			(continuation->dspark_verify != 0u ? 1u :
 			 frame->tokens_per_sequence);
+		{
+			struct timespec ts;
+			clock_gettime(CLOCK_MONOTONIC,&ts);
+			slot->dspark_frame_start_ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+		}
 		status = SparkDsv4ModuleValidateResidentChain(continuation);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDsv4ModuleStartLayers(continuation);
