@@ -44,4 +44,4 @@ reached - COMPSEC-17 scores get their own column then).
 - Flash: keep-old CSA landed (23 exact); skew TESTED: -1u staging correction moved the stream (hash 47cf1a47) but idx 23 = STILL 688, prefix STILL 23 exact -> staging exonerated for real, corruption is INSIDE the 8-row island math. Next: zero-reference per-row pad diff (8 duplicate rows must be bit-identical per island - any row diff = row-index bug); b1 reference unblock via uniform-tps adapter fix (fork's lane); direct-body island dump in parallel -> k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 21:05 UTC (CI green; Flash: staging exonerated - island-math bisect next (per-row pad diff, zero-reference); 27B: vLLM-engine tap capture on spark3; no new HWM since 06:45)
+Last update: 2026-08-18 21:13 UTC (CI green; Flash: pool_full128 pos-83 dump + frame-149 8-row staged-tuple dump next (pad rows may be MIXED 149/150 - non-idempotent by construction); 27B: vLLM-engine tap capture on spark3; no new HWM since 06:45)
