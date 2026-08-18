@@ -334,7 +334,11 @@ from pathlib import Path
 # stagepack PayloadBytes/ScaleBytes, and module ValidateEntry - the BF16
 # round-trip path stays byte-compatible. The shared Linear kernel already
 # shipped the FP8 dot. 166787 is the exact count.
-CEILING = 166787
+# The dsv4-flash MoE exactness kernels land (+10): shared W13, routed W13
+# and W2 all run the certified B1 kernels for every row count (consecutive
+# row iteration + tile-N match for the batched route build) - moe_out now
+# bit-identical to the lean baseline. 166797 is the exact count.
+CEILING = 166797
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

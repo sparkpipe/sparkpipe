@@ -2932,18 +2932,28 @@ void SparkLmSm121B1ExpertW13Kernel(
 	float limit)
 {
 	extern __shared__ float shared_input[];
-	uint32_t task,group,row,neuron_base;
+	uint32_t task,group,row,neuron_base,row_limit,row_end;
 	uint32_t total_tasks = __ldg(group_tile_prefix + group_count);
 	for (task=blockIdx.x; task<total_tasks; task+=gridDim.x)
 	{
 		SparkLmSm121B1ExpertTask<TILE_N>(group_row_offset,group_tile_prefix,
 			group_count,output_dimension,task,&group,&row,&neuron_base);
-		if ( row >= __ldg(group_row_offset + group + 1u) )
-			asm volatile("trap;\n");
-		SparkLmSm121B1ExpertW13Task<TILE_N>(w1_payload,w1_scale_e8m0,
-			w3_payload,w3_scale_e8m0,input_bf16,source_row_map,
-			activated_bf16,source_row_count,group,row,neuron_base,
-			input_dimension,output_dimension,limit,shared_input);
+		/* The route build groups rows in TILE_M-strided tiles; the B1 task
+		 * covers ONE row per launch, so walk the tile's consecutive packed
+		 * rows here (rows==1 batches: exactly one row, unchanged). */
+		row_limit = __ldg(group_row_offset + group + 1u);
+		row_end = row + SPARK_LM_SM121_NATIVE_TILE_M;
+		if ( row_end > row_limit )
+			row_end = row_limit;
+		for (; row < row_end; row++)
+		{
+			if ( row >= row_limit )
+				asm volatile("trap;\n");
+			SparkLmSm121B1ExpertW13Task<TILE_N>(w1_payload,w1_scale_e8m0,
+				w3_payload,w3_scale_e8m0,input_bf16,source_row_map,
+				activated_bf16,source_row_count,group,row,neuron_base,
+				input_dimension,output_dimension,limit,shared_input);
+		}
 	}
 }
 
@@ -2997,17 +3007,25 @@ void SparkLmSm121B1ExpertW2Kernel(
 	uint32_t output_dimension)
 {
 	extern __shared__ float shared_input[];
-	uint32_t task,group,row,neuron_base;
+	uint32_t task,group,row,neuron_base,row_limit,row_end;
 	uint32_t total_tasks = __ldg(group_tile_prefix + group_count);
 	for (task=blockIdx.x; task<total_tasks; task+=gridDim.x)
 	{
 		SparkLmSm121B1ExpertTask<TILE_N>(group_row_offset,group_tile_prefix,
 			group_count,output_dimension,task,&group,&row,&neuron_base);
-		if ( row >= __ldg(group_row_offset + group + 1u) )
-			asm volatile("trap;\n");
-		SparkLmSm121B1ExpertW2Task<TILE_N>(weight_payload,weight_scale_e8m0,
-			input_bf16,output_bf16,group,row,neuron_base,input_dimension,
-			output_dimension,shared_input);
+		/* Walk the tile's consecutive packed rows (see the W13 kernel). */
+		row_limit = __ldg(group_row_offset + group + 1u);
+		row_end = row + SPARK_LM_SM121_NATIVE_TILE_M;
+		if ( row_end > row_limit )
+			row_end = row_limit;
+		for (; row < row_end; row++)
+		{
+			if ( row >= row_limit )
+				asm volatile("trap;\n");
+			SparkLmSm121B1ExpertW2Task<TILE_N>(weight_payload,
+				weight_scale_e8m0,input_bf16,output_bf16,group,row,
+				neuron_base,input_dimension,output_dimension,shared_input);
+		}
 	}
 }
 
@@ -3220,27 +3238,31 @@ static inline cudaError_t SparkLmHostLaunchSm121FusedDenseW13(
 		output_dimension == 0u ||
 		output_dimension % SPARK_LM_SM121_NATIVE_TILE_N != 0u || limit <= 0.0f )
 		return(cudaErrorInvalidValue);
-	if ( row_count == 1u )
+	/* Multi-row must be bit-identical to the certified 1-row math: the
+	 * native tiled kernel quantizes the activation with per-TILE scales
+	 * (a tile spans rows), so a rows>1 batch diverges from the 1-row
+	 * GEMV's per-row quantization. Launch the exact GEMV once per row,
+	 * base pointers advanced by the row strides. */
 	{
-		SparkLmSm121FusedDenseW13GemvKernel<WEIGHT_BITS>
-			<<<((output_dimension + SPARK_LM_SM121_B1_DENSE_W13_CTA_WARPS -
-				1u) / SPARK_LM_SM121_B1_DENSE_W13_CTA_WARPS),
-				SPARK_LM_SM121_B1_DENSE_W13_CTA_THREADS,
-				input_dimension * sizeof(float),stream>>>(
-				(const uint8_t *)w1_payload,w1_scale_e8m0,
-				(const uint8_t *)w3_payload,w3_scale_e8m0,input_bf16,
-				activated_bf16,input_dimension,output_dimension,limit);
+		uint32_t row;
+		for (row = 0u; row < row_count; row++)
+		{
+			const uint8_t *row_input = (const uint8_t *)input_bf16 +
+				(uint64_t)row * input_dimension * 2u;
+			uint8_t *row_activated = (uint8_t *)activated_bf16 +
+				(uint64_t)row * output_dimension * 2u;
+			SparkLmSm121FusedDenseW13GemvKernel<WEIGHT_BITS>
+				<<<((output_dimension +
+					SPARK_LM_SM121_B1_DENSE_W13_CTA_WARPS -
+					1u) / SPARK_LM_SM121_B1_DENSE_W13_CTA_WARPS),
+					SPARK_LM_SM121_B1_DENSE_W13_CTA_THREADS,
+					input_dimension * sizeof(float),stream>>>(
+					(const uint8_t *)w1_payload,w1_scale_e8m0,
+					(const uint8_t *)w3_payload,w3_scale_e8m0,row_input,
+					row_activated,input_dimension,output_dimension,limit);
+		}
 		return(cudaGetLastError());
 	}
-	dim3 grid((row_count + SPARK_LM_SM121_NATIVE_TILE_M - 1u) /
-		SPARK_LM_SM121_NATIVE_TILE_M,
-		output_dimension / SPARK_LM_SM121_NATIVE_TILE_N);
-	SparkLmSm121FusedDenseW13Kernel<SPARK_LM_SM121_NATIVE_TILE_M,WEIGHT_BITS>
-		<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(
-			(const uint8_t *)w1_payload,w1_scale_e8m0,
-			(const uint8_t *)w3_payload,w3_scale_e8m0,input_bf16,
-			activated_bf16,row_count,input_dimension,output_dimension,limit);
-	return(cudaGetLastError());
 }
 
 static inline cudaError_t SparkLmHostLaunchSm121FusedExpertW13(
@@ -3274,10 +3296,16 @@ static inline cudaError_t SparkLmHostLaunchSm121FusedExpertW13(
 		multiprocessor_count > UINT32_MAX /
 			SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM )
 		return(cudaErrorInvalidValue);
+	/* All row counts use the certified B1 exact kernel (per-row activation
+	 * quantization): the native tiled kernel's per-tile scales diverge for
+	 * rows>1 batches. The B1 kernel enumerates every (group,row,neuron-
+	 * tile) task via the shared prefix structures; the per-neuron math is
+	 * tile-size independent, so instantiate it with the tile N the route
+	 * build actually used for the prefixes (32 for the 1-row cooperative
+	 * build, 128 for the batched build - see SparkLmSm121ExpertW13TileN). */
+	block_count = multiprocessor_count *
+		SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM;
 	if ( rows == 1u )
-	{
-		block_count = multiprocessor_count *
-			SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM;
 		SparkLmSm121B1ExpertW13Kernel<SPARK_LM_SM121_B1_EXPERT_W13_TILE_N>
 			<<<block_count,SPARK_LM_CTA_THREADS,
 				input_dimension * sizeof(float),stream>>>(
@@ -3286,22 +3314,15 @@ static inline cudaError_t SparkLmHostLaunchSm121FusedExpertW13(
 				source_row_map,group_row_offset,group_tile_prefix,
 				activated_bf16,rows,group_count,input_dimension,
 				output_dimension,limit);
-		return(cudaGetLastError());
-	}
-	if ( rows == 1024u )
-		SparkLmSm121FusedExpertW13Kernel<SPARK_LM_SM121_NATIVE_WIDE_TILE_M>
-			<<<multiprocessor_count,SPARK_LM_CTA_THREADS,0,stream>>>(
-				(const uint8_t *)w1_payload,w1_scale_e8m0,
-				(const uint8_t *)w3_payload,w3_scale_e8m0,input_bf16,
-				source_row_map,group_row_offset,group_tile_prefix,activated_bf16,
-				rows,group_count,input_dimension,output_dimension,limit);
 	else
-		SparkLmSm121FusedExpertW13Kernel<SPARK_LM_SM121_NATIVE_TILE_M>
-			<<<multiprocessor_count,SPARK_LM_CTA_THREADS,0,stream>>>(
+		SparkLmSm121B1ExpertW13Kernel<SPARK_LM_SM121_NATIVE_TILE_N>
+			<<<block_count,SPARK_LM_CTA_THREADS,
+				input_dimension * sizeof(float),stream>>>(
 				(const uint8_t *)w1_payload,w1_scale_e8m0,
 				(const uint8_t *)w3_payload,w3_scale_e8m0,input_bf16,
-				source_row_map,group_row_offset,group_tile_prefix,activated_bf16,
-				rows,group_count,input_dimension,output_dimension,limit);
+				source_row_map,group_row_offset,group_tile_prefix,
+				activated_bf16,rows,group_count,input_dimension,
+				output_dimension,limit);
 	return(cudaGetLastError());
 }
 
@@ -3331,30 +3352,19 @@ static inline cudaError_t SparkLmHostLaunchSm121ExpertW2(
 			SPARK_LM_SM121_B1_EXPERT_W2_BLOCKS_PER_SM )
 		return(cudaErrorInvalidValue);
 	packed_rows = rows * top_k;
-	if ( rows == 1u )
-	{
-		block_count = multiprocessor_count *
-			SPARK_LM_SM121_B1_EXPERT_W2_BLOCKS_PER_SM;
-		SparkLmSm121B1ExpertW2Kernel<SPARK_LM_SM121_B1_EXPERT_W2_TILE_N>
-			<<<block_count,SPARK_LM_CTA_THREADS,
-				input_dimension * sizeof(float),stream>>>(
-				(const uint8_t *)weight_payload,weight_scale_e8m0,input_bf16,
-				group_row_offset,group_tile_prefix,output_bf16,group_count,
-				input_dimension,output_dimension);
-		return(cudaGetLastError());
-	}
-	if ( rows == 1024u )
-		SparkLmSm121ExpertW2Kernel<SPARK_LM_SM121_NATIVE_WIDE_TILE_M>
-			<<<multiprocessor_count,SPARK_LM_CTA_THREADS,0,stream>>>(
-				(const uint8_t *)weight_payload,weight_scale_e8m0,input_bf16,
-				group_row_offset,group_tile_prefix,output_bf16,packed_rows,
-				group_count,input_dimension,output_dimension);
-	else
-		SparkLmSm121ExpertW2Kernel<SPARK_LM_SM121_NATIVE_TILE_M>
-			<<<multiprocessor_count,SPARK_LM_CTA_THREADS,0,stream>>>(
-				(const uint8_t *)weight_payload,weight_scale_e8m0,input_bf16,
-				group_row_offset,group_tile_prefix,output_bf16,packed_rows,
-				group_count,input_dimension,output_dimension);
+	(void)packed_rows;
+	/* All row counts use the certified B1 exact kernel (per-row activation
+	 * quantization); the native tiled kernel's per-tile scales diverge for
+	 * rows>1 batches. The B1 kernel enumerates all (group,row,neuron-tile)
+	 * tasks via the shared prefix structures. */
+	block_count = multiprocessor_count *
+		SPARK_LM_SM121_B1_EXPERT_W2_BLOCKS_PER_SM;
+	SparkLmSm121B1ExpertW2Kernel<SPARK_LM_SM121_B1_EXPERT_W2_TILE_N>
+		<<<block_count,SPARK_LM_CTA_THREADS,
+			input_dimension * sizeof(float),stream>>>(
+			(const uint8_t *)weight_payload,weight_scale_e8m0,input_bf16,
+			group_row_offset,group_tile_prefix,output_bf16,group_count,
+			input_dimension,output_dimension);
 	return(cudaGetLastError());
 }
 
