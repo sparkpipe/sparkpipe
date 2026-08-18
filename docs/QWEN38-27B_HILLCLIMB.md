@@ -60,6 +60,42 @@ So even after A1-A3, our MTP D=2 ceiling is capped well below DSpark.
    survey's winning path (20-58 tok/s FP8 single-stream) — instead of
    deepening MTP.
 
+**A5 — measured verdict (B1 TP1, memory-bound GB10, 2026-08-18).**
+The async phase-one completion (option a: make the MTP_DRAFT_AFTER submit
+non-blocking so decode-draft(N+1) overlaps verify(N)+replay(N) under the
+residentd admit-first order) is CORRECT — token stream bit-identical — but it
+is a NO-OP: spec D=2 = 3.46-3.47 tok/s vs 3.50 no-async vs 3.69 no-spec. The
+GPU is memory-bound (rung-2 profile: FFN 65.4% + GDN 23.2% = 88.6%), so two
+in-flight walks cost the same wall time as two serial walks: there is no
+compute idle to reclaim and the host-side ~82ms/token is already pipelined.
+
+VERDICT: the overlap/2-in-flight direction is DEAD for this hardware. MTP D=2
+cannot pay — its intrinsic cost is ~3 full-model walks per ~3 committed tokens
+(≈ 1 walk/token, same as no-spec) plus MTP + verify/replay orchestration. The
+only spec path that pays is a HIGHER-ACCEPTANCE draft source (DSpark-class),
+which is the rung-3 gate. The async changes stay UNCOMMITTED in the clone as
+the record and are NOT landed. Lane redirects to rung 2 (tiled FP8 decode)
+now: the 7.88 reference implies their FP8 kernels are ~2x ours, which is
+exactly a tiled-dequant difference.
+
+**A6 — rung-2 FP8 decode landed + spec D=2 re-measured (2026-08-18).**
+Rung 2 (native e4m3x4 decode, landed 9cbe4d5): the FFN/GDN F32B128 dot row
+called exp2f() per e4m3 byte, making it compute-bound; switching to the SM121
+native `cvt.rn.f16x2.e4m3x2` (already shipped for the E8M0 path) removed it,
+bit-losslessly (e4m3 subset of f16). Measured no-spec B1: 3.69 -> **8.00
+tok/s** (HWM c729071), exceeding the 7.88 reference; token stream bit-identical,
+validator bit_exact=1.
+
+Spec D=2 re-armed on the 8.00 base: **7.16 tok/s** (3.35s/24, submitted=8 for
+24 tokens = ~3 committed tokens/iteration, first_draft_miss=2 unchanged). So
+D=2 rose 2.05x (3.50 -> 7.16) but is STILL BELOW no-spec 8.00 — the 3-walk
+verdict HOLDS. Clarifying the arithmetic: "3 walks" is per ITERATION, and each
+iteration commits ~3-4 accepted tokens, so the intrinsic cost is ~1 full-model
+walk per committed token (same as no-spec); the MTP lm_head passes (a full
+vocab-248320 screened argmax per draft, A4) + verify/replay orchestration are
+what keep D=2 below plain decode. Only a higher-acceptance DSpark-class
+drafter (rung 3) can make spec beat no-spec.
+
 ## B. Checkpoint id + revision (read from spark3, no downloads/launches)
 
 spark3 (hostname `aitopatom-a18f`) runtime `/home/spark3/sparkdata/
