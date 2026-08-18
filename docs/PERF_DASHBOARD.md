@@ -41,7 +41,7 @@ reached - COMPSEC-17 scores get their own column then).
 ## Active climbs (references being matched)
 
 - 27B: DSpark rung-3 weights packed (1.36B); parity harness draft[0]=220 matches reference, draft[1] 16-vs-17 near-tie; HF oracle DEAD (drafter trust_remote_code import deadlocks after fla/flashinfer install) -> vLLM-engine oracle confirmed on spark3 (own qwen3_dspark.py classes); instrumenting speculator for 7-draft + 5-tap capture; then 20-58 DSpark.
-- Flash: keep-old CSA landed (23 exact); instrument ac9d8a72 pins FIRST WRONG PREDICTION to the anchor=148 frame row 0 (token 290 @pos150 -> 688, ref 3815); staging + scratch self-contained exonerated -> corruption inside that ONE 8-row forward; in-binary 1-row-vs-8-row per-island output diff underway (b1 engine stall retired as dependency; attention cache-row index dump added) -> then k-sweep k=5/7/8/10.
+- Flash: keep-old CSA landed (23 exact); first wrong prediction = anchor-148 row 0 (token 290 @pos150 -> 688, ref 3815); NEW: anchor-149 frame ran the BUSY pad fallback (8 same-position duplicates) and staging shows a token/position one-step skew -> 77=11x7 phase-shift mechanism; dspark_lane_pos instrument building to name it (coordinator static check: landed store formula consistent -> suspect pad-path accounting); then per-island diff on a clean frame -> k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 21:10 UTC (CI green; Flash bisect: per-island 1-row-vs-8-row diff at anchor=148; 27B: vLLM-engine tap capture on spark3; no new HWM since 06:45)
+Last update: 2026-08-18 21:15 UTC (CI green; Flash: pad-fallback phase-skew instrument building (77=11x7 mechanism); 27B: vLLM-engine tap capture on spark3; no new HWM since 06:45)
