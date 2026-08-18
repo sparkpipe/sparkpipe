@@ -13,7 +13,7 @@ reached - COMPSEC-17 scores get their own column then).
 
 | Model | B1 no-spec | B1 spec | B8 | B16 | other B* |
 | --- | --- | --- | --- | --- | --- |
-| DSV4 Flash (TP4) | **40.46** [exact 3/3] | 8.43 (k=7, hash WRONG - not valid) | - | - | - |
+| DSV4 Flash (TP4) | **40.46** [exact 3/3] | **8.48** (k=7, hash WRONG - not valid) | - | - | - |
 | Qwen 3.8 27B (TP1) | **8.00 FP8** (tiled decode; 3.10 BF16) [validated] | 7.16 (D=2, 2.05x - still < no-spec) | - | - | - |
 | K3 | **none measured** (never run on fleet hardware) | - | - | - | - |
 | GLM52 | **6.91** | - (draft weights untrained) | 2-3 | 2-3 | - |
@@ -31,7 +31,7 @@ reached - COMPSEC-17 scores get their own column then).
 
 | Model | no-spec golden | spec golden | TP correctness |
 | --- | --- | --- | --- |
-| DSV4 Flash | O128 3/3 exact | NOT yet (hash cf74a528 vs a9385d0b; token-2 flip) | TP4 exact |
+| DSV4 Flash | O128 3/3 exact | CSA keep-old fix landed: 23 exact tokens (2c40465d); full-O128 not yet (golden pin moved to 211462f2 batch) | TP4 exact |
 | Qwen 3.8 27B | bit-exact GPU validation + genuine prompt | D=2 validated (no B1 gain) | TP1 |
 | K3 | not measured | - | TP16 serial replay sum-vs-golden PASS (worst 0.0508) - correctness only |
 | GLM52 | pre-fleet | - | - |
@@ -40,8 +40,8 @@ reached - COMPSEC-17 scores get their own column then).
 
 ## Active climbs (references being matched)
 
-- 27B: FP8 repack in flight -> reference 7.88 no-spec B1; then 20-58 DSpark.
-- Flash: final_hidden bisect -> hash bar a9385d0b -> k-sweep k=5/7/8/10.
+- 27B: DSpark rung-3 weights packed (1.36B); parity harness draft[0]=220 matches reference [220,17,11,748,874,4799,13], draft[1] 16-vs-17 near-tie; vLLM-engine oracle running on spark3; then 20-58 DSpark.
+- Flash: keep-old CSA landed (23 exact); idx-23 divergence narrowed to layer-2 MAIN compressor WKV channels 32-255 (index state identical, index emission diverges) -> then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 06:45 UTC (27B spec D=2 7.16 on the 8.0 base - verdict holds)
+Last update: 2026-08-18 20:45 UTC (CI: 1b0ab15 cc arity bug root-caused from receipts, fix 2623715 pushed, run 32183634880 in flight; no new HWM since 06:45)
