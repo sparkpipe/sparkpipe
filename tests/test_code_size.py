@@ -365,7 +365,11 @@ from pathlib import Path
 # decode-draft) now runs BEFORE the phase-two scan so verify(N) and
 # decode-draft(N+1) overlap under max_inflight_submission_count; FIFO,
 # lease, and transport ordering all preserved. 166950 is the exact count.
-CEILING = 166950
+# The qwen36 DSpark drafter packer + format header land (+328): the 62-tensor
+# drafter (Doopeworld/Qwen3.8-27B-DSpark-vLLM, 1.36B params) packs into the
+# Q6SP wire format with 17 kinds and the module-side shape table - the rung-3
+# foundation (draft weights are public; no gate). 167278 is the exact count.
+CEILING = 167278
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
