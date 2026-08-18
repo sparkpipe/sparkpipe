@@ -345,7 +345,11 @@ from pathlib import Path
 # The qwen36 FP8 scale-offset + verify fixes land (+17): copy_scale reads the
 # scale tensor from its data offset (was header bytes -> NaN), and the verify()
 # re-parse path accepts the FP8 format. 166823 is the exact count.
-CEILING = 166823
+# The non-blocking token-emission fix lands (+66): emission decouples from
+# the decode loop (buffered snprintf + O_NONBLOCK write + retry + drain at
+# exit) - the host-side term that stalled B1 at the stdout reader's rate.
+# 166889 is the exact count.
+CEILING = 166889
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

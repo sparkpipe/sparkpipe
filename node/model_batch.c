@@ -1,8 +1,10 @@
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_batch_engine.h"
@@ -35,6 +37,9 @@ typedef struct SparkModelBatchOutput
 	uint32_t stage_completion_capacity;
 	uint32_t dropped_stage_completion_count;
 	SparkModelPipelineStageCompletion *stage_completions;
+	uint8_t *pending_output;
+	uint32_t pending_output_bytes;
+	uint32_t pending_output_capacity;
 } SparkModelBatchOutput;
 
 static const char *const SparkModelBatchFileMembers[] =
@@ -308,20 +313,74 @@ static const char *SparkModelBatchEventName(uint32_t kind)
 	}
 }
 
+/* Emission is decoupled from the decode loop: tokens are formatted into a
+ * user-space buffer and written to stdout WITHOUT blocking. A slow reader
+ * (the harness draining stdout) would otherwise stall the only producer of
+ * the next decode submission, turning reader latency into wall-clock. */
+static int32_t SparkModelBatchOutputReserve(
+	SparkModelBatchOutput *output,
+	uint32_t bytes)
+{
+	uint32_t capacity,required;
+	uint8_t *grown;
+	if ( bytes <= output->pending_output_capacity - output->pending_output_bytes )
+		return(0);
+	required = output->pending_output_bytes + bytes;
+	capacity = output->pending_output_capacity != 0u ? output->pending_output_capacity : 4096u;
+	while ( capacity < required )
+		capacity *= 2u;
+	grown = (uint8_t *)realloc(output->pending_output,capacity);
+	if ( grown == 0 )
+		return(-1);
+	output->pending_output = grown;
+	output->pending_output_capacity = capacity;
+	return(0);
+}
+
+static void SparkModelBatchFlushOutput(SparkModelBatchOutput *output)
+{
+	ssize_t written;
+	if ( output->write_failed != 0u )
+		return;
+	while ( output->pending_output_bytes != 0u )
+	{
+		written = write(STDOUT_FILENO,output->pending_output,output->pending_output_bytes);
+		if ( written > 0 )
+		{
+			memmove(output->pending_output,output->pending_output + written,
+				output->pending_output_bytes - (uint32_t)written);
+			output->pending_output_bytes -= (uint32_t)written;
+			continue;
+		}
+		if ( written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) )
+			return;  /* reader is behind; keep bytes, retry next loop iteration */
+		output->write_failed = 1u;
+		return;
+	}
+}
+
 static void SparkModelBatchWriteEvent(
 	void *event_context,
 	const SparkModelBatchEvent *event)
 {
 	SparkModelBatchOutput *output;
-	int32_t written;
+	char line[512];
+	int32_t length;
 	output = (SparkModelBatchOutput *)event_context;
-	written = fprintf(stdout,"{\"schema_version\":1,\"event\":\"%s\",\"status\":%u,\"request_id\":%llu,\"sequence_id\":%llu,\"request_handle\":%llu,\"token_id\":%u,\"token_index\":%u,\"generated_token_count\":%u,\"stop_token\":%s",SparkModelBatchEventName(event->kind),event->status,(unsigned long long)event->request_id,(unsigned long long)event->sequence_id,(unsigned long long)event->request_handle,event->token_id,event->token_index,event->generated_token_count,(event->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) != 0u ? "true" : "false");
-	if ( written >= 0 && event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED )
-		written = fprintf(stdout,",\"model_extension_kind\":%u,\"first_draft_miss\":%u,\"first_draft_policy\":%u",event->model_extension_kind,event->first_draft_miss_count,event->first_draft_policy);
-	if ( written >= 0 )
-		written = fprintf(stdout,"}\n");
-	if ( written < 0 || fflush(stdout) != 0 )
+	length = snprintf(line,sizeof(line),"{\"schema_version\":1,\"event\":\"%s\",\"status\":%u,\"request_id\":%llu,\"sequence_id\":%llu,\"request_handle\":%llu,\"token_id\":%u,\"token_index\":%u,\"generated_token_count\":%u,\"stop_token\":%s",SparkModelBatchEventName(event->kind),event->status,(unsigned long long)event->request_id,(unsigned long long)event->sequence_id,(unsigned long long)event->request_handle,event->token_id,event->token_index,event->generated_token_count,(event->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) != 0u ? "true" : "false");
+	if ( length >= 0 && event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED && (size_t)length < sizeof(line) )
+		length += snprintf(line + length,sizeof(line) - (size_t)length,",\"model_extension_kind\":%u,\"first_draft_miss\":%u,\"first_draft_policy\":%u",event->model_extension_kind,event->first_draft_miss_count,event->first_draft_policy);
+	if ( length >= 0 && (size_t)length < sizeof(line) )
+		length += snprintf(line + length,sizeof(line) - (size_t)length,"}\n");
+	if ( length < 0 || (size_t)length >= sizeof(line) ||
+		SparkModelBatchOutputReserve(output,(uint32_t)length) != 0 )
 		output->write_failed = 1u;
+	else
+	{
+		memcpy(output->pending_output + output->pending_output_bytes,line,(size_t)length);
+		output->pending_output_bytes += (uint32_t)length;
+		SparkModelBatchFlushOutput(output);
+	}
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED || event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED || event->kind == SPARK_MODEL_BATCH_EVENT_ERROR )
 		output->terminal_count++;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_ERROR )
@@ -450,7 +509,7 @@ static int32_t SparkModelBatchPoll(
 static SparkStatus SparkModelBatchRun(
 	SparkModelBatchEngine *engine,
 	const SparkModelBatchFile *file,
-	const SparkModelBatchOutput *output)
+	SparkModelBatchOutput *output)
 {
 	SparkModelResidentClientPollDescriptor descriptors[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
 	SparkModelBatchEngineView view;
@@ -459,6 +518,7 @@ static SparkStatus SparkModelBatchRun(
 	status = SPARK_STATUS_OK;
 	while ( status == SPARK_STATUS_OK && output->terminal_count<file->request_count && output->write_failed == 0u )
 	{
+		SparkModelBatchFlushOutput(output);
 		status = SparkModelBatchEngineProgress(engine,file->maximum_new_submissions_per_progress);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkModelBatchEngineGetPollDescriptors(engine,descriptors,SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT,&descriptor_count);
@@ -551,7 +611,12 @@ int main(int argc,char **argv)
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchEngineCloseAdmission(engine);
 	if ( status == SPARK_STATUS_OK )
+		(void)fcntl(STDOUT_FILENO,F_SETFL,fcntl(STDOUT_FILENO,F_GETFL,0) | O_NONBLOCK);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchRun(engine,&file,&output);
+	/* Drain whatever the slow reader could not take during the run (now blocking). */
+	(void)fcntl(STDOUT_FILENO,F_SETFL,fcntl(STDOUT_FILENO,F_GETFL,0) & ~O_NONBLOCK);
+	SparkModelBatchFlushOutput(&output);
 	if ( engine != 0 && SparkModelBatchEngineGetView(engine,&engine_view) ==
 		SPARK_STATUS_OK )
 	{
@@ -574,5 +639,6 @@ int main(int argc,char **argv)
 	SparkModelBatchFileDestroy(&file);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	free(output.stage_completions);
+	free(output.pending_output);
 	return(status == SPARK_STATUS_OK ? 0 : 1);
 }
