@@ -40,8 +40,8 @@ reached - COMPSEC-17 scores get their own column then).
 
 ## Active climbs (references being matched)
 
-- 27B: DSpark rung-3 weights packed (1.36B); DECISIVE MARGIN: draft[1] top1(17)-top2(16) = 0.375 -> HARNESS POSITION-1 FORWARD BUG (not tie, not Markov); three zero-cost analyses DONE: margin wide, taps match by construction, host Markov matches numpy+specforge (only .cuh dead-code deviant - fix approved); localization by code-read now: suspects = embedding gather for rows 1+ (mask id/offset), rope block_index, Q/K norm row idx, attention accumulation; oracle shelved; then 20-58 DSpark.
+- 27B: DSpark rung-3 weights packed (1.36B); DECISIVE MARGIN: draft[1] top1(17)-top2(16) = 0.375 -> HARNESS POSITION-1 FORWARD BUG (not tie, not Markov); code-read (embed-gather/rope suspects) + harness re-run dump IN PARALLEL (residentd restart w/ smaller KV approved, configs recorded, restore after); oracle shelved (structural-only fallback); then 20-58 DSpark.
 - Flash: keep-old CSA landed (23 exact); skew TESTED: -1u staging correction moved the stream (hash 47cf1a47) but idx 23 = STILL 688, prefix STILL 23 exact -> staging exonerated for real, corruption is INSIDE the 8-row island math. Next: zero-reference per-row pad diff (8 duplicate rows must be bit-identical per island - any row diff = row-index bug); b1 reference unblock via uniform-tps adapter fix (fork's lane); direct-body island dump in parallel -> k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 22:10 UTC (CI green; Flash: frame-149 pad-row check in flight; 27B: position-1 bug localizing by code-read (embed gather / rope suspects); no new HWM since 06:45)
+Last update: 2026-08-18 22:15 UTC (CI green; Flash: frame-149 pad-row check in flight; 27B: code-read + harness dump in parallel for position-1 bug; no new HWM since 06:45)
