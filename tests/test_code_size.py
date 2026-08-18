@@ -342,7 +342,10 @@ from pathlib import Path
 # the certified 1-row head instead of the screened-argmax route (hash
 # unchanged - proves the token-2 divergence is upstream, but the certified
 # head is the correct math regardless). 166806 is the exact count.
-CEILING = 166806
+# The qwen36 FP8 scale-offset + verify fixes land (+17): copy_scale reads the
+# scale tensor from its data offset (was header bytes -> NaN), and the verify()
+# re-parse path accepts the FP8 format. 166823 is the exact count.
+CEILING = 166823
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
