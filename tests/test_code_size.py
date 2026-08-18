@@ -320,7 +320,12 @@ from pathlib import Path
 # w2 launch now memsets and sets every field the grouped GEMM reads (the
 # uninitialised scale_a returned -41 on the golden's first MoE layer).
 # 166658 is the exact count.
-CEILING = 166658
+# The dsv4-flash QKV exactness fix lands (+5): the FP8 decode linear routes
+# ALL row counts to the exact batched kernel family instead of the MXFP8
+# native path, whose activation quantization diverged the 8-row DSpark
+# verify anchor (first divergent tensor: delta_wq_a). 166663 is the exact
+# count.
+CEILING = 166663
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

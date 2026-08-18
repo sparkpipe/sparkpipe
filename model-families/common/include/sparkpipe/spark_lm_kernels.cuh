@@ -5172,9 +5172,14 @@ static inline cudaError_t SparkLmHostLaunchSm121DecodeLinear(cudaStream_t stream
 		return(SparkLmHostLaunchBatchedLinear<GROUP_SIZE,ACTIVATION_CODEC>(stream,weight_format,weight_payload,weight_scale,input_bf16,output_bf16,row_count,input_dimension,output_dimension));
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
 	{
-		if ( weight_scale == 0 || input_dimension % 128u != 0u || output_dimension % SPARK_LM_SM121_NATIVE_TILE_N != 0u )
-			return(cudaErrorInvalidValue);
-		return(SparkLmHostLaunchSm121NativeLinear<SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(stream,weight_payload,(const uint8_t *)weight_scale,(uint64_t)output_dimension * input_dimension,(uint64_t)output_dimension * (input_dimension / 128u),input_bf16,input_dimension,0u,0u,output_bf16,output_dimension,0u,0u,1u,row_count,input_dimension,output_dimension));
+		/* Exact path for ALL row counts: the native MXFP8 route quantizes the
+		 * BF16 activation to E4M3 (per-K-block E8M0 scale), which diverges
+		 * from the certified 1-row math and corrupts the DSpark verify
+		 * anchor's Q/K (first divergent tensor: delta_wq_a, measured). The
+		 * batched exact kernel is the same family the rows==1 path uses. */
+		return(SparkLmHostLaunchBatchedLinear<GROUP_SIZE,ACTIVATION_CODEC>(stream,
+			weight_format,weight_payload,weight_scale,input_bf16,output_bf16,
+			row_count,input_dimension,output_dimension));
 	}
 	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 || (input_dimension % SPARK_LM_TILE_K) != 0u )
 		return(cudaErrorInvalidValue);
