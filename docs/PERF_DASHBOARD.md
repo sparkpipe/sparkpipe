@@ -40,8 +40,8 @@ reached - COMPSEC-17 scores get their own column then).
 
 ## Active climbs (references being matched)
 
-- 27B: DSpark rung-3 PARITY RESOLVED: kernel bit-exact vs fixed reference (bug was the reference's rope numpy-view read-after-overwrite, landed 1cd258f + ceiling ratchet); next = B1 spec k=7 measurement vs the 8.00 no-spec HWM (acceptance rate is the lever); then 20-58 DSpark.
+- 27B: DSpark rung-3 PARITY RESOLVED (bit-exact, landed 1cd258f); DEPLOY SEQUENCE GO: build .so w/ DSpark + FP8 pack swap + restart-not-stop -> no-spec repro first, then B1 spec k=7 vs the 8.00 HWM (acceptance rate = lever); full DSpark module port delivers after the measurement; then 20-58 DSpark.
 - Flash: keep-old CSA landed (23 exact); skew TESTED: -1u staging correction moved the stream (hash 47cf1a47) but idx 23 = STILL 688, prefix STILL 23 exact -> staging exonerated for real, corruption is INSIDE the 8-row island math. Next: zero-reference per-row pad diff (8 duplicate rows must be bit-identical per island - any row diff = row-index bug); b1 reference unblock via uniform-tps adapter fix (fork's lane); direct-body island dump in parallel -> k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 22:30 UTC (CI green; 27B: DRAFT PARITY BIT-EXACT - reference rope bug fixed and landed; B1 spec measurement next; Flash: frame-149 pad-row check in flight; no new HWM since 06:45)
+Last update: 2026-08-18 22:52 UTC (CI green on 42a4114; 27B: DSpark deploy+measure sequence RUNNING; Flash: frame-149 pad-row check in flight; no new HWM since 06:45)
