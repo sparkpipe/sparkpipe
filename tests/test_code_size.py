@@ -382,7 +382,12 @@ from pathlib import Path
 # never advance the committed state), and the commit replays rows 1..accepted
 # through the committed compressor (rejected rows keep the old value) - the
 # keep-old rollback contract. 167427 is the exact count.
-CEILING = 167427
+# The DSpark parity reference lands (+236): the numpy golden draft script
+# (tools/qwen36_dspark_reference.py) whose rope view bug was the last blocker
+# between the CUDA drafter and the reference tokens - the fixed script is
+# the bit-exact golden for draft parity and must stay in-tree.
+# 167663 is the exact count.
+CEILING = 167663
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
