@@ -377,7 +377,12 @@ from pathlib import Path
 # DSPARK_DRAFT_AFTER flag + draft view, and the module's per-slot tap buffer
 # capturing target hiddens at layers {4,16,28,40,52} during the decode loop.
 # 167370 is the exact count.
-CEILING = 167370
+# The dsv4-flash CSA isolation fixes land (+57): the prologue gates the
+# compressor/indexer to the anchor row for verify/pad frames (draft rows
+# never advance the committed state), and the commit replays rows 1..accepted
+# through the committed compressor (rejected rows keep the old value) - the
+# keep-old rollback contract. 167427 is the exact count.
+CEILING = 167427
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

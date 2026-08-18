@@ -2655,26 +2655,39 @@ static cudaError_t SparkDsv4ModuleRunCompressorProjection(
 		scratch->score_bf16,rows));
 }
 
-static cudaError_t SparkDsv4ModuleRunCompressorPost(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, SparkDsv4CompressorScratch *scratch, cudaStream_t stream, const SparkDsv4CompressorWeights *weights, float *kv_state, float *score_state, uint64_t state_stride, void *cache_base, uint64_t cache_lane_stride, uint64_t cache_slot_offset, uint32_t cache_width, uint32_t rotate, uint32_t rows)
+static cudaError_t SparkDsv4ModuleRunCompressorPost(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, SparkDsv4CompressorScratch *scratch, cudaStream_t stream, const SparkDsv4CompressorWeights *weights, float *kv_state, float *score_state, uint64_t state_stride, void *cache_base, uint64_t cache_lane_stride, uint64_t cache_slot_offset, uint32_t cache_width, uint32_t rotate, uint32_t first_row, uint32_t rows)
 {
 	uint32_t overlapped;
 	uint64_t ratio = weights->ratio;
+	uint64_t channels,row_byte_offset,emit_byte_offset;
 	cudaError_t error;
 	if ( weights->overlap != 1u && weights->overlap != SPARK_DSV4_MODEL_CSA_OVERLAP_FACTOR )
 		return(cudaErrorInvalidValue);
 	overlapped = weights->overlap > 1u ? 1u : 0u;
-	error = SparkDsv4LaunchCompressStep(stream,scratch->kv_bf16,
-		scratch->score_bf16,weights->ape_f32,kv_state,score_state,state_stride,
-		slot->row_lane_indices,slot->row_positions,rows,(uint32_t)ratio,
-		overlapped,cache_width,scratch->emit_bf16,scratch->emitted_u32);
+	channels = (uint64_t)(overlapped != 0u ? 2u : 1u) * cache_width;
+	row_byte_offset = (uint64_t)first_row * channels *
+		SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	emit_byte_offset = (uint64_t)first_row * cache_width *
+		SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	error = SparkDsv4LaunchCompressStep(stream,
+		(uint8_t *)scratch->kv_bf16 + row_byte_offset,
+		(uint8_t *)scratch->score_bf16 + row_byte_offset,
+		weights->ape_f32,kv_state,score_state,state_stride,
+		slot->row_lane_indices + first_row,slot->row_positions + first_row,
+		rows,(uint32_t)ratio,
+		overlapped,cache_width,
+		(uint8_t *)scratch->emit_bf16 + emit_byte_offset,
+		scratch->emitted_u32 + first_row);
 	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchKvEmission(stream,scratch->emit_bf16,
-			scratch->emitted_u32,weights->norm_weight_bf16,
+		error = SparkDsv4LaunchKvEmission(stream,
+			(uint8_t *)scratch->emit_bf16 + emit_byte_offset,
+			scratch->emitted_u32 + first_row,weights->norm_weight_bf16,
 			state->compress_freqs_f32,
 			weights->ratio == SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO ?
-				slot->row_emit_positions_hca : slot->row_emit_positions,
-			cache_base,cache_lane_stride,slot->row_lane_indices,
-			slot->row_positions,rows,cache_width,cache_slot_offset,
+				slot->row_emit_positions_hca + first_row :
+				slot->row_emit_positions + first_row,
+			cache_base,cache_lane_stride,slot->row_lane_indices + first_row,
+			slot->row_positions + first_row,rows,cache_width,cache_slot_offset,
 			(uint32_t)ratio,SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS,rotate);
 	return(error);
 }
@@ -2686,7 +2699,7 @@ static cudaError_t SparkDsv4ModuleRunCompressor(SparkDsv4ModuleState *state, Spa
 	if ( error == cudaSuccess )
 		error = SparkDsv4ModuleRunCompressorPost(state,slot,scratch,stream,weights,
 			kv_state,score_state,state_stride,cache_base,cache_lane_stride,
-			cache_slot_offset,cache_width,rotate,rows);
+			cache_slot_offset,cache_width,rotate,0u,rows);
 	return(error);
 }
 
@@ -2737,7 +2750,7 @@ static cudaError_t SparkDsv4ModuleRunIndexerCore(SparkDsv4ModuleState *state, Sp
 			&slot->index_compressor,stream,&layer->indexer.compressor,kv_state,
 			score_state,state->index_state_lane_stride,index_cache,
 			state->index_lane_stride,0u,
-			SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION,1u,rows);
+			SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION,1u,0u,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchIndexerScore(stream,slot->index_q_bf16,index_cache,state->index_lane_stride,slot->row_page_table_indices,slot->physical_page_table,state->paged_cache.lane_page_capacity,SPARK_DSV4_PAGED_POOL_BLOCK_TOKENS / SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO,slot->slot_counts,slot->index_weights_f32,slot->index_scores_f32,rows,state->index_slot_capacity,SPARK_DSV4_MODEL_INDEX_HEAD_COUNT,SPARK_DSV4_MODEL_INDEX_HEAD_DIMENSION);
 	if ( error == cudaSuccess )
@@ -3071,17 +3084,23 @@ static cudaError_t SparkDsv4ModuleRunAttentionSerialPrologue(SparkDsv4ModuleStat
 			freqs,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4ModuleRunKvPost(slot,stream,layer,freqs,rows);
+	/* Row-0 gate: a verify/pad frame's duplicate or draft rows must not
+	 * advance the committed compressor state or the index cache in the
+	 * batched prologue - only the anchor (row 0) writes. The accepted
+	 * drafts are re-applied at the commit (rows 1..accepted). */
 	if ( error == cudaSuccess && kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA )
 		error = SparkDsv4ModuleRunCompressor(state,slot,&slot->compressor,stream,
 			&layer->compressor,state->compress_kv_state_f32 + state_offset,
 			state->compress_score_state_f32 +
 			state->compress_score_state_offset_by_layer[layer_index],state_stride,
 			cache,lane_stride,SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS,
-			SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,rows);
+			SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,
+			slot->dspark_verify_rows != 0u ? 1u : rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4ModuleStageTopk(state,slot,stream,kind,rows);
 	if ( error == cudaSuccess && kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
-		error = SparkDsv4ModuleRunIndexer(state,slot,stream,layer,layer_index,rows);
+		error = SparkDsv4ModuleRunIndexer(state,slot,stream,layer,layer_index,
+			slot->dspark_verify_rows != 0u ? 1u : rows);
 	return(error);
 }
 
@@ -3600,6 +3619,44 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 			 * lands one past the next submission's sequence_position). */
 			async->lane_next_positions[0] += accepted;
 			async->cache_lanes[0].context_token_count += accepted;
+			/* Commit replay: the row-0 gate wrote only the anchor in
+			 * the prologue; re-apply rows 1..accepted through the
+			 * committed compressor state so the next frame's boundary
+			 * pool reads the exact accepted-prefix d values (the
+			 * rejected rows keep the old committed value). */
+			if ( accepted != 0u )
+			{
+				uint32_t row;
+				for (layer = state->first_layer_index;
+					layer < state->first_layer_index +
+					state->layer_count && error == cudaSuccess; layer++)
+				{
+					if ( SparkDsv4ModelLayerKind(layer) ==
+						SPARK_DSV4_MODEL_LAYER_KIND_SWA )
+						continue;
+					for (row = 1u; row <= accepted; row++)
+					{
+						error = SparkDsv4ModuleRunCompressorPost(
+							state,slot,&slot->compressor,
+							(cudaStream_t)slot->cuda_stream,
+							&state->layers[layer].compressor,
+							state->compress_kv_state_f32 +
+							state->compress_state_offset_by_layer[layer],
+							state->compress_score_state_f32 +
+							state->compress_score_state_offset_by_layer[layer],
+							state->compress_state_lane_stride_by_layer[layer],
+							(uint8_t *)state->kv_cache_bf16 +
+							state->cache_offset_by_layer[layer] *
+							SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,
+							state->cache_lane_stride_by_layer[layer],
+							SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS,
+							SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,
+							row,1u);
+						if ( error != cudaSuccess )
+							break;
+					}
+				}
+			}
 		}
 		if ( lane_index < state->resident_sequence_capacity )
 		{
