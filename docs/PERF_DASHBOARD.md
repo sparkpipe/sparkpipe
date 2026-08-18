@@ -15,7 +15,7 @@ reached - COMPSEC-17 scores get their own column then).
 | --- | --- | --- | --- | --- | --- |
 | DSV4 Flash (TP4) | **40.46** [exact 3/3] | 8.43 (k=7, hash WRONG - not valid) | - | - | - |
 | Qwen 3.8 27B (TP1) | **3.10** [validated] | 3.04 (D=2, no gain, validated) | - | - | - |
-| K3 (pre-fleet) | **18.0** | - | 20.2 (TP16-PP1) | - | - |
+| K3 | **none measured** (never run on fleet hardware) | - | - | - | - |
 | GLM52 | **6.91** | - (draft weights untrained) | 2-3 | 2-3 | - |
 | Qwen3.8-Max | 1.29 per-request | - | 0.61 | - | ~39 agg @B256 (TP4xPP4 replicated) |
 | DSV4 Pro | ~12-13 (bandwidth-grounded est, not e2e) | - | - | - | - |
@@ -24,7 +24,7 @@ reached - COMPSEC-17 scores get their own column then).
 
 | Model | B8 | B1024 | notes |
 | --- | --- | --- | --- |
-| K3 | **92** | **1537** | pre-fleet receipts |
+| K3 | - | - | RETRACTED (not hardware-measured) |
 | others | - | - | not recorded / not wired (Max) |
 
 ## Accuracy / correctness state
@@ -33,7 +33,7 @@ reached - COMPSEC-17 scores get their own column then).
 | --- | --- | --- | --- |
 | DSV4 Flash | O128 3/3 exact | NOT yet (hash cf74a528 vs a9385d0b; token-2 flip) | TP4 exact |
 | Qwen 3.8 27B | bit-exact GPU validation + genuine prompt | D=2 validated (no B1 gain) | TP1 |
-| K3 | pre-fleet receipts | - | TP16 serial replay sum-vs-golden PASS (worst 0.0508) |
+| K3 | not measured | - | TP16 serial replay sum-vs-golden PASS (worst 0.0508) - correctness only |
 | GLM52 | pre-fleet | - | - |
 | Qwen3.8-Max | level-1 state | - | - |
 | DSV4 Pro | - | - | transport-open validated |
