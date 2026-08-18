@@ -44,4 +44,4 @@ reached - COMPSEC-17 scores get their own column then).
 - Flash: keep-old CSA landed (23 exact); R1DIFF PINNED THE BUG: layer-0 wq_a FP8 pair kernel computes a BATCH-COUPLED activation scale (row-0 result depends on row count + sibling values; divergence enters at ch 256 = the 128-tile boundary; ALL 8 rows wrong, not just row 0) - also explains the session-10 ch-32+ signature; fix = PER-ROW scale in the shared 128-tile pair path (precedent: the other exact-per-row fixes in the same file); verify with the in-binary 1-row shadow instrument -> then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 23:35 UTC (CI green; Flash: per-row FP8 scale fix in progress; 27B: adapter MTP-arm defect root-caused + fix greenlit; no HWM change since 8.03)
+Last update: 2026-08-18 23:45 UTC (CI green; Flash: row-count kernel-split check on the FP8 pair fix; 27B: module global-tensor sentinel fixed, checking whether MTP-arm gate was applied (likely remaining invalid_argument); no HWM change since 8.03)
