@@ -40,8 +40,8 @@ reached - COMPSEC-17 scores get their own column then).
 
 ## Active climbs (references being matched)
 
-- 27B: DSpark rung-3 PARITY RESOLVED (bit-exact, landed 1cd258f); no-spec on NEW binary: 8.02 mixed-pack / 4.45 true-BF16 - HWM confirmed, both hashes pinned; spec k=7 blocked: adapter dspark-init invalid_argument - diffing vs landed ada91ee switch; deliverable batch accumulating; then 20-58 DSpark.
+- 27B: DSpark rung-3 PARITY RESOLVED (bit-exact, landed 1cd258f); no-spec 8.02 mixed / 4.45 BF16 confirmed; spec blocker ROOT-CAUSED: adapter arms STAGE_MTP=1 on any speculation without a spec-method check (same defect in landed lines 428-432) -> MTP init rejects dspark; fix = gate the arm with spec-method != dspark (GO issued, ships in the port deliverable); then B1 spec k=7 vs 8.02; then 20-58 DSpark.
 - Flash: keep-old CSA landed (23 exact); R1DIFF PINNED THE BUG: layer-0 wq_a FP8 pair kernel computes a BATCH-COUPLED activation scale (row-0 result depends on row count + sibling values; divergence enters at ch 256 = the 128-tile boundary; ALL 8 rows wrong, not just row 0) - also explains the session-10 ch-32+ signature; fix = PER-ROW scale in the shared 128-tile pair path (precedent: the other exact-per-row fixes in the same file); verify with the in-binary 1-row shadow instrument -> then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 23:30 UTC (CI green; Flash: idx-23 PINNED to batch-coupled FP8 activation scale (shared 128-tile pair kernel) - per-row scale fix directed; 27B: adapter dspark-init fix in progress; no HWM change since 8.03)
+Last update: 2026-08-18 23:35 UTC (CI green; Flash: per-row FP8 scale fix in progress; 27B: adapter MTP-arm defect root-caused + fix greenlit; no HWM change since 8.03)
