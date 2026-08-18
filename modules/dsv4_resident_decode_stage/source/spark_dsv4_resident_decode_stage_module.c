@@ -3853,25 +3853,34 @@ static cudaError_t SparkDsv4ModuleProjectHead(SparkDsv4ModuleState *state, Spark
 		error = SparkDsv4LaunchHcHeadReduce(stream,streams_bf16,slot->mixes_f32,state->hc_head_scale_value,state->hc_head_base_f32,SPARK_DSV4_MODEL_HC_EPSILON,slot->reduced_bf16,rows,SPARK_DSV4_MODEL_HC_STREAM_COUNT,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchRmsNorm(stream,slot->reduced_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
-	if ( error == cudaSuccess && rows == 1u )
-		error = SparkDsv4LaunchHeadCertifiedFp8B1Sharded(stream,
-			slot->normalized_bf16,state->lm_head_weight_bf16,
-			state->head_certified_fp8_payload,
-			state->head_certified_fp8_scale_f32,
-			state->head_certified_fp8_norm_f32,slot->head_certified_scratch,
-			slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,
-			output_token_ids,slot->head_scores_f32,state->vocabulary_row_start,
-			rows,state->vocabulary_rows_per_rank,
-			SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
-	else if ( error == cudaSuccess )
-		error = SparkDsv4LaunchHeadScreenedArgmaxSharded(stream,
-			slot->normalized_bf16,state->lm_head_weight_bf16,
-			state->head_shadow_payload,state->head_shadow_scale,
-			state->head_error_norm_f32,slot->head_logits_bf16,
-			slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,
-			output_token_ids,slot->head_scores_f32,state->vocabulary_row_start,
-			rows,state->vocabulary_rows_per_rank,
-			SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
+	if ( error == cudaSuccess )
+	{
+		/* Every row uses the certified 1-row head: the screened-argmax
+		 * route diverges from the certified head's exact rescore and flips
+		 * near-tie argmaxes. The certified kernels are strictly 1-row, so
+		 * run them once per row on the stream (scratch/candidates are safe
+		 * to share - launches are stream-ordered per row). */
+		uint32_t row;
+		for (row = 0u; row < rows && error == cudaSuccess; row++)
+		{
+			const uint8_t *row_hidden =
+				(const uint8_t *)slot->normalized_bf16 +
+				(uint64_t)row * SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
+				SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+			error = SparkDsv4LaunchHeadCertifiedFp8B1Sharded(stream,
+				row_hidden,state->lm_head_weight_bf16,
+				state->head_certified_fp8_payload,
+				state->head_certified_fp8_scale_f32,
+				state->head_certified_fp8_norm_f32,
+				slot->head_certified_scratch,
+				slot->head_candidate_ids_u32,
+				slot->head_candidate_counts_u32 + row,
+				output_token_ids + row,slot->head_scores_f32 + row,
+				state->vocabulary_row_start,1u,
+				state->vocabulary_rows_per_rank,
+				SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
+		}
+	}
 	if ( error == cudaSuccess && state->tp_degree > 1u )
 		error = SparkDsv4LaunchHeadMaxlocPack(stream,slot->head_scores_f32,
 			output_token_ids,slot->head_maxloc_u64,rows);

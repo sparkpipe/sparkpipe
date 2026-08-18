@@ -338,7 +338,11 @@ from pathlib import Path
 # and W2 all run the certified B1 kernels for every row count (consecutive
 # row iteration + tile-N match for the batched route build) - moe_out now
 # bit-identical to the lean baseline. 166797 is the exact count.
-CEILING = 166797
+# The dsv4-flash ProjectHead exactness fix lands (+9): every verify row runs
+# the certified 1-row head instead of the screened-argmax route (hash
+# unchanged - proves the token-2 divergence is upstream, but the certified
+# head is the correct math regardless). 166806 is the exact count.
+CEILING = 166806
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
