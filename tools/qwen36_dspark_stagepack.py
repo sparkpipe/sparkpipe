@@ -169,7 +169,7 @@ def pack(checkpoint: Path, output: Path, receipt: dict) -> dict:
         payload_bytes = rows * cols * BF16_BYTES
         if nbytes != payload_bytes:
             raise PackFailure(f"size mismatch {name}: header {nbytes} vs plan {payload_bytes}")
-        plans.append((kind, layer, name, payload_offset, payload_bytes, offset))
+        plans.append((kind, layer, name, payload_offset, payload_bytes, offset, rows, cols))
         cursor = payload_offset + payload_bytes
 
     payload_base = (HEADER_BYTES + len(plans) * ENTRY_BYTES + PAYLOAD_ALIGNMENT - 1) & ~(PAYLOAD_ALIGNMENT - 1)
@@ -186,7 +186,7 @@ def pack(checkpoint: Path, output: Path, receipt: dict) -> dict:
     entries = b"".join(
         ENTRY_STRUCT.pack(kind, layer, WEIGHT_BF16, rows, cols, 0,
                           payload_base + payload_offset, payload_bytes, 0, 0)
-        for kind, layer, name, payload_offset, payload_bytes, _ in plans)
+        for kind, layer, name, payload_offset, payload_bytes, _, rows, cols in plans)
 
     receipt.update({
         "layer_count": LAYER_COUNT,
@@ -205,7 +205,7 @@ def pack(checkpoint: Path, output: Path, receipt: dict) -> dict:
         temp.write(header)
         temp.write(entries)
         temp.write(b"\0" * (payload_base - temp.tell()))
-        for kind, layer, name, payload_offset, payload_bytes, src_offset in plans:
+        for kind, layer, name, payload_offset, payload_bytes, src_offset, _, _ in plans:
             with open(checkpoint / "model.safetensors", "rb") as f:
                 f.seek(src_offset)
                 payload = f.read(payload_bytes)
@@ -238,6 +238,34 @@ def verify(pack_path: Path) -> dict:
             "entries": len(entries)}
 
 
+def verify_payload(pack_path: Path, checkpoint: Path) -> bool:
+    """Byte-for-byte round-trip: every packed payload equals its safetensors tensor."""
+    src = SafetensorsHeader(checkpoint / "model.safetensors")
+    with open(pack_path, "rb") as f:
+        header = f.read(HEADER_BYTES)
+        tensor_count = HEADER_STRUCT.unpack(header)[4]
+        f.seek(HEADER_BYTES)
+        entries = [ENTRY_STRUCT.unpack(f.read(ENTRY_BYTES)) for _ in range(tensor_count)]
+    inv = build_inventory()
+    ok = True
+    for (kind, layer, name), entry in zip(inv, entries):
+        e_kind, e_layer, e_fmt, e_rows, e_cols, e_sg, p_off, p_bytes, _, _ = entry
+        rows, cols = kind_shape(kind)
+        if name == "confidence_head.proj.bias":
+            rows, cols = 1, 1
+        assert e_kind == kind and e_rows == rows and e_cols == cols, name
+        src_off, src_bytes = src.offset(name)
+        with open(checkpoint / "model.safetensors", "rb") as sf, open(pack_path, "rb") as pf:
+            sf.seek(src_off)
+            a = sf.read(src_bytes)
+            pf.seek(p_off)
+            b = pf.read(p_bytes)
+        if a != b:
+            print(f"payload mismatch {name}", file=sys.stderr)
+            ok = False
+    return ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--checkpoint", type=Path, required=True,
@@ -252,8 +280,11 @@ def main() -> int:
         print(f"qwen36_dspark_stagepack failed: {e}", file=sys.stderr)
         return 1
     v = verify(args.output)
+    if not verify_payload(args.output, args.checkpoint):
+        print("qwen36_dspark_stagepack round-trip FAILED", file=sys.stderr)
+        return 1
     print(f"qwen36_dspark_stagepack wrote {args.output} tensors={v['tensor_count']} "
-          f"file_gib={v['bytes'] / 2**30:.2f}")
+          f"file_gib={v['bytes'] / 2**30:.2f} round_trip=ok")
     with open(str(args.output) + ".receipt.json", "w") as f:
         json.dump(receipt, f, indent=2)
     return 0

@@ -369,7 +369,11 @@ from pathlib import Path
 # drafter (Doopeworld/Qwen3.8-27B-DSpark-vLLM, 1.36B params) packs into the
 # Q6SP wire format with 17 kinds and the module-side shape table - the rung-3
 # foundation (draft weights are public; no gate). 167278 is the exact count.
-CEILING = 167278
+# The dspark packer gains round-trip verification (+31): verify_payload()
+# re-reads the pack against the safetensors byte-for-byte, and the entries now
+# carry each tensor's own rows/cols (a leaked-loop-value bug it caught).
+# 167309 is the exact count.
+CEILING = 167309
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
