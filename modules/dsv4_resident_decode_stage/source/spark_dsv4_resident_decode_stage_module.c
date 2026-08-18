@@ -3132,7 +3132,7 @@ static cudaError_t SparkDsv4ModuleRunAttentionProjectedPrologue(SparkDsv4ModuleS
 			state->compress_score_state_f32 +
 			state->compress_score_state_offset_by_layer[layer_index],state_stride,
 			cache,lane_stride,SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS,
-			SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,rows);
+			SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,0u,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4ModuleRunQueryRankPost(slot,primary,layer,rows);
 	if ( error == cudaSuccess )
