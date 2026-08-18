@@ -44,4 +44,4 @@ reached - COMPSEC-17 scores get their own column then).
 - Flash: keep-old CSA landed (23 exact); idx-23 divergence narrowed to layer-2 MAIN compressor WKV channels 32-255 (index state identical, index emission diverges) -> then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 20:45 UTC (CI: 1b0ab15 cc arity bug root-caused from receipts, fix 2623715 pushed, run 32183634880 in flight; no new HWM since 06:45)
+Last update: 2026-08-18 20:52 UTC (CI GREEN: run 32183634880 success on arity fix 2623715; unified clean at 728e7d7; no new HWM since 06:45)
