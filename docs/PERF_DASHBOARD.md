@@ -40,8 +40,8 @@ reached - COMPSEC-17 scores get their own column then).
 
 ## Active climbs (references being matched)
 
-- 27B: DSpark rung-3 weights packed (1.36B); parity harness draft[0]=220 matches reference [220,17,11,748,874,4799,13], draft[1] 16-vs-17 near-tie; vLLM-engine oracle running on spark3; then 20-58 DSpark.
+- 27B: DSpark rung-3 weights packed (1.36B); parity harness draft[0]=220 matches reference, draft[1] 16-vs-17 near-tie; HF oracle DEAD (drafter trust_remote_code import deadlocks after fla/flashinfer install) -> vLLM-engine oracle confirmed on spark3 (own qwen3_dspark.py classes); instrumenting speculator for 7-draft + 5-tap capture; then 20-58 DSpark.
 - Flash: keep-old CSA landed (23 exact); instrument ac9d8a72 pins FIRST WRONG PREDICTION to the anchor=148 frame row 0 (token 290 @pos150 -> 688, ref 3815); staged rows correct + ctx through 149 exact -> corruption inside that ONE 8-row forward (scratch seed exonerated); in-binary 1-row-vs-8-row per-island diff next -> then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 21:00 UTC (CI green; fork pinned Flash first-wrong-prediction to anchor=148 frame row 0 - bisect of one 8-row forward underway; no new HWM since 06:45)
+Last update: 2026-08-18 21:05 UTC (CI green; Flash bisect: one 8-row forward pinned; 27B: HF oracle retired, vLLM-engine tap capture underway on spark3; no new HWM since 06:45)
