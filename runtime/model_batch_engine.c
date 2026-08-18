@@ -2036,6 +2036,18 @@ SparkStatus SparkModelBatchEngineProgress(
 		step++;
 		misses = 0u;
 	}
+	/* Flush the just-queued submission(s) immediately: the residentd receives
+	 * them in THIS Progress instead of the next loop iteration, removing a
+	 * one-iteration bubble from the single-stream critical path (the GPU idles
+	 * while the next decode's PREPARE sits queued in the client). The extra
+	 * read is a no-op on the non-blocking socket when nothing arrived. */
+	status = SparkModelPipelineClientProgress(engine->pipeline,engine->maximum_messages_per_rank);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkModelBatchSetFailed(engine,status);
+		SparkModelBatchFailIdleRequests(engine,status);
+		return(status);
+	}
 	return(SPARK_STATUS_OK);
 }
 

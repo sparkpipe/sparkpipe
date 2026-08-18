@@ -353,7 +353,11 @@ from pathlib import Path
 # pending (matching the client) - kills the 100%-CPU busy-spin over the GPU
 # decode that starved the completion callback (~8000x fewer Progress passes).
 # 166891 is the exact count.
-CEILING = 166891
+# The client PREPARE-flush fix lands (+12): the just-queued PREPARE flushes in
+# the same Progress that reads the completion (drops the one-iteration
+# deferral) - tightens the serial loop; the B1 bubble itself closes via
+# speculation overlap, not the scheduler. 166903 is the exact count.
+CEILING = 166903
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
