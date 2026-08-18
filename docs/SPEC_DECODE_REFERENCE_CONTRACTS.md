@@ -277,6 +277,94 @@ re-measure the k sweep — the FP8 k=7 optimum does not carry over.
 
 ---
 
+## Source-by-source: community GB10 + TRT-LLM + llama.cpp
+
+The six contracts above lean on vLLM/SGLang. This section pulls the remaining
+source tiers into the same format so the doc is the complete playbook.
+
+### Community GB10 repos (Weschera / tonyd2wild) — DSV4-Flash DSpark overlay
+
+Their `recipe/overlay/vllm/…` files are a vLLM fork overlaid with the DSpark
+drafter; Weschera mirrors tonyd2wild byte-for-byte on the cited files. These are
+the **closest shape to ours** (same model, same GB10/SM121 hardware).
+
+- **(a) draft-KV isolation** — the draft keeps its attention cache *internal* to
+  the draft model, not a registered vLLM KV-cache layer: "It intentionally keeps
+  the draft-side DSpark attention cache internal to the draft model instead of
+  registering more vLLM KV-cache layers; DSpark uses a small sliding window over
+  target features and draft block tokens" (`models/deepseek_v4/nvidia/dspark.py:3-10`).
+- **(c) compressed/context state + rollback** — `store_main_kv` keeps a sliding
+  window of KV derived from the *target* features (`main_x[:, -window_size:]`,
+  `slots = position % window`) and rolls back via `num_rejected_tokens`: a
+  `valid_mask = offsets < (seq_len - rejected)` makes rejected positions *keep the
+  old value* instead of being overwritten (`dspark.py:413-415, 421, 436-451`). This
+  is the same commit-gate direction as SGLang's `col < commit_lens`, and it is the
+  cleanest formulation of our CSA-emission rollback — keep-old, not
+  write-then-restore.
+- **(g) block emission + local-argmax** — `forward_dspark` projects the whole
+  block's query + draft KV in one call (`dspark.py:471-494`); greedy drafts use
+  `_vocab_parallel_argmax_from_local` — per-rank local top-1 + ONE all-gather,
+  never a full-vocab gather (`:143-161`) — and the Markov bias is fused into the
+  argmax (`_vocab_parallel_markov_argmax`, `:164-180`).
+- **(f) draft-weight sourcing** — the loader's `_STACKED_PARAM_NAME_MAPPING` maps
+  `shared_experts.gate_up_proj ← w1/w3` AND `down_proj ← w2`
+  (`v1/spec_decode/dspark.py:15-34`); dropping `w1/w3` left the always-on shared
+  expert uninitialized → acceptance 25.7%→60.2%
+  (`DSPARK-SHARED-EXPERT-FIX.md:40-132`).
+- **(e) block layout** — noise fill `dspark_noise_token_id`
+  (`v1/spec_decode/dspark_proposer.py:58`, `:498`), anchor-first
+  `num_speculative_tokens` block (`:408`, `:869-874`).
+
+### 0xBakeer — Qwen3.8-27B DSpark+MTP (single DGX Spark, our hardware)
+
+Recipe repo (serve.sh + benches) over vLLM's `qwen3_dspark.py` drafter.
+
+- **(g) cost** — "MTP re-runs one in-checkpoint layer sequentially, paying a full
+  lm_head projection … for every draft token. DSpark … emits a whole block at once.
+  Measured cost per draft token: MTP 0.153, DSpark 0.046" (`NOTES.md:79-83`); DSpark
+  k=7 47.1 tok/s / 0.046 vs MTP k=8 32.2 / 0.153 (`RESULTS.md:96-99`).
+- **(g) k across quantizations** — DSpark k=7 vs k=14 edit-acceptance 98.6% vs
+  67.6% (`RESULTS.md:72-75`); the Qwen3 DSpark drafter
+  (`model_executor/models/qwen3_dspark.py`) is the same one-shot-block +
+  Markov/confidence-head shape as the DSV4 overlay.
+
+### TRT-LLM draft-target (EAGLE/Medusa tree)
+
+Tree-based (multi-path), not a linear DSpark block; the contracts still line up.
+
+- **(a) draft-KV isolation** — draft tokens live in a separate
+  `draftTokens`/`draftIndices` buffer, not the KV cache
+  (`explicitDraftTokensBuffers.h:55-57`).
+- **(b) verify causality** — a `packedMask` gives per-node causality over the
+  flattened tree (`explicitDraftTokensBuffers.h:63`,
+  `utils/speculativeChoicesUtils.h:35-39`).
+- **(d) accounting** — `nextGenerationLengths` / `nextPositionOffsets` /
+  `bestPathLengths` / `bestPathIndices` record the accepted path
+  (`explicitDraftTokensBuffers.h:89-108`); `maxDecodingTokens = maxDraftTokens + 1`
+  and `maxPathLen = maxDraftPathLen + 1` encode the `1+accepted` bonus
+  (`speculativeDecodingModule.h:53-71`).
+- **(g) draft emission** — EAGLE defaults to the 63-node `mc_sim_7b_63` tree
+  (`eagleModule.h:62-69`); Medusa the same (`medusaModule.h:52-57`).
+
+### llama.cpp self-speculative (draft-simple / eagle3 / mtp / dflash / dspark)
+
+- **(a) draft-KV isolation** — a separate draft `llama_context` (`ctx_dft`) with
+  its own memory; speculative KV removed with
+  `llama_memory_seq_rm(mem_dft, seq, pos, -1)` (`common/speculative.cpp:1499-1509`).
+- **(b)/(g) verify + emission** — `draft-dspark` = "anchor-first block layout" +
+  Markov head (`speculative.cpp:926-930`); the MTP/dspark draft consumes target
+  hidden states via `llama_set_embeddings_nextn` /
+  `llama_get_embeddings_nextn_ith` (`:516,524,609,645`).
+- **(d) accounting** — `accept(seq_id, n_accepted)` (`:170`); `n_acc_tokens` /
+  `n_acc_tokens_per_pos` (`:149-151`); the contexts are "rebased … to
+  first-non-accepted pos … consumed by accept() to recover" (`:411-413`).
+- **(f) draft-weight sourcing** — self-speculative: the draft is the *same model's*
+  MTP/dspark layers read from the GGUF (no separate draft checkpoint).
+- Spec types: `draft-simple, draft-eagle3, draft-mtp, draft-dflash, draft-dspark`
+  (`:32-43`).
+
+---
+
 ## Authority summary — remaining fix order
 
 1. **(c) CSA boundary-emission rollback** — the only correctness gap in the
