@@ -329,7 +329,12 @@ from pathlib import Path
 # multi-row frames now run the certified 1-row kernels per row instead of the
 # activation-quantizing native path (delta_wq_a/wo_b bit-identical to the
 # lean baseline). 166721 is the exact count.
-CEILING = 166721
+# The qwen36 FP8 pack path lands (+66): dtype-driven per-tensor FP8_E4M3
+# selection with F32 per-128x128 scales (format 5), the firmware enum, the
+# stagepack PayloadBytes/ScaleBytes, and module ValidateEntry - the BF16
+# round-trip path stays byte-compatible. The shared Linear kernel already
+# shipped the FP8 dot. 166787 is the exact count.
+CEILING = 166787
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

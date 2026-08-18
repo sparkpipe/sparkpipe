@@ -316,12 +316,12 @@ static SparkStatus SparkQwen36ModuleValidateEntry(SparkQwen36ModuleState *state,
 	}
 	else if ( shape.quantizable != 0u )
 	{
-		if ( entry->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 && entry->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
+		if ( entry->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 && entry->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 && entry->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 			return(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	else if ( entry->weight_format != shape.natural_format )
 		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( entry->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ? entry->scale_group_size != 32u : entry->scale_group_size != 0u )
+	if ( entry->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ? entry->scale_group_size != 32u : (entry->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ? entry->scale_group_size != 128u : entry->scale_group_size != 0u) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if ( entry->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16_RANS && (entry->payload_bytes != SparkQwen36StagePackPayloadBytes(entry->weight_format,entry->rows,entry->columns) || entry->scale_bytes != SparkQwen36StagePackScaleBytes(entry->weight_format,entry->rows,entry->columns)) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
@@ -584,7 +584,11 @@ static SparkStatus SparkQwen36ModuleTpReduceDelta(SparkQwen36ModuleState *state,
 {
 	SparkStatus status;
 	if ( state->tp_degree <= 1u )
+	{
+		if ( state->profile_enabled != 0u )
+			(void)cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
 		return(SPARK_STATUS_OK);
+	}
 	status = SparkQwen36TpReduceHidden(&state->tp,slot->delta_bf16,rows,slot->cuda_stream);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr, "%s tp_reduce_delta_failed status=%d rows=%u\n", SPARK_QWEN36_MODULE_TAG, (int)status, rows);
@@ -1504,7 +1508,11 @@ static cudaError_t SparkQwen36ModuleEmitHead(SparkQwen36ModuleState *state, Spar
 		if ( error == cudaSuccess && SparkQwen36TpReduceU64Max(&state->tp,slot->head_maxloc_u64,head_rows,stream) != SPARK_STATUS_OK )
 			error = cudaErrorUnknown;
 		if ( state->profile_enabled != 0u )
+		{
+			if ( state->tp_degree <= 1u )
+				(void)cudaStreamSynchronize(stream);
 			state->profile_head_spin_nanos += SparkQwen36ProfileNow() - spin_start;
+		}
 	}
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchHeadMaxLocUnpack(stream,slot->head_maxloc_u64,slot->output_token_ids,head_rows);

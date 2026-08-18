@@ -64,6 +64,8 @@ PAYLOAD_ALIGNMENT = 256
 
 WEIGHT_BF16 = 0
 WEIGHT_F32 = 1
+WEIGHT_FP8_E4M3_F32B128 = 5
+FP8_SCALE_GROUP = 128  # FP8 per-128x128-block F32 scale (kernel SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128)
 
 HIDDEN = 5120
 LAYER_COUNT = 64
@@ -209,6 +211,13 @@ ATTN_LAYER_KINDS = (KIND_ATTN_QUERY, KIND_ATTN_KEY, KIND_ATTN_VALUE,
                     KIND_ATTN_OUTPUT, KIND_ATTN_QUERY_NORM, KIND_ATTN_KEY_NORM)
 
 
+FP8_KINDS = frozenset([
+    KIND_FFN_GATE, KIND_FFN_UP, KIND_FFN_DOWN,
+    KIND_GDN_QKV, KIND_GDN_GATE, KIND_GDN_OUTPUT,
+    KIND_ATTN_QUERY, KIND_ATTN_KEY, KIND_ATTN_VALUE, KIND_ATTN_OUTPUT,
+])
+
+
 class TensorRef:
     """One pack tensor: its kind, layer marker, and checkpoint source."""
 
@@ -217,6 +226,7 @@ class TensorRef:
         self.layer = layer
         self.name = name
         self.rows, self.columns, self.weight_format = kind_shape(kind)
+        self.scale_name = None
 
 
 def build_inventory(first_layer: int, layer_count: int) -> list[TensorRef]:
@@ -288,7 +298,14 @@ class SafetensorsSource(_BaseSafetensorsSource):
                     raise PackFailure(f"config layer_types[{layer}]={layer_type!r}, expected {want!r}")
 
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
-        return super().check_shape(ref.name, ref.rows, ref.columns)
+        # DTYPE-DRIVEN: FP8 only when the checkpoint tensor is actually F8_E4M3,
+        # so the BF16 pack path (and the synthetic test) stays untouched.
+        _, meta, _ = self.resolve(ref.name)
+        if ref.kind in FP8_KINDS and meta["dtype"] == "F8_E4M3":
+            ref.weight_format = WEIGHT_FP8_E4M3_F32B128
+            ref.scale_name = ref.name + "_scale_inv"
+        dtype = "F8_E4M3" if ref.weight_format == WEIGHT_FP8_E4M3_F32B128 else "BF16"
+        return super().check_shape(ref.name, ref.rows, ref.columns, dtype=dtype)
 
 
 # Qwen3_5RMSNorm applies x * (1 + weight) with zero-initialized weights and
@@ -426,25 +443,47 @@ def copy_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, plan, ou
     """Stream one tensor's payload (optionally TP-sliced), upcasting BF16 to
     F32 where the pack says, folding +1 into the standard-norm weights."""
     path = source.root / source.weight_map[ref.name]
-    mode = 2 if ref.weight_format == WEIGHT_F32 else (
-        1 if ref.kind in NORM_PLUS_ONE_KINDS else 0)
+    mode = 0 if ref.weight_format == WEIGHT_FP8_E4M3_F32B128 else (
+        2 if ref.weight_format == WEIGHT_F32 else (
+            1 if ref.kind in NORM_PLUS_ONE_KINDS else 0))
+    elem = 1 if ref.weight_format == WEIGHT_FP8_E4M3_F32B128 else BF16_BYTES
     if plan is None:
-        write_batch(out, path, offset, ref.rows * ref.columns * BF16_BYTES, mode)
+        write_batch(out, path, offset, ref.rows * ref.columns * elem, mode)
         return
     if isinstance(plan, TpFusedSlice):
         for (row_off, row_count) in plan.segments:
             for row in range(row_off, row_off + row_count):
-                base = offset + (row * ref.columns) * BF16_BYTES
-                write_batch(out, path, base, ref.columns * BF16_BYTES, mode)
+                base = offset + (row * ref.columns) * elem
+                write_batch(out, path, base, ref.columns * elem, mode)
         return
     if plan.col_count == ref.columns:
         for row in range(plan.row_off, plan.row_off + plan.row_count):
-            base = offset + (row * ref.columns) * BF16_BYTES
-            write_batch(out, path, base, ref.columns * BF16_BYTES, mode)
+            base = offset + (row * ref.columns) * elem
+            write_batch(out, path, base, ref.columns * elem, mode)
         return
     for row in range(plan.row_off, plan.row_off + plan.row_count):
-        base = offset + ((row * ref.columns) + plan.col_off) * BF16_BYTES
-        write_batch(out, path, base, plan.col_count * BF16_BYTES, mode)
+        base = offset + ((row * ref.columns) + plan.col_off) * elem
+        write_batch(out, path, base, plan.col_count * elem, mode)
+
+
+def copy_scale(source: SafetensorsSource, ref: TensorRef, plan, out) -> None:
+    """Stream the FP8 weight_scale_inv (BF16 per 128x128 block), TP-sliced to
+    mirror the weight row/col window (windows are 128-aligned)."""
+    path = source.root / source.weight_map[ref.scale_name]
+    scale_rows = ref.rows // FP8_SCALE_GROUP
+    scale_cols = ref.columns // FP8_SCALE_GROUP
+    if plan is None:
+        write_batch(out, path, 0, scale_rows * scale_cols * BF16_BYTES, 2)
+        return
+    if isinstance(plan, TpFusedSlice):
+        raise PackFailure(f"FP8 fused-slice scale not yet supported: {ref.name}")
+    r0 = plan.row_off // FP8_SCALE_GROUP
+    r1 = (plan.row_off + plan.row_count) // FP8_SCALE_GROUP
+    c0 = plan.col_off // FP8_SCALE_GROUP
+    c1 = (plan.col_off + plan.col_count) // FP8_SCALE_GROUP
+    for row in range(r0, r1):
+        base = (row * scale_cols + c0) * BF16_BYTES
+        write_batch(out, path, base, (c1 - c0) * BF16_BYTES, 2)
 
 
 def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
@@ -459,10 +498,17 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         plan = build_tp_plan(ref, tp_degree, tp_rank)
         packed_rows, packed_cols = packed_shape(ref, plan)
         payload_offset = align(cursor)
-        element_bytes = BF16_BYTES if ref.weight_format == WEIGHT_BF16 else F32_BYTES
-        payload_bytes = packed_rows * packed_cols * element_bytes
-        plans.append((ref, offset, payload_offset, payload_bytes, plan))
-        cursor = payload_offset + payload_bytes
+        if ref.weight_format == WEIGHT_FP8_E4M3_F32B128:
+            payload_bytes = packed_rows * packed_cols * 1  # F8_E4M3
+            scale_offset = align(payload_offset + payload_bytes)
+            scale_bytes = (packed_rows // FP8_SCALE_GROUP) * (packed_cols // FP8_SCALE_GROUP) * F32_BYTES
+        else:
+            element_bytes = BF16_BYTES if ref.weight_format == WEIGHT_BF16 else F32_BYTES
+            payload_bytes = packed_rows * packed_cols * element_bytes
+            scale_offset = 0
+            scale_bytes = 0
+        plans.append((ref, offset, payload_offset, payload_bytes, scale_offset, scale_bytes, plan))
+        cursor = (scale_offset + scale_bytes) if scale_bytes else (payload_offset + payload_bytes)
     payload_base = align(HEADER_BYTES + len(plans) * ENTRY_BYTES)
     file_bytes = payload_base + cursor
 
@@ -477,9 +523,12 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     entries = b"".join(
         ENTRY_STRUCT.pack(ref.kind, ref.layer, ref.weight_format,
                           packed_shape(ref, plan)[0], packed_shape(ref, plan)[1],
-                          0, payload_base + payload_offset,
-                          payload_bytes, 0, 0)
-        for ref, _, payload_offset, payload_bytes, plan in plans)
+                          FP8_SCALE_GROUP if ref.weight_format == WEIGHT_FP8_E4M3_F32B128 else 0,
+                          payload_base + payload_offset,
+                          payload_bytes,
+                          payload_base + scale_offset if scale_bytes else 0,
+                          scale_bytes)
+        for ref, _, payload_offset, payload_bytes, scale_offset, scale_bytes, plan in plans)
     receipt.update({
         "first_layer_index": first_layer,
         "layer_count": layer_count,
@@ -506,11 +555,15 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         if padding < 0:
             raise PackFailure("directory overruns the payload base")
         temp.write(b"\0" * padding)
-        for ref, source_offset, _, payload_bytes, plan in plans:
+        for ref, source_offset, _, payload_bytes, scale_offset, scale_bytes, plan in plans:
             before = temp.tell()
             copy_tensor(source, ref, source_offset, plan, temp)
             if temp.tell() - before != payload_bytes:
                 raise PackFailure(f"payload size mismatch on {ref.name}")
+            if scale_bytes:
+                assert temp.tell() == payload_base + scale_offset, ("scale offset drift", temp.tell(), payload_base + scale_offset)
+                copy_scale(source, ref, plan, temp)
+                assert temp.tell() - (payload_base + scale_offset) == scale_bytes, ("scale size mismatch", ref.name)
             pad = align(temp.tell()) - temp.tell()
             if pad:
                 temp.write(b"\0" * pad)
