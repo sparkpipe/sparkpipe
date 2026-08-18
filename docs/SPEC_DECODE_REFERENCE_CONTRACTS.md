@@ -36,6 +36,7 @@ the authority for the six contracts below.
 | (d) | Partial-accept completion/continuation accounting | ✅ match (lease bug was call-site) | `:3577-3597` |
 | (e) | 8-row verify batch structure | ✅ match (staging fixed acc6783a) | `:2393-2485` |
 | (f) | Draft-weight sourcing | ⚠️ rung-3 gate to verify | `:980-981`, `:1238-1240` |
+| (g) | Draft emission structure + cost | ✅ match (3.3× cheaper than MTP) | `qwen3_dspark.py:38-49,210-213` |
 
 ---
 
@@ -228,6 +229,54 @@ loss). Do not re-quantize draft experts (keep MXFP4); quantizing draft *linears*
 
 ---
 
+## (g) Draft emission structure + cost
+
+**Contract:** DSpark's advantage is architectural, not a sampling trick — it drafts
+the whole `k`-block in **one parallel backbone forward** (one `lm_head` projection
+for the whole block) and only the *sequential Markov bias* is per-token, as a
+low-rank `V×r / r×V` transition — not a re-run of the decoder layer. MTP re-runs one
+in-checkpoint layer per token and pays a full `lm_head` over the vocab *for every
+draft token*.
+
+- **vLLM `model_executor/models/qwen3_dspark.py`:** "DSpark drafts a whole block in
+  one parallel pass (DFlash-style: context-KV precompute + a non-causal query-block
+  forward) and then injects intra-block dependency with a lightweight sequential
+  Markov head" (`:3-16`). `DSparkMarkovHead` is low-rank `V×r / r×V`, replicated
+  "because the head runs sequentially for every draft position" (`:38-49`);
+  `compute_draft_logits` is the block-wide base logits (`:210-213`);
+  `DSparkConfidenceHead` is the per-position acceptance estimate (`:107-132`,
+  `:242-247`).
+- **0xBakeer recipe (the cost evidence):** "MTP re-runs one in-checkpoint layer
+  sequentially, paying a full lm_head projection over the ~150K vocabulary for
+  every draft token. DSpark is a separate 5-layer, 1B-parameter drafter that emits
+  a whole block at once. Measured cost per draft token: **MTP 0.153, DSpark
+  0.046**" (`NOTES.md:79-83`); the sweep table puts DSpark k=7 at 47.1 tok/s /
+  5.95 passes/s / 0.046 vs MTP k=8 at 32.2 / 3.60 / 0.153 (`RESULTS.md:96-99`) — a
+  **3.3× draft-cost advantage**.
+- **Probabilistic sampling (+~23%):** a greedy draft is a point mass, so acceptance
+  collapses to `p_target(argmax)`; probabilistic matches the target distribution and
+  holds at depth. joe (TP4, production shape, temp 1): greedy 26.5% → probabilistic
+  34.3% acceptance (`DSPARK_VERIFY_LOOP_REPORT.md:136-141,149-152`).
+- **Markov + confidence heads:** the Markov head injects intra-block order (the
+  semi-autoregressive stage); the confidence head estimates per-position survival
+  for adaptive-depth scheduling (dropped in vLLM's PR DSpark; used by the paper's
+  load-aware verifier — `DSPARK_VERIFY_LOOP_REPORT.md:237-243`).
+- **k does NOT transfer across quantizations:** the per-position acceptance curve is
+  a function of draft *quality*, which changes with quantization, so the optimal k
+  is draft-quantization-specific. joe (FP8): k=7 optimal, k=10 collapses (72.3% →
+  46.5%, `DSPARK_VERIFY_LOOP_REPORT.md:225-230`); ds4/Metal (Q4_K): block=2 beat
+  block=5 (`:235`); 0xBakeer (FP8): DSpark k=7 vs k=14 edit-acceptance 98.6% vs
+  67.6% (`RESULTS.md:72-75`). **Re-sweep k for any draft-quantization change.**
+
+**Fix recipe / principle:** keep the DSpark *block-of-k* emission — never fall back
+to MTP's per-token single-layer re-run. Our draft already runs replicated
+full-width in one parallel block with a sequential Markov head, so the 3.3× cost
+structure is preserved. The "k does not transfer across quantizations" rule is a
+**constraint on contract (f)'s 4-bit-draft rung**: if we quantize the draft,
+re-measure the k sweep — the FP8 k=7 optimum does not carry over.
+
+---
+
 ## Authority summary — remaining fix order
 
 1. **(c) CSA boundary-emission rollback** — the only correctness gap in the
@@ -238,8 +287,10 @@ loss). Do not re-quantize draft experts (keep MXFP4); quantizing draft *linears*
    confidence + projection tensors load (tonyd2wild's silent-drop failure mode).
 3. **(d) lease audit** — confirm the residentd/pipeline lease advances by the
    `1+accepted` emit (already landed); never by `new_token_count`.
-4. **(a/b/e)** verified correct — do not regress the private draft ring, the
-   non-causal-draft/causal-verify split, or the anchor-first 8-row layout.
+4. **(a/b/e/g)** verified correct — do not regress the private draft ring, the
+   non-causal-draft/causal-verify split, the anchor-first 8-row layout, or the
+   block-of-k emission (3.3× cheaper than MTP). (g) adds one constraint: re-sweep k
+   whenever the draft is re-quantized.
 
 The exact-token gate protects the target in all cases: a degraded or mis-sourced
 draft costs speed, never output correctness (tonyd2wild: "output quality was
