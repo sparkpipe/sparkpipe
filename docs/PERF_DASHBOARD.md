@@ -14,7 +14,7 @@ reached - COMPSEC-17 scores get their own column then).
 | Model | B1 no-spec | B1 spec | B8 | B16 | other B* |
 | --- | --- | --- | --- | --- | --- |
 | DSV4 Flash (TP4) | **40.46** [exact 3/3] | 8.43 (k=7, hash WRONG - not valid) | - | - | - |
-| Qwen 3.8 27B (TP1) | **3.10** [validated] | 3.04 (D=2, no gain, validated) | - | - | - |
+| Qwen 3.8 27B (TP1) | **3.67 FP8** (3.10 BF16) [validated] | 2.79 (D=2, FP8 -8% - no gain) | - | - | - |
 | K3 | **none measured** (never run on fleet hardware) | - | - | - | - |
 | GLM52 | **6.91** | - (draft weights untrained) | 2-3 | 2-3 | - |
 | Qwen3.8-Max | 1.29 per-request | - | 0.61 | - | ~39 agg @B256 (TP4xPP4 replicated) |
@@ -44,4 +44,4 @@ reached - COMPSEC-17 scores get their own column then).
 - Flash: final_hidden bisect -> hash bar a9385d0b -> k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 02:35 UTC (initial)
+Last update: 2026-08-18 03:55 UTC (27B FP8 HWM 3.67)
