@@ -325,7 +325,11 @@ from pathlib import Path
 # native path, whose activation quantization diverged the 8-row DSpark
 # verify anchor (first divergent tensor: delta_wq_a). 166663 is the exact
 # count.
-CEILING = 166663
+# The exact-per-row pair + strided decode linear launchers land (+58):
+# multi-row frames now run the certified 1-row kernels per row instead of the
+# activation-quantizing native path (delta_wq_a/wo_b bit-identical to the
+# lean baseline). 166721 is the exact count.
+CEILING = 166721
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

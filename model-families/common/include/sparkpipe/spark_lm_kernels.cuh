@@ -5197,7 +5197,6 @@ static inline cudaError_t SparkLmHostLaunchSm121DecodeLinearPair(
 	uint32_t row_count,uint32_t input_dimension)
 {
 	uint32_t combined_output_dimension;
-	cudaError_t error;
 	if ( first_payload == 0 || first_scale == 0 || second_payload == 0 ||
 		second_scale == 0 || input_bf16 == 0 || first_output_bf16 == 0 ||
 		second_output_bf16 == 0 || first_output_dimension == 0u ||
@@ -5205,22 +5204,51 @@ static inline cudaError_t SparkLmHostLaunchSm121DecodeLinearPair(
 		(input_dimension % GROUP_SIZE) != 0u ||
 		SparkActivationCodecIsKnown(ACTIVATION_CODEC) == 0u )
 		return(cudaErrorInvalidValue);
-	if ( row_count != 1u )
-	{
-		error = SparkLmHostLaunchSm121DecodeLinear<GROUP_SIZE,ACTIVATION_CODEC>(
-			stream,SPARK_LM_WEIGHT_FORMAT_FP8_E4M3,first_payload,first_scale,
-			input_bf16,first_output_bf16,row_count,input_dimension,
-			first_output_dimension);
-		if ( error != cudaSuccess )
-			return(error);
-		return(SparkLmHostLaunchSm121DecodeLinear<GROUP_SIZE,ACTIVATION_CODEC>(
-			stream,SPARK_LM_WEIGHT_FORMAT_FP8_E4M3,second_payload,second_scale,
-			input_bf16,second_output_bf16,row_count,input_dimension,
-			second_output_dimension));
-	}
 	if ( first_output_dimension > UINT32_MAX - second_output_dimension )
 		return(cudaErrorInvalidValue);
 	combined_output_dimension = first_output_dimension + second_output_dimension;
+	if ( row_count != 1u )
+	{
+		/* Multi-row must be bit-identical to the certified 1-row math:
+		 * the DSpark verify anchor (row 0) is diffed against the 1-row
+		 * lean baseline, and the two-launch batched route accumulates
+		 * fp16-level noise (first divergent tensor: delta_wq_a,
+		 * measured). Run the exact pair kernel once per row instead of
+		 * two batched linears: same shared-input load, same dot, same
+		 * writeback as the rows==1 path, row by row. */
+		uint64_t input_row_bytes = (uint64_t)input_dimension * 2u;
+		uint64_t first_row_bytes = (uint64_t)first_output_dimension * 2u;
+		uint64_t second_row_bytes = (uint64_t)second_output_dimension * 2u;
+		uint32_t row,policy;
+		for (row = 0u; row < row_count; row++)
+		{
+			const uint8_t *row_input = (const uint8_t *)input_bf16 +
+				(uint64_t)row * input_row_bytes;
+			uint8_t *row_first = (uint8_t *)first_output_bf16 +
+				(uint64_t)row * first_row_bytes;
+			uint8_t *row_second = (uint8_t *)second_output_bf16 +
+				(uint64_t)row * second_row_bytes;
+			policy = SparkLmSm121B1Fp8LinearPairPolicy(1u,
+				input_dimension,combined_output_dimension);
+			if ( policy == SPARK_LM_PAIR_POLICY_FLAT_16 )
+				SparkLmFp8LinearPairKernel<GROUP_SIZE,ACTIVATION_CODEC,
+					16u><<<(combined_output_dimension + 15u) / 16u,512u,
+					input_dimension * sizeof(float),stream>>>(
+					first_payload,first_scale,second_payload,second_scale,
+					row_input,row_first,row_second,input_dimension,
+					first_output_dimension,second_output_dimension);
+			else
+				SparkLmFp8LinearPairKernel<GROUP_SIZE,ACTIVATION_CODEC,
+					SPARK_LM_CTA_WARPS><<<
+					(combined_output_dimension + SPARK_LM_CTA_WARPS - 1u) /
+					SPARK_LM_CTA_WARPS,SPARK_LM_CTA_THREADS,
+					input_dimension * sizeof(float),stream>>>(
+					first_payload,first_scale,second_payload,second_scale,
+					row_input,row_first,row_second,input_dimension,
+					first_output_dimension,second_output_dimension);
+		}
+		return(cudaGetLastError());
+	}
 	if ( SparkLmSm121B1Fp8LinearPairPolicy(row_count,input_dimension,
 		combined_output_dimension) == SPARK_LM_PAIR_POLICY_FLAT_16 )
 		SparkLmFp8LinearPairKernel<GROUP_SIZE,ACTIVATION_CODEC,16u><<<
@@ -5262,9 +5290,39 @@ static inline cudaError_t SparkLmHostLaunchSm121StridedDecodeLinear(cudaStream_t
 			input_dimension,output_dimension);
 		return(cudaGetLastError());
 	}
-	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 || weight_scale == 0 || input_dimension % 128u != 0u || output_dimension % SPARK_LM_SM121_NATIVE_TILE_N != 0u )
+	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 || weight_scale == 0 ||
+		SparkActivationCodecIsKnown(ACTIVATION_CODEC) == 0u ||
+		(ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE &&
+		 (input_dimension % SparkActivationCodecGroupSize(ACTIVATION_CODEC)) != 0u) )
 		return(cudaErrorInvalidValue);
-	return(SparkLmHostLaunchSm121NativeLinear<SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(stream,weight_payload,weight_scale,weight_payload_group_stride_bytes,weight_scale_group_stride_bytes,input_bf16,input_row_stride,input_offset,input_group_stride,output_bf16,output_row_stride,output_offset,output_group_stride,group_count,row_count,input_dimension,output_dimension));
+	/* Multi-row must be bit-identical to the certified 1-row math: the
+	 * native MXFP8 route quantizes the BF16 activation per-K-block,
+	 * which diverges from the 1-row strided kernel and corrupts the
+	 * DSpark verify anchor's output composition (wo_a -> o_ranks).
+	 * Launch the exact strided kernel once per row, base pointers
+	 * advanced by the row strides (strides are in BF16 elements). */
+	{
+		uint32_t row;
+		for (row = 0u; row < row_count; row++)
+		{
+			const uint8_t *row_input = (const uint8_t *)input_bf16 +
+				(uint64_t)row * input_row_stride * 2u;
+			uint8_t *row_output = (uint8_t *)output_bf16 +
+				(uint64_t)row * output_row_stride * 2u;
+			grid = dim3(1u,(output_dimension + SPARK_LM_CTA_WARPS - 1u) /
+				SPARK_LM_CTA_WARPS,group_count);
+			SparkLmStridedLinearKernel<GROUP_SIZE,ACTIVATION_CODEC><<<grid,
+				SPARK_LM_CTA_THREADS,
+				input_dimension * (uint32_t)sizeof(float),stream>>>(
+				weight_format,weight_payload,weight_scale,
+				weight_payload_group_stride_bytes,
+				weight_scale_group_stride_bytes,
+				row_input,input_row_stride,input_offset,input_group_stride,
+				row_output,output_row_stride,output_offset,
+				output_group_stride,1u,input_dimension,output_dimension);
+		}
+		return(cudaGetLastError());
+	}
 }
 
 static inline cudaError_t SparkLmHostLaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t experts_per_token, uint32_t width)
