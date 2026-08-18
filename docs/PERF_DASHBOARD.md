@@ -44,4 +44,4 @@ reached - COMPSEC-17 scores get their own column then).
 - Flash: keep-old CSA landed (23 exact); 77=11x7 phase bug NAMED: pad fallback frames (expansion BUSY) have no prologue to fold their row-0 emission, so lane_next lands 1 behind -> store pairs (output[accepted], lane_next-1) = token one position ahead (290@149 instead of 290@150) -> wrong pairing -> 688. Fix = pad-specific lane advance (accepted+1, force accepted=0); global -1u drop rejected (breaks full-accept frames 147/148 which were CORRECT). Then per-island diff on a clean frame (pad-shaped forward may carry a 2nd math bug: ch-32+ boundary re-pool poison) -> k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 21:20 UTC (CI green; Flash: 77-phase bug named - pad-path lane accounting, pad-specific fix directed; 27B: vLLM-engine tap capture on spark3; no new HWM since 06:45)
+Last update: 2026-08-18 20:58 UTC (CI green; Flash: pad-specific lane fix in confirmation gate on spark4; 27B: vLLM-engine tap capture on spark3; no new HWM since 06:45; tick-timestamps corrected to UTC)
