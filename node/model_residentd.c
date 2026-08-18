@@ -2606,11 +2606,13 @@ static SparkStatus SparkModelResidentdBuildPollFds(
 	fds[0].events = runtime->client.fd < 0 ? POLLIN : 0;
 	fds[1].fd = runtime->client.fd;
 	fds[1].events = runtime->client.fd >= 0 && runtime->client.close_after_output == 0u ? POLLIN : 0;
-	/* A queued ACK (e.g. the hello ACK written by ProcessHello in the same
-	 * iteration that reads the HELLO) must be flushed in THIS poll, or the
-	 * batch's connect-timeout can expire before the next iteration. Always
-	 * request POLLOUT while the client is connected and open for output. */
-	if ( runtime->client.fd >= 0 && runtime->client.close_after_output == 0u )
+	/* Request POLLOUT only while output is genuinely pending. Requesting it
+	 * unconditionally makes poll() return immediately on a writable socket,
+	 * turning this loop into a 100%-CPU busy-spin for the whole GPU decode and
+	 * starving the driver's completion callback (both IPC round-trips). The
+	 * queued ACK is still flushed here: ReadClient queues it and the run loop
+	 * calls WriteClient in the same iteration (submission_processed path). */
+	if ( runtime->client.fd >= 0 && runtime->client.close_after_output == 0u && runtime->client.output_count != 0u )
 		fds[1].events |= POLLOUT;
 	pthread_mutex_unlock(&runtime->mutex);
 	fds[2].fd = runtime->wake_read_fd;

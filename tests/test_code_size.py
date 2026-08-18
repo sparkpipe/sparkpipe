@@ -349,7 +349,11 @@ from pathlib import Path
 # the decode loop (buffered snprintf + O_NONBLOCK write + retry + drain at
 # exit) - the host-side term that stalled B1 at the stdout reader's rate.
 # 166889 is the exact count.
-CEILING = 166889
+# The residentd poll-gating fix lands (+2): POLLOUT only when output is
+# pending (matching the client) - kills the 100%-CPU busy-spin over the GPU
+# decode that starved the completion callback (~8000x fewer Progress passes).
+# 166891 is the exact count.
+CEILING = 166891
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
