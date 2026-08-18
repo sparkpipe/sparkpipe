@@ -14,7 +14,7 @@ reached - COMPSEC-17 scores get their own column then).
 | Model | B1 no-spec | B1 spec | B8 | B16 | other B* |
 | --- | --- | --- | --- | --- | --- |
 | DSV4 Flash (TP4) | **40.46** [exact 3/3] | **8.48** (k=7, hash WRONG - not valid) | - | - | - |
-| Qwen 3.8 27B (TP1) | **8.00 FP8** (tiled decode; 3.10 BF16) [validated] | 7.16 (D=2, 2.05x - still < no-spec) | - | - | - |
+| Qwen 3.8 27B (TP1) | **8.03 FP8** (repro 8.028 of the 8.00 HWM, DSpark build; 3.10 BF16) [validated] | 7.16 (MTP D=2, 2.05x - still < no-spec); DSpark k=7 blocked on adapter init, next | - | - | - |
 | K3 | **none measured** (never run on fleet hardware) | - | - | - | - |
 | GLM52 | **6.91** | - (draft weights untrained) | 2-3 | 2-3 | - |
 | Qwen3.8-Max | 1.29 per-request | - | 0.61 | - | ~39 agg @B256 (TP4xPP4 replicated) |
@@ -40,8 +40,8 @@ reached - COMPSEC-17 scores get their own column then).
 
 ## Active climbs (references being matched)
 
-- 27B: DSpark rung-3 PARITY RESOLVED (bit-exact, landed 1cd258f); DEPLOY IN PROGRESS: full DSpark build green, FP8 root created, first deploy crash-looped (target_mismatch: adapter built TP4 default vs node_count=1) - fix = rebuild adapter with TP_DEGREE=1u; service RESTORED to BEFORE; next = FP8 no-spec repro (8.00 vs bf16-projection answer) then B1 spec k=7; then 20-58 DSpark.
+- 27B: DSpark rung-3 PARITY RESOLVED (bit-exact, landed 1cd258f); no-spec repro 8.028 = HWM CONFIRMED (FP8 pack real, binary valid; 80e8fb9d pinned as new FP8 reference); spec k=7 blocked: adapter dspark-init invalid_argument - diffing vs landed ada91ee switch; deliverable batch accumulating; then 20-58 DSpark.
 - Flash: keep-old CSA landed (23 exact); skew TESTED: -1u staging correction moved the stream (hash 47cf1a47) but idx 23 = STILL 688, prefix STILL 23 exact -> staging exonerated for real, corruption is INSIDE the 8-row island math. Next: zero-reference per-row pad diff (8 duplicate rows must be bit-identical per island - any row diff = row-index bug); b1 reference unblock via uniform-tps adapter fix (fork's lane); direct-body island dump in parallel -> k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 23:09 UTC (CI green; 27B: deploy recovered from TP4-adapter mismatch, FP8 repro next; Flash: pad-row check pending response; no new HWM since 06:45)
+Last update: 2026-08-18 23:15 UTC (CI green; 27B: FP8 no-spec repro 8.028 confirms HWM - spec k=7 blocked on adapter init, fixing; Flash: pad-row check pending response; HWM tick: 27B B1 no-spec 8.00 -> 8.03)
