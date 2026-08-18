@@ -48,7 +48,7 @@ extern "C" {
  */
 
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 1u
-#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 4u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MTP_DRAFT_VIEW_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION 1u
@@ -413,6 +413,28 @@ typedef struct SparkQwen36GdnSnapshotView
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER 0x00000020u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY 0x00000040u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST 0x00000080u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER 0x00000100u
+
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION 1u
+
+/*
+ * DSpark draft view. The resident module taps the target's post-layer hidden
+ * at target layers {4,16,28,40,52} during the decode, then runs the DFlash
+ * block forward and emits block_size draft ids. tap_buffer is DEVICE memory
+ * (tap_count x hidden bf16, written by the module, read by the DFlash
+ * kernels); draft_token_ids is HOST memory (block_size ids, written D2H).
+ */
+typedef struct SparkQwen36DsparkDraftView
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t block_size;
+	uint32_t draft_token_count;
+	uint64_t sequence_id;
+	uint64_t base_position;
+	void *tap_buffer;
+	uint32_t *draft_token_ids;
+} SparkQwen36DsparkDraftView;
 
 typedef SparkStatus (*SparkQwen36HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
 typedef SparkStatus (*SparkQwen36HiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);
@@ -439,6 +461,7 @@ typedef struct SparkQwen36ResidentDecodeStageFrameContext
 	const SparkQwen36PrefillFrameView *prefill_frame;
 	const SparkQwen36MtpDraftView *mtp_draft;
 	const SparkQwen36GdnSnapshotView *gdn_snapshot;
+	const SparkQwen36DsparkDraftView *dspark_draft;
 	SparkHiddenTransportSession *hidden_input_transport_session;
 	SparkHiddenTransportSession *hidden_output_transport_session;
 	SparkQwen36HiddenTransportPostReceiveFunction hidden_input_post_receive_function;

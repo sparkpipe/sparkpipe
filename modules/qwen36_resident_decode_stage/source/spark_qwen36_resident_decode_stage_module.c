@@ -18,6 +18,7 @@
 #include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "spark_qwen36_stagepack_format.h"
+#include "spark_qwen36_dspark_format.h"
 #include "spark_qwen36_tp.h"
 
 /*
@@ -85,6 +86,7 @@ typedef struct SparkQwen36ModuleSlot
 	float *head_scores_f32;
 	uint64_t *head_maxloc_u64;
 	uint32_t *mtp_draft_ids;
+	void *dspark_tap_buffer;
 	uint32_t mtp_seed_row;
 	uint32_t host_row_cold[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t host_slot_mapping[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
@@ -668,6 +670,8 @@ static SparkStatus SparkQwen36ModuleAllocateSlotControl(SparkQwen36ModuleState *
 		status = SparkStageModuleDeviceAllocate(&state->ledger,staged * sizeof(uint64_t),(void **)&slot->row_positions);
 	if ( status == SPARK_STATUS_OK && state->mtp_armed != 0u )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS * sizeof(uint32_t),(void **)&slot->mtp_draft_ids);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_tap_buffer);
 	return(status);
 }
 
@@ -1826,6 +1830,36 @@ static void SparkQwen36ModuleInvalidateLaneSequenceContinuity(
     }
 }
 
+/* Copy the post-layer hidden into the DSpark tap buffer when the decode
+ * reaches one of the 5 target tap layers {4,16,28,40,52}. B1 only: the tap
+ * holds one position (the committed token's hidden). */
+static SparkStatus SparkQwen36ModuleCaptureDsparkTap(
+	SparkQwen36ModuleState *state,
+	SparkQwen36ModuleSlot *slot,
+	uint32_t layer)
+{
+	uint32_t tap_index;
+	(void)state;
+	switch ( layer )
+	{
+	case 4u: tap_index = 0u; break;
+	case 16u: tap_index = 1u; break;
+	case 28u: tap_index = 2u; break;
+	case 40u: tap_index = 3u; break;
+	case 52u: tap_index = 4u; break;
+	default: return(SPARK_STATUS_OK);
+	}
+	return(SparkStageModuleCudaStatus(
+		SPARK_QWEN36_MODULE_TAG,
+		cudaMemcpyAsync(
+			(uint8_t *)slot->dspark_tap_buffer + (uint64_t)tap_index * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,
+			slot->hidden_bf16,
+			SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,
+			cudaMemcpyDeviceToDevice,
+			(cudaStream_t)slot->cuda_stream),
+		"dspark_tap"));
+}
+
 static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, SparkQwen36ResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, const SparkQwen36PrefillFrameView *prefill, uint32_t rows)
 {
 	uint64_t frame_start = state->profile_enabled != 0u ? SparkQwen36ProfileNow() : 0ull;
@@ -1838,7 +1872,11 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleBeginHidden(state,slot,context,rows);
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
+	{
 		status = SparkQwen36ModuleRunLayer(state,slot,context->kv_block_table,prefill,layer,rows);
+		if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u )
+			status = SparkQwen36ModuleCaptureDsparkTap(state,slot,layer);
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
 	if ( state->profile_enabled != 0u )

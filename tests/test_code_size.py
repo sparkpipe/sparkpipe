@@ -373,7 +373,11 @@ from pathlib import Path
 # re-reads the pack against the safetensors byte-for-byte, and the entries now
 # carry each tensor's own rows/cols (a leaked-loop-value bug it caught).
 # 167309 is the exact count.
-CEILING = 167309
+# The DSpark tap-capture foundation lands (+61): firmware ABI 4 with the
+# DSPARK_DRAFT_AFTER flag + draft view, and the module's per-slot tap buffer
+# capturing target hiddens at layers {4,16,28,40,52} during the decode loop.
+# 167370 is the exact count.
+CEILING = 167370
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
