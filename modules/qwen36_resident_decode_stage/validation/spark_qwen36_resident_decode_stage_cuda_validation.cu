@@ -967,7 +967,7 @@ static int SparkQwen36ValModuleInitialize(SparkQwen36ValModule *module)
 
 /* flags select decode vs prefill; rows and the lane/position/sequence arrays
  * are already staged on the module struct. */
-static int SparkQwen36ValModuleExecute(SparkQwen36ValModule *module, uint32_t prefill, uint32_t rows, uint32_t lane)
+static int SparkQwen36ValModuleExecute(SparkQwen36ValModule *module, uint32_t prefill, uint32_t rows, uint32_t lane, uint32_t draft_count, const SparkQwen36MtpDraftView *draft_view)
 {
 	SparkStatus status;
 	memset(&module->context,0,sizeof(module->context));
@@ -981,7 +981,9 @@ static int SparkQwen36ValModuleExecute(SparkQwen36ValModule *module, uint32_t pr
 			: 0u) |
 		(prefill != 0u
 			? SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW
-			: SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW);
+			: SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW) |
+		(draft_count != 0u ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER : 0u);
+	module->context.mtp_draft = draft_view;
 	module->context.kv_block_table = &module->table;
 	if (prefill != 0u)
 	{
@@ -1046,6 +1048,38 @@ static int SparkQwen36ValCheckFinite(const char *check, const uint16_t *hidden, 
 	return(0);
 }
 
+/* MTP draft chain qualification (A1 step 2): continue lane 0 with a decode
+ * at position 9 and draft the next two tokens via MTP_DRAFT_AFTER, then check
+ * the draft ids are in-vocab. There is no CPU-oracle MTP reference, so
+ * in-vocab is the feasible qualification here; determinism is covered by the
+ * module_determinism check above (bit-exact fresh-instance re-execution). */
+static int SparkQwen36ValCheckMtpDraft(SparkQwen36ValModule *module)
+{
+	SparkQwen36MtpDraftView draft_view;
+	uint32_t draft;
+	module->token_ids[0] = 4242u;
+	module->lanes[0] = 0u;
+	module->positions[0] = SPARK_QWEN36_VALIDATION_PREFILL_TOKENS + 1u;
+	module->sequence_ids[0] = 1u;
+	memset(&draft_view,0,sizeof(draft_view));
+	draft_view.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MTP_DRAFT_VIEW_ABI_VERSION;
+	draft_view.descriptor_bytes = sizeof(draft_view);
+	draft_view.lane_index = 0u;
+	draft_view.draft_token_count = 2u;
+	draft_view.base_position = (uint64_t)SPARK_QWEN36_VALIDATION_PREFILL_TOKENS + 2u;
+	draft_view.sequence_id = 1u;
+	draft_view.row_token_ids = module->token_ids;
+	if (SparkQwen36ValModuleExecute(module,0u,1u,0u,2u,&draft_view) != 0)
+		return(1);
+	for (draft = 0u; draft < 2u; draft++)
+	{
+		if (module->output_token_ids[1u + draft] >= SPARK_QWEN36_MODEL_VOCAB_COUNT)
+			return(SparkQwen36ValFail("module_mtp_draft","out_of_vocab"));
+	}
+	printf("qwen36_validation check=module_mtp_draft in_vocab=1 drafts=[%u,%u]\n",module->output_token_ids[1],module->output_token_ids[2]);
+	return(0);
+}
+
 /* The module flow: prefill 8 tokens on lane 0, decode position 8 on lane 0;
  * prefill the same 8 on lane 1 plus a 1-token warm prefill at position 8.
  * The decode path (recurrent step) and the warm-prefill path (chunk walk)
@@ -1066,7 +1100,7 @@ static int SparkQwen36ValCheckModule(void)
 	if (SparkQwen36ValModuleInitialize(&module) != 0)
 		return(1);
 	/* Admission and snapshot smoke: a decode admit must accept, and the
-	 * snapshot must show the completed frames. */
+	 * snapshot must succeed. Run before the frames so pipeline slots are free. */
 	memset(&admission,0,sizeof(admission));
 	admission.descriptor_bytes = sizeof(admission);
 	admission.program_id = 1u;
@@ -1088,7 +1122,7 @@ static int SparkQwen36ValCheckModule(void)
 		module.token_ids[index] = 1000u + (index * 37u) % 200000u;
 	module.positions[0] = 0u;
 	module.sequence_ids[0] = 1u;
-	if (SparkQwen36ValModuleExecute(&module,1u,SPARK_QWEN36_VALIDATION_PREFILL_TOKENS,0u) != 0)
+	if (SparkQwen36ValModuleExecute(&module,1u,SPARK_QWEN36_VALIDATION_PREFILL_TOKENS,0u,0u,0) != 0)
 		return(1);
 	if (module.capture.sends != (module.head_stage != 0u ? 0u : 1u))
 		return(SparkQwen36ValFail("module_prefill",module.head_stage != 0u ? "unexpected_hidden_send" : "no_hidden_send"));
@@ -1099,7 +1133,7 @@ static int SparkQwen36ValCheckModule(void)
 	module.lanes[0] = 0u;
 	module.positions[0] = SPARK_QWEN36_VALIDATION_PREFILL_TOKENS;
 	module.sequence_ids[0] = 1u;
-	if (SparkQwen36ValModuleExecute(&module,0u,1u,0u) != 0)
+	if (SparkQwen36ValModuleExecute(&module,0u,1u,0u,0u,0) != 0)
 		return(1);
 	if (module.head_stage == 0u)
 	{
@@ -1115,12 +1149,12 @@ static int SparkQwen36ValCheckModule(void)
 		module.token_ids[index] = 1000u + (index * 37u) % 200000u;
 	module.positions[0] = 0u;
 	module.sequence_ids[0] = 2u;
-	if (SparkQwen36ValModuleExecute(&module,1u,SPARK_QWEN36_VALIDATION_PREFILL_TOKENS,1u) != 0)
+	if (SparkQwen36ValModuleExecute(&module,1u,SPARK_QWEN36_VALIDATION_PREFILL_TOKENS,1u,0u,0) != 0)
 		return(1);
 	module.token_ids[0] = 4242u;
 	module.positions[0] = SPARK_QWEN36_VALIDATION_PREFILL_TOKENS;
 	module.sequence_ids[0] = 2u;
-	if (SparkQwen36ValModuleExecute(&module,1u,1u,1u) != 0)
+	if (SparkQwen36ValModuleExecute(&module,1u,1u,1u,0u,0) != 0)
 		return(1);
 	if (module.head_stage == 0u)
 	{
@@ -1155,13 +1189,13 @@ static int SparkQwen36ValCheckModule(void)
 			rerun.token_ids[index] = 1000u + (index * 37u) % 200000u;
 		rerun.positions[0] = 0u;
 		rerun.sequence_ids[0] = 1u;
-		if (SparkQwen36ValModuleExecute(&rerun,1u,SPARK_QWEN36_VALIDATION_PREFILL_TOKENS,0u) != 0)
+		if (SparkQwen36ValModuleExecute(&rerun,1u,SPARK_QWEN36_VALIDATION_PREFILL_TOKENS,0u,0u,0) != 0)
 			return(1);
 		rerun.token_ids[0] = 4242u;
 		rerun.lanes[0] = 0u;
 		rerun.positions[0] = SPARK_QWEN36_VALIDATION_PREFILL_TOKENS;
 		rerun.sequence_ids[0] = 1u;
-		if (SparkQwen36ValModuleExecute(&rerun,0u,1u,0u) != 0)
+		if (SparkQwen36ValModuleExecute(&rerun,0u,1u,0u,0u,0) != 0)
 			return(1);
 		if (module.head_stage == 0u)
 		{
@@ -1180,7 +1214,10 @@ static int SparkQwen36ValCheckModule(void)
 		cudaFree(rerun.device_counts);
 		printf("qwen36_validation check=module_determinism bit_exact=1\n");
 	}
-	SparkQwen36ResidentDecodeStageDestroy(module.state);	cudaFree(module.device_blocks);
+	if (module.head_stage != 0u && SparkQwen36ValCheckMtpDraft(&module) != 0)
+		return(1);
+	SparkQwen36ResidentDecodeStageDestroy(module.state);
+	cudaFree(module.device_blocks);
 	cudaFree(module.device_counts);
 	return(0);
 }

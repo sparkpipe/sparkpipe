@@ -75,7 +75,7 @@ if [[ "${SPARK_QWEN36_TP_DEGREE:-1}" != "1" ]] || [[ "${SPARK_QWEN36_TP_STANDALO
     require_configuration_value SPARK_QWEN36_TP_STANDALONE 1
     require_configuration_value SPARK_QWEN36_STAGE_COUNT 1
     require_configuration_value SPARK_QWEN36_STAGE_LAYER_COUNT 64
-    require_configuration_value SPARK_QWEN36_STAGE_MTP 0
+    require_configuration_value SPARK_QWEN36_STAGE_MTP 1
 else
     if (( ${SPARK_QWEN36_STAGE_COUNT:-0} < 2 )); then
         echo "qwen36 hardware validation requires SPARK_QWEN36_STAGE_COUNT >= 2 (mid-pipeline stage 0)" >&2

@@ -357,7 +357,11 @@ from pathlib import Path
 # the same Progress that reads the completion (drops the one-iteration
 # deferral) - tightens the serial loop; the B1 bubble itself closes via
 # speculation overlap, not the scheduler. 166903 is the exact count.
-CEILING = 166903
+# The qwen36 MTP qualification lands (+37): the validator's whole-stack tier
+# arms STAGE_MTP=1 and adds an MTP_DRAFT_AFTER frame with an in-vocab draft
+# check (determinism rides the fresh-instance re-execution). 166940 is the
+# exact count.
+CEILING = 166940
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
