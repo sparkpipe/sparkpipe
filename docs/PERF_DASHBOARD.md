@@ -40,8 +40,8 @@ reached - COMPSEC-17 scores get their own column then).
 
 ## Active climbs (references being matched)
 
-- 27B: DSpark rung-3 weights packed (1.36B); 7-vs-7 diff = ONE decision: draft[1] 16 (ours) vs 17 (numpy ref) - rest is cascade; vLLM oracle EXHAUSTED (engine-core BF16 ScalarType rejection, GDN path hardcoded, dtype=float16 confirmed identical) - oracle shelved; zero-cost path now: draft[1] margin + our-taps-vs-numpy-taps diff + 3-way rounding-convention diff (our CUDA vs numpy ref vs specforge dspark.py); then 20-58 DSpark.
+- 27B: DSpark rung-3 weights packed (1.36B); 7-vs-7 diff = ONE decision: draft[1] 16 (ours) vs 17 (numpy ref) - rest is cascade; canonical config MINED from Doopeworld README (GPTQ-Int4 target + kv-cache-dtype fp8 + method:dspark; nearest local = FP8 target) - oracle re-armed (restart residentd w/ smaller KV, ~40GiB free); oracle = structural confirmation only (FP8 rounding != our packer); tie arbitration stays zero-cost: margin + tap diff + 3-way convention diff (still owed); then 20-58 DSpark.
 - Flash: keep-old CSA landed (23 exact); skew TESTED: -1u staging correction moved the stream (hash 47cf1a47) but idx 23 = STILL 688, prefix STILL 23 exact -> staging exonerated for real, corruption is INSIDE the 8-row island math. Next: zero-reference per-row pad diff (8 duplicate rows must be bit-identical per island - any row diff = row-index bug); b1 reference unblock via uniform-tps adapter fix (fork's lane); direct-body island dump in parallel -> k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 21:47 UTC (CI green; Flash: frame-149 pad-row check in flight; 27B: vLLM oracle shelved - margin + tap + convention diffs running; no new HWM since 06:45)
+Last update: 2026-08-18 21:55 UTC (CI green; Flash: frame-149 pad-row check in flight; 27B: canonical README config mined, oracle re-armed as structural-only, zero-cost tie analyses required; no new HWM since 06:45)
