@@ -2524,11 +2524,15 @@ static SparkStatus SparkModelResidentdProgressRoutes(
 static SparkStatus SparkModelResidentdProgress(SparkModelResidentdRuntime *runtime)
 {
 	SparkStatus status;
-	status = runtime->adapter_library.adapter_interface.progress(runtime->adapter_state,SPARK_MODEL_RESIDENTD_PROGRESS_STEPS);
-	if ( status == SPARK_STATUS_BUSY )
-		status = SPARK_STATUS_OK;
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdProgressRoutes(runtime,0u);
+	/* ADMIT FIRST. ProgressRoutes(allow_adapter=1) submits the next
+	 * decode-draft (adapter.submit = spec phase one). The adapter's progress
+	 * scan (spec phase two of the prior submission) runs AFTER admission so
+	 * the driver can run verify(N) + decode-draft(N+1) concurrently under
+	 * max_inflight_submission_count, instead of serializing phase two ahead
+	 * of the next admission. The committed-fifo head ordering and the
+	 * continuation-lease chain are untouched: they live in the submit and
+	 * completion paths, not in this scan order. */
+	status = SparkModelResidentdProgressRoutes(runtime,0u);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"model_residentd progress stage=routes-pre status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
@@ -2547,6 +2551,12 @@ static SparkStatus SparkModelResidentdProgress(SparkModelResidentdRuntime *runti
 		status = SparkModelResidentdProgressRoutes(runtime,1u);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"model_residentd progress stage=routes-adapter status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
+	if ( status == SPARK_STATUS_OK )
+	{
+		status = runtime->adapter_library.adapter_interface.progress(runtime->adapter_state,SPARK_MODEL_RESIDENTD_PROGRESS_STEPS);
+		if ( status == SPARK_STATUS_BUSY )
+			status = SPARK_STATUS_OK;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->input_transport,1u);
 	if ( status != SPARK_STATUS_OK )

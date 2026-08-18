@@ -361,7 +361,11 @@ from pathlib import Path
 # arms STAGE_MTP=1 and adds an MTP_DRAFT_AFTER frame with an in-vocab draft
 # check (determinism rides the fresh-instance re-execution). 166940 is the
 # exact count.
-CEILING = 166940
+# The residentd loop reorder lands (+10): admission (spec phase-one
+# decode-draft) now runs BEFORE the phase-two scan so verify(N) and
+# decode-draft(N+1) overlap under max_inflight_submission_count; FIFO,
+# lease, and transport ordering all preserved. 166950 is the exact count.
+CEILING = 166950
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
