@@ -32,7 +32,7 @@ reached - COMPSEC-17 scores get their own column then).
 | Model | no-spec golden | spec golden | TP correctness |
 | --- | --- | --- | --- |
 | DSV4 Flash | O128 3/3 exact | CSA keep-old fix landed: 23 exact tokens (2c40465d); full-O128 not yet (golden pin moved to 211462f2 batch) | TP4 exact |
-| Qwen 3.8 27B | bit-exact GPU validation + genuine prompt | D=2 validated (no B1 gain) | TP1 |
+| Qwen 3.8 27B | bit-exact GPU validation + genuine prompt | DSpark draft parity BIT-EXACT vs fixed reference [220,16,92,198,12,328,82] (draft[1] = genuine 19.625 tie, first-max -> 16); spec speed not yet measured | TP1 |
 | K3 | not measured | - | TP16 serial replay sum-vs-golden PASS (worst 0.0508) - correctness only |
 | GLM52 | pre-fleet | - | - |
 | Qwen3.8-Max | level-1 state | - | - |
@@ -40,8 +40,8 @@ reached - COMPSEC-17 scores get their own column then).
 
 ## Active climbs (references being matched)
 
-- 27B: DSpark rung-3 weights packed (1.36B); static diff cleared all suspects EXCEPT the per-row LINEAR PROJECTIONS (delta-shape will name index-vs-rounding class); GO issued: reduced-KV restart + layer-0 q/k/v row1-vs-row0 dump (configs recorded, restore after); Markov device kernel BF16 fix done in clone; then 20-58 DSpark.
+- 27B: DSpark rung-3 PARITY RESOLVED: kernel bit-exact vs fixed reference (bug was the reference's rope numpy-view read-after-overwrite, landed 1cd258f + ceiling ratchet); next = B1 spec k=7 measurement vs the 8.00 no-spec HWM (acceptance rate is the lever); then 20-58 DSpark.
 - Flash: keep-old CSA landed (23 exact); skew TESTED: -1u staging correction moved the stream (hash 47cf1a47) but idx 23 = STILL 688, prefix STILL 23 exact -> staging exonerated for real, corruption is INSIDE the 8-row island math. Next: zero-reference per-row pad diff (8 duplicate rows must be bit-identical per island - any row diff = row-index bug); b1 reference unblock via uniform-tps adapter fix (fork's lane); direct-body island dump in parallel -> k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 22:25 UTC (CI green; Flash: frame-149 pad-row check in flight; 27B: projection dump RUN issued (layer-0 q/k/v bisect); no new HWM since 06:45)
+Last update: 2026-08-18 22:30 UTC (CI green; 27B: DRAFT PARITY BIT-EXACT - reference rope bug fixed and landed; B1 spec measurement next; Flash: frame-149 pad-row check in flight; no new HWM since 06:45)
