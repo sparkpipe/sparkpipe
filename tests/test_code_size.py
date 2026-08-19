@@ -403,7 +403,12 @@ from pathlib import Path
 # DSpark port landed without sm_121a gate coverage (the gate listed only
 # glm52/dsv4 stages) - now the port's .cu is CI-compiled every push.
 # 168358 is the exact count.
-CEILING = 168358
+# DFlash2 W1+W8 lands (+170): the 21-kind drafter packer (81-tensor
+# inventory, selector codebook slots, grouped-conv kinds) and the numpy
+# parity oracles ported verbatim from the vLLM PR unit tests (the W2/W3
+# kernel gate - no upstream reference implementation exists).
+# 168528 is the exact count.
+CEILING = 168528
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
