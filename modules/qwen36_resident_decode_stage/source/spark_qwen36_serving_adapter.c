@@ -142,27 +142,39 @@ static uint32_t SparkQwen36ServingSpecFirstDraftPolicy(void)
 	return(SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY_RECOVER);
 }
 
-/* Speculation method: "mtp" (default) drives the MTP chain; "dspark" drives
- * the DSpark block-diffusion drafter (block_size drafts, dual-source K/V).
- * Both produce draft[0] as the just-committed position (redundant with C0),
- * so the verify/replay phases are shared; only the phase-one draft view,
- * flag, and draft buffer differ. */
+/* Speculation method: "mtp" (default) drives the MTP chain; "dflash2" drives
+ * the DFlash2 block-diffusion drafter (block 8 = C0 anchor + 7 mask tokens,
+ * conv-wrapped 5-layer backbone, top-16 + candidate-selector walk). "dspark"
+ * names the same driver path for the superseded DSpark drafter pack and fails
+ * loudly at load time against a DFlash2 pack (the module geometry check
+ * rejects 40-head/FFN-10240 weights). Both block drafters produce draft[0] as
+ * the just-committed position (redundant with C0), so the verify/replay
+ * phases are shared; only the phase-one draft view, flag, and draft buffer
+ * differ. */
 #define SPARK_QWEN36_SERVING_SPEC_METHOD_ENV "SPARK_QWEN36_SERVING_SPEC_METHOD"
 #define SPARK_QWEN36_SERVING_SPEC_METHOD_MTP 0u
 #define SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK 1u
+#define SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2 2u
 static uint32_t SparkQwen36ServingSpecMethod(void)
 {
 	const char *value = getenv(SPARK_QWEN36_SERVING_SPEC_METHOD_ENV);
 	if ( value != 0 && strcmp(value,"dspark") == 0 )
 		return(SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK);
+	if ( value != 0 && strcmp(value,"dflash2") == 0 )
+		return(SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2);
 	return(SPARK_QWEN36_SERVING_SPEC_METHOD_MTP);
 }
 
-/* Draft depth for the active spec method: DSpark always drafts its full
- * block_size; MTP uses the env-tunable depth. */
+/* Draft depth for the active spec method: the block drafters always draft
+ * their full block_size (verify window = C0 + block-1 drafts); MTP uses the
+ * env-tunable depth. */
+static uint32_t SparkQwen36ServingBlockDraftMethod(uint32_t spec_method)
+{
+	return(spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK || spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2);
+}
 static uint32_t SparkQwen36ServingActiveDraftCount(uint32_t spec_method)
 {
-	return(spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE : SparkQwen36ServingSpeculativeDraftCount());
+	return(SparkQwen36ServingBlockDraftMethod(spec_method) ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE : SparkQwen36ServingSpeculativeDraftCount());
 }
 /* GDN snapshot slots. The two-phase min-accept schedule keeps one verify
  * snapshot in flight per lane, capped by the module's slot ceiling; a lane
@@ -452,10 +464,11 @@ static SparkStatus SparkQwen36ServingSetEnvironment(
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_KV_BLOCKS",state->kv_block_count);
 	if ( SparkQwen36ServingSpeculationEnabled() != 0u && SparkQwen36ServingOwnsFinalHead(state) != 0u )
 	{
-		/* The GDN snapshot is used by BOTH the MTP verify and the DSpark verify/replay;
-		 * only the MTP module itself is suppressed for the dspark method. */
+		/* The GDN snapshot is used by BOTH the MTP verify and the block-drafter
+		 * verify/replay; only the MTP module itself is suppressed for the
+		 * dspark/dflash2 methods. */
 		SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS",SPARK_QWEN36_SERVING_GDN_SNAPSHOT_SLOTS);
-		if ( SparkQwen36ServingSpecMethod() != SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK )
+		if ( !SparkQwen36ServingBlockDraftMethod(SparkQwen36ServingSpecMethod()) )
 			SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_MTP","1");
 		else
 			SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_MTP","0");
@@ -464,6 +477,18 @@ static SparkStatus SparkQwen36ServingSetEnvironment(
 	{
 		SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_MTP","0");
 		SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS","0");
+	}
+	/* Fail loudly, never draft silently: a block-drafter method without a
+	 * drafter pack initializes an unarmed module whose draft forward is a
+	 * no-op (vLLM's V1 trap, mirrored). */
+	if ( SparkQwen36ServingSpeculationEnabled() != 0u && SparkQwen36ServingOwnsFinalHead(state) != 0u && SparkQwen36ServingBlockDraftMethod(SparkQwen36ServingSpecMethod()) != 0u )
+	{
+		const char *drafter_pack = getenv("SPARK_QWEN36_DSPARK_PACK_PATH");
+		if ( drafter_pack == 0 || drafter_pack[0] == '\0' )
+		{
+			fprintf(stderr,"qwen36_serving spec method requires SPARK_QWEN36_DSPARK_PACK_PATH\n");
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		}
 	}
 	SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_KV_STORE","none");
 	SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_KV_SERVICE","none");
@@ -1326,13 +1351,15 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		spec->sequence_id = sequence;
 		spec->snapshot_index = lane;
 		spec->draft_token_count = draft_count;
-		if ( spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK )
+		if ( SparkQwen36ServingBlockDraftMethod(spec_method) )
 		{
 			memset(&dspark_draft,0,sizeof(dspark_draft));
 			dspark_draft.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION;
 			dspark_draft.descriptor_bytes = sizeof(dspark_draft);
 			dspark_draft.block_size = draft_count;
-			dspark_draft.draft_token_count = draft_count;
+			/* DFlash2 emits block-1 draft ids (the mask slots); DSpark emitted
+			 * one per block row and the remap below dropped the last. */
+			dspark_draft.draft_token_count = spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2 ? draft_count - 1u : draft_count;
 			dspark_draft.sequence_id = sequence;
 			dspark_draft.base_position = spec->base_position;
 			dspark_draft.tap_buffer = 0;
@@ -1356,16 +1383,16 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		if ( status == SPARK_STATUS_OK )
 		{
 			spec->committed_ids[0] = pending->frame_output_ids[0];
-			if ( spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK )
+			if ( SparkQwen36ServingBlockDraftMethod(spec_method) )
 			{
-				/* DSpark drafts position C0+i+1 for i in 0..6 (block[0]=embed(C0),
-				 * block[1..6]=mask, Markov argmax per position), while the shared
-				 * verify/replay/accept loop below uses the MTP convention:
-				 * draft[0] predicts C0 (redundant, never verified) and draft[i>=1]
-				 * predicts position C0+i. Remap so draft_ids[0]=C0 (first-draft
-				 * always in agreement) and draft_ids[i]=dspark_draft[i-1] for i>=1;
-				 * DSpark's last draft (position C0+7) is dropped exactly like MTP's
-				 * redundant draft[0]. */
+				/* Block drafters draft position C0+i+1 from block[i+1] (block[0]
+				 * = embed(C0)), while the shared verify/replay/accept loop below
+				 * uses the MTP convention: draft[0] predicts C0 (redundant, never
+				 * verified) and draft[i>=1] predicts position C0+i. Remap so
+				 * draft_ids[0]=C0 (first-draft always in agreement) and
+				 * draft_ids[i]=block_draft[i-1] for i>=1. DSpark's last draft
+				 * (position C0+7) drops out exactly like MTP's redundant
+				 * draft[0]; DFlash2's block-1 ids all land. */
 				spec->draft_ids[0] = spec->committed_ids[0];
 				for (draft=1u; draft<draft_count; draft++)
 					spec->draft_ids[draft] = pending->dspark_draft_ids[draft - 1u];
