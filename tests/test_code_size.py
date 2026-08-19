@@ -648,7 +648,11 @@ from pathlib import Path
 # forward, isolating the corrupting phase (block forward vs the decode walk
 # itself).
 # 172588 is the exact count.
-CEILING = 172588
+# +2: the pointer inventory now prints the GDN snapshot buffers and the
+# snapshot slot count - the speculation-enabled layout's extra allocations,
+# the last unprinted region in the overlap bisect.
+# 172590 is the exact count.
+CEILING = 172590
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
