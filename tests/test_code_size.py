@@ -435,7 +435,11 @@ from pathlib import Path
 # +60: env-gated DFlash2 stage-dump bisection (SPARK_QWEN36_DFLASH2_STAGE_DUMP)
 # - the parity-debug surface, removed after forward parity lands.
 # 168848 is the exact count.
-CEILING = 168848
+# +107: conv kernel reads the fused [B, sides, taps, groups] delta directly
+# (side param, full row stride - the pointer-offset variant read the wrong
+# rows) + the stage-bisect tool (tools/qwen36_dflash2_bisect.py).
+# 168955 is the exact count.
+CEILING = 168955
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
