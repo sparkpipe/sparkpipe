@@ -40,8 +40,8 @@ reached - COMPSEC-17 scores get their own column then).
 
 ## Active climbs (references being matched)
 
-- 27B: DSpark rung-3 PARITY RESOLVED (bit-exact, landed 1cd258f); SPEC LOOP NOW RUNS on FP8 29.9GB (3 init/frame bugs fixed: global-tensor sentinels, DSPARK_DRAFT_AFTER frame flag); remaining: tap_buffer=0 in DsparkDraftView -> projector reads zeros -> repeating drafts [1510,9,...] + one decode-submit invalid_argument; fixes greenlit; then B1 spec k=7 vs 8.02; then 20-58 DSpark.
+- 27B: DSpark rung-3 PARITY RESOLVED (bit-exact, landed 1cd258f); spec k=7 RUNS END-TO-END to 128 tokens (MTP gate applied, device 72.3GiB); remaining: tap capture fires on the WRONG frame (flag/condition inversion - taps empty -> repeating drafts) + final verify frame rejected (tps=1 vs new_tokens=7 bookkeeping); both fixes greenlit; then B1 spec k=7 vs 8.02; then 20-58 DSpark.
 - Flash: keep-old CSA landed (23 exact); staging CLOSED by measurement (no double-count, no pads, -1u formula matches engine continuity; 7-token lag = symptom); BUG = layer-0 wq_a FP8 pair: batch-coupled activation scale, ch 0-255 clean / 256-1023 diverge at the 128-tile boundary, all 8 rows wrong; fix in progress = align both pair paths (row-count split: !=1 native-tiled vs ==1 flat-pair) to per-row staging; verify r1_wq_a == delta_ge_raw -> then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-18 23:55 UTC (CI green; Flash: FP8 pair kernel fix in progress; 27B: spec loop RUNNING, tap wiring + submit fix greenlit; no HWM change since 8.03)
+Last update: 2026-08-19 00:00 UTC (CI green; Flash: FP8 pair kernel fix in progress; 27B: spec e2e to 128 tokens - tap-frame + tail-verify fixes next; no HWM change since 8.03)
