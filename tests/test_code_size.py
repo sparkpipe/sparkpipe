@@ -635,7 +635,13 @@ from pathlib import Path
 # roleplay/coding streams diverged deterministically. Now a ledger device
 # allocation of the exact float count.
 # 172533 is the exact count.
-CEILING = 172533
+# +14: pointer inventory at slot allocation (the overlap bisect). The silent
+# divergence corrupts the target's gdn_pool during the drafter forward and
+# the scratch sizes are provably correct, so the remaining mechanism is an
+# overlap between the ledger-allocated device regions - the pointers are
+# now printed once per boot so the overlap names itself.
+# 172547 is the exact count.
+CEILING = 172547
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

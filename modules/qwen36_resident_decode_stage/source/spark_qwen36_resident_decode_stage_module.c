@@ -899,6 +899,20 @@ static SparkStatus SparkQwen36ModuleAllocateSlotControl(SparkQwen36ModuleState *
 			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)selector_slots * selector_k * selector_k * sizeof(float),(void **)&slot->dspark_selector.edges_f32);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)selector_slots * sizeof(uint32_t),(void **)&slot->dspark_selector.draft_token_ids);
+		if ( status == SPARK_STATUS_OK )
+		{
+			/* Pointer inventory for the overlap bisect: the silent divergence
+			 * corrupts the TARGET's gdn_pool during the drafter forward, and the
+			 * scratch sizes are provably correct, so one of these device regions
+			 * must overlap another. Printed once per boot, before any frame. */
+			fprintf(stderr,"%s dspark_ptrs gdn_state=%p gdn_tail=%p scratch=%p conv_delta=%p conv_out=%p chunk=%p cand_ids=%p cand_scores=%p gate=%p edges=%p drafts=%p\n",
+				SPARK_QWEN36_MODULE_TAG,
+				(void *)state->gdn_pool.state_f32,(void *)state->gdn_pool.conv_tail_bf16,
+				slot->dspark_scratch,slot->dspark_conv_delta,slot->dspark_conv_out,
+				slot->dspark_selector.chunk_keys,slot->dspark_selector.candidate_ids,
+				slot->dspark_selector.candidate_scores,slot->dspark_selector.context_gate_bf16,
+				slot->dspark_selector.edges_f32,slot->dspark_selector.draft_token_ids);
+		}
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(SPARK_QWEN36_DSPARK_BLOCK_SIZE - 1u) * sizeof(uint32_t),(void **)&slot->dspark_mask_token_ids);
