@@ -19,10 +19,13 @@
 #include "sparkpipe/spark_qwen36_model.h"
 #include "spark_qwen36_dspark_format.h"
 
+/* Geometry lives in spark_qwen36_dspark_format.h (QUERY_HEADS, KV_HEADS,
+ * BLOCK_SIZE, ...). The two shorthands below stay because the kernel body
+ * indexes with those names while the format header spells them
+ * HEAD_DIMENSION / ROPE_DIMENSION. There is no duplicate BLOCK_SIZE here —
+ * the pack's DFlash2 value (8) is the single source of truth. */
 #define SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM 128u
-#define SPARK_QWEN36_DSPARK_ATTN_KV_HEADS 8u
 #define SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM 64u
-/* BLOCK_SIZE comes from spark_qwen36_dspark_format.h (8 for DFlash2). */
 
 static __device__ __forceinline__ float SparkQwen36DsparkRopeFrequency(uint32_t pair)
 {
