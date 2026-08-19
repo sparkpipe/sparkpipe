@@ -13,13 +13,14 @@ and embed_tokens rows (from the sharded 27B checkpoint). Inputs are synthesized
 from __future__ import annotations
 
 import json
+import os
 import struct
 import sys
 from pathlib import Path
 
 import numpy as np
 
-DRAFTER = Path("/home/spark3/sparkdata/qwen38-dflash2-drafter")
+DRAFTER = Path(os.environ.get("SPARK_QWEN36_DFLASH2_DRAFTER", "/home/spark3/sparkdata/qwen38-dflash2-drafter"))
 TARGET = Path("/home/spark3/extnvme/models/hf/Qwen/Qwen3.8-27B")
 
 HIDDEN = 5120
