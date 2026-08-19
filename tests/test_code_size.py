@@ -432,7 +432,10 @@ from pathlib import Path
 # per sublayer), the host top-16 + selector lattice + greedy walk pass, the
 # dflash2 adapter method (block 8), and the fail-loud drafter-pack guard.
 # 168788 is the exact count.
-CEILING = 168788
+# +60: env-gated DFlash2 stage-dump bisection (SPARK_QWEN36_DFLASH2_STAGE_DUMP)
+# - the parity-debug surface, removed after forward parity lands.
+# 168848 is the exact count.
+CEILING = 168848
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

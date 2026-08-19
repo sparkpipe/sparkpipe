@@ -2026,6 +2026,28 @@ static void SparkQwen36ModuleInvalidateLaneSequenceContinuity(
  * embedding and lm_head are shared (the drafter pack carries neither). */
 
 
+/* Parity bisection helper: dump one bf16 stage to /tmp/dflash2_stage_<name>.bin.
+ * Synchronizes the module stream first so the dump reads the launched stage. */
+static void SparkQwen36ModuleDumpStage(cudaStream_t stream, const char *name, const uint16_t *device, uint64_t elements)
+{
+	char path[128];
+	uint16_t *host = (uint16_t *)malloc((size_t)elements * 2u);
+	FILE *file;
+	if ( host == 0 )
+		return;
+	snprintf(path,sizeof(path),"/tmp/dflash2_stage_%s.bin",name);
+	if ( cudaStreamSynchronize(stream) == cudaSuccess && cudaMemcpy(host,device,(size_t)elements * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
+	{
+		file = fopen(path,"wb");
+		if ( file != 0 )
+		{
+			fwrite(host,1,(size_t)elements * 2u,file);
+			fclose(file);
+		}
+	}
+	free(host);
+}
+
 /* DFlash2 block-diffusion draft forward: projector context from the 5 target
  * taps, block = [embed(C0), embed(mask) x (B-1)], then 5 conv-wrapped decoder
  * layers (conv.prepare -> sublayer -> conv.finish per attention AND mlp),
@@ -2086,6 +2108,18 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchEmbeddingGather(stream,slot->dspark_mask_token_ids,state->token_embedding_bf16,block_hidden + H,B - 1u);
 	status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"dflash2_head_init");
+	/* Parity bisection: one-shot per-stage dumps (env-gated) so the numpy
+	 * reference can localize the first divergent stage. */
+	if ( status == SPARK_STATUS_OK && getenv("SPARK_QWEN36_DFLASH2_STAGE_DUMP") != 0 )
+	{
+		static int stage_dump_done = 0;
+		if ( stage_dump_done == 0 )
+		{
+			stage_dump_done = 1;
+			SparkQwen36ModuleDumpStage(stream,"ctx",context,(uint64_t)H);
+			SparkQwen36ModuleDumpStage(stream,"block0",block_hidden,(uint64_t)B * H);
+		}
+	}
 	for (layer = 0u; status == SPARK_STATUS_OK && layer < SPARK_QWEN36_DSPARK_LAYER_COUNT; layer++)
 	{
 		SparkQwen36DsparkLayerWeights *lw = &w->layer[layer];
@@ -2096,6 +2130,12 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			error = SparkQwen36LaunchLinear(stream,&lw->conv_attn_proj,norm,conv_proj_a,B);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchDsparkConv(stream,norm,conv_proj_a,lw->conv_attn_base_bf16,conv_h,B,conv_groups,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE);
+		if ( status == SPARK_STATUS_OK && getenv("SPARK_QWEN36_DFLASH2_STAGE_DUMP") != 0 && layer == 0u )
+		{
+			SparkQwen36ModuleDumpStage(stream,"l0_norm",norm,(uint64_t)B * H);
+			SparkQwen36ModuleDumpStage(stream,"l0_conva",conv_proj_a,(uint64_t)B * SPARK_QWEN36_DSPARK_CONV_PROJ_ROWS);
+			SparkQwen36ModuleDumpStage(stream,"l0_convh",conv_h,(uint64_t)B * H);
+		}
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->q,conv_h,q,B);
 		/* dual-source K/V: K_ctx/V_ctx = proj(context); K_block/V_block = proj(prepared h). */
@@ -2113,8 +2153,17 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			error = SparkQwen36LaunchLinear(stream,&lw->o,attn_out,q,B);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchDsparkConv(stream,q,conv_proj_a + conv_side_delta,(const char *)lw->conv_attn_base_bf16 + (uint64_t)conv_side_base * 2u,conv_h,B,conv_groups,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE);
+		if ( status == SPARK_STATUS_OK && getenv("SPARK_QWEN36_DFLASH2_STAGE_DUMP") != 0 && layer == 0u )
+		{
+			SparkQwen36ModuleDumpStage(stream,"l0_q",q,(uint64_t)B * H);
+			SparkQwen36ModuleDumpStage(stream,"l0_k",k,(uint64_t)(B + 1u) * 1024u);
+			SparkQwen36ModuleDumpStage(stream,"l0_attn",attn_out,(uint64_t)B * H);
+			SparkQwen36ModuleDumpStage(stream,"l0_attfinish",conv_h,(uint64_t)B * H);
+		}
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchResidualAdd(stream,block_hidden,conv_h,B,H);
+		if ( status == SPARK_STATUS_OK && getenv("SPARK_QWEN36_DFLASH2_STAGE_DUMP") != 0 && layer == 0u )
+			SparkQwen36ModuleDumpStage(stream,"l0_x1",block_hidden,(uint64_t)B * H);
 		/* mlp half: the same conv wrap around gate/up/swiglu/down. */
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchRmsNorm(stream,block_hidden,lw->post_norm_bf16,norm,B,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
@@ -2122,6 +2171,12 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			error = SparkQwen36LaunchLinear(stream,&lw->conv_mlp_proj,norm,conv_proj_m,B);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchDsparkConv(stream,norm,conv_proj_m,lw->conv_mlp_base_bf16,conv_h,B,conv_groups,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE);
+		if ( status == SPARK_STATUS_OK && getenv("SPARK_QWEN36_DFLASH2_STAGE_DUMP") != 0 && layer == 0u )
+		{
+			SparkQwen36ModuleDumpStage(stream,"l0_norm2",norm,(uint64_t)B * H);
+			SparkQwen36ModuleDumpStage(stream,"l0_convm",conv_proj_m,(uint64_t)B * SPARK_QWEN36_DSPARK_CONV_PROJ_ROWS);
+			SparkQwen36ModuleDumpStage(stream,"l0_mlpprep",conv_h,(uint64_t)B * H);
+		}
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->gate,conv_h,ffn,B);
 		if ( error == cudaSuccess )
@@ -2132,6 +2187,11 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			error = SparkQwen36LaunchLinear(stream,&lw->down,up,q,B);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchDsparkConv(stream,q,conv_proj_m + conv_side_delta,(const char *)lw->conv_mlp_base_bf16 + (uint64_t)conv_side_base * 2u,conv_h,B,conv_groups,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE);
+		if ( status == SPARK_STATUS_OK && getenv("SPARK_QWEN36_DFLASH2_STAGE_DUMP") != 0 && layer == 0u )
+		{
+			SparkQwen36ModuleDumpStage(stream,"l0_ff",ffn,(uint64_t)B * SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE);
+			SparkQwen36ModuleDumpStage(stream,"l0_mlpfinish",conv_h,(uint64_t)B * H);
+		}
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchResidualAdd(stream,block_hidden,conv_h,B,H);
 		status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"dflash2_layer");
