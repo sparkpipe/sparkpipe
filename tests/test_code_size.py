@@ -477,7 +477,9 @@ from pathlib import Path
 # attention time (the original dual-source rounding path); the bf16
 # pre-prepped q/k flipped round-1 drafts.
 # 169402 is the exact count.
-CEILING = 169402
+# +4: tap-store grid.y channel tile.
+# 169406 is the exact count.
+CEILING = 169406
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
