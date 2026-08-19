@@ -413,7 +413,11 @@ from pathlib import Path
 # end-to-end against the downloaded checkpoint - the end-to-end parity
 # reference for the W2/W3 kernels.
 # 168546 is the exact count.
-CEILING = 168546
+# W2 lands (+41): the fused grouped depthwise conv kernel (per-token
+# coefficients, block-boundary zeroing, one elementwise pass) + launch
+# wrapper - the DFlash2 drafter's first new kernel.
+# 168587 is the exact count.
+CEILING = 168587
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
