@@ -648,3 +648,21 @@ acceptance on a Q4_K_M target); it is a design choice inside W4.
    than +32.6%. Set the acceptance target from DFlash2's **absolutes** — 4.80 mean / 5.46
    GSM8K at block 8 on BF16, or 5.28–5.39 on a Q4_K_M target — measured against SparkPipe's
    own DSpark baseline on identical sampling.
+
+## Perf addendum (independent lane-2 measurement, spark4 GB10, 2026-08-19)
+
+W4 fused cost at production shape (7 rows x 248320 x 5120, K=16): **17.1 ms**,
+~149 GB/s effective - the 2.54 GiB BF16 head READ dominates (~54% of GB10
+bandwidth). Hard floors for the head read: BF16 ~9.3 ms, FP8 ~4.7 ms,
+NVFP4 ~2.3 ms per drafter step. Upstream's 0.041 ms 'top-k' is over an
+already-materialised logits row - not comparable to a fused matvec.
+Conclusion: option 1 (top-K on a quantized/screened head, feeding the
+reduction a candidate list instead of the dense vocab) is the post-adoption
+perf lever; the reduction itself is already generic in candidate_count.
+Measurement caveat: another lane's process appeared on spark4 mid-run;
+correctness unaffected, latencies 17.0-18.2 ms across repeats.
+
+Independent cross-check: lane 2's clean-room implementation (1009 lines,
+mutation-tested - 5 of 5 mutations caught, production-shape bit-exact
+parity) confirms the landed selector contract; per the DRY law the landed
+implementation (cfe1813) remains the single in-tree implementation.
