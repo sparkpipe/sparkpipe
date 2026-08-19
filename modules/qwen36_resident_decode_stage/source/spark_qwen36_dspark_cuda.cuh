@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_qwen36_model.h"
+#include "sparkpipe/spark_lm_kernels.cuh"
 #include "spark_qwen36_dspark_format.h"
 
 /* Geometry lives in spark_qwen36_dspark_format.h (QUERY_HEADS, KV_HEADS,
@@ -186,7 +187,9 @@ static __global__ void SparkQwen36DsparkMarkovKernel(
 	 * bias -> BF16 BEFORE the add, so this device kernel must too (else it
 	 * lies about the rounding convention). */
 	bias_out[(uint64_t)draft_pos * vocab + v] = __bfloat162float(__float2bfloat16(acc));
-}/*
+}
+
+/*
  * ===========================================================================
  * DFlash2 candidate selector, device side (adoption items W4 and W3).
  *
