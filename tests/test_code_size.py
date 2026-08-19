@@ -481,7 +481,12 @@ from pathlib import Path
 # silently; initialize prints the process environment's pack path + spec
 # method; the adapter prints the method it selected.
 # 171628 is the exact count.
-CEILING = 171628
+# +73: the serving preflight script - mechanically proves the RUNNING
+# process's driver carries the W7 markers, the deploy root matches the
+# unit's RUNTIME_ROOT, and the process env has the pack path + dspark
+# method (the misdeploy class that burned the whole serving leg).
+# 171701 is the exact count.
+CEILING = 171701
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
