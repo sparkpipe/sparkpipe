@@ -1665,14 +1665,18 @@ static int SparkQwen36ValCheckLayerAmplification(SparkQwen36ValDevice *device)
 	}
 	printf("qwen36_validation check=layer_amplification layers=%u rows=%u differing=%llu/%llu absmax=%.6g absmean=%.6g scale=%.6g\n",
 		layers,rows,(unsigned long long)state_bad,(unsigned long long)lane_state,absmax,abssum / (double)lane_state,scale);
-	/* THE PREDICTION. The box measured absmax 0.016 / absmean 1.6e-05 at the first
-	 * replay, and this case uses random small-integer inputs so the absolute numbers
-	 * will not coincide; the test is whether the 48-layer walk AMPLIFIES the
-	 * single-layer 4.47e-08 by orders of magnitude (reaching at least 1e-6), which
-	 * is the only way the path substitution explains the observed 1.6e-05. */
+	/* THE RETRACTION, NOW THE GATE. The box measured absmax 0.016 / absmean 1.6e-05
+	 * at the first replay; this case walks the same substitution over 48 layers.
+	 * The recorded retraction (kernel lane evidence): the difference stays bounded -
+	 * absmax 2.98e-08 / absmean 3.15e-10, three-plus orders below the box - so
+	 * chunk-vs-step is NOT the corruption. The real cause was the 5..8-row
+	 * small-batch tiled linear dispatch, now gated behind
+	 * SPARK_QWEN36_SMALL_BATCH_GEMM=1. The gate therefore asserts the retraction:
+	 * if the substitution ever amplifies to within two orders of the box's
+	 * 1.6e-05 (absmean >= 1e-7), the retraction is violated and the tree goes red. */
 	printf("qwen36_validation note=layer_amplification single_layer_was_4.47e-08 box_measured_absmean_1.6e-05\n");
-	if (abssum / (double)lane_state < 1e-7)
-		return(SparkQwen36ValFail("layer_amplification","48 layers did NOT amplify the path difference - the substitution cannot explain the box's 1.6e-05"));
+	if (abssum / (double)lane_state >= 1e-7)
+		return(SparkQwen36ValFail("layer_amplification","path substitution AMPLIFIED - chunk-vs-step retraction violated"));
 	free(qkv_packed); free(qkv_exact); free(log_decay); free(beta); free(state_a); free(state_b);
 	cudaFree(state_pool); cudaFree(tail_pool);
 	return(0);

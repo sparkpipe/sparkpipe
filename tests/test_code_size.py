@@ -773,7 +773,14 @@ from pathlib import Path
 # reach. Until it is proven bit-exact against the library path, 5..8 rows take
 # the library path the lossless controls prove correct.
 # 175035 is the exact count.
-CEILING = 175035
+# +4: the layer_amplification gate flips polarity. It demanded the
+# chunk-vs-step substitution AMPLIFY to explain the box (the dead-theory trial);
+# the retraction is now recorded evidence and the real cause - the 5..8-row
+# tiled linear dispatch - is fixed behind SPARK_QWEN36_SMALL_BATCH_GEMM=1, so the
+# gate asserts the retraction instead: amplification to within two orders of the
+# box's 1.6e-05 (absmean >= 1e-7) now fails it.
+# 175039 is the exact count.
+CEILING = 175039
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
