@@ -150,7 +150,7 @@ def conv_prepare(h, lw, module):
     base = lw[f"{module}.base_kernel"]  # [2, 2, H] (sides, taps, channels)
     T = h.shape[0]
     num_groups = HIDDEN // CONV_GROUP_SIZE
-    delta_all = (h @ kp.T).reshape(T, 2, CONV_KERNEL_SIZE, num_groups)  # [T, 2, 2, 320]
+    delta_all = bf16(h @ kp.T).reshape(T, 2, CONV_KERNEL_SIZE, num_groups)  # [T, 2, 2, 320] (BF16 Linear output, like every other projection)
     h2 = _grouped_conv(h, delta_all[:, 0], base[0], BLOCK, num_groups, CONV_GROUP_SIZE, CONV_KERNEL_SIZE)
     return bf16(h2), delta_all[:, 1]
 
@@ -326,8 +326,8 @@ def main() -> int:
     pos_ctx = BASE_POS - 1.0  # committed position
 
     # 1) context = hidden_norm(fc(cat(5 taps)))
-    ctx = drafter["fc.weight"] @ taps.reshape(-1)  # [H]
-    ctx = rms_norm(ctx, drafter["hidden_norm.weight"])
+    ctx = bf16(drafter["fc.weight"] @ taps.reshape(-1))  # [H] (BF16 projector Linear output)
+    ctx = bf16(rms_norm(ctx, drafter["hidden_norm.weight"]))
 
     # 2) block = [embed(C0), embed(mask) x 7]
     block = np.empty((BLOCK, HIDDEN), dtype=np.float32)
@@ -341,7 +341,7 @@ def main() -> int:
         x = forward_layer(x, ctx, lw, positions_q, pos_ctx)
 
     # 4) final norm -> hidden [8, H]
-    hidden = rms_norm(x, drafter["norm.weight"])
+    hidden = bf16(rms_norm(x, drafter["norm.weight"]))
 
     # 5) top-16 over the 7 mask-position lm_head logits (the C0 slot is the anchor)
     mask_logits = (hidden[1:] @ lm_head.T).astype(np.float32)  # [7, V]

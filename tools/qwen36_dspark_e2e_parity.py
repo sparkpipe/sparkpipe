@@ -45,8 +45,8 @@ def forward(taps: np.ndarray, c0: int, base_pos: float) -> np.ndarray:
     positions_q = np.arange(base_pos, base_pos + ref.BLOCK, dtype=np.float32)
     pos_ctx = base_pos - 1.0
 
-    ctx = drafter["fc.weight"] @ taps.reshape(-1)
-    ctx = ref.rms_norm(ctx, drafter["hidden_norm.weight"])
+    ctx = ref.bf16(drafter["fc.weight"] @ taps.reshape(-1))
+    ctx = ref.bf16(ref.rms_norm(ctx, drafter["hidden_norm.weight"]))
 
     block = np.empty((ref.BLOCK, ref.HIDDEN), dtype=np.float32)
     block[0] = embed_tokens[c0]
@@ -57,7 +57,7 @@ def forward(taps: np.ndarray, c0: int, base_pos: float) -> np.ndarray:
         lw = {k.split(f"layers.{L}.")[1]: drafter[k] for k in drafter if f"layers.{L}." in k}
         x = ref.forward_layer(x, ctx, lw, positions_q, pos_ctx)
 
-    hidden = ref.rms_norm(x, drafter["norm.weight"])
+    hidden = ref.bf16(ref.rms_norm(x, drafter["norm.weight"]))
     logits = (hidden @ lm_head.T).astype(np.float32)
     return ref.bf16_to_f32(ref.f32_to_bf16(logits)), hidden
 
