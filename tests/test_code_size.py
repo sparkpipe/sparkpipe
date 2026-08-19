@@ -393,7 +393,13 @@ from pathlib import Path
 # native MXFP8 per-tile route - the batch-coupled scale was the first
 # divergent tensor (delta_wq_a) in the DSpark verify island.
 # 167721 is the exact count.
-CEILING = 167721
+# The parity-verified DSpark drafter port lands (+628 net): the 5-layer
+# block-diffusion forward + device Markov head + serving-adapter dspark
+# wiring + C0-anchor/draft-remap fixes, rebased onto the landed tap-capture
+# foundation (the drafter is env-gated: SPARK_QWEN36_SERVING_SPEC_METHOD=
+# dspark + optional pack path; greedy baseline = 5.078 tok/s, 10.5% acc).
+# 168349 is the exact count.
+CEILING = 168349
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
