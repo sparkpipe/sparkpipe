@@ -2160,7 +2160,9 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 				cudaMemcpy(&c0,slot->output_token_ids,4u,cudaMemcpyDeviceToHost);
 				df = fopen("/tmp/dspark_c0.bin","wb"); fwrite(&c0,1,4u,df); fclose(df);
 				df = fopen("/tmp/dspark_base.bin","wb"); fwrite(slot->dspark_logits_host,1,(size_t)B * SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT * 2u,df); fclose(df);
-				fprintf(stderr,"dspark_dump c0=%u\n",c0);
+				uint64_t base_pos = (uint64_t)view->base_position;
+				df = fopen("/tmp/dspark_basepos.bin","wb"); fwrite(&base_pos,1,8u,df); fclose(df);
+				fprintf(stderr,"dspark_dump c0=%u base_pos=%llu\n",c0,(unsigned long long)base_pos);
 			}
 		}
 		if ( error == cudaSuccess )
