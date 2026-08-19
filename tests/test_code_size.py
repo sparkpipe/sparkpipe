@@ -594,7 +594,16 @@ from pathlib import Path
 # fields where a mismatch can live - were never printed. Both the adapter
 # echo and the residentd failure branch now print all 32 bytes.
 # 172425 is the exact count.
-CEILING = 172425
+# +18: non-destructive refusal (kernel lane). A submission refused BEFORE any
+# frame executed has not touched the lane's KV or GDN, so releasing it
+# destroyed a valid resident sequence. A per-pending frames_executed flag
+# (set at each driver submit success in both frame paths) now gates the
+# drop: pre-execution refusals keep the lane resident; the continuity
+# validator is the backstop for a wrongly-kept lane. The KV-exhaustion drop
+# is untouched. Pairs with the acceptance-cliff clamp for D-agnostic
+# losslessness.
+# 172443 is the exact count.
+CEILING = 172443
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

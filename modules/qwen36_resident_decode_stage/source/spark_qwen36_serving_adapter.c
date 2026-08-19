@@ -236,6 +236,10 @@ typedef struct SparkQwen36ServingPending
 	uint64_t frame_sequence_id;
 	uint64_t frame_sequence_position;
 	SparkStatus frame_status;
+	/* Non-destructive refusal bookkeeping: set once any frame of this submission
+	 * is handed to the driver and executes. A submission refused before that
+	 * point has not touched the lane's KV or GDN, so it must NOT be dropped. */
+	uint32_t frames_executed;
 	SparkModelDriverResidencyToken residency;
 	uint64_t accepted_token_count;
 	uint64_t queue_delay_ns;
@@ -1120,7 +1124,11 @@ static SparkStatus SparkQwen36ServingRunFrame(
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr, "qwen36_admit_reject status=%d prefill=%u frame_rows=%u lanes=%u\n", (int)status, prefill, frame_rows, submission->active_sequence_count);
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = state->program->submit(state->driver_instance,&frame);
+		if ( status == SPARK_STATUS_OK )
+			pending->frames_executed = 1u;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = pending->frame_status;
 	if ( status == SPARK_STATUS_OK && SparkQwen36ServingOwnsFinalHead(state) != 0u )
@@ -1291,7 +1299,11 @@ static SparkStatus SparkQwen36ServingRunSpeculativeFrame(
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr, "qwen36_admit_reject status=%d prefill=%u frame_rows=%u lanes=%u\n", (int)status, prefill, frame_rows, submission->active_sequence_count);
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = state->program->submit(state->driver_instance,&frame);
+		if ( status == SPARK_STATUS_OK )
+			pending->frames_executed = 1u;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = pending->frame_status;
 	return(status);
@@ -1728,9 +1740,15 @@ static SparkStatus SparkQwen36ServingSubmit(
 	if ( status != SPARK_STATUS_OK )
 	{
 		/* A failed submission fires no completion, matching the glm52/dsv4
-		 * adapters; every lane it touched drops back to cold so the next
-		 * touch is a position-zero reset on both sides of the contract. */
-		SparkQwen36ServingDropSubmission(state,submission);
+		 * adapters. But ONLY a submission whose frames actually executed may
+		 * have left the lane dirty and needs the drop-to-cold below. A
+		 * pre-execution refusal (validation, coverage, admit) has not touched
+		 * the lane's KV or GDN, so releasing it would destroy a valid resident
+		 * sequence - the divergence engine the MTP D=2 control reproduced. The
+		 * continuity validator is the backstop: a lane wrongly kept here fails
+		 * the next decode's continuity check and is released at that point. */
+		if ( pending->frames_executed != 0u )
+			SparkQwen36ServingDropSubmission(state,submission);
 		pending->active = 0u;
 		return(status);
 	}
