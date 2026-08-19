@@ -446,7 +446,12 @@ from pathlib import Path
 # +107: the W2 end-to-end parity harness (module block forward vs the
 # numpy reference full forward) - the validation rail W7 plugs into.
 # 169947 is the exact count.
-CEILING = 169947
+# +580: the independent W4/W3 cross-check harness (lane-2's file-based
+# tie-forced + truncation-load-bearing cases - the PRNG-mirrored landed
+# validator cannot force walk ties, so this closes that coverage gap;
+# mutation-verified 5/5).
+# 170527 is the exact count.
+CEILING = 170527
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
