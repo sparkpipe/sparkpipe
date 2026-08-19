@@ -8,7 +8,11 @@ are my arithmetic on numbers published in the cited table, not quoted figures.
 <https://github.com/sgl-project/sglang/pull/35371>). vLLM support is an **open, unmerged
 PR** (vllm-project/vllm#52816, opened 2026-08-18, state `open`, 755+/5-, 11 files,
 <https://github.com/vllm-project/vllm/pull/52816>). llama.cpp support is an **open,
-unmerged PR #27342** (<https://inco.ai/blog/dflash2/> "Run It Now"). Blog:
+unmerged PR #27342** — "spec : add DFlash2 support (local convolution + candidate
+selector)", `state=open`, `merged=false`, created 2026-08-18
+(<https://api.github.com/repos/ggml-org/llama.cpp/pulls/27342>); DFlash **v1** by contrast
+merged as #22105 on 2026-06-28. All three engines gate on the checkpoint alone — PR #27342
+body: "DFlash2 is enabled when the checkpoint is DFlash2; no need to use extra flag." Blog:
 <https://inco.ai/blog/dflash2/>. Upstream code: <https://github.com/z-lab/dflash>.
 
 ---
@@ -156,7 +160,7 @@ repacks (`https://huggingface.co/api/models?search=DFlash2`).
 | `incoai/Qwen3.8-27B-DFlash2` | same | same | the repo the launch commands name |
 | `z-lab/Muse-Glimmer-30B-DFlash2` | `meta-models/Muse-Glimmer-30B` | **5,544,328,424 B (5.54 GB)** | finetuned *from* Meta's official DFlash drafter `Muse-Glimmer-30B-assistant` |
 | `incoai/Muse-Glimmer-30B-DFlash2` | same | same | mirror |
-| `z-lab/Qwen3.8-27B-DFlash2-GGUF` / `incoai/…-GGUF` | Qwen3.8-27B | BF16 3860.3 MB · Q8_0 2056.4 MB · Q4_K_M 1143.0 MB | needs llama.cpp **PR #27342** (unmerged) |
+| `z-lab/Qwen3.8-27B-DFlash2-GGUF` / `incoai/…-GGUF` | Qwen3.8-27B | BF16 3,860,293,152 B · Q8_0 2,056,414,752 B · Q4_K_M 1,143,006,752 B | needs llama.cpp **PR #27342** (unmerged); declares `gguf.architecture = "dflash"`, **not** "dflash2"; publishes Q4_K_M-target acceptance (see (c)) |
 | `z-lab/Muse-Glimmer-30B-DFlash2-GGUF` / `incoai/…-GGUF` | Muse Glimmer | BF16 5558.1 MB · Q8_0 2959.5 MB · Q4_K_M 1645.7 MB | same |
 | `ProCreations/Qwen3.8-27B-DFlash2-MLXFast-Q4` | Qwen3.8-27B | 1265.6 MB | third-party, proposal-grade; no upstream MLX support claimed |
 
@@ -218,13 +222,32 @@ DFlash v1** (verified against `z-lab/Qwen3.6-27B-DFlash`).
 
 ## (c) Published numbers
 
-### Target quantization: **BF16, unquantized — in every published table**
+### Target quantization: **BF16 unquantized in every GPU-engine table — but Q4_K_M numbers exist on the llama.cpp path**
 
 `Qwen/Qwen3.8-27B` `text_config.dtype = "bfloat16"`, 55.59 GB, no `quantization_config`
-(<https://huggingface.co/Qwen/Qwen3.8-27B/raw/main/config.json>). All launch commands are
-bare `vllm serve Qwen/Qwen3.8-27B` / `--model-path Qwen/Qwen3.8-27B` with no quantization
-flag. **No FP8 / Int4 / NVFP4 number is published anywhere.** This is a hard requirement,
-not an accident — see (e).
+(<https://huggingface.co/Qwen/Qwen3.8-27B/raw/main/config.json>). All vLLM/SGLang launch
+commands are bare `vllm serve Qwen/Qwen3.8-27B` / `--model-path Qwen/Qwen3.8-27B` with no
+quantization flag, so **every acceptance/throughput table in (c) below is BF16 target +
+BF16 draft**. No FP8 or NVFP4 number is published anywhere.
+
+**However, quantized numbers do exist — on the GGUF cards, and they matter for SparkPipe.**
+The GGUF READMEs publish acceptance length for a **quantized draft against a Q4_K_M
+target** (`llama-server -hf ggml-org/Qwen3.8-27B-GGUF:Q4_K_M -hfd …-DFlash2-GGUF:<quant>`):
+
+| Draft quant | Qwen3.8-27B (target Q4_K_M) | Muse-Glimmer-30B (target Q4_K_M) |
+|---|---:|---:|
+| BF16 | 5.28 | 5.45 |
+| Q8_0 | 5.13 | 5.58 |
+| Q4_K_M | **5.39** | 5.44 |
+
+Sources: <https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2-GGUF>,
+<https://huggingface.co/z-lab/Muse-Glimmer-30B-DFlash2-GGUF>. Two readings, both useful:
+**(i)** the drafter is essentially insensitive to its own quantization (5.13–5.39 spans
+less than the BF16-vs-Q4 ordering can resolve — Q4_K_M scores *above* BF16, so this is
+noise, not a trend); **(ii)** a **Q4_K_M target — including a quantized LM head — reaches
+5.28–5.39 acceptance vs 5.46 on the BF16 target** (SGLang card, GSM8K). That is a ~1–3%
+give-up, and it directly contradicts reading the unquantized-LM-head rule as an
+*algorithmic* requirement. See the reassessed blocker in (e).
 
 ### Acceptance length, per-request mean (block 8 = 7 draft tokens), H200, SGLang + FA3
 
@@ -528,17 +551,37 @@ Add `_grouped_conv`, the selector lattice, the walk. Constants change:
 `MASK_TOKEN_ID 248077→248070`, `ROPE` yarn→default, + sliding window 2048. Port both
 upstream unit tests as numpy oracles first — they are exact and cheap.
 
-### Blocker for SparkPipe specifically
+### Quantization constraint for SparkPipe — an ENGINE limit, not an algorithmic one
 
-**DFlash2 forbids a quantized target LM head** (vLLM raises; SGLang's
-`is_dense_head_weight` rejects fp8 explicitly). SparkPipe's Qwen3.8-27B work is FP8/NVFP4
-oriented (`qwen38_tp4_build.sh`, `docs/QWEN38-27B_HILLCLIMB.md`). **Either keep the LM
-head in BF16 while the body stays FP8** (upstream's requirement is on the head only, since
-the selector's top-K reads head logits), **or DFlash2 cannot run.** Resolve this before
-W1. Also note every published DFlash2 number is BF16-target — **no quantized-target
-acceptance number exists**, so re-tune `num_speculative_tokens` locally; the landed
-`docs/RUNG3_DSPARK_ADOPTION.md` already records that "k does NOT transfer across
-quantization."
+**vLLM and SGLang both refuse a quantized target LM head**: vLLM raises "DFlash2 requires
+an unquantized target LM head for candidate TopK" unless `lm_head.quant_method` is
+`UnquantizedEmbeddingMethod`; SGLang's `is_dense_head_weight` admits only
+`{float16, bfloat16, float32}` with the comment "is_floating_point() is True for fp8; list
+dtypes explicitly." SparkPipe's Qwen3.8-27B work is FP8/NVFP4 oriented
+(`qwen38_tp4_build.sh`, `docs/QWEN38-27B_HILLCLIMB.md`), so on a straight port this bites.
+
+**But it is a property of those two implementations, not of DFlash2.** The llama.cpp path
+runs DFlash2 against a **Q4_K_M target — quantized LM head included — and reports 5.28–5.39
+acceptance** (<https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2-GGUF>), against 5.46 on the
+BF16 target. The selector only needs *top-16 ids + their scores*; nothing requires those
+logits to come from a dense BF16 matmul. SparkPipe writes its own head kernel and already
+has `SparkQwen36LaunchHeadScreenedArgmaxScore` producing value+index from a **quantized,
+shadow-screened** head — i.e. **SparkPipe is better placed here than either upstream.**
+
+Three options, in preference order:
+1. **Do the top-K on the quantized head directly** (extend `…ScreenedArgmaxScore` from
+   top-1 to top-16, W4). Follows llama.cpp's precedent; costs ~1–3% acceptance per the
+   GGUF-vs-BF16 comparison; no extra weight copy.
+2. **Keep the LM head in BF16 while the body stays FP8/NVFP4.** Upstream-faithful, exact,
+   but costs a 248320×5120 BF16 head resident (**2.54 GB**) on a 128 GiB unified box.
+3. Do not adopt on quantized targets. Not warranted given (1).
+
+Either way: **no FP8/NVFP4 acceptance number exists upstream**, so re-tune
+`num_speculative_tokens` locally — the landed `docs/RUNG3_DSPARK_ADOPTION.md` already
+records that "k does NOT transfer across quantization." Also note the third-party MLX
+affine-4 repack **kept the selector codebooks in BF16** while quantizing 47 linear modules
+(<https://huggingface.co/ProCreations/Qwen3.8-27B-DFlash2-MLXFast-Q4>) — a reasonable
+default for SparkPipe's own pack: quantize the backbone, leave `[248320,256]×2` alone.
 
 ### Verdict
 
@@ -550,9 +593,10 @@ depthwise conv (W2), top-16-over-vocab (W4, the sleeper cost), and the path walk
 plus mechanical reshaping. Nothing requires a new pack format, a new ABI wire layout, a
 new serving path, or a second backbone.
 
-**Sequence:** resolve the FP8-LM-head blocker → W1 packer → W8 numpy oracle (cheap, exact,
-de-risks everything) → W6 attn reshape → W2 conv → W4 top-K → W3 selector → W5 walk → W7
-policy.
+**Sequence:** W1 packer → W8 numpy oracle (cheap, exact, de-risks everything) → W6 attn
+reshape → W2 conv → W4 top-K **on the quantized head** → W3 selector → W5 walk → W7 policy.
+The FP8 LM-head question is no longer a gating blocker (llama.cpp reaches 5.28–5.39
+acceptance on a Q4_K_M target); it is a design choice inside W4.
 
 **Two gates before committing serving capacity:** (1) vLLM #52816 is **unmerged** and has
 an **open sm120 out-of-bounds crash at concurrency 4** — adjacent to GB10/SM121; (2)
