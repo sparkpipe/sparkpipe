@@ -457,7 +457,10 @@ from pathlib import Path
 # per-position tap history, context-window fc/norm, per-layer staged K/V,
 # k/q prep + cache attention kernels; supersedes the dual-source attention.
 # 169136 is the exact count.
-CEILING = 169136
+# +163: pair-atomic rope prep + layer-0 stage dumps + the
+# cache-semantics checker tool (tools/qwen36_dflash2_cache_check.py).
+# 169299 is the exact count.
+CEILING = 169299
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
