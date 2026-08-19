@@ -108,7 +108,6 @@ typedef struct SparkQwen36ModuleSlot
 	uint32_t *mtp_draft_ids;
 	void *dspark_tap_buffer;
 	void *dspark_scratch;
-	uint16_t *dspark_logits_host;
 	uint16_t *dspark_conv_delta;
 	void *dspark_conv_out;
 	uint32_t *dspark_mask_token_ids;
@@ -840,17 +839,13 @@ static SparkStatus SparkQwen36ModuleAllocateSlotControl(SparkQwen36ModuleState *
 		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS * sizeof(uint32_t),(void **)&slot->mtp_draft_ids);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_tap_buffer);
-	/* DFlash2 scratch: context (5120) + block hidden + Q + K/V + attn out + norm + ffn (17408) + logits, all x block_size (8). */
+	/* DFlash2 scratch: context (5120) + block hidden + Q + K/V + attn out + norm + ffn (17408), all x block_size (8). The selector computes top-16 straight from the hidden, so no B x vocab logits buffer is needed. */
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(1u*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*(SPARK_QWEN36_DSPARK_BLOCK_SIZE+1u)*SPARK_QWEN36_DSPARK_ATTN_KV_HEADS*SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_scratch);
-	if ( status == SPARK_STATUS_OK )
-		slot->dspark_logits_host = (uint16_t *)malloc((size_t)SPARK_QWEN36_DSPARK_BLOCK_SIZE * SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT * sizeof(uint16_t));
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(1u*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*(SPARK_QWEN36_DSPARK_BLOCK_SIZE+1u)*SPARK_QWEN36_DSPARK_ATTN_KV_HEADS*SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_scratch);
 	if ( status == SPARK_STATUS_OK )
 		slot->dspark_conv_delta = (uint16_t *)malloc((size_t)SPARK_QWEN36_DSPARK_BLOCK_SIZE * 2u * SPARK_QWEN36_DSPARK_CONV_KERNEL_SIZE * (SPARK_QWEN36_MODEL_HIDDEN_DIMENSION / SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE) * sizeof(uint16_t));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)SPARK_QWEN36_DSPARK_BLOCK_SIZE * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_conv_out);
-	if ( status == SPARK_STATUS_OK && slot->dspark_logits_host == 0 )
-		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(SPARK_QWEN36_DSPARK_BLOCK_SIZE - 1u) * sizeof(uint32_t),(void **)&slot->dspark_mask_token_ids);
 	if ( status == SPARK_STATUS_OK )
@@ -2067,7 +2062,6 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	uint16_t *norm = attn_out + (uint64_t)B * H;
 	uint16_t *ffn = norm + (uint64_t)B * H;
 	uint16_t *up = ffn + (uint64_t)B * SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE;
-	uint16_t *logits = up + (uint64_t)B * SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE;
 	SparkStatus status;
 	cudaError_t error;
 	uint32_t layer;
@@ -2076,12 +2070,6 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		return(SPARK_STATUS_OK);
 	if ( view == 0 || view->draft_token_ids == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* debug: dump first taps to confirm capture fired */
-	{
-		uint16_t tdbg[8];
-		cudaMemcpy(tdbg,slot->dspark_tap_buffer,sizeof(tdbg),cudaMemcpyDeviceToHost);
-		fprintf(stderr,"dspark_tap_dbg %u,%u,%u,%u %u,%u,%u,%u\n",tdbg[0],tdbg[1],tdbg[2],tdbg[3],tdbg[4],tdbg[5],tdbg[6],tdbg[7]);
-	}
 	/* 1) context = hidden_norm(fc(cat(5 taps))): one [H] vector, shared by every layer. */
 	error = SparkQwen36LaunchLinear(stream,&w->projector,slot->dspark_tap_buffer,q,1u);
 	if ( error == cudaSuccess )
@@ -2145,7 +2133,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			error = SparkQwen36LaunchResidualAdd(stream,block_hidden,slot->dspark_conv_out,B,H);
 		status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"dspark_layer");
 	}
-	/* 2) final norm + shared lm_head -> logits (B x vocab), then Markov bias. */
+	/* 2) final norm, then the DFlash2 candidate selector (the head top-16 reads the final-norm hidden directly; no full B x vocab logits are materialized). */
 	if ( status == SPARK_STATUS_OK )
 	{
 		SparkQwen36LinearView lm_head;
@@ -2157,33 +2145,6 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		lm_head.weight_payload = state->lm_head_weight_bf16;
 		lm_head.weight_payload_bytes = (uint64_t)SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT * 2u;
 		error = SparkQwen36LaunchRmsNorm(stream,block_hidden,w->final_norm_bf16,norm,B,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
-		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lm_head,norm,logits,B);
-		/* D2H the B x vocab base logits for the parity dump (the selector reads the
-		 * final-norm hidden directly and computes top-16 without materializing logits). */
-		if ( error == cudaSuccess )
-			error = cudaMemcpyAsync(slot->dspark_logits_host,logits,(size_t)B * SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT * sizeof(uint16_t),cudaMemcpyDeviceToHost,stream);
-		if ( error == cudaSuccess )
-			error = cudaStreamSynchronize(stream);
-		if ( error == cudaSuccess )
-		{
-			static int dspark_dump_done = 0;
-			if ( dspark_dump_done == 0 )
-			{
-				dspark_dump_done = 1;
-				FILE *df;
-				uint16_t *taps_host = (uint16_t *)malloc((size_t)5u * H * 2u);
-				cudaMemcpy(taps_host,slot->dspark_tap_buffer,(size_t)5u * H * 2u,cudaMemcpyDeviceToHost);
-				df = fopen("/tmp/dspark_taps.bin","wb"); fwrite(taps_host,1,(size_t)5u * H * 2u,df); fclose(df); free(taps_host);
-				uint32_t c0;
-				cudaMemcpy(&c0,slot->output_token_ids,4u,cudaMemcpyDeviceToHost);
-				df = fopen("/tmp/dspark_c0.bin","wb"); fwrite(&c0,1,4u,df); fclose(df);
-				df = fopen("/tmp/dspark_base.bin","wb"); fwrite(slot->dspark_logits_host,1,(size_t)B * SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT * 2u,df); fclose(df);
-				uint64_t base_pos = (uint64_t)view->base_position;
-				df = fopen("/tmp/dspark_basepos.bin","wb"); fwrite(&base_pos,1,8u,df); fclose(df);
-				fprintf(stderr,"dspark_dump c0=%u base_pos=%llu\n",c0,(unsigned long long)base_pos);
-			}
-		}
 		/* DFlash2 candidate selector (W4 top-16 -> W3 gate/lattice/walk): draft over
 		 * the (B-1) mask positions, anchor = the committed token (output_token_ids[0]). */
 		if ( error == cudaSuccess )
@@ -2577,10 +2538,6 @@ void SparkQwen36ResidentDecodeStageDestroy(void *module_state)
         if (state->slots[slot_index].cuda_stream != 0)
         {
             cudaStreamDestroy((cudaStream_t)state->slots[slot_index].cuda_stream);
-        }
-        if (state->slots[slot_index].dspark_logits_host != 0)
-        {
-            free(state->slots[slot_index].dspark_logits_host);
         }
     }
     SparkQwen36TpDestroy(&state->tp);
