@@ -439,7 +439,9 @@ from pathlib import Path
 # (side param, full row stride - the pointer-offset variant read the wrong
 # rows) + the stage-bisect tool (tools/qwen36_dflash2_bisect.py).
 # 168955 is the exact count.
-CEILING = 168955
+# +11: spec acceptance clamped to the shared tokens-per-sequence ABI cap.
+# 168966 is the exact count.
+CEILING = 168966
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
