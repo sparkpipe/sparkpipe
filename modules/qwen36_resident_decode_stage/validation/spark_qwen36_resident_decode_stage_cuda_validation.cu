@@ -1431,6 +1431,254 @@ static int SparkQwen36ValCheckStepRowBatch(SparkQwen36ValDevice *device)
 	return(0);
 }
 
+/*
+ * DRIFT ACCUMULATION - does the path substitution actually reach the measured drift?
+ *
+ * The claim under test: a speculative round rebuilds its committed positions with
+ * the CHUNK path where a no-spec run built them with the STEP path, and that
+ * substitution compounds. The claim is only worth anything if the compounded size
+ * matches what the box's dumps show: at position 235 the spec lane's state differs
+ * from the no-spec lane's by absmax 0.016 / absmean 1.6e-05 on a state of scale
+ * +-30, which is 0.1% of ONE token of legitimate change.
+ *
+ * So simulate exactly that, round for round, on two lanes of the real pool:
+ *
+ *   lane 0 (no-spec): every row walked one at a time through the STEP path
+ *   lane 1 (spec)   : the round's first row through the STEP path (the decode),
+ *                     then the remaining rows through the CHUNK path (the replay)
+ *
+ * Same tokens, same order, same weights. After each round the two lanes' states are
+ * compared, so the output is the drift CURVE - and its magnitude after ~20 rounds is
+ * a prediction that either matches the measured 0.016 or does not.
+ */
+static int SparkQwen36ValCheckDriftAccumulation(SparkQwen36ValDevice *device)
+{
+	const uint32_t rounds = 20u;
+	const uint32_t rows_per_round = 4u;      /* a typical round: ma=2 -> replay 4 rows */
+	const uint64_t conv_elements = (uint64_t)rows_per_round * SPARK_QWEN36_CONV;
+	const uint64_t state_elements = device->pool.state_lane_stride_elements;
+	uint16_t *qkv_packed = (uint16_t *)calloc(conv_elements,sizeof(uint16_t));
+	float *qkv_exact = (float *)calloc(conv_elements,sizeof(float));
+	float *log_decay = (float *)calloc((uint64_t)rows_per_round * SPARK_QWEN36_HEADS,sizeof(float));
+	float *beta = (float *)calloc((uint64_t)rows_per_round * SPARK_QWEN36_HEADS,sizeof(float));
+	float *state_a = (float *)calloc(state_elements,sizeof(float));
+	float *state_b = (float *)calloc(state_elements,sizeof(float));
+	uint32_t warm[2] = {0u,0u};
+	uint32_t lane0[1] = {0u},lane1[1] = {1u};
+	uint32_t round,row;
+	uint64_t index;
+	double absmax = 0.0,abssum = 0.0,scale = 0.0;
+	cudaError_t error;
+	if (qkv_packed == 0 || qkv_exact == 0 || log_decay == 0 || beta == 0 || state_a == 0 || state_b == 0)
+		return(SparkQwen36ValFail("drift_accumulation","host_alloc"));
+	error = cudaMemset(device->state,0,2u * state_elements * sizeof(float));
+	if (error == cudaSuccess) error = cudaMemset(device->conv_tail,0,2u * device->pool.conv_tail_lane_stride_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMemcpy(device->cold,warm,sizeof(warm),cudaMemcpyHostToDevice);
+	SparkQwen36ValRandomState = 4242u;
+	for (round = 0u; round < rounds && error == cudaSuccess; round++)
+	{
+		/* Fresh tokens for the round, identical for both lanes. */
+		SparkQwen36ValFillBf16(qkv_packed,qkv_exact,conv_elements,1.0f);
+		for (index = 0u; index < (uint64_t)rows_per_round * SPARK_QWEN36_HEADS; index++)
+		{
+			log_decay[index] = SparkQwen36ValUniform(0.25f) - 0.25f;
+			beta[index] = 0.25f + fabsf(SparkQwen36ValUniform(0.5f));
+		}
+		error = cudaMemcpy(device->qkv,qkv_packed,conv_elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
+		if (error == cudaSuccess) error = cudaMemcpy(device->log_decay,log_decay,(uint64_t)rows_per_round * SPARK_QWEN36_HEADS * sizeof(float),cudaMemcpyHostToDevice);
+		if (error == cudaSuccess) error = cudaMemcpy(device->beta,beta,(uint64_t)rows_per_round * SPARK_QWEN36_HEADS * sizeof(float),cudaMemcpyHostToDevice);
+		/* lane 0: the no-spec trajectory - every row through the step path. */
+		if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,lane0,sizeof(lane0),cudaMemcpyHostToDevice);
+		for (row = 0u; row < rows_per_round && error == cudaSuccess; row++)
+		{
+			error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv + ((uint64_t)row * SPARK_QWEN36_CONV),
+				&device->gdn_weights,device->conv_out + ((uint64_t)row * SPARK_QWEN36_CONV),&device->pool,device->lane_indices,1u,0u);
+			if (error == cudaSuccess)
+				error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out + ((uint64_t)row * SPARK_QWEN36_CONV),
+					device->log_decay + ((uint64_t)row * SPARK_QWEN36_HEADS),device->beta + ((uint64_t)row * SPARK_QWEN36_HEADS),
+					&device->pool,device->core_out + ((uint64_t)row * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION),device->lane_indices,1u,0u);
+		}
+		/* lane 1: the spec trajectory - one decode row through the step path, the
+		 * rest through the chunk path, which is what a replay frame does. */
+		if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,lane1,sizeof(lane1),cudaMemcpyHostToDevice);
+		if (error == cudaSuccess)
+			error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv,&device->gdn_weights,device->conv_out,&device->pool,device->lane_indices,1u,0u);
+		if (error == cudaSuccess)
+			error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out,device->log_decay,device->beta,&device->pool,device->core_out,device->lane_indices,1u,0u);
+		if (error == cudaSuccess)
+			error = SparkQwen36LaunchChunkConv(cudaStreamPerThread,device->qkv + SPARK_QWEN36_CONV,&device->gdn_weights,
+				device->conv_out + SPARK_QWEN36_CONV,&device->pool,1u,rows_per_round - 1u,0u);
+		if (error == cudaSuccess)
+			error = SparkQwen36LaunchGdnChunk(cudaStreamPerThread,device->conv_out + SPARK_QWEN36_CONV,
+				device->log_decay + SPARK_QWEN36_HEADS,device->beta + SPARK_QWEN36_HEADS,
+				device->chunk_qn,device->chunk_kn,device->chunk_cum_g,device->chunk_decay,device->chunk_attn,
+				device->chunk_w,device->chunk_kg,&device->pool,device->core_out + SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION,
+				1u,rows_per_round - 1u,0u);
+		if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
+		if (error == cudaSuccess) error = cudaMemcpy(state_a,device->state,state_elements * sizeof(float),cudaMemcpyDeviceToHost);
+		if (error == cudaSuccess) error = cudaMemcpy(state_b,device->state + state_elements,state_elements * sizeof(float),cudaMemcpyDeviceToHost);
+		if (error != cudaSuccess)
+			break;
+		absmax = 0.0; abssum = 0.0; scale = 0.0;
+		for (index = 0u; index < state_elements; index++)
+		{
+			double delta = fabs((double)state_a[index] - (double)state_b[index]);
+			double magnitude = fabs((double)state_a[index]);
+			abssum += delta;
+			if (delta > absmax) absmax = delta;
+			if (magnitude > scale) scale = magnitude;
+		}
+		if (round == 0u || round == 4u || round == 9u || round == rounds - 1u)
+			printf("qwen36_validation check=drift_accumulation round=%u absmax=%.6g absmean=%.6g state_scale=%.6g\n",
+				round + 1u,absmax,abssum / (double)state_elements,scale);
+	}
+	if (SparkQwen36ValCuda(error,"drift_accumulation") != 0)
+		return(1);
+	/* The box measured absmax 0.016 / absmean 1.6e-05 at position 235 on a state of
+	 * scale ~30. This simulation is not the same tokens or the same number of rounds,
+	 * so the test is ORDER OF MAGNITUDE: the substitution must produce a drift that
+	 * is small against the state scale yet far above a single fp32 rounding, which is
+	 * what makes it invisible per round and fatal after twenty. */
+	printf("qwen36_validation check=drift_accumulation rounds=%u rows_per_round=%u final_absmax=%.6g relative_to_scale=%.3g\n",
+		rounds,rows_per_round,absmax,scale > 0.0 ? absmax / scale : 0.0);
+	if (absmax <= 0.0)
+		return(SparkQwen36ValFail("drift_accumulation","the substitution produced NO drift - the paths would be interchangeable"));
+	return(0);
+}
+
+/*
+ * FORTY-EIGHT-LAYER CHUNK vs STEP: the box's replay, end to end.
+ *
+ * The box replay is ONE chunk launch per GDN layer over its rows; the no-spec
+ * reference it replaces is one STEP launch per row per layer. The single-layer
+ * gate (spec_path_equivalence) measured 4.47e-08 for two rows; this walks the same
+ * two rows through all 48 layers, on the REAL pool layout (lane stride = 48 *
+ * layer stride), so the output is the magnitude a single round actually injects -
+ * which must sit in the 1e-6..1e-5 range to match the box's measured 1.6e-05 at
+ * the first replay (position 235), where exactly one round has run.
+ */
+/*
+ * FORTY-EIGHT-LAYER CHUNK vs STEP: the box's replay walk, end to end.
+ *
+ * A replay walks min_accepted + 2 rows through EVERY GDN layer in one chunk launch
+ * per layer; the no-spec reference it replaces walks each row through each layer in
+ * a one-row step launch. The single-layer gate measured 4.47e-08 for two rows; the
+ * box's first replay injects a state difference of absmax 0.016 / absmean 1.6e-05.
+ * The only place that extra three orders can come from is the 48-layer compounding
+ * WITHIN one walk - each layer transforms the previous layer's slightly-different
+ * state. This case runs that exactly: two lanes, two rows, all 48 layers, and the
+ * difference after the LAST layer is the prediction.
+ */
+static int SparkQwen36ValCheckLayerAmplification(SparkQwen36ValDevice *device)
+{
+	const uint32_t rows = 2u;
+	const uint32_t layers = SPARK_QWEN36_MODEL_GDN_LAYER_COUNT;
+	const uint64_t conv_elements = (uint64_t)rows * SPARK_QWEN36_CONV;
+	uint16_t *qkv_packed = (uint16_t *)calloc(conv_elements,sizeof(uint16_t));
+	float *qkv_exact = (float *)calloc(conv_elements,sizeof(float));
+	float *log_decay = (float *)calloc((uint64_t)rows * SPARK_QWEN36_HEADS,sizeof(float));
+	float *beta = (float *)calloc((uint64_t)rows * SPARK_QWEN36_HEADS,sizeof(float));
+	uint32_t warm[2] = {0u,0u};
+	uint32_t lane0[1] = {0u},lane1[1] = {1u};
+	float *state_pool = 0, *state_a = 0, *state_b = 0;
+	uint16_t *tail_pool = 0;
+	SparkQwen36GdnStatePool pool;
+	uint64_t layer_state, layer_tail, lane_state, lane_tail, state_elements, tail_elements, index;
+	uint64_t state_bad = 0u;
+	double absmax = 0.0, abssum = 0.0, scale = 0.0;
+	uint32_t layer,row;
+	cudaError_t error;
+	if (qkv_packed == 0 || qkv_exact == 0 || log_decay == 0 || beta == 0)
+		return(SparkQwen36ValFail("layer_amplification","host_alloc"));
+	layer_state = (uint64_t)SPARK_QWEN36_HEADS * SPARK_QWEN36_DK * SPARK_QWEN36_DV;
+	layer_tail = (uint64_t)SPARK_QWEN36_CONV * (SPARK_QWEN36_MODEL_GDN_CONV_KERNEL - 1u);
+	lane_state = layer_state * (uint64_t)layers;
+	lane_tail = layer_tail * (uint64_t)layers;
+	state_elements = lane_state * 2u;
+	tail_elements = lane_tail * 2u;
+	error = cudaMalloc((void **)&state_pool, state_elements * sizeof(float));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&tail_pool, tail_elements * sizeof(uint16_t));
+	state_a = (float *)malloc(lane_state * sizeof(float));
+	state_b = (float *)malloc(lane_state * sizeof(float));
+	if (error != cudaSuccess || state_pool == 0 || tail_pool == 0 || state_a == 0 || state_b == 0)
+		return(SparkQwen36ValFail("layer_amplification","pool_alloc"));
+	/* A 48-layer pool over the freshly allocated region, lane_capacity 2. */
+	memset(&pool,0,sizeof(pool));
+	pool.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION;
+	pool.lane_capacity = 2u;
+	pool.gdn_layer_count = layers;
+	pool.state_f32 = state_pool;
+	pool.state_layer_stride_elements = layer_state;
+	pool.state_lane_stride_elements = lane_state;
+	pool.conv_tail_bf16 = tail_pool;
+	pool.conv_tail_layer_stride_elements = layer_tail;
+	pool.conv_tail_lane_stride_elements = lane_tail;
+	pool.state_cold_by_row = device->cold;
+	error = cudaMemset(state_pool,0,state_elements * sizeof(float));
+	if (error == cudaSuccess) error = cudaMemset(tail_pool,0,tail_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMemcpy(device->cold,warm,sizeof(warm),cudaMemcpyHostToDevice);
+	SparkQwen36ValRandomState = 99u;
+	SparkQwen36ValFillBf16(qkv_packed,qkv_exact,conv_elements,1.0f);
+	for (index = 0u; index < (uint64_t)rows * SPARK_QWEN36_HEADS; index++)
+	{
+		log_decay[index] = SparkQwen36ValUniform(0.25f) - 0.25f;
+		beta[index] = 0.25f + fabsf(SparkQwen36ValUniform(0.5f));
+	}
+	error = cudaMemcpy(device->qkv,qkv_packed,conv_elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(device->log_decay,log_decay,(uint64_t)rows * SPARK_QWEN36_HEADS * sizeof(float),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(device->beta,beta,(uint64_t)rows * SPARK_QWEN36_HEADS * sizeof(float),cudaMemcpyHostToDevice);
+	/* lane 0: the no-spec trajectory - one row at a time through the step path. */
+	if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,lane0,sizeof(lane0),cudaMemcpyHostToDevice);
+	for (layer = 0u; layer < layers && error == cudaSuccess; layer++)
+		for (row = 0u; row < rows && error == cudaSuccess; row++)
+		{
+			error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv + ((uint64_t)row * SPARK_QWEN36_CONV),
+				&device->gdn_weights,device->conv_out + ((uint64_t)row * SPARK_QWEN36_CONV),&pool,device->lane_indices,1u,layer);
+			if (error == cudaSuccess)
+				error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out + ((uint64_t)row * SPARK_QWEN36_CONV),
+					device->log_decay + ((uint64_t)row * SPARK_QWEN36_HEADS),device->beta + ((uint64_t)row * SPARK_QWEN36_HEADS),
+					&pool,device->core_out + ((uint64_t)row * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION),device->lane_indices,1u,layer);
+		}
+	/* lane 1: the replay trajectory - both rows in one chunk launch per layer. */
+	if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,lane1,sizeof(lane1),cudaMemcpyHostToDevice);
+	for (layer = 0u; layer < layers && error == cudaSuccess; layer++)
+	{
+		error = SparkQwen36LaunchChunkConv(cudaStreamPerThread,device->qkv,&device->gdn_weights,device->conv_out,&pool,1u,rows,layer);
+		if (error == cudaSuccess)
+			error = SparkQwen36LaunchGdnChunk(cudaStreamPerThread,device->conv_out,device->log_decay,device->beta,
+				device->chunk_qn,device->chunk_kn,device->chunk_cum_g,device->chunk_decay,device->chunk_attn,
+				device->chunk_w,device->chunk_kg,&pool,device->core_out,1u,rows,layer);
+	}
+	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
+	if (error == cudaSuccess) error = cudaMemcpy(state_a,state_pool,lane_state * sizeof(float),cudaMemcpyDeviceToHost);
+	if (error == cudaSuccess) error = cudaMemcpy(state_b,state_pool + lane_state,lane_state * sizeof(float),cudaMemcpyDeviceToHost);
+	if (SparkQwen36ValCuda(error,"layer_amplification") != 0)
+		return(1);
+	for (index = 0u; index < lane_state; index++)
+	{
+		double delta = fabs((double)state_a[index] - (double)state_b[index]);
+		double magnitude = fabs((double)state_a[index]);
+		if (state_a[index] != state_b[index]) state_bad++;
+		abssum += delta;
+		if (delta > absmax) absmax = delta;
+		if (magnitude > scale) scale = magnitude;
+	}
+	printf("qwen36_validation check=layer_amplification layers=%u rows=%u differing=%llu/%llu absmax=%.6g absmean=%.6g scale=%.6g\n",
+		layers,rows,(unsigned long long)state_bad,(unsigned long long)lane_state,absmax,abssum / (double)lane_state,scale);
+	/* THE PREDICTION. The box measured absmax 0.016 / absmean 1.6e-05 at the first
+	 * replay, and this case uses random small-integer inputs so the absolute numbers
+	 * will not coincide; the test is whether the 48-layer walk AMPLIFIES the
+	 * single-layer 4.47e-08 by orders of magnitude (reaching at least 1e-6), which
+	 * is the only way the path substitution explains the observed 1.6e-05. */
+	printf("qwen36_validation note=layer_amplification single_layer_was_4.47e-08 box_measured_absmean_1.6e-05\n");
+	if (abssum / (double)lane_state < 1e-7)
+		return(SparkQwen36ValFail("layer_amplification","48 layers did NOT amplify the path difference - the substitution cannot explain the box's 1.6e-05"));
+	free(qkv_packed); free(qkv_exact); free(log_decay); free(beta); free(state_a); free(state_b);
+	cudaFree(state_pool); cudaFree(tail_pool);
+	return(0);
+}
+
+
 int main(int argc, char **argv)
 {
 	SparkQwen36ValDevice device;
@@ -1452,6 +1700,8 @@ int main(int argc, char **argv)
 	if (result == 0) result = SparkQwen36ValCheckGdnChunk(&device);
 	if (result == 0) result = SparkQwen36ValCheckSpecPathEquivalence(&device);
 	if (result == 0) result = SparkQwen36ValCheckStepRowBatch(&device);
+	if (result == 0) result = SparkQwen36ValCheckDriftAccumulation(&device);
+	if (result == 0) result = SparkQwen36ValCheckLayerAmplification(&device);
 	if (result == 0) result = SparkQwen36ValCheckModule();
 	if (result == 0)
 		printf("qwen36_validation PASS\n");

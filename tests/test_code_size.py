@@ -765,7 +765,15 @@ from pathlib import Path
 # the restore is faithful or the replay walk is the corruptor - with
 # magnitudes, not a hash.
 # 174843 is the exact count.
-CEILING = 174843
+# +250: the path-substitution bounds (kernel lane retraction, recorded with
+# evidence): the chunk/step substitution drifts at most 5.96e-08 across 20
+# rounds and 2.98e-08 across 48 layers - three orders below the box's
+# measured 1.6e-05, so it is NOT the corruption (the fix stands on its own
+# merits, but its claimed mechanism is bounded away). The real corruption
+# is the multi-row attention path, reproduced offline by the lane's next
+# validator case (2-row frame vs two 1-row frames differ at absmax ~34000).
+# 175093 is the exact count.
+CEILING = 175093
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
