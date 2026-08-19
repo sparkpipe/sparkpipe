@@ -108,6 +108,7 @@ typedef struct SparkQwen36ModuleSlot
 	/* Set per frame in RunFrame: the GDN path choice below needs the frame kind,
 	 * and the per-layer runner does not see the frame context. */
 	uint32_t replay_frame;
+	uint32_t verify_frame;
 	uint32_t host_row_cold[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t host_slot_mapping[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
 	uint32_t host_context_lengths[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
@@ -1146,8 +1147,13 @@ static SparkStatus SparkQwen36ModuleRunGdnLayer(SparkQwen36ModuleState *state, S
 	 */
 	if ( error == cudaSuccess )
 	{
-		uint32_t replay = prefill != 0 && slot->replay_frame != 0u ? 1u : 0u;
-		if ( replay != 0u )
+		/* The VERIFY walks the same speculative rows its per-row head outputs feed
+		 * into the accept loop and the committed correction, so those outputs must
+		 * be step-truth too. Its GDN state is discarded by the restore, but a
+		 * chunk-built head at a thin margin commits the wrong correction (the
+		 * coding residual: replay_row_mismatch verify=9045 replay=561). */
+		uint32_t step = prefill != 0 && (slot->replay_frame != 0u || slot->verify_frame != 0u) ? 1u : 0u;
+		if ( step != 0u )
 			error = SparkQwen36ModuleRunGdnCoreReplay(state,slot,weights,prefill->lane_index,rows,ordinal);
 		else
 			error = prefill != 0 ? SparkQwen36ModuleRunGdnCorePrefill(state,slot,weights,prefill->lane_index,rows,ordinal) : SparkQwen36ModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
@@ -2578,6 +2584,7 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	uint64_t frame_start = state->profile_enabled != 0u ? SparkQwen36ProfileNow() : 0ull;
 	SparkStatus status;
 	slot->replay_frame = prefill != 0 && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u ? 1u : 0u;
+	slot->verify_frame = prefill != 0 && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u ? 1u : 0u;
 	status = SparkQwen36ModuleUploadRows(state,slot,context,frame,prefill,rows);
 	uint32_t layer;
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u )

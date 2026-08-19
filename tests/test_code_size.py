@@ -785,7 +785,13 @@ from pathlib import Path
 # free() on a device pointer crashed the module validator's rerun teardown
 # depending on buffer contents.
 # 175040 is the exact count.
-CEILING = 175040
+# +7: the VERIFY frame's GDN walks the step path (like the replay): the
+# verify's per-row head outputs feed the accept loop and the committed
+# correction, so they must be step-truth. The audit (replay_row_mismatch
+# verify=9045 replay=561) showed the chunk-built verify head flips at a thin
+# margin and commits the wrong correction.
+# 175047 is the exact count.
+CEILING = 175047
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
