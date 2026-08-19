@@ -427,7 +427,10 @@ from pathlib import Path
 # 168668 is the exact count.
 # +9: W2 host wiring part 1 (conv weight struct + loading + side param).
 # 168677 is the exact count.
-CEILING = 168677
+# +19: W2 host wiring completes (layer-loop conv prepare/finish around
+# attention AND mlp, BF16 delta, scratch buffers).
+# 168696 is the exact count.
+CEILING = 168696
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
