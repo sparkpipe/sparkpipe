@@ -180,11 +180,22 @@ static uint32_t SparkQwen36ServingCreditCeiling(uint32_t draft_count)
 	return(by_block < by_cap ? by_block : by_cap);
 }
 
-/* Draft depth for the active spec method: DSpark always drafts its full
- * block_size; MTP uses the env-tunable depth. */
+/* Draft depth for the active spec method. DSpark drafts its full block by
+ * default, but honors SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT as a CAP:
+ * verifying fewer drafts costs fewer verify rows per round, so at low
+ * acceptance a smaller depth drops the round cost below the breakeven (the
+ * measured round cost is ~2.9 no-spec tokens; the ladder must beat it). The
+ * drafter still produces block-1 drafts; the surplus is simply not walked. */
 static uint32_t SparkQwen36ServingActiveDraftCount(uint32_t spec_method)
 {
-	return(spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE : SparkQwen36ServingSpeculativeDraftCount());
+	if ( spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK )
+	{
+		uint32_t cap = SparkQwen36ServingSpeculativeDraftCount();
+		if ( cap == 0u || cap >= SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE )
+			return(SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE);
+		return(cap);
+	}
+	return(SparkQwen36ServingSpeculativeDraftCount());
 }
 /* GDN snapshot slots. The two-phase min-accept schedule keeps one verify
  * snapshot in flight per lane, capped by the module's slot ceiling; a lane
@@ -1394,8 +1405,11 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			 * MTP-convention verify depth, where draft[0] restates C0, so it is
 			 * one MORE than the number of emitted ids. block_size is the block
 			 * the kernels walk (8 = anchor + 7 masks). */
-			dspark_draft.block_size = draft_count;
-			dspark_draft.draft_token_count = draft_count - 1u;
+			/* The MODULE always computes the full block (B rows, B-1 drafts)
+			 * and refuses anything else; the verify-depth cap only shortens
+			 * what the ADAPTER walks of it. */
+			dspark_draft.block_size = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
+			dspark_draft.draft_token_count = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u;
 			dspark_draft.sequence_id = sequence;
 			dspark_draft.base_position = spec->base_position;
 			dspark_draft.tap_buffer = 0;

@@ -751,7 +751,14 @@ from pathlib import Path
 # regression in the row serialization fails a gate instead of silently
 # reopening the divergence.
 # 174765 is the exact count.
-CEILING = 174765
+# +14: the dspark verify-depth cap. SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT
+# now caps how many of the block's drafts the adapter walks (the module still
+# computes the full block; the surplus is dropped). At low acceptance the
+# verify walk dominates the round cost (~2.9 no-spec tokens), so a smaller
+# depth drops the round below the breakeven - the speed lever the measured
+# ladder needs to beat no-spec.
+# 174779 is the exact count.
+CEILING = 174779
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
