@@ -194,6 +194,11 @@ typedef struct SparkQwen36ServingSpecState
 	uint32_t accepted_count;
 	uint32_t chain_dead;
 	uint32_t first_draft_miss;
+	/* Rollback bookkeeping: a verify frame WALKS the GDN recurrence over drafted
+	 * positions, so a lane that walked one must be rolled back before any later
+	 * frame - by its replay, or by the repair pass when no replay runs. */
+	uint32_t verify_walked;
+	uint32_t replayed;
 	uint32_t draft_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t emitted_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t committed_ids[SPARK_QWEN36_SERVING_MAX_COMMITTED_TOKENS];
@@ -1399,6 +1404,8 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,verify_tokens,0,0,draft_count,spec->base_position,sequence,spec->base_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY,0,0,&gdn_snapshot,draft_count);
 			if ( status != SPARK_STATUS_OK )
 				fprintf(stderr, "qwen36_spec_diag verify_frame_failed lane=%u status=%d\n", lane, (int)status);
+			else
+				spec->verify_walked = 1u;
 		}
 		if ( status == SPARK_STATUS_OK )
 		{
@@ -1463,11 +1470,56 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			fprintf(stderr, "qwen36_spec_diag replay_frame_failed lane=%u status=%d\n", lane, (int)status);
 		if ( status == SPARK_STATUS_OK )
 		{
+			spec->replayed = 1u;
 			for (draft=0u; draft<min_accepted; draft++)
 				spec->committed_ids[1u + draft] = spec->draft_ids[1u + draft];
 			spec->committed_ids[1u + min_accepted] = spec->emitted_ids[min_accepted];
 			spec->committed_ids[2u + min_accepted] = pending->frame_output_ids[0];
 		}
+	}
+	/*
+	 * LOSSLESSNESS REPAIR - the verify walk is destructive and its rollback was
+	 * not guaranteed.
+	 *
+	 * A verify frame snapshots the lane's GDN state, then WALKS the recurrence
+	 * over the drafted positions, rejected drafts included; only a
+	 * GDN_RESTORE_FIRST replay puts it back. The replay loop above is skipped
+	 * for EVERY lane when any single lane's chain is dead (min_accepted is
+	 * zeroed and the loop is gated on spec_chain_dead), and it aborts midway
+	 * when a lane's replay frame fails - in both cases a healthy lane that DID
+	 * walk its verify frame keeps recurrent state advanced over tokens that were
+	 * never committed, and its lane_next_positions stays parked at
+	 * base + draft_count. The next decode frame then either consumes a
+	 * contaminated state or is refused outright by the continuity check
+	 * (position != expected), which is exactly the "spec stream diverges from
+	 * the no-spec golden" signature.
+	 *
+	 * One row of GDN_RESTORE_FIRST over the committed token C0 repairs both: the
+	 * snapshot goes back in, the recurrence re-walks exactly the position that
+	 * WAS committed, the KV row for that position is rewritten with the same
+	 * token, and lane_next_positions lands on base + 1 - bit-for-bit where the
+	 * no-spec stream would have left the lane.
+	 */
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+	{
+		SparkQwen36ServingSpecState *spec = &pending->spec[lane];
+		SparkQwen36GdnSnapshotView repair_snapshot;
+		uint32_t repair_token;
+		SparkStatus repair_status;
+		if ( spec->verify_walked == 0u || spec->replayed != 0u )
+			continue;
+		memset(&repair_snapshot,0,sizeof(repair_snapshot));
+		repair_snapshot.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
+		repair_snapshot.descriptor_bytes = sizeof(repair_snapshot);
+		repair_snapshot.snapshot_index = spec->snapshot_index;
+		repair_token = spec->committed_ids[0];
+		fprintf(stderr,"qwen36_spec rollback_repair lane=%u base_position=%llu token=%u (verify walked, no replay)\n",
+			lane,(unsigned long long)spec->base_position,repair_token);
+		repair_status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,spec->resident_slot,1u,&repair_token,0,0,1u,spec->base_position,spec->sequence_id,spec->base_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST,0,0,&repair_snapshot,1u);
+		if ( repair_status != SPARK_STATUS_OK )
+			fprintf(stderr,"qwen36_spec rollback_repair_failed lane=%u status=%d\n",lane,(int)repair_status);
+		if ( status == SPARK_STATUS_OK )
+			status = repair_status;
 	}
 	return(status);
 }

@@ -503,7 +503,17 @@ from pathlib import Path
 # now append to SPARK_QWEN36_DSPARK_DIAG_PATH, default /tmp/dspark_diag.log
 # - the three facts the arming question needs, on a stable per-instance path.
 # 171757 is the exact count.
-CEILING = 171757
+# +52: verify-walk rollback repair (kernel lane). A verify frame walks the GDN
+# recurrence over drafted positions and only a GDN_RESTORE_FIRST replay puts it
+# back, but the replay loop was skipped for EVERY lane when any lane's chain was
+# dead (strict policy) and aborted midway when a replay frame failed - so a
+# healthy lane kept recurrent state advanced over tokens never committed AND
+# lane_next_positions parked at base+draft_count (the continuity check then
+# refuses the next decode - the live status=1/4 refusals). Every lane that
+# walked a verify now gets a one-row GDN_RESTORE_FIRST over the committed token
+# C0 when no replay ran for it.
+# 171809 is the exact count.
+CEILING = 171809
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
