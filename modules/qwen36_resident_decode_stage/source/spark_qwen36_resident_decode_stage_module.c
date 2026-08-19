@@ -2430,17 +2430,19 @@ static SparkStatus SparkQwen36ModuleCaptureDsparkTap(
 	cudaError_t error;
 	switch ( layer )
 	{
-	/* Tap layers = the REFERENCE's auxiliary set (6,20,34,48,62): vLLM's
-	 * eagle3_utils applies +1 to the config's target_layer_ids and hooks
-	 * those MODEL LAYER indices (verified live: "Using auxiliary layers
-	 * from speculative config: (6, 20, 34, 48, 62)" on the spark0 vLLM
-	 * reference run). The earlier [5,19,...] test predates the tap-store
-	 * grid fix, so it compared noise. */
-	case 6u: tap_index = 0u; break;
-	case 20u: tap_index = 1u; break;
-	case 34u: tap_index = 2u; break;
-	case 48u: tap_index = 3u; break;
-	case 62u: tap_index = 4u; break;
+	/* Tap layers = the config's target_layer_ids [5,19,33,47,61], i.e. the
+	 * OUTPUT of model layers 5/19/33/47/61. The spark0 vLLM reference prints
+	 * "auxiliary layers (6,20,34,48,62)" - those are hidden-state LIST
+	 * indices (index i+1 = layer i's output), the SAME tensors. Measured on
+	 * this build with the tap-store fixed: [5,19,...] round-1 accepts 7/7
+	 * (mean 0.37); capturing one layer later [6,20,...] accepts 3/7 (mean
+	 * 0.175). The two engines' tap tensors agree; the earlier cross-test
+	 * predates the tap-store fix and compared noise. */
+	case 5u: tap_index = 0u; break;
+	case 19u: tap_index = 1u; break;
+	case 33u: tap_index = 2u; break;
+	case 47u: tap_index = 3u; break;
+	case 61u: tap_index = 4u; break;
 	default: return(SPARK_STATUS_OK);
 	}
 	error = SparkQwen36LaunchDsparkTapStore((cudaStream_t)slot->cuda_stream,slot->hidden_bf16,slot->row_positions,state->dflash_taps_history,rows,tap_index,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION,SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT);

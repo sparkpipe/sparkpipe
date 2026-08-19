@@ -479,7 +479,10 @@ from pathlib import Path
 # 169402 is the exact count.
 # +4: tap-store grid.y channel tile.
 # 169406 is the exact count.
-CEILING = 169406
+# +5: the tap-layer evidence-trail comment (revert to [5,19,33,47,61]
+# after the reference cross-test).
+# 169411 is the exact count.
+CEILING = 169411
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
