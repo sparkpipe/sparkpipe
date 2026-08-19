@@ -697,7 +697,14 @@ from pathlib import Path
 # frame's parallel row blocks). Each channel block now walks the rows
 # sequentially with a sync between rows and grid.y = 1.
 # 173343 is the exact count.
-CEILING = 173343
+# +261: the acceptance profile tool (kernel lane). It cross-checks two
+# independent accountings per round and proves the oracle drafts earn the
+# SAME acceptance as the module's (0.853/round on the GLM capture) - the
+# 8/34 forward flips cost exactly zero, so forward bit-exactness is not the
+# acceptance lever. It also surfaces the zero-acceptance suffix (the context
+# collapse) whose onset is the live bisect target.
+# 173604 is the exact count.
+CEILING = 173604
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
