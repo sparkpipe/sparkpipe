@@ -2358,19 +2358,20 @@ static SparkStatus SparkQwen36ModuleCaptureDsparkTap(
 {
 	uint32_t tap_index;
 	(void)state;
-	/* vLLM maps the drafter config's target_layer_ids [5,19,33,47,61] to
-	 * hidden-state list indices [6,20,34,48,62] (eagle3_utils applies +1:
-	 * list index i+1 is layer i's OUTPUT; DFlash semantics count differently).
-	 * Capturing one layer early drafts the trivial prefix fine and degrades
-	 * everywhere else - acceptance collapsed to ~0.3 on both FP8 and BF16
-	 * targets with [5,19,33,47,61]. */
+	/* Tap layers stay at the config's target_layer_ids [5,19,33,47,61]:
+	 * vLLM's eagle3_utils +1 maps DFlash ids onto ITS hidden-states-list
+	 * indexing (list index i+1 = layer i's output), which is the same
+	* tensor we capture here. Measured: [6,20,34,48,62] scored WORSE
+	 * (no full-accept iterations vs two). The residual acceptance gap vs
+	 * upstream is NOT the layer choice - it persists across FP8/BF16
+	 * targets and every tap source (see PR #675 discussion). */
 	switch ( layer )
 	{
-	case 6u: tap_index = 0u; break;
-	case 20u: tap_index = 1u; break;
-	case 34u: tap_index = 2u; break;
-	case 48u: tap_index = 3u; break;
-	case 62u: tap_index = 4u; break;
+	case 5u: tap_index = 0u; break;
+	case 19u: tap_index = 1u; break;
+	case 33u: tap_index = 2u; break;
+	case 47u: tap_index = 3u; break;
+	case 61u: tap_index = 4u; break;
 	default: return(SPARK_STATUS_OK);
 	}
 	return(SparkStageModuleCudaStatus(
