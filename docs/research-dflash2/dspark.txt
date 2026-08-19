@@ -1,0 +1,69 @@
+---
+license: other
+library_name: transformers
+pipeline_tag: text-generation
+tags:
+- speculative-decoding
+- dspark
+- dflash
+- specforge
+- sglang
+inference: false
+---
+
+# Qwen3.8-27B-DSpark
+
+A DSpark speculator for [Qwen/Qwen3.8-27B-FP8](https://huggingface.co/Qwen/Qwen3.8-27B-FP8). DSpark extends [DFlash](https://github.com/z-lab/dflash) with target-model auxiliary features and a confidence head that dynamically chooses the number of draft tokens. The model was trained with [SpecForge](https://github.com/sgl-project/SpecForge) and is served with [SGLang](https://github.com/sgl-project/sglang).
+
+## Model specifications
+
+- Target model: [Qwen/Qwen3.8-27B-FP8](https://huggingface.co/Qwen/Qwen3.8-27B-FP8)
+- Checkpoint: `epoch_2_step_4166`
+- Draft parameters: 1,359,284,737 (1.36B)
+- Draft weight dtype: BF16
+- Hidden size: 5,120
+- Transformer layers: 5 full-attention layers
+- Attention: GQA with 40 query heads and 8 key/value heads
+- Target auxiliary feature layers: 4, 16, 28, 40, 52
+- Confidence head: vanilla Markov head, rank 256
+- DSpark block size: 7 draft tokens (verify width 8, including the target bonus token)
+- Maximum position embeddings: 262,144
+
+## Acceptance length
+
+Acceptance length is the mean number of tokens accepted per speculative verification step, including the target bonus token. Each workload value below is the unweighted mean of SGLang's per-request `spec_accept_length` values.
+
+Setting: FP8 target and unquantized BF16 draft; DSpark block size 7; sampling temperature 0.6, top-k 20, top-p 0.95; thinking enabled; `max_new_tokens=2048`; seed 0; up to 128 prompts per workload, or the full set when smaller. The prompt construction and measurement loop follow `z-lab/dflash`'s SGLang benchmark path.
+
+| Workload | Acceptance length |
+|---|---:|
+| HumanEval | 3.47 |
+| GSM8K | 4.57 |
+| MATH-500 | 4.08 |
+| LiveCodeBench | 2.94 |
+| MBPP | 3.67 |
+| AIME 2025 | 3.28 |
+| LBPP | 3.03 |
+| AIME 2026 | 3.07 |
+| MT-Bench | 3.10 |
+| Arena-Hard-v2 | 2.71 |
+| Alpaca | 2.95 |
+
+The evaluation contains 1,164 requests. The mean across all requests is **3.39**, and the macro mean across the 11 workload means is **3.35**. Every response contained acceptance statistics, and recomputing `completion_tokens / spec_verify_ct` matched `spec_accept_length` exactly.
+
+## Serving with SGLang
+
+Use an SGLang version containing DSPARK support (the results above used the pinned main-branch commit shown in the evaluation setting):
+
+```bash
+sglang serve \
+  --trust-remote-code \
+  --model-path Qwen/Qwen3.8-27B-FP8 \
+  --tp-size 1 \
+  --speculative-algorithm DSPARK \
+  --speculative-draft-model-path RadixArk/Qwen3.8-27B-DSpark \
+  --speculative-dspark-block-size 7 \
+  --speculative-draft-model-quantization unquant \
+  --mamba-scheduler-strategy extra_buffer \
+  --attention-backend fa3
+```
