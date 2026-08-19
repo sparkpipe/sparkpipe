@@ -417,7 +417,9 @@ from pathlib import Path
 # coefficients, block-boundary zeroing, one elementwise pass) + launch
 # wrapper - the DFlash2 drafter's first new kernel.
 # 168587 is the exact count.
-CEILING = 168587
+# +1 for the DRAFTER-path env override line in the DFlash2 reference.
+# 168588 is the exact count.
+CEILING = 168588
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
