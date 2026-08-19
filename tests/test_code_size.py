@@ -564,7 +564,15 @@ from pathlib import Path
 # sequence, position and the expectation, so a repeated request failing with
 # status=1 names its producer instead of being guessed at. No behaviour change.
 # 172311 is the exact count.
-CEILING = 172311
+# +53: separation-experiment instrumentation (kernel lane, coordinator-merged
+# onto the cliff-fixed tree). The per-round diag line now carries lane +
+# base_position (C0's absolute sequence position, so a round can be placed
+# against the golden) and a round_commit line reports the credit side
+# (accepted/min_accepted/credited/positions), and the trajectory bisect tool
+# now ISSUES the verdict instead of describing it (STATE RESTORE/ROLLBACK vs
+# COMMIT/ACCOUNTING, or 'neither branch fires yet' - it refuses to guess).
+# 172364 is the exact count.
+CEILING = 172364
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -1429,7 +1429,13 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			spec->accepted_count = 0u;
 			while ( spec->accepted_count + 1u < draft_count && spec->emitted_ids[spec->accepted_count] == spec->draft_ids[spec->accepted_count + 1u] )
 				spec->accepted_count++;
-			fprintf(stderr, "qwen36_spec_diag C0=%u accepted=%u drafts=[%u,%u,%u,%u] emitted=[%u,%u,%u,%u]\n",
+			/* lane and base_position make the round ALIGNABLE to a golden stream:
+			 * base_position is C0's absolute sequence position, so the golden's
+			 * token index for this round is base_position - prompt_length. Without
+			 * it the diag line cannot be placed next to the golden's token index,
+			 * which is exactly what the separation experiment needs. */
+			fprintf(stderr, "qwen36_spec_diag lane=%u base_position=%llu C0=%u accepted=%u drafts=[%u,%u,%u,%u] emitted=[%u,%u,%u,%u]\n",
+				lane, (unsigned long long)spec->base_position,
 				spec->committed_ids[0], spec->accepted_count,
 				spec->draft_ids[0], spec->draft_ids[1], spec->draft_ids[2], spec->draft_ids[3],
 				spec->emitted_ids[0], spec->emitted_ids[1], spec->emitted_ids[2], spec->emitted_ids[3]);
@@ -1481,6 +1487,17 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		}
 		pending->spec_tokens_per_sequence = pending->spec_chain_dead != 0u ? 1u : min_accepted + 3u;
 		pending->spec_total_accepted = pending->spec_chain_dead != 0u ? 0u : min_accepted * submission->active_sequence_count;
+		/* The credit side of the round, in absolute positions: what the stream
+		 * actually advances by. Pairing this with the per-lane diag line above
+		 * answers the accounting question from ONE log - whether accepted and
+		 * min_accepted are right while the committed stream is a token long or
+		 * short - without reconstructing the round from token ids. */
+		for (lane=0u; lane<submission->active_sequence_count; lane++)
+			fprintf(stderr,"qwen36_spec round_commit lane=%u base_position=%llu accepted=%u min_accepted=%u credited=%u positions=[%llu..%llu]\n",
+				lane,(unsigned long long)pending->spec[lane].base_position,
+				pending->spec[lane].accepted_count,min_accepted,pending->spec_tokens_per_sequence,
+				(unsigned long long)pending->spec[lane].base_position,
+				(unsigned long long)(pending->spec[lane].base_position + pending->spec_tokens_per_sequence - 1u));
 	}
 	for (lane=0u; status == SPARK_STATUS_OK && pending->spec_chain_dead == 0u && lane<submission->active_sequence_count; lane++)
 	{

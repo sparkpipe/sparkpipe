@@ -133,11 +133,47 @@ def main() -> int:
           f"{first_mismatch if first_mismatch is not None else 'none (the DFlash2 path is faithful)'}")
     print(f"first step whose tap state is degenerate           : "
           f"{first_degenerate if first_degenerate is not None else 'none'}")
-    if golden is not None:
-        print(f"golden tokens    = {len(golden)}")
-        print("Compare the golden against the committed stream your run recorded; the bisect reads: tap state "
-              "degenerate BEFORE the first token divergence -> a state restore/rollback bug; token divergence "
-              "first with the taps following -> the commit/accounting path.")
+    if golden is None:
+        print("no golden stream given; run again with the no-spec token list to get the verdict")
+        return 0
+
+    # THE VERDICT. Each step's c0 IS a committed token at that step's absolute
+    # base_position, so the committed stream is aligned to the golden by position:
+    # golden index = base_position - first_position, where first_position defaults
+    # to the earliest sampled step (override with the third argument when the
+    # golden file starts elsewhere).
+    first_position = int(sys.argv[3]) if len(sys.argv) > 3 else steps[0][0]
+    print(f"golden tokens    = {len(golden)}  golden[0] is absolute position {first_position}")
+    first_token_divergence = None
+    compared = 0
+    for position, _taps, c0, _drafts in steps:
+        index = position - first_position
+        if index < 0 or index >= len(golden):
+            continue
+        compared += 1
+        if golden[index] != c0 and first_token_divergence is None:
+            first_token_divergence = position
+            print(f"token divergence  at position {position} (golden index {index}): "
+                  f"module committed {c0}, golden {golden[index]}")
+    print(f"positions compared= {compared}")
+    if first_token_divergence is None:
+        print("VERDICT: no token divergence in the sampled window - the committed stream matches the golden "
+              "wherever it was sampled, so neither branch of the decision rule fires yet. Widen the dump "
+              "window or sample every step.")
+        return 0
+    if first_degenerate is not None and first_degenerate < first_token_divergence:
+        print(f"VERDICT: STATE RESTORE / ROLLBACK CLASS - the tap state is already degenerate at position "
+              f"{first_degenerate}, BEFORE the first token divergence at {first_token_divergence}. The drafter "
+              f"is being fed a corrupted recurrent state, so look for remaining rollback holes on the default "
+              f"policy path, not at the commit seam.")
+    else:
+        print(f"VERDICT: COMMIT / ACCOUNTING SEAM - the token stream diverges first at position "
+              f"{first_token_divergence}"
+              + (f" while the tap state stays healthy until {first_degenerate}" if first_degenerate is not None
+                 else " and the tap state never goes degenerate in this window") +
+              ". The state is exact and the loss is in how the round is credited: read the "
+              "qwen36_spec_diag / round_commit pair at that base_position - accepted, min_accepted, credited - "
+              "against the golden index.")
     return 0
 
 
