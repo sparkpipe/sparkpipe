@@ -758,7 +758,14 @@ from pathlib import Path
 # depth drops the round below the breakeven - the speed lever the measured
 # ladder needs to beat no-spec.
 # 174779 is the exact count.
-CEILING = 174779
+# +64: the snapshot-slot fingerprints with magnitudes (kernel lane). The
+# per-frame fingerprint now also samples the snapshot slot itself
+# (snapshot_stored_pre_verify / snapshot_restored_pre_replay /
+# lane_after_restore) with absmax/absmean, so one spec run decides whether
+# the restore is faithful or the replay walk is the corruptor - with
+# magnitudes, not a hash.
+# 174843 is the exact count.
+CEILING = 174843
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
