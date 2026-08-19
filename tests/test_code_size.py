@@ -791,7 +791,13 @@ from pathlib import Path
 # verify=9045 replay=561) showed the chunk-built verify head flips at a thin
 # margin and commits the wrong correction.
 # 175047 is the exact count.
-CEILING = 175047
+# +138: the 8-row multi-row attention gate. An 8-row frame must bit-match eight
+# 1-row frames in BOTH the KV cache it writes and the per-row outputs (the
+# depth-8 verify geometry). The single-row reference loops all eight rows;
+# the earlier 2-row-only reference left rows 2..7 as calloc zeroes and so
+# misreported a per-row KV-write corruption that is actually bit-exact.
+# 175185 is the exact count.
+CEILING = 175185
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

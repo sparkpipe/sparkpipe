@@ -1682,6 +1682,143 @@ static int SparkQwen36ValCheckLayerAmplification(SparkQwen36ValDevice *device)
 	return(0);
 }
 
+/*
+ * MULTI-ROW ATTENTION: the clean k-row vs k x 1-row comparison, KV and output.
+ *
+ * Each path has its OWN device buffers filled from the SAME host data - d_q,
+ * d_k, d_v, d_out, kv_cache - so the comparison is apples-to-apples and any
+ * difference is the kernels', not the harness'. A k-row frame's AttnPrepare +
+ * AttnDecode must bit-match k 1-row frames in BOTH the KV cache it writes and
+ * the per-row outputs it reads back. The 2-row case already proved bit-exact
+ * (differing=0/12288); this case holds the same bar at the 8-row verify
+ * geometry the depth-8 repro reaches.
+ */
+static int SparkQwen36ValCheckMultiRowAttention(SparkQwen36ValDevice *device)
+{
+	const uint32_t tokens = 8u;
+	const uint64_t fused = (uint64_t)tokens * 2u * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION;
+	const uint64_t kv_elements = (uint64_t)tokens * SPARK_QWEN36_MODEL_ATTN_KV_DIMENSION;
+	const uint64_t out_elements = (uint64_t)tokens * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION;
+	const uint64_t cache_elements = (uint64_t)SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN36_MODEL_ATTN_CACHE_TOKEN_ELEMENTS;
+	uint16_t *q = (uint16_t *)calloc(fused,sizeof(uint16_t));
+	uint16_t *k = (uint16_t *)calloc(kv_elements,sizeof(uint16_t));
+	uint16_t *v = (uint16_t *)calloc(kv_elements,sizeof(uint16_t));
+	uint16_t *norm = (uint16_t *)calloc(2u * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION,sizeof(uint16_t));
+	uint16_t *out_multi = (uint16_t *)calloc(out_elements,sizeof(uint16_t));
+	uint16_t *kv_multi_after = (uint16_t *)calloc(cache_elements,sizeof(uint16_t));
+	uint16_t *kv_single_after = (uint16_t *)calloc(cache_elements,sizeof(uint16_t));
+	uint16_t *out_single = (uint16_t *)calloc(out_elements,sizeof(uint16_t));
+	uint32_t slot_mapping[8] = {0u,1u,2u,3u,4u,5u,6u,7u};
+	uint64_t positions[8] = {0ull,1ull,2ull,3ull,4ull,5ull,6ull,7ull};
+	uint32_t lane0[8] = {0u,0u,0u,0u,0u,0u,0u,0u};
+	uint32_t lane_one[1] = {0u};
+	uint32_t context_all[8] = {1u,2u,3u,4u,5u,6u,7u,8u};
+	uint32_t block_indices[1] = {0u};
+	uint32_t block_counts[1] = {1u};
+	void *kv_multi = 0, *kv_single = 0;
+	void *dq_multi = 0, *dq_single = 0;
+	void *dk_multi = 0, *dk_single = 0;
+	void *dv_multi = 0, *dv_single = 0;
+	void *dout_multi = 0, *dout_single = 0;
+	uint32_t *dslots_multi = 0, *dslots_single = 0;
+	uint32_t *dlane_multi = 0, *dlane_single = 0;
+	uint32_t *dctx_multi = 0, *dctx_single = 0;
+	uint32_t *dblk = 0, *dcnt = 0;
+	uint64_t *dpos_multi = 0, *dpos_single = 0;
+	SparkQwen36KvBlockTableView table;
+	cudaError_t error;
+	uint64_t index, row, bad = 0u, first_bad = out_elements;
+	uint64_t kv_bad = 0u, first_kv = cache_elements;
+	if (q == 0 || k == 0 || v == 0 || norm == 0 || out_multi == 0 || out_single == 0 ||
+		kv_multi_after == 0 || kv_single_after == 0)
+		return(SparkQwen36ValFail("multi_row_attn","host_alloc"));
+	SparkQwen36ValRandomState = 313u;
+	SparkQwen36ValFillBf16(q,0,fused,0.5f);
+	SparkQwen36ValFillBf16(k,0,kv_elements,0.5f);
+	SparkQwen36ValFillBf16(v,0,kv_elements,0.5f);
+	SparkQwen36ValFillBf16(norm,0,SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION,0.5f);
+	SparkQwen36ValFillBf16(norm + SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION,0,SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION,0.5f);
+	/* separate device buffers for each path */
+	error = cudaMalloc(&kv_multi,cache_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMalloc(&kv_single,cache_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMalloc(&dq_multi,fused * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMalloc(&dq_single,fused * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMalloc(&dk_multi,kv_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMalloc(&dk_single,kv_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMalloc(&dv_multi,kv_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMalloc(&dv_single,kv_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMalloc(&dout_multi,out_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMalloc(&dout_single,out_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&dslots_multi,sizeof(slot_mapping));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&dslots_single,sizeof(slot_mapping));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&dpos_multi,sizeof(positions));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&dpos_single,sizeof(positions));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&dlane_multi,sizeof(lane0));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&dlane_single,sizeof(lane_one));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&dctx_multi,sizeof(context_all));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&dctx_single,sizeof(uint32_t));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&dblk,sizeof(block_indices));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&dcnt,sizeof(block_counts));
+	if (error == cudaSuccess) error = cudaMemset(kv_multi,0,cache_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMemset(kv_single,0,cache_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMemcpy(dq_multi,q,fused * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dq_single,q,fused * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dk_multi,k,kv_elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dk_single,k,kv_elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dv_multi,v,kv_elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dv_single,v,kv_elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dslots_multi,slot_mapping,sizeof(slot_mapping),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dslots_single,slot_mapping,sizeof(slot_mapping),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dpos_multi,positions,sizeof(positions),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dpos_single,positions,sizeof(positions),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dlane_multi,lane0,sizeof(lane0),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dlane_single,lane_one,sizeof(lane_one),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dctx_multi,context_all,sizeof(context_all),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dblk,block_indices,sizeof(block_indices),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(dcnt,block_counts,sizeof(block_counts),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(device->q_norm_weight,norm,SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(device->k_norm_weight,norm + SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION,SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	memset(&table,0,sizeof(table));
+	table.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION;
+	table.descriptor_bytes = sizeof(table);
+	table.block_token_count = SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+	table.lane_count = 1u; table.lane_stride = 1u; table.lane_capacity = 1u;
+	table.physical_block_indices = dblk; table.lane_physical_block_counts = dcnt;
+	table.host_physical_block_indices = block_indices; table.host_lane_physical_block_counts = block_counts;
+	/* MULTI-ROW: one 8-row frame */
+	if (error == cudaSuccess)
+		error = SparkQwen36LaunchAttnPrepare(cudaStreamPerThread,dq_multi,dk_multi,dv_multi,&device->attn_weights,kv_multi,dslots_multi,dpos_multi,tokens,0u,cache_elements,cache_elements,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
+	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
+	if (error == cudaSuccess) error = cudaMemcpy(kv_multi_after,kv_multi,cache_elements * sizeof(uint16_t),cudaMemcpyDeviceToHost);
+	if (error == cudaSuccess)
+		error = SparkQwen36LaunchAttnDecode(cudaStreamPerThread,dq_multi,kv_multi,&table,dlane_multi,dctx_multi,dout_multi,tokens,0u,cache_elements,cache_elements);
+	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
+	if (error == cudaSuccess) error = cudaMemcpy(out_multi,dout_multi,out_elements * sizeof(uint16_t),cudaMemcpyDeviceToHost);
+	/* SINGLE-ROW: eight 1-row frames, each on its own buffers */
+	for (row = 0u; row < tokens; row++)
+	{
+		if (error == cudaSuccess) error = cudaMemcpy(dctx_single,&context_all[row],sizeof(uint32_t),cudaMemcpyHostToDevice);
+		if (error == cudaSuccess)
+			error = SparkQwen36LaunchAttnPrepare(cudaStreamPerThread,(uint8_t *)dq_single + row * 2u * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION * sizeof(uint16_t),(uint8_t *)dk_single + row * SPARK_QWEN36_MODEL_ATTN_KV_DIMENSION * sizeof(uint16_t),(uint8_t *)dv_single + row * SPARK_QWEN36_MODEL_ATTN_KV_DIMENSION * sizeof(uint16_t),&device->attn_weights,kv_single,dslots_single + row,dpos_single + row,1u,0u,cache_elements,cache_elements,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
+		if (error == cudaSuccess)
+			error = SparkQwen36LaunchAttnDecode(cudaStreamPerThread,(uint8_t *)dq_single + row * 2u * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION * sizeof(uint16_t),kv_single,&table,dlane_single,dctx_single,(uint8_t *)dout_single + row * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION * sizeof(uint16_t),1u,0u,cache_elements,cache_elements);
+	}
+	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
+	if (error == cudaSuccess) error = cudaMemcpy(kv_single_after,kv_single,cache_elements * sizeof(uint16_t),cudaMemcpyDeviceToHost);
+	if (error == cudaSuccess) error = cudaMemcpy(out_single,dout_single,out_elements * sizeof(uint16_t),cudaMemcpyDeviceToHost);
+	if (SparkQwen36ValCuda(error,"multi_row_attn") != 0)
+		return(1);
+	for (index = 0u; index < cache_elements; index++)
+		if (kv_multi_after[index] != kv_single_after[index]) { kv_bad++; if (first_kv == cache_elements) first_kv = index; }
+	for (index = 0u; index < out_elements; index++)
+		if (out_multi[index] != out_single[index]) { bad++; if (first_bad == out_elements) first_bad = index; }
+	printf("qwen36_validation check=multi_row_attn tokens=%u kv_bad=%llu/%llu first_kv=%llu out_bad=%llu/%llu first_out=%llu\n",
+		tokens,(unsigned long long)kv_bad,(unsigned long long)cache_elements,(unsigned long long)(first_kv==cache_elements?0:first_kv),
+		(unsigned long long)bad,(unsigned long long)out_elements,(unsigned long long)(first_bad==out_elements?0:first_bad));
+	if (bad != 0u || kv_bad != 0u)
+		return(SparkQwen36ValFail("multi_row_attn","the multi-row frame differs from per-row frames"));
+	return(0);
+}
 
 int main(int argc, char **argv)
 {
@@ -1706,6 +1843,7 @@ int main(int argc, char **argv)
 	if (result == 0) result = SparkQwen36ValCheckStepRowBatch(&device);
 	if (result == 0) result = SparkQwen36ValCheckDriftAccumulation(&device);
 	if (result == 0) result = SparkQwen36ValCheckLayerAmplification(&device);
+	if (result == 0) result = SparkQwen36ValCheckMultiRowAttention(&device);
 	if (result == 0) result = SparkQwen36ValCheckModule();
 	if (result == 0)
 		printf("qwen36_validation PASS\n");
