@@ -346,7 +346,7 @@ def main() -> int:
     # 5) top-16 over the 7 mask-position lm_head logits (the C0 slot is the anchor)
     mask_logits = (hidden[1:] @ lm_head.T).astype(np.float32)  # [7, V]
     mask_logits = bf16_to_f32(f32_to_bf16(mask_logits))
-    top_ids = np.argsort(-mask_logits, axis=-1)[:, :SELECTOR_TOP_K]  # [7, K]
+    top_ids = np.argsort(-mask_logits, axis=-1, kind="stable")[:, :SELECTOR_TOP_K]  # [7, K]; stable = deterministic id-asc tie-break, matching the kernel
     unary = np.take_along_axis(mask_logits, top_ids, axis=-1)  # [7, K]
 
     # 6) selector: hidden_projection(hidden[1:]) -> score edges -> greedy walk
