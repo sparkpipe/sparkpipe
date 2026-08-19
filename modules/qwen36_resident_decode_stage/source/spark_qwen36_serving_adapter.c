@@ -158,6 +158,28 @@ static uint32_t SparkQwen36ServingSpecMethod(void)
 	return(SPARK_QWEN36_SERVING_SPEC_METHOD_MTP);
 }
 
+/* Round audit. With SPARK_QWEN36_SPEC_AUDIT set (and not "0") the replay frame
+ * emits every row so the adapter can check it against the verify frame, and each
+ * round prints its committed ids with absolute positions. Off by default: the
+ * extra rows cost one head pass each. */
+static uint32_t SparkQwen36ServingSpecAudit(void)
+{
+	const char *text = getenv("SPARK_QWEN36_SPEC_AUDIT");
+	return(text != 0 && text[0] != 0 && (text[0] != 0x30 || text[1] != 0) ? 1u : 0u);
+}
+
+/* THE CREDITED CEILING of this build. A round credits (accepted drafts + 3) -
+ * the committed token, the accepted drafts, the correction and the replay's
+ * emission - so no round can credit more than min(draft_count - 1, cap - 3)
+ * drafts. Printed with every round so an acceptance target above it is visibly
+ * unreachable instead of being chased through the drafter. */
+static uint32_t SparkQwen36ServingCreditCeiling(uint32_t draft_count)
+{
+	uint32_t by_block = draft_count > 0u ? draft_count - 1u : 0u;
+	uint32_t by_cap = (uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u;
+	return(by_block < by_cap ? by_block : by_cap);
+}
+
 /* Draft depth for the active spec method: DSpark always drafts its full
  * block_size; MTP uses the env-tunable depth. */
 static uint32_t SparkQwen36ServingActiveDraftCount(uint32_t spec_method)
@@ -1332,11 +1354,13 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 	uint32_t min_accepted;
 	uint32_t first_draft_policy;
 	uint32_t spec_method;
+	uint32_t spec_audit;
 	uint32_t verify_tokens[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	SparkStatus status;
 	spec_method = state->spec_method;
 	draft_count = SparkQwen36ServingActiveDraftCount(state->spec_method);
 	first_draft_policy = SparkQwen36ServingSpecFirstDraftPolicy();
+	spec_audit = SparkQwen36ServingSpecAudit();
 	pending->spec_active = 1u;
 	pending->spec_first_draft_miss = 0u;
 	memset(pending->spec,0,sizeof(pending->spec));
@@ -1363,8 +1387,15 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			memset(&dspark_draft,0,sizeof(dspark_draft));
 			dspark_draft.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION;
 			dspark_draft.descriptor_bytes = sizeof(dspark_draft);
+			/* TWO DIFFERENT COUNTS, and conflating them is what pinned the
+			 * credited ceiling below the block. The module emits one draft per
+			 * MASK row, i.e. block_size - 1 ids, and refuses anything else
+			 * (draft_token_count != B - 1). The adapter's draft_count is the
+			 * MTP-convention verify depth, where draft[0] restates C0, so it is
+			 * one MORE than the number of emitted ids. block_size is the block
+			 * the kernels walk (8 = anchor + 7 masks). */
 			dspark_draft.block_size = draft_count;
-			dspark_draft.draft_token_count = draft_count;
+			dspark_draft.draft_token_count = draft_count - 1u;
 			dspark_draft.sequence_id = sequence;
 			dspark_draft.base_position = spec->base_position;
 			dspark_draft.tap_buffer = 0;
@@ -1505,9 +1536,10 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		 * min_accepted are right while the committed stream is a token long or
 		 * short - without reconstructing the round from token ids. */
 		for (lane=0u; lane<submission->active_sequence_count; lane++)
-			fprintf(stderr,"qwen36_spec round_commit lane=%u base_position=%llu accepted=%u min_accepted=%u credited=%u positions=[%llu..%llu]\n",
+			fprintf(stderr,"qwen36_spec round_commit lane=%u base_position=%llu accepted=%u min_accepted=%u credited=%u ceiling=%u positions=[%llu..%llu]\n",
 				lane,(unsigned long long)pending->spec[lane].base_position,
 				pending->spec[lane].accepted_count,min_accepted,pending->spec_tokens_per_sequence,
+				SparkQwen36ServingCreditCeiling(draft_count),
 				(unsigned long long)pending->spec[lane].base_position,
 				(unsigned long long)(pending->spec[lane].base_position + pending->spec_tokens_per_sequence - 1u));
 	}
@@ -1534,7 +1566,25 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		gdn_snapshot.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 		gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
 		gdn_snapshot.snapshot_index = spec->snapshot_index;
-		status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST,0,0,&gdn_snapshot,1u);
+		/* THE ONE UNCHECKED COMMITTED TOKEN. Of the (min_accepted + 3) tokens a
+		 * round commits, every one is cross-checked except the last: C0 comes
+		 * from the decode frame, the accepted drafts are exactly the ids the
+		 * verify frame re-emitted, the correction IS the verify's own emission -
+		 * but the replay's final emission is produced by a freshly restored and
+		 * re-walked state and compared against nothing. A wrong value there is
+		 * silent, deterministic, and becomes the next round's C0, which is the
+		 * observed signature (a committed token the golden never has, then a
+		 * legitimately different continuation).
+		 *
+		 * The audit closes that hole with the invariant the two frames already
+		 * share: for every row j <= min_accepted the replay consumes the SAME
+		 * token at the SAME position as verify row j, so their argmaxes must be
+		 * equal. A mismatch localizes a state divergence to (row, position); rows
+		 * agreeing while the stream still diverges puts it in the last row alone. */
+		status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,
+			SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST |
+			(spec_audit != 0u ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPEC_AUDIT_EMIT_ALL : 0u),
+			0,0,&gdn_snapshot,spec_audit != 0u ? replay_rows : 1u);
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr, "qwen36_spec_diag replay_frame_failed lane=%u status=%d\n", lane, (int)status);
 		if ( status == SPARK_STATUS_OK )
@@ -1543,7 +1593,34 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			for (draft=0u; draft<min_accepted; draft++)
 				spec->committed_ids[1u + draft] = spec->draft_ids[1u + draft];
 			spec->committed_ids[1u + min_accepted] = spec->emitted_ids[min_accepted];
-			spec->committed_ids[2u + min_accepted] = pending->frame_output_ids[0];
+			/* Emitting one row puts the LAST row's argmax at index 0 (a prefill
+			 * frame's head runs on the final row); emitting all rows puts it at
+			 * the last index. The continuation is the last row either way. */
+			spec->committed_ids[2u + min_accepted] = spec_audit != 0u
+				? pending->frame_output_ids[replay_rows - 1u]
+				: pending->frame_output_ids[0];
+			if ( spec_audit != 0u )
+			{
+				uint32_t row;
+				for (row=0u; row<=min_accepted; row++)
+					if ( pending->frame_output_ids[row] != spec->emitted_ids[row] )
+						fprintf(stderr,"qwen36_spec_audit replay_row_mismatch lane=%u base_position=%llu row=%u position=%llu verify=%u replay=%u accepted=%u min_accepted=%u\n",
+							lane,(unsigned long long)spec->base_position,row,
+							(unsigned long long)(spec->base_position + row),
+							spec->emitted_ids[row],pending->frame_output_ids[row],
+							spec->accepted_count,min_accepted);
+				/* Every id the round commits, with the absolute positions it
+				 * commits them at: the log alone diffs against a golden stream,
+				 * so the failing round is named without reconstructing it. A full
+				 * block credits ten. */
+				fprintf(stderr,"qwen36_spec_audit round_ids lane=%u positions=[%llu..%llu] committed=[%u,%u,%u,%u,%u,%u,%u,%u,%u,%u] credited=%u\n",
+					lane,(unsigned long long)spec->base_position,
+					(unsigned long long)(spec->base_position + pending->spec_tokens_per_sequence - 1u),
+					spec->committed_ids[0],spec->committed_ids[1],spec->committed_ids[2],spec->committed_ids[3],
+					spec->committed_ids[4],spec->committed_ids[5],spec->committed_ids[6],spec->committed_ids[7],
+					spec->committed_ids[8],spec->committed_ids[9],
+					pending->spec_tokens_per_sequence);
+			}
 		}
 	}
 	/*

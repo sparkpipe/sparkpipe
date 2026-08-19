@@ -52,7 +52,10 @@ extern "C" {
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MTP_DRAFT_VIEW_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION 1u
-#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS 8u
+/* Per-lane speculation array bound. It must cover the WIDEST spec frame, which
+ * is the replay: min_accepted + 2 rows, i.e. up to (block drafts) + 2. Sizing it
+ * at one block exactly is what capped the credited acceptance below the block. */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS 10u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_GDN_SNAPSHOT_SLOTS 8u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION 1u
@@ -414,10 +417,31 @@ typedef struct SparkQwen36GdnSnapshotView
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY 0x00000040u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST 0x00000080u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER 0x00000100u
+/*
+ * Audit emission. A prefill frame normally emits ONLY its last row's argmax,
+ * which is right for production and blind for a divergence hunt: the replay
+ * re-walks positions the verify already walked, so their per-row argmaxes MUST
+ * agree over the accepted prefix, and a mismatch localizes a state divergence
+ * to a row and a position. This flag makes such a frame emit every row so the
+ * adapter can run that comparison; the adapter sets it only under
+ * SPARK_QWEN36_SPEC_AUDIT.
+ */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPEC_AUDIT_EMIT_ALL 0x00000200u
 
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION 1u
 
-#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE 7u
+/*
+ * DSpark draft depth in the adapter's MTP convention: draft[0] restates the
+ * committed token and draft[i>=1] predicts position C0+i, so verifying a block
+ * of B rows (one anchor + B-1 masks) needs B entries, not B-1.
+ *
+ * This was 7 while the kernel's SPARK_QWEN36_DSPARK_BLOCK_SIZE is 8, so the
+ * adapter fed the verify frame six of the seven emitted drafts and DISCARDED
+ * the seventh - the accept loop could then never exceed six, and the driver's
+ * eight-token cap clamped the credited count to five. Average acceptance >= 6
+ * was arithmetically impossible before this line changed.
+ */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE 8u
 /*
  * DSpark draft view. The resident module taps the target's post-layer hidden
  * at target layers {4,16,28,40,52} during the decode, then runs the DFlash

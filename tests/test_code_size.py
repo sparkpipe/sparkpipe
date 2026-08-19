@@ -711,7 +711,18 @@ from pathlib import Path
 # dates the corruption (taps bit-identical at 232, 74-87% differing from 235)
 # as the recurrence race the serialization fixes.
 # 174100 is the exact count.
-CEILING = 174100
+# +116: the credited-ceiling fix + the spec audit (kernel lane). The adapter's
+# DSPARK_BLOCK_SIZE was 7 while the kernels walk 8, so the seventh draft was
+# discarded, capping the accept loop at 6, and the cliff clamp then capped the
+# CREDITED acceptance at FIVE - average acceptance >= 6 was arithmetically
+# impossible on that build no matter how good the drafter. Draft depth 7->8,
+# MAX_MTP_DRAFT_TOKENS 8->10, driver cap 8->10, draft_token_count = depth-1
+# (the module refuses anything but B-1), credited ceiling now 7 and printed
+# with every round. Plus SPARK_QWEN36_SPEC_AUDIT: the replay emits every row
+# and the adapter checks it against the verify row by row (the one committed
+# token that was previously checked against nothing).
+# 174216 is the exact count.
+CEILING = 174216
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
