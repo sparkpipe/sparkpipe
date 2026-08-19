@@ -425,7 +425,9 @@ from pathlib import Path
 # +79: the W2 conv parity harness (kernel vs _grouped_conv oracle,
 # assert_allclose PASS) - the DFlash2 kernel regression gate.
 # 168668 is the exact count.
-CEILING = 168668
+# +9: W2 host wiring part 1 (conv weight struct + loading + side param).
+# 168677 is the exact count.
+CEILING = 168677
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
