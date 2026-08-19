@@ -766,7 +766,14 @@ from pathlib import Path
 # the box, core-dump; the per-frame fingerprint without the snapshot
 # sampling remains.)
 # 175029 is the exact count.
-CEILING = 175029
+# +6: gate the 5..8-row small-batch tiled linear path behind
+# SPARK_QWEN36_SMALL_BATCH_GEMM=1. The tiled kernel is the ONLY code that changes
+# between the D=4 lossless and D=6 diverged frames - the dispatch boundary is
+# exactly rows 5..8, which only verify (7 rows) and replay (min_accepted+2)
+# reach. Until it is proven bit-exact against the library path, 5..8 rows take
+# the library path the lossless controls prove correct.
+# 175035 is the exact count.
+CEILING = 175035
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

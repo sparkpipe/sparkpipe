@@ -1853,7 +1853,13 @@ extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQ
 	 * hit L2 at those sizes and its 4x larger thread grid hides HBM latency
 	 * better than the tiled kernel. Rows 5..8 re-read the full strip enough
 	 * to exceed L2, where the once-per-projection shared tile wins. */
-	if ( (gate == 0 || strcmp(gate, "0") != 0) &&
+	/* The 5..8-row tiled path is OFF by default: the verify (7 rows) and the
+	 * replay (min_accepted+2 rows) frames reach it, and it is the ONLY thing that
+	 * changes between D=4 (lossless) and D=6 (diverged) - the row-count boundary
+	 * is exactly here. Until the tiled kernel is proven bit-exact against the
+	 * library, route 5..8 rows through the same library path 1..4 use, which the
+	 * lossless controls prove is correct. Re-enable with SPARK_QWEN36_SMALL_BATCH_GEMM=1. */
+	if ( (gate != 0 && strcmp(gate, "1") == 0) &&
 		view->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
 		row_count >= 5u && row_count <= SPARK_QWEN36_SMALL_BATCH_MAX_ROWS &&
 		(view->input_dimension % SPARK_QWEN36_SMALL_BATCH_K_CHUNK) == 0u &&
