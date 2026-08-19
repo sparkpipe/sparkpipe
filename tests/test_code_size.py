@@ -439,7 +439,11 @@ from pathlib import Path
 # +77: the BF16-delta conv parity check script + harness rework (both
 # sides, bit-exact BF16 on spark3; sign-bit-only normalization noted).
 # 169837 is the exact count.
-CEILING = 169837
+# +3: selector header hygiene (the .cuh self-includes spark_lm_kernels
+# so it never depends on the includer's order; the merge's glued brace
+# splits back).
+# 169840 is the exact count.
+CEILING = 169840
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
