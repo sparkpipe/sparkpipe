@@ -422,7 +422,10 @@ from pathlib import Path
 # +1: the dspark .cuh includes the format header (W6 constants were
 # undefined in the CI gate compile - the qwen36 gate coverage caught it).
 # 168589 is the exact count.
-CEILING = 168589
+# +79: the W2 conv parity harness (kernel vs _grouped_conv oracle,
+# assert_allclose PASS) - the DFlash2 kernel regression gate.
+# 168668 is the exact count.
+CEILING = 168668
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
