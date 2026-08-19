@@ -2408,6 +2408,25 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,1u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleBeginHidden(state,slot,context,rows);
+	/* Prefill-end state dump (prefill != 0, same decode-state gate): the
+	 * recurrence at the end of the prompt walk, so the two boots can be
+	 * diffed to decide whether the prefill itself is env-dependent or the
+	 * first decode is. */
+	if ( status == SPARK_STATUS_OK && prefill != 0 && state->decode_state_dump_dir != 0 )
+	{
+		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
+		float *host = (float *)malloc((size_t)state_bytes);
+		char path[512];
+		FILE *dump;
+		uint32_t lane = prefill->lane_index;
+		if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+		{
+			snprintf(path,sizeof(path),"%s/prefill_start_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
+			dump = fopen(path,"wb");
+			if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
+		}
+		free(host);
+	}
 	/* GDN entry state for the decode frame: the recurrence (state_f32) and the
 	 * conv tail as they are BEFORE the walk, so the spec-vs-no-spec diff at a
 	 * position separates a recurrence residue from a KV/attention residue. */
@@ -2470,6 +2489,24 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	 * dumps its per-layer taps and its final pre-head hidden, keyed by the
 	 * decode row position - so a spec run and a no-spec run of the same prompt
 	 * can be diffed layer by layer to localize a silent state divergence. */
+	/* Prefill-end state: the recurrence after the prompt walk, the input to
+	 * the first decode - the datum that separates an env-dependent prefill
+	 * from an env-dependent first decode. */
+	if ( status == SPARK_STATUS_OK && prefill != 0 && state->decode_state_dump_dir != 0 )
+	{
+		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
+		float *host = (float *)malloc((size_t)state_bytes);
+		char path[512];
+		FILE *dump;
+		uint32_t lane = prefill->lane_index;
+		if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+		{
+			snprintf(path,sizeof(path),"%s/prefill_end_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
+			dump = fopen(path,"wb");
+			if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
+		}
+		free(host);
+	}
 	if ( status == SPARK_STATUS_OK && prefill == 0 && state->decode_state_dump_dir != 0 )
 	{
 		const uint64_t tap_bytes = (uint64_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);

@@ -652,7 +652,13 @@ from pathlib import Path
 # snapshot slot count - the speculation-enabled layout's extra allocations,
 # the last unprinted region in the overlap bisect.
 # 172590 is the exact count.
-CEILING = 172590
+# +37: prefill start/end state dumps (same decode-state gate). The spec and
+# no-spec lane states already differ at the FIRST decode's end on the same
+# build, so the divergence enters in the prefill or earlier; the prefill
+# start dump checks the lane reset and the prefill end dump separates an
+# env-dependent prefill from an env-dependent first decode.
+# 172627 is the exact count.
+CEILING = 172627
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
