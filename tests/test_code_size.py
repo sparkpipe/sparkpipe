@@ -758,22 +758,15 @@ from pathlib import Path
 # depth drops the round below the breakeven - the speed lever the measured
 # ladder needs to beat no-spec.
 # 174779 is the exact count.
-# +64: the snapshot-slot fingerprints with magnitudes (kernel lane). The
-# per-frame fingerprint now also samples the snapshot slot itself
-# (snapshot_stored_pre_verify / snapshot_restored_pre_replay /
-# lane_after_restore) with absmax/absmean, so one spec run decides whether
-# the restore is faithful or the replay walk is the corruptor - with
-# magnitudes, not a hash.
-# 174843 is the exact count.
 # +250: the path-substitution bounds (kernel lane retraction, recorded with
 # evidence): the chunk/step substitution drifts at most 5.96e-08 across 20
 # rounds and 2.98e-08 across 48 layers - three orders below the box's
-# measured 1.6e-05, so it is NOT the corruption (the fix stands on its own
-# merits, but its claimed mechanism is bounded away). The real corruption
-# is the multi-row attention path, reproduced offline by the lane's next
-# validator case (2-row frame vs two 1-row frames differ at absmax ~34000).
-# 175093 is the exact count.
-CEILING = 175093
+# measured 1.6e-05, so it is NOT the corruption. (The snapshot-slot
+# fingerprint attempt was REVERTED - its sampling crashed the daemon on
+# the box, core-dump; the per-frame fingerprint without the snapshot
+# sampling remains.)
+# 175029 is the exact count.
+CEILING = 175029
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

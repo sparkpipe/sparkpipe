@@ -2534,96 +2534,43 @@ static uint64_t SparkQwen36ModuleFingerprintHash(const void *bytes, size_t count
 	return(hash);
 }
 
-static void SparkQwen36ModuleStateFingerprintRegion(SparkQwen36ModuleState *state, uint32_t lane, uint64_t position, const char *kind, const float *state_region, const void *tail_region)
+static void SparkQwen36ModuleStateFingerprint(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, uint32_t lane, uint64_t position, const char *kind)
 {
 	float state_sample[SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES];
 	uint16_t tail_sample[SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES];
-	uint64_t state_elements,tail_elements,state_stride,tail_stride,index;
+	uint64_t state_elements,tail_elements,state_stride,tail_stride;
 	uint64_t state_hash = 0ull,tail_hash = 0ull;
-	double state_absmax = 0.0,state_abssum = 0.0,tail_absmax = 0.0,tail_abssum = 0.0;
-	if ( state->state_fingerprint == 0u || state_region == 0 )
+	if ( state->state_fingerprint == 0u || state->gdn_pool.state_f32 == 0 )
 		return;
 	state_elements = state->gdn_pool.state_lane_stride_elements;
 	tail_elements = state->gdn_pool.conv_tail_lane_stride_elements;
 	if ( state_elements == 0u )
 		return;
+	/* Stride the whole lane so the sample covers every layer, not just the head of
+	 * the pool: a divergence confined to late layers must still show up. */
 	state_stride = state_elements / SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES;
 	if ( state_stride == 0u )
 		state_stride = 1u;
-	if ( cudaMemcpy2D(state_sample,sizeof(float),state_region,
+	if ( cudaMemcpy2D(state_sample,sizeof(float),
+		state->gdn_pool.state_f32 + ((uint64_t)lane * state_elements),
 		(size_t)(state_stride * sizeof(float)),sizeof(float),
 		(size_t)SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES,cudaMemcpyDeviceToHost) == cudaSuccess )
-	{
 		state_hash = SparkQwen36ModuleFingerprintHash(state_sample,sizeof(state_sample));
-		/* MAGNITUDES, not only a hash. A hash answers one bit, and one bit cannot
-		 * separate an accumulated numeric drift from a stray write: the measured
-		 * drift on this path is 0.1% of ONE token of legitimate change with the
-		 * value range intact, while a wrong restore or a wrong lane would land at
-		 * or above the token scale. absmax/absmean make that visible in the log. */
-		for (index = 0u; index < SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES; index++)
-		{
-			double magnitude = state_sample[index] < 0.0f ? -(double)state_sample[index] : (double)state_sample[index];
-			state_abssum += magnitude;
-			if ( magnitude > state_absmax )
-				state_absmax = magnitude;
-		}
-	}
-	if ( tail_elements != 0u && tail_region != 0 )
+	if ( tail_elements != 0u && state->gdn_pool.conv_tail_bf16 != 0 )
 	{
 		tail_stride = tail_elements / SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES;
 		if ( tail_stride == 0u )
 			tail_stride = 1u;
-		if ( cudaMemcpy2D(tail_sample,sizeof(uint16_t),tail_region,
+		if ( cudaMemcpy2D(tail_sample,sizeof(uint16_t),
+			(const uint8_t *)state->gdn_pool.conv_tail_bf16 + ((uint64_t)lane * tail_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES),
 			(size_t)(tail_stride * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES),sizeof(uint16_t),
 			(size_t)SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES,cudaMemcpyDeviceToHost) == cudaSuccess )
-		{
 			tail_hash = SparkQwen36ModuleFingerprintHash(tail_sample,sizeof(tail_sample));
-			for (index = 0u; index < SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES; index++)
-			{
-				uint32_t widened = (uint32_t)tail_sample[index] << 16u;
-				float value;
-				double magnitude;
-				memcpy(&value,&widened,sizeof(value));
-				magnitude = value < 0.0f ? -(double)value : (double)value;
-				tail_abssum += magnitude;
-				if ( magnitude > tail_absmax )
-					tail_absmax = magnitude;
-			}
-		}
 	}
-	fprintf(stderr,"%s state_fp lane=%u position=%llu kind=%s state=%016llx tail=%016llx state_absmax=%.6g state_absmean=%.6g tail_absmax=%.6g tail_absmean=%.6g\n",
+	fprintf(stderr,"%s state_fp lane=%u position=%llu kind=%s state=%016llx tail=%016llx\n",
 		SPARK_QWEN36_MODULE_TAG,lane,(unsigned long long)position,kind,
-		(unsigned long long)state_hash,(unsigned long long)tail_hash,
-		state_absmax,state_abssum / (double)SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES,
-		tail_absmax,tail_abssum / (double)SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES);
-}
-
-/* The lane's live recurrent state. */
-static void SparkQwen36ModuleStateFingerprint(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, uint32_t lane, uint64_t position, const char *kind)
-{
-	uint64_t tail_bytes;
-	if ( state->state_fingerprint == 0u || state->gdn_pool.state_f32 == 0 )
-		return;
-	tail_bytes = state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
-	SparkQwen36ModuleStateFingerprintRegion(state,lane,position,kind,
-		state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),
-		(const void *)((const uint8_t *)state->gdn_pool.conv_tail_bf16 + ((uint64_t)lane * tail_bytes)));
+		(unsigned long long)state_hash,(unsigned long long)tail_hash);
 	(void)slot;
-}
-
-/* The SNAPSHOT SLOT's content, at the moment the verify stores it or the replay
- * restores it. This is the field the bisect needs and could not see: whether the
- * content the restore puts back is the right state (magnitudes within a fraction
- * of one token of the no-spec lane) or the wrong one (token-scale or larger). */
-static void SparkQwen36ModuleSnapshotFingerprint(SparkQwen36ModuleState *state, uint32_t snapshot_index, uint64_t position, const char *kind)
-{
-	uint64_t tail_bytes;
-	if ( state->state_fingerprint == 0u || state->snapshot_state_f32 == 0 )
-		return;
-	tail_bytes = state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
-	SparkQwen36ModuleStateFingerprintRegion(state,snapshot_index,position,kind,
-		state->snapshot_state_f32 + ((uint64_t)snapshot_index * state->gdn_pool.state_lane_stride_elements),
-		state->snapshot_tail_bf16 == 0 ? 0 : (const void *)((const uint8_t *)state->snapshot_tail_bf16 + ((uint64_t)snapshot_index * tail_bytes)));
 }
 
 static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, SparkQwen36ResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, const SparkQwen36PrefillFrameView *prefill, uint32_t rows)
@@ -2635,19 +2582,8 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	uint32_t layer;
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u )
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
-	if ( status == SPARK_STATUS_OK && state->state_fingerprint != 0u && prefill != 0 )
-	{
-		cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
-		SparkQwen36ModuleSnapshotFingerprint(state,context->gdn_snapshot->snapshot_index,prefill->base_position,"snapshot_stored_pre_verify");
-	}
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u )
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,1u);
-	if ( status == SPARK_STATUS_OK && state->state_fingerprint != 0u && prefill != 0 )
-	{
-		cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
-		SparkQwen36ModuleSnapshotFingerprint(state,context->gdn_snapshot->snapshot_index,prefill->base_position,"snapshot_restored_pre_replay");
-		SparkQwen36ModuleStateFingerprint(state,slot,prefill->lane_index,prefill->base_position,"lane_after_restore");
-	}
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u && state->decode_state_dump_dir != 0 )
 	{
 		/* Post-restore state: what the restore actually put back. Compared
