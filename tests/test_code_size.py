@@ -473,7 +473,10 @@ from pathlib import Path
 # +5: serving-path diagnostics (pack-load + block-forward entry fprintfs
 # to name the deployed arming failure).
 # 171592 is the exact count.
-CEILING = 171592
+# +9: the e2e rail honors the dump's own base_position (the silent
+# fallback to the synthetic 64 would hide RoPE position bugs).
+# 171601 is the exact count.
+CEILING = 171601
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

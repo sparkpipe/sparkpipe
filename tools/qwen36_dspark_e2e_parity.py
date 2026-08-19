@@ -86,10 +86,19 @@ def main() -> int:
     c0_p = sys.argv[2] if len(sys.argv) > 2 else "/tmp/dspark_c0.bin"
     base_p = sys.argv[3] if len(sys.argv) > 3 else "/tmp/dspark_base.bin"
     base_pos = float(os.environ.get("SPARK_QWEN36_BASE_POS", ref.BASE_POS))
-    # prefer the module's dumped base_position (RoPE must match) when present
-    bp_p = "/tmp/dspark_basepos.bin"
-    if os.path.exists(bp_p):
-        base_pos = float(struct.unpack("<Q", open(bp_p, "rb").read(8))[0])
+    # Prefer the module's dumped base_position - RoPE must match, and a silent
+    # fallback to the synthetic default is how a position bug hides. Look next to
+    # the taps dump first (so a dump copied out of /tmp still carries its own
+    # position), then the module's default path.
+    for bp_p in (os.path.join(os.path.dirname(os.path.abspath(taps_p)), "dspark_basepos.bin"),
+                 "/tmp/dspark_basepos.bin"):
+        if os.path.exists(bp_p):
+            base_pos = float(struct.unpack("<Q", open(bp_p, "rb").read(8))[0])
+            print(f"base_position from {bp_p}")
+            break
+    else:
+        print(f"WARNING: no dumped base_position found; falling back to {base_pos} "
+              f"(the reference's synthetic default - a position mismatch would be invisible)")
 
     taps = read_taps(taps_p)
     c0 = read_c0(c0_p)
