@@ -548,7 +548,17 @@ from pathlib import Path
 # from the contract constant; the replay re-walks exactly the credited prefix
 # so the stream and the recurrent state stay exact - shorter round, never wrong.
 # 172033 is the exact count.
-CEILING = 172033
+# +258: the speculative-KV invariants regression test (kernel lane): a GPU
+# validation that poisons the current row's slot, a slot above the context
+# length, and a history row inside the window, and proves the decode can read
+# none of the first two while demonstrably reading the third - the behavioural
+# half of the draft-KV isolation deviation audit. The two invariants
+# (write-before-read ordering in the attention layer; context_length excludes
+# speculative rows) are the whole safety argument for the committed-cache
+# design, so they are now a test instead of a comment, and the compile gate
+# wires the .cu so a future fused kernel or context-length change fails CI.
+# 172291 is the exact count.
+CEILING = 172291
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
