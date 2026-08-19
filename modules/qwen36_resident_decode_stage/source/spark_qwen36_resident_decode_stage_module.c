@@ -2406,6 +2406,25 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u )
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,1u);
+	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u && state->decode_state_dump_dir != 0 )
+	{
+		/* Post-restore state: what the restore actually put back. Compared
+		 * against the no-spec's post-walk state at the round's start position,
+		 * it names whether the RESTORE content is wrong (dump differs) or the
+		 * restore is right and the replay walk is the corruptor. */
+		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
+		float *host = (float *)malloc((size_t)state_bytes);
+		char path[512];
+		FILE *dump;
+		cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+		if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)prefill->lane_index * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+		{
+			snprintf(path,sizeof(path),"%s/restore_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
+			dump = fopen(path,"wb");
+			if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
+		}
+		free(host);
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleBeginHidden(state,slot,context,rows);
 	/* Prefill-end state dump (prefill != 0, same decode-state gate): the
@@ -2547,6 +2566,25 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		}
 		free(tap_host);
 		free(hidden_host);
+	}
+	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u && state->decode_state_dump_dir != 0 )
+	{
+		/* Post-replay-walk state: the recurrence after the replay's rows.
+		 * Compared against the no-spec's post-walk state at the same position,
+		 * it names whether the replay WALK differs (dump differs while the
+		 * post-restore dump matched). */
+		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
+		float *host = (float *)malloc((size_t)state_bytes);
+		char path[512];
+		FILE *dump;
+		cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+		if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)prefill->lane_index * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+		{
+			snprintf(path,sizeof(path),"%s/replaypost_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
+			dump = fopen(path,"wb");
+			if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
+		}
+		free(host);
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);

@@ -665,7 +665,13 @@ from pathlib import Path
 # branch). This settles whether the first decode walk itself diverges or
 # the round-1 verify/replay corrupts a clean post-walk state.
 # 172646 is the exact count.
-CEILING = 172646
+# +38: post-restore and post-replay-walk state dumps (stream-synced). The
+# aligned chain showed the 232 post-walk state clean and the 235 entry
+# corrupted, so the corruption is in round 1's verify/replay - these two
+# dumps name whether the restore content or the replay walk is wrong in one
+# roleplay run.
+# 172684 is the exact count.
+CEILING = 172684
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
