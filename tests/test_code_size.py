@@ -430,7 +430,13 @@ from pathlib import Path
 # +19: W2 host wiring completes (layer-loop conv prepare/finish around
 # attention AND mlp, BF16 delta, scratch buffers).
 # 168696 is the exact count.
-CEILING = 168696
+# W4+W3 land (+1064): the candidate-selector kernels (top-16 over the
+# vocab, context gate, K x K edge lattice, greedy walk) + wrappers +
+# the bitwise parity validator. Spark0 validation: PARITY - 0 failing
+# comparisons (top ids/scores, gate, lattice, walk, fused path all
+# bitwise equal vs the stable-sort oracle).
+# 169760 is the exact count.
+CEILING = 169760
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

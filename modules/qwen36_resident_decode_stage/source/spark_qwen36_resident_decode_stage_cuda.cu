@@ -2239,3 +2239,101 @@ extern "C" cudaError_t SparkQwen36LaunchDsparkMarkov(cudaStream_t stream, const 
 	SparkQwen36DsparkMarkovKernel<<<grid, 256u, 0u, stream>>>((const __nv_bfloat16 *)markov_w1_bf16, (const __nv_bfloat16 *)markov_w2_bf16, prev_token_ids, draft_count, rank, (float *)bias_out, vocab);
 	return(cudaGetLastError());
 }
+
+/*
+ * DFlash2 candidate selector launchers (W4 top-16 over the vocabulary, W3 the
+ * K x K edge lattice and the greedy walk).
+ *
+ * The head is read through the module's OWN head view (SparkQwen36LinearView,
+ * the same descriptor SparkQwen36LaunchLinear consumes and the drafter host
+ * path already builds around state->lm_head_weight_bf16), and the view's
+ * format is checked rather than assumed: DFlash2's candidate top-K needs the
+ * dense BF16 target head, so a quantized payload is refused here loudly
+ * instead of being silently mis-decoded. Every buffer is caller owned; these
+ * launchers allocate nothing and synchronize nothing.
+ */
+
+/* Element count of the stage-one chunk key workspace, for the host's ledger. */
+extern "C" uint64_t SparkQwen36DsparkHeadTopKChunkKeyCount(uint32_t row_count, uint32_t top_k)
+{
+	return((uint64_t)row_count * SPARK_QWEN36_DSPARK_TOPK_CHUNK_COUNT * top_k);
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkHeadTopK(cudaStream_t stream, const SparkQwen36LinearView *head, const void *hidden_bf16, uint64_t *chunk_keys, uint32_t *top_candidate_ids, float *top_scores_f32, void *top_scores_bf16, uint32_t row_count, uint32_t candidate_offset, uint32_t top_k)
+{
+	cudaError_t error;
+	uint32_t shared_bytes;
+	dim3 grid;
+	if ( head == 0 || hidden_bf16 == 0 || chunk_keys == 0 || top_candidate_ids == 0 || row_count == 0u )
+		return(cudaErrorInvalidValue);
+	if ( head->abi_version != SPARK_QWEN36_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION || head->weight_payload == 0 )
+		return(cudaErrorInvalidValue);
+	if ( head->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+		return(cudaErrorInvalidValue);
+	if ( top_k == 0u || top_k > SPARK_QWEN36_DSPARK_TOPK_WIDTH || head->output_dimension < top_k )
+		return(cudaErrorInvalidValue);
+	if ( head->input_dimension == 0u || (head->input_dimension & 1u) != 0u )
+		return(cudaErrorInvalidValue);
+	shared_bytes = head->input_dimension * (uint32_t)sizeof(float);
+	grid = dim3(row_count,SPARK_QWEN36_DSPARK_TOPK_CHUNK_COUNT);
+	SparkQwen36DsparkHeadTopKChunkKernel<<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(hidden_bf16,head->weight_payload,chunk_keys,row_count,head->output_dimension,head->input_dimension,top_k);
+	error = cudaGetLastError();
+	if ( error != cudaSuccess )
+		return(error);
+	SparkQwen36DsparkHeadTopKMergeKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(chunk_keys,top_candidate_ids,top_scores_f32,top_scores_bf16,row_count,candidate_offset,top_k);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkSelectorProject(cudaStream_t stream, const void *hidden_bf16, const void *hidden_projection_bf16, void *context_gate_bf16, uint32_t row_count, uint32_t rank, uint32_t hidden_dimension)
+{
+	uint32_t shared_bytes;
+	if ( hidden_bf16 == 0 || hidden_projection_bf16 == 0 || context_gate_bf16 == 0 || row_count == 0u )
+		return(cudaErrorInvalidValue);
+	if ( rank == 0u || rank > SPARK_QWEN36_DSPARK_SELECTOR_RANK )
+		return(cudaErrorInvalidValue);
+	if ( hidden_dimension == 0u || (hidden_dimension & 1u) != 0u )
+		return(cudaErrorInvalidValue);
+	shared_bytes = hidden_dimension * (uint32_t)sizeof(float);
+	SparkQwen36DsparkSelectorProjectKernel<<<row_count,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(hidden_bf16,hidden_projection_bf16,context_gate_bf16,row_count,rank,hidden_dimension);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkSelectorEdges(cudaStream_t stream, const void *predecessor_bf16, const void *successor_bf16, const uint32_t *candidate_ids, const uint32_t *anchor_token_ids, const float *unary_f32, const void *context_gate_bf16, float *edges_f32, uint32_t batch_count, uint32_t slot_count, uint32_t top_k, uint32_t rank)
+{
+	if ( predecessor_bf16 == 0 || successor_bf16 == 0 || candidate_ids == 0 || anchor_token_ids == 0 )
+		return(cudaErrorInvalidValue);
+	if ( unary_f32 == 0 || context_gate_bf16 == 0 || edges_f32 == 0 )
+		return(cudaErrorInvalidValue);
+	if ( batch_count == 0u || slot_count == 0u )
+		return(cudaErrorInvalidValue);
+	if ( top_k == 0u || top_k > SPARK_QWEN36_DSPARK_SELECTOR_TOP_K || (top_k * top_k) > SPARK_LM_CTA_THREADS )
+		return(cudaErrorInvalidValue);
+	if ( rank == 0u || rank > SPARK_QWEN36_DSPARK_SELECTOR_RANK )
+		return(cudaErrorInvalidValue);
+	SparkQwen36DsparkSelectorEdgeKernel<<<batch_count * slot_count,SPARK_LM_CTA_THREADS,0,stream>>>(predecessor_bf16,successor_bf16,candidate_ids,anchor_token_ids,unary_f32,context_gate_bf16,edges_f32,batch_count,slot_count,top_k,rank);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkSelectorWalk(cudaStream_t stream, const float *edges_f32, const uint32_t *candidate_ids, uint32_t *draft_token_ids, uint32_t *draft_candidate_slots, uint32_t batch_count, uint32_t slot_count, uint32_t top_k)
+{
+	if ( edges_f32 == 0 || candidate_ids == 0 || draft_token_ids == 0 )
+		return(cudaErrorInvalidValue);
+	if ( batch_count == 0u || slot_count == 0u || top_k == 0u || top_k > SPARK_QWEN36_DSPARK_SELECTOR_TOP_K )
+		return(cudaErrorInvalidValue);
+	SparkQwen36DsparkSelectorWalkKernel<<<(batch_count + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,SPARK_LM_CTA_THREADS,0,stream>>>(edges_f32,candidate_ids,draft_token_ids,draft_candidate_slots,batch_count,slot_count,top_k);
+	return(cudaGetLastError());
+}
+
+/* The whole selector in one stream-ordered sequence: context gate, lattice,
+ * walk. draft_token_ids receives batch_count x slot_count ids. */
+extern "C" cudaError_t SparkQwen36LaunchDsparkSelector(cudaStream_t stream, const void *hidden_bf16, const void *hidden_projection_bf16, const void *predecessor_bf16, const void *successor_bf16, const uint32_t *candidate_ids, const uint32_t *anchor_token_ids, const float *unary_f32, void *context_gate_bf16, float *edges_f32, uint32_t *draft_token_ids, uint32_t *draft_candidate_slots, uint32_t batch_count, uint32_t slot_count, uint32_t top_k, uint32_t rank, uint32_t hidden_dimension)
+{
+	cudaError_t error;
+	error = SparkQwen36LaunchDsparkSelectorProject(stream,hidden_bf16,hidden_projection_bf16,context_gate_bf16,batch_count * slot_count,rank,hidden_dimension);
+	if ( error == cudaSuccess )
+		error = SparkQwen36LaunchDsparkSelectorEdges(stream,predecessor_bf16,successor_bf16,candidate_ids,anchor_token_ids,unary_f32,context_gate_bf16,edges_f32,batch_count,slot_count,top_k,rank);
+	if ( error == cudaSuccess )
+		error = SparkQwen36LaunchDsparkSelectorWalk(stream,edges_f32,candidate_ids,draft_token_ids,draft_candidate_slots,batch_count,slot_count,top_k);
+	return(error);
+}
+
