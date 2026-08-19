@@ -399,7 +399,11 @@ from pathlib import Path
 # foundation (the drafter is env-gated: SPARK_QWEN36_SERVING_SPEC_METHOD=
 # dspark + optional pack path; greedy baseline = 5.078 tok/s, 10.5% acc).
 # 168349 is the exact count.
-CEILING = 168349
+# The CUDA compile gate gains the qwen36 resident stage module (+9): the
+# DSpark port landed without sm_121a gate coverage (the gate listed only
+# glm52/dsv4 stages) - now the port's .cu is CI-compiled every push.
+# 168358 is the exact count.
+CEILING = 168358
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -66,6 +66,8 @@ include_flags=(
 	-I"${repository_root}/modules/glm52_dspark_draft_backend/include"
 	-I"${repository_root}/modules/dsv4_resident_decode_stage/include"
 	-I"${repository_root}/modules/dsv4_resident_decode_stage/source"
+	-I"${repository_root}/modules/qwen36_resident_decode_stage/include"
+	-I"${repository_root}/modules/qwen36_resident_decode_stage/source"
 )
 object_flags=(
 	-std=c++17
@@ -143,6 +145,13 @@ compile_cuda \
 	-include "${dsv4_model_header}" \
 	-DSPARK_DSV4_MODULE_BUILD=1 \
 	-DSPARK_BATCH_BUCKET=1024u
+
+qwen36_model_header="${repository_root}/model-families/qwen36/include/sparkpipe/spark_qwen36_model.h"
+compile_cuda \
+	modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_cuda.cu \
+	qwen36_resident_decode_stage \
+	-include "${qwen36_model_header}" \
+	-DSPARK_QWEN36_MODULE_BUILD=1
 
 glm_model_header="${repository_root}/model-families/glm52/include/sparkpipe/spark_glm52_model.h"
 glm_codecs=(int6 int7 int8 fp8 nvfp4 mxfp4)
