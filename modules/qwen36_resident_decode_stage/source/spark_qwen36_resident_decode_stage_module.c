@@ -2327,23 +2327,50 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 						snprintf(path,sizeof(path),"/tmp/dspark_drafts.bin");
 					dump = fopen(path,"wb");
 					if ( dump != 0 ) { fwrite(view->draft_token_ids,1u,(size_t)(B - 1u) * sizeof(uint32_t),dump); fclose(dump); }
-					/* Per-step selector lattice, to localize the 7/37 module-vs-oracle
-					 * draft divergences to the head (unary), the context gate, or the
-					 * edge lattice. 448 + 3584 + 7168 bytes per step. The oracle's
-					 * reference_step recomputes all three from the taps, so a diff
-					 * between these files and the oracle names the diverging stage. */
+					/* Per-step selector lattice, to localize the module-vs-oracle draft
+					 * divergences to the head (unary), the context gate, or the edge
+					 * lattice. 448 + 3584 + 7168 bytes per step, plus the two fields
+					 * the first localization run proved it needed:
+					 *
+					 *   hidden.bf16  the FINAL-NORMED mask hidden - the ONE input both
+					 *                the head and the projection read. The stage table
+					 *                found unary AND gate differing together on every
+					 *                step, which no single kernel can cause: the
+					 *                parsimonious cause is their shared input. Dumping
+					 *                it turns that inference into an observation, and
+					 *                names bf16(rms_norm(x, norm.weight)) as the exact
+					 *                truncation point that differs (or clears it).
+					 *   cands.u32    the module's own top-K candidate ids. Without them
+					 *                the oracle has to assume its own id set when it
+					 *                rescores the lattice, so a tail-rank id difference
+					 *                (unary differs by up to 8 BF16 ULP) shows up as a
+					 *                0.8-relative edge difference that reads like an
+					 *                edge-kernel defect and is not one.
+					 *
+					 * 71680 + 448 bytes more per step; the whole set is still ~135 KB. */
 					if ( per_step != 0u )
 					{
 						const uint64_t unary_bytes = (uint64_t)(B - 1u) * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K * sizeof(float);
 						const uint64_t gate_bytes = (uint64_t)(B - 1u) * SPARK_QWEN36_DSPARK_SELECTOR_RANK * sizeof(uint16_t);
 						const uint64_t edge_bytes = (uint64_t)(B - 1u) * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K * sizeof(float);
+						const uint64_t hidden_bytes = (uint64_t)(B - 1u) * H * sizeof(uint16_t);
+						const uint64_t candidate_bytes = (uint64_t)(B - 1u) * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K * sizeof(uint32_t);
 						void *unary_host = malloc((size_t)unary_bytes);
 						void *gate_host = malloc((size_t)gate_bytes);
 						void *edge_host = malloc((size_t)edge_bytes);
+						void *hidden_host = malloc((size_t)hidden_bytes);
+						void *candidate_host = malloc((size_t)candidate_bytes);
 						if ( unary_host != 0 && gate_host != 0 && edge_host != 0 &&
+						     hidden_host != 0 && candidate_host != 0 &&
 						     cudaMemcpy(unary_host,slot->dspark_selector.candidate_scores,(size_t)unary_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
 						     cudaMemcpy(gate_host,slot->dspark_selector.context_gate_bf16,(size_t)gate_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
-						     cudaMemcpy(edge_host,slot->dspark_selector.edges_f32,(size_t)edge_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+						     cudaMemcpy(edge_host,slot->dspark_selector.edges_f32,(size_t)edge_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
+						     /* norm + H is EXACTLY the pointer the selector was handed:
+						      * the same mask rows, after the same final norm, so the
+						      * dump cannot drift from what the head and the projection
+						      * actually read. */
+						     cudaMemcpy(hidden_host,norm + (uint64_t)H,(size_t)hidden_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
+						     cudaMemcpy(candidate_host,slot->dspark_selector.candidate_ids,(size_t)candidate_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
 						{
 							snprintf(path,sizeof(path),"%s/step_%llu_unary.f32",dump_directory,(unsigned long long)base_position);
 							dump = fopen(path,"wb");
@@ -2354,10 +2381,18 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 							snprintf(path,sizeof(path),"%s/step_%llu_edges.f32",dump_directory,(unsigned long long)base_position);
 							dump = fopen(path,"wb");
 							if ( dump != 0 ) { fwrite(edge_host,1u,(size_t)edge_bytes,dump); fclose(dump); }
+							snprintf(path,sizeof(path),"%s/step_%llu_hidden.bf16",dump_directory,(unsigned long long)base_position);
+							dump = fopen(path,"wb");
+							if ( dump != 0 ) { fwrite(hidden_host,1u,(size_t)hidden_bytes,dump); fclose(dump); }
+							snprintf(path,sizeof(path),"%s/step_%llu_cands.u32",dump_directory,(unsigned long long)base_position);
+							dump = fopen(path,"wb");
+							if ( dump != 0 ) { fwrite(candidate_host,1u,(size_t)candidate_bytes,dump); fclose(dump); }
 						}
 						free(unary_host);
 						free(gate_host);
 						free(edge_host);
+						free(hidden_host);
+						free(candidate_host);
 					}
 					fprintf(stderr,"%s dspark_dump position=%llu anchor=%u mode=%s\n",SPARK_QWEN36_MODULE_TAG,
 						(unsigned long long)base_position,anchor,per_step != 0u ? "per-step" : "first-frame");

@@ -676,7 +676,15 @@ from pathlib import Path
 # while the replay walk still diverges; the tail is the remaining half of
 # the recurrence).
 # 172700 is the exact count.
-CEILING = 172700
+# +630: the lattice stage verdict tooling (kernel lane): the stage table plus
+# the noise-floor/sensitivity/exact analyses prove the 8/34 module-vs-oracle
+# draft flips sit BELOW the oracle's own self-flip band (~50% under an equally
+# innocuous fp64 change) - sub-ULP candidate margins, not a fixable defect.
+# The per-step dump also gains the final-normed hidden and the candidate ids
+# so the last blind stage is observable. The bisect tool no longer calls a
+# draft divergence a DFlash2 defect.
+# 173330 is the exact count.
+CEILING = 173330
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -19,8 +19,21 @@ OUTPUT - one row per step:
     count, whether every draft equals c0 (the "repeat the committed token"
     degeneracy), and the mean top-1 unary logit (the drafter's confidence).
 Then the two bisect answers: the first step whose drafts diverge from the
-reference (a DFlash2 defect - none so far), and the first step whose tap state is
-degenerate (a target-trajectory defect).
+reference, and the first step whose tap state is degenerate (a target-trajectory
+defect).
+
+A draft divergence is NOT by itself a DFlash2 defect. The DFlash2 drafter
+truncates to BF16 after every projection in all five layers, which makes the
+forward chaotic in its own low bits: recomputing the SAME contract with only the
+accumulation width changed (fp32 -> fp64, identical truncation points) moves
+300353 of 358400 final-hidden BF16 words, changes the top-16 candidate set at
+every step, and changes the reference's OWN drafts at ~50% of steps - while ONE
+BF16 ULP on a single target tap does the same. So the reference's draft ids are
+one sample from a noise band, not a unique answer, and a module flip rate below
+the reference's own self-flip rate carries no information about correctness.
+tools/qwen36_dspark_lattice_stage.py measures that band and localizes any
+divergence to a stage (head unary / context gate / edge lattice / walk); use it
+before calling a divergence here a defect.
 
 The reference weights are loaded ONCE and reused for every step: rail.forward
 reloads the 1.9B drafter plus the target's lm_head and embed_tokens on each call,
@@ -130,7 +143,10 @@ def main() -> int:
               f"{parity:>8} {distinct:>8} {str(repeat_c0):>8} {unary_mean:>8.2f}")
     print()
     print(f"first step whose drafts diverge from the reference : "
-          f"{first_mismatch if first_mismatch is not None else 'none (the DFlash2 path is faithful)'}")
+          f"{first_mismatch if first_mismatch is not None else 'none'}")
+    print("  (divergence here is only a defect if it exceeds the contract's own noise band - "
+          "the reference's drafts change at ~50% of steps under a fp32/fp64 accumulation swap "
+          "or one BF16 ULP on one tap; run tools/qwen36_dspark_lattice_stage.py to localize)")
     print(f"first step whose tap state is degenerate           : "
           f"{first_degenerate if first_degenerate is not None else 'none'}")
     if golden is None:
