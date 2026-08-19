@@ -1417,13 +1417,8 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 				 * (position C0+7) drops out exactly like MTP's redundant
 				 * draft[0]; DFlash2's block-1 ids all land. */
 				spec->draft_ids[0] = spec->committed_ids[0];
-				/* Bonus convention: draft i predicts position base+i, so
-				 * slots 1..6 map directly; the last verify row (base+7)
-				 * has no draft - the mask id stands in and stops the
-				 * accept loop cleanly. */
-				for (draft=1u; draft + 1u < draft_count; draft++)
-					spec->draft_ids[draft] = state->dflash2_next_draft_ids[draft];
-				spec->draft_ids[draft_count - 1u] = SPARK_QWEN36_DSPARK_MASK_TOKEN_ID;
+				for (draft=1u; draft<draft_count; draft++)
+					spec->draft_ids[draft] = state->dflash2_next_draft_ids[draft - 1u];
 			}
 			else
 			{

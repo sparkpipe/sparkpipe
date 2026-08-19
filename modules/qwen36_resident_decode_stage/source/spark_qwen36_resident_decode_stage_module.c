@@ -2089,13 +2089,15 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	uint16_t *ffn = norm + (uint64_t)B * H;
 	uint16_t *up = ffn + (uint64_t)B * SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE;
 	uint16_t *logits = up + (uint64_t)B * SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE;
-	/* Bonus convention (upstream): the block's row 0 re-processes the LAST
-	 * COMMITTED INPUT token (the bonus), so the context window covers
-	 * positions 0..base-2 and the block rows sit at base-1..base+6. The
-	 * anchor is the frame's last input row, not the emission. */
+	/* Dual-source degeneration: window = 1 (the LAST tap position only,
+	 * position base-1) + block rows at base..base+B-1, anchor = the frame's
+	 * emission. This is the convention whose iteration-1 drafts were
+	 * PERFECT ([270x7]); the per-position cache context made iteration 1
+	 * worse, and the recurrence races (now serialized) were what killed
+	 * iterations 2+. */
 	const uint64_t base = view->base_position;
-	const uint32_t window = (uint32_t)(base - 1u < 2048u ? base - 1u : 2048u);
-	const uint64_t window_base = base - 1u - window;
+	const uint32_t window = 1u;
+	const uint64_t window_base = base - 1u;
 	const uint32_t nkv = window + B;
 	uint16_t *ctx_kv = (uint16_t *)state->dflash_ctx_kv;
 	uint16_t *kv_k;
@@ -2113,10 +2115,9 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	error = SparkQwen36LaunchLinear(stream,&w->projector,(const uint8_t *)state->dflash_taps_history + window_base * 5u * H * 2u,state->dflash_fc_out,window);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchRmsNorm(stream,state->dflash_fc_out,w->hidden_norm_bf16,state->dflash_ctx_normed,window,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
-	/* 2) block[0] = embed(anchor = the frame's LAST INPUT row, the bonus
-	 * token = the last committed token); rest = mask. */
+	/* 2) block[0] = embed(anchor = the frame's emission); rest = mask. */
 	if ( error == cudaSuccess )
-		error = SparkQwen36LaunchEmbeddingGather(stream,slot->input_token_ids + (rows - 1u),state->token_embedding_bf16,block_hidden,1u);
+		error = SparkQwen36LaunchEmbeddingGather(stream,slot->output_token_ids,state->token_embedding_bf16,block_hidden,1u);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchEmbeddingGather(stream,slot->dspark_mask_token_ids,state->token_embedding_bf16,block_hidden + H,B - 1u);
 	/* 3) prep positions: window rows at window_base..base-1, block rows at
@@ -2277,7 +2278,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		 * or the replay's output (replay-tail draft, iterations 2+). Both are
 		 * the first candidate token AFTER the tap position. */
 		if ( error == cudaSuccess )
-			error = cudaMemcpyAsync(&prev,slot->input_token_ids + (rows - 1u),sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+			error = cudaMemcpyAsync(&prev,slot->output_token_ids,sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 		if ( error == cudaSuccess )
 			error = cudaStreamSynchronize(stream);
 		if ( error == cudaSuccess )
