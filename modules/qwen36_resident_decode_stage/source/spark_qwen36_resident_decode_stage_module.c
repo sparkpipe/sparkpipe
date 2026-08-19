@@ -2073,10 +2073,18 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	cudaError_t error;
 	uint32_t layer;
 	(void)rows;
-	fprintf(stderr,"dspark_block_forward entry armed=%u view=%p count=%u rows=%u\n",
-		w->armed,(const void *)view,view != 0 ? view->draft_token_count : 0u,rows);
+	/* A DSPARK_DRAFT_AFTER frame is a REQUEST for selector drafts. Returning OK
+	 * with an unarmed drafter left the caller's buffer untouched, so the serving
+	 * path emitted [committed, 0, 0, ...] silently for every submission - which
+	 * is exactly how a stripped daemon environment (no
+	 * SPARK_QWEN36_DSPARK_PACK_PATH, so the pack never loads) looked like a
+	 * kernel bug. Fail loudly instead, naming the variable that is missing. */
 	if ( w->armed == 0u )
-		return(SPARK_STATUS_OK);
+	{
+		fprintf(stderr,"%s dspark_not_armed: a DSPARK_DRAFT_AFTER frame arrived but the drafter pack is not loaded; set %s in the SERVING PROCESS environment\n",
+			SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_DSPARK_PACK_PATH");
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	if ( view == 0 || view->draft_token_ids == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	/* Block position 0 carries the committed token and is the walk's anchor, so
@@ -2698,8 +2706,20 @@ SparkStatus SparkQwen36ResidentDecodeStageInitialize(
          * is set (spec-method dspark). getenv (not the required-text helper)
          * so a no-spec / MTP deploy without the var still initializes. */
         const char *dspark_path = getenv("SPARK_QWEN36_DSPARK_PACK_PATH");
+        const char *spec_method = getenv("SPARK_QWEN36_SERVING_SPEC_METHOD");
+        /* One line, at initialize, naming what the PROCESS environment actually
+         * carries. A daemon started through a wrapper that strips the caller's
+         * environment sees neither variable, and then the drafter is silently
+         * absent: no pack, and the adapter's spec method falls back to MTP so no
+         * DSPARK_DRAFT_AFTER frame is ever built. This makes that visible in the
+         * first seconds of the log instead of after a request. */
+        fprintf(stderr,"%s dspark_env pack_path=%s spec_method=%s\n",SPARK_QWEN36_MODULE_TAG,
+            dspark_path != 0 && dspark_path[0] != '\0' ? dspark_path : "(unset)",
+            spec_method != 0 && spec_method[0] != '\0' ? spec_method : "(unset -> mtp)");
         if ( dspark_path != 0 && dspark_path[0] != '\0' )
             status = SparkQwen36ModuleLoadDsparkPack(state, dspark_path);
+        else if ( spec_method != 0 && spec_method[0] == 'd' )
+            fprintf(stderr,"%s dspark_env_mismatch: spec method asks for dspark but SPARK_QWEN36_DSPARK_PACK_PATH is unset\n",SPARK_QWEN36_MODULE_TAG);
     }
     if (status == SPARK_STATUS_OK)
     {

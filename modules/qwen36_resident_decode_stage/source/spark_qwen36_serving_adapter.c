@@ -1825,6 +1825,13 @@ static SparkStatus SparkQwen36ServingInitialize(
 	state->execution_stream = configuration->execution_stream;
 	state->shim.execution_stream = configuration->execution_stream;
 	state->spec_method = SparkQwen36ServingSpecMethod();
+	/* The method decides whether a DSPARK_DRAFT_AFTER frame is ever built, so
+	 * print it: an environment-stripped daemon silently serves MTP drafts while
+	 * the deploy believes it is serving DFlash2. */
+	fprintf(stderr,"qwen36_serving spec_method=%s (%s=%s)\n",
+		state->spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK ? "dspark" : "mtp",
+		SPARK_QWEN36_SERVING_SPEC_METHOD_ENV,
+		getenv(SPARK_QWEN36_SERVING_SPEC_METHOD_ENV) != 0 ? getenv(SPARK_QWEN36_SERVING_SPEC_METHOD_ENV) : "(unset)");
 	status = SparkQwen36ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_QWEN36_SERVING_MAX_SEQUENCE_POSITIONS_CAP) )
 		status = SPARK_STATUS_SCHEMA_ERROR;

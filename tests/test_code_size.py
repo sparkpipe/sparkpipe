@@ -476,7 +476,12 @@ from pathlib import Path
 # +9: the e2e rail honors the dump's own base_position (the silent
 # fallback to the synthetic 64 would hide RoPE position bugs).
 # 171601 is the exact count.
-CEILING = 171601
+# +27: the fail-loud misdeploy guards - an unarmed drafter on a DRAFT
+# frame now names the missing env var instead of serving [C0,0,0,...]
+# silently; initialize prints the process environment's pack path + spec
+# method; the adapter prints the method it selected.
+# 171628 is the exact count.
+CEILING = 171628
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
