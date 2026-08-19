@@ -626,7 +626,16 @@ from pathlib import Path
 # clean) - the last discriminator for the position-235 whole-state
 # divergence.
 # 172523 is the exact count.
-CEILING = 172523
+# +10: the conv-delta buffer fix - THE silent-divergence root cause. The
+# drafter's projection kernels write B x 2 x KERNEL x H/GROUP FLOATS
+# (40,960 bytes) into dspark_conv_delta, but it was a HOST malloc sized as
+# uint16 elements (20,480 bytes): every projection overflowed 20,480 bytes
+# into the host heap via UVA, twice per layer per forward, spec runs only -
+# which is exactly why only the spec lane's state corrupted and why the
+# roleplay/coding streams diverged deterministically. Now a ledger device
+# allocation of the exact float count.
+# 172533 is the exact count.
+CEILING = 172533
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

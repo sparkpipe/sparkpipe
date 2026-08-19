@@ -95,7 +95,7 @@ typedef struct SparkQwen36ModuleSlot
 	void *dspark_tap_buffer;
 	void *dspark_scratch;
 	SparkQwen36DsparkSelectorWorkspace dspark_selector;
-	uint16_t *dspark_conv_delta;
+	float *dspark_conv_delta;
 	void *dspark_conv_out;
 	uint32_t *dspark_mask_token_ids;
 	uint64_t *dspark_selector_chunk_keys;
@@ -865,7 +865,17 @@ static SparkStatus SparkQwen36ModuleAllocateSlotControl(SparkQwen36ModuleState *
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(1u*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*(SPARK_QWEN36_DSPARK_BLOCK_SIZE+1u)*SPARK_QWEN36_DSPARK_ATTN_KV_HEADS*SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_scratch);
 	if ( status == SPARK_STATUS_OK )
-		slot->dspark_conv_delta = (uint16_t *)malloc((size_t)SPARK_QWEN36_DSPARK_BLOCK_SIZE * 2u * SPARK_QWEN36_DSPARK_CONV_KERNEL_SIZE * (SPARK_QWEN36_MODEL_HIDDEN_DIMENSION / SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE) * sizeof(uint16_t));
+	{
+		/* The projection kernels write FLOATS here (B x 2 x KERNEL x H/GROUP of
+		 * them, 40,960 bytes at the shipped geometry) and the conv kernels read
+		 * them back on the device. The previous HOST malloc allocated HALF that
+		 * size as uint16 elements, so every projection overflowed 20,480 bytes
+		 * into the host heap via UVA - twice per layer per forward, spec runs
+		 * only. That is the silent-divergence corruption source: only the spec
+		 * lane executes this code, and the heap overflow scrambled adjacent
+		 * host state. A device allocation of the exact float count fixes it. */
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)SPARK_QWEN36_DSPARK_BLOCK_SIZE * 2u * SPARK_QWEN36_DSPARK_CONV_KERNEL_SIZE * (SPARK_QWEN36_MODEL_HIDDEN_DIMENSION / SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE) * sizeof(float),(void **)&slot->dspark_conv_delta);
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)SPARK_QWEN36_DSPARK_BLOCK_SIZE * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_conv_out);
 	if ( status == SPARK_STATUS_OK && slot->dspark_conv_delta == 0 )
