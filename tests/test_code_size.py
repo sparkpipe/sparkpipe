@@ -558,7 +558,13 @@ from pathlib import Path
 # design, so they are now a test instead of a comment, and the compile gate
 # wires the .cu so a future fused kernel or context-length change fails CI.
 # 172291 is the exact count.
-CEILING = 172291
+# +20: continuity-refusal naming (kernel lane). The four silent
+# INVALID_ARGUMENT producers in the lane-continuity validator (decode /
+# decode-new-sequence / prefill / prefill-new-sequence) now print the lane,
+# sequence, position and the expectation, so a repeated request failing with
+# status=1 names its producer instead of being guessed at. No behaviour change.
+# 172311 is the exact count.
+CEILING = 172311
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

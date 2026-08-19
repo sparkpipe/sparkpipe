@@ -1978,6 +1978,14 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
             if ((restore_first == 0u && prefill->base_position != expected_position) ||
                 (restore_first != 0u && prefill->base_position > expected_position))
             {
+                /* This refusal used to be silent, which is why a repeated request
+                 * failing with status=1 could not be attributed: the caller sees
+                 * INVALID_ARGUMENT and the log says nothing. Name the mismatch. */
+                fprintf(stderr,"%s continuity_reject prefill lane=%u sequence=%llu base=%llu expected=%llu restore_first=%u\n",
+                    SPARK_QWEN36_MODULE_TAG,prefill->lane_index,
+                    (unsigned long long)prefill->sequence_id,
+                    (unsigned long long)prefill->base_position,
+                    (unsigned long long)expected_position,restore_first);
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
         }
@@ -1985,6 +1993,11 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
         {
             if (prefill->base_position != 0u)
             {
+                fprintf(stderr,"%s continuity_reject prefill_new_sequence lane=%u sequence=%llu held=%llu base=%llu (a new sequence must start at 0)\n",
+                    SPARK_QWEN36_MODULE_TAG,prefill->lane_index,
+                    (unsigned long long)prefill->sequence_id,
+                    (unsigned long long)current_sequence_id,
+                    (unsigned long long)prefill->base_position);
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
             lane_requires_reset[0] = 1u;
@@ -2007,6 +2020,10 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
         {
             if (position != state->lane_next_positions[lane])
             {
+                fprintf(stderr,"%s continuity_reject decode lane=%u row=%u sequence=%llu position=%llu expected=%llu\n",
+                    SPARK_QWEN36_MODULE_TAG,lane,row,(unsigned long long)sequence_id,
+                    (unsigned long long)position,
+                    (unsigned long long)state->lane_next_positions[lane]);
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
         }
@@ -2014,6 +2031,9 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
         {
             if (position != 0u)
             {
+                fprintf(stderr,"%s continuity_reject decode_new_sequence lane=%u row=%u sequence=%llu held=%llu position=%llu (a new sequence must start at 0)\n",
+                    SPARK_QWEN36_MODULE_TAG,lane,row,(unsigned long long)sequence_id,
+                    (unsigned long long)current_sequence_id,(unsigned long long)position);
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
             lane_requires_reset[row] = 1u;
