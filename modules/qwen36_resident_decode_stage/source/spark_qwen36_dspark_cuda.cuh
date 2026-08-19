@@ -421,6 +421,10 @@ static __global__ void SparkQwen36DsparkSelectorEdgeKernel(
 	if ( threadIdx.x < top_k )
 	{
 		successor_ids[threadIdx.x] = candidate_ids[((uint64_t)row * top_k) + threadIdx.x];
+		/* The slot-0 anchor branch is load-bearing for MEMORY SAFETY, not
+		 * only contract correctness: without it, row 0 evaluates
+		 * candidate_ids[(row-1)*top_k + ...] and the uint32 underflow
+		 * indexes ~4.3G elements out of bounds. Do not simplify it away. */
 		predecessor_ids[threadIdx.x] = slot == 0u
 			? anchor_token_ids[batch]
 			: candidate_ids[((uint64_t)(row - 1u) * top_k) + threadIdx.x];
