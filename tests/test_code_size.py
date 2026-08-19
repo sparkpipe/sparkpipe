@@ -387,7 +387,13 @@ from pathlib import Path
 # between the CUDA drafter and the reference tokens - the fixed script is
 # the bit-exact golden for draft parity and must stay in-tree.
 # 167663 is the exact count.
-CEILING = 167663
+# The multi-row exact-linear routing lands (+58): DecodeLinearPair and
+# StridedDecodeLinear multi-row launches now run the certified 1-row
+# kernel once per row (per-row activation quantization) instead of the
+# native MXFP8 per-tile route - the batch-coupled scale was the first
+# divergent tensor (delta_wq_a) in the DSpark verify island.
+# 167721 is the exact count.
+CEILING = 167721
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
