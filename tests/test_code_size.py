@@ -469,7 +469,11 @@ from pathlib import Path
 # 169315 is the exact count.
 # +4 more for the serialization (grid.y removals).
 # 169319 is the exact count.
-CEILING = 169319
+# +37: the replay walks the GDN STEP path (the DSV4 session's
+# silent-divergence fix, unified 2bd2673) - the chunk/step fp32-rounding
+# difference accumulated per round and decayed acceptance.
+# 169356 is the exact count.
+CEILING = 169356
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

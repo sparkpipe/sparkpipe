@@ -108,6 +108,8 @@ typedef struct SparkQwen36ModuleSlot
 	uint32_t *mtp_draft_ids;
 	void *dspark_tap_buffer;
 	void *dspark_scratch;
+	/* Set per frame in RunFrame: replay frames walk the GDN STEP path. */
+	uint32_t replay_frame;
 	uint16_t *dspark_logits_host;
 	uint16_t *dspark_hidden_host;
 	uint32_t *dspark_mask_token_ids;
@@ -1012,6 +1014,35 @@ static cudaError_t SparkQwen36ModuleRunGdnCorePrefill(SparkQwen36ModuleState *st
 	return(error);
 }
 
+/*
+ * Replay GDN core (the DSV4 session's silent-divergence fix, unified 2bd2673):
+ * the committed positions a verify frame destroyed, re-walked through the
+ * DECODE path so the rebuilt state is bit-identical to the state a no-spec run
+ * would hold at the same positions. The step kernels are row-indexed, so the
+ * frame's rows are staged as one lane repeated - the same shape a decode batch
+ * of that many rows would present - and every row is WARM (the restore put the
+ * lane's state back before this walk).
+ */
+static cudaError_t SparkQwen36ModuleRunGdnCoreReplay(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, const SparkQwen36GdnLayerWeights *weights, uint32_t lane, uint32_t rows, uint32_t ordinal)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint32_t row;
+	cudaError_t error;
+	if ( rows > SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT )
+		return(cudaErrorInvalidValue);
+	for (row = 0u; row < rows; row++)
+	{
+		slot->host_row_lane_indices[row] = lane;
+		slot->host_row_cold[row] = 0u;
+	}
+	error = cudaMemcpyAsync(slot->row_lane_indices,slot->host_row_lane_indices,(size_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->row_cold,slot->host_row_cold,(size_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = SparkQwen36ModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
+	return(error);
+}
+
 static SparkStatus SparkQwen36ModuleRunGdnLayer(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, const SparkQwen36PrefillFrameView *prefill, uint32_t layer, uint32_t rows)
 {
 	const SparkQwen36GdnLayerWeights *weights = &state->gdn_by_layer[layer];
@@ -1033,8 +1064,19 @@ static SparkStatus SparkQwen36ModuleRunGdnLayer(SparkQwen36ModuleState *state, S
 		error = SparkQwen36LaunchLinear(stream,&weights->decay,slot->normalized_bf16,slot->decay_pre_bf16,rows);
 	if ( error != cudaSuccess && rows >= 32u )
 		fprintf(stderr, "%s gdn_decay_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
+	/* PATH CHOICE IS A LOSSLESSNESS CONTRACT: the chunk path (prompt
+	 * prefill, verify - its state is discarded by the restore) and the
+	 * step path (decodes, and REPLAY - rebuilding bit-identically what
+	 * the decode sequence it replaces would have built) compute the
+	 * same recurrence with different fp32 rounding, and the recurrence
+	 * accumulates the difference round after round. */
 	if ( error == cudaSuccess )
-		error = prefill != 0 ? SparkQwen36ModuleRunGdnCorePrefill(state,slot,weights,prefill->lane_index,rows,ordinal) : SparkQwen36ModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
+	{
+		if ( prefill != 0 && slot->replay_frame != 0u )
+			error = SparkQwen36ModuleRunGdnCoreReplay(state,slot,weights,prefill->lane_index,rows,ordinal);
+		else
+			error = prefill != 0 ? SparkQwen36ModuleRunGdnCorePrefill(state,slot,weights,prefill->lane_index,rows,ordinal) : SparkQwen36ModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
+	}
 	if ( error != cudaSuccess && rows >= 32u )
 		fprintf(stderr, "%s gdn_core_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
 	if ( error == cudaSuccess )
@@ -2411,6 +2453,7 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	uint64_t frame_start = state->profile_enabled != 0u ? SparkQwen36ProfileNow() : 0ull;
 	SparkStatus status = SparkQwen36ModuleUploadRows(state,slot,context,frame,prefill,rows);
 	uint32_t layer;
+	slot->replay_frame = (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u )
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u )
