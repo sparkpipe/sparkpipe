@@ -408,7 +408,12 @@ from pathlib import Path
 # parity oracles ported verbatim from the vLLM PR unit tests (the W2/W3
 # kernel gate - no upstream reference implementation exists).
 # 168528 is the exact count.
-CEILING = 168528
+# W8 main() wiring lands (+18): the DFlash2 full-forward numpy smoke
+# (sliding attention + conv wrapping + top-16 -> lattice -> walk) runs
+# end-to-end against the downloaded checkpoint - the end-to-end parity
+# reference for the W2/W3 kernels.
+# 168546 is the exact count.
+CEILING = 168546
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

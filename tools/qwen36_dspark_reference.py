@@ -143,49 +143,64 @@ def silu(x: np.ndarray) -> np.ndarray:
     return x / (1.0 + np.exp(-x))
 
 
+def conv_prepare(h, lw, module):
+    """DFlashGroupedConv.prepare: one projection -> both sides. Returns (h2, coeff_finish)."""
+    kp = lw[f"{module}.kernel_projection.weight"]  # [1280, H]
+    base = lw[f"{module}.base_kernel"]  # [2, 2, H] (sides, taps, channels)
+    T = h.shape[0]
+    num_groups = HIDDEN // CONV_GROUP_SIZE
+    delta_all = (h @ kp.T).reshape(T, 2, CONV_KERNEL_SIZE, num_groups)  # [T, 2, 2, 320]
+    h2 = _grouped_conv(h, delta_all[:, 0], base[0], BLOCK, num_groups, CONV_GROUP_SIZE, CONV_KERNEL_SIZE)
+    return bf16(h2), delta_all[:, 1]
+
+
+def conv_finish(h, coeff, lw, module):
+    """DFlashGroupedConv.finish: apply the side-1 conv with the stored coefficients."""
+    base = lw[f"{module}.base_kernel"]
+    num_groups = HIDDEN // CONV_GROUP_SIZE
+    h2 = _grouped_conv(h, coeff, base[1], BLOCK, num_groups, CONV_GROUP_SIZE, CONV_KERNEL_SIZE)
+    return bf16(h2)
+
+
 def forward_layer(x_block, ctx, lw, positions_q, pos_ctx):
-    """One decoder layer. x_block: [7, H]; ctx: [H] (context feature)."""
-    h = bf16(rms_norm(x_block, lw["input_layernorm.weight"]))  # [7, H]
-    # Q
-    q = bf16(h @ lw["self_attn.q_proj.weight"].T)  # [7, 5120]
+    """One DFlash2 decoder layer: conv-wrapped attention + MLP, sliding non-causal."""
+    h = bf16(rms_norm(x_block, lw["input_layernorm.weight"]))
+    h, coeff = conv_prepare(h, lw, "attention_conv")
+    q = bf16(h @ lw["self_attn.q_proj.weight"].T)  # [B, 4096]
     q = q.reshape(BLOCK, N_Q_HEADS, HEAD_DIM)
-    q = bf16(rms_norm(q, lw["self_attn.q_norm.weight"]))  # per-head norm [7,40,128]
-    q = apply_rope(q, positions_q[:, None])  # [7,40,128]
-    # K/V: context (1) + block (7)
-    k_ctx = bf16(ctx[None, :] @ lw["self_attn.k_proj.weight"].T)  # [1, 1024]
-    k_noise = bf16(h @ lw["self_attn.k_proj.weight"].T)  # [7, 1024]
-    v_ctx = bf16(ctx[None, :] @ lw["self_attn.v_proj.weight"].T)  # [1, 1024]
-    v_noise = bf16(h @ lw["self_attn.v_proj.weight"].T)  # [7, 1024]
+    q = bf16(rms_norm(q, lw["self_attn.q_norm.weight"]))
+    q = apply_rope(q, positions_q[:, None])
+    k_ctx = bf16(ctx[None, :] @ lw["self_attn.k_proj.weight"].T)
+    k_noise = bf16(h @ lw["self_attn.k_proj.weight"].T)
+    v_ctx = bf16(ctx[None, :] @ lw["self_attn.v_proj.weight"].T)
+    v_noise = bf16(h @ lw["self_attn.v_proj.weight"].T)
     k = np.concatenate([k_ctx, k_noise], axis=0).reshape(BLOCK + 1, N_KV_HEADS, HEAD_DIM)
     v = np.concatenate([v_ctx, v_noise], axis=0).reshape(BLOCK + 1, N_KV_HEADS, HEAD_DIM)
-    k = bf16(rms_norm(k, lw["self_attn.k_norm.weight"]))  # per-head norm [8,8,128]
-    # rope: context at pos_ctx, block at positions_q
-    k_pos = np.concatenate([np.array([pos_ctx]), positions_q])  # [8]
-    k = apply_rope(k, k_pos[:, None])  # [8,8,128]
-    # GQA attention (non-causal): Q [7,40,128], K/V [8,8,128]
+    k = bf16(rms_norm(k, lw["self_attn.k_norm.weight"]))
+    k_pos = np.concatenate([np.array([pos_ctx]), positions_q])
+    k = apply_rope(k, k_pos[:, None])
     scale = HEAD_DIM ** -0.5
     attn_out = np.zeros((BLOCK, N_Q_HEADS, HEAD_DIM), dtype=np.float32)
     for qi in range(BLOCK):
         for qh in range(N_Q_HEADS):
-            kvh = qh // (N_Q_HEADS // N_KV_HEADS)  # 5 Q heads per KV head
-            scores = (q[qi, qh] @ k[:, kvh].T) * scale  # [8]
+            kvh = qh // (N_Q_HEADS // N_KV_HEADS)
+            scores = (q[qi, qh] @ k[:, kvh].T) * scale
             scores = scores - scores.max()
             p = np.exp(scores)
             p = p / p.sum()
             attn_out[qi, qh] = p @ v[:, kvh]
     attn_out = bf16(attn_out.reshape(BLOCK, N_Q_HEADS * HEAD_DIM))
-    attn_out = bf16(attn_out @ lw["self_attn.o_proj.weight"].T)  # [7, H]
-    x = bf16(x_block + attn_out)
+    attn_out = bf16(attn_out @ lw["self_attn.o_proj.weight"].T)
+    h = conv_finish(attn_out, coeff, lw, "attention_conv")
+    x = bf16(x_block + h)
     h = bf16(rms_norm(x, lw["post_attention_layernorm.weight"]))
+    h, coeff = conv_prepare(h, lw, "mlp_conv")
     gate = bf16(h @ lw["mlp.gate_proj.weight"].T)
     up = bf16(h @ lw["mlp.up_proj.weight"].T)
     ff = bf16(silu(gate) * up)
     ff = bf16(ff @ lw["mlp.down_proj.weight"].T)
-    return bf16(x + ff)
-
-
-def markov_bias(w1, w2, prev: int) -> np.ndarray:
-    return (w2 @ w1[prev]).astype(np.float32)  # [V]
+    h = conv_finish(ff, coeff, lw, "mlp_conv")
+    return bf16(x + h)
 
 
 # ---- DFlash2: EXACT port of the vLLM PR #52816 oracles ----
@@ -313,40 +328,43 @@ def main() -> int:
     ctx = drafter["fc.weight"] @ taps.reshape(-1)  # [H]
     ctx = rms_norm(ctx, drafter["hidden_norm.weight"])
 
-    # 2) block = [embed(C0), embed(mask) x 6]
+    # 2) block = [embed(C0), embed(mask) x 7]
     block = np.empty((BLOCK, HIDDEN), dtype=np.float32)
     block[0] = embed_tokens[c0]
     block[1:] = embed_tokens[MASK_TOKEN_ID]
 
-    # 3) 5 layers
+    # 3) 5 layers (conv-wrapped)
     x = block
     for L in range(N_LAYERS):
         lw = {k.split(f"layers.{L}.")[1]: drafter[k] for k in drafter if f"layers.{L}." in k}
         x = forward_layer(x, ctx, lw, positions_q, pos_ctx)
 
-    # 4) final norm -> lm_head -> base logits (BF16)
-    x = rms_norm(x, drafter["norm.weight"])  # [7, H]
-    base_logits = (x @ lm_head.T).astype(np.float32)  # [7, V]
-    base_logits = bf16_to_f32(f32_to_bf16(base_logits))  # -> BF16
+    # 4) final norm -> hidden [8, H]
+    hidden = rms_norm(x, drafter["norm.weight"])
 
-    # 5) sequential Markov + argmax
-    w1 = drafter["markov_head.markov_w1.weight"]  # [V, R]
-    w2 = drafter["markov_head.markov_w2.weight"]  # [V, R]
-    prev = c0
-    drafts = []
-    for i in range(BLOCK):
-        bias = markov_bias(w1, w2, prev)  # [V] fp32
-        bias = bf16_to_f32(f32_to_bf16(bias))  # bias -> BF16
-        logits = base_logits[i] + bias
-        logits = bf16_to_f32(f32_to_bf16(logits))  # add -> BF16
-        prev = int(np.argmax(logits))
-        drafts.append(prev)
+    # 5) top-16 over the 7 mask-position lm_head logits (the C0 slot is the anchor)
+    mask_logits = (hidden[1:] @ lm_head.T).astype(np.float32)  # [7, V]
+    mask_logits = bf16_to_f32(f32_to_bf16(mask_logits))
+    top_ids = np.argsort(-mask_logits, axis=-1)[:, :SELECTOR_TOP_K]  # [7, K]
+    unary = np.take_along_axis(mask_logits, top_ids, axis=-1)  # [7, K]
+
+    # 6) selector: hidden_projection(hidden[1:]) -> score edges -> greedy walk
+    hproj = hidden[1:] @ drafter["candidate_selector.hidden_projection.weight"].T  # [7, R]
+    hproj = bf16_to_f32(f32_to_bf16(hproj))
+    scores = _score_edges(
+        drafter["candidate_selector.predecessor_codebook"],
+        drafter["candidate_selector.successor_codebook"],
+        top_ids[None],
+        unary[None],
+        hproj[None],
+        np.array([c0]),
+        SELECTOR_TOP_K,
+    )[0]  # [7, K, K]
+    drafts = _greedy_walk(scores, top_ids)
 
     print("draft_tokens =", drafts)
-    # emit a few diagnostic values for cross-checking
-    print("base_logits[0][:4] =", base_logits[0][:4].tolist())
-    print("block[0][:4] =", block[0][:4].tolist())
     print("ctx[:4] =", ctx[:4].tolist())
+    print("hidden[0][:4] =", hidden[0][:4].tolist())
     return 0
 
 
