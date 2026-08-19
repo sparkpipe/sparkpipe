@@ -146,12 +146,17 @@ static __device__ __forceinline__ float SparkQwen36RopeFrequency(uint32_t pair)
 // a zero tail. Matches causal_conv1d_update with bias absent.
 static __global__ void SparkQwen36ConvUpdateKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
 {
-	uint32_t row = blockIdx.y,channel = (blockIdx.x * blockDim.x) + threadIdx.x;
+	uint32_t row,channel = (blockIdx.x * blockDim.x) + threadIdx.x;
 	uint64_t tail_base;
 	float window[4],accumulator;
 	uint32_t tap;
-	if ( row >= row_count || channel >= SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS) )
+	if ( channel >= SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS) )
 		return;
+	/* Serialize the rows: the conv tail is the sliding recurrence; parallel
+	 * row blocks raced its read-modify-write (same class as the GDN step
+	 * race; the DSV4 session's fix). */
+	for (row = 0u; row < row_count; row++)
+	{
 	tail_base = ((uint64_t)row_lane_indices[row] * tail_lane_stride) + ((uint64_t)gdn_layer_ordinal * tail_layer_stride) + ((uint64_t)channel * 3u);
 	if ( state_cold_by_row[row] != 0u )
 	{
@@ -173,6 +178,8 @@ static __global__ void SparkQwen36ConvUpdateKernel(const void *qkv_bf16, const v
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 0u,window[1]);
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 1u,window[2]);
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 2u,window[3]);
+	__syncthreads();
+	}
 }
 
 // Per-head log decay and beta from the two 48-row projections plus the fp32
@@ -227,14 +234,15 @@ static __global__ void SparkQwen36GdnStepKernel(const void *conv_out_bf16, const
     float delta;
     float output;
 
-    row = blockIdx.y;
     head = blockIdx.x;
     column = threadIdx.x;
     key_head = head / SPARK_QWEN36_CUDA_GVA_GROUP;
-    if (row >= row_count)
+    /* Rows serialized inside each head block: the state_f32 read-modify-write
+     * is the recurrence and parallel row blocks race it (last writer wins per
+     * element - one row's accumulation lost per multi-row frame; the DSV4
+     * session's silent-divergence fix). k-row frame == k sequential frames. */
+    for (row = 0u; row < row_count; row++)
     {
-        return;
-    }
 
     conv_row = (uint64_t)row * SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS);
     value = SparkLmBf16ToFloat(
@@ -296,6 +304,8 @@ static __global__ void SparkQwen36GdnStepKernel(const void *conv_out_bf16, const
     {
         state_index = (element * SPARK_QWEN36_CUDA_DV) + column;
         state_f32[state_base + state_index] = state_shared[state_index];
+    }
+    __syncthreads();
     }
 }
 
@@ -1859,7 +1869,7 @@ extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQ
 
 extern "C" cudaError_t SparkQwen36LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen36GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen36GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal)
 {
-	dim3 grid((SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS) + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,row_count,1u);
+	dim3 grid((SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS) + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,1u,1u);
 	SparkQwen36ConvUpdateKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,weights->conv_weight_bf16,conv_out_bf16,pool->conv_tail_bf16,row_lane_indices,pool->state_cold_by_row,row_count,gdn_layer_ordinal,pool->conv_tail_lane_stride_elements,pool->conv_tail_layer_stride_elements);
 	return(cudaGetLastError());
 }
@@ -1874,7 +1884,7 @@ extern "C" cudaError_t SparkQwen36LaunchGdnStep(cudaStream_t stream, const void 
 {
     dim3 grid(
         SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_VALUE_HEADS),
-        row_count,
+        1u,
         1u);
     SparkQwen36GdnStepKernel<<<
         grid,

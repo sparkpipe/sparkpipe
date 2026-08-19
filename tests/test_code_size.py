@@ -463,7 +463,13 @@ from pathlib import Path
 # +10: bonus-token convention (anchor = the frame's last input row;
 # context window excludes the bonus position; adapter remap shifts).
 # 169309 is the exact count.
-CEILING = 169309
+# +6: serialize the GDN step + conv update rows (the recurrence races
+# across multi-row frames found by the DSV4 session - verify/replay left a
+# wrong GDN state while per-row outputs stayed golden; the tap-drift source).
+# 169315 is the exact count.
+# +4 more for the serialization (grid.y removals).
+# 169319 is the exact count.
+CEILING = 169319
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
