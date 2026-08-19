@@ -37,11 +37,20 @@ if [ -r "${driver}" ]; then
     note "driver" "${driver} ($(stat -c %s "${driver}") B, $(stat -c %y "${driver}" | cut -c1-16))"
     # String literals, not symbol names: the emit sequence is a static inline
     # function that is inlined away, so its NAME is absent even from a correct
-    # build. These three literals exist only in a W7 build - a pre-W7 driver
-    # carries dspark_head / dspark_layer and none of them.
-    for marker in "dspark_pack_loaded" "dspark_block_forward entry" "dspark_selector"; do
-        if strings "${driver}" | grep -qF "${marker}"; then check "driver carries '${marker}'" PASS; else
-            check "driver carries '${marker}'" FAIL "pre-W7 artifact - published to a different runtime root?"; fi
+    # build. These three literals exist only in a W7 (fail-loud) build. The
+    # earlier W7 revision carried "dspark_block_forward entry" / "dspark_selector"
+    # instead; the fail-loud patch replaced the entry fprintf with the not-armed
+    # guard and added the init-time env line, so those two literals no longer
+    # exist in ANY current-tree build. A pre-W7 driver carries none of these.
+    # Capture once; piping strings into grep -qF under 'set -o pipefail' is a
+    # trap: grep -q exits at the first match, strings then dies on SIGPIPE with
+    # exit 141, and pipefail fails the pipeline even though the match happened.
+    # Every marker check below silently FAILED on correct drivers because of
+    # this (2026-08-19, cost: a wrong-deploy ghost-chase on spark3).
+    driver_symbols="$(strings "${driver}")"
+    for marker in "dspark_pack_loaded" "dspark_not_armed" "dspark_env"; do
+        if grep -qF "${marker}" <<<"${driver_symbols}"; then check "driver carries '${marker}'" PASS; else
+            check "driver carries '${marker}'" FAIL "pre-fail-loud artifact - published to a different runtime root?"; fi
     done
 else
     check "driver readable" FAIL "${driver}"

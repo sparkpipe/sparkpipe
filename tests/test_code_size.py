@@ -486,7 +486,15 @@ from pathlib import Path
 # unit's RUNTIME_ROOT, and the process env has the pack path + dspark
 # method (the misdeploy class that burned the whole serving leg).
 # 171701 is the exact count.
-CEILING = 171701
+# +9: preflight truthfulness fix - the marker list still named the
+# pre-fail-loud revision's literals (dspark_block_forward entry /
+# dspark_selector) that NO current build contains, and the strings|grep -qF
+# check died on the pipefail/SIGPIPE trap so every marker check silently
+# FAILed even on correct drivers (cost: a wrong-deploy ghost chase on
+# spark3 on 2026-08-19). Markers now match the fail-loud literals and the
+# strings output is captured before grepping.
+# 171710 is the exact count.
+CEILING = 171710
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
