@@ -453,7 +453,11 @@ from pathlib import Path
 # +19: drafter-run tap dump (SPARK_QWEN36_DFLASH2_RUN_DUMP=N) - the exact
 # taps the drafter consumed, for oracle replay.
 # 169089 is the exact count.
-CEILING = 169089
+# +47: cache-based drafter context (upstream precompute_and_store_context_kv):
+# per-position tap history, context-window fc/norm, per-layer staged K/V,
+# k/q prep + cache attention kernels; supersedes the dual-source attention.
+# 169136 is the exact count.
+CEILING = 169136
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

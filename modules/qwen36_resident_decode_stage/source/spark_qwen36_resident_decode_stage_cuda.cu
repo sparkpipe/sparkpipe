@@ -2219,10 +2219,30 @@ extern "C" cudaError_t SparkQwen36LaunchAccumU64Max(cudaStream_t stream, uint64_
 }
 
 
-extern "C" cudaError_t SparkQwen36LaunchDsparkAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, void *attn_out_bf16, uint32_t block_size, uint64_t base_position)
+extern "C" cudaError_t SparkQwen36LaunchDsparkTapStore(cudaStream_t stream, const void *hidden_bf16, const uint64_t *row_positions, void *taps_bf16, uint32_t rows, uint32_t tap_index, uint32_t hidden_dim, uint32_t tap_layers)
 {
-	dim3 grid(block_size, 8u);
-	SparkQwen36DsparkAttnKernel<<<grid, SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS / SPARK_QWEN36_DSPARK_ATTN_KV_HEADS, 0u, stream>>>((const __nv_bfloat16 *)q_bf16, (const __nv_bfloat16 *)k_bf16, (const __nv_bfloat16 *)v_bf16, (const __nv_bfloat16 *)q_norm_bf16, (const __nv_bfloat16 *)k_norm_bf16, (__nv_bfloat16 *)attn_out_bf16, block_size, base_position);
+	SparkQwen36DsparkTapStoreKernel<<<rows, 256u, 0u, stream>>>((const __nv_bfloat16 *)hidden_bf16, row_positions, (__nv_bfloat16 *)taps_bf16, rows, tap_index, hidden_dim, tap_layers);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkKPrep(cudaStream_t stream, void *k_bf16, const void *k_norm_bf16, const uint64_t *positions, uint32_t rows)
+{
+	dim3 grid(rows, 8u);
+	SparkQwen36DsparkKPrepKernel<<<grid, SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM, 0u, stream>>>((__nv_bfloat16 *)k_bf16, (const __nv_bfloat16 *)k_norm_bf16, positions, rows);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkQPrep(cudaStream_t stream, void *q_bf16, const void *q_norm_bf16, const uint64_t *positions, uint32_t rows)
+{
+	dim3 grid(rows, 32u);
+	SparkQwen36DsparkQPrepKernel<<<grid, SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM, 0u, stream>>>((__nv_bfloat16 *)q_bf16, (const __nv_bfloat16 *)q_norm_bf16, positions, rows);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkCacheAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, void *attn_out_bf16, uint32_t block_rows, uint32_t nkv)
+{
+	dim3 grid(block_rows, 32u);
+	SparkQwen36DsparkCacheAttnKernel<<<grid, SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM, 2056u * sizeof(float), stream>>>((const __nv_bfloat16 *)q_bf16, (const __nv_bfloat16 *)k_bf16, (const __nv_bfloat16 *)v_bf16, (__nv_bfloat16 *)attn_out_bf16, nkv);
 	return(cudaGetLastError());
 }
 
