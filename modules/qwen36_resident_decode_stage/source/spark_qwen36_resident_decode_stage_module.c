@@ -3185,10 +3185,11 @@ void SparkQwen36ResidentDecodeStageDestroy(void *module_state)
         {
             cudaStreamDestroy((cudaStream_t)state->slots[slot_index].cuda_stream);
         }
-        if (state->slots[slot_index].dspark_conv_delta != 0)
-        {
-            free(state->slots[slot_index].dspark_conv_delta);
-        }
+        /* dspark_conv_delta is a SparkStageModuleDeviceAllocate (cudaMalloc)
+         * pointer; the ledger releases it in SparkStageModuleLedgerRelease
+         * below. free() on a device pointer is undefined and crashes in
+         * Destroy depending on the buffer contents (caught by the module
+         * validator's CheckModule rerun teardown). */
     }
     SparkQwen36TpDestroy(&state->tp);
     if ( state->tp_stream != 0 )

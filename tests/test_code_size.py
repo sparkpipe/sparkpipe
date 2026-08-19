@@ -780,7 +780,12 @@ from pathlib import Path
 # gate asserts the retraction instead: amplification to within two orders of the
 # box's 1.6e-05 (absmean >= 1e-7) now fails it.
 # 175039 is the exact count.
-CEILING = 175039
+# +1: Destroy no longer free()s the slot's dspark_conv_delta - it is a
+# SparkStageModuleDeviceAllocate (cudaMalloc) pointer the ledger releases; the
+# free() on a device pointer crashed the module validator's rerun teardown
+# depending on buffer contents.
+# 175040 is the exact count.
+CEILING = 175040
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
