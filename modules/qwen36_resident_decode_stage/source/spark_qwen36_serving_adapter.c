@@ -322,6 +322,10 @@ typedef struct SparkQwen36ServingState
 	 * active sequence: a new sequence restarts at the decode frame. */
 	uint32_t dflash2_drafts_valid;
 	uint64_t dflash2_draft_sequence_id;
+	/* Drafts must outlive the submission: the replay-tail drafter writes
+	 * here, and the NEXT submission's remap consumes them (the pending
+	 * struct dies at the submission boundary). */
+	uint32_t dflash2_next_draft_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	SparkQwen36ServingPending pending[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkQwen36ServingState;
 
@@ -1378,7 +1382,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 				dspark_draft.sequence_id = sequence;
 				dspark_draft.base_position = spec->base_position;
 				dspark_draft.tap_buffer = 0;
-				dspark_draft.draft_token_ids = pending->dspark_draft_ids;
+				dspark_draft.draft_token_ids = state->dflash2_next_draft_ids;
 				status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,0u,&token,&position,&sequence,1u,0u,submission->sequence_id,submission->sequence_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER,0,&dspark_draft,0,1u);
 				state->dflash2_drafts_valid = 1u;
 				state->dflash2_draft_sequence_id = sequence;
@@ -1413,7 +1417,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 				 * draft[0]; DFlash2's block-1 ids all land. */
 				spec->draft_ids[0] = spec->committed_ids[0];
 				for (draft=1u; draft<draft_count; draft++)
-					spec->draft_ids[draft] = pending->dspark_draft_ids[draft - 1u];
+					spec->draft_ids[draft] = state->dflash2_next_draft_ids[draft - 1u];
 			}
 			else
 			{
@@ -1531,7 +1535,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			dspark_draft.sequence_id = spec->sequence_id;
 			dspark_draft.base_position = replay_base + replay_rows;
 			dspark_draft.tap_buffer = 0;
-			dspark_draft.draft_token_ids = pending->dspark_draft_ids;
+			dspark_draft.draft_token_ids = state->dflash2_next_draft_ids;
 			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER,0,&dspark_draft,&gdn_snapshot,1u);
 		}
 		else

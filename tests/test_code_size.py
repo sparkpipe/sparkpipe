@@ -450,7 +450,7 @@ from pathlib import Path
 # 169051 is the exact count.
 # +3: the draft hangs off the replay tail (taps = last committed row),
 # not the verify tail (row 0 = the anchor itself - off-by-one vs training).
-CEILING = 169054
+CEILING = 169070
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

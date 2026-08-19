@@ -2097,6 +2097,31 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		return(SPARK_STATUS_OK);
 	if ( view == 0 || view->draft_token_ids == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( getenv("SPARK_QWEN36_DFLASH2_RUN_DUMP") != 0 )
+	{
+		static uint32_t run_dump_count = 0;
+		uint32_t want = (uint32_t)strtoul(getenv("SPARK_QWEN36_DFLASH2_RUN_DUMP"),0,0);
+		char path[128];
+		FILE *file;
+		uint16_t *taps_host;
+		uint32_t anchor;
+		run_dump_count++;
+		if ( run_dump_count == want )
+		{
+			taps_host = (uint16_t *)malloc((size_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * 2u);
+			if ( taps_host != 0 && cudaMemcpy(taps_host,slot->dspark_tap_buffer,(size_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
+			{
+				snprintf(path,sizeof(path),"/tmp/dflash2_rundump_%u.bin",run_dump_count);
+				file = fopen(path,"wb");
+				if ( file != 0 ) { fwrite(taps_host,1,(size_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * 2u,file); fclose(file); }
+			}
+			free(taps_host);
+			cudaMemcpy(&anchor,slot->output_token_ids,sizeof(uint32_t),cudaMemcpyDeviceToHost);
+			snprintf(path,sizeof(path),"/tmp/dflash2_rundump_%u.meta",run_dump_count);
+			file = fopen(path,"w");
+			if ( file != 0 ) { fprintf(file,"run=%u anchor=%u base=%llu\n",run_dump_count,anchor,(unsigned long long)view->base_position); fclose(file); }
+		}
+	}
 	/* 1) context = hidden_norm(fc(cat(5 taps))): one [H] vector, shared by every layer. */
 	error = SparkQwen36LaunchLinear(stream,&w->projector,slot->dspark_tap_buffer,q,1u);
 	if ( error == cudaSuccess )
