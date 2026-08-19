@@ -443,7 +443,10 @@ from pathlib import Path
 # so it never depends on the includer's order; the merge's glued brace
 # splits back).
 # 169840 is the exact count.
-CEILING = 169840
+# +107: the W2 end-to-end parity harness (module block forward vs the
+# numpy reference full forward) - the validation rail W7 plugs into.
+# 169947 is the exact count.
+CEILING = 169947
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
