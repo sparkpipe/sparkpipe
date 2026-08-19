@@ -820,9 +820,9 @@ static SparkStatus SparkQwen36ModuleAllocateSlotControl(SparkQwen36ModuleState *
 		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS * sizeof(uint32_t),(void **)&slot->mtp_draft_ids);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_tap_buffer);
-	/* DSpark scratch: block hidden (7x5120) + Q (7x5120) + K/V (8x1024 each) + attn out (7x5120) + norm (7x5120) + ffn (7x10240) + logits (7x248320). */
+	/* DFlash2 scratch: context (5120) + block hidden + Q + K/V + attn out + norm + ffn (17408) + logits, all x block_size (8). */
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(1u*5120u + 7u*5120u + 7u*5120u + 2u*8u*1024u + 7u*5120u + 7u*5120u + 2u*7u*10240u + 7u*248320u) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_scratch);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(1u*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*(SPARK_QWEN36_DSPARK_BLOCK_SIZE+1u)*SPARK_QWEN36_DSPARK_ATTN_KV_HEADS*SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_scratch);
 	if ( status == SPARK_STATUS_OK )
 		slot->dspark_logits_host = (uint16_t *)malloc((size_t)SPARK_QWEN36_DSPARK_BLOCK_SIZE * SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT * sizeof(uint16_t));
 	if ( status == SPARK_STATUS_OK && slot->dspark_logits_host == 0 )
@@ -2027,8 +2027,8 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	uint16_t *attn_out = v + (uint64_t)(B + 1u) * 1024u;
 	uint16_t *norm = attn_out + (uint64_t)B * H;
 	uint16_t *ffn = norm + (uint64_t)B * H;
-	uint16_t *up = ffn + (uint64_t)B * 10240u;
-	uint16_t *logits = up + (uint64_t)B * 10240u;
+	uint16_t *up = ffn + (uint64_t)B * SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE;
+	uint16_t *logits = up + (uint64_t)B * SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE;
 	SparkStatus status;
 	cudaError_t error;
 	uint32_t layer;
@@ -2183,11 +2183,11 @@ static SparkStatus SparkQwen36ModuleCaptureDsparkTap(
 	(void)state;
 	switch ( layer )
 	{
-	case 4u: tap_index = 0u; break;
-	case 16u: tap_index = 1u; break;
-	case 28u: tap_index = 2u; break;
-	case 40u: tap_index = 3u; break;
-	case 52u: tap_index = 4u; break;
+	case 5u: tap_index = 0u; break;
+	case 19u: tap_index = 1u; break;
+	case 33u: tap_index = 2u; break;
+	case 47u: tap_index = 3u; break;
+	case 61u: tap_index = 4u; break;
 	default: return(SPARK_STATUS_OK);
 	}
 	return(SparkStageModuleCudaStatus(

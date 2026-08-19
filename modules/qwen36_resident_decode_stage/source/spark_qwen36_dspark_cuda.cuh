@@ -30,8 +30,8 @@ static __device__ __forceinline__ float SparkQwen36DsparkRopeFrequency(uint32_t 
 }
 
 /* The flat dual-source attention. Each CTA handles one (block position, KV
- * head group); threads span the 5 Q heads in the group. qk_v layout:
- *   Q: block_size x 40 x 128 (after q_proj, before q_norm)
+ * head group); threads span the 4 Q heads in the group. qk_v layout:
+ *   Q: block_size x 32 x 128 (after q_proj, before q_norm)
  *   K: (1+block_size) x 8 x 128 (after k_proj, before k_norm)
  *   V: (1+block_size) x 8 x 128 (after v_proj)
  */
@@ -42,7 +42,7 @@ static __global__ void SparkQwen36DsparkAttnKernel(
 {
 	const uint32_t kv_heads = SPARK_QWEN36_DSPARK_ATTN_KV_HEADS;
 	const uint32_t head_dim = SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM;
-	const uint32_t q_heads_per_group = 40u / kv_heads;
+	const uint32_t q_heads_per_group = SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS / kv_heads;
 	const uint32_t q_pos = blockIdx.x;
 	const uint32_t kv_group = blockIdx.y;
 	const uint32_t q_head_in_group = threadIdx.x;
@@ -58,7 +58,7 @@ static __global__ void SparkQwen36DsparkAttnKernel(
 		float sum = 0.0f, scale;
 		#pragma unroll
 		for (d = 0u; d < head_dim; d++)
-			qn[d] = __bfloat162float(q_bf16[((uint64_t)q_pos * 40u + q_head) * head_dim + d]);
+			qn[d] = __bfloat162float(q_bf16[((uint64_t)q_pos * SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS + q_head) * head_dim + d]);
 		#pragma unroll
 		for (d = 0u; d < head_dim; d++)
 			sum = fmaf(qn[d], qn[d], sum);
@@ -123,7 +123,7 @@ static __global__ void SparkQwen36DsparkAttnKernel(
 	 * once more against the true max for safety at this small size. */
 	#pragma unroll
 	for (d = 0u; d < head_dim; d++)
-		attn_out_bf16[((uint64_t)q_pos * 40u + q_head) * head_dim + d] = __float2bfloat16(acc[d] / sum_exp);
+		attn_out_bf16[((uint64_t)q_pos * SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS + q_head) * head_dim + d] = __float2bfloat16(acc[d] / sum_exp);
 }
 
 /* Markov bigram bias: bias[v] = w2 @ w1[prev_token], applied to the draft
