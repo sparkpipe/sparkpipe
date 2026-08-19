@@ -523,7 +523,16 @@ from pathlib import Path
 # so the capture is the next suspect and this rail is how the next live run is
 # measured.
 # 171982 is the exact count.
-CEILING = 171982
+# +13: completion residency echo (27B lane analysis, coordinator-verified and
+# landed). The pending never anchored submission->residency at reservation and
+# every internal spec frame's driver completion overwrote pending->residency,
+# so a long request's final completion carried a drifted per-frame residency
+# and the runtime's exact-memcmp residency validation (reason=2) killed the
+# batch with status=4. The pending now anchors the submission's residency at
+# reservation and the driver-completion write is removed - the completion
+# echoes what the route's submission carried, which is the runtime contract.
+# 171995 is the exact count.
+CEILING = 171995
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -648,6 +648,16 @@ static SparkQwen36ServingPending *SparkQwen36ServingReservePending(
 			pending->dispatch_generation = submission->dispatch_generation;
 			pending->request_generation = submission->request_generation;
 			pending->step_generation = submission->step_generation;
+			/* The completion must ECHO the submission's residency token: the
+			 * runtime validates it with an exact memcmp against the route's
+			 * submission residency (SparkModelServingAdapterValidateCompletionResidency),
+			 * so the pending is anchored here and the internal spec frames
+			 * (decode -> draft -> verify -> replay) must not clobber it - their
+			 * driver completions carry per-frame residency values whose minted
+			 * generation drifts across the cycles of a long request, which is
+			 * exactly the status=4 / reason=2 (COMPLETION_RESIDENCY) failure the
+			 * 128-token spec run hit while the 32-token run completed clean. */
+			pending->residency = submission->residency;
 			pending->frame_status = SPARK_STATUS_OK;
 			for (row=0u; row<submission->row_count; row++)
 			{
@@ -692,7 +702,10 @@ static void SparkQwen36ServingDriverCompletion(
 		return;
 	}
 	pending->frame_status = (SparkStatus)driver_completion->status;
-	pending->residency = driver_completion->residency;
+	/* Do NOT take the driver's residency into the pending: the completion must
+	 * echo the submission's residency (anchored at reservation), and every
+	 * internal spec frame completion would otherwise overwrite it with a
+	 * per-frame value whose generation drifts over a long request. */
 	pending->accepted_token_count += driver_completion->accepted_token_count;
 	pending->queue_delay_ns += driver_completion->queue_delay_ns;
 	pending->service_time_ns += driver_completion->service_time_ns;
