@@ -65,6 +65,15 @@ first (negative code), then level buys ranked by value-per-line.
   read-ahead, 2-token chains.
 - DSV4 Flash: predeclared collective program (-150-300 + the no-spec
   ceiling unlock), greedy->sampled verify (+60-80), TP4xPP4 stage-3 draft.
+- ENGINE (coordinator-owned, deferred to post-merge): b1 first-decode wedge
+  at ctx=129. Signature (fork driver dd75a1cb, TP4 BUCKET=1, uniform tps):
+  all ranks end at lease_advance ctx=129 accepted=1 tps=1 completed=1
+  next=129, prefill completes, first decode submission never completes,
+  no error lines, client wedged in dispatch loop. The fork's runtime diff
+  (node/runtime files, incl. POLLOUT gating + continuation-lease emitted
+  count + 1cfea8f anchor-double-count fix) must land first so the stall
+  reproduces on the merged tree; the kernel fix verifies via the in-binary
+  1-row reference and does NOT wait on this.
 - KV: Qwen38 TP 1/N head-sharding (+300), GLM52 JIT-KV onto common core
   (+400), NVMe tier into common path (+200), Mooncake rank-sharded backend
   (+150).
