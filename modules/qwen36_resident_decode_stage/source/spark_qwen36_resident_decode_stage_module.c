@@ -109,6 +109,8 @@ typedef struct SparkQwen36ModuleSlot
 	void *dspark_tap_buffer;
 	void *dspark_scratch;
 	uint16_t *dspark_logits_host;
+	uint16_t *dspark_conv_delta;
+	void *dspark_conv_out;
 	uint32_t *dspark_mask_token_ids;
 	uint32_t mtp_seed_row;
 	uint32_t host_row_cold[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -582,9 +584,9 @@ static SparkStatus SparkQwen36ModuleLoadDsparkEntry(
 	case SPARK_QWEN36_DSPARK_TENSOR_CONV_MLP_BASE: lw->conv_mlp_base = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN36_DSPARK_TENSOR_CONV_MLP_PROJ: SparkQwen36ModuleFillLinearView(&lw->conv_mlp_proj,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN36_DSPARK_TENSOR_PROJECTOR: SparkQwen36ModuleFillLinearView(&w->projector,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN36_DSPARK_TENSOR_MARKOV_W1: SparkQwen36ModuleFillLinearView(&w->markov_w1,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN36_DSPARK_TENSOR_MARKOV_W2: SparkQwen36ModuleFillLinearView(&w->markov_w2,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN36_DSPARK_TENSOR_CONFIDENCE: SparkQwen36ModuleFillLinearView(&w->confidence,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_DSPARK_TENSOR_SELECTOR_PRED: SparkQwen36ModuleFillLinearView(&w->markov_w1,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_DSPARK_TENSOR_SELECTOR_SUCC: SparkQwen36ModuleFillLinearView(&w->markov_w2,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_DSPARK_TENSOR_SELECTOR_HIDDEN_PROJ: SparkQwen36ModuleFillLinearView(&w->confidence,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN36_DSPARK_TENSOR_FINAL_NORM: w->final_norm_bf16 = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN36_DSPARK_TENSOR_HIDDEN_NORM: w->hidden_norm_bf16 = payload; return(SPARK_STATUS_OK);
 	default: return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -834,6 +836,10 @@ static SparkStatus SparkQwen36ModuleAllocateSlotControl(SparkQwen36ModuleState *
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(1u*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*(SPARK_QWEN36_DSPARK_BLOCK_SIZE+1u)*SPARK_QWEN36_DSPARK_ATTN_KV_HEADS*SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_scratch);
 	if ( status == SPARK_STATUS_OK )
 		slot->dspark_logits_host = (uint16_t *)malloc((size_t)SPARK_QWEN36_DSPARK_BLOCK_SIZE * SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT * sizeof(uint16_t));
+	if ( status == SPARK_STATUS_OK )
+		slot->dspark_conv_delta = (uint16_t *)malloc((size_t)SPARK_QWEN36_DSPARK_BLOCK_SIZE * 2u * SPARK_QWEN36_DSPARK_CONV_KERNEL_SIZE * (SPARK_QWEN36_MODEL_HIDDEN_DIMENSION / SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE) * sizeof(uint16_t));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)SPARK_QWEN36_DSPARK_BLOCK_SIZE * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_conv_out);
 	if ( status == SPARK_STATUS_OK && slot->dspark_logits_host == 0 )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
@@ -2070,37 +2076,50 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	{
 		SparkQwen36DsparkLayerWeights *lw = &w->layer[layer];
 		error = SparkQwen36LaunchRmsNorm(stream,block_hidden,lw->input_norm_bf16,norm,B,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
+		/* attention_conv.prepare: kernel_projection(norm) -> delta, side-0 conv */
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->q,norm,q,B);
-		/* dual-source K/V: K_ctx/V_ctx = proj(context); K_block/V_block = proj(normed block). */
+			error = SparkQwen36LaunchLinear(stream,&lw->conv_attn_proj,norm,slot->dspark_conv_delta,B);
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchDsparkConv(stream,norm,slot->dspark_conv_delta,lw->conv_attn_base,slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,0u);
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchLinear(stream,&lw->q,slot->dspark_conv_out,q,B);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->k,context,k,1);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->k,norm,k + 1024u,B);
+			error = SparkQwen36LaunchLinear(stream,&lw->k,slot->dspark_conv_out,k + 1024u,B);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->v,context,v,1);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->v,norm,v + 1024u,B);
+			error = SparkQwen36LaunchLinear(stream,&lw->v,slot->dspark_conv_out,v + 1024u,B);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchDsparkAttn(stream,q,k,v,lw->q_norm_bf16,lw->k_norm_bf16,attn_out,B,view->base_position);
-		/* o_proj -> delta (reuse q), residual add 1. */
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->o,attn_out,q,B);
+		/* attention_conv.finish: side-1 conv, then residual add 1 */
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchResidualAdd(stream,block_hidden,q,B,H);
+			error = SparkQwen36LaunchDsparkConv(stream,q,slot->dspark_conv_delta,(const void*)((const uint8_t*)lw->conv_attn_base + (SPARK_QWEN36_DSPARK_CONV_KERNEL_SIZE * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES),slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,1u);
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchResidualAdd(stream,block_hidden,slot->dspark_conv_out,B,H);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchRmsNorm(stream,block_hidden,lw->post_norm_bf16,norm,B,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
+		/* mlp_conv.prepare: side-0 conv */
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->gate,norm,ffn,B);
+			error = SparkQwen36LaunchLinear(stream,&lw->conv_mlp_proj,norm,slot->dspark_conv_delta,B);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->up,norm,up,B);
+			error = SparkQwen36LaunchDsparkConv(stream,norm,slot->dspark_conv_delta,lw->conv_mlp_base,slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,0u);
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchLinear(stream,&lw->gate,slot->dspark_conv_out,ffn,B);
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchLinear(stream,&lw->up,slot->dspark_conv_out,up,B);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchSwiGlu(stream,ffn,up,B,SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE);
-		/* down -> delta (reuse q), residual add 2. */
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->down,up,q,B);
+		/* mlp_conv.finish: side-1 conv, then residual add 2 */
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchResidualAdd(stream,block_hidden,q,B,H);
+			error = SparkQwen36LaunchDsparkConv(stream,q,slot->dspark_conv_delta,(const void*)((const uint8_t*)lw->conv_mlp_base + (SPARK_QWEN36_DSPARK_CONV_KERNEL_SIZE * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES),slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,1u);
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchResidualAdd(stream,block_hidden,slot->dspark_conv_out,B,H);
 		status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"dspark_layer");
 	}
 	/* 2) final norm + shared lm_head -> logits (B x vocab), then Markov bias. */
@@ -2148,7 +2167,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		{
 			const uint16_t *w1 = w->markov_w1_host;
 			const uint16_t *w2 = w->markov_w2_host;
-			const uint32_t R = SPARK_QWEN36_DSPARK_MARKOV_RANK;
+			const uint32_t R = SPARK_QWEN36_DSPARK_SELECTOR_RANK;
 			const uint32_t V = SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT;
 			uint32_t pos;
 			for (pos = 0u; pos < B; pos++)
