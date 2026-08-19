@@ -684,7 +684,15 @@ from pathlib import Path
 # so the last blind stage is observable. The bisect tool no longer calls a
 # draft divergence a DFlash2 defect.
 # 173330 is the exact count.
-CEILING = 173330
+# +5: the GDN-step row serialization - THE silent-divergence fix. The state
+# read-modify-write raced across a multi-row frame's parallel row blocks
+# (grid.y = row_count; last writer won per element, one row's accumulation
+# lost per frame), so the verify/replay frames left a wrong recurrence while
+# their per-row outputs stayed golden. Each head block now walks the rows
+# sequentially with a sync between rows and grid.y = 1 - a k-row frame
+# bit-matches k sequential single-row frames.
+# 173335 is the exact count.
+CEILING = 173335
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

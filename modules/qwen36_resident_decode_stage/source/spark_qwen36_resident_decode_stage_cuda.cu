@@ -227,14 +227,17 @@ static __global__ void SparkQwen36GdnStepKernel(const void *conv_out_bf16, const
     float delta;
     float output;
 
-    row = blockIdx.y;
     head = blockIdx.x;
     column = threadIdx.x;
     key_head = head / SPARK_QWEN36_CUDA_GVA_GROUP;
-    if (row >= row_count)
+    /* Rows are serialized in order inside each head block: the state_f32
+     * read-modify-write is the recurrence and parallel row blocks race it
+     * (last writer wins per element, one row's accumulation lost per
+     * multi-row frame) - the silent divergence source. A sequential loop
+     * with a sync between rows makes a k-row frame bit-match k
+     * sequential single-row frames. */
+    for (row = 0u; row < row_count; row++)
     {
-        return;
-    }
 
     conv_row = (uint64_t)row * SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS);
     value = SparkLmBf16ToFloat(
@@ -296,6 +299,8 @@ static __global__ void SparkQwen36GdnStepKernel(const void *conv_out_bf16, const
     {
         state_index = (element * SPARK_QWEN36_CUDA_DV) + column;
         state_f32[state_base + state_index] = state_shared[state_index];
+    }
+    __syncthreads();
     }
 }
 
@@ -1874,7 +1879,7 @@ extern "C" cudaError_t SparkQwen36LaunchGdnStep(cudaStream_t stream, const void 
 {
     dim3 grid(
         SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_VALUE_HEADS),
-        row_count,
+        1u,
         1u);
     SparkQwen36GdnStepKernel<<<
         grid,
