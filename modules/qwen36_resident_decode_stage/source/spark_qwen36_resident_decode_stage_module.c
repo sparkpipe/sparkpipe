@@ -200,6 +200,7 @@ typedef struct SparkQwen36ModuleState
 	SparkQwen36TpState tp;
 	SparkQwen36DsparkWeights dspark_weights;
 	void *tp_stream;
+	const char *decode_state_dump_dir;
 	atomic_ullong submitted_count;
 	atomic_ullong completed_count;
 	atomic_ullong rejected_count;
@@ -2384,8 +2385,37 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
 	{
 		status = SparkQwen36ModuleRunLayer(state,slot,context->kv_block_table,prefill,layer,rows);
-		if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u )
+		if ( status == SPARK_STATUS_OK &&
+		     ((context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u ||
+		      state->decode_state_dump_dir != 0) )
 			status = SparkQwen36ModuleCaptureDsparkTap(state,slot,layer);
+	}
+	/* Divergence bisect: with SPARK_QWEN36_DECODE_STATE_DUMP_DIR set, every
+	 * DECODE frame (prefill == 0; the verify/replay prefills are excluded)
+	 * dumps its per-layer taps and its final pre-head hidden, keyed by the
+	 * decode row position - so a spec run and a no-spec run of the same prompt
+	 * can be diffed layer by layer to localize a silent state divergence. */
+	if ( status == SPARK_STATUS_OK && prefill == 0 && state->decode_state_dump_dir != 0 )
+	{
+		const uint64_t tap_bytes = (uint64_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
+		uint16_t *tap_host = (uint16_t *)malloc((size_t)tap_bytes);
+		uint16_t *hidden_host = (uint16_t *)malloc((size_t)SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t));
+		uint64_t position = context->decode_batch->row_positions[0];
+		char path[512];
+		FILE *dump;
+		if ( tap_host != 0 && hidden_host != 0 &&
+		     cudaMemcpy(tap_host,slot->dspark_tap_buffer,(size_t)tap_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
+		     cudaMemcpy(hidden_host,slot->hidden_bf16,(size_t)SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess )
+		{
+			snprintf(path,sizeof(path),"%s/decode_%llu_taps.bin",state->decode_state_dump_dir,(unsigned long long)position);
+			dump = fopen(path,"wb");
+			if ( dump != 0 ) { fwrite(tap_host,1u,(size_t)tap_bytes,dump); fclose(dump); }
+			snprintf(path,sizeof(path),"%s/decode_%llu_hidden.bin",state->decode_state_dump_dir,(unsigned long long)position);
+			dump = fopen(path,"wb");
+			if ( dump != 0 ) { fwrite(hidden_host,1u,(size_t)SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),dump); fclose(dump); }
+		}
+		free(tap_host);
+		free(hidden_host);
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
@@ -2834,6 +2864,7 @@ SparkStatus SparkQwen36ResidentDecodeStageInitialize(
          * so a no-spec / MTP deploy without the var still initializes. */
         const char *dspark_path = getenv("SPARK_QWEN36_DSPARK_PACK_PATH");
         const char *spec_method = getenv("SPARK_QWEN36_SERVING_SPEC_METHOD");
+        state->decode_state_dump_dir = getenv("SPARK_QWEN36_DECODE_STATE_DUMP_DIR");
         /* One line, at initialize, naming what the PROCESS environment actually
          * carries. A daemon started through a wrapper that strips the caller's
          * environment sees neither variable, and then the drafter is silently

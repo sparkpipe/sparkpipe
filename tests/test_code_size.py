@@ -603,7 +603,15 @@ from pathlib import Path
 # is untouched. Pairs with the acceptance-cliff clamp for D-agnostic
 # losslessness.
 # 172443 is the exact count.
-CEILING = 172443
+# +31: decode-state dump (divergence bisect). With
+# SPARK_QWEN36_DECODE_STATE_DUMP_DIR set, every DECODE frame (verify/replay
+# prefills excluded) dumps its per-layer taps and its final pre-head hidden,
+# keyed by the decode row position - so a spec run and a no-spec run of the
+# same prompt can be diffed layer by layer to localize the silent
+# state divergence the roleplay/coding prompts reproduce (failing round is
+# always acc=0 with C0 itself non-golden).
+# 172474 is the exact count.
+CEILING = 172474
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
