@@ -537,7 +537,18 @@ from pathlib import Path
 # so a residency-memcmp failure on a long/prefill-bearing request can be
 # attributed to a re-reserved pending vs a wire-side token difference.
 # 172009 is the exact count.
-CEILING = 172009
+# +24: the acceptance cliff fix (kernel lane). A round emits min_accepted+3
+# tokens and the driver contract caps a submission at 8, so DFlash2's full
+# acceptance (min_accepted=6 -> 9 tokens) got the next submission REFUSED
+# (INVALID_ARGUMENT), the refused submission dropped, and every lane it
+# touched cooled - the round after a peak accepts zero, and the dropped
+# round's tokens are re-derived from a cooled lane (the stream-divergence
+# source). Six accepted=6 lines in the deployed log pair one-for-one with six
+# refusals. The credited depth is now clamped to MAX-3 with the bound derived
+# from the contract constant; the replay re-walks exactly the credited prefix
+# so the stream and the recurrent state stay exact - shorter round, never wrong.
+# 172033 is the exact count.
+CEILING = 172033
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

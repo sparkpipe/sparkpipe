@@ -1454,6 +1454,31 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		 * simply not credited this round; tokens stay exact). */
 		if ( pending->spec_chain_dead != 0u )
 			min_accepted = 0u;
+		/*
+		 * THE ACCEPTANCE CLIFF. A round emits min_accepted + 3 tokens (C0, the
+		 * accepted drafts, the correction, the replay's emission), and the driver
+		 * contract caps a submission at SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE
+		 * (8). DFlash2 drafts seven, so a FULL acceptance (min_accepted = 6) asks for
+		 * NINE and the next submission is refused by
+		 * SparkModelServingAdapterValidateSubmission - which is exactly what the
+		 * deployed log shows: six "qwen36_spec accepted=6" lines and six
+		 * "route_failed status=1 reason=2 work_kind=2" / "route_state=5" lines, one
+		 * for one. The refused submission is then dropped, which cools every lane it
+		 * touched, so the round AFTER a peak accepts zero - the acceptance decay is
+		 * this cliff, not a drafter quality problem.
+		 *
+		 * Credit only what the contract can carry. The surplus accepted drafts are
+		 * not credited this round and the replay re-walks exactly the credited
+		 * prefix, so the token stream and the recurrent state stay exact - the round
+		 * is shorter, never wrong.
+		 */
+		if ( min_accepted + 3u > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE )
+		{
+			fprintf(stderr,"qwen36_spec accept_clamped accepted=%u credited=%u cap=%u\n",
+				min_accepted,(uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u,
+				(uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE);
+			min_accepted = (uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u;
+		}
 		pending->spec_tokens_per_sequence = pending->spec_chain_dead != 0u ? 1u : min_accepted + 3u;
 		pending->spec_total_accepted = pending->spec_chain_dead != 0u ? 0u : min_accepted * submission->active_sequence_count;
 	}
