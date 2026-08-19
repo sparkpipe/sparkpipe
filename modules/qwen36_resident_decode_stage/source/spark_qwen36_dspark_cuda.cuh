@@ -137,7 +137,7 @@ static __global__ void SparkQwen36DsparkAttnKernel(
  */
 static __global__ void SparkQwen36DsparkConvKernel(
 	const __nv_bfloat16 *x_bf16, const float *delta, const __nv_bfloat16 *base_bf16,
-	__nv_bfloat16 *out_bf16, uint32_t block_size, uint32_t num_groups, uint32_t group_size)
+	__nv_bfloat16 *out_bf16, uint32_t block_size, uint32_t num_groups, uint32_t group_size, uint32_t side)
 {
 	const uint32_t pos = blockIdx.x;
 	const uint32_t group = blockIdx.y;
@@ -148,13 +148,14 @@ static __global__ void SparkQwen36DsparkConvKernel(
 	if ( c >= H )
 		return;
 	p = (block_size & (block_size - 1u)) == 0u ? pos & (block_size - 1u) : pos % block_size;
+	const uint32_t ds = (pos * 2u + side) * 2u;
 	x0 = __bfloat162float(x_bf16[(uint64_t)pos * H + c]);
-	d0 = delta[((uint64_t)pos * 2u + 0u) * num_groups + group];
+	d0 = delta[(uint64_t)(ds + 0u) * num_groups + group];
 	out = (__bfloat162float(base_bf16[0u * H + c]) + d0) * x0;
 	if ( p >= 1u )
 	{
 		float x1 = __bfloat162float(x_bf16[((uint64_t)(pos - 1u)) * H + c]);
-		float d1 = delta[((uint64_t)pos * 2u + 1u) * num_groups + group];
+		float d1 = delta[(uint64_t)(ds + 1u) * num_groups + group];
 		out += (__bfloat162float(base_bf16[1u * H + c]) + d1) * x1;
 	}
 	out_bf16[(uint64_t)pos * H + c] = __float2bfloat16(out);

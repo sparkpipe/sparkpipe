@@ -131,6 +131,10 @@ typedef struct SparkQwen36DsparkLayerWeights
 	SparkQwen36LinearView gate;
 	SparkQwen36LinearView up;
 	SparkQwen36LinearView down;
+	const void *conv_attn_base;
+	SparkQwen36LinearView conv_attn_proj;
+	const void *conv_mlp_base;
+	SparkQwen36LinearView conv_mlp_proj;
 } SparkQwen36DsparkLayerWeights;
 
 typedef struct SparkQwen36DsparkWeights
@@ -245,7 +249,7 @@ extern cudaError_t SparkQwen36LaunchFusedResidualRmsNorm(cudaStream_t stream, vo
 extern cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQwen36LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
 extern cudaError_t SparkQwen36LaunchDsparkAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, void *attn_out_bf16, uint32_t block_size, uint64_t base_position);
 extern cudaError_t SparkQwen36LaunchDsparkMarkov(cudaStream_t stream, const void *markov_w1_bf16, const void *markov_w2_bf16, const uint32_t *prev_token_ids, uint32_t draft_count, uint32_t rank, void *bias_out, uint32_t vocab);
-extern cudaError_t SparkQwen36LaunchDsparkConv(cudaStream_t stream, const void *x_bf16, const void *delta_f32, const void *base_bf16, void *out_bf16, uint32_t block_size, uint32_t num_groups, uint32_t group_size);
+extern cudaError_t SparkQwen36LaunchDsparkConv(cudaStream_t stream, const void *x_bf16, const void *delta_f32, const void *base_bf16, void *out_bf16, uint32_t block_size, uint32_t num_groups, uint32_t group_size, uint32_t side);
 /* Small-batch GEMM geometry, mirrors the cuda translation unit. */
 #define SPARK_QWEN36_SMALL_BATCH_MAX_ROWS 8u
 #define SPARK_QWEN36_SMALL_BATCH_TILE_N 64u
@@ -573,6 +577,10 @@ static SparkStatus SparkQwen36ModuleLoadDsparkEntry(
 	case SPARK_QWEN36_DSPARK_TENSOR_FFN_GATE: SparkQwen36ModuleFillLinearView(&lw->gate,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN36_DSPARK_TENSOR_FFN_UP: SparkQwen36ModuleFillLinearView(&lw->up,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN36_DSPARK_TENSOR_FFN_DOWN: SparkQwen36ModuleFillLinearView(&lw->down,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_DSPARK_TENSOR_CONV_ATTN_BASE: lw->conv_attn_base = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_DSPARK_TENSOR_CONV_ATTN_PROJ: SparkQwen36ModuleFillLinearView(&lw->conv_attn_proj,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_DSPARK_TENSOR_CONV_MLP_BASE: lw->conv_mlp_base = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_DSPARK_TENSOR_CONV_MLP_PROJ: SparkQwen36ModuleFillLinearView(&lw->conv_mlp_proj,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN36_DSPARK_TENSOR_PROJECTOR: SparkQwen36ModuleFillLinearView(&w->projector,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN36_DSPARK_TENSOR_MARKOV_W1: SparkQwen36ModuleFillLinearView(&w->markov_w1,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN36_DSPARK_TENSOR_MARKOV_W2: SparkQwen36ModuleFillLinearView(&w->markov_w2,entry,payload,scale); return(SPARK_STATUS_OK);
