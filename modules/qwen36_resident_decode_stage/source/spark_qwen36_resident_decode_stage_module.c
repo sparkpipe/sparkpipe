@@ -2122,6 +2122,42 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(state->dflash_positions,state->dflash_positions_host,(size_t)nkv * sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
 	status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"dflash2_head_init");
+	if ( status == SPARK_STATUS_OK && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
+	{
+		static int ctx_dump_done = 0;
+		if ( ctx_dump_done == 0 )
+		{
+			FILE *file;
+			uint16_t *host = (uint16_t *)malloc((size_t)5u * H * 2u);
+			ctx_dump_done = 1;
+			if ( cudaMemcpy(host,(const uint8_t *)state->dflash_taps_history + (base - 1u) * 5u * H * 2u,(size_t)5u * H * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
+			{
+				file = fopen("/tmp/ctxdump_taps_last.bin","wb");
+				if ( file != 0 ) { fwrite(host,1,(size_t)5u * H * 2u,file); fclose(file); }
+			}
+			if ( cudaMemcpy(host,(const uint8_t *)state->dflash_fc_out + (uint64_t)(window - 1u) * H * 2u,(size_t)H * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
+			{
+				file = fopen("/tmp/ctxdump_fc_last.bin","wb");
+				if ( file != 0 ) { fwrite(host,1,(size_t)H * 2u,file); fclose(file); }
+			}
+			if ( cudaMemcpy(host,(const uint8_t *)state->dflash_ctx_normed + (uint64_t)(window - 1u) * H * 2u,(size_t)H * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
+			{
+				file = fopen("/tmp/ctxdump_normed_last.bin","wb");
+				if ( file != 0 ) { fwrite(host,1,(size_t)H * 2u,file); fclose(file); }
+			}
+			free(host);
+			{
+				uint16_t *win = (uint16_t *)malloc((size_t)window * 5u * H * 2u);
+				if ( win != 0 && cudaMemcpy(win,(const uint8_t *)state->dflash_taps_history + window_base * 5u * H * 2u,(size_t)window * 5u * H * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
+				{
+					FILE *wf = fopen("/tmp/ctxwin_taps.bin","wb");
+					if ( wf != 0 ) { fwrite(win,1,(size_t)window * 5u * H * 2u,wf); fclose(wf); }
+				}
+				free(win);
+			}
+			fprintf(stderr,"ctxdump base=%llu window=%u\n",(unsigned long long)base,window);
+		}
+	}
 	for (layer = 0u; status == SPARK_STATUS_OK && layer < SPARK_QWEN36_DSPARK_LAYER_COUNT; layer++)
 	{
 		SparkQwen36DsparkLayerWeights *lw = &w->layer[layer];
@@ -2150,6 +2186,43 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			error = SparkQwen36LaunchDsparkQPrep(stream,q,lw->q_norm_bf16,state->dflash_positions + window,B);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchDsparkCacheAttn(stream,q,kv_k,kv_v,attn_out,B,nkv);
+		if ( layer == 0u && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
+		{
+			static int l0_dump_done = 0;
+			if ( l0_dump_done == 0 )
+			{
+				uint32_t rows_sample[5];
+				uint32_t sample_count = window >= 2u ? 5u : window + 2u;
+				uint32_t si;
+				FILE *sf;
+				rows_sample[0] = 0u;
+				rows_sample[1] = window >= 2u ? window - 1u : 0u;
+				rows_sample[2] = window;
+				rows_sample[3] = window + 1u;
+				rows_sample[4] = nkv - 1u;
+				cudaStreamSynchronize(stream);
+				l0_dump_done = 1;
+				sf = fopen("/tmp/l0_sample_rows.txt","w");
+				for (si = 0u; si < sample_count; si++)
+					fprintf(sf,"%u\n",rows_sample[si]);
+				fclose(sf);
+				sf = fopen("/tmp/l0_kv_k.bin","wb");
+				for (si = 0u; si < sample_count; si++)
+					{ uint16_t rowbuf[1024]; cudaMemcpy(rowbuf,kv_k + (uint64_t)rows_sample[si] * 1024u,sizeof(rowbuf),cudaMemcpyDeviceToHost); fwrite(rowbuf,1,sizeof(rowbuf),sf); }
+				fclose(sf);
+				sf = fopen("/tmp/l0_kv_v.bin","wb");
+				for (si = 0u; si < sample_count; si++)
+					{ uint16_t rowbuf[1024]; cudaMemcpy(rowbuf,kv_v + (uint64_t)rows_sample[si] * 1024u,sizeof(rowbuf),cudaMemcpyDeviceToHost); fwrite(rowbuf,1,sizeof(rowbuf),sf); }
+				fclose(sf);
+				sf = fopen("/tmp/l0_q.bin","wb");
+				for (si = 0u; si < 2u; si++)
+					{ uint16_t rowbuf[4096]; cudaMemcpy(rowbuf,q + (uint64_t)si * 4096u,sizeof(rowbuf),cudaMemcpyDeviceToHost); fwrite(rowbuf,1,sizeof(rowbuf),sf); }
+				fclose(sf);
+				sf = fopen("/tmp/l0_attn.bin","wb");
+				{ uint16_t rowbuf[4096]; cudaMemcpy(rowbuf,attn_out,sizeof(rowbuf),cudaMemcpyDeviceToHost); fwrite(rowbuf,1,sizeof(rowbuf),sf); }
+				fclose(sf);
+			}
+		}
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->o,attn_out,q,B);
 		if ( error == cudaSuccess )

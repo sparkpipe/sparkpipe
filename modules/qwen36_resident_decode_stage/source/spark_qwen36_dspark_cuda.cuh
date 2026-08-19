@@ -58,14 +58,12 @@ static __global__ void SparkQwen36DsparkKPrepKernel(
 	const uint32_t d = threadIdx.x;
 	const uint32_t head_dim = SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM;
 	const uint32_t kv_heads = SPARK_QWEN36_DSPARK_ATTN_KV_HEADS;
-	float kn[SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM];
 	float sum = 0.0f, scale;
 	uint64_t pos;
 	if ( d >= head_dim )
 		return;
 	{
 		float v = __bfloat162float(k_bf16[((uint64_t)row * kv_heads + head) * head_dim + d]);
-		kn[d] = v;
 		sum = fmaf(v, v, sum);
 	}
 	/* the whole head's threads must contribute to sum: head_dim == blockDim */
@@ -78,19 +76,26 @@ static __global__ void SparkQwen36DsparkKPrepKernel(
 	__syncthreads();
 	scale = rsqrtf(total / (float)head_dim + 1e-6f);
 	pos = positions[row];
+	if ( (d & 1u) != 0u && d < SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM )
+		return; /* odd rope dims are written by their even pair thread */
 	{
-		float gated = kn[d] * scale * __bfloat162float(k_norm_bf16[d]);
+		uint32_t dp = d ^ 1u;
+		float re = __bfloat162float(k_bf16[((uint64_t)row * kv_heads + head) * head_dim + d]);
+		float im = __bfloat162float(k_bf16[((uint64_t)row * kv_heads + head) * head_dim + dp]);
+		re *= scale * __bfloat162float(k_norm_bf16[d]);
+		im *= scale * __bfloat162float(k_norm_bf16[dp]);
 		if ( d < SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM )
 		{
-			uint32_t pair = d >> 1u;
-			uint32_t is_im = d & 1u;
-			float f = (float)pos * SparkQwen36DsparkRopeFrequency(pair);
+			float f = (float)pos * SparkQwen36DsparkRopeFrequency(d >> 1u);
 			float c = cosf(f), sn = sinf(f);
-			float other = kn[d ^ 1u] * scale * __bfloat162float(k_norm_bf16[d ^ 1u]);
-			k_bf16[((uint64_t)row * kv_heads + head) * head_dim + d] = __float2bfloat16(is_im == 0u ? gated * c - other * sn : gated * sn + other * c);
+			float ro = re * c - im * sn;
+			float io = re * sn + im * c;
+			re = ro;
+			im = io;
 		}
-		else
-			k_bf16[((uint64_t)row * kv_heads + head) * head_dim + d] = __float2bfloat16(gated);
+		k_bf16[((uint64_t)row * kv_heads + head) * head_dim + d] = __float2bfloat16(re);
+		if ( dp != d )
+			k_bf16[((uint64_t)row * kv_heads + head) * head_dim + dp] = __float2bfloat16(im);
 	}
 }
 
@@ -105,14 +110,12 @@ static __global__ void SparkQwen36DsparkQPrepKernel(
 	const uint32_t d = threadIdx.x;
 	const uint32_t head_dim = SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM;
 	const uint32_t q_heads = SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS;
-	float qn[SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM];
 	float sum = 0.0f;
 	uint64_t pos;
 	if ( d >= head_dim )
 		return;
 	{
 		float v = __bfloat162float(q_bf16[((uint64_t)row * q_heads + head) * head_dim + d]);
-		qn[d] = v;
 		sum = fmaf(v, v, sum);
 	}
 	__shared__ float total;
@@ -121,21 +124,28 @@ static __global__ void SparkQwen36DsparkQPrepKernel(
 	__syncthreads();
 	atomicAdd(&total, sum);
 	__syncthreads();
+	if ( (d & 1u) != 0u && d < SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM )
+		return; /* odd rope dims are written by their even pair thread */
 	{
 		float scale = rsqrtf(total / (float)head_dim + 1e-6f);
-		float gated = qn[d] * scale * __bfloat162float(q_norm_bf16[d]);
+		uint32_t dp = d ^ 1u;
+		float re = __bfloat162float(q_bf16[((uint64_t)row * q_heads + head) * head_dim + d]);
+		float im = __bfloat162float(q_bf16[((uint64_t)row * q_heads + head) * head_dim + dp]);
+		re *= scale * __bfloat162float(q_norm_bf16[d]);
+		im *= scale * __bfloat162float(q_norm_bf16[dp]);
 		pos = positions[row];
 		if ( d < SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM )
 		{
-			uint32_t pair = d >> 1u;
-			uint32_t is_im = d & 1u;
-			float f = (float)pos * SparkQwen36DsparkRopeFrequency(pair);
+			float f = (float)pos * SparkQwen36DsparkRopeFrequency(d >> 1u);
 			float c = cosf(f), sn = sinf(f);
-			float other = qn[d ^ 1u] * scale * __bfloat162float(q_norm_bf16[d ^ 1u]);
-			q_bf16[((uint64_t)row * q_heads + head) * head_dim + d] = __float2bfloat16(is_im == 0u ? gated * c - other * sn : gated * sn + other * c);
+			float ro = re * c - im * sn;
+			float io = re * sn + im * c;
+			re = ro;
+			im = io;
 		}
-		else
-			q_bf16[((uint64_t)row * q_heads + head) * head_dim + d] = __float2bfloat16(gated);
+		q_bf16[((uint64_t)row * q_heads + head) * head_dim + d] = __float2bfloat16(re);
+		if ( dp != d )
+			q_bf16[((uint64_t)row * q_heads + head) * head_dim + dp] = __float2bfloat16(im);
 	}
 }
 
