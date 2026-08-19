@@ -797,7 +797,14 @@ from pathlib import Path
 # the earlier 2-row-only reference left rows 2..7 as calloc zeroes and so
 # misreported a per-row KV-write corruption that is actually bit-exact.
 # 175185 is the exact count.
-CEILING = 175185
+# +239: the DFlash2 full-sequence context fix (oracle agent, z-lab reference).
+# The drafter now captures every position's 5 tap-layer hiddens in a per-lane
+# 2048-slot ring and attends over N+8 keys (N context rows + 8 block rows) instead
+# of 9 keys from ONE tap position - the structural divergence that cost ~2.2x
+# accepted drafts vs z-lab. New kernels: tap-ring scatter, tiled-K N-row
+# projector (the 25600-wide fc), N+8-key attention with absolute rope positions.
+# 175424 is the exact count.
+CEILING = 175424
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

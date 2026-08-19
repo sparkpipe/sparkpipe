@@ -37,6 +37,20 @@
 #define SPARK_QWEN36_DSPARK_SELECTOR_TOP_K 16u
 #define SPARK_QWEN36_DSPARK_CONV_KERNEL_SIZE 2u
 #define SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE 16u
+/* Full-sequence context (z-lab DFlash2): the drafter's K/V context is the
+ * projector over EVERY committed position's 5-tap concat (25600 -> 5120), not
+ * one position. The taps live in a per-lane rolling ring of capacity 2048 (a
+ * power of two so the position index is a single AND); the attention attends
+ * over the last CONTEXT_MAX = sliding_window - 1 = 2047 positions + the block,
+ * exactly z-lab's RotatingKVCache(max_size = sliding_window - 1). The 2048th
+ * ring slot is the wrap-around head and is never read by the context build. */
+#define SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY 2048u
+#define SPARK_QWEN36_DSPARK_CONTEXT_MAX (SPARK_QWEN36_DSPARK_SLIDING_WINDOW - 1u)
+/* The projector input is the 5 taps concatenated per position (fc.weight is
+ * [5120, 5*5120]); the ring stores them as one 25600-wide row per position so
+ * the projector's N-row launch can read a contiguous row. */
+#define SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION (SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION)
+#define SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY_MASK (SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY - 1u)
 #define SPARK_QWEN36_DSPARK_SLIDING_WINDOW 2048u
 #define SPARK_QWEN36_DSPARK_MASK_TOKEN_ID 248070u
 

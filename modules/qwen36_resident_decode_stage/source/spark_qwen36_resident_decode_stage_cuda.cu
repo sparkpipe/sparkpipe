@@ -1841,6 +1841,85 @@ extern "C" cudaError_t SparkQwen36LaunchSmallBatchLinear(cudaStream_t stream, co
 	return(cudaGetLastError());
 }
 
+/* DFlash2 full-sequence projector fc: [row_count, 25600] @ [25600, 5120]^T.
+ *
+ * The projector input dimension (5 taps x 5120 = 25600) exceeds the library
+ * scalar path's shared-memory budget, so this is a dedicated tiled-K kernel. A
+ * 2D grid (grid.x = 8-row tiles FASTEST, grid.y = 64-neuron tiles) reuses one
+ * neuron tile's weight strip in L2 across all its row-tile blocks, so the 256 MB
+ * projector weight streams from HBM once per forward instead of once per row.
+ * Dot order and reduction tree are the library's (lane-strided pair + shfl-down),
+ * and the store is round-to-nearest BF16, matching SparkQwen36LaunchLinear.
+ */
+#define SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N 64u
+#define SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS 8u
+
+static __global__ void __launch_bounds__(1024u, 1u) SparkQwen36DsparkProjectorKernel(
+	const void *weight_bf16, const void *input_bf16, void *output_bf16,
+	uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	extern __shared__ __nv_bfloat16 tile[];
+	__nv_bfloat16 *weight_tile = tile;
+	__nv_bfloat16 *input_tile = tile + (SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK);
+	const uint32_t neuron_base = blockIdx.y * SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N;
+	const uint32_t row_base = blockIdx.x * SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS;
+	const uint32_t thread = threadIdx.x;
+	const uint32_t warp = thread >> 5u;
+	const uint32_t lane = thread & 31u;
+	const uint32_t row = warp & (SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS - 1u);
+	const uint32_t neuron_group = warp >> 3u;
+	const uint32_t PER_GROUP = SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N >> 2u;
+	uint32_t k_base, neuron, p;
+	float value;
+	float acc[16];
+	#pragma unroll
+	for (p = 0u; p < PER_GROUP; p++)
+		acc[p] = 0.0f;
+	for (k_base = 0u; k_base < input_dimension; k_base += SPARK_QWEN36_SMALL_BATCH_K_CHUNK)
+	{
+		/* 64x128 weight tile: one uint4 (8 bf16) per thread. */
+		((uint4 *)weight_tile)[thread] = __ldg(((const uint4 *)weight_bf16) + ((((uint64_t)(neuron_base + (thread >> 4u)) * input_dimension) + k_base) >> 3u) + (thread & 15u));
+		/* 8x128 input tile; pad rows past row_count with zero. */
+		if ( thread < 128u && row_base + (thread >> 4u) < row_count )
+			((uint4 *)input_tile)[thread] = __ldg(((const uint4 *)input_bf16) + ((((uint64_t)(row_base + (thread >> 4u)) * input_dimension) + k_base) >> 3u) + (thread & 15u));
+		else if ( thread < 128u )
+			((uint4 *)input_tile)[thread] = make_uint4(0u, 0u, 0u, 0u);
+		__syncthreads();
+		#pragma unroll
+		for (p = 0u; p < PER_GROUP; p++)
+		{
+			neuron = (neuron_group * PER_GROUP) + p;
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + (lane << 1u)]), __bfloat162float(input_tile[(row << 7u) + (lane << 1u)]), acc[p]);
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + (lane << 1u) + 1u]), __bfloat162float(input_tile[(row << 7u) + (lane << 1u) + 1u]), acc[p]);
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + 64u + (lane << 1u)]), __bfloat162float(input_tile[(row << 7u) + 64u + (lane << 1u)]), acc[p]);
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + 64u + (lane << 1u) + 1u]), __bfloat162float(input_tile[(row << 7u) + 64u + (lane << 1u) + 1u]), acc[p]);
+		}
+		__syncthreads();
+	}
+	#pragma unroll
+	for (p = 0u; p < PER_GROUP; p++)
+	{
+		neuron = (neuron_group * PER_GROUP) + p;
+		value = acc[p];
+		value += __shfl_down_sync(0xffffffffu, value, 16u);
+		value += __shfl_down_sync(0xffffffffu, value, 8u);
+		value += __shfl_down_sync(0xffffffffu, value, 4u);
+		value += __shfl_down_sync(0xffffffffu, value, 2u);
+		value += __shfl_down_sync(0xffffffffu, value, 1u);
+		if ( lane == 0u && row_base + row < row_count && neuron_base + neuron < output_dimension )
+			SparkLmFloatToBf16(output_bf16, ((uint64_t)(row_base + row) * output_dimension) + neuron_base + neuron, value);
+	}
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkProjector(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	dim3 grid((row_count + SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS - 1u) / SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS,
+		(output_dimension + SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N - 1u) / SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N);
+	size_t shared_bytes = (size_t)(SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N + SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS) * SPARK_QWEN36_SMALL_BATCH_K_CHUNK * sizeof(__nv_bfloat16);
+	SparkQwen36DsparkProjectorKernel<<<grid, 1024u, shared_bytes, stream>>>(weight_bf16, input_bf16, output_bf16, row_count, input_dimension, output_dimension);
+	return(cudaGetLastError());
+}
+
 extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQwen36LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
 	const char *gate = getenv("SPARK_QWEN36_SMALL_BATCH_GEMM");
@@ -2238,10 +2317,17 @@ extern "C" cudaError_t SparkQwen36LaunchAccumU64Max(cudaStream_t stream, uint64_
 }
 
 
-extern "C" cudaError_t SparkQwen36LaunchDsparkAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, void *attn_out_bf16, uint32_t block_size, uint64_t base_position)
+extern "C" cudaError_t SparkQwen36LaunchDsparkAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, void *attn_out_bf16, uint32_t block_size, uint64_t base_position, uint32_t context_length)
 {
 	dim3 grid(block_size, 8u);
-	SparkQwen36DsparkAttnKernel<<<grid, SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS / SPARK_QWEN36_DSPARK_ATTN_KV_HEADS, 0u, stream>>>((const __nv_bfloat16 *)q_bf16, (const __nv_bfloat16 *)k_bf16, (const __nv_bfloat16 *)v_bf16, (const __nv_bfloat16 *)q_norm_bf16, (const __nv_bfloat16 *)k_norm_bf16, (__nv_bfloat16 *)attn_out_bf16, block_size, base_position);
+	SparkQwen36DsparkAttnKernel<<<grid, SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS / SPARK_QWEN36_DSPARK_ATTN_KV_HEADS, 0u, stream>>>((const __nv_bfloat16 *)q_bf16, (const __nv_bfloat16 *)k_bf16, (const __nv_bfloat16 *)v_bf16, (const __nv_bfloat16 *)q_norm_bf16, (const __nv_bfloat16 *)k_norm_bf16, (__nv_bfloat16 *)attn_out_bf16, block_size, base_position, context_length);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkTapCapture(cudaStream_t stream, const void *hidden_bf16, const uint64_t *row_positions, void *ring_bf16, uint32_t tap_index, uint32_t row_count, uint32_t hidden_dimension, uint32_t capacity)
+{
+	dim3 grid(row_count, (hidden_dimension + 255u) / 256u);
+	SparkQwen36DsparkTapCaptureKernel<<<grid, 256u, 0u, stream>>>((const __nv_bfloat16 *)hidden_bf16, row_positions, (__nv_bfloat16 *)ring_bf16, tap_index, row_count, hidden_dimension, capacity);
 	return(cudaGetLastError());
 }
 

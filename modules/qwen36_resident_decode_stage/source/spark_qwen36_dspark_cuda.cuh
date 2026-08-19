@@ -37,13 +37,17 @@ static __device__ __forceinline__ float SparkQwen36DsparkRopeFrequency(uint32_t 
 /* The flat dual-source attention. Each CTA handles one (block position, KV
  * head group); threads span the 4 Q heads in the group. qk_v layout:
  *   Q: block_size x 32 x 128 (after q_proj, before q_norm)
- *   K: (1+block_size) x 8 x 128 (after k_proj, before k_norm)
- *   V: (1+block_size) x 8 x 128 (after v_proj)
+ *   K: (context_length+block_size) x 8 x 128 (after k_proj, before k_norm)
+ *   V: (context_length+block_size) x 8 x 128 (after v_proj)
+ * The first context_length rows are the full-sequence context (the projector
+ * output over every committed position's taps, positions
+ * [base_position-context_length, base_position)); the last block_size rows are
+ * the block (positions [base_position, base_position+block_size)). Non-causal.
  */
 static __global__ void SparkQwen36DsparkAttnKernel(
 	const __nv_bfloat16 *q_bf16, const __nv_bfloat16 *k_bf16, const __nv_bfloat16 *v_bf16,
 	const __nv_bfloat16 *q_norm_bf16, const __nv_bfloat16 *k_norm_bf16,
-	__nv_bfloat16 *attn_out_bf16, uint32_t block_size, uint64_t base_position)
+	__nv_bfloat16 *attn_out_bf16, uint32_t block_size, uint64_t base_position, uint32_t context_length)
 {
 	const uint32_t kv_heads = SPARK_QWEN36_DSPARK_ATTN_KV_HEADS;
 	const uint32_t head_dim = SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM;
@@ -82,13 +86,16 @@ static __global__ void SparkQwen36DsparkAttnKernel(
 		qn[d] = re * c - im * sn;
 		qn[d + 1u] = re * sn + im * c;
 	}
-	/* Online softmax over the (1+block_size) KV positions, non-causal. */
+	/* Online softmax over the (context_length+block_size) KV positions,
+	 * non-causal. The max/sum are accumulated but the final division is a
+	 * single-pass naive softmax (scores are bounded: q,k are RMS-normed so
+	 * |q.k| <= 128, score <= 128/sqrt(128) ~ 11.3, exp never overflows). */
 	#pragma unroll
 	for (d = 0u; d < head_dim; d++)
 		acc[d] = 0.0f;
 	max_score = -1e30f;
 	sum_exp = 0.0f;
-	for (kv_pos = 0u; kv_pos < 1u + block_size; kv_pos++)
+	for (kv_pos = 0u; kv_pos < context_length + block_size; kv_pos++)
 	{
 		float sum = 0.0f, scale;
 		#pragma unroll
@@ -101,8 +108,12 @@ static __global__ void SparkQwen36DsparkAttnKernel(
 		#pragma unroll
 		for (d = 0u; d < head_dim; d++)
 			kn[d] = kn[d] * scale * __bfloat162float(k_norm_bf16[d]);
-		/* K rope (tap at base_position - 1 = committed position, block at base_position + kv_pos - 1) */
-		pos = kv_pos == 0u ? base_position - 1u : base_position + (kv_pos - 1u);
+		/* K rope: context rows carry their absolute committed positions
+		 * [base_position-context_length, base_position); block rows carry
+		 * [base_position, base_position+block_size). */
+		pos = kv_pos < context_length
+			? base_position - context_length + kv_pos
+			: base_position + (kv_pos - context_length);
 		#pragma unroll
 		for (d = 0u; d < SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM; d += 2u)
 		{
@@ -129,6 +140,32 @@ static __global__ void SparkQwen36DsparkAttnKernel(
 	#pragma unroll
 	for (d = 0u; d < head_dim; d++)
 		attn_out_bf16[((uint64_t)q_pos * SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS + q_head) * head_dim + d] = __float2bfloat16(acc[d] / sum_exp);
+}
+
+/* Rolling tap capture. One CTA per (row, hidden chunk); threads span the hidden
+ * dimension. Writes the tap-layer hidden of EVERY staged position into the
+ * per-lane ring at (absolute_position & (capacity-1)), so the ring accumulates
+ * the committed stream as the target walks it (prefill writes every prompt
+ * position, each decode/draft-after frame writes its one committed position).
+ *
+ *   hidden_bf16:  [row_count, H] BF16   (the tap layer's post-layer output)
+ *   row_positions:[row_count] u64       (absolute position of each row)
+ *   ring_bf16:    [capacity, 5*H] BF16  (one lane's ring; lane stride applied on host)
+ *   tap_index:    0..4 (which tap layer)
+ */
+static __global__ void SparkQwen36DsparkTapCaptureKernel(
+	const __nv_bfloat16 *hidden_bf16, const uint64_t *row_positions,
+	__nv_bfloat16 *ring_bf16, uint32_t tap_index, uint32_t row_count,
+	uint32_t hidden_dimension, uint32_t capacity)
+{
+	const uint32_t row = blockIdx.x;
+	const uint32_t c = blockIdx.y * blockDim.x + threadIdx.x;
+	uint64_t slot;
+	if ( row >= row_count || c >= hidden_dimension )
+		return;
+	slot = (row_positions[row] & (uint64_t)(capacity - 1u)) *
+		(uint64_t)SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION + (uint64_t)tap_index * hidden_dimension;
+	ring_bf16[slot + c] = hidden_bf16[(uint64_t)row * hidden_dimension + c];
 }
 
 /* Grouped dynamic depthwise conv (DFlash2), fused into ONE elementwise pass — no

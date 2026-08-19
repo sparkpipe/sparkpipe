@@ -92,7 +92,13 @@ typedef struct SparkQwen36ModuleSlot
 	float *head_scores_f32;
 	uint64_t *head_maxloc_u64;
 	uint32_t *mtp_draft_ids;
-	void *dspark_tap_buffer;
+	uint32_t dspark_lane_index;
+	/* Full-sequence context workspace (per slot, sized for the max context):
+	 * the projector output [CONTEXT_MAX, H], and the attention K/V
+	 * [CONTEXT_MAX + BLOCK, 1024] built by projecting context + block rows. */
+	void *dspark_context_bf16;
+	void *dspark_context_k_bf16;
+	void *dspark_context_v_bf16;
 	void *dspark_scratch;
 	SparkQwen36DsparkSelectorWorkspace dspark_selector;
 	float *dspark_conv_delta;
@@ -203,6 +209,12 @@ typedef struct SparkQwen36ModuleState
 	SparkStageKvClient kv_client;
 	SparkQwen36TpState tp;
 	SparkQwen36DsparkWeights dspark_weights;
+	/* Full-sequence tap ring: [max_active_sequences][capacity=2048][5*H] BF16,
+	 * the committed stream's tap-layer hiddens, written during the normal walk
+	 * (prefill + decode/draft-after) and read by the block forward's N-row
+	 * projector. Persists per-lane across submissions like the KV cache. */
+	void *dspark_tap_ring_bf16;
+	uint64_t dspark_tap_ring_lane_stride_elements;
 	void *tp_stream;
 	const char *decode_state_dump_dir;
 	uint32_t state_fingerprint;
@@ -249,9 +261,11 @@ extern cudaError_t SparkQwen36ConfigureCudaKernels(void);
 extern cudaError_t SparkQwen36LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkQwen36LaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQwen36LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
-extern cudaError_t SparkQwen36LaunchDsparkAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, void *attn_out_bf16, uint32_t block_size, uint64_t base_position);
+extern cudaError_t SparkQwen36LaunchDsparkAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, void *attn_out_bf16, uint32_t block_size, uint64_t base_position, uint32_t context_length);
 extern cudaError_t SparkQwen36LaunchDsparkMarkov(cudaStream_t stream, const void *markov_w1_bf16, const void *markov_w2_bf16, const uint32_t *prev_token_ids, uint32_t draft_count, uint32_t rank, void *bias_out, uint32_t vocab);
 extern cudaError_t SparkQwen36LaunchDsparkConv(cudaStream_t stream, const void *x_bf16, const void *delta_f32, const void *base_bf16, void *out_bf16, uint32_t block_size, uint32_t num_groups, uint32_t group_size, uint32_t side);
+extern cudaError_t SparkQwen36LaunchDsparkTapCapture(cudaStream_t stream, const void *hidden_bf16, const uint64_t *row_positions, void *ring_bf16, uint32_t tap_index, uint32_t row_count, uint32_t hidden_dimension, uint32_t capacity);
+extern cudaError_t SparkQwen36LaunchDsparkProjector(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension);
 extern uint64_t SparkQwen36DsparkHeadTopKChunkKeyCount(uint32_t row_count, uint32_t top_k);
 extern cudaError_t SparkQwen36LaunchDsparkHeadTopK(cudaStream_t stream, const SparkQwen36LinearView *head, const void *hidden_bf16, uint64_t *chunk_keys, uint32_t *top_candidate_ids, float *top_scores_f32, void *top_scores_bf16, uint32_t row_count, uint32_t candidate_offset, uint32_t top_k);
 extern cudaError_t SparkQwen36LaunchDsparkSelector(cudaStream_t stream, const void *hidden_bf16, const void *hidden_projection_bf16, const void *predecessor_bf16, const void *successor_bf16, const uint32_t *candidate_ids, const uint32_t *anchor_token_ids, const float *unary_f32, void *context_gate_bf16, float *edges_f32, uint32_t *draft_token_ids, uint32_t *draft_candidate_slots, uint32_t batch_count, uint32_t slot_count, uint32_t top_k, uint32_t rank, uint32_t hidden_dimension);
@@ -824,6 +838,29 @@ static SparkStatus SparkQwen36ModuleAllocatePools(SparkQwen36ModuleState *state)
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES * state->gdn_snapshot_slot_count,&state->snapshot_tail_bf16);
 	}
+	/* Capture-side buffer invariants (cheap host validator): the ring capacity
+	 * must be a power of two (the capture/context index uses a single AND), the
+	 * tap row must be TAP_COUNT x HIDDEN (the projector's input width), and the
+	 * context max must be sliding_window - 1 (z-lab's RotatingKVCache). */
+	if ( (SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY & (SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY - 1u)) != 0u ||
+	     SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION != SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION ||
+	     SPARK_QWEN36_DSPARK_CONTEXT_MAX != SPARK_QWEN36_DSPARK_SLIDING_WINDOW - 1u )
+	{
+		fprintf(stderr,"%s dspark_tap_layout_invalid capacity=%u tap_row=%u context_max=%u\n",
+			SPARK_QWEN36_MODULE_TAG,SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY,
+			SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION,SPARK_QWEN36_DSPARK_CONTEXT_MAX);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	/* Full-sequence tap ring: one [capacity][5*H] BF16 lane window per active
+	 * sequence, zeroed so an unwritten (not-yet-reached) ring slot reads as the
+	 * zero vector rather than stale device memory. ~100 MB per lane at the
+	 * shipped geometry. */
+	state->dspark_tap_ring_lane_stride_elements =
+		(uint64_t)SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY * SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,
+			state->dspark_tap_ring_lane_stride_elements * state->max_active_sequence_count * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,
+			&state->dspark_tap_ring_bf16);
 	return(status);
 }
 
@@ -861,14 +898,23 @@ static SparkStatus SparkQwen36ModuleAllocateSlotControl(SparkQwen36ModuleState *
 		status = SparkStageModuleDeviceAllocate(&state->ledger,staged * sizeof(uint64_t),(void **)&slot->row_positions);
 	if ( status == SPARK_STATUS_OK && state->mtp_armed != 0u )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS * sizeof(uint32_t),(void **)&slot->mtp_draft_ids);
+	/* Full-sequence context workspace: the projector output [CONTEXT_MAX, H]
+	 * and the attention K/V [CONTEXT_MAX + BLOCK, 1024]. These move OUT of the
+	 * carved scratch because they scale with the context (up to ~21 MB / ~4.2 MB
+	 * each) while the rest of the drafter forward stays fixed at the block size. */
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_tap_buffer);
-	/* DFlash2 scratch: context (5120) + block hidden + Q + K/V + attn out + norm
-	 * + ffn (17408), all x block_size (8). The [block, 248320] logits tile is
-	 * GONE: the selector's top-16 kernel reduces the head in place, so neither
-	 * the 3.97 MB device tile nor its host mirror exists any more. */
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)SPARK_QWEN36_DSPARK_CONTEXT_MAX * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_context_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(1u*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*(SPARK_QWEN36_DSPARK_BLOCK_SIZE+1u)*SPARK_QWEN36_DSPARK_ATTN_KV_HEADS*SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_scratch);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN36_DSPARK_CONTEXT_MAX + SPARK_QWEN36_DSPARK_BLOCK_SIZE) * SPARK_QWEN36_DSPARK_ATTN_KV_HEADS * SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_context_k_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN36_DSPARK_CONTEXT_MAX + SPARK_QWEN36_DSPARK_BLOCK_SIZE) * SPARK_QWEN36_DSPARK_ATTN_KV_HEADS * SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_context_v_bf16);
+	/* DFlash2 scratch: block hidden + Q + attn out + norm + ffn (17408), all x
+	 * block_size (8). The context (projector output) and the attention K/V now
+	 * live in their own context-sized buffers (above), so the fixed carve-out is
+	 * block-sized only. The [block, 248320] logits tile is GONE: the selector's
+	 * top-16 kernel reduces the head in place. */
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_MODEL_HIDDEN_DIMENSION + 2u*SPARK_QWEN36_DSPARK_BLOCK_SIZE*SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_scratch);
 	if ( status == SPARK_STATUS_OK )
 	{
 		/* The projection kernels write FLOATS here (B x 2 x KERNEL x H/GROUP of
@@ -2219,16 +2265,20 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	uint8_t *scr = (uint8_t *)slot->dspark_scratch;
 	const uint32_t B = SPARK_QWEN36_DSPARK_BLOCK_SIZE;
 	const uint32_t H = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
-	/* scratch carve-out (bf16 elements, 2 bytes each) */
-	uint16_t *context = (uint16_t *)scr;
-	uint16_t *block_hidden = context + H;
+	/* scratch carve-out (bf16 elements, 2 bytes each): block-sized only. The
+	 * context (projector output) and the attention K/V now scale with the
+	 * context and live in the dedicated buffers allocated per slot. */
+	uint16_t *block_hidden = (uint16_t *)scr;
 	uint16_t *q = block_hidden + (uint64_t)B * H;
-	uint16_t *k = q + (uint64_t)B * H;
-	uint16_t *v = k + (uint64_t)(B + 1u) * 1024u;
-	uint16_t *attn_out = v + (uint64_t)(B + 1u) * 1024u;
+	uint16_t *attn_out = q + (uint64_t)B * H;
 	uint16_t *norm = attn_out + (uint64_t)B * H;
 	uint16_t *ffn = norm + (uint64_t)B * H;
 	uint16_t *up = ffn + (uint64_t)B * SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE;
+	uint16_t *context = (uint16_t *)slot->dspark_context_bf16;
+	uint16_t *k = (uint16_t *)slot->dspark_context_k_bf16;
+	uint16_t *v = (uint16_t *)slot->dspark_context_v_bf16;
+	uint8_t *lane_ring;
+	uint32_t context_length;
 	SparkStatus status;
 	cudaError_t error;
 	uint32_t layer;
@@ -2254,10 +2304,50 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	 * (the DSpark host loop wrote B ids into that B-1 buffer). */
 	if ( view->draft_token_count != B - 1u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* 1) context = hidden_norm(fc(cat(5 taps))): one [H] vector, shared by every layer. */
-	error = SparkQwen36LaunchLinear(stream,&w->projector,slot->dspark_tap_buffer,q,1u);
-	if ( error == cudaSuccess )
-		error = SparkQwen36LaunchRmsNorm(stream,q,w->hidden_norm_bf16,context,1u,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
+	/* 1) context = hidden_norm(fc(cat(5 taps))) over EVERY committed position:
+	 *    the tap ring's last context_length positions (positions
+	 *    [base_position-context_length, base_position)), projected N rows at a
+	 *    time, then hidden_norm per row. base_position == lane_next_positions is
+	 *    the committed length, so context_length = min(base_position, 2047). */
+	context_length = (uint32_t)(view->base_position >= SPARK_QWEN36_DSPARK_CONTEXT_MAX
+		? SPARK_QWEN36_DSPARK_CONTEXT_MAX : view->base_position);
+	lane_ring = (uint8_t *)state->dspark_tap_ring_bf16 +
+		(uint64_t)slot->dspark_lane_index * state->dspark_tap_ring_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
+	if ( context_length != 0u )
+	{
+		/* The last context_length positions occupy at most TWO contiguous ring
+		 * segments (wrap-around); run the N-row projector on each in oldest-first
+		 * order so the output rows are positions [base_position-context_length,
+		 * base_position). */
+		uint64_t start = view->base_position - context_length;
+		uint32_t start_idx = (uint32_t)(start & (uint64_t)SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY_MASK);
+		uint32_t end_idx = (uint32_t)((view->base_position - 1u) & (uint64_t)SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY_MASK);
+		uint32_t done = 0u;
+		if ( start_idx <= end_idx )
+		{
+			error = SparkQwen36LaunchDsparkProjector(stream,w->projector.weight_payload,
+				lane_ring + (uint64_t)start_idx * SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,
+				context,context_length,w->projector.input_dimension,w->projector.output_dimension);
+			done = context_length;
+		}
+		else
+		{
+			uint32_t tail_len = SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY - start_idx;
+			error = SparkQwen36LaunchDsparkProjector(stream,w->projector.weight_payload,
+				lane_ring + (uint64_t)start_idx * SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,
+				context,tail_len,w->projector.input_dimension,w->projector.output_dimension);
+			if ( error == cudaSuccess && context_length > tail_len )
+				error = SparkQwen36LaunchDsparkProjector(stream,w->projector.weight_payload,
+					lane_ring,
+					context + (uint64_t)tail_len * H,context_length - tail_len,
+					w->projector.input_dimension,w->projector.output_dimension);
+			done = context_length;
+		}
+		if ( error == cudaSuccess )
+			error = SparkQwen36LaunchRmsNorm(stream,context,w->hidden_norm_bf16,context,done,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
+	}
+	else
+		error = cudaSuccess;
 	/* 2) block[0] = embed(C0); block[1..B-1] = embed(mask_token_id). */
 	/* C0 is the COMMITTED token the target just emitted (frame_output_ids[0]),
 	 * not the frame's input token (slot->input_token_ids); EmitHead writes it to
@@ -2279,15 +2369,15 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->q,slot->dspark_conv_out,q,B);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->k,context,k,1);
+			error = SparkQwen36LaunchLinear(stream,&lw->k,context,k,context_length);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->k,slot->dspark_conv_out,k + 1024u,B);
+			error = SparkQwen36LaunchLinear(stream,&lw->k,slot->dspark_conv_out,k + (uint64_t)context_length * 1024u,B);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->v,context,v,1);
+			error = SparkQwen36LaunchLinear(stream,&lw->v,context,v,context_length);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->v,slot->dspark_conv_out,v + 1024u,B);
+			error = SparkQwen36LaunchLinear(stream,&lw->v,slot->dspark_conv_out,v + (uint64_t)context_length * 1024u,B);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchDsparkAttn(stream,q,k,v,lw->q_norm_bf16,lw->k_norm_bf16,attn_out,B,view->base_position);
+			error = SparkQwen36LaunchDsparkAttn(stream,q,k,v,lw->q_norm_bf16,lw->k_norm_bf16,attn_out,B,view->base_position,context_length);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->o,attn_out,q,B);
 		/* attention_conv.finish: side-1 conv, then residual add 1 */
@@ -2377,7 +2467,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 				FILE *dump;
 				dspark_dump_done = 1;
 				if ( tap_host != 0 &&
-				     cudaMemcpy(tap_host,slot->dspark_tap_buffer,(size_t)tap_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
+				     cudaMemcpy(tap_host,(uint8_t *)state->dspark_tap_ring_bf16 + (uint64_t)slot->dspark_lane_index * state->dspark_tap_ring_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES + ((base_position - 1u) & (uint64_t)SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY_MASK) * SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,(size_t)tap_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
 				     cudaMemcpy(&anchor,slot->output_token_ids,sizeof(anchor),cudaMemcpyDeviceToHost) == cudaSuccess )
 				{
 					if ( per_step != 0u )
@@ -2485,10 +2575,11 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 static SparkStatus SparkQwen36ModuleCaptureDsparkTap(
 	SparkQwen36ModuleState *state,
 	SparkQwen36ModuleSlot *slot,
-	uint32_t layer)
+	uint32_t layer,
+	uint32_t rows)
 {
 	uint32_t tap_index;
-	(void)state;
+	uint8_t *lane_ring;
 	switch ( layer )
 	{
 	case 5u: tap_index = 0u; break;
@@ -2498,14 +2589,15 @@ static SparkStatus SparkQwen36ModuleCaptureDsparkTap(
 	case 61u: tap_index = 4u; break;
 	default: return(SPARK_STATUS_OK);
 	}
+	if ( state->dspark_tap_ring_bf16 == 0 || rows == 0u || slot->row_positions == 0 || slot->hidden_bf16 == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	lane_ring = (uint8_t *)state->dspark_tap_ring_bf16 +
+		(uint64_t)slot->dspark_lane_index * state->dspark_tap_ring_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
 	return(SparkStageModuleCudaStatus(
 		SPARK_QWEN36_MODULE_TAG,
-		cudaMemcpyAsync(
-			(uint8_t *)slot->dspark_tap_buffer + (uint64_t)tap_index * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,
-			slot->hidden_bf16,
-			SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,
-			cudaMemcpyDeviceToDevice,
-			(cudaStream_t)slot->cuda_stream),
+		SparkQwen36LaunchDsparkTapCapture((cudaStream_t)slot->cuda_stream,
+			slot->hidden_bf16,slot->row_positions,lane_ring,tap_index,rows,
+			SPARK_QWEN36_MODEL_HIDDEN_DIMENSION,SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY),
 		"dspark_tap"));
 }
 
@@ -2585,6 +2677,9 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	SparkStatus status;
 	slot->replay_frame = prefill != 0 && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u ? 1u : 0u;
 	slot->verify_frame = prefill != 0 && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u ? 1u : 0u;
+	/* The tap ring is keyed per lane; record which lane this frame walks so the
+	 * tap capture can target the right ring window. */
+	slot->dspark_lane_index = prefill != 0 ? prefill->lane_index : context->decode_batch->row_lane_indices[0];
 	status = SparkQwen36ModuleUploadRows(state,slot,context,frame,prefill,rows);
 	uint32_t layer;
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u )
@@ -2691,10 +2786,17 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
 	{
 		status = SparkQwen36ModuleRunLayer(state,slot,context->kv_block_table,prefill,layer,rows);
-		if ( status == SPARK_STATUS_OK &&
-		     ((context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u ||
-		      state->decode_state_dump_dir != 0) )
-			status = SparkQwen36ModuleCaptureDsparkTap(state,slot,layer);
+		/* Capture the tap layers' hiddens for EVERY walked position into the
+		 * per-lane ring. Every frame that walks the target (prefill = whole
+		 * prompt, decode/draft-after = one committed token, verify/replay = the
+		 * block/replay prefix) writes its rows at their ABSOLUTE positions; the
+		 * ring is last-write-wins and the context build reads only the committed
+		 * prefix, so a speculative row never enters the context unless it is
+		 * later committed at that exact position (in which case this frame IS
+		 * the walk that produced its hidden - matching z-lab, which reads the
+		 * context from the verify forward's committed prefix). */
+		if ( status == SPARK_STATUS_OK && state->dspark_weights.armed != 0u )
+			status = SparkQwen36ModuleCaptureDsparkTap(state,slot,layer,rows);
 	}
 	/* Divergence bisect: with SPARK_QWEN36_DECODE_STATE_DUMP_DIR set, every
 	 * DECODE frame (prefill == 0; the verify/replay prefills are excluded)
@@ -2747,7 +2849,7 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		char path[512];
 		FILE *dump;
 		if ( tap_host != 0 && hidden_host != 0 &&
-		     cudaMemcpy(tap_host,slot->dspark_tap_buffer,(size_t)tap_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
+		     cudaMemcpy(tap_host,(uint8_t *)state->dspark_tap_ring_bf16 + (uint64_t)slot->dspark_lane_index * state->dspark_tap_ring_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES + (position & (uint64_t)SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY_MASK) * SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,(size_t)tap_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
 		     cudaMemcpy(hidden_host,slot->hidden_bf16,(size_t)SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess )
 		{
 			snprintf(path,sizeof(path),"%s/decode_%llu_taps.bin",state->decode_state_dump_dir,(unsigned long long)position);
