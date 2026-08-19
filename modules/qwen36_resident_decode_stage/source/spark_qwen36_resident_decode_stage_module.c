@@ -2226,34 +2226,62 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 				SPARK_QWEN36_DSPARK_SELECTOR_RANK,H,view->draft_token_ids);
 		if ( error == cudaSuccess )
 			error = cudaStreamSynchronize(stream);
-		/* First-call dump for the end-to-end rail (tools/qwen36_dspark_e2e_parity.py):
-		 * the taps, the anchor, the base position and the emitted drafts. Nothing
+		/* Dump for the end-to-end rail (tools/qwen36_dspark_e2e_parity.py): the taps,
+		 * the anchor, the base position and the emitted drafts. Nothing
 		 * vocabulary-wide is written any more - the selector never materializes a
-		 * logits tile, so the rail gates on the DRAFT IDS, which depend on the
-		 * whole forward plus the selector. */
+		 * logits tile, so the rail gates on the DRAFT IDS, which depend on the whole
+		 * forward plus the selector.
+		 *
+		 * Default: the first frame only, into /tmp - one case for the rail. With
+		 * SPARK_QWEN36_DSPARK_DUMP_DIR set: EVERY frame, keyed by base position, as
+		 * step_<position>_{taps,c0,basepos,drafts}.bin - the per-step series
+		 * tools/qwen36_dspark_trajectory_bisect.py turns into the trajectory table
+		 * (which step first diverges from the reference, which step's tap state first
+		 * goes degenerate). 51 KB per step, so a 20-step bisect costs 1 MB. */
 		if ( error == cudaSuccess )
 		{
 			static int dspark_dump_done = 0;
-			if ( dspark_dump_done == 0 )
+			const char *dump_directory = getenv("SPARK_QWEN36_DSPARK_DUMP_DIR");
+			uint32_t per_step = dump_directory != 0 && dump_directory[0] != '\0' ? 1u : 0u;
+			if ( per_step != 0u || dspark_dump_done == 0 )
 			{
 				const uint64_t tap_bytes = (uint64_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * H * sizeof(uint16_t);
 				uint16_t *tap_host = (uint16_t *)malloc((size_t)tap_bytes);
 				uint64_t base_position = view->base_position;
 				uint32_t anchor = 0u;
+				char path[512];
 				FILE *dump;
 				dspark_dump_done = 1;
 				if ( tap_host != 0 &&
 				     cudaMemcpy(tap_host,slot->dspark_tap_buffer,(size_t)tap_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
 				     cudaMemcpy(&anchor,slot->output_token_ids,sizeof(anchor),cudaMemcpyDeviceToHost) == cudaSuccess )
 				{
-					dump = fopen("/tmp/dspark_taps.bin","wb");
+					if ( per_step != 0u )
+						snprintf(path,sizeof(path),"%s/step_%llu_taps.bin",dump_directory,(unsigned long long)base_position);
+					else
+						snprintf(path,sizeof(path),"/tmp/dspark_taps.bin");
+					dump = fopen(path,"wb");
 					if ( dump != 0 ) { fwrite(tap_host,1u,(size_t)tap_bytes,dump); fclose(dump); }
-					dump = fopen("/tmp/dspark_c0.bin","wb");
+					if ( per_step != 0u )
+						snprintf(path,sizeof(path),"%s/step_%llu_c0.bin",dump_directory,(unsigned long long)base_position);
+					else
+						snprintf(path,sizeof(path),"/tmp/dspark_c0.bin");
+					dump = fopen(path,"wb");
 					if ( dump != 0 ) { fwrite(&anchor,1u,sizeof(anchor),dump); fclose(dump); }
-					dump = fopen("/tmp/dspark_basepos.bin","wb");
+					if ( per_step != 0u )
+						snprintf(path,sizeof(path),"%s/step_%llu_basepos.bin",dump_directory,(unsigned long long)base_position);
+					else
+						snprintf(path,sizeof(path),"/tmp/dspark_basepos.bin");
+					dump = fopen(path,"wb");
 					if ( dump != 0 ) { fwrite(&base_position,1u,sizeof(base_position),dump); fclose(dump); }
-					dump = fopen("/tmp/dspark_drafts.bin","wb");
+					if ( per_step != 0u )
+						snprintf(path,sizeof(path),"%s/step_%llu_drafts.bin",dump_directory,(unsigned long long)base_position);
+					else
+						snprintf(path,sizeof(path),"/tmp/dspark_drafts.bin");
+					dump = fopen(path,"wb");
 					if ( dump != 0 ) { fwrite(view->draft_token_ids,1u,(size_t)(B - 1u) * sizeof(uint32_t),dump); fclose(dump); }
+					fprintf(stderr,"%s dspark_dump position=%llu anchor=%u mode=%s\n",SPARK_QWEN36_MODULE_TAG,
+						(unsigned long long)base_position,anchor,per_step != 0u ? "per-step" : "first-frame");
 				}
 				free(tap_host);
 			}

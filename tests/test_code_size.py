@@ -513,7 +513,17 @@ from pathlib import Path
 # walked a verify now gets a one-row GDN_RESTORE_FIRST over the committed token
 # C0 when no replay ran for it.
 # 171809 is the exact count.
-CEILING = 171809
+# +173: the trajectory bisect rail (kernel lane). The module's draft dump gains
+# a per-step mode (SPARK_QWEN36_DSPARK_DUMP_DIR -> step_<position>_*.bin, every
+# frame, 51 KB/step) and tools/qwen36_dspark_trajectory_bisect.py turns the
+# series into the table that separates a DFlash2 defect from a target-trajectory
+# defect per step (module vs reference drafts, parity, distinct count, repeat
+# degeneracy, mean top-1 unary; then the first-divergence / first-degenerate
+# answers). The tap degeneracy at position 2 predates the token-15 divergence,
+# so the capture is the next suspect and this rail is how the next live run is
+# measured.
+# 171982 is the exact count.
+CEILING = 171982
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
