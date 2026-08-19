@@ -473,7 +473,11 @@ from pathlib import Path
 # silent-divergence fix, unified 2bd2673) - the chunk/step fp32-rounding
 # difference accumulated per round and decayed acceptance.
 # 169356 is the exact count.
-CEILING = 169356
+# +46: the drafter attention applies per-head norm+rope in f32 at
+# attention time (the original dual-source rounding path); the bf16
+# pre-prepped q/k flipped round-1 drafts.
+# 169402 is the exact count.
+CEILING = 169402
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

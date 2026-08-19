@@ -268,7 +268,7 @@ extern cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQwen3
 extern cudaError_t SparkQwen36LaunchDsparkTapStore(cudaStream_t stream, const void *hidden_bf16, const uint64_t *row_positions, void *taps_bf16, uint32_t rows, uint32_t tap_index, uint32_t hidden_dim, uint32_t tap_layers);
 extern cudaError_t SparkQwen36LaunchDsparkKPrep(cudaStream_t stream, void *k_bf16, const void *k_norm_bf16, const uint64_t *positions, uint32_t rows);
 extern cudaError_t SparkQwen36LaunchDsparkQPrep(cudaStream_t stream, void *q_bf16, const void *q_norm_bf16, const uint64_t *positions, uint32_t rows);
-extern cudaError_t SparkQwen36LaunchDsparkCacheAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, void *attn_out_bf16, uint32_t block_rows, uint32_t nkv);
+extern cudaError_t SparkQwen36LaunchDsparkCacheAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, const uint64_t *positions, void *attn_out_bf16, uint32_t block_rows, uint32_t nkv, uint32_t window);
 extern cudaError_t SparkQwen36LaunchDsparkMarkov(cudaStream_t stream, const void *markov_w1_bf16, const void *markov_w2_bf16, const uint32_t *prev_token_ids, uint32_t draft_count, uint32_t rank, void *bias_out, uint32_t vocab);
 extern cudaError_t SparkQwen36LaunchDsparkConv(cudaStream_t stream, const void *x_bf16, const void *delta_bf16, const void *base_bf16, void *out_bf16, uint32_t block_size, uint32_t num_groups, uint32_t group_size, uint32_t side);
 /* Small-batch GEMM geometry, mirrors the cuda translation unit. */
@@ -2228,11 +2228,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->v,conv_h,kv_v + (uint64_t)window * 1024u,B);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchDsparkKPrep(stream,kv_k,lw->k_norm_bf16,state->dflash_positions,nkv);
-		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchDsparkQPrep(stream,q,lw->q_norm_bf16,state->dflash_positions + window,B);
-		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchDsparkCacheAttn(stream,q,kv_k,kv_v,attn_out,B,nkv);
+			error = SparkQwen36LaunchDsparkCacheAttn(stream,q,kv_k,kv_v,lw->q_norm_bf16,lw->k_norm_bf16,state->dflash_positions,attn_out,B,nkv,window);
 		if ( layer == 0u && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
 		{
 			static int l0_dump_done = 0;

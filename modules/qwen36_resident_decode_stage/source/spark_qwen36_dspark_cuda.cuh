@@ -149,15 +149,23 @@ static __global__ void SparkQwen36DsparkQPrepKernel(
 	}
 }
 
-/* Cache-based drafter attention. One CTA per (block row, query head),
- * 128 threads over head_dim. K/V live in one staged array:
- *   [0 .. ctx_len-1]   = context cache (from the target taps, pre-roped)
- *   [ctx_len .. nkv-1] = the block's own rows (anchor first, pre-roped)
- * Q arrives pre-normed/pre-roped. Online softmax: scores to shared, max/exp
- * reduce, then per-dim weighted V accumulation. */
+
+/* Cache-based drafter attention, self-contained arithmetic: reads the RAW
+ * q/k projections (bf16) and applies per-head RMSNorm + RoPE in f32 at
+ * attention time - the original dual-source kernel's exact rounding path
+ * (bf16 storage of projections, f32 norm+rope, bf16 only at the output).
+ * Pre-prepped bf16 q/k lost drafter fidelity (round-1 drafts flipped).
+ * One CTA per (block row, query head), 128 threads over head_dim.
+ *   q:  [block_rows, 32*128] raw projection, roped at positions[window+row]
+ *   k:  [nkv, 8*128] raw projections (context window || block rows),
+ *       each row roped at positions[row]
+ *   v:  [nkv, 8*128] raw projections (no norm, no rope)
+ */
 static __global__ void SparkQwen36DsparkCacheAttnKernel(
 	const __nv_bfloat16 *q_bf16, const __nv_bfloat16 *k_bf16, const __nv_bfloat16 *v_bf16,
-	__nv_bfloat16 *out_bf16, uint32_t nkv)
+	const __nv_bfloat16 *q_norm_bf16, const __nv_bfloat16 *k_norm_bf16,
+	const uint64_t *positions, __nv_bfloat16 *out_bf16, uint32_t block_rows,
+	uint32_t nkv, uint32_t window)
 {
 	extern __shared__ float scores[];
 	const uint32_t row = blockIdx.x;
@@ -168,55 +176,95 @@ static __global__ void SparkQwen36DsparkCacheAttnKernel(
 	const uint32_t q_heads = SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS;
 	const uint32_t kv_group = head / (q_heads / kv_heads);
 	float q[SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM];
-	float acc, max_score, sum_exp, coeff;
-	__shared__ float total_max, total_sum;
-	uint32_t kv;
+	float sum, scale, f, c, sn, other;
+	__shared__ float total_sum;
+	uint32_t kv, e;
+	uint64_t q_pos, k_pos;
 	if ( d >= head_dim )
 		return;
+	/* q: load raw, f32 per-head RMSNorm, rope at the row's position. */
+	q_pos = positions[window + row];
+	sum = 0.0f;
 	for (kv = 0u; kv < head_dim; kv++)
+	{
 		q[kv] = __bfloat162float(q_bf16[((uint64_t)row * q_heads + head) * head_dim + kv]);
-	/* scores: each thread handles rows strided by blockDim */
+		sum = fmaf(q[kv], q[kv], sum);
+	}
+	scale = rsqrtf(sum / (float)head_dim + 1e-6f);
+	for (kv = 0u; kv < head_dim; kv++)
+		q[kv] *= scale * __bfloat162float(q_norm_bf16[kv]);
+	for (kv = 0u; kv < SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM; kv += 2u)
+	{
+		f = (float)q_pos * SparkQwen36DsparkRopeFrequency(kv >> 1u);
+		c = cosf(f);
+		sn = sinf(f);
+		{
+			float re = q[kv], im = q[kv + 1u];
+			q[kv] = re * c - im * sn;
+			q[kv + 1u] = re * sn + im * c;
+		}
+	}
+	/* scores: each thread handles strided kv rows; per row, load raw k,
+	 * f32 norm (over the head's 128 dims it loads), rope at positions[row]. */
 	for (kv = d; kv < nkv; kv += head_dim)
 	{
 		const __nv_bfloat16 *krow = k_bf16 + ((uint64_t)kv * kv_heads + kv_group) * head_dim;
+		float kn[SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM];
 		float s = 0.0f;
-		uint32_t e;
+		sum = 0.0f;
 		for (e = 0u; e < head_dim; e++)
-			s = fmaf(q[e], __bfloat162float(krow[e]), s);
+		{
+			kn[e] = __bfloat162float(krow[e]);
+			sum = fmaf(kn[e], kn[e], sum);
+		}
+		scale = rsqrtf(sum / (float)head_dim + 1e-6f);
+		k_pos = positions[kv];
+		for (e = 0u; e < head_dim; e++)
+			kn[e] *= scale * __bfloat162float(k_norm_bf16[e]);
+		for (e = 0u; e < SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM; e += 2u)
+		{
+			f = (float)k_pos * SparkQwen36DsparkRopeFrequency(e >> 1u);
+			c = cosf(f);
+			sn = sinf(f);
+			{
+				float re = kn[e], im = kn[e + 1u];
+				kn[e] = re * c - im * sn;
+				kn[e + 1u] = re * sn + im * c;
+			}
+		}
+		(void)other;
+		for (e = 0u; e < head_dim; e++)
+			s = fmaf(q[e], kn[e], s);
 		scores[kv] = s * 0.088388347f; /* 1/sqrt(128) */
 	}
 	__syncthreads();
-	/* max + softmax sum (block reduce through shared scalars) */
+	/* softmax */
 	if ( d == 0u )
 	{
-		total_max = -3.4028235e38f;
-		total_sum = 0.0f;
-	}
-	__syncthreads();
-	if ( d == 0u )
-	{
+		float m = -3.4028235e38f;
 		for (kv = 0u; kv < nkv; kv++)
-			total_max = fmaxf(total_max, scores[kv]);
-	}
-	__syncthreads();
-	{
-		float local_sum = 0.0f;
-		for (kv = d; kv < nkv; kv += head_dim)
+			m = fmaxf(m, scores[kv]);
+		scores[0] = m; /* reuse slot 0.. no: keep max in total_sum */
+		total_sum = 0.0f;
 		{
-			scores[kv] = __expf(scores[kv] - total_max);
-			local_sum += scores[kv];
+			float local_sum = 0.0f;
+			float mx = m;
+			for (kv = 0u; kv < nkv; kv++)
+			{
+				scores[kv] = __expf(scores[kv] - mx);
+				local_sum += scores[kv];
+			}
+			total_sum = local_sum;
 		}
-		atomicAdd(&total_sum, local_sum);
 	}
 	__syncthreads();
 	/* weighted V: thread d accumulates its dim over all rows */
-	acc = 0.0f;
-	(void)max_score;
-	(void)sum_exp;
-	(void)coeff;
-	for (kv = 0u; kv < nkv; kv++)
-		acc = fmaf(scores[kv], __bfloat162float(v_bf16[((uint64_t)kv * kv_heads + kv_group) * head_dim + d]), acc);
-	out_bf16[((uint64_t)row * q_heads + head) * head_dim + d] = __float2bfloat16(acc / total_sum);
+	{
+		float acc = 0.0f;
+		for (kv = 0u; kv < nkv; kv++)
+			acc = fmaf(scores[kv], __bfloat162float(v_bf16[((uint64_t)kv * kv_heads + kv_group) * head_dim + d]), acc);
+		out_bf16[((uint64_t)row * q_heads + head) * head_dim + d] = __float2bfloat16(acc / total_sum);
+	}
 }
 
 /* Grouped dynamic depthwise conv (DFlash2), fused into ONE elementwise pass — no
