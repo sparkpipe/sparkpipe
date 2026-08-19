@@ -44,4 +44,4 @@ reached - COMPSEC-17 scores get their own column then).
 - Flash: keep-old CSA landed (23 exact); staging FULLY EXONERATED (frame-149 = anchor 290@150 + 7 distinct drafts sequential - mixed-staging falsified; pad = first-decode only, all-identical per-row); BUG = layer-0 wq_a FP8 pair batch-coupled activation scale (ch 256+ at 128-tile boundary); FIX DRAFT EXISTS in fork clone (multi-row -> per-row-exact routing) - build + r1_wq_a==delta_ge_raw verification pending; then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-19 02:50 UTC (27B: DFlash2 adoption GO - spec landed, FP8-head check is step zero, W1-W8 sequence issued; Flash: spark4 verification of 47c24f2 still pending; CI green incl. qwen36 gate; no HWM change since 8.03)
+Last update: 2026-08-19 02:52 UTC (27B: sampling decisively closed (4x negative); W1+W8 = only active tasks, W8 oracles are the W2/W3 prerequisite; DFlash2 spec v3 landed (gates x4, budget absolutes); Flash: spark4 verification of 47c24f2 still pending; CI green; no HWM change since 8.03)
