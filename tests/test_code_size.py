@@ -704,7 +704,14 @@ from pathlib import Path
 # acceptance lever. It also surfaces the zero-acceptance suffix (the context
 # collapse) whose onset is the live bisect target.
 # 173604 is the exact count.
-CEILING = 173604
+# +496: the context probe and contract sweep (kernel lane). The clean-context
+# measurement (0.550/round vs the spec's 0.853) plus the eight-variant wiring
+# sweep prove the acceptance gap is the PROMPT CLASS (thinking-style prose =
+# maximum entropy), not a kernel, not the context corruption - and the probe
+# dates the corruption (taps bit-identical at 232, 74-87% differing from 235)
+# as the recurrence race the serialization fixes.
+# 174100 is the exact count.
+CEILING = 174100
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
