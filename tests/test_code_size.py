@@ -470,7 +470,10 @@ from pathlib import Path
 # checkpoint (drafts 163572 235738 160199 87342 8624 6501 5162, unary
 # logits BITWISE equal, max|delta|=0) + the SPARK_QWEN36_TARGET override.
 # 171587 is the exact count.
-CEILING = 171587
+# +5: serving-path diagnostics (pack-load + block-forward entry fprintfs
+# to name the deployed arming failure).
+# 171592 is the exact count.
+CEILING = 171592
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
