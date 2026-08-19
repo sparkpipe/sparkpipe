@@ -126,6 +126,39 @@ static __global__ void SparkQwen36DsparkAttnKernel(
 		attn_out_bf16[((uint64_t)q_pos * SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS + q_head) * head_dim + d] = __float2bfloat16(acc[d] / sum_exp);
 }
 
+/* Grouped dynamic depthwise conv (DFlash2), fused into ONE elementwise pass — no
+ * im2col. One CTA per (block position, group); threads span the group_size channels.
+ *   x:    [block_size, H] BF16
+ *   delta: [block_size, taps, num_groups] F32 (per-token, from kernel_projection)
+ *   base:  [taps, H] BF16 (learned base, one side)
+ *   out[i,c] = sum_t (base[t,c] + delta[i,t,g(c)]) * x[i-t,c], taps zero where
+ *              (i & (block_size-1)) < t.
+ */
+static __global__ void SparkQwen36DsparkConvKernel(
+	const __nv_bfloat16 *x_bf16, const float *delta, const __nv_bfloat16 *base_bf16,
+	__nv_bfloat16 *out_bf16, uint32_t block_size, uint32_t num_groups, uint32_t group_size)
+{
+	const uint32_t pos = blockIdx.x;
+	const uint32_t group = blockIdx.y;
+	const uint32_t c = group * group_size + threadIdx.x;
+	const uint32_t H = num_groups * group_size;
+	uint32_t p;
+	float x0, d0, out;
+	if ( c >= H )
+		return;
+	p = (block_size & (block_size - 1u)) == 0u ? pos & (block_size - 1u) : pos % block_size;
+	x0 = __bfloat162float(x_bf16[(uint64_t)pos * H + c]);
+	d0 = delta[((uint64_t)pos * 2u + 0u) * num_groups + group];
+	out = (__bfloat162float(base_bf16[0u * H + c]) + d0) * x0;
+	if ( p >= 1u )
+	{
+		float x1 = __bfloat162float(x_bf16[((uint64_t)(pos - 1u)) * H + c]);
+		float d1 = delta[((uint64_t)pos * 2u + 1u) * num_groups + group];
+		out += (__bfloat162float(base_bf16[1u * H + c]) + d1) * x1;
+	}
+	out_bf16[(uint64_t)pos * H + c] = __float2bfloat16(out);
+}
+
 /* Markov bigram bias: bias[v] = w2 @ w1[prev_token], applied to the draft
  * logits. One CTA, one thread per vocab shard. */
 static __global__ void SparkQwen36DsparkMarkovKernel(

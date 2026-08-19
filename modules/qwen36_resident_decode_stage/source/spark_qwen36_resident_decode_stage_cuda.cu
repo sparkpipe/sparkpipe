@@ -2222,7 +2222,14 @@ extern "C" cudaError_t SparkQwen36LaunchAccumU64Max(cudaStream_t stream, uint64_
 extern "C" cudaError_t SparkQwen36LaunchDsparkAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, void *attn_out_bf16, uint32_t block_size, uint64_t base_position)
 {
 	dim3 grid(block_size, 8u);
-	SparkQwen36DsparkAttnKernel<<<grid, 5u, 0u, stream>>>((const __nv_bfloat16 *)q_bf16, (const __nv_bfloat16 *)k_bf16, (const __nv_bfloat16 *)v_bf16, (const __nv_bfloat16 *)q_norm_bf16, (const __nv_bfloat16 *)k_norm_bf16, (__nv_bfloat16 *)attn_out_bf16, block_size, base_position);
+	SparkQwen36DsparkAttnKernel<<<grid, SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS / SPARK_QWEN36_DSPARK_ATTN_KV_HEADS, 0u, stream>>>((const __nv_bfloat16 *)q_bf16, (const __nv_bfloat16 *)k_bf16, (const __nv_bfloat16 *)v_bf16, (const __nv_bfloat16 *)q_norm_bf16, (const __nv_bfloat16 *)k_norm_bf16, (__nv_bfloat16 *)attn_out_bf16, block_size, base_position);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkConv(cudaStream_t stream, const void *x_bf16, const void *delta_f32, const void *base_bf16, void *out_bf16, uint32_t block_size, uint32_t num_groups, uint32_t group_size)
+{
+	dim3 grid(block_size, num_groups);
+	SparkQwen36DsparkConvKernel<<<grid, group_size, 0u, stream>>>((const __nv_bfloat16 *)x_bf16, (const float *)delta_f32, (const __nv_bfloat16 *)base_bf16, (__nv_bfloat16 *)out_bf16, block_size, num_groups, group_size);
 	return(cudaGetLastError());
 }
 
