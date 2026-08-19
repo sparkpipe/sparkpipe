@@ -16,7 +16,9 @@
 // winner reduces locally.
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
@@ -52,6 +54,7 @@ typedef struct SparkK3RunnerTpContext
 	uint32_t boundary;
 	uint32_t segments;
 	uint32_t phase;
+	uint32_t gate_up_elements;
 } SparkK3RunnerTpContext;
 
 static void K3RunnerTpCompletion(void *context,
@@ -63,6 +66,16 @@ static void K3RunnerTpCompletion(void *context,
 	uint32_t rows = tp->rows;
 	uint32_t elements = rows * K3_HIDDEN;
 	uint16_t *fused = tp->fused;
+	if ( tp->phase == 2u )
+	{
+		/* the gate|up segment: write the SUMMED partial back into the scratch
+		 * the w1 half left it in, so SiTU runs on the full-width gate|up */
+		cudaMemcpyAsync(b->gate_up_bf16, fused,
+			(uint64_t)tp->gate_up_elements * 2u,
+			cudaMemcpyDeviceToDevice, tp->stream);
+		delete tp;
+		return;
+	}
 	if ( tp->phase == 0u )
 	{
 		/* the attention segment: restart at a boundary, accumulate otherwise */
@@ -83,13 +96,22 @@ static void K3RunnerTpCompletion(void *context,
 }
 
 // The per-phase pack: phase 0 stages attention_out, phase 1 stages hidden
-// (routed_up / dense_down) and, for routed layers, shared_out after it.
+// (routed_up / dense_down) and, for routed layers, shared_out after it, phase 2
+// stages the w1 gate|up partial (packed_rows x 2*intermediate wide).
 __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
-	const uint16_t *hidden,const uint16_t *shared,uint16_t *fused,
-	uint32_t rows,uint32_t phase,uint32_t segments)
+	const uint16_t *hidden,const uint16_t *shared,const uint16_t *gate_up,
+	uint16_t *fused,uint32_t rows,uint32_t phase,uint32_t segments,
+	uint32_t gate_up_elements)
 {
 	uint32_t i = (blockIdx.x * blockDim.x) + threadIdx.x;
 	uint32_t elements = rows * K3_HIDDEN;
+	if ( phase == 2u )
+	{
+		if ( i >= gate_up_elements )
+			return;
+		fused[i] = gate_up[i];
+		return;
+	}
 	if ( i >= elements )
 		return;
 	if ( phase == 0u )
@@ -161,6 +183,7 @@ typedef struct SparkK3RunnerState
 	int collective_created;
 	SparkTpDeviceCollective device_collective;
 	int device_collective_created;
+	uint32_t tp_rank;
 	uint16_t *fused_device;
 	uint32_t fused_rows;
 	uint64_t tp_next_ordinal;
@@ -198,6 +221,11 @@ typedef struct SparkK3RunnerState
 	float *output_score;
 	uint32_t *output_token_host;
 	float *output_score_host;
+	/* per-token device tensors for the serial-TP half step (single-token decode) */
+	uint32_t *positions;        /* rows */
+	uint32_t *context_length;   /* rows */
+	uint32_t *sequence_of_row;  /* rows */
+	uint32_t *kda_state_index;  /* sequences */
 	cudaStream_t stream;
 	uint32_t max_rows;
 	uint32_t max_context;
@@ -345,11 +373,46 @@ static uint32_t K3RunnerLayerCount(uint32_t stage_index)
 // stage to the host, all-reduce in place, upload. The sync-per-projection is
 // the host-collective tier's known cost; the device-direct tier replaces it
 // without changing this file's contract.
+static void K3RunnerEmbedCompletion(void *context,
+	const SparkTpDeviceCollectiveCompletion *completion)
+{
+	(void)context;
+	(void)completion;
+}
+
 static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t stream,
 	const uint16_t *device_values, uint32_t rows)
 {
 	SparkStatus status;
 	uint32_t elements = rows * K3_HIDDEN;
+	if ( state->device_collective_created != 0 &&
+		state->device_collective.backend_kind ==
+			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
+	{
+		/* THE DEVICE TIER: the embedding is slot-encoded (the out-of-slice
+		 * rank contributes zero), so ONE stream-ordered all-reduce of the
+		 * rows x K3_HIDDEN buffer IS the embedding exchange - no sync, no
+		 * host staging. The buffer reduces in place; nothing folds. NCCL
+		 * only: the hidden-transport tier cannot narrow its pre-registered
+		 * frame. */
+		SparkTpDeviceCollectiveSubmission submission;
+		memset(&submission, 0, sizeof(submission));
+		submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+		submission.descriptor_bytes = sizeof(submission);
+		submission.slot_index = 0u;
+		submission.active_sequence_count = rows;
+		submission.flags =
+			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+		submission.ordinal = state->tp_next_ordinal++;
+		submission.reserved0 = elements;
+		submission.local_device = device_values;
+		submission.full_device = (void *)device_values;
+		submission.cuda_stream = stream;
+		submission.completion_function = K3RunnerEmbedCompletion;
+		submission.completion_context = 0;
+		return SparkTpDeviceCollectiveSubmitBf16(&state->device_collective,
+			&submission);
+	}
 	if ( state->collective_created == 0 )
 		return SPARK_STATUS_OK;
 	cudaError_t error = cudaStreamSynchronize(stream);
@@ -376,6 +439,68 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 // phase 1 does the MoE's routed_up (layer 0's dense_down) and, for routed
 // layers, the shared_w2. At tp_degree 1 the layer folded its own projections
 // (tp_sharded = 0) and the hook is a no-op.
+/* ENV-GATED STATE DUMPS for the offline equivalence bisect: K3_HOOK_DUMP =
+ * a path prefix; the hook writes the raw BF16 states per rank/layer/phase
+ * (attention_out, hidden, shared_out, the AttnRes partial). The tp_degree 1
+ * leg dumps at the hook entry (the layer's own values); the TP4 legs dump
+ * again after the all-reduce and the fold - the two are directly
+ * comparable. */
+static const char *K3RunnerDumpPrefix(void)
+{
+	static const char *prefix = 0;
+	static int checked = 0;
+	if ( checked == 0 )
+	{
+		prefix = getenv("K3_HOOK_DUMP");
+		checked = 1;
+	}
+	return prefix;
+}
+
+static void K3RunnerDumpTensor(const char *prefix, uint32_t rank,
+	uint32_t layer, uint32_t phase, const char *stage, const char *name,
+	const uint16_t *device, uint32_t elements)
+{
+	char path[320];
+	FILE *file;
+	snprintf(path, sizeof(path), "%s_r%u_l%u_p%u_%s_%s.bin",
+		prefix, rank, layer, phase, stage, name);
+	file = fopen(path, "wb");
+	if ( file == 0 )
+		return;
+	{
+		std::vector<uint16_t> host(elements);
+		cudaMemcpy(host.data(), device, (uint64_t)elements * 2u,
+			cudaMemcpyDeviceToHost);
+		fwrite(host.data(), 2u, elements, file);
+	}
+	fclose(file);
+}
+
+static void K3RunnerHookDump(SparkK3RunnerState *state, uint32_t rank,
+	uint32_t layer, uint32_t phase, const char *stage, uint32_t elements)
+{
+	const char *prefix = K3RunnerDumpPrefix();
+	K3LayerBuffers *b;
+	if ( prefix == 0 || prefix[0] == '\0' )
+		return;
+	b = state->dispatch.buffers;
+	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "attn_out",
+		b->attention_out_bf16, elements);
+	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "hidden",
+		b->hidden_bf16, elements);
+	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "shared",
+		b->shared_out_bf16, elements);
+	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "partial",
+		b->attnres_partial_bf16, elements);
+	/* the MLA intermediates: the per-head query (rows x rank q dim) and the
+	 * gated value (rows x rank v dim) */
+	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "query",
+		b->query_bf16, state->rows * K3_RANK_DIM(b, mla_q_up_rows, K3_MLA_Q_DIM));
+	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "value",
+		b->value_bf16, state->rows * K3_RANK_DIM(b, mla_out_input, K3_MLA_OUT_DIM));
+}
+
 static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint32_t layer, uint32_t phase)
 {
@@ -386,16 +511,77 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint32_t boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u;
 	uint32_t elements = rows * K3_HIDDEN;
 	uint32_t segments = phase == 0u ? 1u : (layer == 0u ? 1u : 2u);
+	/* THE KDA PHASE-0 SOURCE IS hidden_bf16, NOT attention_out: the o_proj
+	 * writes its output there (the in-place GEMM fix in layer.cuh). The MLA
+	 * o_proj still lands in attention_out. */
+	uint16_t *phase0_source =
+		(K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT)
+			? b->hidden_bf16 : b->attention_out_bf16;
+	K3RunnerHookDump(state, state->tp_rank, layer, phase, "pre", elements);
 	if ( b->tp_sharded == 0u )
 		return;
+	/* THE w1 GATE|UP ALL-REDUCE. The input-split w1 emits a FULL-width gate|up
+	 * partial (packed_rows x 2*intermediate), and SiTU is non-linear, so the
+	 * partial must be summed BEFORE SiTU. This is the point the replay harness
+	 * folds host-side; the serving tier does it here (NCCL honours reserved0;
+	 * the hidden-transport tier keeps its pre-registered 7168 frame). */
+	if ( phase == 2u )
+	{
+		const uint32_t gate_up_elements =
+			rows * K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u);
+		if ( state->device_collective_created != 0 )
+		{
+			K3RunnerFusedPackKernel<<<(gate_up_elements + 255u) / 256u,
+				256u, 0, stream>>>(
+				0, 0, 0, b->gate_up_bf16, state->fused_device,
+				rows, 2u, 1u, gate_up_elements);
+			SparkK3RunnerTpContext *completion_context = new SparkK3RunnerTpContext;
+			completion_context->fused = state->fused_device;
+			completion_context->buffers = b;
+			completion_context->stream = stream;
+			completion_context->rows = rows;
+			completion_context->boundary = 0u;
+			completion_context->segments = 1u;
+			completion_context->phase = 2u;
+			completion_context->gate_up_elements = gate_up_elements;
+			SparkTpDeviceCollectiveSubmission submission;
+			memset(&submission, 0, sizeof(submission));
+			submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+			submission.descriptor_bytes = sizeof(submission);
+			submission.slot_index = 0u;
+			submission.active_sequence_count = rows;
+			submission.flags =
+				SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+			submission.ordinal = state->tp_next_ordinal++;
+			submission.reserved0 = gate_up_elements;
+			submission.local_device = state->fused_device;
+			submission.full_device = state->fused_device;
+			submission.cuda_stream = stream;
+			submission.completion_function = K3RunnerTpCompletion;
+			submission.completion_context = completion_context;
+			SparkTpDeviceCollectiveSubmitBf16(&state->device_collective, &submission);
+			return;
+		}
+		if ( state->collective_created != 0 )
+		{
+			cudaStreamSynchronize(stream);
+			cudaMemcpy(state->staging_values, b->gate_up_bf16,
+				(uint64_t)gate_up_elements * 2u, cudaMemcpyDeviceToHost);
+			SparkTpCollectiveAllReduceSumBf16(&state->collective,
+				state->staging_values, gate_up_elements, state->staging_scratch);
+			cudaMemcpy(b->gate_up_bf16, state->staging_values,
+				(uint64_t)gate_up_elements * 2u, cudaMemcpyHostToDevice);
+		}
+		return;
+	}
 	if ( state->device_collective_created != 0 )
 	{
 		/* THE DEVICE TIER: one pack kernel + ONE stream-ordered combine
 		 * submission per phase; the completion folds the summed segment(s)
 		 * into the partial on the same stream. No sync, no host staging. */
 		K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
-			b->attention_out_bf16,b->hidden_bf16,b->shared_out_bf16,
-			state->fused_device,rows,phase,segments);
+			phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
+			state->fused_device,rows,phase,segments,0u);
 		SparkK3RunnerTpContext *completion_context = new SparkK3RunnerTpContext;
 		completion_context->fused = state->fused_device;
 		completion_context->buffers = b;
@@ -404,6 +590,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		completion_context->boundary = boundary;
 		completion_context->segments = segments;
 		completion_context->phase = phase;
+		completion_context->gate_up_elements = 0u;
 		SparkTpDeviceCollectiveSubmission submission;
 		memset(&submission, 0, sizeof(submission));
 		submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -413,6 +600,10 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		submission.flags =
 			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 		submission.ordinal = state->tp_next_ordinal++;
+		/* the per-phase payload, not the 3-segment frame: phase 0 ships ONE
+		 * segment (14 KB per row), phase 1 one or two - the fixed frame
+		 * tripled phase 0's bytes on the wire */
+		submission.reserved0 = elements * segments;
 		submission.local_device = state->fused_device;
 		submission.full_device = state->fused_device;
 		submission.cuda_stream = stream;
@@ -430,16 +621,16 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		cudaStreamSynchronize(stream);
 		if ( phase == 0u )
 		{
-			cudaMemcpy(state->staging_values, b->attention_out_bf16,
+			cudaMemcpy(state->staging_values, phase0_source,
 				(uint64_t)elements * 2u, cudaMemcpyDeviceToHost);
 			SparkTpCollectiveAllReduceSumBf16(&state->collective,
 				state->staging_values, elements, state->staging_scratch);
-			cudaMemcpy(b->attention_out_bf16, state->staging_values,
+			cudaMemcpy(phase0_source, state->staging_values,
 				(uint64_t)elements * 2u, cudaMemcpyHostToDevice);
 			if ( boundary != 0u )
-				K3PartialSet(b, b->attention_out_bf16, rows, stream);
+				K3PartialSet(b, phase0_source, rows, stream);
 			else
-				K3PartialAdd(b, b->attention_out_bf16, rows, stream);
+				K3PartialAdd(b, phase0_source, rows, stream);
 		}
 		else
 		{
@@ -460,6 +651,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			if ( segments == 2u )
 				K3PartialAdd(b, b->shared_out_bf16, rows, stream);
 		}
+		K3RunnerHookDump(state, state->tp_rank, layer, phase, "post", elements);
 	}
 }
 SparkStatus SparkK3StageRunnerInitialize(
@@ -493,6 +685,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 	runner->owns_embedding = configuration->stage_index == 0u ? 1u : 0u;
 	runner->owns_final_head = configuration->stage_index + 1u == configuration->stage_count ? 1u : 0u;
 	runner->private_state = state;
+	state->tp_rank = configuration->tp_rank;
 	state->stream = (cudaStream_t)configuration->execution_stream;
 	state->max_rows = configuration->max_input_row_count;
 	state->max_context = configuration->resident_sequence_capacity;
@@ -555,12 +748,15 @@ SparkStatus SparkK3StageRunnerInitialize(
 		state->vocab_slice_rows = state->vocab;
 	/* The TP contract: sharded ranks defer the partial epilogues to the hook. */
 	state->dispatch.buffers->tp_sharded = configuration->tp_degree > 1u ? 1u : 0u;
+	/* The hook registers unconditionally: at tp_degree 1 it no-ops (the
+	 * layer folds its own projections) except for the env-gated state dumps
+	 * the equivalence bisect reads. */
+	state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
+	state->dispatch.slice_state->collective_context = state;
 	if ( configuration->tp_degree > 1u )
 	{
 		if ( configuration->tp_collective == 0 )
 			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INVALID_ARGUMENT; }
-		state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
-		state->dispatch.slice_state->collective_context = state;
 		fprintf(stderr, "sparkpipe_k3: creating host collective tp=%u rank=%u port=%u\n",
 			configuration->tp_degree, configuration->tp_rank,
 			configuration->tp_collective->listen_port);
@@ -584,8 +780,12 @@ SparkStatus SparkK3StageRunnerInitialize(
 	if ( configuration->device_collective != 0 )
 	{
 		state->fused_rows = configuration->max_input_row_count;
+		/* The fused stage must hold the widest per-phase payload: the w1
+		 * gate|up is packed_rows x 2*intermediate (24576 u16 at B1), wider
+		 * than the 3*hidden frame the phase 0/1 hooks used. */
 		cudaMalloc(&state->fused_device,
-			(uint64_t)state->fused_rows * 3u * K3_HIDDEN * 2u);
+			(uint64_t)state->fused_rows * K3_TOP_K *
+			(K3_EXPERT_INTERMEDIATE * 2u) * 2u);
 		SparkTpDeviceCollectiveConfig device_config =
 			*configuration->device_collective;
 		/* The K3 combine kernels replace the transport's math for the
@@ -615,8 +815,11 @@ SparkStatus SparkK3StageRunnerInitialize(
 		if ( SparkK3PackLoadEntry(&state->module.pack,"lm_head.weight",&entry) == 0 )
 			state->head_weight = (const uint16_t *)SparkK3PackPayload(&state->module.pack,&entry);
 	}
-	/* Host staging + head slots + the per-step device arrays. */
-	state->staging_capacity = configuration->max_input_row_count * 3u * K3_HIDDEN;
+	/* Host staging + head slots + the per-step device arrays. The stage must
+	 * hold the widest per-phase payload - the w1 gate|up (packed_rows x
+	 * 2*intermediate = 24576 u16 at B1) is wider than the 3*hidden frame. */
+	state->staging_capacity = configuration->max_input_row_count *
+		K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u);
 	state->staging_values = new uint16_t[state->staging_capacity];
 	state->staging_scratch = new uint16_t[state->staging_capacity];
 	state->fused_capacity = state->staging_capacity;
@@ -642,6 +845,19 @@ SparkStatus SparkK3StageRunnerInitialize(
 		(uint64_t)configuration->max_input_row_count * 4u);
 	cudaMalloc(&state->output_score,
 		(uint64_t)configuration->max_input_row_count * 4u);
+	/* per-token tensors for the serial-TP half step (single token, position 0,
+	 * context length 1, sequence 0, state slot 0). */
+	cudaMalloc(&state->positions, 4u);
+	cudaMalloc(&state->context_length, 4u);
+	cudaMalloc(&state->sequence_of_row, 4u);
+	cudaMalloc(&state->kda_state_index, 4u);
+	{
+		uint32_t pos = 0u, ctx = 1u, seq = 0u, st = 0u;
+		cudaMemcpy(state->positions, &pos, 4u, cudaMemcpyHostToDevice);
+		cudaMemcpy(state->context_length, &ctx, 4u, cudaMemcpyHostToDevice);
+		cudaMemcpy(state->sequence_of_row, &seq, 4u, cudaMemcpyHostToDevice);
+		cudaMemcpy(state->kda_state_index, &st, 4u, cudaMemcpyHostToDevice);
+	}
 	state->output_token_host = new uint32_t[configuration->max_input_row_count];
 	state->output_score_host = new float[configuration->max_input_row_count];
 	return SPARK_STATUS_OK;
@@ -725,6 +941,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 			return SPARK_STATUS_INTERNAL_ERROR;
 		if ( K3RunnerReduceBf16(state, stream, b->hidden_bf16, rows) != SPARK_STATUS_OK )
 			return SPARK_STATUS_INTERNAL_ERROR;
+		K3RunnerHookDump(state, runner->tp_rank, 0u, 0u, "embed", rows * K3_HIDDEN);
 	}
 	else
 	{
@@ -875,6 +1092,107 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 	cudaFree(state->head_candidate_score);
 	cudaFree(state->output_token);
 	cudaFree(state->output_score);
+	cudaFree(state->positions);
+	cudaFree(state->context_length);
+	cudaFree(state->sequence_of_row);
+	cudaFree(state->kda_state_index);
 	delete state;
 	runner->private_state = 0;
+}
+
+/* bind.cu's serial-TP half-step ABI (docs/serial_tp_replay.md). */
+extern "C" int32_t K3StageSliceHalf(const void *layer_weights, const void *slice_state, void *layer_buffers, uint32_t layer, uint32_t phase, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, void *stream);
+
+SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t layer, uint32_t phase,
+	const void *hidden_input_bf16, const void *partial_input_bf16, void *partial_output_bf16)
+{
+	SparkK3RunnerState *state;
+	SparkK3Dispatch *d;
+	K3LayerBuffers *b;
+	cudaStream_t stream;
+	uint32_t rows, sequences, packed_rows;
+	int32_t status;
+	if ( runner == 0 || runner->private_state == 0 || partial_output_bf16 == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	state = (SparkK3RunnerState *)runner->private_state;
+	d = &state->dispatch;
+	if ( layer < d->first_layer || layer >= d->first_layer + d->layer_count )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( phase == 0u && hidden_input_bf16 == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	b = d->buffers;
+	stream = state->stream;
+	rows = 1u;            /* the replay is single-token decode (B1) */
+	sequences = 1u;
+	packed_rows = rows * K3_TOP_K;
+	if ( phase == 0u )
+		cudaMemcpy(b->hidden_bf16, hidden_input_bf16,
+			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
+	if ( phase == 2u )
+	{
+		/* MoE rest: feed the all-reduced gate|up back into the scratch the w1
+		 * half left it in, so SiTU runs on the summed partial. */
+		cudaMemcpy(b->gate_up_bf16, partial_input_bf16,
+			(uint64_t)packed_rows * (K3_EXPERT_INTERMEDIATE * 2u) * 2u,
+			cudaMemcpyDeviceToDevice);
+	}
+	else if ( partial_input_bf16 != 0 )
+		cudaMemcpy(b->attnres_partial_bf16, partial_input_bf16,
+			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
+	/* Fill the per-step device tensors the normal dispatch step would set
+	 * (the half step bypasses SparkK3DispatchStep). The routing arrays are
+	 * consumed by the MoE path; the dense/group prefixes by every GEMM. */
+	b->dense_row_offset = state->dense_row_offset;
+	/* The non-grouped GEMMs derive their row extent from
+	 * dense_row_offset[1]-[0] (the dispatch step's launch wrote it; the half
+	 * step bypasses that launch), so write [0, rows] here or every dense
+	 * projection sees zero rows and the AttnRes fold never happens. */
+	K3RunnerDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, rows);
+	b->dense_tile_prefix = state->dense_tile_prefix;
+	b->group_row_offset = state->group_row_offset;
+	b->group_tile_prefix_w1 = state->group_tile_prefix_w1;
+	b->group_tile_prefix_w2 = state->group_tile_prefix_w2;
+	b->route_expert = state->route_expert;
+	b->route_packed_row = state->route_packed_row;
+	b->route_source_token = state->route_source_token;
+	b->route_weight = state->route_weight;
+	b->sequence_row_begin = 0; /* identity: row i is sequence i */
+	b->positions = state->positions;
+	b->context_length = state->context_length;
+	b->sequence_of_row = state->sequence_of_row;
+	b->kda_state_index = state->kda_state_index;
+	status = K3StageSliceHalf(d->weights + (layer - d->first_layer), d->slice_state, d->buffers,
+		layer, phase, rows, sequences, 1u, packed_rows, rows, state->multiprocessors, stream);
+	if ( status != LM_LAUNCH_OK )
+	{
+		fprintf(stderr, "sparkpipe_k3: half step layer %u phase %u -> %d\n",
+			layer, phase, status);
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
+	/* Capture the rank's CONTRIBUTION (the un-folded input-sharded projection
+	 * output), NOT the folded partial. Phase 1 on a MoE layer is the w1 half
+	 * and captures the gate|up partial (packed_rows x 2*inter); every other
+	 * phase captures hidden_bf16 (kda_out/dense_down/routed_up), with
+	 * attention_out_bf16 for the MLA phase 0 and shared_out_bf16 added on the
+	 * MoE rest (phase 2). The harness sums these across ranks and folds the
+	 * sum; the replicated partial is only the retrieval's read. */
+	if ( phase == 1u && layer >= K3_FIRST_ROUTED_LAYER )
+	{
+		cudaMemcpy(partial_output_bf16, b->gate_up_bf16,
+			(uint64_t)packed_rows * (K3_EXPERT_INTERMEDIATE * 2u) * 2u,
+			cudaMemcpyDeviceToDevice);
+		return SPARK_STATUS_OK;
+	}
+	const uint16_t *phase0_source = (phase == 0u &&
+		K3_LAYER_KIND(layer) == LM_LAYER_LATENT)
+		? b->attention_out_bf16 : b->hidden_bf16;
+	cudaMemcpy(partial_output_bf16, phase0_source,
+		(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
+	if ( phase == 2u )
+		LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),
+			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
+			K3_LAYER_THREADS, 0, stream,
+			(uint16_t *)partial_output_bf16,b->shared_out_bf16,
+			(uint16_t *)partial_output_bf16,rows,K3_HIDDEN);
+	return SPARK_STATUS_OK;
 }

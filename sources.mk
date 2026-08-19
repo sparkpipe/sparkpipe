@@ -15,6 +15,7 @@
 SPARKPIPE_CORE_SOURCES := \
     src/spark_status.c \
     src/spark_sha256.c \
+    src/spark_admission.c \
     runtime/filesystem.c \
     runtime/json.c
 
@@ -53,6 +54,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     cache/kv_cache.c \
 	cache/kv_page_cache.c \
 	cache/kv_page_store.c \
+	cache/kv_model_table.c \
     cache/prefix_cache.c \
     cache/store/kv_store.c \
     cache/store/stage_kv_client.c \
@@ -62,7 +64,8 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
 
 SPARKPIPE_GLM52_SOURCES := \
 	model-families/glm52/src/spark_glm52_chat_template.c \
-	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c
+	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c \
+	src/spark_speculation_policy.c
 
 SPARKPIPE_QWEN36_SOURCES := \
     model-families/qwen36/src/spark_qwen36_work_control.c

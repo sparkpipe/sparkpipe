@@ -1,0 +1,156 @@
+---
+license: apache-2.0
+library_name: transformers
+pipeline_tag: text-generation
+base_model:
+  - meta-models/Muse-Glimmer-30B
+inference: false
+tags:
+  - dflash2
+  - speculative-decoding
+  - block-diffusion
+  - draft-model
+  - sglang
+  - vllm
+---
+
+# Muse-Glimmer-30B-DFlash2
+
+[Blog](https://inco.ai/blog/dflash2/) | [GitHub](https://github.com/z-lab/dflash)
+
+This repository contains the DFlash 2 draft model for
+[`meta-models/Muse-Glimmer-30B`](https://huggingface.co/meta-models/Muse-Glimmer-30B).
+It is not a standalone language model: it runs inside a speculative
+decoding server and drafts tokens for the target model to verify. It is
+finetuned from
+[`meta-models/Muse-Glimmer-30B-assistant`](https://huggingface.co/meta-models/Muse-Glimmer-30B-assistant),
+the official DFlash drafter Meta ships with the model. This repository is a mirror
+of [`incoai/Muse-Glimmer-30B-DFlash2`](https://huggingface.co/incoai/Muse-Glimmer-30B-DFlash2).
+
+DFlash 2 is a block-diffusion drafter for speculative decoding. It predicts
+a whole block of tokens in a single pass and keeps the top candidates at
+every position. A lightweight selector then traces one coherent path through them.
+Two-tap dynamic convolutions in the backbone keep the draft from decaying
+toward the end of the block. Decoding is lossless: greedy output
+matches the target model exactly, and sampling preserves its distribution.
+
+<div align="center">
+  <img src="assets/dflash2-figure.png" alt="DFlash 2: parallel block drafting with a candidate path selector" width="100%">
+</div>
+
+## Quick Start
+
+Serve with [SGLang](https://github.com/sgl-project/sglang):
+
+```bash
+pip install -U "sglang[all] @ git+https://github.com/sgl-project/sglang.git@refs/pull/35371/head#subdirectory=python"
+
+python -m sglang.launch_server \
+  --model-path meta-models/Muse-Glimmer-30B \
+  --speculative-algorithm DFLASH \
+  --speculative-draft-model-path incoai/Muse-Glimmer-30B-DFlash2 \
+  --speculative-num-draft-tokens 16
+```
+
+Or with [vLLM](https://github.com/vllm-project/vllm):
+
+```bash
+pip install -U "vllm @ git+https://github.com/vllm-project/vllm.git@refs/pull/52816/head"
+
+vllm serve meta-models/Muse-Glimmer-30B \
+  --speculative-config '{
+    "method": "dflash",
+    "model": "incoai/Muse-Glimmer-30B-DFlash2",
+    "num_speculative_tokens": 15
+  }'
+```
+
+See the [blog post](https://inco.ai/blog/dflash2/) for other engines and more details.
+
+## Evaluation
+
+- Runtime: SGLang on one NVIDIA H200, with FlashAttention 3 for target and draft attention
+- Speculation block size: 16 (15 draft tokens per verification step)
+- Sampling: Muse's officially recommended parameters (temperature 1.0, top-p 0.95, top-k 64), with high reasoning strength
+- Maximum new tokens: 4096
+- Prompts: benchmark formatting from [`z-lab/dflash`](https://github.com/z-lab/dflash)
+
+We compare autoregressive decoding, the official DFlash drafter
+([`meta-models/Muse-Glimmer-30B-assistant`](https://huggingface.co/meta-models/Muse-Glimmer-30B-assistant)),
+a community DSpark drafter
+([`DaoCloud/Muse-Glimmer-30B-DSpark`](https://huggingface.co/DaoCloud/Muse-Glimmer-30B-DSpark)),
+and DFlash 2. All speculative methods propose fifteen draft tokens per
+verification step.
+
+### Acceptance Length
+
+Acceptance length is the per-request mean of completion tokens divided by verification steps.
+Higher is better.
+
+| Task | Official DFlash | DSpark | DFlash 2 |
+| :--- | ---: | ---: | ---: |
+| GSM8K | 5.43 | 5.45 | **6.57** |
+| MATH-500 | 5.39 | 5.01 | **6.56** |
+| HumanEval | 4.11 | 4.33 | **5.66** |
+| MBPP | 3.74 | 4.02 | **5.30** |
+| MT-Bench | 3.52 | 3.59 | **4.42** |
+
+### Throughput
+
+Throughput is total output tokens divided by end-to-end wall time.
+Each cell shows `output tok/s (speedup vs. autoregressive)`.
+
+#### Concurrency 1
+
+| Task | Autoregressive | Official DFlash | DSpark | DFlash 2 |
+| :--- | ---: | ---: | ---: | ---: |
+| GSM8K | 63.9 | 247.8 (3.88×) | 236.5 (3.70×) | **293.7 (4.59×)** |
+| MATH-500 | 64.0 | 246.3 (3.85×) | 218.4 (3.41×) | **295.5 (4.62×)** |
+| HumanEval | 65.1 | 210.5 (3.23×) | 201.4 (3.09×) | **266.2 (4.09×)** |
+| MBPP | 63.9 | 196.8 (3.08×) | 192.7 (3.02×) | **264.8 (4.14×)** |
+| MT-Bench | 64.0 | 164.6 (2.57×) | 159.7 (2.49×) | **197.4 (3.08×)** |
+
+#### Concurrency 8
+
+| Task | Autoregressive | Official DFlash | DSpark | DFlash 2 |
+| :--- | ---: | ---: | ---: | ---: |
+| GSM8K | 476.6 | 1,574.4 (3.30×) | 1,456.1 (3.06×) | **1,816.6 (3.81×)** |
+| MATH-500 | 466.0 | 1,582.9 (3.40×) | 1,386.0 (2.97×) | **1,859.3 (3.99×)** |
+| HumanEval | 499.9 | 1,419.8 (2.84×) | 1,315.4 (2.63×) | **1,784.9 (3.57×)** |
+| MBPP | 491.6 | 1,278.9 (2.60×) | 1,266.6 (2.58×) | **1,719.7 (3.50×)** |
+| MT-Bench | 470.0 | 1,078.4 (2.29×) | 1,052.6 (2.24×) | **1,288.9 (2.74×)** |
+
+#### Concurrency 32
+
+| Task | Autoregressive | Official DFlash | DSpark | DFlash 2 |
+| :--- | ---: | ---: | ---: | ---: |
+| GSM8K | 1,705.6 | 2,330.3 (1.37×) | 2,301.7 (1.35×) | **2,818.3 (1.65×)** |
+| MATH-500 | 1,710.2 | 2,427.3 (1.42×) | 2,185.0 (1.28×) | **2,869.6 (1.68×)** |
+| HumanEval | 1,798.1 | 2,170.0 (1.21×) | 2,068.9 (1.15×) | **2,780.2 (1.55×)** |
+| MBPP | 1,717.5 | 1,964.6 (1.14×) | 2,006.5 (1.17×) | **2,685.4 (1.56×)** |
+| MT-Bench | 1,721.8 | 1,668.0 (0.97×) | 1,627.2 (0.95×) | **1,975.5 (1.15×)** |
+
+## Citation
+
+If you find DFlash 2 useful, please cite:
+
+```bibtex
+@misc{inco2026dflash2,
+  title  = {{DFlash 2: Keep Drafting Parallel}},
+  author = {{Inco AI}},
+  year   = {2026},
+  month  = {August},
+  url    = {https://inco.ai/blog/dflash2/}
+}
+```
+
+Please also cite the original DFlash paper:
+
+```bibtex
+@inproceedings{chen2026dflash,
+  title     = {{DFlash: Block Diffusion for Flash Speculative Decoding}},
+  author    = {Chen, Jian and Liang, Yesheng and Liu, Zhijian},
+  booktitle = {International Conference on Machine Learning (ICML)},
+  year      = {2026}
+}
+```

@@ -16,44 +16,44 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_sha256.h"
 
-#define SPARK_GLM52_DSPARK_BACKEND_THREADS 256u
-#define SPARK_GLM52_DSPARK_BACKEND_HEAD_THREADS \
-    SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION
-#define SPARK_GLM52_DSPARK_BACKEND_CONFIDENCE_DIMENSION \
-    (SPARK_GLM52_DSPARK_HIDDEN_DIMENSION + SPARK_GLM52_DSPARK_MARKOV_RANK)
-#define SPARK_GLM52_DSPARK_MANIFEST_FORMAT \
+#define SPARK_DSPARK_BACKEND_THREADS 256u
+#define SPARK_DSPARK_BACKEND_HEAD_THREADS \
+    SPARK_DSPARK_DRAFT_HEAD_DIMENSION
+#define SPARK_DSPARK_BACKEND_CONFIDENCE_DIMENSION \
+    (SPARK_DSPARK_HIDDEN_DIMENSION + SPARK_DSPARK_MARKOV_RANK)
+#define SPARK_DSPARK_MANIFEST_FORMAT \
     "sparkpipe.glm52.dspark.speculator_manifest.v2"
-#define SPARK_GLM52_DSPARK_MANIFEST_MODEL_ID \
+#define SPARK_DSPARK_MANIFEST_MODEL_ID \
     "RedHatAI/GLM-5.2-speculator.dspark"
 
 typedef enum SparkGlm52DsparkWeightRole
 {
-    SPARK_GLM52_DSPARK_WEIGHT_EMBED_TOKENS = 0,
-    SPARK_GLM52_DSPARK_WEIGHT_FUSION_FC,
-    SPARK_GLM52_DSPARK_WEIGHT_HIDDEN_NORM,
-    SPARK_GLM52_DSPARK_WEIGHT_FINAL_NORM,
-    SPARK_GLM52_DSPARK_WEIGHT_LM_HEAD,
-    SPARK_GLM52_DSPARK_WEIGHT_MARKOV_W1,
-    SPARK_GLM52_DSPARK_WEIGHT_MARKOV_W2,
-    SPARK_GLM52_DSPARK_WEIGHT_CONFIDENCE,
-    SPARK_GLM52_DSPARK_WEIGHT_CONFIDENCE_BIAS,
-    SPARK_GLM52_DSPARK_WEIGHT_LAYER_BASE
+    SPARK_DSPARK_WEIGHT_EMBED_TOKENS = 0,
+    SPARK_DSPARK_WEIGHT_FUSION_FC,
+    SPARK_DSPARK_WEIGHT_HIDDEN_NORM,
+    SPARK_DSPARK_WEIGHT_FINAL_NORM,
+    SPARK_DSPARK_WEIGHT_LM_HEAD,
+    SPARK_DSPARK_WEIGHT_MARKOV_W1,
+    SPARK_DSPARK_WEIGHT_MARKOV_W2,
+    SPARK_DSPARK_WEIGHT_CONFIDENCE,
+    SPARK_DSPARK_WEIGHT_CONFIDENCE_BIAS,
+    SPARK_DSPARK_WEIGHT_LAYER_BASE
 } SparkGlm52DsparkWeightRole;
 
 typedef enum SparkGlm52DsparkLayerWeight
 {
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_INPUT_NORM = 0,
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_Q,
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_K,
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_V,
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_Q_NORM,
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_K_NORM,
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_O,
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_POST_NORM,
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_GATE,
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_UP,
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_DOWN,
-    SPARK_GLM52_DSPARK_LAYER_WEIGHT_COUNT
+    SPARK_DSPARK_LAYER_WEIGHT_INPUT_NORM = 0,
+    SPARK_DSPARK_LAYER_WEIGHT_Q,
+    SPARK_DSPARK_LAYER_WEIGHT_K,
+    SPARK_DSPARK_LAYER_WEIGHT_V,
+    SPARK_DSPARK_LAYER_WEIGHT_Q_NORM,
+    SPARK_DSPARK_LAYER_WEIGHT_K_NORM,
+    SPARK_DSPARK_LAYER_WEIGHT_O,
+    SPARK_DSPARK_LAYER_WEIGHT_POST_NORM,
+    SPARK_DSPARK_LAYER_WEIGHT_GATE,
+    SPARK_DSPARK_LAYER_WEIGHT_UP,
+    SPARK_DSPARK_LAYER_WEIGHT_DOWN,
+    SPARK_DSPARK_LAYER_WEIGHT_COUNT
 } SparkGlm52DsparkLayerWeight;
 
 typedef struct SparkGlm52DsparkTensorSpec
@@ -138,8 +138,8 @@ static SparkStatus SparkGlm52DsparkManifestValidateVerifier(
 {
     static const SparkGlm52DsparkManifestU32 expected[] =
     {
-        {"hidden_dimension", SPARK_GLM52_DSPARK_HIDDEN_DIMENSION},
-        {"vocabulary_size", SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE}
+        {"hidden_dimension", SPARK_DSPARK_HIDDEN_DIMENSION},
+        {"vocabulary_size", SPARK_DSPARK_FULL_VOCAB_SIZE}
     };
     bool quantization_independent;
     uint32_t index;
@@ -175,22 +175,22 @@ static SparkStatus SparkGlm52DsparkManifestValidateContract(
 {
     static const SparkGlm52DsparkManifestU32 expected[] =
     {
-        {"abi_version", SPARK_GLM52_DSPARK_ABI_VERSION},
-        {"verifier_hidden_dtype", SPARK_GLM52_DSPARK_VERIFIER_HIDDEN_DTYPE_BF16},
-        {"draft_dtype", SPARK_GLM52_DSPARK_DRAFT_DTYPE_BF16},
-        {"draft_layer_count", SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT},
-        {"block_size", SPARK_GLM52_DSPARK_BLOCK_SIZE},
-        {"hidden_dimension", SPARK_GLM52_DSPARK_HIDDEN_DIMENSION},
-        {"intermediate_dimension", SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION},
-        {"attention_head_count", SPARK_GLM52_DSPARK_DRAFT_ATTENTION_HEAD_COUNT},
-        {"kv_head_count", SPARK_GLM52_DSPARK_DRAFT_KV_HEAD_COUNT},
-        {"head_dimension", SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION},
-        {"vocab_size", SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE},
-        {"draft_vocab_size", SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE},
-        {"markov_rank", SPARK_GLM52_DSPARK_MARKOV_RANK},
-        {"max_anchors", SPARK_GLM52_DSPARK_MAX_ANCHORS},
+        {"abi_version", SPARK_DSPARK_ABI_VERSION},
+        {"verifier_hidden_dtype", SPARK_DSPARK_VERIFIER_HIDDEN_DTYPE_BF16},
+        {"draft_dtype", SPARK_DSPARK_DRAFT_DTYPE_BF16},
+        {"draft_layer_count", SPARK_DSPARK_DRAFT_LAYER_COUNT},
+        {"block_size", SPARK_DSPARK_BLOCK_SIZE},
+        {"hidden_dimension", SPARK_DSPARK_HIDDEN_DIMENSION},
+        {"intermediate_dimension", SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION},
+        {"attention_head_count", SPARK_DSPARK_DRAFT_ATTENTION_HEAD_COUNT},
+        {"kv_head_count", SPARK_DSPARK_DRAFT_KV_HEAD_COUNT},
+        {"head_dimension", SPARK_DSPARK_DRAFT_HEAD_DIMENSION},
+        {"vocab_size", SPARK_DSPARK_FULL_VOCAB_SIZE},
+        {"draft_vocab_size", SPARK_DSPARK_FULL_VOCAB_SIZE},
+        {"markov_rank", SPARK_DSPARK_MARKOV_RANK},
+        {"max_anchors", SPARK_DSPARK_MAX_ANCHORS},
         {"maximum_speculative_token_count",
-            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT},
+            SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT},
         {"verifier_accept_k", 1u},
         {"enable_confidence_head", 1u},
         {"confidence_head_with_markov", 1u}
@@ -272,11 +272,11 @@ static SparkStatus SparkGlm52DsparkValidateArtifactManifest(
         status = SPARK_STATUS_VALIDATION_FAILED;
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkManifestRequireString(
-            &document, root_token, "format", SPARK_GLM52_DSPARK_MANIFEST_FORMAT);
+            &document, root_token, "format", SPARK_DSPARK_MANIFEST_FORMAT);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkManifestRequireString(
             &document, root_token, "model_id",
-            SPARK_GLM52_DSPARK_MANIFEST_MODEL_ID);
+            SPARK_DSPARK_MANIFEST_MODEL_ID);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkManifestValidateRevision(&document, root_token);
     if (status == SPARK_STATUS_OK)
@@ -299,8 +299,8 @@ static uint32_t SparkGlm52DsparkLayerWeightIndex(
     uint32_t layer_index,
     uint32_t layer_weight)
 {
-    return SPARK_GLM52_DSPARK_WEIGHT_LAYER_BASE +
-        (layer_index * (uint32_t)SPARK_GLM52_DSPARK_LAYER_WEIGHT_COUNT) +
+    return SPARK_DSPARK_WEIGHT_LAYER_BASE +
+        (layer_index * (uint32_t)SPARK_DSPARK_LAYER_WEIGHT_COUNT) +
         layer_weight;
 }
 
@@ -327,7 +327,7 @@ static __global__ void SparkGlm52DsparkRmsNormRowsKernel(
     uint32_t row_count,
     uint32_t dimension)
 {
-    __shared__ float partials[SPARK_GLM52_DSPARK_BACKEND_THREADS];
+    __shared__ float partials[SPARK_DSPARK_BACKEND_THREADS];
     __shared__ float inverse_norm;
     uint32_t row_index,element_index,stride_index;
     uint64_t row_offset;
@@ -354,7 +354,7 @@ static __global__ void SparkGlm52DsparkRmsNormRowsKernel(
     }
     if (threadIdx.x == 0u)
         inverse_norm = rsqrtf((partials[0] / (float)dimension) +
-            SPARK_GLM52_MODEL_RMS_NORM_EPSILON);
+            SPARK_DSPARK_RMS_NORM_EPSILON);
     __syncthreads();
     for (element_index=threadIdx.x; element_index<dimension; element_index+=blockDim.x)
     {
@@ -416,16 +416,16 @@ static __global__ void SparkGlm52DsparkGatherStageTapsKernel(
 
     element_index = (blockIdx.x * blockDim.x) + threadIdx.x;
     element_count = (uint64_t)stage_count *
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION;
+        SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION;
     if ((uint64_t)element_index >= element_count)
         return;
     stage_index =
-        element_index / SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION;
+        element_index / SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION;
     column_index =
-        element_index % SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION;
+        element_index % SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION;
     stage_tap_bf16[element_index] = tap_arena_bf16[
         ((uint64_t)tap_row_indices[stage_index] *
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION) +
+            SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION) +
         column_index];
 }
 
@@ -445,19 +445,19 @@ static __global__ void SparkGlm52DsparkScatterContextBatchKernel(
 
     element_index = (blockIdx.x * blockDim.x) + threadIdx.x;
     element_count = (uint64_t)stage_count *
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
+        SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
     if ((uint64_t)element_index >= element_count)
         return;
     stage_index =
-        element_index / SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
+        element_index / SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
     column_index =
-        element_index % SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
+        element_index % SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
     backend_lane_index = backend_lane_indices[stage_index];
     destination_offset =
         ((((uint64_t)backend_lane_index *
-            SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT) + layer_index) *
+            SPARK_DSPARK_DRAFT_LAYER_COUNT) + layer_index) *
             maximum_context_token_count + context_positions[stage_index]) *
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION + column_index;
+        SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION + column_index;
     context_key_bf16[destination_offset] = key_bf16[element_index];
     context_value_bf16[destination_offset] = value_bf16[element_index];
 }
@@ -472,18 +472,18 @@ static __global__ void SparkGlm52DsparkBuildQueryBlockBatchKernel(
     uint64_t element_count;
 
     element_index = (blockIdx.x * blockDim.x) + threadIdx.x;
-    element_count = (uint64_t)lane_count * SPARK_GLM52_DSPARK_BLOCK_SIZE *
-        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
+    element_count = (uint64_t)lane_count * SPARK_DSPARK_BLOCK_SIZE *
+        SPARK_DSPARK_HIDDEN_DIMENSION;
     if ((uint64_t)element_index >= element_count)
         return;
-    row_index = element_index / SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
-    lane_index = row_index / SPARK_GLM52_DSPARK_BLOCK_SIZE;
-    column_index = element_index % SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
-    token_id = (row_index % SPARK_GLM52_DSPARK_BLOCK_SIZE) == 0u
+    row_index = element_index / SPARK_DSPARK_HIDDEN_DIMENSION;
+    lane_index = row_index / SPARK_DSPARK_BLOCK_SIZE;
+    column_index = element_index % SPARK_DSPARK_HIDDEN_DIMENSION;
+    token_id = (row_index % SPARK_DSPARK_BLOCK_SIZE) == 0u
         ? anchor_token_ids[lane_index]
-        : SPARK_GLM52_MODEL_DSPARK_MASK_TOKEN_ID;
+        : SPARK_DSPARK_MASK_TOKEN_ID;
     block_hidden_bf16[element_index] = embed_weight_bf16[
-        ((uint64_t)token_id * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION) +
+        ((uint64_t)token_id * SPARK_DSPARK_HIDDEN_DIMENSION) +
         column_index];
 }
 
@@ -495,8 +495,8 @@ static __global__ void SparkGlm52DsparkHeadNormRopeBatchKernel(
     uint32_t row_count,
     uint32_t rows_per_lane)
 {
-    __shared__ float values[SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION];
-    __shared__ float partials[SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION];
+    __shared__ float values[SPARK_DSPARK_DRAFT_HEAD_DIMENSION];
+    __shared__ float partials[SPARK_DSPARK_DRAFT_HEAD_DIMENSION];
     uint32_t row_index,lane_index,lane_row,head_index,element_index;
     uint32_t pair_index,paired_index,stride;
     uint64_t offset;
@@ -510,8 +510,8 @@ static __global__ void SparkGlm52DsparkHeadNormRopeBatchKernel(
     lane_index = row_index / rows_per_lane;
     lane_row = row_index % rows_per_lane;
     offset = ((uint64_t)row_index *
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION) +
-        ((uint64_t)head_index * SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION);
+        SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION) +
+        ((uint64_t)head_index * SPARK_DSPARK_DRAFT_HEAD_DIMENSION);
     value = __bfloat162float(
         ((const __nv_bfloat16 *)input_bf16)[offset + element_index]);
     partials[element_index] = value * value;
@@ -523,28 +523,28 @@ static __global__ void SparkGlm52DsparkHeadNormRopeBatchKernel(
         __syncthreads();
     }
     inverse_norm = rsqrtf((partials[0] /
-        (float)SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION) +
-        SPARK_GLM52_MODEL_RMS_NORM_EPSILON);
+        (float)SPARK_DSPARK_DRAFT_HEAD_DIMENSION) +
+        SPARK_DSPARK_RMS_NORM_EPSILON);
     value = __bfloat162float(__float2bfloat16(value * inverse_norm));
     values[element_index] = __bfloat162float(__float2bfloat16(
         value * __bfloat162float(
             ((const __nv_bfloat16 *)head_norm_weight_bf16)[element_index])));
     __syncthreads();
     pair_index = element_index %
-        (SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION / 2u);
+        (SPARK_DSPARK_DRAFT_HEAD_DIMENSION / 2u);
     paired_index =
-        element_index < (SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION / 2u)
-        ? element_index + (SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION / 2u)
-        : element_index - (SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION / 2u);
+        element_index < (SPARK_DSPARK_DRAFT_HEAD_DIMENSION / 2u)
+        ? element_index + (SPARK_DSPARK_DRAFT_HEAD_DIMENSION / 2u)
+        : element_index - (SPARK_DSPARK_DRAFT_HEAD_DIMENSION / 2u);
     paired = values[paired_index];
-    frequency = powf(SPARK_GLM52_MODEL_ROPE_THETA,
+    frequency = powf(SPARK_DSPARK_ROPE_THETA,
         -2.0f * (float)pair_index /
-        (float)SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION);
+        (float)SPARK_DSPARK_DRAFT_HEAD_DIMENSION);
     angle = (float)(base_positions[lane_index] + lane_row) * frequency;
     cosine = __bfloat162float(__float2bfloat16(cosf(angle)));
     sine = __bfloat162float(__float2bfloat16(sinf(angle)));
     value = element_index <
-        (SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION / 2u)
+        (SPARK_DSPARK_DRAFT_HEAD_DIMENSION / 2u)
         ? __bfloat162float(__float2bfloat16(values[element_index] * cosine)) -
             __bfloat162float(__float2bfloat16(paired * sine))
         : __bfloat162float(__float2bfloat16(values[element_index] * cosine)) +
@@ -566,7 +566,7 @@ static __global__ void SparkGlm52DsparkBlockAttentionBatchKernel(
     uint32_t layer_index,
     uint32_t maximum_context_token_count)
 {
-    __shared__ float partials[SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION];
+    __shared__ float partials[SPARK_DSPARK_DRAFT_HEAD_DIMENSION];
     __shared__ float score,max_score,inverse_sum;
     uint32_t row_index,lane_index,head_index,element_index,key_index,stride;
     uint32_t context_token_count,total_key_count,backend_lane_index;
@@ -579,18 +579,18 @@ static __global__ void SparkGlm52DsparkBlockAttentionBatchKernel(
     element_index = threadIdx.x;
     if (row_index >= row_count)
         return;
-    lane_index = row_index / SPARK_GLM52_DSPARK_BLOCK_SIZE;
+    lane_index = row_index / SPARK_DSPARK_BLOCK_SIZE;
     backend_lane_index = backend_lane_indices[lane_index];
     context_token_count = context_token_counts[lane_index];
-    total_key_count = context_token_count + SPARK_GLM52_DSPARK_BLOCK_SIZE;
+    total_key_count = context_token_count + SPARK_DSPARK_BLOCK_SIZE;
     context_base =
         (((uint64_t)backend_lane_index *
-            SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT) + layer_index) *
+            SPARK_DSPARK_DRAFT_LAYER_COUNT) + layer_index) *
         maximum_context_token_count *
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
+        SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
     query_offset = ((uint64_t)row_index *
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION) +
-        ((uint64_t)head_index * SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION);
+        SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION) +
+        ((uint64_t)head_index * SPARK_DSPARK_DRAFT_HEAD_DIMENSION);
     query_value = __bfloat162float(
         ((const __nv_bfloat16 *)query_bf16)[query_offset + element_index]);
     if (element_index == 0u)
@@ -602,12 +602,12 @@ static __global__ void SparkGlm52DsparkBlockAttentionBatchKernel(
             ? context_key_bf16 + context_base : block_key_bf16;
         key_offset = key_index < context_token_count
             ? ((uint64_t)key_index *
-                SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION)
-            : (((uint64_t)lane_index * SPARK_GLM52_DSPARK_BLOCK_SIZE +
+                SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION)
+            : (((uint64_t)lane_index * SPARK_DSPARK_BLOCK_SIZE +
                 key_index - context_token_count) *
-                SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION);
+                SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION);
         key_offset +=
-            (uint64_t)head_index * SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION;
+            (uint64_t)head_index * SPARK_DSPARK_DRAFT_HEAD_DIMENSION;
         key_value = __bfloat162float(
             ((const __nv_bfloat16 *)key_base)[key_offset + element_index]);
         partials[element_index] = query_value * key_value;
@@ -633,12 +633,12 @@ static __global__ void SparkGlm52DsparkBlockAttentionBatchKernel(
             ? context_key_bf16 + context_base : block_key_bf16;
         key_offset = key_index < context_token_count
             ? ((uint64_t)key_index *
-                SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION)
-            : (((uint64_t)lane_index * SPARK_GLM52_DSPARK_BLOCK_SIZE +
+                SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION)
+            : (((uint64_t)lane_index * SPARK_DSPARK_BLOCK_SIZE +
                 key_index - context_token_count) *
-                SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION);
+                SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION);
         key_offset +=
-            (uint64_t)head_index * SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION;
+            (uint64_t)head_index * SPARK_DSPARK_DRAFT_HEAD_DIMENSION;
         key_value = __bfloat162float(
             ((const __nv_bfloat16 *)key_base)[key_offset + element_index]);
         partials[element_index] = query_value * key_value;
@@ -669,12 +669,12 @@ static __global__ void SparkGlm52DsparkBlockAttentionBatchKernel(
             ? context_value_bf16 + context_base : block_value_bf16;
         key_offset = key_index < context_token_count
             ? ((uint64_t)key_index *
-                SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION)
-            : (((uint64_t)lane_index * SPARK_GLM52_DSPARK_BLOCK_SIZE +
+                SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION)
+            : (((uint64_t)lane_index * SPARK_DSPARK_BLOCK_SIZE +
                 key_index - context_token_count) *
-                SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION);
+                SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION);
         key_offset +=
-            (uint64_t)head_index * SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION;
+            (uint64_t)head_index * SPARK_DSPARK_DRAFT_HEAD_DIMENSION;
         key_value = __bfloat162float(
             ((const __nv_bfloat16 *)key_base)[key_offset + element_index]);
         partials[element_index] = query_value * key_value;
@@ -712,18 +712,18 @@ static __global__ void SparkGlm52DsparkGatherMarkovBatchKernel(
     lane_index = blockIdx.x;
     element_index = threadIdx.x;
     if (lane_index >= lane_count ||
-        element_index >= SPARK_GLM52_DSPARK_MARKOV_RANK)
+        element_index >= SPARK_DSPARK_MARKOV_RANK)
         return;
     token_id = proposal_index == 0u
         ? last_token_ids[lane_index]
         : generated_token_ids[
             ((uint64_t)lane_index *
-                SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT) +
+                SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT) +
             proposal_index - 1u];
     embedding_bf16[
-        ((uint64_t)lane_index * SPARK_GLM52_DSPARK_MARKOV_RANK) +
+        ((uint64_t)lane_index * SPARK_DSPARK_MARKOV_RANK) +
         element_index] = markov_w1_bf16[
-            ((uint64_t)token_id * SPARK_GLM52_DSPARK_MARKOV_RANK) +
+            ((uint64_t)token_id * SPARK_DSPARK_MARKOV_RANK) +
             element_index];
 }
 
@@ -736,8 +736,8 @@ static __global__ void SparkGlm52DsparkArgmaxBatchKernel(
     uint32_t lane_count,
     uint32_t *token_ids_out)
 {
-    __shared__ float values[SPARK_GLM52_DSPARK_BACKEND_THREADS];
-    __shared__ uint32_t token_ids[SPARK_GLM52_DSPARK_BACKEND_THREADS];
+    __shared__ float values[SPARK_DSPARK_BACKEND_THREADS];
+    __shared__ uint32_t token_ids[SPARK_DSPARK_BACKEND_THREADS];
     uint32_t lane_index,candidate_count,candidate_index,token_id,stride;
     uint64_t logits_offset,markov_offset,output_offset;
     float value,best_value;
@@ -747,13 +747,13 @@ static __global__ void SparkGlm52DsparkArgmaxBatchKernel(
     if (lane_index >= lane_count)
         return;
     logits_offset =
-        (((uint64_t)lane_index * SPARK_GLM52_DSPARK_BLOCK_SIZE) +
+        (((uint64_t)lane_index * SPARK_DSPARK_BLOCK_SIZE) +
             proposal_index + 1u) *
-        SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE;
+        SPARK_DSPARK_FULL_VOCAB_SIZE;
     markov_offset =
-        (uint64_t)lane_index * SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE;
+        (uint64_t)lane_index * SPARK_DSPARK_FULL_VOCAB_SIZE;
     candidate_count = restricted_token_count == 0u
-        ? SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE : restricted_token_count;
+        ? SPARK_DSPARK_FULL_VOCAB_SIZE : restricted_token_count;
     best_value = -FLT_MAX;
     best_token = UINT32_MAX;
     for (candidate_index=threadIdx.x; candidate_index<candidate_count;
@@ -791,7 +791,7 @@ static __global__ void SparkGlm52DsparkArgmaxBatchKernel(
     }
     output_offset =
         ((uint64_t)lane_index *
-            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT) + proposal_index;
+            SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT) + proposal_index;
     if (threadIdx.x == 0u)
         token_ids_out[output_offset] = token_ids[0u];
 }
@@ -805,7 +805,7 @@ static __global__ void SparkGlm52DsparkConfidenceBatchKernel(
     uint32_t lane_count,
     float *confidence_out)
 {
-    __shared__ float partials[SPARK_GLM52_DSPARK_BACKEND_THREADS];
+    __shared__ float partials[SPARK_DSPARK_BACKEND_THREADS];
     uint32_t lane_index,element_index,stride;
     uint64_t hidden_offset,markov_offset,output_offset;
     float sum,value;
@@ -814,24 +814,24 @@ static __global__ void SparkGlm52DsparkConfidenceBatchKernel(
     if (lane_index >= lane_count)
         return;
     hidden_offset =
-        (((uint64_t)lane_index * SPARK_GLM52_DSPARK_BLOCK_SIZE) +
+        (((uint64_t)lane_index * SPARK_DSPARK_BLOCK_SIZE) +
             proposal_index + 1u) *
-        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
+        SPARK_DSPARK_HIDDEN_DIMENSION;
     markov_offset =
-        (uint64_t)lane_index * SPARK_GLM52_DSPARK_MARKOV_RANK;
+        (uint64_t)lane_index * SPARK_DSPARK_MARKOV_RANK;
     sum = 0.0f;
     for (element_index=threadIdx.x;
-         element_index<SPARK_GLM52_DSPARK_BACKEND_CONFIDENCE_DIMENSION;
+         element_index<SPARK_DSPARK_BACKEND_CONFIDENCE_DIMENSION;
          element_index+=blockDim.x)
     {
-        value = element_index < SPARK_GLM52_DSPARK_HIDDEN_DIMENSION
+        value = element_index < SPARK_DSPARK_HIDDEN_DIMENSION
             ? __bfloat162float(
                 ((const __nv_bfloat16 *)block_final_bf16)[
                     hidden_offset + element_index])
             : __bfloat162float(
                 ((const __nv_bfloat16 *)markov_embedding_bf16)[
                     markov_offset + element_index -
-                        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION]);
+                        SPARK_DSPARK_HIDDEN_DIMENSION]);
         sum += value * __bfloat162float(
             ((const __nv_bfloat16 *)weight_bf16)[element_index]);
     }
@@ -845,7 +845,7 @@ static __global__ void SparkGlm52DsparkConfidenceBatchKernel(
     }
     output_offset =
         ((uint64_t)lane_index *
-            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT) + proposal_index;
+            SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT) + proposal_index;
     if (threadIdx.x == 0u)
     {
         value = partials[0] + __bfloat162float(
@@ -1028,28 +1028,28 @@ static SparkStatus SparkGlm52DsparkLoadFixedTensors(
 {
     static const SparkGlm52DsparkTensorSpec specs[] =
     {
-        {"embed_tokens.weight", SPARK_GLM52_DSPARK_WEIGHT_EMBED_TOKENS,
-            SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION},
-        {"fc.weight", SPARK_GLM52_DSPARK_WEIGHT_FUSION_FC,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION},
-        {"hidden_norm.weight", SPARK_GLM52_DSPARK_WEIGHT_HIDDEN_NORM,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION, 1u},
-        {"norm.weight", SPARK_GLM52_DSPARK_WEIGHT_FINAL_NORM,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION, 1u},
-        {"lm_head.weight", SPARK_GLM52_DSPARK_WEIGHT_LM_HEAD,
-            SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION},
-        {"markov_head.markov_w1.weight", SPARK_GLM52_DSPARK_WEIGHT_MARKOV_W1,
-            SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE,
-            SPARK_GLM52_DSPARK_MARKOV_RANK},
-        {"markov_head.markov_w2.weight", SPARK_GLM52_DSPARK_WEIGHT_MARKOV_W2,
-            SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE,
-            SPARK_GLM52_DSPARK_MARKOV_RANK},
-        {"confidence_head.proj.weight", SPARK_GLM52_DSPARK_WEIGHT_CONFIDENCE,
-            1u, SPARK_GLM52_DSPARK_BACKEND_CONFIDENCE_DIMENSION},
-        {"confidence_head.proj.bias", SPARK_GLM52_DSPARK_WEIGHT_CONFIDENCE_BIAS,
+        {"embed_tokens.weight", SPARK_DSPARK_WEIGHT_EMBED_TOKENS,
+            SPARK_DSPARK_FULL_VOCAB_SIZE,
+            SPARK_DSPARK_HIDDEN_DIMENSION},
+        {"fc.weight", SPARK_DSPARK_WEIGHT_FUSION_FC,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION},
+        {"hidden_norm.weight", SPARK_DSPARK_WEIGHT_HIDDEN_NORM,
+            SPARK_DSPARK_HIDDEN_DIMENSION, 1u},
+        {"norm.weight", SPARK_DSPARK_WEIGHT_FINAL_NORM,
+            SPARK_DSPARK_HIDDEN_DIMENSION, 1u},
+        {"lm_head.weight", SPARK_DSPARK_WEIGHT_LM_HEAD,
+            SPARK_DSPARK_FULL_VOCAB_SIZE,
+            SPARK_DSPARK_HIDDEN_DIMENSION},
+        {"markov_head.markov_w1.weight", SPARK_DSPARK_WEIGHT_MARKOV_W1,
+            SPARK_DSPARK_FULL_VOCAB_SIZE,
+            SPARK_DSPARK_MARKOV_RANK},
+        {"markov_head.markov_w2.weight", SPARK_DSPARK_WEIGHT_MARKOV_W2,
+            SPARK_DSPARK_FULL_VOCAB_SIZE,
+            SPARK_DSPARK_MARKOV_RANK},
+        {"confidence_head.proj.weight", SPARK_DSPARK_WEIGHT_CONFIDENCE,
+            1u, SPARK_DSPARK_BACKEND_CONFIDENCE_DIMENSION},
+        {"confidence_head.proj.bias", SPARK_DSPARK_WEIGHT_CONFIDENCE_BIAS,
             1u, 1u}
     };
     uint32_t spec_index;
@@ -1098,40 +1098,40 @@ static SparkStatus SparkGlm52DsparkLoadLayerTensors(
         uint32_t columns;
     } specs[] =
     {
-        {"input_layernorm.weight", SPARK_GLM52_DSPARK_LAYER_WEIGHT_INPUT_NORM,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION, 1u},
-        {"self_attn.q_proj.weight", SPARK_GLM52_DSPARK_LAYER_WEIGHT_Q,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION},
-        {"self_attn.k_proj.weight", SPARK_GLM52_DSPARK_LAYER_WEIGHT_K,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION},
-        {"self_attn.v_proj.weight", SPARK_GLM52_DSPARK_LAYER_WEIGHT_V,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION},
-        {"self_attn.q_norm.weight", SPARK_GLM52_DSPARK_LAYER_WEIGHT_Q_NORM,
-            SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION, 1u},
-        {"self_attn.k_norm.weight", SPARK_GLM52_DSPARK_LAYER_WEIGHT_K_NORM,
-            SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION, 1u},
-        {"self_attn.o_proj.weight", SPARK_GLM52_DSPARK_LAYER_WEIGHT_O,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION},
-        {"post_attention_layernorm.weight", SPARK_GLM52_DSPARK_LAYER_WEIGHT_POST_NORM,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION, 1u},
-        {"mlp.gate_proj.weight", SPARK_GLM52_DSPARK_LAYER_WEIGHT_GATE,
-            SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION},
-        {"mlp.up_proj.weight", SPARK_GLM52_DSPARK_LAYER_WEIGHT_UP,
-            SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION},
-        {"mlp.down_proj.weight", SPARK_GLM52_DSPARK_LAYER_WEIGHT_DOWN,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
-            SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION}
+        {"input_layernorm.weight", SPARK_DSPARK_LAYER_WEIGHT_INPUT_NORM,
+            SPARK_DSPARK_HIDDEN_DIMENSION, 1u},
+        {"self_attn.q_proj.weight", SPARK_DSPARK_LAYER_WEIGHT_Q,
+            SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION},
+        {"self_attn.k_proj.weight", SPARK_DSPARK_LAYER_WEIGHT_K,
+            SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION},
+        {"self_attn.v_proj.weight", SPARK_DSPARK_LAYER_WEIGHT_V,
+            SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION},
+        {"self_attn.q_norm.weight", SPARK_DSPARK_LAYER_WEIGHT_Q_NORM,
+            SPARK_DSPARK_DRAFT_HEAD_DIMENSION, 1u},
+        {"self_attn.k_norm.weight", SPARK_DSPARK_LAYER_WEIGHT_K_NORM,
+            SPARK_DSPARK_DRAFT_HEAD_DIMENSION, 1u},
+        {"self_attn.o_proj.weight", SPARK_DSPARK_LAYER_WEIGHT_O,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION},
+        {"post_attention_layernorm.weight", SPARK_DSPARK_LAYER_WEIGHT_POST_NORM,
+            SPARK_DSPARK_HIDDEN_DIMENSION, 1u},
+        {"mlp.gate_proj.weight", SPARK_DSPARK_LAYER_WEIGHT_GATE,
+            SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION},
+        {"mlp.up_proj.weight", SPARK_DSPARK_LAYER_WEIGHT_UP,
+            SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION},
+        {"mlp.down_proj.weight", SPARK_DSPARK_LAYER_WEIGHT_DOWN,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION}
     };
     uint32_t layer_index,spec_index;
     SparkStatus status;
 
-    for (layer_index=0u; layer_index<SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT;
+    for (layer_index=0u; layer_index<SPARK_DSPARK_DRAFT_LAYER_COUNT;
          ++layer_index)
     {
         for (spec_index=0u;
@@ -1164,18 +1164,18 @@ static SparkStatus SparkGlm52DsparkAllocateWorkspaces(
     SparkStatus status;
 
     lane_count = backend->maximum_lane_count;
-    execution_row_count = lane_count * SPARK_GLM52_DSPARK_BLOCK_SIZE;
+    execution_row_count = lane_count * SPARK_DSPARK_BLOCK_SIZE;
     tap_elements = execution_row_count *
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION;
-    context_elements = lane_count * SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT *
+        SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION;
+    context_elements = lane_count * SPARK_DSPARK_DRAFT_LAYER_COUNT *
         backend->maximum_context_token_count *
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
+        SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
     hidden_block_elements = execution_row_count *
-        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
+        SPARK_DSPARK_HIDDEN_DIMENSION;
     attention_block_elements = execution_row_count *
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
+        SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
     mlp_block_elements = execution_row_count *
-        SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION;
+        SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION;
     status = SparkGlm52DsparkAllocate(
         (void **)&backend->device_tap_arena_bf16,
         tap_elements * sizeof(uint16_t));
@@ -1239,21 +1239,21 @@ static SparkStatus SparkGlm52DsparkAllocateWorkspaces(
         status = SparkGlm52DsparkAllocate(
             (void **)&backend->device_block_logits_bf16,
             execution_row_count *
-                SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE * sizeof(uint16_t));
+                SPARK_DSPARK_FULL_VOCAB_SIZE * sizeof(uint16_t));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkAllocate(
             (void **)&backend->device_markov_logits_bf16,
-            lane_count * SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE *
+            lane_count * SPARK_DSPARK_FULL_VOCAB_SIZE *
                 sizeof(uint16_t));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkAllocate(
             (void **)&backend->device_argmax_u32,
-            lane_count * SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT *
+            lane_count * SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT *
                 sizeof(uint32_t));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkAllocate(
             (void **)&backend->device_confidence_f32,
-            lane_count * SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT *
+            lane_count * SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT *
                 sizeof(float));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkAllocate(
@@ -1278,12 +1278,12 @@ static SparkStatus SparkGlm52DsparkAllocateWorkspaces(
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMallocHost(
             (void **)&backend->host_argmax_u32,
-            lane_count * SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT *
+            lane_count * SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT *
                 sizeof(uint32_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMallocHost(
             (void **)&backend->host_confidence_f32,
-            lane_count * SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT *
+            lane_count * SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT *
                 sizeof(float)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaEventCreateWithFlags(
@@ -1308,7 +1308,7 @@ static SparkStatus SparkGlm52DsparkUploadRestrictedTokenIds(
          ++token_index)
     {
         if (configuration->restricted_token_ids[token_index] >=
-            SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE)
+            SPARK_DSPARK_FULL_VOCAB_SIZE)
             return SPARK_STATUS_INVALID_ARGUMENT;
     }
     status = SparkGlm52DsparkAllocate(
@@ -1364,36 +1364,36 @@ static SparkStatus SparkGlm52DsparkLaunchGemm(
 static void SparkGlm52DsparkFillModelContract(
     SparkGlm52DsparkModelContract *contract)
 {
-    static const uint32_t aux_layer_ids[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT] =
-        SPARK_GLM52_DSPARK_AUX_LAYER_IDS_INITIALIZER;
+    static const uint32_t aux_layer_ids[SPARK_DSPARK_AUX_LAYER_COUNT] =
+        SPARK_DSPARK_AUX_LAYER_IDS_INITIALIZER;
     uint32_t layer_index;
 
     memset(contract, 0, sizeof(*contract));
-    contract->abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
-    contract->descriptor_bytes = SPARK_GLM52_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES;
+    contract->abi_version = SPARK_DSPARK_ABI_VERSION;
+    contract->descriptor_bytes = SPARK_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES;
     contract->verifier_hidden_dtype =
-        SPARK_GLM52_DSPARK_VERIFIER_HIDDEN_DTYPE_BF16;
-    contract->draft_dtype = SPARK_GLM52_DSPARK_DRAFT_DTYPE_BF16;
-    contract->draft_layer_count = SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT;
-    contract->block_size = SPARK_GLM52_DSPARK_BLOCK_SIZE;
-    contract->hidden_dimension = SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
+        SPARK_DSPARK_VERIFIER_HIDDEN_DTYPE_BF16;
+    contract->draft_dtype = SPARK_DSPARK_DRAFT_DTYPE_BF16;
+    contract->draft_layer_count = SPARK_DSPARK_DRAFT_LAYER_COUNT;
+    contract->block_size = SPARK_DSPARK_BLOCK_SIZE;
+    contract->hidden_dimension = SPARK_DSPARK_HIDDEN_DIMENSION;
     contract->intermediate_dimension =
-        SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION;
+        SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION;
     contract->attention_head_count =
-        SPARK_GLM52_DSPARK_DRAFT_ATTENTION_HEAD_COUNT;
-    contract->kv_head_count = SPARK_GLM52_DSPARK_DRAFT_KV_HEAD_COUNT;
-    contract->head_dimension = SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION;
-    contract->vocab_size = SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE;
-    contract->draft_vocab_size = SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE;
-    contract->markov_rank = SPARK_GLM52_DSPARK_MARKOV_RANK;
-    contract->max_anchors = SPARK_GLM52_DSPARK_MAX_ANCHORS;
+        SPARK_DSPARK_DRAFT_ATTENTION_HEAD_COUNT;
+    contract->kv_head_count = SPARK_DSPARK_DRAFT_KV_HEAD_COUNT;
+    contract->head_dimension = SPARK_DSPARK_DRAFT_HEAD_DIMENSION;
+    contract->vocab_size = SPARK_DSPARK_FULL_VOCAB_SIZE;
+    contract->draft_vocab_size = SPARK_DSPARK_FULL_VOCAB_SIZE;
+    contract->markov_rank = SPARK_DSPARK_MARKOV_RANK;
+    contract->max_anchors = SPARK_DSPARK_MAX_ANCHORS;
     contract->maximum_speculative_token_count =
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
     contract->verifier_accept_k = 1u;
-    contract->aux_layer_count = SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+    contract->aux_layer_count = SPARK_DSPARK_AUX_LAYER_COUNT;
     contract->enable_confidence_head = 1u;
     contract->confidence_head_with_markov = 1u;
-    for (layer_index=0u; layer_index<SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+    for (layer_index=0u; layer_index<SPARK_DSPARK_AUX_LAYER_COUNT;
          ++layer_index)
         contract->aux_layer_ids[layer_index] = aux_layer_ids[layer_index];
 }
@@ -1406,17 +1406,17 @@ SparkStatus SparkGlm52DsparkDraftBackendInitialize(
     SparkStatus status;
 
     if (backend == 0 || configuration == 0 ||
-        configuration->abi_version != SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION ||
+        configuration->abi_version != SPARK_DSPARK_DRAFT_BACKEND_ABI_VERSION ||
         configuration->descriptor_bytes !=
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES ||
+            SPARK_DSPARK_DRAFT_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES ||
         configuration->maximum_lane_count == 0u ||
         configuration->maximum_lane_count >
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT ||
+            SPARK_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT ||
         configuration->maximum_context_token_count == 0u ||
         configuration->maximum_context_token_count >
-            SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS ||
+            SPARK_DSPARK_MAXIMUM_CONTEXT_TOKENS ||
         configuration->restricted_vocabulary_count >
-            SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE ||
+            SPARK_DSPARK_FULL_VOCAB_SIZE ||
         configuration->manifest_path == 0 ||
         configuration->config_path == 0 ||
         configuration->safetensors_path == 0)
@@ -1424,18 +1424,18 @@ SparkStatus SparkGlm52DsparkDraftBackendInitialize(
     memset(&safetensors, 0, sizeof(safetensors));
     safetensors.file_descriptor = -1;
     memset(backend, 0, sizeof(*backend));
-    backend->abi_version = SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION;
-    backend->descriptor_bytes = SPARK_GLM52_DSPARK_DRAFT_BACKEND_DESCRIPTOR_BYTES;
+    backend->abi_version = SPARK_DSPARK_DRAFT_BACKEND_ABI_VERSION;
+    backend->descriptor_bytes = SPARK_DSPARK_DRAFT_BACKEND_DESCRIPTOR_BYTES;
     backend->maximum_lane_count = configuration->maximum_lane_count;
     backend->maximum_context_token_count =
         configuration->maximum_context_token_count;
     backend->restricted_vocabulary_count =
         configuration->restricted_vocabulary_count;
-    backend->weight_count = SPARK_GLM52_DSPARK_DRAFT_BACKEND_WEIGHT_COUNT;
+    backend->weight_count = SPARK_DSPARK_DRAFT_BACKEND_WEIGHT_COUNT;
     backend->maximum_tap_row_count =
-        configuration->maximum_lane_count * SPARK_GLM52_DSPARK_BLOCK_SIZE;
+        configuration->maximum_lane_count * SPARK_DSPARK_BLOCK_SIZE;
     backend->tap_arena_lane_stride_bytes =
-        (uint64_t)SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION *
+        (uint64_t)SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION *
         sizeof(uint16_t);
     SparkGlm52DsparkFillModelContract(&backend->contract);
     status = SparkGlm52DsparkValidateArtifactManifest(configuration);
@@ -1535,7 +1535,7 @@ SparkStatus SparkGlm52DsparkDraftBackendTeardown(
     if (backend->cublas_handle != 0)
         cublasDestroy((cublasHandle_t)backend->cublas_handle);
     for (weight_index=0u;
-         weight_index<SPARK_GLM52_DSPARK_DRAFT_BACKEND_WEIGHT_COUNT;
+         weight_index<SPARK_DSPARK_DRAFT_BACKEND_WEIGHT_COUNT;
          ++weight_index)
     {
         if (backend->device_weights[weight_index] != 0)
@@ -1559,7 +1559,7 @@ SparkStatus SparkGlm52DsparkDraftBackendModelContract(
     SparkGlm52DsparkModelContract *contract_out)
 {
     if (backend == 0 || contract_out == 0 ||
-        backend->abi_version != SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION)
+        backend->abi_version != SPARK_DSPARK_DRAFT_BACKEND_ABI_VERSION)
         return SPARK_STATUS_INVALID_ARGUMENT;
     *contract_out = backend->contract;
     return SPARK_STATUS_OK;
@@ -1568,23 +1568,23 @@ SparkStatus SparkGlm52DsparkDraftBackendModelContract(
 SparkStatus SparkGlm52DsparkDraftBackendTapOutputPointers(
     SparkGlm52DsparkDraftBackend *backend,
     uint32_t lane_index,
-    void *tap_output_bf16[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT],
+    void *tap_output_bf16[SPARK_DSPARK_AUX_LAYER_COUNT],
     uint64_t *lane_stride_bytes_out)
 {
     uint8_t *lane_base;
     uint32_t tap_index;
 
     if (backend == 0 || tap_output_bf16 == 0 || lane_stride_bytes_out == 0 ||
-        backend->abi_version != SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION ||
+        backend->abi_version != SPARK_DSPARK_DRAFT_BACKEND_ABI_VERSION ||
         lane_index >= backend->maximum_lane_count)
         return SPARK_STATUS_INVALID_ARGUMENT;
     lane_base = (uint8_t *)backend->device_tap_arena_bf16 +
         ((uint64_t)lane_index * backend->tap_arena_lane_stride_bytes);
-    for (tap_index=0u; tap_index<SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+    for (tap_index=0u; tap_index<SPARK_DSPARK_AUX_LAYER_COUNT;
          ++tap_index)
     {
         tap_output_bf16[tap_index] = lane_base +
-            ((uint64_t)tap_index * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION *
+            ((uint64_t)tap_index * SPARK_DSPARK_HIDDEN_DIMENSION *
                 sizeof(uint16_t));
     }
     *lane_stride_bytes_out = backend->tap_arena_lane_stride_bytes;
@@ -1612,7 +1612,7 @@ static SparkStatus SparkGlm52DsparkValidateStageBatch(
             stage->sequence_position == 0u ||
             stage->sequence_position > backend->maximum_context_token_count ||
             stage->sequence_position > UINT32_MAX ||
-            stage->token_id >= SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE ||
+            stage->token_id >= SPARK_DSPARK_FULL_VOCAB_SIZE ||
             stage->reserved != 0u)
             return SPARK_STATUS_INVALID_ARGUMENT;
         lane_state =
@@ -1672,12 +1672,12 @@ static SparkStatus SparkGlm52DsparkUploadStageBatch(
     if (status != SPARK_STATUS_OK)
         return status;
     element_count = (uint64_t)stage_count *
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION;
+        SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION;
     block_count = (uint32_t)((element_count +
-        SPARK_GLM52_DSPARK_BACKEND_THREADS - 1u) /
-        SPARK_GLM52_DSPARK_BACKEND_THREADS);
+        SPARK_DSPARK_BACKEND_THREADS - 1u) /
+        SPARK_DSPARK_BACKEND_THREADS);
     SparkGlm52DsparkGatherStageTapsKernel<<<block_count,
-        SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+        SPARK_DSPARK_BACKEND_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         backend->device_tap_arena_bf16,
         backend->device_tap_row_indices,
@@ -1699,35 +1699,35 @@ static SparkStatus SparkGlm52DsparkAppendContextBatchLayer(
     status = SparkGlm52DsparkLaunchGemm(
         backend,
         SparkGlm52DsparkLayerWeightIndex(
-            layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_K),
+            layer_index,SPARK_DSPARK_LAYER_WEIGHT_K),
         backend->device_target_hidden_bf16,
         backend->device_block_key_bf16,
         stage_count,
-        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
+        SPARK_DSPARK_HIDDEN_DIMENSION,
+        SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
         0u);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_V),
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_V),
             backend->device_target_hidden_bf16,
             backend->device_block_value_bf16,
             stage_count,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
             0u);
     if (status != SPARK_STATUS_OK)
         return status;
     rope_grid = dim3(
-        SPARK_GLM52_DSPARK_DRAFT_ATTENTION_HEAD_COUNT,stage_count,1u);
+        SPARK_DSPARK_DRAFT_ATTENTION_HEAD_COUNT,stage_count,1u);
     SparkGlm52DsparkHeadNormRopeBatchKernel<<<rope_grid,
-        SPARK_GLM52_DSPARK_BACKEND_HEAD_THREADS,0u,
+        SPARK_DSPARK_BACKEND_HEAD_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         backend->device_block_key_bf16,
         (const uint16_t *)backend->device_weights[
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_K_NORM)],
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_K_NORM)],
         backend->device_sequence_positions,
         backend->device_block_key_bf16,
         stage_count,
@@ -1736,12 +1736,12 @@ static SparkStatus SparkGlm52DsparkAppendContextBatchLayer(
     if (status != SPARK_STATUS_OK)
         return status;
     element_count = (uint64_t)stage_count *
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
+        SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION;
     block_count = (uint32_t)((element_count +
-        SPARK_GLM52_DSPARK_BACKEND_THREADS - 1u) /
-        SPARK_GLM52_DSPARK_BACKEND_THREADS);
+        SPARK_DSPARK_BACKEND_THREADS - 1u) /
+        SPARK_DSPARK_BACKEND_THREADS);
     SparkGlm52DsparkScatterContextBatchKernel<<<block_count,
-        SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+        SPARK_DSPARK_BACKEND_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         backend->device_block_key_bf16,
         backend->device_block_value_bf16,
@@ -1764,10 +1764,10 @@ SparkStatus SparkGlm52DsparkDraftBackendStageBatch(
     SparkStatus status;
 
     if (backend == 0 || stages == 0 || stage_count == 0u ||
-        backend->abi_version != SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION ||
+        backend->abi_version != SPARK_DSPARK_DRAFT_BACKEND_ABI_VERSION ||
         stage_count > backend->maximum_tap_row_count ||
         backend->pending_operation_kind !=
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_NONE)
+            SPARK_DSPARK_DRAFT_BACKEND_PENDING_NONE)
         return SPARK_STATUS_INVALID_ARGUMENT;
     status = SparkGlm52DsparkValidateStageBatch(backend,stages,stage_count);
     if (status == SPARK_STATUS_OK)
@@ -1775,29 +1775,29 @@ SparkStatus SparkGlm52DsparkDraftBackendStageBatch(
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
-            SPARK_GLM52_DSPARK_WEIGHT_FUSION_FC,
+            SPARK_DSPARK_WEIGHT_FUSION_FC,
             backend->device_stage_tap_bf16,
             backend->device_block_normed_bf16,
             stage_count,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
             0u);
     if (status == SPARK_STATUS_OK)
     {
         SparkGlm52DsparkRmsNormRowsKernel<<<stage_count,
-            SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+            SPARK_DSPARK_BACKEND_THREADS,0u,
             (cudaStream_t)backend->cuda_stream>>>(
             backend->device_block_normed_bf16,
             (const uint16_t *)backend->device_weights[
-                SPARK_GLM52_DSPARK_WEIGHT_HIDDEN_NORM],
+                SPARK_DSPARK_WEIGHT_HIDDEN_NORM],
             backend->device_target_hidden_bf16,
             stage_count,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION);
+            SPARK_DSPARK_HIDDEN_DIMENSION);
         status = SparkGlm52DsparkCudaStatus(cudaGetLastError());
     }
     for (layer_index=0u;
          status == SPARK_STATUS_OK &&
-             layer_index<SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT;
+             layer_index<SPARK_DSPARK_DRAFT_LAYER_COUNT;
          ++layer_index)
         status = SparkGlm52DsparkAppendContextBatchLayer(
             backend,stage_count,layer_index);
@@ -1812,7 +1812,7 @@ SparkStatus SparkGlm52DsparkDraftBackendStageBatch(
         backend->validation_lane_states,
         (size_t)backend->maximum_lane_count * sizeof(backend->lane_states[0u]));
     backend->pending_operation_kind =
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_STAGE;
+        SPARK_DSPARK_DRAFT_BACKEND_PENDING_STAGE;
     return SPARK_STATUS_OK;
 }
 
@@ -1822,7 +1822,7 @@ static SparkStatus SparkGlm52DsparkUploadDraftBatchMetadata(
     uint32_t lane_count,
     uint32_t *maximum_requested_token_count)
 {
-    uint8_t seen[SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
+    uint8_t seen[SPARK_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
     SparkGlm52DsparkDraftBackendLaneState *lane_state;
     const SparkGlm52DsparkDraftRequest *request;
     uint32_t lane_index,backend_lane_index;
@@ -1834,12 +1834,12 @@ static SparkStatus SparkGlm52DsparkUploadDraftBatchMetadata(
     {
         request = &requests[lane_index];
         backend_lane_index = request->active_sequence_index;
-        if (request->abi_version != SPARK_GLM52_DSPARK_ABI_VERSION ||
+        if (request->abi_version != SPARK_DSPARK_ABI_VERSION ||
             request->descriptor_bytes !=
-                SPARK_GLM52_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES ||
+                SPARK_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES ||
             request->requested_token_count == 0u ||
             request->requested_token_count >
-                SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ||
+                SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ||
             backend_lane_index >= backend->maximum_lane_count ||
             seen[backend_lane_index] != 0u)
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1902,84 +1902,84 @@ static SparkStatus SparkGlm52DsparkBlockAttentionBatch(
     dim3 rope_grid,attention_grid;
     SparkStatus status;
 
-    row_count = lane_count * SPARK_GLM52_DSPARK_BLOCK_SIZE;
+    row_count = lane_count * SPARK_DSPARK_BLOCK_SIZE;
     SparkGlm52DsparkRmsNormRowsKernel<<<row_count,
-        SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+        SPARK_DSPARK_BACKEND_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         backend->device_block_hidden_bf16,
         (const uint16_t *)backend->device_weights[
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_INPUT_NORM)],
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_INPUT_NORM)],
         backend->device_block_normed_bf16,
         row_count,
-        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION);
+        SPARK_DSPARK_HIDDEN_DIMENSION);
     status = SparkGlm52DsparkCudaStatus(cudaGetLastError());
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_Q),
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_Q),
             backend->device_block_normed_bf16,
             backend->device_block_query_bf16,
             row_count,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
             0u);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_K),
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_K),
             backend->device_block_normed_bf16,
             backend->device_block_key_bf16,
             row_count,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
             0u);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_V),
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_V),
             backend->device_block_normed_bf16,
             backend->device_block_value_bf16,
             row_count,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
             0u);
     if (status != SPARK_STATUS_OK)
         return status;
     rope_grid = dim3(
-        SPARK_GLM52_DSPARK_DRAFT_ATTENTION_HEAD_COUNT,row_count,1u);
+        SPARK_DSPARK_DRAFT_ATTENTION_HEAD_COUNT,row_count,1u);
     SparkGlm52DsparkHeadNormRopeBatchKernel<<<rope_grid,
-        SPARK_GLM52_DSPARK_BACKEND_HEAD_THREADS,0u,
+        SPARK_DSPARK_BACKEND_HEAD_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         backend->device_block_query_bf16,
         (const uint16_t *)backend->device_weights[
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_Q_NORM)],
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_Q_NORM)],
         backend->device_sequence_positions,
         backend->device_block_query_bf16,
         row_count,
-        SPARK_GLM52_DSPARK_BLOCK_SIZE);
+        SPARK_DSPARK_BLOCK_SIZE);
     SparkGlm52DsparkHeadNormRopeBatchKernel<<<rope_grid,
-        SPARK_GLM52_DSPARK_BACKEND_HEAD_THREADS,0u,
+        SPARK_DSPARK_BACKEND_HEAD_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         backend->device_block_key_bf16,
         (const uint16_t *)backend->device_weights[
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_K_NORM)],
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_K_NORM)],
         backend->device_sequence_positions,
         backend->device_block_key_bf16,
         row_count,
-        SPARK_GLM52_DSPARK_BLOCK_SIZE);
+        SPARK_DSPARK_BLOCK_SIZE);
     status = SparkGlm52DsparkCudaStatus(cudaGetLastError());
     if (status != SPARK_STATUS_OK)
         return status;
     attention_grid = dim3(
-        SPARK_GLM52_DSPARK_DRAFT_ATTENTION_HEAD_COUNT,row_count,1u);
+        SPARK_DSPARK_DRAFT_ATTENTION_HEAD_COUNT,row_count,1u);
     SparkGlm52DsparkBlockAttentionBatchKernel<<<attention_grid,
-        SPARK_GLM52_DSPARK_BACKEND_HEAD_THREADS,0u,
+        SPARK_DSPARK_BACKEND_HEAD_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         backend->device_block_query_bf16,
         backend->device_context_key_bf16,
@@ -2004,49 +2004,49 @@ static SparkStatus SparkGlm52DsparkBlockMlpBatch(
     uint32_t row_count,block_count;
     SparkStatus status;
 
-    row_count = lane_count * SPARK_GLM52_DSPARK_BLOCK_SIZE;
+    row_count = lane_count * SPARK_DSPARK_BLOCK_SIZE;
     SparkGlm52DsparkRmsNormRowsKernel<<<row_count,
-        SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+        SPARK_DSPARK_BACKEND_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         backend->device_block_hidden_bf16,
         (const uint16_t *)backend->device_weights[
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_POST_NORM)],
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_POST_NORM)],
         backend->device_block_normed_bf16,
         row_count,
-        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION);
+        SPARK_DSPARK_HIDDEN_DIMENSION);
     status = SparkGlm52DsparkCudaStatus(cudaGetLastError());
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_GATE),
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_GATE),
             backend->device_block_normed_bf16,
             backend->device_block_gate_bf16,
             row_count,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
-            SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
             0u);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_UP),
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_UP),
             backend->device_block_normed_bf16,
             backend->device_block_up_bf16,
             row_count,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
-            SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
             0u);
     if (status != SPARK_STATUS_OK)
         return status;
     element_count = (uint64_t)row_count *
-        SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION;
+        SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION;
     block_count = (uint32_t)((element_count +
-        SPARK_GLM52_DSPARK_BACKEND_THREADS - 1u) /
-        SPARK_GLM52_DSPARK_BACKEND_THREADS);
+        SPARK_DSPARK_BACKEND_THREADS - 1u) /
+        SPARK_DSPARK_BACKEND_THREADS);
     SparkGlm52DsparkSwigluRowsKernel<<<block_count,
-        SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+        SPARK_DSPARK_BACKEND_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         backend->device_block_gate_bf16,
         backend->device_block_up_bf16,
@@ -2057,21 +2057,21 @@ static SparkStatus SparkGlm52DsparkBlockMlpBatch(
         status = SparkGlm52DsparkLaunchGemm(
             backend,
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_DOWN),
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_DOWN),
             backend->device_block_mlp_bf16,
             backend->device_block_final_bf16,
             row_count,
-            SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
             0u);
     element_count =
-        (uint64_t)row_count * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
+        (uint64_t)row_count * SPARK_DSPARK_HIDDEN_DIMENSION;
     block_count = (uint32_t)((element_count +
-        SPARK_GLM52_DSPARK_BACKEND_THREADS - 1u) /
-        SPARK_GLM52_DSPARK_BACKEND_THREADS);
+        SPARK_DSPARK_BACKEND_THREADS - 1u) /
+        SPARK_DSPARK_BACKEND_THREADS);
     if (status == SPARK_STATUS_OK)
         SparkGlm52DsparkAddBf16Kernel<<<block_count,
-            SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+            SPARK_DSPARK_BACKEND_THREADS,0u,
             (cudaStream_t)backend->cuda_stream>>>(
             backend->device_block_hidden_bf16,
             backend->device_block_final_bf16,
@@ -2089,28 +2089,28 @@ static SparkStatus SparkGlm52DsparkLayerForwardBatch(
     uint32_t row_count,block_count;
     SparkStatus status;
 
-    row_count = lane_count * SPARK_GLM52_DSPARK_BLOCK_SIZE;
+    row_count = lane_count * SPARK_DSPARK_BLOCK_SIZE;
     status = SparkGlm52DsparkBlockAttentionBatch(
         backend,lane_count,layer_index);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
             SparkGlm52DsparkLayerWeightIndex(
-                layer_index,SPARK_GLM52_DSPARK_LAYER_WEIGHT_O),
+                layer_index,SPARK_DSPARK_LAYER_WEIGHT_O),
             backend->device_block_attention_bf16,
             backend->device_block_final_bf16,
             row_count,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
             0u);
     element_count =
-        (uint64_t)row_count * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
+        (uint64_t)row_count * SPARK_DSPARK_HIDDEN_DIMENSION;
     block_count = (uint32_t)((element_count +
-        SPARK_GLM52_DSPARK_BACKEND_THREADS - 1u) /
-        SPARK_GLM52_DSPARK_BACKEND_THREADS);
+        SPARK_DSPARK_BACKEND_THREADS - 1u) /
+        SPARK_DSPARK_BACKEND_THREADS);
     if (status == SPARK_STATUS_OK)
         SparkGlm52DsparkAddBf16Kernel<<<block_count,
-            SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+            SPARK_DSPARK_BACKEND_THREADS,0u,
             (cudaStream_t)backend->cuda_stream>>>(
             backend->device_block_hidden_bf16,
             backend->device_block_final_bf16,
@@ -2131,10 +2131,10 @@ static SparkStatus SparkGlm52DsparkRunHeadStepBatch(
     SparkStatus status;
 
     SparkGlm52DsparkGatherMarkovBatchKernel<<<lane_count,
-        SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+        SPARK_DSPARK_BACKEND_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         (const uint16_t *)backend->device_weights[
-            SPARK_GLM52_DSPARK_WEIGHT_MARKOV_W1],
+            SPARK_DSPARK_WEIGHT_MARKOV_W1],
         backend->device_last_token_ids,
         backend->device_argmax_u32,
         backend->device_block_query_bf16,
@@ -2144,17 +2144,17 @@ static SparkStatus SparkGlm52DsparkRunHeadStepBatch(
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
-            SPARK_GLM52_DSPARK_WEIGHT_MARKOV_W2,
+            SPARK_DSPARK_WEIGHT_MARKOV_W2,
             backend->device_block_query_bf16,
             backend->device_markov_logits_bf16,
             lane_count,
-            SPARK_GLM52_DSPARK_MARKOV_RANK,
-            SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE,
+            SPARK_DSPARK_MARKOV_RANK,
+            SPARK_DSPARK_FULL_VOCAB_SIZE,
             0u);
     if (status != SPARK_STATUS_OK)
         return status;
     SparkGlm52DsparkArgmaxBatchKernel<<<lane_count,
-        SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+        SPARK_DSPARK_BACKEND_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         backend->device_block_logits_bf16,
         backend->device_markov_logits_bf16,
@@ -2164,14 +2164,14 @@ static SparkStatus SparkGlm52DsparkRunHeadStepBatch(
         lane_count,
         backend->device_argmax_u32);
     SparkGlm52DsparkConfidenceBatchKernel<<<lane_count,
-        SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+        SPARK_DSPARK_BACKEND_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
         backend->device_block_final_bf16,
         backend->device_block_query_bf16,
         (const uint16_t *)backend->device_weights[
-            SPARK_GLM52_DSPARK_WEIGHT_CONFIDENCE],
+            SPARK_DSPARK_WEIGHT_CONFIDENCE],
         (const uint16_t *)backend->device_weights[
-            SPARK_GLM52_DSPARK_WEIGHT_CONFIDENCE_BIAS],
+            SPARK_DSPARK_WEIGHT_CONFIDENCE_BIAS],
         proposal_index,
         lane_count,
         backend->device_confidence_f32);
@@ -2189,26 +2189,26 @@ SparkStatus SparkGlm52DsparkDraftBackendLaunchDraftBatch(
     SparkStatus status;
 
     if (backend == 0 || requests == 0 || lane_count == 0u ||
-        backend->abi_version != SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION ||
+        backend->abi_version != SPARK_DSPARK_DRAFT_BACKEND_ABI_VERSION ||
         lane_count > backend->maximum_lane_count ||
         backend->pending_operation_kind ==
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_DRAFT)
+            SPARK_DSPARK_DRAFT_BACKEND_PENDING_DRAFT)
         return SPARK_STATUS_INVALID_ARGUMENT;
     status = SparkGlm52DsparkUploadDraftBatchMetadata(
         backend,requests,lane_count,&maximum_requested_token_count);
-    row_count = lane_count * SPARK_GLM52_DSPARK_BLOCK_SIZE;
+    row_count = lane_count * SPARK_DSPARK_BLOCK_SIZE;
     element_count =
-        (uint64_t)row_count * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
+        (uint64_t)row_count * SPARK_DSPARK_HIDDEN_DIMENSION;
     block_count = (uint32_t)((element_count +
-        SPARK_GLM52_DSPARK_BACKEND_THREADS - 1u) /
-        SPARK_GLM52_DSPARK_BACKEND_THREADS);
+        SPARK_DSPARK_BACKEND_THREADS - 1u) /
+        SPARK_DSPARK_BACKEND_THREADS);
     if (status == SPARK_STATUS_OK)
     {
         SparkGlm52DsparkBuildQueryBlockBatchKernel<<<block_count,
-            SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+            SPARK_DSPARK_BACKEND_THREADS,0u,
             (cudaStream_t)backend->cuda_stream>>>(
             (const uint16_t *)backend->device_weights[
-                SPARK_GLM52_DSPARK_WEIGHT_EMBED_TOKENS],
+                SPARK_DSPARK_WEIGHT_EMBED_TOKENS],
             backend->device_last_token_ids,
             backend->device_block_hidden_bf16,
             lane_count);
@@ -2216,32 +2216,32 @@ SparkStatus SparkGlm52DsparkDraftBackendLaunchDraftBatch(
     }
     for (layer_index=0u;
          status == SPARK_STATUS_OK &&
-             layer_index<SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT;
+             layer_index<SPARK_DSPARK_DRAFT_LAYER_COUNT;
          ++layer_index)
         status = SparkGlm52DsparkLayerForwardBatch(
             backend,lane_count,layer_index);
     if (status == SPARK_STATUS_OK)
     {
         SparkGlm52DsparkRmsNormRowsKernel<<<row_count,
-            SPARK_GLM52_DSPARK_BACKEND_THREADS,0u,
+            SPARK_DSPARK_BACKEND_THREADS,0u,
             (cudaStream_t)backend->cuda_stream>>>(
             backend->device_block_hidden_bf16,
             (const uint16_t *)backend->device_weights[
-                SPARK_GLM52_DSPARK_WEIGHT_FINAL_NORM],
+                SPARK_DSPARK_WEIGHT_FINAL_NORM],
             backend->device_block_final_bf16,
             row_count,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION);
+            SPARK_DSPARK_HIDDEN_DIMENSION);
         status = SparkGlm52DsparkCudaStatus(cudaGetLastError());
     }
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
-            SPARK_GLM52_DSPARK_WEIGHT_LM_HEAD,
+            SPARK_DSPARK_WEIGHT_LM_HEAD,
             backend->device_block_final_bf16,
             backend->device_block_logits_bf16,
             row_count,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION,
-            SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE,
+            SPARK_DSPARK_HIDDEN_DIMENSION,
+            SPARK_DSPARK_FULL_VOCAB_SIZE,
             0u);
     for (proposal_index=0u;
          status == SPARK_STATUS_OK &&
@@ -2250,7 +2250,7 @@ SparkStatus SparkGlm52DsparkDraftBackendLaunchDraftBatch(
         status = SparkGlm52DsparkRunHeadStepBatch(
             backend,lane_count,proposal_index);
     element_count = (uint64_t)lane_count *
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMemcpyAsync(
             backend->host_argmax_u32,
@@ -2272,7 +2272,7 @@ SparkStatus SparkGlm52DsparkDraftBackendLaunchDraftBatch(
     if (status != SPARK_STATUS_OK)
         return status;
     backend->pending_operation_kind =
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_DRAFT;
+        SPARK_DSPARK_DRAFT_BACKEND_PENDING_DRAFT;
     backend->pending_draft_lane_count = lane_count;
     return SPARK_STATUS_OK;
 }
@@ -2288,9 +2288,9 @@ SparkStatus SparkGlm52DsparkDraftBackendTakeBatchResults(
     cudaError_t event_status;
 
     if (backend == 0 || result_count == 0 ||
-        backend->abi_version != SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION ||
+        backend->abi_version != SPARK_DSPARK_DRAFT_BACKEND_ABI_VERSION ||
         backend->pending_operation_kind ==
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_NONE)
+            SPARK_DSPARK_DRAFT_BACKEND_PENDING_NONE)
         return SPARK_STATUS_INVALID_ARGUMENT;
     event_status = cudaEventQuery((cudaEvent_t)backend->completion_event);
     if (event_status == cudaErrorNotReady)
@@ -2298,11 +2298,11 @@ SparkStatus SparkGlm52DsparkDraftBackendTakeBatchResults(
     if (event_status != cudaSuccess)
         return SparkGlm52DsparkCudaStatus(event_status);
     if (backend->pending_operation_kind ==
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_STAGE)
+        SPARK_DSPARK_DRAFT_BACKEND_PENDING_STAGE)
     {
         *result_count = 0u;
         backend->pending_operation_kind =
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_NONE;
+            SPARK_DSPARK_DRAFT_BACKEND_PENDING_NONE;
         return SPARK_STATUS_OK;
     }
     if (results == 0 ||
@@ -2313,13 +2313,13 @@ SparkStatus SparkGlm52DsparkDraftBackendTakeBatchResults(
          ++lane_index)
     {
         memset(&results[lane_index],0,sizeof(results[lane_index]));
-        results[lane_index].abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
+        results[lane_index].abi_version = SPARK_DSPARK_ABI_VERSION;
         results[lane_index].descriptor_bytes =
-            SPARK_GLM52_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES;
+            SPARK_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES;
         results[lane_index].token_count =
             backend->host_requested_token_counts[lane_index];
         result_offset = (uint64_t)lane_index *
-            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+            SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
         for (proposal_index=0u;
              proposal_index<results[lane_index].token_count;
              ++proposal_index)
@@ -2328,10 +2328,10 @@ SparkStatus SparkGlm52DsparkDraftBackendTakeBatchResults(
                 backend->host_argmax_u32[result_offset + proposal_index];
             confidence_milli = (uint32_t)(
                 backend->host_confidence_f32[result_offset + proposal_index] *
-                (float)SPARK_GLM52_DSPARK_CONFIDENCE_MILLI_ONE);
-            if (confidence_milli > SPARK_GLM52_DSPARK_CONFIDENCE_MILLI_ONE)
+                (float)SPARK_DSPARK_CONFIDENCE_MILLI_ONE);
+            if (confidence_milli > SPARK_DSPARK_CONFIDENCE_MILLI_ONE)
                 confidence_milli =
-                    SPARK_GLM52_DSPARK_CONFIDENCE_MILLI_ONE;
+                    SPARK_DSPARK_CONFIDENCE_MILLI_ONE;
             results[lane_index].confidence_milli[proposal_index] =
                 confidence_milli;
         }
@@ -2339,6 +2339,6 @@ SparkStatus SparkGlm52DsparkDraftBackendTakeBatchResults(
     *result_count = backend->pending_draft_lane_count;
     backend->pending_draft_lane_count = 0u;
     backend->pending_operation_kind =
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_NONE;
+        SPARK_DSPARK_DRAFT_BACKEND_PENDING_NONE;
     return SPARK_STATUS_OK;
 }

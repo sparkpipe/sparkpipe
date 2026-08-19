@@ -37,7 +37,21 @@
       "sparkb",
       "sparkc"
     ],
-    "stage_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    "stage_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+    ],
     "runtime_dataset": "dsv4_flash.fp8.pp13",
     "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
     "adapter_configuration_path_template": "config/dsv4_flash_stage.json",
@@ -47,6 +61,21 @@
       "kind": "tcp",
       "host_template": "{host}",
       "port": 18080
-    }
+    },
+    "transport_hosts": [
+      "spark0-fabric",
+      "spark1-fabric",
+      "spark2-fabric",
+      "spark3-fabric",
+      "spark4-fabric",
+      "spark5-fabric",
+      "spark6-fabric",
+      "spark7-fabric",
+      "spark8-fabric",
+      "spark9-fabric",
+      "sparka-fabric",
+      "sparkb-fabric",
+      "sparkc-fabric"
+    ]
   }
 }

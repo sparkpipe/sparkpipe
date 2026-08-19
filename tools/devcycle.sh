@@ -64,7 +64,7 @@ TEMPLATE_STAGE="$SCRIPT_DIR/devcycle/templates/dsv4_flash_tp4_stage.template.jso
 RELEASE_GIT_COMMIT="da7f91090c0d40729352b4e4180ad231971c90a2"
 RELEASE_GENERATION="20260815000000"
 
-BUILD_HOST="sparkf"
+BUILD_HOST="spark4"
 BUILD_CHECKOUT="/tmp/sparkpipe-devcycle"
 
 # ---------------------------------------------------------------------------
@@ -80,11 +80,11 @@ cmd_sync() {
 }
 
 cmd_build() {
-    local name="$1" bucket="${2:-1}" local_sha
-    [[ -n "$name" ]] || die "usage: devcycle build NAME [BUCKET]"
+    local name="$1" bucket="${2:-1}" spec_step="${3:-}" local_sha
+    [[ -n "$name" ]] || die "usage: devcycle build NAME [BUCKET] [SPEC_STEP]"
     local_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
     cmd_sync >/dev/null || die "sync failed"
-    ssh_rank "$BUILD_HOST" "cd '$BUILD_CHECKOUT' && bash tools/devcycle/build_remote.sh '$name' '$local_sha' '$bucket'" \
+    ssh_rank "$BUILD_HOST" "cd '$BUILD_CHECKOUT' && bash tools/devcycle/build_remote.sh '$name' '$local_sha' '$bucket' '$spec_step'" \
         || die "remote build failed"
     mkdir -p "$SCRIPT_DIR/devcycle/drivers/$name"
     for artifact in model_driver.so model_serving_adapter.so hidden_transport.so; do
@@ -534,7 +534,7 @@ case "${1:-}" in
     start)   cmd_start "$2" ;;
     ready)   cmd_ready "$2" ;;
     sync)    cmd_sync ;;
-    build)   cmd_build "$2" "${3:-}" ;;
+    build)   cmd_build "$2" "${3:-}" "${4:-}" ;;
     deploy)  cmd_deploy "$2" "$3" ;;
     driver)  cmd_driver "$2" "$3" ;;
     gate24)  cmd_gate24 "$2" ;;

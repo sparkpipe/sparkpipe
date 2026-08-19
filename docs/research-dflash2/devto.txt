@@ -1,0 +1,1056 @@
+ising step</strong>. The reasoning: drafts only need to be good enough to be accepted at a high rate. The target model's parallel verification guarantees the final output distribution regardless.</p>
+
+<p>This approach collapses <code>T_draft</code> from <em>O(k)</em> to <em>O(1)</em> — drafting an 8-token block costs no more than drafting a 1-token block. This frees DFlash to use deeper, more expressive draft models without penalty, since additional depth adds quality (higher <code>τ</code>) without adding sequential latency.</p>
+
+<h3>
+  <a name="31-target-knows-best-kv-injection-architecture" href="#31-target-knows-best-kv-injection-architecture">
+  </a>
+  3.1 "Target Knows Best": KV Injection Architecture
+</h3>
+
+<p>The mechanism that makes DFlash's one-pass draft so accurate is what the authors call the <strong>"target knows best" insight</strong>. Large autoregressive target models develop rich internal representations of the input context — their hidden states implicitly encode information about many plausible future token sequences. DFlash extracts hidden states from several target layers, fuses them into a compact <em>target context feature</em>, and injects this feature as conditioning into the draft model.</p>
+
+<p>Critically, DFlash's injection strategy is different from EAGLE-3. EAGLE-3 fuses target features only at the input embeddings of the draft model. As the draft runs deeper, that signal gets diluted through layers of attention and feedforward operations. DFlash instead injects the target context feature directly into the <strong>Key and Value projections of every draft layer</strong>. The projected features sit in the draft's KV cache and persist across all draft attention operations.</p>
+
+<p>This architectural difference is why depth scales differently in DFlash. In EAGLE-3, a deeper draft model does not reliably improve acceptance length because the conditioning signal weakens with depth. In DFlash, the signal is reinforced at every layer, so a 5-layer DFlash draft generating 16 tokens consistently outperforms EAGLE-3 generating 8 tokens — at lower total latency.</p>
+
+<p><a href="https://media2.dev.to/dynamic/image/width=800%2Cheight=%2Cfit=scale-down%2Cgravity=auto%2Cformat=auto/https%3A%2F%2Fdev-to-uploads.s3.us-east-2.amazonaws.com%2Fuploads%2Farticles%2Fvld8r3ughucth5ypf09s.png" class="article-body-image-wrapper"><img src="https://media2.dev.to/dynamic/image/width=800%2Cheight=%2Cfit=scale-down%2Cgravity=auto%2Cformat=auto/https%3A%2F%2Fdev-to-uploads.s3.us-east-2.amazonaws.com%2Fuploads%2Farticles%2Fvld8r3ughucth5ypf09s.png" alt="DFlash speculative decoding architecture diagram showing KV injection from target LLM into every draft model layer" loading="lazy" width="800" height="800"></a><br>
+<em>Figure 2: DFlash architecture — target hidden states are injected into the Key-Value projections of every draft layer, reinforcing the conditioning signal at depth rather than diluting it.</em></p>
+<h3>
+  <a name="32-dflash-benchmark-results" href="#32-dflash-benchmark-results">
+  </a>
+  3.2 DFlash Benchmark Results
+</h3>
+
+<p>The numbers are striking. On Qwen3-8B at temperature 0 with the Transformers backend, here are per-task speedups versus the autoregressive baseline and EAGLE-3:</p>
+
+<div class="table-wrapper-paragraph"><table>
+<thead>
+<tr>
+<th>Task</th>
+<th>Autoregressive</th>
+<th>EAGLE-3 (16)</th>
+<th><strong>DFlash (16)</strong></th>
+<th>DFlash τ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GSM8K</td>
+<td>1.00×</td>
+<td>1.94×</td>
+<td><strong>5.15×</strong></td>
+<td>6.54</td>
+</tr>
+<tr>
+<td>MATH-500</td>
+<td>1.00×</td>
+<td>1.81×</td>
+<td><strong>6.08×</strong></td>
+<td>7.87</td>
+</tr>
+<tr>
+<td>AIME25</td>
+<td>1.00×</td>
+<td>1.79×</td>
+<td><strong>5.62×</strong></td>
+<td>7.08</td>
+</tr>
+<tr>
+<td>HumanEval</td>
+<td>1.00×</td>
+<td>1.89×</td>
+<td><strong>5.14×</strong></td>
+<td>6.50</td>
+</tr>
+<tr>
+<td>MBPP</td>
+<td>1.00×</td>
+<td>1.69×</td>
+<td><strong>4.65×</strong></td>
+<td>5.95</td>
+</tr>
+<tr>
+<td>LiveCodeBench</td>
+<td>1.00×</td>
+<td>1.57×</td>
+<td><strong>5.51×</strong></td>
+<td>7.27</td>
+</tr>
+<tr>
+<td>MT-Bench</td>
+<td>1.00×</td>
+<td>1.63×</td>
+<td><strong>2.75×</strong></td>
+<td>4.24</td>
+</tr>
+<tr>
+<td><strong>Average</strong></td>
+<td><strong>1.00×</strong></td>
+<td><strong>1.76×</strong></td>
+<td><strong>4.86×</strong></td>
+<td><strong>6.49</strong></td>
+</tr>
+</tbody>
+</table></div>
+
+<p>DFlash's average accepted length of τ = 6.49 means that for every draft-verify cycle, nearly 6.5 tokens are accepted — compared to EAGLE-3's implied ~1.7 from its 1.76× average speedup. The biggest gains are on structured, high-probability-sequence tasks: math and code. MT-Bench (open-ended conversation) sees smaller gains at 2.75× — more on why that matters in the DSpark section.</p>
+
+<p>On NVIDIA Blackwell hardware (8× B300 GPUs, DGX B300 system, TensorRT-LLM, gpt-oss-120b), NVIDIA's engineering team reports <strong>up to 15× throughput</strong> at the 500–600 tokens/sec per-user interactivity target. This is not a cherry-picked peak — it is at a <em>fixed interactivity constraint</em>, meaning it represents the serving throughput you can push while keeping individual user response latency acceptable.</p>
+<h3>
+  <a name="33-running-dflash-in-production" href="#33-running-dflash-in-production">
+  </a>
+  3.3 Running DFlash in Production
+</h3>
+
+<p>DFlash ships first-class support for vLLM, SGLang, and the Hugging Face Transformers backend. Switching from EAGLE-3 is a single config change in vLLM:<br>
+</p>
+
+<div class="highlight js-code-highlight">
+<pre class="highlight shell"><code><span class="c"># Running DFlash with vLLM — drop-in replacement for EAGLE-3</span>
+<span class="c"># Just swap the speculative-config to point at a DFlash checkpoint</span>
+
+vllm serve Qwen/Qwen3.5-27B <span class="se">\</span>
+  <span class="nt">--speculative-config</span> <span class="s1">'{
+    "method": "dflash",
+    "model": "z-lab/Qwen3.5-27B-DFlash",
+    "num_speculative_tokens": 15
+  }'</span> <span class="se">\</span>
+  <span class="nt">--attention-backend</span> flash_attn <span class="se">\</span>
+  <span class="nt">--max-num-batched-tokens</span> 32768
+</code></pre>
+<div class="highlight__panel js-actions-panel">
+<div class="highlight__panel-action js-fullscreen-code-action">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20px" height="20px" viewbox="0 0 24 24" class="highlight-action crayons-icon highlight-action--fullscreen-on"><title>Enter fullscreen mode</title>
+    <path d="M16 3h6v6h-2V5h-4V3zM2 3h6v2H4v4H2V3zm18 16v-4h2v6h-6v-2h4zM4 19h4v2H2v-6h2v4z"></path>
+</svg>
+
+    <svg xmlns="http://www.w3.org/2000/svg" width="20px" height="20px" viewbox="0 0 24 24" class="highlight-action crayons-icon highlight-action--fullscreen-off"><title>Exit fullscreen mode</title>
+    <path d="M18 7h4v2h-6V3h2v4zM8 9H2V7h4V3h2v6zm10 8v4h-2v-6h6v2h-4zM8 15v6H6v-4H2v-2h6z"></path>
+</svg>
+
+</div>
+</div>
+</div>
+
+
+
+<p>For direct integration with Hugging Face Transformers — useful for research, fine-tuning pipelines, or serving smaller models locally:<br>
+</p>
+
+<div class="highlight js-code-highlight">
+<pre class="highlight python"><code><span class="c1"># DFlash inference using the Hugging Face Transformers backend
+# Both the draft and target load onto the same or different CUDA devices
+</span>
+<span class="kn">from</span> <span class="n">transformers</span> <span class="kn">import</span> <span class="n">AutoModel</span><span class="p">,</span> <span class="n">AutoModelForCausalLM</span><span class="p">,</span> <span class="n">AutoTokenizer</span>
+
+<span class="c1"># Load the 5-layer DFlash draft model
+</span><span class="n">draft</span> <span class="o">=</span> <span class="n">AutoModel</span><span class="p">.</span><span class="nf">from_pretrained</span><span class="p">(</span>
+    <span class="sh">"</span><span class="s">z-lab/Qwen3-8B-DFlash-b16</span><span class="sh">"</span><span class="p">,</span>
+    <span class="n">trust_remote_code</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+    <span class="n">dtype</span><span class="o">=</span><span class="sh">"</span><span class="s">auto</span><span class="sh">"</span><span class="p">,</span>
+    <span class="n">device_map</span><span class="o">=</span><span class="sh">"</span><span class="s">cuda:0</span><span class="sh">"</span>
+<span class="p">).</span><span class="nf">eval</span><span class="p">()</span>
+
+<span class="c1"># Load the full target model
+</span><span class="n">target</span> <span class="o">=</span> <span class="n">AutoModelForCausalLM</span><span class="p">.</span><span class="nf">from_pretrained</span><span class="p">(</span>
+    <span class="sh">"</span><span class="s">Qwen/Qwen3-8B</span><span class="sh">"</span><span class="p">,</span>
+    <span class="n">dtype</span><span class="o">=</span><span class="sh">"</span><span class="s">auto</span><span class="sh">"</span><span class="p">,</span>
+    <span class="n">device_map</span><span class="o">=</span><span class="sh">"</span><span class="s">cuda:0</span><span class="sh">"</span>
+<span class="p">).</span><span class="nf">eval</span><span class="p">()</span>
+
+<span class="n">tokenizer</span> <span class="o">=</span> <span class="n">AutoTokenizer</span><span class="p">.</span><span class="nf">from_pretrained</span><span class="p">(</span><span class="sh">"</span><span class="s">Qwen/Qwen3-8B</span><span class="sh">"</span><span class="p">)</span>
+
+<span class="n">messages</span> <span class="o">=</span> <span class="p">[{</span><span class="sh">"</span><span class="s">role</span><span class="sh">"</span><span class="p">:</span> <span class="sh">"</span><span class="s">user</span><span class="sh">"</span><span class="p">,</span> <span class="sh">"</span><span class="s">content</span><span class="sh">"</span><span class="p">:</span> <span class="sh">"</span><span class="s">Solve: What is the sum of all divisors of 360?</span><span class="sh">"</span><span class="p">}]</span>
+<span class="n">input_ids</span> <span class="o">=</span> <span class="n">tokenizer</span><span class="p">.</span><span class="nf">apply_chat_template</span><span class="p">(</span>
+    <span class="n">messages</span><span class="p">,</span>
+    <span class="n">return_tensors</span><span class="o">=</span><span class="sh">"</span><span class="s">pt</span><span class="sh">"</span><span class="p">,</span>
+    <span class="n">add_generation_prompt</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+    <span class="n">enable_thinking</span><span class="o">=</span><span class="bp">False</span>
+<span class="p">).</span><span class="nf">to</span><span class="p">(</span><span class="n">draft</span><span class="p">.</span><span class="n">device</span><span class="p">)</span>
+
+<span class="c1"># spec_generate pairs the draft model with the target model
+# and runs the DFlash draft-verify loop transparently
+</span><span class="n">output</span> <span class="o">=</span> <span class="n">draft</span><span class="p">.</span><span class="nf">spec_generate</span><span class="p">(</span>
+    <span class="n">input_ids</span><span class="o">=</span><span class="n">input_ids</span><span class="p">,</span>
+    <span class="n">max_new_tokens</span><span class="o">=</span><span class="mi">2048</span><span class="p">,</span>
+    <span class="n">temperature</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>          <span class="c1"># Greedy decoding for maximum acceptance
+</span>    <span class="n">target</span><span class="o">=</span><span class="n">target</span><span class="p">,</span>
+    <span class="n">stop_token_ids</span><span class="o">=</span><span class="p">[</span><span class="n">tokenizer</span><span class="p">.</span><span class="n">eos_token_id</span><span class="p">]</span>
+<span class="p">)</span>
+
+<span class="nf">print</span><span class="p">(</span><span class="n">tokenizer</span><span class="p">.</span><span class="nf">decode</span><span class="p">(</span><span class="n">output</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">skip_special_tokens</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+</code></pre>
+<div class="highlight__panel js-actions-panel">
+<div class="highlight__panel-action js-fullscreen-code-action">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20px" height="20px" viewbox="0 0 24 24" class="highlight-action crayons-icon highlight-action--fullscreen-on"><title>Enter fullscreen mode</title>
+    <path d="M16 3h6v6h-2V5h-4V3zM2 3h6v2H4v4H2V3zm18 16v-4h2v6h-6v-2h4zM4 19h4v2H2v-6h2v4z"></path>
+</svg>
+
+    <svg xmlns="http://www.w3.org/2000/svg" width="20px" height="20px" viewbox="0 0 24 24" class="highlight-action crayons-icon highlight-action--fullscreen-off"><title>Exit fullscreen mode</title>
+    <path d="M18 7h4v2h-6V3h2v4zM8 9H2V7h4V3h2v6zm10 8v4h-2v-6h6v2h-4zM8 15v6H6v-4H2v-2h6z"></path>
+</svg>
+
+</div>
+</div>
+</div>
+
+
+
+<p>DFlash checkpoints for Qwen3, LLaMA-3.1, and Gemma 4 models are available at the <a href="https://huggingface.co/collections/z-lab/dflash" target="_blank" rel="noopener noreferrer">z-lab HuggingFace collection</a>. No target model retraining is required.</p>
+
+
+<hr>
+
+<h2>
+  <a name="4-dspark-deepseeks-semiautoregressive-framework" href="#4-dspark-deepseeks-semiautoregressive-framework">
+  </a>
+  4. DSpark: DeepSeek's Semi-Autoregressive Framework
+</h2>
+
+<p>On June 27, 2026, DeepSeek released <strong>DSpark</strong> alongside the MIT-licensed <strong>DeepSpec</strong> training framework — an open-source end-to-end system for training, evaluating, and deploying speculative decoding drafters against any target model. DSpark is not a new model; it is a <em>serving optimization</em> that attaches a draft module to existing DeepSeek-V4 weights. The production checkpoints shipped as <code>DeepSeek-V4-Pro-DSpark</code> and <code>DeepSeek-V4-Flash-DSpark</code>.</p>
+
+<p>Where DFlash solves the problem by eliminating serial drafting entirely, DSpark takes a more nuanced approach: it identifies that pure parallel drafting suffers from <strong>suffix decay</strong> — accepted length drops off sharply for tokens deep in the draft block because each position cannot condition on its accepted predecessors during drafting. DSpark's insight is that you can fix this with a lightweight sequential correction step.</p>
+
+<h3>
+  <a name="41-the-markov-head-solving-suffix-decay" href="#41-the-markov-head-solving-suffix-decay">
+  </a>
+  4.1 The Markov Head: Solving Suffix Decay
+</h3>
+
+<p>DSpark's architecture is a two-stage process called <strong>semi-autoregressive generation</strong>:</p>
+
+<p><strong>Stage 1: Parallel backbone.</strong> A parallel drafting backbone (implemented as DFlash in DeepSeek's setup) produces base logits for every position in the draft block simultaneously. This inherits DFlash's O(1) drafting cost.</p>
+
+<p><strong>Stage 2: Sequential Markov head.</strong> A lightweight sequential correction head adds a prefix-dependent bias to each position's logits <em>before</em> sampling. The Markov head only looks at the <strong>immediately preceding sampled token</strong> — not the full preceding sequence. This makes it <em>sequential</em> but adds near-zero compute cost.</p>
+
+<p>The Markov head uses a rank-256 low-rank factorization across the vocabulary, keeping it small even for large vocabulary models. An optional RNN head tracks the full block prefix, but the research team found it adds only marginal gains — so the Markov head ships as the default.</p>
+
+<p>Here is the intuition: after the parallel backbone samples token "of" at position <em>i</em>, the Markov head updates the logit distribution for position <em>i+1</em> — boosting "course" and suppressing "problem" — before sampling. This one-step sequential correction is enough to hold acceptance steady deep into the block.</p>
+
+<p>Measured against both pure baselines: on Qwen3-4B, DSpark beats EAGLE-3 by <strong>+30.9% macro-average accepted length</strong>, and beats DFlash by <strong>+16.3%</strong>. A 2-layer DSpark beats a 5-layer DFlash in accepted length across all tested domains — with the Markov head's sequential overhead adding only <strong>0.2–1.3% per-round latency</strong> even at block size 16.</p>
+
+<h3>
+  <a name="42-confidencescheduled-verification" href="#42-confidencescheduled-verification">
+  </a>
+  4.2 Confidence-Scheduled Verification
+</h3>
+
+<p>DSpark's second major innovation is its <strong>confidence-scheduled verification</strong> system, which addresses lever 3 of the latency equation: verifying smarter, not just more.</p>
+
+<p>In a busy production system with high GPU concurrency, verifying a large draft block occupies target-model compute with tokens that will mostly be rejected under distribution shift. This wastes batch capacity and lowers throughput even when per-request latency looks acceptable.</p>
+
+<p>DSpark adds a <strong>confidence head</strong> to the draft model that outputs a scalar score for each draft position, estimating the probability that the token at that position will survive target verification. This head is supervised by the analytical per-step acceptance rate. Raw neural confidence is typically overconfident, so DSpark applies <strong>Sequential Temperature Scaling</strong> — a post-hoc calibration method that drops expected calibration error from <strong>3–8% to ~1%</strong>.</p>
+
+<p>A hardware-aware prefix scheduler then sets verification length <code>k</code> per request dynamically:<br>
+</p>
+
+<div class="highlight js-code-highlight">
+<pre class="highlight plaintext"><code>k(request, GPU_load) = argmax_k [ SPS(B) × (τ_expected(k) - 1) / L(k) ]
+</code></pre>
+<div class="highlight__panel js-actions-panel">
+<div class="highlight__panel-action js-fullscreen-code-action">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20px" height="20px" viewbox="0 0 24 24" class="highlight-action crayons-icon highlight-action--fullscreen-on"><title>Enter fullscreen mode</title>
+    <path d="M16 3h6v6h-2V5h-4V3zM2 3h6v2H4v4H2V3zm18 16v-4h2v6h-6v-2h4zM4 19h4v2H2v-6h2v4z"></path>
+</svg>
+
+    <svg xmlns="http://www.w3.org/2000/svg" width="20px" height="20px" viewbox="0 0 24 24" class="highlight-action crayons-icon highlight-action--fullscreen-off"><title>Exit fullscreen mode</title>
+    <path d="M18 7h4v2h-6V3h2v4zM8 9H2V7h4V3h2v6zm10 8v4h-2v-6h6v2h-4zM8 15v6H6v-4H2v-2h6z"></path>
+</svg>
+
+</div>
+</div>
+</div>
+
+
+
+<p>Where <code>SPS(B)</code> is a profiled tokens-per-second-per-unit-batch-size curve measured once at startup. When GPU concurrency is low, the scheduler verifies more tokens. When the GPU is heavily loaded, it verifies fewer — protecting overall throughput without violating losslessness.</p>
+
+<p>The production results on live DeepSeek-V4 traffic are extraordinary:</p>
+
+<ul>
+<li>
+<strong>V4-Flash at matched throughput</strong>: per-user speed is <strong>60–85% faster</strong> than the MTP-1 baseline</li>
+<li>
+<strong>V4-Pro at matched throughput</strong>: per-user speed is <strong>57–78% faster</strong>
+</li>
+<li>The shipped configuration is <strong>DSpark-5</strong> — a 5-token draft block with the Markov head</li>
+</ul>
+
+<p>The confidence scheduling also makes DSpark dramatically better on mixed-traffic workloads. On open-ended chat, DFlash's acceptance rate drops because natural language is less repetitively structured than math or code. DSpark's confidence head dynamically prunes the verification block for low-confidence chat suffixes. In experiments, sweeping the confidence threshold raises chat acceptance from <strong>45.7% to 95.7%</strong>.</p>
+
+<h3>
+  <a name="43-running-dspark-and-training-your-own-drafter" href="#43-running-dspark-and-training-your-own-drafter">
+  </a>
+  4.3 Running DSpark and Training Your Own Drafter
+</h3>
+
+<p>DeepSpec is the training framework behind DSpark. It runs in three stages — data preparation, training, then evaluation — and is fully configurable via a Python config file:<br>
+</p>
+
+<div class="highlight js-code-highlight">
+<pre class="highlight shell"><code><span class="c"># DeepSpec: Training a DSpark draft against any target model</span>
+<span class="c"># Requires 1 node with 8 GPUs for default configs</span>
+
+<span class="c"># 1. Install dependencies</span>
+python <span class="nt">-m</span> pip <span class="nb">install</span> <span class="nt">-r</span> requirements.txt
+
+<span class="c"># 2. Train a DSpark draft against Qwen3-4B</span>
+<span class="c"># Config selects the algorithm (dspark) and the target model</span>
+bash scripts/train/train.sh <span class="se">\</span>
+    <span class="nt">--config</span> config/dspark/dspark_qwen3_4b.py
+
+<span class="c"># NOTE: Target KV cache can be large (~38TB for Qwen3-4B).</span>
+<span class="c"># Ensure sufficient NVMe or RAM swap is available.</span>
+
+<span class="c"># 3. Evaluate the trained draft across 9 benchmark datasets</span>
+bash scripts/eval/eval.sh <span class="se">\</span>
+    <span class="nt">--config</span> config/eval/dspark_qwen3_4b_eval.py
+</code></pre>
+<div class="highlight__panel js-actions-panel">
+<div class="highlight__panel-action js-fullscreen-code-action">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20px" height="20px" viewbox="0 0 24 24" class="highlight-action crayons-icon highlight-action--fullscreen-on"><title>Enter fullscreen mode</title>
+    <path d="M16 3h6v6h-2V5h-4V3zM2 3h6v2H4v4H2V3zm18 16v-4h2v6h-6v-2h4zM4 19h4v2H2v-6h2v4z"></path>
+</svg>
+
+    <svg xmlns="http://www.w3.org/2000/svg" width="20px" height="20px" viewbox="0 0 24 24" class="highlight-action crayons-icon highlight-action--fullscreen-off"><title>Exit fullscreen mode</title>
+    <path d="M18 7h4v2h-6V3h2v4zM8 9H2V7h4V3h2v6zm10 8v4h-2v-6h6v2h-4zM8 15v6H6v-4H2v-2h6z"></path>
+</svg>
+
+</div>
+</div>
+</div>
+
+
+
+<p>For production inference using the pre-trained DeepSeek-V4 DSpark checkpoints:<br>
+</p>
+
+<div class="highlight js-code-highlight">
+<pre class="highlight python"><code><span class="c1"># DSpark inference with DeepSeek-V4-Flash-DSpark
+# The draft module attaches to frozen V4 weights — no target retraining required
+</span>
+<span class="kn">from</span> <span class="n">transformers</span> <span class="kn">import</span> <span class="n">AutoTokenizer</span><span class="p">,</span> <span class="n">AutoModelForCausalLM</span>
+
+<span class="c1"># Load base target model and tokenizer
+</span><span class="n">tokenizer</span> <span class="o">=</span> <span class="n">AutoTokenizer</span><span class="p">.</span><span class="nf">from_pretrained</span><span class="p">(</span>
+    <span class="sh">"</span><span class="s">deepseek-ai/DeepSeek-V4-Flash</span><span class="sh">"</span><span class="p">,</span>
+    <span class="n">trust_remote_code</span><span class="o">=</span><span class="bp">True</span>
+<span class="p">)</span>
+<span class="n">target</span> <span class="o">=</span> <span class="n">AutoModelForCausalLM</span><span class="p">.</span><span class="nf">from_pretrained</span><span class="p">(</span>
+    <span class="sh">"</span><span class="s">deepseek-ai/DeepSeek-V4-Flash</span><span class="sh">"</span><span class="p">,</span>
+    <span class="n">trust_remote_code</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+    <span class="n">device_map</span><span class="o">=</span><span class="sh">"</span><span class="s">auto</span><span class="sh">"</span><span class="p">,</span>
+    <span class="n">torch_dtype</span><span class="o">=</span><span class="sh">"</span><span class="s">auto</span><span class="sh">"</span>
+<span class="p">)</span>
+
+<span class="c1"># Load DSpark draft module via DeepSpec helper
+# DSpark-5: 5-token block with Markov head + confidence-scheduled verification
+# See: https://github.com/deepseek-ai/DeepSpec for the full inference API
+</span><span class="kn">from</span> <span class="n">deepspec.inference</span> <span class="kn">import</span> <span class="n">DSpark</span>
+
+<span class="n">dspark</span> <span class="o">=</span> <span class="n">DSpark</span><span class="p">.</span><span class="nf">from_pretrained</span><span class="p">(</span>
+    <span class="sh">"</span><span class="s">deepseek-ai/DeepSeek-V4-Flash-DSpark</span><span class="sh">"</span><span class="p">,</span>
+    <span class="n">target_model</span><span class="o">=</span><span class="n">target</span><span class="p">,</span>
+    <span class="n">block_size</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span>              <span class="c1"># DSpark-5 default production config
+</span>    <span class="n">confidence_threshold</span><span class="o">=</span><span class="mf">0.85</span><span class="p">,</span> <span class="c1"># Dynamic verification scheduling threshold
+</span>    <span class="n">device_map</span><span class="o">=</span><span class="sh">"</span><span class="s">auto</span><span class="sh">"</span>
+<span class="p">)</span>
+
+<span class="c1"># Generate with confidence-scheduled speculative decoding LLM inference
+</span><span class="n">messages</span> <span class="o">=</span> <span class="p">[{</span><span class="sh">"</span><span class="s">role</span><span class="sh">"</span><span class="p">:</span> <span class="sh">"</span><span class="s">user</span><span class="sh">"</span><span class="p">,</span> <span class="sh">"</span><span class="s">content</span><span class="sh">"</span><span class="p">:</span> <span class="sh">"</span><span class="s">Write a merge sort implementation in Python.</span><span class="sh">"</span><span class="p">}]</span>
+<span class="n">inputs</span> <span class="o">=</span> <span class="n">tokenizer</span><span class="p">.</span><span class="nf">apply_chat_template</span><span class="p">(</span>
+    <span class="n">messages</span><span class="p">,</span> <span class="n">return_tensors</span><span class="o">=</span><span class="sh">"</span><span class="s">pt</span><span class="sh">"</span>
+<span class="p">).</span><span class="nf">to</span><span class="p">(</span><span class="n">target</span><span class="p">.</span><span class="n">device</span><span class="p">)</span>
+
+<span class="c1"># Load-aware scheduling adapts verification budget to real-time GPU load
+</span><span class="k">with</span> <span class="n">dspark</span><span class="p">.</span><span class="nf">speculative_context</span><span class="p">(</span><span class="n">gpu_load_factor</span><span class="o">=</span><span class="sh">"</span><span class="s">auto</span><span class="sh">"</span><span class="p">):</span>
+    <span class="n">outputs</span> <span class="o">=</span> <span class="n">dspark</span><span class="p">.</span><span class="nf">generate</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">max_new_tokens</span><span class="o">=</span><span class="mi">1024</span><span class="p">,</span> <span class="n">temperature</span><span class="o">=</span><span class="mf">0.6</span><span class="p">)</span>
+
+<span class="nf">print</span><span class="p">(</span><span class="n">tokenizer</span><span class="p">.</span><span class="nf">decode</span><span class="p">(</span><span class="n">outputs</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">skip_special_tokens</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+</code></pre>
+<div class="highlight__panel js-actions-panel">
+<div class="highlight__panel-action js-fullscreen-code-action">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20px" height="20px" viewbox="0 0 24 24" class="highlight-action crayons-icon highlight-action--fullscreen-on"><title>Enter fullscreen mode</title>
+    <path d="M16 3h6v6h-2V5h-4V3zM2 3h6v2H4v4H2V3zm18 16v-4h2v6h-6v-2h4zM4 19h4v2H2v-6h2v4z"></path>
+</svg>
+
+    <svg xmlns="http://www.w3.org/2000/svg" width="20px" height="20px" viewbox="0 0 24 24" class="highlight-action crayons-icon highlight-action--fullscreen-off"><title>Exit fullscreen mode</title>
+    <path d="M18 7h4v2h-6V3h2v4zM8 9H2V7h4V3h2v6zm10 8v4h-2v-6h6v2h-4zM8 15v6H6v-4H2v-2h6z"></path>
+</svg>
+
+</div>
+</div>
+</div>
+
+
+
+
+<hr>
+
+<h2>
+  <a name="5-dflash-vs-dspark-vs-eagle3-the-full-comparison" href="#5-dflash-vs-dspark-vs-eagle3-the-full-comparison">
+  </a>
+  5. DFlash vs. DSpark vs. EAGLE-3: The Full Comparison
+</h2>
+
+<p><a href="https://media2.dev.to/dynamic/image/width=800%2Cheight=%2Cfit=scale-down%2Cgravity=auto%2Cformat=auto/https%3A%2F%2Fdev-to-uploads.s3.us-east-2.amazonaws.com%2Fuploads%2Farticles%2Fmzrntkmhmcv5u30tgplx.png" class="article-body-image-wrapper"><img src="https://media2.dev.to/dynamic/image/width=800%2Cheight=%2Cfit=scale-down%2Cgravity=auto%2Cformat=auto/https%3A%2F%2Fdev-to-uploads.s3.us-east-2.amazonaws.com%2Fuploads%2Farticles%2Fmzrntkmhmcv5u30tgplx.png" alt="DFlash vs DSpark vs EAGLE-3 comparison infographic showing speedup metrics and use cases" loading="lazy" width="800" height="800"></a><br>
+<em>Figure 3: Framework comparison — EAGLE-3 (purple), DFlash (blue), DSpark (green) across drafting style, peak speedup, production gains, and best use cases.</em></p>
+
+<div class="table-wrapper-paragraph"><table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>EAGLE-3</th>
+<th>DFlash</th>
+<th>DSpark</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Drafting Style</strong></td>
+<td>Autoregressive</td>
+<td>Block diffusion (1 pass)</td>
+<td>Parallel backbone + Markov head</td>
+</tr>
+<tr>
+<td><strong>Block Generation Cost</strong></td>
+<td>O(k) — grows with block size</td>
+<td>O(1) — flat regardless of k</td>
+<td>O(1) + tiny sequential step</td>
+</tr>
+<tr>
+<td><strong>Conditioning Signal</strong></td>
+<td>Input embedding fusion</td>
+<td>Per-layer KV injection</td>
+<td>Per-layer KV injection + prefix bias</td>
+</tr>
+<tr>
+<td><strong>Suffix Acceptance</strong></td>
+<td>Stable but limited</td>
+<td>Decays at depth</td>
+<td>Stable at depth (Markov correction)</td>
+</tr>
+<tr>
+<td><strong>Verification Length</strong></td>
+<td>Fixed</td>
+<td>Fixed</td>
+<td>Dynamic, load-aware</td>
+</tr>
+<tr>
+<td><strong>Peak Single-Stream Speedup</strong></td>
+<td>~2.0×</td>
+<td>
+<strong>6.08×</strong> (MATH-500, Qwen3-8B)</td>
+<td>— (production metric)</td>
+</tr>
+<tr>
+<td><strong>Production Throughput Gain</strong></td>
+<td>—</td>
+<td>
+<strong>15×</strong> (Blackwell, gpt-oss-120b)</td>
+<td>
+<strong>60–85%</strong> (DeepSeek-V4, live)</td>
+</tr>
+<tr>
+<td><strong>Calibration Required</strong></td>
+<td>No</td>
+<td>No</td>
+<td>Seq. Temperature Scaling (once)</td>
+</tr>
+<tr>
+<td><strong>Training Needed</strong></td>
+<td>New checkpoint</td>
+<td>New checkpoint</td>
+<td>DeepSpec (MIT) or pre-trained</td>
+</tr>
+<tr>
+<td><strong>Open Source</strong></td>
+<td>✅</td>
+<td>✅ (MIT)</td>
+<td>✅ (MIT, DeepSpec)</td>
+</tr>
+<tr>
+<td><strong>Best For</strong></td>
+<td>Mixed tasks, low overhead</td>
+<td>Math, code, reasoning</td>
+<td>Mixed-traffic APIs, production serving</td>
+</tr>
+<tr>
+<td><strong>Framework Support</strong></td>
+<td>vLLM, HF</td>
+<td>vLLM, SGLang, HF</td>
+<td>DeepSpec + V4 production checkpoints</td>
+</tr>
+</tbody>
+</table></div>
+
+
+<hr>
+
+<h2>
+  <a name="6-decision-guide-when-to-use-which" href="#6-decision-guide-when-to-use-which">
+  </a>
+  6. Decision Guide: When to Use Which
+</h2>
+
+<p><strong>Use DFlash when:</strong></p>
+
+<ul>
+<li>Your workload is predominantly <strong>math, code, or structured reasoning</strong> (where τ &gt; 5 is achievable)</li>
+<li>You run at <strong>low to moderate concurrency</strong> (single-stream latency is the primary metric)</li>
+<li>You want <strong>maximum simplicity</strong> — one config flag in vLLM, pre-trained checkpoints available for Qwen3, LLaMA-3.1, Gemma 4</li>
+<li>You are deploying on <strong>NVIDIA Blackwell</strong> hardware and need to maximize throughput per GPU</li>
+<li>You want the research-pedigree guarantee: <strong>ICML 2026-accepted</strong> paper with independently verified results</li>
+</ul>
+
+<p><strong>Use DSpark when:</strong></p>
+
+<ul>
+<li>You run a <strong>production multi-tenant API</strong> with mixed workloads (code + chat + reasoning in the same serving cluster)</li>
+<li>Your priority is <strong>tail latency (P95/P99)</strong> — DSpark's confidence scheduling keeps the long tail tight</li>
+<li>Your GPU cluster experiences <strong>variable concurrency</strong> throughout the day — the load-aware scheduler adapts automatically</li>
+<li>You want to <strong>train your own drafter</strong> for a custom target model using DeepSpec's MIT-licensed framework</li>
+<li>You are already running <strong>DeepSeek-V4</strong> infrastructure — shipped production checkpoints require zero retraining</li>
+</ul>
+
+<p><strong>Use EAGLE-3 when:</strong></p>
+
+<ul>
+<li>You need a well-tested, battle-hardened baseline with the <strong>widest ecosystem support</strong>
+</li>
+<li>Your target model does not yet have DFlash or DSpark checkpoints available</li>
+<li>You are in an exploration phase and want to <strong>validate speculative decoding gains</strong> before committing to a more complex setup</li>
+</ul>
+
+<p>One final, critical nuance: <strong>DFlash and DSpark are not mutually exclusive</strong>. DSpark's reference implementation <em>uses DFlash as its parallel backbone</em>. The most sophisticated production configuration is: DFlash for the backbone, Markov head for suffix correction, and confidence-scheduled verification for hardware-adaptive throughput. That is exactly what DeepSeek ships in DSpark-5.</p>
+
+
+<hr>
+
+<h2>
+  <a name="7-the-bigger-picture-where-inference-optimization-is-heading" href="#7-the-bigger-picture-where-inference-optimization-is-heading">
+  </a>
+  7. The Bigger Picture: Where Inference Optimization Is Heading
+</h2>
+
+<p>The simultaneous arrival of DFlash and DSpark is not a coincidence — it reflects a broader maturation of the inference optimization stack. In 2024 and early 2025, the dominant techniques were quantization (GPTQ, AWQ, FP8), continuous batching (vLLM's PagedAttention), and prefix caching. These were valuable but addressed different dimensions of the cost surface. Speculative decoding LLM inference was always the more powerful lever — it directly addresses the fundamental serial generation bottleneck — but previous implementations could not deliver practical production gains.</p>
+
+<p>Several trends are converging to make 2026 the inflection point:</p>
+
+<p><strong>Multi-Token Prediction (MTP) as a native capability.</strong> DeepSeek-V3 and V4 were trained with MTP heads — small prediction heads for each future token position, baked directly into the target model's training objective. MTP heads are weaker than dedicated drafter models but are already part of the deployed checkpoint. DSpark's MTP-1 baseline (which it beats by 60–85%) demonstrates that even training-integrated speculative decoding is now a product feature, not a research prototype.</p>
+
+<p><strong>Hardware that rewards large batch verification.</strong> NVIDIA's Blackwell architecture (B200, B300) is specifically optimized for the large-batch parallel verification pass that speculative decoding requires. DFlash's 15× throughput result was measured on B300 — the verification step maps nearly perfectly onto Blackwell's tile-and-fuse execution model. As Blackwell deployments ramp, the real-world ceiling for speculative decoding speedups will keep rising.</p>
+
+<p><strong>Inference on the edge.</strong> Liquid AI's LFM2.5-230M running at 213 tokens/sec on a Samsung Galaxy S25 Ultra (released June 2026) represents the same philosophy applied to a different constraint set: make small models fast enough to be useful on-device. Speculative decoding variants optimized for edge inference — where you might use a 30M draft model with a 1B target — are an active research area. DFlash's O(1) drafting cost translates directly to devices where serial computation is most expensive.</p>
+
+<p><strong>Agentic workloads as the primary beneficiary.</strong> AI coding agents, embodied AI systems, and autonomous reasoning agents all have one thing in common: they require many rapid inference calls in sequence, often where each response conditions the next. For agentic loops, reducing per-generation latency by 5–6× does not just lower cost — it makes fundamentally new interaction patterns possible that feel like real-time response rather than polling a slow API.</p>
+
+<p>The near-term direction is clear: speculative decoding will become a default, invisible layer in production inference stacks, much as quantization is today. DFlash and DSpark are the frameworks most likely to be the implementation basis for that default layer.</p>
+
+
+<hr>
+
+<h2>
+  <a name="8-conclusion" href="#8-conclusion">
+  </a>
+  8. Conclusion
+</h2>
+
+<p>We are at a turning point in LLM inference engineering. For the past three years, the honest answer to "how do I make my LLM API faster?" was mostly "buy more GPUs." DFlash and DSpark change that calculus dramatically.</p>
+
+<p>DFlash's block diffusion drafting breaks the O(k) serial drafting barrier and delivers 6×+ single-stream speedups and 15× production throughput on Blackwell — with nothing more than a checkpoint swap in vLLM. DSpark's semi-autoregressive architecture with confidence-scheduled verification delivers 60–85% faster per-user generation on live DeepSeek-V4 traffic — losslessly, with open-source training code so you can adapt it to your own target model.</p>
+
+<p>The key takeaways for engineers building <strong>speculative decoding LLM inference</strong> systems today:</p>
+
+<ul>
+<li>
+<strong>It is no longer research-only.</strong> Both DFlash and DSpark ship with production-ready checkpoints, framework integrations, and independently verified results.</li>
+<li>
+<strong>Your workload profile determines your choice.</strong> DFlash for structured tasks with high sequential probability; DSpark for mixed-traffic production APIs with variable GPU load.</li>
+<li>
+<strong>The lossless guarantee is real.</strong> Rejection sampling preserves the target distribution exactly. You are not trading quality for speed.</li>
+<li>
+<strong>The training barrier is low.</strong> DeepSpec (MIT) lets you train a custom DSpark drafter against any target model in three shell commands on 8 GPUs.</li>
+</ul>
+
+<p>The next time you are staring at your GPU utilization dashboard watching it hover at 15%, you now know exactly what to do about it.</p>
+
+
+<hr>
+
+<p><strong>Get started today:</strong></p>
+
+<ul>
+<li>🔗 <a href="https://github.com/z-lab/dflash" target="_blank" rel="noopener noreferrer">DFlash GitHub</a> | <a href="https://huggingface.co/collections/z-lab/dflash" target="_blank" rel="noopener noreferrer">DFlash HuggingFace Checkpoints</a> | <a href="https://arxiv.org/abs/2602.06036" target="_blank" rel="noopener noreferrer">DFlash Paper (ICML 2026)</a>
+</li>
+<li>🔗 <a href="https://github.com/deepseek-ai/DeepSpec" target="_blank" rel="noopener noreferrer">DSpark / DeepSpec GitHub</a> | <a href="https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-DSpark" target="_blank" rel="noopener noreferrer">DeepSeek-V4-Pro-DSpark on HuggingFace</a>
+</li>
+</ul>
+
+
+<hr>
+
+<p><em>Published: July 3, 2026 | Topic sourced from trending discussions on Hacker News, Hugging Face Blog, and MarkTechPost · All benchmark figures cited from primary sources (ICML 2026 camera-ready paper, DeepSpec GitHub, NVIDIA developer blog)</em></p>
+
+
+            </div>
+
+              <div class="below-post-bb body-billboard-container" data-async-url="/monuminu/speculative-decoding-in-2026-how-dflash-and-dspark-are-delivering-15-llm-inference-speedups-2ia9/bmar11/post_body_bottom"></div>
+          </div>
+          <section id="comments" data-follow-button-container="true" data-updated-at="2026-08-19 02:31:49 UTC" class="text-padding mb-4 border-t-1 border-0 border-solid border-base-10">
+    <header class="relative flex justify-between items-center mb-6">
+      <div class="flex items-center">
+        <h2 class="crayons-subtitle-1">
+          Top comments <span class="js-comments-count" data-comments-count="0">(0)</span>
+        </h2>
+      </div>
+
+
+      <div id="comment-subscription" class="print-hidden">
+        <div class="crayons-btn-group">
+          <span class="crayons-btn crayons-btn--outlined">Subscribe</span>
+        </div>
+      </div>
+    </header>
+    <div id="billboard_delay_trigger"></div>
+    <div
+      id="comments-container"
+      data-testid="comments-container"
+      data-commentable-id="4056476"
+      data-commentable-type="Article"
+      data-has-recent-comment-activity="false">
+
+        <div id="response-templates-data" class="hidden"></div>
+
+
+<form class="comment-form print-hidden" id="new_comment" action="/comments" accept-charset="UTF-8" method="post">
+
+  <input type="hidden" name="authenticity_token" value="NOTHING" id="new_comment_authenticity_token">
+
+    <input value="4056476" autocomplete="off" type="hidden" name="comment[commentable_id]" id="comment_commentable_id" />
+    <input value="Article" autocomplete="off" type="hidden" name="comment[commentable_type]" id="comment_commentable_type" />
+    
+
+  <span class="crayons-avatar m:crayons-avatar--l mr-2 shrink-0">
+    <img src="https://media2.dev.to/dynamic/image/width=256,height=,fit=scale-down,gravity=auto,format=auto/https%3A%2F%2Fdev-to-uploads.s3.amazonaws.com%2Fuploads%2Farticles%2F8j7kvp660rqzt99zui8e.png" width="32" height="32" alt="pic" class="crayons-avatar__image overflow-hidden" id="comment-primary-user-profile--avatar" loading="lazy" />
+  </span>
+  <div class="comment-form__inner">
+    <div class="comment-form__field" data-tracking-name="comment_form_textfield">
+      <textarea placeholder="Add to the discussion" onfocus="handleFocus(event)" onkeyup="handleKeyUp(event)" onkeydown="handleKeyDown(event)" oninput="handleChange(event)" id="text-area" required="required" class="crayons-textfield comment-textarea crayons-textfield--ghost" aria-label="Add a comment to the discussion" name="comment[body_markdown]">
+</textarea>
+
+    </div>
+
+    <div class="response-templates-container crayons-card crayons-card--secondary p-4 mb-4 comment-form__templates fs-base hidden">
+      <header class="mb-3">
+        <button type="button" class="crayons-btn personal-template-button active" data-target-type="personal" data-form-id="new_comment">Personal</button>
+        <button type="button" class="crayons-btn moderator-template-button hidden" data-target-type="moderator" data-form-id="new_comment">Trusted User</button>
+      </header>
+
+      <div class="personal-responses-container">
+      </div>
+      <div class="moderator-responses-container hidden">
+      </div>
+
+      <a target="_blank" rel="noopener nofollow" href="/settings/response-templates">
+        Create template
+      </a>
+      <p>Templates let you quickly answer FAQs or store snippets for re-use.</p>
+    </div>
+
+    <div class="comment-form__preview text-styles text-styles--secondary" id="preview-div"></div>
+
+    <div class="comment-form__buttons mb-4 flex items-center flex-wrap gap-2">
+      <button type="submit" class="crayons-btn mr-2 js-btn-enable" onclick="validateField(event)" data-tracking-name="comment_submit_button" disabled>Submit</button>
+      <button type="button" class="preview-toggle crayons-btn crayons-btn--secondary comment-action-preview js-btn-enable mr-2" data-tracking-name="comment_preview_button" disabled>Preview</button>
+      <a href="/404.html" class="dismiss-edit-comment crayons-btn crayons-btn--ghost js-btn-dismiss hidden">Dismiss</a>
+    </div>
+  </div>
+
+  <div class="code-of-conduct" id="toggle-code-of-conduct-checkbox"></div>
+</form>
+
+
+      <div class="comments" id="comment-trees-container">
+      </div>
+    </div>
+
+    <div class="align-center">
+
+
+  <nav class="fs-s align-center block" aria-label="Conduct controls">
+  <a href="/code-of-conduct" class="crayons-link crayons-link--secondary">Code of Conduct</a>
+  <span class="opacity-25 px-2" role="presentation">&bull;</span>
+  <a href="/report-abuse" class="crayons-link crayons-link--secondary">Report abuse</a>
+</nav>
+
+</div>
+
+</section>
+<div id="hide-comments-modal" class="hidden">
+  <form id="hide-comments-modal__form" class="hide-comments-modal__form" data-type="json" action="/comments/hide" accept-charset="UTF-8" data-remote="true" method="post"><input type="hidden" name="_method" value="patch" autocomplete="off" /><input type="hidden" name="authenticity_token" value="tnhHY4RaJsybSTfoJXiOxR4N71KiwF6aqHFPQasLTsctVPASS_1Fs2H3EK-UAaXNC0QwpLVRAgpkOspeO3kYWQ" autocomplete="off" />
+    <div class="hide-comments-modal__content">
+      <p class="pb-2">
+        Are you sure you want to hide this comment? It will become hidden in your post, but will still be visible via the comment's <a id="hide-comments-modal__comment-permalink" href="#">permalink</a>.
+      </p>
+      <label class="crayons-field crayons-field--checkbox my-2">
+        <input name="hide_children" type="hidden" value="0" autocomplete="off" /><input class="hide_children crayons-checkbox" type="checkbox" value="1" name="hide_children" id="hide_children" />
+        <p class="crayons-field__label">Hide child comments as well</p>
+      </label>
+      <p class="pb-4 pt-2">
+        <button type="submit" class="crayons-btn">
+          Confirm
+        </button>
+      </p>
+    </div>
+</form>  <p class="fs-s color-base-60">For further actions, you may consider blocking this person and/or <a id="hide-comments-modal__report-link" href="/report-abuse">reporting abuse</a></p>
+</div>
+
+
+
+        </article>
+
+        <div class="pb-4 crayons-layout__comments-billboard">
+          <div class="new-bb-container pb-4 crayons-layout__comments-billboard" data-async-url="/monuminu/speculative-decoding-in-2026-how-dflash-and-dspark-are-delivering-15-llm-inference-speedups-2ia9/bmar11/post_comments"></div>
+        </div>
+
+          <!-- Bottom content skipped via SKIP_BOTTOM_CONTENT config -->
+      </div>
+    </main>
+
+    <aside class="crayons-layout__sidebar-right" aria-label="Author details">
+      <div class="crayons-article-sticky grid gap-4 pb-4 break-word" id="article-show-primary-sticky-nav">
+  <div class="crayons-card crayons-card--secondary branded-7 p-4 pt-0 gap-4 grid" style="border-top-color: #000000;">
+    <div class="-mt-4">
+  <a href="/monuminu" class="flex">
+    <span class="crayons-avatar crayons-avatar--xl  mr-2 shrink-0">
+      <img src="https://media2.dev.to/dynamic/image/width=90,height=90,fit=cover,gravity=auto,format=auto/https%3A%2F%2Fdev-to-uploads.s3.us-east-2.amazonaws.com%2Fuploads%2Fuser%2Fprofile_image%2F1376994%2F8956b907-d30b-4730-b82b-35d338d4fa0c.jpeg" class="crayons-avatar__image" alt="" loading="lazy" />
+    </span>
+    <span class="crayons-link crayons-subtitle-2 mt-5">
+      Manoranjan Rajguru
+      
+      
+    </span>
+  </a>
+</div>
+
+<div class="print-hidden">
+  <button name="button" type="button" data-info="{&quot;className&quot;:&quot;User&quot;,&quot;style&quot;:&quot;&quot;,&quot;id&quot;:1376994,&quot;name&quot;:&quot;Manoranjan Rajguru&quot;}" class="crayons-btn follow-action-button whitespace-nowrap w-100 follow-user" aria-label="Follow user: Manoranjan Rajguru" aria-pressed="false">Follow</button>
+</div>
+
+  <div class="user-metadata-details">
+    <ul class="user-metadata-details-inner">
+      <li>
+        <div class="key">
+          Joined
+        </div>
+        <div class="value">
+          <time datetime="2024-03-23T08:50:40Z" class="date">Mar 23, 2024</time>
+        </div>
+      </li>
+    </ul>
+  </div>
+
+  </div>
+
+      <div class="crayons-card crayons-card--secondary">
+        <header class="crayons-card__header">
+          <h3 class="crayons-subtitle-2">
+            More from <a href="/monuminu">Manoranjan Rajguru</a>
+          </h3>
+        </header>
+        <div>
+            <a class="crayons-link crayons-link--contentful" href="/monuminu/the-end-of-static-scaffolding-how-self-improving-ai-agents-are-rewriting-the-rules-of-agentic-ai-549o">
+              The End of Static Scaffolding: How Self-Improving AI Agents Are Rewriting the Rules of Agentic AI
+              <div class="crayons-link__secondary -ml-1">
+                  <span class="mr-1"><span class="opacity-50">#</span>ai</span>
+                  <span class="mr-1"><span class="opacity-50">#</span>agents</span>
+                  <span class="mr-1"><span class="opacity-50">#</span>python</span>
+                  <span class="mr-1"><span class="opacity-50">#</span>machinelearning</span>
+              </div>
+            </a>
+            <a class="crayons-link crayons-link--contentful" href="/monuminu/etching-intelligence-into-silicon-how-amds-taalas-acquisition-and-model-specific-integrated-4ekj">
+              Etching Intelligence Into Silicon: How AMD&#39;s Taalas Acquisition and Model-Specific Integrated Circuits Are Rewriting AI Inference
+              <div class="crayons-link__secondary -ml-1">
+                  <span class="mr-1"><span class="opacity-50">#</span>ai</span>
+                  <span class="mr-1"><span class="opacity-50">#</span>hardware</span>
+                  <span class="mr-1"><span class="opacity-50">#</span>machinelearning</span>
+                  <span class="mr-1"><span class="opacity-50">#</span>llm</span>
+              </div>
+            </a>
+            <a class="crayons-link crayons-link--contentful" href="/monuminu/ai-agents-gone-rogue-how-openai-anthropic-meta-models-accidentally-hacked-real-companies-in-2l2b">
+              AI Agents Gone Rogue: How OpenAI, Anthropic &amp; Meta Models Accidentally Hacked Real Companies in 2026 — and What Claude Code Auto Mode Does About It
+              <div class="crayons-link__secondary -ml-1">
+                  <span class="mr-1"><span class="opacity-50">#</span>ai</span>
+                  <span class="mr-1"><span class="opacity-50">#</span>security</span>
+                  <span class="mr-1"><span class="opacity-50">#</span>llm</span>
+                  <span class="mr-1"><span class="opacity-50">#</span>programming</span>
+              </div>
+            </a>
+        </div>
+      </div>
+</div>
+
+<div class="crayons-article-sticky grid gap-4 break-word sidebar-bb" data-async-url="/monuminu/speculative-decoding-in-2026-how-dflash-and-dspark-are-delivering-15-llm-inference-speedups-2ia9/bmar11/post_sidebar"></div>
+
+
+    </aside>
+  </div>
+
+  <div class="mod-actions-menu print-hidden"></div>
+  <div data-testid="unpublish-post-modal-container" class="unpublish-post-modal-container hidden"></div>
+
+  <div class="fullscreen-code js-fullscreen-code"></div>
+  <script src="https://assets.dev.to/assets/billboard-1b75959755e3f87ef58c28efef9eab9853df3b84cf27a937749b2c3449fd450d.js" defer="defer"></script>
+<script src="https://assets.dev.to/assets/localizeArticleDates-ddf0f7415ce8497325dd1b64bc1e022762d4d14aec7f538e6988744eeaa9a501.js" defer="defer"></script>
+<script src="https://assets.dev.to/assets/articleReactions-03b03e63c7319a6caa1788ca81e7b25dff9fe90b38ca051b8b979a773b011e3b.js" defer="defer"></script>
+<script src="https://assets.dev.to/assets/favoriteControls-cfa2ed6790ef8a2f8e34cb8509281caaaefa45a5cea6bb1e5c4675943b8b6a37.js" defer="defer"></script>
+
+  <script>
+  </script>
+  <div class="js-billboard-container pb-4 crayons-layout__comments-billboard" data-async-url="/monuminu/speculative-decoding-in-2026-how-dflash-and-dspark-are-delivering-15-llm-inference-speedups-2ia9/bmar11/post_fixed_bottom"></div>
+
+
+    <div id="runtime-banner-container"></div>
+    <div id="i18n-translations" data-translations="{&quot;en&quot;:{&quot;core&quot;:{&quot;add_comment&quot;:&quot;Add comment&quot;,&quot;beta&quot;:&quot;beta&quot;,&quot;comment&quot;:&quot;Comment&quot;,&quot;copy_link&quot;:&quot;Copy link&quot;,&quot;edit_profile&quot;:&quot;Edit profile&quot;,&quot;follow&quot;:&quot;Follow&quot;,&quot;follow_back&quot;:&quot;Follow back&quot;,&quot;following&quot;:&quot;Following&quot;,&quot;like&quot;:&quot;Like&quot;,&quot;loading&quot;:&quot;loading...&quot;,&quot;reaction&quot;:&quot;Reaction&quot;,&quot;report_abuse&quot;:&quot;Report abuse&quot;,&quot;search&quot;:&quot;Search&quot;,&quot;success_settings&quot;:&quot;Successfully updated settings.&quot;,&quot;search_placeholder&quot;:&quot;Search...&quot;,&quot;search_find_related_posts&quot;:&quot;Find related posts...&quot;,&quot;search_powered_by&quot;:&quot;Powered by Algolia&quot;,&quot;search_submit_search&quot;:&quot;Submit search for advanced filtering.&quot;,&quot;search_displaying_recommendations&quot;:&quot;Displaying Algolia Recommendations — Start typing to search&quot;,&quot;article_form_save_changes&quot;:&quot;Save changes&quot;,&quot;article_form_schedule&quot;:&quot;Schedule&quot;,&quot;article_form_publish&quot;:&quot;Publish&quot;,&quot;article_form_loading_preview&quot;:&quot;Loading preview&quot;,&quot;article_form_preview_loaded&quot;:&quot;Preview loaded&quot;,&quot;article_form_co_authors&quot;:&quot;Co-authors&quot;,&quot;article_form_co_authors_description&quot;:&quot;Add up to 4 co-authors from %{org_name}.&quot;,&quot;article_form_co_authors_placeholder&quot;:&quot;Add up to 4...&quot;,&quot;comments_preview&quot;:&quot;Preview&quot;,&quot;comments_continue_editing&quot;:&quot;Continue editing&quot;,&quot;survey_enter_response&quot;:&quot;Enter your response here...&quot;,&quot;survey_thank_you_response&quot;:&quot;Thank you for your response.&quot;,&quot;survey_thank_you_completing&quot;:&quot;Thank you for completing the survey!&quot;,&quot;dashboard_analytics_readers&quot;:&quot;Readers&quot;,&quot;dashboard_analytics_avg_read_time&quot;:&quot;avg. read time %{seconds}s&quot;,&quot;dashboard_analytics_comments&quot;:&quot;Comments&quot;,&quot;dashboard_analytics_reactions&quot;:&quot;Reactions&quot;,&quot;dashboard_analytics_unique_reactors&quot;:&quot;from %{count} unique users&quot;,&quot;dashboard_analytics_bookmarks&quot;:&quot;Bookmarks&quot;,&quot;dashboard_analytics_followers&quot;:&quot;New Followers&quot;,&quot;top_contributors_empty&quot;:&quot;No engagers found for this period.&quot;,&quot;top_contributors_reactions&quot;:&quot;reactions&quot;,&quot;top_contributors_comments&quot;:&quot;comments&quot;,&quot;top_contributors_weight_note&quot;:&quot;Comments carry more weight&quot;,&quot;follower_engagement_ratio&quot;:&quot;%{ratio}% of followers engaged&quot;,&quot;follower_engagement_detail&quot;:&quot;(%{engaged} of %{total})&quot;,&quot;dashboard_analytics_no_data&quot;:&quot;No data available for this period&quot;,&quot;dashboard_analytics_no_referrers&quot;:&quot;No traffic sources yet&quot;,&quot;stats_by&quot;:&quot;by&quot;,&quot;editor_new_title&quot;:&quot;New post title here...&quot;,&quot;editor_body_placeholder&quot;:&quot;Write your post content here...&quot;,&quot;tags_field_label&quot;:&quot;Add up to 4 tags&quot;,&quot;tags_field_placeholder&quot;:&quot;Add up to 4 tags...&quot;,&quot;counted_organization&quot;:{&quot;one&quot;:&quot;%{count} organization&quot;,&quot;other&quot;:&quot;%{count} organizations&quot;},&quot;counted_user&quot;:{&quot;one&quot;:&quot;%{count} person&quot;,&quot;other&quot;:&quot;%{count} people&quot;},&quot;not_following&quot;:&quot;You&#39;re not following anyone&quot;,&quot;following_everyone&quot;:&quot;You&#39;re following %{details} (everyone)&quot;,&quot;you_are_following&quot;:&quot;You&#39;re following&quot;,&quot;and&quot;:&quot;and&quot;}}}"></div>
+  </div>
+</div>
+    
+
+<footer id="footer" class="crayons-footer print-hidden">
+  <div id="footer-container" class="crayons-footer__container">
+
+
+
+    <p class="fs-s crayons-footer__description">
+      <a class="c-link c-link--branded fw-medium" aria-label="DEV Community Home" href="/">DEV Community</a> — A space to discuss and keep up software development and manage your software career
+    </p>
+
+    <ul class="footer__nav-links flex gap-2 justify-center flex-wrap fs-s p-0" style="" />
+        <li class="footer__nav-link flex items-center">
+    <a href="/">
+      Home
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/challenges">
+      DEV Challenges
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/++">
+      DEV++
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/videos">
+      Videos
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/deved">
+      DEV Education Tracks
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/help">
+      DEV Help
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/advertise">
+      Advertise on DEV
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/organizations">
+      Organization Accounts
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/showcase">
+      DEV Showcase
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/about">
+      About
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/contact">
+      Contact
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/free-postgres-database-tier">
+      Free Postgres Database
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="https://shop.forem.com/">
+      DEV Shop
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="https://mlh.io/">
+      MLH
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+
+    </ul>
+
+    <ul class="footer__nav-links flex gap-2 justify-center flex-wrap fs-s p-0" style="" />
+        <li class="footer__nav-link flex items-center">
+    <a href="/code-of-conduct">
+      Code of Conduct
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/privacy">
+      Privacy Policy
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+  <li class="footer__nav-link flex items-center">
+    <a href="/terms">
+      Terms of Use
+    </a>
+    <span class="dot ml-2"></span>
+  </li>
+
+    </ul>
+
+    <div class="fs-s">
+      <p>Built on <a class="c-link c-link--branded" target="_blank" rel="noopener" href="https://www.forem.com">Forem</a> — the <a target="_blank" rel="noopener" class="c-link c-link--branded" href="https://dev.to/t/opensource">open source</a> software that powers <a target="_blank" rel="noopener" class="c-link c-link--branded" href="https://dev.to">DEV</a> and other inclusive communities.</p>
+      <p>Made with love and <a target="_blank" rel="noopener" class="c-link c-link--branded" href="https://dev.to/t/rails">Ruby on Rails</a>. DEV Community <span title="copyright">&copy;</span> 2016 - 2026.</p>
+    </div>
+  </div>
+</footer>
+<div id="snack-zone"></div>
+
+    <div id="global-signup-modal" class="authentication-modal hidden">
+  <div class="authentication-modal__container">
+    <figure class="authentication-modal__image-container">
+      <img class="authentication-modal__image" src="https://media2.dev.to/dynamic/image/width=190,height=,fit=scale-down,gravity=auto,format=auto/https%3A%2F%2Fdev-to-uploads.s3.amazonaws.com%2Fuploads%2Farticles%2F8j7kvp660rqzt99zui8e.png"
+        alt="DEV Community" loading="lazy" />
+    </figure>
+    <div class="authentication-modal__content">
+      <p class="authentication-modal__description">
+          We&#39;re a place where coders share, stay up-to-date and grow their careers.
+      </p>
+    </div>
+    <div class="authentication-modal__actions">
+      <a href="https://dev.to/enter?signup_subforem=1" class="crayons-btn" aria-label="Log in" data-no-instant>
+        Log in
+      </a>
+      <a href="https://dev.to/enter?signup_subforem=1&amp;state=new-user" class="crayons-btn crayons-btn--ghost-brand js-global-signup-modal__create-account" aria-label="Create new account" data-no-instant>
+        Create account
+      </a>
+    </div>
+  </div>
+</div>
+
+<script src="https://assets.dev.to/assets/signupModalShortcuts-0b25469b985100a01e94cbd7fccaf7f0a4d776e129aac65c766aa32cb28ab29a.js" defer="defer"></script>
+
+    <div id="cookie-consent"></div>
+  <div id="reaction-category-resources" class="hidden" aria-hidden="true">
+    <img data-name="Like" data-slug="like" data-position="1" src="https://assets.dev.to/assets/sparkle-heart-5f9bee3767e18deb1bb725290cb151c25234768a0e9a2bd39370c382d02920cf.svg" width="18" height="18" />
+    <img data-name="Unicorn" data-slug="unicorn" data-position="2" src="https://assets.dev.to/assets/multi-unicorn-b44d6f8c23cdd00964192bedc38af3e82463978aa611b4365bd33a0f1f4f3e97.svg" width="18" height="18" />
+    <img data-name="Exploding Head" data-slug="exploding_head" data-position="3" src="https://assets.dev.to/assets/exploding-head-daceb38d627e6ae9b730f36a1e390fca556a4289d5a41abb2c35068ad3e2c4b5.svg" width="18" height="18" />
+    <img data-name="Raised Hands" data-slug="raised_hands" data-position="4" src="https://assets.dev.to/assets/raised-hands-74b2099fd66a39f2d7eed9305ee0f4553df0eb7b4f11b01b6b1b499973048fe5.svg" width="18" height="18" />
+    <img data-name="Fire" data-slug="fire" data-position="5" src="https://assets.dev.to/assets/fire-f60e7a582391810302117f987b22a8ef04a2fe0df7e3258a5f49332df1cec71e.svg" width="18" height="18" />
+</div>
+
+    <script>
+  var userSignedIn = false;
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    initAuth();
+  } else {
+    document.addEventListener('DOMContentLoaded', initAuth);
+  }
+
+  function initAuth() {
+    var paramToken = new URLSearchParams(window.location.search).get('jwt');
+
+    if (paramToken && !userSignedIn) {
+      authenticateUser(paramToken);
+    } else {
+      var iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = 'https://forem.com/auth_pass/iframe';
+  
+      document.body.appendChild(iframe);
+  
+      window.addEventListener('message', function(event) {
+        if (event.origin !== 'https://forem.com' && event.origin !== window.location.origin) {
+          return;
+        }
+  
+        var data = event.data;
+  
+        if (data.authenticated && !userSignedIn) {
+          authenticateUser(data.token);
+        } else if(data.authenticated && window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            action: 'login',
+            token: data.token,
+          }));
+        }
+      });  
+    }
+
+    function authenticateUser(token) {
+      fetch('/auth_pass/token_login', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': getMetaContent('csrf-token'),
+        },
+        body: JSON.stringify({ token: token }),
+      })
+      .then(function(response) {
+        return response.json();
+      })
+      .then(function(data) {
+        if (data.success) {
+          if (document.head.querySelector('meta[name="user-signed-in"][content="false"]')) {
+            // Reload the page to update the user's state
+            location.reload();
+          }
+        }
+      })
+      .catch(function(error) {
+        console.error('Error during authentication:', error);
+      });
+    }
+
+    function getMetaContent(name) {
+      var element = document.querySelector('meta[name="' + name + '"]');
+      return element ? element.getAttribute('content') : '';
+    }
+  }
+</script>
+
+  
+  
+  
+  </body>
+  </html>

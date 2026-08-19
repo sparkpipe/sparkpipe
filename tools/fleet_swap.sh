@@ -2,7 +2,7 @@
 #
 # fleet_swap.sh MODEL — designate the current big model on the fleet.
 #
-# The registry (deployment/fleet_registry.json) assigns every model a
+# The registry (tools/devcycle/fleet_registry.json) assigns every model a
 # tier ("always-on" | "big"), a scope ("band" = its own hosts,
 # "fleet" = all 16 sparks), hosts, ports, and its runtime root.
 #
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REGISTRY="$(cd "$SCRIPT_DIR/.." && pwd)/deployment/fleet_registry.json"
+REGISTRY="$SCRIPT_DIR/devcycle/fleet_registry.json"
 STATE_REMOTE="/tmp/sparkpipe_fleet_state.json"
 ALL_HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7
            spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
@@ -40,7 +40,7 @@ remote_state() {
 broadcast_state() {
     local state="$1" host
     for host in "${ALL_HOSTS[@]}"; do
-        printf '%s' "$state" | ssh -o BatchMode=yes "$host" "cat > '$STATE_REMOTE'"             || die "state broadcast to $host failed"
+        printf '%s' "$state" | ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "cat > '$STATE_REMOTE'"             || echo "fleet_swap: $host unreachable, state broadcast skipped"
     done
 }
 
@@ -48,7 +48,7 @@ stop_model() {
     local model="$1"
     echo "fleet_swap: stopping $model"
     registry_hosts "$model" | while read -r host; do
-        ssh -o BatchMode=yes "$host"             "pkill -f '^bin/sparkpipe_model_residentd' 2>/dev/null || true"             || die "stop on $host failed"
+        ssh -o BatchMode=yes -o ConnectTimeout=8 "$host"             "sudo systemctl stop sparkpipe_model_residentd 2>/dev/null || true"             || echo "fleet_swap: $host unreachable, stop skipped"
     done
     sleep 2
 }
@@ -58,14 +58,16 @@ start_model() {
     echo "fleet_swap: starting $model"
     registry_hosts "$model" | while read -r host; do
         runtime="$(registry_field "$model" runtime_root | sed "s/{host}/$host/")"
-        ssh -o BatchMode=yes "$host" "
+        ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "
             test -x '$runtime/bin/sparkpipe_model_residentd' \
                 || { echo "missing residentd for $model on $host: $runtime" >&2; exit 1; }
-            cd '$runtime' &&
-            export LD_LIBRARY_PATH='$runtime/lib':${LD_LIBRARY_PATH:-}
-            setsid -f bin/sparkpipe_model_residentd \
-                --deployment config/model_resident.json --rank-index $rank \
-                >/tmp/fleet-swap-$model-$host.log 2>&1 </dev/null
+            sudo mkdir -p /etc/sparkpipe /etc/systemd/system/sparkpipe_model_residentd.service.d
+            printf 'RUNTIME_ROOT=%s\nRANK_INDEX=%s\nMODEL=%s\nHOST=%s\nLD_LIBRARY_PATH=%s/lib\n' '$runtime' '$rank' '$model' '$host' '$runtime' \
+                | sudo tee /etc/sparkpipe/residentd.env >/dev/null
+            printf '[Service]\nUser=%s\n' \"\$(whoami)\" \
+                | sudo tee /etc/systemd/system/sparkpipe_model_residentd.service.d/10-user.conf >/dev/null
+            sudo systemctl daemon-reload
+            sudo systemctl start sparkpipe_model_residentd
         " || die "start $model on $host failed"
         rank=$((rank + 1))
     done
@@ -97,7 +99,7 @@ cmd_swap() {
               running:{prev:(.current_big//"none"),prev_state:.running}}'             > /tmp/fleet-new-state.json
         # evict all residentds on every host
         for host in "${ALL_HOSTS[@]}"; do
-            ssh -o BatchMode=yes "$host"                 "pkill -f '^bin/sparkpipe_model_residentd' 2>/dev/null || true"                 || die "fleet evict on $host failed"
+            ssh -o BatchMode=yes -o ConnectTimeout=8 "$host"                 "sudo systemctl stop sparkpipe_model_residentd 2>/dev/null || true"                 || echo "fleet_swap: $host unreachable, evict skipped"
         done
         sleep 2
         start_model "$model"

@@ -269,9 +269,18 @@ static SparkStatus SparkModelPipelineClientUpdateLeases(
 		next_sequence_position = lanes[lane].context_token_count;
 		if ( transaction->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 		{
+			uint32_t completed_tokens;
+			/* The lease must advance by the COMPLETION's emitted count
+			 * (1 + accepted), not the submission's chain width (8). A
+			 * partial-accept verify burst emits fewer tokens than the
+			 * admitted chain, so the client lease must mirror the
+			 * residentd's completion-derived advance. */
+			completed_tokens = transaction->final_completion.tokens_per_sequence;
+			if ( completed_tokens == 0u )
+				completed_tokens = transaction->tokens_per_sequence;
 			status = SparkModelContinuationLeaseDecodePosition(
 				lanes[lane].context_token_count,
-				transaction->tokens_per_sequence,&next_sequence_position);
+				completed_tokens,&next_sequence_position);
 			if ( status != SPARK_STATUS_OK )
 				return(status);
 		}

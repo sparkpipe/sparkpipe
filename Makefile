@@ -30,7 +30,7 @@ DSV4_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/includ
 K3_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include
 MIMO25_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/mimo25/include
 MODEL_FAMILY_INCLUDE_FLAGS := \
-    \
+    -Imodel-families/common/include \
     -Imodel-families/glm52/include \
     -Imodel-families/qwen36/include \
     -Imodel-families/qwen38/include \
@@ -212,12 +212,19 @@ TEST_NAMES := \
     test_kv_store \
     test_kv_cache \
 	test_k3_kv_cache \
+    test_kv_model_table \
     test_nvme_tier \
     test_kv_mooncake \
     test_qwen36_work_control \
     test_qwen38_work_control \
     test_dsv4_cache_plan \
 	test_dsv4_parallel_shape \
+    test_dspark_drafter_pin \
+    test_dsv4_pro_dspark_drafter_pin \
+    test_gemm_tile_k_fallback \
+    test_serial_tp_replay \
+    test_speculation_policy_pin \
+    test_speculation_tree_pin \
     test_glm52_dspark \
     test_glm52_mtp_tree \
     test_tp_collective \
@@ -237,7 +244,8 @@ TEST_NAMES := \
     test_dsv4_stage_runner \
     test_tensor_map_geometry \
     test_weight_codec \
-    test_topology_switch
+    test_topology_switch \
+    test_qwen38_math_kernels
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
@@ -447,8 +455,10 @@ build:
 build/test_modules:
 	mkdir -p build/test_modules
 
+build/obj/src/spark_speculation_policy.o: SPARK_SPECULATION_TARGET_FLAGS = -DSPARK_DSPARK_TARGET_GLM52=1
+
 build/obj/%.o: %.c | build
-	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
+	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(SPARK_SPECULATION_TARGET_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
 $(CORE_LIBRARY): $(CORE_OBJECTS)
 	$(AR) rcs $@ $^
@@ -554,6 +564,9 @@ build/test_kv_cache: tests/test_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRAR
 
 build/test_k3_kv_cache: tests/test_k3_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_kv_model_table: tests/test_kv_model_table.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/sparkpipe_glm52_batchplane_model: tests/studies/sparkpipe_glm52_batchplane_model.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -lm -o $@
@@ -814,6 +827,11 @@ build/test_qwen36_work_control: tests/test_qwen36_work_control.cpp tests/fixture
 build/test_qwen38_work_control: tests/test_qwen38_work_control.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
 	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
+# Numeric verification of the math-audit fixes: includes the module's CUDA
+# source, so the tested code IS the production code.
+build/test_qwen38_math_kernels: tests/test_qwen38_math_kernels.cu modules/qwen38_resident_decode_stage/source/spark_qwen38_resident_decode_stage_cuda.cu
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38/include -Imodules/qwen38_resident_decode_stage/include -Imodules/qwen38_resident_decode_stage/source $< -L$(CUDA_HOME)/lib64 -lcudart -o $@
+
 build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
@@ -830,8 +848,26 @@ build/test_glm52_stagepack: tests/test_glm52_stagepack.c modules/glm52_resident_
 	$(CC) $(GLM52_INCLUDE_FLAGS) -Imodules/glm52_resident_decode_stage/source \
 		$(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_dspark: tests/test_glm52_dspark.c $(COMMON_LIBRARY)
+build/test_dspark_drafter_pin: tests/test_dspark_drafter_pin.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv4_pro_dspark_drafter_pin: tests/test_dsv4_pro_dspark_drafter_pin.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_gemm_tile_k_fallback: tests/test_gemm_tile_k_fallback.c runtime/launch.h inference/kernels/layout.cuh | build
+	$(CXX) -x c++ -D__host__= -D__device__= $(CPPFLAGS) $(CXXFLAGS) -Wno-unused-function $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_serial_tp_replay: tests/test_serial_tp_replay.c tests/serial_tp_replay.c tests/serial_tp_replay.h | build
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) tests/test_serial_tp_replay.c tests/serial_tp_replay.c $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_tree_pin: tests/test_speculation_tree_pin.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_dspark: tests/test_glm52_dspark.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_policy_pin: tests/test_speculation_policy_pin.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_tokenizer: tests/test_tokenizer.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

@@ -2,7 +2,8 @@
 """Shard a validated full DSV4 stage pack for one TP rank and PP stage.
 
 The source pack is the canonical full-model pack produced by
-``dsv4_stagepack.py --first-layer 0 --layer-count 43``. This utility only
+``dsv4_stagepack.py --first-layer 0 --layer-count N`` (43 for Flash, 61 for
+Pro; --model selects the geometry). This utility only
 changes the dimensions that the tensor-parallel kernels actually shard and
 retains only the requested pipeline stage's balanced layer slice. Replicated
 weights remain byte-for-byte identical. It streams matrix rows, so the largest
@@ -12,30 +13,85 @@ expert tensor is never loaded wholesale into host memory.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import struct
+import sys
 import tempfile
 from typing import Callable, List, Sequence, Tuple
+
+# Make the sibling shared packer core importable whether this script runs
+# standalone, via `import tools.dsv4_tp16_stagepack`, or via importlib.
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from spark_pack_common import (  # noqa: E402
+    PackFailure,
+    sha256_file,
+    spark_pack_replicated_draft_rows,
+)
 
 
 HEADER = struct.Struct("<16I2Q")
 ENTRY = struct.Struct("<6I2Q")
 MAGIC = 0x34565344
-VERSION = 4
+
+# One parameterized sharder serves both DSV4 variants. The former Pro copy
+# (dsv4_pro_tp16_stagepack.py) duplicated 426 of this file's 444 lines; per
+# the tree's DRY law the model facts live in this one table instead of in
+# parallel machinery. apply_model_geometry() selects them before use.
+MODEL_GEOMETRY = {
+    "flash": {
+        "layers": 43,
+        "version": 4,
+        "mtp": True,
+        "hidden": 4096,
+        "query_dim": 32768,
+        "output_groups": 8,
+        "experts": 256,
+        "expert_width": 2048,
+    },
+    "pro": {
+        "layers": 61,
+        "version": 4,
+        "mtp": True,
+        "hidden": 7168,
+        "query_dim": 65536,
+        "output_groups": 16,
+        "experts": 384,
+        "expert_width": 3072,
+    },
+}
 MTP_LAYER_FIRST = 0xFFFFFFFB
 MTP_LAYER_COUNT_MAX = 3
 TP_DEGREE = 16
-HIDDEN = 4096
-QUERY_DIM = 32768
-OUTPUT_GROUPS = 8
+LAYERS = MODEL_GEOMETRY["flash"]["layers"]
+VERSION = MODEL_GEOMETRY["flash"]["version"]
+MTP_ENABLED = MODEL_GEOMETRY["flash"]["mtp"]
+HIDDEN = MODEL_GEOMETRY["flash"]["hidden"]
+QUERY_DIM = MODEL_GEOMETRY["flash"]["query_dim"]
+OUTPUT_GROUPS = MODEL_GEOMETRY["flash"]["output_groups"]
 OUTPUT_LORA = 1024
 OUTPUT_GROUP_DIM = QUERY_DIM // OUTPUT_GROUPS
-EXPERTS = 256
-EXPERT_WIDTH = 2048
+EXPERTS = MODEL_GEOMETRY["flash"]["experts"]
+EXPERT_WIDTH = MODEL_GEOMETRY["flash"]["expert_width"]
 VOCAB = 129280
 VOCAB_TILE_ROWS = 128
+
+
+def apply_model_geometry(model: str) -> None:
+    global LAYERS, VERSION, MTP_ENABLED, HIDDEN, QUERY_DIM, OUTPUT_GROUPS
+    global OUTPUT_GROUP_DIM, EXPERTS, EXPERT_WIDTH
+    geometry = MODEL_GEOMETRY[model]
+    LAYERS = geometry["layers"]
+    VERSION = geometry["version"]
+    MTP_ENABLED = geometry["mtp"]
+    HIDDEN = geometry["hidden"]
+    QUERY_DIM = geometry["query_dim"]
+    OUTPUT_GROUPS = geometry["output_groups"]
+    OUTPUT_GROUP_DIM = QUERY_DIM // OUTPUT_GROUPS
+    EXPERTS = geometry["experts"]
+    EXPERT_WIDTH = geometry["expert_width"]
 
 WEIGHT_BF16 = 0
 WEIGHT_F32 = 1
@@ -65,12 +121,22 @@ KIND_LM_HEAD = 37
 KIND_HC_HEAD_FN = 38
 KIND_HC_HEAD_BASE = 39
 KIND_HC_HEAD_SCALE = 40
+KIND_MTP_MAIN_PROJ = 41
+KIND_MTP_MAIN_NORM = 42
+KIND_MTP_FINAL_NORM = 43
+KIND_MTP_HC_HEAD_FN = 44
+KIND_MTP_HC_HEAD_BASE = 45
+KIND_MTP_HC_HEAD_SCALE = 46
+KIND_MTP_MARKOV_W1 = 47
+KIND_MTP_MARKOV_W2 = 48
+KIND_MTP_CONFIDENCE_PROJ = 49
+KIND_MTP_SET = frozenset((
+    KIND_MTP_MAIN_PROJ, KIND_MTP_MAIN_NORM, KIND_MTP_FINAL_NORM,
+    KIND_MTP_HC_HEAD_FN, KIND_MTP_HC_HEAD_BASE, KIND_MTP_HC_HEAD_SCALE,
+    KIND_MTP_MARKOV_W1, KIND_MTP_MARKOV_W2, KIND_MTP_CONFIDENCE_PROJ,
+))
 
 GLOBAL_LAYER = 0xFFFFFFFF
-
-
-class PackFailure(RuntimeError):
-    pass
 
 
 def payload_bytes(weight: int, rows: int, columns: int) -> int:
@@ -199,7 +265,7 @@ def shard_shape(kind: int, rank: int, rows: int, columns: int) -> Tuple[List[int
 def layer_slice(pp_stages: int, pp_stage: int) -> Tuple[int, int]:
     if pp_stages < 1 or pp_stages > 16 or pp_stage < 0 or pp_stage >= pp_stages:
         raise PackFailure("PP stage must address one of at most sixteen stages")
-    base, remainder = divmod(43, pp_stages)
+    base, remainder = divmod(LAYERS, pp_stages)
     if base == 0:
         raise PackFailure("PP degree exceeds the DSV4 layer count")
     count = base + (1 if pp_stage < remainder else 0)
@@ -211,22 +277,17 @@ def selected_global(kind: int, rank: int, pp_stages: int = 1,
                     pp_stage: int = 0) -> bool:
     if kind == KIND_EMBEDDING:
         return pp_stage == 0
+    if spark_pack_replicated_draft_rows(
+            kind, GLOBAL_LAYER, draft_layer_first=MTP_LAYER_FIRST,
+            draft_layer_count=MTP_LAYER_COUNT_MAX, global_kinds=KIND_MTP_SET):
+        # The DSpark draft extras replicate in full to every rank.
+        return True
     if pp_stage + 1 != pp_stages:
         return False
     if kind in (KIND_FINAL_NORM, KIND_LM_HEAD, KIND_HC_HEAD_FN,
                 KIND_HC_HEAD_BASE, KIND_HC_HEAD_SCALE):
         return True
     return True
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        while True:
-            data = file.read(16 * 1024 * 1024)
-            if not data:
-                return digest.hexdigest()
-            digest.update(data)
 
 
 def copy_payload(source, destination, offset: int, weight: int, rows: int,
@@ -271,7 +332,9 @@ def plan_entry(entry: Tuple[int, ...], rank: int, pp_stages: int = 1,
                pp_stage: int = 0) -> Tuple[Tuple[int, ...], List[int], int, int]:
     kind, layer, weight, rows, columns, reserved, payload, scale = entry
     first_layer, layer_count = layer_slice(pp_stages, pp_stage)
-    if MTP_LAYER_FIRST <= layer < MTP_LAYER_FIRST + MTP_LAYER_COUNT_MAX:
+    if (MTP_ENABLED and spark_pack_replicated_draft_rows(
+            kind, layer, draft_layer_first=MTP_LAYER_FIRST,
+            draft_layer_count=MTP_LAYER_COUNT_MAX, global_kinds=KIND_MTP_SET)):
         # DSpark draft layers are REPLICATED full-width on every rank:
         # keep every MTP entry unchanged (the draft runs replicated with
         # zero draft collectives).
@@ -299,8 +362,8 @@ def shard_pack(input_path: Path, output_path: Path, rank: int,
         header = list(HEADER.unpack(header_raw))
         if header[0] != MAGIC or header[1] != VERSION:
             raise PackFailure("input is not a DSV4 stage pack")
-        if header[9] != 0 or header[10] != 43:
-            raise PackFailure("input must cover the complete 43-layer model")
+        if header[9] != 0 or header[10] != LAYERS:
+            raise PackFailure(f"input must cover the complete {LAYERS}-layer model")
         source.seek(header[16])
         entries = [ENTRY.unpack(source.read(ENTRY.size)) for _ in range(header[8])]
         plans = []
@@ -421,10 +484,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                         choices=(1, 2, 4, 8, 16))
     parser.add_argument("--pp-stages", type=int, default=1)
     parser.add_argument("--pp-stage", type=int, default=0)
+    parser.add_argument("--model", choices=tuple(MODEL_GEOMETRY),
+                        default="flash")
     parser.add_argument("--verify-output", action="store_true")
     args = parser.parse_args(argv)
     try:
         global TP_DEGREE
+        apply_model_geometry(args.model)
         TP_DEGREE = args.tp_degree
         if args.tp_degree * args.pp_stages > 16:
             raise PackFailure("TP degree times PP stages exceeds sixteen ranks")

@@ -1,0 +1,148 @@
+Title: DFlash与DSpark块扩散投机解码技术原理、架构差异及实操对比报告
+
+URL Source: https://zhuanlan.zhihu.com/p/2056327176912377238
+
+Markdown Content:
+## 一、[研究背景](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E7%A0%94%E7%A9%B6%E8%83%8C%E6%99%AF&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLnoJTnqbbog4zmma8iLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.Hav_jMxB_cA4TYPTRmfkKFsHKFcgCi6D-93oXK4ZRaQ&zhida_source=entity)
+
+大模型推理加速中，[投机解码](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=2&q=%E6%8A%95%E6%9C%BA%E8%A7%A3%E7%A0%81&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLmipXmnLrop6PnoIEiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MiwiemRfdG9rZW4iOm51bGx9.EObfTqqSy4PFCIgNuynr_1U7E57_vh7hO0lb-OE-PyY&zhida_source=entity)（Speculative Decoding）是工业界落地性价比最高的方案。传统自回归草稿模型（以Eagle3为代表）逐Token串行生成，可复用[KV缓存](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=KV%E7%BC%93%E5%AD%98&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiJLVue8k-WtmCIsInpoaWRhX3NvdXJjZSI6ImVudGl0eSIsImNvbnRlbnRfaWQiOjI3ODIyMzA5NywiY29udGVudF90eXBlIjoiQXJ0aWNsZSIsIm1hdGNoX29yZGVyIjoxLCJ6ZF90b2tlbiI6bnVsbH0.PvrSaeI_goIZEZ-rfmnV0nC9laMd12yUAEDoQZuTwsQ&zhida_source=entity)、准确率高，但单次仅生成1个Token，草稿生成延迟高、并行上限低。
+
+为突破串行瓶颈，业界提出**块扩散投机解码（[Block Diffusion Speculative Decoding](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=Block+Diffusion+Speculative+Decoding&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiJCbG9jayBEaWZmdXNpb24gU3BlY3VsYXRpdmUgRGVjb2RpbmciLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.eYn8I7wpusTIZ1iHju319_XeB7-n-CgJJ7KRdhM7-84&zhida_source=entity)）**，代表方案为DFlash、DSpark。该类方案基于[扩散模型](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E6%89%A9%E6%95%A3%E6%A8%A1%E5%9E%8B&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLmianmlaPmqKHlnosiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.cHUCB2dgI3xyU-vpieKTcXa5Noq4Nrx-y8dtXm9CoTY&zhida_source=entity)思想，单次并行生成一整段Token块，打破自回归串行限制。其中DSpark在DFlash基础上完成架构升级，解决了原生块扩散的固有缺陷，是当前[高并发](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E9%AB%98%E5%B9%B6%E5%8F%91&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLpq5jlubblj5EiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.BY4PZTznUkTGAdwwv3M5IAuubw4EKq4ssz1bIGOhFu0&zhida_source=entity)推理场景下的最优草稿生成方案之一。
+
+本报告系统性梳理自回归方案（Eagle3）、初代块扩散（DFlash）、进阶块扩散（DSpark）的底层原理、[算力逻辑](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E7%AE%97%E5%8A%9B%E9%80%BB%E8%BE%91&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLnrpflipvpgLvovpEiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.gFhqXNFMskf6sHGWn9z-frx6aE0jG7JErHsyfLxuOKA&zhida_source=entity)、架构差异、[算法](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E7%AE%97%E6%B3%95&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLnrpfms5UiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.xFWobQnWNyWlcE1E1pnLx5grScXp3WXxaeOG4l79VNg&zhida_source=entity)公式及vLLM实操细节。
+
+## 二、基线方案对比：自回归投机解码（Eagle3）原理
+
+### 2.1 核心生成逻辑
+
+Eagle3为标准[自回归Transformer](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E8%87%AA%E5%9B%9E%E5%BD%92Transformer&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLoh6rlm57lvZJUcmFuc2Zvcm1lciIsInpoaWRhX3NvdXJjZSI6ImVudGl0eSIsImNvbnRlbnRfaWQiOjI3ODIyMzA5NywiY29udGVudF90eXBlIjoiQXJ0aWNsZSIsIm1hdGNoX29yZGVyIjoxLCJ6ZF90b2tlbiI6bnVsbH0.xQ2A2wwLU3zaUCVd72rXpDMYsZMEoBjsLvRUod7ReKA&zhida_source=entity)架构，遵循单向因果生成逻辑：已知历史上下文，仅预测下一个Token，建模公式：P(t_n | t_1,t_2...t_{n-1})。
+
+### 2.2 KV缓存算力优势
+
+自回归生成的核心优势为**KV缓存完全复用**：已生成的历史Token隐藏状态、KV参数固定不变，推理全程缓存，无需重复计算。每一轮解码仅需计算**1个新增Draft Token**，单层算力开销极低。
+
+### 2.3 固有缺陷
+
+全程串行生成，无法并行输出多Token，块生成能力弱，[长序列推理](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E9%95%BF%E5%BA%8F%E5%88%97%E6%8E%A8%E7%90%86&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLplb_luo_liJfmjqjnkIYiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.L4YA8jxEXVDxX4fDue7DHReH3Gvi_A1hBTKsheXz6ZM&zhida_source=entity)时迭代次数多，整体吞吐上限受限。
+
+## 三、初代块扩散方案：DFlash技术原理与核心缺陷
+
+### 3.1 DFlash核心架构：单步块扩散模型
+
+DFlash摒弃自回归范式，基于**离散块扩散模型（Block Diffusion）**，固定[块大小](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E5%9D%97%E5%A4%A7%E5%B0%8F&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLlnZflpKflsI8iLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.rTmqetYb732sUj2o_UIWRjuvS6vrDlSXA-eO8dc5h6U&zhida_source=entity)（默认block_size=5），以「锚点+掩码占位」的方式并行生成整段Token块。
+
+### 3.1.1 掩码（MASK）实操机制（vLLM落地细节）
+
+DFlash推理输入固定结构：
+
+**Anchor锚点Token, MASK, MASK, MASK, MASK**
+
+。
+
+关键实操结论：MASK并非[全零向量](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E5%85%A8%E9%9B%B6%E5%90%91%E9%87%8F&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLlhajpm7blkJHph48iLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.0fgRTDdfyZ-a9NZ5t5E9dh8VrecurcxFdCs07qdKcps&zhida_source=entity)，也非随机噪声，而是**训练阶段高斯初始化、可学习的固定掩码Embedding**。在扩散推理中，该Embedding等价于标准扩散模型的「噪声输入」，模型通过单步前向完成降噪还原Token的过程。
+
+同时DFlash关闭块内因果注意力（is_causal=False），块内所有位置双向可见，实现5个Token全局并行预测。
+
+### 3.1.2 [数学建模](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E6%95%B0%E5%AD%A6%E5%BB%BA%E6%A8%A1&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLmlbDlrablu7rmqKEiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.siGFkKUpz9y8tuh2AWmH5SUQB9YPBpdExtjxJWFBhKk&zhida_source=entity)与算力逻辑
+
+设块长度 B=5，输入序列：\boldsymbol{x} = [x_1,x_2,x_3,x_4,x_5],\; x_1=\text{anchor},\; x_{2\sim5}=\text{mask_token_id}。
+
+嵌入查表：\boldsymbol{e}_i = E[x_i]，送入双向扩散Transformer得到整块隐藏态：\boldsymbol{h}_i = \text{DiffusionTransformer}(\boldsymbol{e})[i]，直接输出预测Logits：l_i = W_{out} \cdot h_i。
+
+**算力核心痛点**：扩散块每轮输入为全新噪声MASK向量，整块5个Token特征全部刷新，无任何KV缓存可复用。模型每一层必须完整重算5个Token的注意力与[前馈网络](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E5%89%8D%E9%A6%88%E7%BD%91%E7%BB%9C&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLliY3ppojnvZHnu5wiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.ndTE8oO_QY8VLVPedculc6q2XtWpST1rVkJGZETECN8&zhida_source=entity)，单层算力为Eagle3的5倍。
+
+### 3.2 DFlash两大致命缺陷
+
+### 3.2.1 后缀衰减问题（核心精度缺陷）
+
+DFlash所有MASK位置**[条件独立](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E6%9D%A1%E4%BB%B6%E7%8B%AC%E7%AB%8B&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLmnaHku7bni6znq4siLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.utwxAUqo5z57repi2aHmAmiQd2BA6l_l0ewJhrAZ6DA&zhida_source=entity)预测**，块内Token无前后因果依赖。第2-5位Token预测互不影响，无法模拟自然文本的[时序逻辑](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E6%97%B6%E5%BA%8F%E9%80%BB%E8%BE%91&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLml7bluo_pgLvovpEiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.cPid6SnGZglc7yvNDqMDK527F3-G7xeQ6wlBBAZYXPo&zhida_source=entity)，导致块越靠后的Token准确率断崖式下跌，大量草稿被[主模型](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E4%B8%BB%E6%A8%A1%E5%9E%8B&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLkuLvmqKHlnosiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.2WoHKtoHea6llqZ7elQ9oD941zptLGIr1XS0s00pY34&zhida_source=entity)驳回。
+
+### 3.2.2 固定长度验证，算力浪费严重
+
+DFlash固定验证完整5Token块，无法识别低置信度尾部Token。高并发场景下，后缀低质量Token大概率被驳回，但仍占用主模型验证算力，GPU无效开销极高。
+
+## 四、升级版方案：DSpark半自回归块扩散技术全解
+
+DSpark完全继承DFlash并行块扩散主干优势，通过**轻量Markov串行校正头**解决精度衰减问题，通过**[动态置信度调度](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E5%8A%A8%E6%80%81%E7%BD%AE%E4%BF%A1%E5%BA%A6%E8%B0%83%E5%BA%A6&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLliqjmgIHnva7kv6HluqbosIPluqYiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.bRtx2Lq2oEptXZpoepisavZCuHgdvddksNNBVGBBLpw&zhida_source=entity)机制**解决算力浪费问题，实现「高速并行+高准确率+自适应算力」的最优平衡。
+
+### 4.1 DSpark整体架构流程
+
+1. 输入层：复用DFlash锚点+MASK噪声块输入；
+
+2. 主干层：Block Diffusion双向Transformer并行输出整块隐藏态（与DFlash算力一致）；
+
+3. 校正层：轻量一阶Markov类RNN串行校正，补齐块内时序依赖；
+
+4. 调度层：实时预测Token置信度，结合GPU负载动态截断草稿长度；
+
+5. 输出层：仅高置信前缀Token送入主模型验证。
+
+### 4.2 核心改进一：[Markov轻量串行校正头](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=Markov%E8%BD%BB%E9%87%8F%E4%B8%B2%E8%A1%8C%E6%A0%A1%E6%AD%A3%E5%A4%B4&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiJNYXJrb3bovbvph4_kuLLooYzmoKHmraPlpLQiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.UTs2gpNOyQEF5vNkMOFLCLJ221TWIj-5cgi33CfI2wE&zhida_source=entity)（类RNN时序建模）
+
+### 4.2.1 核心答疑（关键落地认知）
+
+校正头**不使用上一轮全局草稿的隐藏态**，仅使用 h_k**当前扩散块新鲜原生隐藏态 + 块内前序采样Token的低秩嵌入**，仅单块内局部递推，无跨块缓存、无额外算力负担。
+
+### 4.2.2 完整算法公式
+
+第一步：构建低秩马尔可夫嵌入，捕捉前序Token信息：m_{k-1} = E_m[x_{k-1}]，其中 E_m 为低秩嵌入[矩阵](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E7%9F%A9%E9%98%B5&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLnn6npmLUiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.oMDjfyGPiPwsADTABk5WlCc6S4vzImPW7v_R1oGebAc&zhida_source=entity)，维度远小于模型隐藏维度，开销可忽略。
+
+第二步：融合当前位置扩散特征与前序时序特征：z_k = \text{Concat}(h_k,\; m_{k-1})。
+
+第三步：单层线性激活校正（类RNN循环逻辑）：\tilde{h}_k = \sigma(W_m \cdot z_k + b_m)。
+
+第四步：输出校正后精准Logits：l'_k = W_{out} \cdot \tilde{h}_k。
+
+### 4.2.3 串行递推逻辑（对标RNN）
+
+采用从左到右一阶马尔可夫递推，模拟文本因果时序：
+
+1. 锚点位 k=1：无前置依赖，直接沿用扩散原生输出；
+
+2. k\ge2：基于前一位采样的真实Token，逐位修正当前位置分布；
+
+该机制为**轻量化RNN变体**，无状态缓存、无多头注意力，仅少量[矩阵运算](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E7%9F%A9%E9%98%B5%E8%BF%90%E7%AE%97&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLnn6npmLXov5DnrpciLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.dDUmNPebbP8kNhdY0voZuUIqr-vetAA_nAaQ6qR7AaI&zhida_source=entity)，算力开销仅为主干扩散的1%-3%，彻底解决DFlash后缀衰减问题。
+
+### 4.3 核心改进二：动态置信度预测与自适应调度
+
+### 4.3.1 置信度来源（动态实时生成）
+
+[置信度](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=6&q=%E7%BD%AE%E4%BF%A1%E5%BA%A6&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLnva7kv6HluqYiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6NiwiemRfdG9rZW4iOm51bGx9._7RFTbN_AtbQPfw0XzQIObWmxMCYKfjAiiqrupPSfEw&zhida_source=entity)头与Markov校正共享修正后隐藏态\tilde{h}_k，通过单层Sigmoid输出0-1存活概率：c_k = \text{Sigmoid}(W_c \cdot \tilde{h}_k + b_c)。
+
+训练阶段以「草稿分布与主模型分布的总变分距离」为监督标签：c_k^* = 1 - \frac12 \sum_{v\in V} |p_d(v) - p_t(v)|，让置信度精准对齐真实Token接受率。
+
+### 4.3.2 双层动态调度机制
+
+1. **内容动态**：代码场景置信度高、保留长度长；闲聊/推理场景置信度衰减快、自动截断；
+
+2. **硬件负载动态**：GPU空闲时放宽阈值，最大化单次生成Token数；高并发满载时抬高阈值，截断低置信后缀，杜绝无效算力浪费。
+
+最终保留有效草稿长度：K_{\text{keep}} = \max\Big\{ t \;\big|\; \forall 1\le i \le t,\; c_i \ge \tau \Big\}。
+
+## 五、Eagle3 / DFlash / DSpark 全方位对比总结
+
+| 方案 | 生成方式 | 时序因果依赖 | KV缓存复用 | 草稿延迟 | 后缀准确率 | 算力利用率 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Eagle3 | 纯自回归串行 | 强、精度高 | 完全复用 | 随长度递增 | 稳定无衰减 | 高、无无效计算 |
+| DFlash | 纯并行块扩散 | 无、各位置独立 | 完全无法复用 | 常数、极低 | 严重后缀衰减 | 低、大量无效验证 |
+| DSpark | 并行扩散+轻量串行校正 | 完整块内时序依赖 | 块内不可复用、全局上下文可复用 | 接近DFlash常数低延迟 | 无明显衰减 | 极高、动态裁剪无效算力 |
+
+## 六、核心结论与落地建议
+
+### 6.1 核心原理总结
+
+1. 自回归Eagle3：靠KV缓存省算力，但串行生成速度瓶颈明显；
+
+2. DFlash块扩散：靠MASK噪声块+双向注意力实现并行生成，但无条件时序约束、算力浪费严重；
+
+3. DSpark在DFlash基础上，通过**Markov类[RNN](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=6&q=RNN&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiJSTk4iLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6NiwiemRfdG9rZW4iOm51bGx9.NeAKI19pU4oJ0MNDFsdGLphpjzaFe-hTpqIVonnWWiQ&zhida_source=entity)校正头**补齐时序精度，通过**动态置信度调度**优化算力效率，兼顾速度、精度、并发能力。
+
+### 6.2 工程落地建议
+
+1. 简单[代码生成](https://zhida.zhihu.com/search?content_id=278223097&content_type=Article&match_order=1&q=%E4%BB%A3%E7%A0%81%E7%94%9F%E6%88%90&zd_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ6aGlkYV9zZXJ2ZXIiLCJleHAiOjE3ODcyNzk1MDMsInEiOiLku6PnoIHnlJ_miJAiLCJ6aGlkYV9zb3VyY2UiOiJlbnRpdHkiLCJjb250ZW50X2lkIjoyNzgyMjMwOTcsImNvbnRlbnRfdHlwZSI6IkFydGljbGUiLCJtYXRjaF9vcmRlciI6MSwiemRfdG9rZW4iOm51bGx9.vcXSQkIog9-DELsyyWWto5w5lNu1tdUNP8d1a0E6gIE&zhida_source=entity)、低并发场景：DFlash可满足基础加速需求；
+
+2. 开放对话、长文本推理、高并发线上生产场景：DSpark综合性能碾压DFlash与传统自回归方案，为最优落地选择；
+
+3. vLLM实操关键：块扩散MASK为可学习噪声Embedding（非全零、非随机），是扩散降噪生成的核心基础。
+
+> （注：部分内容可能由 AI 生成）

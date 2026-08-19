@@ -15,8 +15,8 @@
 // WHY THIS IS SMALL WHERE THE OLD ONE WAS 1,501 LINES. The old capture had to
 // enumerate every launch it was recording, because the launches were spread
 // across a 27,000-line file with no single function that issued them in order.
-// Here the sequence IS a function - Glm52LayerAttention followed by
-// Glm52LayerMoe - so capturing it is capturing one call, and the graph knows
+// Here the sequence IS a function - GlmLayerAttention followed by
+// GlmLayerMoe - so capturing it is capturing one call, and the graph knows
 // nothing about what is inside.
 //
 // THE CONSTRAINT THAT MAKES IT WORK. A graph records pointers, not values, so

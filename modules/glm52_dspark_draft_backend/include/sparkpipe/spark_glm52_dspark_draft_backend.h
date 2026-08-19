@@ -9,24 +9,24 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION 3u
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES \
+#define SPARK_DSPARK_DRAFT_BACKEND_ABI_VERSION 3u
+#define SPARK_DSPARK_DRAFT_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52DsparkDraftBackendConfiguration))
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_DESCRIPTOR_BYTES \
+#define SPARK_DSPARK_DRAFT_BACKEND_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52DsparkDraftBackend))
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT 1024u
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_WEIGHT_COUNT 64u
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION \
-    (SPARK_GLM52_DSPARK_DRAFT_ATTENTION_HEAD_COUNT * \
-     SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION)
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION \
-    (SPARK_GLM52_DSPARK_AUX_LAYER_COUNT * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION)
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT \
-    (SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT * \
-     SPARK_GLM52_DSPARK_BLOCK_SIZE)
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_NONE 0u
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_STAGE 1u
-#define SPARK_GLM52_DSPARK_DRAFT_BACKEND_PENDING_DRAFT 2u
+#define SPARK_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT 1024u
+#define SPARK_DSPARK_DRAFT_BACKEND_WEIGHT_COUNT 64u
+#define SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION \
+    (SPARK_DSPARK_DRAFT_ATTENTION_HEAD_COUNT * \
+     SPARK_DSPARK_DRAFT_HEAD_DIMENSION)
+#define SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION \
+    (SPARK_DSPARK_AUX_LAYER_COUNT * SPARK_DSPARK_HIDDEN_DIMENSION)
+#define SPARK_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT \
+    (SPARK_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT * \
+     SPARK_DSPARK_BLOCK_SIZE)
+#define SPARK_DSPARK_DRAFT_BACKEND_PENDING_NONE 0u
+#define SPARK_DSPARK_DRAFT_BACKEND_PENDING_STAGE 1u
+#define SPARK_DSPARK_DRAFT_BACKEND_PENDING_DRAFT 2u
 
 typedef struct SparkGlm52DsparkDraftBackendConfiguration
 {
@@ -79,7 +79,7 @@ typedef struct SparkGlm52DsparkDraftBackend
     SparkGlm52DsparkModelContract contract;
     void *cuda_stream;
     void *cublas_handle;
-    void *device_weights[SPARK_GLM52_DSPARK_DRAFT_BACKEND_WEIGHT_COUNT];
+    void *device_weights[SPARK_DSPARK_DRAFT_BACKEND_WEIGHT_COUNT];
     uint32_t *device_restricted_token_ids;
     uint16_t *device_tap_arena_bf16;
     uint64_t tap_arena_lane_stride_bytes;
@@ -110,21 +110,21 @@ typedef struct SparkGlm52DsparkDraftBackend
     float *host_confidence_f32;
     void *completion_event;
     uint32_t host_tap_row_indices[
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT];
+        SPARK_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT];
     uint32_t host_backend_lane_indices[
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT];
+        SPARK_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT];
     uint32_t host_sequence_positions[
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT];
+        SPARK_DSPARK_DRAFT_BACKEND_MAX_TAP_ROW_COUNT];
     uint32_t host_context_token_counts[
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
+        SPARK_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
     uint32_t host_last_token_ids[
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
+        SPARK_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
     uint32_t host_requested_token_counts[
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
+        SPARK_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
     SparkGlm52DsparkDraftBackendLaneState
-        lane_states[SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
+        lane_states[SPARK_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
     SparkGlm52DsparkDraftBackendLaneState
-        validation_lane_states[SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
+        validation_lane_states[SPARK_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT];
 } SparkGlm52DsparkDraftBackend;
 
 SparkStatus SparkGlm52DsparkDraftBackendInitialize(
@@ -141,7 +141,7 @@ SparkStatus SparkGlm52DsparkDraftBackendModelContract(
 SparkStatus SparkGlm52DsparkDraftBackendTapOutputPointers(
     SparkGlm52DsparkDraftBackend *backend,
     uint32_t lane_index,
-    void *tap_output_bf16[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT],
+    void *tap_output_bf16[SPARK_DSPARK_AUX_LAYER_COUNT],
     uint64_t *lane_stride_bytes_out);
 
 SparkStatus SparkGlm52DsparkDraftBackendStageBatch(

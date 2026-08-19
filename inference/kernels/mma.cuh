@@ -32,7 +32,7 @@
 #define LM_WARP_LANES 32u
 
 /*
- * The native DSV4 decode kernels below this header are deliberately tied to
+ * The native V4 decode kernels below this header are deliberately tied to
  * the architecture-qualified SM121 target.  PTX block-scaled mma is not a
  * portable fallback: compiling another real-device pass must leave a trap,
  * never a scalar or BF16-dequant implementation that can be mistaken for the
@@ -105,7 +105,7 @@ static __device__ __forceinline__ void LmMmaE4m3(float accumulator[4], const uin
 }
 
 /*
- * SM121 mixed-width block-scaled atoms used by DSV4.
+ * SM121 mixed-width block-scaled atoms used by the V4 decode path.
  *
  * PTX represents every f8/f6/f4 element in the m16n8k32 register fragment as
  * one byte.  MXFP4 therefore remains nibble-packed in global/shared memory and

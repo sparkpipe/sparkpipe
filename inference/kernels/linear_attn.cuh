@@ -2,15 +2,15 @@
 
 // Linear attention with a recurrent state. The delta rule at decode.
 //
-// The other half of this tree's architecture space. Qwen 3.6 runs Gated DeltaNet
-// on 48 of 64 layers and Kimi K3 runs Kimi Delta Attention on 3 of every 4, and
+// The other half of this tree's architecture space. The GDN model runs Gated DeltaNet
+// on 48 of 64 layers and the KDA model runs Delta Attention on 3 of every 4, and
 // both are the same recurrence with different gate parameterisations.
 //
 // WHAT MAKES IT DIFFERENT FROM EVERYTHING ELSE HERE. Softmax attention keeps
 // every past key and value and re-reads them each step, so its cost grows with
 // context. This keeps a fixed matrix per head - key_dim by value_dim - and
 // updates it in place, so its cost per token is constant no matter how long the
-// conversation is. At Qwen 3.6's widths that is 512 KB per sequence against a KV
+// conversation is. At the GDN model's widths that is 512 KB per sequence against a KV
 // cache that passes 512 KB at about 170 tokens and keeps growing.
 //
 // THE DELTA RULE, and why it is not just an accumulation. A naive linear
@@ -42,7 +42,7 @@
 #include "inference/kernels/norm.cuh"
 #include <stdint.h>
 
-// The decay logit to a per-channel retention factor. Kimi K3 technical report
+// The decay logit to a per-channel retention factor. The KDA technical report
 // equation 5:
 //
 //     g = g_min * Sigmoid(exp(A_h) * z)      in (g_min, 0)
@@ -115,7 +115,7 @@ void LmBoundedDecayKernel(const uint16_t *__restrict__ logit_bf16, const float *
 			channel_bias[(head * KEY_DIM) + index],head_log_scale[head],minimum_log_decay);
 }
 
-// Qwen 3.6's gate producer, one block per (row, head). The reference form is
+// The GDN model's gate producer, one block per (row, head). The reference form is
 // the UNBOUNDED negative-softplus mapping the bounded kernel above argues
 // against for the chunkwise path - g = -exp(A_h) * softplus(z + dt_bias),
 // retention = exp(g) - with the write gate beta = sigmoid(W_beta x). The
@@ -189,11 +189,11 @@ void LmL2NormalisePerHeadKernel(uint16_t *__restrict__ rows_bf16, uint32_t heads
 
 // -- ReplaySSM ------------------------------------------------------------------
 //
-// Speculation over a recurrent state is the reason K3's decode can go from ~113
+// Speculation over a recurrent state is the reason the KDA model's decode can go from ~113
 // to ~423 tok/s, and the reason it is hard. Verification accepts a prefix of the
 // draft, so the state must be rewindable - and a KDA state overwrites itself
 // every token. The obvious fix, snapshotting after each draft step, costs
-// heads * KEY_DIM * VALUE_DIM per step per layer: at K3's shape 96 * 128 * 128
+// heads * KEY_DIM * VALUE_DIM per step per layer: at the KDA shape 96 * 128 * 128
 // bf16 is 3 MB, times gamma+1 steps, times 69 layers, per running request. It
 // outgrows the state pool it competes with and caps concurrency.
 //
@@ -261,7 +261,7 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 	// THE POOL STRIDE IS A PARAMETER, NOT AN ASSUMPTION.
 	//
 	// This computed its slot from key_heads * KEY_DIM * VALUE_DIM * 2, hard-wiring
-	// both the element size and the absence of anything else in the slot. K3's
+	// both the element size and the absence of anything else in the slot. The KDA model's
 	// config declares the state fp32 and bundles the three convolution windows
 	// into the same per-request block - sized against SGLang's measured 54 MB at
 	// TP=8 - so a pool allocated at that stride and addressed at this one aliases
@@ -270,7 +270,7 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 	// Neither side was wrong on its own. They were two expressions of the same
 	// quantity that nothing forced to agree, which is the third time this branch
 	// has found that shape: the MLA latent standing in for the KDA head dim, and
-	// qwen's KV heads before it.
+	// the GDN producer's KV heads before it.
 	//
 	// slot_bytes now comes from the caller, which reads it from the model's
 	// config, and the element size follows from the same place: State is
@@ -293,7 +293,7 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 		// the same strided partials and the same LmBlockSum the decode
 		// kernel runs, at the same THREADS, never a hand-copied loop whose
 		// order can be edited apart from it. This was thread 0 walking 128
-		// elements serially while the block waited (audit K3-PERF-002).
+		// elements serially while the block waited (audit PERF-002).
 		// One buffer suffices here: one reduction per step, and the fill
 		// loop's barrier stands between this step's final read and the next
 		// step's first write.
@@ -330,7 +330,7 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 
 // One decode step of the gated delta rule, one block per (row, head).
 //
-// GROUPED VALUE HEADS. Qwen 3.6 has 16 key heads and 48 value heads, so three
+// GROUPED VALUE HEADS. The GDN model has 16 key heads and 48 value heads, so three
 // value heads share each key head's state slice. The state is indexed by key
 // head and the value offset selects within it, which is why value_heads_per_key
 // is a parameter rather than assumed to be one.
@@ -354,9 +354,9 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 	// forward, and a draft must not advance what the sequence remembers.
 	// commit == 0 computes every output and abandons the state.
 	// THE SHARED TILE IS FP32 WHATEVER THE POOL HOLDS. The contract
-	// (K3_KDA_STATE_ELEMENT_BYTES = 4) makes float the default State; the
+	// (KDA_STATE_ELEMENT_BYTES = 4) makes float the default State; the
 	// admission-time half-width option (config.h's
-	// K3_KDA_STATE_SLOT_BYTES_BF16) instantiates State = uint16_t and halves
+	// KDA_STATE_SLOT_BYTES_BF16) instantiates State = uint16_t and halves
 	// the pool stream. Either way the slot is upcast into this same fp32
 	// tile on the way in, the recurrence below runs in fp32 exactly as
 	// today - bit-identical per-step math given the same fp32 input state -
@@ -403,8 +403,8 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 	for (row = begin; row < end; ++row)
 	{
 		// PER HEAD PER CHANNEL. This read was one scalar per head, which cannot
-		// express Kimi K3's channel-wise decay - its retention factor is a d_k
-		// vector from a low-rank projection. Qwen 3.6's gated DeltaNet is the
+		// express the KDA model's channel-wise decay - its retention factor is a d_k
+		// vector from a low-rank projection. The GDN model's gated DeltaNet is the
 		// same shape, so the width serves both; a per-head caller passes a
 		// vector with every channel equal.
 		const float *forget = forget_gate + ((((uint64_t)row * key_heads) + head) * KEY_DIM);
@@ -421,7 +421,7 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 		// use_qk_l2norm_in_kernel=True: q and k are unit vectors before the
 		// delta rule sees them. Reduced by the WHOLE BLOCK: this ran as 128
 		// serial FMAs on thread 0 while the other THREADS-1 threads sat at
-		// the barrier, once per row per head (audit K3-PERF-002) - the
+		// the barrier, once per row per head (audit PERF-002) - the
 		// longest dependency chain in the kernel, in the middle of its
 		// serial token loop. Strided partials plus LmBlockSum's shuffle tree
 		// is a handful of steps.

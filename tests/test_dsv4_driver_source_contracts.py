@@ -50,11 +50,11 @@ def main() -> None:
 		raise SystemExit("DSV4 Flash source model is not GA")
 	if contract["source_revision"] != "7872f01b1d1fe23eabc4c98b48bffcef5a386062":
 		raise SystemExit("DSV4 Flash source revision is not exact")
-	if contract["model"]["mtp_layer_count"] != 0:
-		raise SystemExit("DSV4 Flash GA baseline MTP layer count is not zero")
+	if contract["model"]["mtp_layer_count"] != 3:
+		raise SystemExit("DSV4 Flash GA baseline MTP layer count is not the packed draft count")
 	if contract["dspark"]["layer_count"] != 3:
 		raise SystemExit("DSV4 Flash GA checkpoint DSpark count is not exact")
-	if contract["runtime"]["packed_mtp_layer_count"] != 0:
+	if contract["runtime"]["packed_mtp_layer_count"] != 3:
 		raise SystemExit("DSV4 Flash GA baseline must not pack DSpark tensors")
 	if contract["precision"]["routed_expert_weight_codec"] != "mxfp4_e2m1":
 		raise SystemExit("DSV4 Flash package does not declare its exact expert codec")
@@ -107,7 +107,13 @@ def main() -> None:
 	reject(common, "SPARK_LM_SCALAR_NEURONS_PER_WARP", "slower scalar activation reuse")
 	require(cuda, "SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC", "BF16 spine launch specialization")
 	require(cuda, "SPARK_DSV4_MODEL_EXPERT_ACTIVATION_CODEC", "expert launch specialization")
-	require(cuda, "#define SPARK_DSV4_ROUTER_SORT_CAPACITY SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT", "exact router sort capacity")
+	# Bitonic sort capacity is the next power of two at or above the expert
+	# count (256 for Flash, 512 for Pro), padded with zero keys that sort
+	# below every real key; the three ceiling branches must all exist.
+	require(cuda, "SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= 256u", "router capacity ceiling 256")
+	require(cuda, "#define SPARK_DSV4_ROUTER_SORT_CAPACITY 256u", "router sort capacity 256")
+	require(cuda, "#define SPARK_DSV4_ROUTER_SORT_CAPACITY 512u", "router sort capacity 512")
+	require(cuda, "#define SPARK_DSV4_ROUTER_SORT_CAPACITY 1024u", "router sort capacity 1024")
 	require(cuda, "#define SPARK_DSV4_HC_ELEMENT_TILE 256u", "row-adaptive Hc element tile")
 	require(cuda, "#define SPARK_DSV4_HC_MINIMUM_BLOCKS 16u", "row-adaptive Hc minimum occupancy")
 	require(cuda, "grid = dim3(tiles_per_row,row_count)", "row-adaptive Hc two-dimensional launch grid")
@@ -278,9 +284,9 @@ def main() -> None:
 	reject(module, "cudaMemsetAsync(state->compress_score_state_f32 + offset,0", "zero compressor score reset")
 	reject(module, "cudaMemsetAsync(state->index_score_state_f32 + offset,0", "zero indexer score reset")
 	require(stagepack, "SPARK_DSV4_STAGEPACK_WEIGHT_FP4_E2M1", "checkpoint MXFP4 expert payload")
-	require(header, "SPARK_DSV4_MODEL_MTP_LAYER_COUNT 0u", "zero runtime MTP layers")
+	require(header, "SPARK_DSV4_MODEL_MTP_LAYER_COUNT 3u", "packed draft layers ride the MTP namespace")
 	require(header, "SPARK_DSV4_MODEL_CHECKPOINT_DSPARK_LAYER_COUNT 3u", "checkpoint DSpark layers")
-	require(stagepack, "SPARK_DSV4_STAGEPACK_FORMAT_VERSION 3u", "GA stage-pack format")
+	require(stagepack, "SPARK_DSV4_STAGEPACK_FORMAT_VERSION 4u", "GA stage-pack format (draft-layer era)")
 	reject(module, "spark_glm", "GLM driver coupling")
 	reject(adapter, "spark_glm", "GLM adapter coupling")
 	require(adapter, "SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION", "asynchronous adapter completion capability")

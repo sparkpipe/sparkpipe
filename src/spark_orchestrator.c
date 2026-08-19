@@ -411,6 +411,10 @@ SparkStatus SparkOrchestratorResolveRoute(
     }
     if (endpoint_count == 0u)
     {
+        fprintf(stderr,
+            "spark_orchestrator route_not_found model_id=%s revision=%s stage=%s program=%s drivers=%u\n",
+            model_id,model_revision,stage_name,program_name,
+            orchestrator->driver_count);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     if (endpoint_count > orchestrator->configuration.route_endpoint_capacity - orchestrator->route_endpoint_count)

@@ -50,10 +50,10 @@
       0, 1, 2, 3, 4, 5, 6, 7,
       8, 9, 10, 11, 12, 13, 14, 15
     ],
-    "runtime_dataset": "dsv4_pro.fp8.tp4_pp4.b1024",
+    "runtime_dataset": "dsv4_pro.tp4pp4",
     "node_target": "cuda.sm121.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
     "adapter_configuration_path_template": "config/dsv4_pro_tp4_pp4_stage.json",
-    "kv_backing_dataset": "dsv4_pro/tp4_pp4.bf16",
+    "kv_backing_dataset": "dsv4_pro/tp4pp4.bf16",
     "kv_backing_maximum_bytes": 4398046511104,
     "control_endpoint": {
       "kind": "tcp",

@@ -8,7 +8,11 @@ MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_qwen38_resident_decode_stage_cuda.c
 MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/cache/store/stage_kv_client.c \
 	$(REPOSITORY_ROOT)/cache/store/kv_store.c \
-	$(REPOSITORY_ROOT)/model-families/qwen38/src/spark_qwen38_work_control.c
+	$(REPOSITORY_ROOT)/model-families/qwen38/src/spark_qwen38_work_control.c \
+	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
+	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
+	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c \
+	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective_nccl.c
 # Adapter provenance pins: the vendor FP8 checkpoint revision and the exact
 # package contract, checked at adapter compile time.
 QWEN38_MODEL_REVISION := d2dc35658bcf77e66643428cb52e774cc3b5bd29

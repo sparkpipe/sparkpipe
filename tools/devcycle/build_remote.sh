@@ -7,9 +7,10 @@
 # Usage (on spark):  tools/devcycle/build_remote.sh NAME
 set -euo pipefail
 
-NAME="${1:?usage: build_remote.sh NAME [LOCAL_SHA] [BUCKET]}"
+NAME="${1:?usage: build_remote.sh NAME [LOCAL_SHA] [BUCKET] [SPEC_STEP]}"
 SOURCE_SHA="${2:-}"
 BUCKET="${3:-1}"
+SPEC_STEP="${4:-}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="/tmp/devcycle-build-${NAME}"
 MODULE_LIB="/tmp/devcycle-build-${NAME}-module-library"
@@ -34,6 +35,7 @@ mkdir -p "${OUT}"
 make clean >/dev/null
 make -C modules/dsv4_resident_decode_stage -j4 variants \
     MODULE_BATCH_VARIANT_BUCKETS=${BUCKET} \
+    $(if [[ -n "${SPEC_STEP}" ]]; then echo "DSPARK_SPEC_STEP=${SPEC_STEP}"; fi) \
     NVCC=/usr/local/cuda-13.0/bin/nvcc \
     CUDA_ARCH=sm_121a
 # firmware for this bucket: the generated bucket description (committed)

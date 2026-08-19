@@ -93,7 +93,8 @@
    1572
   ],
   "packed": true,
-  "execution_supported": true
+  "execution_supported": true,
+  "serving_block_size": 7
  },
  "source_index_sha256": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
  "source_tensor_count": 72317,

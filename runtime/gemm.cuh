@@ -207,11 +207,11 @@ static int32_t LmGemmEncodeWeightMap(
     return LmGemmTensorMapCached(weight, &request);
 }
 
-// INTERLEAVED WEIGHT MAP - pack V2 mxfp4_ws_interleaved_v1 (K3). The B
+// INTERLEAVED WEIGHT MAP - pack format mxfp4_ws_interleaved_v1. The B
 // operand is the 17-row cell grid, described as a rank-3 UINT8 byte tensor:
 // 64-byte rows, rows_per_expert = k_tiles * cells * 17 rows per expert, one
 // group per expert, box [64 bytes, 17 * (TILE_N/16) rows, 1], 64B swizzle.
-// The packer's interleave grid (tools/k3_pack.py) asserts this closes with
+// The packer's interleave grid asserts this closes with
 // zero padding, and the kernel's produce coordinate
 // (k_tile * cells + neuron_base/16) * 17 is this layout's row index. The
 // 128-element pack k-tile is the grid's k unit, so the launcher passes
@@ -649,7 +649,7 @@ static int32_t LmGemmWeightOnlyIndirectLaunch(
 		input_dimension,output_dimension,multiprocessors,true,stream));
 }
 
-// INTERLEAVED B LAUNCHERS (K3 pack V2 mxfp4_ws_interleaved_v1). TILE_K is
+// INTERLEAVED B LAUNCHERS (pack format mxfp4_ws_interleaved_v1). TILE_K is
 // forced to the pack grid's 128-element k-tile - one staged box per k step,
 // scales riding the cell row - so these never pass through
 // LmGemmWeightOnlyLaunchMode's tile_k selection. The indirect variant is the
@@ -748,6 +748,42 @@ static int32_t LmGemmLaunch(
             multiprocessors,
             grouped,
             stream);
+}
+
+// GEMM-008 shape-based TILE_K fallback for the symmetric (dense/unquantised)
+// GEMM. When the format's preferred K tile does not divide input_dimension but
+// 32 does, re-launch with TILE_K=32 - the non-interleaved BF16 path already
+// stages a 32-element tile (a 64-byte TMA-swizzleable row, inference/kernels/
+// gemm.cuh is TILE_K-generic). This is what unblocks TP-sliced dense/routed
+// projections (a 32-multiple input such as 224 = 7*32) that would otherwise
+// return LM_LAUNCH_ERR_SHAPE before producing partials.
+template<class Format, uint32_t TILE_N, uint32_t STAGES, uint32_t WARPS>
+static int32_t LmGemmLaunchTileK(
+    LmGemmArguments *args,
+    const void *activation_bytes,
+    const void *weight_bytes,
+    uint32_t packed_rows,
+    uint32_t tokens,
+    uint32_t top_k,
+    uint32_t group_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t multiprocessors,
+    bool grouped,
+    cudaStream_t stream)
+{
+    uint32_t tile_k = LmGemmSelectTileK(Format::kTileK, input_dimension);
+    if ( tile_k == Format::kTileK )
+        return LmGemmLaunch<Format,TILE_N,Format::kTileK,STAGES,WARPS>(
+            args,activation_bytes,weight_bytes,packed_rows,tokens,top_k,
+            group_count,input_dimension,output_dimension,multiprocessors,
+            grouped,stream);
+    if ( tile_k == 32u )
+        return LmGemmLaunch<Format,TILE_N,32u,STAGES,WARPS>(
+            args,activation_bytes,weight_bytes,packed_rows,tokens,top_k,
+            group_count,input_dimension,output_dimension,multiprocessors,
+            grouped,stream);
+    return LM_LAUNCH_ERR_SHAPE;
 }
 
 #undef LM_GEMM_MAX_TRACKED_CUDA_DEVICES

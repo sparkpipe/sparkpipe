@@ -8,8 +8,8 @@
 
 #include "sparkpipe/spark_glm52_dspark_draft_backend.h"
 
-#define SPARK_GLM52_DSPARK_VALIDATION_ANCHOR_TOKEN_ID 10397u
-#define SPARK_GLM52_DSPARK_DEFAULT_VALIDATION_LANE_COUNT 2u
+#define SPARK_DSPARK_VALIDATION_ANCHOR_TOKEN_ID 10397u
+#define SPARK_DSPARK_DEFAULT_VALIDATION_LANE_COUNT 2u
 
 typedef struct SparkGlm52DsparkValidationMetrics
 {
@@ -48,7 +48,7 @@ static int32_t SparkGlm52DsparkParseLaneCount(
     if (text == 0 || lane_count_out == 0 ||
         sscanf(text, "%u%c", &lane_count, &trailing) != 1 ||
         lane_count == 0u ||
-        lane_count > SPARK_GLM52_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT)
+        lane_count > SPARK_DSPARK_DRAFT_BACKEND_MAX_LANE_COUNT)
         return -1;
     *lane_count_out = (uint32_t)lane_count;
     return 0;
@@ -110,25 +110,25 @@ static int32_t SparkGlm52DsparkLoadOracle(
 
     snprintf(path, sizeof(path), "%s/taps.bf16", oracle_directory);
     if (SparkGlm52DsparkReadFile(path, taps,
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION *
+        SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION *
             sizeof(uint16_t)) != 0)
         return -1;
     snprintf(path, sizeof(path), "%s/target_hidden.bf16", oracle_directory);
     if (SparkGlm52DsparkReadFile(path, target_hidden,
-        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t)) != 0)
+        SPARK_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t)) != 0)
         return -2;
     snprintf(path, sizeof(path), "%s/final_hidden.bf16", oracle_directory);
     if (SparkGlm52DsparkReadFile(path, final_hidden,
-        SPARK_GLM52_DSPARK_BLOCK_SIZE * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION *
+        SPARK_DSPARK_BLOCK_SIZE * SPARK_DSPARK_HIDDEN_DIMENSION *
             sizeof(uint16_t)) != 0)
         return -3;
     snprintf(path, sizeof(path), "%s/tokens.u32", oracle_directory);
     if (SparkGlm52DsparkReadFile(path, tokens,
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT * sizeof(uint32_t)) != 0)
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT * sizeof(uint32_t)) != 0)
         return -4;
     snprintf(path, sizeof(path), "%s/confidence.f32", oracle_directory);
     if (SparkGlm52DsparkReadFile(path, confidence,
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT * sizeof(float)) != 0)
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT * sizeof(float)) != 0)
         return -5;
     return 0;
 }
@@ -138,7 +138,7 @@ static int32_t SparkGlm52DsparkUploadTaps(
     const uint16_t *taps,
     uint32_t lane_index)
 {
-    void *tap_outputs[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT];
+    void *tap_outputs[SPARK_DSPARK_AUX_LAYER_COUNT];
     uint64_t lane_stride;
     uint32_t tap_index;
 
@@ -146,15 +146,15 @@ static int32_t SparkGlm52DsparkUploadTaps(
         backend, lane_index, tap_outputs, &lane_stride) != SPARK_STATUS_OK)
         return -1;
     if (lane_stride !=
-        (uint64_t)SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION *
+        (uint64_t)SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION *
             sizeof(uint16_t))
         return -2;
-    for (tap_index=0u; tap_index<SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+    for (tap_index=0u; tap_index<SPARK_DSPARK_AUX_LAYER_COUNT;
          ++tap_index)
     {
         if (cudaMemcpy(tap_outputs[tap_index],
-            taps + ((uint64_t)tap_index * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION),
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t),
+            taps + ((uint64_t)tap_index * SPARK_DSPARK_HIDDEN_DIMENSION),
+            SPARK_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t),
             cudaMemcpyHostToDevice) != cudaSuccess)
             return -3;
     }
@@ -177,33 +177,33 @@ static int32_t SparkGlm52DsparkValidateOutputs(
     int32_t failed;
 
     actual_target = (uint16_t *)malloc(
-        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t));
+        SPARK_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t));
     actual_final = (uint16_t *)malloc(
-        SPARK_GLM52_DSPARK_BLOCK_SIZE * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION *
+        SPARK_DSPARK_BLOCK_SIZE * SPARK_DSPARK_HIDDEN_DIMENSION *
             sizeof(uint16_t));
     if (actual_target == 0 || actual_final == 0)
         return -1;
     target_offset = (uint64_t)lane_index *
-        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
+        SPARK_DSPARK_HIDDEN_DIMENSION;
     final_offset = (uint64_t)lane_index *
-        SPARK_GLM52_DSPARK_BLOCK_SIZE *
-        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
+        SPARK_DSPARK_BLOCK_SIZE *
+        SPARK_DSPARK_HIDDEN_DIMENSION;
     result_offset = (uint64_t)lane_index *
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
     if (cudaMemcpy(actual_target,
             backend->device_target_hidden_bf16 + target_offset,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t),
+            SPARK_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t),
             cudaMemcpyDeviceToHost) != cudaSuccess ||
         cudaMemcpy(actual_final,
             backend->device_block_final_bf16 + final_offset,
-            SPARK_GLM52_DSPARK_BLOCK_SIZE * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION *
+            SPARK_DSPARK_BLOCK_SIZE * SPARK_DSPARK_HIDDEN_DIMENSION *
                 sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess)
         return -2;
     target_metrics = SparkGlm52DsparkCompareBf16(
-        actual_target, expected_target, SPARK_GLM52_DSPARK_HIDDEN_DIMENSION);
+        actual_target, expected_target, SPARK_DSPARK_HIDDEN_DIMENSION);
     final_metrics = SparkGlm52DsparkCompareBf16(
         actual_final, expected_final,
-        SPARK_GLM52_DSPARK_BLOCK_SIZE * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION);
+        SPARK_DSPARK_BLOCK_SIZE * SPARK_DSPARK_HIDDEN_DIMENSION);
     fprintf(stdout,
         "dspark_target lane=%u max_abs=%.9f rel_l2=%.9f cosine=%.9f\n",
         lane_index,
@@ -221,7 +221,7 @@ static int32_t SparkGlm52DsparkValidateOutputs(
         final_metrics.relative_l2_error > 0.08 ||
         final_metrics.cosine_similarity < 0.995;
     for (token_index=0u;
-         token_index<SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+         token_index<SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
          ++token_index)
     {
         fprintf(stdout,
@@ -248,16 +248,16 @@ int main(int argc,char **argv)
     SparkGlm52DsparkDraftRequest *requests;
     SparkGlm52DsparkDraftResult *results;
     uint16_t *taps,*expected_target,*expected_final;
-    uint32_t expected_tokens[SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+    uint32_t expected_tokens[SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
     uint32_t lane_count,lane_index,result_count;
-    float expected_confidence[SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+    float expected_confidence[SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
     cudaEvent_t start_event,stop_event;
     float stage_ms,draft_ms;
     int32_t validation_status;
 
     if (argc != 5 && argc != 6)
         return 2;
-    lane_count = SPARK_GLM52_DSPARK_DEFAULT_VALIDATION_LANE_COUNT;
+    lane_count = SPARK_DSPARK_DEFAULT_VALIDATION_LANE_COUNT;
     if (argc == 6 &&
         SparkGlm52DsparkParseLaneCount(argv[5], &lane_count) != 0)
         return 2;
@@ -268,11 +268,11 @@ int main(int argc,char **argv)
     results = (SparkGlm52DsparkDraftResult *)calloc(
         lane_count, sizeof(results[0]));
     taps = (uint16_t *)malloc(
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION * sizeof(uint16_t));
+        SPARK_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION * sizeof(uint16_t));
     expected_target = (uint16_t *)malloc(
-        SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t));
+        SPARK_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t));
     expected_final = (uint16_t *)malloc(
-        SPARK_GLM52_DSPARK_BLOCK_SIZE * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION *
+        SPARK_DSPARK_BLOCK_SIZE * SPARK_DSPARK_HIDDEN_DIMENSION *
             sizeof(uint16_t));
     if (stages == 0 || requests == 0 || results == 0 ||
         taps == 0 || expected_target == 0 || expected_final == 0)
@@ -281,9 +281,9 @@ int main(int argc,char **argv)
         expected_final, expected_tokens, expected_confidence) != 0)
         return 4;
     memset(&configuration, 0, sizeof(configuration));
-    configuration.abi_version = SPARK_GLM52_DSPARK_DRAFT_BACKEND_ABI_VERSION;
+    configuration.abi_version = SPARK_DSPARK_DRAFT_BACKEND_ABI_VERSION;
     configuration.descriptor_bytes =
-        SPARK_GLM52_DSPARK_DRAFT_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_DSPARK_DRAFT_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES;
     configuration.maximum_lane_count = lane_count;
     configuration.maximum_context_token_count = 16u;
     configuration.manifest_path = argv[1];
@@ -305,7 +305,7 @@ int main(int argc,char **argv)
         stages[lane_index].tap_row_index = lane_index;
         stages[lane_index].backend_lane_index = lane_index;
         stages[lane_index].token_id =
-            SPARK_GLM52_DSPARK_VALIDATION_ANCHOR_TOKEN_ID;
+            SPARK_DSPARK_VALIDATION_ANCHOR_TOKEN_ID;
     }
     cudaEventCreate(&start_event);
     cudaEventCreate(&stop_event);
@@ -327,11 +327,11 @@ int main(int argc,char **argv)
          ++lane_index)
     {
         memset(&requests[lane_index], 0, sizeof(requests[lane_index]));
-        requests[lane_index].abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
+        requests[lane_index].abi_version = SPARK_DSPARK_ABI_VERSION;
         requests[lane_index].descriptor_bytes =
-            SPARK_GLM52_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES;
+            SPARK_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES;
         requests[lane_index].requested_token_count =
-            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+            SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
         requests[lane_index].active_sequence_index = lane_index;
         requests[lane_index].request_id = lane_index + 1u;
         requests[lane_index].sequence_id = lane_index + 1u;

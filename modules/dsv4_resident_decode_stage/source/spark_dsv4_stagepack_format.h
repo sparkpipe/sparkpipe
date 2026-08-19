@@ -363,15 +363,21 @@ static inline uint32_t SparkDsv4StagePackExpectedTensorCountForOwnership(
 		tensors += SparkDsv4StagePackLayerTensorCount(layer);
 	if ( include_embedding != 0u )
 		tensors += 1u;
-	if ( include_final_globals != 0u )
+	if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
 	{
 		uint32_t stage;
-		tensors += 5u;
+		/* DSpark draft: every rank's pack carries the full draft layers
+		 * (they ride the standard per-layer kinds under the MTP range)
+		 * plus the 9 draft-only extras, so every geometry admits them. */
 		for (stage = 0u; stage < SPARK_DSV4_MODEL_MTP_LAYER_COUNT; stage++)
 			tensors += SparkDsv4StagePackLayerTensorCount(SPARK_DSV4_STAGEPACK_MTP_LAYER(stage));
-		/* Draft extras: stage-0 main projection pair + stage-2 output norm,
-		 * hc head trio, markov pair, confidence projection = 9 kinds. */
-		tensors += 9u + (include_embedding == 0u ? 1u : 0u);
+		tensors += 9u;
+	}
+	if ( include_final_globals != 0u )
+	{
+		tensors += 5u;
+		if ( include_embedding == 0u )
+			tensors += 1u;
 	}
 	return(tensors);
 }

@@ -78,7 +78,7 @@ int main(void)
 	memset(&test_state,0,sizeof(test_state));
 	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_DSV4_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&library) == SPARK_STATUS_OK);
 	assert(strcmp(library.adapter_interface.descriptor->model_id,"deepseek-ai/DeepSeek-V4-Flash-0731") == 0);
-	assert(library.adapter_interface.descriptor->max_speculative_token_count == 0u);
+	assert(library.adapter_interface.descriptor->max_speculative_token_count == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP);
 	assert(library.adapter_interface.descriptor->max_inflight_submission_count == 13u);
 	assert(library.adapter_interface.descriptor->max_active_sequence_count ==
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT);

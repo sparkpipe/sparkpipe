@@ -18,7 +18,7 @@
 // ROUTE ROW INDIRECTION CONSUMER CONTRACT
 //
 // The grouped weight-only GEMM reads activation rows through
-// route_source_token directly, and the K3 driver consumes it that way: the
+// route_source_token directly, and the routed-MoE driver consumes it that way: the
 // w1 launch sets source_row_map = route_source_token with the UN-gathered
 // latent as the source, so no packed activation tensor is written and no
 // host sees the route - LmGatherRowsKernel, its buffer, and its recipe-gate

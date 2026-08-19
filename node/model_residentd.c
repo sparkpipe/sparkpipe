@@ -748,6 +748,7 @@ static SparkStatus SparkModelResidentdReleaseResidentSlotsLocked(
 }
 
 static SparkStatus SparkModelResidentdCompleteContinuationLease(
+	SparkModelResidentdRuntime *runtime,
 	SparkModelResidentdRoute *route,
 	const SparkModelServingLane *lane,
 	SparkModelResidentdSequenceSlot *slot)
@@ -763,14 +764,31 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 	next_sequence_position = lane->context_token_count;
 	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 	{
+		/* The lease must land on the position the engine actually advanced
+		 * to: the completion's EMITTED count (1 + accepted), not the
+		 * coordinator-rank chain width (spec bucket = 8). A partial-accept
+		 * verify burst emits fewer tokens than the admitted chain; the
+		 * batch side (c8f76e5) already mirrors this, so both leases must
+		 * advance by the same count. */
+		/* accepted_token_count already includes the anchor (the module sets it
+		 * to 1 + accepted), so it IS the emitted count — no +1. */
+		uint32_t completed_tokens = route->completion.accepted_token_count;
+		if ( completed_tokens == 0u ||
+			(completed_tokens > route->completion.tokens_per_sequence &&
+			 route->completion.tokens_per_sequence != 0u) )
+			completed_tokens = route->completion.tokens_per_sequence;
 		status = SparkModelContinuationLeaseDecodePosition(
 			lane->context_token_count,
-			route->submission.tokens_per_sequence,&next_sequence_position);
+			completed_tokens,&next_sequence_position);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
+	/* The lease must be fenced by the CURRENT client generation, not the
+		 * route's (captured at reservation): the ASYNC verify completion can
+		 * land after a reconnect, which would leave the route's generation
+		 * stale and reject the next continuation. */
 	return(SparkModelContinuationLeaseEstablish(&slot->lease,
-		route->client_generation,route->submission.control_generation,
+		runtime->client.generation,route->submission.control_generation,
 		next_sequence_position,lane->step_generation));
 }
 
@@ -811,7 +829,7 @@ static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(
 		if ( (descriptor->capability_flags &
 			SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u )
 		{
-			status = SparkModelResidentdCompleteContinuationLease(route,lane,slot);
+			status = SparkModelResidentdCompleteContinuationLease(runtime,route,lane,slot);
 			if ( status != SPARK_STATUS_OK )
 				return(status);
 		}
@@ -2506,11 +2524,15 @@ static SparkStatus SparkModelResidentdProgressRoutes(
 static SparkStatus SparkModelResidentdProgress(SparkModelResidentdRuntime *runtime)
 {
 	SparkStatus status;
-	status = runtime->adapter_library.adapter_interface.progress(runtime->adapter_state,SPARK_MODEL_RESIDENTD_PROGRESS_STEPS);
-	if ( status == SPARK_STATUS_BUSY )
-		status = SPARK_STATUS_OK;
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentdProgressRoutes(runtime,0u);
+	/* ADMIT FIRST. ProgressRoutes(allow_adapter=1) submits the next
+	 * decode-draft (adapter.submit = spec phase one). The adapter's progress
+	 * scan (spec phase two of the prior submission) runs AFTER admission so
+	 * the driver can run verify(N) + decode-draft(N+1) concurrently under
+	 * max_inflight_submission_count, instead of serializing phase two ahead
+	 * of the next admission. The committed-fifo head ordering and the
+	 * continuation-lease chain are untouched: they live in the submit and
+	 * completion paths, not in this scan order. */
+	status = SparkModelResidentdProgressRoutes(runtime,0u);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"model_residentd progress stage=routes-pre status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
@@ -2529,6 +2551,12 @@ static SparkStatus SparkModelResidentdProgress(SparkModelResidentdRuntime *runti
 		status = SparkModelResidentdProgressRoutes(runtime,1u);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"model_residentd progress stage=routes-adapter status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
+	if ( status == SPARK_STATUS_OK )
+	{
+		status = runtime->adapter_library.adapter_interface.progress(runtime->adapter_state,SPARK_MODEL_RESIDENTD_PROGRESS_STEPS);
+		if ( status == SPARK_STATUS_BUSY )
+			status = SPARK_STATUS_OK;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdProgressTransport(runtime,runtime->input_transport,1u);
 	if ( status != SPARK_STATUS_OK )
@@ -2588,7 +2616,13 @@ static SparkStatus SparkModelResidentdBuildPollFds(
 	fds[0].events = runtime->client.fd < 0 ? POLLIN : 0;
 	fds[1].fd = runtime->client.fd;
 	fds[1].events = runtime->client.fd >= 0 && runtime->client.close_after_output == 0u ? POLLIN : 0;
-	if ( runtime->client.fd >= 0 && runtime->client.output_count != 0u )
+	/* Request POLLOUT only while output is genuinely pending. Requesting it
+	 * unconditionally makes poll() return immediately on a writable socket,
+	 * turning this loop into a 100%-CPU busy-spin for the whole GPU decode and
+	 * starving the driver's completion callback (both IPC round-trips). The
+	 * queued ACK is still flushed here: ReadClient queues it and the run loop
+	 * calls WriteClient in the same iteration (submission_processed path). */
+	if ( runtime->client.fd >= 0 && runtime->client.close_after_output == 0u && runtime->client.output_count != 0u )
 		fds[1].events |= POLLOUT;
 	pthread_mutex_unlock(&runtime->mutex);
 	fds[2].fd = runtime->wake_read_fd;

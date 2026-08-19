@@ -383,7 +383,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		/* the sharded path defers the restart to the phase-0 hook, whose
 		 * completion sets the SUMMED attention output into the partial */
 		if ( boundary != 0u && buffers->tp_sharded == 0u )
-			K3PartialSet(buffers,buffers->attention_out_bf16,rows,stream);
+			K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
 		// The sharded attention output all-reduces and folds BEFORE the
 		// MLP-side retrieval: the retrieval's partial mix must contain the
 		// post-attention contribution on every rank.
@@ -399,7 +399,17 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		if ( layer < K3_FIRST_ROUTED_LAYER )
 			status = K3LayerDenseMlp<Format>(buffers,rows,multiprocessors,stream);
 		else
-			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream);
+		{
+			/* w1 -> (gate_up all-reduce) -> SiTU rest. The production
+			 * collective's gate_up point is phase 2 (TODO in the runner: it
+			 * needs a packed_rows*2*intermediate-wide stage, wider than the
+			 * current 3*hidden host buffer). */
+			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
+			if ( status == LM_LAUNCH_OK && state->layer_collective != 0 )
+				state->layer_collective(state->collective_context,stream,layer,2u);
+			if ( status == LM_LAUNCH_OK )
+				status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
+		}
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		if ( state->layer_collective != 0 )
@@ -437,6 +447,65 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		K3_LAYER_THREADS, 0, stream,
 		buffers->attnres_partial_bf16,buffers->hidden_bf16,rows,K3_HIDDEN);
 	return(LM_LAUNCH_OK);
+}
+
+// THE SERIAL-TP HALF STEP. Runs ONE layer's attention half (phase 0) or MLP
+// half (phase 1) in isolation, for the serial-TP replay
+// (docs/serial_tp_replay.md): the harness replicates the FULL hidden (phase 0)
+// and the FULL AttnRes partial (both phases) into the buffers before each half,
+// runs the half on every rank in turn, and host-sums the rank partials between
+// halves. The AttnRes bank and the recurrent KDA state live in the buffers and
+// the slice state and persist across the per-half calls exactly as the
+// whole-slice loop leaves them. phase 1 reuses the weight pointers phase 0
+// bound (K3BindLayer) and the scratch buffers the dispatch carved once.
+template<class Format, class Geometry>
+static int32_t K3LaunchSliceHalf(const K3LayerWeights *weights, const K3SliceState *state,
+	K3LayerBuffers *buffers, uint32_t layer, uint32_t phase, uint32_t rows,
+	uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context,
+	uint32_t multiprocessors, cudaStream_t stream)
+{
+	int32_t status;
+	uint32_t boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u ? 1u : 0u;
+	if ( phase == 0u )
+	{
+		K3BindLayer(weights,buffers);
+		K3BindLayerState(state,layer,buffers);
+		// Attention-side retrieval, over the bank BEFORE any append.
+		if ( layer > 0u )
+			K3AttnRes(buffers,buffers->attnres_attn_weight,
+				((layer - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
+		if ( boundary != 0u )
+		{
+			if ( layer == 0u )
+				K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
+			K3BankStore(buffers,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
+		}
+		status = K3LaunchAttentionHalf<Format,Geometry>(buffers,layer,rows,sequences,commit,
+			boundary != 0u ? (uint16_t *)0 : buffers->attnres_partial_bf16,context,
+			multiprocessors,stream);
+		if ( status != LM_LAUNCH_OK )
+			return(status);
+		if ( boundary != 0u && buffers->tp_sharded == 0u )
+			K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
+		return(LM_LAUNCH_OK);
+	}
+	if ( layer < K3_FIRST_ROUTED_LAYER )
+	{
+		K3AttnRes(buffers,buffers->attnres_mlp_weight,
+			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
+		return(K3LayerDenseMlp<Format>(buffers,rows,multiprocessors,stream));
+	}
+	/* MoE: phase 1 = the MLP-side retrieval + the gate|up w1 partial, phase 2
+	 * = the SiTU->w2->finalize->routed_up->shared rest. The harness (and the
+	 * production collective) all-reduce gate_up_bf16 between the two so SiTU
+	 * runs on the summed gate|up, not a rank's partial. */
+	if ( phase == 1u )
+	{
+		K3AttnRes(buffers,buffers->attnres_mlp_weight,
+			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
+		return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u));
+	}
+	return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u));
 }
 
 // Fold the accepted prefix of a verify step into the real state, with the

@@ -56,15 +56,6 @@ def main():
     values = dict(re.findall(r"(\w+)\[0\] ([\d.\-]+)", run.stdout))
     failures = 0
 
-    # pack V2 interleaves the expert scales into the weight stream; the
-    # grouped GEMM cannot read that grid yet, so the layer must fail closed
-    # on the flag (the kernels-wave contract is in K3LayerLatentMoe).
-    refused = re.search(r"interleave_refused (\d)", run.stdout)
-    if refused is None or refused.group(1) != "1":
-        print("  FAIL the layer did not refuse the interleaved expert stream; "
-              "scales co-tiled with payload would be read as weights")
-        failures += 1
-
     destinations = [g["dest"] for g in gemms]
     if "shared_out" not in destinations:
         print("  FAIL the shared expert does not write its own buffer")

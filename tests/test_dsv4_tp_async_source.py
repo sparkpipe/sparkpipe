@@ -30,7 +30,10 @@ promotion = "if ( prefill != 0 && state->tp_degree > 1u )"
 assert promotion in run_frame
 assert run_frame.index(promotion) < run_frame.index("SparkDsv4ModuleBeginStreams")
 assert "rows != SPARK_BATCH_BUCKET" in run_frame
-assert "prefill->active_sequence_count != SPARK_BATCH_BUCKET" in run_frame
+# The speculative wave stages single-lane prefills to bucket width, so the
+# rows gate is the only full-width check left; the per-sequence gate is gone.
+assert "active_sequence_count != SPARK_BATCH_BUCKET" not in run_frame
+assert run_frame.count("!= SPARK_BATCH_BUCKET") == 1
 assert "prefill = 0;" in run_frame
 assert run_frame.index("SparkDsv4ModuleRunLocalLayers") < run_frame.index(
     "continuation = slot->tp_continuation")
@@ -44,8 +47,11 @@ assert "configuration.credit_count = state->pipeline_slot_count *" in \
 validate_shape = body("static SparkStatus SparkDsv4ModuleValidateFrameShape")
 admission_shape = body("static uint32_t SparkDsv4ModuleAdmissionShapeSupported")
 for shape in (validate_shape, admission_shape):
-    assert "active_slot_count != SPARK_BATCH_BUCKET" in shape
-    assert "new_token_count != SPARK_BATCH_BUCKET" in shape
+    # The speculative wave re-gates the full-width check in equality form:
+    # (active == BUCKET && new == BUCKET) or the bucket-8 DSpark lane case.
+    # ValidateFrame uses frame->, AdmissionShapeSupported uses request->.
+    assert "active_slot_count == SPARK_BATCH_BUCKET &&" in shape
+    assert "new_token_count == SPARK_BATCH_BUCKET)" in shape
     assert "is_prefill != 0u ||" not in shape
 
 continue_name = "static void SparkDsv4ModuleContinueLayers"

@@ -3,7 +3,7 @@
 // Speculative decode. Verify and accept.
 //
 // This tree has two speculative systems - MTP and DSpark - and they are the same
-// algorithm. MTP is 6 kernels in the glm52 decode stage; the DSpark backend is
+// algorithm. MTP is 6 kernels in the GLM decode stage; the DSpark backend is
 // 2,887 lines. What differs between them is where the draft comes from: MTP uses
 // an extra model layer, DSpark uses a separate small model. What is identical is
 // everything after: run the target over the draft, compare, take the longest

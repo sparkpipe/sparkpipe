@@ -449,13 +449,16 @@ static int SparkDsv4ValidationGateRouteCheckSelection(
 	const uint32_t *expected)
 {
 	uint32_t expert,rank;
+	float expected_weight;
 	if ( SparkDsv4ValidationRequire(isfinite(scores[0]) && scores[0] > 0.0f,"gate_route_score_finite") != 0 ) return(1);
 	for (expert=1u; expert<SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT; expert++)
 		if ( SparkDsv4ValidationRequire(scores[expert] == scores[0],"gate_route_score_exact") != 0 ) return(1);
 	for (rank=0u; rank<SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN; rank++)
 	{
 		if ( SparkDsv4ValidationRequire(indices[rank] == expected[rank],"gate_route_selection") != 0 ) return(1);
-		if ( SparkDsv4ValidationRequire(fabsf(weights[rank] - 0.25f) <= 1.0e-6f,"gate_route_weight") != 0 ) return(1);
+		expected_weight = SPARK_DSV4_MODEL_ROUTED_SCALING_FACTOR /
+			(float)SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN;
+		if ( SparkDsv4ValidationRequire(fabsf(weights[rank] - expected_weight) <= 1.0e-6f,"gate_route_weight") != 0 ) return(1);
 	}
 	return(0);
 }
@@ -850,7 +853,16 @@ static int SparkDsv4ValidationPostExact(
 	if ( error == cudaSuccess ) error = cudaMemcpy(buffers->control,buffers->control_bf16,bytes,cudaMemcpyDeviceToHost);
 	if ( error == cudaSuccess ) error = cudaMemcpy(buffers->candidate,buffers->candidate_bf16,bytes,cudaMemcpyDeviceToHost);
 	if ( SparkDsv4ValidationRequireCuda(error,"post_fusion_read") != 0 ) return(1);
-	if ( SparkDsv4ValidationRequire(memcmp(buffers->control,buffers->candidate,bytes) == 0,message) != 0 ) return(1);
+	if ( memcmp(buffers->control,buffers->candidate,bytes) != 0 )
+	{
+		for (index=0u; index<elements; index++)
+			if ( buffers->control[index] != buffers->candidate[index] )
+			{
+				fprintf(stderr,"%s mismatch_index=%u control=%04x candidate=%04x\n",message,index,(unsigned)buffers->control[index],(unsigned)buffers->candidate[index]);
+				break;
+			}
+		return(SparkDsv4ValidationRequire(0,message));
+	}
 	for (index=0u; index<elements; index++)
 		nonzero += buffers->control[index] != 0u ? 1u : 0u;
 	return(SparkDsv4ValidationRequire(nonzero != 0u,"post_fusion_nontrivial"));

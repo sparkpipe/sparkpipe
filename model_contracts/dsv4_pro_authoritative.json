@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "model_id": "deepseek-ai/DeepSeek-V4-Pro",
+  "model_id": "deepseek-ai/DeepSeek-V4-Pro-0813",
   "architecture": "DeepseekV4ForCausalLM",
-  "source_revision": "official Hugging Face config observed 2026-07-31",
+  "source_revision": "GA release deepseek-ai/DeepSeek-V4-Pro-0813 (HF, 2026-08-13)",
   "model": {
     "hidden_dimension": 7168,
     "layer_count": 61,
-    "mtp_layer_count": 1,
+    "mtp_layer_count": 3,
     "vocabulary_size": 129280,
     "maximum_context_tokens": 1048576,
     "rms_norm_epsilon": 0.000001,
@@ -27,7 +27,22 @@
     "compressed_rope_theta": 160000,
     "yarn_factor": 16,
     "yarn_original_context_tokens": 65536,
-    "compression_ratios": [128, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0]
+    "compression_ratios": [128, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0, 0, 0]
+  },
+  "dspark": {
+    "layer_count": 3,
+    "block_size": 5,
+    "noise_token_id": 128799,
+    "target_layer_ids": [
+      58,
+      59,
+      60
+    ],
+    "markov_rank": 512,
+    "draft_attention_head_count": 128,
+    "draft_kv_head_count": 1,
+    "draft_head_dimension": 512,
+    "draft_intermediate_dimension": 3072
   },
   "hyper_connections": {
     "stream_count": 4,
@@ -51,12 +66,13 @@
     "non_expert_linear_weight_codec": "fp8_e4m3",
     "non_expert_linear_weight_format": "fp8_e4m3_block_128x128",
     "kv_cache_codec": "bf16",
-    "non_expert_activation_format": "fp8_e4m3",
+    "non_expert_activation_format": "bf16",
     "routed_expert_activation_format": "fp8_e4m3",
     "output_composition_activation_format": "bf16",
     "scale_format": "ue8m0",
     "residual_norm_storage_format": "bf16",
-    "accumulator_format": "fp32"
+    "accumulator_format": "fp32",
+    "_first_light_note": "non-expert activations run BF16 to match the Flash-validated kernel set; checkpoint declares fp8 e4m3 activations - fp8 activations are a follow-up"
   },
   "qualification": {
     "cuda_target": "sm_121a",

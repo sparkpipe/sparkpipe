@@ -736,10 +736,10 @@ def main() -> int:
         ).read_text(encoding="utf-8")
     )
     dsv4_target = dsv4_description["stages"][0]["target"]
-    expected_hosts = [f"spark{rank}" for rank in range(10)] + [
-        "sparka",
-        "sparkb",
-        "sparkc",
+    expected_hosts = [f"spark{rank}-fabric" for rank in range(10)] + [
+        "sparka-fabric",
+        "sparkb-fabric",
+        "sparkc-fabric",
     ]
     require(
         deployment_example["coordinator_rank_index"] == 0

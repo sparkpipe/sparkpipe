@@ -26,7 +26,7 @@ def body(name: str, start_at: int = 0) -> str:
 
 
 assert "return(3u * local_layer_count + 1u);" in FIRMWARE
-assert "width == 1u || width == 8u || width == 1024u" in FIRMWARE
+assert "width == 1u || width == 8u || width == 16u || width == 32u || width == 64u || width == 1024u" in FIRMWARE
 assert '"cuda_graph_count_by_pp_stage"' in ADAPTER
 assert '"cuda_graph_count_by_pp_stage": [34, 34, 34, 31]' in CONFIG
 

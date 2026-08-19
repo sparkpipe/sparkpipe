@@ -4,10 +4,10 @@
 //
 // attn.cuh's decode kernels are MLA-shaped: a slot is one shared latent row and
 // the first LATENT elements double as the value, which is the whole trick of
-// latent absorption. Qwen 3.6 and MiMo 2.5 store per-head keys AND values, and
+// latent absorption. The GDN model and MiMo 2.5 store per-head keys AND values, and
 // neither kernel can express that - the value is a different tensor at a
 // different offset, not a prefix of the key. Both drivers were launched through
-// LmAttentionDecodeKernel anyway: qwen attended every query head over the first
+// LmAttentionDecodeKernel anyway: the GDN model attended every query head over the first
 // 256 elements of a 2048-element slot and wrote 192-wide outputs into a
 // 256-wide pipeline, mimo read 64 elements past each key head and wrote 12288
 // outputs into an 8192-wide pipeline. Fluent and wrong, with every shape check
@@ -79,9 +79,9 @@ void LmBuildSlidingWindowPositionsKernel(
 // expansion materialised - the attention decode above gets the same sharing
 // for free through its head-to-KV-head mapping, but a consumer that indexes
 // heads densely, like the delta rule, needs the repeated tensor in memory.
-// Qwen 3.6's GDN is the case: 16 key heads and 48 value heads, and the
+// The GDN model's GDN is the case: 16 key heads and 48 value heads, and the
 // recurrence holds one state per VALUE head with q and k repeated three ways,
-// which is the only form the reference (Qwen3-Next's modeling file, FLA's
+// which is the only form the reference (the next-generation modeling file, FLA's
 // gated delta rule) defines - a state per key head shared three ways is not
 // GDN, and it silently drops two of every three value heads.
 template<uint32_t THREADS>

@@ -2,7 +2,7 @@
 
 // MXFP4: E2M1 data, E8M0 scale, one scale per 32 elements. Decoded to BF16.
 //
-// This is the format Kimi K3 ships. config.json's quantization_config gives
+// This is the format the routed-MXFP4 checkpoints ship. config.json's quantization_config gives
 // num_bits 4, type float, group_size 32, scale_dtype uint8, symmetric - and the
 // ignore list is the part that matters as much as the numbers: attention
 // projections, latent MoE projections, shared experts, routers and lm_head are

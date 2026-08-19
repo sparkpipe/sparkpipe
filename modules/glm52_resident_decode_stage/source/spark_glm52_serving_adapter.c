@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_glm52_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
+#include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
 #ifndef GLM52_EXPERT_WEIGHT_CODEC
@@ -778,6 +779,8 @@ static SparkStatus SparkGlm52ServingInitialize(
 		state->node_context.tp_collective_control_port_base = state->tp_collective_control_port_base;
 		state->node_context.tp_collective_topology = state->tp_collective_topology;
 		state->node_context.tp_collective_backend_module_path = state->tp_collective_backend_path;
+		state->node_context.kv_backing_directory = configuration->kv_backing_directory;
+		state->node_context.kv_backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
 		status = SparkGlm52ServingLoadDriver(state,configuration);
 	}
 	if ( status != SPARK_STATUS_OK )
@@ -890,29 +893,12 @@ static SparkStatus SparkGlm52ServingAdmit(
 	SparkModelDriverAdmissionRequest request;
 	SparkModelDriverAdmissionDecision decision;
 	SparkStatus status;
-	memset(&request,0,sizeof(request));
-	request.descriptor_bytes = sizeof(request);
-	request.program_id = state->program->program_id;
-	request.request_id = submission->request_id;
-	request.sequence_id = submission->sequence_id;
-	request.sequence_position = submission->sequence_position;
-	request.deadline_time_ns = submission->deadline_time_ns;
-	request.active_slot_count = submission->active_sequence_count;
-	request.new_token_count = submission->row_count;
-	request.priority = submission->priority;
-	request.frame_flags = frame->flags;
-	request.residency = submission->residency;
-	SparkModelDriverInitializeAdmissionDecision(&decision);
-	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
+	status = SparkAdmissionRequestFromSubmission(
+		state->program->program_id,submission,0,0u,&request);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( SparkModelDriverAdmissionDecisionIsValid(&decision) == 0u )
-		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( decision.accepted == 0u )
-	{
-		return(decision.rejection_reason == SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY ? SPARK_STATUS_BUSY : SPARK_STATUS_CAPACITY_EXCEEDED);
-	}
-	return(SparkModelDriverApplyAdmissionDecision(&decision,frame));
+	return(SparkAdmissionEvaluateAndApply(
+		state->driver.interface,state->driver_instance,&request,frame,&decision));
 }
 
 static SparkStatus SparkGlm52ServingSubmit(

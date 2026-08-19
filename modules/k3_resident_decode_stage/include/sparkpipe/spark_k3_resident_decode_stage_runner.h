@@ -152,6 +152,19 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner);
  * probe hooks and tests that observe the stream per layer. */
 const void *SparkK3StageRunnerProbeBuffers(const SparkK3StageRunner *runner);
 
+/* Serial-TP half step (docs/serial_tp_replay.md): run ONE layer's attention
+ * half (phase 0) or MLP half (phase 1) with the FULL hidden and the FULL
+ * AttnRes partial replicated in, and the rank's partial copied out. The
+ * harness loops layers and halves, host-summing the rank partials between
+ * halves. rows is the single decode token (the replay is B1). */
+SparkStatus SparkK3StageRunnerStepHalf(
+    SparkK3StageRunner *runner,
+    uint32_t layer,                 /* absolute layer index in the pack slice */
+    uint32_t phase,                 /* 0 = attention half, 1 = MLP half */
+    const void *hidden_input_bf16,  /* full hidden, device (phase 0) */
+    const void *partial_input_bf16, /* full AttnRes partial, device (may be NULL) */
+    void *partial_output_bf16);     /* rank's partial, device, K3_HIDDEN */
+
 #ifdef __cplusplus
 }
 #endif

@@ -53,13 +53,13 @@
       "speculative_decoding_reason": "checkpoint MTP layer packed but speculation not yet qualified for Pro"
     },
     "source_model": {
-      "id": "deepseek-ai/DeepSeek-V4-Pro",
-      "revision": "official Hugging Face config observed 2026-07-31"
+      "id": "deepseek-ai/DeepSeek-V4-Pro-0813",
+      "revision": "GA release (HF, 2026-08-13)"
     }
   },
   "model": {
     "id": "deepseek.v4.pro.resident-decode-stage-firmware",
-    "revision": "h7168-l61-dsa-e384k6-hash3-v129280-ga0731-v1"
+    "revision": "h7168-l61-dsa-e384k6-hash3-v129280-ga0813-v1"
   },
   "schema_version": 1,
   "stages": [
@@ -84,7 +84,7 @@
                 "runtime_backend_selection": "forbidden",
                 "runtime_precision_selection": "forbidden"
               },
-              "module": "spark.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h7168.l61.e384.k6.ga0731.v1",
+              "module": "spark.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h7168.l61.e384.k6.ga0813.v1",
               "name": "dsv4_resident_decode_stage"
             }
           ],

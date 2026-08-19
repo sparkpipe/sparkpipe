@@ -583,11 +583,19 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ? 1u : 0u;
 	if ( stage_index != final_stage && (parallel == 0u || hybrid != 0u) )
 		return(has_tokens == 0u && completion->tokens_per_sequence == 0u ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
-	/* Speculative completions may commit up to max_speculative_token_count
-	 * extra tokens per sequence beyond the submission's count; the exact
-	 * yield rides accepted_token_count. */
+	/* Pure TP fanout: the TP-sharded adapters publish the token payload only
+	 * from the final stage (the other ranks carry status alone); a
+	 * status-only completion from a non-final rank is therefore legal. */
+	if ( stage_index != final_stage && has_tokens == 0u &&
+		completion->tokens_per_sequence == 0u )
+		return(SPARK_STATUS_OK);
+	/* Speculative completions: the submission carries the CHAIN width
+	 * (tokens_per_sequence), while the actual yield rides
+	 * accepted_token_count. Draft-chain verify emits 1..chain_width
+	 * tokens per sequence (partial acceptance), so the lower bound is 1;
+	 * the upper bound is the chain width plus the speculative allowance. */
 	if ( has_tokens != 0u &&
-		completion->tokens_per_sequence >= tokens_per_sequence &&
+		completion->tokens_per_sequence >= 1u &&
 		completion->tokens_per_sequence <= tokens_per_sequence + descriptor->max_speculative_token_count &&
 		active_sequence_count <= UINT32_MAX / completion->tokens_per_sequence &&
 		completion->token_count == active_sequence_count * completion->tokens_per_sequence )

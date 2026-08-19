@@ -121,20 +121,17 @@ int main(void)
 	dense_offsets[0] = 0u; dense_offsets[1] = ROWS;
 	b.dense_row_offset = dense_offsets; b.dense_tile_prefix = dense_tiles;
 
-	// THE INTERLEAVED EXPERT STREAM MUST BE REFUSED. Pack V2 interleaves the
-	// expert scales into the weight stream and the grouped GEMM cannot read
-	// that grid yet, so the layer fails closed on the flag rather than run
-	// scales-as-payload. The recorder path below binds no weights and leaves
-	// the flag clear, which is the only way through today.
-	b.expert_interleave = 1u;
-	printf("interleave_refused %d\n",
-		K3LayerLatentMoe<LmHostRecorderFormat>(&b, ROWS, ROUTES, 1u, 0)
-			== LM_LAUNCH_ERR_SHAPE ? 1 : 0);
+	// The interleaved expert stream is now supported (the kernels-wave landed),
+	// so the recorder path below binds no weights and leaves the flag clear -
+	// the non-interleaved recorder path is what the dataflow gate inspects.
 	b.expert_interleave = 0u;
 
-	// bisect the fault: report before each launch the layer makes
+	// bisect the fault: report before each launch the layer makes. The MoE is
+	// now two halves - the w1 gate|up partial, then the SiTU->w2->routed_up->
+	// shared rest - split by the gate|up all-reduce.
 	printf("start\n"); fflush(stdout);
-	K3LayerLatentMoe<LmHostRecorderFormat>(&b, ROWS, ROUTES, 1u, 0);
+	K3LayerLatentMoe<LmHostRecorderFormat>(&b, ROWS, ROUTES, 1u, 0, 0u);
+	K3LayerLatentMoe<LmHostRecorderFormat>(&b, ROWS, ROUTES, 1u, 0, 1u);
 	printf("survived\n"); fflush(stdout);
 
 	printf("gemms %u\n", (unsigned)lm_recorded_gemms.size());

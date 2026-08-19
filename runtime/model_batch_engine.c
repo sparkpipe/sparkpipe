@@ -44,6 +44,9 @@ typedef struct SparkModelBatchRequestState
 	SparkModelServingCacheIdentity cache_prefix_identity;
 	SparkModelServingCacheIdentity cache_published_identity;
 	SparkSha256Context cache_published_digest_context;
+	uint32_t model_extension_kind;
+	uint32_t first_draft_miss_count;
+	uint32_t first_draft_policy;
 	SparkModelBatchRequestHandle handle;
 } SparkModelBatchRequestState;
 
@@ -518,6 +521,9 @@ static void SparkModelBatchEmit(
 	event.request_id = request->request_id;
 	event.sequence_id = request->sequence_id;
 	event.request_handle = request->handle;
+	event.model_extension_kind = request->model_extension_kind;
+	event.first_draft_miss_count = request->first_draft_miss_count;
+	event.first_draft_policy = request->first_draft_policy;
 	engine->event_function(engine->event_context,&event);
 }
 
@@ -768,13 +774,27 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 {
 	uint32_t *request_slots;
 	uint32_t lane,step,token_index;
+	uint32_t extension_miss,extension_policy;
 	request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
+	extension_miss = 0u;
+	extension_policy = 0u;
+	if ( completion->model_extension_kind == 0x5136u && completion->model_extension_bytes >= 2u * sizeof(uint32_t) )
+	{
+		memcpy(&extension_miss, completion->model_extension, sizeof(extension_miss));
+		memcpy(&extension_policy, (const uint8_t *)completion->model_extension + sizeof(extension_miss), sizeof(extension_policy));
+	}
 	for (lane=0u; lane<submission->lane_count; lane++)
 	{
 		SparkModelBatchRequestState *request;
 		SparkStatus status;
 		request = &engine->requests[request_slots[lane]];
 		request->resident_bound = 1u;
+		if ( completion->model_extension_kind == 0x5136u )
+		{
+			request->model_extension_kind = completion->model_extension_kind;
+			request->first_draft_miss_count += extension_miss;
+			request->first_draft_policy = extension_policy;
+		}
 		for (step=0u; step<completion->tokens_per_sequence; step++)
 		{
 			status = SparkModelBatchPublishCompletedBlocks(engine,request,
@@ -993,12 +1013,13 @@ static SparkStatus SparkModelBatchConnectPipeline(
 	SparkModelBatchEngine *engine)
 {
 	SparkModelPipelineClientConfiguration pipeline_configuration;
+	const SparkModelResidentDeploymentNode *coordinator = SparkModelResidentDeploymentFindRank(configuration->deployment,configuration->deployment->coordinator_rank_index);
 	memset(&pipeline_configuration,0,sizeof(pipeline_configuration));
 	pipeline_configuration.abi_version = SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION;
 	pipeline_configuration.descriptor_bytes = SPARK_MODEL_PIPELINE_CLIENT_CONFIGURATION_BYTES;
 	pipeline_configuration.connect_timeout_ms = configuration->connect_timeout_ms;
 	pipeline_configuration.deployment = configuration->deployment;
-	pipeline_configuration.runtime_root = configuration->runtime_root;
+	pipeline_configuration.runtime_root = coordinator != 0 ? coordinator->runtime_root : configuration->runtime_root;
 	pipeline_configuration.submit_result_function = SparkModelBatchSubmitResult;
 	pipeline_configuration.submit_result_context = engine;
 	pipeline_configuration.completion_function = SparkModelBatchCompletion;
@@ -2014,6 +2035,18 @@ SparkStatus SparkModelBatchEngineProgress(
 		}
 		step++;
 		misses = 0u;
+	}
+	/* Flush the just-queued submission(s) immediately: the residentd receives
+	 * them in THIS Progress instead of the next loop iteration, removing a
+	 * one-iteration bubble from the single-stream critical path (the GPU idles
+	 * while the next decode's PREPARE sits queued in the client). The extra
+	 * read is a no-op on the non-blocking socket when nothing arrived. */
+	status = SparkModelPipelineClientProgress(engine->pipeline,engine->maximum_messages_per_rank);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkModelBatchSetFailed(engine,status);
+		SparkModelBatchFailIdleRequests(engine,status);
+		return(status);
 	}
 	return(SPARK_STATUS_OK);
 }

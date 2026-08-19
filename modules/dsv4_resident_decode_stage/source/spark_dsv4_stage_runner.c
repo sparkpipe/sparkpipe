@@ -1,6 +1,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_dsv4_resident_decode_stage_runner.h"
+#include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
 #include "sparkpipe/spark_row_layout.h"
@@ -367,50 +368,43 @@ static SparkStatus SparkDsv4StageRunnerAdmit(
     {
         return SPARK_STATUS_OK;
     }
-    memset(&request, 0, sizeof(request));
-    request.descriptor_bytes = sizeof(request);
-    request.program_id = runner->program->program_id;
-	request.submission_id = dispatch->submission_id;
-	request.control_generation = dispatch->control_generation;
-	request.transaction_id = dispatch->transaction_id;
-	request.request_generation = dispatch->request_generation;
-	request.step_generation = dispatch->step_generation;
-    request.request_id = dispatch->request_id;
-    request.sequence_id = dispatch->sequence_id;
-    request.sequence_position = dispatch->sequence_position;
-    request.deadline_time_ns = dispatch->deadline_time_ns;
-    request.active_slot_count = dispatch->active_sequence_count;
-    request.new_token_count = dispatch->new_token_count;
-    request.priority = dispatch->priority;
-    request.frame_flags = frame->flags;
-	request.cache_lane_count = dispatch->cache_lane_count;
-	request.cache_lanes = dispatch->cache_lanes;
-    request.residency = dispatch->residency;
-	SparkModelDriverInitializeAdmissionDecision(&decision);
-    status = runner->driver_interface->admit(
-        runner->driver_instance, &request, &decision);
+    status = SparkAdmissionRequestFromFrame(
+        runner->program->program_id, frame, 0, 0u, &request);
     if (status != SPARK_STATUS_OK)
     {
         runner->stats.last_status = (uint32_t)status;
         return status;
     }
-	if (SparkModelDriverAdmissionDecisionIsValid(&decision) == 0u)
-	{
-		runner->stats.last_status = SPARK_STATUS_ABI_MISMATCH;
-		return SPARK_STATUS_ABI_MISMATCH;
-	}
-	if ( dispatch->tokens_per_sequence > 1u && runner->pp_stage_count != 1u )
-		return(SPARK_STATUS_UNSUPPORTED);
-	runner->stats.last_admission_rejection = decision.rejection_reason;
-    if (decision.accepted == 0u)
+    /* The frame carries every dispatch field except the generation tuple,
+     * which has no frame slot; copy it from the dispatch. */
+    request.submission_id = dispatch->submission_id;
+    request.control_generation = dispatch->control_generation;
+    request.transaction_id = dispatch->transaction_id;
+    request.request_generation = dispatch->request_generation;
+    request.step_generation = dispatch->step_generation;
+
+    status = SparkAdmissionEvaluate(
+        runner->driver_interface, runner->driver_instance, &request, &decision);
+    if (status != SPARK_STATUS_OK &&
+        status != SPARK_STATUS_BUSY &&
+        status != SPARK_STATUS_UNSUPPORTED &&
+        status != SPARK_STATUS_CAPACITY_EXCEEDED)
+    {
+        runner->stats.last_status = (uint32_t)status;
+        return status;
+    }
+    if (dispatch->tokens_per_sequence > 1u && runner->pp_stage_count != 1u)
+    {
+        return SPARK_STATUS_UNSUPPORTED;
+    }
+    runner->stats.last_admission_rejection = decision.rejection_reason;
+    if (status != SPARK_STATUS_OK)
     {
         runner->stats.rejected_count += 1u;
-        return decision.rejection_reason ==
-            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY ?
-            SPARK_STATUS_BUSY : SPARK_STATUS_CAPACITY_EXCEEDED;
+        return status;
     }
     runner->stats.admitted_count += 1u;
-	return SparkModelDriverApplyAdmissionDecision(&decision, frame);
+    return SparkModelDriverApplyAdmissionDecision(&decision, frame);
 }
 
 SparkStatus SparkDsv4StageRunnerInitialize(

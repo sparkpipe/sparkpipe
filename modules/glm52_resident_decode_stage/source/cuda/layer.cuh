@@ -11,11 +11,30 @@
 #include "inference/kernels/weight_codec.cuh"
 #include "modules/glm52_resident_decode_stage/source/cuda/config.h"
 
-using Glm52Kv = LmKvLatent<
-    GLM52_KV_BITS,
-    GLM52_LATENT,
-    GLM52_ROPE_DIM,
-    GLM52_KV_PAGE_SLOTS>;
+// Block-major KV geometry: one logical block = GLM52_KV_PAGE_SLOTS tokens
+// across all GLM52_LAYERS layers, laid out contiguously (the common
+// SparkKvCacheArena block-major layout). kPageBytes is the block stride; the
+// per-layer pool base the driver passes already carries the layer offset, so
+// SlotInPage stays the within-block token index. This mirrors the shared
+// arena's default block stride (block_token_count x layer_count x kv_head_count
+// x head_dim x bytes_per_scalar) and is the TRANSPOSE of the old layer-major
+// pool: same bytes, different order.
+struct Glm52Kv
+{
+    static constexpr uint32_t kSlotBytes = GLM52_KV_SLOT_BYTES;
+    static constexpr uint32_t kPageSlots = GLM52_KV_PAGE_SLOTS;
+    static constexpr uint32_t kPageBytes =
+        GLM52_KV_SLOT_BYTES * GLM52_KV_PAGE_SLOTS * GLM52_LAYERS;
+    static constexpr bool kGrows = true;
+    static __host__ __device__ constexpr uint32_t PageOf(uint32_t position)
+    { return position / GLM52_KV_PAGE_SLOTS; }
+    static __host__ __device__ constexpr uint32_t SlotInPage(uint32_t position)
+    { return position % GLM52_KV_PAGE_SLOTS; }
+    static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens)
+    { return (tokens + GLM52_KV_PAGE_SLOTS - 1u) / GLM52_KV_PAGE_SLOTS; }
+    static __host__ __device__ constexpr uint64_t PoolBytes(uint64_t pages)
+    { return pages * (uint64_t)kPageBytes; }
+};
 using Glm52IndexKv = LmKvLatent<
     GLM52_KV_BITS,
     GLM52_DSA_INDEX_DIM,

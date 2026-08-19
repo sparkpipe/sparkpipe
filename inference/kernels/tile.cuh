@@ -4,7 +4,7 @@
 //
 // The old tree had this written four times with four different schedules: two
 // BF16 bodies selected by a policy macro, an FP8 body in a header excluded from
-// every build, and a fourth inside the glm52 decode stage. Each had its own
+// every build, and a fourth inside the GLM decode stage. Each had its own
 // prologue, its own phase arithmetic and its own idea of when a stage was free.
 // Three of the four never ran.
 //
@@ -168,7 +168,7 @@ static __device__ __forceinline__ void LmPipelineProduceWeight(
 		LmTmaLoad2d(stage_b,tensor_map_b,barrier,(int32_t)k_byte_b,(int32_t)neuron_base);
 }
 
-// INTERLEAVED WEIGHT STAGING - pack V2 mxfp4_ws_interleaved_v1 (K3).
+// INTERLEAVED WEIGHT STAGING - pack V2 mxfp4_ws_interleaved_v1.
 //
 // The B operand is a cell grid, not a [neuron, k] plane: per expert and per
 // 128-element pack k-tile, each 16-neuron cell occupies 17 rows of 64 bytes -

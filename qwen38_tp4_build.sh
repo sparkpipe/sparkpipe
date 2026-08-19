@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # qwen36 TP4 whole-stack build: module archive + TP4 GPU validation + driver
 set -euo pipefail
-ROOT=/home/sparkd/sparkpipe-qwen
-PACKS=/home/sparkd/sparkdata/qwen38.bf16.tp4/packs
-OUT=/home/sparkd/sparkdata/qwen38.bf16.tp4/build
+ROOT=/home/spark0/sparkpipe
+PACKS=/home/spark0/sparkdata/qwen38.bf16.tp4/packs
+OUT=/home/spark0/sparkdata/qwen38.bf16.tp4/build
 export NVCC=/usr/local/cuda/bin/nvcc
 cd "$ROOT"
 mkdir -p "$OUT"
@@ -24,7 +24,7 @@ make -C modules/qwen36_resident_decode_stage publish \
     STAGE_PACK_PATH="$PACKS/tp4-rank0.qwen36sp" \
     STAGE_COUNT=1 STAGE_INDEX=0 STAGE_FIRST_LAYER=0 STAGE_LAYER_COUNT=64 \
     TP_DEGREE=4 TP_RANK=0 TP_STANDALONE=1 \
-    MTP_LAYER_COUNT=0 GDN_SNAPSHOT_SLOT_COUNT=0 \
+    MTP_LAYER_COUNT=1 GDN_SNAPSHOT_SLOT_COUNT=8 \
     MAX_ACTIVE_SEQUENCES=8 KV_BLOCK_COUNT=8 ALLOW_UNQUALIFIED_EXECUTION=1
 echo "=== model driver ==="
 build/sparkpipe_model_compile \

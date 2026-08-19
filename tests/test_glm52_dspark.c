@@ -10,7 +10,7 @@ typedef struct SparkTestDsparkBackend
 {
     uint32_t call_count;
     uint32_t token_base;
-    uint32_t confidence_milli[SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+    uint32_t confidence_milli[SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
     uint64_t last_sequence_id;
     uint64_t last_tap_generation;
 } SparkTestDsparkBackend;
@@ -29,14 +29,14 @@ static SparkStatus SparkTestDsparkDraftBackend(
     assert(result != 0);
     assert(request->requested_token_count != 0u);
     assert(request->requested_token_count <=
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT);
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT);
 
     backend->call_count += 1u;
     backend->last_sequence_id = request->sequence_id;
     backend->last_tap_generation = request->tap_generation;
 
-    result->abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
-    result->descriptor_bytes = SPARK_GLM52_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES;
+    result->abi_version = SPARK_DSPARK_ABI_VERSION;
+    result->descriptor_bytes = SPARK_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES;
     result->token_count = request->requested_token_count;
     for (token_index = 0u;
          token_index < request->requested_token_count;
@@ -61,9 +61,9 @@ static void SparkTestDsparkInitializesSpeculator(
     memset(&configuration, 0, sizeof(configuration));
     assert(SparkGlm52DsparkBuildDefaultModelContract(
         &model_contract) == SPARK_STATUS_OK);
-    configuration.abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
+    configuration.abi_version = SPARK_DSPARK_ABI_VERSION;
     configuration.descriptor_bytes =
-        SPARK_GLM52_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES;
     configuration.sequence_state_count = SPARK_TEST_DSPARK_SEQUENCE_STATE_COUNT;
     configuration.default_speculative_token_count = 7u;
     configuration.minimum_confidence_milli = 350u;
@@ -93,7 +93,7 @@ static void SparkTestDsparkModelContractRejectsNonBf16VerifierTaps(void)
 static void SparkTestDsparkDefaultTapPlanMatchesGlm52Ring(void)
 {
     SparkGlm52DsparkHiddenTapPlan tap_plan;
-    static const uint32_t expected_layers[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT] =
+    static const uint32_t expected_layers[SPARK_DSPARK_AUX_LAYER_COUNT] =
         { 7u, 22u, 38u, 54u, 69u };
     uint32_t tap_index;
 
@@ -101,12 +101,12 @@ static void SparkTestDsparkDefaultTapPlanMatchesGlm52Ring(void)
         &tap_plan) == SPARK_STATUS_OK);
     assert(SparkGlm52DsparkValidateHiddenTapPlan(
         &tap_plan) == SPARK_STATUS_OK);
-    assert(tap_plan.aux_layer_count == SPARK_GLM52_DSPARK_AUX_LAYER_COUNT);
+    assert(tap_plan.aux_layer_count == SPARK_DSPARK_AUX_LAYER_COUNT);
     assert(tap_plan.pp_stage_count == 13u);
     assert(tap_plan.pp_stage_layer_count == 6u);
 
     for (tap_index = 0u;
-         tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+         tap_index < SPARK_DSPARK_AUX_LAYER_COUNT;
          ++tap_index)
     {
         const SparkGlm52DsparkTapStage *tap_stage;
@@ -156,9 +156,9 @@ static void SparkTestDsparkDraftLifecycleWithConfidenceTruncation(void)
     assert(tap_generation != 0u);
 
     memset(&draft_request, 0, sizeof(draft_request));
-    draft_request.abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
+    draft_request.abi_version = SPARK_DSPARK_ABI_VERSION;
     draft_request.descriptor_bytes =
-        SPARK_GLM52_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES;
+        SPARK_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES;
     draft_request.requested_token_count = 7u;
     draft_request.priority = 100u;
     draft_request.request_id = 100u;
@@ -180,10 +180,10 @@ static void SparkTestDsparkDraftLifecycleWithConfidenceTruncation(void)
     assert(draft_result.confidence_milli[1u] == 800u);
 
     memset(&verify_result, 0, sizeof(verify_result));
-    verify_result.abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
+    verify_result.abi_version = SPARK_DSPARK_ABI_VERSION;
     verify_result.descriptor_bytes =
-        SPARK_GLM52_DSPARK_VERIFY_RESULT_DESCRIPTOR_BYTES;
-    verify_result.flags = SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_REJECTED;
+        SPARK_DSPARK_VERIFY_RESULT_DESCRIPTOR_BYTES;
+    verify_result.flags = SPARK_DSPARK_VERIFY_RESULT_FLAG_REJECTED;
     verify_result.proposed_token_count = 2u;
     verify_result.accepted_draft_token_count = 1u;
     verify_result.committed_token_count = 2u;
@@ -205,43 +205,43 @@ static void SparkTestDsparkDraftLifecycleWithConfidenceTruncation(void)
 static void SparkTestDsparkResolvesVerifierTokens(void)
 {
     SparkGlm52DsparkVerifyResult verify_result;
-    const uint32_t draft_tokens[SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT] = {
+    const uint32_t draft_tokens[SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT] = {
         100u, 101u, 102u, 103u, 104u, 105u, 106u
     };
-    const uint32_t rejected_verifier_tokens[SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT] = {
+    const uint32_t rejected_verifier_tokens[SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT] = {
         100u, 101u, 777u, 778u, 779u, 780u, 781u
     };
     const uint32_t accepted_with_bonus_tokens[
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u] = {
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u] = {
         100u, 101u, 102u, 103u, 104u, 105u, 106u, 107u
     };
 
     assert(SparkGlm52DsparkResolveVerifierTokens(
         draft_tokens,
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT,
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT,
         rejected_verifier_tokens,
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT,
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT,
         &verify_result) == SPARK_STATUS_OK);
     assert((verify_result.flags &
-        SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_REJECTED) != 0u);
+        SPARK_DSPARK_VERIFY_RESULT_FLAG_REJECTED) != 0u);
     assert(verify_result.proposed_token_count ==
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT);
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT);
     assert(verify_result.accepted_draft_token_count == 2u);
     assert(verify_result.committed_token_count == 3u);
     assert(verify_result.fallback_token_id == 777u);
 
     assert(SparkGlm52DsparkResolveVerifierTokens(
         draft_tokens,
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT,
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT,
         accepted_with_bonus_tokens,
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u,
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u,
         &verify_result) == SPARK_STATUS_OK);
     assert((verify_result.flags &
-        SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_ACCEPTED_ALL) != 0u);
+        SPARK_DSPARK_VERIFY_RESULT_FLAG_ACCEPTED_ALL) != 0u);
     assert(verify_result.accepted_draft_token_count ==
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT);
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT);
     assert(verify_result.committed_token_count ==
-        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u);
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u);
     assert(verify_result.fallback_token_id == 107u);
 }
 
