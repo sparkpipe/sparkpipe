@@ -37,8 +37,11 @@ static __global__ void SparkQwen36DsparkTapStoreKernel(
 	__nv_bfloat16 *taps_bf16, uint32_t rows, uint32_t tap_index,
 	uint32_t hidden_dim, uint32_t tap_layers)
 {
+	/* grid.y tiles the hidden dimension: 256 threads cover only the first
+	 * 256 of 5120 channels - without the tile the taps were 95% unwritten
+	 * memory and every draft downstream was noise. */
 	const uint32_t row = blockIdx.x;
-	const uint32_t c = threadIdx.x;
+	const uint32_t c = (blockIdx.y * blockDim.x) + threadIdx.x;
 	const uint64_t pos = row_positions[row];
 	if ( c >= hidden_dim )
 		return;

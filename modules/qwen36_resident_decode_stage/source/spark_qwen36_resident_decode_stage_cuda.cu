@@ -2231,7 +2231,8 @@ extern "C" cudaError_t SparkQwen36LaunchAccumU64Max(cudaStream_t stream, uint64_
 
 extern "C" cudaError_t SparkQwen36LaunchDsparkTapStore(cudaStream_t stream, const void *hidden_bf16, const uint64_t *row_positions, void *taps_bf16, uint32_t rows, uint32_t tap_index, uint32_t hidden_dim, uint32_t tap_layers)
 {
-	SparkQwen36DsparkTapStoreKernel<<<rows, 256u, 0u, stream>>>((const __nv_bfloat16 *)hidden_bf16, row_positions, (__nv_bfloat16 *)taps_bf16, rows, tap_index, hidden_dim, tap_layers);
+	dim3 grid(rows, (hidden_dim + 255u) / 256u);
+	SparkQwen36DsparkTapStoreKernel<<<grid, 256u, 0u, stream>>>((const __nv_bfloat16 *)hidden_bf16, row_positions, (__nv_bfloat16 *)taps_bf16, rows, tap_index, hidden_dim, tap_layers);
 	return(cudaGetLastError());
 }
 
