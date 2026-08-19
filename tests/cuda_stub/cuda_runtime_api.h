@@ -32,6 +32,7 @@ typedef enum cudaStreamCaptureMode
 #define cudaErrorInvalidValue 1
 #define cudaErrorMemoryAllocation 2
 #define cudaErrorNotReady 34
+#define cudaErrorUnknown 999
 #define cudaDevAttrMultiProcessorCount 16
 #define cudaStreamDefault 0u
 #define cudaStreamNonBlocking 1u
