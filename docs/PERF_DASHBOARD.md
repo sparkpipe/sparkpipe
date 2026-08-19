@@ -40,8 +40,8 @@ reached - COMPSEC-17 scores get their own column then).
 
 ## Active climbs (references being matched)
 
-- 27B: DSpark port LANDED on unified (49aa3b3, rebased by coordinator, +727/-27, ceiling 168349); greedy baseline 5.078 tok/s @ 10.5% (retracted 4.596/5.3% artifact); PREMISE INVERTED: drafter is FP8-trained (OUR target), authors' bar L=3.39/76% first-pos under PROBABILISTIC sampling -> at L=3.39 spec ~12.8 beats 8.02; sampling experiment = the deciding lever (greedy verdict premature).
+- 27B: DSpark port LANDED (49aa3b3 + qwen36 gate coverage e08d80b); greedy baseline 5.078 @ 10.5%; sampling lever ANALYZED: at greedy target probabilistic==argmax (no-op) or worse -> authors' 3.39 bar is sampled-target-only; HELD pending DFlash2 spec (vLLM PR 52816 + SGLang 35371, research in flight).
 - Flash: keep-old CSA landed (23 exact); staging FULLY EXONERATED (frame-149 = anchor 290@150 + 7 distinct drafts sequential - mixed-staging falsified; pad = first-decode only, all-identical per-row); BUG = layer-0 wq_a FP8 pair batch-coupled activation scale (ch 256+ at 128-tile boundary); FIX DRAFT EXISTS in fork clone (multi-row -> per-row-exact routing) - build + r1_wq_a==delta_ge_raw verification pending; then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-19 02:20 UTC (27B DSpark port LANDED (49aa3b3), CI in flight; sampling experiment = deciding lever; Flash: spark4 verification of 47c24f2 still pending; no HWM change since 8.03)
+Last update: 2026-08-19 02:35 UTC (27B: sampling lever held - sampled-target-only; DFlash2 research in flight; CI now compiles the qwen36 port (first sm_121a verification); Flash: spark4 verification of 47c24f2 still pending; no HWM change since 8.03)
