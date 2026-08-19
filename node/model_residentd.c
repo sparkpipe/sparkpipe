@@ -1039,7 +1039,23 @@ static void SparkModelResidentdCompletion(
 	{
 		status = SparkModelServingAdapterValidateCompletionResidency(runtime->adapter_library.adapter_interface.descriptor,&route->submission.residency,completion);
 		if ( status != SPARK_STATUS_OK )
+		{
+			/* Name the two sides of the byte comparison. The model adapters
+			 * print the ECHOED token from their own completion path; without
+			 * the EXPECTED hex a future mismatch cannot be attributed to the
+			 * route's copy (wire / deserialize seam) vs the adapter's echo
+			 * (slot-lifecycle seam) - two fixes in different files.
+			 * Diagnostic only. */
+			const unsigned char *expected_bytes = (const unsigned char *)&route->submission.residency;
+			const unsigned char *echo_bytes = (const unsigned char *)&completion->residency;
+			fprintf(stderr, "model_residentd residency_mismatch submission=%llu expected=%02x%02x%02x%02x%02x%02x%02x%02x echo=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+				(unsigned long long)route->submission_id,
+				expected_bytes[0],expected_bytes[1],expected_bytes[2],expected_bytes[3],
+				expected_bytes[4],expected_bytes[5],expected_bytes[6],expected_bytes[7],
+				echo_bytes[0],echo_bytes[1],echo_bytes[2],echo_bytes[3],
+				echo_bytes[4],echo_bytes[5],echo_bytes[6],echo_bytes[7]);
 			failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_RESIDENCY;
+		}
 	}
 	if ( status == SPARK_STATUS_OK && (route->request_id != completion->request_id || route->sequence_id != completion->sequence_id || route->sequence_position != completion->sequence_position || route->submission.control_generation != completion->control_generation || route->submission.transaction_id != completion->transaction_id || route->submission.dispatch_generation != completion->dispatch_generation || route->submission.request_generation != completion->request_generation || route->submission.step_generation != completion->step_generation) )
 	{

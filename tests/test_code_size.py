@@ -572,7 +572,14 @@ from pathlib import Path
 # now ISSUES the verdict instead of describing it (STATE RESTORE/ROLLBACK vs
 # COMMIT/ACCOUNTING, or 'neither branch fires yet' - it refuses to guess).
 # 172364 is the exact count.
-CEILING = 172364
+# +16: residency-mismatch attribution diag in the shared residentd. When the
+# completion's residency token byte-differs from the route's submission
+# residency, the failure branch now prints both sides as hex (expected vs
+# echo) - the one line that separates a route-side wire/deserialize seam
+# from an adapter-side slot-lifecycle seam, two fixes in different files.
+# Diagnostic only.
+# 172380 is the exact count.
+CEILING = 172380
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
