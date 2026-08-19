@@ -2217,6 +2217,9 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			error = cudaMemcpyAsync(slot->dspark_logits_host,logits,(size_t)B * V * sizeof(uint16_t),cudaMemcpyDeviceToHost,stream);
 		if ( error == cudaSuccess )
 			error = cudaMemcpyAsync(slot->dspark_hidden_host,norm,(size_t)B * H * sizeof(uint16_t),cudaMemcpyDeviceToHost,stream);
+		/* Anchor = the frame's emission: the decode's output (iteration 1)
+		 * or the replay's output (replay-tail draft, iterations 2+). Both are
+		 * the first candidate token AFTER the tap position. */
 		if ( error == cudaSuccess )
 			error = cudaMemcpyAsync(&prev,slot->output_token_ids,sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 		if ( error == cudaSuccess )
@@ -2325,7 +2328,8 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 static SparkStatus SparkQwen36ModuleCaptureDsparkTap(
 	SparkQwen36ModuleState *state,
 	SparkQwen36ModuleSlot *slot,
-	uint32_t layer)
+	uint32_t layer,
+	uint64_t row)
 {
 	uint32_t tap_index;
 	(void)state;
@@ -2342,7 +2346,7 @@ static SparkStatus SparkQwen36ModuleCaptureDsparkTap(
 		SPARK_QWEN36_MODULE_TAG,
 		cudaMemcpyAsync(
 			(uint8_t *)slot->dspark_tap_buffer + (uint64_t)tap_index * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,
-			slot->hidden_bf16,
+			(uint8_t *)slot->hidden_bf16 + row * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,
 			SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES,
 			cudaMemcpyDeviceToDevice,
 			(cudaStream_t)slot->cuda_stream),
@@ -2363,8 +2367,12 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
 	{
 		status = SparkQwen36ModuleRunLayer(state,slot,context->kv_block_table,prefill,layer,rows);
-		if ( status == SPARK_STATUS_OK && prefill == 0 && ((context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u || state->tap_capture_enabled != 0u) )
-			status = SparkQwen36ModuleCaptureDsparkTap(state,slot,layer);
+		/* Capture on every DSPARK-flagged frame - decode AND verify: the
+		 * verify frame's row 0 is the anchor token walked by the same prefill
+		 * kernels that verify it, so taps from there match the committed
+		 * trajectory bit-for-bit (decode-kernel taps drift from it). */
+		if ( status == SPARK_STATUS_OK && ((context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u || (prefill == 0 && state->tap_capture_enabled != 0u)) )
+			status = SparkQwen36ModuleCaptureDsparkTap(state,slot,layer,prefill != 0 ? (uint64_t)(rows - 1u) : 0u);
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);

@@ -444,7 +444,13 @@ from pathlib import Path
 # +38: env-gated tap-capture/dump diagnostics (Nth-capture dump for
 # spec-vs-no-spec tap parity at matched positions).
 # 169004 is the exact count.
-CEILING = 169004
+# +47: verify-tail re-draft - the drafter consumes the verify frame's row-0
+# (anchor) hiddens so taps match the prefill-written committed trajectory
+# (decode-frame taps drift 5-16% over prefill state; acceptance collapsed).
+# 169051 is the exact count.
+# +3: the draft hangs off the replay tail (taps = last committed row),
+# not the verify tail (row 0 = the anchor itself - off-by-one vs training).
+CEILING = 169054
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
