@@ -14,7 +14,7 @@ reached - COMPSEC-17 scores get their own column then).
 | Model | B1 no-spec | B1 spec | B8 | B16 | other B* |
 | --- | --- | --- | --- | --- | --- |
 | DSV4 Flash (TP4) | **40.46** [exact 3/3] | **8.48** (k=7, hash WRONG - not valid) | - | - | - |
-| Qwen 3.8 27B (TP1) | **8.03** mixed/FP8 29.9GB pack (repro 8.028 of the 8.00 HWM; true-BF16 54.6GB pack = 4.45 - CORRECTED from stale 3.10) [validated] | 7.16 (MTP D=2) + DSpark k=7 progression 4.596 -> 5.068 (acceptance 5.3% -> 10.5% after C0-anchor + draft-remap fixes) - still loses; tap-freshness re-wire is the next lever (~25%+ acceptance needed) | - | - | - |
+| Qwen 3.8 27B (TP1) | **8.03** mixed/FP8 29.9GB pack (repro 8.028 of the 8.00 HWM; true-BF16 54.6GB pack = 4.45 - CORRECTED from stale 3.10) [validated] | 7.16 (MTP D=2); DSpark k=7 5.068 @ L=0.735 (10.5%) - authors' bar: L=3.39 / 76% first-pos on the SAME FP8 target -> port gap 1.7x, at L=3.39 spec = ~12.8 BEATS 8.02; lever = probabilistic sampling (authors' config) | - | - | - |
 | K3 | **none measured** (never run on fleet hardware) | - | - | - | - |
 | GLM52 | **6.91** | - (draft weights untrained) | 2-3 | 2-3 | - |
 | Qwen3.8-Max | 1.29 per-request | - | 0.61 | - | ~39 agg @B256 (TP4xPP4 replicated) |
@@ -44,4 +44,4 @@ reached - COMPSEC-17 scores get their own column then).
 - Flash: keep-old CSA landed (23 exact); staging FULLY EXONERATED (frame-149 = anchor 290@150 + 7 distinct drafts sequential - mixed-staging falsified; pad = first-decode only, all-identical per-row); BUG = layer-0 wq_a FP8 pair batch-coupled activation scale (ch 256+ at 128-tile boundary); FIX DRAFT EXISTS in fork clone (multi-row -> per-row-exact routing) - build + r1_wq_a==delta_ge_raw verification pending; then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-19 01:33 UTC (CI green; Flash: kernel fix LANDED on unified (47c24f2) - spark4 verification pending; 27B: DSpark 5.068 tok/s @ 10.5% acceptance, tap re-wire next (bar ~25%+); no HWM change since 8.03)
+Last update: 2026-08-19 01:50 UTC (CI green; Flash: kernel fix landed, spark4 verification pending; 27B: premise inverted - drafter IS FP8-trained, authors' L=3.39 is the bar, probabilistic sampling next, port patch needs rebase onto unified; no HWM change since 8.03)
