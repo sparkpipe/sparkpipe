@@ -671,7 +671,12 @@ from pathlib import Path
 # dumps name whether the restore content or the replay walk is wrong in one
 # roleplay run.
 # 172684 is the exact count.
-CEILING = 172684
+# +16: the restore/replaypost dumps now also capture the conv tail - the
+# restore's tail copy was never verified (the state restore proved perfect
+# while the replay walk still diverges; the tail is the remaining half of
+# the recurrence).
+# 172700 is the exact count.
+CEILING = 172700
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
