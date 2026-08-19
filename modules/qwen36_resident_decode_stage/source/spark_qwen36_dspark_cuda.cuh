@@ -22,7 +22,7 @@
 #define SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM 128u
 #define SPARK_QWEN36_DSPARK_ATTN_KV_HEADS 8u
 #define SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM 64u
-#define SPARK_QWEN36_DSPARK_BLOCK_SIZE 7u
+/* BLOCK_SIZE comes from spark_qwen36_dspark_format.h (8 for DFlash2). */
 
 static __device__ __forceinline__ float SparkQwen36DsparkRopeFrequency(uint32_t pair)
 {
