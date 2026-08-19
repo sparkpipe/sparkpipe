@@ -1459,6 +1459,15 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		 * simply not credited this round; tokens stay exact). */
 		if ( pending->spec_chain_dead != 0u )
 			min_accepted = 0u;
+		/* The shared serving ABI caps tokens_per_sequence at
+		 * SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE (8); a fully-accepted
+		 * block-8 chain would commit 10 (C0 + 7 drafts + correction +
+		 * replay emission). Clamp acceptance so the completion fits the cap;
+		 * the two surplus verified drafts are discarded and re-drafted next
+		 * iteration. Removing the clamp needs the shared ABI bump, reviewed
+		 * cross-session. */
+		if ( min_accepted + 3u > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE )
+			min_accepted = SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u;
 		pending->spec_tokens_per_sequence = pending->spec_chain_dead != 0u ? 1u : min_accepted + 3u;
 		pending->spec_total_accepted = pending->spec_chain_dead != 0u ? 0u : min_accepted * submission->active_sequence_count;
 	}
