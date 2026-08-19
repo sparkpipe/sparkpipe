@@ -619,7 +619,14 @@ from pathlib import Path
 # roleplay/coding prompts reproduce (state diverges at position 235, all
 # five tap layers, 44% of the final hidden).
 # 172501 is the exact count.
-CEILING = 172501
+# +22: snapshot-slot dump alongside the decode-entry GDN dump. The snapshot
+# slot holds the last verify frame's pre-walk state, so dumping it at the
+# next decode says whether the corruption predates the verify snapshot
+# (drafter-forward residue) or the restore failed to apply (snapshot content
+# clean) - the last discriminator for the position-235 whole-state
+# divergence.
+# 172523 is the exact count.
+CEILING = 172523
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -2408,6 +2408,28 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		}
 		free(state_host);
 		free(tail_host);
+		/* The snapshot slot still holds the LAST verify frame's pre-walk state
+		 * (the restore reads it without clearing). Dumping it here says whether
+		 * the corruption predates the verify snapshot (drafter-forward residue)
+		 * or the restore failed to apply (snapshot content is clean). */
+		if ( state->gdn_snapshot_slot_count != 0u )
+		{
+			float *shot_host = (float *)malloc((size_t)state_bytes);
+			uint16_t *shot_tail = (uint16_t *)malloc((size_t)tail_bytes);
+			if ( shot_host != 0 && shot_tail != 0 &&
+			     cudaMemcpy(shot_host,state->snapshot_state_f32,(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
+			     cudaMemcpy(shot_tail,state->snapshot_tail_bf16,(size_t)tail_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+			{
+				snprintf(path,sizeof(path),"%s/decode_%llu_snapshot.f32",state->decode_state_dump_dir,(unsigned long long)position);
+				dump = fopen(path,"wb");
+				if ( dump != 0 ) { fwrite(shot_host,1u,(size_t)state_bytes,dump); fclose(dump); }
+				snprintf(path,sizeof(path),"%s/decode_%llu_snapshottail.bf16",state->decode_state_dump_dir,(unsigned long long)position);
+				dump = fopen(path,"wb");
+				if ( dump != 0 ) { fwrite(shot_tail,1u,(size_t)tail_bytes,dump); fclose(dump); }
+			}
+			free(shot_host);
+			free(shot_tail);
+		}
 	}
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
 	{
