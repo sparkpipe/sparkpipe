@@ -201,6 +201,7 @@ typedef struct SparkQwen36ModuleState
 	SparkQwen36DsparkWeights dspark_weights;
 	void *tp_stream;
 	const char *decode_state_dump_dir;
+	uint32_t state_fingerprint;
 	atomic_ullong submitted_count;
 	atomic_ullong completed_count;
 	atomic_ullong rejected_count;
@@ -2438,6 +2439,76 @@ static SparkStatus SparkQwen36ModuleCaptureDsparkTap(
 		"dspark_tap"));
 }
 
+/*
+ * STATE FINGERPRINT - the 4 KB answer to a 150 MB question.
+ *
+ * A spec lane's recurrent state can be wrong for a hundred positions before the
+ * head's argmax finally flips: the roleplay window's taps differ from the no-spec
+ * lane at 74-87% of their BF16 words from position 235 on, while the committed
+ * stream stays golden until 307. Diffing that with full state dumps costs 150 MB
+ * per position, so the divergence hunt could only sample a few positions.
+ *
+ * A strided SAMPLE is enough to detect a divergence of that scale, and it is two
+ * cudaMemcpy2D calls plus an FNV-1a hash: one line per frame, comparable between a
+ * spec run and a no-spec run by position. The first position whose fingerprints
+ * differ is where the lane's state parted, with no dump directory at all.
+ *
+ * Gated on SPARK_QWEN36_STATE_FINGERPRINT so production pays nothing.
+ */
+#define SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES 1024u
+
+static uint64_t SparkQwen36ModuleFingerprintHash(const void *bytes, size_t count)
+{
+	const uint8_t *cursor = (const uint8_t *)bytes;
+	uint64_t hash = 0xcbf29ce484222325ull;
+	size_t index;
+	for (index = 0u; index < count; index++)
+	{
+		hash ^= (uint64_t)cursor[index];
+		hash *= 0x100000001b3ull;
+	}
+	return(hash);
+}
+
+static void SparkQwen36ModuleStateFingerprint(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, uint32_t lane, uint64_t position, const char *kind)
+{
+	float state_sample[SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES];
+	uint16_t tail_sample[SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES];
+	uint64_t state_elements,tail_elements,state_stride,tail_stride;
+	uint64_t state_hash = 0ull,tail_hash = 0ull;
+	if ( state->state_fingerprint == 0u || state->gdn_pool.state_f32 == 0 )
+		return;
+	state_elements = state->gdn_pool.state_lane_stride_elements;
+	tail_elements = state->gdn_pool.conv_tail_lane_stride_elements;
+	if ( state_elements == 0u )
+		return;
+	/* Stride the whole lane so the sample covers every layer, not just the head of
+	 * the pool: a divergence confined to late layers must still show up. */
+	state_stride = state_elements / SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES;
+	if ( state_stride == 0u )
+		state_stride = 1u;
+	if ( cudaMemcpy2D(state_sample,sizeof(float),
+		state->gdn_pool.state_f32 + ((uint64_t)lane * state_elements),
+		(size_t)(state_stride * sizeof(float)),sizeof(float),
+		(size_t)SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES,cudaMemcpyDeviceToHost) == cudaSuccess )
+		state_hash = SparkQwen36ModuleFingerprintHash(state_sample,sizeof(state_sample));
+	if ( tail_elements != 0u && state->gdn_pool.conv_tail_bf16 != 0 )
+	{
+		tail_stride = tail_elements / SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES;
+		if ( tail_stride == 0u )
+			tail_stride = 1u;
+		if ( cudaMemcpy2D(tail_sample,sizeof(uint16_t),
+			(const uint8_t *)state->gdn_pool.conv_tail_bf16 + ((uint64_t)lane * tail_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES),
+			(size_t)(tail_stride * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES),sizeof(uint16_t),
+			(size_t)SPARK_QWEN36_STATE_FINGERPRINT_SAMPLES,cudaMemcpyDeviceToHost) == cudaSuccess )
+			tail_hash = SparkQwen36ModuleFingerprintHash(tail_sample,sizeof(tail_sample));
+	}
+	fprintf(stderr,"%s state_fp lane=%u position=%llu kind=%s state=%016llx tail=%016llx\n",
+		SPARK_QWEN36_MODULE_TAG,lane,(unsigned long long)position,kind,
+		(unsigned long long)state_hash,(unsigned long long)tail_hash);
+	(void)slot;
+}
+
 static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, SparkQwen36ResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, const SparkQwen36PrefillFrameView *prefill, uint32_t rows)
 {
 	uint64_t frame_start = state->profile_enabled != 0u ? SparkQwen36ProfileNow() : 0ull;
@@ -2645,6 +2716,20 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
+	/* Fingerprint the lane's recurrent state as this frame leaves it, naming the
+	 * frame kind so a spec log and a no-spec log line up by position: the first
+	 * position whose state hash differs is where the lane parted, which is the
+	 * question the 150 MB per-position dumps were being used to answer. */
+	if ( status == SPARK_STATUS_OK && state->state_fingerprint != 0u )
+	{
+		const char *kind = (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u ? "replay"
+			: ((context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u ? "verify"
+			: (prefill != 0 ? "prefill" : "decode"));
+		uint64_t position = prefill != 0 ? prefill->base_position : context->decode_batch->row_positions[0];
+		uint32_t lane = prefill != 0 ? prefill->lane_index : 0u;
+		cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+		SparkQwen36ModuleStateFingerprint(state,slot,lane,position,kind);
+	}
 	if ( state->profile_enabled != 0u )
 		SparkQwen36ProfilePrint(state, SparkQwen36ProfileNow() - frame_start);
 	return(status);
@@ -3132,6 +3217,9 @@ SparkStatus SparkQwen36ResidentDecodeStageInitialize(
         const char *dspark_path = getenv("SPARK_QWEN36_DSPARK_PACK_PATH");
         const char *spec_method = getenv("SPARK_QWEN36_SERVING_SPEC_METHOD");
         state->decode_state_dump_dir = getenv("SPARK_QWEN36_DECODE_STATE_DUMP_DIR");
+	/* One line per frame instead of a 150 MB dump per position; see
+	 * SparkQwen36ModuleStateFingerprint. */
+	state->state_fingerprint = getenv("SPARK_QWEN36_STATE_FINGERPRINT") != 0 ? 1u : 0u;
         /* One line, at initialize, naming what the PROCESS environment actually
          * carries. A daemon started through a wrapper that strips the caller's
          * environment sees neither variable, and then the drafter is silently

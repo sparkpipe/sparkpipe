@@ -722,7 +722,16 @@ from pathlib import Path
 # and the adapter checks it against the verify row by row (the one committed
 # token that was previously checked against nothing).
 # 174216 is the exact count.
-CEILING = 174216
+# +272: the per-frame state fingerprint (kernel lane). With
+# SPARK_QWEN36_STATE_FINGERPRINT=1 every frame prints a strided 1024-element
+# FNV-1a hash of the lane's GDN state and conv tail (kind=decode/verify/
+# replay/prefill, position) - 4 KB per frame instead of 150 MB per position.
+# The first non-golden token was proven a DECODE frame's C0 (the round did
+# nothing wrong; the lane state was already wrong), so the fingerprint diff
+# by position between a spec and a no-spec run names whether a verify/replay
+# frame corrupts, the restore is incomplete, or the state is exonerated.
+# 174488 is the exact count.
+CEILING = 174488
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

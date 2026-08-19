@@ -57,6 +57,14 @@ cudaError_t cudaMemcpy(
     const void *source,
     size_t bytes,
     cudaMemcpyKind kind);
+cudaError_t cudaMemcpy2D(
+    void *destination,
+    size_t destination_pitch,
+    const void *source,
+    size_t source_pitch,
+    size_t width,
+    size_t height,
+    cudaMemcpyKind kind);
 cudaError_t cudaMemcpyAsync(
     void *destination,
     const void *source,
