@@ -25,6 +25,29 @@ DFlash2's selector favors larger k, but B1 verify cost caps the win.
 Report the full sweep table; the HWM cell is the best (k, tok/s) that
 beats the no-spec baseline on the SAME prompt set.
 
+### Bench contract: mint fresh request/sequence ids per run (do NOT reuse the bench json)
+
+Two repeat-request "status=1" incidents (window2, plus the 27B lane's
+earlier repro) traced to the TEST HARNESS, not the server. The residentd
+enforces submission-id monotonicity and lane continuity:
+
+  * reusing a request_id/sequence_id already served -> INVALID_ARGUMENT at
+    submit (submission_id <= last_submission_id);
+  * reusing a sequence_id the module still holds, with base_position=0 ->
+    continuity_reject (a continuing sequence must continue from its held
+    position, never reset to 0).
+
+Both produce a phantom status=1 with zero tokens on an otherwise healthy
+binary. This is a HARD requirement for every bench run and the whole
+k-sweep:
+
+  * mint a FRESH request_id AND sequence_id per request (or continue the
+    held sequence id from its current position);
+  * never run the same bench json twice against the same residentd boot.
+
+A request that fails the continuity gate tells you nothing about the
+config; discard it and re-run with fresh ids before recording any number.
+
 ## Prompt set (upstream-comparable, not O128-only)
 
 Acceptance on the 128-token devcycle prompt (our DSpark L=0.735) is NOT
