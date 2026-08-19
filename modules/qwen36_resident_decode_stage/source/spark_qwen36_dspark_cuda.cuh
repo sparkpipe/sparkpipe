@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_qwen36_model.h"
+#include "spark_qwen36_dspark_format.h"
 
 #define SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM 128u
 #define SPARK_QWEN36_DSPARK_ATTN_KV_HEADS 8u

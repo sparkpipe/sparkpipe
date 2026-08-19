@@ -419,7 +419,10 @@ from pathlib import Path
 # 168587 is the exact count.
 # +1 for the DRAFTER-path env override line in the DFlash2 reference.
 # 168588 is the exact count.
-CEILING = 168588
+# +1: the dspark .cuh includes the format header (W6 constants were
+# undefined in the CI gate compile - the qwen36 gate coverage caught it).
+# 168589 is the exact count.
+CEILING = 168589
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
