@@ -40,8 +40,8 @@ reached - COMPSEC-17 scores get their own column then).
 
 ## Active climbs (references being matched)
 
-- 27B: DSpark port LANDED (49aa3b3 + qwen36 gate coverage e08d80b); greedy baseline 5.078 @ 10.5%; sampling lever ANALYZED: at greedy target probabilistic==argmax (no-op) or worse -> authors' 3.39 bar is sampled-target-only; HELD pending DFlash2 spec (vLLM PR 52816 + SGLang 35371, research in flight).
+- 27B: DSpark port LANDED (49aa3b3 + gate coverage); greedy 5.078 @ 10.5%; sampling lever empirically CLOSED (probabilistic worse vs greedy target). DFLASH2 ADOPTION GO (spec landed c5053e7): Qwen3.8-27B drafter exists (z-lab, 3.85GB BF16, 5 layers, block 8, taps [5,19,33,47,61]); acceptance 4.80 vs DSpark 3.62 (+32.6%), vs no-spec 3.11-3.43x @ conc1; conv+selector bolt-ons, Markov slots = codebooks VERBATIM; gates: LM-head-BF16 check (step zero) + upstream sm120 OOB warning; W1-W8 ~8-11 days.
 - Flash: keep-old CSA landed (23 exact); staging FULLY EXONERATED (frame-149 = anchor 290@150 + 7 distinct drafts sequential - mixed-staging falsified; pad = first-decode only, all-identical per-row); BUG = layer-0 wq_a FP8 pair batch-coupled activation scale (ch 256+ at 128-tile boundary); FIX DRAFT EXISTS in fork clone (multi-row -> per-row-exact routing) - build + r1_wq_a==delta_ge_raw verification pending; then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-19 02:35 UTC (27B: sampling lever held - sampled-target-only; DFlash2 research in flight; CI now compiles the qwen36 port (first sm_121a verification); Flash: spark4 verification of 47c24f2 still pending; no HWM change since 8.03)
+Last update: 2026-08-19 02:50 UTC (27B: DFlash2 adoption GO - spec landed, FP8-head check is step zero, W1-W8 sequence issued; Flash: spark4 verification of 47c24f2 still pending; CI green incl. qwen36 gate; no HWM change since 8.03)
