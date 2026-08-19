@@ -146,3 +146,75 @@ beats the retained baseline (the TECHDEBT acceptance rule).
   the mandate.
 - The exact `Qwen/Qwen3.8-27B` HF checkpoint id+revision (from whoever holds
   the source) so B's pin closes at re-pack time.
+
+---
+
+## D. DSpark drafter parity — RESOLVED (kernel correct, numpy reference had a rope bug)
+
+Standing bar: our 7 draft tokens == vLLM's 7 given the same taps. Status: MET.
+
+The harness (`tools/qwen36_dspark_parity.cu`, links the real `.cu` kernels)
+produced `[220,16,92,198,12,328,82]`; the numpy oracle
+(`tools/qwen36_dspark_reference.py`) produced `[220,17,11,748,874,4799,13]`.
+A multi-turn hunt (embedding gather, rope position, Q/K RMSNorm row indexing,
+attention accumulation) read clean — all four were correct in the kernel.
+A per-layer/per-position intermediate dump localized the first divergence to
+the layer-0 ATTENTION output, and an independent numpy reimplementation of the
+KERNEL's arithmetic matched the CUDA output to ~1 ULP. That proved the kernel
+was right and the ORACLE was wrong.
+
+**Deviant line** — `tools/qwen36_dspark_reference.py` `apply_rope()` had an
+in-place numpy view aliasing bug:
+
+    xr = out[..., 0:ROPE_DIM:2]          # a VIEW, not a copy
+    xi = out[..., 1:ROPE_DIM:2]
+    out[..., 0:ROPE_DIM:2] = xr * c - xi * s   # overwrites even slots
+    out[..., 1:ROPE_DIM:2] = xr * s + xi * c   # xr now reads ROTATED even values
+
+The odd channels were computed from already-rotated even values. The CUDA
+kernel is correct (reads re/im into registers before overwriting). 90-degree
+probe: view-bug → [-2,-2,-4,-4]; correct → [-2,1,-4,3]. Fixed by `.copy()` on
+`xr`/`xi`; the fixed reference now emits `[220,16,92,198,12,328,82]` == kernel.
+
+Residual (not a bug): the kernel keeps fp32 after the q/k head-norm where the
+reference truncates to BF16, so layer-0 attention still differs by ~1 ULP —
+below the argmax. Position 1 is a genuine tie (tokens 17 and 16 both 19.625
+base+markov), broken to 16 by argmax-first-max; not a margin flip.
+
+vLLM oracle: not needed to settle this (optional structural confirmation still
+on the table; blocked on the `Got unsupported ScalarType BFloat16` config leak).
+Do NOT re-attempt HF `trust_remote_code` — post-fla/flashinfer install the
+drafter's `dspark.py` import deadlocks (0% CPU, `Ss` state).
+
+---
+
+## E. DSpark-on-FP8 spec verdict — CANNOT PAY at B1 (final)
+
+Measured on the FP8 target (29.9 GB, B1, O128, k=7) after three landed fixes:
+C0 anchor (block[0]/Markov-prev consume the committed token, not the frame input),
+draft remap (DSpark positions C0+i+1 folded into the MTP verify convention), and
+the GDN-snapshot submit fix. No-spec HWM is 8.02 tok/s.
+
+| config | tok/s | accepted/k | first-position |
+|---|---|---|---|
+| no-spec (FP8) | 8.02 | — | — |
+| spec, C0-fix + remap (correct wiring) | 5.08 | 0.735 (10.5%) | 44% |
+| spec, tap re-wire (capture on VERIFY row 0) | 4.58 | 0.342 (4.9%) | 21% |
+
+VERDICT: **DSpark-on-the-FP8-target cannot pay at B1, same as MTP D=2.** The C0
+anchor + draft remap were real fixes (5.3% -> 10.5% acceptance, 4.596 -> 5.078
+tok/s), but the tap re-wire — capturing the target's hidden on the
+SPECULATIVE_VERIFY frame's row 0 (the committed token) instead of the DRAFT frame's
+input row — makes acceptance WORSE (10.5% -> 4.9%): the one-iteration-late tap is
+further from the DSpark's trained input than the DRAFT-frame capture of the last
+committed token's hidden. The ~10.5% accepted/k is the drafter's real quality on
+real inputs, well short of the ~25%+ needed to beat 8.02 at k=7.
+
+Provenance correction: the drafter (`RadixArk/Qwen3.8-27B-DSpark`) is trained
+against Qwen3.8-27B-**FP8**, which IS our target — the earlier GPTQ-Int4 premise is
+inverted, so there is no Int4 pack to obtain (Int4 is the perturbed-taps repack at
+2.45-2.79 acceptance length, FP8 is the 3.39 canonical). The remaining lever is the
+sampling method: the authors' 3.39 acceptance length is under PROBABILISTIC
+sampling, while this port runs greedy argmax (their own data: greedy is slower).
+The port stays env-gated (`SPEC_METHOD=dspark`, optional pack) as the platform for
+that acceptance work.

@@ -3,6 +3,7 @@
 
 #include "sparkpipe/spark_qwen36_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_lm_kernels.cuh"
+#include "spark_qwen36_dspark_cuda.cuh"
 
 /*
  * Qwen 3.6 27B device code. Two production hot paths share these kernels: a
@@ -1289,7 +1290,9 @@ extern "C" cudaError_t SparkQwen36ConfigureCudaKernels(void)
     /* The scalar Linear path stages the input row in dynamic shared memory,
      * input_dimension floats deep; the FFN down projection reads the
      * 17408-wide intermediate, which is past the 48KB static ceiling and
-     * must be opted in like the GDN kernels above. */
+     * must be opted in like the GDN kernels above. The DSpark projector fc
+     * consumes 5 taps x hidden (25600), wider still, so opt in to the max
+     * of both. */
     return cudaFuncSetAttribute(
         (const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_CTA_WARPS>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -1843,6 +1846,14 @@ extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQ
 		(view->input_dimension % SPARK_QWEN36_SMALL_BATCH_K_CHUNK) == 0u &&
 		(view->output_dimension % SPARK_QWEN36_SMALL_BATCH_TILE_N) == 0u )
 		return(SparkQwen36LaunchSmallBatchLinear(stream,view->weight_payload,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
+	/* Wide-input B1 (DSpark projector fc 25600) exceeds scalar shared-memory budget on
+	 * GB10 (101376 opt-in cap); the lean B1 kernel tiles K and needs no dynamic shared. */
+	if ( (gate == 0 || strcmp(gate,"0") != 0) &&
+		view->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
+		row_count == 1u && view->input_dimension > 24576u &&
+		(view->input_dimension % SPARK_QWEN36_SMALL_BATCH_K_CHUNK) == 0u &&
+		(view->output_dimension % SPARK_QWEN36_SMALL_BATCH_TILE_N) == 0u )
+		return(SparkQwen36LaunchSmallBatchLinear(stream,view->weight_payload,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 }
 
@@ -2204,5 +2215,20 @@ extern "C" cudaError_t SparkQwen36LaunchAccumAddTp4(cudaStream_t stream, void *d
 extern "C" cudaError_t SparkQwen36LaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count)
 {
 	SparkQwen36AccumU64MaxKernel<<<(element_count + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,SPARK_LM_CTA_THREADS,0,stream>>>(destination,source,element_count);
+	return(cudaGetLastError());
+}
+
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, void *attn_out_bf16, uint32_t block_size, uint64_t base_position)
+{
+	dim3 grid(block_size, 8u);
+	SparkQwen36DsparkAttnKernel<<<grid, 5u, 0u, stream>>>((const __nv_bfloat16 *)q_bf16, (const __nv_bfloat16 *)k_bf16, (const __nv_bfloat16 *)v_bf16, (const __nv_bfloat16 *)q_norm_bf16, (const __nv_bfloat16 *)k_norm_bf16, (__nv_bfloat16 *)attn_out_bf16, block_size, base_position);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkMarkov(cudaStream_t stream, const void *markov_w1_bf16, const void *markov_w2_bf16, const uint32_t *prev_token_ids, uint32_t draft_count, uint32_t rank, void *bias_out, uint32_t vocab)
+{
+	dim3 grid(draft_count, (vocab + 255u) / 256u);
+	SparkQwen36DsparkMarkovKernel<<<grid, 256u, 0u, stream>>>((const __nv_bfloat16 *)markov_w1_bf16, (const __nv_bfloat16 *)markov_w2_bf16, prev_token_ids, draft_count, rank, (float *)bias_out, vocab);
 	return(cudaGetLastError());
 }

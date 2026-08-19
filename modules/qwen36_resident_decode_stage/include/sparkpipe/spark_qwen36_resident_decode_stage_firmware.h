@@ -417,6 +417,7 @@ typedef struct SparkQwen36GdnSnapshotView
 
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION 1u
 
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE 7u
 /*
  * DSpark draft view. The resident module taps the target's post-layer hidden
  * at target layers {4,16,28,40,52} during the decode, then runs the DFlash
