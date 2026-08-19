@@ -692,7 +692,12 @@ from pathlib import Path
 # sequentially with a sync between rows and grid.y = 1 - a k-row frame
 # bit-matches k sequential single-row frames.
 # 173335 is the exact count.
-CEILING = 173335
+# +8: the conv-update row serialization - the same recurrence-race class as
+# the GDN step (the conv tail's read-modify-write raced across a multi-row
+# frame's parallel row blocks). Each channel block now walks the rows
+# sequentially with a sync between rows and grid.y = 1.
+# 173343 is the exact count.
+CEILING = 173343
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
