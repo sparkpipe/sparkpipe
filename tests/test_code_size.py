@@ -579,7 +579,16 @@ from pathlib import Path
 # from an adapter-side slot-lifecycle seam, two fixes in different files.
 # Diagnostic only.
 # 172380 is the exact count.
-CEILING = 172380
+# +32: per-step selector-lattice dumps (kernel lane). The live trace found
+# 7/37 steps where the module's drafts diverge from the oracle over the SAME
+# taps (capture proven clean) - walk flips at step 2-3 = accumulated BF16
+# truncation differences in the DFlash2 forward, costing ~19% of steps in
+# pure acceptance loss. Each step now dumps the top-16 unary logits, the
+# context gate and the K x K edge lattice; the oracle recomputes all three
+# from the taps, so the diff names the stage (W4 head vs W3 gate vs W3
+# edges vs the forward's final hidden).
+# 172412 is the exact count.
+CEILING = 172412
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

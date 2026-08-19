@@ -2300,6 +2300,38 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 						snprintf(path,sizeof(path),"/tmp/dspark_drafts.bin");
 					dump = fopen(path,"wb");
 					if ( dump != 0 ) { fwrite(view->draft_token_ids,1u,(size_t)(B - 1u) * sizeof(uint32_t),dump); fclose(dump); }
+					/* Per-step selector lattice, to localize the 7/37 module-vs-oracle
+					 * draft divergences to the head (unary), the context gate, or the
+					 * edge lattice. 448 + 3584 + 7168 bytes per step. The oracle's
+					 * reference_step recomputes all three from the taps, so a diff
+					 * between these files and the oracle names the diverging stage. */
+					if ( per_step != 0u )
+					{
+						const uint64_t unary_bytes = (uint64_t)(B - 1u) * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K * sizeof(float);
+						const uint64_t gate_bytes = (uint64_t)(B - 1u) * SPARK_QWEN36_DSPARK_SELECTOR_RANK * sizeof(uint16_t);
+						const uint64_t edge_bytes = (uint64_t)(B - 1u) * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K * sizeof(float);
+						void *unary_host = malloc((size_t)unary_bytes);
+						void *gate_host = malloc((size_t)gate_bytes);
+						void *edge_host = malloc((size_t)edge_bytes);
+						if ( unary_host != 0 && gate_host != 0 && edge_host != 0 &&
+						     cudaMemcpy(unary_host,slot->dspark_selector.candidate_scores,(size_t)unary_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
+						     cudaMemcpy(gate_host,slot->dspark_selector.context_gate_bf16,(size_t)gate_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
+						     cudaMemcpy(edge_host,slot->dspark_selector.edges_f32,(size_t)edge_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+						{
+							snprintf(path,sizeof(path),"%s/step_%llu_unary.f32",dump_directory,(unsigned long long)base_position);
+							dump = fopen(path,"wb");
+							if ( dump != 0 ) { fwrite(unary_host,1u,(size_t)unary_bytes,dump); fclose(dump); }
+							snprintf(path,sizeof(path),"%s/step_%llu_gate.bf16",dump_directory,(unsigned long long)base_position);
+							dump = fopen(path,"wb");
+							if ( dump != 0 ) { fwrite(gate_host,1u,(size_t)gate_bytes,dump); fclose(dump); }
+							snprintf(path,sizeof(path),"%s/step_%llu_edges.f32",dump_directory,(unsigned long long)base_position);
+							dump = fopen(path,"wb");
+							if ( dump != 0 ) { fwrite(edge_host,1u,(size_t)edge_bytes,dump); fclose(dump); }
+						}
+						free(unary_host);
+						free(gate_host);
+						free(edge_host);
+					}
 					fprintf(stderr,"%s dspark_dump position=%llu anchor=%u mode=%s\n",SPARK_QWEN36_MODULE_TAG,
 						(unsigned long long)base_position,anchor,per_step != 0u ? "per-step" : "first-frame");
 				}
