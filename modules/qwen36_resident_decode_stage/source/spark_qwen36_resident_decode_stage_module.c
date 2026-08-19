@@ -2382,6 +2382,33 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,1u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleBeginHidden(state,slot,context,rows);
+	/* GDN entry state for the decode frame: the recurrence (state_f32) and the
+	 * conv tail as they are BEFORE the walk, so the spec-vs-no-spec diff at a
+	 * position separates a recurrence residue from a KV/attention residue. */
+	if ( prefill == 0 && state->decode_state_dump_dir != 0 )
+	{
+		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
+		const uint64_t tail_bytes = state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
+		float *state_host = (float *)malloc((size_t)state_bytes);
+		uint16_t *tail_host = (uint16_t *)malloc((size_t)tail_bytes);
+		char path[512];
+		FILE *dump;
+		uint64_t position = context->decode_batch->row_positions[0];
+		uint32_t lane = context->decode_batch->row_lane_indices[0];
+		if ( state_host != 0 && tail_host != 0 &&
+		     cudaMemcpy(state_host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
+		     cudaMemcpy(tail_host,(uint8_t *)state->gdn_pool.conv_tail_bf16 + ((uint64_t)lane * tail_bytes),(size_t)tail_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+		{
+			snprintf(path,sizeof(path),"%s/decode_%llu_gdnstate.f32",state->decode_state_dump_dir,(unsigned long long)position);
+			dump = fopen(path,"wb");
+			if ( dump != 0 ) { fwrite(state_host,1u,(size_t)state_bytes,dump); fclose(dump); }
+			snprintf(path,sizeof(path),"%s/decode_%llu_gdntail.bf16",state->decode_state_dump_dir,(unsigned long long)position);
+			dump = fopen(path,"wb");
+			if ( dump != 0 ) { fwrite(tail_host,1u,(size_t)tail_bytes,dump); fclose(dump); }
+		}
+		free(state_host);
+		free(tail_host);
+	}
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
 	{
 		status = SparkQwen36ModuleRunLayer(state,slot,context->kv_block_table,prefill,layer,rows);

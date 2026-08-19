@@ -611,7 +611,15 @@ from pathlib import Path
 # state divergence the roleplay/coding prompts reproduce (failing round is
 # always acc=0 with C0 itself non-golden).
 # 172474 is the exact count.
-CEILING = 172474
+# +27: GDN entry-state dump for the decode frames (same
+# SPARK_QWEN36_DECODE_STATE_DUMP_DIR gate). The recurrence (state_f32) and
+# the conv tail are dumped BEFORE the walk, so the spec-vs-no-spec diff at
+# the first diverging position separates a recurrence residue from a
+# KV/attention residue - the decisive datum for the silent divergence the
+# roleplay/coding prompts reproduce (state diverges at position 235, all
+# five tap layers, 44% of the final hidden).
+# 172501 is the exact count.
+CEILING = 172501
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
