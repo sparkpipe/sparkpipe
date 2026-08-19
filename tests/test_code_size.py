@@ -641,7 +641,14 @@ from pathlib import Path
 # overlap between the ledger-allocated device regions - the pointers are
 # now printed once per boot so the overlap names itself.
 # 172547 is the exact count.
-CEILING = 172547
+# +41: pre/post-forward GDN dumps (corruption-phase bisect). The MTP D=2
+# control is LOSSLESS on the diverging prompt, so the corruption is
+# drafter-forward-specific, yet the pointer inventory shows no overlap. The
+# lane's GDN state is now dumped immediately BEFORE and AFTER the block
+# forward, isolating the corrupting phase (block forward vs the decode walk
+# itself).
+# 172588 is the exact count.
+CEILING = 172588
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

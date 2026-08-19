@@ -2662,7 +2662,48 @@ SparkStatus SparkQwen36ResidentDecodeStageExecute(
         state->dspark_weights.armed,(const void *)context->dspark_draft,rows,(int)status);
     if (status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u)
     {
+        {
+            /* Corruption-phase bisect: dump the lane's GDN state immediately
+             * BEFORE and AFTER the drafter block forward, so a diff isolates the
+             * corrupting phase (block forward vs the decode walk itself). */
+            if ( state->decode_state_dump_dir != 0 )
+            {
+                const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
+                const uint64_t tail_bytes = state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
+                const uint64_t position = context->decode_batch->row_positions[0];
+                const uint32_t lane = context->decode_batch->row_lane_indices[0];
+                float *host = (float *)malloc((size_t)state_bytes);
+                char path[512];
+                FILE *dump;
+                if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+                {
+                    snprintf(path,sizeof(path),"%s/decode_%llu_preforward.f32",state->decode_state_dump_dir,(unsigned long long)position);
+                    dump = fopen(path,"wb");
+                    if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
+                }
+                free(host);
+                (void)tail_bytes;
+            }
+        }
         status = SparkQwen36ModuleRunDsparkBlockForward(state,slot,context->dspark_draft,rows);
+        {
+            if ( state->decode_state_dump_dir != 0 && status == SPARK_STATUS_OK )
+            {
+                const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
+                const uint64_t position = context->decode_batch->row_positions[0];
+                const uint32_t lane = context->decode_batch->row_lane_indices[0];
+                float *host = (float *)malloc((size_t)state_bytes);
+                char path[512];
+                FILE *dump;
+                if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+                {
+                    snprintf(path,sizeof(path),"%s/decode_%llu_postforward.f32",state->decode_state_dump_dir,(unsigned long long)position);
+                    dump = fopen(path,"wb");
+                    if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
+                }
+                free(host);
+            }
+        }
         SparkQwen36ModuleDsparkDiag("block_forward returned status=%d\n",(int)status);
     }
     if (status == SPARK_STATUS_OK)
