@@ -47,6 +47,7 @@ extern "C" cudaError_t SparkQwen36LaunchGdnStep(cudaStream_t stream, const void 
 extern "C" cudaError_t SparkQwen36LaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const SparkQwen36GdnLayerWeights *weights, void *output_bf16, uint32_t row_count, float epsilon);
 extern "C" cudaError_t SparkQwen36LaunchAttnPrepare(cudaStream_t stream, void *q_fused_bf16, const void *k_bf16, const void *v_bf16, const SparkQwen36AttnLayerWeights *weights, void *kv_cache_bf16, const uint32_t *slot_mapping, const uint64_t *row_positions, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, float epsilon);
 extern "C" cudaError_t SparkQwen36LaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen36KvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride);
+extern "C" cudaError_t SparkQwen36LaunchChunkConv(cudaStream_t stream, const void *qkv_bf16, const SparkQwen36GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen36GdnStatePool *pool, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal);
 extern "C" cudaError_t SparkQwen36LaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, const SparkQwen36GdnStatePool *pool, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal);
 
 static uint32_t SparkQwen36ValRandomState;
@@ -1222,6 +1223,214 @@ static int SparkQwen36ValCheckModule(void)
 	return(0);
 }
 
+/*
+ * SPEC-PATH EQUIVALENCE - the invariant the speculative loop rests on, and the
+ * one nothing tested.
+ *
+ * A speculative round rebuilds the recurrence with a DIFFERENT kernel pair than
+ * the one that built it: the verify and the replay walk their rows through the
+ * CHUNK path (ChunkConv + GdnChunk), while a plain decode walks one row through
+ * the STEP path (ConvUpdate + GdnStep). Each path is checked against its own
+ * oracle with a tolerance, so a systematic difference BETWEEN them passes both
+ * checks and then accumulates once per round: the drafter's context degrades
+ * (roleplay's accepted count decays 1.78 -> 0.44 across a window's clean
+ * prefix), and the target's own argmax eventually flips at a thin margin,
+ * committing a non-golden C0 while every round's accounting stays consistent.
+ *
+ * This case walks the SAME tokens both ways on two lanes and demands the
+ * resulting state and conv tail be BIT-IDENTICAL. A failure here is that bug,
+ * found without the serving box; a pass rules the kernels out and points at the
+ * frame plumbing instead.
+ */
+static int SparkQwen36ValCheckSpecPathEquivalence(SparkQwen36ValDevice *device)
+{
+	const uint32_t tokens = 8u;                 /* one DFlash2 block */
+	const uint64_t conv_elements = (uint64_t)tokens * SPARK_QWEN36_CONV;
+	const uint64_t state_elements = device->pool.state_lane_stride_elements;
+	const uint64_t tail_elements = device->pool.conv_tail_lane_stride_elements;
+	uint16_t *qkv_packed = (uint16_t *)calloc(conv_elements,sizeof(uint16_t));
+	float *qkv_exact = (float *)calloc(conv_elements,sizeof(float));
+	float *log_decay = (float *)calloc((uint64_t)tokens * SPARK_QWEN36_HEADS,sizeof(float));
+	float *beta = (float *)calloc((uint64_t)tokens * SPARK_QWEN36_HEADS,sizeof(float));
+	float *state_chunk = (float *)calloc(state_elements,sizeof(float));
+	float *state_step = (float *)calloc(state_elements,sizeof(float));
+	uint16_t *tail_chunk = (uint16_t *)calloc(tail_elements,sizeof(uint16_t));
+	uint16_t *tail_step = (uint16_t *)calloc(tail_elements,sizeof(uint16_t));
+	uint32_t warm[2] = {0u,0u};
+	uint32_t step_lane[2] = {1u,1u};
+	uint64_t index,state_bad = 0u,tail_bad = 0u,first_bad = state_elements;
+	double worst = 0.0;
+	uint32_t token;
+	cudaError_t error;
+	if (qkv_packed == 0 || qkv_exact == 0 || log_decay == 0 || beta == 0 || state_chunk == 0 ||
+		state_step == 0 || tail_chunk == 0 || tail_step == 0)
+		return(SparkQwen36ValFail("spec_path_equivalence","host_alloc"));
+	SparkQwen36ValRandomState = 991u;
+	SparkQwen36ValFillBf16(qkv_packed,qkv_exact,conv_elements,1.0f);
+	for (index = 0u; index < (uint64_t)tokens * SPARK_QWEN36_HEADS; index++)
+	{
+		log_decay[index] = SparkQwen36ValUniform(0.25f) - 0.25f;
+		beta[index] = 0.25f + fabsf(SparkQwen36ValUniform(0.5f));
+	}
+	/* Both lanes start from the same zeroed state and tail, and both are WARM so
+	 * neither path takes a cold-start shortcut the other does not. */
+	error = cudaMemset(device->state,0,2u * state_elements * sizeof(float));
+	if (error == cudaSuccess) error = cudaMemset(device->conv_tail,0,2u * tail_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMemcpy(device->cold,warm,sizeof(warm),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(device->qkv,qkv_packed,conv_elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(device->log_decay,log_decay,(uint64_t)tokens * SPARK_QWEN36_HEADS * sizeof(float),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(device->beta,beta,(uint64_t)tokens * SPARK_QWEN36_HEADS * sizeof(float),cudaMemcpyHostToDevice);
+	/* PATH A - the verify/replay walk: every token in one chunk call, lane 0. */
+	if (error == cudaSuccess)
+		error = SparkQwen36LaunchChunkConv(cudaStreamPerThread,device->qkv,&device->gdn_weights,device->conv_out,&device->pool,0u,tokens,0u);
+	if (error == cudaSuccess)
+		error = SparkQwen36LaunchGdnChunk(cudaStreamPerThread,device->conv_out,device->log_decay,device->beta,
+			device->chunk_qn,device->chunk_kn,device->chunk_cum_g,device->chunk_decay,device->chunk_attn,
+			device->chunk_w,device->chunk_kg,&device->pool,device->core_out,0u,tokens,0u);
+	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
+	/* PATH B - the plain decode walk: one token per launch, one row, lane 1. */
+	if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,step_lane,sizeof(step_lane),cudaMemcpyHostToDevice);
+	for (token = 0u; token < tokens && error == cudaSuccess; token++)
+	{
+		error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv + ((uint64_t)token * SPARK_QWEN36_CONV),
+			&device->gdn_weights,device->conv_out + ((uint64_t)token * SPARK_QWEN36_CONV),&device->pool,
+			device->lane_indices,1u,0u);
+		if (error == cudaSuccess)
+			error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out + ((uint64_t)token * SPARK_QWEN36_CONV),
+				device->log_decay + ((uint64_t)token * SPARK_QWEN36_HEADS),device->beta + ((uint64_t)token * SPARK_QWEN36_HEADS),
+				&device->pool,device->core_out + ((uint64_t)token * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION),
+				device->lane_indices,1u,0u);
+		if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
+	}
+	if (error == cudaSuccess) error = cudaMemcpy(state_chunk,device->state,state_elements * sizeof(float),cudaMemcpyDeviceToHost);
+	if (error == cudaSuccess) error = cudaMemcpy(state_step,device->state + state_elements,state_elements * sizeof(float),cudaMemcpyDeviceToHost);
+	if (error == cudaSuccess) error = cudaMemcpy(tail_chunk,device->conv_tail,tail_elements * sizeof(uint16_t),cudaMemcpyDeviceToHost);
+	if (error == cudaSuccess) error = cudaMemcpy(tail_step,device->conv_tail + tail_elements,tail_elements * sizeof(uint16_t),cudaMemcpyDeviceToHost);
+	if (SparkQwen36ValCuda(error,"spec_path_equivalence") != 0)
+		return(1);
+	for (index = 0u; index < state_elements; index++)
+		if (state_chunk[index] != state_step[index])
+		{
+			double difference = fabs((double)state_chunk[index] - (double)state_step[index]);
+			state_bad++;
+			if (difference > worst)
+				worst = difference;
+			if (first_bad == state_elements)
+				first_bad = index;
+		}
+	for (index = 0u; index < tail_elements; index++)
+		if (tail_chunk[index] != tail_step[index])
+			tail_bad++;
+	printf("qwen36_validation check=spec_path_equivalence tokens=%u state_elements=%llu "
+		"state_mismatch=%llu tail_mismatch=%llu worst_abs=%.9g first_bad=%llu\n",
+		tokens,(unsigned long long)state_elements,(unsigned long long)state_bad,
+		(unsigned long long)tail_bad,worst,
+		(unsigned long long)(first_bad == state_elements ? 0u : first_bad));
+	/* The two paths are EXPECTED to differ at fp32 rounding scale - that is the
+	 * finding, and the module must therefore never substitute one for the other
+	 * across a lane's lifetime (the replay now walks the step path). A GROSS
+	 * difference would be a logic error in one of the kernels, so that is what
+	 * this gate fails on; the measured magnitude is printed either way. */
+	if (worst > 1e-4)
+		return(SparkQwen36ValFail("spec_path_equivalence","chunk and step disagree beyond fp32 rounding - one path is wrong"));
+	if (state_bad == 0u && tail_bad == 0u)
+		printf("qwen36_validation note=spec_path_equivalence paths are bit-identical on this build\n");
+	return(0);
+}
+
+/*
+ * STEP ROW-BATCH EQUIVALENCE - the property the replay fix rests on.
+ *
+ * The replay walks its rows through the step path in ONE k-row launch with every
+ * row on the SAME lane. That is only a faithful stand-in for the k separate
+ * decode frames it replaces if a k-row launch is bit-identical to k sequential
+ * one-row launches - the property the GDN/conv row serialization landed for.
+ * Nothing tested it for the same-lane shape, which is the shape a replay uses
+ * (production decodes put one row per lane), so a regression there would silently
+ * reopen the divergence this fix closed.
+ */
+static int SparkQwen36ValCheckStepRowBatch(SparkQwen36ValDevice *device)
+{
+	/* Two rows is the whole property: the validator stages two lanes, so the
+	 * cold/lane arrays hold two entries, and a 2-row same-lane launch already
+	 * differs from two sequential launches if the serialization is broken. */
+	const uint32_t tokens = 2u;
+	const uint64_t conv_elements = (uint64_t)tokens * SPARK_QWEN36_CONV;
+	const uint64_t state_elements = device->pool.state_lane_stride_elements;
+	const uint64_t tail_elements = device->pool.conv_tail_lane_stride_elements;
+	uint16_t *qkv_packed = (uint16_t *)calloc(conv_elements,sizeof(uint16_t));
+	float *qkv_exact = (float *)calloc(conv_elements,sizeof(float));
+	float *log_decay = (float *)calloc((uint64_t)tokens * SPARK_QWEN36_HEADS,sizeof(float));
+	float *beta = (float *)calloc((uint64_t)tokens * SPARK_QWEN36_HEADS,sizeof(float));
+	float *state_batch = (float *)calloc(state_elements,sizeof(float));
+	float *state_serial = (float *)calloc(state_elements,sizeof(float));
+	uint16_t *tail_batch = (uint16_t *)calloc(tail_elements,sizeof(uint16_t));
+	uint16_t *tail_serial = (uint16_t *)calloc(tail_elements,sizeof(uint16_t));
+	uint32_t *lanes = (uint32_t *)calloc(tokens,sizeof(uint32_t));
+	uint32_t *warm = (uint32_t *)calloc(tokens,sizeof(uint32_t));
+	uint64_t index,state_bad = 0u,tail_bad = 0u;
+	double worst = 0.0;
+	uint32_t token,one_lane[1] = {1u};
+	cudaError_t error;
+	if (qkv_packed == 0 || qkv_exact == 0 || log_decay == 0 || beta == 0 || state_batch == 0 ||
+		state_serial == 0 || tail_batch == 0 || tail_serial == 0 || lanes == 0 || warm == 0)
+		return(SparkQwen36ValFail("step_row_batch","host_alloc"));
+	SparkQwen36ValRandomState = 1777u;
+	SparkQwen36ValFillBf16(qkv_packed,qkv_exact,conv_elements,1.0f);
+	for (index = 0u; index < (uint64_t)tokens * SPARK_QWEN36_HEADS; index++)
+	{
+		log_decay[index] = SparkQwen36ValUniform(0.25f) - 0.25f;
+		beta[index] = 0.25f + fabsf(SparkQwen36ValUniform(0.5f));
+	}
+	error = cudaMemset(device->state,0,2u * state_elements * sizeof(float));
+	if (error == cudaSuccess) error = cudaMemset(device->conv_tail,0,2u * tail_elements * sizeof(uint16_t));
+	if (error == cudaSuccess) error = cudaMemcpy(device->qkv,qkv_packed,conv_elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(device->log_decay,log_decay,(uint64_t)tokens * SPARK_QWEN36_HEADS * sizeof(float),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(device->beta,beta,(uint64_t)tokens * SPARK_QWEN36_HEADS * sizeof(float),cudaMemcpyHostToDevice);
+	/* BATCHED: k rows, one launch, every row on lane 0 - the replay's shape. */
+	if (error == cudaSuccess) error = cudaMemcpy(device->cold,warm,tokens * sizeof(uint32_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,lanes,tokens * sizeof(uint32_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess)
+		error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv,&device->gdn_weights,device->conv_out,&device->pool,device->lane_indices,tokens,0u);
+	if (error == cudaSuccess)
+		error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out,device->log_decay,device->beta,&device->pool,device->core_out,device->lane_indices,tokens,0u);
+	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
+	/* SERIAL: one row per launch on lane 1, same tokens in the same order. */
+	if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,one_lane,sizeof(one_lane),cudaMemcpyHostToDevice);
+	for (token = 0u; token < tokens && error == cudaSuccess; token++)
+	{
+		error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv + ((uint64_t)token * SPARK_QWEN36_CONV),
+			&device->gdn_weights,device->conv_out + ((uint64_t)token * SPARK_QWEN36_CONV),&device->pool,device->lane_indices,1u,0u);
+		if (error == cudaSuccess)
+			error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out + ((uint64_t)token * SPARK_QWEN36_CONV),
+				device->log_decay + ((uint64_t)token * SPARK_QWEN36_HEADS),device->beta + ((uint64_t)token * SPARK_QWEN36_HEADS),
+				&device->pool,device->core_out + ((uint64_t)token * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION),device->lane_indices,1u,0u);
+		if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
+	}
+	if (error == cudaSuccess) error = cudaMemcpy(state_batch,device->state,state_elements * sizeof(float),cudaMemcpyDeviceToHost);
+	if (error == cudaSuccess) error = cudaMemcpy(state_serial,device->state + state_elements,state_elements * sizeof(float),cudaMemcpyDeviceToHost);
+	if (error == cudaSuccess) error = cudaMemcpy(tail_batch,device->conv_tail,tail_elements * sizeof(uint16_t),cudaMemcpyDeviceToHost);
+	if (error == cudaSuccess) error = cudaMemcpy(tail_serial,device->conv_tail + tail_elements,tail_elements * sizeof(uint16_t),cudaMemcpyDeviceToHost);
+	if (SparkQwen36ValCuda(error,"step_row_batch") != 0)
+		return(1);
+	for (index = 0u; index < state_elements; index++)
+		if (state_batch[index] != state_serial[index])
+		{
+			double difference = fabs((double)state_batch[index] - (double)state_serial[index]);
+			state_bad++;
+			if (difference > worst)
+				worst = difference;
+		}
+	for (index = 0u; index < tail_elements; index++)
+		if (tail_batch[index] != tail_serial[index])
+			tail_bad++;
+	printf("qwen36_validation check=step_row_batch tokens=%u state_mismatch=%llu tail_mismatch=%llu worst_abs=%.9g\n",
+		tokens,(unsigned long long)state_bad,(unsigned long long)tail_bad,worst);
+	if (state_bad != 0u || tail_bad != 0u)
+		return(SparkQwen36ValFail("step_row_batch","a k-row same-lane step launch is not k sequential one-row launches - the replay cannot stand in for the decodes it replaces"));
+	return(0);
+}
+
 int main(int argc, char **argv)
 {
 	SparkQwen36ValDevice device;
@@ -1241,6 +1450,8 @@ int main(int argc, char **argv)
 	if (result == 0) result = SparkQwen36ValCheckGatedNorm(&device);
 	if (result == 0) result = SparkQwen36ValCheckAttention(&device);
 	if (result == 0) result = SparkQwen36ValCheckGdnChunk(&device);
+	if (result == 0) result = SparkQwen36ValCheckSpecPathEquivalence(&device);
+	if (result == 0) result = SparkQwen36ValCheckStepRowBatch(&device);
 	if (result == 0) result = SparkQwen36ValCheckModule();
 	if (result == 0)
 		printf("qwen36_validation PASS\n");

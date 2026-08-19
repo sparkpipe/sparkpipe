@@ -744,7 +744,14 @@ from pathlib import Path
 # the verify keep the chunk path (no asymmetry - the no-spec run prefills the
 # same way, and the verify's state is discarded by the restore).
 # 174671 is the exact count.
-CEILING = 174671
+# +94: the step-path premise gate (kernel lane, GPU-proven): a k-row
+# same-lane step launch must equal k sequential one-row launches
+# (state_mismatch=0 tail_mismatch=0 worst_abs=0 measured on the GB10) - the
+# property the replay-step fix rests on, now a permanent validator case so a
+# regression in the row serialization fails a gate instead of silently
+# reopening the divergence.
+# 174765 is the exact count.
+CEILING = 174765
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
