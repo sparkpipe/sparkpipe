@@ -465,7 +465,12 @@ from pathlib import Path
 # mirrors deleted, the e2e rail's drafts gate. Host-path PARITY at
 # tie+full with a mutation test.
 # 171186 is the exact count.
-CEILING = 171186
+# +401: the W7 real-weight end-to-end gate - the module's emitted drafts
+# are bit-equal to the reference full forward on the real z-lab DFlash2
+# checkpoint (drafts 163572 235738 160199 87342 8624 6501 5162, unary
+# logits BITWISE equal, max|delta|=0) + the SPARK_QWEN36_TARGET override.
+# 171587 is the exact count.
+CEILING = 171587
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
