@@ -658,7 +658,14 @@ from pathlib import Path
 # start dump checks the lane reset and the prefill end dump separates an
 # env-dependent prefill from an env-dependent first decode.
 # 172627 is the exact count.
-CEILING = 172627
+# +19: post-walk GDN dump for EVERY decode frame (both boots), so the
+# spec-vs-no-spec comparison at the first diverging position is aligned -
+# the earlier 232 comparison mixed the spec's post-walk state with the
+# no-spec's pre-walk state (the preforward dump only fires in the draft
+# branch). This settles whether the first decode walk itself diverges or
+# the round-1 verify/replay corrupts a clean post-walk state.
+# 172646 is the exact count.
+CEILING = 172646
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

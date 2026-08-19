@@ -2507,6 +2507,25 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		}
 		free(host);
 	}
+	/* Post-walk state for EVERY decode frame (both boots dump this, so the
+	 * spec-vs-no-spec comparison at the first diverging position is aligned):
+	 * the recurrence right after the decode walk, before any spec machinery. */
+	if ( status == SPARK_STATUS_OK && prefill == 0 && state->decode_state_dump_dir != 0 )
+	{
+		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
+		const uint64_t position = context->decode_batch->row_positions[0];
+		const uint32_t lane = context->decode_batch->row_lane_indices[0];
+		float *host = (float *)malloc((size_t)state_bytes);
+		char path[512];
+		FILE *dump;
+		if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+		{
+			snprintf(path,sizeof(path),"%s/decode_%llu_postwalk.f32",state->decode_state_dump_dir,(unsigned long long)position);
+			dump = fopen(path,"wb");
+			if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
+		}
+		free(host);
+	}
 	if ( status == SPARK_STATUS_OK && prefill == 0 && state->decode_state_dump_dir != 0 )
 	{
 		const uint64_t tap_bytes = (uint64_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
