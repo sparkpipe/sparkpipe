@@ -441,7 +441,10 @@ from pathlib import Path
 # 168955 is the exact count.
 # +11: spec acceptance clamped to the shared tokens-per-sequence ABI cap.
 # 168966 is the exact count.
-CEILING = 168966
+# +38: env-gated tap-capture/dump diagnostics (Nth-capture dump for
+# spec-vs-no-spec tap parity at matched positions).
+# 169004 is the exact count.
+CEILING = 169004
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

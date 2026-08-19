@@ -217,6 +217,9 @@ typedef struct SparkQwen36ModuleState
 	 * the spin durations measure the GPU execution of the phase between two
 	 * reduces: GDN branch, ATTN branch, FFN, and the head tail. */
 	uint32_t profile_enabled;
+	uint32_t tap_capture_enabled;
+	uint32_t tap_dump_nth;
+	uint32_t tap_capture_count;
 	uint64_t profile_gdn_spin_nanos;
 	uint64_t profile_attn_spin_nanos;
 	uint64_t profile_ffn_spin_nanos;
@@ -2360,11 +2363,35 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
 	{
 		status = SparkQwen36ModuleRunLayer(state,slot,context->kv_block_table,prefill,layer,rows);
-		if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u )
+		if ( status == SPARK_STATUS_OK && prefill == 0 && ((context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u || state->tap_capture_enabled != 0u) )
 			status = SparkQwen36ModuleCaptureDsparkTap(state,slot,layer);
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
+	if ( status == SPARK_STATUS_OK && prefill == 0 && state->tap_capture_enabled != 0u )
+	{
+		state->tap_capture_count++;
+		if ( state->tap_capture_count == state->tap_dump_nth || state->tap_dump_nth == 0u )
+		{
+			char path[128];
+			FILE *file;
+			uint16_t *taps_host = (uint16_t *)malloc((size_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * 2u);
+			uint32_t c0;
+			snprintf(path,sizeof(path),"/tmp/dflash2_tapdump_%u.bin",state->tap_capture_count);
+			if ( taps_host != 0 && cudaMemcpy(taps_host,slot->dspark_tap_buffer,(size_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
+			{
+				file = fopen(path,"wb");
+				if ( file != 0 ) { fwrite(taps_host,1,(size_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * 2u,file); fclose(file); }
+			}
+			free(taps_host);
+			if ( cudaMemcpy(&c0,slot->output_token_ids,sizeof(uint32_t),cudaMemcpyDeviceToHost) == cudaSuccess )
+			{
+				snprintf(path,sizeof(path),"/tmp/dflash2_tapdump_%u.meta",state->tap_capture_count);
+				file = fopen(path,"w");
+				if ( file != 0 ) { fprintf(file,"capture=%u c0=%u position=%llu\n",state->tap_capture_count,c0,(unsigned long long)slot->host_row_positions[0]); fclose(file); }
+			}
+		}
+	}
 	if ( state->profile_enabled != 0u )
 		SparkQwen36ProfilePrint(state, SparkQwen36ProfileNow() - frame_start);
 	return(status);
@@ -2766,6 +2793,17 @@ SparkStatus SparkQwen36ResidentDecodeStageInitialize(
     {
         const char *profile_env = getenv("SPARK_QWEN36_PROFILE");
         state->profile_enabled = profile_env != 0 && strcmp(profile_env, "0") != 0 ? 1u : 0u;
+    }
+    {
+        /* Diagnostics: capture drafter taps on EVERY decode frame (even
+         * without the drafter armed) and dump the Nth capture set, so
+         * spec-run taps diff against no-spec taps at the same position.
+         * N=0 dumps every capture. */
+        const char *capture_env = getenv("SPARK_QWEN36_STAGE_TAP_CAPTURE");
+        const char *dump_env = getenv("SPARK_QWEN36_DFLASH2_TAP_DUMP_N");
+        state->tap_capture_enabled = capture_env != 0 && strcmp(capture_env, "0") != 0 ? 1u : 0u;
+        state->tap_dump_nth = dump_env != 0 ? (uint32_t)strtoul(dump_env,0,0) : 0xFFFFFFFFu;
+        state->tap_capture_count = 0u;
     }
     atomic_init(&state->submitted_count, 0u);
     atomic_init(&state->completed_count, 0u);
