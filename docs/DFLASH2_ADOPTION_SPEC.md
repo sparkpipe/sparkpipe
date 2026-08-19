@@ -13,7 +13,19 @@ selector)", `state=open`, `merged=false`, created 2026-08-18
 (<https://api.github.com/repos/ggml-org/llama.cpp/pulls/27342>); DFlash **v1** by contrast
 merged as #22105 on 2026-06-28. All three engines gate on the checkpoint alone — PR #27342
 body: "DFlash2 is enabled when the checkpoint is DFlash2; no need to use extra flag." Blog:
-<https://inco.ai/blog/dflash2/>. Upstream code: <https://github.com/z-lab/dflash>.
+<https://inco.ai/blog/dflash2/>.
+
+> ⚠️ **There is no upstream reference implementation of DFlash2.**
+> <https://github.com/z-lab/dflash> is the DFlash **v1** repo: 14 files, top level
+> `{.github, .gitignore, LICENSE, README.md, dflash, pyproject.toml}`, and **zero paths
+> matching `dflash2`, `conv`, or `select`**; its only release is `v0.1.0` (2026-08-18,
+> empty body) (<https://api.github.com/repos/z-lab/dflash/git/trees/HEAD?recursive=1>).
+> The blog and both PRs cite it only for *prompt formatting and the benchmark harness*.
+> **The three engine PRs plus the checkpoint tensors ARE the specification** — there is no
+> training code, no paper, and no canonical forward to diff against. Treat the vLLM PR's
+> two unit tests (`test_grouped_conv_matches_reference`,
+> `test_selector_edges_match_sequential_reference`) as the authoritative oracle; they are
+> the only executable ground truth published.
 
 ---
 
@@ -252,6 +264,25 @@ give-up, and it directly contradicts reading the unquantized-LM-head rule as an
 ### Acceptance length, per-request mean (block 8 = 7 draft tokens), H200, SGLang + FA3
 
 Source: <https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2> (= blog Table 4).
+
+> ⚠️ **Baseline-provenance caveat — the DSpark column is an off-label run of that drafter,
+> and it matters directly to SparkPipe.** `RadixArk/Qwen3.8-27B-DSpark` states: "A DSpark
+> speculator for **Qwen/Qwen3.8-27B-FP8**", "Target model: Qwen/Qwen3.8-27B-FP8",
+> "Setting: **FP8 target** and unquantized BF16 draft; DSpark block size 7; sampling
+> **temperature 0.6**, top-k 20, top-p 0.95; `max_new_tokens=2048`", and serves with
+> `--model-path Qwen/Qwen3.8-27B-FP8 --speculative-draft-model-quantization unquant`
+> (<https://huggingface.co/RadixArk/Qwen3.8-27B-DSpark>). Its **own** published GSM8K
+> acceptance is **4.57**.
+>
+> The DFlash2 comparison runs that drafter against a **BF16** target at **temperature 1.0**,
+> xhigh reasoning, 4096 max new tokens — and reports DSpark GSM8K **4.36** (−4.6% vs the
+> drafter's own card). So the baseline is benchmarked outside the configuration it was
+> trained and validated for. The gap is small and the harsher sampling plausibly explains
+> it, so this is not evidence of a rigged comparison — but it does mean the headline
+> **"+32.6% vs DSpark" is measured against a weakened DSpark**. SparkPipe's landed port
+> *is* the FP8-target DSpark configuration, so **expect a smaller DFlash2 delta against
+> your own baseline than the cards advertise.** Budget on acceptance-length *absolutes*
+> (DFlash2 4.80 mean / 5.46 GSM8K) rather than on the DSpark-relative percentage.
 
 | Task | MTP | DSpark | DFlash 2 | vs DSpark *(derived)* |
 |---|---:|---:|---:|---:|
@@ -598,9 +629,22 @@ reshape → W2 conv → W4 top-K **on the quantized head** → W3 selector → W
 The FP8 LM-head question is no longer a gating blocker (llama.cpp reaches 5.28–5.39
 acceptance on a Q4_K_M target); it is a design choice inside W4.
 
-**Two gates before committing serving capacity:** (1) vLLM #52816 is **unmerged** and has
-an **open sm120 out-of-bounds crash at concurrency 4** — adjacent to GB10/SM121; (2)
-**no DFlash2 drafter exists for DSV4-Flash, DSV4-Pro, K3, GLM5.2, or Qwen3.6-27B**, so
-this is a Qwen3.8-27B-only adoption unless SparkPipe trains its own drafter. The blog
-invites exactly that: "want a drafter for a model you run, including your own fine-tunes,
-write to us" (<https://inco.ai/blog/dflash2/>).
+**Four gates before committing serving capacity:**
+
+1. **vLLM #52816 is unmerged** and has an **open sm120 out-of-bounds crash at concurrency
+   4** — adjacent to GB10/SM121. Only SGLang is merged.
+2. **No DFlash2 drafter exists for DSV4-Flash, DSV4-Pro, K3, GLM5.2, or Qwen3.6-27B**, so
+   this is a Qwen3.8-27B-only adoption unless SparkPipe trains its own. The blog invites
+   exactly that: "want a drafter for a model you run, including your own fine-tunes, write
+   to us" (<https://inco.ai/blog/dflash2/>).
+3. **No upstream reference implementation exists** (see the header warning). The three
+   engine PRs plus 23 checkpoint tensors are the whole specification; there is no training
+   code, no paper, and no canonical forward. **W8 is therefore not optional** — the numpy
+   oracle built from the two vLLM unit tests is the only ground truth SparkPipe will have,
+   and it must land before W2/W3 rather than after.
+4. **Do not budget on the DSpark-relative percentages.** They are measured against an
+   FP8-trained DSpark drafter run off-label on a BF16 target (see the caveat in (c)).
+   SparkPipe's landed port *is* that FP8 configuration, so the local delta will be smaller
+   than +32.6%. Set the acceptance target from DFlash2's **absolutes** — 4.80 mean / 5.46
+   GSM8K at block 8 on BF16, or 5.28–5.39 on a Q4_K_M target — measured against SparkPipe's
+   own DSpark baseline on identical sampling.
