@@ -44,4 +44,4 @@ reached - COMPSEC-17 scores get their own column then).
 - Flash: keep-old CSA landed (23 exact); staging FULLY EXONERATED (frame-149 = anchor 290@150 + 7 distinct drafts sequential - mixed-staging falsified; pad = first-decode only, all-identical per-row); BUG = layer-0 wq_a FP8 pair batch-coupled activation scale (ch 256+ at 128-tile boundary); FIX DRAFT EXISTS in fork clone (multi-row -> per-row-exact routing) - build + r1_wq_a==delta_ge_raw verification pending; then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-19 05:00 UTC (RACE ON: bench plan landed (5b3318a - k-sweep 4/7/8/12, MT-Bench-class prompts, hash gate before speed); W2-host (27B) + W4/W3 (cuda-kernels) + flash verification in flight; CI fix run 32217162159 pending; no HWM change since 8.03)
+Last update: 2026-08-19 05:07 UTC (RACE ON: W4/W3 kernels written (+415 lines, pre-reviewed faithful to the corrected oracle) + exact-arithmetic validator case in flight; W2 layer-loop launches on 27B; flash verification build live; CI green on the include fix; no HWM change since 8.03)
