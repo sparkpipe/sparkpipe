@@ -494,7 +494,16 @@ from pathlib import Path
 # spark3 on 2026-08-19). Markers now match the fail-loud literals and the
 # strings output is captured before grepping.
 # 171710 is the exact count.
-CEILING = 171710
+# +47: file-backed drafter diagnostics (kernel lane patch, coordinator-landed
+# with corrected rationale). The deployed unit sends stderr to a shared
+# append log that journalctl does not show and that every swapped instance
+# shares, so "nothing in the journal" was misread as "the code never ran".
+# Pack load (begin/OK/FAILED with errno and reason) and every frame's
+# routing decision (flags, dspark_after, armed, draft view, rows, status)
+# now append to SPARK_QWEN36_DSPARK_DIAG_PATH, default /tmp/dspark_diag.log
+# - the three facts the arming question needs, on a stable per-instance path.
+# 171757 is the exact count.
+CEILING = 171757
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

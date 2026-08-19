@@ -2,7 +2,9 @@
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
+#include <errno.h>
 #include <inttypes.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -589,6 +591,32 @@ static SparkStatus SparkQwen36ModuleLoadDsparkEntry(
 }
 
 /* Load the separate DSpark drafter pack (optional, spec-method dspark only). */
+/*
+ * Drafter diagnostics go to a FILE, not to stderr.
+ *
+ * The deployed unit sends stderr to an append log (/tmp/fleet-swap-residentd.log)
+ * that every swapped instance shares and that journalctl does not show, so the
+ * drafter fprintfs were hard to attribute to an instance and "nothing in the
+ * journal" was misread as "the code never ran". These lines land in
+ * SPARK_QWEN36_DSPARK_DIAG_PATH (default /tmp/dspark_diag.log), append-only and
+ * flushed, next to the taps/drafts dumps the same path already writes, so the
+ * arming question is answerable per instance without touching the unit's stdio
+ * policy.
+ */
+static void SparkQwen36ModuleDsparkDiag(const char *format, ...)
+{
+	const char *path = getenv("SPARK_QWEN36_DSPARK_DIAG_PATH");
+	FILE *log;
+	va_list arguments;
+	log = fopen(path != 0 && path[0] != '\0' ? path : "/tmp/dspark_diag.log","a");
+	if ( log == 0 )
+		return;
+	va_start(arguments,format);
+	vfprintf(log,format,arguments);
+	va_end(arguments);
+	fclose(log);
+}
+
 static SparkStatus SparkQwen36ModuleLoadDsparkPack(SparkQwen36ModuleState *state, const char *path)
 {
 	SparkQwen36StagePackHeader header;
@@ -597,11 +625,16 @@ static SparkStatus SparkQwen36ModuleLoadDsparkPack(SparkQwen36ModuleState *state
 	SparkStatus status;
 	uint32_t index;
 	if ( path == 0 || path[0] == '\0' )
+	{
+		SparkQwen36ModuleDsparkDiag("pack_load skipped: no path (SPARK_QWEN36_DSPARK_PACK_PATH unset in the PROCESS)\n");
 		return(SPARK_STATUS_OK);
+	}
+	SparkQwen36ModuleDsparkDiag("pack_load begin path=%s\n",path);
 	file = fopen(path,"rb");
 	if ( file == 0 )
 	{
 		fprintf(stderr,"%s dspark_pack_open_failed path=%s\n",SPARK_QWEN36_MODULE_TAG,path);
+		SparkQwen36ModuleDsparkDiag("pack_load FAILED open path=%s errno=%d\n",path,errno);
 		return(SPARK_STATUS_IO_ERROR);
 	}
 	status = SparkStageModulePackRead(SPARK_QWEN36_MODULE_TAG,file,0u,&header,sizeof(header));
@@ -625,6 +658,7 @@ static SparkStatus SparkQwen36ModuleLoadDsparkPack(SparkQwen36ModuleState *state
 	{
 		state->dspark_weights.armed = 1u;
 		fprintf(stderr,"dspark_pack_loaded path=%s tensors=%u\n",path,header.tensor_count);
+		SparkQwen36ModuleDsparkDiag("pack_load OK path=%s tensors=%u armed=1\n",path,header.tensor_count);
 	}
 	/* The selector needs every pack slot it scores with; a pack that predates
 	 * the DFlash2 kinds must fail here, not at the first draft. */
@@ -633,6 +667,8 @@ static SparkStatus SparkQwen36ModuleLoadDsparkPack(SparkQwen36ModuleState *state
 	      state->dspark_weights.selector_successor.weight_payload == 0 ||
 	      state->dspark_weights.selector_hidden_projection.weight_payload == 0) )
 		status = SPARK_STATUS_INVALID_ARGUMENT;
+	if ( status != SPARK_STATUS_OK )
+		SparkQwen36ModuleDsparkDiag("pack_load FAILED status=%d (armed stays 0; the selector slots 12/13/14 must all be present)\n",(int)status);
 	free(directory);
 	fclose(file);
 	return(status);
@@ -2433,8 +2469,19 @@ SparkStatus SparkQwen36ResidentDecodeStageExecute(
             prefill,
             rows);
     }
+    /* Every frame says whether it asked for selector drafts, whether the drafter
+     * is armed, and what the routing decided - so "the block forward did not
+     * fire" can be attributed to the flag, the arming, or the forward itself
+     * instead of guessed at. */
+    SparkQwen36ModuleDsparkDiag("frame flags=0x%x dspark_after=%u armed=%u draft_view=%p rows=%u status=%d\n",
+        context->flags,
+        (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u ? 1u : 0u,
+        state->dspark_weights.armed,(const void *)context->dspark_draft,rows,(int)status);
     if (status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u)
+    {
         status = SparkQwen36ModuleRunDsparkBlockForward(state,slot,context->dspark_draft,rows);
+        SparkQwen36ModuleDsparkDiag("block_forward returned status=%d\n",(int)status);
+    }
     if (status == SPARK_STATUS_OK)
     {
         SparkQwen36ModuleCommitLaneSequenceContinuity(
