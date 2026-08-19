@@ -41,7 +41,7 @@ reached - COMPSEC-17 scores get their own column then).
 ## Active climbs (references being matched)
 
 - 27B: DSpark rung-3 PARITY RESOLVED + FINAL BENCH: spec k=7 = 4.596 tok/s vs 8.02 no-spec (LOSES, acceptance 5.3%; forward clean, period-2 genuine). Lever = acceptance: drafter trained for GPTQ-Int4 target (canonical config) vs our FP8 taps -> mine authors' acceptance bar, tap-rewire experiment, Int4-pack decision pending. Deliverable batch (9 items) handed for gates. Then 20-58 DSpark.
-- Flash: keep-old CSA landed (23 exact); staging CLOSED by measurement (no double-count, no pads, -1u formula matches engine continuity; 7-token lag = symptom); BUG = layer-0 wq_a FP8 pair: batch-coupled activation scale, ch 0-255 clean / 256-1023 diverge at the 128-tile boundary, all 8 rows wrong; fix in progress = align both pair paths (row-count split: !=1 native-tiled vs ==1 flat-pair) to per-row staging; verify r1_wq_a == delta_ge_raw -> then k-sweep k=5/7/8/10.
+- Flash: keep-old CSA landed (23 exact); staging FULLY EXONERATED (frame-149 = anchor 290@150 + 7 distinct drafts sequential - mixed-staging falsified; pad = first-decode only, all-identical per-row); BUG = layer-0 wq_a FP8 pair batch-coupled activation scale (ch 256+ at 128-tile boundary); FIX DRAFT EXISTS in fork clone (multi-row -> per-row-exact routing) - build + r1_wq_a==delta_ge_raw verification pending; then k-sweep k=5/7/8/10.
 - COMPSEC-17: added as a tracked stat once spec accuracy is reached.
 
-Last update: 2026-08-19 01:02 UTC (CI green; Flash: all corroborations done, b1 stall TAKEN + deferred to post-merge (backlogged), kernel fix sole remaining work; 27B: C0 fix (committed_ids[0] into draft view) in flight - 4.596 retractable if acceptance jumps; no HWM change since 8.03)
+Last update: 2026-08-19 01:16 UTC (CI green; Flash: staging fully exonerated, fix draft build+verify pending; 27B: C0 fix in flight - 4.596 retractable; no HWM change since 8.03)
