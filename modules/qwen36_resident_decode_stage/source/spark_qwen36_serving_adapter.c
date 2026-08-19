@@ -1467,7 +1467,9 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		SparkQwen36ServingSpecState *spec;
 		uint32_t slot;
 		uint32_t replay_rows;
-		uint32_t replay_tokens[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
+		/* +1: a fully-accepted block-8 chain replays C0 + 7 drafts + the
+		 * correction = 9 rows, one past MAX_MTP_DRAFT_TOKENS. */
+		uint32_t replay_tokens[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS + 1u];
 		uint64_t replay_base;
 		spec = &pending->spec[lane];
 		slot = spec->resident_slot;
