@@ -223,6 +223,7 @@ typedef struct SparkQwen36ServingPending
 	uint32_t active_sequence_count;
 	uint32_t work_kind;
 	uint64_t submission_id;
+	uint64_t residency_origin_submission_id;
 	uint64_t request_id;
 	uint64_t sequence_id;
 	uint64_t sequence_position;
@@ -658,6 +659,7 @@ static SparkQwen36ServingPending *SparkQwen36ServingReservePending(
 			 * exactly the status=4 / reason=2 (COMPLETION_RESIDENCY) failure the
 			 * 128-token spec run hit while the 32-token run completed clean. */
 			pending->residency = submission->residency;
+			pending->residency_origin_submission_id = submission->submission_id;
 			pending->frame_status = SPARK_STATUS_OK;
 			for (row=0u; row<submission->row_count; row++)
 			{
@@ -1591,6 +1593,17 @@ static void SparkQwen36ServingComplete(
 		completion.model_extension_kind = SPARK_QWEN36_SERVING_EXTENSION_KIND;
 		completion.model_extension_bytes = sizeof(telemetry);
 		memcpy(completion.model_extension,&telemetry,sizeof(telemetry));
+	}
+	{
+		/* Residency diag (trajectory seam): the runtime memcmp's the completion's
+		 * residency against the route's submission residency. Print the echo and
+		 * the pending identity so a failure can be attributed to a re-reserved
+		 * pending vs a wire-side token difference. */
+		const unsigned char *bytes = (const unsigned char *)&completion.residency;
+		fprintf(stderr,"qwen36_residency sid=%llu pending_sid=%llu pending_origin=%llu hex=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+			(unsigned long long)completion.submission_id,(unsigned long long)pending->submission_id,
+			(unsigned long long)pending->residency_origin_submission_id,
+			bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7]);
 	}
 	pending->active = 0u;
 	state->completion_function(state->completion_context,&completion);

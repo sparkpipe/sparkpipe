@@ -532,7 +532,12 @@ from pathlib import Path
 # reservation and the driver-completion write is removed - the completion
 # echoes what the route's submission carried, which is the runtime contract.
 # 171995 is the exact count.
-CEILING = 171995
+# +14: residency echo diag (trajectory seam): the completion now prints the
+# echoed residency bytes plus the pending's current and origin submission ids,
+# so a residency-memcmp failure on a long/prefill-bearing request can be
+# attributed to a re-reserved pending vs a wire-side token difference.
+# 172009 is the exact count.
+CEILING = 172009
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
