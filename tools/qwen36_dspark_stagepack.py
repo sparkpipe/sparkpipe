@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Pack the DSpark drafter (Doopeworld/Qwen3.8-27B-DSpark-vLLM) into a qwen36 wire pack.
+"""Pack the DFlash2 drafter (z-lab/Qwen3.8-27B-DFlash2) into a qwen36 wire pack.
 
-Setup-time code, never the serving path. The drafter is a 5-layer full-attention
-decoder (no GDN, no MTP) that emits a 7-token block; it SHARES the target's token
-embedding and lm_head (the safetensors carries neither). This tool streams the 62
+Setup-time code, never the serving path. The drafter is a 5-layer sliding-attention
+decoder (no GDN, no MTP) that emits an 8-token block; it SHARES the target's token
+embedding and lm_head (the safetensors carries neither). This tool streams the 81
 drafter tensors into the same wire format the qwen36 target packer writes, so the
 resident module can load both with one header reader.
 
-Drafter geometry (config.json): hidden 5120, 5 layers, 40 Q / 8 KV heads x head_dim
-128, FFN intermediate 10240, vocab 248320, block_size 7, target taps {4,16,28,40,52},
-mask token 248077, markov_rank 256, confidence input 5120+256.
+Drafter geometry (config.json): hidden 5120, 5 layers, 32 Q / 8 KV heads x head_dim
+128, FFN intermediate 17408, vocab 248320, block_size 8, target taps {5,19,33,47,61},
+mask token 248070, selector_rank 256, selector_top_k 16, conv_kernel_size 2,
+conv_group_size 16, sliding_window 2048, is_causal false. No confidence head.
 """
 
 from __future__ import annotations
@@ -33,40 +34,49 @@ BF16_BYTES = 2
 
 HIDDEN = 5120
 LAYER_COUNT = 5
-ATTN_QUERY_HEADS = 40
+ATTN_QUERY_HEADS = 32
 ATTN_KV_HEADS = 8
 ATTN_HEAD_DIM = 128
 ATTN_ROPE_DIM = 64
-FFN_INTERMEDIATE = 10240
+FFN_INTERMEDIATE = 17408
 VOCAB = 248320
-BLOCK_SIZE = 7
-TARGET_TAP_LAYERS = (4, 16, 28, 40, 52)
+BLOCK_SIZE = 8
+TARGET_TAP_LAYERS = (5, 19, 33, 47, 61)
 TAP_COUNT = len(TARGET_TAP_LAYERS)
-MARKOV_RANK = 256
-CONFIDENCE_INPUT = HIDDEN + MARKOV_RANK  # 5376
+SELECTOR_RANK = 256
+SELECTOR_TOP_K = 16
+CONV_KERNEL_SIZE = 2
+CONV_GROUP_SIZE = 16
+SLIDING_WINDOW = 2048
+MASK_TOKEN_ID = 248070
+CONV_SIDES = 2
+CONV_PROJ_ROWS = CONV_SIDES * CONV_KERNEL_SIZE * (HIDDEN // CONV_GROUP_SIZE)  # 1280
 
 HEADER_STRUCT = struct.Struct("<26I2Q")
 ENTRY_STRUCT = struct.Struct("<6I4Q")
 assert HEADER_STRUCT.size == HEADER_BYTES and ENTRY_STRUCT.size == ENTRY_BYTES
 
-# DSpark tensor kinds (per-layer + global). Mirror SparkQwen36DsparkTensorKind.
+# DFlash2 tensor kinds (per-layer + global). Mirror SparkQwen36DsparkTensorKind.
 (KIND_ATTN_QUERY, KIND_ATTN_KEY, KIND_ATTN_VALUE, KIND_ATTN_OUTPUT,
  KIND_ATTN_QUERY_NORM, KIND_ATTN_KEY_NORM, KIND_ATTENTION_NORM, KIND_MLP_NORM,
  KIND_FFN_GATE, KIND_FFN_UP, KIND_FFN_DOWN,
- KIND_PROJECTOR, KIND_MARKOV_W1, KIND_MARKOV_W2, KIND_CONFIDENCE,
- KIND_FINAL_NORM, KIND_HIDDEN_NORM) = range(17)
+ KIND_PROJECTOR, KIND_SELECTOR_PRED, KIND_SELECTOR_SUCC, KIND_SELECTOR_HIDDEN_PROJ,
+ KIND_FINAL_NORM, KIND_HIDDEN_NORM,
+ KIND_CONV_ATTN_BASE, KIND_CONV_ATTN_PROJ, KIND_CONV_MLP_BASE, KIND_CONV_MLP_PROJ) = range(21)
 
 PER_LAYER_KINDS = (KIND_ATTN_QUERY, KIND_ATTN_KEY, KIND_ATTN_VALUE, KIND_ATTN_OUTPUT,
                    KIND_ATTN_QUERY_NORM, KIND_ATTN_KEY_NORM, KIND_ATTENTION_NORM,
-                   KIND_MLP_NORM, KIND_FFN_GATE, KIND_FFN_UP, KIND_FFN_DOWN)
+                   KIND_MLP_NORM, KIND_FFN_GATE, KIND_FFN_UP, KIND_FFN_DOWN,
+                   KIND_CONV_ATTN_BASE, KIND_CONV_ATTN_PROJ,
+                   KIND_CONV_MLP_BASE, KIND_CONV_MLP_PROJ)
 
 
 def kind_shape(kind: int) -> tuple[int, int]:
     table = {
-        KIND_ATTN_QUERY: (HIDDEN, HIDDEN),
+        KIND_ATTN_QUERY: (ATTN_QUERY_HEADS * ATTN_HEAD_DIM, HIDDEN),
         KIND_ATTN_KEY: (ATTN_KV_HEADS * ATTN_HEAD_DIM, HIDDEN),
         KIND_ATTN_VALUE: (ATTN_KV_HEADS * ATTN_HEAD_DIM, HIDDEN),
-        KIND_ATTN_OUTPUT: (HIDDEN, HIDDEN),
+        KIND_ATTN_OUTPUT: (HIDDEN, ATTN_QUERY_HEADS * ATTN_HEAD_DIM),
         KIND_ATTN_QUERY_NORM: (1, ATTN_HEAD_DIM),
         KIND_ATTN_KEY_NORM: (1, ATTN_HEAD_DIM),
         KIND_ATTENTION_NORM: (1, HIDDEN),
@@ -75,11 +85,16 @@ def kind_shape(kind: int) -> tuple[int, int]:
         KIND_FFN_UP: (FFN_INTERMEDIATE, HIDDEN),
         KIND_FFN_DOWN: (HIDDEN, FFN_INTERMEDIATE),
         KIND_PROJECTOR: (HIDDEN, TAP_COUNT * HIDDEN),
-        KIND_MARKOV_W1: (VOCAB, MARKOV_RANK),
-        KIND_MARKOV_W2: (VOCAB, MARKOV_RANK),
-        KIND_CONFIDENCE: (1, CONFIDENCE_INPUT),
+        KIND_SELECTOR_PRED: (VOCAB, SELECTOR_RANK),
+        KIND_SELECTOR_SUCC: (VOCAB, SELECTOR_RANK),
+        KIND_SELECTOR_HIDDEN_PROJ: (SELECTOR_RANK, HIDDEN),
         KIND_FINAL_NORM: (1, HIDDEN),
         KIND_HIDDEN_NORM: (1, HIDDEN),
+        # base_kernel [2,2,5120] (sides, taps, channels) -> [sides, taps*channels] = [2, 10240]
+        KIND_CONV_ATTN_BASE: (CONV_SIDES, CONV_KERNEL_SIZE * HIDDEN),
+        KIND_CONV_ATTN_PROJ: (CONV_PROJ_ROWS, HIDDEN),
+        KIND_CONV_MLP_BASE: (CONV_SIDES, CONV_KERNEL_SIZE * HIDDEN),
+        KIND_CONV_MLP_PROJ: (CONV_PROJ_ROWS, HIDDEN),
     }
     return table[kind]
 
@@ -96,12 +111,16 @@ _LAYER_NAMES = {
     KIND_FFN_GATE: "mlp.gate_proj.weight",
     KIND_FFN_UP: "mlp.up_proj.weight",
     KIND_FFN_DOWN: "mlp.down_proj.weight",
+    KIND_CONV_ATTN_BASE: "attention_conv.base_kernel",
+    KIND_CONV_ATTN_PROJ: "attention_conv.kernel_projection.weight",
+    KIND_CONV_MLP_BASE: "mlp_conv.base_kernel",
+    KIND_CONV_MLP_PROJ: "mlp_conv.kernel_projection.weight",
 }
 GLOBAL_NAMES = {
     KIND_PROJECTOR: "fc.weight",
-    KIND_MARKOV_W1: "markov_head.markov_w1.weight",
-    KIND_MARKOV_W2: "markov_head.markov_w2.weight",
-    KIND_CONFIDENCE: "confidence_head.proj.weight",
+    KIND_SELECTOR_PRED: "candidate_selector.predecessor_codebook",
+    KIND_SELECTOR_SUCC: "candidate_selector.successor_codebook",
+    KIND_SELECTOR_HIDDEN_PROJ: "candidate_selector.hidden_projection.weight",
     KIND_FINAL_NORM: "norm.weight",
     KIND_HIDDEN_NORM: "hidden_norm.weight",
 }
@@ -146,8 +165,6 @@ def build_inventory() -> list[tuple[int, int, str]]:
             inv.append((kind, layer, f"layers.{layer}.{_LAYER_NAMES[kind]}"))
     for kind, name in GLOBAL_NAMES.items():
         inv.append((kind, 0xFFFFFFFF, name))
-    # Confidence bias (1 element) rides along after the confidence weight.
-    inv.append((KIND_CONFIDENCE, 0xFFFFFFFE, "confidence_head.proj.bias"))
     return inv
 
 
@@ -163,8 +180,6 @@ def pack(checkpoint: Path, output: Path, receipt: dict) -> dict:
     for kind, layer, name in build_inventory():
         offset, nbytes = src.offset(name)
         rows, cols = kind_shape(kind)
-        if name == "confidence_head.proj.bias":
-            rows, cols = 1, 1
         payload_offset = (cursor + PAYLOAD_ALIGNMENT - 1) & ~(PAYLOAD_ALIGNMENT - 1)
         payload_bytes = rows * cols * BF16_BYTES
         if nbytes != payload_bytes:
@@ -196,6 +211,12 @@ def pack(checkpoint: Path, output: Path, receipt: dict) -> dict:
         "tp_rank": 0,
         "block_size": BLOCK_SIZE,
         "target_tap_layers": list(TARGET_TAP_LAYERS),
+        "selector_rank": SELECTOR_RANK,
+        "selector_top_k": SELECTOR_TOP_K,
+        "conv_kernel_size": CONV_KERNEL_SIZE,
+        "conv_group_size": CONV_GROUP_SIZE,
+        "sliding_window": SLIDING_WINDOW,
+        "mask_token_id": MASK_TOKEN_ID,
     })
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -251,8 +272,6 @@ def verify_payload(pack_path: Path, checkpoint: Path) -> bool:
     for (kind, layer, name), entry in zip(inv, entries):
         e_kind, e_layer, e_fmt, e_rows, e_cols, e_sg, p_off, p_bytes, _, _ = entry
         rows, cols = kind_shape(kind)
-        if name == "confidence_head.proj.bias":
-            rows, cols = 1, 1
         assert e_kind == kind and e_rows == rows and e_cols == cols, name
         src_off, src_bytes = src.offset(name)
         with open(checkpoint / "model.safetensors", "rb") as sf, open(pack_path, "rb") as pf:
@@ -272,7 +291,7 @@ def main() -> int:
                         help="dir holding the drafter model.safetensors")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    receipt = {"kind": "sparkpipe.qwen36.dspark-stagepack-receipt.v1",
+    receipt = {"kind": "sparkpipe.qwen36.dflash2-stagepack-receipt.v1",
                "tool": "tools/qwen36_dspark_stagepack.py"}
     try:
         pack(args.checkpoint, args.output, receipt)

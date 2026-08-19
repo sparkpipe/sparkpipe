@@ -19,22 +19,26 @@ from pathlib import Path
 
 import numpy as np
 
-DRAFTER = Path("/home/spark3/extnvme/models/hf/Doopeworld/Qwen3.8-27B-DSpark-vLLM")
+DRAFTER = Path("/home/spark3/sparkdata/qwen38-dflash2-drafter")
 TARGET = Path("/home/spark3/extnvme/models/hf/Qwen/Qwen3.8-27B")
 
 HIDDEN = 5120
 N_LAYERS = 5
-N_Q_HEADS = 40
+N_Q_HEADS = 32
 N_KV_HEADS = 8
 HEAD_DIM = 128
 ROPE_DIM = 64
-FFN = 10240
+FFN = 17408
 VOCAB = 248320
-BLOCK = 7
+BLOCK = 8
 TAPS = 5
-TAP_LAYERS = (4, 16, 28, 40, 52)
-MARKOV_RANK = 256
-MASK_TOKEN_ID = 248077
+TAP_LAYERS = (5, 19, 33, 47, 61)
+SELECTOR_RANK = 256
+SELECTOR_TOP_K = 16
+CONV_KERNEL_SIZE = 2
+CONV_GROUP_SIZE = 16
+SLIDING_WINDOW = 2048
+MASK_TOKEN_ID = 248070
 EPS = 1e-6
 ROPE_THETA = 1e7
 BASE_POS = 64  # arbitrary: the first draft position
@@ -77,14 +81,18 @@ def load_drafter() -> dict:
     st = DRAFTER / "model.safetensors"
     names = {
         "fc.weight", "norm.weight", "hidden_norm.weight",
-        "markov_head.markov_w1.weight", "markov_head.markov_w2.weight",
+        "candidate_selector.predecessor_codebook",
+        "candidate_selector.successor_codebook",
+        "candidate_selector.hidden_projection.weight",
     }
     for L in range(N_LAYERS):
         for n in ("self_attn.q_proj.weight", "self_attn.k_proj.weight",
                   "self_attn.v_proj.weight", "self_attn.o_proj.weight",
                   "self_attn.q_norm.weight", "self_attn.k_norm.weight",
                   "input_layernorm.weight", "post_attention_layernorm.weight",
-                  "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight"):
+                  "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight",
+                  "attention_conv.base_kernel", "attention_conv.kernel_projection.weight",
+                  "mlp_conv.base_kernel", "mlp_conv.kernel_projection.weight"):
             names.add(f"layers.{L}.{n}")
     w = {}
     for n in sorted(names):
@@ -178,6 +186,116 @@ def forward_layer(x_block, ctx, lw, positions_q, pos_ctx):
 
 def markov_bias(w1, w2, prev: int) -> np.ndarray:
     return (w2 @ w1[prev]).astype(np.float32)  # [V]
+
+
+# ---- DFlash2: EXACT port of the vLLM PR #52816 oracles ----
+# test_grouped_conv_matches_reference + test_selector_edges_match_sequential_reference
+# are the only executable ground truth (no upstream reference impl exists). These
+# numpy ports must match the sequential references before W2/W3 kernels are written.
+
+
+def _grouped_conv(hidden, delta, base, block_size, num_groups, group_size, taps):
+    """Exact port of vLLM PR #52816 _grouped_conv.
+
+    hidden: [T, num_groups*group_size]; delta: [T, taps, num_groups];
+    base: [taps, num_groups*group_size]. Grouped depthwise conv with hard zeroing
+    across the block boundary (pos = i % block_size >= tap).
+    """
+    T = hidden.shape[0]
+    blocks = hidden.reshape(T, num_groups, group_size)
+    coefficients = base.reshape(1, taps, num_groups, group_size) + delta[:, :, :, None]
+    output = coefficients[:, 0] * blocks
+    position = np.arange(T, dtype=np.int64)
+    if block_size & (block_size - 1) == 0:
+        position = position & (block_size - 1)
+    else:
+        position = position % block_size
+    for tap in range(1, taps):
+        shifted = np.concatenate(
+            [np.zeros((tap, num_groups, group_size), dtype=hidden.dtype), blocks[:-tap]],
+            axis=0,
+        )
+        output += coefficients[:, tap] * shifted * (position >= tap).reshape(-1, 1, 1)
+    return output.reshape(T, -1)
+
+
+def _score_edges(predecessor_table, successor_table, candidate_ids, unary_logits, hidden, anchor_token_ids, top_k):
+    """Exact port of vLLM PR #52816 _score_edges.
+
+    predecessor/successor_table: [vocab, rank]; candidate_ids: [B, steps, K] int;
+    unary_logits: [B, steps, K]; hidden: [B, steps, rank] (already projected);
+    anchor_token_ids: [B] int. Returns [B, steps, K, K].
+    """
+    successors = successor_table[candidate_ids]
+    anchor_p = np.broadcast_to(
+        anchor_token_ids[:, None, None], (anchor_token_ids.shape[0], 1, top_k)
+    )
+    predecessor_ids = np.concatenate([anchor_p, candidate_ids[:, :-1]], axis=1)
+    predecessors = predecessor_table[predecessor_ids]
+    gate = predecessors * hidden[:, :, None, :]
+    edges = np.einsum("blpr,blcr->blpc", gate, successors)
+    return unary_logits[:, :, None, :] + edges
+
+
+def _greedy_walk(scores, candidate_ids):
+    """Greedy path walk: previous=0 (anchor), argmax-first-max per slot.
+
+    scores: [steps, K, K]; candidate_ids: [steps, K]. Returns [steps] draft ids.
+    """
+    steps = scores.shape[0]
+    drafts = []
+    previous = 0
+    for step in range(steps):
+        row = scores[step, previous]
+        nxt = int(np.min(np.where(row == row.max())[0]))
+        drafts.append(int(candidate_ids[step, nxt]))
+        previous = nxt
+    return drafts
+
+
+def test_grouped_conv_matches_reference(block_size):
+    rng = np.random.default_rng(0)
+    batch, taps, num_groups, group_size = 3, 3, 4, 2
+    hidden = rng.standard_normal((batch * block_size, num_groups * group_size)).astype(np.float32)
+    delta = rng.standard_normal((batch * block_size, taps, num_groups)).astype(np.float32)
+    base = rng.standard_normal((taps, num_groups * group_size)).astype(np.float32)
+    actual = _grouped_conv(hidden, delta, base, block_size, num_groups, group_size, taps)
+    hidden_blocks = hidden.reshape(batch, block_size, num_groups, group_size)
+    base_b = base.reshape(taps, num_groups, group_size)
+    delta_b = delta.reshape(batch, block_size, taps, num_groups)
+    expected = np.zeros((batch, block_size, num_groups, group_size), dtype=np.float32)
+    for position in range(block_size):
+        for tap in range(min(taps, position + 1)):
+            expected[:, position] += (
+                base_b[tap] + delta_b[:, position, tap, :, None]
+            ) * hidden_blocks[:, position - tap]
+    np.testing.assert_allclose(actual, expected.reshape(batch * block_size, num_groups * group_size), rtol=1e-5, atol=1e-5)
+
+
+def test_selector_edges_match_sequential_reference():
+    rng = np.random.default_rng(1)
+    batch, steps, top_k, rank = 2, 4, 3, 5
+    vocab = 17
+    predecessors = rng.standard_normal((vocab, rank)).astype(np.float32)
+    successors = rng.standard_normal((vocab, rank)).astype(np.float32)
+    candidate_ids = rng.integers(0, vocab, (batch, steps, top_k))
+    unary = rng.standard_normal((batch, steps, top_k)).astype(np.float32)
+    hidden = rng.standard_normal((batch, steps, rank)).astype(np.float32)
+    anchors = rng.integers(0, vocab, (batch,))
+    actual = _score_edges(predecessors, successors, candidate_ids, unary, hidden, anchors, top_k)
+    expected = np.empty_like(actual)
+    for step in range(steps):
+        pred = (
+            np.broadcast_to(anchors[:, None], (batch, top_k))
+            if step == 0
+            else candidate_ids[:, step - 1]
+        )
+        expected[:, step] = unary[:, step, None] + np.einsum(
+            "bpr,bcr->bpc",
+            predecessors[pred] * hidden[:, step, None],
+            successors[candidate_ids[:, step]],
+        )
+    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
 
 
 def main() -> int:
