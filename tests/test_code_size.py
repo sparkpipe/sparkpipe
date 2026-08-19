@@ -436,7 +436,10 @@ from pathlib import Path
 # comparisons (top ids/scores, gate, lattice, walk, fused path all
 # bitwise equal vs the stable-sort oracle).
 # 169760 is the exact count.
-CEILING = 169760
+# +77: the BF16-delta conv parity check script + harness rework (both
+# sides, bit-exact BF16 on spark3; sign-bit-only normalization noted).
+# 169837 is the exact count.
+CEILING = 169837
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
