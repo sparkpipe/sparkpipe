@@ -460,7 +460,10 @@ from pathlib import Path
 # +163: pair-atomic rope prep + layer-0 stage dumps + the
 # cache-semantics checker tool (tools/qwen36_dflash2_cache_check.py).
 # 169299 is the exact count.
-CEILING = 169299
+# +10: bonus-token convention (anchor = the frame's last input row;
+# context window excludes the bonus position; adapter remap shifts).
+# 169309 is the exact count.
+CEILING = 169309
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
