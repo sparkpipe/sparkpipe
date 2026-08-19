@@ -588,7 +588,13 @@ from pathlib import Path
 # from the taps, so the diff names the stage (W4 head vs W3 gate vs W3
 # edges vs the forward's final hidden).
 # 172412 is the exact count.
-CEILING = 172412
+# +13: full-32-byte residency-token prints (kernel lane). The earlier
+# diagnostics printed only word0 (the submission id) of the 32-byte token,
+# so every echo looked perfect while word1/generation/owner - the only
+# fields where a mismatch can live - were never printed. Both the adapter
+# echo and the residentd failure branch now print all 32 bytes.
+# 172425 is the exact count.
+CEILING = 172425
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

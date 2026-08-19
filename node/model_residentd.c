@@ -1040,21 +1040,24 @@ static void SparkModelResidentdCompletion(
 		status = SparkModelServingAdapterValidateCompletionResidency(runtime->adapter_library.adapter_interface.descriptor,&route->submission.residency,completion);
 		if ( status != SPARK_STATUS_OK )
 		{
-			/* Name the two sides of the byte comparison. The model adapters
-			 * print the ECHOED token from their own completion path; without
-			 * the EXPECTED hex a future mismatch cannot be attributed to the
-			 * route's copy (wire / deserialize seam) vs the adapter's echo
-			 * (slot-lifecycle seam) - two fixes in different files.
-			 * Diagnostic only. */
-			const unsigned char *expected_bytes = (const unsigned char *)&route->submission.residency;
-			const unsigned char *echo_bytes = (const unsigned char *)&completion->residency;
-			fprintf(stderr, "model_residentd residency_mismatch submission=%llu expected=%02x%02x%02x%02x%02x%02x%02x%02x echo=%02x%02x%02x%02x%02x%02x%02x%02x\n",
-				(unsigned long long)route->submission_id,
-				expected_bytes[0],expected_bytes[1],expected_bytes[2],expected_bytes[3],
-				expected_bytes[4],expected_bytes[5],expected_bytes[6],expected_bytes[7],
-				echo_bytes[0],echo_bytes[1],echo_bytes[2],echo_bytes[3],
-				echo_bytes[4],echo_bytes[5],echo_bytes[6],echo_bytes[7]);
+			const unsigned char *expected = (const unsigned char *)&route->submission.residency;
+			const unsigned char *actual = (const unsigned char *)&completion->residency;
 			failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_RESIDENCY;
+			/* Print the FULL 32-byte tokens so a word1/generation/owner mismatch is
+			 * attributed in one line instead of looking like a clean echo (word0 is
+			 * the submission id and almost always matches). */
+			fprintf(stderr,"model_residentd residency_mismatch submission=%llu "
+				"expected=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x "
+				"actual=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+				(unsigned long long)route->submission.submission_id,
+				expected[0],expected[1],expected[2],expected[3],expected[4],expected[5],expected[6],expected[7],
+				expected[8],expected[9],expected[10],expected[11],expected[12],expected[13],expected[14],expected[15],
+				expected[16],expected[17],expected[18],expected[19],expected[20],expected[21],expected[22],expected[23],
+				expected[24],expected[25],expected[26],expected[27],expected[28],expected[29],expected[30],expected[31],
+				actual[0],actual[1],actual[2],actual[3],actual[4],actual[5],actual[6],actual[7],
+				actual[8],actual[9],actual[10],actual[11],actual[12],actual[13],actual[14],actual[15],
+				actual[16],actual[17],actual[18],actual[19],actual[20],actual[21],actual[22],actual[23],
+				actual[24],actual[25],actual[26],actual[27],actual[28],actual[29],actual[30],actual[31]);
 		}
 	}
 	if ( status == SPARK_STATUS_OK && (route->request_id != completion->request_id || route->sequence_id != completion->sequence_id || route->sequence_position != completion->sequence_position || route->submission.control_generation != completion->control_generation || route->submission.transaction_id != completion->transaction_id || route->submission.dispatch_generation != completion->dispatch_generation || route->submission.request_generation != completion->request_generation || route->submission.step_generation != completion->step_generation) )
