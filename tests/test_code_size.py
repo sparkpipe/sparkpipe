@@ -456,7 +456,10 @@ from pathlib import Path
 # the truncation discriminator proves BF16-before-selection at full
 # scale (67/224 ids differ) with --require-discriminating anti-rot.
 # 170684 is the exact count.
-CEILING = 170684
+# +4: the slot-0 anchor branch comment (memory-safety-load-bearing -
+# without it the underflow indexes 4.3G out of bounds; do not simplify).
+# 170688 is the exact count.
+CEILING = 170688
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
