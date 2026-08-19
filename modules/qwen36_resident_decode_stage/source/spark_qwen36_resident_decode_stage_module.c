@@ -622,7 +622,10 @@ static SparkStatus SparkQwen36ModuleLoadDsparkPack(SparkQwen36ModuleState *state
 			status = SparkQwen36ModuleLoadDsparkEntry(state,&directory[index],payload,scale);
 	}
 	if ( status == SPARK_STATUS_OK )
+	{
 		state->dspark_weights.armed = 1u;
+		fprintf(stderr,"dspark_pack_loaded path=%s tensors=%u\n",path,header.tensor_count);
+	}
 	/* The selector needs every pack slot it scores with; a pack that predates
 	 * the DFlash2 kinds must fail here, not at the first draft. */
 	if ( status == SPARK_STATUS_OK &&
@@ -2070,6 +2073,8 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	cudaError_t error;
 	uint32_t layer;
 	(void)rows;
+	fprintf(stderr,"dspark_block_forward entry armed=%u view=%p count=%u rows=%u\n",
+		w->armed,(const void *)view,view != 0 ? view->draft_token_count : 0u,rows);
 	if ( w->armed == 0u )
 		return(SPARK_STATUS_OK);
 	if ( view == 0 || view->draft_token_ids == 0 )
