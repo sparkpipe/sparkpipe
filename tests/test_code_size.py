@@ -731,7 +731,20 @@ from pathlib import Path
 # by position between a spec and a no-spec run names whether a verify/replay
 # frame corrupts, the restore is incomplete, or the state is exonerated.
 # 174488 is the exact count.
-CEILING = 174488
+# +183: THE silent-divergence fix (kernel lane, hardware-measured) + the round
+# audit tool. The module has TWO recurrence implementations - the chunk path
+# (every prefill-shaped frame: prompt prefill, verify, REPLAY) and the step
+# path (plain decodes) - and a GPU validator proved 78% of the GDN state
+# differs between them at fp32-rounding magnitude; a recurrence REMEMBERS the
+# accumulated difference. Every spec round substituted a chunk-built state
+# for the step-built state the golden trajectory holds, accumulating once per
+# round: the acceptance decay, the tap divergence from position 235, and the
+# non-golden C0 at the first thin margin. The replay now walks the STEP path
+# (bit-identical to the decode sequence it replaces); the prompt prefill and
+# the verify keep the chunk path (no asymmetry - the no-spec run prefills the
+# same way, and the verify's state is discarded by the restore).
+# 174671 is the exact count.
+CEILING = 174671
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

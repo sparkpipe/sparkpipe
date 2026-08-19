@@ -105,6 +105,9 @@ typedef struct SparkQwen36ModuleSlot
 	float *dspark_selector_edges;
 	uint32_t *dspark_selector_slots;
 	uint32_t mtp_seed_row;
+	/* Set per frame in RunFrame: the GDN path choice below needs the frame kind,
+	 * and the per-layer runner does not see the frame context. */
+	uint32_t replay_frame;
 	uint32_t host_row_cold[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t host_slot_mapping[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
 	uint32_t host_context_lengths[SPARK_QWEN36_MODULE_STAGED_ROW_CAPACITY];
@@ -1042,6 +1045,36 @@ static cudaError_t SparkQwen36ModuleRunGdnCoreDecode(SparkQwen36ModuleState *sta
 	return(error);
 }
 
+/*
+ * Replay GDN core: the committed positions a verify frame destroyed, re-walked
+ * through the DECODE path so the rebuilt state is bit-identical to the state a
+ * no-spec run would hold at the same positions. The step kernels are row-indexed,
+ * so the frame's rows are staged as one lane repeated - the same shape a decode
+ * batch of that many rows would present - and every row is WARM (the restore put
+ * the lane's state back before this walk).
+ */
+static cudaError_t SparkQwen36ModuleRunGdnCoreReplay(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, const SparkQwen36GdnLayerWeights *weights, uint32_t lane, uint32_t rows, uint32_t ordinal)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint32_t row;
+	cudaError_t error;
+	/* host_row_cold is the narrower of the two staging arrays, so it sets the
+	 * bound: a replay walks min_accepted + 2 rows, far below either. */
+	if ( rows > SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT )
+		return(cudaErrorInvalidValue);
+	for (row = 0u; row < rows; row++)
+	{
+		slot->host_row_lane_indices[row] = lane;
+		slot->host_row_cold[row] = 0u;
+	}
+	error = cudaMemcpyAsync(slot->row_lane_indices,slot->host_row_lane_indices,(size_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->row_cold,slot->host_row_cold,(size_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = SparkQwen36ModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
+	return(error);
+}
+
 // Prefill GDN core: conv over the whole frame with the carried tail, then
 // the 64-token chunk sequence per slice of the frame; looping chunks on the
 // one slot stream serializes the state dependency for free.
@@ -1086,8 +1119,39 @@ static SparkStatus SparkQwen36ModuleRunGdnLayer(SparkQwen36ModuleState *state, S
 		error = SparkQwen36LaunchLinear(stream,&weights->decay,slot->normalized_bf16,slot->decay_pre_bf16,rows);
 	if ( error != cudaSuccess && rows >= 32u )
 		fprintf(stderr, "%s gdn_decay_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
+	/*
+	 * PATH CHOICE IS A LOSSLESSNESS CONTRACT, not a performance detail.
+	 *
+	 * The chunk path (ChunkConv + GdnChunk) and the step path (ConvUpdate +
+	 * GdnStep) compute the same recurrence with different arithmetic, and the
+	 * hardware validator's spec_path_equivalence case measures the gap: over
+	 * eight tokens, 616637 of 786432 state elements differ, worst 4.5e-08 - fp32
+	 * rounding, not a logic error, but a recurrence REMEMBERS it.
+	 *
+	 * A no-spec run walks committed positions with the STEP path, one decode row
+	 * at a time. A speculative round's REPLAY re-walks those same committed
+	 * positions to rebuild the state the verify destroyed - and it is a prefill
+	 * frame, so it used the CHUNK path. Every round therefore substituted a
+	 * chunk-built state for a step-built one, the difference accumulated round
+	 * after round, the drafter's context drifted (accepted count decays 1.78 ->
+	 * 0.44 across a window's clean prefix) and the target's own argmax eventually
+	 * flipped at a thin margin: a non-golden C0 with a clean accounting audit,
+	 * which is exactly the roleplay-307 / coding-364 signature.
+	 *
+	 * A replay walks at most min_accepted + 2 rows, so the step path costs
+	 * nothing here, and the k-row step launch is bit-identical to k sequential
+	 * one-row launches (the row serialization landed for exactly that property).
+	 * The prompt prefill keeps the chunk path: the no-spec run prefills the same
+	 * way, so no asymmetry exists there.
+	 */
 	if ( error == cudaSuccess )
-		error = prefill != 0 ? SparkQwen36ModuleRunGdnCorePrefill(state,slot,weights,prefill->lane_index,rows,ordinal) : SparkQwen36ModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
+	{
+		uint32_t replay = prefill != 0 && slot->replay_frame != 0u ? 1u : 0u;
+		if ( replay != 0u )
+			error = SparkQwen36ModuleRunGdnCoreReplay(state,slot,weights,prefill->lane_index,rows,ordinal);
+		else
+			error = prefill != 0 ? SparkQwen36ModuleRunGdnCorePrefill(state,slot,weights,prefill->lane_index,rows,ordinal) : SparkQwen36ModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
+	}
 	if ( error != cudaSuccess && rows >= 32u )
 		fprintf(stderr, "%s gdn_core_failed rows=%u err=%d\n", SPARK_QWEN36_MODULE_TAG, rows, (int)error);
 	if ( error == cudaSuccess )
@@ -2512,7 +2576,9 @@ static void SparkQwen36ModuleStateFingerprint(SparkQwen36ModuleState *state, Spa
 static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, SparkQwen36ResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, const SparkQwen36PrefillFrameView *prefill, uint32_t rows)
 {
 	uint64_t frame_start = state->profile_enabled != 0u ? SparkQwen36ProfileNow() : 0ull;
-	SparkStatus status = SparkQwen36ModuleUploadRows(state,slot,context,frame,prefill,rows);
+	SparkStatus status;
+	slot->replay_frame = prefill != 0 && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u ? 1u : 0u;
+	status = SparkQwen36ModuleUploadRows(state,slot,context,frame,prefill,rows);
 	uint32_t layer;
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u )
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
