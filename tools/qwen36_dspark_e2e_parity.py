@@ -30,6 +30,25 @@ def read_c0(path: str) -> int:
     return struct.unpack("<I", open(path, "rb").read(4))[0]
 
 
+def read_drafts(path: str) -> np.ndarray:
+    raw = np.fromfile(path, dtype=np.uint32)
+    assert raw.size == ref.BLOCK - 1, (raw.size, "drafts")
+    return raw
+
+
+def selector_drafts(hidden: np.ndarray, logits: np.ndarray, c0: int, drafter: dict) -> np.ndarray:
+    """The reference's selector tail: stable top-16 -> gate -> lattice -> walk."""
+    mask_logits = logits[1:]
+    top_ids = np.argsort(-mask_logits, axis=-1, kind="stable")[:, :ref.SELECTOR_TOP_K]
+    unary = np.take_along_axis(mask_logits, top_ids, axis=-1)
+    hproj = ref.bf16(hidden[1:] @ drafter["candidate_selector.hidden_projection.weight"].T)
+    scores = ref._score_edges(
+        drafter["candidate_selector.predecessor_codebook"],
+        drafter["candidate_selector.successor_codebook"],
+        top_ids[None], unary[None], hproj[None], np.array([c0]), ref.SELECTOR_TOP_K)[0]
+    return np.asarray(ref._greedy_walk(scores, top_ids), dtype=np.uint32)
+
+
 def read_base_logits(path: str) -> np.ndarray:
     raw = np.fromfile(path, dtype=np.uint16)
     assert raw.size % ref.VOCAB == 0, (raw.size, "base logits")
@@ -59,7 +78,7 @@ def forward(taps: np.ndarray, c0: int, base_pos: float) -> np.ndarray:
 
     hidden = ref.bf16(ref.rms_norm(x, drafter["norm.weight"]))
     logits = (hidden @ lm_head.T).astype(np.float32)
-    return ref.bf16_to_f32(ref.f32_to_bf16(logits)), hidden
+    return ref.bf16_to_f32(ref.f32_to_bf16(logits)), hidden, drafter
 
 
 def main() -> int:
@@ -76,7 +95,7 @@ def main() -> int:
     c0 = read_c0(c0_p)
     print(f"taps shape={taps.shape} c0={c0} base_pos={base_pos}")
 
-    ref_logits, hidden = forward(taps, c0, base_pos)
+    ref_logits, hidden, drafter = forward(taps, c0, base_pos)
     print(f"ref logits {ref_logits.shape}; hidden[0][:4]={hidden[0][:4].tolist()}")
     np.save("/tmp/dspark_ref_logits.npy", ref_logits.astype(np.float32))
 
@@ -97,7 +116,23 @@ def main() -> int:
         d = np.abs(a - r).max()
         print(f"E2E_PARITY PASS ({mask_rows} mask rows bit-exact BF16; f32 max|diff|={d:.3e})")
     else:
-        print(f"module base logits not found at {base_p}; wrote reference logits only")
+        print(f"module base logits not found at {base_p}; the W7 selector path dumps drafts instead")
+
+    # W7 gate: the module's EMITTED draft ids vs the reference's selector tail
+    # (stable top-16 -> context gate -> K x K lattice -> greedy walk). The ids
+    # depend on the whole forward AND the selector, so this is the end-to-end
+    # check that survives the vocabulary-wide logits tile going away.
+    drafts_p = os.environ.get("SPARK_QWEN36_DRAFTS_DUMP", "/tmp/dspark_drafts.bin")
+    if os.path.exists(drafts_p):
+        module_drafts = read_drafts(drafts_p)
+        reference_drafts = selector_drafts(hidden, ref_logits, c0, drafter)
+        print(f"module drafts    = {module_drafts.tolist()}")
+        print(f"reference drafts = {reference_drafts.tolist()}")
+        np.testing.assert_array_equal(module_drafts, reference_drafts,
+                                      err_msg="W7 draft-id mismatch (module selector vs reference selector)")
+        print(f"W7_E2E_PARITY PASS ({module_drafts.size} draft ids equal)")
+    else:
+        print(f"module drafts not found at {drafts_p}; run the module once to dump them")
     return 0
 
 

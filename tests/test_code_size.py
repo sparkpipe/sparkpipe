@@ -459,7 +459,13 @@ from pathlib import Path
 # +4: the slot-0 anchor branch comment (memory-safety-load-bearing -
 # without it the underflow indexes 4.3G out of bounds; do not simplify).
 # 170688 is the exact count.
-CEILING = 170688
+# The kernel lane's W7 replacement lands (+498 net): the selector emit
+# sequence defined ONCE (shared header, module AND host-path validator),
+# the B-vs-B-1 overrun guard, the dead logits tile + host codebook
+# mirrors deleted, the e2e rail's drafts gate. Host-path PARITY at
+# tie+full with a mutation test.
+# 171186 is the exact count.
+CEILING = 171186
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
