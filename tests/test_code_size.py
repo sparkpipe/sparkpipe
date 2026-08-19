@@ -451,7 +451,12 @@ from pathlib import Path
 # validator cannot force walk ties, so this closes that coverage gap;
 # mutation-verified 5/5).
 # 170527 is the exact count.
-CEILING = 170527
+# +157: the rule-proving harness upgrades the main selector validator:
+# the tie scale forces 14/14 tied walk maxima (>= walk moves 14/14) and
+# the truncation discriminator proves BF16-before-selection at full
+# scale (67/224 ids differ) with --require-discriminating anti-rot.
+# 170684 is the exact count.
+CEILING = 170684
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -2,7 +2,15 @@
 #
 # DFlash2 candidate-selector parity: numpy oracle vs the CUDA kernels.
 #
-# usage: validate_qwen36_dflash2_selector_cuda.sh [smoke|mid|full] [OUTPUT_DIRECTORY]
+# usage: validate_qwen36_dflash2_selector_cuda.sh [smoke|mid|full|tie] [OUTPUT_DIRECTORY]
+#
+# The "tie" scale is the rule discriminator: its logits are large enough that
+# the BF16 truncation collapses distinct values, its head rows are paired so
+# every logit ties exactly, and its codebook span is zero so each lattice row
+# collapses onto those tied unary logits. It is run with
+# --require-discriminating, so it FAILS if it ever stops separating
+# truncate-then-select from select-then-truncate, or strict-greater first-max
+# from a >= walk.
 #
 # Builds the case with tools/qwen36_dflash2_selector_case.py (which runs the
 # oracles in tools/qwen36_dspark_reference.py), compiles the module's CUDA
@@ -19,9 +27,13 @@ nvcc_binary="${NVCC:-nvcc}"
 cuda_architecture="${CUDA_ARCH:-sm_121a}"
 
 case "${scale}" in
-smoke|mid|full) ;;
-*) echo "scale must be smoke, mid or full" >&2; exit 2 ;;
+smoke|mid|full|tie) ;;
+*) echo "scale must be smoke, mid, full or tie" >&2; exit 2 ;;
 esac
+validator_flags=()
+if [[ "${scale}" == "tie" ]]; then
+    validator_flags+=(--require-discriminating)
+fi
 if ! command -v "${nvcc_binary}" >/dev/null 2>&1; then
     echo "DFlash2 selector validation requires nvcc from CUDA 13" >&2
     exit 2
@@ -53,4 +65,4 @@ echo "== compiling for ${cuda_architecture}"
     -o "${binary}"
 
 echo "== running"
-"${binary}" "${case_file}"
+"${binary}" "${case_file}" "${validator_flags[@]+${validator_flags[@]}}"
