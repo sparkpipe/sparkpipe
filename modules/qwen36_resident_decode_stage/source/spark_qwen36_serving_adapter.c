@@ -1529,6 +1529,23 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		 * SELECTS the accepted-prefix state (snapshot_index = min_accepted+1,
 		 * the row whose walk covered [C0, d1..d_a]) and this frame walks only
 		 * the correction - the token the verify did not walk. */
+		{
+			const char *sel_env = getenv("SPARK_QWEN36_DFLASH2_STATE_SELECT");
+			if ( sel_env == 0 || sel_env[0] == '0' )
+			{
+				/* default: the validated replay re-walk */
+				uint32_t d2;
+				replay_rows = min_accepted + 2u;
+				replay_tokens[0] = spec->committed_ids[0];
+				for (d2 = 1u; d2 <= min_accepted; d2++)
+					replay_tokens[d2] = spec->draft_ids[d2];
+				replay_tokens[min_accepted + 1u] = spec->emitted_ids[min_accepted];
+				replay_base = spec->base_position;
+				gdn_snapshot.snapshot_index = spec->snapshot_index;
+				status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST,0,0,&gdn_snapshot,1u);
+				goto replay_done;
+			}
+		}
 		replay_rows = 1u;
 		replay_tokens[0] = spec->emitted_ids[min_accepted];
 		replay_base = spec->base_position + min_accepted + 1u;
@@ -1537,6 +1554,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
 		gdn_snapshot.snapshot_index = min_accepted >= 7u ? 7u : min_accepted;
 		status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW,0,0,&gdn_snapshot,1u);
+		replay_done:;
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr, "qwen36_spec_diag replay_frame_failed lane=%u status=%d\n", lane, (int)status);
 		if ( status == SPARK_STATUS_OK )

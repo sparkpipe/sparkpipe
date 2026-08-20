@@ -232,6 +232,7 @@ typedef struct SparkQwen36ModuleState
 	 * reduces: GDN branch, ATTN branch, FFN, and the head tail. */
 	uint32_t profile_enabled;
 	uint32_t tap_capture_enabled;
+	uint32_t dflash2_state_select;
 	uint32_t tap_dump_nth;
 	uint32_t tap_capture_count;
 	uint64_t profile_gdn_spin_nanos;
@@ -1108,7 +1109,7 @@ static SparkStatus SparkQwen36ModuleRunGdnLayer(SparkQwen36ModuleState *state, S
 	{
 		if ( prefill != 0 && slot->replay_frame != 0u )
 			error = SparkQwen36ModuleRunGdnCoreReplay(state,slot,weights,prefill->lane_index,rows,ordinal);
-		else if ( prefill != 0 && slot->verify_frame != 0u && state->snapshot_state_f32 != 0 )
+		else if ( prefill != 0 && slot->verify_frame != 0u && state->snapshot_state_f32 != 0 && state->dflash2_state_select != 0u )
 			error = SparkQwen36ModuleRunGdnCoreReplaySnap(state,slot,weights,prefill->lane_index,rows,ordinal);
 		else
 			error = prefill != 0 ? SparkQwen36ModuleRunGdnCorePrefill(state,slot,weights,prefill->lane_index,rows,ordinal) : SparkQwen36ModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
@@ -3003,7 +3004,9 @@ SparkStatus SparkQwen36ResidentDecodeStageInitialize(
          * N=0 dumps every capture. */
         const char *capture_env = getenv("SPARK_QWEN36_STAGE_TAP_CAPTURE");
         const char *dump_env = getenv("SPARK_QWEN36_DFLASH2_TAP_DUMP_N");
+        const char *sel_env = getenv("SPARK_QWEN36_DFLASH2_STATE_SELECT");
         state->tap_capture_enabled = capture_env != 0 && strcmp(capture_env, "0") != 0 ? 1u : 0u;
+        state->dflash2_state_select = sel_env != 0 && strcmp(sel_env, "0") != 0 ? 1u : 0u;
         state->tap_dump_nth = dump_env != 0 ? (uint32_t)strtoul(dump_env,0,0) : 0xFFFFFFFFu;
         state->tap_capture_count = 0u;
     }

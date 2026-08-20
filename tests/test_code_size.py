@@ -506,7 +506,10 @@ from pathlib import Path
 # +8: the conv-tail per-row checkpoint (full bf16 elements - the
 # first attempt never landed and the restore read stale tails).
 # 169634 is the exact count.
-CEILING = 169634
+# +23: SPARK_QWEN36_DFLASH2_STATE_SELECT env gate (default OFF =
+# the validated replay path; the select path stays opt-in WIP).
+# 169657 is the exact count.
+CEILING = 169657
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
