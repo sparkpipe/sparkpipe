@@ -494,7 +494,16 @@ from pathlib import Path
 # 169561 is the exact count.
 # +7: anchor-id dump with the ctx round.
 # 169568 is the exact count.
-CEILING = 169568
+# +85: state-select verify (the vLLM shape) - per-row GDN state+tail
+# checkpoints in the step kernels, checkpoint-select restore, 1-row replay.
+# 169653 is the exact count.
+# +2: checkpoint alloc moved after pool strides.
+# 169655 is the exact count.
+# -30: checkpoints reuse the GDN snapshot pool (no new buffers).
+# 169625 is the exact count.
+# +1: whitelist the select-restore flag.
+# 169626 is the exact count.
+CEILING = 169626
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

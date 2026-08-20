@@ -1524,17 +1524,19 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		 * position, so the replay must re-walk it too: the committed token
 		 * C0, the accepted drafts, and the correction. draft[0] is not used
 		 * (it predicted the already-committed position). */
-		replay_rows = min_accepted + 2u;
-		replay_tokens[0] = spec->committed_ids[0];
-		for (draft=1u; draft<=min_accepted; draft++)
-			replay_tokens[draft] = spec->draft_ids[draft];
-		replay_tokens[min_accepted + 1u] = spec->emitted_ids[min_accepted];
-		replay_base = spec->base_position;
+		/* The replay is now ONE row (the correction): the verify walked the
+		 * step path with per-row checkpoints, so GDN_RESTORE_VERIFY_ROW
+		 * SELECTS the accepted-prefix state (snapshot_index = min_accepted+1,
+		 * the row whose walk covered [C0, d1..d_a]) and this frame walks only
+		 * the correction - the token the verify did not walk. */
+		replay_rows = 1u;
+		replay_tokens[0] = spec->emitted_ids[min_accepted];
+		replay_base = spec->base_position + min_accepted + 1u;
 		memset(&gdn_snapshot,0,sizeof(gdn_snapshot));
 		gdn_snapshot.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 		gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
-		gdn_snapshot.snapshot_index = spec->snapshot_index;
-		status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST,0,0,&gdn_snapshot,1u);
+		gdn_snapshot.snapshot_index = min_accepted >= 7u ? 7u : min_accepted;
+		status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW,0,0,&gdn_snapshot,1u);
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr, "qwen36_spec_diag replay_frame_failed lane=%u status=%d\n", lane, (int)status);
 		if ( status == SPARK_STATUS_OK )

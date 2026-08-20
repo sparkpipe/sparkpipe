@@ -144,7 +144,7 @@ static __device__ __forceinline__ float SparkQwen36RopeFrequency(uint32_t pair)
 // (row, channel), window = carried tail (3) plus the fresh projection, dot
 // with the 4-tap weight, silu, then rotate the tail in place. Cold rows read
 // a zero tail. Matches causal_conv1d_update with bias absent.
-static __global__ void SparkQwen36ConvUpdateKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
+static __global__ void SparkQwen36ConvUpdateKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride, uint8_t *row_snap_tails, uint64_t snap_tail_lane_stride, uint64_t snap_tail_layer_stride)
 {
 	uint32_t row,channel = (blockIdx.x * blockDim.x) + threadIdx.x;
 	uint64_t tail_base;
@@ -211,7 +211,7 @@ static __global__ void SparkQwen36DecayBetaKernel(const void *decay_pre_bf16, co
  * read-out. State is fp32 in the resident pool and updated in place; cold
  * rows start from zero without a separate memset pass.
  */
-static __global__ void SparkQwen36GdnStepKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *state_f32, void *core_out_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride)
+static __global__ void SparkQwen36GdnStepKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *state_f32, void *core_out_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride, float *row_snap_states, uint64_t snap_lane_stride, uint64_t snap_layer_stride)
 {
     extern __shared__ float state_shared[];
     __shared__ float qn[SPARK_QWEN36_CUDA_DK];
@@ -304,6 +304,14 @@ static __global__ void SparkQwen36GdnStepKernel(const void *conv_out_bf16, const
     {
         state_index = (element * SPARK_QWEN36_CUDA_DV) + column;
         state_f32[state_base + state_index] = state_shared[state_index];
+        /* Per-row checkpoint (the vLLM select shape): after row r's update,
+         * this layer's head state lands at [row][layer] so the accept loop
+         * can SELECT the accepted-prefix state instead of re-walking. */
+        if ( row_snap_states != 0 )
+            row_snap_states[
+                ((uint64_t)row * snap_lane_stride) +
+                ((uint64_t)gdn_layer_ordinal * snap_layer_stride) +
+                ((uint64_t)head * SPARK_QWEN36_CUDA_GDN_STATE_ELEMENTS) + state_index] = state_shared[state_index];
     }
     __syncthreads();
     }
@@ -1867,10 +1875,10 @@ extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQ
 	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 }
 
-extern "C" cudaError_t SparkQwen36LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen36GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen36GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal)
+extern "C" cudaError_t SparkQwen36LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen36GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen36GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint8_t *row_snap_tails, uint64_t snap_tail_lane_stride, uint64_t snap_tail_layer_stride)
 {
 	dim3 grid((SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS) + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,1u,1u);
-	SparkQwen36ConvUpdateKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,weights->conv_weight_bf16,conv_out_bf16,pool->conv_tail_bf16,row_lane_indices,pool->state_cold_by_row,row_count,gdn_layer_ordinal,pool->conv_tail_lane_stride_elements,pool->conv_tail_layer_stride_elements);
+	SparkQwen36ConvUpdateKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,weights->conv_weight_bf16,conv_out_bf16,pool->conv_tail_bf16,row_lane_indices,pool->state_cold_by_row,row_count,gdn_layer_ordinal,pool->conv_tail_lane_stride_elements,pool->conv_tail_layer_stride_elements,row_snap_tails,snap_tail_lane_stride,snap_tail_layer_stride);
 	return(cudaGetLastError());
 }
 
@@ -1880,7 +1888,7 @@ extern "C" cudaError_t SparkQwen36LaunchDecayBeta(cudaStream_t stream, const voi
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen36LaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkQwen36GdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal)
+extern "C" cudaError_t SparkQwen36LaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkQwen36GdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, float *row_snap_states, uint64_t snap_lane_stride, uint64_t snap_layer_stride)
 {
     dim3 grid(
         SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_VALUE_HEADS),
@@ -1901,7 +1909,10 @@ extern "C" cudaError_t SparkQwen36LaunchGdnStep(cudaStream_t stream, const void 
             row_count,
             gdn_layer_ordinal,
             pool->state_lane_stride_elements,
-            pool->state_layer_stride_elements);
+            pool->state_layer_stride_elements,
+            row_snap_states,
+            snap_lane_stride,
+            snap_layer_stride);
     return cudaGetLastError();
 }
 
