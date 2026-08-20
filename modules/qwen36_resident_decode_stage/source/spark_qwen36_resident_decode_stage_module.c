@@ -2144,8 +2144,8 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	 * worse, and the recurrence races (now serialized) were what killed
 	 * iterations 2+. */
 	const uint64_t base = view->base_position;
-	const uint32_t window = 1u;
-	const uint64_t window_base = base - 1u;
+	const uint32_t window = (uint32_t)(base - 1u < 2048u ? base - 1u : 2048u);
+	const uint64_t window_base = base - 1u - window;
 	const uint32_t nkv = window + B;
 	uint16_t *ctx_kv = (uint16_t *)state->dflash_ctx_kv;
 	uint16_t *kv_k;
