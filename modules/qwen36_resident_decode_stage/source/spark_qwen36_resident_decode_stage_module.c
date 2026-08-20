@@ -1041,7 +1041,7 @@ static cudaError_t SparkQwen36ModuleRunGdnCoreReplaySnap(SparkQwen36ModuleState 
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	uint32_t row;
 	cudaError_t error;
-	if ( rows > 8u || state->snapshot_state_f32 == 0 )
+	if ( rows > 8u || state->snapshot_state_f32 == 0 || state->gdn_snapshot_slot_count < SPARK_QWEN36_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE + 8u )
 		return(cudaErrorInvalidValue);
 	for (row = 0u; row < rows; row++)
 	{
@@ -1052,7 +1052,7 @@ static cudaError_t SparkQwen36ModuleRunGdnCoreReplaySnap(SparkQwen36ModuleState 
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(slot->row_cold,slot->host_row_cold,(size_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
-		error = SparkQwen36ModuleRunGdnCoreDecodeSnap(state,slot,weights,rows,ordinal,state->snapshot_state_f32,state->gdn_pool.state_lane_stride_elements,state->gdn_pool.state_layer_stride_elements,(uint8_t *)state->snapshot_tail_bf16,state->gdn_pool.conv_tail_lane_stride_elements * 2u,state->gdn_pool.conv_tail_layer_stride_elements * 2u);
+		error = SparkQwen36ModuleRunGdnCoreDecodeSnap(state,slot,weights,rows,ordinal,(float *)state->snapshot_state_f32 + (uint64_t)SPARK_QWEN36_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE * state->gdn_pool.state_lane_stride_elements,state->gdn_pool.state_lane_stride_elements,state->gdn_pool.state_layer_stride_elements,(uint8_t *)state->snapshot_tail_bf16 + (uint64_t)SPARK_QWEN36_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE * state->gdn_pool.conv_tail_lane_stride_elements * 2u,state->gdn_pool.conv_tail_lane_stride_elements * 2u,state->gdn_pool.conv_tail_layer_stride_elements * 2u);
 	return(error);
 }
 
@@ -1109,7 +1109,7 @@ static SparkStatus SparkQwen36ModuleRunGdnLayer(SparkQwen36ModuleState *state, S
 	{
 		if ( prefill != 0 && slot->replay_frame != 0u )
 			error = SparkQwen36ModuleRunGdnCoreReplay(state,slot,weights,prefill->lane_index,rows,ordinal);
-		else if ( prefill != 0 && slot->verify_frame != 0u && state->snapshot_state_f32 != 0 && state->dflash2_state_select != 0u )
+		else if ( prefill != 0 && slot->verify_frame != 0u && state->snapshot_state_f32 != 0 && state->dflash2_state_select != 0u && state->gdn_snapshot_slot_count >= SPARK_QWEN36_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE + 8u )
 			error = SparkQwen36ModuleRunGdnCoreReplaySnap(state,slot,weights,prefill->lane_index,rows,ordinal);
 		else
 			error = prefill != 0 ? SparkQwen36ModuleRunGdnCorePrefill(state,slot,weights,prefill->lane_index,rows,ordinal) : SparkQwen36ModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
@@ -2546,12 +2546,12 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	 * step checkpoints (slot = row) replace it. */
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u )
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,1u);
-	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW) != 0u )
+	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW) != 0u && state->gdn_snapshot_slot_count >= SPARK_QWEN36_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE + 8u )
 	{
 		/* SELECT the verify's row-N checkpoint (the vLLM shape): the step
-		 * kernels wrote slot=row during the verify walk; this restores the
-		 * accepted-prefix state+tail, replacing the re-walk. */
-		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,1u);
+		 * kernels wrote slots 8+row during the verify walk; this restores
+		 * the accepted-prefix state+tail, replacing the re-walk. */
+		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,SPARK_QWEN36_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE + context->gdn_snapshot->snapshot_index,1u);
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleBeginHidden(state,slot,context,rows);

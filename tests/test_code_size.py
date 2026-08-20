@@ -509,7 +509,9 @@ from pathlib import Path
 # +23: SPARK_QWEN36_DFLASH2_STATE_SELECT env gate (default OFF =
 # the validated replay path; the select path stays opt-in WIP).
 # 169657 is the exact count.
-CEILING = 169657
+# +2: checkpoint slot-base wiring.
+# 169659 is the exact count.
+CEILING = 169659
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

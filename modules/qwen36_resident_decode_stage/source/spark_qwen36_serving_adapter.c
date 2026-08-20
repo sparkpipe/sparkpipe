@@ -488,7 +488,7 @@ static SparkStatus SparkQwen36ServingSetEnvironment(
 		/* The GDN snapshot is used by BOTH the MTP verify and the block-drafter
 		 * verify/replay; only the MTP module itself is suppressed for the
 		 * dspark/dflash2 methods. */
-		SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS",SPARK_QWEN36_SERVING_GDN_SNAPSHOT_SLOTS);
+		SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS",SparkQwen36ServingBlockDraftMethod(SparkQwen36ServingSpecMethod()) ? 16u : SPARK_QWEN36_SERVING_GDN_SNAPSHOT_SLOTS);
 		if ( !SparkQwen36ServingBlockDraftMethod(SparkQwen36ServingSpecMethod()) )
 			SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_MTP","1");
 		else
