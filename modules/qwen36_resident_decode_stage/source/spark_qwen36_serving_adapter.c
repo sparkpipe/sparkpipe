@@ -1374,15 +1374,12 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		spec->draft_token_count = draft_count;
 		if ( SparkQwen36ServingBlockDraftMethod(spec_method) )
 		{
-			if ( spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2 && state->dflash2_drafts_valid != 0u && state->dflash2_draft_sequence_id == sequence )
 			{
-				/* Iterations 2+: the verify tail already re-drafted with
-				 * state-consistent taps; this decode frame only advances the
-				 * target (it writes the anchor's KV row). */
-				status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,0u,&token,&position,&sequence,1u,0u,submission->sequence_id,submission->sequence_position,0u,0,0,0,1u);
-			}
-			else
-			{
+				/* Draft on EVERY decode frame: the anchor must be this round's
+				 * C0 = the decode's own emission (the oracle-verified winner;
+				 * at a replay tail output_token_ids holds the replay emission,
+				 * which drafts from the wrong token). */
+			
 				memset(&dspark_draft,0,sizeof(dspark_draft));
 				dspark_draft.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION;
 				dspark_draft.descriptor_bytes = sizeof(dspark_draft);
@@ -1395,8 +1392,6 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 				dspark_draft.tap_buffer = 0;
 				dspark_draft.draft_token_ids = state->dflash2_next_draft_ids;
 				status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,0u,&token,&position,&sequence,1u,0u,submission->sequence_id,submission->sequence_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER,0,&dspark_draft,0,1u);
-				state->dflash2_drafts_valid = 1u;
-				state->dflash2_draft_sequence_id = sequence;
 			}
 		}
 		else
@@ -1529,30 +1524,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		gdn_snapshot.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 		gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
 		gdn_snapshot.snapshot_index = spec->snapshot_index;
-		if ( spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2 )
-		{
-			/* Re-draft at the REPLAY tail: the replay's last row is the last
-			 * committed token, walked by the same prefill kernels that verify
-			 * every committed position - its hiddens (the taps) match the
-			 * committed trajectory. The anchor is the replay's emission (the
-			 * first candidate after it). A decode-frame draft instead reads
-			 * decode-kernel hiddens over the prefill-written state, which
-			 * drifts (measured 5-16% by layer 47) and collapses acceptance. */
-			memset(&dspark_draft,0,sizeof(dspark_draft));
-			dspark_draft.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION;
-			dspark_draft.descriptor_bytes = sizeof(dspark_draft);
-			dspark_draft.block_size = draft_count;
-			dspark_draft.draft_token_count = draft_count - 1u;
-			dspark_draft.sequence_id = spec->sequence_id;
-			dspark_draft.base_position = replay_base + replay_rows;
-			dspark_draft.tap_buffer = 0;
-			dspark_draft.draft_token_ids = state->dflash2_next_draft_ids;
-			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER,0,&dspark_draft,&gdn_snapshot,1u);
-		}
-		else
-		{
-			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST,0,0,&gdn_snapshot,1u);
-		}
+		status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST,0,0,&gdn_snapshot,1u);
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr, "qwen36_spec_diag replay_frame_failed lane=%u status=%d\n", lane, (int)status);
 		if ( status == SPARK_STATUS_OK )
