@@ -2145,6 +2145,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	 * iterations 2+. */
 	const uint64_t base = view->base_position;
 	uint32_t wnd;
+	uint32_t ctx_tail;
 	/* env-tunable recent-context bound: the numpy sweep hit draft[1] with a
 	 * 15-row recent window while the full 0..base-2 window missed - the
 	 * drafter's attention sinks on early positions (vLLM ships optional
@@ -2157,7 +2158,15 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	}
 	const uint32_t window = wnd;
 	const uint64_t window_base = base - 1u - window;
-	const uint32_t nkv = window + B;
+	/* The verify-forward tail (vLLM's context shape): extend the context past
+	 * the committed prefix into the stale tap rows the LAST verify walk wrote
+	 * (the rejected drafts' target hiddens). vLLM's context KV includes the
+	 * verify's own rows; SPARK_QWEN36_DFLASH2_CTX_TAIL=N adds N such rows. */
+	{
+		const char *tenv = getenv("SPARK_QWEN36_DFLASH2_CTX_TAIL");
+		ctx_tail = tenv != 0 ? (uint32_t)strtoul(tenv,0,0) : 0u;
+	}
+	const uint32_t nkv = window + ctx_tail + B;
 	uint16_t *ctx_kv = (uint16_t *)state->dflash_ctx_kv;
 	uint16_t *kv_k;
 	uint16_t *kv_v;
@@ -2185,8 +2194,10 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		error = SparkQwen36LaunchEmbeddingGather(stream,slot->dspark_mask_token_ids,state->token_embedding_bf16,block_hidden + H,B - 1u);
 	/* 3) prep positions: window rows at window_base..base-1, block rows at
 	 * base..base+B-1 (k norm+rope and q rope are absolute). */
-	for (layer = 0u; layer < nkv; layer++)
+	for (layer = 0u; layer < window + ctx_tail; layer++)
 		state->dflash_positions_host[layer] = window_base + layer;
+	for (layer = 0u; layer < B; layer++)
+		state->dflash_positions_host[window + ctx_tail + layer] = base - 1u + layer;
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(state->dflash_positions,state->dflash_positions_host,(size_t)nkv * sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
 	status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"dflash2_head_init");
@@ -2261,9 +2272,9 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->v,state->dflash_ctx_normed,kv_v,window);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->k,conv_h,kv_k + (uint64_t)window * 1024u,B);
+			error = SparkQwen36LaunchLinear(stream,&lw->k,conv_h,kv_k + (uint64_t)(window + ctx_tail) * 1024u,B);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->v,conv_h,kv_v + (uint64_t)window * 1024u,B);
+			error = SparkQwen36LaunchLinear(stream,&lw->v,conv_h,kv_v + (uint64_t)(window + ctx_tail) * 1024u,B);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchDsparkCacheAttn(stream,q,kv_k,kv_v,lw->q_norm_bf16,lw->k_norm_bf16,state->dflash_positions,attn_out,B,nkv,window);
 		if ( layer == 0u && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
