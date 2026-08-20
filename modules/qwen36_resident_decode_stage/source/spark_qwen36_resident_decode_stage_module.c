@@ -2181,12 +2181,13 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"dflash2_head_init");
 	if ( status == SPARK_STATUS_OK && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
 	{
-		static int ctx_dump_done = 0;
-		if ( ctx_dump_done == 0 )
+		static uint32_t ctx_dump_count = 0u;
+		uint32_t ctx_dump_want = (uint32_t)strtoul(getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP"),0,0);
+		ctx_dump_count++;
+		if ( ctx_dump_want == 0u || ctx_dump_count == ctx_dump_want )
 		{
 			FILE *file;
 			uint16_t *host = (uint16_t *)malloc((size_t)5u * H * 2u);
-			ctx_dump_done = 1;
 			if ( cudaMemcpy(host,(const uint8_t *)state->dflash_taps_history + (base - 1u) * 5u * H * 2u,(size_t)5u * H * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
 			{
 				file = fopen("/tmp/ctxdump_taps_last.bin","wb");
@@ -2204,15 +2205,22 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			}
 			free(host);
 			{
-				uint16_t *win = (uint16_t *)malloc((size_t)window * 5u * H * 2u);
-				if ( win != 0 && cudaMemcpy(win,(const uint8_t *)state->dflash_taps_history + window_base * 5u * H * 2u,(size_t)window * 5u * H * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
+				/* the full neighborhood: every position any frame walked around
+				 * this draft (verify rows incl. rejected, replay rows), so the
+				 * numpy sweep can test any context-window convention */
+				uint64_t nb_base = base < 16u ? 0u : base - 16u;
+				uint32_t nb = (uint32_t)(base < 16u ? base + 16u : 32u);
+				uint16_t *win = (uint16_t *)malloc((size_t)nb * 5u * H * 2u);
+				if ( win != 0 && cudaMemcpy(win,(const uint8_t *)state->dflash_taps_history + nb_base * 5u * H * 2u,(size_t)nb * 5u * H * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
 				{
 					FILE *wf = fopen("/tmp/ctxwin_taps.bin","wb");
-					if ( wf != 0 ) { fwrite(win,1,(size_t)window * 5u * H * 2u,wf); fclose(wf); }
+					if ( wf != 0 ) { fwrite(win,1,(size_t)nb * 5u * H * 2u,wf); fclose(wf); }
 				}
 				free(win);
+				file = fopen("/tmp/ctxwin.meta","w");
+				if ( file != 0 ) { fprintf(file,"base=%llu window=%u nb_base=%llu nb=%u\n",(unsigned long long)base,window,(unsigned long long)nb_base,nb); fclose(file); }
 			}
-			fprintf(stderr,"ctxdump base=%llu window=%u\n",(unsigned long long)base,window);
+			fprintf(stderr,"ctxdump run=%u base=%llu window=%u\n",ctx_dump_count,(unsigned long long)base,window);
 		}
 	}
 	for (layer = 0u; status == SPARK_STATUS_OK && layer < SPARK_QWEN36_DSPARK_LAYER_COUNT; layer++)

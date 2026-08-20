@@ -485,7 +485,9 @@ from pathlib import Path
 # +24: bonus-token anchor (the frame's last input row) + the shifted
 # adapter remap - fixes the one-step-late drafts on natural text.
 # 169435 is the exact count.
-CEILING = 169435
+# +8: Nth-run neighborhood tap dump (context-convention sweep).
+# 169443 is the exact count.
+CEILING = 169443
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
