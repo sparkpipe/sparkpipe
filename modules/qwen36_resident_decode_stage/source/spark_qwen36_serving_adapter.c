@@ -627,12 +627,18 @@ static SparkStatus SparkQwen36ServingValidateSubmissionBase(
 		return(SPARK_STATUS_BUSY);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkQwen36ServingDescriptor,&state->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"qwen36_debug validate_runtime status=%d kind=%u rows=%u lanes=%u act=%u tps=%u new_tokens=%u pos=%llu ctx=%llu\\n",(int)status,submission->work_kind,submission->row_count,submission->lane_count,submission->active_sequence_count,submission->tokens_per_sequence,submission->new_token_count,(unsigned long long)submission->sequence_position,(unsigned long long)(submission->active_sequence_count > 0u ? submission->lanes[0].context_token_count : 0u));
 		return(status);
+	}
 	if ( submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkQwen36ServingValidateRowOrder(state,submission);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"qwen36_debug row_order status=%d\\n",(int)status);
 		return(status);
+	}
 	if ( submission->model_extension_bytes != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
 	return(SPARK_STATUS_OK);
@@ -1137,8 +1143,12 @@ static SparkStatus SparkQwen36ServingRunFrame(
 		fprintf(stderr, "qwen36_admit_reject status=%d prefill=%u frame_rows=%u lanes=%u\n", (int)status, prefill, frame_rows, submission->active_sequence_count);
 	if ( status == SPARK_STATUS_OK )
 		status = state->program->submit(state->driver_instance,&frame);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr, "qwen36_debug driver_submit status=%d prefill=%u rows=%u seqpos=%llu tps=%u newtok=%u\n", (int)status, prefill, frame_rows, (unsigned long long)submission->sequence_position, submission->tokens_per_sequence, submission->new_token_count);
 	if ( status == SPARK_STATUS_OK )
 		status = pending->frame_status;
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr, "qwen36_debug frame_status status=%d prefill=%u rows=%u\n", (int)status, prefill, frame_rows);
 	if ( status == SPARK_STATUS_OK && SparkQwen36ServingOwnsFinalHead(state) != 0u )
 	{
 		if ( prefill != 0u )

@@ -1577,10 +1577,16 @@ static SparkStatus SparkQwen36ModuleStagePosition(SparkQwen36ModuleState *state,
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	block_ordinal = (uint32_t)(position / SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
 	if ( lane >= table->lane_count || block_ordinal >= table->host_lane_physical_block_counts[lane] )
+	{
+		fprintf(stderr,"qwen36_debug stage_pos lane=%u ord=%u counts=%u stride=%u pos=%llu\n",lane,block_ordinal,lane < table->lane_count ? table->host_lane_physical_block_counts[lane] : 0u,table->lane_stride,(unsigned long long)position);
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	block = table->host_physical_block_indices[((uint64_t)lane * table->lane_stride) + block_ordinal];
 	if ( block == SPARK_QWEN36_RESIDENT_DECODE_STAGE_NO_BLOCK || block >= state->kv_block_count )
+	{
+		fprintf(stderr,"qwen36_debug stage_noblock lane=%u ord=%u block=%u kv=%u\n",lane,block_ordinal,block,state->kv_block_count);
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	slot->host_slot_mapping[index] = (block * SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) + (uint32_t)(position % SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
 	slot->host_context_lengths[index] = (uint32_t)(position + 1u);
 	return(SPARK_STATUS_OK);
