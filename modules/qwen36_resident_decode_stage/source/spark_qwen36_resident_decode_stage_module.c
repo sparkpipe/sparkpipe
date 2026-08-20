@@ -2144,7 +2144,18 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	 * worse, and the recurrence races (now serialized) were what killed
 	 * iterations 2+. */
 	const uint64_t base = view->base_position;
-	const uint32_t window = (uint32_t)(base - 1u < 2048u ? base - 1u : 2048u);
+	uint32_t wnd;
+	/* env-tunable recent-context bound: the numpy sweep hit draft[1] with a
+	 * 15-row recent window while the full 0..base-2 window missed - the
+	 * drafter's attention sinks on early positions (vLLM ships optional
+	 * attention sinks for exactly this). Default: full. */
+	{
+		const char *wenv = getenv("SPARK_QWEN36_DFLASH2_WINDOW");
+		uint32_t bound = wenv != 0 ? (uint32_t)strtoul(wenv,0,0) : 2048u;
+		uint32_t avail = (uint32_t)(base - 1u < 2048u ? base - 1u : 2048u);
+		wnd = bound < avail ? bound : avail;
+	}
+	const uint32_t window = wnd;
 	const uint64_t window_base = base - 1u - window;
 	const uint32_t nkv = window + B;
 	uint16_t *ctx_kv = (uint16_t *)state->dflash_ctx_kv;
