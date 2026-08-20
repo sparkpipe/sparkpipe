@@ -487,7 +487,10 @@ from pathlib import Path
 # 169435 is the exact count.
 # +8: Nth-run neighborhood tap dump (context-convention sweep).
 # 169443 is the exact count.
-CEILING = 169443
+# +112: layer-0 stage dump Nth-gated to the ctx-dump round (the
+# device-vs-oracle forward divergence bisection on GSM inputs).
+# 169555 is the exact count.
+CEILING = 169555
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

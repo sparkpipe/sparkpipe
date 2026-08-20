@@ -2249,8 +2249,10 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			error = SparkQwen36LaunchDsparkCacheAttn(stream,q,kv_k,kv_v,lw->q_norm_bf16,lw->k_norm_bf16,state->dflash_positions,attn_out,B,nkv,window);
 		if ( layer == 0u && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
 		{
-			static int l0_dump_done = 0;
-			if ( l0_dump_done == 0 )
+			static uint32_t l0_dump_count = 0u;
+			l0_dump_count++;
+			uint32_t l0_want = (uint32_t)strtoul(getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP"),0,0);
+			if ( l0_want == 0u || l0_dump_count == l0_want )
 			{
 				uint32_t rows_sample[5];
 				uint32_t sample_count = window >= 2u ? 5u : window + 2u;
@@ -2262,7 +2264,6 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 				rows_sample[3] = window + 1u;
 				rows_sample[4] = nkv - 1u;
 				cudaStreamSynchronize(stream);
-				l0_dump_done = 1;
 				sf = fopen("/tmp/l0_sample_rows.txt","w");
 				for (si = 0u; si < sample_count; si++)
 					fprintf(sf,"%u\n",rows_sample[si]);
