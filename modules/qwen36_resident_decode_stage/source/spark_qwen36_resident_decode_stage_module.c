@@ -1051,7 +1051,7 @@ static cudaError_t SparkQwen36ModuleRunGdnCoreReplaySnap(SparkQwen36ModuleState 
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(slot->row_cold,slot->host_row_cold,(size_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
-		error = SparkQwen36ModuleRunGdnCoreDecodeSnap(state,slot,weights,rows,ordinal,state->snapshot_state_f32,state->gdn_pool.state_lane_stride_elements,state->gdn_pool.state_layer_stride_elements,(uint8_t *)state->snapshot_tail_bf16,state->gdn_pool.conv_tail_lane_stride_elements,state->gdn_pool.conv_tail_layer_stride_elements);
+		error = SparkQwen36ModuleRunGdnCoreDecodeSnap(state,slot,weights,rows,ordinal,state->snapshot_state_f32,state->gdn_pool.state_lane_stride_elements,state->gdn_pool.state_layer_stride_elements,(uint8_t *)state->snapshot_tail_bf16,state->gdn_pool.conv_tail_lane_stride_elements * 2u,state->gdn_pool.conv_tail_layer_stride_elements * 2u);
 	return(error);
 }
 

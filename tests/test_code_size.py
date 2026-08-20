@@ -503,7 +503,10 @@ from pathlib import Path
 # 169625 is the exact count.
 # +1: whitelist the select-restore flag.
 # 169626 is the exact count.
-CEILING = 169626
+# +8: the conv-tail per-row checkpoint (full bf16 elements - the
+# first attempt never landed and the restore read stale tails).
+# 169634 is the exact count.
+CEILING = 169634
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

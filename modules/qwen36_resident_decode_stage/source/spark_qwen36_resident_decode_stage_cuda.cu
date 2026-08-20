@@ -178,6 +178,18 @@ static __global__ void SparkQwen36ConvUpdateKernel(const void *qkv_bf16, const v
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 0u,window[1]);
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 1u,window[2]);
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 2u,window[3]);
+	if ( row_snap_tails != 0 )
+	{
+		/* Per-row tail checkpoint (full bf16 elements, 3 x 2 bytes per
+		 * channel), indexed [row][layer][channel*3]. */
+		const uint16_t *src16 = (const uint16_t *)conv_tail_bf16 + tail_base;
+		uint16_t *dst16 = (uint16_t *)(row_snap_tails +
+			((uint64_t)row * snap_tail_lane_stride) +
+			((uint64_t)gdn_layer_ordinal * snap_tail_layer_stride)) + channel * 3u;
+		dst16[0u] = src16[0u];
+		dst16[1u] = src16[1u];
+		dst16[2u] = src16[2u];
+	}
 	__syncthreads();
 	}
 }
