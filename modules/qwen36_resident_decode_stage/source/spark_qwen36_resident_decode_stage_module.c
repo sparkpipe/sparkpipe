@@ -2220,7 +2220,15 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 				file = fopen("/tmp/ctxwin.meta","w");
 				if ( file != 0 ) { fprintf(file,"base=%llu window=%u nb_base=%llu nb=%u\n",(unsigned long long)base,window,(unsigned long long)nb_base,nb); fclose(file); }
 			}
-			fprintf(stderr,"ctxdump run=%u base=%llu window=%u\n",ctx_dump_count,(unsigned long long)base,window);
+			{
+				uint32_t anchor_id = 0u;
+				cudaMemcpy(&anchor_id,slot->input_token_ids + (rows - 1u),sizeof(uint32_t),cudaMemcpyDeviceToHost);
+				fprintf(stderr,"ctxdump run=%u base=%llu window=%u anchor=%u\n",ctx_dump_count,(unsigned long long)base,window,anchor_id);
+				{
+					FILE *mf = fopen("/tmp/ctxwin_anchor","w");
+					if ( mf != 0 ) { fprintf(mf,"%u\n",anchor_id); fclose(mf); }
+				}
+			}
 		}
 	}
 	for (layer = 0u; status == SPARK_STATUS_OK && layer < SPARK_QWEN36_DSPARK_LAYER_COUNT; layer++)

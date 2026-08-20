@@ -492,7 +492,9 @@ from pathlib import Path
 # 169555 is the exact count.
 # +6: anchor-id dump in the ctx-dump round.
 # 169561 is the exact count.
-CEILING = 169561
+# +7: anchor-id dump with the ctx round.
+# 169568 is the exact count.
+CEILING = 169568
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
