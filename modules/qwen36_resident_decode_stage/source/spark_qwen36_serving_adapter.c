@@ -175,7 +175,17 @@ static uint32_t SparkQwen36ServingBlockDraftMethod(uint32_t spec_method)
 }
 static uint32_t SparkQwen36ServingActiveDraftCount(uint32_t spec_method)
 {
-	return(SparkQwen36ServingBlockDraftMethod(spec_method) ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE : SparkQwen36ServingSpeculativeDraftCount());
+	if ( !SparkQwen36ServingBlockDraftMethod(spec_method) )
+		return(SparkQwen36ServingSpeculativeDraftCount());
+	/* The verify-depth cap (the DSV4 session's speed lever, unified 052d0e5):
+	 * the module still drafts the full block; the adapter verifies only the
+	 * first k, dropping the surplus. At measured acceptance the verify walk
+	 * dominates the round, so k tunes tokens-per-round-cost directly. */
+	{
+		uint32_t block = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
+		uint32_t cap = SparkQwen36ServingSpeculativeDraftCount();
+		return(cap < block ? cap : block);
+	}
 }
 /* GDN snapshot slots. The two-phase min-accept schedule keeps one verify
  * snapshot in flight per lane, capped by the module's slot ceiling; a lane
