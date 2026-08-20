@@ -247,7 +247,6 @@ static __global__ void SparkQwen36DsparkCacheAttnKernel(
 		float m = -3.4028235e38f;
 		for (kv = 0u; kv < nkv; kv++)
 			m = fmaxf(m, scores[kv]);
-		scores[0] = m; /* reuse slot 0.. no: keep max in total_sum */
 		total_sum = 0.0f;
 		{
 			float local_sum = 0.0f;
