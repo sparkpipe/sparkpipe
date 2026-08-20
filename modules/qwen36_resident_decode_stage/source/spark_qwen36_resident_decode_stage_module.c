@@ -2219,8 +2219,8 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 				/* the full neighborhood: every position any frame walked around
 				 * this draft (verify rows incl. rejected, replay rows), so the
 				 * numpy sweep can test any context-window convention */
-				uint64_t nb_base = base < 16u ? 0u : base - 16u;
-				uint32_t nb = (uint32_t)(base < 16u ? base + 16u : 32u);
+				uint64_t nb_base = 0u;
+				uint32_t nb = (uint32_t)(base < 2048u ? base + 8u : 2056u);
 				uint16_t *win = (uint16_t *)malloc((size_t)nb * 5u * H * 2u);
 				if ( win != 0 && cudaMemcpy(win,(const uint8_t *)state->dflash_taps_history + nb_base * 5u * H * 2u,(size_t)nb * 5u * H * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
 				{
