@@ -511,7 +511,14 @@ from pathlib import Path
 # 169657 is the exact count.
 # +2: checkpoint slot-base wiring.
 # 169659 is the exact count.
-CEILING = 169659
+# +108: the bonus fold (the vLLM round shape, SPARK_QWEN36_DFLASH2_BONUS_FOLD
+# env gate, default OFF) - the correction tail drafts (anchor = its emission)
+# and the next round's verify row 0 walks the client token in the decode
+# walk's place: 3 full-model frames per round drop to 2. Commit math is
+# shape-aware (m+2 folded vs m+3) and the fold disarms on any plain decode,
+# prefill, or bootstrap so desyncs self-heal.
+# 169767 is the exact count.
+CEILING = 169767
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
