@@ -2163,13 +2163,13 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	error = SparkQwen36LaunchLinear(stream,&w->projector,(const uint8_t *)state->dflash_taps_history + window_base * 5u * H * 2u,state->dflash_fc_out,window);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchRmsNorm(stream,state->dflash_fc_out,w->hidden_norm_bf16,state->dflash_ctx_normed,window,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
-	/* 2) block[0] = embed(anchor = the frame's LAST INPUT row, the bonus
-	 * token = the last committed token; the block rows sit at positions
-	 * base-1..base+6 so the drafts predict base..base+6 - the one-step-late
-	 * drafts on natural text (drafts[2]==emitted[1] etc.) were this anchor
-	 * sitting one position ahead). */
+	/* 2) block[0] = embed(anchor = the frame's EMISSION). Measured on the
+	 * GSM round-4 dump: the emission anchor's oracle draft[1] hits the
+	 * truth (220); the input-row ("bonus") anchor echoes the anchor (5632)
+	 * - exactly the device's wrong output. The geometry stays: block rows
+	 * at base-1..base+6, window 0..base-2, drafts predict base..base+6. */
 	if ( error == cudaSuccess )
-		error = SparkQwen36LaunchEmbeddingGather(stream,slot->input_token_ids + (rows - 1u),state->token_embedding_bf16,block_hidden,1u);
+		error = SparkQwen36LaunchEmbeddingGather(stream,slot->output_token_ids,state->token_embedding_bf16,block_hidden,1u);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchEmbeddingGather(stream,slot->dspark_mask_token_ids,state->token_embedding_bf16,block_hidden + H,B - 1u);
 	/* 3) prep positions: window rows at window_base..base-1, block rows at
@@ -2343,7 +2343,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		 * or the replay's output (replay-tail draft, iterations 2+). Both are
 		 * the first candidate token AFTER the tap position. */
 		if ( error == cudaSuccess )
-			error = cudaMemcpyAsync(&prev,slot->input_token_ids + (rows - 1u),sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+			error = cudaMemcpyAsync(&prev,slot->output_token_ids,sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 		if ( error == cudaSuccess )
 			error = cudaStreamSynchronize(stream);
 		if ( error == cudaSuccess )
