@@ -490,7 +490,9 @@ from pathlib import Path
 # +112: layer-0 stage dump Nth-gated to the ctx-dump round (the
 # device-vs-oracle forward divergence bisection on GSM inputs).
 # 169555 is the exact count.
-CEILING = 169555
+# +6: anchor-id dump in the ctx-dump round.
+# 169561 is the exact count.
+CEILING = 169561
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
