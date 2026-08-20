@@ -482,7 +482,10 @@ from pathlib import Path
 # +5: the tap-layer evidence-trail comment (revert to [5,19,33,47,61]
 # after the reference cross-test).
 # 169411 is the exact count.
-CEILING = 169411
+# +24: bonus-token anchor (the frame's last input row) + the shifted
+# adapter remap - fixes the one-step-late drafts on natural text.
+# 169435 is the exact count.
+CEILING = 169435
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
