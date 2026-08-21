@@ -1,9 +1,54 @@
 # DFlash2 Speculative Decoding — Handoff Document
 
-**PR:** #675, branch `qwen38-dflash2`, HEAD `9f970a8`
+**PR:** #675, branch `qwen38-dflash2`, HEAD `506770e` + the argmax-selection session
 **Model:** Qwen/Qwen3.8-27B (FP8 target), DFlash2 block-diffusion drafter (5-layer, hidden 5120, block 8)
 **Hardware:** GB10 Spark (sm_121a), single-GPU B1 serving
-**Date:** 2026-08-22
+**Date:** 2026-08-22 (argmax-selection update)
+
+---
+
+## 0. THE ARGMAX UNLOCK (2026-08-22 session — read this first)
+
+**Problem A is SOLVED.** The acceptance gap was NOT in the forward — it was the draft
+selection rule. The SOTA reference's SERVING path (vLLM `vllm serve`) selects drafts as
+**per-mask-row full-vocab ARGMAX**: the worker loads `DFlashSpeculator` (v1,
+`dflash/speculator.py`), whose `_generate_draft` calls `sample_draft ->
+gumbel_sample(compute_logits(mask-row hiddens))` — greedy == argmax. The codebook lattice
+walk (`_score_edges` + `_selector_walk_kernel` in `dflash2/speculator.py`) is **dead code in
+the serving path** — that module is never imported by the server (verified: its .pyc only
+regenerated on manual import). The prior session ported the walk from that dead code.
+
+Evidence: on the reference's own dumped inputs, argmax-per-row agrees with the reference's
+drafts at **96–100% per position** (37/39, 37/39, 39/39, 39/39, 39/39, 39/39, 38/39) vs
+87%-at-best for any walk variant (`tools/qwen36_dflash2_vllm_input_parity.py`,
+SELECT_MODE=argmax default).
+
+Engine: the host walk in `SparkQwen36ModuleRunDsparkBlockForward` is replaced by rank-0
+selection (the device top-16 is value-desc/index-asc, so rank 0 IS the argmax).
+
+Measured on O128 (spark2, k=8, `SPARK_QWEN36_DFLASH2_WINDOW=256`): **E 1.10 → 2.36**,
+~3.36 committed/round, bit-exact vs the no-spec baseline (same token stream).
+Reference on the SAME prompt at temperature 0: **E = 2.90** (streak 81/74/72/78/86/83/90).
+Our pos-0 rate ≈ 76–81% (parity); the depth decay is still steeper than theirs — the
+residual is draft quality at depth 2–3, not selection.
+
+Other session findings:
+- The specforge layer-bisect was INVALID: specforge's `Qwen3DFlashDecoderLayer` has no conv
+  (DFlash1); DFlash2 weights loaded `strict=False` — the 0.92–0.98 cosines compared
+  different architectures. Treat the conv path as validated only via the argmax agreement.
+- The reference's context-KV is INCREMENTAL: each round `precompute_and_store_context_kv`
+  processes only the NEW frame rows into the persistent cache (decode-round dumps are 8-row
+  deltas). Our engine rebuilds the full window per round — measured cost is small (W=256 vs
+  2048: +1.5% e2e), so this is NOT the bottleneck people feared.
+- BLOCK_KV stale-history rows barely matter under argmax (1.54 vs 1.60 mean accepted) —
+  the walk-era "unlock" attribution was confounded with the wrong selection rule.
+- **Where the time actually goes** (`SPARK_QWEN36_PROFILE=1`, k=8, per frame ~229ms):
+  **FFN 155ms (68%!)**, GDN 44ms (19%), head 16ms, attn 12ms. The old "28ms/row GDN
+  serialization" attribution was wrong — that slope was FFN-per-row. The FFN runs at ~6%
+  of memory bandwidth; and the engine runs ~1.84 frames per spec round (~128 wasted
+  full-weight frames per 512 tokens — client submission granularity + fold arming;
+  raising `max_prefill_rows_per_submission` makes it WORSE, 5.2 tps — the fold logic
+  depends on 1-row submissions). These two are the next throughput levers, not the GDN.
 
 ---
 
@@ -242,14 +287,38 @@ curl -s http://spark3:8123/metrics | grep spec_decode
 
 ---
 
-## 9. Recommended Next Steps (Priority Order)
+## 9. Recommended Next Steps (Priority Order — revised after the argmax unlock)
 
-1. **Cache warm-up fix** (Problem A, cheapest test): pre-warm the block-KV history during the bootstrap round. The first 2-3 rounds are where the confident scoring divergence lives. Even a partial fix here moves E.
+1. **Kill the double-frames** (~1.84 frames/round): the adapter runs a full-weight frame
+   for ~128 of 280 frames that commit nothing — submission-granularity + fold-arming
+   interaction in `spark_qwen36_serving_adapter.c`. Trace `SparkQwen36ModuleRunFrame`
+   callers vs `spec_diag` rounds. Potential ~1.8x.
 
-2. **In-process model comparison**: load specforge + our forward in the same process on spark3, build identical KV caches, compare block hiddens row-by-row through the first 5 rounds. This is the definitive bisect — the dump-replay harness has a structural blind spot at round transitions.
+2. **FFN efficiency**: 155ms/frame at ~6% of the GB10's memory bandwidth for a full
+   27GB weight sweep (floor ≈ 100ms/frame total). Check the fp8 GEMM path's batch
+   efficiency at 9-row frames (kernel selection, split-k, layout). Potential ~1.5–2x.
 
-3. **GDN scan parallelization** (Problem B): chunked-scan the verify rows (the A/B/C/D decomposition for linear recurrences). This unlocks k=7 → E=1.25 at the cost of k=3 → immediate ~20% throughput gain even at current acceptance.
+3. **Depth-2+ draft quality** (E 2.36 vs reference 2.90 at T=0): pos-0 is at parity;
+   the decay steepens after. Compare per-layer hiddens against the live reference via
+   the stage dumps (`tools/qwen36_dflash2_stage_diff.py`; needs the vllmsel dump patch
+   moved into the v1 speculator's `_generate_draft`, since dflash2/speculator.py is
+   dead code — the /tmp/stage_patch.py on spark3 has the working pattern).
 
-4. **CUDA graphs for the verify frame**: after the GDN fix, capture the verify+drafter pipeline in a graph. This is how the reference gets flat cost per round. Combined with k=7 and the current E=1.25, projects to ~15-16 tok/s.
+4. **GDN scan parallelization**: 44ms/frame (19%) — chunked-scan the verify rows.
+   Worth doing only after 1–2 land.
 
-5. **Acceptance to E≥2**: with 1-4 done, the acceptance climb is pure upside. At E=2 with graphed rounds: ~18-20 tok/s = SOTA.
+5. **CUDA graphs** for the verify+drafter frame — the reference's flat-round-cost trick.
+
+At E=2.36 with frames 1.84x→1.0 and FFN at bandwidth: ~15-17 tok/s. At E=2.9: SOTA 18-20.
+
+### Measurement gotchas (this session)
+- The reference at temperature 1.0 SAMPLES drafts (Gumbel) — comparing our greedy chains
+  against temperature-1.0 dumps is meaningless. Drive it with `"temperature": 0`.
+- `sparkpipe_model_batch` rejects a re-run of the same request_id; use fresh ids per run.
+- Daemon relaunch over ssh drops the session (exit 255) — use launcher scripts
+  (`/tmp/launch_spec2.sh <bkv> <k>` with `W=` env on spark2; pre-truncate the log and
+  wait for "model_residentd ready", the stale-log grep race bites).
+- GPU zombies after kill -9 need a wait before relaunch (~5s) or the stage load hangs.
+- Benchmark wall-time includes ~10-20s fixed overhead — use `SPARK_QWEN36_PROFILE=1`
+  frame spins for GPU-side comparisons; the profile counters are CUMULATIVE across the
+  daemon lifetime (relaunch between measurements).

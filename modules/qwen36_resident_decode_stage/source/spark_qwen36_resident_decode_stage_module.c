@@ -2624,38 +2624,21 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			 * host pass's exact value-desc/index-asc order) plus the
 			 * bf16-rounded hidden projection, all in one compact copy */
 			const uint32_t *top_ids = state->dspark_sel_out_host;
-			const float *unary = (const float *)(top_ids + (B - 1u) * K);
-			const float *hproj = unary + (B - 1u) * K;
 			uint32_t slot_i;
-			/* greedy walk over the lattice: edge[p,c] = unary[c] + (A[pred] . hproj) . B[cand]. */
+			/* Draft selection = the serving semantics of the SOTA reference:
+			 * per-mask-row full-vocab ARGMAX (v1 DFlashSpeculator.sample_draft
+			 * -> gumbel_sample(compute_logits(mask hiddens)); greedy == argmax).
+			 * The codebook lattice walk (dflash2 speculator) is NOT the serving
+			 * path - it never loads in vllm serve. The top-16 is value-desc /
+			 * index-asc, so rank 0 IS the argmax (lowest index on ties, like
+			 * torch.argmax). Validated on the reference's own dumped inputs:
+			 * 96-100% draft agreement at every position vs 87% best-case for
+			 * the walk (tools/qwen36_dflash2_vllm_input_parity.py). */
+			for (slot_i = 0u; slot_i < B - 1u; slot_i++)
 			{
-				uint32_t previous = 0u;
-				for (slot_i = 0u; slot_i < B - 1u; slot_i++)
-				{
-					float best_score = -3.4028235e38f;
-					uint32_t best_c = 0u, c;
-					for (c = 0u; c < K; c++)
-					{
-						/* predecessor row: the anchor C0 for slot 0, else the
-						 * previous slot's candidate top_ids[slot-1][previous]. */
-						const uint32_t pred_id = slot_i == 0u ? prev : top_ids[(slot_i - 1u) * K + previous];
-						const uint16_t *pred_row = w->selector_pred_host + (uint64_t)pred_id * R;
-						const uint16_t *succ_row = w->selector_succ_host + (uint64_t)top_ids[slot_i * K + c] * R;
-						float edge = 0.0f, score;
-						uint32_t r;
-						for (r = 0u; r < R; r++)
-							edge += SparkQwen36ModuleBf16ToFloat(pred_row[r]) * hproj[slot_i * R + r] * SparkQwen36ModuleBf16ToFloat(succ_row[r]);
-						score = unary[slot_i * K + c] + edge;
-						if ( score > best_score )
-						{
-							best_score = score;
-							best_c = c;
-						}
-					}
-					view->draft_token_ids[blk * (B - 1u) + slot_i] = top_ids[slot_i * K + best_c];
-					previous = best_c;
-				}
-				if ( blk == 0u && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
+				view->draft_token_ids[blk * (B - 1u) + slot_i] = top_ids[slot_i * K];
+			}
+			if ( blk == 0u && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
 				{
 					/* Per-run parity capture, read AFTER the section-3 stream
 					 * sync (race-free): a taps slice wide enough for any
@@ -2690,8 +2673,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 								fclose(mf);
 							}
 						}
-						parity_runs++;
-					}
+					parity_runs++;
 				}
 			}
 		}

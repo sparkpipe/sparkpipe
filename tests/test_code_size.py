@@ -582,7 +582,17 @@ from pathlib import Path
 # block rows; SPARK_QWEN36_DFLASH2_BLOCK_KV=1). Both validated on the
 # reference input dumps: 87% pos-0 draft agreement, curve mirrors theirs.
 # 170992 is the exact count.
-CEILING = 170992
+# +199 stale at the handoff commit (506770e): the session's last tooling
+# commits (the fp8/bf16 tapdiff and layer-bisect tools) landed without
+# their ratchet - found when re-running the gate from a clean checkout.
+# +233: the argmax selection unlock - draft selection is the per-mask-row
+# full-vocab ARGMAX (the reference's SERVING path; the codebook walk is
+# dflash2-speculator code that never loads in vllm serve). The engine walk
+# is REPLACED by rank-0 selection (net engine shrink); the new lines are
+# the stage-diff tool (live-reference per-stage tensor comparison) and the
+# parity harness's SELECT_MODE (argmax default, walk modes kept for study).
+# 171424 is the exact count.
+CEILING = 171424
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -348,6 +348,11 @@ def main() -> int:
     unary = np.take_along_axis(mask_logits, top_ids, axis=-1)  # [7, K]
 
     # 6) selector: hidden_projection(hidden[1:]) -> score edges -> greedy walk
+    # NOTE: the SERVING semantics of the SOTA reference (v1 DFlashSpeculator
+    # sample_draft -> gumbel_sample over full-vocab logits) select the
+    # per-mask-row ARGMAX = top_ids[:, 0]; the codebook walk below is the
+    # dflash2-speculator path, which never loads in `vllm serve`. Kept for
+    # study; the engine uses rank 0 (see module.c draft selection).
     hproj = hidden[1:] @ drafter["candidate_selector.hidden_projection.weight"].T  # [7, R]
     hproj = bf16_to_f32(f32_to_bf16(hproj))
     scores = _score_edges(

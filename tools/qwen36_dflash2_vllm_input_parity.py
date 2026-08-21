@@ -184,8 +184,20 @@ def main():
         succs = w["candidate_selector.successor_codebook"]
         prev_id = bonus
         ours = []
+        select_mode = __import__("os").environ.get("SELECT_MODE", "argmax")
         for slot in range(BLOCK - 1):
-            scores = topv[slot].float() + (preds[prev_id].float() * hp[slot].float()) @ succs[topi[slot]].float().T
+            if select_mode == "argmax":
+                # the SERVING semantics of the SOTA reference: the v1
+                # DFlashSpeculator's sample_draft -> gumbel_sample over the
+                # FULL-vocab logits of each mask row (greedy == argmax). The
+                # codebook walk in dflash2/speculator.py never loads in
+                # `vllm serve`. Validated: 96-100% agreement per position.
+                ours.append(int(torch.argmax(logits[slot])))
+                continue
+            if select_mode == "edge":
+                scores = (preds[prev_id].float() * hp[slot].float()) @ succs[topi[slot]].float().T
+            else:  # "unary_edge": the historical (wrong) engine walk
+                scores = topv[slot].float() + (preds[prev_id].float() * hp[slot].float()) @ succs[topi[slot]].float().T
             best = int(torch.argmax(scores))
             ours.append(int(topi[slot][best]))
             prev_id = ours[-1]
