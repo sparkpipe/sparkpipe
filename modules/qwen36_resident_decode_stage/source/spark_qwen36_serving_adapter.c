@@ -347,6 +347,11 @@ typedef struct SparkQwen36ServingState
 	uint32_t dflash2_fold_armed;
 	uint64_t dflash2_fold_position;
 	uint64_t dflash2_fold_sequence_id;
+	/* one-frame chain: the verify row-0 restore slot (the previous round's
+	 * accept depth; -1 = walk from live state) and the multi-block draft
+	 * matrix (block i = verify row i's block; the host picks block m). */
+	int32_t dflash2_fold_restore_slot;
+	uint32_t dflash2_draft_matrix[SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_MAX_MULTI_BLOCKS * (SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u)];
 	SparkQwen36ServingPending pending[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkQwen36ServingState;
 
@@ -1398,18 +1403,23 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		if ( SparkQwen36ServingBlockDraftMethod(spec_method) )
 		{
 			const char *fold_env = getenv("SPARK_QWEN36_DFLASH2_BONUS_FOLD");
-			if ( fold_env != 0 && fold_env[0] != '0' && state->dflash2_fold_armed != 0u
+			uint32_t fold_mode = fold_env != 0 && fold_env[0] != '0' ? (uint32_t)strtoul(fold_env,0,0) : 0u;
+			if ( fold_mode == 0u )
+				fold_mode = fold_env != 0 && fold_env[0] != '0' ? 1u : 0u;
+			if ( fold_mode >= 1u && state->dflash2_fold_armed != 0u
 				&& state->dflash2_fold_sequence_id == sequence
 				&& state->dflash2_fold_position == position )
 			{
 				/* Bonus-fold round (the vLLM shape): the previous round's
-				 * correction tail drafted this round's block, so the decode
-				 * walk is redundant - the verify's row 0 walks the client
-				 * token (= that correction's emission) in its place and its
-				 * emission becomes this round's C0. base_position drops to
-				 * the client row's position, so every downstream offset
-				 * (verify rows, correction, commit math) keeps its formula. */
-				fold_active = 1u;
+				 * tail drafted this round's block, so the decode walk is
+				 * redundant - the verify's row 0 walks the client token in
+				 * its place and its emission becomes this round's C0.
+				 * base_position drops to the client row's position, so every
+				 * downstream offset keeps its formula. Mode 2 = the ONE-FRAME
+				 * round: row 0 also restores the previous accept's GDN
+				 * checkpoint and the multi-block drafter runs at this
+				 * verify's tail (no correction frame at all). */
+				fold_active = fold_mode >= 2u ? 2u : 1u;
 				spec->base_position = position;
 				spec->draft_ids[0] = 0u;
 				for (draft=1u; draft<draft_count; draft++)
@@ -1494,7 +1504,37 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			verify_tokens[0] = fold_active != 0u ? token : spec->committed_ids[0];
 			for (draft=1u; draft<draft_count; draft++)
 				verify_tokens[draft] = spec->draft_ids[draft];
-			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,verify_tokens,0,0,draft_count,spec->base_position,sequence,spec->base_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY,0,0,&gdn_snapshot,draft_count);
+			{
+				uint32_t verify_flags = SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY;
+				SparkQwen36DsparkDraftView *verify_draft = 0;
+				if ( fold_active == 2u )
+				{
+					/* the one-frame round: row 0 restores the previous
+					 * accept's checkpoint before its walk, and the padding
+					 * drafter runs at THIS verify's tail (block i anchored on
+					 * row i's emission; the host picks block m post-accept) */
+					verify_flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER;
+					if ( getenv("SPARK_QWEN36_DFLASH2_OF_NORESTORE") != 0 )
+						state->dflash2_fold_restore_slot = -1;
+					if ( state->dflash2_fold_restore_slot >= 0 )
+					{
+						verify_flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW;
+						gdn_snapshot.snapshot_index = (uint32_t)state->dflash2_fold_restore_slot;
+					}
+					memset(&dspark_draft,0,sizeof(dspark_draft));
+					dspark_draft.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION;
+					dspark_draft.descriptor_bytes = sizeof(dspark_draft);
+					dspark_draft.block_size = draft_count;
+					dspark_draft.draft_token_count = draft_count - 1u;
+					dspark_draft.sequence_id = sequence;
+					dspark_draft.base_position = position + 1u;
+					dspark_draft.tap_buffer = 0;
+					dspark_draft.draft_token_ids = state->dflash2_draft_matrix;
+					dspark_draft.multi_block_count = draft_count;
+					verify_draft = &dspark_draft;
+				}
+				status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,verify_tokens,0,0,draft_count,spec->base_position,sequence,spec->base_position,verify_flags,0,verify_draft,&gdn_snapshot,draft_count);
+			}
 			if ( status != SPARK_STATUS_OK )
 				fprintf(stderr, "qwen36_spec_diag verify_frame_failed lane=%u status=%d\n", lane, (int)status);
 		}
@@ -1517,7 +1557,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			while ( spec->accepted_count + 1u < draft_count && spec->emitted_ids[spec->accepted_count] == spec->draft_ids[spec->accepted_count + 1u] )
 				spec->accepted_count++;
 			if ( fold_active != 0u )
-				pending->spec_fold = 1u;
+				pending->spec_fold = fold_active;
 			fprintf(stderr, "qwen36_spec_diag C0=%u accepted=%u drafts=[%u,%u,%u,%u,%u,%u,%u,%u] emitted=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
 				spec->committed_ids[0], spec->accepted_count,
 				spec->draft_ids[0], spec->draft_ids[1], spec->draft_ids[2], spec->draft_ids[3],
@@ -1554,7 +1594,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		 * discarded and re-drafted next iteration. Removing the clamp
 		 * needs the shared ABI bump, reviewed cross-session. */
 		{
-			uint32_t commit_overhead = pending->spec_fold != 0u ? 2u : 3u;
+			uint32_t commit_overhead = pending->spec_fold == 2u ? 1u : (pending->spec_fold == 1u ? 2u : 3u);
 			if ( min_accepted + commit_overhead > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE )
 				min_accepted = SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - commit_overhead;
 			pending->spec_tokens_per_sequence = pending->spec_chain_dead != 0u ? 1u : min_accepted + commit_overhead;
@@ -1566,6 +1606,31 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		SparkQwen36ServingSpecState *spec;
 		uint32_t slot;
 		uint32_t replay_rows;
+		if ( pending->spec_fold == 2u )
+		{
+			/* ONE-FRAME round tail: no correction frame. Select block m from
+			 * the padding matrix (the block anchored on the accepted row),
+			 * commit [e0, drafts 2..m, e_m] (m+1 tokens - the next round's
+			 * row 0 walks e_m from checkpoint m and its emission continues
+			 * the chain), and arm the next round. */
+			spec = &pending->spec[lane];
+			slot = spec->resident_slot;
+			(void)slot;
+			{
+				uint32_t ci = 1u;
+				uint32_t d2;
+				for (d2 = 0u; d2 < SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u; d2++)
+					state->dflash2_next_draft_ids[d2] = state->dflash2_draft_matrix[min_accepted * (SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u) + d2];
+				for (draft=2u; draft<=min_accepted; draft++)
+					spec->committed_ids[ci++] = spec->draft_ids[draft];
+				spec->committed_ids[ci++] = spec->emitted_ids[min_accepted];
+				state->dflash2_fold_armed = 1u;
+				state->dflash2_fold_position = spec->base_position + min_accepted + 1u;
+				state->dflash2_fold_sequence_id = spec->sequence_id;
+				state->dflash2_fold_restore_slot = (int32_t)min_accepted;
+			}
+			continue;
+		}
 		/* +1: a fully-accepted block-8 chain replays C0 + 7 drafts + the
 		 * correction = 9 rows, one past MAX_MTP_DRAFT_TOKENS. */
 		uint32_t replay_tokens[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS + 1u];
@@ -1638,6 +1703,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 				state->dflash2_fold_armed = 1u;
 				state->dflash2_fold_position = replay_base + 1u;
 				state->dflash2_fold_sequence_id = spec->sequence_id;
+				state->dflash2_fold_restore_slot = -1; /* round 2 walks from live state */
 			}
 		}
 		replay_done:;

@@ -2030,8 +2030,13 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
 
         current_sequence_id = state->lane_sequence_ids[prefill->lane_index];
         expected_position = state->lane_next_positions[prefill->lane_index];
+        /* A VERIFY_ROW restore also re-establishes the lane at a branch
+         * point (the one-frame round's verify starts behind the previous
+         * verify's end whenever the chain breaks early), so it gets the
+         * same at-or-behind continuity rule as a full restore. */
         restore_first = (context->flags &
-            SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u
+            (SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST |
+             SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW)) != 0u
             ? 1u
             : 0u;
         if (current_sequence_id == prefill->sequence_id)
@@ -2152,6 +2157,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	SparkQwen36ModuleState *state,
 	SparkQwen36ModuleSlot *slot,
 	const SparkQwen36DsparkDraftView *view,
+	const uint32_t *row_tokens_host,
 	uint32_t rows)
 {
 	SparkQwen36DsparkWeights *w = &state->dspark_weights;
@@ -2182,34 +2188,20 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	 * worse, and the recurrence races (now serialized) were what killed
 	 * iterations 2+. */
 	const uint64_t base = view->base_position;
-	uint32_t wnd;
+	uint32_t wnd_bound;
 	uint32_t ctx_tail;
-	/* env-tunable recent-context bound: the numpy sweep hit draft[1] with a
-	 * 15-row recent window while the full 0..base-2 window missed - the
-	 * drafter's attention sinks on early positions (vLLM ships optional
-	 * attention sinks for exactly this). Default: full. */
+	/* env-tunable recent-context bound (default full; small windows measured
+	 * best post-fix). */
 	{
 		const char *wenv = getenv("SPARK_QWEN36_DFLASH2_WINDOW");
-		uint32_t bound = wenv != 0 ? (uint32_t)strtoul(wenv,0,0) : 2048u;
-		uint32_t avail = (uint32_t)(base < 2048u ? base : 2048u);
-		wnd = bound < avail ? bound : avail;
+		wnd_bound = wenv != 0 ? (uint32_t)strtoul(wenv,0,0) : 2048u;
 	}
-	const uint32_t window = wnd;
-	/* The context window INCLUDES the walked row's tap (position base-1, the
-	 * g_P of llama.cpp's seed pair (t_{P+1}, g_P)): the anchor embed and g_P
-	 * share RoPE position base-1. The convention sweep measured the pair at
-	 * p0=70% vs 41% without it - dropping the freshest target hidden made
-	 * the drafter echo one round behind on every varying token. */
-	const uint64_t window_base = base - window;
-	/* The verify-forward tail (vLLM's context shape): extend the context past
-	 * the committed prefix into the stale tap rows the LAST verify walk wrote
-	 * (the rejected drafts' target hiddens). vLLM's context KV includes the
-	 * verify's own rows; SPARK_QWEN36_DFLASH2_CTX_TAIL=N adds N such rows. */
+	/* The verify-forward tail rows (rejected drafts' hiddens); measured
+	 * negative, default 0. */
 	{
 		const char *tenv = getenv("SPARK_QWEN36_DFLASH2_CTX_TAIL");
 		ctx_tail = tenv != 0 ? (uint32_t)strtoul(tenv,0,0) : 0u;
 	}
-	const uint32_t nkv = window + ctx_tail + B;
 	uint16_t *ctx_kv = (uint16_t *)state->dflash_ctx_kv;
 	uint16_t *kv_k;
 	uint16_t *kv_v;
@@ -2217,11 +2209,55 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	uint32_t prev;
 	SparkStatus status;
 	cudaError_t error;
+	uint32_t blk;
 	(void)rows;
 	if ( w->armed == 0u )
 		return(SPARK_STATUS_OK);
 	if ( view == 0 || view->draft_token_ids == 0 || state->dflash_taps_history == 0 )
+	{
+		fprintf(stderr,"dflash2_trace drafter_invalid view=%p ids=%p taps=%p\n",(void*)view,(void*)(view!=0?(void*)view->draft_token_ids:0),(void*)state->dflash_taps_history);
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	/* Multi-block (padding) drafting: block i anchors on output row i's
+	 * emission at base+i - vLLM's per-row draft-then-select shape; the host
+	 * picks block m (the accept depth) from the matrix after the verify.
+	 * Each block's context window covers taps < base+i, so block m sees the
+	 * accepted-prefix rows fresh and none of the rejected tail (the deferred
+	 * seed pair, per block). multi_block_count <= 1 keeps the legacy
+	 * anchor-row-0 single block. */
+	{
+		uint32_t multi = view->multi_block_count;
+		uint32_t sel_block = 0u;
+		if ( multi < 1u )
+			multi = 1u;
+		if ( multi > SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_MAX_MULTI_BLOCKS )
+			multi = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_MAX_MULTI_BLOCKS;
+		if ( multi > 1u && row_tokens_host != 0 )
+		{
+			/* padding-select: compute the verify's own accept depth (its
+			 * emissions vs the walked draft rows) and draft ONLY that block -
+			 * the host discards every other block's output anyway, and the
+			 * per-block selector pass is host-bound. The adapter recomputes
+			 * the identical m from the same data after the frame. */
+			uint32_t emissions[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
+			if ( rows > SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS )
+				rows = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS;
+			if ( cudaStreamSynchronize(stream) == cudaSuccess && cudaMemcpy(emissions,slot->output_token_ids,(size_t)rows * sizeof(uint32_t),cudaMemcpyDeviceToHost) == cudaSuccess )
+			{
+				while ( sel_block + 1u < rows && emissions[sel_block] == row_tokens_host[sel_block + 1u] )
+					sel_block++;
+			}
+			multi = sel_block + 1u;
+		}
+		status = SPARK_STATUS_OK;
+		for (blk = sel_block; status == SPARK_STATUS_OK && blk < multi; blk++)
+		{
+			const uint64_t base_blk = base + blk;
+			uint32_t avail = (uint32_t)(base_blk < 2048u ? base_blk : 2048u);
+			const uint32_t window = wnd_bound < avail ? wnd_bound : avail;
+			/* the window INCLUDES the walked row's tap g_P (the deferred pair) */
+			const uint64_t window_base = base_blk - window;
+			const uint32_t nkv = window + ctx_tail + B;
 	/* 1) context window: fc(cat 5 taps per position) -> hidden_norm. */
 	error = SparkQwen36LaunchLinear(stream,&w->projector,(const uint8_t *)state->dflash_taps_history + window_base * 5u * H * 2u,state->dflash_fc_out,window);
 	if ( error == cudaSuccess )
@@ -2231,7 +2267,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	 * seed pair). Block rows at base..base+7; row r's walk output predicts
 	 * the token at base+r (own-position). */
 	if ( error == cudaSuccess )
-		error = SparkQwen36LaunchEmbeddingGather(stream,slot->output_token_ids,state->token_embedding_bf16,block_hidden,1u);
+		error = SparkQwen36LaunchEmbeddingGather(stream,slot->output_token_ids + blk,state->token_embedding_bf16,block_hidden,1u);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchEmbeddingGather(stream,slot->dspark_mask_token_ids,state->token_embedding_bf16,block_hidden + H,B - 1u);
 	/* 3) prep positions: window rows at window_base..base-1 (g_P included),
@@ -2242,11 +2278,11 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	for (layer = 0u; layer < window + ctx_tail; layer++)
 		state->dflash_positions_host[layer] = window_base + layer;
 	for (layer = 0u; layer < B; layer++)
-		state->dflash_positions_host[window + ctx_tail + layer] = base + layer;
+		state->dflash_positions_host[window + ctx_tail + layer] = base_blk + layer;
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(state->dflash_positions,state->dflash_positions_host,(size_t)nkv * sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
 	status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"dflash2_head_init");
-	if ( status == SPARK_STATUS_OK && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
+	if ( status == SPARK_STATUS_OK && blk == 0u && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
 	{
 		static uint32_t ctx_dump_count = 0u;
 		uint32_t ctx_dump_want = (uint32_t)strtoul(getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP"),0,0);
@@ -2413,7 +2449,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		 * or the replay's output (replay-tail draft, iterations 2+). Both are
 		 * the first candidate token AFTER the tap position. */
 		if ( error == cudaSuccess )
-			error = cudaMemcpyAsync(&prev,slot->output_token_ids,sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+			error = cudaMemcpyAsync(&prev,slot->output_token_ids + blk,sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 		if ( error == cudaSuccess )
 			error = cudaStreamSynchronize(stream);
 		if ( error == cudaSuccess )
@@ -2507,10 +2543,10 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 							best_c = c;
 						}
 					}
-					view->draft_token_ids[slot_i] = top_ids[slot_i][best_c];
+					view->draft_token_ids[blk * (B - 1u) + slot_i] = top_ids[slot_i][best_c];
 					previous = best_c;
 				}
-				if ( getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
+				if ( blk == 0u && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
 				{
 					/* Per-run parity capture, read AFTER the section-3 stream
 					 * sync (race-free): a taps slice wide enough for any
@@ -2551,6 +2587,8 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			}
 		}
 		status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"dflash2_head");
+	}
+	}
 	}
 	return(status);
 }
@@ -2804,7 +2842,10 @@ SparkStatus SparkQwen36ResidentDecodeStageExecute(
             rows);
     }
     if (status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u)
-        status = SparkQwen36ModuleRunDsparkBlockForward(state,slot,context->dspark_draft,rows);
+        status = SparkQwen36ModuleRunDsparkBlockForward(state,slot,context->dspark_draft,
+            (state->owns_embedding != 0u && frame->buffer_count > 0u && frame->buffers != 0)
+                ? (const uint32_t *)frame->buffers[0].address : 0,
+            rows);
     if (status == SPARK_STATUS_OK)
     {
         SparkQwen36ModuleCommitLaneSequenceContinuity(

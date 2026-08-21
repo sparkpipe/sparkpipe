@@ -542,7 +542,23 @@ from pathlib import Path
 # 170442 is the exact count.
 # +2: parity tool default moves to the fixed geometry.
 # 170444 is the exact count.
-CEILING = 170444
+# +92: the ONE-FRAME round (SPARK_QWEN36_DFLASH2_BONUS_FOLD=2) - dspark view
+# ABI v2 gains multi_block_count (block i anchored on verify row i's emission
+# at base+i; the host picks block m post-accept), the module loops the block
+# forward per row, and the adapter runs the round as ONE verify frame (row 0
+# restores the previous accept's GDN checkpoint via GDN_RESTORE_VERIFY_ROW;
+# no correction frame), committing m+1 and arming slot m.
+# 170536 is the exact count.
+# +12: the one-frame bring-up - the continuity rule treats a VERIFY_ROW
+# restore like a full restore (the one-frame verify re-establishes the lane
+# at the branch point), plus bring-up trace prints (tail drafter status).
+# 170550 is the exact count.
+# +18: padding-select - the verify-tail drafter computes the verify's own
+# accept depth (emissions vs the walked rows, one tiny D2H) and drafts ONLY
+# block m; the per-block selector is host-bound so k-1 of k blocks were pure
+# overhead (measured: one-frame at 3 blocks ran 6.55 tok/s vs 8.76 2-frame).
+# 170572 is the exact count.
+CEILING = 170572
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

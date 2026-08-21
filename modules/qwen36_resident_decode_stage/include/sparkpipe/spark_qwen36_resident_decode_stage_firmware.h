@@ -420,10 +420,15 @@ typedef struct SparkQwen36GdnSnapshotView
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER 0x00000100u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW 0x00000200u
 
-#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION 1u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION 2u
 
 /* DFlash2 block: [C0 anchor + 7 mask tokens] = 8 rows, 7 draft ids. */
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE 8u
+/* Multi-block (padding) drafting: the verify tail drafts one block PER verify
+ * row, block i anchored on row i's emission at base+i; the host picks block
+ * m (the accept depth) afterwards. draft_token_ids must hold
+ * multi_block_count * (block_size-1) ids. */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_MAX_MULTI_BLOCKS 8u
 /*
  * DSpark/DFlash2 draft view. The resident module taps the target's post-layer
  * hidden at target layers {5,19,33,47,61} during the decode, then runs the
@@ -441,6 +446,7 @@ typedef struct SparkQwen36DsparkDraftView
 	uint64_t base_position;
 	void *tap_buffer;
 	uint32_t *draft_token_ids;
+	uint32_t multi_block_count; /* ABI v2: 0/1 = one block (legacy, anchor = emission row 0); N = N blocks, block i anchored on output row i at base+i */
 } SparkQwen36DsparkDraftView;
 
 typedef SparkStatus (*SparkQwen36HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);

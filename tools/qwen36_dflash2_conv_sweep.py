@@ -100,14 +100,18 @@ def layer_forward(x, ctx_kv, lw, q_pos, kv_pos, rope):
     return x
 
 
-def forward_round(w, emb_w, lm_w, taps, taps_start, ctx_hi, block_start, anchor, rope):
+def forward_round(w, emb_w, lm_w, taps, taps_start, ctx_hi, block_start, anchor, rope, pos_mode="abs"):
     W = ctx_hi - taps_start
     ctx = taps[:W].view(W, -1).float() @ w["fc.weight"].float().T
     ctx = rms(ctx.to(torch.bfloat16), w["hidden_norm.weight"])
     ids = torch.tensor([anchor] + [MASK_ID] * (BLOCK - 1), device=DEV)
     x = emb_w[ids]
-    q_pos = torch.arange(block_start, block_start + BLOCK, device=DEV)
-    kv_pos = torch.arange(taps_start, taps_start + W + BLOCK, device=DEV)
+    if pos_mode == "rel":
+        q_pos = torch.arange(0, BLOCK, device=DEV)
+        kv_pos = torch.cat([torch.full((W,), taps_start + 1, device=DEV, dtype=torch.long), q_pos + taps_start + 2])
+    else:
+        q_pos = torch.arange(block_start, block_start + BLOCK, device=DEV)
+        kv_pos = torch.arange(taps_start, taps_start + W + BLOCK, device=DEV)
     for layer in range(LAYERS):
         lw = {k.split(f"layers.{layer}.")[1]: v for k, v in w.items() if f"layers.{layer}." in k}
         x = layer_forward(x, ctx, lw, q_pos, kv_pos, rope)
@@ -134,12 +138,22 @@ def main():
     lm_w = load(f"{BUNDLE}/../torchbundle/model-00018-of-00018.safetensors", ["lm_head.weight"])["lm_head.weight"]
     bundle = json.load(open(f"{BUNDLE}/picks.json"))
     combos = []
-    for rope in ("inter", "neox"):
-        for ctx_hi_off in (0, 1):        # ctx end = base-1+off
-            for blk_off in (0, 1):       # block start = base-1+off
+    for rope in ("inter",):
+        for ctx_hi_off in (0, 1):
+            for blk_off in (1, -1):       # block start = base-1+off
                 combos.append((rope, ctx_hi_off, blk_off))
-    stats = {c: {"next": [0] * 7, "own": [0] * 7} for c in combos}
+    stats = {}
     n = 0
+    # reconstruct the client token per round: round r's client = e_m of round r-1
+    import re as _re
+    rounds_all = []
+    diag_re = _re.compile(r"qwen36_spec_diag C0=(\d+) accepted=(\d+) drafts=\[([0-9,]+)\] emitted=\[([0-9,]+)\]")
+    for m in diag_re.finditer(open("/tmp/qwen38-tp1-o128cap.log", errors="replace").read()):
+        rounds_all.append((int(m.group(2)), [int(t) for t in m.group(4).split(",")]))
+    client_tok = {}
+    for idx in range(1, len(rounds_all)):
+        acc_prev, emitted_prev = rounds_all[idx - 1]
+        client_tok[idx + 1] = emitted_prev[acc_prev] if acc_prev < len(emitted_prev) else None
     for run_s in sorted(bundle, key=int):
         item = bundle[run_s]
         meta, truth = item["meta"], item["round"]["emitted"]
@@ -149,17 +163,28 @@ def main():
         wlo = base - 1 - window
         taps = taps_all[wlo - lo:]  # index 0 = wlo (absolute)
         n += 1
+        # the fixed-geometry combos with BOTH anchors: the emission (device
+        # today) and the client/bonus token (the 1-frame-round candidate)
+        anchor_set = {"emission": anchor}
+        ct = client_tok.get(int(run_s) + 1)
+        if ct is not None:
+            anchor_set["bonus"] = ct
         for rope, chi, blk in combos:
-            drafts = forward_round(w, emb_w, lm_w, taps, wlo, base - 1 + chi, base - 1 + blk, anchor, rope)
-            for pos in range(7):
-                stats[(rope, chi, blk)]["next"][pos] += drafts[pos] == truth[pos]
-                stats[(rope, chi, blk)]["own"][pos] += drafts[pos] == (truth[pos - 1] if pos else item["round"]["c0"])
+          for anchor_name, anchor_id in anchor_set.items():
+            for pos_mode in ("abs",):
+                drafts = forward_round(w, emb_w, lm_w, taps, wlo, base - 1 + chi, base - 1 + blk, anchor_id, rope, pos_mode)
+                key = (rope, chi, blk, pos_mode, anchor_name)
+                if key not in stats:
+                    stats[key] = {"next": [0] * 7, "own": [0] * 7}
+                for pos in range(7):
+                    stats[key]["next"][pos] += drafts[pos] == truth[pos]
+                    stats[key]["own"][pos] += drafts[pos] == (truth[pos - 1] if pos else item["round"]["c0"])
     print(f"rounds: {n}")
-    for c in combos:
+    for c in sorted(stats, key=str):
         for align in ("next", "own"):
             tot = sum(stats[c][align])
             p0 = stats[c][align][0]
-            print(f"rope={c[0]:5s} ctx_end=base-1+{c[1]} blk=base-1+{c[2]} align={align:4s} "
+            print(f"rope={c[0]:5s} ctx=base-1+{c[1]} blk=base-1+{c[2]:+d} pos={c[3]} anch={c[4]:8s} align={align:4s} "
                   f"total={tot:3d} p0={p0:3d} profile={' '.join(str(h) for h in stats[c][align])}")
 
 
