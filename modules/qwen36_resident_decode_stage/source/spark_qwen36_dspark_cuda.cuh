@@ -23,6 +23,15 @@
 #define SPARK_QWEN36_DSPARK_ATTN_KV_HEADS 8u
 #define SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM 64u
 
+/* The DFlash DRAFTER ropes the FULL head dim HF-style (rotate_half pairs
+ * dim d with d+64, frequency theta^(-2d/128)) - specforge's trained
+ * semantics; validated on the reference input dumps with the block-KV
+ * history (87% pos-0 draft agreement vs 64% interleaved). */
+static __device__ __forceinline__ float SparkQwen36DsparkRopeFrequencyNeoX(uint32_t pair)
+{
+	return exp2f(-((float)(2u * pair) / (float)SPARK_QWEN36_DSPARK_ATTN_HEAD_DIM) * log2f((float)SPARK_QWEN36_MODEL_ATTN_ROPE_THETA));
+}
+
 static __device__ __forceinline__ float SparkQwen36DsparkRopeFrequency(uint32_t pair)
 {
 	/* Same convention as the target: theta^(-2*pair/rope_dim), rope_dim 64. */
@@ -185,9 +194,10 @@ static __global__ void SparkQwen36DsparkCacheAttnKernel(
 	uint64_t q_pos, k_pos;
 	if ( d >= head_dim )
 		return;
-	/* q: load raw, f32 per-head RMSNorm, interleaved-64 rope at the row's
-	 * position - the empirically winning convention (the sweep's neox-128
-	 * variant wins p0 but kills depth; see the conv_sweep notes). */
+	/* q: load raw, f32 per-head RMSNorm, NeoX rope over the FULL head dim
+	 * (HF rotate_half: dim d pairs with d+64) - the trained convention, read
+	 * from specforge's Qwen3DFlashAttention and validated on the reference
+	 * dumps (interleaved-64 was the target's convention, not the drafter's). */
 	q_pos = positions[window + row];
 	sum = 0.0f;
 	for (kv = 0u; kv < head_dim; kv++)
@@ -198,15 +208,15 @@ static __global__ void SparkQwen36DsparkCacheAttnKernel(
 	scale = rsqrtf(sum / (float)head_dim + 1e-6f);
 	for (kv = 0u; kv < head_dim; kv++)
 		q[kv] *= scale * __bfloat162float(q_norm_bf16[kv]);
-	for (kv = 0u; kv < SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM; kv += 2u)
+	for (kv = 0u; kv < head_dim / 2u; kv++)
 	{
-		f = (float)q_pos * SparkQwen36DsparkRopeFrequency(kv >> 1u);
+		f = (float)q_pos * SparkQwen36DsparkRopeFrequencyNeoX(kv);
 		c = cosf(f);
 		sn = sinf(f);
 		{
-			float re = q[kv], im = q[kv + 1u];
+			float re = q[kv], im = q[kv + head_dim / 2u];
 			q[kv] = re * c - im * sn;
-			q[kv + 1u] = re * sn + im * c;
+			q[kv + head_dim / 2u] = re * sn + im * c;
 		}
 	}
 	/* scores: each thread handles strided kv rows; per row, load raw k,
@@ -226,15 +236,15 @@ static __global__ void SparkQwen36DsparkCacheAttnKernel(
 		k_pos = positions[kv];
 		for (e = 0u; e < head_dim; e++)
 			kn[e] *= scale * __bfloat162float(k_norm_bf16[e]);
-		for (e = 0u; e < SPARK_QWEN36_DSPARK_ATTN_ROPE_DIM; e += 2u)
+		for (e = 0u; e < head_dim / 2u; e++)
 		{
-			f = (float)k_pos * SparkQwen36DsparkRopeFrequency(e >> 1u);
+			f = (float)k_pos * SparkQwen36DsparkRopeFrequencyNeoX(e);
 			c = cosf(f);
 			sn = sinf(f);
 			{
-				float re = kn[e], im = kn[e + 1u];
+				float re = kn[e], im = kn[e + head_dim / 2u];
 				kn[e] = re * c - im * sn;
-				kn[e + 1u] = re * sn + im * c;
+				kn[e + head_dim / 2u] = re * sn + im * c;
 			}
 		}
 		(void)other;

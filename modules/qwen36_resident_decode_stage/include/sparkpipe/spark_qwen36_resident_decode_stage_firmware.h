@@ -429,6 +429,10 @@ typedef struct SparkQwen36GdnSnapshotView
  * m (the accept depth) afterwards. draft_token_ids must hold
  * multi_block_count * (block_size-1) ids. */
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_MAX_MULTI_BLOCKS 8u
+/* Persistent draft-side block KV history capacity (rows per layer, k+v):
+ * the drafter attends its own past blocks (HF DynamicCache semantics).
+ * 4096 rows x 1024 ch x 2 (k,v) x 5 layers x 2B = 84MB. */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP 4096u
 /*
  * DSpark/DFlash2 draft view. The resident module taps the target's post-layer
  * hidden at target layers {5,19,33,47,61} during the decode, then runs the

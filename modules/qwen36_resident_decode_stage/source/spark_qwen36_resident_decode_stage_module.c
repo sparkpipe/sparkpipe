@@ -214,6 +214,13 @@ typedef struct SparkQwen36ModuleState
 	 * window [2048][H] x2, the staged per-layer K/V [5][2][2056][1024] bf16
 	 * (context window + block rows), and the prep positions. */
 	void *dflash_taps_history;
+	/* persistent draft-side block KV history (the HF DynamicCache shape):
+	 * raw k/v rows of every block the drafter ever ran, keyed by position;
+	 * specforge/vLLM semantics - the drafter attends its own past blocks */
+	void *dflash_block_hist_k;
+	void *dflash_block_hist_v;
+	uint64_t dflash_hist_pos_host[SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP];
+	uint32_t dflash_hist_count;
 	/* device-side selector front-end output (ids/scores/hproj, compact) */
 	void *dspark_sel_out_dev;
 	uint32_t *dspark_sel_out_host;
@@ -685,9 +692,15 @@ static SparkStatus SparkQwen36ModuleLoadDsparkPack(SparkQwen36ModuleState *state
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)2048u * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * 2u,&state->dflash_ctx_normed);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)5u * 2u * 2056u * 1024u * 2u,&state->dflash_ctx_kv);
+			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)5u * 2u * (2048u + 8u + SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP) * 1024u * 2u,&state->dflash_ctx_kv);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkStageModuleDeviceAllocate(&state->ledger,2056u * sizeof(uint64_t),(void **)&state->dflash_positions);
+			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)5u * SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP * 1024u * 2u,&state->dflash_block_hist_k);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)5u * SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP * 1024u * 2u,&state->dflash_block_hist_v);
+		if ( status == SPARK_STATUS_OK )
+			state->dflash_hist_count = 0u;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,(2048u + 8u + SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP) * sizeof(uint64_t),(void **)&state->dflash_positions);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u) * (2u * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K + SPARK_QWEN36_DSPARK_SELECTOR_RANK) * 4u,&state->dspark_sel_out_dev);
 		if ( status == SPARK_STATUS_OK )
@@ -2202,11 +2215,16 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	const uint64_t base = view->base_position;
 	uint32_t wnd_bound;
 	uint32_t ctx_tail;
+	uint32_t block_kv_on;
 	/* env-tunable recent-context bound (default full; small windows measured
 	 * best post-fix). */
 	{
 		const char *wenv = getenv("SPARK_QWEN36_DFLASH2_WINDOW");
 		wnd_bound = wenv != 0 ? (uint32_t)strtoul(wenv,0,0) : 2048u;
+	}
+	{
+		const char *benv = getenv("SPARK_QWEN36_DFLASH2_BLOCK_KV");
+		block_kv_on = benv != 0 && benv[0] != '0' ? 1u : 0u;
 	}
 	/* The verify-forward tail rows (rejected drafts' hiddens); measured
 	 * negative, default 0. */
@@ -2352,8 +2370,10 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	for (layer = 0u; status == SPARK_STATUS_OK && layer < SPARK_QWEN36_DSPARK_LAYER_COUNT; layer++)
 	{
 		SparkQwen36DsparkLayerWeights *lw = &w->layer[layer];
-		kv_k = ctx_kv + (uint64_t)(layer * 2u + 0u) * 2056u * 1024u;
-		kv_v = ctx_kv + (uint64_t)(layer * 2u + 1u) * 2056u * 1024u;
+		const uint64_t kv_stride = (2048u + 8u + SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP) * 1024u;
+		kv_k = ctx_kv + (uint64_t)(layer * 2u + 0u) * kv_stride;
+		kv_v = ctx_kv + (uint64_t)(layer * 2u + 1u) * kv_stride;
+		(void)kv_stride;
 		/* attention half: norm -> conv.prepare -> q from the prepared h;
 		 * K/V = [context window (from the target taps) || block rows]. */
 		error = SparkQwen36LaunchRmsNorm(stream,block_hidden,lw->input_norm_bf16,norm,B,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
@@ -2371,8 +2391,56 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			error = SparkQwen36LaunchLinear(stream,&lw->k,conv_h,kv_k + (uint64_t)(window + ctx_tail) * 1024u,B);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->v,conv_h,kv_v + (uint64_t)(window + ctx_tail) * 1024u,B);
-		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchDsparkCacheAttn(stream,q,kv_k,kv_v,lw->q_norm_bf16,lw->k_norm_bf16,state->dflash_positions,attn_out,B,nkv,window);
+		{
+			/* the persistent block-KV history rides AFTER the current block
+			 * rows: [ctx || this block || past blocks]. Raw rows - the
+			 * attention kernel norms and ropes each row at its own position. */
+			const uint32_t hist_base = (window + ctx_tail + B) * 1024u;
+			const uint64_t hist_lk = (uint64_t)layer * SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP * 1024u;
+			uint32_t nkv_eff = nkv;
+			uint32_t hi;
+			if ( block_kv_on != 0u && state->dflash_hist_count != 0u )
+			{
+				if ( error == cudaSuccess )
+					error = cudaMemcpyAsync(kv_k + hist_base,(const uint16_t *)state->dflash_block_hist_k + hist_lk,(size_t)state->dflash_hist_count * 1024u * 2u,cudaMemcpyDeviceToDevice,stream);
+				if ( error == cudaSuccess )
+					error = cudaMemcpyAsync(kv_v + hist_base,(const uint16_t *)state->dflash_block_hist_v + hist_lk,(size_t)state->dflash_hist_count * 1024u * 2u,cudaMemcpyDeviceToDevice,stream);
+				for (hi = 0u; hi < state->dflash_hist_count; hi++)
+					state->dflash_positions_host[window + ctx_tail + B + hi] = state->dflash_hist_pos_host[hi];
+				nkv_eff = nkv + state->dflash_hist_count;
+			}
+			if ( error == cudaSuccess )
+				error = cudaMemcpyAsync(state->dflash_positions,state->dflash_positions_host,(size_t)nkv_eff * sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
+			if ( error == cudaSuccess )
+				error = SparkQwen36LaunchDsparkCacheAttn(stream,q,kv_k,kv_v,lw->q_norm_bf16,lw->k_norm_bf16,state->dflash_positions,attn_out,B,nkv_eff,window + ctx_tail);
+			/* append this block's raw k/v rows to the per-layer history,
+			 * keyed by position (re-walked positions overwrite their slot) */
+			if ( block_kv_on != 0u && error == cudaSuccess )
+			{
+				for (hi = 0u; hi < B; hi++)
+				{
+					const uint64_t bpos = state->dflash_positions_host[window + ctx_tail + hi];
+					uint32_t slot = state->dflash_hist_count;
+					uint32_t si;
+					for (si = 0u; si < state->dflash_hist_count; si++)
+						if ( state->dflash_hist_pos_host[si] == bpos )
+						{
+							slot = si;
+							break;
+						}
+					if ( slot >= SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP )
+						continue;
+					if ( slot == state->dflash_hist_count )
+						state->dflash_hist_count++;
+					state->dflash_hist_pos_host[slot] = bpos;
+					error = cudaMemcpyAsync((uint16_t *)state->dflash_block_hist_k + hist_lk + (uint64_t)slot * 1024u,kv_k + (uint64_t)(window + ctx_tail + hi) * 1024u,1024u * 2u,cudaMemcpyDeviceToDevice,stream);
+					if ( error == cudaSuccess )
+						error = cudaMemcpyAsync((uint16_t *)state->dflash_block_hist_v + hist_lk + (uint64_t)slot * 1024u,kv_v + (uint64_t)(window + ctx_tail + hi) * 1024u,1024u * 2u,cudaMemcpyDeviceToDevice,stream);
+					if ( error != cudaSuccess )
+						break;
+				}
+			}
+		}
 		if ( layer == 0u && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
 		{
 			static uint32_t l0_dump_count = 0u;

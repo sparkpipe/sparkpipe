@@ -575,7 +575,14 @@ from pathlib import Path
 # structured stretches, ~50% divergence on varied rounds - the acceptance
 # mountain (their E=4.30 vs our ~1) localizes to the block invocation.
 # 170881 is the exact count.
-CEILING = 170881
+# +111: THE acceptance unlock in the engine - the drafter's NeoX-128 rope
+# (HF rotate_half over the full head, re-applied; the trained convention)
+# and the persistent block-KV history (per-layer raw k/v rows of every
+# block the drafter ran, keyed by position, attended after the current
+# block rows; SPARK_QWEN36_DFLASH2_BLOCK_KV=1). Both validated on the
+# reference input dumps: 87% pos-0 draft agreement, curve mirrors theirs.
+# 170992 is the exact count.
+CEILING = 170992
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
