@@ -1884,6 +1884,51 @@ extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQ
 		(view->input_dimension % SPARK_QWEN36_SMALL_BATCH_K_CHUNK) == 0u &&
 		(view->output_dimension % SPARK_QWEN36_SMALL_BATCH_TILE_N) == 0u )
 		return(SparkQwen36LaunchSmallBatchLinear(stream,view->weight_payload,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
+	/* MEASURED (do not re-try without a plan): routing 2..15-row fp8/bf16
+	 * linears through SparkLmExpertTileKernel is ~2x SLOWER than the scalar
+	 * path below at M=9 on GB10 (FFN 303ms/verify vs 155; attn 31ms vs 12;
+	 * the projections all degraded). The WMMA tile's decode+shared staging
+	 * does not pay at one M-tile. The FFN compute-bound fix is the native
+	 * MXFP8 block-scaled MMA below (format 6 packs). */
+	if ( view->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 &&
+		view->weight_scale_e8m0 != 0 &&
+		(view->input_dimension % 128u) == 0u &&
+		(view->output_dimension % SPARK_LM_SM121_NATIVE_TILE_N) == 0u )
+	{
+		/* The native SM121 block-scaled fp8 MMA: hardware E4M3 atoms with
+		 * e8m0 scales - the scalar path below is fp32-CUDA-core dequant-FMA
+		 * and is COMPUTE-bound at verify-frame rows (the F32B128 FFN
+		 * measured 155ms/frame = 68% of the spec round). Non-certified row
+		 * counts (the 2-frame bootstrap, k=5's 6-row verify) run the same
+		 * launcher once per row; the repack only converts 128-divisible
+		 * matrices, so small projections (GDN beta/decay) stay F32B128 on
+		 * the scalar path by pack construction. Numerics are the MX grid -
+		 * a new per-build baseline. */
+		const uint8_t *scale = (const uint8_t *)view->weight_scale_e8m0;
+		const uint64_t payload_stride = (uint64_t)view->output_dimension * view->input_dimension;
+		const uint64_t scale_stride = (uint64_t)view->output_dimension * (view->input_dimension / 128u);
+		if ( SparkLmSm121NativeDecodeShape(row_count) != 0u )
+			return(SparkLmHostLaunchSm121NativeLinear<
+				SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(
+				stream,view->weight_payload,scale,payload_stride,scale_stride,
+				input_bf16,view->input_dimension,0u,0u,
+				output_bf16,view->output_dimension,0u,0u,
+				1u,row_count,view->input_dimension,view->output_dimension));
+		{
+			uint32_t row;
+			cudaError_t error = cudaSuccess;
+			for ( row = 0u; row < row_count && error == cudaSuccess; row++ )
+				error = SparkLmHostLaunchSm121NativeLinear<
+					SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(
+					stream,view->weight_payload,scale,payload_stride,scale_stride,
+					(const uint8_t *)input_bf16 + (uint64_t)row * view->input_dimension * 2u,
+					view->input_dimension,0u,0u,
+					(uint8_t *)output_bf16 + (uint64_t)row * view->output_dimension * 2u,
+					view->output_dimension,0u,0u,
+					1u,1u,view->input_dimension,view->output_dimension);
+			return(error);
+		}
+	}
 	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 }
 

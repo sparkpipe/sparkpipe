@@ -592,7 +592,15 @@ from pathlib import Path
 # the stage-diff tool (live-reference per-stage tensor comparison) and the
 # parity harness's SELECT_MODE (argmax default, walk modes kept for study).
 # 171424 is the exact count.
-CEILING = 171424
+# +213: the MX serving format - FP8_E4M3_E8M0B128 (format 6: E4M3 payload,
+# per-row e8m0 scales per 128-K group, the native SM121 block-scaled fp8 MMA
+# layout). Loader + byte-calcs + the SparkQwen36LaunchLinear dispatch route
+# (native launcher for its shapes, per-row loop for the rest), plus the
+# repack tool (tools/qwen36_stagepack_mx_repack.py - measured LOSSLESS: the
+# pack's tile scales are already powers of two, so the conversion is a pure
+# re-layout with zero quantization cost).
+# 171637 is the exact count.
+CEILING = 171637
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

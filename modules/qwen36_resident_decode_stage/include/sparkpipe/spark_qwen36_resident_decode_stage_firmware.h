@@ -79,6 +79,12 @@ extern "C" {
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 3u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16_RANS 4u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 5u
+/* MX serving format: E4M3 payload, one e8m0 (power-of-two) scale per row per
+ * 128-K group - the layout SparkLmSm121ScaleB indexes on the native SM121
+ * block-scaled fp8 MMA path. Produced from the F32B128 pack by
+ * tools/qwen36_stagepack_mx_repack.py (tile fp32 scales rounded up to e8m0,
+ * payloads re-rounded; usage-approved quantization-for-speed trade). */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 6u
 
 /*
  * One linear projection, bf16 or MXFP4 payload with per-group E8M0 scales.
