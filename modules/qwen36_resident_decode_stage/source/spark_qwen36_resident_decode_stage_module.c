@@ -2650,7 +2650,11 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 					if ( parity_runs < 80u )
 					{
 						char path[128];
-						uint32_t lo = base < 41u ? 0u : (uint32_t)base - 41u;
+						/* full-prefix neighborhood: the parity replay needs every
+						 * position the context window can cover (window =
+						 * min(2048, base)), not the old 41-row sweep slice -
+						 * the oracle skips rounds it cannot cover */
+						uint32_t lo = 0u;
 						uint32_t count = (uint32_t)(base + 8u - lo);
 						uint16_t *host = (uint16_t *)malloc((size_t)count * 5u * H * 2u);
 						if ( host != 0 && cudaMemcpy(host,(const uint8_t *)state->dflash_taps_history + (uint64_t)lo * 5u * H * 2u,(size_t)count * 5u * H * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )

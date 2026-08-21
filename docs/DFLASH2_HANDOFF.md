@@ -9,6 +9,20 @@
 
 ## 0. THE ARGMAX UNLOCK (2026-08-22 session — read this first)
 
+**UPDATE (same session, later commits): the engine is now PROVEN FAITHFUL and the
+acceptance gap is fully attributed.** The numpy-oracle replay on the engine's own
+dumped taps (full-prefix ctxrun dumps + `tools/qwen36_dflash2_engine_faithfulness.py`)
+matches the engine's drafts EXACTLY (14/14 positions over sampled rounds). The
+per-depth streak is FLAT (71/75/71/67/80/66% at k=7 MX =1 - the block-diffusion
+property works; deep runs reach 6/7). The residual gap vs the reference's
+81/74/72/78/86/83 is a uniform ~5-10 points, dominated by pos0 (71 vs 81), and is
+**input-side: our fp8 target's taps/emissions vs the bf16 teacher the drafter was
+distilled against** - not an engine defect. Closing it needs training-side work (a
+drafter fine-tuned on fp8-target activations) or a finer target quantization; it is
+NOT reachable by engine fixes.
+
+Also landed this session: the MX serving format (`385dd0b`) - see §2b.
+
 **Problem A is SOLVED.** The acceptance gap was NOT in the forward — it was the draft
 selection rule. The SOTA reference's SERVING path (vLLM `vllm serve`) selects drafts as
 **per-mask-row full-vocab ARGMAX**: the worker loads `DFlashSpeculator` (v1,

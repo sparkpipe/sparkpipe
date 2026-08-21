@@ -600,7 +600,12 @@ from pathlib import Path
 # pack's tile scales are already powers of two, so the conversion is a pure
 # re-layout with zero quantization cost).
 # 171637 is the exact count.
-CEILING = 171637
+# +79: the engine-faithfulness proof - the numpy-oracle replay on the
+# engine's own full-prefix taps (new tool) matches the engine's argmax
+# drafts EXACTLY; the oracle's apply_rope_neox (the stale interleaved
+# variant kept for history); the ctxrun dump widened to the full prefix.
+# 171716 is the exact count.
+CEILING = 171716
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

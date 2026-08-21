@@ -138,6 +138,24 @@ def apply_rope(x: np.ndarray, pos: np.ndarray) -> np.ndarray:
     return out
 
 
+def apply_rope_neox(x: np.ndarray, pos: np.ndarray) -> np.ndarray:
+    """x: [..., head_dim]; NeoX-128 rope over the FULL head (HF rotate_half:
+    dim d pairs with d+64, theta^(-2d/128)) - the trained convention the
+    engine serves (validated on the reference dumps; the interleaved variant
+    above is the pre-unlock mistake, kept for history)."""
+    half = HEAD_DIM // 2
+    freq = 1.0 / (ROPE_THETA ** (np.arange(0, half, dtype=np.float64) / half))
+    ang = np.asarray(pos, dtype=np.float64)[..., None] * freq[None, :]
+    c = np.cos(ang).astype(np.float32)
+    s = np.sin(ang).astype(np.float32)
+    out = x.copy()
+    xr = out[..., :half].copy()
+    xi = out[..., half:HEAD_DIM].copy()
+    out[..., :half] = xr * c - xi * s
+    out[..., half:HEAD_DIM] = xr * s + xi * c
+    return out
+
+
 def silu(x: np.ndarray) -> np.ndarray:
     return x / (1.0 + np.exp(-x))
 
