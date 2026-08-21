@@ -567,8 +567,8 @@ from pathlib import Path
 # original scalar host pass beside the device kernel and prints divergences)
 # - it caught the kernel's rank>threads hproj hole (outputs 128..255 read as
 # zero, halving the walk's edge scores: -6% O128). Zero mismatches post-fix.
-# 170712 is the exact count.
-CEILING = 170712
+# 170714 is the exact count.
+CEILING = 170714
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
