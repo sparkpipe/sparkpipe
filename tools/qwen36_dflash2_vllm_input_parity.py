@@ -23,6 +23,7 @@ TOPK, CGS, TAPS2 = 16, 16, 2
 EPS, THETA = 1e-6, 1e7
 MASK_ID = 248070
 DEV = "cpu"
+DTYPE = torch.bfloat16
 
 
 def load(path, names=None):
@@ -104,7 +105,7 @@ def layer(x, ctx, lw, q_pos, kv_pos, kv_store=None, layer_i=0, ctx_pos=None):
         kvh = qh // (NQ // NKV)
         s = (q[:, qh].float() @ k[:, kvh].float().T) * (HD ** -0.5)
         out[:, qh] = torch.softmax(s, -1) @ v[:, kvh].float()
-    att = out.to(torch.bfloat16).view(BLOCK, NQ * HD)
+    att = out.to(DTYPE).view(BLOCK, NQ * HD)
     o = att @ lw["self_attn.o_proj.weight"].T
     x = x + gconv(o, ca[:, 1], lw["attention_conv.base_kernel"][1])
     h = rms(x, lw["post_attention_layernorm.weight"])
@@ -120,11 +121,18 @@ def main():
     import os as _os3
     global ROPE_MODE
     ROPE_MODE = _os3.environ.get("ROPE_MODE", "inter")
+    global DTYPE
+    DTYPE = torch.bfloat16 if _os3.environ.get("DTYPE", "bf16") == "bf16" else torch.float32
     import glob
     import re
     w = load(f"{DRAFTER}/model.safetensors")
+    if DTYPE == torch.float32:
+        w = {k: v.float() for k, v in w.items()}
     emb_w = load("/home/spark3/sparkdata/Qwen3.8-27B-local/model-00003-of-00018.safetensors", ["embed_tokens.weight"])["model.language_model.embed_tokens.weight"]
     lm_w = load("/home/spark3/sparkdata/Qwen3.8-27B-local/model-00018-of-00018.safetensors", ["lm_head.weight"])["lm_head.weight"]
+    if DTYPE == torch.float32:
+        emb_w = emb_w.float()
+        lm_w = lm_w.float()
     # local copies may be whole-dir; fall back to names present
     if emb_w is None:
         raise SystemExit("embed shard missing")
@@ -157,11 +165,11 @@ def main():
         _wcut = int(_os2.environ.get("CTX_TRUNC", "0"))
         if _wcut > 0 and vis > _wcut:
             vis = _wcut
-        ctx = rms(hidden[:vis], w["hidden_norm.weight"])
+        ctx = rms(hidden[:vis].to(DTYPE), w["hidden_norm.weight"])
         W = ctx.shape[0]
         pos = pos[:W]
         ids = torch.tensor([bonus] + [MASK_ID] * (BLOCK - 1), device=DEV)
-        x = emb_w[ids]
+        x = emb_w[ids].to(DTYPE)
         pmax = int(pos.max())
         q_pos = torch.arange(pmax + 1, pmax + 1 + BLOCK, device=DEV)
         kv_pos = torch.cat([pos, q_pos])
@@ -169,7 +177,7 @@ def main():
             lw = {k.split(f"layers.{layer_i}.")[1]: v for k, v in w.items() if f"layers.{layer_i}." in k}
             x = layer(x, ctx, lw, q_pos, kv_pos, kv_store, layer_i)
         hid = rms(x, w["norm.weight"])
-        logits = hid[1:].float() @ lm_w.float().T
+        logits = hid[1:].float() @ lm_w.float().T  # always fp32 scoring
         topv, topi = torch.topk(logits, TOPK, dim=-1)
         hp = hid[1:] @ w["candidate_selector.hidden_projection.weight"].T
         preds = w["candidate_selector.predecessor_codebook"]
