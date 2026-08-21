@@ -39,7 +39,21 @@ def rms(x, w):
     return x * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + EPS).to(x.dtype) * w
 
 
+ROPE_MODE = "inter"  # "inter" (engine) or "neox" (HF rotate_half, full head)
+
+
 def rope(x, pos):
+    if ROPE_MODE == "neox":
+        inv = 1.0 / (THETA ** (torch.arange(0, HD, 2, device=DEV, dtype=torch.float32) / HD))
+        ang = pos.float()[:, None] * inv[None, :]
+        cs = ang.cos()[:, None, :].to(x.dtype)
+        sn = ang.sin()[:, None, :].to(x.dtype)
+        out = x.clone()
+        half = HD // 2
+        re, im = x[..., :half].clone(), x[..., half:HD].clone()
+        out[..., :half] = re * cs - im * sn
+        out[..., half:HD] = re * sn + im * cs
+        return out
     inv = 1.0 / (THETA ** (torch.arange(0, ROPE, 2, device=DEV, dtype=torch.float32) / ROPE))
     ang = pos.float()[:, None] * inv[None, :]
     cs = ang.cos()[:, None, :].to(x.dtype)
@@ -64,17 +78,27 @@ def gconv(h, delta, base):
     return o.view(T, H)
 
 
-def layer(x, ctx, lw, q_pos, kv_pos):
+def layer(x, ctx, lw, q_pos, kv_pos, kv_store=None, layer_i=0, ctx_pos=None):
     h = rms(x, lw["input_layernorm.weight"])
     ca = (h @ lw["attention_conv.kernel_projection.weight"].T).view(BLOCK, 2, TAPS2, -1)
     h2 = gconv(h, ca[:, 0], lw["attention_conv.base_kernel"][0])
     q = rms((h2 @ lw["self_attn.q_proj.weight"].T).view(BLOCK, NQ, HD), lw["self_attn.q_norm.weight"])
     q = rope(q, q_pos)
-    k = rms(torch.cat([(ctx @ lw["self_attn.k_proj.weight"].T).view(-1, NKV, HD),
-                       (h2 @ lw["self_attn.k_proj.weight"].T).view(BLOCK, NKV, HD)]), lw["self_attn.k_norm.weight"])
+    k_all = torch.cat([(ctx @ lw["self_attn.k_proj.weight"].T).view(-1, NKV, HD),
+                       (h2 @ lw["self_attn.k_proj.weight"].T).view(BLOCK, NKV, HD)])
+    v_all = torch.cat([(ctx @ lw["self_attn.v_proj.weight"].T).view(-1, NKV, HD),
+                       (h2 @ lw["self_attn.v_proj.weight"].T).view(BLOCK, NKV, HD)])
+    k = rms(k_all, lw["self_attn.k_norm.weight"])
     k = rope(k, kv_pos)
-    v = torch.cat([(ctx @ lw["self_attn.v_proj.weight"].T).view(-1, NKV, HD),
-                   (h2 @ lw["self_attn.v_proj.weight"].T).view(BLOCK, NKV, HD)])
+    v = v_all
+    if kv_store is not None:
+        # persistent draft-side KV (the HF DynamicCache shape): every ctx row
+        # (target side) and block row ever seen stays attended forever
+        for i, p in enumerate(kv_pos.tolist()):
+            kv_store[layer_i][p] = (k[i].clone(), v[i].clone())
+        positions = sorted(kv_store[layer_i])
+        k = torch.stack([kv_store[layer_i][p][0] for p in positions])
+        v = torch.stack([kv_store[layer_i][p][1] for p in positions])
     out = torch.empty(BLOCK, NQ, HD, device=DEV, dtype=torch.float32)
     for qh in range(NQ):
         kvh = qh // (NQ // NKV)
@@ -93,6 +117,9 @@ def layer(x, ctx, lw, q_pos, kv_pos):
 
 
 def main():
+    import os as _os3
+    global ROPE_MODE
+    ROPE_MODE = _os3.environ.get("ROPE_MODE", "inter")
     import glob
     import re
     w = load(f"{DRAFTER}/model.safetensors")
@@ -107,6 +134,8 @@ def main():
         dumps[n] = torch.load(f, weights_only=False, map_location="cpu")
     agree = [0] * 7
     total = 0
+    use_cache = __import__("os").environ.get("KV_CACHE", "0") == "1"
+    kv_store = {i: {} for i in range(LAYERS)} if use_cache else None
     for n in sorted(dumps):
         if n + 1 not in dumps:
             continue
@@ -138,7 +167,7 @@ def main():
         kv_pos = torch.cat([pos, q_pos])
         for layer_i in range(LAYERS):
             lw = {k.split(f"layers.{layer_i}.")[1]: v for k, v in w.items() if f"layers.{layer_i}." in k}
-            x = layer(x, ctx, lw, q_pos, kv_pos)
+            x = layer(x, ctx, lw, q_pos, kv_pos, kv_store, layer_i)
         hid = rms(x, w["norm.weight"])
         logits = hid[1:].float() @ lm_w.float().T
         topv, topi = torch.topk(logits, TOPK, dim=-1)
