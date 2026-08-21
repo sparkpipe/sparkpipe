@@ -568,7 +568,14 @@ from pathlib import Path
 # - it caught the kernel's rank>threads hproj hole (outputs 128..255 read as
 # zero, halving the walk's edge scores: -6% O128). Zero mismatches post-fix.
 # 170714 is the exact count.
-CEILING = 170714
+# +128: the vLLM input-parity harness - the reference driver is patched
+# (VLLM_DFLASH2_INPUT_DUMP) to dump its drafter-context hiddens/bonus/
+# positions per round; the harness runs OUR block forward + walk on those
+# exact inputs and scores draft agreement. Finding: perfect agreement on
+# structured stretches, ~50% divergence on varied rounds - the acceptance
+# mountain (their E=4.30 vs our ~1) localizes to the block invocation.
+# 170880 is the exact count.
+CEILING = 170880
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
