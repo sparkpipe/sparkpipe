@@ -331,3 +331,94 @@ static __global__ void SparkQwen36DsparkMarkovKernel(
 	 * lies about the rounding convention). */
 	bias_out[(uint64_t)draft_pos * vocab + v] = __bfloat162float(__float2bfloat16(acc));
 }
+
+/* Device-side selector front-end: per draft slot (blockIdx.x), top-16 over
+ * the vocab logits in the host pass's exact two-key order (value desc, index
+ * asc) fused with the 256-wide hidden projection (one thread per output,
+ * sequential mul+add - intrinsics block FMA contraction so the bf16-rounded
+ * result bit-matches the host scalar path). Replaces the ~4MB logits D2H and
+ * the scalar 7x248320 insertion pass (~25-35ms host) with a compact
+ * ids/scores/hproj copy. */
+#define SPARK_QWEN36_DSPARK_SEL_THREADS 128u
+
+static __global__ void SparkQwen36DsparkSelectKernel(
+	const __nv_bfloat16 *logits, const __nv_bfloat16 *hidden, const __nv_bfloat16 *hproj_w,
+	uint32_t *out_ids, float *out_scores, float *out_hproj,
+	uint32_t vocab, uint32_t hidden_dim, uint32_t rank, uint32_t top_k)
+{
+	const uint32_t slot = blockIdx.x;
+	const uint32_t tid = threadIdx.x;
+	const uint32_t nt = blockDim.x;
+	const uint32_t K = top_k;
+	const __nv_bfloat16 *row = logits + (uint64_t)(slot + 1u) * vocab;
+	__shared__ float s_val[SPARK_QWEN36_DSPARK_SEL_THREADS * 16u];
+	__shared__ uint32_t s_idx[SPARK_QWEN36_DSPARK_SEL_THREADS * 16u];
+	__shared__ uint32_t s_head[SPARK_QWEN36_DSPARK_SEL_THREADS];
+	__shared__ unsigned long long s_best;
+	float lv[16];
+	uint32_t li[16];
+	uint32_t ln = 0u;
+	uint32_t out;
+	for (uint32_t v = tid; v < vocab; v += nt)
+	{
+		const float value = __bfloat162float(row[v]);
+		uint32_t insert = ln < K ? ln : K;
+		uint32_t shift;
+		while ( insert > 0u && (value > lv[insert - 1u] || (value == lv[insert - 1u] && v < li[insert - 1u])) )
+			insert--;
+		if ( insert == K )
+			continue;
+		shift = ln < K ? ln : K - 1u;
+		for ( ; shift > insert; shift-- )
+		{
+			lv[shift] = lv[shift - 1u];
+			li[shift] = li[shift - 1u];
+		}
+		if ( ln < K )
+			ln++;
+		lv[insert] = value;
+		li[insert] = v;
+	}
+	for (out = 0u; out < ln; out++)
+	{
+		s_val[tid * 16u + out] = lv[out];
+		s_idx[tid * 16u + out] = li[out];
+	}
+	s_head[tid] = 0u;
+	if ( tid == 0u )
+		s_best = 0ull;
+	__syncthreads();
+	for (out = 0u; out < K; out++)
+	{
+		unsigned long long mine = 0ull;
+		if ( s_head[tid] < ln )
+		{
+			const float v0 = s_val[tid * 16u + s_head[tid]];
+			const uint32_t i0 = s_idx[tid * 16u + s_head[tid]];
+			uint32_t sb = __float_as_uint(v0);
+			sb ^= (sb >> 31u) != 0u ? 0xFFFFFFFFu : 0x80000000u;
+			mine = ((unsigned long long)sb << 20) | (unsigned long long)(0xFFFFFu - (i0 & 0xFFFFFu));
+		}
+		atomicMax(&s_best, mine);
+		__syncthreads();
+		if ( mine != 0ull && mine == s_best )
+		{
+			out_ids[(uint64_t)slot * K + out] = s_idx[tid * 16u + s_head[tid]];
+			out_scores[(uint64_t)slot * K + out] = s_val[tid * 16u + s_head[tid]];
+			s_head[tid]++;
+		}
+		if ( tid == 0u )
+			s_best = 0ull;
+		__syncthreads();
+	}
+	for (uint32_t rr = tid; rr < rank; rr += nt)
+	{
+		const __nv_bfloat16 *hrow = hidden + (uint64_t)(slot + 1u) * hidden_dim;
+		const __nv_bfloat16 *wrow = hproj_w + (uint64_t)rr * hidden_dim;
+		float acc = 0.0f;
+		uint32_t c;
+		for (c = 0u; c < hidden_dim; c++)
+			acc = __fadd_rn(acc, __fmul_rn(__bfloat162float(hrow[c]), __bfloat162float(wrow[c])));
+		out_hproj[(uint64_t)slot * rank + rr] = __bfloat162float(__float2bfloat16(acc));
+	}
+}

@@ -2293,3 +2293,17 @@ extern "C" cudaError_t SparkQwen36LaunchDsparkMarkov(cudaStream_t stream, const 
 	SparkQwen36DsparkMarkovKernel<<<grid, 256u, 0u, stream>>>((const __nv_bfloat16 *)markov_w1_bf16, (const __nv_bfloat16 *)markov_w2_bf16, prev_token_ids, draft_count, rank, (float *)bias_out, vocab);
 	return(cudaGetLastError());
 }
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkSelect(cudaStream_t stream,
+	const void *logits, const void *hidden, const void *hproj_w,
+	void *out, uint32_t block_rows, uint32_t vocab, uint32_t hidden_dim, uint32_t rank, uint32_t top_k)
+{
+	if ( block_rows < 2u )
+		return(cudaSuccess);
+	SparkQwen36DsparkSelectKernel<<<block_rows - 1u, SPARK_QWEN36_DSPARK_SEL_THREADS>>>(
+		(const __nv_bfloat16 *)logits, (const __nv_bfloat16 *)hidden, (const __nv_bfloat16 *)hproj_w,
+		(uint32_t *)out, (float *)((uint8_t *)out + (size_t)(block_rows - 1u) * top_k * 4u),
+		(float *)((uint8_t *)out + (size_t)(block_rows - 1u) * (2u * top_k * 4u)),
+		vocab, hidden_dim, rank, top_k);
+	return(cudaGetLastError());
+}

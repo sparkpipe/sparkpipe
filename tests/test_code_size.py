@@ -558,7 +558,17 @@ from pathlib import Path
 # block m; the per-block selector is host-bound so k-1 of k blocks were pure
 # overhead (measured: one-frame at 3 blocks ran 6.55 tok/s vs 8.76 2-frame).
 # 170572 is the exact count.
-CEILING = 170572
+# +78: the device-side selector front-end (fused top-16 + hidden projection
+# kernel, exact two-key order and mul+add rounding to bit-match the host
+# scalar path) + a compact ids/scores/hproj copy - removes the ~4MB logits
+# D2H and the ~25-35ms scalar 7x248320 insertion pass per drafter call.
+# 170650 is the exact count.
+# +62: the selector parity oracle (SPARK_QWEN36_DSPARK_SEL_CHECK=1 runs the
+# original scalar host pass beside the device kernel and prints divergences)
+# - it caught the kernel's rank>threads hproj hole (outputs 128..255 read as
+# zero, halving the walk's edge scores: -6% O128). Zero mismatches post-fix.
+# 170712 is the exact count.
+CEILING = 170712
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

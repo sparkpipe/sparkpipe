@@ -214,6 +214,9 @@ typedef struct SparkQwen36ModuleState
 	 * window [2048][H] x2, the staged per-layer K/V [5][2][2056][1024] bf16
 	 * (context window + block rows), and the prep positions. */
 	void *dflash_taps_history;
+	/* device-side selector front-end output (ids/scores/hproj, compact) */
+	void *dspark_sel_out_dev;
+	uint32_t *dspark_sel_out_host;
 	void *dflash_fc_out;
 	void *dflash_ctx_normed;
 	void *dflash_ctx_kv;
@@ -272,6 +275,7 @@ extern cudaError_t SparkQwen36LaunchDsparkTapStore(cudaStream_t stream, const vo
 extern cudaError_t SparkQwen36LaunchDsparkKPrep(cudaStream_t stream, void *k_bf16, const void *k_norm_bf16, const uint64_t *positions, uint32_t rows);
 extern cudaError_t SparkQwen36LaunchDsparkQPrep(cudaStream_t stream, void *q_bf16, const void *q_norm_bf16, const uint64_t *positions, uint32_t rows);
 extern cudaError_t SparkQwen36LaunchDsparkCacheAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, const uint64_t *positions, void *attn_out_bf16, uint32_t block_rows, uint32_t nkv, uint32_t window);
+extern cudaError_t SparkQwen36LaunchDsparkSelect(cudaStream_t stream, const void *logits, const void *hidden, const void *hproj_w, void *out, uint32_t block_rows, uint32_t vocab, uint32_t hidden_dim, uint32_t rank, uint32_t top_k);
 extern cudaError_t SparkQwen36LaunchDsparkMarkov(cudaStream_t stream, const void *markov_w1_bf16, const void *markov_w2_bf16, const uint32_t *prev_token_ids, uint32_t draft_count, uint32_t rank, void *bias_out, uint32_t vocab);
 extern cudaError_t SparkQwen36LaunchDsparkConv(cudaStream_t stream, const void *x_bf16, const void *delta_bf16, const void *base_bf16, void *out_bf16, uint32_t block_size, uint32_t num_groups, uint32_t group_size, uint32_t side);
 /* Small-batch GEMM geometry, mirrors the cuda translation unit. */
@@ -684,6 +688,14 @@ static SparkStatus SparkQwen36ModuleLoadDsparkPack(SparkQwen36ModuleState *state
 			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)5u * 2u * 2056u * 1024u * 2u,&state->dflash_ctx_kv);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,2056u * sizeof(uint64_t),(void **)&state->dflash_positions);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u) * (2u * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K + SPARK_QWEN36_DSPARK_SELECTOR_RANK) * 4u,&state->dspark_sel_out_dev);
+		if ( status == SPARK_STATUS_OK )
+		{
+			state->dspark_sel_out_host = (uint32_t *)malloc((size_t)(SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u) * (2u * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K + SPARK_QWEN36_DSPARK_SELECTOR_RANK) * 4u);
+			if ( state->dspark_sel_out_host == 0 )
+				status = SPARK_STATUS_CAPACITY_EXCEEDED;
+		}
 	}
 	free(directory);
 	fclose(file);
@@ -2442,9 +2454,11 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lm_head,norm,logits,B);
 		if ( error == cudaSuccess )
-			error = cudaMemcpyAsync(slot->dspark_logits_host,logits,(size_t)B * V * sizeof(uint16_t),cudaMemcpyDeviceToHost,stream);
+			error = SparkQwen36LaunchDsparkSelect(stream,logits,norm,w->selector_hidden_proj.weight_payload,state->dspark_sel_out_dev,B,V,H,R,K);
 		if ( error == cudaSuccess )
 			error = cudaMemcpyAsync(slot->dspark_hidden_host,norm,(size_t)B * H * sizeof(uint16_t),cudaMemcpyDeviceToHost,stream);
+		if ( error == cudaSuccess )
+			error = cudaMemcpyAsync(state->dspark_sel_out_host,state->dspark_sel_out_dev,(size_t)(B - 1u) * (2u * K + R) * 4u,cudaMemcpyDeviceToHost,stream);
 		/* Anchor = the frame's emission: the decode's output (iteration 1)
 		 * or the replay's output (replay-tail draft, iterations 2+). Both are
 		 * the first candidate token AFTER the tap position. */
@@ -2460,6 +2474,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 				/* one-shot parity dump: taps + C0 + logits + final hidden */
 				dflash2_dump_done = 1;
 				FILE *df;
+				cudaMemcpy(slot->dspark_logits_host,logits,(size_t)B * V * 2u,cudaMemcpyDeviceToHost);
 				uint16_t *taps_host = (uint16_t *)malloc((size_t)5u * H * 2u);
 				cudaMemcpy(taps_host,slot->dspark_tap_buffer,(size_t)5u * H * 2u,cudaMemcpyDeviceToHost);
 				df = fopen("/tmp/dflash2_taps.bin","wb"); fwrite(taps_host,1,(size_t)5u * H * 2u,df); fclose(df); free(taps_host);
@@ -2472,41 +2487,44 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		/* 4) candidate selector, host pass (numpy reference rounding order):
 		 * top-16 per mask row (value desc, index asc), hidden projection gate,
 		 * [slots, K, K] edge lattice, greedy walk from the C0 anchor. */
-		if ( error == cudaSuccess )
+		if ( error == cudaSuccess && getenv("SPARK_QWEN36_DSPARK_SEL_CHECK") != 0 )
 		{
-			uint32_t top_ids[B - 1u][K];
-			float unary[B - 1u][K];
-			float hproj[B - 1u][R];
+			/* parity oracle: recompute the device front-end's outputs with the
+			 * original scalar host pass and print the first divergence */
+			const uint32_t *dev_ids = state->dspark_sel_out_host;
+			const float *dev_scores = (const float *)(dev_ids + (B - 1u) * K);
+			const float *dev_hproj = dev_scores + (B - 1u) * K;
 			uint32_t slot_i;
+			cudaMemcpy(slot->dspark_logits_host,logits,(size_t)B * V * 2u,cudaMemcpyDeviceToHost);
 			for (slot_i = 0u; slot_i < B - 1u; slot_i++)
 			{
-				/* top-16 over the slot's lm_head logits (row slot_i+1; row 0 is
-				 * the C0 anchor). Ties break to the lower vocab index. */
 				const uint16_t *row = slot->dspark_logits_host + (uint64_t)(slot_i + 1u) * V;
-				uint32_t fill, v;
+				uint32_t hid[K];
+				float hun[K];
+				float hp[R];
+				uint32_t fill, v, c2;
 				for (fill = 0u; fill < K; fill++)
 				{
-					top_ids[slot_i][fill] = 0u;
-					unary[slot_i][fill] = -3.4028235e38f;
+					hid[fill] = 0u;
+					hun[fill] = -3.4028235e38f;
 				}
 				for (v = 0u; v < V; v++)
 				{
 					const float value = SparkQwen36ModuleBf16ToFloat(row[v]);
 					uint32_t insert = K;
 					uint32_t shift;
-					while ( insert > 0u && value > unary[slot_i][insert - 1u] )
+					while ( insert > 0u && value > hun[insert - 1u] )
 						insert--;
 					if ( insert == K )
 						continue;
 					for (shift = K - 1u; shift > insert; shift--)
 					{
-						unary[slot_i][shift] = unary[slot_i][shift - 1u];
-						top_ids[slot_i][shift] = top_ids[slot_i][shift - 1u];
+						hun[shift] = hun[shift - 1u];
+						hid[shift] = hid[shift - 1u];
 					}
-					unary[slot_i][insert] = value;
-					top_ids[slot_i][insert] = v;
+					hun[insert] = value;
+					hid[insert] = v;
 				}
-				/* hidden projection: [R] gate row = hidden . hproj_w[r], bf16-rounded. */
 				for (fill = 0u; fill < R; fill++)
 				{
 					const uint16_t *hw = w->selector_hidden_proj_host + (uint64_t)fill * H;
@@ -2515,9 +2533,32 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 					uint32_t c;
 					for (c = 0u; c < H; c++)
 						acc += SparkQwen36ModuleBf16ToFloat(hidden[c]) * SparkQwen36ModuleBf16ToFloat(hw[c]);
-					hproj[slot_i][fill] = SparkQwen36ModuleBf16ToFloat(SparkQwen36ModuleFloatToBf16(acc));
+					hp[fill] = SparkQwen36ModuleBf16ToFloat(SparkQwen36ModuleFloatToBf16(acc));
+				}
+				for (c2 = 0u; c2 < K; c2++)
+				{
+					if ( hid[c2] != dev_ids[slot_i * K + c2] || hun[c2] != dev_scores[slot_i * K + c2] )
+						fprintf(stderr,"sel_check slot=%u rank=%u host=(%u,%f) dev=(%u,%f)\n",slot_i,c2,hid[c2],hun[c2],dev_ids[slot_i * K + c2],dev_scores[slot_i * K + c2]);
+				}
+				for (c2 = 0u; c2 < R; c2++)
+				{
+					if ( hp[c2] != dev_hproj[slot_i * R + c2] )
+					{
+						fprintf(stderr,"sel_check hproj slot=%u r=%u host=%f dev=%f\n",slot_i,c2,hp[c2],dev_hproj[slot_i * R + c2]);
+						break;
+					}
 				}
 			}
+		}
+		if ( error == cudaSuccess )
+		{
+			/* the selector front-end ran on device: top-16 ids/scores (the
+			 * host pass's exact value-desc/index-asc order) plus the
+			 * bf16-rounded hidden projection, all in one compact copy */
+			const uint32_t *top_ids = state->dspark_sel_out_host;
+			const float *unary = (const float *)(top_ids + (B - 1u) * K);
+			const float *hproj = unary + (B - 1u) * K;
+			uint32_t slot_i;
 			/* greedy walk over the lattice: edge[p,c] = unary[c] + (A[pred] . hproj) . B[cand]. */
 			{
 				uint32_t previous = 0u;
@@ -2529,21 +2570,21 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 					{
 						/* predecessor row: the anchor C0 for slot 0, else the
 						 * previous slot's candidate top_ids[slot-1][previous]. */
-						const uint32_t pred_id = slot_i == 0u ? prev : top_ids[slot_i - 1u][previous];
+						const uint32_t pred_id = slot_i == 0u ? prev : top_ids[(slot_i - 1u) * K + previous];
 						const uint16_t *pred_row = w->selector_pred_host + (uint64_t)pred_id * R;
-						const uint16_t *succ_row = w->selector_succ_host + (uint64_t)top_ids[slot_i][c] * R;
+						const uint16_t *succ_row = w->selector_succ_host + (uint64_t)top_ids[slot_i * K + c] * R;
 						float edge = 0.0f, score;
 						uint32_t r;
 						for (r = 0u; r < R; r++)
-							edge += SparkQwen36ModuleBf16ToFloat(pred_row[r]) * hproj[slot_i][r] * SparkQwen36ModuleBf16ToFloat(succ_row[r]);
-						score = unary[slot_i][c] + edge;
+							edge += SparkQwen36ModuleBf16ToFloat(pred_row[r]) * hproj[slot_i * R + r] * SparkQwen36ModuleBf16ToFloat(succ_row[r]);
+						score = unary[slot_i * K + c] + edge;
 						if ( score > best_score )
 						{
 							best_score = score;
 							best_c = c;
 						}
 					}
-					view->draft_token_ids[blk * (B - 1u) + slot_i] = top_ids[slot_i][best_c];
+					view->draft_token_ids[blk * (B - 1u) + slot_i] = top_ids[slot_i * K + best_c];
 					previous = best_c;
 				}
 				if ( blk == 0u && getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
