@@ -289,10 +289,18 @@ curl -s http://spark3:8123/metrics | grep spec_decode
 
 ## 9. Recommended Next Steps (Priority Order — revised after the argmax unlock)
 
-1. **Kill the double-frames** (~1.84 frames/round): the adapter runs a full-weight frame
-   for ~128 of 280 frames that commit nothing — submission-granularity + fold-arming
-   interaction in `spark_qwen36_serving_adapter.c`. Trace `SparkQwen36ModuleRunFrame`
-   callers vs `spec_diag` rounds. Potential ~1.8x.
+1. **Kill the double-frames — ROOT CAUSE FOUND (end of the argmax session)**: instrumented
+   the adapter's six `RunFrame`/`RunSpeculativeFrame` call sites (fprintf "frame_tag ..."
+   at lines ~1446 nonfold_draft / ~1536 fold_verify / ~1662+1696 replays / ~1845
+   plain_decode / ~1862 prefill_chunk — instrumentation reverted, re-add for tracing).
+   A 128-token run: **1 nonfold_draft + 128 prefill_chunk + 0 fold_verify**; the 512-run
+   profile decomposes as 152 verify frames + ~128 one-row PREFILL CHUNKS at full weight
+   cost. The committed tokens are re-fed by the client as prefill rows and re-processed
+   through the whole model instead of riding the next folded verify's row 0. Fix the
+   submission-to-lane flow in `spark_qwen36_serving_adapter.c` so every committed token
+   is consumed by the next verify frame (the fold condition `fold_position == position`
+   catches only the LAST row of a submission — with 1-row submissions it should always
+   match; find why ~45% of rounds take the prefill wave instead). Potential ~1.8x.
 
 2. **FFN efficiency**: 155ms/frame at ~6% of the GB10's memory bandwidth for a full
    27GB weight sweep (floor ≈ 100ms/frame total). Check the fp8 GEMM path's batch
