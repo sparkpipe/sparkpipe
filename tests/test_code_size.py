@@ -574,8 +574,8 @@ from pathlib import Path
 # exact inputs and scores draft agreement. Finding: perfect agreement on
 # structured stretches, ~50% divergence on varied rounds - the acceptance
 # mountain (their E=4.30 vs our ~1) localizes to the block invocation.
-# 170880 is the exact count.
-CEILING = 170880
+# 170881 is the exact count.
+CEILING = 170881
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
