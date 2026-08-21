@@ -12,7 +12,8 @@
 **UPDATE (same session, later commits): the engine is now PROVEN FAITHFUL and the
 acceptance gap is fully attributed.** The numpy-oracle replay on the engine's own
 dumped taps (full-prefix ctxrun dumps + `tools/qwen36_dflash2_engine_faithfulness.py`)
-matches the engine's drafts EXACTLY (14/14 positions over sampled rounds). The
+matches the engine's drafts on 82/84 positions over 12 rounds (97.6%; the two
+misses are isolated single-position near-tie flips, the sub-bf16 numerics class). The
 per-depth streak is FLAT (71/75/71/67/80/66% at k=7 MX =1 - the block-diffusion
 property works; deep runs reach 6/7). The residual gap vs the reference's
 81/74/72/78/86/83 is a uniform ~5-10 points, dominated by pos0 (71 vs 81), and is
