@@ -123,16 +123,14 @@ def rope_freq() -> np.ndarray:
 
 
 def apply_rope(x: np.ndarray, pos: np.ndarray) -> np.ndarray:
-    """x: [..., head_dim]; rope over the first ROPE_DIM dims. pos: [...] broadcast."""
+    """x: [..., head_dim]; interleaved rope over the first ROPE_DIM dims
+    (pairs (2i, 2i+1), theta^(-2i/64)) - the empirically winning drafter
+    convention (the neox-128 variant wins p0 but zeroes deep drafts)."""
     freq = rope_freq().astype(np.float64)  # [32]
-    ang = np.asarray(pos, dtype=np.float64)[..., None] * freq[None, :]  # [..., 32]
+    ang = np.asarray(pos, dtype=np.float64)[..., None] * freq[None, :]
     c = np.cos(ang).astype(np.float32)
     s = np.sin(ang).astype(np.float32)
     out = x.copy()
-    # COPY (not view): the in-place stores below would otherwise alias xr back
-    # into the just-written even slots, feeding ROTATED (not original) even
-    # values into the odd computation. The CUDA kernel reads re/im before
-    # overwriting, so this must too.
     xr = out[..., 0:ROPE_DIM:2].copy()
     xi = out[..., 1:ROPE_DIM:2].copy()
     out[..., 0:ROPE_DIM:2] = xr * c - xi * s

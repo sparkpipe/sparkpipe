@@ -185,7 +185,9 @@ static __global__ void SparkQwen36DsparkCacheAttnKernel(
 	uint64_t q_pos, k_pos;
 	if ( d >= head_dim )
 		return;
-	/* q: load raw, f32 per-head RMSNorm, rope at the row's position. */
+	/* q: load raw, f32 per-head RMSNorm, interleaved-64 rope at the row's
+	 * position - the empirically winning convention (the sweep's neox-128
+	 * variant wins p0 but kills depth; see the conv_sweep notes). */
 	q_pos = positions[window + row];
 	sum = 0.0f;
 	for (kv = 0u; kv < head_dim; kv++)

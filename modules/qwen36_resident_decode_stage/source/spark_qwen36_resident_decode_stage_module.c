@@ -2191,11 +2191,16 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	{
 		const char *wenv = getenv("SPARK_QWEN36_DFLASH2_WINDOW");
 		uint32_t bound = wenv != 0 ? (uint32_t)strtoul(wenv,0,0) : 2048u;
-		uint32_t avail = (uint32_t)(base - 1u < 2048u ? base - 1u : 2048u);
+		uint32_t avail = (uint32_t)(base < 2048u ? base : 2048u);
 		wnd = bound < avail ? bound : avail;
 	}
 	const uint32_t window = wnd;
-	const uint64_t window_base = base - 1u - window;
+	/* The context window INCLUDES the walked row's tap (position base-1, the
+	 * g_P of llama.cpp's seed pair (t_{P+1}, g_P)): the anchor embed and g_P
+	 * share RoPE position base-1. The convention sweep measured the pair at
+	 * p0=70% vs 41% without it - dropping the freshest target hidden made
+	 * the drafter echo one round behind on every varying token. */
+	const uint64_t window_base = base - window;
 	/* The verify-forward tail (vLLM's context shape): extend the context past
 	 * the committed prefix into the stale tap rows the LAST verify walk wrote
 	 * (the rejected drafts' target hiddens). vLLM's context KV includes the
@@ -2221,21 +2226,23 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	error = SparkQwen36LaunchLinear(stream,&w->projector,(const uint8_t *)state->dflash_taps_history + window_base * 5u * H * 2u,state->dflash_fc_out,window);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchRmsNorm(stream,state->dflash_fc_out,w->hidden_norm_bf16,state->dflash_ctx_normed,window,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
-	/* 2) block[0] = embed(anchor = the frame's EMISSION). Measured on the
-	 * GSM round-4 dump: the emission anchor's oracle draft[1] hits the
-	 * truth (220); the input-row ("bonus") anchor echoes the anchor (5632)
-	 * - exactly the device's wrong output. The geometry stays: block rows
-	 * at base-1..base+6, window 0..base-2, drafts predict base..base+6. */
+	/* 2) block[0] = embed(anchor = the frame's EMISSION), roped at ITS OWN
+	 * position base, one past the g_P context row at base-1 (the deferred
+	 * seed pair). Block rows at base..base+7; row r's walk output predicts
+	 * the token at base+r (own-position). */
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchEmbeddingGather(stream,slot->output_token_ids,state->token_embedding_bf16,block_hidden,1u);
 	if ( error == cudaSuccess )
 		error = SparkQwen36LaunchEmbeddingGather(stream,slot->dspark_mask_token_ids,state->token_embedding_bf16,block_hidden + H,B - 1u);
-	/* 3) prep positions: window rows at window_base..base-1, block rows at
-	 * base..base+B-1 (k norm+rope and q rope are absolute). */
+	/* 3) prep positions: window rows at window_base..base-1 (g_P included),
+	 * block rows at base..base+B-1 - the anchor row sits one PAST its paired
+	 * g_P row (llama.cpp's DEFERRED pair: t_{P+1} at P+1, g_P at P; a shared
+	 * position measurably zeroes deep drafts). (k norm+rope and q rope are
+	 * absolute.) */
 	for (layer = 0u; layer < window + ctx_tail; layer++)
 		state->dflash_positions_host[layer] = window_base + layer;
 	for (layer = 0u; layer < B; layer++)
-		state->dflash_positions_host[window + ctx_tail + layer] = base - 1u + layer;
+		state->dflash_positions_host[window + ctx_tail + layer] = base + layer;
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(state->dflash_positions,state->dflash_positions_host,(size_t)nkv * sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
 	status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"dflash2_head_init");
@@ -2282,7 +2289,10 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			}
 			{
 				uint32_t anchor_id = 0u;
-				cudaMemcpy(&anchor_id,slot->input_token_ids + (rows - 1u),sizeof(uint32_t),cudaMemcpyDeviceToHost);
+				/* the anchor the block actually embeds: the frame's EMISSION
+				 * (output_token_ids[0]); the old input-row read dumped the
+				 * walked token instead and mislabeled the oracle sweeps */
+				cudaMemcpy(&anchor_id,slot->output_token_ids,sizeof(uint32_t),cudaMemcpyDeviceToHost);
 				fprintf(stderr,"ctxdump run=%u base=%llu window=%u anchor=%u\n",ctx_dump_count,(unsigned long long)base,window,anchor_id);
 				{
 					FILE *mf = fopen("/tmp/ctxwin_anchor","w");
@@ -2499,6 +2509,44 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 					}
 					view->draft_token_ids[slot_i] = top_ids[slot_i][best_c];
 					previous = best_c;
+				}
+				if ( getenv("SPARK_QWEN36_DFLASH2_CTX_DUMP") != 0 )
+				{
+					/* Per-run parity capture, read AFTER the section-3 stream
+					 * sync (race-free): a taps slice wide enough for any
+					 * convention sweep, the true walk anchor (prev), and the
+					 * device's own walk output. Consumed round-by-round by
+					 * tools/qwen36_dflash2_deep_parity.py against the numpy
+					 * reference to localize the deep-draft acceptance gap. */
+					static uint32_t parity_runs = 0u;
+					if ( parity_runs < 80u )
+					{
+						char path[128];
+						uint32_t lo = base < 41u ? 0u : (uint32_t)base - 41u;
+						uint32_t count = (uint32_t)(base + 8u - lo);
+						uint16_t *host = (uint16_t *)malloc((size_t)count * 5u * H * 2u);
+						if ( host != 0 && cudaMemcpy(host,(const uint8_t *)state->dflash_taps_history + (uint64_t)lo * 5u * H * 2u,(size_t)count * 5u * H * 2u,cudaMemcpyDeviceToHost) == cudaSuccess )
+						{
+							FILE *tf;
+							snprintf(path,sizeof(path),"/tmp/ctxrun_%u_taps.bin",parity_runs);
+							tf = fopen(path,"wb");
+							if ( tf != 0 ) { fwrite(host,1,(size_t)count * 5u * H * 2u,tf); fclose(tf); }
+						}
+						free(host);
+						snprintf(path,sizeof(path),"/tmp/ctxrun_%u.meta",parity_runs);
+						{
+							FILE *mf = fopen(path,"w");
+							if ( mf != 0 )
+							{
+								uint32_t di;
+								fprintf(mf,"run=%u lo=%u base=%llu window=%u anchor=%u drafts=",(unsigned int)parity_runs,(unsigned int)lo,(unsigned long long)base,window,prev);
+								for (di=0u; di<B - 1u; di++)
+									fprintf(mf,"%u%c",view->draft_token_ids[di],di + 1u < B - 1u ? ' ' : '\n');
+								fclose(mf);
+							}
+						}
+						parity_runs++;
+					}
 				}
 			}
 		}

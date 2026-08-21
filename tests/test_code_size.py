@@ -518,7 +518,31 @@ from pathlib import Path
 # shape-aware (m+2 folded vs m+3) and the fold disarms on any plain decode,
 # prefill, or bootstrap so desyncs self-heal.
 # 169767 is the exact count.
-CEILING = 169767
+# +19: deep-acceptance debugging instrumentation - the ctx dump's anchor
+# read moves to the frame EMISSION (the token the block actually embeds;
+# the input-row read mislabeled the oracle sweeps), the device's walk
+# output dumps beside the ctxwin taps, and the round diag prints all 8
+# draft/emitted positions (the collapse is position-2+ only).
+# 169786 is the exact count.
+# +154 (net, replacing the racy one-shot dumps): per-run parity captures at
+# the walk-end stream sync - taps slice + the TRUE walk anchor + the device
+# walk output, race-free, consumed round-by-round by the deep-parity scorer
+# to localize the position-2+ acceptance collapse (WIP instrumentation).
+# 169940 is the exact count.
+# +416 (tools incl.): THE conditioning fix, from the live convention sweep on
+# 44 O128 rounds (torch, tools/qwen36_dflash2_conv_sweep.py): the drafter
+# wants HF Qwen3 NeoX rope over the full 128-dim head (not interleaved-64),
+# the context must INCLUDE the walked row's tap g_P at RoPE position base-1 -
+# llama.cpp's seed pair (t_{P+1}, g_P) - and the walk emits own-position
+# drafts, so output 0 is redundant and the verify remap shifts by one
+# (draft_count caps at block-1). Sweep: p0 41%->70%, p1 31%->59%.
+# 170356 is the exact count.
+# +86: sweep-fix tail (adapter remap comment rewrite, module geometry comment,
+# draft-count block-1 cap wording).
+# 170442 is the exact count.
+# +2: parity tool default moves to the fixed geometry.
+# 170444 is the exact count.
+CEILING = 170444
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

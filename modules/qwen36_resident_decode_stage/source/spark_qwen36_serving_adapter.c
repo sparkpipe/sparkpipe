@@ -1455,14 +1455,12 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			spec->committed_ids[0] = pending->frame_output_ids[0];
 			if ( SparkQwen36ServingBlockDraftMethod(spec_method) )
 			{
-				/* Block drafters draft position C0+i+1 from block[i+1] (block[0]
-				 * = embed(C0)), while the shared verify/replay/accept loop below
-				 * uses the MTP convention: draft[0] predicts C0 (redundant, never
-				 * verified) and draft[i>=1] predicts position C0+i. Remap so
-				 * draft_ids[0]=C0 (first-draft always in agreement) and
-				 * draft_ids[i]=block_draft[i-1] for i>=1. DSpark's last draft
-				 * (position C0+7) drops out exactly like MTP's redundant
-				 * draft[0]; DFlash2's block-1 ids all land. */
+				/* Block drafters emit own-position drafts: block row r at
+				 * base-1+r predicts the token at that position, so the walk's
+				 * output 0 (position base, the anchor's own slot) is redundant
+				 * with C0 and output i predicts position base+i = C0+i-1. The
+				 * verify walks [C0, outputs 1..k-1] one slot later than the old
+				 * shifted remap (the convention-sweep winner). */
 				spec->draft_ids[0] = spec->committed_ids[0];
 				for (draft=1u; draft<draft_count; draft++)
 					spec->draft_ids[draft] = state->dflash2_next_draft_ids[draft - 1u];
@@ -1520,10 +1518,12 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 				spec->accepted_count++;
 			if ( fold_active != 0u )
 				pending->spec_fold = 1u;
-			fprintf(stderr, "qwen36_spec_diag C0=%u accepted=%u drafts=[%u,%u,%u,%u] emitted=[%u,%u,%u,%u]\n",
+			fprintf(stderr, "qwen36_spec_diag C0=%u accepted=%u drafts=[%u,%u,%u,%u,%u,%u,%u,%u] emitted=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
 				spec->committed_ids[0], spec->accepted_count,
 				spec->draft_ids[0], spec->draft_ids[1], spec->draft_ids[2], spec->draft_ids[3],
-				spec->emitted_ids[0], spec->emitted_ids[1], spec->emitted_ids[2], spec->emitted_ids[3]);
+				spec->draft_ids[4], spec->draft_ids[5], spec->draft_ids[6], spec->draft_ids[7],
+				spec->emitted_ids[0], spec->emitted_ids[1], spec->emitted_ids[2], spec->emitted_ids[3],
+				spec->emitted_ids[4], spec->emitted_ids[5], spec->emitted_ids[6], spec->emitted_ids[7]);
 		}
 	}
 	min_accepted = 0u;
