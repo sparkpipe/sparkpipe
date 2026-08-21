@@ -184,6 +184,15 @@ def main():
         total += 1
         for j in range(7):
             agree[j] += ours[j] == their_drafts[j]
+            if ours[j] != their_drafts[j] and n <= 8:
+                # near-tie analysis: find their token among our candidates
+                slot = j
+                row_scores = topv[slot].float() + (preds[(ours[slot-1] if slot > 0 else bonus)].float() * hp[slot].float()) @ succs[topi[slot]].float().T
+                our_pick = ours[slot]
+                ti = (topi[slot] == their_drafts[j]).nonzero(as_tuple=True)[0]
+                their_s = row_scores[ti[0]].item() if len(ti) else float("-inf")
+                our_s = row_scores[(topi[slot] == our_pick).nonzero(as_tuple=True)[0][0]].item()
+                print(f"  disagree r{n} pos{j}: ours={our_pick}({our_s:.4f}) theirs={their_drafts[j]}({their_s:.4f}) gap={our_s-their_s:+.5f} in_top{len(ti)>0}")
         if n <= 6:
             print(f"round {n}: bonus={bonus} pos={pmax}")
             print(f"  theirs={their_drafts}")
