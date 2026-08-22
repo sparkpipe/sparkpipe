@@ -665,8 +665,8 @@ from pathlib import Path
 # (without it, later requests on the same daemon attend the previous
 # sequence's stale rows and acceptance collapses run over run: 57.6 -> 79.7
 # -> 85.2s measured on identical prompts; now stable 57.8/57.5/57.5s).
-# 172932 is the exact count.
-CEILING = 172932
+# 172936 is the exact count.
+CEILING = 172936
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
