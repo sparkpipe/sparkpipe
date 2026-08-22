@@ -674,8 +674,8 @@ from pathlib import Path
 # the layer path (site=ffn cascade) - the hunt continues from
 # graphs_broken diagnostics. Default OFF; production verified unaffected
 # (80.9s no-spec, same stream).
-# 173050 is the exact count.
-CEILING = 173050
+# 173061 is the exact count.
+CEILING = 173061
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

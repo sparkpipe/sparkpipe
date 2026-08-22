@@ -831,7 +831,10 @@ static SparkStatus SparkQwen36ModuleTpReduceDelta(SparkQwen36ModuleState *state,
 	SparkStatus status;
 	if ( state->tp_degree <= 1u )
 	{
-		if ( state->profile_enabled != 0u )
+		/* profile-only sync: capture-aware (the FFN's copy was the THIRD
+		 * capture blocker - it invalidated the capture round with the
+		 * sticky error surfacing at the next checked ffn launch) */
+		if ( state->profile_enabled != 0u && slot->capturing == 0u )
 			(void)cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
 		return(SPARK_STATUS_OK);
 	}
@@ -2886,10 +2889,16 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 			slot->capturing = capturing != 0 ? 1u : 0u;
 			if ( status == SPARK_STATUS_OK )
 				status = SparkQwen36ModuleBeginHidden(state,slot,context,rows);
+			if ( capturing != 0 && getenv("SPARK_QWEN36_CAPTRACE") != 0 )
+				fprintf(stderr,"captrace: begin_hidden status=%d\n",(int)status);
 			{
 				uint32_t layer;
 				for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
 			{
+				if ( capturing != 0 && getenv("SPARK_QWEN36_CAPTRACE") != 0 )
+				{
+					fprintf(stderr,"captrace: pre-layer %u\n",layer);
+				}
 					status = SparkQwen36ModuleRunLayer(state,slot,context->kv_block_table,prefill,layer,rows);
 					/* Per-position tap capture on EVERY armed frame (prefill, decode,
 					 * verify, replay): the drafter's context KV is built from the target
@@ -2898,6 +2907,8 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 					 * overwritten when re-walked, exactly like the main KV. */
 					if ( status == SPARK_STATUS_OK && state->dspark_weights.armed != 0u )
 						status = SparkQwen36ModuleCaptureDsparkTap(state,slot,layer,rows);
+					if ( capturing != 0 && getenv("SPARK_QWEN36_CAPTRACE") != 0 )
+						fprintf(stderr,"captrace: post-layer %u status=%d\n",layer,(int)status);
 				}
 			}
 			if ( status == SPARK_STATUS_OK )

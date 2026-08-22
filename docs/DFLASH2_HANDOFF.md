@@ -282,6 +282,31 @@ transition is column-independent -> per-row transitions compute in
 parallel, then a tiny serial prefix composes them; checkpoints (slots
 8+row) must be preserved (see the vLLM mamba_ssm reference).
 
+## 0f. THE FRAME GRAPHS ARE LIVE (all three blockers fixed) - no-spec verified, spec anomaly OPEN
+
+All three capture blockers found and fixed: (1) Finish's completion sync
+(capture-aware; the wrapper syncs after replay), (2) the profile-head spin
+sync, (3) the FFN TP-reduce spin sync (module.c ~835 - it invalidated the
+capture with the sticky error surfacing at the next checked ffn launch;
+found via layer-granular captrace, now env-gated SPARK_QWEN36_CAPTRACE).
+
+RESULTS (SPARK_QWEN36_FRAME_GRAPH=1):
+- NO-SPEC: WORKS - zero errors, stream BIT-IDENTICAL (76ed2695005b9b53),
+  79.6s vs 80.9s. The win is ~1.6% NOT the estimated 8%: the launch
+  overhead was already CPU/GPU-overlapped (memory-bound frames ~120ms of
+  GPU work vs ~4.5ms CPU submit time - the CPU runs ahead). The reference's
+  graphs matter for THEM because their frames are faster, making CPU submit
+  the bottleneck; ours self-hide. Honest correction to the business case.
+- SPEC k=8: ANOMALY - 56.1s / 175 rounds vs the stable 44.4s / 119 with
+  graphs off ON THE SAME BUILD. The no-spec stream is bit-identical, so the
+  frame replays compute correctly; but the spec trajectory (acceptance)
+  shifts when graphs are on. The spec path graphs ONLY the prefill chunks
+  (verify frames gated by the drafter flags). Suspect: an interaction
+  between the capture-round bookkeeping and the drafter's host-side state
+  (ctx-cache watermark / block-KV history) on the spec path - OR the MTP
+  bootstrap decode frame's key. Under investigation; graphs stay default-OFF
+  for spec serving (the spec launcher does not set FRAME_GRAPH).
+
 ## 1. Where We Are
 
 | Metric | O128 | GSM | Notes |
