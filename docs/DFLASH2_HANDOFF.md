@@ -241,6 +241,31 @@ PRIORITY (revised, quality-lossless only per review direction - no further
 quantization): graph port > GDN scan (~10ms) > prefill batching. The fp8
 drafter and the fp8 lm_head ideas are OFF THE TABLE (quality constraint).
 
+GRAPH-PORT FEASIBILITY (scanned end to end; the design is fixed):
+- ALL frame inputs are DEVICE-BUFFERED and async-uploaded per round:
+  slot->row_lane_indices, row_positions, row_cold, slot_mapping,
+  context_lengths (module.c ~1746-1752). Kernels take POINTERS - replay
+  reads current device contents. NO baked-value blockers in the no-spec
+  decode path.
+- THE CAPTURE BOUNDARY: keep the prologue H2D uploads EAGER (outside the
+  graph - their host sources may be pageable; do them before every
+  cudaGraphLaunch), then capture ONLY the kernel sequence (embedding
+  gather -> 64 layers -> head). The host token-validation loop is pure
+  host code (runs at capture, harmless).
+- KEYING: per (slot, rows) - the slot buffers are per-slot addresses.
+  No-spec + prefill chunks are both rows=1 -> realistically ONE graph
+  per slot. Gate: capture ONLY frames without DSPARK_DRAFT_AFTER (the
+  drafter tail has the padding-select sync; the spec frame stays eager
+  for round 1 - its target-side capture is round 2 once the GDN restore
+  slot moves to device memory).
+- VERIFY before capture: that frame->buffers[0].address (the token-id
+  input the embedding gather reads) is a STABLE device address across
+  submissions - if it moves, stage tokens into a slot-stable buffer in
+  the eager prologue.
+- The K3 pattern to copy verbatim: spark_k3_resident_decode_stage_runner.cu
+  (warm run first - shared-memory opt-ins precede capture - capture on
+  second sighting, cudaStreamCaptureModeRelaxed, graphs_broken fallback).
+
 THE LAUNCH-GAP QUANTIFICATION (the graph-port business case, measured from
 the FFN arithmetic): no-spec FFN in-situ = 76.2ms/frame vs 192 GEMMs x
 0.362ms standalone + ~3ms norms/swiglu = ~72.5ms -> ~4ms of launch gaps in
