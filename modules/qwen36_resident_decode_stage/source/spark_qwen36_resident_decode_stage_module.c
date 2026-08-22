@@ -2309,7 +2309,16 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		uint32_t cache_on = (cenv == 0 || cenv[0] != '0') && ctx_tail == 0u ? 1u : 0u;
 		error = cudaSuccess;
 		if ( cache_on != 0u && base_blk < state->dflash_ctx_valid_to )
+		{
 			state->dflash_ctx_valid_to = 0u;
+			/* a backward base = a NEW sequence on this lane: the block-KV
+			 * history still holds the previous sequence's rows (keyed by
+			 * positions that collide with the new one) - without this
+			 * reset, later requests on the same daemon attend stale rows
+			 * and acceptance collapses (measured: run 1 E=2.80, run 2
+			 * E=1.80 on the identical prompt) */
+			state->dflash_hist_count = 0u;
+		}
 		if ( cache_on != 0u )
 		{
 			uint64_t new_from = window_base > state->dflash_ctx_valid_to ? window_base : state->dflash_ctx_valid_to;

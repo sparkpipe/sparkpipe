@@ -657,7 +657,16 @@ from pathlib import Path
 # cudaFuncSetAttribute. Result: 173.9-175.6 GB/s bit-exact on every
 # production shape; O512 9.30 tps (+23%), E=4.94, bit-lossless.
 # 172883 is the exact count.
-CEILING = 172883
+# +49: the M=1 GEMV fix and the cross-request stability fix.
+# SparkLmDotRowFp8E8m0 (the scalar decode for the e8m0 pack layout - at M=1
+# the pure-streaming GEMV measures 228 GB/s vs the WS kernel's 171; the
+# no-spec MX regression 103.5s -> 81.4s, parity with F32B128's 80.1s) plus
+# rows 1-4 routing to it; and the block-KV history reset on a backward base
+# (without it, later requests on the same daemon attend the previous
+# sequence's stale rows and acceptance collapses run over run: 57.6 -> 79.7
+# -> 85.2s measured on identical prompts; now stable 57.8/57.5/57.5s).
+# 172932 is the exact count.
+CEILING = 172932
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

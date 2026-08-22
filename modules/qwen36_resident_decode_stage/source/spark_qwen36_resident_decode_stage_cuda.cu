@@ -1908,6 +1908,12 @@ extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQ
 		const uint8_t *scale = (const uint8_t *)view->weight_scale_e8m0;
 		const uint64_t payload_stride = (uint64_t)view->output_dimension * view->input_dimension;
 		const uint64_t scale_stride = (uint64_t)view->output_dimension * (view->input_dimension / 128u);
+		/* Rows 1..4: the pure-streaming scalar GEMV beats every MMA path at
+		 * M=1 (228 vs 171 GB/s measured - no shared-staging round trip; the
+		 * library kernel now decodes the e8m0 scales). This is the no-spec
+		 * decode and the per-row prefill shape. */
+		if ( row_count <= 4u )
+			return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 		/* The warp-specialized kernel (176.8-178.1 GB/s measured bit-exact on
 		 * the 89MB verify-shape sweep vs the library path's 125.6): producers
 		 * cp.async the B ring, consumers quantize+mma. D=4 ONLY (D=2 has a
