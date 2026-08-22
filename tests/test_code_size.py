@@ -619,7 +619,16 @@ from pathlib import Path
 # transactions are the needed memory-level parallelism), K-split does not
 # help, and the path past ~125 GB/s is a cp.async shared-staged B tile.
 # 171865 is the exact count.
-CEILING = 171865
+# +225: the staged-B kernel exploration harness (tools/
+# qwen36_native_staged_bench.cu) - a bit-exact cp.async double-buffered
+# variant of the native MMA linear plus the PIPELINE-DEPTH LAW: this kernel
+# family's bandwidth ~= (in-flight bytes/CTA / DRAM latency) x resident
+# CTAs x SMs (16KB/600ns x 4.5 x 10 ~= the measured 113-125 GB/s; pure
+# coalesced reads reach 266+). The deep-ring (4+ stages) is the
+# theory-backed path past it; the depth-2 ring is verified bit-exact at
+# parity with the direct kernel.
+# 172126 is the exact count.
+CEILING = 172126
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
