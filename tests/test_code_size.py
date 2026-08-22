@@ -688,7 +688,11 @@ from pathlib import Path
 # 173457 (2026-08-21): frame graphs default ON (kill-switch preserved) -
 # the spec-graph anomaly proved resolved (FFN TP-reduce guard); bit-identical
 # verified on both paths.
-CEILING = 173457
+# 173994 (2026-08-21): timestamped spec_diag round telemetry (adapter) +
+# the multi-row dot GEMM bench (tools/, four variants, negative-result
+# ledger: 160.3 GB/s best vs WS 176.8 - the M=1 248 GB/s scalar does not
+# generalize to M>=8).
+CEILING = 173994
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
