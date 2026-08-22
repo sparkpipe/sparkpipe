@@ -322,10 +322,18 @@ native path. On the CURRENT build, M=8 prefill runs the WS kernel
 (bit-exact vs native at M=8) - the batched prefill is now CLEAN.
 
 MEASURED (max_prefill_rows_per_submission=8, k=8, W=2048):
-  spec O512   20.9s / 24.53 tps  (from 44.4s / 11.38 - +116%)
-  spec O128    9.1s / 14.03 tps  (from 22.7s / 5.64)
-  no-spec O512 67.3s / 7.60 tps  (from 81.4s / 6.29)
+  spec O512   20.9s / 24.53 tps wall  (from 44.4s / 11.38 - +116%)
+  spec O128    9.1s / 14.03 tps wall  (from 22.7s / 5.64)
+  no-spec O512 67.3s / 7.60 tps wall  (from 81.4s / 6.29)
   E = 5.65 (77 rounds), deterministic across runs (8fb03a865248fb0b x2)
+
+DECODE-ONLY (the metric that matters; the wall numbers above still carry
+~2.7s of prefill - the engine has no prefix cache yet, it is an
+adapter-declared capability ours does not set; isolated by budget=1 vs
+budget=512 wall subtraction: prefill+1step = 2.68s spec / 2.69s no-spec):
+  spec decode     511/(20.90-2.68) = 28.0 tps   <- IN THE 28-32 BAND
+  no-spec decode  511/(67.33-2.69) = 7.90 tps
+  speculation speedup over baseline: 3.55x (the community 2.8x recipe math)
 NOTE: spec-vs-nospec streams diverge at token 21 - the M=1 decode GEMV
 keeps fp32 activations while M>=5 frames (prefill/verify) quantize to
 e4m3. Both deterministic, same fp8 numerics family; the strict
