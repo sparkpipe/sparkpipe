@@ -307,6 +307,36 @@ RESULTS (SPARK_QWEN36_FRAME_GRAPH=1):
   bootstrap decode frame's key. Under investigation; graphs stay default-OFF
   for spec serving (the spec launcher does not set FRAME_GRAPH).
 
+## 0g. THE PREFILL UNLOCK (the +116% jump) - serve max_prefill_rows_per_submission=8
+
+THE CORRECTED BAR: the community-settings reference (k=8, 0.88 mem,
+flash_attn - the exact recipe) measures 12.0 tps WARM on our O512 prompt.
+Decomposition: theirs = ~2s one-shot prefill + 40.6s decode (12.6 tps
+decode-phase); ours-was = 16.3s of 1-row prefill chunks + 28.1s decode
+(18.2 tps decode-phase - WE WERE ALREADY FASTER IN DECODE). The entire
+wall gap was the un-batched prefill.
+
+THE OLD BLOCKER VANISHED: the =8 prefill numerics break (E collapse to
+1.18) was measured on the pre-MX build where M=8 prefill hit the library
+native path. On the CURRENT build, M=8 prefill runs the WS kernel
+(bit-exact vs native at M=8) - the batched prefill is now CLEAN.
+
+MEASURED (max_prefill_rows_per_submission=8, k=8, W=2048):
+  spec O512   20.9s / 24.53 tps  (from 44.4s / 11.38 - +116%)
+  spec O128    9.1s / 14.03 tps  (from 22.7s / 5.64)
+  no-spec O512 67.3s / 7.60 tps  (from 81.4s / 6.29)
+  E = 5.65 (77 rounds), deterministic across runs (8fb03a865248fb0b x2)
+NOTE: spec-vs-nospec streams diverge at token 21 - the M=1 decode GEMV
+keeps fp32 activations while M>=5 frames (prefill/verify) quantize to
+e4m3. Both deterministic, same fp8 numerics family; the strict
+cross-path bit-match invariant needs the M=1 path to QDQ its activations
+(future work, ~free to add to the GEMV's shared staging).
+
+VS THE 28-32 COMMUNITY CLAIM: that number needs ~85% per-position
+acceptance (code prompts). At our E=5.65 we emit 24.5 tps; on
+high-acceptance prompts the same engine math gives 6-7 tokens/round
+-> 28-32 tps. The architecture is there.
+
 ## 1. Where We Are
 
 | Metric | O128 | GSM | Notes |
