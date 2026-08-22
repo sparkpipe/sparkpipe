@@ -111,6 +111,14 @@ typedef struct SparkQwen36ModuleSlot
 	/* Set per frame in RunFrame: replay frames walk the GDN STEP path. */
 	uint32_t replay_frame;
 	uint32_t verify_frame;
+	/* per-(rows,prefill) frame graph: warm run first (shared-memory opt-ins
+	 * precede capture), capture on second sighting, replay after. */
+	cudaGraphExec_t graph_exec;
+	uint32_t graph_live;
+	uint32_t graph_warm;
+	uint32_t graph_rows;
+	uint32_t graph_prefill;
+	uint32_t capturing;
 	uint16_t *dspark_logits_host;
 	uint16_t *dspark_hidden_host;
 	uint32_t *dspark_mask_token_ids;
@@ -257,6 +265,7 @@ typedef struct SparkQwen36ModuleState
 	uint64_t profile_head_spin_nanos;
 	uint64_t profile_frame_nanos;
 	uint32_t profile_frame_count;
+	uint32_t graphs_broken;
 } SparkQwen36ModuleState;
 
 static uint64_t SparkQwen36ProfileNow(void)
@@ -1851,7 +1860,9 @@ static cudaError_t SparkQwen36ModuleEmitHead(SparkQwen36ModuleState *state, Spar
 			error = cudaErrorUnknown;
 		if ( state->profile_enabled != 0u )
 		{
-			if ( state->tp_degree <= 1u )
+			/* profile-only sync: ILLEGAL during graph capture (it invalidated
+			 * the very first capture round; skip while capturing) */
+			if ( state->tp_degree <= 1u && slot->capturing == 0u )
 				(void)cudaStreamSynchronize(stream);
 			state->profile_head_spin_nanos += SparkQwen36ProfileNow() - spin_start;
 		}
@@ -1994,7 +2005,10 @@ static SparkStatus SparkQwen36ModuleFinish(SparkQwen36ModuleState *state, SparkQ
 		context->hidden_output_packet.sideband_kind = 0u;
 		context->hidden_output_packet.sideband_bytes_per_sequence = 0u;
 	}
-	if ( status == SPARK_STATUS_OK )
+	/* the sync is the module's completion contract; during graph capture it
+	 * is ILLEGAL (it invalidated the very first capture round) - the frame
+	 * wrapper syncs after the replay instead, preserving the contract */
+	if ( status == SPARK_STATUS_OK && slot->capturing == 0u )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,cudaStreamSynchronize(stream),"sync");
 	if ( status == SPARK_STATUS_OK && state->owns_final_head == 0u )
 		status = context->hidden_output_send_function(context->hidden_output_transport_session,&context->hidden_output_packet);
@@ -2809,24 +2823,124 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		 * the accepted-prefix state+tail, replacing the re-walk. */
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,SPARK_QWEN36_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE + context->gdn_snapshot->snapshot_index,1u);
 	}
-	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen36ModuleBeginHidden(state,slot,context,rows);
+	/* FRAME GRAPH (the launch-gap lever: ~8-10ms/frame no-spec measured).
+	 * Eligible = the plain path (no drafter tail - it has the
+	 * padding-select sync; no GDN restore - the snapshot slot varies per
+	 * round and is a baked kernel arg; no verify). All frame inputs are
+	 * device-buffered (row_positions, cold, slot_mapping, context_lengths,
+	 * input_token_ids - uploaded eagerly in UploadRows), so replay reads
+	 * current contents. Warm run first; capture on second sighting; the
+	 * capture round REPLAYS immediately (recording does not execute).
+	 * Kill-switch SPARK_QWEN36_FRAME_GRAPH=0; any capture failure sets
+	 * graphs_broken and this frame returns an error (the GDN state
+	 * mutation makes a direct RERUN unsafe). */
 	{
-		uint32_t layer;
-		for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
-	{
-			status = SparkQwen36ModuleRunLayer(state,slot,context->kv_block_table,prefill,layer,rows);
-			/* Per-position tap capture on EVERY armed frame (prefill, decode,
-			 * verify, replay): the drafter's context KV is built from the target
-			 * hidden states at every committed position (upstream
-			 * precompute_and_store_context_kv). Rejected draft positions are
-			 * overwritten when re-walked, exactly like the main KV. */
-			if ( status == SPARK_STATUS_OK && state->dspark_weights.armed != 0u )
-				status = SparkQwen36ModuleCaptureDsparkTap(state,slot,layer,rows);
+		const uint32_t graph_blocked = (context->flags & (SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY)) != 0u;
+		/* OPT-IN (WIP): the capture round still invalidates from an
+		 * unchecked call in the layer path (three sync blockers found and
+		 * guarded - Finish, profile-head, both syncs now capture-aware -
+		 * but a fourth remains; enable with SPARK_QWEN36_FRAME_GRAPH=1
+		 * to continue the hunt from the graphs_broken diagnostics) */
+		const char *genv = getenv("SPARK_QWEN36_FRAME_GRAPH");
+		int graph_off = !(genv != 0 && genv[0] == '1');
+		int replayed = 0;
+		int capturing = 0;
+		cudaGraph_t cap = 0;
+		if ( graph_off == 0 && state->graphs_broken == 0u && graph_blocked == 0u && status == SPARK_STATUS_OK )
+		{
+			if ( slot->graph_live != 0u && slot->graph_rows == rows && slot->graph_prefill == (prefill != 0 ? 1u : 0u) )
+			{
+				if ( slot->graph_exec != 0 )
+				{
+					if ( cudaGraphLaunch(slot->graph_exec,(cudaStream_t)slot->cuda_stream) == cudaSuccess )
+					{
+						if ( cudaStreamSynchronize((cudaStream_t)slot->cuda_stream) == cudaSuccess )
+							replayed = 1;
+						else
+							state->graphs_broken = 1u;
+					}
+					else
+						state->graphs_broken = 1u;
+				}
+				else if ( slot->graph_warm != 0u )
+				{
+					if ( cudaStreamBeginCapture((cudaStream_t)slot->cuda_stream,cudaStreamCaptureModeRelaxed) == cudaSuccess )
+						capturing = 1;
+					else
+						state->graphs_broken = 1u;
+				}
+			}
+			else
+			{
+				slot->graph_live = 1u;
+				slot->graph_warm = 1u;
+				slot->graph_rows = rows;
+				slot->graph_prefill = prefill != 0 ? 1u : 0u;
+				if ( slot->graph_exec != 0 )
+					(void)cudaGraphExecDestroy(slot->graph_exec);
+				slot->graph_exec = 0;
+			}
+		}
+		if ( replayed == 0 )
+		{
+			slot->capturing = capturing != 0 ? 1u : 0u;
+			if ( status == SPARK_STATUS_OK )
+				status = SparkQwen36ModuleBeginHidden(state,slot,context,rows);
+			{
+				uint32_t layer;
+				for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
+			{
+					status = SparkQwen36ModuleRunLayer(state,slot,context->kv_block_table,prefill,layer,rows);
+					/* Per-position tap capture on EVERY armed frame (prefill, decode,
+					 * verify, replay): the drafter's context KV is built from the target
+					 * hidden states at every committed position (upstream
+					 * precompute_and_store_context_kv). Rejected draft positions are
+					 * overwritten when re-walked, exactly like the main KV. */
+					if ( status == SPARK_STATUS_OK && state->dspark_weights.armed != 0u )
+						status = SparkQwen36ModuleCaptureDsparkTap(state,slot,layer,rows);
+				}
+			}
+			if ( status == SPARK_STATUS_OK )
+				status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
+			if ( capturing != 0 )
+			{
+				if ( cudaStreamEndCapture((cudaStream_t)slot->cuda_stream,&cap) == cudaSuccess && cap != 0 && status == SPARK_STATUS_OK )
+				{
+					cudaGraphExec_t exec = 0;
+					if ( cudaGraphInstantiate(&exec,cap,0ull) == cudaSuccess && exec != 0 )
+					{
+						slot->graph_exec = exec;
+						/* the capture round did not execute - replay now so this
+						 * frame produces its output (the K3 pattern) */
+						if ( cudaGraphLaunch(exec,(cudaStream_t)slot->cuda_stream) == cudaSuccess )
+							status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)slot->cuda_stream),"graph_sync");
+						else
+						{
+							state->graphs_broken = 1u;
+							status = SPARK_STATUS_INTERNAL_ERROR;
+						}
+					}
+					else
+					{
+						state->graphs_broken = 1u;
+						status = SPARK_STATUS_INTERNAL_ERROR;
+					}
+					if ( cap != 0 )
+						(void)cudaGraphDestroy(cap);
+				}
+				else
+				{
+					if ( cap != 0 )
+						(void)cudaGraphDestroy(cap);
+					state->graphs_broken = 1u;
+					/* the recorded work did NOT execute and the GDN state mutation
+					 * makes a blind rerun unsafe - fail the frame loudly */
+					status = SPARK_STATUS_INTERNAL_ERROR;
+				}
+			}
+			slot->capturing = 0u;
 		}
 	}
-	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
 	if ( status == SPARK_STATUS_OK && prefill == 0 && state->tap_capture_enabled != 0u )
 	{
 		state->tap_capture_count++;

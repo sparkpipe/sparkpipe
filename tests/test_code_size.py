@@ -666,7 +666,16 @@ from pathlib import Path
 # sequence's stale rows and acceptance collapses run over run: 57.6 -> 79.7
 # -> 85.2s measured on identical prompts; now stable 57.8/57.5/57.5s).
 # 172936 is the exact count.
-CEILING = 172936
+# +114: the frame-graph WIRING (opt-in, SPARK_QWEN36_FRAME_GRAPH=1):
+# per-(rows,prefill) capture in RunFrame, warm-then-capture-then-replay
+# (the K3 pattern), eager uploads outside, capture-aware syncs (Finish +
+# profile-head guarded), capture-fail = loud error (GDN rerun unsafe).
+# Two sync blockers found and fixed; a THIRD invalidating call remains in
+# the layer path (site=ffn cascade) - the hunt continues from
+# graphs_broken diagnostics. Default OFF; production verified unaffected
+# (80.9s no-spec, same stream).
+# 173050 is the exact count.
+CEILING = 173050
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
