@@ -1321,6 +1321,7 @@ static void SparkQwen36ServingBuildFrame(
 	frame->buffers = SparkQwen36ServingOwnsEmbedding(state) != 0u || SparkQwen36ServingOwnsFinalHead(state) != 0u ? buffers : 0;
 	frame->buffer_count = (SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u) + (SparkQwen36ServingOwnsFinalHead(state) != 0u ? 1u : 0u);
 	frame->residency = submission->residency;
+	frame->scalar[0] = submission->request_generation; /* module lane-continuity key */
 	frame->user_context = context;
 	frame->completion_function = SparkQwen36ServingDriverCompletion;
 	frame->completion_context = pending;
@@ -1507,6 +1508,7 @@ static void SparkQwen36ServingBuildSpeculativeFrame(
 	frame->buffers = SparkQwen36ServingOwnsEmbedding(state) != 0u || SparkQwen36ServingOwnsFinalHead(state) != 0u ? buffers : 0;
 	frame->buffer_count = (SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u) + (SparkQwen36ServingOwnsFinalHead(state) != 0u ? 1u : 0u);
 	frame->residency = submission->residency;
+	frame->scalar[0] = submission->request_generation; /* module lane-continuity key */
 	frame->user_context = context;
 	frame->completion_function = SparkQwen36ServingDriverCompletion;
 	frame->completion_context = pending;

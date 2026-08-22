@@ -401,6 +401,25 @@ VERIFIED (641-token shared prompt, block cap leaves a 1-row suffix):
   borrow entry@640 (10 blocks), GDN restore, output sha IDENTICAL to
   request 1 (8fa62eab5c7bcf38 both). Cold control (different prompts,
   same shapes): 50.9s vs cached 39.7s.
+PRODUCTION CONFIG UPDATE (2026-08-21, post-prefix-cache sweep): BLOCK_KV=0.
+The sweep at the current build: BKV=0 24.2 tps / 77 rounds / E=5.66 vs
+BKV=1 21.6 / 88 / 4.81 - the drafter attends BETTER without its own past
+block rows appended (out-of-distribution for the trained block-diffuser;
+the reference drafter attends context + current block only). Output is
+IDENTICAL across BKV settings (greedy target disposes; the drafter only
+proposes). Two accompanying module fixes landed:
+- The backward-base ctx-cache reset now distinguishes FAR backward
+  (base+64 < valid_to: a new sequence or prefix borrow -> full reset)
+  from an intra-sequence rejection rollback (rewind the projection
+  watermark to the base, keep the block history, and filter history rows
+  at positions >= the walk base at assembly - they are rejected-walk
+  residue). The old full-reset-on-every-rollback cost E 5.66 -> 4.81.
+- Lane continuity is keyed on (sequence id, request generation via
+  frame->scalar[0]) AND treats a base-0 prefill as a legitimate restart
+  (fresh client runs reuse batch-file ids; generations collide across
+  client processes). Re-running the same batch against a live daemon now
+  reproduces the identical stream (d7f79880 x2).
+
 NOTE for wall comparisons: the reference spec stream on O512 was
 8fb03a865248fb0b/77 rounds; post-hist-reset acceptance shifted to
 d7f798801a6e43a6/88 rounds (deterministic x2, no-spec wall and per-round

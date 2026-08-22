@@ -681,7 +681,11 @@ from pathlib import Path
 # frame builder, RELEASE submission path (REQUIRES_RELEASE + residency echo);
 # batch tool sequential_submissions mode (the arrival pattern the cache
 # serves). Verified: borrow bit-identical output, 11.2s saved per repeat.
-CEILING = 173409
+# 173452 (2026-08-21): drafter-history rollback hygiene - far-backward
+# vs intra-sequence rollback split (watermark rewind + stale-row filter),
+# lane continuity keyed on request generation (frame scalar[0]) with the
+# base-0 restart rule (same-batch reruns against a live daemon).
+CEILING = 173452
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

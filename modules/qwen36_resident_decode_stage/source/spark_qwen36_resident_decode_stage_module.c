@@ -212,6 +212,7 @@ typedef struct SparkQwen36ModuleState
 	uint64_t cache_block_stride;
 	uint8_t lane_warm[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_sequence_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t lane_request_generations[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_next_positions[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkQwen36ModuleSlot slots[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -2109,6 +2110,7 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
     SparkQwen36ModuleState *state,
     const SparkQwen36ResidentDecodeStageFrameContext *context,
     const SparkQwen36PrefillFrameView *prefill,
+    uint64_t request_generation,
     uint8_t *lane_requires_reset)
 {
     uint32_t row_count;
@@ -2147,9 +2149,18 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
             SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_RESTORE_IN) != 0u
             ? 1u
             : 0u;
-        if (current_sequence_id == prefill->sequence_id)
+        if (current_sequence_id == prefill->sequence_id &&
+            state->lane_request_generations[prefill->lane_index] == request_generation)
         {
-            if ((restore_first == 0u && prefill->base_position != expected_position) ||
+            if (prefill->base_position == 0u && expected_position != 0u)
+            {
+                /* a re-used sequence id restarting at zero (a fresh client
+                 * run of the same batch re-sends the same ids; generations
+                 * collide across client processes). Position 0 is always a
+                 * legitimate restart - the lane resets below. */
+                lane_requires_reset[0] = 1u;
+            }
+            else if ((restore_first == 0u && prefill->base_position != expected_position) ||
                 (restore_first != 0u && prefill->base_position > expected_position))
             {
                 return SPARK_STATUS_INVALID_ARGUMENT;
@@ -2199,13 +2210,15 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
 static void SparkQwen36ModuleCommitLaneSequenceContinuity(
     SparkQwen36ModuleState *state,
     const SparkQwen36ResidentDecodeStageFrameContext *context,
-    const SparkQwen36PrefillFrameView *prefill)
+    const SparkQwen36PrefillFrameView *prefill,
+    uint64_t request_generation)
 {
     uint32_t row;
 
     if (prefill != 0)
     {
         state->lane_sequence_ids[prefill->lane_index] = prefill->sequence_id;
+        state->lane_request_generations[prefill->lane_index] = request_generation;
         state->lane_next_positions[prefill->lane_index] =
             prefill->base_position + prefill->token_count;
         state->lane_warm[prefill->lane_index] = 1u;
@@ -2217,6 +2230,7 @@ static void SparkQwen36ModuleCommitLaneSequenceContinuity(
 
         lane = context->decode_batch->row_lane_indices[row];
         state->lane_sequence_ids[lane] = context->decode_batch->row_sequence_ids[row];
+        state->lane_request_generations[lane] = request_generation;
         state->lane_next_positions[lane] = context->decode_batch->row_positions[row] + 1u;
         state->lane_warm[lane] = 1u;
     }
@@ -2384,14 +2398,30 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 		error = cudaSuccess;
 		if ( cache_on != 0u && base_blk < state->dflash_ctx_valid_to )
 		{
-			state->dflash_ctx_valid_to = 0u;
-			/* a backward base = a NEW sequence on this lane: the block-KV
-			 * history still holds the previous sequence's rows (keyed by
-			 * positions that collide with the new one) - without this
-			 * reset, later requests on the same daemon attend stale rows
-			 * and acceptance collapses (measured: run 1 E=2.80, run 2
-			 * E=1.80 on the identical prompt) */
-			state->dflash_hist_count = 0u;
+			if ( base_blk + 64u < state->dflash_ctx_valid_to )
+			{
+				/* a FAR backward base = a NEW sequence on this lane (a fresh
+				 * request starts at 0, a prefix borrow at the prefix edge):
+				 * the block-KV history still holds the previous sequence's
+				 * rows (keyed by positions that collide with the new one) -
+				 * without this reset, later requests on the same daemon
+				 * attend stale rows and acceptance collapses (measured:
+				 * run 1 E=2.80, run 2 E=1.80 on the identical prompt) */
+				state->dflash_ctx_valid_to = 0u;
+				state->dflash_hist_count = 0u;
+			}
+			else
+			{
+				/* an intra-sequence rollback (rejection): the walk depth is
+				 * <= k+verify, so a small backward step is NOT a new
+				 * sequence. Rewind the projection watermark so the
+				 * re-committed rows re-project from their final taps; KEEP
+				 * the block history (resetting it on every rejection
+				 * measured E 5.66 -> 4.81, +11 rounds on O512). History
+				 * rows at positions >= base_blk are stale-by-definition and
+				 * are filtered at assembly below. */
+				state->dflash_ctx_valid_to = base_blk;
+			}
 		}
 		if ( cache_on != 0u )
 		{
@@ -2550,13 +2580,22 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			uint32_t hi;
 			if ( block_kv_on != 0u && state->dflash_hist_count != 0u )
 			{
-				if ( error == cudaSuccess )
-					error = cudaMemcpyAsync(kv_k + hist_base,(const uint16_t *)state->dflash_block_hist_k + hist_lk,(size_t)state->dflash_hist_count * 1024u * 2u,cudaMemcpyDeviceToDevice,stream);
-				if ( error == cudaSuccess )
-					error = cudaMemcpyAsync(kv_v + hist_base,(const uint16_t *)state->dflash_block_hist_v + hist_lk,(size_t)state->dflash_hist_count * 1024u * 2u,cudaMemcpyDeviceToDevice,stream);
+				uint32_t live = 0u;
 				for (hi = 0u; hi < state->dflash_hist_count; hi++)
-					state->dflash_positions_host[window + ctx_tail + B + hi] = state->dflash_hist_pos_host[hi];
-				nkv_eff = nkv + state->dflash_hist_count;
+				{
+					/* rows at positions >= base_blk are residue of the
+					 * rejected walk this round re-produces; they must not
+					 * be attended (the walk overwrites them after use) */
+					if ( state->dflash_hist_pos_host[hi] >= base_blk )
+						continue;
+					if ( error == cudaSuccess )
+						error = cudaMemcpyAsync(kv_k + hist_base + live * 1024u,(const uint16_t *)state->dflash_block_hist_k + hist_lk + (uint64_t)hi * 1024u,1024u * 2u,cudaMemcpyDeviceToDevice,stream);
+					if ( error == cudaSuccess )
+						error = cudaMemcpyAsync(kv_v + hist_base + live * 1024u,(const uint16_t *)state->dflash_block_hist_v + hist_lk + (uint64_t)hi * 1024u,1024u * 2u,cudaMemcpyDeviceToDevice,stream);
+					state->dflash_positions_host[window + ctx_tail + B + live] = state->dflash_hist_pos_host[hi];
+					live++;
+				}
+				nkv_eff = nkv + live;
 			}
 			if ( error == cudaSuccess )
 				error = cudaMemcpyAsync(state->dflash_positions,state->dflash_positions_host,(size_t)nkv_eff * sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
@@ -3111,6 +3150,7 @@ SparkStatus SparkQwen36ResidentDecodeStageExecute(
             state,
             context,
             prefill,
+            frame->scalar[0], /* the adapter passes the client request_generation */
             lane_requires_reset);
     }
     if (status != SPARK_STATUS_OK)
@@ -3205,7 +3245,8 @@ SparkStatus SparkQwen36ResidentDecodeStageExecute(
         SparkQwen36ModuleCommitLaneSequenceContinuity(
             state,
             context,
-            prefill);
+            prefill,
+            frame->scalar[0]);
         atomic_fetch_add_explicit(
             &state->completed_count,
             1u,
