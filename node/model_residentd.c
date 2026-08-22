@@ -777,11 +777,29 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 			(completed_tokens > route->completion.tokens_per_sequence &&
 			 route->completion.tokens_per_sequence != 0u) )
 			completed_tokens = route->completion.tokens_per_sequence;
+		if ( completed_tokens == 0u )
+		{
+			/* No emitted count exists at this rank: a transported non-final
+			 * stage publishes a status-only DECODE completion (schema-required
+			 * tokens_per_sequence == 0, adapter-optional accepted count), so
+			 * the emitted total lives only on the final stage. Guessing the
+			 * submission chain width here over-advances on partial accept and
+			 * desyncs this rank's fence from the client's completion-derived
+			 * advance; feeding the zero to the lease decoder rejects with
+			 * INVALID_ARGUMENT and kills the run loop (the 1cfea8f break).
+			 * Defer the position fence instead: the generation and step fences
+			 * stay armed, and the next continuation re-fences against the
+			 * coordinator-authoritative position it carries. */
+			return(SparkModelContinuationLeaseEstablishDeferred(&slot->lease,
+				runtime->client.generation,
+				route->submission.control_generation,
+				lane->step_generation));
+		}
 		status = SparkModelContinuationLeaseDecodePosition(
 			lane->context_token_count,
 			completed_tokens,&next_sequence_position);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			fprintf(stderr,"model_residentd TRACE lease-advance status=%s accepted=%u ctps=%u stps=%u ctx=%llu\n",SparkStatusToString(status),route->completion.accepted_token_count,route->completion.tokens_per_sequence,route->submission.tokens_per_sequence,(unsigned long long)lane->context_token_count);
 	}
 	/* The lease must be fenced by the CURRENT client generation, not the
 		 * route's (captured at reservation): the ASYNC verify completion can
@@ -1010,7 +1028,10 @@ static SparkStatus SparkModelResidentdQueueCompletionLocked(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdCompleteResidentSlotsLocked(runtime,route);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"model_residentd TRACE queue-completion status=%s\n",SparkStatusToString(status));
 		return(status);
+	}
 	output->message_bytes = message_bytes;
 	output->sent_bytes = 0u;
 	runtime->client.output_count++;
@@ -2515,8 +2536,12 @@ static SparkStatus SparkModelResidentdProgressRoute(
 			return(status == SPARK_STATUS_OK || status == SPARK_STATUS_BUSY ? SPARK_STATUS_OK : status);
 		}
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION )
-			return(SparkModelResidentdFinishRoute(runtime,route));
-		return(SPARK_STATUS_SCHEMA_ERROR);
+			status = SparkModelResidentdFinishRoute(runtime,route);
+		else
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr,"model_residentd TRACE progress-route status=%s state=%u slot=%u\n",SparkStatusToString(status),state,route->slot_index);
+		return(status);
 	}
 	return(SPARK_STATUS_OK);
 }

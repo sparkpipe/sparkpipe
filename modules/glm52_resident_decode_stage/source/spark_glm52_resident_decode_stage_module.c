@@ -31,12 +31,6 @@
 #define SPARK_GLM52_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_GLM52_KV_ACCESS_ERROR_WORD_COUNT 6u
 
-typedef struct SparkGlm52PackRange
-{
-	uint64_t offset;
-	uint64_t bytes;
-} SparkGlm52PackRange;
-
 typedef struct SparkGlm52ModuleState SparkGlm52ModuleState;
 
 typedef struct SparkGlm52AsyncCompletion
@@ -64,7 +58,6 @@ struct SparkGlm52ModuleState
 	uint32_t expert_weight_codec;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
-	uint32_t tp_collective_disabled;
 	uint32_t resident_sequence_capacity;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
@@ -106,7 +99,6 @@ struct SparkGlm52ModuleState
 	SparkModelDriverCacheLane *kv_lane_cache_lanes;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
-	char kv_backing_default[256];
 	SparkGlm52ExecutionSlot slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkGlm52AsyncCompletion completions[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -171,7 +163,7 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	context = (const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context;
 	if ( context->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION || context->descriptor_bytes != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( context->stage_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index != SparkGlm52ResidentDecodeStageFirstLayer(context->stage_index) || context->layer_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > context->resident_sequence_capacity || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
+	if ( context->stage_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index != SparkGlm52ResidentDecodeStageFirstLayer(context->stage_index) || context->layer_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > context->resident_sequence_capacity || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || context->kv_backing_directory == 0 || context->kv_backing_directory[0] == '\0' || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u || context->expert_weight_codec == SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_UNSUPPORTED);
@@ -179,9 +171,6 @@ static SparkStatus SparkGlm52ModuleConfigure(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->model_revision == 0 || strcmp(configuration->model_revision,context->model_revision) != 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	/* Lenient: existing serving configs may omit the backing fields. The
-	 * page-store backing then falls back to a default path in
-	 * SparkGlm52KvInitialize; a configured value is used as-is. */
 	state->stage_index = context->stage_index;
 	state->first_layer_index = context->first_layer_index;
 	state->layer_count = context->layer_count;
@@ -190,11 +179,6 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	state->tp_rank = context->tp_rank;
 	state->kv_backing_directory = context->kv_backing_directory;
 	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
-	/* Identifier zero names a degraded single-rank bringup mode: the pack
-	 * keeps its real tp geometry but no collective peers exist, so the chain
-	 * runs with every reduce elided and the math is rank-local. Real
-	 * deployments always set a non-zero identifier. */
-	state->tp_collective_disabled = context->tp_collective_identifier == 0u ? 1u : 0u;
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
 	state->max_sequence_positions = context->max_sequence_positions;
@@ -217,11 +201,6 @@ static SparkStatus SparkGlm52PackFileSize(FILE *file,uint64_t *bytes)
 		return(SPARK_STATUS_IO_ERROR);
 	*bytes = (uint64_t)end;
 	return(SPARK_STATUS_OK);
-}
-
-static uint32_t SparkGlm52PackRangesOverlap(const SparkGlm52PackRange *left,const SparkGlm52PackRange *right)
-{
-	return(left->bytes != 0u && right->bytes != 0u && left->offset < right->offset + right->bytes && right->offset < left->offset + left->bytes ? 1u : 0u);
 }
 
 static SparkStatus SparkGlm52PackValidateHeader(
@@ -260,7 +239,6 @@ static SparkStatus SparkGlm52PackValidateEntryGeometry(
 	const SparkGlm52StagePackEntry *entry,
 	SparkGlm52StagePackTensorShape *shape)
 {
-	uint64_t payload_bytes,scale_bytes;
 	uint32_t local_layer;
 	if ( SparkGlm52StagePackExpectedShape(entry->tensor_kind,entry->layer_index,state->expert_weight_codec,state->tp_degree,shape) < 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -269,25 +247,14 @@ static SparkStatus SparkGlm52PackValidateEntryGeometry(
 		if ( entry->layer_index < state->first_layer_index || entry->layer_index >= state->first_layer_index + state->layer_count )
 			return(SPARK_STATUS_SCHEMA_ERROR);
 		local_layer = entry->layer_index - state->first_layer_index;
-		if ( (state->layer_seen[local_layer] & (UINT64_C(1) << entry->tensor_kind)) != 0u )
+		if ( SparkStagePackSeenHas(state->layer_seen[local_layer],entry->tensor_kind) != 0u )
 			return(SPARK_STATUS_DUPLICATE);
 	}
-	else if ( (state->global_seen & (UINT64_C(1) << entry->tensor_kind)) != 0u )
+	else if ( SparkStagePackSeenHas(state->global_seen,entry->tensor_kind) != 0u )
 		return(SPARK_STATUS_DUPLICATE);
 	if ( entry->payload_type != shape->payload_type || entry->weight_codec != shape->weight_codec || entry->scale_encoding != shape->scale_encoding || entry->group_count != shape->group_count || entry->rows != shape->rows || entry->columns != shape->columns )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	payload_bytes = SparkGlm52StagePackExpectedPayloadBytes(shape);
-	scale_bytes = SparkGlm52StagePackExpectedScaleBytes(shape);
-	if ( payload_bytes == 0u || entry->payload_bytes != payload_bytes || entry->scale_bytes != scale_bytes )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( entry->payload_offset % SPARK_GLM52_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->payload_offset < header->directory_offset + ((uint64_t)header->tensor_count * header->directory_entry_bytes) || entry->payload_offset > header->file_bytes || entry->payload_bytes > header->file_bytes - entry->payload_offset )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( scale_bytes == 0u )
-	{
-		if ( entry->scale_offset != 0u )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	else if ( entry->scale_offset % SPARK_GLM52_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->scale_offset < header->directory_offset + ((uint64_t)header->tensor_count * header->directory_entry_bytes) || entry->scale_offset > header->file_bytes || entry->scale_bytes > header->file_bytes - entry->scale_offset )
+	if ( SparkStagePackCheckEntryBounds(SPARK_GLM52_STAGEPACK_ALIGNMENT_BYTES,shape,header->directory_offset + ((uint64_t)header->tensor_count * header->directory_entry_bytes),header->file_bytes,entry->payload_offset,entry->payload_bytes,entry->scale_offset,entry->scale_bytes) != 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
@@ -296,26 +263,26 @@ static SparkStatus SparkGlm52PackValidateRanges(
 	const SparkGlm52StagePackEntry *entries,
 	uint32_t entry_count)
 {
-	SparkGlm52PackRange left[2],right[2];
+	uint64_t left_offsets[2],left_bytes[2],right_offsets[2],right_bytes[2];
 	uint32_t left_index,right_index,left_part,right_part;
 	for (left_index=0u; left_index<entry_count; left_index++)
 	{
-		left[0].offset = entries[left_index].payload_offset;
-		left[0].bytes = entries[left_index].payload_bytes;
-		left[1].offset = entries[left_index].scale_offset;
-		left[1].bytes = entries[left_index].scale_bytes;
+		left_offsets[0] = entries[left_index].payload_offset;
+		left_bytes[0] = entries[left_index].payload_bytes;
+		left_offsets[1] = entries[left_index].scale_offset;
+		left_bytes[1] = entries[left_index].scale_bytes;
 		for (right_index=left_index + 1u; right_index<entry_count; right_index++)
 		{
-			right[0].offset = entries[right_index].payload_offset;
-			right[0].bytes = entries[right_index].payload_bytes;
-			right[1].offset = entries[right_index].scale_offset;
-			right[1].bytes = entries[right_index].scale_bytes;
+			right_offsets[0] = entries[right_index].payload_offset;
+			right_bytes[0] = entries[right_index].payload_bytes;
+			right_offsets[1] = entries[right_index].scale_offset;
+			right_bytes[1] = entries[right_index].scale_bytes;
 			for (left_part=0u; left_part<2u; left_part++)
 				for (right_part=0u; right_part<2u; right_part++)
-					if ( SparkGlm52PackRangesOverlap(&left[left_part],&right[right_part]) != 0u )
+					if ( SparkStagePackRangesOverlap(left_offsets[left_part],left_bytes[left_part],right_offsets[right_part],right_bytes[right_part]) != 0u )
 						return(SPARK_STATUS_SCHEMA_ERROR);
 		}
-		if ( SparkGlm52PackRangesOverlap(&left[0],&left[1]) != 0u )
+		if ( SparkStagePackRangesOverlap(left_offsets[0],left_bytes[0],left_offsets[1],left_bytes[1]) != 0u )
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	return(SPARK_STATUS_OK);
@@ -326,9 +293,9 @@ static void SparkGlm52PackMarkSeen(
 	const SparkGlm52StagePackEntry *entry)
 {
 	if ( entry->layer_index == SPARK_GLM52_STAGEPACK_GLOBAL_LAYER )
-		state->global_seen |= UINT64_C(1) << entry->tensor_kind;
+		SparkStagePackSeenMark(&state->global_seen,entry->tensor_kind);
 	else
-		state->layer_seen[entry->layer_index - state->first_layer_index] |= UINT64_C(1) << entry->tensor_kind;
+		SparkStagePackSeenMark(&state->layer_seen[entry->layer_index - state->first_layer_index],entry->tensor_kind);
 }
 
 static SparkStatus SparkGlm52PackAssignLayer(
@@ -401,18 +368,27 @@ static SparkStatus SparkGlm52PackLoadEntry(
 	return(status);
 }
 
+typedef struct SparkGlm52ShapeContext
+{
+	uint32_t expert_codec;
+	uint32_t tp_degree;
+} SparkGlm52ShapeContext;
+
+static int32_t SparkGlm52ResolveShape(void *context,uint32_t tensor_kind,uint32_t layer_index,SparkGlm52StagePackTensorShape *shape)
+{
+	SparkGlm52ShapeContext *shape_context;
+	shape_context = (SparkGlm52ShapeContext *)context;
+	return(SparkGlm52StagePackExpectedShape(tensor_kind,layer_index,shape_context->expert_codec,shape_context->tp_degree,shape));
+}
+
 static uint64_t SparkGlm52ExpectedLayerMask(
 	const SparkGlm52ModuleState *state,
 	uint32_t layer_index)
 {
-	SparkGlm52StagePackTensorShape shape;
-	uint64_t mask;
-	uint32_t kind;
-	mask = 0u;
-	for (kind=SPARK_GLM52_STAGEPACK_TENSOR_ATTN_NORM; kind<SPARK_GLM52_STAGEPACK_TENSOR_KIND_COUNT; kind++)
-		if ( SparkGlm52StagePackExpectedShape(kind,layer_index,state->expert_weight_codec,state->tp_degree,&shape) == 0 )
-			mask |= UINT64_C(1) << kind;
-	return(mask);
+	SparkGlm52ShapeContext context;
+	context.expert_codec = state->expert_weight_codec;
+	context.tp_degree = state->tp_degree;
+	return(SparkStagePackExpectedLayerMask(&context,SparkGlm52ResolveShape,SPARK_GLM52_STAGEPACK_TENSOR_ATTN_NORM,SPARK_GLM52_STAGEPACK_TENSOR_KIND_COUNT,layer_index));
 }
 
 static uint64_t SparkGlm52ExpectedGlobalMask(const SparkGlm52ModuleState *state)
@@ -734,17 +710,10 @@ static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
 	table.page_store_config.logical_page_capacity = state->page_count;
 	table.page_store_config.transfer_capacity = 2u;
 	table.page_store_config.page_bytes = block_bytes;
-	if ( state->kv_backing_directory != 0 && state->kv_backing_directory[0] != '\0' )
-		table.page_store_config.backing_path = state->kv_backing_directory;
-	else
-	{
-		/* Fallback for serving configs that predate the backing fields: keep
-		 * the store functional with a well-known default (the page store
-		 * opens the path once; it does not retain the pointer). */
-		(void)snprintf(state->kv_backing_default,sizeof(state->kv_backing_default),
-			"/tmp/sparkpipe_glm52_kv_%s",state->model_revision);
-		table.page_store_config.backing_path = state->kv_backing_default;
-	}
+	/* The backing path is a required node-context field (ModuleConfigure
+	 * rejects an empty one); the store opens the path once and does not
+	 * retain the pointer. */
+	table.page_store_config.backing_path = state->kv_backing_directory;
 	table.page_store_config.maximum_backing_bytes =
 		state->kv_backing_maximum_bytes >= block_bytes
 			? state->kv_backing_maximum_bytes
@@ -1201,7 +1170,7 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	SparkStatus status;
 	if ( state == 0 || context == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
+	if ( state->tp_degree == 1u )
 		return(SPARK_STATUS_OK);
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -1340,7 +1309,7 @@ static SparkStatus SparkGlm52ModuleReduceHidden(SparkGlm52TpChain *chain,void *d
 	SparkTpDeviceCollectiveSubmission submission;
 	uint64_t ordinal;
 	state = chain->state;
-	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
+	if ( state->tp_degree == 1u )
 	{
 		SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
 		return(SPARK_STATUS_OK);
@@ -1369,7 +1338,7 @@ static SparkStatus SparkGlm52ModuleReduceHeadMax(SparkGlm52TpChain *chain)
 	SparkTpDeviceCollectiveSubmission submission;
 	uint64_t ordinal;
 	state = chain->state;
-	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
+	if ( state->tp_degree == 1u )
 	{
 		SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
 		return(SPARK_STATUS_OK);
@@ -1573,13 +1542,7 @@ static void SparkGlm52PrepareAsyncCompletion(
 	async->lane_count = batch->active_sequence_count;
 	async->row_count = batch->row_count;
 	async->output_token_destination = state->owns_final_head != 0u ? (uint32_t *)frame->buffers[0].address : 0;
-	// The compiled bucket is the hard ceiling at the copy, not just upstream
-	// of it: SparkGlm52ValidateFrame rejects an active_sequence_count above
-	// resident_sequence_capacity and ModuleConfigure bounds that capacity by
-	// MAX_ACTIVE_SEQUENCE_COUNT, but a tight variant build (b8 lane tables)
-	// prices a broken invariant as a heap overflow the compiler can see, so
-	// the loop names the ceiling itself.
-	for (lane=0u; lane<batch->active_sequence_count && lane<SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
+	for (lane=0u; lane<batch->active_sequence_count; lane++)
 	{
 		async->lane_indices[lane] = batch->row_resident_slots[lane];
 		async->lane_bound[lane] = lane_bound[lane];

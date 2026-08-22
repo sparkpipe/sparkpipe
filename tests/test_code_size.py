@@ -804,7 +804,37 @@ from pathlib import Path
 # accepted drafts vs z-lab. New kernels: tap-ring scatter, tiled-K N-row
 # projector (the 25600-wide fc), N+8-key attention with absolute rope positions.
 # 175424 is the exact count.
-CEILING = 175424
+# +1162: the qwen36 paged-KV / prefix-reuse port (prefixcache agent). The
+# module gains a physical-block KV pool with refcounted shared blocks and a
+# chain-hash prefix directory (spark_qwen36_paged_kv.c+h, +796 new), the
+# serving adapter swaps per-lane contiguous pools for block tables with
+# admit-time longest-published-prefix matching, block-boundary frame shaping,
+# PREFIX_RESUME/GDN_CHECKPOINT wiring and donor release-on-diverge
+# (+287), the module side publishes/feeds the block table and sizes its pool
+# from kv_logical/kv_physical_page_capacity (+76), the firmware header names
+# the block-table view types (+20), the JIT_KV runtime-limit rule lands in
+# the shared validator (+8) with the two runtime-limit fields (+8), build
+# wiring (+12); the stagepack header reformat is net -45. The feature
+# eliminates shared-prefix recompute for B1..B1024 resident decode; the gate
+# (tests/test_qwen36_prefix_cache.c, excluded here) proves reuse ON vs OFF
+# walk-identity at B1/B4/B25. Concurrent agents' in-flight growth is theirs
+# to account.
+# -86: the qwen36 port onto the general prefix-cache core (prefixcache
+# agent). The bespoke allocator/content-directory/matcher in
+# spark_qwen36_paged_kv.c+h (was +796, now 677: -119) is replaced by
+# SparkPrefixCacheCore* (runtime/prefix_cache.{c,h}, pccore's files - their
+# lines are already on this tree and theirs to account); the module half
+# keeps only GDN checkpoint binding with witness blocks and a small
+# scratch-borrow path for speculative coverage. The adapter rewires admit/
+# cover onto the core's sequence API (+33) and drops its dead free-block
+# mirror; build wiring is net 0 (-Iruntime on an existing line). The gate
+# re-proved reuse ON vs OFF walk-identity plus B25 pressure after the port.
+# +2466: peer round-2 feature wave (user-directed completeness): qwen36 prefix
+# caching + paged KV (general core runtime/prefix_cache.c + the model port), the
+# shared stagepack reader (runtime/spark_stagepack_reader.h + hybrid core; the
+# four private stagepack families collapse next round as pure deletion), glm52
+# GPU numerical validator restore, k3 TP16 pack production + e2e scripts.
+CEILING = 178966
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

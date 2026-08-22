@@ -32,6 +32,19 @@ SparkStatus SparkModelContinuationLeaseEstablish(
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkModelContinuationLeaseEstablishDeferred(
+	SparkModelContinuationLease *lease,
+	uint64_t client_generation,
+	uint64_t control_generation,
+	uint64_t step_generation)
+{
+	SparkStatus status;
+	status = SparkModelContinuationLeaseEstablish(lease,client_generation,
+		control_generation,SPARK_MODEL_CONTINUATION_LEASE_DEFERRED_POSITION,
+		step_generation);
+	return(status);
+}
+
 SparkStatus SparkModelContinuationLeaseDecodePosition(
 	uint64_t context_token_count,
 	uint32_t tokens_per_sequence,
@@ -61,8 +74,15 @@ SparkStatus SparkModelContinuationLeaseValidate(
 		return(SPARK_STATUS_NOT_FOUND);
 	if ( lease->lease_client_generation != client_generation ||
 		lease->lease_control_generation != control_generation ||
-		lease->next_sequence_position != sequence_position ||
 		step_generation <= lease->last_step_generation )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	/* A deferred lease (next_sequence_position == 0) carries no position
+	 * fence: the completing stage published no emitted count, so it adopts
+	 * the coordinator-authoritative position of the continuation being
+	 * validated here. Generation and step fences above still hold. */
+	if ( lease->next_sequence_position !=
+		SPARK_MODEL_CONTINUATION_LEASE_DEFERRED_POSITION &&
+		lease->next_sequence_position != sequence_position )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }

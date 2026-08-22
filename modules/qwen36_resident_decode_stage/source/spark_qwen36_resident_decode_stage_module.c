@@ -1409,8 +1409,10 @@ static SparkStatus SparkQwen36ModuleValidateSpeculation(
     const SparkQwen36MtpDraftView *draft;
     const SparkQwen36GdnSnapshotView *snapshot;
     const SparkQwen36DecodeBatchView *decode_batch;
+    uint32_t checkpoint;
     uint32_t drafted;
     uint32_t restore;
+    uint32_t resume;
     uint32_t verify;
     uint32_t row;
     uint32_t matching_row_found;
@@ -1426,6 +1428,10 @@ static SparkStatus SparkQwen36ModuleValidateSpeculation(
     drafted = context->flags &
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER;
 
+    resume = context->flags &
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME;
+    checkpoint = context->flags &
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT;
     if (verify != 0u || restore != 0u)
     {
         if (prefill == 0 || (verify != 0u && restore != 0u) ||
@@ -1438,6 +1444,24 @@ static SparkStatus SparkQwen36ModuleValidateSpeculation(
             (state->gdn_layer_count != 0u &&
              (state->gdn_snapshot_slot_count == 0u ||
               snapshot->snapshot_index >= state->gdn_snapshot_slot_count)))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    else if (resume != 0u || checkpoint != 0u)
+    {
+        /* The prefix cache shares a donor's recurrence: the frame must name
+         * a valid snapshot slot, and a RESUME is by definition a warm start. */
+        if (snapshot == 0 ||
+            snapshot->abi_version !=
+                SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION ||
+            snapshot->descriptor_bytes < (uint32_t)sizeof(*snapshot) ||
+            snapshot->reserved0 != 0u ||
+            (state->gdn_layer_count != 0u &&
+             (state->gdn_snapshot_slot_count == 0u ||
+              snapshot->snapshot_index >= state->gdn_snapshot_slot_count)) ||
+            (resume != 0u &&
+             (prefill == 0 || prefill->base_position == 0u)))
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -1512,7 +1536,9 @@ static SparkStatus SparkQwen36ModuleValidateFrame(
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY |
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST |
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER |
-        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPEC_AUDIT_EMIT_ALL;
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPEC_AUDIT_EMIT_ALL |
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME |
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT;
     const SparkQwen36ResidentDecodeStageFrameContext *context;
     const SparkQwen36KvBlockTableView *block_table;
     uint32_t expected_buffer_count;
@@ -2115,6 +2141,7 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
     {
         uint64_t current_sequence_id;
         uint64_t expected_position;
+        uint32_t prefix_resume;
         uint32_t restore_first;
 
         current_sequence_id = state->lane_sequence_ids[prefill->lane_index];
@@ -2123,8 +2150,22 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
             SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u
             ? 1u
             : 0u;
+        prefix_resume = (context->flags &
+            SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME) != 0u
+            ? 1u
+            : 0u;
         if (current_sequence_id == prefill->sequence_id)
         {
+            /* A resume is a NEW-sequence instrument: the held sequence must
+             * keep the ordinary continuation rule. */
+            if (prefix_resume != 0u)
+            {
+                fprintf(stderr,"%s continuity_reject prefill_resume_held lane=%u sequence=%llu base=%llu\n",
+                    SPARK_QWEN36_MODULE_TAG,prefill->lane_index,
+                    (unsigned long long)prefill->sequence_id,
+                    (unsigned long long)prefill->base_position);
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
             if ((restore_first == 0u && prefill->base_position != expected_position) ||
                 (restore_first != 0u && prefill->base_position > expected_position))
             {
@@ -2141,7 +2182,11 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
         }
         else
         {
-            if (prefill->base_position != 0u)
+            /* A prefix-resumed sequence claims positions it never walked:
+             * the shared KV below base_position is block-table proven and
+             * the checkpoint restores the donor recurrence, so the warm
+             * start is exact. */
+            if (prefill->base_position != 0u && prefix_resume == 0u)
             {
                 fprintf(stderr,"%s continuity_reject prefill_new_sequence lane=%u sequence=%llu held=%llu base=%llu (a new sequence must start at 0)\n",
                     SPARK_QWEN36_MODULE_TAG,prefill->lane_index,
@@ -2686,6 +2731,12 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u )
 		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,1u);
+	/* A prefix-resumed lane inherits the donor recurrence at its matched
+	 * boundary. It must NOT set the step-path replay mode: the resumed
+	 * frames are an ordinary prompt continuation and the no-resume run
+	 * walks the same tokens with the chunk path. */
+	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME) != 0u )
+		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,1u);
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u && state->decode_state_dump_dir != 0 )
 	{
 		/* Post-restore state: what the restore actually put back. Compared
@@ -3118,6 +3169,31 @@ SparkStatus SparkQwen36ResidentDecodeStageExecute(
             }
         }
         SparkQwen36ModuleDsparkDiag("block_forward returned status=%d\n",(int)status);
+    }
+    if (status == SPARK_STATUS_OK && prefill != 0 &&
+        (context->flags &
+         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT) != 0u)
+    {
+        /* Publish-side checkpoint: the walk ended exactly on the boundary
+         * the adapter wants to publish, so the post-walk recurrence IS the
+         * prefix state later sequences resume from. */
+        status = SparkQwen36ModuleGdnSnapshot(
+            state,
+            slot,
+            prefill->lane_index,
+            context->gdn_snapshot->snapshot_index,
+            0u);
+    }
+    if (status == SPARK_STATUS_OK && prefill == 0 &&
+        (context->flags &
+         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT) != 0u)
+    {
+        status = SparkQwen36ModuleGdnSnapshot(
+            state,
+            slot,
+            context->decode_batch->row_lane_indices[0],
+            context->gdn_snapshot->snapshot_index,
+            0u);
     }
     if (status == SPARK_STATUS_OK)
     {

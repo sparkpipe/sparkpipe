@@ -427,6 +427,26 @@ typedef struct SparkQwen36GdnSnapshotView
  * SPARK_QWEN36_SPEC_AUDIT.
  */
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPEC_AUDIT_EMIT_ALL 0x00000200u
+/*
+ * PREFIX_RESUME (prefill frames, base_position > 0): the lane context
+ * below base_position is SHARED READ-ONLY KV published by another sequence
+ * (block-table proven), and the frame's gdn_snapshot view names a
+ * checkpoint slot holding the donor's GDN recurrence at that boundary,
+ * restored into the lane before the walk. A new sequence may therefore
+ * start at base_position instead of zero; the walk itself is an ordinary
+ * chunk-path prefill, so the resumed trajectory is bit-identical to a full
+ * re-walk of the same tokens.
+ */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME 0x00000400u
+/*
+ * GDN_CHECKPOINT (any frame kind): after the frame's successful walk, copy
+ * the lane's GDN state and conv tails OUT to gdn_snapshot->snapshot_index.
+ * The adapter attaches it to frames whose END position lands exactly on a
+ * 64-token publish boundary, so the slot then proves the recurrence for
+ * that prefix and later sequences may resume from it (PREFIX_RESUME).
+ * Non-destructive: the frame's own results are unaffected.
+ */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT 0x00000800u
 
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION 1u
 

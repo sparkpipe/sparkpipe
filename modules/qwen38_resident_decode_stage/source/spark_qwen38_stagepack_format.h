@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "runtime/spark_hybrid_stagepack_core.h"
 #include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_status.h"
 
@@ -64,10 +65,12 @@ typedef enum SparkQwen38StagePackTensorKind
 	SPARK_QWEN38_STAGEPACK_TENSOR_KIND_COUNT = 32
 } SparkQwen38StagePackTensorKind;
 
-#define SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL 0u
-#define SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER 1u
-#define SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER 2u
-#define SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER 3u
+/* Layer-class values are the shared hybrid core's
+ * (runtime/spark_hybrid_stagepack_core.h), under this family's names. */
+#define SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL SPARK_HYBRID_STAGEPACK_CLASS_GLOBAL
+#define SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER SPARK_HYBRID_STAGEPACK_CLASS_EVERY_LAYER
+#define SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER SPARK_HYBRID_STAGEPACK_CLASS_GDN_LAYER
+#define SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER SPARK_HYBRID_STAGEPACK_CLASS_ATTN_LAYER
 
 typedef struct SparkQwen38StagePackHeader
 {
@@ -143,7 +146,7 @@ _Static_assert((SPARK_QWEN38_MODEL_HIDDEN_DIMENSION % SPARK_QWEN38_MODEL_MXFP4_G
 
 static inline uint32_t SparkQwen38StagePackFullAttentionLayersBelow(uint32_t layer_count)
 {
-	return(layer_count / SPARK_QWEN38_MODEL_ATTENTION_PERIOD);
+	return(SparkHybridStagePackFullAttentionLayersBelow(SPARK_QWEN38_MODEL_ATTENTION_PERIOD,layer_count));
 }
 
 /*
@@ -197,20 +200,16 @@ static inline void SparkQwen38StagePackExpectedGeometry(SparkQwen38StagePackHead
 	header->file_bytes = 0u;
 }
 
-/* Field-by-field comparison; returns 0 on match, nonzero on any drift. */
+/* Field-by-field comparison; the walk over the contiguous u32 prefix
+ * (everything up to the trailing u64 offsets) is the shared core's and
+ * gives each field its own negative code, so a refusal names the first
+ * field that disagreed. */
+#define SPARK_QWEN38_STAGEPACK_COMPARE_U32_FIELDS \
+	((sizeof(SparkQwen38StagePackHeader) - 2u * sizeof(uint64_t)) / sizeof(uint32_t))
+
 static inline int32_t SparkQwen38StagePackHeaderMatches(const SparkQwen38StagePackHeader *file_header, const SparkQwen38StagePackHeader *expected)
 {
-	if ( file_header->magic != expected->magic || file_header->format_version != expected->format_version || file_header->header_bytes != expected->header_bytes || file_header->directory_entry_bytes != expected->directory_entry_bytes )
-		return(-1);
-	if ( file_header->tensor_count != expected->tensor_count || file_header->hidden_dimension != expected->hidden_dimension || file_header->layer_count != expected->layer_count || file_header->first_layer_index != expected->first_layer_index || file_header->total_layer_count != expected->total_layer_count )
-		return(-2);
-	if ( file_header->attention_period != expected->attention_period || file_header->full_attention_phase != expected->full_attention_phase || file_header->gdn_key_head_count != expected->gdn_key_head_count || file_header->gdn_value_head_count != expected->gdn_value_head_count || file_header->gdn_head_key_dimension != expected->gdn_head_key_dimension || file_header->gdn_head_value_dimension != expected->gdn_head_value_dimension || file_header->gdn_conv_kernel != expected->gdn_conv_kernel )
-		return(-3);
-	if ( file_header->attn_query_head_count != expected->attn_query_head_count || file_header->attn_kv_head_count != expected->attn_kv_head_count || file_header->attn_head_dimension != expected->attn_head_dimension || file_header->attn_rope_dimension != expected->attn_rope_dimension )
-		return(-4);
-	if ( file_header->routed_expert_count != expected->routed_expert_count || file_header->experts_per_token != expected->experts_per_token || file_header->expert_intermediate_dimension != expected->expert_intermediate_dimension || file_header->output_vocab_count != expected->output_vocab_count || file_header->mxfp4_group_size != expected->mxfp4_group_size || file_header->mtp_layer_count != expected->mtp_layer_count )
-		return(-5);
-	return(0);
+	return(SparkHybridStagePackHeaderFieldsMatch(file_header,expected,(uint32_t)SPARK_QWEN38_STAGEPACK_COMPARE_U32_FIELDS));
 }
 
 typedef struct SparkQwen38StagePackTensorShape
@@ -221,167 +220,74 @@ typedef struct SparkQwen38StagePackTensorShape
 	uint32_t layer_class;
 } SparkQwen38StagePackTensorShape;
 
-static inline void SparkQwen38StagePackShapeInit(SparkQwen38StagePackTensorShape *shape)
+/*
+ * The per-kind geometry table - the model-specific part of this family, as
+ * data rather than as four switches of case lines. One row per tensor kind:
+ * its layer class, its natural weight format, and its unpacked shape. The
+ * reader mechanics around these rows live in runtime/spark_stagepack_reader.h.
+ */
+typedef struct SparkQwen38StagePackKindGeometry
 {
-	shape->rows = 0u;
-	shape->columns = 0u;
-	shape->natural_format = SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16;
-	shape->layer_class = SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER;
+	uint32_t rows;
+	uint32_t columns;
+	uint32_t natural_format;
+	uint32_t layer_class;
 }
+SparkQwen38StagePackKindGeometry;
 
-static inline int32_t SparkQwen38StagePackShapeGlobal(uint32_t tensor_kind, SparkQwen38StagePackTensorShape *shape)
+#define SPARK_QWEN38_GEOM_ROW(kind,class,format,rows_expression,columns_expression) \
+	[kind] = {rows_expression,columns_expression,format,class}
+
+static const SparkQwen38StagePackKindGeometry SPARK_QWEN38_STAGEPACK_KIND_GEOMETRY[SPARK_QWEN38_STAGEPACK_TENSOR_KIND_COUNT] =
 {
-	shape->layer_class = SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL;
-	switch ( tensor_kind )
-	{
-	case SPARK_QWEN38_STAGEPACK_TENSOR_EMBEDDING:
-	case SPARK_QWEN38_STAGEPACK_TENSOR_LM_HEAD:
-		shape->rows = SPARK_QWEN38_MODEL_OUTPUT_VOCAB_COUNT;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_FINAL_NORM:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MTP_FC:
-		shape->rows = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		shape->columns = 2u * SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MTP_EMBED_NORM:
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MTP_HIDDEN_NORM:
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MTP_FINAL_NORM:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	default:
-		return(-1);
-	}
-}
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_EMBEDDING,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_OUTPUT_VOCAB_COUNT,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_FINAL_NORM,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_LM_HEAD,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_OUTPUT_VOCAB_COUNT,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_ATTENTION_NORM,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MLP_NORM,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MOE_GATE,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MOE_W1,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MOE_W3,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MOE_DOWN,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MOE_SHARED_GATE,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MOE_SHARED_UP,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MOE_SHARED_DOWN,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_GDN_QKV,SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_GDN_CONV_CHANNELS,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_GDN_GATE,SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_GDN_VALUE_DIMENSION,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_GDN_BETA,SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_GDN_DECAY,SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_GDN_OUTPUT,SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_MODEL_GDN_VALUE_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_GDN_CONV_WEIGHT,SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_GDN_CONV_CHANNELS,SPARK_QWEN38_MODEL_GDN_CONV_KERNEL),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_GDN_A_LOG,SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32,1u,SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_GDN_DT_BIAS,SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32,1u,SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_GDN_NORM,SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_GDN_HEAD_VALUE_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_QUERY,SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,2u * SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_KEY,SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_ATTN_KV_DIMENSION,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_VALUE,SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_ATTN_KV_DIMENSION,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_OUTPUT,SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_QUERY_NORM,SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_KEY_NORM,SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MTP_FC,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,2u * SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MTP_EMBED_NORM,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MTP_HIDDEN_NORM,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MTP_FINAL_NORM,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION)
+};
 
-static inline int32_t SparkQwen38StagePackShapeEveryLayer(uint32_t tensor_kind, SparkQwen38StagePackTensorShape *shape)
-{
-	shape->layer_class = SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER;
-	switch ( tensor_kind )
-	{
-	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTENTION_NORM:
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MLP_NORM:
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_GATE:
-		shape->rows = SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_W1:
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_W3:
-		shape->rows = SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		shape->natural_format = SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_DOWN:
-		shape->rows = SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		shape->columns = SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
-		shape->natural_format = SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_SHARED_GATE:
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_SHARED_UP:
-		shape->rows = SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_MOE_SHARED_DOWN:
-		shape->rows = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		shape->columns = SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
-		return(0);
-	default:
-		return(-1);
-	}
-}
+#undef SPARK_QWEN38_GEOM_ROW
 
-static inline int32_t SparkQwen38StagePackShapeGdn(uint32_t tensor_kind, SparkQwen38StagePackTensorShape *shape)
-{
-	shape->layer_class = SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER;
-	switch ( tensor_kind )
-	{
-	case SPARK_QWEN38_STAGEPACK_TENSOR_GDN_QKV:
-		shape->rows = SPARK_QWEN38_MODEL_GDN_CONV_CHANNELS;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_GDN_GATE:
-		shape->rows = SPARK_QWEN38_MODEL_GDN_VALUE_DIMENSION;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_GDN_BETA:
-	case SPARK_QWEN38_STAGEPACK_TENSOR_GDN_DECAY:
-		shape->rows = SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_GDN_OUTPUT:
-		shape->rows = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		shape->columns = SPARK_QWEN38_MODEL_GDN_VALUE_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_GDN_CONV_WEIGHT:
-		shape->rows = SPARK_QWEN38_MODEL_GDN_CONV_CHANNELS;
-		shape->columns = SPARK_QWEN38_MODEL_GDN_CONV_KERNEL;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_GDN_A_LOG:
-	case SPARK_QWEN38_STAGEPACK_TENSOR_GDN_DT_BIAS:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT;
-		shape->natural_format = SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_GDN_NORM:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_MODEL_GDN_HEAD_VALUE_DIMENSION;
-		return(0);
-	default:
-		return(-1);
-	}
-}
-
-static inline int32_t SparkQwen38StagePackShapeAttn(uint32_t tensor_kind, SparkQwen38StagePackTensorShape *shape)
-{
-	shape->layer_class = SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER;
-	switch ( tensor_kind )
-	{
-	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_QUERY:
-		shape->rows = 2u * SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_KEY:
-	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_VALUE:
-		shape->rows = SPARK_QWEN38_MODEL_ATTN_KV_DIMENSION;
-		shape->columns = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_OUTPUT:
-		shape->rows = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION;
-		shape->columns = SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_QUERY_NORM:
-	case SPARK_QWEN38_STAGEPACK_TENSOR_ATTN_KEY_NORM:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION;
-		return(0);
-	default:
-		return(-1);
-	}
-}
-
+/* Every kind has a row, so the only failure is a kind outside the enum. */
 static inline int32_t SparkQwen38StagePackTensorShapeOf(uint32_t tensor_kind, SparkQwen38StagePackTensorShape *shape)
 {
-	SparkQwen38StagePackShapeInit(shape);
-	if ( SparkQwen38StagePackShapeGlobal(tensor_kind,shape) == 0 )
-		return(0);
-	SparkQwen38StagePackShapeInit(shape);
-	if ( SparkQwen38StagePackShapeEveryLayer(tensor_kind,shape) == 0 )
-		return(0);
-	SparkQwen38StagePackShapeInit(shape);
-	if ( SparkQwen38StagePackShapeGdn(tensor_kind,shape) == 0 )
-		return(0);
-	SparkQwen38StagePackShapeInit(shape);
-	if ( SparkQwen38StagePackShapeAttn(tensor_kind,shape) == 0 )
-		return(0);
-	return(-1);
+	const SparkQwen38StagePackKindGeometry *geometry;
+	if ( tensor_kind >= SPARK_QWEN38_STAGEPACK_TENSOR_KIND_COUNT )
+		return(-1);
+	geometry = &SPARK_QWEN38_STAGEPACK_KIND_GEOMETRY[tensor_kind];
+	shape->rows = geometry->rows;
+	shape->columns = geometry->columns;
+	shape->natural_format = geometry->natural_format;
+	shape->layer_class = geometry->layer_class;
+	return(0);
 }
 
 /*
@@ -395,38 +301,36 @@ static inline int32_t SparkQwen38StagePackResolvedShape(uint32_t tensor_kind, ui
 {
 	if ( SparkQwen38StagePackTensorShapeOf(tensor_kind,shape) < 0 )
 		return(-1);
-	if ( layer_index == SPARK_QWEN38_STAGEPACK_MTP_LAYER )
-		return((is_global == 0u && (shape->layer_class == SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER || shape->layer_class == SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER)) ? 0 : -6);
-	if ( (shape->layer_class == SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL) != (is_global != 0u) )
-		return(-2);
-	if ( is_global != 0u )
-		return(0);
-	if ( layer_index >= SPARK_QWEN38_MODEL_LAYER_COUNT )
-		return(-3);
-	if ( shape->layer_class == SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER && SPARK_QWEN38_MODEL_LAYER_IS_GDN(layer_index) == 0u )
-		return(-4);
-	if ( shape->layer_class == SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER && SPARK_QWEN38_MODEL_LAYER_IS_GDN(layer_index) != 0u )
-		return(-5);
-	return(0);
+	/* The resolution tail - MTP marker admission, global/class agreement,
+	 * stack bound, hybrid-map class check - is the shared core's, with its
+	 * exact refusal codes (-6,-2,-3,-4,-5). */
+	return(SparkHybridStagePackResolveLayerClass(shape->layer_class,is_global,
+		layer_index == SPARK_QWEN38_STAGEPACK_MTP_LAYER ? 1u : 0u,
+		layer_index,SPARK_QWEN38_MODEL_LAYER_COUNT,
+		SPARK_QWEN38_MODEL_LAYER_IS_GDN(layer_index)));
+}
+
+/* Byte accounting is the shared hybrid core's; this forward maps the
+ * family's wire format enum onto the normalized weight classes. */
+static inline uint32_t SparkQwen38StagePackWeightClass(uint32_t weight_format)
+{
+	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
+		return(SPARK_HYBRID_STAGEPACK_WEIGHT_MXFP4_E2M1);
+	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+		return(SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_F32B128);
+	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 )
+		return(SPARK_HYBRID_STAGEPACK_WEIGHT_F32);
+	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U32 )
+		return(SPARK_HYBRID_STAGEPACK_WEIGHT_U32);
+	return(SPARK_HYBRID_STAGEPACK_WEIGHT_BF16);
 }
 
 static inline uint64_t SparkQwen38StagePackPayloadBytes(uint32_t weight_format, uint32_t rows, uint32_t columns)
 {
-	uint64_t elements = (uint64_t)rows * (uint64_t)columns;
-	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
-		return(elements / 2u);
-	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
-		return(elements);
-	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 || weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U32 )
-		return(elements * 4u);
-	return(elements * (uint64_t)SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES);
+	return(SparkHybridStagePackPayloadBytes(SparkQwen38StagePackWeightClass(weight_format),rows,columns));
 }
 
 static inline uint64_t SparkQwen38StagePackScaleBytes(uint32_t weight_format, uint32_t rows, uint32_t columns)
 {
-	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
-		return(((uint64_t)rows * (uint64_t)columns) / SPARK_QWEN38_MODEL_MXFP4_GROUP_SIZE);
-	if ( weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
-		return(((uint64_t)rows / 128u) * ((uint64_t)columns / 128u) * 4u);
-	return(0u);
+	return(SparkHybridStagePackScaleBytes(SparkQwen38StagePackWeightClass(weight_format),rows,columns));
 }

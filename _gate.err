@@ -1,0 +1,13 @@
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+PROBE match lane=0 slot=2 count=200 blocks=0
+PROBE publish lane=2 boundary=1 chain=1 lo=3179560139370453713 hi=6122006485976454773
+PROBE publish lane=2 boundary=2 chain=2 lo=4399743113922511193 hi=2205239846642689896
+PROBE publish lane=2 boundary=3 chain=3 lo=11675787306762975579 hi=6430745020024821933
+qwen36_residency sid=700 pending_sid=700 pending_origin=700 hex=bc02000000000000b10000000000000015010000000000000d00000000000000
+PROBE match lane=0 slot=3 count=200 blocks=0
+PROBE publish lane=3 boundary=1 chain=1 lo=3179560139370453713 hi=6122006485976454773
+PROBE publish lane=3 boundary=2 chain=2 lo=4399743113922511193 hi=2205239846642689896
+PROBE publish lane=3 boundary=3 chain=3 lo=11675787306762975579 hi=6430745020024821933
+qwen36_residency sid=701 pending_sid=701 pending_origin=701 hex=bd02000000000000b10000000000000015010000000000000d00000000000000
+DBG identical idx=25 lane=3 base=0 expected=192 rows=8 flags=11
+Assertion failed: (record->base_position == walked_cursor), function GateAssertWalk, file test_qwen36_prefix_cache.c, line 214.

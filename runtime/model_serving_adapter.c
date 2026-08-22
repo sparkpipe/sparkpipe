@@ -421,6 +421,14 @@ SparkStatus SparkModelServingAdapterValidateRuntimeSubmission(
 	return(SparkModelServingAdapterValidateRows(submission,submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE,runtime_limits->resident_sequence_capacity,descriptor->cache_block_token_count));
 }
 
+SparkStatus SparkModelServingAdapterStreamOrderedProgress(
+	void *adapter_state,
+	uint32_t maximum_step_count)
+{
+	(void)maximum_step_count;
+	return(adapter_state != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 SparkStatus SparkModelServingAdapterPrepareSubmission(
 	const SparkModelServingAdapterInterface *adapter_interface,
 	void *adapter_state,

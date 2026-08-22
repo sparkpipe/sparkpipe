@@ -88,6 +88,29 @@ def main():
             if not (a == b == full(name)):
                 print(f"  FAIL {name}: replication is not replication")
                 failures += 1
+        # 1-D tensors that ride sharded axes: each rank takes its OWN slice
+        # (the kernels index all three rank-locally from zero), so the
+        # ranks' shards CONCATENATE to the pack and the rank shape is
+        # repriced - replicating any of these hands ranks 1..n-1 rank 0's
+        # segments on every KDA layer and every MoE layer
+        for name, rows in (("model.layers.0.kda_decay_bias",
+                            cfg["kda_heads"] * cfg["kda_head"]),
+                           ("model.layers.0.kda_head_log_scale",
+                            cfg["kda_heads"]),
+                           ("model.layers.1.routed_norm_weight",
+                            cfg["latent"])):
+            a, b = both(name)
+            if a == b:
+                print(f"  FAIL {name}: ranks hold identical slices")
+                failures += 1
+            if b"".join((a, b)) != full(name):
+                print(f"  FAIL {name}: rank slices do not reassemble")
+                failures += 1
+            rank_shape = ranks[0][0]["tensors"][name]["shape"]
+            if not rank_shape or rank_shape[0] != rows // 2:
+                print(f"  FAIL {name}: rank shape {rank_shape} is not "
+                      f"repriced to the rank's axis")
+                failures += 1
         # output rows concatenate: vocab shard and a head-block shard
         for name in ("model.embed_tokens.weight",
                      "model.layers.1.mla_q_up_weight",

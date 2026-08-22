@@ -18,8 +18,8 @@
     "max_active_sequences": 64,
     "max_input_rows": 128,
     "resident_sequence_capacity": 64,
-    "kv_logical_page_capacity": 0,
-    "kv_physical_page_capacity": 0
+    "kv_logical_page_capacity": 16384,
+    "kv_physical_page_capacity": 8192
   },
   "topology": {
     "rank_hosts": [

@@ -247,6 +247,30 @@ static void TestContinuationLease(void)
 		SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelContinuationLeaseValidate(&leases[0],7u,3u,41u,11u) ==
 		SPARK_STATUS_SCHEMA_ERROR);
+	/* A deferred lease drops ONLY the position fence: any incoming position
+	 * is adopted at a strictly-later step under unchanged generations, while
+	 * stale steps and generation changes still reject (the zero-info
+	 * completion path in model_residentd depends on this). */
+	assert(SparkModelContinuationLeaseEstablishDeferred(&leases[1],0u,3u,16u) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelContinuationLeaseEstablishDeferred(&leases[1],7u,3u,16u) ==
+		SPARK_STATUS_OK);
+	assert(SparkModelContinuationLeaseIsActive(&leases[1]) != 0u);
+	assert(SparkModelContinuationLeaseValidate(&leases[1],7u,3u,99u,17u) ==
+		SPARK_STATUS_OK);
+	assert(SparkModelContinuationLeaseValidate(&leases[1],7u,3u,120u,18u) ==
+		SPARK_STATUS_OK);
+	/* Validate is a NON-MUTATING fence read: it cannot advance
+	 * last_step_generation, so a re-read at an already-seen (but not stale)
+	 * step stays OK. Only a step OLDER than the established one rejects. */
+	assert(SparkModelContinuationLeaseValidate(&leases[1],7u,3u,99u,18u) ==
+		SPARK_STATUS_OK);
+	assert(SparkModelContinuationLeaseValidate(&leases[1],7u,3u,99u,16u) ==
+		SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelContinuationLeaseValidate(&leases[1],8u,3u,99u,19u) ==
+		SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelContinuationLeaseValidate(&leases[1],7u,4u,99u,19u) ==
+		SPARK_STATUS_SCHEMA_ERROR);
 	SparkModelContinuationLeaseInvalidate(&leases[0]);
 	assert(SparkModelContinuationLeaseIsActive(&leases[0]) == 0u);
 	assert(SparkModelContinuationLeaseValidate(&leases[0],7u,3u,41u,15u) ==

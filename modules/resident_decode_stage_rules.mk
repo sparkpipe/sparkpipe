@@ -46,7 +46,8 @@ GPU_VALIDATOR_ARGUMENTS ?=
 BUILD_DIRECTORY ?= $(REPOSITORY_ROOT)/build/modules/$(MODULE_FAMILY)_resident_decode_stage
 MODULE_ARCHIVE ?= $(BUILD_DIRECTORY)/lib$(MODULE_FAMILY)_resident_decode_stage.a
 MODULE_COMMON_HOST_SOURCES ?= \
-	$(REPOSITORY_ROOT)/runtime/stage_module_common.c
+	$(REPOSITORY_ROOT)/runtime/stage_module_common.c \
+	$(REPOSITORY_ROOT)/runtime/prefix_cache.c
 MODULE_HOST_SOURCES := \
 	$(MODULE_HOST_SOURCE) \
 	$(MODULE_COMMON_HOST_SOURCES) \
@@ -56,7 +57,8 @@ MODULE_INCLUDE_FLAGS ?= \
 	-I"$(REPOSITORY_ROOT)/model-families/common/include" \
 	-I"$(REPOSITORY_ROOT)/model-families/$(MODULE_FAMILY)/include" \
 	-I"$(REPOSITORY_ROOT)/modules/$(MODULE_FAMILY)_resident_decode_stage/include" \
-	-I"$(REPOSITORY_ROOT)/modules/$(MODULE_FAMILY)_resident_decode_stage/source"
+	-I"$(REPOSITORY_ROOT)/modules/$(MODULE_FAMILY)_resident_decode_stage/source" \
+	-I"$(REPOSITORY_ROOT)/runtime"
 MODULE_HOST_OBJECTS := $(foreach source,$(MODULE_HOST_SOURCES),$(BUILD_DIRECTORY)/$(subst /,_,$(basename $(source))).o)
 MODULE_CUDA_OBJECT := $(BUILD_DIRECTORY)/$(subst /,_,$(basename $(MODULE_CUDA_SOURCE))).o
 VALIDATION_CONFIGURATION_SHA256 := $(shell printf '%s\n' '$(RUNTIME_CONFIGURATION)' | sha256sum | awk '{print $$1}')

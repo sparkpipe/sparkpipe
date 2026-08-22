@@ -29,18 +29,44 @@ every real K extent (7168/12288/33792) by the determinism probes.
 ## Prefill + decode performance estimate
 
 tools/k3_tp4pp4_perf_estimate.py derives both numbers from the deployed
-rank-pack manifest inventory (per-layer tensor bytes) and the repo's
-273 GB/s x 0.65 bandwidth convention, anchored to the measured 55.5 ms
-stage step:
+rank-pack manifest inventory (per-layer tensor bytes) and reports every
+projection under TWO bandwidth models, so the analytical/measure boundary
+stays visible:
 
-- Decode (output, B1): measured 18.0 tok/s (55.5 ms/stage); the roofline
-  lands at 48.6 ms (20.6 tok/s) - the path is bandwidth-bound on the dense
-  spine + the top-16 expert stream + the fp32 KDA state read/write.
-- Prefill: 92 tok/s at B8 rising to 1537 tok/s at B1024 steady state
-  (single-prompt latency 0.35 s -> 2.66 s); the expert stream saturates at
-  B=56 (896/16) and the KDA state becomes the dominant term at large batch.
-- TP16 (PP1): decode 20.2 tok/s at 49.5 ms token latency (~4x lower latency
-  than the pipelined TP4xPP4 at the same throughput); prefill parity.
+- **convention** (historical roofline): 273 GB/s x 0.65 = 177.45 GB/s.
+- **calibrated** (planning model): anchored to three measured points on this
+  hardware class - (A1) K3's own warm B1 stage step, 55.5 ms on sparka;
+  (A2) `tools/devcycle/bw_probe.cu` DRAM stream 250.7 GB/s @256 MB on
+  sparkb; (A3) the qwen36 TP4 band's measured device read bandwidth
+  225.9 GB/s with plain B1 at 72% of its weight floor = 162.7 GB/s achieved.
+  A1 + the byte inventory implies **155.4 GB/s** achieved on K3's mixed
+  BF16-spine + MXFP4-expert stream; A3 independently gives 162.7 GB/s -
+  two models, same hardware class, within 4.5%, both at ~62% of the A2
+  stream probe. The calibrated planning value is the conservative one
+  (min), and it lands the B1 decode projection ON the measured step by
+  construction.
+
+Projections (convention -> calibrated):
+
+- Decode (output, B1): measured 18.0 tok/s (55.5 ms/stage); roofline
+  20.6 -> 18.0 tok/s - under calibration the path IS its roofline, i.e.
+  B1 decode is bandwidth-bound with no modeled headroom left; only byte
+  reduction or speculation moves it (the ~32 tok/s absolute no-spec
+  ceiling at 100% of 273 GB/s still bounds any kernel work).
+- Prefill: 92/359/1537 tok/s at B8/B128/B1024 under the convention;
+  **81/315/1346** calibrated (single-prompt latency 0.40 s -> 3.04 s at
+  B1024). The expert stream saturates at B=56 (896/16) and the fp32 KDA
+  state stays the dominant large-batch term (52% of B1024 bytes), so the
+  BF16-state lever prices out at roughly +38% under either model.
+- TP16 (PP1): decode 20.2 -> **17.8 tok/s** at 56.1 ms token latency
+  (~4x lower latency than the pipelined TP4xPP4 at the same throughput);
+  prefill parity (1323 tok/s at B1024 calibrated).
+
+AR-latency sensitivity: the model uses 8 us per tree all-reduce; qwen36
+measured ~27 us/op on its hidden-transport tier. Even at 27 us the
+whole-stage AR budget is ~1.24 ms against a ~55 ms step (~2%), so the
+projections are insensitive to the AR constant - they are sensitive to the
+bandwidth term, which is why that term is the calibrated one.
 
 Measured on sparka, real rank pack, stage 0 (24 layers), 1 token:
 

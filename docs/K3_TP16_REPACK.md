@@ -13,9 +13,12 @@ Why TP16 needs 32-element tiles (the arithmetic, settled by audit):
   = 3.5); 32 divides both. The packer's interleave_geometry already closes
   at tile_k 32 (16-byte payload row = 16 rows x 1 scale byte; the E2M1
   group is 32, so one scale byte per neuron per tile).
-- TP 1/2/4/8 keep the 128-element tiles (28 and 24 tiles divide evenly);
-  only TP16 packs switch. The manifest carries tile_k per tensor, so both
-  formats coexist and the serving tier picks per pack.
+- TP 1/2/4 keep the 128-element tiles (28 and 24 tiles divide by 1, 2 and
+  4). TP8 does NOT: 28 % 8 = 4, so the w1 k-tile range does not split —
+  TP8 packs switch to tile_k 32 just like TP16 (there its w1 slice is
+  224/8 = 28 x 32-tiles, whole; w2 192/8 = 24, whole). The manifest
+  carries tile_k per tensor, so both formats coexist and the serving tier
+  picks per pack.
 
 Work items, in order:
 

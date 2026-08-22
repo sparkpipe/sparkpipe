@@ -196,3 +196,15 @@ void SparkStageModuleCompleteAndReleaseClaims(
     uint32_t index_count,
     atomic_uint *slot_states,
     uint32_t slot_index);
+/* Upload a lane-major block table (per-lane physical indices + counts)
+ * to its device mirrors for kernel consumption. One helper so every
+ * resident port feeds its attention kernels identically. */
+SparkStatus SparkStageModuleBlockTableUpload(
+    const char *module_tag,
+    uint32_t *device_physical_block_indices,
+    uint32_t *device_lane_block_counts,
+    const uint32_t *host_physical_block_indices,
+    const uint32_t *host_lane_block_counts,
+    uint32_t lane_count,
+    uint32_t lane_stride,
+    cudaStream_t stream);

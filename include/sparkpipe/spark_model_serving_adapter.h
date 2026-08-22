@@ -396,6 +396,14 @@ SparkStatus SparkModelServingAdapterValidateRuntimeSubmission(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingRuntimeLimits *runtime_limits,
 	const SparkModelServingSubmission *submission);
+/*
+ * The progress entry the ABI requires, for adapters whose driver completions
+ * arrive through stream-ordered callbacks and therefore have nothing to
+ * poll: validate the handle and report OK.
+ */
+SparkStatus SparkModelServingAdapterStreamOrderedProgress(
+	void *adapter_state,
+	uint32_t maximum_step_count);
 SparkStatus SparkModelServingAdapterPrepareSubmission(
 	const SparkModelServingAdapterInterface *adapter_interface,
 	void *adapter_state,

@@ -60,6 +60,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     cache/store/stage_kv_client.c \
     cache/nvme_tier.c \
     runtime/stage_module_common.c \
+    runtime/prefix_cache.c \
     runtime/work_transaction.c
 
 SPARKPIPE_GLM52_SOURCES := \

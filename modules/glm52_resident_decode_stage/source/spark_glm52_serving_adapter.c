@@ -148,14 +148,6 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.boundary_sideband_bytes_per_sequence = {0u}
 };
 
-static int32_t SparkGlm52ServingJsonMember(
-	const SparkJsonDocument *document,
-	int32_t root,
-	const char *name)
-{
-	return(SparkJsonFindObjectMember(document,root,name));
-}
-
 static SparkStatus SparkGlm52ServingJsonUnsigned(
 	const SparkJsonDocument *document,
 	int32_t root,
@@ -163,7 +155,7 @@ static SparkStatus SparkGlm52ServingJsonUnsigned(
 	uint32_t *value)
 {
 	int32_t token;
-	token = SparkGlm52ServingJsonMember(document,root,name);
+	token = SparkJsonFindObjectMember(document,root,name);
 	return(token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt32(document,token,value));
 }
 
@@ -174,7 +166,7 @@ static SparkStatus SparkGlm52ServingLoadTpAlgorithms(
 {
 	int32_t element,token;
 	uint32_t count,index,mask;
-	token = SparkGlm52ServingJsonMember(document,object,"algorithms");
+	token = SparkJsonFindObjectMember(document,object,"algorithms");
 	if ( token < 0 ||
 		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -210,7 +202,7 @@ static SparkStatus SparkGlm52ServingLoadTpStepRails(
 	int32_t element,token;
 	uint32_t count,index,value;
 	SparkStatus status;
-	token = SparkGlm52ServingJsonMember(document,object,"step_rail_indices");
+	token = SparkJsonFindObjectMember(document,object,"step_rail_indices");
 	if ( token < 0 ||
 		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
 		SparkJsonGetArrayElementCount(document,token) !=
@@ -240,7 +232,7 @@ static SparkStatus SparkGlm52ServingLoadTpRailHosts(
 	uint32_t host_count,index,rail;
 	char *host;
 	SparkStatus status;
-	token = SparkGlm52ServingJsonMember(document,object,"rail_peer_hosts");
+	token = SparkJsonFindObjectMember(document,object,"rail_peer_hosts");
 	if ( token < 0 ||
 		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
 		SparkJsonGetArrayElementCount(document,token) !=
@@ -325,10 +317,10 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
 	state->tp_collective_topology.descriptor_bytes =
 		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
-	object = SparkGlm52ServingJsonMember(document,root,"tp_collective");
+	object = SparkJsonFindObjectMember(document,root,"tp_collective");
 	if ( object < 0 || !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	token = SparkGlm52ServingJsonMember(document,object,"backend");
+	token = SparkJsonFindObjectMember(document,object,"backend");
 	if ( token < 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( SparkJsonStringEquals(document,token,"nccl") )
@@ -344,7 +336,7 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	relative_backend_path = 0;
-	token = SparkGlm52ServingJsonMember(document,object,"backend_module_path");
+	token = SparkJsonFindObjectMember(document,object,"backend_module_path");
 	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR :
 		SparkJsonCopyString(document,token,&relative_backend_path);
 	if ( status == SPARK_STATUS_OK )
@@ -354,12 +346,14 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 	free(relative_backend_path);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	token = SparkGlm52ServingJsonMember(document,object,"collective_identifier");
+	token = SparkJsonFindObjectMember(document,object,"collective_identifier");
 	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt64(document,token,&collective_identifier);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	/* Identifier zero is the degraded single-rank bringup mode: the module
-	 * keeps the pack's tp geometry but runs with every reduce elided. */
+	/* A zero identifier is not a configuration: the module would elide every
+	 * reduce and serve rank-local math on a TP-degree pack. */
+	if ( collective_identifier == 0u )
+		return(SPARK_STATUS_SCHEMA_ERROR);
 	state->tp_collective_identifier = collective_identifier;
 	status = SparkGlm52ServingJsonUnsigned(document,object,"listen_port",&port);
 	if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
@@ -371,7 +365,7 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 	status = SparkGlm52ServingJsonUnsigned(document,object,"operation_timeout_milli",&state->tp_operation_timeout_milli);
 	if ( status != SPARK_STATUS_OK || state->tp_operation_timeout_milli == 0u )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	token = SparkGlm52ServingJsonMember(document,object,"peer_hosts");
+	token = SparkJsonFindObjectMember(document,object,"peer_hosts");
 	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
@@ -392,7 +386,7 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 			state->tp_collective_topology.rank_hosts[index][0] == '\0' )
 			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
 	}
-	token = SparkGlm52ServingJsonMember(document,object,"peer_ports");
+	token = SparkJsonFindObjectMember(document,object,"peer_ports");
 	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
@@ -467,13 +461,13 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 		status = SparkGlm52ServingJsonUnsigned(&document,root,"schema_version",&schema_version);
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_GLM52_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	token = status == SPARK_STATUS_OK ? SparkGlm52ServingJsonMember(&document,root,"model_revision") : -1;
+	token = status == SPARK_STATUS_OK ? SparkJsonFindObjectMember(&document,root,"model_revision") : -1;
 	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,GLM52_MODEL_REVISION)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	token = status == SPARK_STATUS_OK ? SparkGlm52ServingJsonMember(&document,root,"expert_weight_codec") : -1;
+	token = status == SPARK_STATUS_OK ? SparkJsonFindObjectMember(&document,root,"expert_weight_codec") : -1;
 	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,GLM52_EXPERT_CODEC_NAME)) )
 		status = SPARK_STATUS_TARGET_MISMATCH;
-	token = status == SPARK_STATUS_OK ? SparkGlm52ServingJsonMember(&document,root,"stage_pack_path") : -1;
+	token = status == SPARK_STATUS_OK ? SparkJsonFindObjectMember(&document,root,"stage_pack_path") : -1;
 	if ( status == SPARK_STATUS_OK )
 		status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(&document,token,&relative_stage_pack_path);
 	if ( status == SPARK_STATUS_OK )
@@ -793,18 +787,13 @@ static SparkStatus SparkGlm52ServingInitialize(
 }
 
 static SparkStatus SparkGlm52ServingValidateBoundaries(
-	const SparkGlm52ServingState *state,
 	const SparkModelServingSubmission *submission)
 {
-	uint64_t boundary_bytes;
-	boundary_bytes = (uint64_t)submission->row_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
 	/* Every TP8 fanout rank runs the full single-stage firmware: it owns the
 	 * embedding and the head, so it accepts no hidden boundaries and no DSA
 	 * sidebands. */
 	if ( submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	(void)boundary_bytes;
-	(void)state;
 	return(SPARK_STATUS_OK);
 }
 
@@ -821,7 +810,7 @@ static SparkStatus SparkGlm52ServingValidateSubmission(
 		return(SPARK_STATUS_BUSY);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkGlm52ServingDescriptor,&state->runtime_limits,submission);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingValidateBoundaries(state,submission);
+		status = SparkGlm52ServingValidateBoundaries(submission);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ServingValidateRowOrder(state,submission);
 	if ( status == SPARK_STATUS_OK && submission->model_extension_bytes != 0u )
@@ -928,14 +917,6 @@ static SparkStatus SparkGlm52ServingSubmit(
 	return(status);
 }
 
-static SparkStatus SparkGlm52ServingProgress(
-	void *adapter_state,
-	uint32_t maximum_step_count)
-{
-	(void)maximum_step_count;
-	return(adapter_state != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-}
-
 static SparkStatus SparkGlm52ServingQuiesce(
 	void *adapter_state,
 	uint64_t deadline_time_ns)
@@ -999,7 +980,7 @@ static const SparkModelServingAdapterInterface SparkGlm52ServingInterface =
 	.destroy = SparkGlm52ServingDestroy,
 	.validate_submission = SparkGlm52ServingValidateSubmission,
 	.submit = SparkGlm52ServingSubmit,
-	.progress = SparkGlm52ServingProgress,
+	.progress = SparkModelServingAdapterStreamOrderedProgress,
 	.quiesce = SparkGlm52ServingQuiesce,
 	.snapshot = SparkGlm52ServingSnapshot
 };

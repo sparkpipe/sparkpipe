@@ -119,6 +119,16 @@ typedef struct SparkGlm52DsparkHiddenTapPlan
     SparkGlm52DsparkTapStage tap_stages[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT];
 } SparkGlm52DsparkHiddenTapPlan;
 
+/* Model-owned tap-plan mechanics (implemented in
+ * modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c).
+ * Prototypes dropped by the d6f8967 split are restored here so consumers stay
+ * zero-touch, as that commit's contract promises. */
+SparkStatus SparkGlm52DsparkBuildDefaultHiddenTapPlan(
+    SparkGlm52DsparkHiddenTapPlan *tap_plan);
+
+SparkStatus SparkGlm52DsparkValidateHiddenTapPlan(
+    const SparkGlm52DsparkHiddenTapPlan *tap_plan);
+
 #ifdef __cplusplus
 }
 #endif

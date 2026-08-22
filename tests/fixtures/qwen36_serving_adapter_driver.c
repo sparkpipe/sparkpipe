@@ -8,6 +8,12 @@
  * (buffer 1) with no hidden transport. kv_token_capacity doubles as the
  * observation channel for the KV pool size the adapter derived (blocks x
  * block tokens).
+ *
+ * The prefix-cache gate needs the FRAMES the adapter built, so every
+ * submitted frame is recorded - context flags, prefill geometry, the row
+ * token ids, and the lane's block-table row from the host mirrors - into a
+ * ring the test reads back through the exported query symbols (the test
+ * dlopen()s this same library, so the ring is shared).
  */
 
 #include <stdlib.h>
@@ -30,7 +36,60 @@
 /* TP4: the adapter sets a single module stage (SPARK_QWEN36_STAGE_COUNT=1,
  * STAGE_INDEX=0) on every rank. */
 #define TEST_QWEN36_DRIVER_STAGE_COUNT 1u
-#define TEST_QWEN36_DRIVER_CAPTURE_ROWS 16u
+#define TEST_QWEN36_DRIVER_CAPTURE_ROWS 32u
+#define TEST_QWEN36_DRIVER_RECORD_CAPACITY 8192u
+
+/* One submitted frame, as the prefix gate observes it. */
+typedef struct TestQwen36DriverFrameRecord
+{
+	uint32_t prefill;
+	uint32_t rows;
+	uint32_t context_flags;
+	uint32_t snapshot_index_present;
+	uint32_t snapshot_index;
+	uint32_t lane_index;
+	uint64_t base_position;
+	uint64_t sequence_id;
+	uint32_t block_count;
+	uint32_t token_ids[TEST_QWEN36_DRIVER_CAPTURE_ROWS];
+	uint32_t blocks[TEST_QWEN36_DRIVER_CAPTURE_ROWS];
+}
+TestQwen36DriverFrameRecord;
+
+static TestQwen36DriverFrameRecord TestQwen36ServingDriverRecords[TEST_QWEN36_DRIVER_RECORD_CAPACITY];
+static uint32_t TestQwen36ServingDriverRecordHead;
+/* The KV pool size this driver instance was created with (the adapter's
+ * SPARK_QWEN36_STAGE_KV_BLOCKS), for the deployment-wiring assertions. */
+static uint32_t TestQwen36ServingDriverKvBlocks;
+
+__attribute__((visibility("default")))
+uint32_t TestQwen36ServingDriverKvBlockCount(void)
+{
+	return(TestQwen36ServingDriverKvBlocks);
+}
+
+__attribute__((visibility("default")))
+uint32_t TestQwen36ServingDriverRecordCount(void)
+{
+	return(TestQwen36ServingDriverRecordHead);
+}
+
+__attribute__((visibility("default")))
+const TestQwen36DriverFrameRecord *TestQwen36ServingDriverRecord(
+	uint32_t index)
+{
+	if ( index >= TestQwen36ServingDriverRecordHead )
+		return(0);
+	return(&TestQwen36ServingDriverRecords[index]);
+}
+
+__attribute__((visibility("default")))
+void TestQwen36ServingDriverResetRecords(void)
+{
+	TestQwen36ServingDriverRecordHead = 0u;
+	memset(TestQwen36ServingDriverRecords,0,
+		sizeof(TestQwen36ServingDriverRecords));
+}
 
 typedef struct TestQwen36ServingDriver
 {
@@ -124,6 +183,7 @@ static SparkStatus TestQwen36ServingDriverCreate(
 	driver->completion_context = request->completion_context;
 	driver->stage_index = stage_index;
 	driver->kv_block_count = kv_blocks;
+	TestQwen36ServingDriverKvBlocks = kv_blocks;
 	*driver_instance = driver;
 	return(SPARK_STATUS_OK);
 }
@@ -195,6 +255,52 @@ static SparkStatus TestQwen36ServingDriverSubmit(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( frame->buffers[1].slot != 1u || frame->buffers[1].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || frame->buffers[1].address == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	/* Record the frame for the prefix gate BEFORE emitting: the input ids
+	 * are read straight from buffer 0 (host memory), and the block-table
+	 * row from the host mirrors the adapter must keep proven. */
+	if ( TestQwen36ServingDriverRecordHead < TEST_QWEN36_DRIVER_RECORD_CAPACITY )
+	{
+		TestQwen36DriverFrameRecord *record =
+			&TestQwen36ServingDriverRecords[TestQwen36ServingDriverRecordHead++];
+		const uint32_t *input_ids = (const uint32_t *)frame->buffers[0].address;
+		const SparkQwen36KvBlockTableView *table = context->kv_block_table;
+		uint32_t lane_index,ordinal;
+		memset(record,0,sizeof(*record));
+		record->prefill = prefill;
+		record->rows = rows;
+		record->context_flags = context->flags;
+		if ( context->gdn_snapshot != 0 )
+		{
+			record->snapshot_index_present = 1u;
+			record->snapshot_index = context->gdn_snapshot->snapshot_index;
+		}
+		if ( prefill != 0u )
+		{
+			record->lane_index = context->prefill_frame->lane_index;
+			record->base_position = context->prefill_frame->base_position;
+			record->sequence_id = context->prefill_frame->sequence_id;
+		}
+		else
+		{
+			lane_index = context->decode_batch->row_lane_indices[0];
+			record->lane_index = lane_index;
+			record->base_position = context->decode_batch->row_positions[0];
+			record->sequence_id = context->decode_batch->row_sequence_ids[0];
+		}
+		lane_index = record->lane_index;
+		for (row=0u; row<rows && row<TEST_QWEN36_DRIVER_CAPTURE_ROWS; row++)
+			record->token_ids[row] = input_ids[row];
+		if ( table != 0 && table->host_physical_block_indices != 0 &&
+			table->host_lane_physical_block_counts != 0 &&
+			lane_index < table->lane_count )
+		{
+			record->block_count = table->host_lane_physical_block_counts[lane_index];
+			for (ordinal=0u; ordinal<record->block_count &&
+				ordinal<TEST_QWEN36_DRIVER_CAPTURE_ROWS; ordinal++)
+				record->blocks[ordinal] = table->host_physical_block_indices[
+					((uint64_t)lane_index * table->lane_stride) + ordinal];
+		}
+	}
 	tokens = (uint32_t *)frame->buffers[1].address;
 	if ( prefill != 0u )
 		tokens[0] = 4242u;

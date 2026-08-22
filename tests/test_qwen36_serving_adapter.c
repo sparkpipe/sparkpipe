@@ -71,6 +71,10 @@ static void TestQwen36ServingConfiguration(
 	configuration->runtime_limits.max_active_sequence_count = 8u;
 	configuration->runtime_limits.max_input_row_count = 8u;
 	configuration->runtime_limits.resident_sequence_capacity = 8u;
+	/* JIT_KV descriptor: page capacities are mandatory and sized like a
+	 * real deployment (the derived pool for this geometry is 512 blocks). */
+	configuration->runtime_limits.kv_logical_page_capacity = 1024u;
+	configuration->runtime_limits.kv_physical_page_capacity = 512u;
 	configuration->runtime_root = runtime_root;
 	configuration->node_id = "spark-test";
 	configuration->node_target = "cuda.sm121.qwen36.resident_decode_stage.bf16";

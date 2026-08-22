@@ -356,12 +356,9 @@ static int32_t Glm52LayerIndexer(
         buffers->positions,
         rows,
         GLM52_DSA_INDEX_DIM);
-    if (context <= GLM52_DSA_SELECTED)
-    {
-        return cudaPeekAtLastError() == cudaSuccess
-            ? LM_LAUNCH_OK
-            : LM_LAUNCH_ERR_LAUNCH;
-    }
+    /* No short-context branch here: the context <= GLM52_DSA_SELECTED case
+     * already returned above, so every launch below runs whenever this code
+     * does and the single error fold at the tail covers the store path. */
     if (buffers->selection_scores == 0 || buffers->selected_positions == 0 ||
         buffers->head_candidate_token == 0)
     {

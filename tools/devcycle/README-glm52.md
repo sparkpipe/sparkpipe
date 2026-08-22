@@ -29,6 +29,6 @@ block; TP16/PP16 topologies take the full fleet (slot B) in their slice.
   residentd, no measurement contention.
 - Pack build: full 78-layer glm52sp, streaming, two-source
   (spine = zai-org/GLM-5.2 BF16 master b4734de4; experts =
-  zai-org/GLM-5.2-FP8), output /home/sparke/srcdata/glm52_full.fp8.glms52sp.
+  zai-org/GLM-5.2-FP8), output /home/sparke/srcdata/glm52_full.fp8.glm52sp.
 - Next: model driver compile (fp8 firmware), residentd deploy with the
   slot-A port block, layer-0 gates, then the B1 baseline.

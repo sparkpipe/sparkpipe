@@ -63,7 +63,7 @@
       "owner": "glm52 session",
       "status": "active",
       "topology": "TP8",
-      "notes": "Single-stage TP8 resident decode, BF16 spine + FP8 experts. Rank packs glm52_tp8_rank0N.fp8.glms52sp (rank 0 = spark8 ... rank 7 = sparkf)."
+      "notes": "Single-stage TP8 resident decode, BF16 spine + FP8 experts. Rank packs glm52_tp8_rank0N.fp8.glm52sp (rank 0 = spark8 ... rank 7 = sparkf)."
     },
     "dsv4-pro": {
       "tier": "big",

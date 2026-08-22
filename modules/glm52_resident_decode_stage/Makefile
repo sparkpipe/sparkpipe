@@ -78,6 +78,11 @@ RUNTIME_CONFIGURATION := \
 	SPARK_GLM52_STAGE_MAX_SEQUENCE_POSITIONS=$(MAX_SEQUENCE_POSITIONS) \
 	SPARK_GLM52_STAGE_EXECUTION_ROW_CAPACITY=$(EXECUTION_ROW_CAPACITY) \
 	SPARK_GLM52_STAGE_PIPELINE_SLOTS=$(PIPELINE_SLOT_COUNT)
+# Retained receipt: the validator source digest rides the configuration hash,
+# so a published artifact names the exact validator text that approved it.
+override GLM52_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_glm52_resident_decode_stage_cuda_validation.cu | awk '{print $$1}')
+RUNTIME_CONFIGURATION += \
+	SPARK_GLM52_CUDA_VALIDATOR_SHA256=$(GLM52_CUDA_VALIDATOR_SHA256)
 
 GPU_VALIDATOR := validation/validate_glm52_resident_decode_stage_cuda.sh
 
@@ -92,6 +97,11 @@ ADAPTER_SHARED_FLAGS := -shared
 ADAPTER_LIBRARY_EXT := so
 endif
 ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/libglm52_serving_adapter_$(EXPERT_CODEC).$(ADAPTER_LIBRARY_EXT)
+# The adapter serves every runtime batch, so it builds at the unflagged
+# maximum-ceiling bucket (the batch-tuning header's own default), not at a
+# ladder member: MODULE_BATCH_VARIANT_BUCKETS is an archive-variant LIST and
+# must never reach a single -D flag.
+ADAPTER_BATCH_BUCKET ?= 1024u
 
 .PHONY: adapter
 
@@ -99,7 +109,7 @@ adapter:
 	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
 	@mkdir -p "$(BUILD_DIRECTORY)"
 	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC $(ADAPTER_SHARED_FLAGS) \
-		-I$(REPOSITORY_ROOT)/src $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=$(MODULE_BATCH_VARIANT_BUCKETS) \
+		-I$(REPOSITORY_ROOT)/src $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=$(ADAPTER_BATCH_BUCKET) \
 		source/spark_glm52_serving_adapter.c \
 		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
 		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \

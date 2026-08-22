@@ -21,25 +21,30 @@ from glm52, each earned by the architecture:
   ways buys nothing but a collective
   the kv_a latent path replicates, which is what keeps the latent KV cache
   identical per rank - TP cannot shard one KV head
+  the 1-D arrays on sharded axes SLICE: kda_decay_bias and
+  kda_head_log_scale ride the KDA head axis and routed_norm_weight rides
+  the latent axis, and every consumer indexes them rank-locally from zero -
+  replicating them would feed ranks 1..n-1 rank 0's segments
   V2 fuses q|k|v|beta into kda_qkv_beta_weight, ONE OUTPUT_DIM_HEADS tensor:
   a rank holding heads [h0, h1) owns one contiguous row range PER SECTION,
   the per-head section widths (128/128/128/1) coming from the manifest's
   section table, beta's single row per head included
-  the concatenated gate|up tensors (shared, dense, and every expert's w1)
-  slice EACH HALF and re-concatenate per rank, or the SiTU kernel's
-  gate-first contract breaks at every rank boundary
+  the concatenated gate|up tensors (shared, dense) slice EACH HALF and
+  re-concatenate per rank, or the SiTU kernel's gate-first contract breaks
+  at every rank boundary
   expert w1 is the V2 interleaved grid (16 payload + 1 scale row per
-  16-neuron cell per k-tile): it output-splits on whole 16-neuron cells
-  per gate|up half AND input-splits on whole k-tiles - the rank's latent
-  slice addresses only its own tiles, so keeping the whole k axis would
-  pair a rank's activations with rank 0's weights
-  expert w2 input-splits on whole k-tiles - a contiguous row range per
-  expert per rank. The rank's SiTU intermediate slice IS contiguous (the
-  gate|up halves share cell offsets), so the contiguous take matches it.
-  K3's 128-element tiles admit TP 1/2/4/8 on both experts; TP16 is
-  REFUSED unless the pack carries 32-element tiles (224 = 7 x 32 for the
-  w1 k, 192 = 6 x 32 for the w2 k - the packer's interleave_geometry
-  already closes at tile_k 32)
+  16-neuron cell per k-tile): it INPUT-splits on whole k-tiles - the rank's
+  latent slice addresses only its own tiles - and keeps the gate|up output
+  FULL, because sum(SiTU(p)) != SiTU(sum(p)) demands all-reducing the full
+  width BEFORE the SiTU
+  expert w2 OUTPUT-splits on whole 16-neuron cells with the intermediate
+  input FULL: after that all-reduce every rank holds the whole SiTU
+  intermediate, so a rank's latent cells must read the whole k axis (the
+  input-split form would pair its cells with its tiles alone and drop the
+  cross terms). Both axes divide at TP 1/2/4/8 on 128-element tiles; TP16
+  is REFUSED unless the pack carries 32-element tiles (224 = 7 x 32 for
+  the w1 k, 192 = 6 x 32 for the w2 k - and TP8 needs them too: 28 % 8
+  = 4. The packer's interleave_geometry already closes at tile_k 32)
 """
 import json
 import mmap
@@ -61,11 +66,24 @@ class ShardFailure(RuntimeError):
 REPLICATED = {
     "attn_norm_weight", "mlp_norm_weight", "attnres_attn_weight",
     "attnres_mlp_weight", "router_weight", "router_bias",
-    "kda_decay_down_weight", "kda_decay_bias",
-    "kda_head_log_scale", "kda_out_norm_weight",
+    "kda_decay_down_weight", "kda_out_norm_weight",
     "mla_q_down_weight", "mla_q_norm_weight", "mla_kv_a_weight",
-    "mla_kv_a_norm_weight", "routed_norm_weight",
+    "mla_kv_a_norm_weight",
 }
+# 1-D tensors riding the KDA head axis: the rank takes its own contiguous
+# slice, because their consumers index by the rank's LOCAL heads -
+# LmBoundedDecayKernel reads channel_bias[head*KEY_DIM+i] and
+# head_log_scale[head] over K3_RANK_DIM(kda_heads_rank) heads
+# (inference/kernels/linear_attn.cuh, launched from layer.cuh's KDA path),
+# so a replicated array hands ranks 1..n-1 rank 0's segments on all 69 KDA
+# layers. Both only matter past position 0 (the state starts zero), which
+# is why a position-0 equivalence gate cannot see a mis-slice here.
+HEAD_1D = {"kda_decay_bias", "kda_head_log_scale"}
+# 1-D tensor riding the latent axis: the MoE RMS norm scales the rank's own
+# latent slice before routed_up (layer.cuh reads routed_norm_weight over
+# the rank-local moe_in), so rank r must hold segment r of the array -
+# replicated, every MoE layer norms with rank 0's scale.
+LATENT_1D = {"routed_norm_weight"}
 MODEL_REPLICATED = {"model.norm.weight", "model.attnres_out_weight"}
 # output-dimension, sliced on whole head blocks: (head elements, row bytes)
 OUTPUT_HEADS = {
@@ -208,6 +226,23 @@ class Slicer:
 
         if name in MODEL_REPLICATED or field in REPLICATED:
             return raw, meta
+        if field in HEAD_1D or field in LATENT_1D:
+            # the rank's contiguous slice of a 1-D array whose axis is
+            # sharded (HEAD_1D: the KDA head axis; LATENT_1D: the latent
+            # axis) - the element type is uniform, so a byte split IS the
+            # element split, and the rank shape is repriced so the rank
+            # pack stays self-describing
+            if field in LATENT_1D and cfg["latent"] % degree != 0:
+                raise ShardFailure(
+                    f"{name}: latent {cfg['latent']} does not split "
+                    f"{degree} ways")
+            if len(raw) % degree != 0:
+                raise ShardFailure(
+                    f"{name}: {len(raw)} bytes do not split {degree} ways")
+            per = len(raw) // degree
+            if "shape" in meta and meta["shape"]:
+                meta["shape"][0] //= degree
+            return raw[rank * per:(rank + 1) * per], meta
         if name in ("model.embed_tokens.weight", "lm_head.weight"):
             shape(rows=cfg["vocab"] // degree)
             return slice_rows(raw, cfg["vocab"], rank, degree), meta

@@ -43,7 +43,7 @@ def stage_config(rank: int) -> dict:
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
         "expert_weight_codec": "fp8",
-        "stage_pack_path": "packs/glm52_tp8_rank%02d.fp8.glms52sp" % rank,
+        "stage_pack_path": "packs/glm52_tp8_rank%02d.fp8.glm52sp" % rank,
         "max_sequence_positions": 4096,
         "execution_row_capacity": 16,
         "tp_degree": TP,
