@@ -695,7 +695,11 @@ static __device__ __forceinline__ float SparkLmDotRowFp8E8m0(const float *shared
 	for (run = lane; run < run_count; run += SPARK_LM_WARP_LANES)
 	{
 		packed = __ldg(((const uint32_t *)weight_payload) + run_row + run);
-		scale_value = exp2f((float)((int32_t)__ldg(weight_scale_e8m0 + scale_row + ((run << 2u) >> 7u)) - 127));
+		/* e8m0 scale = 2^(code-127); IEEE exponent bits are (e+127)<<23, so
+		 * the scale is __int_as_float(code << 23) EXACTLY - one instruction
+		 * vs the exp2f transcendental this replaced (which cost real rate at
+		 * 5120 K: one exp2f per 4 elements). */
+		scale_value = __uint_as_float((uint32_t)__ldg(weight_scale_e8m0 + scale_row + ((run << 2u) >> 7u)) << 23u);
 		SparkLmDecodeE4m3x4Half2(packed,decoded);
 		#pragma unroll
 		for (pair = 0u; pair < 2u; pair++)

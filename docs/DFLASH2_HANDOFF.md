@@ -237,9 +237,21 @@ cp.async.bulk (TMA-adjacent) measured 115 GB/s with mbarrier completion -
 SLOWER than the 16B cp.async path (180); fenced as a null result for this
 pattern on GB10.
 
-PRIORITY (revised): graph port (~16ms gaps) > GDN scan (~10ms) > fp8
-drafter (+5% w/ risk) > prefill batching. The 16B cp.async 180 GB/s
-ceiling stands as the practical FFN limit. The GDN kernel: SparkQwen36GdnStepKernel in the .cu serializes
+PRIORITY (revised, quality-lossless only per review direction - no further
+quantization): graph port > GDN scan (~10ms) > prefill batching. The fp8
+drafter and the fp8 lm_head ideas are OFF THE TABLE (quality constraint).
+
+THE LAUNCH-GAP QUANTIFICATION (the graph-port business case, measured from
+the FFN arithmetic): no-spec FFN in-situ = 76.2ms/frame vs 192 GEMMs x
+0.362ms standalone + ~3ms norms/swiglu = ~72.5ms -> ~4ms of launch gaps in
+FFN alone; GDN shows ~5ms more; total ~8-10ms/frame no-spec (~8%) and
+~16ms/round spec (~9%). ONE graph per frame shape recovers both.
+
+The e8m0 GEMV scale fix (exp2f -> __uint_as_float(code<<23), bit-exact):
+standalone 228 -> 248 GB/s (the pure-read ceiling is 266-276); in-situ the
+gain is mostly absorbed by launch overhead - one more confirmation the
+graph port is the lever. The 16B cp.async 180 GB/s ceiling stands as the
+practical multi-row FFN limit; cp.async.bulk measured 115 (fenced). The GDN kernel: SparkQwen36GdnStepKernel in the .cu serializes
 rows in-kernel for state chaining; the A_t = decay*(I - beta k k^T)
 transition is column-independent -> per-row transitions compute in
 parallel, then a tiny serial prefix composes them; checkpoints (slots
