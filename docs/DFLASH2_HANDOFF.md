@@ -457,6 +457,19 @@ provably inert (timers + statics only) - that function is fragile to
 growth; the timestamped spec_diag line gives per-round walls without
 touching it.
 
+PLAIN-B WS KERNEL (2026-08-21, default ON, kill-switch SPARK_QWEN36_WS_PLAIN=0):
+staging B with plain uint4 load+store instead of cp.async 16B lifts the
+ISOLATED kernel from 176-181 to 195-205 GB/s (bit-exact 3/3x with
+A-read-from-global - the shared raw-A ring has a latent race that the
+plain-B timing exposes; production quantizes A from global already, which
+is the verified config). BUT the in-situ kill-switch A/B (same build,
+same run): wall 20.90 vs 20.91s, ffn_ms/frame 85.1 vs 85.3 - IDENTICAL.
+The verify frame's FFN runs ~123 GB/s effective regardless of staging:
+the missing 50 GB/s is kernel interleaving, cold-L2 scale reads, and
+launch gaps, not the B-staging engine. THE NEXT FFN LEVER is in-situ
+locality (L2 persistence windows for the e8m0 scales, launch coalescing),
+not kernel micro-optimization.
+
 NOTE for wall comparisons: the reference spec stream on O512 was
 8fb03a865248fb0b/77 rounds; post-hist-reset acceptance shifted to
 d7f798801a6e43a6/88 rounds (deterministic x2, no-spec wall and per-round

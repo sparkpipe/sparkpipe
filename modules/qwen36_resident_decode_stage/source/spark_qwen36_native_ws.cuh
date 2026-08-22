@@ -28,6 +28,20 @@ static __device__ __forceinline__ void StCpWait(void)
 	asm volatile("cp.async.wait_group %0;\n" :: "n"(Groups));
 }
 
+/* PLAIN-B (2026-08-21): staging B with plain uint4 load+store instead of
+ * cp.async 16B - the async engine is the streaming bottleneck on GB10
+ * (bench: 195-205 GB/s vs cp.async's 176-181, bit-exact at M=8 with
+ * A-from-global, the production quantize path). Plain shared stores need
+ * the consumer-side acquire fence below; cp.async arrived via wait_group. */
+template <bool PLAIN_B>
+static __device__ __forceinline__ void StageB16(void *shmem, const void *gmem)
+{
+	if ( PLAIN_B )
+		*(uint4 *)shmem = *(const uint4 *)gmem;
+	else
+		StCpAsync16(shmem,gmem);
+}
+
 #define ST_TILE_N 128u
 #define ST_CHUNK_K 128u
 #define ST_B_STRIDE (ST_CHUNK_K + 16u)
@@ -40,7 +54,7 @@ static __device__ __forceinline__ void StCpWait(void)
  * Handshake: one counter (b_ready = "B[c] and rawA[c] landed"), one top
  * spin (consumed >= c) gating both ring slots. The wait is StCpWait<1>
  * regardless of D: one commit per iteration, all-but-the-last complete. */
-template <uint32_t D>
+template <uint32_t D, bool PLAIN_B>
 static __global__ __launch_bounds__(512u, 1)
 void SparkQwen36WarpSpecializedKernel(
 	const uint8_t *weight_payload,
@@ -180,6 +194,10 @@ void SparkQwen36WarpSpecializedKernel(
 				while ( b_ready < chunk + 1u )
 					__nanosleep(64);
 			asm volatile("bar.sync 1, 256;");
+			/* PLAIN-B: plain st.shared needs an explicit acquire in every
+			 * reading thread (cp.async writes arrived via wait_group) */
+			if ( PLAIN_B )
+				__threadfence_block();
 			/* quantize A[c] from the global input (warp w = row w; 8 real rows) */
 			for ( step = 0u; step < ST_CHUNK_K / 32u; ++step )
 			{
@@ -224,6 +242,9 @@ void SparkQwen36WarpSpecializedKernel(
 					SparkLmSm121Mma<SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(total[ni], a, b, scale_a, scale_b);
 				}
 			}
+			/* all consumer threads past this chunk's reads before the
+			 * producer may restage slot (chunk-1)%D */
+			asm volatile("bar.sync 1, 256;");
 			if ( threadIdx.x == 0u )
 			{
 				__threadfence_block();
@@ -268,15 +289,30 @@ static inline cudaError_t SparkQwen36LaunchWsLinear(
 	static bool ws_shared_ready = false;
 	if ( !ws_shared_ready )
 	{
-		cudaError_t error = cudaFuncSetAttribute(SparkQwen36WarpSpecializedKernel<4u>,
+		cudaError_t error = cudaFuncSetAttribute(SparkQwen36WarpSpecializedKernel<4u,true>,
+			cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
+		if ( error != cudaSuccess )
+			return(error);
+		error = cudaFuncSetAttribute(SparkQwen36WarpSpecializedKernel<4u,false>,
 			cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
 		if ( error != cudaSuccess )
 			return(error);
 		ws_shared_ready = true;
 	}
-	SparkQwen36WarpSpecializedKernel<4u><<<grid, 512u, shared, stream>>>(
-		(const uint8_t *)weight_payload, weight_scale_e8m0,
-		input_bf16, input_row_stride, output_bf16, output_row_stride,
-		row_count, input_dimension, output_dimension);
+	/* PLAIN-B default ON (kill-switch SPARK_QWEN36_WS_PLAIN=0); the
+	 * cudaFuncSetAttribute above must target the matching instantiation */
+	{
+		const char *plain_env = getenv("SPARK_QWEN36_WS_PLAIN");
+		if ( plain_env != 0 && plain_env[0] == '0' )
+			SparkQwen36WarpSpecializedKernel<4u,false><<<grid, 512u, shared, stream>>>(
+				(const uint8_t *)weight_payload, weight_scale_e8m0,
+				input_bf16, input_row_stride, output_bf16, output_row_stride,
+				row_count, input_dimension, output_dimension);
+		else
+			SparkQwen36WarpSpecializedKernel<4u,true><<<grid, 512u, shared, stream>>>(
+				(const uint8_t *)weight_payload, weight_scale_e8m0,
+				input_bf16, input_row_stride, output_bf16, output_row_stride,
+				row_count, input_dimension, output_dimension);
+	}
 	return(cudaGetLastError());
 }

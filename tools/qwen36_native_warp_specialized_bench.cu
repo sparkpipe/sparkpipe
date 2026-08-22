@@ -101,6 +101,15 @@ static __device__ __forceinline__ void StCpCommit(void)
 	asm volatile("cp.async.commit_group;\n");
 }
 
+
+template <bool PLAIN_B>
+static __device__ __forceinline__ void StageB16(void *shmem, const void *gmem)
+{
+	if ( PLAIN_B )
+		*(uint4 *)shmem = *(const uint4 *)gmem;
+	else
+		StCpAsync16(shmem,gmem);
+}
 template <int Groups>
 static __device__ __forceinline__ void StCpWait(void)
 {
@@ -115,7 +124,7 @@ static __device__ __forceinline__ void StCpWait(void)
  * Handshake: one counter (b_ready = "B[c] and rawA[c] landed"), one top
  * spin (consumed >= c) gating both ring slots. The wait is StCpWait<1>
  * regardless of D: one commit per iteration, all-but-the-last complete. */
-template <uint32_t D>
+template <uint32_t D, bool PLAIN_B>
 static __global__ __launch_bounds__(512u, 1)
 void SparkQwen36WarpSpecializedKernel(
 	const uint8_t *weight_payload,
@@ -165,9 +174,9 @@ void SparkQwen36WarpSpecializedKernel(
 			{
 				uint32_t neuron = t / (ST_CHUNK_K / 16u);
 				uint32_t k16 = t % (ST_CHUNK_K / 16u);
-				StCpAsync16(staged_b + (chunk % D) * ST_TILE_N * ST_B_STRIDE +
+				StageB16<PLAIN_B>(staged_b + (chunk % D) * ST_TILE_N * ST_B_STRIDE +
 					neuron * ST_B_STRIDE + k16 * 16u,
-					weight_payload + (uint64_t)(tile_n_base + neuron) * input_dimension +
+					(const uint8_t *)weight_payload + (uint64_t)(tile_n_base + neuron) * input_dimension +
 					(uint64_t)chunk * ST_CHUNK_K + k16 * 16u);
 			}
 		for ( uint32_t ac = 0u; ac < 2u && ac < chunks; ++ac )
@@ -217,9 +226,9 @@ void SparkQwen36WarpSpecializedKernel(
 					uint32_t neuron = t / (ST_CHUNK_K / 16u);
 					uint32_t k16 = t % (ST_CHUNK_K / 16u);
 					uint32_t rchunk = chunk + D - 1u;
-					StCpAsync16(staged_b + (rchunk % D) * ST_TILE_N * ST_B_STRIDE +
+					StageB16<PLAIN_B>(staged_b + (rchunk % D) * ST_TILE_N * ST_B_STRIDE +
 						neuron * ST_B_STRIDE + k16 * 16u,
-						weight_payload + (uint64_t)(tile_n_base + neuron) * input_dimension +
+						(const uint8_t *)weight_payload + (uint64_t)(tile_n_base + neuron) * input_dimension +
 						(uint64_t)rchunk * ST_CHUNK_K + k16 * 16u);
 				}
 			if ( chunk + 1u < chunks )
@@ -249,7 +258,10 @@ void SparkQwen36WarpSpecializedKernel(
 			if ( threadIdx.x == 0u )
 				while ( b_ready < chunk + 1u )
 					__nanosleep(64);
-			asm volatile("bar.sync 1, 256;");
+			if ( PLAIN_B )
+				asm volatile("bar.sync 1, 256;fence.acq_rel.cta;");
+			else
+				asm volatile("bar.sync 1, 256;");
 			/* quantize A[c] from SHARED raw (warp w = row w; 8 real rows) */
 			for ( step = 0u; step < ST_CHUNK_K / 32u; ++step )
 			{
@@ -297,6 +309,11 @@ void SparkQwen36WarpSpecializedKernel(
 					SparkLmSm121Mma<SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(total[ni], a, b, scale_a, scale_b);
 				}
 			}
+			/* ALL consumer threads must be past this chunk's reads before the
+			 * producer may restage slot (chunk-1)%D: thread 0 publishing
+			 * alone races the slower warps (latent in the cp.async build,
+			 * exposed by plain stores' instant visibility) */
+			asm volatile("bar.sync 1, 256;");
 			if ( threadIdx.x == 0u )
 			{
 				__threadfence_block();
@@ -320,24 +337,31 @@ void SparkQwen36WarpSpecializedKernel(
 static cudaError_t LaunchStaged(cudaStream_t stream,
 	const void *payload, const uint8_t *scale, const void *in, uint64_t in_stride,
 	void *out, uint64_t out_stride, uint32_t rows, uint32_t K, uint32_t N,
-	uint32_t depth)
+	uint32_t depth, int plain_b = 0)
 {
 	dim3 grid((rows + 15u) / 16u, N / ST_TILE_N);
 	size_t shared = (size_t)depth * ST_TILE_N * ST_B_STRIDE;
 	cudaError_t error;
-	#define ST_LAUNCH(D) do { \
-		error = cudaFuncSetAttribute(SparkQwen36WarpSpecializedKernel<D>, \
+	#define ST_LAUNCH(D, PB) do { \
+		error = cudaFuncSetAttribute(SparkQwen36WarpSpecializedKernel<D, PB>, \
 			cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared); \
 		if ( error != cudaSuccess ) return(error); \
-		SparkQwen36WarpSpecializedKernel<D><<<grid, 512u, shared, stream>>>( \
+		SparkQwen36WarpSpecializedKernel<D, PB><<<grid, 512u, shared, stream>>>(\
 			(const uint8_t *)payload, scale, in, in_stride, out, out_stride, rows, K, N); \
 	} while (0)
+	if ( plain_b != 0 )
+	{
+		if ( depth != 4u )
+			return(cudaErrorInvalidValue);
+		ST_LAUNCH(4u, true);
+		return(cudaGetLastError());
+	}
 	switch ( depth )
 	{
-	case 2u: ST_LAUNCH(2u); break;
-	case 4u: ST_LAUNCH(4u); break;
-	case 6u: ST_LAUNCH(6u); break;
-	case 8u: ST_LAUNCH(8u); break;
+	case 2u: ST_LAUNCH(2u, false); break;
+	case 4u: ST_LAUNCH(4u, false); break;
+	case 6u: ST_LAUNCH(6u, false); break;
+	case 8u: ST_LAUNCH(8u, false); break;
 	default: return(cudaErrorInvalidValue);
 	}
 	#undef ST_LAUNCH
@@ -389,6 +413,53 @@ int main(int argc, char **argv)
 	CHECK(SparkLmHostLaunchSm121NativeLinear<SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(
 		stream, payload, scale, payload_bytes, scale_bytes, in, K, 0u, 0u,
 		ref, N, 0u, 0u, 1u, M, K, N));
+	/* PLAIN-B variant: producers stage B with plain uint4 loads + shared
+	 * stores instead of cp.async 16B (the ledger's 180 cp.async ceiling vs
+	 * the 266 plain-read ceiling - is the async engine the bottleneck?)
+	 * ANSWER: YES at the kernel level - 195-205 GB/s vs 176-181, bit-exact
+	 * 3/3x WITH A READ FROM GLOBAL (the shared raw-A ring has a latent
+	 * race that plain-B timing exposes: per-tile corruption, all rows,
+	 * resistant to acquire fences and a publish barrier - root cause still
+	 * open; production keeps A-from-global which is the verified config).
+	 * IN SITU (o512 spec, kill-switch A/B on the same build): wall and
+	 * ffn_ms/frame IDENTICAL (20.90 vs 20.91s, 85.1 vs 85.3ms) - the
+	 * verify frame's FFN runs at ~123 GB/s effective regardless of the
+	 * staging engine; the gap to 176 is interleaving/cold-L2/gaps, NOT
+	 * the B-staging path. Plain-B ships default-ON (neutral, bit-exact)
+	 * with kill-switch SPARK_QWEN36_WS_PLAIN=0. */
+	{
+		CHECK(LaunchStaged(stream, payload, scale, in, K, out, N, M, K, N, 4u, 1));
+		CHECK(cudaStreamSynchronize(stream));
+		uint16_t *h_ref = (uint16_t *)malloc((size_t)M * N * 2u);
+		uint16_t *h_out = (uint16_t *)malloc((size_t)M * N * 2u);
+		CHECK(cudaMemcpy(h_ref, ref, (size_t)M * N * 2u, cudaMemcpyDeviceToHost));
+		CHECK(cudaMemcpy(h_out, out, (size_t)M * N * 2u, cudaMemcpyDeviceToHost));
+		int exact = 0;
+		uint32_t row_err[32] = {0}, col_err[64] = {0};
+		for (uint32_t i = 0; i < M * N; i++)
+			if (h_ref[i] != h_out[i])
+			{
+				exact++;
+				row_err[i / N]++;
+				col_err[(i % N) * 64u / N]++;
+			}
+		printf("plain-b correctness: exact=%d/%u rows:", M * N - exact, M * N);
+		for (uint32_t r = 0u; r < M; r++) printf(" %u", row_err[r]);
+		printf(" cols:");
+		for (uint32_t c = 0u; c < 64u; c++) printf("%u", col_err[c] > 9u ? 9u : col_err[c]);
+		printf("\n");
+		free(h_ref); free(h_out);
+		for (int i = 0; i < 8; i++)
+			CHECK(LaunchStaged(stream, payload, scale, in, K, out, N, M, K, N, 4u, 1));
+		CHECK(cudaStreamSynchronize(stream));
+		double bytes = (double)payload_bytes + (double)scale_bytes + (double)M * K * 2u + (double)M * N * 2u;
+		double t0 = now_s();
+		for (int i = 0; i < iters; i++)
+			CHECK(LaunchStaged(stream, payload, scale, in, K, out, N, M, K, N, 4u, 1));
+		CHECK(cudaStreamSynchronize(stream));
+		double dt = now_s() - t0;
+		printf("plain-b M=%u K=%u N=%u D=4: %.1f GB/s (%.3f ms/iter)\n", M, K, N, bytes * iters / dt / 1e9, dt / iters * 1e3);
+	}
 	for ( uint32_t depth = 2u; depth <= 4u; depth += 2u )  /* K must be % CHUNK_K; depth 6+ exceeds the 101376B shared opt-in cap */
 	{
 		CHECK(LaunchStaged(stream, payload, scale, in, K, out, N, M, K, N, depth));

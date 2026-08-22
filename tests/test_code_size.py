@@ -692,7 +692,11 @@ from pathlib import Path
 # the multi-row dot GEMM bench (tools/, four variants, negative-result
 # ledger: 160.3 GB/s best vs WS 176.8 - the M=1 248 GB/s scalar does not
 # generalize to M>=8).
-CEILING = 173994
+# 174101 (2026-08-21): plain-B WS kernel variant (uint4 load+store B
+# staging, default ON, kill-switch SPARK_QWEN36_WS_PLAIN=0) + consumer
+# acquire fence + publish barrier; bench ledger updated with the in-situ
+# A/B (kernel-level +10%, end-to-end neutral, bit-exact).
+CEILING = 174101
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
