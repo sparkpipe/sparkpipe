@@ -345,6 +345,50 @@ acceptance (code prompts). At our E=5.65 we emit 24.5 tps; on
 high-acceptance prompts the same engine math gives 6-7 tokens/round
 -> 28-32 tps. The architecture is there.
 
+## 0h. PREFIX CACHING - the mandatory serving feature, fully scoped (the
+next session's centerpiece; NOT worked around)
+
+The client ALREADY implements the complete protocol (runtime/
+model_batch_engine.c): digest-per-block, SparkPrefixCacheCommitPrompt on
+CACHE_PUBLISH, lookup + suffix-only prefill on a hit. It is OFF because
+OUR ADAPTER NEVER DECLARES IT - the descriptor's cache_block_token_count
+gates everything (adapter contract: >0 requires the JIT_KV capability,
+which requires PREFETCH|DRIVER_OWNS_KV; we declare DRIVER_OWNS_KV only).
+
+THE CLIENT CONTRACT (mapped end to end):
+- Publish: lanes arrive with SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH +
+  cache_publish_token_count (a multiple of cache_block_token_count, <=
+  context) + a sha256 identity of those tokens. The engine must keep the
+  KV for [0, publish_count) alive and addressable by that identity AFTER
+  the sequence ends.
+- Prefix hit: the client SKIPS prefilling [0, prefix_count) entirely
+  (computed_prompt_token_count == cache_prefix_token_count < prompt; only
+  the suffix is prefilled) and the lane arrives with
+  LANE_FLAG_CACHE_PREFIX + cache_prefix_token_count + identity +
+  sequence_position = prefix_count. The adapter must ATTACH the cached KV
+  for [0, prefix_count) to the new sequence with no compute.
+- cache_block_token_count must divide all counts (ours: KV block = 64).
+
+WHAT IT TAKES ON OUR SIDE (qwen36 adapter + module):
+1. Descriptor: cache_block_token_count = 64 (KV_BLOCK_TOKENS) +
+   JIT_KV|PREFETCH capability bits (adapter.c line ~362).
+2. KV BLOCK PERSISTENCE: state->kv_cache_bf16 blocks are per-lane via the
+   block table today and lanes reset on reuse (lane_requires_reset,
+   state_cold). Need: an identity-keyed block store with refcounts -
+   publish = pin the lane's blocks under the digest; prefix hit = build
+   the new lane's block table pointing at the pinned blocks.
+3. GDN STATE SNAPSHOTS (the hybrid-model part - why vLLM's recipe has
+   --mamba-full-memory-ratio / mamba-radix-cache): the 48 GDN layers are
+   RECURRENT - a prefix hit needs the GDN state AT the prefix boundary.
+   We already HAVE the snapshot machinery (the verify checkpoint slots +
+   SparkQwen36ModuleGdnSnapshot); extend it to snapshot at publish
+   boundaries and restore on prefix hits.
+4. Adapter glue: honor CACHE_PREFIX (skip, attach, set position) and
+   CACHE_PUBLISH (pin + store identity) in the lane lifecycle.
+DO NOT declare the capability before 2-4 work - a prefix hit without real
+persistence silently reads stale KV. The budget=1-vs-512 subtraction used
+for the decode-only numbers above is a measurement tool, not a substitute.
+
 ## 1. Where We Are
 
 | Metric | O128 | GSM | Notes |
