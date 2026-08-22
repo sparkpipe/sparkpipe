@@ -97,6 +97,44 @@ Next-session targets in order:
 3. Tap-stable chunked prefill (the =8 collapse is the multi-row PREFILL
    attention kernel numerics, not the native MMA).
 
+## 0c. The honest SOTA bar (measured 2026-08-22, same O512 prompt, temperature 0)
+
+| config | wall | decode tps | round | committed/round |
+|---|---|---|---|---|
+| reference CUDA-graphed | 41.5s (12.35 tps) | ~13.3 | ~294ms | 3.90 (E=2.90) |
+| reference eager | 45.0s (11.4 tps) | ~12 | - | 3.90 |
+| **us (k=7 MX cache, =1)** | 67.8s (7.55) | **10.1** | 318ms | 3.22 (E~2.2) |
+
+The historical "18-20 tps SOTA" DOES NOT REPRODUCE at temperature 0 on this
+benchmark; it corresponds to the temperature-1.0 sampled regime (E=4.3,
+rejection-sampling-friendly). We are at 75% of the reference's decode rate.
+
+Our round decomposes: FFN 149ms + GDN 69ms + drafter residual 55ms + head
+28ms + attn 17ms. BOTH big pieces are LATENCY-bound, not bandwidth-bound:
+the FFN takes 125ms at 1 row and 149ms at 8 rows (+19% for 8x the work) -
+the native MMA kernel's serial K-loop with per-step syncthreads and no
+prefetch runs at 114GB/s effective on a 17GB sweep (the hardware can do
+~2.4x that); the GDN's 69ms = 48 layers x ~1.4ms of launch latency +
+serialized-row sync chains for ~30us of math per layer.
+
+ESTIMATE after all identified fixes (kernel efficiency, no training):
+FFN 149->85 (pipelined/split-K), GDN 69->18 (fused + row-parallel phases),
+head 28->14, drafter 55->30 => round ~164ms => **19.6 tps decode at
+CURRENT acceptance** - ABOVE the measured reference bar (13.3). At E parity
+(3.9, training-side): ~23.8. The gap to close is KERNEL EFFICIENCY and
+acceptance, not architecture.
+
+What SOTA does that we don't (isolated):
+1. CUDA graphs - their decode step is one replay; we launch ~700
+   kernels/frame with per-launch gaps (the root of both latency binds).
+2. Chunked-parallel GDN scan (vLLM mamba_ssm) vs our serialized rows.
+3. cuBLAS-grade fp8 GEMMs (latency-hidden) vs our native MMA serial K-loop.
+4. Temperature-1.0 sampled serving with rejection sampling (E=4.3) - a
+   measurement-condition difference; our greedy-verify is bit-lossless.
+5. One-shot batched prompt prefill; ours is 16.6s of 1-row chunks
+   (tap-stability blocker, root-caused to the multi-row PREFILL attention
+   kernel numerics).
+
 ## 1. Where We Are
 
 | Metric | O128 | GSM | Notes |
