@@ -364,6 +364,12 @@ typedef struct SparkQwen36ServingState
 	uint32_t paged_ready;
 	uint32_t quiescing;
 	uint32_t spec_method;
+	/* Speculation policy read once at Initialize (the same init-time rule as
+	 * spec_method): draft depth for the active method, first-draft policy and
+	 * the round audit switch. The per-frame paths never touch getenv. */
+	uint32_t spec_draft_count;
+	uint32_t spec_first_draft_policy;
+	uint32_t spec_audit;
 	uint64_t orphan_completion_count;
 	SparkModelServingRuntimeLimits runtime_limits;
 	SparkQwen36KvBlockTableView block_table;
@@ -1025,7 +1031,7 @@ static SparkStatus SparkQwen36ServingExtendSpeculativeCoverage(
 		for (row=0u; row<submission->row_count; row++)
 			if ( submission->row_lane_indices[row] == lane )
 				position = submission->row_positions[row];
-		end_position = position + (uint64_t)SparkQwen36ServingActiveDraftCount(state->spec_method) + 2u;
+		end_position = position + (uint64_t)state->spec_draft_count + 2u;
 		required = (end_position + SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 		if ( required > state->blocks_per_lane )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -1042,7 +1048,7 @@ static SparkStatus SparkQwen36ServingExtendSpeculativeCoverage(
 		for (row=0u; row<submission->row_count; row++)
 			if ( submission->row_lane_indices[row] == lane )
 				position = submission->row_positions[row];
-		end_position = position + (uint64_t)SparkQwen36ServingActiveDraftCount(state->spec_method) + 2u;
+		end_position = position + (uint64_t)state->spec_draft_count + 2u;
 		status = SparkQwen36ServingCoverLane(state,submission,lane,
 			end_position);
 		if ( status != SPARK_STATUS_OK )
@@ -1515,9 +1521,9 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 	uint32_t verify_tokens[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	SparkStatus status;
 	spec_method = state->spec_method;
-	draft_count = SparkQwen36ServingActiveDraftCount(state->spec_method);
-	first_draft_policy = SparkQwen36ServingSpecFirstDraftPolicy();
-	spec_audit = SparkQwen36ServingSpecAudit();
+	draft_count = state->spec_draft_count;
+	first_draft_policy = state->spec_first_draft_policy;
+	spec_audit = state->spec_audit;
 	pending->spec_active = 1u;
 	pending->spec_first_draft_miss = 0u;
 	memset(pending->spec,0,sizeof(pending->spec));
@@ -1879,7 +1885,7 @@ static void SparkQwen36ServingComplete(
 		SparkQwen36ServingSpecTelemetry telemetry;
 		memset(&telemetry,0,sizeof(telemetry));
 		telemetry.first_draft_miss_count = pending->spec_first_draft_miss;
-		telemetry.first_draft_policy = SparkQwen36ServingSpecFirstDraftPolicy();
+		telemetry.first_draft_policy = state->spec_first_draft_policy;
 		completion.completion_flags |= SPARK_MODEL_SERVING_COMPLETION_FLAG_MODEL_EXTENSION;
 		completion.model_extension_kind = SPARK_QWEN36_SERVING_EXTENSION_KIND;
 		completion.model_extension_bytes = sizeof(telemetry);
@@ -2343,6 +2349,9 @@ static SparkStatus SparkQwen36ServingInitialize(
 	state->execution_stream = configuration->execution_stream;
 	state->shim.execution_stream = configuration->execution_stream;
 	state->spec_method = SparkQwen36ServingSpecMethod();
+	state->spec_draft_count = SparkQwen36ServingActiveDraftCount(state->spec_method);
+	state->spec_first_draft_policy = SparkQwen36ServingSpecFirstDraftPolicy();
+	state->spec_audit = SparkQwen36ServingSpecAudit();
 	/* The method decides whether a DSPARK_DRAFT_AFTER frame is ever built, so
 	 * print it: an environment-stripped daemon silently serves MTP drafts while
 	 * the deploy believes it is serving DFlash2. */
