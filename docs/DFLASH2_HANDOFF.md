@@ -223,8 +223,23 @@ SPEC ROUND (~314ms, 8.87 tps, E=2.47, consecutive-run-stable):
                   the selector codebooks BF16)
   gaps     ~40ms (~700 launches/frame - the graph port)
 
-PRIORITY: GDN chunked scan > graph port > TMA > prefill batching > fp8
-drafter. The GDN kernel: SparkQwen36GdnStepKernel in the .cu serializes
+K=8 IS THE SERVING DEFAULT (found by sweep after the balanced config): the
+drafter's native block is 8 (anchor + 7 mask slots); draft_count=8 uses
+ALL SEVEN mask slots - at k=7 one drafter slot was wasted and the 7th
+draft unusable. Measured O512 (stable across runs): k=5 48.8s/144 rounds,
+k=7 57.5s/183, k=8 45.0-44.5s/119 rounds = E=3.30, 11.4 tps (from 8.87).
+O128 k=8: 22.7s / 5.64 tps.
+
+MEASURED CORRECTIONS (post-MX): the GDN serialized-row slope is only
+~1.5ms/row/frame now (k=3 vs k=7: 32.5 vs 38.5ms GDN/frame) - the chunked
+scan is worth ~10ms/round (+3-4%), NOT the +13% of the pre-MX era.
+cp.async.bulk (TMA-adjacent) measured 115 GB/s with mbarrier completion -
+SLOWER than the 16B cp.async path (180); fenced as a null result for this
+pattern on GB10.
+
+PRIORITY (revised): graph port (~16ms gaps) > GDN scan (~10ms) > fp8
+drafter (+5% w/ risk) > prefill batching. The 16B cp.async 180 GB/s
+ceiling stands as the practical FFN limit. The GDN kernel: SparkQwen36GdnStepKernel in the .cu serializes
 rows in-kernel for state chaining; the A_t = decay*(I - beta k k^T)
 transition is column-independent -> per-row transitions compute in
 parallel, then a tiny serial prefix composes them; checkpoints (slots
