@@ -420,6 +420,25 @@ proposes). Two accompanying module fixes landed:
   client processes). Re-running the same batch against a live daemon now
   reproduces the identical stream (d7f79880 x2).
 
+FRAME GRAPHS: DEFAULT ON (2026-08-21). The spec-graph anomaly is RESOLVED
+- it was the FFN TP-reduce capture invalidation (guarded earlier); the
+"fourth site" lead was stale. Verified on the current build, bit-identical
+streams both paths: spec O512 20.8-20.9s / 77 rounds (vs 21.1 off, +1.5%),
+no-spec 66.3s (vs 67.5, +1.7%). Kill-switch SPARK_QWEN36_FRAME_GRAPH=0.
+The gain is modest for SPEC because verify/drafter/replay frames are
+graph-blocked by design (varying snapshot slots are baked kernel args).
+
+THE HONNO-PREFILL NUMBERS, now via REAL CACHE HITS (not subtraction):
+o512 prompt, request A budget=1 warms the cache, request B borrows 64
+tokens (the reusable cap rounds (prompt-1) down to blocks), prefills the
+64-row suffix, decodes 512: B wall = 26.2 tps INCLUDING its suffix
+prefill; decode-only 28.0 tps - in the 28-32 community band. Output
+bit-identical to the cold run (d7f798801a6e43a6).
+
+Production launcher env: SPECULATE=1, SPEC_METHOD=dflash2, K=8,
+STATE_SELECT=1, BONUS_FOLD=2, BLOCK_KV=0, WINDOW=2048, CTX_CACHE=1,
+FRAME_GRAPH default on.
+
 NOTE for wall comparisons: the reference spec stream on O512 was
 8fb03a865248fb0b/77 rounds; post-hist-reset acceptance shifted to
 d7f798801a6e43a6/88 rounds (deterministic x2, no-spec wall and per-round

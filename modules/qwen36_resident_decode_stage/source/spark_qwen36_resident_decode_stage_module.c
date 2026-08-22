@@ -2946,8 +2946,13 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		 * guarded - Finish, profile-head, both syncs now capture-aware -
 		 * but a fourth remains; enable with SPARK_QWEN36_FRAME_GRAPH=1
 		 * to continue the hunt from the graphs_broken diagnostics) */
+		/* DEFAULT ON (2026-08-21): the spec-graph anomaly is resolved - the
+		 * FFN TP-reduce capture guard fixed the silent replay corruption.
+		 * Verified bit-identical on both paths: spec O512 20.8s / 77 rounds
+		 * (was 21.1), no-spec 66.3s (was 67.5). Kill-switch
+		 * SPARK_QWEN36_FRAME_GRAPH=0. */
 		const char *genv = getenv("SPARK_QWEN36_FRAME_GRAPH");
-		int graph_off = !(genv != 0 && genv[0] == '1');
+		int graph_off = genv != 0 && genv[0] == '0';
 		int replayed = 0;
 		int capturing = 0;
 		cudaGraph_t cap = 0;
