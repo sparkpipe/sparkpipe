@@ -17,14 +17,33 @@
 // Also: SPARK_LM_CTA_THREADS is 256 (8 warps) - the specialization needs
 // an explicit 512-thread launch (the first version's producers never ran).
 //
-// PERF STATUS: 126.4 GB/s at D=2 - parity with the direct kernel (125.6).
-// The sync cost per chunk (2 producer barriers + 1 consumer barrier +
-// spins, x40 chunks) currently eats the structural win; a racy variant
-// measured 155-157, so ~25% is available by: deepening the A ring to 4
-// slots (gate rarely binds), fusing the a_ready publish onto the same
-// group barrier as b_ready, and staging A two chunks ahead. Those are the
-// next steps - mechanical from this verified base.
-// Build: same includes as tools/qwen36_native_staged_bench.cu.
+// PERF LEDGER (all bit-exact unless noted, M=8 K=5120 N=17408):
+//   direct byte-load (production)              125.6 GB/s
+//   this kernel, first verified                 126.4
+//   + lean sync (verified this session, recipe below)  133.0-133.4
+//   + A-quantize moved to the consumer         127.3  (WORSE: serializes mma)
+//   STAGE_ONLY experiments (the decisive data):
+//     producers + inline A-quantize            ~136
+//     pure-B producers (no A work at all)      179.6-182.2
+//   => THE A-QUANTIZE IS ORPHAN WORK (~450ns/chunk): on the producer it
+//   costs 45 GB/s of streaming; on the consumer it serializes the mma
+//   critical path. Neither side has slack. The path to 180+: OVERLAP it -
+//   cp.async the RAW bf16 A input (4KB/chunk) on the producer into a ring
+//   and quantize from shared on the consumer (~150ns), or give A its own
+//   warp group. Pure-B streaming at 180 leaves ~45 GB/s of headroom to
+//   the 266 pure-read ceiling (the remaining gap: the cp.async 16B issue
+//   pattern vs bulk TMA).
+//
+// LEAN-SYNC RECIPE (reconstructs the verified 133.0 from this base):
+//   1. A ring 4 slots, stage chunk c+2 (gate: consumed >= c, folds into
+//      the top spin); prologue stages A[0] AND A[1].
+//   2. Prologue stages B chunks 0..D-2; iteration c restages chunk c+D-1
+//      into slot (c-1)%D (gate: the SAME top spin consumed >= c) and uses
+//      StCpWait<D-2> - one producer barrier per chunk total.
+//   3. b_scale_tile[2][128]: producers stage each next chunk's e8m0 scale
+//      bytes (1 strided byte load per neuron); consumers read scales from
+//      shared instead of SparkLmSm121ScaleB's global __ldg.
+// Build: same includes as tools/qwen36_native_staged_bench.cu
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>

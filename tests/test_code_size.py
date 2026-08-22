@@ -643,7 +643,14 @@ from pathlib import Path
 # ran at 256). Perf at parity (126.4); the leaner-sync path to ~155 is
 # documented in the harness header.
 # 172573 is the exact count.
-CEILING = 172573
+# +19: the warp-specialized perf LEDGER - the decisive
+# STAGE_ONLY experiments (pure-B producers 179.6-182.2 GB/s; +A-inline 136;
+# +consumers 133; A-on-consumer 127 WORSE) proving the A-quantize is orphan
+# work needing overlap, the lean-sync recipe that reconstructs the verified
+# 133.0, and the 180+ path (cp.async raw-A + shared-side quantize or a
+# third warp group; TMA for the last 45 to the 266 pure-read ceiling).
+# 172592 is the exact count.
+CEILING = 172592
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
