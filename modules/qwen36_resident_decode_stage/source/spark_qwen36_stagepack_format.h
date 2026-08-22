@@ -533,7 +533,8 @@ static inline uint64_t SparkQwen36StagePackPayloadBytes(uint32_t weight_format, 
 	uint64_t elements = (uint64_t)rows * (uint64_t)columns;
 	if ( weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
 		return(elements / 2u);
-	if ( weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+	if ( weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
+		weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
 		return(elements);
 	if ( weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 || weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U32 )
 		return(elements * 4u);
@@ -546,5 +547,7 @@ static inline uint64_t SparkQwen36StagePackScaleBytes(uint32_t weight_format, ui
 		return(((uint64_t)rows * (uint64_t)columns) / 32u);
 	if ( weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 		return(((uint64_t)rows / 128u) * ((uint64_t)columns / 128u) * 4u);
+	if ( weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
+		return((uint64_t)rows * ((uint64_t)columns / 128u));
 	return(0u);
 }

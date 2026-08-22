@@ -53,7 +53,13 @@ extern "C" {
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MTP_DRAFT_VIEW_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS 8u
-#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_GDN_SNAPSHOT_SLOTS 8u
+/* Slots 0-7: per-lane harness snapshots (the original contract). Slots 8-15:
+ * the verify's per-row checkpoints (the state-select path; allocated only when
+ * a block-drafter deployment requests 16). */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_GDN_SNAPSHOT_SLOTS 16u
+/* persistent prefix-cache GDN pool slots (owned by adapter prefix entries) */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT 8u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE 8u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION 1u
@@ -75,6 +81,12 @@ extern "C" {
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 3u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16_RANS 4u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 5u
+/* MX serving format: E4M3 payload, one e8m0 (power-of-two) scale per row per
+ * 128-K group - the layout SparkLmSm121ScaleB indexes on the native SM121
+ * block-scaled fp8 MMA path. Produced from the F32B128 pack by
+ * tools/qwen36_stagepack_mx_repack.py (tile fp32 scales rounded up to e8m0,
+ * payloads re-rounded; usage-approved quantization-for-speed trade). */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 6u
 
 /*
  * One linear projection, bf16 or MXFP4 payload with per-group E8M0 scales.
@@ -414,16 +426,34 @@ typedef struct SparkQwen36GdnSnapshotView
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY 0x00000040u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST 0x00000080u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER 0x00000100u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW 0x00000200u
+/* Prefix caching: SNAPSHOT_OUT copies the lane's GDN state + conv tail to
+ * the PERSISTENT prefix pool slot gdn_snapshot->snapshot_index AFTER the
+ * frame's walk (the publish-boundary submission); RESTORE_IN copies from
+ * it BEFORE the walk (a prefix-hit lane's first frame). The pools are
+ * separate from the verify snapshot slots - these survive sequences. */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT 0x00000400u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_RESTORE_IN 0x00000800u
 
-#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION 1u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION 2u
 
-#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE 7u
+/* DFlash2 block: [C0 anchor + 7 mask tokens] = 8 rows, 7 draft ids. */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE 8u
+/* Multi-block (padding) drafting: the verify tail drafts one block PER verify
+ * row, block i anchored on row i's emission at base+i; the host picks block
+ * m (the accept depth) afterwards. draft_token_ids must hold
+ * multi_block_count * (block_size-1) ids. */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_MAX_MULTI_BLOCKS 8u
+/* Persistent draft-side block KV history capacity (rows per layer, k+v):
+ * the drafter attends its own past blocks (HF DynamicCache semantics).
+ * 4096 rows x 1024 ch x 2 (k,v) x 5 layers x 2B = 84MB. */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP 4096u
 /*
- * DSpark draft view. The resident module taps the target's post-layer hidden
- * at target layers {4,16,28,40,52} during the decode, then runs the DFlash
- * block forward and emits block_size draft ids. tap_buffer is DEVICE memory
- * (tap_count x hidden bf16, written by the module, read by the DFlash
- * kernels); draft_token_ids is HOST memory (block_size ids, written D2H).
+ * DSpark/DFlash2 draft view. The resident module taps the target's post-layer
+ * hidden at target layers {5,19,33,47,61} during the decode, then runs the
+ * DFlash2 block forward and emits block_size-1 draft ids. tap_buffer is DEVICE
+ * memory (tap_count x hidden bf16, written by the module, read by the DFlash
+ * kernels); draft_token_ids is HOST memory (block_size-1 ids, written D2H).
  */
 typedef struct SparkQwen36DsparkDraftView
 {
@@ -435,6 +465,7 @@ typedef struct SparkQwen36DsparkDraftView
 	uint64_t base_position;
 	void *tap_buffer;
 	uint32_t *draft_token_ids;
+	uint32_t multi_block_count; /* ABI v2: 0/1 = one block (legacy, anchor = emission row 0); N = N blocks, block i anchored on output row i at base+i */
 } SparkQwen36DsparkDraftView;
 
 typedef SparkStatus (*SparkQwen36HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);

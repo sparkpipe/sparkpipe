@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 DRAFTER = Path(os.environ.get("SPARK_QWEN36_DFLASH2_DRAFTER", "/home/spark3/sparkdata/qwen38-dflash2-drafter"))
-TARGET = Path("/home/spark3/extnvme/models/hf/Qwen/Qwen3.8-27B")
+TARGET = Path(os.environ.get("SPARK_QWEN36_DFLASH2_TARGET", "/home/spark3/extnvme/models/hf/Qwen/Qwen3.8-27B"))
 
 HIDDEN = 5120
 N_LAYERS = 5
@@ -123,20 +123,36 @@ def rope_freq() -> np.ndarray:
 
 
 def apply_rope(x: np.ndarray, pos: np.ndarray) -> np.ndarray:
-    """x: [..., head_dim]; rope over the first ROPE_DIM dims. pos: [...] broadcast."""
+    """x: [..., head_dim]; interleaved rope over the first ROPE_DIM dims
+    (pairs (2i, 2i+1), theta^(-2i/64)) - the empirically winning drafter
+    convention (the neox-128 variant wins p0 but zeroes deep drafts)."""
     freq = rope_freq().astype(np.float64)  # [32]
-    ang = np.asarray(pos, dtype=np.float64)[..., None] * freq[None, :]  # [..., 32]
+    ang = np.asarray(pos, dtype=np.float64)[..., None] * freq[None, :]
     c = np.cos(ang).astype(np.float32)
     s = np.sin(ang).astype(np.float32)
     out = x.copy()
-    # COPY (not view): the in-place stores below would otherwise alias xr back
-    # into the just-written even slots, feeding ROTATED (not original) even
-    # values into the odd computation. The CUDA kernel reads re/im before
-    # overwriting, so this must too.
     xr = out[..., 0:ROPE_DIM:2].copy()
     xi = out[..., 1:ROPE_DIM:2].copy()
     out[..., 0:ROPE_DIM:2] = xr * c - xi * s
     out[..., 1:ROPE_DIM:2] = xr * s + xi * c
+    return out
+
+
+def apply_rope_neox(x: np.ndarray, pos: np.ndarray) -> np.ndarray:
+    """x: [..., head_dim]; NeoX-128 rope over the FULL head (HF rotate_half:
+    dim d pairs with d+64, theta^(-2d/128)) - the trained convention the
+    engine serves (validated on the reference dumps; the interleaved variant
+    above is the pre-unlock mistake, kept for history)."""
+    half = HEAD_DIM // 2
+    freq = 1.0 / (ROPE_THETA ** (np.arange(0, half, dtype=np.float64) / half))
+    ang = np.asarray(pos, dtype=np.float64)[..., None] * freq[None, :]
+    c = np.cos(ang).astype(np.float32)
+    s = np.sin(ang).astype(np.float32)
+    out = x.copy()
+    xr = out[..., :half].copy()
+    xi = out[..., half:HEAD_DIM].copy()
+    out[..., :half] = xr * c - xi * s
+    out[..., half:HEAD_DIM] = xr * s + xi * c
     return out
 
 
@@ -350,6 +366,11 @@ def main() -> int:
     unary = np.take_along_axis(mask_logits, top_ids, axis=-1)  # [7, K]
 
     # 6) selector: hidden_projection(hidden[1:]) -> score edges -> greedy walk
+    # NOTE: the SERVING semantics of the SOTA reference (v1 DFlashSpeculator
+    # sample_draft -> gumbel_sample over full-vocab logits) select the
+    # per-mask-row ARGMAX = top_ids[:, 0]; the codebook walk below is the
+    # dflash2-speculator path, which never loads in `vllm serve`. Kept for
+    # study; the engine uses rank 0 (see module.c draft selection).
     hproj = hidden[1:] @ drafter["candidate_selector.hidden_projection.weight"].T  # [7, R]
     hproj = bf16_to_f32(f32_to_bf16(hproj))
     scores = _score_edges(

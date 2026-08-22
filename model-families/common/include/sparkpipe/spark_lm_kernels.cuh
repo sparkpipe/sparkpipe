@@ -48,6 +48,7 @@
 #define SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 3u
 #define SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 4u
 #define SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 5u
+#define SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 6u
 
 #define SPARK_LM_EXPERT_TILE_POLICY_ALL_WARPS 0u
 #define SPARK_LM_EXPERT_TILE_POLICY_SOFTWARE_PIPELINED 1u
@@ -678,6 +679,40 @@ static __device__ __forceinline__ float SparkLmDotRowFp8F32(const float *shared_
 	return(accumulator);
 }
 
+/* E8M0B128: same E4M3 payload decode as F32B128, but the scale is one e8m0
+ * byte per row per 128-K group (2^(code-127)) - the MX pack layout the
+ * native block-scaled path reads. This is the M=1 GEMV decode: at single
+ * row the pure-streaming scalar beats the warp-specialized MMA (228 vs
+ * 171 GB/s measured - no shared-staging round trip). */
+static __device__ __forceinline__ float SparkLmDotRowFp8E8m0(const float *shared_input, const void *weight_payload, const uint8_t *weight_scale_e8m0, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
+{
+	uint64_t run_row = ((uint64_t)neuron * input_dimension) >> 2u,scale_row = (uint64_t)neuron * (input_dimension >> 7u);
+	uint32_t run_count = input_dimension >> 2u,run,pair,packed,decoded[2];
+	float accumulator = 0.0f,scale_value;
+	float2 values;
+	SparkLmHalf2Bits half2_bits;
+	#pragma unroll 4
+	for (run = lane; run < run_count; run += SPARK_LM_WARP_LANES)
+	{
+		packed = __ldg(((const uint32_t *)weight_payload) + run_row + run);
+		/* e8m0 scale = 2^(code-127); IEEE exponent bits are (e+127)<<23, so
+		 * the scale is __int_as_float(code << 23) EXACTLY - one instruction
+		 * vs the exp2f transcendental this replaced (which cost real rate at
+		 * 5120 K: one exp2f per 4 elements). */
+		scale_value = __uint_as_float((uint32_t)__ldg(weight_scale_e8m0 + scale_row + ((run << 2u) >> 7u)) << 23u);
+		SparkLmDecodeE4m3x4Half2(packed,decoded);
+		#pragma unroll
+		for (pair = 0u; pair < 2u; pair++)
+		{
+			half2_bits.bits = decoded[pair];
+			values = __half22float2(half2_bits.values);
+			accumulator = fmaf(shared_input[(run << 2u) + (pair << 1u)],values.x * scale_value,accumulator);
+			accumulator = fmaf(shared_input[(run << 2u) + (pair << 1u) + 1u],values.y * scale_value,accumulator);
+		}
+	}
+	return(accumulator);
+}
+
 // FP8 weights: one e4m3 byte per element, one E8M0 scale per GROUP_SIZE
 // columns per row - the DeepSeek block-quantized layout.
 template <uint32_t GROUP_SIZE>
@@ -788,6 +823,9 @@ static __device__ __forceinline__ float SparkLmDotLinearRow(
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 		return(SparkLmDotRowFp8F32<128u>(shared_input,weight_payload,
 			(const float *)weight_scale,neuron,input_dimension,lane));
+	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
+		return(SparkLmDotRowFp8E8m0(shared_input,weight_payload,
+			(const uint8_t *)weight_scale,neuron,input_dimension,lane));
 	return(SparkLmDotRowMxfp4<GROUP_SIZE>(shared_input,weight_payload,
 		(const uint8_t *)weight_scale,neuron,input_dimension,lane));
 }
@@ -2489,13 +2527,22 @@ static __device__ __forceinline__ void SparkLmSm121LoadMxf8B(
 	uint32_t lane,
 	uint32_t b[2])
 {
-	uint32_t reg,byte_index,packed;
+	uint32_t reg,byte_index;
 	uint32_t neuron = neuron_base + LmMma8OperandBRow(lane);
 	uint64_t row_base = (uint64_t)neuron * input_dimension;
+	/* MEASURED (2026-08-22, M=8 K=5120 N=17408 micro-bench on GB10): the
+	 * byte-by-byte __ldg assembly is the FASTEST B load at 125.6 GB/s
+	 * effective; a single 4-byte load per register (bit-identical bytes)
+	 * measured 83.7 and __ldg-4B measured 91.7 - the extra outstanding
+	 * byte transactions are memory-level parallelism this kernel NEEDS
+	 * (its per-warp access is 8 quads x 16B at 5120B stride). Do not
+	 * "optimize" this to wider loads without re-measuring; the path past
+	 * ~125 GB/s is a cp.async shared-staged B tile (coalesced wide loads,
+	 * CUTLASS-style), not load-width tweaks. */
 	#pragma unroll
 	for (reg = 0u; reg < 2u; ++reg)
 	{
-		packed = 0u;
+		uint32_t packed = 0u;
 		#pragma unroll
 		for (byte_index = 0u; byte_index < 4u; ++byte_index)
 			packed |= (uint32_t)__ldg(payload_e4m3 + row_base + k_base +
@@ -5000,7 +5047,7 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
  */
 static inline cudaError_t SparkLmValidateLinearContract(uint32_t weight_format, uint32_t row_count, uint32_t input_dimension)
 {
-	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
 	{
 		fprintf(stderr,"spark_lm_kernels: linear dispatch got weight_format %u, which no decoder branch handles\n",weight_format);
 		return(cudaErrorInvalidValue);
@@ -5020,7 +5067,7 @@ static inline cudaError_t SparkLmHostLaunchGroupedScalarLinear(cudaStream_t stre
 	size_t shared_bytes;
 	if ( payload_base == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || source_row_count == 0u || group_count == 0u || input_dimension == 0u || output_dimension == 0u || multiprocessor_count == 0u || payload_group_stride_bytes == 0u || (source_row_map == 0 && source_row_count == 0u) )
 		return(cudaErrorInvalidValue);
-	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
 		return(cudaErrorInvalidValue);
 	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && (scale_base == 0 || scale_group_stride_bytes == 0u) )
 		return(cudaErrorInvalidValue);

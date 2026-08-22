@@ -427,7 +427,265 @@ from pathlib import Path
 # 168668 is the exact count.
 # +9: W2 host wiring part 1 (conv weight struct + loading + side param).
 # 168677 is the exact count.
-CEILING = 168677
+# +111: DFlash2 module integration - selector weight loading + host mirrors
+# replacing the Markov slots, the conv-wrapped block forward (prepare/finish
+# per sublayer), the host top-16 + selector lattice + greedy walk pass, the
+# dflash2 adapter method (block 8), and the fail-loud drafter-pack guard.
+# 168788 is the exact count.
+# +60: env-gated DFlash2 stage-dump bisection (SPARK_QWEN36_DFLASH2_STAGE_DUMP)
+# - the parity-debug surface, removed after forward parity lands.
+# 168848 is the exact count.
+# +107: conv kernel reads the fused [B, sides, taps, groups] delta directly
+# (side param, full row stride - the pointer-offset variant read the wrong
+# rows) + the stage-bisect tool (tools/qwen36_dflash2_bisect.py).
+# 168955 is the exact count.
+# +11: spec acceptance clamped to the shared tokens-per-sequence ABI cap.
+# 168966 is the exact count.
+# +38: env-gated tap-capture/dump diagnostics (Nth-capture dump for
+# spec-vs-no-spec tap parity at matched positions).
+# 169004 is the exact count.
+# +47: verify-tail re-draft - the drafter consumes the verify frame's row-0
+# (anchor) hiddens so taps match the prefill-written committed trajectory
+# (decode-frame taps drift 5-16% over prefill state; acceptance collapsed).
+# 169051 is the exact count.
+# +3: the draft hangs off the replay tail (taps = last committed row),
+# not the verify tail (row 0 = the anchor itself - off-by-one vs training).
+# +19: drafter-run tap dump (SPARK_QWEN36_DFLASH2_RUN_DUMP=N) - the exact
+# taps the drafter consumed, for oracle replay.
+# 169089 is the exact count.
+# +47: cache-based drafter context (upstream precompute_and_store_context_kv):
+# per-position tap history, context-window fc/norm, per-layer staged K/V,
+# k/q prep + cache attention kernels; supersedes the dual-source attention.
+# 169136 is the exact count.
+# +163: pair-atomic rope prep + layer-0 stage dumps + the
+# cache-semantics checker tool (tools/qwen36_dflash2_cache_check.py).
+# 169299 is the exact count.
+# +10: bonus-token convention (anchor = the frame's last input row;
+# context window excludes the bonus position; adapter remap shifts).
+# 169309 is the exact count.
+# +6: serialize the GDN step + conv update rows (the recurrence races
+# across multi-row frames found by the DSV4 session - verify/replay left a
+# wrong GDN state while per-row outputs stayed golden; the tap-drift source).
+# 169315 is the exact count.
+# +4 more for the serialization (grid.y removals).
+# 169319 is the exact count.
+# +37: the replay walks the GDN STEP path (the DSV4 session's
+# silent-divergence fix, unified 2bd2673) - the chunk/step fp32-rounding
+# difference accumulated per round and decayed acceptance.
+# 169356 is the exact count.
+# +46: the drafter attention applies per-head norm+rope in f32 at
+# attention time (the original dual-source rounding path); the bf16
+# pre-prepped q/k flipped round-1 drafts.
+# 169402 is the exact count.
+# +4: tap-store grid.y channel tile.
+# 169406 is the exact count.
+# +5: the tap-layer evidence-trail comment (revert to [5,19,33,47,61]
+# after the reference cross-test).
+# 169411 is the exact count.
+# +24: bonus-token anchor (the frame's last input row) + the shifted
+# adapter remap - fixes the one-step-late drafts on natural text.
+# 169435 is the exact count.
+# +8: Nth-run neighborhood tap dump (context-convention sweep).
+# 169443 is the exact count.
+# +112: layer-0 stage dump Nth-gated to the ctx-dump round (the
+# device-vs-oracle forward divergence bisection on GSM inputs).
+# 169555 is the exact count.
+# +6: anchor-id dump in the ctx-dump round.
+# 169561 is the exact count.
+# +7: anchor-id dump with the ctx round.
+# 169568 is the exact count.
+# +85: state-select verify (the vLLM shape) - per-row GDN state+tail
+# checkpoints in the step kernels, checkpoint-select restore, 1-row replay.
+# 169653 is the exact count.
+# +2: checkpoint alloc moved after pool strides.
+# 169655 is the exact count.
+# -30: checkpoints reuse the GDN snapshot pool (no new buffers).
+# 169625 is the exact count.
+# +1: whitelist the select-restore flag.
+# 169626 is the exact count.
+# +8: the conv-tail per-row checkpoint (full bf16 elements - the
+# first attempt never landed and the restore read stale tails).
+# 169634 is the exact count.
+# +23: SPARK_QWEN36_DFLASH2_STATE_SELECT env gate (default OFF =
+# the validated replay path; the select path stays opt-in WIP).
+# 169657 is the exact count.
+# +2: checkpoint slot-base wiring.
+# 169659 is the exact count.
+# +108: the bonus fold (the vLLM round shape, SPARK_QWEN36_DFLASH2_BONUS_FOLD
+# env gate, default OFF) - the correction tail drafts (anchor = its emission)
+# and the next round's verify row 0 walks the client token in the decode
+# walk's place: 3 full-model frames per round drop to 2. Commit math is
+# shape-aware (m+2 folded vs m+3) and the fold disarms on any plain decode,
+# prefill, or bootstrap so desyncs self-heal.
+# 169767 is the exact count.
+# +19: deep-acceptance debugging instrumentation - the ctx dump's anchor
+# read moves to the frame EMISSION (the token the block actually embeds;
+# the input-row read mislabeled the oracle sweeps), the device's walk
+# output dumps beside the ctxwin taps, and the round diag prints all 8
+# draft/emitted positions (the collapse is position-2+ only).
+# 169786 is the exact count.
+# +154 (net, replacing the racy one-shot dumps): per-run parity captures at
+# the walk-end stream sync - taps slice + the TRUE walk anchor + the device
+# walk output, race-free, consumed round-by-round by the deep-parity scorer
+# to localize the position-2+ acceptance collapse (WIP instrumentation).
+# 169940 is the exact count.
+# +416 (tools incl.): THE conditioning fix, from the live convention sweep on
+# 44 O128 rounds (torch, tools/qwen36_dflash2_conv_sweep.py): the drafter
+# wants HF Qwen3 NeoX rope over the full 128-dim head (not interleaved-64),
+# the context must INCLUDE the walked row's tap g_P at RoPE position base-1 -
+# llama.cpp's seed pair (t_{P+1}, g_P) - and the walk emits own-position
+# drafts, so output 0 is redundant and the verify remap shifts by one
+# (draft_count caps at block-1). Sweep: p0 41%->70%, p1 31%->59%.
+# 170356 is the exact count.
+# +86: sweep-fix tail (adapter remap comment rewrite, module geometry comment,
+# draft-count block-1 cap wording).
+# 170442 is the exact count.
+# +2: parity tool default moves to the fixed geometry.
+# 170444 is the exact count.
+# +92: the ONE-FRAME round (SPARK_QWEN36_DFLASH2_BONUS_FOLD=2) - dspark view
+# ABI v2 gains multi_block_count (block i anchored on verify row i's emission
+# at base+i; the host picks block m post-accept), the module loops the block
+# forward per row, and the adapter runs the round as ONE verify frame (row 0
+# restores the previous accept's GDN checkpoint via GDN_RESTORE_VERIFY_ROW;
+# no correction frame), committing m+1 and arming slot m.
+# 170536 is the exact count.
+# +12: the one-frame bring-up - the continuity rule treats a VERIFY_ROW
+# restore like a full restore (the one-frame verify re-establishes the lane
+# at the branch point), plus bring-up trace prints (tail drafter status).
+# 170550 is the exact count.
+# +18: padding-select - the verify-tail drafter computes the verify's own
+# accept depth (emissions vs the walked rows, one tiny D2H) and drafts ONLY
+# block m; the per-block selector is host-bound so k-1 of k blocks were pure
+# overhead (measured: one-frame at 3 blocks ran 6.55 tok/s vs 8.76 2-frame).
+# 170572 is the exact count.
+# +78: the device-side selector front-end (fused top-16 + hidden projection
+# kernel, exact two-key order and mul+add rounding to bit-match the host
+# scalar path) + a compact ids/scores/hproj copy - removes the ~4MB logits
+# D2H and the ~25-35ms scalar 7x248320 insertion pass per drafter call.
+# 170650 is the exact count.
+# +62: the selector parity oracle (SPARK_QWEN36_DSPARK_SEL_CHECK=1 runs the
+# original scalar host pass beside the device kernel and prints divergences)
+# - it caught the kernel's rank>threads hproj hole (outputs 128..255 read as
+# zero, halving the walk's edge scores: -6% O128). Zero mismatches post-fix.
+# 170714 is the exact count.
+# +128: the vLLM input-parity harness - the reference driver is patched
+# (VLLM_DFLASH2_INPUT_DUMP) to dump its drafter-context hiddens/bonus/
+# positions per round; the harness runs OUR block forward + walk on those
+# exact inputs and scores draft agreement. Finding: perfect agreement on
+# structured stretches, ~50% divergence on varied rounds - the acceptance
+# mountain (their E=4.30 vs our ~1) localizes to the block invocation.
+# 170881 is the exact count.
+# +111: THE acceptance unlock in the engine - the drafter's NeoX-128 rope
+# (HF rotate_half over the full head, re-applied; the trained convention)
+# and the persistent block-KV history (per-layer raw k/v rows of every
+# block the drafter ran, keyed by position, attended after the current
+# block rows; SPARK_QWEN36_DFLASH2_BLOCK_KV=1). Both validated on the
+# reference input dumps: 87% pos-0 draft agreement, curve mirrors theirs.
+# 170992 is the exact count.
+# +199 stale at the handoff commit (506770e): the session's last tooling
+# commits (the fp8/bf16 tapdiff and layer-bisect tools) landed without
+# their ratchet - found when re-running the gate from a clean checkout.
+# +233: the argmax selection unlock - draft selection is the per-mask-row
+# full-vocab ARGMAX (the reference's SERVING path; the codebook walk is
+# dflash2-speculator code that never loads in vllm serve). The engine walk
+# is REPLACED by rank-0 selection (net engine shrink); the new lines are
+# the stage-diff tool (live-reference per-stage tensor comparison) and the
+# parity harness's SELECT_MODE (argmax default, walk modes kept for study).
+# 171424 is the exact count.
+# +213: the MX serving format - FP8_E4M3_E8M0B128 (format 6: E4M3 payload,
+# per-row e8m0 scales per 128-K group, the native SM121 block-scaled fp8 MMA
+# layout). Loader + byte-calcs + the SparkQwen36LaunchLinear dispatch route
+# (native launcher for its shapes, per-row loop for the rest), plus the
+# repack tool (tools/qwen36_stagepack_mx_repack.py - measured LOSSLESS: the
+# pack's tile scales are already powers of two, so the conversion is a pure
+# re-layout with zero quantization cost).
+# 171637 is the exact count.
+# +79: the engine-faithfulness proof - the numpy-oracle replay on the
+# engine's own full-prefix taps (new tool) matches the engine's argmax
+# drafts EXACTLY; the oracle's apply_rope_neox (the stale interleaved
+# variant kept for history); the ctxrun dump widened to the full prefix.
+# 171716 is the exact count.
+# +66: the incremental context cache - position-keyed per-layer K/V plus
+# the fc/normed watermark (the reference's precompute-and-store semantics:
+# only the round's NEW committed rows are projected; the wide fc runs
+# per-row to stay on the lean wide-B1 kernel). Stream-invariant (measured:
+# cache and no-cache produce identical token streams), O512 wall 70.6s ->
+# 67.7s and the window cost flattened (W=2048 == W=256, so the full window
+# rides free with the better acceptance).
+# 171782 is the exact count.
+# +83: the native-linear micro-benchmark tool (tools/qwen36_native_linear_bench.cu)
+# - the measured record for the FFN kernel project: the byte-load variant
+# WINS (125.6 GB/s vs 91.7/83.7 for 4-byte loads - the outstanding byte
+# transactions are the needed memory-level parallelism), K-split does not
+# help, and the path past ~125 GB/s is a cp.async shared-staged B tile.
+# 171865 is the exact count.
+# +225: the staged-B kernel exploration harness (tools/
+# qwen36_native_staged_bench.cu) - a bit-exact cp.async double-buffered
+# variant of the native MMA linear plus the PIPELINE-DEPTH LAW: this kernel
+# family's bandwidth ~= (in-flight bytes/CTA / DRAM latency) x resident
+# CTAs x SMs (16KB/600ns x 4.5 x 10 ~= the measured 113-125 GB/s; pure
+# coalesced reads reach 266+). The deep-ring (4+ stages) is the
+# theory-backed path past it; the depth-2 ring is verified bit-exact at
+# parity with the direct kernel.
+# 172144 is the exact count.
+# +328: the warp-specialized kernel SKETCH (tools/
+# qwen36_native_warp_specialized_bench.cu) - the design that escapes the
+# shared-budget tension (producer warps stream the B ring continuously,
+# consumer warps mma, collective A rendezvous). DEADLOCKS: the named-barrier
+# arrival matrix needs re-derivation (documented in the header). The
+# measured map it builds on lives in qwen36_native_staged_bench.cu.
+# 172472 is the exact count.
+# +101: the warp-specialized kernel VERIFIED BIT-EXACT
+# (139264/139264 at both depths) after fixing three subtle races (per-thread
+# cp.async groups need a group barrier before publish; the 2-slot A ring
+# needs consume-gating; spin gates need group barriers, not __syncwarp) and
+# the 512-thread launch (SPARK_LM_CTA_THREADS is 256 - the producers never
+# ran at 256). Perf at parity (126.4); the leaner-sync path to ~155 is
+# documented in the harness header.
+# 172573 is the exact count.
+# +19: the warp-specialized perf LEDGER - the decisive
+# STAGE_ONLY experiments (pure-B producers 179.6-182.2 GB/s; +A-inline 136;
+# +consumers 133; A-on-consumer 127 WORSE) proving the A-quantize is orphan
+# work needing overlap, the lean-sync recipe that reconstructs the verified
+# 133.0, and the 180+ path (cp.async raw-A + shared-side quantize or a
+# third warp group; TMA for the last 45 to the 266 pure-read ceiling).
+# 172592 is the exact count.
+# +291: the production WS header fixed for deployment - the
+# prologue's b_scale_tile staging restored (the extraction regex had
+# deleted it; garbage scales corrupted everything), the producer's A-input
+# L2 prefetch restored (cold consumer reads cost 50 GB/s), and one-time
+# cudaFuncSetAttribute. Result: 173.9-175.6 GB/s bit-exact on every
+# production shape; O512 9.30 tps (+23%), E=4.94, bit-lossless.
+# 172883 is the exact count.
+# +49: the M=1 GEMV fix and the cross-request stability fix.
+# SparkLmDotRowFp8E8m0 (the scalar decode for the e8m0 pack layout - at M=1
+# the pure-streaming GEMV measures 228 GB/s vs the WS kernel's 171; the
+# no-spec MX regression 103.5s -> 81.4s, parity with F32B128's 80.1s) plus
+# rows 1-4 routing to it; and the block-KV history reset on a backward base
+# (without it, later requests on the same daemon attend the previous
+# sequence's stale rows and acceptance collapses run over run: 57.6 -> 79.7
+# -> 85.2s measured on identical prompts; now stable 57.8/57.5/57.5s).
+# 172936 is the exact count.
+# +114: the frame-graph WIRING (opt-in, SPARK_QWEN36_FRAME_GRAPH=1):
+# per-(rows,prefill) capture in RunFrame, warm-then-capture-then-replay
+# (the K3 pattern), eager uploads outside, capture-aware syncs (Finish +
+# profile-head guarded), capture-fail = loud error (GDN rerun unsafe).
+# Two sync blockers found and fixed; a THIRD invalidating call remains in
+# the layer path (site=ffn cascade) - the hunt continues from
+# graphs_broken diagnostics. Default OFF; production verified unaffected
+# (80.9s no-spec, same stream).
+# 173061 is the exact count.
+# 173409 (2026-08-21): prefix caching - module prefix GDN pool + snapshot/
+# restore transfers + continuity exception for borrow lanes; adapter prefix
+# store (refcounted blocks, LRU entries), publish/borrow glue in the plain
+# frame builder, RELEASE submission path (REQUIRES_RELEASE + residency echo);
+# batch tool sequential_submissions mode (the arrival pattern the cache
+# serves). Verified: borrow bit-identical output, 11.2s saved per repeat.
+# 173452 (2026-08-21): drafter-history rollback hygiene - far-backward
+# vs intra-sequence rollback split (watermark rewind + stale-row filter),
+# lane continuity keyed on request generation (frame scalar[0]) with the
+# base-0 restart rule (same-batch reruns against a live daemon).
+CEILING = 173452
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

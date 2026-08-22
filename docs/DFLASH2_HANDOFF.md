@@ -1,0 +1,706 @@
+# DFlash2 Speculative Decoding — Handoff Document
+
+**PR:** #675, branch `qwen38-dflash2`, HEAD `506770e` + the argmax-selection session
+**Model:** Qwen/Qwen3.8-27B (FP8 target), DFlash2 block-diffusion drafter (5-layer, hidden 5120, block 8)
+**Hardware:** GB10 Spark (sm_121a), single-GPU B1 serving
+**Date:** 2026-08-22 (argmax-selection update)
+
+---
+
+## 0. THE ARGMAX UNLOCK (2026-08-22 session — read this first)
+
+**UPDATE (same session, later commits): the engine is now PROVEN FAITHFUL and the
+acceptance gap is fully attributed.** The numpy-oracle replay on the engine's own
+dumped taps (full-prefix ctxrun dumps + `tools/qwen36_dflash2_engine_faithfulness.py`)
+matches the engine's drafts on 82/84 positions over 12 rounds (97.6%; the two
+misses are isolated single-position near-tie flips, the sub-bf16 numerics class). The
+per-depth streak is FLAT (71/75/71/67/80/66% at k=7 MX =1 - the block-diffusion
+property works; deep runs reach 6/7). The residual gap vs the reference's
+81/74/72/78/86/83 is a uniform ~5-10 points, dominated by pos0 (71 vs 81), and is
+**input-side: our fp8 target's taps/emissions vs the bf16 teacher the drafter was
+distilled against** - not an engine defect. Closing it needs training-side work (a
+drafter fine-tuned on fp8-target activations) or a finer target quantization; it is
+NOT reachable by engine fixes.
+
+Also landed this session: the MX serving format (`385dd0b`) - see §2b.
+
+**Problem A is SOLVED.** The acceptance gap was NOT in the forward — it was the draft
+selection rule. The SOTA reference's SERVING path (vLLM `vllm serve`) selects drafts as
+**per-mask-row full-vocab ARGMAX**: the worker loads `DFlashSpeculator` (v1,
+`dflash/speculator.py`), whose `_generate_draft` calls `sample_draft ->
+gumbel_sample(compute_logits(mask-row hiddens))` — greedy == argmax. The codebook lattice
+walk (`_score_edges` + `_selector_walk_kernel` in `dflash2/speculator.py`) is **dead code in
+the serving path** — that module is never imported by the server (verified: its .pyc only
+regenerated on manual import). The prior session ported the walk from that dead code.
+
+Evidence: on the reference's own dumped inputs, argmax-per-row agrees with the reference's
+drafts at **96–100% per position** (37/39, 37/39, 39/39, 39/39, 39/39, 39/39, 38/39) vs
+87%-at-best for any walk variant (`tools/qwen36_dflash2_vllm_input_parity.py`,
+SELECT_MODE=argmax default).
+
+Engine: the host walk in `SparkQwen36ModuleRunDsparkBlockForward` is replaced by rank-0
+selection (the device top-16 is value-desc/index-asc, so rank 0 IS the argmax).
+
+Measured on O128 (spark2, k=8, `SPARK_QWEN36_DFLASH2_WINDOW=256`): **E 1.10 → 2.36**,
+~3.36 committed/round, bit-exact vs the no-spec baseline (same token stream).
+Reference on the SAME prompt at temperature 0: **E = 2.90** (streak 81/74/72/78/86/83/90).
+Our pos-0 rate ≈ 76–81% (parity); the depth decay is still steeper than theirs — the
+residual is draft quality at depth 2–3, not selection.
+
+Other session findings:
+- The specforge layer-bisect was INVALID: specforge's `Qwen3DFlashDecoderLayer` has no conv
+  (DFlash1); DFlash2 weights loaded `strict=False` — the 0.92–0.98 cosines compared
+  different architectures. Treat the conv path as validated only via the argmax agreement.
+- The reference's context-KV is INCREMENTAL: each round `precompute_and_store_context_kv`
+  processes only the NEW frame rows into the persistent cache (decode-round dumps are 8-row
+  deltas). Our engine rebuilds the full window per round — measured cost is small (W=256 vs
+  2048: +1.5% e2e), so this is NOT the bottleneck people feared.
+- BLOCK_KV stale-history rows barely matter under argmax (1.54 vs 1.60 mean accepted) —
+  the walk-era "unlock" attribution was confounded with the wrong selection rule.
+- **Where the time actually goes** (`SPARK_QWEN36_PROFILE=1`, k=8, per frame ~229ms):
+  **FFN 155ms (68%!)**, GDN 44ms (19%), head 16ms, attn 12ms. The old "28ms/row GDN
+  serialization" attribution was wrong — that slope was FFN-per-row. The FFN runs at ~6%
+  of memory bandwidth; and the engine runs ~1.84 frames per spec round (~128 wasted
+  full-weight frames per 512 tokens — client submission granularity + fold arming;
+  raising `max_prefill_rows_per_submission` makes it WORSE, 5.2 tps — the fold logic
+  depends on 1-row submissions). These two are the next throughput levers, not the GDN.
+
+---
+
+## 0b. The round-time truth (end of the 2026-08-22 session)
+
+The "client RPC ~100ms/round" theory is DEAD: adapter-internal timing shows the
+round (submit-entry to diag) = 357-361ms and the RunSpeculativeFrame call alone
+is 357.4ms of it - host orchestration is ~1ms, IPC/poll ~0.6s TOTAL across a
+512-token run. The wall decomposes exactly: prefill 16s (128 one-row chunks) +
+159 x round + ~0.6s.
+
+Of the ~357ms round: ~277ms is the profiled target phases (ffn/gdn/attn/head -
+the weight-sweep memory wall) and **~80ms is the DRAFTER, which the profiler
+does not wrap** (its linears bypass SparkQwen36ModuleRunFfn): the ctx fc GEMM
+over the window, the per-layer K/V projections, the cache-attn kernel (which
+RE-NORMS and RE-ROPES every context K row per (block-row, head) - 256x
+redundant work by design, for the exact bf16 rounding path), the 5-layer block
+forward, the select, and the padding-select D2H sync.
+
+Window sweep (k=7 MX =1, O512 wall): W=2048: 74.1s | **W=256: 70.6s (best)** |
+W=128: 73.3s (acceptance loss 159->171 rounds beats the round-time gain).
+Serve `SPARK_QWEN36_DFLASH2_WINDOW=256`.
+
+Next-session targets in order:
+
+00. **THE FFN KERNEL PROJECT (scoped by micro-benchmark, 2026-08-22)**: the
+   native MMA linear runs at ~116-126 GB/s effective on the 89MB verify-shape
+   sweep (M=8 K=5120 N=17408, 0.72ms) vs ~245 GB/s D2D ceiling - the prize is
+   ~-79ms/round (FFN 149 -> ~70ms). MEASURED DEAD ENDS (do not re-try):
+   4-byte B loads (83.7 GB/s) and __ldg-4B (91.7) are SLOWER than the
+   byte-by-byte __ldg (125.6) - the outstanding byte transactions ARE the
+   memory-level parallelism this access pattern needs; K-split via grid.z
+   (bit-exact, module-local variant tested) does not help either - the
+   fabric, not occupancy, caps this pattern. THE PATH: a cp.async
+   shared-staged B tile - wide coalesced loads of whole 128B lines into
+   shared, mma reads from shared (CUTLASS-style). Benchmark harness is
+   committed at tools/qwen36_native_linear_bench.cu with the build command;
+   the measurement note lives in SparkLmSm121LoadMxf8B.
+
+0. **CUDA-GRAPH THE VERIFY FRAME** (the master lever - fixes the FFN's launch
+   gaps AND the GDN's per-layer launch overhead at once; the reference's flat
+   round cost IS this). Port the K3 pattern verbatim
+   (spark_k3_resident_decode_stage_runner.cu: graphs keyed by shape, warm run
+   first - shared-memory opt-ins must precede capture - capture on second
+   sighting, cudaStreamCaptureModeRelaxed, graphs_broken fallback). Four
+   capture-blockers in our frame, each with a fix:
+   a. The padding-select's cudaStreamSynchronize + emissions D2H inside
+      RunDsparkBlockForward - DROP it (the adapter already recomputes the
+      identical m from its own post-frame data).
+   b. The host draft walk + dspark_sel_out D2H - move selection ON DEVICE:
+      with argmax selection the walk is rank-0, so a rank-0 gather kernel
+      writes draft_token_ids directly; the adapter's per-round D2H of the
+      drafts moves AFTER the frame (outside the capture).
+   c. The ctx-cache's variable per-row fills (new_count varies, pointers
+      vary) - run the fill OUTSIDE the captured unit (it is ~12 small
+      launches); the per-layer D2D kv assembly is fixed-size/fixed-pointer
+      and captures as-is.
+   d. getenv() reads in the frame body bake their branch into the graph -
+      fine (env is static per run); just do not flip them mid-run.
+   The verify frame is FIXED-SHAPE per k (8 rows at k=7) - one graph per
+   (rows, kind); TP1 has no collectives; the module stream is non-default.
+
+1. Profile the drafter's phases (wrap them like the target's) and attack the
+   ~80ms: incremental ctx-KV cache (the reference precomputes ONLY the new
+   rows per round; we rebuild the window), and/or the prepped-K cache-attn
+   variant (fidelity retest under argmax selection - the old rejection was
+   under the walk).
+2. The GDN scan (44ms/frame).
+3. Tap-stable chunked prefill (the =8 collapse is the multi-row PREFILL
+   attention kernel numerics, not the native MMA).
+
+## 0c. The honest SOTA bar (measured 2026-08-22, same O512 prompt, temperature 0)
+
+| config | wall | decode tps | round | committed/round |
+|---|---|---|---|---|
+| reference CUDA-graphed | 41.5s (12.35 tps) | ~13.3 | ~294ms | 3.90 (E=2.90) |
+| reference eager | 45.0s (11.4 tps) | ~12 | - | 3.90 |
+| **us (k=7 MX cache, =1)** | 67.8s (7.55) | **10.1** | 318ms | 3.22 (E~2.2) |
+
+The historical "18-20 tps SOTA" DOES NOT REPRODUCE at temperature 0 on this
+benchmark; it corresponds to the temperature-1.0 sampled regime (E=4.3,
+rejection-sampling-friendly). We are at 75% of the reference's decode rate.
+
+Our round decomposes: FFN 149ms + GDN 69ms + drafter residual 55ms + head
+28ms + attn 17ms. BOTH big pieces are LATENCY-bound, not bandwidth-bound:
+the FFN takes 125ms at 1 row and 149ms at 8 rows (+19% for 8x the work) -
+the native MMA kernel's serial K-loop with per-step syncthreads and no
+prefetch runs at 114GB/s effective on a 17GB sweep (the hardware can do
+~2.4x that); the GDN's 69ms = 48 layers x ~1.4ms of launch latency +
+serialized-row sync chains for ~30us of math per layer.
+
+ESTIMATE after all identified fixes (kernel efficiency, no training):
+FFN 149->85 (pipelined/split-K), GDN 69->18 (fused + row-parallel phases),
+head 28->14, drafter 55->30 => round ~164ms => **19.6 tps decode at
+CURRENT acceptance** - ABOVE the measured reference bar (13.3). At E parity
+(3.9, training-side): ~23.8. The gap to close is KERNEL EFFICIENCY and
+acceptance, not architecture.
+
+What SOTA does that we don't (isolated):
+1. CUDA graphs - their decode step is one replay; we launch ~700
+   kernels/frame with per-launch gaps (the root of both latency binds).
+2. Chunked-parallel GDN scan (vLLM mamba_ssm) vs our serialized rows.
+3. cuBLAS-grade fp8 GEMMs (latency-hidden) vs our native MMA serial K-loop.
+4. Temperature-1.0 sampled serving with rejection sampling (E=4.3) - a
+   measurement-condition difference; our greedy-verify is bit-lossless.
+5. One-shot batched prompt prefill; ours is 16.6s of 1-row chunks
+   (tap-stability blocker, root-caused to the multi-row PREFILL attention
+   kernel numerics).
+
+## 0d. THE MX-PACK POSTMORTEM (end of session) - read before any MX work
+
+The earlier "MX serving format" measurements were VACUOUS: the repack tool's
+convertibility gate read STALE parsing-loop variables (rows/cols from the
+LAST entry) so it never converted anything - it byte-copied the pack and the
+"lossless 0.0 error" was the absence of conversions. Every "MX" number before
+this correction was actually F32B128. Both tool bugs are now fixed and
+verified: the gate reads e["rows"]/e["cols"], and the header's file_bytes
+(offset 112) is rewritten (the loader bounds-checks offsets against it - the
+first fixed repack left the original 29.9GB size and every tail entry past
+it failed pack validation with a misleading kind/layer error).
+
+The REAL repack (tools/qwen36_stagepack_mx_repack.py, both fixes in) converts
+407 tensors with mean_rel ~2.3% (max_rel 0.98 on near-zero elements - the
+approved quantization trade) to /home/spark2/sparkdata/qwen38-mx2.tp1.qwen36sp
+(format histogram verified: {0:363, 6:407, 1:96}). It LOADS (validator ready
+lines) but the first frames fault with a deferred illegal-memory-access that
+surfaces at the mtp_emit sync - the faulting kernel is upstream in the
+verify-frame path with fmt-6 weights. THAT AUDIT is the next MX step: run
+with the mx2 pack + SPARK_QWEN36_WS_GEMM=0 (library native path) to see if
+the fault is the WS kernel in situ or the fmt-6 path generally, then
+compute-sanitize. Production is RESTORED to the F32B128 pack (verified:
+67.6s / 7.58 tps / stream e3838ba2bf2475d4).
+
+The warp-specialized kernel IS wired into SparkQwen36LaunchLinear (routes
+when a format-6 pack is loaded; kill-switch SPARK_QWEN36_WS_GEMM=0) - it is
+DORMANT on the F32B128 pack. Its isolated (dependency-cold) bench numbers:
+166.9-171.2 GB/s at the verify shapes vs the library kernel's 125.6.
+
+## 0e. THE FLOORS, QUANTIFIED (ff5dcc5 state) - the priority order is fixed by this
+
+NO-SPEC IS AT 93% OF ITS KERNEL-CLASS MEMORY WALL: 127ms/step measured vs
+the ~118ms theoretical (27GB weights / 228 GB/s scalar-GEMV rate). Every
+phase sweeps at rate (FFN 76ms = 192 GEMMs x 0.40ms; GDN 29ms = 5.5GB;
+head 11ms = 2.5GB). There is no no-spec bug left - the floor is reading
+27GB per token. Getting no-spec to ~10 tps REQUIRES TMA-class kernels
+(266 GB/s ceiling -> ~101ms/step), which lifts spec equally.
+
+SPEC ROUND (~314ms, 8.87 tps, E=2.47, consecutive-run-stable):
+  FFN     100ms  (WS kernel, 176 GB/s - TMA takes this to ~65)
+  GDN      69ms  = 24ms projections (at wall) + ~45ms SERIALIZED VERIFY
+                  ROWS in the step kernel (~5ms/row/frame: 48 layers x
+                  ~100us/row). THE CHUNKED SCAN COLLAPSES THE 45ms TO ~5
+                  -> -40ms/round = +13% spec. THE BIGGEST SINGLE LEVER.
+  head     28ms  (at wall)
+  drafter  ~30ms (BF16; fp8 would save ~15ms = +5% WITH acceptance risk -
+                  do it LAST and only with per-channel calibration; keep
+                  the selector codebooks BF16)
+  gaps     ~40ms (~700 launches/frame - the graph port)
+
+K=8 IS THE SERVING DEFAULT (found by sweep after the balanced config): the
+drafter's native block is 8 (anchor + 7 mask slots); draft_count=8 uses
+ALL SEVEN mask slots - at k=7 one drafter slot was wasted and the 7th
+draft unusable. Measured O512 (stable across runs): k=5 48.8s/144 rounds,
+k=7 57.5s/183, k=8 45.0-44.5s/119 rounds = E=3.30, 11.4 tps (from 8.87).
+O128 k=8: 22.7s / 5.64 tps.
+
+MEASURED CORRECTIONS (post-MX): the GDN serialized-row slope is only
+~1.5ms/row/frame now (k=3 vs k=7: 32.5 vs 38.5ms GDN/frame) - the chunked
+scan is worth ~10ms/round (+3-4%), NOT the +13% of the pre-MX era.
+cp.async.bulk (TMA-adjacent) measured 115 GB/s with mbarrier completion -
+SLOWER than the 16B cp.async path (180); fenced as a null result for this
+pattern on GB10.
+
+PRIORITY (revised, quality-lossless only per review direction - no further
+quantization): graph port > GDN scan (~10ms) > prefill batching. The fp8
+drafter and the fp8 lm_head ideas are OFF THE TABLE (quality constraint).
+
+GRAPH-PORT FEASIBILITY (scanned end to end; the design is fixed):
+- ALL frame inputs are DEVICE-BUFFERED and async-uploaded per round:
+  slot->row_lane_indices, row_positions, row_cold, slot_mapping,
+  context_lengths (module.c ~1746-1752). Kernels take POINTERS - replay
+  reads current device contents. NO baked-value blockers in the no-spec
+  decode path.
+- THE CAPTURE BOUNDARY: keep the prologue H2D uploads EAGER (outside the
+  graph - their host sources may be pageable; do them before every
+  cudaGraphLaunch), then capture ONLY the kernel sequence (embedding
+  gather -> 64 layers -> head). The host token-validation loop is pure
+  host code (runs at capture, harmless).
+- KEYING: per (slot, rows) - the slot buffers are per-slot addresses.
+  No-spec + prefill chunks are both rows=1 -> realistically ONE graph
+  per slot. Gate: capture ONLY frames without DSPARK_DRAFT_AFTER (the
+  drafter tail has the padding-select sync; the spec frame stays eager
+  for round 1 - its target-side capture is round 2 once the GDN restore
+  slot moves to device memory).
+- VERIFY before capture: that frame->buffers[0].address (the token-id
+  input the embedding gather reads) is a STABLE device address across
+  submissions - if it moves, stage tokens into a slot-stable buffer in
+  the eager prologue.
+- The K3 pattern to copy verbatim: spark_k3_resident_decode_stage_runner.cu
+  (warm run first - shared-memory opt-ins precede capture - capture on
+  second sighting, cudaStreamCaptureModeRelaxed, graphs_broken fallback).
+
+THE LAUNCH-GAP QUANTIFICATION (the graph-port business case, measured from
+the FFN arithmetic): no-spec FFN in-situ = 76.2ms/frame vs 192 GEMMs x
+0.362ms standalone + ~3ms norms/swiglu = ~72.5ms -> ~4ms of launch gaps in
+FFN alone; GDN shows ~5ms more; total ~8-10ms/frame no-spec (~8%) and
+~16ms/round spec (~9%). ONE graph per frame shape recovers both.
+
+The e8m0 GEMV scale fix (exp2f -> __uint_as_float(code<<23), bit-exact):
+standalone 228 -> 248 GB/s (the pure-read ceiling is 266-276); in-situ the
+gain is mostly absorbed by launch overhead - one more confirmation the
+graph port is the lever. The 16B cp.async 180 GB/s ceiling stands as the
+practical multi-row FFN limit; cp.async.bulk measured 115 (fenced). The GDN kernel: SparkQwen36GdnStepKernel in the .cu serializes
+rows in-kernel for state chaining; the A_t = decay*(I - beta k k^T)
+transition is column-independent -> per-row transitions compute in
+parallel, then a tiny serial prefix composes them; checkpoints (slots
+8+row) must be preserved (see the vLLM mamba_ssm reference).
+
+## 0f. THE FRAME GRAPHS ARE LIVE (all three blockers fixed) - no-spec verified, spec anomaly OPEN
+
+All three capture blockers found and fixed: (1) Finish's completion sync
+(capture-aware; the wrapper syncs after replay), (2) the profile-head spin
+sync, (3) the FFN TP-reduce spin sync (module.c ~835 - it invalidated the
+capture with the sticky error surfacing at the next checked ffn launch;
+found via layer-granular captrace, now env-gated SPARK_QWEN36_CAPTRACE).
+
+RESULTS (SPARK_QWEN36_FRAME_GRAPH=1):
+- NO-SPEC: WORKS - zero errors, stream BIT-IDENTICAL (76ed2695005b9b53),
+  79.6s vs 80.9s. The win is ~1.6% NOT the estimated 8%: the launch
+  overhead was already CPU/GPU-overlapped (memory-bound frames ~120ms of
+  GPU work vs ~4.5ms CPU submit time - the CPU runs ahead). The reference's
+  graphs matter for THEM because their frames are faster, making CPU submit
+  the bottleneck; ours self-hide. Honest correction to the business case.
+- SPEC k=8: ANOMALY - 56.1s / 175 rounds vs the stable 44.4s / 119 with
+  graphs off ON THE SAME BUILD. The no-spec stream is bit-identical, so the
+  frame replays compute correctly; but the spec trajectory (acceptance)
+  shifts when graphs are on. The spec path graphs ONLY the prefill chunks
+  (verify frames gated by the drafter flags). Suspect: an interaction
+  between the capture-round bookkeeping and the drafter's host-side state
+  (ctx-cache watermark / block-KV history) on the spec path - OR the MTP
+  bootstrap decode frame's key. Under investigation; graphs stay default-OFF
+  for spec serving (the spec launcher does not set FRAME_GRAPH).
+
+## 0g. THE PREFILL UNLOCK (the +116% jump) - serve max_prefill_rows_per_submission=8
+
+THE CORRECTED BAR: the community-settings reference (k=8, 0.88 mem,
+flash_attn - the exact recipe) measures 12.0 tps WARM on our O512 prompt.
+Decomposition: theirs = ~2s one-shot prefill + 40.6s decode (12.6 tps
+decode-phase); ours-was = 16.3s of 1-row prefill chunks + 28.1s decode
+(18.2 tps decode-phase - WE WERE ALREADY FASTER IN DECODE). The entire
+wall gap was the un-batched prefill.
+
+THE OLD BLOCKER VANISHED: the =8 prefill numerics break (E collapse to
+1.18) was measured on the pre-MX build where M=8 prefill hit the library
+native path. On the CURRENT build, M=8 prefill runs the WS kernel
+(bit-exact vs native at M=8) - the batched prefill is now CLEAN.
+
+MEASURED (max_prefill_rows_per_submission=8, k=8, W=2048):
+  spec O512   20.9s / 24.53 tps wall  (from 44.4s / 11.38 - +116%)
+  spec O128    9.1s / 14.03 tps wall  (from 22.7s / 5.64)
+  no-spec O512 67.3s / 7.60 tps wall  (from 81.4s / 6.29)
+  E = 5.65 (77 rounds), deterministic across runs (8fb03a865248fb0b x2)
+
+DECODE-ONLY (the metric that matters; the wall numbers above still carry
+~2.7s of prefill - the engine has no prefix cache yet, it is an
+adapter-declared capability ours does not set; isolated by budget=1 vs
+budget=512 wall subtraction: prefill+1step = 2.68s spec / 2.69s no-spec):
+  spec decode     511/(20.90-2.68) = 28.0 tps   <- IN THE 28-32 BAND
+  no-spec decode  511/(67.33-2.69) = 7.90 tps
+  speculation speedup over baseline: 3.55x (the community 2.8x recipe math)
+NOTE: spec-vs-nospec streams diverge at token 21 - the M=1 decode GEMV
+keeps fp32 activations while M>=5 frames (prefill/verify) quantize to
+e4m3. Both deterministic, same fp8 numerics family; the strict
+cross-path bit-match invariant needs the M=1 path to QDQ its activations
+(future work, ~free to add to the GEMV's shared staging).
+
+VS THE 28-32 COMMUNITY CLAIM: that number needs ~85% per-position
+acceptance (code prompts). At our E=5.65 we emit 24.5 tps; on
+high-acceptance prompts the same engine math gives 6-7 tokens/round
+-> 28-32 tps. The architecture is there.
+
+## 0h. PREFIX CACHING - IMPLEMENTED AND VERIFIED (2026-08-21)
+
+The full client protocol is now honored end to end. A second request with
+the same prompt SKIPS ~all prefill: output bit-identical, 11.2s saved
+(39.7s vs 50.9s two-request control, 641-token prompt, 128-token outputs).
+
+THE WIRING (all landed):
+- Descriptor: cache_block_token_count=64 + JIT_KV|PREFETCH|RELEASE caps,
+  slot_reuse=REQUIRES_RELEASE. The deployment JSON must declare
+  kv_logical_page_capacity(256) >= resident_capacity and
+  kv_physical_page_capacity(64) >= max_active - with JIT_KV declared,
+  ValidateRuntimeLimits REJECTS zeros (this was the deployment_validation
+  failure).
+- Adapter prefix store: identity-keyed entries (8 slots, LRU over
+  zero-ref entries), per-block refcounts; publish = entry pins the lane's
+  blocks + one lane-borrow ref (re-publishes SWAP the borrow - each lane
+  holds exactly one entry ref); borrow = seed the lane block table from
+  the entry's pinned blocks + ref each, arm GDN restore. Miss = logged
+  cold recompute (client-side entries can outlive adapter slots).
+- Module prefix GDN pool (8 slots, separate from the verify pool):
+  SNAPSHOT_OUT = D2D lane state+tail -> pool slot after the frame that
+  ENDS exactly at the publish boundary; RESTORE_IN = D2D back before the
+  first layer of the borrow lane's suffix frame. Both fenced from frame
+  graphs (slot is a baked kernel arg).
+- Glue lives in the PLAIN frame builder ONLY (BuildFrame): spec
+  verify/replay frames snapshot GDN state pre-rewind - a publish there
+  would be wrong. The engine's block-span capping guarantees a prefill
+  submission ends exactly at each 64-token boundary, so every publish
+  boundary gets its frame (the o512 prompt publishes at 64 and 128).
+- Lane continuity: a NEW sequence at base_position > 0 is allowed only
+  with PREFIX_RESTORE_IN (ValidateLaneSequenceContinuity); the lane still
+  takes a full state reset (clears the prior sequence's residue) and the
+  restore re-seeds GDN from the pool.
+- RELEASE submissions (the REQUIRES_RELEASE contract): drop every lane's
+  blocks (entries keep their pins), complete with NO token flags and the
+  client's residency token echoed (a zeroed residency = daemon
+  route_failed schema_error - found the hard way). The daemon unbinds the
+  resident slot at the release completion, which is what lets a later
+  request claim the slot mid-position.
+- Decode-time publishes (lanes crossing block edges during decode) are
+  armed by the client but CANNOT be honored: the GDN snapshot must land
+  exactly on the boundary and spec positions jump. They are silently
+  dropped (armed, never fired); the client-side entry then misses
+  adapter-side on a future borrow -> cold recompute. Correct, not
+  maximally cached. (vLLM's mamba radix cache has the same prefill-
+  boundary-only shape.)
+- Batch tool: SPARK_MODEL_BATCH_SEQUENTIAL=1 admits request N+1 only
+  after N terminates - the arrival pattern the cache serves. A co-
+  scheduled group prefills every lane from zero in parallel (round-robin
+  row budget), so same-batch requests do not hit regardless.
+
+VERIFIED (641-token shared prompt, block cap leaves a 1-row suffix):
+  request 2: publish chain 64..640 (LRU evicts cleanly at 8 slots),
+  borrow entry@640 (10 blocks), GDN restore, output sha IDENTICAL to
+  request 1 (8fa62eab5c7bcf38 both). Cold control (different prompts,
+  same shapes): 50.9s vs cached 39.7s.
+PRODUCTION CONFIG UPDATE (2026-08-21, post-prefix-cache sweep): BLOCK_KV=0.
+The sweep at the current build: BKV=0 24.2 tps / 77 rounds / E=5.66 vs
+BKV=1 21.6 / 88 / 4.81 - the drafter attends BETTER without its own past
+block rows appended (out-of-distribution for the trained block-diffuser;
+the reference drafter attends context + current block only). Output is
+IDENTICAL across BKV settings (greedy target disposes; the drafter only
+proposes). Two accompanying module fixes landed:
+- The backward-base ctx-cache reset now distinguishes FAR backward
+  (base+64 < valid_to: a new sequence or prefix borrow -> full reset)
+  from an intra-sequence rejection rollback (rewind the projection
+  watermark to the base, keep the block history, and filter history rows
+  at positions >= the walk base at assembly - they are rejected-walk
+  residue). The old full-reset-on-every-rollback cost E 5.66 -> 4.81.
+- Lane continuity is keyed on (sequence id, request generation via
+  frame->scalar[0]) AND treats a base-0 prefill as a legitimate restart
+  (fresh client runs reuse batch-file ids; generations collide across
+  client processes). Re-running the same batch against a live daemon now
+  reproduces the identical stream (d7f79880 x2).
+
+NOTE for wall comparisons: the reference spec stream on O512 was
+8fb03a865248fb0b/77 rounds; post-hist-reset acceptance shifted to
+d7f798801a6e43a6/88 rounds (deterministic x2, no-spec wall and per-round
+decode time unchanged) - the drafter history fix changed the acceptance
+profile, not the engine.
+
+## 1. Where We Are
+
+| Metric | O128 | GSM | Notes |
+|--------|------|-----|-------|
+| No-spec baseline | ~7.7 | 8.13 | Bit-exact golden hashes |
+| vLLM reference (SOTA) | 18–20 | 18–20 | E=4.30 accepted/round, CUDA-graphed |
+| **Us now (k=5 unlock)** | **10.34** | **6.44** | E=1.10, bit-lossless |
+
+**We are at ~53% of reference on O128, ~35% on GSM.** GSM at k=5 is below the no-spec baseline; the best GSM config is the 2-frame fold at k=3 (8.76 tok/s, commit `acf397c` minus BLOCK_KV).
+
+### Golden hashes (must match after any change)
+- O128 (128 tokens): `02740eb47b01c606`
+- GSM (160 tokens): `dc9bea4ee644b324`
+
+### Current best serving config (spark2)
+```bash
+cd /home/spark2/sparkdata/qwen38.fp8.tp1
+env LD_LIBRARY_PATH=$PWD/lib:$LD_LIBRARY_PATH \
+  SPARK_QWEN36_SERVING_SPECULATE=1 \
+  SPARK_QWEN36_SERVING_SPEC_METHOD=dflash2 \
+  SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT=5 \
+  SPARK_QWEN36_DSPARK_PACK_PATH=/home/spark2/sparkdata/qwen38-dflash2-drafter.qwen36sp \
+  SPARK_QWEN36_DFLASH2_STATE_SELECT=1 \
+  SPARK_QWEN36_DFLASH2_BONUS_FOLD=2 \
+  SPARK_QWEN36_DFLASH2_BLOCK_KV=1 \
+  setsid nohup bin/sparkpipe_model_residentd \
+    --deployment config/model_resident.json --rank-index 0 \
+    > /tmp/qwen38.log 2>&1 < /dev/null &
+```
+
+---
+
+## 2. Architecture (What's Implemented)
+
+### The one-frame round (`BONUS_FOLD=2`)
+Each decode submission becomes ONE verify frame (the vLLM shape):
+- Row 0 walks the previous round's accepted emission `e_m`, restoring GDN checkpoint slot `m` via `GDN_RESTORE_VERIFY_ROW`
+- Rows 1..k walk the selected draft block's tokens
+- The verify tail runs the multi-block padding drafter (`dspark` view ABI v2: `multi_block_count`)
+- **Padding-select:** the module computes the verify's own accept depth (emissions vs walked rows, one tiny D2H) and drafts ONLY block m — drafting all k blocks was pure host-bound overhead (6.55 → 9.15 tok/s)
+- Commits `m+1` tokens, arms restore slot `m` for the next round
+- No correction frame; bootstrap round is 2-frame, round 2 walks from live state
+
+### The persistent draft KV history (`BLOCK_KV=1`)
+Per-layer raw k/v rows of every block the drafter ever ran, keyed by position (re-walked positions overwrite), stored in `dflash_block_hist_k/v` [4096 rows/layer], copied in after the current block rows and attended at their own positions. This is the HF DynamicCache semantics that specforge trains with and vLLM serves with.
+
+### The device-side selector
+Fused kernel: per-slot top-16 (value desc, index asc — the host pass's exact two-key order via sortable-packed atomicMax merge) + the 256-wide hidden projection (strided threads, `__fmul_rn`/`__fadd_rn` to bit-match scalar rounding). Replaces ~4MB logits D2H + ~35ms host pass with one compact ids/scores/hproj copy. `SPARK_QWEN36_DSPARK_SEL_CHECK=1` keeps the original host pass as a live oracle.
+
+### The NeoX-128 rope
+The drafter ropes HF-style `rotate_half` over the FULL 128-dim head (dim d pairs with d+64, frequency θ^(-2d/128)). This is NOT the target's convention (interleaved-64). Implemented in `SparkQwen36DsparkRopeFrequencyNeoX()` + the cache-attn kernel's q and k loops.
+
+---
+
+## 3. The Two Remaining Problems
+
+### Problem A: Acceptance E=1.10 vs reference 4.30 (THE dominant gap)
+
+The reference accepts 4.3 of 7 drafts per round; we accept 1.1. Same weights, same target, same prompts. This is a 4x gap that converts directly to throughput at fixed round cost.
+
+**What's been proven equivalent (don't re-check these):**
+- Input features: our taps = reference aux at cosine 1.000 per layer over the shared GSM prompt (tool: `tools/qwen36_dflash2_fp8_bf16_tapdiff.py`)
+- Forward math: three implementations (CUDA, numpy, torch) agree bit-for-bit; specforge's `DFlashDraftModel` per-layer cosine 0.92–0.98 (tool: `tools/qwen36_dflash2_specforge_bisect.py`)
+- bf16 rounding: fp32 forward gives identical 34/39 agreement (eliminated)
+- Sliding window: all 5 layers are `sliding_attention` with window 2048 — never binds at our prompt lengths
+- Context window size: sweeps at 2048/512/32 all flat
+- Rejected-row masking: flat
+- Rope convention: fixed (NeoX-128), validated on reference dumps
+- Draft KV persistence: implemented, transforms the accept distribution (capped at 3 → runs through 7)
+
+**What remains — the 13% draft divergence:**
+Running our forward on the reference's own dumped inputs, we agree with their drafts at 87% (34/39 at position 0). The 13% disagreement shows:
+- Confident score gaps (+0.08 to +0.79 under our math), NOT near-ties
+- Their token always in our top-16 (candidate generation agrees; scoring differs)
+- Concentrated at position 0 of EARLY rounds (first 2-3 rounds)
+- Persist in fp32 (not a rounding artifact)
+
+**The characterization:** the divergence is in the runtime state at round transitions — something the dump-and-replay harness can't fully replicate. The dumps capture `set_inputs_first_pass`'s parameters, but the reference's actual draft forward may see a slightly different context (e.g., the KV cache state accumulated through CUDA graph replays, or the bonus row's context KV from a different step in the pipeline).
+
+**How to proceed:**
+1. **Direct comparison in-process:** Load specforge's `DFlashDraftModel` AND our forward in the same Python process. Feed both the exact dump inputs AND build the KV cache identically (DynamicCache on their side, our persistent store on ours). Hook per-layer, compare block hidden states row-by-row.
+2. **The cache warm-up hypothesis:** Our engine's block-KV history starts empty at bootstrap. The reference's DynamicCache accumulates from the FIRST draft forward (including the prefill precompute). The first 2-3 rounds see different cache depths. Test: pre-warm our history with the bootstrap round's block rows before the first one-frame verify.
+3. **Round-start position-0 focus:** The disagreement is concentrated there. In the walk, slot 0's predecessor = the anchor (bonus). If the ANCHOR's context differs (e.g., the reference includes the bonus token's own KV row in the context), the entire first slot's edge scoring shifts. Check: does the reference's `precompute_and_store_context_kv` include a row for the bonus position?
+
+### Problem B: GDN verify serialization (~28ms/row)
+
+Our `SparkQwen36GdnStepKernel` serializes verify rows in-kernel (necessary for state chaining). The reference uses a chunked parallel mamba scan. Result: our verify cost scales linearly with k, theirs doesn't.
+
+**Measured:** k=3→k=7 adds ~110ms (4 rows × 28ms) to the round. The reference's CUDA-graphed batched verify costs the same for any k.
+
+**How to proceed:**
+- The GDN recurrence is a linear state-space scan: `s_t = A·s_{t-1} + B·x_t`. For a block of k verify rows, this can be parallelized as a chunked scan (compute per-row transitions in parallel, then prefix-scan the state). vLLM's `mamba_ssm` kernel does exactly this.
+- The kernel lives in `spark_qwen36_resident_decode_stage_cuda.cu`, function `SparkQwen36GdnStepKernel`. The checkpoint writes (per-row state snapshots to slots 8+row) must be preserved.
+- After parallelizing, k=7 becomes viable → E=1.25 × lower round cost → ~12-14 tok/s even at current acceptance.
+
+---
+
+## 4. Build & Deploy (spark2)
+
+```bash
+# 1. rsync sources
+rsync modules/qwen36_resident_decode_stage/source/*.c \
+       modules/qwen36_resident_decode_stage/source/*.cu \
+       modules/qwen36_resident_decode_stage/source/*.cuh \
+       spark2:/home/spark2/sparkpipe/modules/qwen36_resident_decode_stage/source/
+rsync modules/qwen36_resident_decode_stage/include/sparkpipe/*.h \
+       spark2:/home/spark2/sparkpipe/modules/qwen36_resident_decode_stage/include/sparkpipe/
+
+# 2. module (GPU validator — MUST pass)
+ssh spark2 'pgrep -f "[s]parkpipe_model_residentd" | xargs -r kill; cd /home/spark2/sparkpipe && \
+  make -C modules/qwen36_resident_decode_stage -j8 publish \
+  NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a \
+  STAGE_PACK_PATH=/home/spark2/sparkdata/qwen38.fp8.tp1/packs/qwen38-fp8.tp1.qwen36sp \
+  STAGE_COUNT=1 STAGE_INDEX=0 STAGE_FIRST_LAYER=0 STAGE_LAYER_COUNT=64 \
+  TP_DEGREE=1 TP_RANK=0 TP_STANDALONE=1 MTP_LAYER_COUNT=1 \
+  GDN_SNAPSHOT_SLOT_COUNT=16 MAX_ACTIVE_SEQUENCES=8 KV_BLOCK_COUNT=8 \
+  ALLOW_UNQUALIFIED_EXECUTION=1 2>&1 | tail -4'
+
+# 3. adapter (TP1) — rebuild BOTH or you get the stale-adapter bug
+ssh spark2 'cd /home/spark2/sparkpipe && \
+  rm -f build/libqwen36_serving_adapter.so && \
+  make build/libqwen36_serving_adapter.so \
+  CC="cc -DSPARK_QWEN36_SERVING_TP_DEGREE=1u" -j8 2>&1 | grep -c error'
+
+# 4. driver compile + deploy BOTH
+ssh spark2 'cd /home/spark2/sparkpipe && \
+  rm -rf /tmp/qwen38-driver-new && mkdir -p /tmp/qwen38-driver-new && \
+  env SPARK_QWEN36_STAGE_COUNT=1 SPARK_QWEN36_STAGE_INDEX=0 \
+  SPARK_QWEN36_STAGE_FIRST_LAYER=0 SPARK_QWEN36_STAGE_LAYER_COUNT=64 \
+  SPARK_QWEN36_TP_DEGREE=1 SPARK_QWEN36_TP_RANK=0 SPARK_QWEN36_TP_STANDALONE=1 \
+  SPARK_QWEN36_STAGE_MTP=1 SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS=16 \
+  SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES=8 SPARK_QWEN36_STAGE_KV_BLOCKS=8 \
+  SPARK_QWEN36_STAGE_KV_STORE=none SPARK_QWEN36_STAGE_KV_SERVICE=none \
+  SPARK_QWEN36_STAGE_KV_SOCKET=none SPARK_QWEN36_STAGE_KV_POOL_BYTES=0 \
+  SPARK_QWEN36_STAGE_KV_WORKER_COUNT=0 SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION=1 \
+  build/sparkpipe_model_compile \
+  --model examples/model_descriptions/qwen36_resident_decode_stage_firmware.json \
+  --library build/module_library --output /tmp/qwen38-driver-new \
+  --include include --cc-arg -L/usr/local/cuda/lib64 --cc-arg -lcudart --cc-arg -lstdc++ \
+  2>&1 | tail -1 && \
+  cp /tmp/qwen38-driver-new/stages/stage_000/model_driver.so \
+     /home/spark2/sparkdata/qwen38.fp8.tp1/lib/model_driver.so && \
+  cp build/libqwen36_serving_adapter.so \
+     /home/spark2/sparkdata/qwen38.fp8.tp1/lib/model_serving_adapter.so'
+
+# 5. code-size gate (local)
+python3 tests/test_code_size.py  # must pass; ratchet ceiling with justification
+```
+
+### Benchmark
+```bash
+ssh spark2 'cd /home/spark2/sparkdata/qwen38.fp8.tp1 && \
+  export LD_LIBRARY_PATH=$PWD/lib:$LD_LIBRARY_PATH && \
+  bin/sparkpipe_model_batch --deployment config/model_resident.json \
+  --runtime-root $PWD --batch /tmp/o128_batch.json'
+# Parse token events from output (JSON lines); compute tok/s and sha16
+```
+
+---
+
+## 5. The Reference (spark3)
+
+### Server (should still be running)
+```bash
+# Model staged on internal NVMe (4.7x faster than extnvme)
+# /home/spark3/sparkdata/Qwen3.8-27B-local/
+ssh spark3 'pgrep -f "[v]llm-venv/bin/vllm" && echo ALIVE || \
+  cd /home/spark3 && \
+  VLLM_DFLASH2_INPUT_DUMP=40 LIBRARY_PATH=/usr/local/cuda/lib64 \
+  LD_LIBRARY_PATH=/usr/local/cuda/lib64 \
+  nohup /home/spark3/vllm-venv/bin/vllm serve \
+  /home/spark3/sparkdata/Qwen3.8-27B-local \
+  --speculative-config "{\"method\": \"dflash\", \"model\": \"/home/spark3/sparkdata/qwen38-dflash2-drafter\", \"num_speculative_tokens\": 7}" \
+  --max-model-len 2048 --gpu-memory-utilization 0.85 --port 8123 \
+  > /tmp/vllm_dflash.log 2>&1 < /dev/null &'
+```
+
+### Key patched files (in spark3's venv)
+- `vllm/v1/spec_decode/dflash.py` — input dump hook (`set_inputs_first_pass`, env `VLLM_DFLASH2_INPUT_DUMP=N` → `/tmp/vllmin_<n>.pt`)
+- `vllm/model_executor/models/qwen3_dflash.py` — aux dump hook (`combine_hidden_states`, env `VLLM_DFLASH2_AUX_DUMP=1` → `/tmp/vllmaux_0.pt`)
+- `vllm/model_executor/models/qwen3_dflash2.py`, `registry.py`, `spec_decode/__init__.py`, `dflash2/` — the DFlash2 PR files (copied from spark0)
+
+### Dumps on spark3
+- `/tmp/vllmin_0.pt` .. `/tmp/vllmin_39.pt` — 40 rounds of drafter inputs (target_hidden_states, positions, bonus, walked tokens, num_rejected)
+- `/tmp/vllmaux_0.pt` — raw aux features (5-layer concatenation) for the first call
+
+### Measuring acceptance from the reference
+```bash
+curl -s http://spark3:8123/metrics | grep spec_decode
+# vllm:spec_decode_num_accepted_tokens_per_pos_total{position="0".."6"}
+# vllm:spec_decode_num_drafts_total, num_accepted_tokens_total
+```
+
+---
+
+## 6. Tooling (all in-tree on branch `qwen38-dflash2`)
+
+| Tool | Purpose |
+|------|---------|
+| `tools/qwen36_dflash2_vllm_input_parity.py` | Run OUR forward on THEIR dumped inputs; score draft agreement. Env: `KV_CACHE=1`, `ROPE_MODE=neox`, `DTYPE=fp32`. Run on spark3. |
+| `tools/qwen36_dflash2_specforge_bisect.py` | Layer-by-layer compare vs specforge's DFlashDraftModel on the same inputs. Run on spark3. |
+| `tools/qwen36_dflash2_fp8_bf16_tapdiff.py` | Prove our FP8 taps = their BF16 aux features per layer. |
+| `tools/qwen36_dflash2_deep_parity.py` | Replay the numpy reference on one captured dump. |
+| `tools/qwen36_dflash2_round_parity.py` | Statistical scorer across all captured rounds. |
+| `tools/qwen36_dflash2_conv_sweep.py` | 16-combo convention sweep (rope × ctx × block). |
+| `tools/qwen36_dspark_reference.py` | The numpy oracle (bf16-exact forward + selector). |
+
+---
+
+## 7. Root Causes Found & Fixed (Session Ledger)
+
+| # | Bug | Fix | Commit | Impact |
+|---|-----|-----|--------|--------|
+| 1 | Tap-store grid wrote 256/5120 channels | `dim3 grid(rows, (H+255)/256)` | pre-session | taps were 95% unwritten |
+| 2 | Drafter context dropped the walked row's tap (g_P pair) | `window_base = base - window` (include g_P) | `170b109` | p0 41%→70% |
+| 3 | Interleaved-64 rope (wrong convention) | NeoX-128 in kernel | `acf397c` | trained convention |
+| 4 | No draft KV memory (blocks don't attend own history) | `dflash_block_hist_k/v` persistent store | `acf397c` | distribution runs to 7 (was 3) |
+| 5 | Three full-model passes per round | One-frame round + padding-select | `216dd39` | 2→1 passes |
+| 6 | Host selector: 4MB D2H + 35ms scalar pass | Fused device kernel | `f8eac1a` | bit-identical, ~1-2% |
+| 7 | Lane continuity rejected one-frame rounds at branch points | VERIFY_ROW restore re-establishes lane | `216dd39` | fixed chain-break crash |
+| 8 | Selector hproj: threads 128..255 never written (rank 256) | Strided `for (rr = tid; rr < rank; rr += nt)` | `f8eac1a` | -6% O128 → fixed |
+
+---
+
+## 8. Known Gotchas
+
+- **Rebuild BOTH binaries** (driver + adapter) after any change — a stale adapter with a new driver caused the one-frame crash that took hours to diagnose.
+- **Kill residentd before building** — the GPU validator OOMs if the daemon holds memory.
+- **The daemon leaves zombie GPU allocations** after kill -9; run `nvidia-smi --query-compute-apps=pid --format=csv,noheader | xargs kill -9` then wait.
+- **Prompt retokenization:** the reference's /v1/completions endpoint doesn't accept `prompt_token_ids`; decode→re-encode→send→verify `usage.prompt_tokens == expected`. O128 re-encodes to 130 (not 128).
+- **Code-size gate:** `python3 tests/test_code_size.py` — ratchet the ceiling in the same commit with a justification comment.
+- **spark3's extnvme is ~50MB/s effective** — the model is now staged on internal NVMe at `/home/spark3/sparkdata/Qwen3.8-27B-local` (loads in ~3 min vs ~20).
+
+---
+
+## 9. Recommended Next Steps (Priority Order — revised after the argmax unlock)
+
+1. **Kill the double-frames — ROOT CAUSE FOUND (end of the argmax session)**: instrumented
+   the adapter's six `RunFrame`/`RunSpeculativeFrame` call sites (fprintf "frame_tag ..."
+   at lines ~1446 nonfold_draft / ~1536 fold_verify / ~1662+1696 replays / ~1845
+   plain_decode / ~1862 prefill_chunk — instrumentation reverted, re-add for tracing).
+   A 128-token run: **1 nonfold_draft + 128 prefill_chunk + 0 fold_verify**; the 512-run
+   profile decomposes as 152 verify frames + ~128 one-row PREFILL CHUNKS at full weight
+   cost. The committed tokens are re-fed by the client as prefill rows and re-processed
+   through the whole model instead of riding the next folded verify's row 0. Fix the
+   submission-to-lane flow in `spark_qwen36_serving_adapter.c` so every committed token
+   is consumed by the next verify frame (the fold condition `fold_position == position`
+   catches only the LAST row of a submission — with 1-row submissions it should always
+   match; find why ~45% of rounds take the prefill wave instead). Potential ~1.8x.
+
+2. **FFN efficiency**: 155ms/frame at ~6% of the GB10's memory bandwidth for a full
+   27GB weight sweep (floor ≈ 100ms/frame total). Check the fp8 GEMM path's batch
+   efficiency at 9-row frames (kernel selection, split-k, layout). Potential ~1.5–2x.
+
+3. **Depth-2+ draft quality** (E 2.36 vs reference 2.90 at T=0): pos-0 is at parity;
+   the decay steepens after. Compare per-layer hiddens against the live reference via
+   the stage dumps (`tools/qwen36_dflash2_stage_diff.py`; needs the vllmsel dump patch
+   moved into the v1 speculator's `_generate_draft`, since dflash2/speculator.py is
+   dead code — the /tmp/stage_patch.py on spark3 has the working pattern).
+
+4. **GDN scan parallelization**: 44ms/frame (19%) — chunked-scan the verify rows.
+   Worth doing only after 1–2 land.
+
+5. **CUDA graphs** for the verify+drafter frame — the reference's flat-round-cost trick.
+
+At E=2.36 with frames 1.84x→1.0 and FFN at bandwidth: ~15-17 tok/s. At E=2.9: SOTA 18-20.
+
+### Measurement gotchas (this session)
+- The reference at temperature 1.0 SAMPLES drafts (Gumbel) — comparing our greedy chains
+  against temperature-1.0 dumps is meaningless. Drive it with `"temperature": 0`.
+- `sparkpipe_model_batch` rejects a re-run of the same request_id; use fresh ids per run.
+- Daemon relaunch over ssh drops the session (exit 255) — use launcher scripts
+  (`/tmp/launch_spec2.sh <bkv> <k>` with `W=` env on spark2; pre-truncate the log and
+  wait for "model_residentd ready", the stale-log grep race bites).
+- GPU zombies after kill -9 need a wait before relaunch (~5s) or the stage load hangs.
+- Benchmark wall-time includes ~10-20s fixed overhead — use `SPARK_QWEN36_PROFILE=1`
+  frame spins for GPU-side comparisons; the profile counters are CUMULATIVE across the
+  daemon lifetime (relaunch between measurements).
