@@ -2489,13 +2489,22 @@ static __device__ __forceinline__ void SparkLmSm121LoadMxf8B(
 	uint32_t lane,
 	uint32_t b[2])
 {
-	uint32_t reg,byte_index,packed;
+	uint32_t reg,byte_index;
 	uint32_t neuron = neuron_base + LmMma8OperandBRow(lane);
 	uint64_t row_base = (uint64_t)neuron * input_dimension;
+	/* MEASURED (2026-08-22, M=8 K=5120 N=17408 micro-bench on GB10): the
+	 * byte-by-byte __ldg assembly is the FASTEST B load at 125.6 GB/s
+	 * effective; a single 4-byte load per register (bit-identical bytes)
+	 * measured 83.7 and __ldg-4B measured 91.7 - the extra outstanding
+	 * byte transactions are memory-level parallelism this kernel NEEDS
+	 * (its per-warp access is 8 quads x 16B at 5120B stride). Do not
+	 * "optimize" this to wider loads without re-measuring; the path past
+	 * ~125 GB/s is a cp.async shared-staged B tile (coalesced wide loads,
+	 * CUTLASS-style), not load-width tweaks. */
 	#pragma unroll
 	for (reg = 0u; reg < 2u; ++reg)
 	{
-		packed = 0u;
+		uint32_t packed = 0u;
 		#pragma unroll
 		for (byte_index = 0u; byte_index < 4u; ++byte_index)
 			packed |= (uint32_t)__ldg(payload_e4m3 + row_base + k_base +

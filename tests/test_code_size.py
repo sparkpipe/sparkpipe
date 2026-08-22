@@ -613,7 +613,13 @@ from pathlib import Path
 # 67.7s and the window cost flattened (W=2048 == W=256, so the full window
 # rides free with the better acceptance).
 # 171782 is the exact count.
-CEILING = 171782
+# +83: the native-linear micro-benchmark tool (tools/qwen36_native_linear_bench.cu)
+# - the measured record for the FFN kernel project: the byte-load variant
+# WINS (125.6 GB/s vs 91.7/83.7 for 4-byte loads - the outstanding byte
+# transactions are the needed memory-level parallelism), K-split does not
+# help, and the path past ~125 GB/s is a cp.async shared-staged B tile.
+# 171865 is the exact count.
+CEILING = 171865
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -89,6 +89,20 @@ Serve `SPARK_QWEN36_DFLASH2_WINDOW=256`.
 
 Next-session targets in order:
 
+00. **THE FFN KERNEL PROJECT (scoped by micro-benchmark, 2026-08-22)**: the
+   native MMA linear runs at ~116-126 GB/s effective on the 89MB verify-shape
+   sweep (M=8 K=5120 N=17408, 0.72ms) vs ~245 GB/s D2D ceiling - the prize is
+   ~-79ms/round (FFN 149 -> ~70ms). MEASURED DEAD ENDS (do not re-try):
+   4-byte B loads (83.7 GB/s) and __ldg-4B (91.7) are SLOWER than the
+   byte-by-byte __ldg (125.6) - the outstanding byte transactions ARE the
+   memory-level parallelism this access pattern needs; K-split via grid.z
+   (bit-exact, module-local variant tested) does not help either - the
+   fabric, not occupancy, caps this pattern. THE PATH: a cp.async
+   shared-staged B tile - wide coalesced loads of whole 128B lines into
+   shared, mma reads from shared (CUTLASS-style). Benchmark harness is
+   committed at tools/qwen36_native_linear_bench.cu with the build command;
+   the measurement note lives in SparkLmSm121LoadMxf8B.
+
 0. **CUDA-GRAPH THE VERIFY FRAME** (the master lever - fixes the FFN's launch
    gaps AND the GDN's per-layer launch overhead at once; the reference's flat
    round cost IS this). Port the K3 pattern verbatim
