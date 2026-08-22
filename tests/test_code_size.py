@@ -685,7 +685,10 @@ from pathlib import Path
 # vs intra-sequence rollback split (watermark rewind + stale-row filter),
 # lane continuity keyed on request generation (frame scalar[0]) with the
 # base-0 restart rule (same-batch reruns against a live daemon).
-CEILING = 173452
+# 173457 (2026-08-21): frame graphs default ON (kill-switch preserved) -
+# the spec-graph anomaly proved resolved (FFN TP-reduce guard); bit-identical
+# verified on both paths.
+CEILING = 173457
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
