@@ -67,6 +67,36 @@ Other session findings:
 
 ---
 
+## 0b. The round-time truth (end of the 2026-08-22 session)
+
+The "client RPC ~100ms/round" theory is DEAD: adapter-internal timing shows the
+round (submit-entry to diag) = 357-361ms and the RunSpeculativeFrame call alone
+is 357.4ms of it - host orchestration is ~1ms, IPC/poll ~0.6s TOTAL across a
+512-token run. The wall decomposes exactly: prefill 16s (128 one-row chunks) +
+159 x round + ~0.6s.
+
+Of the ~357ms round: ~277ms is the profiled target phases (ffn/gdn/attn/head -
+the weight-sweep memory wall) and **~80ms is the DRAFTER, which the profiler
+does not wrap** (its linears bypass SparkQwen36ModuleRunFfn): the ctx fc GEMM
+over the window, the per-layer K/V projections, the cache-attn kernel (which
+RE-NORMS and RE-ROPES every context K row per (block-row, head) - 256x
+redundant work by design, for the exact bf16 rounding path), the 5-layer block
+forward, the select, and the padding-select D2H sync.
+
+Window sweep (k=7 MX =1, O512 wall): W=2048: 74.1s | **W=256: 70.6s (best)** |
+W=128: 73.3s (acceptance loss 159->171 rounds beats the round-time gain).
+Serve `SPARK_QWEN36_DFLASH2_WINDOW=256`.
+
+Next-session targets in order:
+1. Profile the drafter's phases (wrap them like the target's) and attack the
+   ~80ms: incremental ctx-KV cache (the reference precomputes ONLY the new
+   rows per round; we rebuild the window), and/or the prepped-K cache-attn
+   variant (fidelity retest under argmax selection - the old rejection was
+   under the walk).
+2. The GDN scan (44ms/frame).
+3. Tap-stable chunked prefill (the =8 collapse is the multi-row PREFILL
+   attention kernel numerics, not the native MMA).
+
 ## 1. Where We Are
 
 | Metric | O128 | GSM | Notes |
