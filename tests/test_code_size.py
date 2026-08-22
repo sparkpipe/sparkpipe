@@ -635,7 +635,15 @@ from pathlib import Path
 # arrival matrix needs re-derivation (documented in the header). The
 # measured map it builds on lives in qwen36_native_staged_bench.cu.
 # 172472 is the exact count.
-CEILING = 172472
+# +101: the warp-specialized kernel VERIFIED BIT-EXACT
+# (139264/139264 at both depths) after fixing three subtle races (per-thread
+# cp.async groups need a group barrier before publish; the 2-slot A ring
+# needs consume-gating; spin gates need group barriers, not __syncwarp) and
+# the 512-thread launch (SPARK_LM_CTA_THREADS is 256 - the producers never
+# ran at 256). Perf at parity (126.4); the leaner-sync path to ~155 is
+# documented in the harness header.
+# 172573 is the exact count.
+CEILING = 172573
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
