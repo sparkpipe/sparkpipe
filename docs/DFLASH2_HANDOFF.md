@@ -202,6 +202,34 @@ when a format-6 pack is loaded; kill-switch SPARK_QWEN36_WS_GEMM=0) - it is
 DORMANT on the F32B128 pack. Its isolated (dependency-cold) bench numbers:
 166.9-171.2 GB/s at the verify shapes vs the library kernel's 125.6.
 
+## 0e. THE FLOORS, QUANTIFIED (ff5dcc5 state) - the priority order is fixed by this
+
+NO-SPEC IS AT 93% OF ITS KERNEL-CLASS MEMORY WALL: 127ms/step measured vs
+the ~118ms theoretical (27GB weights / 228 GB/s scalar-GEMV rate). Every
+phase sweeps at rate (FFN 76ms = 192 GEMMs x 0.40ms; GDN 29ms = 5.5GB;
+head 11ms = 2.5GB). There is no no-spec bug left - the floor is reading
+27GB per token. Getting no-spec to ~10 tps REQUIRES TMA-class kernels
+(266 GB/s ceiling -> ~101ms/step), which lifts spec equally.
+
+SPEC ROUND (~314ms, 8.87 tps, E=2.47, consecutive-run-stable):
+  FFN     100ms  (WS kernel, 176 GB/s - TMA takes this to ~65)
+  GDN      69ms  = 24ms projections (at wall) + ~45ms SERIALIZED VERIFY
+                  ROWS in the step kernel (~5ms/row/frame: 48 layers x
+                  ~100us/row). THE CHUNKED SCAN COLLAPSES THE 45ms TO ~5
+                  -> -40ms/round = +13% spec. THE BIGGEST SINGLE LEVER.
+  head     28ms  (at wall)
+  drafter  ~30ms (BF16; fp8 would save ~15ms = +5% WITH acceptance risk -
+                  do it LAST and only with per-channel calibration; keep
+                  the selector codebooks BF16)
+  gaps     ~40ms (~700 launches/frame - the graph port)
+
+PRIORITY: GDN chunked scan > graph port > TMA > prefill batching > fp8
+drafter. The GDN kernel: SparkQwen36GdnStepKernel in the .cu serializes
+rows in-kernel for state chaining; the A_t = decay*(I - beta k k^T)
+transition is column-independent -> per-row transitions compute in
+parallel, then a tiny serial prefix composes them; checkpoints (slots
+8+row) must be preserved (see the vLLM mamba_ssm reference).
+
 ## 1. Where We Are
 
 | Metric | O128 | GSM | Notes |
