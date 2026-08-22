@@ -57,6 +57,8 @@ extern "C" {
  * the verify's per-row checkpoints (the state-select path; allocated only when
  * a block-drafter deployment requests 16). */
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_GDN_SNAPSHOT_SLOTS 16u
+/* persistent prefix-cache GDN pool slots (owned by adapter prefix entries) */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT 8u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE 8u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION 1u
@@ -425,6 +427,13 @@ typedef struct SparkQwen36GdnSnapshotView
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST 0x00000080u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER 0x00000100u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW 0x00000200u
+/* Prefix caching: SNAPSHOT_OUT copies the lane's GDN state + conv tail to
+ * the PERSISTENT prefix pool slot gdn_snapshot->snapshot_index AFTER the
+ * frame's walk (the publish-boundary submission); RESTORE_IN copies from
+ * it BEFORE the walk (a prefix-hit lane's first frame). The pools are
+ * separate from the verify snapshot slots - these survive sequences. */
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT 0x00000400u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_RESTORE_IN 0x00000800u
 
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION 2u
 

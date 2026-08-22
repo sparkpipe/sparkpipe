@@ -345,49 +345,67 @@ acceptance (code prompts). At our E=5.65 we emit 24.5 tps; on
 high-acceptance prompts the same engine math gives 6-7 tokens/round
 -> 28-32 tps. The architecture is there.
 
-## 0h. PREFIX CACHING - the mandatory serving feature, fully scoped (the
-next session's centerpiece; NOT worked around)
+## 0h. PREFIX CACHING - IMPLEMENTED AND VERIFIED (2026-08-21)
 
-The client ALREADY implements the complete protocol (runtime/
-model_batch_engine.c): digest-per-block, SparkPrefixCacheCommitPrompt on
-CACHE_PUBLISH, lookup + suffix-only prefill on a hit. It is OFF because
-OUR ADAPTER NEVER DECLARES IT - the descriptor's cache_block_token_count
-gates everything (adapter contract: >0 requires the JIT_KV capability,
-which requires PREFETCH|DRIVER_OWNS_KV; we declare DRIVER_OWNS_KV only).
+The full client protocol is now honored end to end. A second request with
+the same prompt SKIPS ~all prefill: output bit-identical, 11.2s saved
+(39.7s vs 50.9s two-request control, 641-token prompt, 128-token outputs).
 
-THE CLIENT CONTRACT (mapped end to end):
-- Publish: lanes arrive with SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH +
-  cache_publish_token_count (a multiple of cache_block_token_count, <=
-  context) + a sha256 identity of those tokens. The engine must keep the
-  KV for [0, publish_count) alive and addressable by that identity AFTER
-  the sequence ends.
-- Prefix hit: the client SKIPS prefilling [0, prefix_count) entirely
-  (computed_prompt_token_count == cache_prefix_token_count < prompt; only
-  the suffix is prefilled) and the lane arrives with
-  LANE_FLAG_CACHE_PREFIX + cache_prefix_token_count + identity +
-  sequence_position = prefix_count. The adapter must ATTACH the cached KV
-  for [0, prefix_count) to the new sequence with no compute.
-- cache_block_token_count must divide all counts (ours: KV block = 64).
+THE WIRING (all landed):
+- Descriptor: cache_block_token_count=64 + JIT_KV|PREFETCH|RELEASE caps,
+  slot_reuse=REQUIRES_RELEASE. The deployment JSON must declare
+  kv_logical_page_capacity(256) >= resident_capacity and
+  kv_physical_page_capacity(64) >= max_active - with JIT_KV declared,
+  ValidateRuntimeLimits REJECTS zeros (this was the deployment_validation
+  failure).
+- Adapter prefix store: identity-keyed entries (8 slots, LRU over
+  zero-ref entries), per-block refcounts; publish = entry pins the lane's
+  blocks + one lane-borrow ref (re-publishes SWAP the borrow - each lane
+  holds exactly one entry ref); borrow = seed the lane block table from
+  the entry's pinned blocks + ref each, arm GDN restore. Miss = logged
+  cold recompute (client-side entries can outlive adapter slots).
+- Module prefix GDN pool (8 slots, separate from the verify pool):
+  SNAPSHOT_OUT = D2D lane state+tail -> pool slot after the frame that
+  ENDS exactly at the publish boundary; RESTORE_IN = D2D back before the
+  first layer of the borrow lane's suffix frame. Both fenced from frame
+  graphs (slot is a baked kernel arg).
+- Glue lives in the PLAIN frame builder ONLY (BuildFrame): spec
+  verify/replay frames snapshot GDN state pre-rewind - a publish there
+  would be wrong. The engine's block-span capping guarantees a prefill
+  submission ends exactly at each 64-token boundary, so every publish
+  boundary gets its frame (the o512 prompt publishes at 64 and 128).
+- Lane continuity: a NEW sequence at base_position > 0 is allowed only
+  with PREFIX_RESTORE_IN (ValidateLaneSequenceContinuity); the lane still
+  takes a full state reset (clears the prior sequence's residue) and the
+  restore re-seeds GDN from the pool.
+- RELEASE submissions (the REQUIRES_RELEASE contract): drop every lane's
+  blocks (entries keep their pins), complete with NO token flags and the
+  client's residency token echoed (a zeroed residency = daemon
+  route_failed schema_error - found the hard way). The daemon unbinds the
+  resident slot at the release completion, which is what lets a later
+  request claim the slot mid-position.
+- Decode-time publishes (lanes crossing block edges during decode) are
+  armed by the client but CANNOT be honored: the GDN snapshot must land
+  exactly on the boundary and spec positions jump. They are silently
+  dropped (armed, never fired); the client-side entry then misses
+  adapter-side on a future borrow -> cold recompute. Correct, not
+  maximally cached. (vLLM's mamba radix cache has the same prefill-
+  boundary-only shape.)
+- Batch tool: SPARK_MODEL_BATCH_SEQUENTIAL=1 admits request N+1 only
+  after N terminates - the arrival pattern the cache serves. A co-
+  scheduled group prefills every lane from zero in parallel (round-robin
+  row budget), so same-batch requests do not hit regardless.
 
-WHAT IT TAKES ON OUR SIDE (qwen36 adapter + module):
-1. Descriptor: cache_block_token_count = 64 (KV_BLOCK_TOKENS) +
-   JIT_KV|PREFETCH capability bits (adapter.c line ~362).
-2. KV BLOCK PERSISTENCE: state->kv_cache_bf16 blocks are per-lane via the
-   block table today and lanes reset on reuse (lane_requires_reset,
-   state_cold). Need: an identity-keyed block store with refcounts -
-   publish = pin the lane's blocks under the digest; prefix hit = build
-   the new lane's block table pointing at the pinned blocks.
-3. GDN STATE SNAPSHOTS (the hybrid-model part - why vLLM's recipe has
-   --mamba-full-memory-ratio / mamba-radix-cache): the 48 GDN layers are
-   RECURRENT - a prefix hit needs the GDN state AT the prefix boundary.
-   We already HAVE the snapshot machinery (the verify checkpoint slots +
-   SparkQwen36ModuleGdnSnapshot); extend it to snapshot at publish
-   boundaries and restore on prefix hits.
-4. Adapter glue: honor CACHE_PREFIX (skip, attach, set position) and
-   CACHE_PUBLISH (pin + store identity) in the lane lifecycle.
-DO NOT declare the capability before 2-4 work - a prefix hit without real
-persistence silently reads stale KV. The budget=1-vs-512 subtraction used
-for the decode-only numbers above is a measurement tool, not a substitute.
+VERIFIED (641-token shared prompt, block cap leaves a 1-row suffix):
+  request 2: publish chain 64..640 (LRU evicts cleanly at 8 slots),
+  borrow entry@640 (10 blocks), GDN restore, output sha IDENTICAL to
+  request 1 (8fa62eab5c7bcf38 both). Cold control (different prompts,
+  same shapes): 50.9s vs cached 39.7s.
+NOTE for wall comparisons: the reference spec stream on O512 was
+8fb03a865248fb0b/77 rounds; post-hist-reset acceptance shifted to
+d7f798801a6e43a6/88 rounds (deterministic x2, no-spec wall and per-round
+decode time unchanged) - the drafter history fix changed the acceptance
+profile, not the engine.
 
 ## 1. Where We Are
 

@@ -24,6 +24,7 @@ typedef struct SparkModelBatchFile
 {
 	SparkModelBatchEngineConfiguration engine;
 	uint32_t maximum_new_submissions_per_progress;
+	uint32_t sequential_submissions;
 	uint32_t request_count;
 	SparkModelBatchFileRequest *requests;
 } SparkModelBatchFile;
@@ -474,13 +475,15 @@ static int32_t SparkModelBatchWriteReady(
 
 static SparkStatus SparkModelBatchSubmitAll(
 	SparkModelBatchEngine *engine,
-	const SparkModelBatchFile *file)
+	const SparkModelBatchFile *file,
+	uint32_t first,
+	uint32_t count)
 {
 	SparkModelBatchRequestHandle handle;
 	uint32_t index;
 	SparkStatus status;
 	status = SPARK_STATUS_OK;
-	for (index=0u; status==SPARK_STATUS_OK && index<file->request_count; index++)
+	for (index=first; status==SPARK_STATUS_OK && index<first+count; index++)
 		status = SparkModelBatchEngineSubmit(engine,&file->requests[index].request,&handle);
 	return(status);
 }
@@ -514,10 +517,28 @@ static SparkStatus SparkModelBatchRun(
 	SparkModelResidentClientPollDescriptor descriptors[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
 	SparkModelBatchEngineView view;
 	uint32_t descriptor_count;
+	uint32_t submitted;
 	SparkStatus status;
 	status = SPARK_STATUS_OK;
+	submitted = file->sequential_submissions != 0u ? 0u : file->request_count;
 	while ( status == SPARK_STATUS_OK && output->terminal_count<file->request_count && output->write_failed == 0u )
 	{
+		/* sequential mode: request N+1 admits only after request N reached
+		 * terminal - the production arrival pattern the prefix cache serves
+		 * (a co-scheduled group prefills every lane from zero in parallel) */
+		while ( file->sequential_submissions != 0u && submitted < file->request_count && output->terminal_count == submitted )
+		{
+			status = SparkModelBatchSubmitAll(engine,file,submitted,1u);
+			if ( status != SPARK_STATUS_OK )
+				break;
+			submitted++;
+		}
+		if ( status != SPARK_STATUS_OK )
+			break;
+		if ( file->sequential_submissions != 0u && submitted == file->request_count )
+			status = SparkModelBatchEngineCloseAdmission(engine);
+		if ( status != SPARK_STATUS_OK )
+			break;
 		SparkModelBatchFlushOutput(output);
 		status = SparkModelBatchEngineProgress(engine,file->maximum_new_submissions_per_progress);
 		if ( status == SPARK_STATUS_OK )
@@ -586,6 +607,8 @@ int main(int argc,char **argv)
 	status = SparkModelResidentDeploymentLoad(deployment_path,&deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchLoadFile(batch_path,&file);
+	if ( status == SPARK_STATUS_OK && getenv("SPARK_MODEL_BATCH_SEQUENTIAL") != 0 )
+		file.sequential_submissions = 1u;
 	if ( status == SPARK_STATUS_OK && profile_stages != 0u )
 		status = SparkModelBatchInitializeStageProfile(&file,deployment.node_count,&output);
 	if ( status == SPARK_STATUS_OK )
@@ -607,8 +630,8 @@ int main(int argc,char **argv)
 	if ( status == SPARK_STATUS_OK && (descriptor == 0 || SparkModelBatchWriteReady(descriptor) < 0) )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelBatchSubmitAll(engine,&file);
-	if ( status == SPARK_STATUS_OK )
+		status = SparkModelBatchSubmitAll(engine,&file,0u,file.sequential_submissions != 0u ? 0u : file.request_count);
+	if ( status == SPARK_STATUS_OK && file.sequential_submissions == 0u )
 		status = SparkModelBatchEngineCloseAdmission(engine);
 	if ( status == SPARK_STATUS_OK )
 		(void)fcntl(STDOUT_FILENO,F_SETFL,fcntl(STDOUT_FILENO,F_GETFL,0) | O_NONBLOCK);

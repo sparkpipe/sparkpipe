@@ -675,7 +675,13 @@ from pathlib import Path
 # graphs_broken diagnostics. Default OFF; production verified unaffected
 # (80.9s no-spec, same stream).
 # 173061 is the exact count.
-CEILING = 173061
+# 173409 (2026-08-21): prefix caching - module prefix GDN pool + snapshot/
+# restore transfers + continuity exception for borrow lanes; adapter prefix
+# store (refcounted blocks, LRU entries), publish/borrow glue in the plain
+# frame builder, RELEASE submission path (REQUIRES_RELEASE + residency echo);
+# batch tool sequential_submissions mode (the arrival pattern the cache
+# serves). Verified: borrow bit-identical output, 11.2s saved per repeat.
+CEILING = 173409
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

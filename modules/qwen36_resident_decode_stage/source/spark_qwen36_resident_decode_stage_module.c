@@ -187,6 +187,8 @@ typedef struct SparkQwen36ModuleState
 	uint32_t gdn_snapshot_slot_count;
 	float *snapshot_state_f32;
 	void *snapshot_tail_bf16;
+	float *prefix_state_f32;
+	void *prefix_tail_bf16;
 	uint32_t gdn_ordinal_by_layer[SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	uint32_t attn_ordinal_by_layer[SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	uint32_t layer_seen_bits[SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT];
@@ -881,6 +883,14 @@ static SparkStatus SparkQwen36ModuleAllocatePools(SparkQwen36ModuleState *state)
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES * state->gdn_snapshot_slot_count,&state->snapshot_tail_bf16);
 	}
+	/* persistent prefix-cache GDN pool: 8 slots, same strides as the verify
+	 * pool but owned by the adapter's prefix entries (survives sequences) */
+	if ( status == SPARK_STATUS_OK && state->gdn_layer_count != 0u )
+	{
+		status = SparkStageModuleDeviceAllocate(&state->ledger,state->gdn_pool.state_lane_stride_elements * sizeof(float) * SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT,(void **)&state->prefix_state_f32);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES * SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT,&state->prefix_tail_bf16);
+	}
 	return(status);
 }
 
@@ -1366,6 +1376,8 @@ static SparkStatus SparkQwen36ModuleValidateSpeculation(
     const SparkQwen36GdnSnapshotView *snapshot;
     const SparkQwen36DecodeBatchView *decode_batch;
     uint32_t drafted;
+    uint32_t prefix_restore;
+    uint32_t prefix_snapshot;
     uint32_t restore;
     uint32_t verify;
     uint32_t row;
@@ -1377,12 +1389,19 @@ static SparkStatus SparkQwen36ModuleValidateSpeculation(
     decode_batch = context->decode_batch;
     verify = context->flags &
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY;
+    /* prefix-cache transfers carry a snapshot view too: restore-in borrows
+     * from the persistent prefix pool, snapshot-out publishes into it */
+    prefix_restore = context->flags &
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_RESTORE_IN;
+    prefix_snapshot = context->flags &
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT;
     restore = context->flags &
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST;
     drafted = context->flags &
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER;
 
-    if (verify != 0u || restore != 0u)
+    if (verify != 0u || restore != 0u || prefix_restore != 0u ||
+        prefix_snapshot != 0u)
     {
         if (prefill == 0 || (verify != 0u && restore != 0u) ||
             (verify != 0u && prefill->base_position == 0u) ||
@@ -1392,12 +1411,16 @@ static SparkStatus SparkQwen36ModuleValidateSpeculation(
             snapshot->descriptor_bytes < (uint32_t)sizeof(*snapshot) ||
             snapshot->reserved0 != 0u ||
             (state->gdn_layer_count != 0u &&
-             (state->gdn_snapshot_slot_count == 0u ||
-              snapshot->snapshot_index >= state->gdn_snapshot_slot_count)))
-        {
-            return SPARK_STATUS_INVALID_ARGUMENT;
-        }
+             ((prefix_restore != 0u || prefix_snapshot != 0u)
+                  ? (snapshot->snapshot_index >=
+                     SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT)
+                  : (state->gdn_snapshot_slot_count == 0u ||
+                     snapshot->snapshot_index >=
+                         state->gdn_snapshot_slot_count))))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
+}
     else if (snapshot != 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1468,6 +1491,8 @@ static SparkStatus SparkQwen36ModuleValidateFrame(
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY |
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST |
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW |
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT |
+        SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_RESTORE_IN |
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER;
     const SparkQwen36ResidentDecodeStageFrameContext *context;
     const SparkQwen36KvBlockTableView *block_table;
@@ -1819,6 +1844,28 @@ static SparkStatus SparkQwen36ModuleGdnSnapshot(SparkQwen36ModuleState *state, S
 	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"gdn_snapshot"));
 }
 
+/* Prefix-cache GDN transfer: lane state <-> a PERSISTENT pool slot (the
+ * adapter's prefix entries own these slots; the verify snapshot slots are
+ * transient per-round). restore=0 snapshots OUT (after the publish-
+ * boundary walk), restore=1 restores IN (before a prefix-hit lane's walk). */
+static SparkStatus SparkQwen36ModuleGdnPrefixTransfer(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, uint32_t lane, uint32_t prefix_slot, uint32_t restore)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
+	uint64_t tail_bytes = state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
+	float *lane_state = state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements);
+	float *slot_state = state->prefix_state_f32 + ((uint64_t)prefix_slot * state->gdn_pool.state_lane_stride_elements);
+	uint8_t *lane_tail = (uint8_t *)state->gdn_pool.conv_tail_bf16 + ((uint64_t)lane * tail_bytes);
+	uint8_t *slot_tail = (uint8_t *)state->prefix_tail_bf16 + ((uint64_t)prefix_slot * tail_bytes);
+	cudaError_t error;
+	if ( state->gdn_layer_count == 0u || state->prefix_state_f32 == 0 || state->prefix_tail_bf16 == 0 || prefix_slot >= SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	error = cudaMemcpyAsync(restore != 0u ? lane_state : slot_state,restore != 0u ? slot_state : lane_state,state_bytes,cudaMemcpyDeviceToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(restore != 0u ? lane_tail : slot_tail,restore != 0u ? slot_tail : lane_tail,tail_bytes,cudaMemcpyDeviceToDevice,stream);
+	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"gdn_prefix_transfer"));
+}
+
 static SparkStatus SparkQwen36ModuleBeginHidden(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, SparkQwen36ResidentDecodeStageFrameContext *context, uint32_t rows)
 {
 	SparkStatus status;
@@ -2077,6 +2124,7 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
     {
         uint64_t current_sequence_id;
         uint64_t expected_position;
+        uint32_t prefix_restore_in;
         uint32_t restore_first;
 
         current_sequence_id = state->lane_sequence_ids[prefill->lane_index];
@@ -2090,6 +2138,15 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
              SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW)) != 0u
             ? 1u
             : 0u;
+        /* A prefix-cache borrow legitimately lands a NEW sequence mid-lane:
+         * the restore-in transfer re-seeds the lane's GDN state from the
+         * published prefix snapshot and the KV blocks come pinned from the
+         * prefix store, so the position-zero rule does not apply. The lane
+         * reset below still clears the previous sequence's residue. */
+        prefix_restore_in = (context->flags &
+            SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_RESTORE_IN) != 0u
+            ? 1u
+            : 0u;
         if (current_sequence_id == prefill->sequence_id)
         {
             if ((restore_first == 0u && prefill->base_position != expected_position) ||
@@ -2100,7 +2157,7 @@ static SparkStatus SparkQwen36ModuleValidateLaneSequenceContinuity(
         }
         else
         {
-            if (prefill->base_position != 0u)
+            if (prefill->base_position != 0u && prefix_restore_in == 0u)
             {
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
@@ -2824,8 +2881,14 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		/* SELECT the verify's row-N checkpoint (the vLLM shape): the step
 		 * kernels wrote slots 8+row during the verify walk; this restores
 		 * the accepted-prefix state+tail, replacing the re-walk. */
-		status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,SPARK_QWEN36_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE + context->gdn_snapshot->snapshot_index,1u);
+			status = SparkQwen36ModuleGdnSnapshot(state,slot,prefill->lane_index,SPARK_QWEN36_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE + context->gdn_snapshot->snapshot_index,1u);
 	}
+	/* prefix-cache borrow: the lane resumes from a published GDN state
+	 * (the vLLM mamba-radix shape - hybrid models snapshot recurrent state
+	 * at block boundaries). Must land BEFORE the first layer touches the
+	 * lane's GDN pool storage. */
+	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_RESTORE_IN) != 0u && context->gdn_snapshot != 0 )
+		status = SparkQwen36ModuleGdnPrefixTransfer(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,1u);
 	/* FRAME GRAPH (the launch-gap lever: ~8-10ms/frame no-spec measured).
 	 * Eligible = the plain path (no drafter tail - it has the
 	 * padding-select sync; no GDN restore - the snapshot slot varies per
@@ -2838,7 +2901,7 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	 * graphs_broken and this frame returns an error (the GDN state
 	 * mutation makes a direct RERUN unsafe). */
 	{
-		const uint32_t graph_blocked = (context->flags & (SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY)) != 0u;
+			const uint32_t graph_blocked = (context->flags & (SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_RESTORE_IN | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY)) != 0u;
 		/* OPT-IN (WIP): the capture round still invalidates from an
 		 * unchecked call in the layer path (three sync blockers found and
 		 * guarded - Finish, profile-head, both syncs now capture-aware -
@@ -2889,17 +2952,11 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 			slot->capturing = capturing != 0 ? 1u : 0u;
 			if ( status == SPARK_STATUS_OK )
 				status = SparkQwen36ModuleBeginHidden(state,slot,context,rows);
-			if ( capturing != 0 && getenv("SPARK_QWEN36_CAPTRACE") != 0 )
-				fprintf(stderr,"captrace: begin_hidden status=%d\n",(int)status);
 			{
 				uint32_t layer;
 				for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
 			{
-				if ( capturing != 0 && getenv("SPARK_QWEN36_CAPTRACE") != 0 )
-				{
-					fprintf(stderr,"captrace: pre-layer %u\n",layer);
-				}
-					status = SparkQwen36ModuleRunLayer(state,slot,context->kv_block_table,prefill,layer,rows);
+						status = SparkQwen36ModuleRunLayer(state,slot,context->kv_block_table,prefill,layer,rows);
 					/* Per-position tap capture on EVERY armed frame (prefill, decode,
 					 * verify, replay): the drafter's context KV is built from the target
 					 * hidden states at every committed position (upstream
@@ -2913,6 +2970,8 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 			}
 			if ( status == SPARK_STATUS_OK )
 				status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
+			if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT) != 0u && context->gdn_snapshot != 0 )
+				status = SparkQwen36ModuleGdnPrefixTransfer(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
 			if ( capturing != 0 )
 			{
 				if ( cudaStreamEndCapture((cudaStream_t)slot->cuda_stream,&cap) == cudaSuccess && cap != 0 && status == SPARK_STATUS_OK )
