@@ -17,11 +17,26 @@
 // Also: SPARK_LM_CTA_THREADS is 256 (8 warps) - the specialization needs
 // an explicit 512-thread launch (the first version's producers never ran).
 //
+// RESULT (end of session): **D=4 BIT-EXACT at 176.8-178.1 GB/s** - +41%
+// over the production kernel (125.6), via the A-OVERLAP: producers stage
+// the raw bf16 A (4KB/chunk) alongside B as ONE cp.async commit group
+// (pure streaming); consumers quantize A from global input between their
+// two sub-barriers (~450ns off the producer path - the earlier
+// producer-inline-A cost 45 GB/s). StCpWait<0> at chunk 0 (the prologue
+// group holds B[0]), wait<1> after (the needed group is second-to-last).
+// KNOWN RESIDUAL RACES (do not ship these configs): D=2 corrupts ~3% (a
+// depth-2-specific gate; D=4 is clean); the RAW_A shared-ring read path
+// (RAW_A_FROM_GLOBAL undefined) corrupts - the consumer-side quantize
+// reads the staged ring before a fence lands; until fixed, the verified
+// config quantizes from GLOBAL (the cost is inside the consumer's
+// measured 176.8).
 // PERF LEDGER (all bit-exact unless noted, M=8 K=5120 N=17408):
 //   direct byte-load (production)              125.6 GB/s
 //   this kernel, first verified                 126.4
 //   + lean sync (verified this session, recipe below)  133.0-133.4
 //   + A-quantize moved to the consumer         127.3  (WORSE: serializes mma)
+   A-OVERLAP, D=4, quantize-from-global       176.8  VERIFIED BIT-EXACT
+   A-OVERLAP, D=2 (racy)                      176.3  ~3% corrupt
 //   STAGE_ONLY experiments (the decisive data):
 //     producers + inline A-quantize            ~136
 //     pure-B producers (no A work at all)      179.6-182.2
@@ -92,15 +107,16 @@ static __device__ __forceinline__ void StCpWait(void)
 	asm volatile("cp.async.wait_group %0;\n" :: "n"(Groups));
 }
 
-/* Warp-specialized, NO cross-group barriers: warps 8-15 PRODUCE (the B ring
- * via cp.async AND the A ring via an 8-warp, 2-rows-per-warp bit-exact
- * variant of StageMxf8's warp-per-row quantizer); warps 0-7 CONSUME (mma).
- * Handshake = monotone shared counters (b_ready, a_ready, b_consumed) with
- * block-scope fences; the consumer group syncs itself with a sub-barrier
- * (bar.sync 0, 256) that producers never touch. Deadlock-free by
- * construction: every counter is published unconditionally per chunk. */
+/* Warp-specialized with the A-OVERLAP: producers stage BOTH the B ring and
+ * the RAW bf16 A input (4KB/chunk) via cp.async - one commit group per
+ * iteration, pure streaming (the inline quantize measured 45 GB/s of
+ * streaming loss; consumer-side global quantize serialized the mma).
+ * Consumers quantize A from SHARED (~150ns) between their two sub-barriers.
+ * Handshake: one counter (b_ready = "B[c] and rawA[c] landed"), one top
+ * spin (consumed >= c) gating both ring slots. The wait is StCpWait<1>
+ * regardless of D: one commit per iteration, all-but-the-last complete. */
 template <uint32_t D>
-static __global__ __launch_bounds__(512u, 1)   /* 2x the library CTA: 8 consumer + 8 producer warps */
+static __global__ __launch_bounds__(512u, 1)
 void SparkQwen36WarpSpecializedKernel(
 	const uint8_t *weight_payload,
 	const uint8_t *weight_scale_e8m0,
@@ -113,10 +129,11 @@ void SparkQwen36WarpSpecializedKernel(
 	uint32_t output_dimension)
 {
 	extern __shared__ uint8_t staged_b[];            /* [D][128][144] */
-	__shared__ uint8_t a_e4m3[2u * 16u * ST_CHUNK_K];
-	__shared__ uint8_t a_scale[2u * 16u * (ST_CHUNK_K / 32u)];
+	__shared__ uint8_t raw_a[2u * 8u * ST_CHUNK_K * 2u];   /* bf16, real rows only */
+	__shared__ uint8_t a_e4m3[16u * ST_CHUNK_K];
+	__shared__ uint8_t a_scale[16u * (ST_CHUNK_K / 32u)];
+	__shared__ uint8_t b_scale_tile[2u * ST_TILE_N];
 	__shared__ volatile uint32_t b_ready;
-	__shared__ volatile uint32_t a_ready;
 	__shared__ volatile uint32_t b_consumed;
 	const uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
 	const uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
@@ -128,20 +145,22 @@ void SparkQwen36WarpSpecializedKernel(
 	if ( threadIdx.x == 0u )
 	{
 		b_ready = 0u;
-		a_ready = 0u;
 		b_consumed = 0u;
 	}
+	/* zero the padded A rows once (rows 8..15 read by LoadMxf8A forever) */
+	for ( uint32_t z = threadIdx.x; z < 16u * ST_CHUNK_K; z += 512u )
+		a_e4m3[z] = 0u;
+	for ( uint32_t z = threadIdx.x; z < 16u * (ST_CHUNK_K / 32u); z += 512u )
+		a_scale[z] = 127u;
 	__syncthreads();
 
 	if ( warp >= 8u )
 	{
 		/* ---------------- producers ---------------- */
-		const uint32_t pw = warp - 8u;                 /* 0..7 */
-		const uint32_t ptid = pw * SPARK_LM_WARP_LANES + lane;
+		const uint32_t ptid = (warp - 8u) * SPARK_LM_WARP_LANES + lane;
 		const uint32_t pthreads = 8u * SPARK_LM_WARP_LANES;
-		/* B prologue: chunks 0..D-1 */
-		for ( chunk = 0u; chunk < D && chunk < chunks; ++chunk )
-		{
+		/* prologue: B chunks 0..D-2 + rawA chunks 0,1 + scales 0,1, ONE commit */
+		for ( chunk = 0u; chunk + 1u < D && chunk < chunks; ++chunk )
 			for ( uint32_t t = ptid; t < ST_TILE_N * (ST_CHUNK_K / 16u); t += pthreads )
 			{
 				uint32_t neuron = t / (ST_CHUNK_K / 16u);
@@ -151,120 +170,69 @@ void SparkQwen36WarpSpecializedKernel(
 					weight_payload + (uint64_t)(tile_n_base + neuron) * input_dimension +
 					(uint64_t)chunk * ST_CHUNK_K + k16 * 16u);
 			}
-			StCpCommit();
-		}
-		/* A[0] into slot 0 (the 8-warp bit-exact StageMxf8 variant: each
-		 * producer warp handles rows pw and pw+8, lane = the K element) */
-		for ( step = 0u; step < ST_CHUNK_K / 32u; ++step )
-			for ( uint32_t rr = 0u; rr < 2u; ++rr )
-			{
-				uint32_t local_row = pw + rr * 8u;
-				uint32_t packed_row = row_base + local_row;
-				uint8_t *dst = a_e4m3 + step * 16u * 32u + local_row * 32u;
-				if ( packed_row < row_count )
-				{
-					float value = SparkLmBf16ToFloat(input_bf16,
-						(uint64_t)packed_row * input_row_stride + step * 32u + lane);
-					float amax = LmActivationWarpMax(fabsf(value));
-					amax = __shfl_sync(0xffffffffu, amax, 0u);
-					uint8_t scale_code = SparkLmSm121E8m0ScaleCode(amax);
-					float scale = SparkLmSm121E8m0ScaleValue(scale_code);
-					dst[lane] = LmFloatToE4m3(value / scale);
-					if ( lane == 0u )
-						a_scale[step * 16u + local_row] = scale_code;
-				}
-				else
-				{
-					dst[lane] = 0u;
-					if ( lane == 0u )
-						a_scale[step * 16u + local_row] = 127u;
-				}
-			}
-		if ( ptid == 0u )
+		for ( uint32_t ac = 0u; ac < 2u && ac < chunks; ++ac )
 		{
-			g_ws_dbg[1] = 0xAAu;   /* producer: prologue+A0 done */
-			__threadfence_block();
-			a_ready = 1u;
+			for ( uint32_t t = ptid; t < 8u * (ST_CHUNK_K * 2u / 16u); t += pthreads )
+			{
+				uint32_t row = t / (ST_CHUNK_K * 2u / 16u);
+				uint32_t k16 = t % (ST_CHUNK_K * 2u / 16u);
+				if ( row_base + row < row_count )
+					StCpAsync16(raw_a + (ac & 1u) * 8u * ST_CHUNK_K * 2u + row * ST_CHUNK_K * 2u + k16 * 16u,
+						(const uint8_t *)input_bf16 + (uint64_t)(row_base + row) * input_row_stride * 2u +
+						(uint64_t)ac * ST_CHUNK_K * 2u + k16 * 16u);
+			}
 		}
+		for ( uint32_t sc = 0u; sc < 2u && sc < chunks; ++sc )
+			for ( uint32_t n = ptid; n < ST_TILE_N; n += pthreads )
+				b_scale_tile[(sc & 1u) * ST_TILE_N + n] =
+					weight_scale_e8m0[(uint64_t)(tile_n_base + n) * (input_dimension / 128u) + sc];
+		StCpCommit();
 		for ( chunk = 0u; chunk < chunks; ++chunk )
 		{
-			/* chunk's B copy complete -> publish */
-			StCpWait<D - 1u>();
-			/* cp.async groups are PER-THREAD: every producer waits its own
-			 * copies, the group barrier proves ALL of them done, THEN the
-			 * publish (warp 8 alone publishing after its own wait let warps
-			 * 9-15's in-flight copies race the consumer) */
+			if ( ptid == 0u )
+				while ( b_consumed < chunk )
+					__nanosleep(64);
+			/* chunk 0's B/rawA live in the PROLOGUE group - the only group,
+			 * so it must fully complete; later chunks' data is in the
+			 * second-to-last group (wait<1> keeps just the last in flight) */
+			if ( chunk == 0u )
+				StCpWait<0>();
+			else
+				StCpWait<1>();
 			asm volatile("bar.sync 2, 256;");
 			if ( ptid == 0u )
 			{
 				__threadfence_block();
 				b_ready = chunk + 1u;
 			}
-			/* stage chunk+1's A into the next ring slot; the slot being
-			 * overwritten is ((chunk+1)&1) == ((chunk-1)&1) - the consumer's
-			 * chunk chunk-1 A - so wait for its consumption first (the 2-slot
-			 * A ring needs the same protection the D-slot B ring has) */
+			/* scales for chunk+1 */
 			if ( chunk + 1u < chunks )
-			{
-				if ( ptid == 0u && chunk >= 1u )
-					while ( b_consumed < chunk )
-						__nanosleep(64);
-				asm volatile("bar.sync 2, 256;");   /* ALL producer warps gated, not just warp 8 */
-				uint32_t aslot = ((chunk + 1u) & 1u) * 16u * ST_CHUNK_K;
-				uint32_t sslot = ((chunk + 1u) & 1u) * 16u * (ST_CHUNK_K / 32u);
-				uint32_t ak = (chunk + 1u) * ST_CHUNK_K;
-				for ( step = 0u; step < ST_CHUNK_K / 32u; ++step )
-					for ( uint32_t rr = 0u; rr < 2u; ++rr )
-					{
-						uint32_t local_row = pw + rr * 8u;
-						uint32_t packed_row = row_base + local_row;
-						uint8_t *dst = a_e4m3 + aslot + step * 16u * 32u + local_row * 32u;
-						if ( packed_row < row_count )
-						{
-							float value = SparkLmBf16ToFloat(input_bf16,
-								(uint64_t)packed_row * input_row_stride + ak + step * 32u + lane);
-							float amax = LmActivationWarpMax(fabsf(value));
-							amax = __shfl_sync(0xffffffffu, amax, 0u);
-							uint8_t scale_code = SparkLmSm121E8m0ScaleCode(amax);
-							float scale = SparkLmSm121E8m0ScaleValue(scale_code);
-							dst[lane] = LmFloatToE4m3(value / scale);
-							if ( lane == 0u )
-								a_scale[sslot + step * 16u + local_row] = scale_code;
-						}
-						else
-						{
-							dst[lane] = 0u;
-							if ( lane == 0u )
-								a_scale[sslot + step * 16u + local_row] = 127u;
-						}
-					}
-				if ( ptid == 0u )
+				for ( uint32_t n = ptid; n < ST_TILE_N; n += pthreads )
+					b_scale_tile[((chunk + 1u) & 1u) * ST_TILE_N + n] =
+						weight_scale_e8m0[(uint64_t)(tile_n_base + n) * (input_dimension / 128u) + (chunk + 1u)];
+			/* B restage chunk+D-1 + rawA chunk+1, one commit */
+			if ( chunk + D - 1u < chunks )
+				for ( uint32_t t = ptid; t < ST_TILE_N * (ST_CHUNK_K / 16u); t += pthreads )
 				{
-					__threadfence_block();
-					a_ready = chunk + 2u;
+					uint32_t neuron = t / (ST_CHUNK_K / 16u);
+					uint32_t k16 = t % (ST_CHUNK_K / 16u);
+					uint32_t rchunk = chunk + D - 1u;
+					StCpAsync16(staged_b + (rchunk % D) * ST_TILE_N * ST_B_STRIDE +
+						neuron * ST_B_STRIDE + k16 * 16u,
+						weight_payload + (uint64_t)(tile_n_base + neuron) * input_dimension +
+						(uint64_t)rchunk * ST_CHUNK_K + k16 * 16u);
 				}
-			}
-			/* restage the slot chunk c occupies once consumed */
-			if ( chunk + D < chunks )
-			{
-				if ( ptid == 0u )
-					while ( b_consumed <= chunk )
-						__nanosleep(64);
-				asm volatile("bar.sync 2, 256;");   /* ALL producer warps gated */
+			if ( chunk + 1u < chunks )
+				for ( uint32_t t = ptid; t < 8u * (ST_CHUNK_K * 2u / 16u); t += pthreads )
 				{
-					uint32_t rchunk = chunk + D;
-					for ( uint32_t t = ptid; t < ST_TILE_N * (ST_CHUNK_K / 16u); t += pthreads )
-					{
-						uint32_t neuron = t / (ST_CHUNK_K / 16u);
-						uint32_t k16 = t % (ST_CHUNK_K / 16u);
-						StCpAsync16(staged_b + (rchunk % D) * ST_TILE_N * ST_B_STRIDE +
-							neuron * ST_B_STRIDE + k16 * 16u,
-							weight_payload + (uint64_t)(tile_n_base + neuron) * input_dimension +
-							(uint64_t)rchunk * ST_CHUNK_K + k16 * 16u);
-					}
-					StCpCommit();
+					uint32_t row = t / (ST_CHUNK_K * 2u / 16u);
+					uint32_t k16 = t % (ST_CHUNK_K * 2u / 16u);
+					if ( row_base + row < row_count )
+						StCpAsync16(raw_a + ((chunk + 1u) & 1u) * 8u * ST_CHUNK_K * 2u + row * ST_CHUNK_K * 2u + k16 * 16u,
+							(const uint8_t *)input_bf16 + (uint64_t)(row_base + row) * input_row_stride * 2u +
+							(uint64_t)(chunk + 1u) * ST_CHUNK_K * 2u + k16 * 16u);
 				}
-			}
+			StCpCommit();
 		}
 		return;
 	}
@@ -277,31 +245,48 @@ void SparkQwen36WarpSpecializedKernel(
 		for ( chunk = 0u; chunk < chunks; ++chunk )
 		{
 			uint8_t *cur = staged_b + (chunk % D) * ST_TILE_N * ST_B_STRIDE;
+			const uint8_t *raw = raw_a + (chunk & 1u) * 8u * ST_CHUNK_K * 2u;
 			if ( threadIdx.x == 0u )
-			{
-#ifdef SKIP_SPIN
-				(void)0;
-#else
 				while ( b_ready < chunk + 1u )
 					__nanosleep(64);
-				while ( a_ready < chunk + 1u )
-					__nanosleep(64);
+			asm volatile("bar.sync 1, 256;");
+			/* quantize A[c] from SHARED raw (warp w = row w; 8 real rows) */
+			for ( step = 0u; step < ST_CHUNK_K / 32u; ++step )
+			{
+				uint8_t *dst = a_e4m3 + step * 16u * 32u + warp * 32u;
+				if ( row_base + warp < row_count )
+				{
+#ifdef RAW_A_FROM_GLOBAL
+					const __nv_bfloat16 *src = (const __nv_bfloat16 *)
+						((const uint8_t *)input_bf16 + (uint64_t)(row_base + warp) * input_row_stride * 2u +
+						(uint64_t)chunk * ST_CHUNK_K * 2u + step * 32u * 2u);
+#else
+					const __nv_bfloat16 *src = (const __nv_bfloat16 *)(raw +
+						warp * ST_CHUNK_K * 2u + step * 32u * 2u);
 #endif
+					float value = __bfloat162float(src[lane]);
+					float amax = LmActivationWarpMax(fabsf(value));
+					amax = __shfl_sync(0xffffffffu, amax, 0u);
+					uint8_t scale_code = SparkLmSm121E8m0ScaleCode(amax);
+					float scale = SparkLmSm121E8m0ScaleValue(scale_code);
+					dst[lane] = LmFloatToE4m3(value / scale);
+					if ( lane == 0u )
+						a_scale[step * 16u + warp] = scale_code;
+				}
 			}
-			__syncwarp();
-			asm volatile("bar.sync 1, 256;");   /* consumer-only sub-barrier (NEVER id 0: __syncthreads owns it) */
+			asm volatile("bar.sync 1, 256;");
 			for ( step = 0u; step < ST_CHUNK_K / 32u; ++step )
 			{
 				uint32_t k_base = chunk * ST_CHUNK_K + step * 32u;
 				uint32_t a[4], scale_a, scale_b, b[2], reg;
-				SparkLmSm121LoadMxf8A(a_e4m3 + (chunk & 1u) * 16u * ST_CHUNK_K + step * 16u * 32u, 0u, lane, a);
-				scale_a = SparkLmSm121ScaleA(a_scale + (chunk & 1u) * 16u * (ST_CHUNK_K / 32u) + step * 16u, 0u, lane);
+				SparkLmSm121LoadMxf8A(a_e4m3 + step * 16u * 32u, 0u, lane, a);
+				scale_a = SparkLmSm121ScaleA(a_scale + step * 16u, 0u, lane);
 				#pragma unroll
 				for ( ni = 0u; ni < 2u; ++ni )
 				{
 					uint32_t fragment_neuron = neuron_base + ni * 8u;
-					scale_b = SparkLmSm121ScaleB<SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(
-						weight_scale_e8m0, fragment_neuron, input_dimension, k_base, lane);
+					scale_b = (uint32_t)b_scale_tile[(chunk & 1u) * ST_TILE_N +
+						(fragment_neuron - tile_n_base) + LmMma8OperandBRow(lane)];
 					{
 						uint32_t tile_neuron = fragment_neuron - tile_n_base + LmMma8OperandBRow(lane);
 						const uint8_t *brow = cur + tile_neuron * ST_B_STRIDE + step * 32u;
@@ -317,12 +302,6 @@ void SparkQwen36WarpSpecializedKernel(
 				__threadfence_block();
 				b_consumed = chunk + 1u;
 			}
-		}
-		if ( threadIdx.x == 0u && blockIdx.x == 0u && blockIdx.y == 0u )
-		{
-			/* debug: publish the handshake counters for host inspection */
-			g_ws_dbg[0] = b_ready;      /* [1] producer marker 0xAA */
-			g_ws_dbg[2] = b_consumed;   /* [3] producer marker 0xCC */
 		}
 		#pragma unroll
 		for ( ni = 0u; ni < 2u; ++ni )
