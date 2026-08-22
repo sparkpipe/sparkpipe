@@ -628,7 +628,14 @@ from pathlib import Path
 # theory-backed path past it; the depth-2 ring is verified bit-exact at
 # parity with the direct kernel.
 # 172144 is the exact count.
-CEILING = 172144
+# +328: the warp-specialized kernel SKETCH (tools/
+# qwen36_native_warp_specialized_bench.cu) - the design that escapes the
+# shared-budget tension (producer warps stream the B ring continuously,
+# consumer warps mma, collective A rendezvous). DEADLOCKS: the named-barrier
+# arrival matrix needs re-derivation (documented in the header). The
+# measured map it builds on lives in qwen36_native_staged_bench.cu.
+# 172472 is the exact count.
+CEILING = 172472
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
