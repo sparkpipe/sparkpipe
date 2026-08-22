@@ -12,7 +12,16 @@ extern "C" {
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
-#define SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE 8u
+/*
+ * Tokens a single submission may credit for one sequence. A speculative round
+ * credits (accepted drafts + 3): the committed token, the accepted drafts, the
+ * correction token and the replay's emission. At 8 this bound clamped a
+ * seven-draft block to five credited drafts, which put average acceptance >= 6
+ * out of reach for every model on the contract; 10 lets a full block (7) be
+ * credited whole. It is a VALIDATION bound only - no buffer is sized by it - so
+ * raising it cannot shrink any allocation.
+ */
+#define SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE 10u
 #define SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS 0x00000001u
 #define SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS 0x00000002u
 

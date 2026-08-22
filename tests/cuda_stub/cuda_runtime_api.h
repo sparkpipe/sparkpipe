@@ -32,6 +32,7 @@ typedef enum cudaStreamCaptureMode
 #define cudaErrorInvalidValue 1
 #define cudaErrorMemoryAllocation 2
 #define cudaErrorNotReady 34
+#define cudaErrorUnknown 999
 #define cudaDevAttrMultiProcessorCount 16
 #define cudaStreamDefault 0u
 #define cudaStreamNonBlocking 1u
@@ -55,6 +56,14 @@ cudaError_t cudaMemcpy(
     void *destination,
     const void *source,
     size_t bytes,
+    cudaMemcpyKind kind);
+cudaError_t cudaMemcpy2D(
+    void *destination,
+    size_t destination_pitch,
+    const void *source,
+    size_t source_pitch,
+    size_t width,
+    size_t height,
     cudaMemcpyKind kind);
 cudaError_t cudaMemcpyAsync(
     void *destination,

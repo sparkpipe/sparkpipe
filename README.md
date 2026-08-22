@@ -63,7 +63,9 @@ pick a B-number.
 | 4x / 8x Stations | office-deployable fabric target for the largest models |
 
 Every Spark scale keeps complete direct pairs and the same combined-fabric
-contract. Expansion preserves the endpoint, scheduler semantics, package
+contract. The same package identity carries across accelerator vendors:
+NVIDIA GB10 Spark fleets today, MI350P-class AMD deployments following the
+same model-package and readiness rules. Expansion preserves the endpoint, scheduler semantics, package
 identity, storage hierarchy, and readiness rules. The hardware strategy uses
 prosumer products with an active secondary market so capacity can follow actual
 business demand.
@@ -93,6 +95,24 @@ The large-payload path splits alternating chunks into two disjoint stripes. At
 steady state every Spark overlaps direct TX/RX with switched TX/RX. This halves
 switch-facing traffic relative to a one-port ring while retaining the switch as
 half of the active collective.
+
+## AMD GPU support
+
+The serving API, model packages, scheduling, and readiness rules are
+hardware-agnostic: callers and deployed packages do not change when the
+accelerator vendor changes. Model drivers are split at semantic
+execution-island boundaries (attention block, routed-MoE block, shared
+expert, head, cache transition) into a portable model core plus
+per-vendor device implementations that resolve through static linking at
+package compile time - no hot-path backend selection at execution.
+
+The first AMD target is an MI350P-class gfx950 deployment. The port
+follows a fixed sequence: define the accelerator and model-device
+contracts, extract the neutral runtime primitives (memory, queues,
+events, graphs), prove the CUDA path byte-identical with no performance
+regression, then bring up the HIP/RCCL backend one complete layer at a
+time. Status and effort notes are recorded alongside the other
+coordination documents.
 
 ## Resident model topology
 

@@ -158,11 +158,44 @@ static uint32_t SparkQwen36ServingSpecMethod(void)
 	return(SPARK_QWEN36_SERVING_SPEC_METHOD_MTP);
 }
 
-/* Draft depth for the active spec method: DSpark always drafts its full
- * block_size; MTP uses the env-tunable depth. */
+/* Round audit. With SPARK_QWEN36_SPEC_AUDIT set (and not "0") the replay frame
+ * emits every row so the adapter can check it against the verify frame, and each
+ * round prints its committed ids with absolute positions. Off by default: the
+ * extra rows cost one head pass each. */
+static uint32_t SparkQwen36ServingSpecAudit(void)
+{
+	const char *text = getenv("SPARK_QWEN36_SPEC_AUDIT");
+	return(text != 0 && text[0] != 0 && (text[0] != 0x30 || text[1] != 0) ? 1u : 0u);
+}
+
+/* THE CREDITED CEILING of this build. A round credits (accepted drafts + 3) -
+ * the committed token, the accepted drafts, the correction and the replay's
+ * emission - so no round can credit more than min(draft_count - 1, cap - 3)
+ * drafts. Printed with every round so an acceptance target above it is visibly
+ * unreachable instead of being chased through the drafter. */
+static uint32_t SparkQwen36ServingCreditCeiling(uint32_t draft_count)
+{
+	uint32_t by_block = draft_count > 0u ? draft_count - 1u : 0u;
+	uint32_t by_cap = (uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u;
+	return(by_block < by_cap ? by_block : by_cap);
+}
+
+/* Draft depth for the active spec method. DSpark drafts its full block by
+ * default, but honors SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT as a CAP:
+ * verifying fewer drafts costs fewer verify rows per round, so at low
+ * acceptance a smaller depth drops the round cost below the breakeven (the
+ * measured round cost is ~2.9 no-spec tokens; the ladder must beat it). The
+ * drafter still produces block-1 drafts; the surplus is simply not walked. */
 static uint32_t SparkQwen36ServingActiveDraftCount(uint32_t spec_method)
 {
-	return(spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE : SparkQwen36ServingSpeculativeDraftCount());
+	if ( spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK )
+	{
+		uint32_t cap = SparkQwen36ServingSpeculativeDraftCount();
+		if ( cap == 0u || cap >= SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE )
+			return(SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE);
+		return(cap);
+	}
+	return(SparkQwen36ServingSpeculativeDraftCount());
 }
 /* GDN snapshot slots. The two-phase min-accept schedule keeps one verify
  * snapshot in flight per lane, capped by the module's slot ceiling; a lane
@@ -194,6 +227,11 @@ typedef struct SparkQwen36ServingSpecState
 	uint32_t accepted_count;
 	uint32_t chain_dead;
 	uint32_t first_draft_miss;
+	/* Rollback bookkeeping: a verify frame WALKS the GDN recurrence over drafted
+	 * positions, so a lane that walked one must be rolled back before any later
+	 * frame - by its replay, or by the repair pass when no replay runs. */
+	uint32_t verify_walked;
+	uint32_t replayed;
 	uint32_t draft_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t emitted_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t committed_ids[SPARK_QWEN36_SERVING_MAX_COMMITTED_TOKENS];
@@ -218,6 +256,7 @@ typedef struct SparkQwen36ServingPending
 	uint32_t active_sequence_count;
 	uint32_t work_kind;
 	uint64_t submission_id;
+	uint64_t residency_origin_submission_id;
 	uint64_t request_id;
 	uint64_t sequence_id;
 	uint64_t sequence_position;
@@ -230,6 +269,10 @@ typedef struct SparkQwen36ServingPending
 	uint64_t frame_sequence_id;
 	uint64_t frame_sequence_position;
 	SparkStatus frame_status;
+	/* Non-destructive refusal bookkeeping: set once any frame of this submission
+	 * is handed to the driver and executes. A submission refused before that
+	 * point has not touched the lane's KV or GDN, so it must NOT be dropped. */
+	uint32_t frames_executed;
 	SparkModelDriverResidencyToken residency;
 	uint64_t accepted_token_count;
 	uint64_t queue_delay_ns;
@@ -643,6 +686,17 @@ static SparkQwen36ServingPending *SparkQwen36ServingReservePending(
 			pending->dispatch_generation = submission->dispatch_generation;
 			pending->request_generation = submission->request_generation;
 			pending->step_generation = submission->step_generation;
+			/* The completion must ECHO the submission's residency token: the
+			 * runtime validates it with an exact memcmp against the route's
+			 * submission residency (SparkModelServingAdapterValidateCompletionResidency),
+			 * so the pending is anchored here and the internal spec frames
+			 * (decode -> draft -> verify -> replay) must not clobber it - their
+			 * driver completions carry per-frame residency values whose minted
+			 * generation drifts across the cycles of a long request, which is
+			 * exactly the status=4 / reason=2 (COMPLETION_RESIDENCY) failure the
+			 * 128-token spec run hit while the 32-token run completed clean. */
+			pending->residency = submission->residency;
+			pending->residency_origin_submission_id = submission->submission_id;
 			pending->frame_status = SPARK_STATUS_OK;
 			for (row=0u; row<submission->row_count; row++)
 			{
@@ -687,7 +741,10 @@ static void SparkQwen36ServingDriverCompletion(
 		return;
 	}
 	pending->frame_status = (SparkStatus)driver_completion->status;
-	pending->residency = driver_completion->residency;
+	/* Do NOT take the driver's residency into the pending: the completion must
+	 * echo the submission's residency (anchored at reservation), and every
+	 * internal spec frame completion would otherwise overwrite it with a
+	 * per-frame value whose generation drifts over a long request. */
 	pending->accepted_token_count += driver_completion->accepted_token_count;
 	pending->queue_delay_ns += driver_completion->queue_delay_ns;
 	pending->service_time_ns += driver_completion->service_time_ns;
@@ -1100,7 +1157,11 @@ static SparkStatus SparkQwen36ServingRunFrame(
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr, "qwen36_admit_reject status=%d prefill=%u frame_rows=%u lanes=%u\n", (int)status, prefill, frame_rows, submission->active_sequence_count);
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = state->program->submit(state->driver_instance,&frame);
+		if ( status == SPARK_STATUS_OK )
+			pending->frames_executed = 1u;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = pending->frame_status;
 	if ( status == SPARK_STATUS_OK && SparkQwen36ServingOwnsFinalHead(state) != 0u )
@@ -1271,7 +1332,11 @@ static SparkStatus SparkQwen36ServingRunSpeculativeFrame(
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr, "qwen36_admit_reject status=%d prefill=%u frame_rows=%u lanes=%u\n", (int)status, prefill, frame_rows, submission->active_sequence_count);
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = state->program->submit(state->driver_instance,&frame);
+		if ( status == SPARK_STATUS_OK )
+			pending->frames_executed = 1u;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = pending->frame_status;
 	return(status);
@@ -1300,11 +1365,13 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 	uint32_t min_accepted;
 	uint32_t first_draft_policy;
 	uint32_t spec_method;
+	uint32_t spec_audit;
 	uint32_t verify_tokens[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	SparkStatus status;
 	spec_method = state->spec_method;
 	draft_count = SparkQwen36ServingActiveDraftCount(state->spec_method);
 	first_draft_policy = SparkQwen36ServingSpecFirstDraftPolicy();
+	spec_audit = SparkQwen36ServingSpecAudit();
 	pending->spec_active = 1u;
 	pending->spec_first_draft_miss = 0u;
 	memset(pending->spec,0,sizeof(pending->spec));
@@ -1331,8 +1398,18 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			memset(&dspark_draft,0,sizeof(dspark_draft));
 			dspark_draft.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION;
 			dspark_draft.descriptor_bytes = sizeof(dspark_draft);
-			dspark_draft.block_size = draft_count;
-			dspark_draft.draft_token_count = draft_count;
+			/* TWO DIFFERENT COUNTS, and conflating them is what pinned the
+			 * credited ceiling below the block. The module emits one draft per
+			 * MASK row, i.e. block_size - 1 ids, and refuses anything else
+			 * (draft_token_count != B - 1). The adapter's draft_count is the
+			 * MTP-convention verify depth, where draft[0] restates C0, so it is
+			 * one MORE than the number of emitted ids. block_size is the block
+			 * the kernels walk (8 = anchor + 7 masks). */
+			/* The MODULE always computes the full block (B rows, B-1 drafts)
+			 * and refuses anything else; the verify-depth cap only shortens
+			 * what the ADAPTER walks of it. */
+			dspark_draft.block_size = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
+			dspark_draft.draft_token_count = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u;
 			dspark_draft.sequence_id = sequence;
 			dspark_draft.base_position = spec->base_position;
 			dspark_draft.tap_buffer = 0;
@@ -1399,6 +1476,8 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,verify_tokens,0,0,draft_count,spec->base_position,sequence,spec->base_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY,0,0,&gdn_snapshot,draft_count);
 			if ( status != SPARK_STATUS_OK )
 				fprintf(stderr, "qwen36_spec_diag verify_frame_failed lane=%u status=%d\n", lane, (int)status);
+			else
+				spec->verify_walked = 1u;
 		}
 		if ( status == SPARK_STATUS_OK )
 		{
@@ -1407,7 +1486,13 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			spec->accepted_count = 0u;
 			while ( spec->accepted_count + 1u < draft_count && spec->emitted_ids[spec->accepted_count] == spec->draft_ids[spec->accepted_count + 1u] )
 				spec->accepted_count++;
-			fprintf(stderr, "qwen36_spec_diag C0=%u accepted=%u drafts=[%u,%u,%u,%u] emitted=[%u,%u,%u,%u]\n",
+			/* lane and base_position make the round ALIGNABLE to a golden stream:
+			 * base_position is C0's absolute sequence position, so the golden's
+			 * token index for this round is base_position - prompt_length. Without
+			 * it the diag line cannot be placed next to the golden's token index,
+			 * which is exactly what the separation experiment needs. */
+			fprintf(stderr, "qwen36_spec_diag lane=%u base_position=%llu C0=%u accepted=%u drafts=[%u,%u,%u,%u] emitted=[%u,%u,%u,%u]\n",
+				lane, (unsigned long long)spec->base_position,
 				spec->committed_ids[0], spec->accepted_count,
 				spec->draft_ids[0], spec->draft_ids[1], spec->draft_ids[2], spec->draft_ids[3],
 				spec->emitted_ids[0], spec->emitted_ids[1], spec->emitted_ids[2], spec->emitted_ids[3]);
@@ -1432,8 +1517,45 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		 * simply not credited this round; tokens stay exact). */
 		if ( pending->spec_chain_dead != 0u )
 			min_accepted = 0u;
+		/*
+		 * THE ACCEPTANCE CLIFF. A round emits min_accepted + 3 tokens (C0, the
+		 * accepted drafts, the correction, the replay's emission), and the driver
+		 * contract caps a submission at SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE
+		 * (8). DFlash2 drafts seven, so a FULL acceptance (min_accepted = 6) asks for
+		 * NINE and the next submission is refused by
+		 * SparkModelServingAdapterValidateSubmission - which is exactly what the
+		 * deployed log shows: six "qwen36_spec accepted=6" lines and six
+		 * "route_failed status=1 reason=2 work_kind=2" / "route_state=5" lines, one
+		 * for one. The refused submission is then dropped, which cools every lane it
+		 * touched, so the round AFTER a peak accepts zero - the acceptance decay is
+		 * this cliff, not a drafter quality problem.
+		 *
+		 * Credit only what the contract can carry. The surplus accepted drafts are
+		 * not credited this round and the replay re-walks exactly the credited
+		 * prefix, so the token stream and the recurrent state stay exact - the round
+		 * is shorter, never wrong.
+		 */
+		if ( min_accepted + 3u > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE )
+		{
+			fprintf(stderr,"qwen36_spec accept_clamped accepted=%u credited=%u cap=%u\n",
+				min_accepted,(uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u,
+				(uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE);
+			min_accepted = (uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u;
+		}
 		pending->spec_tokens_per_sequence = pending->spec_chain_dead != 0u ? 1u : min_accepted + 3u;
 		pending->spec_total_accepted = pending->spec_chain_dead != 0u ? 0u : min_accepted * submission->active_sequence_count;
+		/* The credit side of the round, in absolute positions: what the stream
+		 * actually advances by. Pairing this with the per-lane diag line above
+		 * answers the accounting question from ONE log - whether accepted and
+		 * min_accepted are right while the committed stream is a token long or
+		 * short - without reconstructing the round from token ids. */
+		for (lane=0u; lane<submission->active_sequence_count; lane++)
+			fprintf(stderr,"qwen36_spec round_commit lane=%u base_position=%llu accepted=%u min_accepted=%u credited=%u ceiling=%u positions=[%llu..%llu]\n",
+				lane,(unsigned long long)pending->spec[lane].base_position,
+				pending->spec[lane].accepted_count,min_accepted,pending->spec_tokens_per_sequence,
+				SparkQwen36ServingCreditCeiling(draft_count),
+				(unsigned long long)pending->spec[lane].base_position,
+				(unsigned long long)(pending->spec[lane].base_position + pending->spec_tokens_per_sequence - 1u));
 	}
 	for (lane=0u; status == SPARK_STATUS_OK && pending->spec_chain_dead == 0u && lane<submission->active_sequence_count; lane++)
 	{
@@ -1458,16 +1580,106 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		gdn_snapshot.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 		gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
 		gdn_snapshot.snapshot_index = spec->snapshot_index;
-		status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST,0,0,&gdn_snapshot,1u);
+		/* THE ONE UNCHECKED COMMITTED TOKEN. Of the (min_accepted + 3) tokens a
+		 * round commits, every one is cross-checked except the last: C0 comes
+		 * from the decode frame, the accepted drafts are exactly the ids the
+		 * verify frame re-emitted, the correction IS the verify's own emission -
+		 * but the replay's final emission is produced by a freshly restored and
+		 * re-walked state and compared against nothing. A wrong value there is
+		 * silent, deterministic, and becomes the next round's C0, which is the
+		 * observed signature (a committed token the golden never has, then a
+		 * legitimately different continuation).
+		 *
+		 * The audit closes that hole with the invariant the two frames already
+		 * share: for every row j <= min_accepted the replay consumes the SAME
+		 * token at the SAME position as verify row j, so their argmaxes must be
+		 * equal. A mismatch localizes a state divergence to (row, position); rows
+		 * agreeing while the stream still diverges puts it in the last row alone. */
+		status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,
+			SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST |
+			(spec_audit != 0u ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPEC_AUDIT_EMIT_ALL : 0u),
+			0,0,&gdn_snapshot,spec_audit != 0u ? replay_rows : 1u);
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr, "qwen36_spec_diag replay_frame_failed lane=%u status=%d\n", lane, (int)status);
 		if ( status == SPARK_STATUS_OK )
 		{
+			spec->replayed = 1u;
 			for (draft=0u; draft<min_accepted; draft++)
 				spec->committed_ids[1u + draft] = spec->draft_ids[1u + draft];
 			spec->committed_ids[1u + min_accepted] = spec->emitted_ids[min_accepted];
-			spec->committed_ids[2u + min_accepted] = pending->frame_output_ids[0];
+			/* Emitting one row puts the LAST row's argmax at index 0 (a prefill
+			 * frame's head runs on the final row); emitting all rows puts it at
+			 * the last index. The continuation is the last row either way. */
+			spec->committed_ids[2u + min_accepted] = spec_audit != 0u
+				? pending->frame_output_ids[replay_rows - 1u]
+				: pending->frame_output_ids[0];
+			if ( spec_audit != 0u )
+			{
+				uint32_t row;
+				for (row=0u; row<=min_accepted; row++)
+					if ( pending->frame_output_ids[row] != spec->emitted_ids[row] )
+						fprintf(stderr,"qwen36_spec_audit replay_row_mismatch lane=%u base_position=%llu row=%u position=%llu verify=%u replay=%u accepted=%u min_accepted=%u\n",
+							lane,(unsigned long long)spec->base_position,row,
+							(unsigned long long)(spec->base_position + row),
+							spec->emitted_ids[row],pending->frame_output_ids[row],
+							spec->accepted_count,min_accepted);
+				/* Every id the round commits, with the absolute positions it
+				 * commits them at: the log alone diffs against a golden stream,
+				 * so the failing round is named without reconstructing it. A full
+				 * block credits ten. */
+				fprintf(stderr,"qwen36_spec_audit round_ids lane=%u positions=[%llu..%llu] committed=[%u,%u,%u,%u,%u,%u,%u,%u,%u,%u] credited=%u\n",
+					lane,(unsigned long long)spec->base_position,
+					(unsigned long long)(spec->base_position + pending->spec_tokens_per_sequence - 1u),
+					spec->committed_ids[0],spec->committed_ids[1],spec->committed_ids[2],spec->committed_ids[3],
+					spec->committed_ids[4],spec->committed_ids[5],spec->committed_ids[6],spec->committed_ids[7],
+					spec->committed_ids[8],spec->committed_ids[9],
+					pending->spec_tokens_per_sequence);
+			}
 		}
+	}
+	/*
+	 * LOSSLESSNESS REPAIR - the verify walk is destructive and its rollback was
+	 * not guaranteed.
+	 *
+	 * A verify frame snapshots the lane's GDN state, then WALKS the recurrence
+	 * over the drafted positions, rejected drafts included; only a
+	 * GDN_RESTORE_FIRST replay puts it back. The replay loop above is skipped
+	 * for EVERY lane when any single lane's chain is dead (min_accepted is
+	 * zeroed and the loop is gated on spec_chain_dead), and it aborts midway
+	 * when a lane's replay frame fails - in both cases a healthy lane that DID
+	 * walk its verify frame keeps recurrent state advanced over tokens that were
+	 * never committed, and its lane_next_positions stays parked at
+	 * base + draft_count. The next decode frame then either consumes a
+	 * contaminated state or is refused outright by the continuity check
+	 * (position != expected), which is exactly the "spec stream diverges from
+	 * the no-spec golden" signature.
+	 *
+	 * One row of GDN_RESTORE_FIRST over the committed token C0 repairs both: the
+	 * snapshot goes back in, the recurrence re-walks exactly the position that
+	 * WAS committed, the KV row for that position is rewritten with the same
+	 * token, and lane_next_positions lands on base + 1 - bit-for-bit where the
+	 * no-spec stream would have left the lane.
+	 */
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+	{
+		SparkQwen36ServingSpecState *spec = &pending->spec[lane];
+		SparkQwen36GdnSnapshotView repair_snapshot;
+		uint32_t repair_token;
+		SparkStatus repair_status;
+		if ( spec->verify_walked == 0u || spec->replayed != 0u )
+			continue;
+		memset(&repair_snapshot,0,sizeof(repair_snapshot));
+		repair_snapshot.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
+		repair_snapshot.descriptor_bytes = sizeof(repair_snapshot);
+		repair_snapshot.snapshot_index = spec->snapshot_index;
+		repair_token = spec->committed_ids[0];
+		fprintf(stderr,"qwen36_spec rollback_repair lane=%u base_position=%llu token=%u (verify walked, no replay)\n",
+			lane,(unsigned long long)spec->base_position,repair_token);
+		repair_status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,spec->resident_slot,1u,&repair_token,0,0,1u,spec->base_position,spec->sequence_id,spec->base_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST,0,0,&repair_snapshot,1u);
+		if ( repair_status != SPARK_STATUS_OK )
+			fprintf(stderr,"qwen36_spec rollback_repair_failed lane=%u status=%d\n",lane,(int)repair_status);
+		if ( status == SPARK_STATUS_OK )
+			status = repair_status;
 	}
 	return(status);
 }
@@ -1526,6 +1738,27 @@ static void SparkQwen36ServingComplete(
 		completion.model_extension_kind = SPARK_QWEN36_SERVING_EXTENSION_KIND;
 		completion.model_extension_bytes = sizeof(telemetry);
 		memcpy(completion.model_extension,&telemetry,sizeof(telemetry));
+	}
+	{
+		/* Residency diag (trajectory seam): the runtime memcmp's the completion's
+		 * residency against the route's submission residency. Print the echo and
+		 * the pending identity so a failure can be attributed to a re-reserved
+		 * pending vs a wire-side token difference. */
+		const unsigned char *bytes = (const unsigned char *)&completion.residency;
+		/* Print the FULL 32-byte token. The old 8-byte print only showed word0
+		 * (= the submission id), so a mismatch in word1 / generation / owner was
+		 * invisible and a route-vs-adapter echo disagreement looked "perfect". */
+		fprintf(stderr,"qwen36_residency sid=%llu pending_sid=%llu pending_origin=%llu hex="
+			"%02x%02x%02x%02x%02x%02x%02x%02x"
+			"%02x%02x%02x%02x%02x%02x%02x%02x"
+			"%02x%02x%02x%02x%02x%02x%02x%02x"
+			"%02x%02x%02x%02x%02x%02x%02x%02x\n",
+			(unsigned long long)completion.submission_id,(unsigned long long)pending->submission_id,
+			(unsigned long long)pending->residency_origin_submission_id,
+			bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],
+			bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15],
+			bytes[16],bytes[17],bytes[18],bytes[19],bytes[20],bytes[21],bytes[22],bytes[23],
+			bytes[24],bytes[25],bytes[26],bytes[27],bytes[28],bytes[29],bytes[30],bytes[31]);
 	}
 	pending->active = 0u;
 	state->completion_function(state->completion_context,&completion);
@@ -1598,9 +1831,15 @@ static SparkStatus SparkQwen36ServingSubmit(
 	if ( status != SPARK_STATUS_OK )
 	{
 		/* A failed submission fires no completion, matching the glm52/dsv4
-		 * adapters; every lane it touched drops back to cold so the next
-		 * touch is a position-zero reset on both sides of the contract. */
-		SparkQwen36ServingDropSubmission(state,submission);
+		 * adapters. But ONLY a submission whose frames actually executed may
+		 * have left the lane dirty and needs the drop-to-cold below. A
+		 * pre-execution refusal (validation, coverage, admit) has not touched
+		 * the lane's KV or GDN, so releasing it would destroy a valid resident
+		 * sequence - the divergence engine the MTP D=2 control reproduced. The
+		 * continuity validator is the backstop: a lane wrongly kept here fails
+		 * the next decode's continuity check and is released at that point. */
+		if ( pending->frames_executed != 0u )
+			SparkQwen36ServingDropSubmission(state,submission);
 		pending->active = 0u;
 		return(status);
 	}
@@ -1825,6 +2064,13 @@ static SparkStatus SparkQwen36ServingInitialize(
 	state->execution_stream = configuration->execution_stream;
 	state->shim.execution_stream = configuration->execution_stream;
 	state->spec_method = SparkQwen36ServingSpecMethod();
+	/* The method decides whether a DSPARK_DRAFT_AFTER frame is ever built, so
+	 * print it: an environment-stripped daemon silently serves MTP drafts while
+	 * the deploy believes it is serving DFlash2. */
+	fprintf(stderr,"qwen36_serving spec_method=%s (%s=%s)\n",
+		state->spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK ? "dspark" : "mtp",
+		SPARK_QWEN36_SERVING_SPEC_METHOD_ENV,
+		getenv(SPARK_QWEN36_SERVING_SPEC_METHOD_ENV) != 0 ? getenv(SPARK_QWEN36_SERVING_SPEC_METHOD_ENV) : "(unset)");
 	status = SparkQwen36ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_QWEN36_SERVING_MAX_SEQUENCE_POSITIONS_CAP) )
 		status = SPARK_STATUS_SCHEMA_ERROR;

@@ -24,6 +24,11 @@
   sessions may rebase onto `unified` at any point; `unified` is the
   eventual reference directory.
 
+**Converged 2026-08-19:** PR #670 (unified -> main) was merged (main head
+5de09e9). main and unified are now content-identical; unified remains the
+active development branch and publishes its post-convergence delta through
+a continuation tracking PR. New main work still flows into unified.
+
 ## What unified owns
 
 - Duplication removal across model tooling (packers, sharders, generators,

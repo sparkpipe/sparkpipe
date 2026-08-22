@@ -146,12 +146,18 @@ static __device__ __forceinline__ float SparkQwen36RopeFrequency(uint32_t pair)
 // a zero tail. Matches causal_conv1d_update with bias absent.
 static __global__ void SparkQwen36ConvUpdateKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
 {
-	uint32_t row = blockIdx.y,channel = (blockIdx.x * blockDim.x) + threadIdx.x;
+	uint32_t row,channel = (blockIdx.x * blockDim.x) + threadIdx.x;
 	uint64_t tail_base;
 	float window[4],accumulator;
 	uint32_t tap;
-	if ( row >= row_count || channel >= SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS) )
+	if ( channel >= SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS) )
 		return;
+	/* Serialize the rows: the conv tail is the sliding recurrence, and
+	 * parallel row blocks raced its read-modify-write (same class as the
+	 * GDN step race). A sequential loop with a sync between rows makes a
+	 * k-row frame bit-match k sequential single-row frames. */
+	for (row = 0u; row < row_count; row++)
+	{
 	tail_base = ((uint64_t)row_lane_indices[row] * tail_lane_stride) + ((uint64_t)gdn_layer_ordinal * tail_layer_stride) + ((uint64_t)channel * 3u);
 	if ( state_cold_by_row[row] != 0u )
 	{
@@ -173,6 +179,8 @@ static __global__ void SparkQwen36ConvUpdateKernel(const void *qkv_bf16, const v
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 0u,window[1]);
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 1u,window[2]);
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 2u,window[3]);
+	__syncthreads();
+	}
 }
 
 // Per-head log decay and beta from the two 48-row projections plus the fp32
@@ -227,14 +235,17 @@ static __global__ void SparkQwen36GdnStepKernel(const void *conv_out_bf16, const
     float delta;
     float output;
 
-    row = blockIdx.y;
     head = blockIdx.x;
     column = threadIdx.x;
     key_head = head / SPARK_QWEN36_CUDA_GVA_GROUP;
-    if (row >= row_count)
+    /* Rows are serialized in order inside each head block: the state_f32
+     * read-modify-write is the recurrence and parallel row blocks race it
+     * (last writer wins per element, one row's accumulation lost per
+     * multi-row frame) - the silent divergence source. A sequential loop
+     * with a sync between rows makes a k-row frame bit-match k
+     * sequential single-row frames. */
+    for (row = 0u; row < row_count; row++)
     {
-        return;
-    }
 
     conv_row = (uint64_t)row * SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS);
     value = SparkLmBf16ToFloat(
@@ -296,6 +307,8 @@ static __global__ void SparkQwen36GdnStepKernel(const void *conv_out_bf16, const
     {
         state_index = (element * SPARK_QWEN36_CUDA_DV) + column;
         state_f32[state_base + state_index] = state_shared[state_index];
+    }
+    __syncthreads();
     }
 }
 
@@ -1828,6 +1841,85 @@ extern "C" cudaError_t SparkQwen36LaunchSmallBatchLinear(cudaStream_t stream, co
 	return(cudaGetLastError());
 }
 
+/* DFlash2 full-sequence projector fc: [row_count, 25600] @ [25600, 5120]^T.
+ *
+ * The projector input dimension (5 taps x 5120 = 25600) exceeds the library
+ * scalar path's shared-memory budget, so this is a dedicated tiled-K kernel. A
+ * 2D grid (grid.x = 8-row tiles FASTEST, grid.y = 64-neuron tiles) reuses one
+ * neuron tile's weight strip in L2 across all its row-tile blocks, so the 256 MB
+ * projector weight streams from HBM once per forward instead of once per row.
+ * Dot order and reduction tree are the library's (lane-strided pair + shfl-down),
+ * and the store is round-to-nearest BF16, matching SparkQwen36LaunchLinear.
+ */
+#define SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N 64u
+#define SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS 8u
+
+static __global__ void __launch_bounds__(1024u, 1u) SparkQwen36DsparkProjectorKernel(
+	const void *weight_bf16, const void *input_bf16, void *output_bf16,
+	uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	extern __shared__ __nv_bfloat16 tile[];
+	__nv_bfloat16 *weight_tile = tile;
+	__nv_bfloat16 *input_tile = tile + (SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N * SPARK_QWEN36_SMALL_BATCH_K_CHUNK);
+	const uint32_t neuron_base = blockIdx.y * SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N;
+	const uint32_t row_base = blockIdx.x * SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS;
+	const uint32_t thread = threadIdx.x;
+	const uint32_t warp = thread >> 5u;
+	const uint32_t lane = thread & 31u;
+	const uint32_t row = warp & (SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS - 1u);
+	const uint32_t neuron_group = warp >> 3u;
+	const uint32_t PER_GROUP = SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N >> 2u;
+	uint32_t k_base, neuron, p;
+	float value;
+	float acc[16];
+	#pragma unroll
+	for (p = 0u; p < PER_GROUP; p++)
+		acc[p] = 0.0f;
+	for (k_base = 0u; k_base < input_dimension; k_base += SPARK_QWEN36_SMALL_BATCH_K_CHUNK)
+	{
+		/* 64x128 weight tile: one uint4 (8 bf16) per thread. */
+		((uint4 *)weight_tile)[thread] = __ldg(((const uint4 *)weight_bf16) + ((((uint64_t)(neuron_base + (thread >> 4u)) * input_dimension) + k_base) >> 3u) + (thread & 15u));
+		/* 8x128 input tile; pad rows past row_count with zero. */
+		if ( thread < 128u && row_base + (thread >> 4u) < row_count )
+			((uint4 *)input_tile)[thread] = __ldg(((const uint4 *)input_bf16) + ((((uint64_t)(row_base + (thread >> 4u)) * input_dimension) + k_base) >> 3u) + (thread & 15u));
+		else if ( thread < 128u )
+			((uint4 *)input_tile)[thread] = make_uint4(0u, 0u, 0u, 0u);
+		__syncthreads();
+		#pragma unroll
+		for (p = 0u; p < PER_GROUP; p++)
+		{
+			neuron = (neuron_group * PER_GROUP) + p;
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + (lane << 1u)]), __bfloat162float(input_tile[(row << 7u) + (lane << 1u)]), acc[p]);
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + (lane << 1u) + 1u]), __bfloat162float(input_tile[(row << 7u) + (lane << 1u) + 1u]), acc[p]);
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + 64u + (lane << 1u)]), __bfloat162float(input_tile[(row << 7u) + 64u + (lane << 1u)]), acc[p]);
+			acc[p] = fmaf(__bfloat162float(weight_tile[(neuron << 7u) + 64u + (lane << 1u) + 1u]), __bfloat162float(input_tile[(row << 7u) + 64u + (lane << 1u) + 1u]), acc[p]);
+		}
+		__syncthreads();
+	}
+	#pragma unroll
+	for (p = 0u; p < PER_GROUP; p++)
+	{
+		neuron = (neuron_group * PER_GROUP) + p;
+		value = acc[p];
+		value += __shfl_down_sync(0xffffffffu, value, 16u);
+		value += __shfl_down_sync(0xffffffffu, value, 8u);
+		value += __shfl_down_sync(0xffffffffu, value, 4u);
+		value += __shfl_down_sync(0xffffffffu, value, 2u);
+		value += __shfl_down_sync(0xffffffffu, value, 1u);
+		if ( lane == 0u && row_base + row < row_count && neuron_base + neuron < output_dimension )
+			SparkLmFloatToBf16(output_bf16, ((uint64_t)(row_base + row) * output_dimension) + neuron_base + neuron, value);
+	}
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkProjector(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	dim3 grid((row_count + SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS - 1u) / SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS,
+		(output_dimension + SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N - 1u) / SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N);
+	size_t shared_bytes = (size_t)(SPARK_QWEN36_DSPARK_PROJECTOR_TILE_N + SPARK_QWEN36_DSPARK_PROJECTOR_TILE_ROWS) * SPARK_QWEN36_SMALL_BATCH_K_CHUNK * sizeof(__nv_bfloat16);
+	SparkQwen36DsparkProjectorKernel<<<grid, 1024u, shared_bytes, stream>>>(weight_bf16, input_bf16, output_bf16, row_count, input_dimension, output_dimension);
+	return(cudaGetLastError());
+}
+
 extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQwen36LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
 	const char *gate = getenv("SPARK_QWEN36_SMALL_BATCH_GEMM");
@@ -1840,7 +1932,13 @@ extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQ
 	 * hit L2 at those sizes and its 4x larger thread grid hides HBM latency
 	 * better than the tiled kernel. Rows 5..8 re-read the full strip enough
 	 * to exceed L2, where the once-per-projection shared tile wins. */
-	if ( (gate == 0 || strcmp(gate, "0") != 0) &&
+	/* The 5..8-row tiled path is OFF by default: the verify (7 rows) and the
+	 * replay (min_accepted+2 rows) frames reach it, and it is the ONLY thing that
+	 * changes between D=4 (lossless) and D=6 (diverged) - the row-count boundary
+	 * is exactly here. Until the tiled kernel is proven bit-exact against the
+	 * library, route 5..8 rows through the same library path 1..4 use, which the
+	 * lossless controls prove is correct. Re-enable with SPARK_QWEN36_SMALL_BATCH_GEMM=1. */
+	if ( (gate != 0 && strcmp(gate, "1") == 0) &&
 		view->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
 		row_count >= 5u && row_count <= SPARK_QWEN36_SMALL_BATCH_MAX_ROWS &&
 		(view->input_dimension % SPARK_QWEN36_SMALL_BATCH_K_CHUNK) == 0u &&
@@ -1859,7 +1957,7 @@ extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQ
 
 extern "C" cudaError_t SparkQwen36LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen36GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen36GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal)
 {
-	dim3 grid((SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS) + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,row_count,1u);
+	dim3 grid((SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_CONV_CHANNELS) + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,1u,1u);
 	SparkQwen36ConvUpdateKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,weights->conv_weight_bf16,conv_out_bf16,pool->conv_tail_bf16,row_lane_indices,pool->state_cold_by_row,row_count,gdn_layer_ordinal,pool->conv_tail_lane_stride_elements,pool->conv_tail_layer_stride_elements);
 	return(cudaGetLastError());
 }
@@ -1874,7 +1972,7 @@ extern "C" cudaError_t SparkQwen36LaunchGdnStep(cudaStream_t stream, const void 
 {
     dim3 grid(
         SparkQwen36TpDim(SPARK_QWEN36_TPD_GDN_VALUE_HEADS),
-        row_count,
+        1u,
         1u);
     SparkQwen36GdnStepKernel<<<
         grid,
@@ -2219,17 +2317,24 @@ extern "C" cudaError_t SparkQwen36LaunchAccumU64Max(cudaStream_t stream, uint64_
 }
 
 
-extern "C" cudaError_t SparkQwen36LaunchDsparkAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, void *attn_out_bf16, uint32_t block_size, uint64_t base_position)
+extern "C" cudaError_t SparkQwen36LaunchDsparkAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, void *attn_out_bf16, uint32_t block_size, uint64_t base_position, uint32_t context_length)
 {
 	dim3 grid(block_size, 8u);
-	SparkQwen36DsparkAttnKernel<<<grid, SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS / SPARK_QWEN36_DSPARK_ATTN_KV_HEADS, 0u, stream>>>((const __nv_bfloat16 *)q_bf16, (const __nv_bfloat16 *)k_bf16, (const __nv_bfloat16 *)v_bf16, (const __nv_bfloat16 *)q_norm_bf16, (const __nv_bfloat16 *)k_norm_bf16, (__nv_bfloat16 *)attn_out_bf16, block_size, base_position);
+	SparkQwen36DsparkAttnKernel<<<grid, SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS / SPARK_QWEN36_DSPARK_ATTN_KV_HEADS, 0u, stream>>>((const __nv_bfloat16 *)q_bf16, (const __nv_bfloat16 *)k_bf16, (const __nv_bfloat16 *)v_bf16, (const __nv_bfloat16 *)q_norm_bf16, (const __nv_bfloat16 *)k_norm_bf16, (__nv_bfloat16 *)attn_out_bf16, block_size, base_position, context_length);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkTapCapture(cudaStream_t stream, const void *hidden_bf16, const uint64_t *row_positions, void *ring_bf16, uint32_t tap_index, uint32_t row_count, uint32_t hidden_dimension, uint32_t capacity)
+{
+	dim3 grid(row_count, (hidden_dimension + 255u) / 256u);
+	SparkQwen36DsparkTapCaptureKernel<<<grid, 256u, 0u, stream>>>((const __nv_bfloat16 *)hidden_bf16, row_positions, (__nv_bfloat16 *)ring_bf16, tap_index, row_count, hidden_dimension, capacity);
 	return(cudaGetLastError());
 }
 
 extern "C" cudaError_t SparkQwen36LaunchDsparkConv(cudaStream_t stream, const void *x_bf16, const void *delta_f32, const void *base_bf16, void *out_bf16, uint32_t block_size, uint32_t num_groups, uint32_t group_size, uint32_t side)
 {
 	dim3 grid(block_size, num_groups);
-	SparkQwen36DsparkConvKernel<<<grid, group_size, 0u, stream>>>((const __nv_bfloat16 *)x_bf16, (const float *)delta_f32, (const __nv_bfloat16 *)base_bf16, (__nv_bfloat16 *)out_bf16, block_size, num_groups, group_size, side);
+	SparkQwen36DsparkConvKernel<<<grid, group_size, 0u, stream>>>((const __nv_bfloat16 *)x_bf16, (const __nv_bfloat16 *)delta_f32, (const __nv_bfloat16 *)base_bf16, (__nv_bfloat16 *)out_bf16, block_size, num_groups, group_size, side);
 	return(cudaGetLastError());
 }
 
@@ -2239,3 +2344,101 @@ extern "C" cudaError_t SparkQwen36LaunchDsparkMarkov(cudaStream_t stream, const 
 	SparkQwen36DsparkMarkovKernel<<<grid, 256u, 0u, stream>>>((const __nv_bfloat16 *)markov_w1_bf16, (const __nv_bfloat16 *)markov_w2_bf16, prev_token_ids, draft_count, rank, (float *)bias_out, vocab);
 	return(cudaGetLastError());
 }
+
+/*
+ * DFlash2 candidate selector launchers (W4 top-16 over the vocabulary, W3 the
+ * K x K edge lattice and the greedy walk).
+ *
+ * The head is read through the module's OWN head view (SparkQwen36LinearView,
+ * the same descriptor SparkQwen36LaunchLinear consumes and the drafter host
+ * path already builds around state->lm_head_weight_bf16), and the view's
+ * format is checked rather than assumed: DFlash2's candidate top-K needs the
+ * dense BF16 target head, so a quantized payload is refused here loudly
+ * instead of being silently mis-decoded. Every buffer is caller owned; these
+ * launchers allocate nothing and synchronize nothing.
+ */
+
+/* Element count of the stage-one chunk key workspace, for the host's ledger. */
+extern "C" uint64_t SparkQwen36DsparkHeadTopKChunkKeyCount(uint32_t row_count, uint32_t top_k)
+{
+	return((uint64_t)row_count * SPARK_QWEN36_DSPARK_TOPK_CHUNK_COUNT * top_k);
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkHeadTopK(cudaStream_t stream, const SparkQwen36LinearView *head, const void *hidden_bf16, uint64_t *chunk_keys, uint32_t *top_candidate_ids, float *top_scores_f32, void *top_scores_bf16, uint32_t row_count, uint32_t candidate_offset, uint32_t top_k)
+{
+	cudaError_t error;
+	uint32_t shared_bytes;
+	dim3 grid;
+	if ( head == 0 || hidden_bf16 == 0 || chunk_keys == 0 || top_candidate_ids == 0 || row_count == 0u )
+		return(cudaErrorInvalidValue);
+	if ( head->abi_version != SPARK_QWEN36_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION || head->weight_payload == 0 )
+		return(cudaErrorInvalidValue);
+	if ( head->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+		return(cudaErrorInvalidValue);
+	if ( top_k == 0u || top_k > SPARK_QWEN36_DSPARK_TOPK_WIDTH || head->output_dimension < top_k )
+		return(cudaErrorInvalidValue);
+	if ( head->input_dimension == 0u || (head->input_dimension & 1u) != 0u )
+		return(cudaErrorInvalidValue);
+	shared_bytes = head->input_dimension * (uint32_t)sizeof(float);
+	grid = dim3(row_count,SPARK_QWEN36_DSPARK_TOPK_CHUNK_COUNT);
+	SparkQwen36DsparkHeadTopKChunkKernel<<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(hidden_bf16,head->weight_payload,chunk_keys,row_count,head->output_dimension,head->input_dimension,top_k);
+	error = cudaGetLastError();
+	if ( error != cudaSuccess )
+		return(error);
+	SparkQwen36DsparkHeadTopKMergeKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(chunk_keys,top_candidate_ids,top_scores_f32,top_scores_bf16,row_count,candidate_offset,top_k);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkSelectorProject(cudaStream_t stream, const void *hidden_bf16, const void *hidden_projection_bf16, void *context_gate_bf16, uint32_t row_count, uint32_t rank, uint32_t hidden_dimension)
+{
+	uint32_t shared_bytes;
+	if ( hidden_bf16 == 0 || hidden_projection_bf16 == 0 || context_gate_bf16 == 0 || row_count == 0u )
+		return(cudaErrorInvalidValue);
+	if ( rank == 0u || rank > SPARK_QWEN36_DSPARK_SELECTOR_RANK )
+		return(cudaErrorInvalidValue);
+	if ( hidden_dimension == 0u || (hidden_dimension & 1u) != 0u )
+		return(cudaErrorInvalidValue);
+	shared_bytes = hidden_dimension * (uint32_t)sizeof(float);
+	SparkQwen36DsparkSelectorProjectKernel<<<row_count,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(hidden_bf16,hidden_projection_bf16,context_gate_bf16,row_count,rank,hidden_dimension);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkSelectorEdges(cudaStream_t stream, const void *predecessor_bf16, const void *successor_bf16, const uint32_t *candidate_ids, const uint32_t *anchor_token_ids, const float *unary_f32, const void *context_gate_bf16, float *edges_f32, uint32_t batch_count, uint32_t slot_count, uint32_t top_k, uint32_t rank)
+{
+	if ( predecessor_bf16 == 0 || successor_bf16 == 0 || candidate_ids == 0 || anchor_token_ids == 0 )
+		return(cudaErrorInvalidValue);
+	if ( unary_f32 == 0 || context_gate_bf16 == 0 || edges_f32 == 0 )
+		return(cudaErrorInvalidValue);
+	if ( batch_count == 0u || slot_count == 0u )
+		return(cudaErrorInvalidValue);
+	if ( top_k == 0u || top_k > SPARK_QWEN36_DSPARK_SELECTOR_TOP_K || (top_k * top_k) > SPARK_LM_CTA_THREADS )
+		return(cudaErrorInvalidValue);
+	if ( rank == 0u || rank > SPARK_QWEN36_DSPARK_SELECTOR_RANK )
+		return(cudaErrorInvalidValue);
+	SparkQwen36DsparkSelectorEdgeKernel<<<batch_count * slot_count,SPARK_LM_CTA_THREADS,0,stream>>>(predecessor_bf16,successor_bf16,candidate_ids,anchor_token_ids,unary_f32,context_gate_bf16,edges_f32,batch_count,slot_count,top_k,rank);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchDsparkSelectorWalk(cudaStream_t stream, const float *edges_f32, const uint32_t *candidate_ids, uint32_t *draft_token_ids, uint32_t *draft_candidate_slots, uint32_t batch_count, uint32_t slot_count, uint32_t top_k)
+{
+	if ( edges_f32 == 0 || candidate_ids == 0 || draft_token_ids == 0 )
+		return(cudaErrorInvalidValue);
+	if ( batch_count == 0u || slot_count == 0u || top_k == 0u || top_k > SPARK_QWEN36_DSPARK_SELECTOR_TOP_K )
+		return(cudaErrorInvalidValue);
+	SparkQwen36DsparkSelectorWalkKernel<<<(batch_count + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,SPARK_LM_CTA_THREADS,0,stream>>>(edges_f32,candidate_ids,draft_token_ids,draft_candidate_slots,batch_count,slot_count,top_k);
+	return(cudaGetLastError());
+}
+
+/* The whole selector in one stream-ordered sequence: context gate, lattice,
+ * walk. draft_token_ids receives batch_count x slot_count ids. */
+extern "C" cudaError_t SparkQwen36LaunchDsparkSelector(cudaStream_t stream, const void *hidden_bf16, const void *hidden_projection_bf16, const void *predecessor_bf16, const void *successor_bf16, const uint32_t *candidate_ids, const uint32_t *anchor_token_ids, const float *unary_f32, void *context_gate_bf16, float *edges_f32, uint32_t *draft_token_ids, uint32_t *draft_candidate_slots, uint32_t batch_count, uint32_t slot_count, uint32_t top_k, uint32_t rank, uint32_t hidden_dimension)
+{
+	cudaError_t error;
+	error = SparkQwen36LaunchDsparkSelectorProject(stream,hidden_bf16,hidden_projection_bf16,context_gate_bf16,batch_count * slot_count,rank,hidden_dimension);
+	if ( error == cudaSuccess )
+		error = SparkQwen36LaunchDsparkSelectorEdges(stream,predecessor_bf16,successor_bf16,candidate_ids,anchor_token_ids,unary_f32,context_gate_bf16,edges_f32,batch_count,slot_count,top_k,rank);
+	if ( error == cudaSuccess )
+		error = SparkQwen36LaunchDsparkSelectorWalk(stream,edges_f32,candidate_ids,draft_token_ids,draft_candidate_slots,batch_count,slot_count,top_k);
+	return(error);
+}
+

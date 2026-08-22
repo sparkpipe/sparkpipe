@@ -152,6 +152,11 @@ compile_cuda \
 	qwen36_resident_decode_stage \
 	-include "${qwen36_model_header}" \
 	-DSPARK_QWEN36_MODULE_BUILD=1
+compile_cuda \
+	modules/qwen36_resident_decode_stage/validation/spark_qwen36_kv_stale_row_validation.cu \
+	qwen36_kv_stale_row_validation \
+	-include "${qwen36_model_header}" \
+	-DSPARK_QWEN36_MODULE_BUILD=1
 
 glm_model_header="${repository_root}/model-families/glm52/include/sparkpipe/spark_glm52_model.h"
 glm_codecs=(int6 int7 int8 fp8 nvfp4 mxfp4)
