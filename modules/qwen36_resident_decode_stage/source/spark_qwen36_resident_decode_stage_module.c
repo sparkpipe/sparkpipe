@@ -227,6 +227,12 @@ typedef struct SparkQwen36ModuleState
 	void *dflash_fc_out;
 	void *dflash_ctx_normed;
 	void *dflash_ctx_kv;
+	/* incremental context cache (position-keyed): the per-layer K/V
+	 * projections of committed rows, plus the fc/normed watermark. Committed
+	 * positions' taps are final (accepted rows walked their true tokens), so
+	 * cached rows equal the full recompute up to kernel-shape rounding. */
+	void *dflash_ctx_kv_cache;
+	uint64_t dflash_ctx_valid_to;
 	uint64_t *dflash_positions;
 
 	uint64_t dflash_positions_host[2056u];
@@ -693,6 +699,9 @@ static SparkStatus SparkQwen36ModuleLoadDsparkPack(SparkQwen36ModuleState *state
 			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)2048u * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * 2u,&state->dflash_ctx_normed);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)5u * 2u * (2048u + 8u + SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP) * 1024u * 2u,&state->dflash_ctx_kv);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)5u * 2u * 2048u * 1024u * 2u,&state->dflash_ctx_kv_cache);
+		state->dflash_ctx_valid_to = 0u;
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)5u * SPARK_QWEN36_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP * 1024u * 2u,&state->dflash_block_hist_k);
 		if ( status == SPARK_STATUS_OK )
@@ -2288,10 +2297,56 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			/* the window INCLUDES the walked row's tap g_P (the deferred pair) */
 			const uint64_t window_base = base_blk - window;
 			const uint32_t nkv = window + ctx_tail + B;
-	/* 1) context window: fc(cat 5 taps per position) -> hidden_norm. */
-	error = SparkQwen36LaunchLinear(stream,&w->projector,(const uint8_t *)state->dflash_taps_history + window_base * 5u * H * 2u,state->dflash_fc_out,window);
-	if ( error == cudaSuccess )
-		error = SparkQwen36LaunchRmsNorm(stream,state->dflash_fc_out,w->hidden_norm_bf16,state->dflash_ctx_normed,window,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
+	/* 1) context window: fc(cat 5 taps per position) -> hidden_norm.
+	 * INCREMENTAL: only positions committed since the last block forward
+	 * are projected (the reference's precompute-and-store semantics - it
+	 * processes each round's NEW rows only). A backward base resets the
+	 * watermark (new sequence on the lane); ctx-tail mode keeps the full
+	 * recompute (its tail rows are per-round). Kill-switch:
+	 * SPARK_QWEN36_DFLASH2_CTX_CACHE=0. */
+	{
+		const char *cenv = getenv("SPARK_QWEN36_DFLASH2_CTX_CACHE");
+		uint32_t cache_on = (cenv == 0 || cenv[0] != '0') && ctx_tail == 0u ? 1u : 0u;
+		error = cudaSuccess;
+		if ( cache_on != 0u && base_blk < state->dflash_ctx_valid_to )
+			state->dflash_ctx_valid_to = 0u;
+		if ( cache_on != 0u )
+		{
+			uint64_t new_from = window_base > state->dflash_ctx_valid_to ? window_base : state->dflash_ctx_valid_to;
+			/* per-row projection: the wide fc (input 25600) at rows 2..4
+			 * lands on the library scalar kernel whose 100KB dynamic
+			 * shared request fails without the opt-in; rows=1 rides the
+			 * module's lean wide-B1 kernel. New rows per round are few
+			 * (m+1 <= 8), so the per-row loop is cheap. */
+			while ( new_from < base_blk && error == cudaSuccess )
+			{
+				error = SparkQwen36LaunchLinear(stream,&w->projector,(const uint8_t *)state->dflash_taps_history + new_from * 5u * H * 2u,(uint8_t *)state->dflash_fc_out + new_from * H * 2u,1u);
+				if ( error == cudaSuccess )
+					error = SparkQwen36LaunchRmsNorm(stream,(const uint8_t *)state->dflash_fc_out + new_from * H * 2u,w->hidden_norm_bf16,(uint8_t *)state->dflash_ctx_normed + new_from * H * 2u,1u,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
+				{
+					uint32_t cl;
+					for (cl = 0u; cl < SPARK_QWEN36_DSPARK_LAYER_COUNT && error == cudaSuccess; cl++)
+					{
+						SparkQwen36DsparkLayerWeights *cw = &w->layer[cl];
+						const uint64_t cache_lk = (uint64_t)cl * 2u * 2048u * 1024u;
+						const uint64_t cache_lv = cache_lk + (uint64_t)2048u * 1024u;
+						error = SparkQwen36LaunchLinear(stream,&cw->k,(const uint8_t *)state->dflash_ctx_normed + new_from * H * 2u,(uint16_t *)state->dflash_ctx_kv_cache + cache_lk + new_from * 1024u,1u);
+						if ( error == cudaSuccess )
+							error = SparkQwen36LaunchLinear(stream,&cw->v,(const uint8_t *)state->dflash_ctx_normed + new_from * H * 2u,(uint16_t *)state->dflash_ctx_kv_cache + cache_lv + new_from * 1024u,1u);
+					}
+				}
+				new_from++;
+			}
+			if ( error == cudaSuccess )
+				state->dflash_ctx_valid_to = base_blk;
+		}
+		else
+		{
+			error = SparkQwen36LaunchLinear(stream,&w->projector,(const uint8_t *)state->dflash_taps_history + window_base * 5u * H * 2u,state->dflash_fc_out,window);
+			if ( error == cudaSuccess )
+				error = SparkQwen36LaunchRmsNorm(stream,state->dflash_fc_out,w->hidden_norm_bf16,state->dflash_ctx_normed,window,H,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
+		}
+	}
 	/* 2) block[0] = embed(anchor = the frame's EMISSION), roped at ITS OWN
 	 * position base, one past the g_P context row at base-1 (the deferred
 	 * seed pair). Block rows at base..base+7; row r's walk output predicts
@@ -2383,10 +2438,21 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 			error = SparkQwen36LaunchDsparkConv(stream,norm,conv_proj_a,lw->conv_attn_base_bf16,conv_h,B,conv_groups,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,0u);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->q,conv_h,q,B);
-		if ( error == cudaSuccess )
+		if ( error == cudaSuccess && state->dflash_ctx_valid_to >= base_blk )
+		{
+			/* cached: assemble this round's window rows from the
+			 * position-keyed per-layer cache (contiguous D2D copy) */
+			const uint64_t cache_lk = (uint64_t)layer * 2u * 2048u * 1024u;
+			error = cudaMemcpyAsync(kv_k,(const uint16_t *)state->dflash_ctx_kv_cache + cache_lk + window_base * 1024u,(size_t)window * 1024u * 2u,cudaMemcpyDeviceToDevice,stream);
+			if ( error == cudaSuccess )
+				error = cudaMemcpyAsync(kv_v,(const uint16_t *)state->dflash_ctx_kv_cache + cache_lk + (uint64_t)2048u * 1024u + window_base * 1024u,(size_t)window * 1024u * 2u,cudaMemcpyDeviceToDevice,stream);
+		}
+		else if ( error == cudaSuccess )
+		{
 			error = SparkQwen36LaunchLinear(stream,&lw->k,state->dflash_ctx_normed,kv_k,window);
-		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchLinear(stream,&lw->v,state->dflash_ctx_normed,kv_v,window);
+			if ( error == cudaSuccess )
+				error = SparkQwen36LaunchLinear(stream,&lw->v,state->dflash_ctx_normed,kv_v,window);
+		}
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->k,conv_h,kv_k + (uint64_t)(window + ctx_tail) * 1024u,B);
 		if ( error == cudaSuccess )

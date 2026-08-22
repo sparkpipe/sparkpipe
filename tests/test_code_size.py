@@ -605,7 +605,15 @@ from pathlib import Path
 # drafts EXACTLY; the oracle's apply_rope_neox (the stale interleaved
 # variant kept for history); the ctxrun dump widened to the full prefix.
 # 171716 is the exact count.
-CEILING = 171716
+# +66: the incremental context cache - position-keyed per-layer K/V plus
+# the fc/normed watermark (the reference's precompute-and-store semantics:
+# only the round's NEW committed rows are projected; the wide fc runs
+# per-row to stay on the lean wide-B1 kernel). Stream-invariant (measured:
+# cache and no-cache produce identical token streams), O512 wall 70.6s ->
+# 67.7s and the window cost flattened (W=2048 == W=256, so the full window
+# rides free with the better acceptance).
+# 171782 is the exact count.
+CEILING = 171782
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
