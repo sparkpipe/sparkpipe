@@ -54,6 +54,7 @@ void SparkQwen36WarpSpecializedKernel(
 	uint32_t output_dimension)
 {
 	extern __shared__ uint8_t staged_b[];            /* [D][128][144] */
+	__shared__ uint8_t raw_a[2u * 8u * ST_CHUNK_K * 2u];   /* L2-prefetch target (see below) */
 	__shared__ uint8_t a_e4m3[16u * ST_CHUNK_K];
 	__shared__ uint8_t a_scale[16u * (ST_CHUNK_K / 32u)];
 	__shared__ uint8_t b_scale_tile[2u * ST_TILE_N];
@@ -94,6 +95,28 @@ void SparkQwen36WarpSpecializedKernel(
 					weight_payload + (uint64_t)(tile_n_base + neuron) * input_dimension +
 					(uint64_t)chunk * ST_CHUNK_K + k16 * 16u);
 			}
+		/* B scales for chunks 0,1 into the 2-slot tile (the extraction that
+		 * stripped the raw-A ring accidentally deleted this loop too - the
+		 * first chunks read garbage scales and every output corrupted) */
+		for ( uint32_t sc = 0u; sc < 2u && sc < chunks; ++sc )
+			for ( uint32_t n = ptid; n < ST_TILE_N; n += pthreads )
+				b_scale_tile[(sc & 1u) * ST_TILE_N + n] =
+					weight_scale_e8m0[(uint64_t)(tile_n_base + n) * (input_dimension / 128u) + sc];
+		/* L2 PREFETCH of the A input (chunks 0,1): the consumer quantizes
+		 * from GLOBAL - without this prefetch those reads are cold (~600ns
+		 * each, serialized between the consumer barriers) and cost 50 GB/s
+		 * (111 vs 164 measured). The ring is written but NEVER read - no
+		 * fence concerns; its only job is pulling the input through L2. */
+		for ( uint32_t ac = 0u; ac < 2u && ac < chunks; ++ac )
+			for ( uint32_t t = ptid; t < 8u * (ST_CHUNK_K * 2u / 16u); t += pthreads )
+			{
+				uint32_t row = t / (ST_CHUNK_K * 2u / 16u);
+				uint32_t k16 = t % (ST_CHUNK_K * 2u / 16u);
+				if ( row_base + row < row_count )
+					StCpAsync16(raw_a + (ac & 1u) * 8u * ST_CHUNK_K * 2u + row * ST_CHUNK_K * 2u + k16 * 16u,
+						(const uint8_t *)input_bf16 + (uint64_t)(row_base + row) * input_row_stride * 2u +
+						(uint64_t)ac * ST_CHUNK_K * 2u + k16 * 16u);
+			}
 		StCpCommit();
 		for ( chunk = 0u; chunk < chunks; ++chunk )
 		{
@@ -129,6 +152,16 @@ void SparkQwen36WarpSpecializedKernel(
 						neuron * ST_B_STRIDE + k16 * 16u,
 						weight_payload + (uint64_t)(tile_n_base + neuron) * input_dimension +
 						(uint64_t)rchunk * ST_CHUNK_K + k16 * 16u);
+				}
+			if ( chunk + 1u < chunks )
+				for ( uint32_t t = ptid; t < 8u * (ST_CHUNK_K * 2u / 16u); t += pthreads )
+				{
+					uint32_t row = t / (ST_CHUNK_K * 2u / 16u);
+					uint32_t k16 = t % (ST_CHUNK_K * 2u / 16u);
+					if ( row_base + row < row_count )
+						StCpAsync16(raw_a + ((chunk + 1u) & 1u) * 8u * ST_CHUNK_K * 2u + row * ST_CHUNK_K * 2u + k16 * 16u,
+							(const uint8_t *)input_bf16 + (uint64_t)(row_base + row) * input_row_stride * 2u +
+							(uint64_t)(chunk + 1u) * ST_CHUNK_K * 2u + k16 * 16u);
 				}
 			StCpCommit();
 		}
@@ -229,10 +262,18 @@ static inline cudaError_t SparkQwen36LaunchWsLinear(
 		16u * ST_CHUNK_K +                            /* a_e4m3 */
 		16u * (ST_CHUNK_K / 32u) +                    /* a_scale */
 		2u * ST_TILE_N;                               /* b_scale_tile */
-	cudaError_t error = cudaFuncSetAttribute(SparkQwen36WarpSpecializedKernel<4u>,
-		cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
-	if ( error != cudaSuccess )
-		return(error);
+	/* one-time opt-in: cudaFuncSetAttribute is a runtime call that costs
+	 * ~0.3ms per invocation - calling it per GEMM launch halved throughput
+	 * (112 vs 167 GB/s measured) */
+	static bool ws_shared_ready = false;
+	if ( !ws_shared_ready )
+	{
+		cudaError_t error = cudaFuncSetAttribute(SparkQwen36WarpSpecializedKernel<4u>,
+			cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
+		if ( error != cudaSuccess )
+			return(error);
+		ws_shared_ready = true;
+	}
 	SparkQwen36WarpSpecializedKernel<4u><<<grid, 512u, shared, stream>>>(
 		(const uint8_t *)weight_payload, weight_scale_e8m0,
 		input_bf16, input_row_stride, output_bf16, output_row_stride,
