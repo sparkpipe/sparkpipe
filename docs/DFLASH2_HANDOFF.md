@@ -88,6 +88,30 @@ W=128: 73.3s (acceptance loss 159->171 rounds beats the round-time gain).
 Serve `SPARK_QWEN36_DFLASH2_WINDOW=256`.
 
 Next-session targets in order:
+
+0. **CUDA-GRAPH THE VERIFY FRAME** (the master lever - fixes the FFN's launch
+   gaps AND the GDN's per-layer launch overhead at once; the reference's flat
+   round cost IS this). Port the K3 pattern verbatim
+   (spark_k3_resident_decode_stage_runner.cu: graphs keyed by shape, warm run
+   first - shared-memory opt-ins must precede capture - capture on second
+   sighting, cudaStreamCaptureModeRelaxed, graphs_broken fallback). Four
+   capture-blockers in our frame, each with a fix:
+   a. The padding-select's cudaStreamSynchronize + emissions D2H inside
+      RunDsparkBlockForward - DROP it (the adapter already recomputes the
+      identical m from its own post-frame data).
+   b. The host draft walk + dspark_sel_out D2H - move selection ON DEVICE:
+      with argmax selection the walk is rank-0, so a rank-0 gather kernel
+      writes draft_token_ids directly; the adapter's per-round D2H of the
+      drafts moves AFTER the frame (outside the capture).
+   c. The ctx-cache's variable per-row fills (new_count varies, pointers
+      vary) - run the fill OUTSIDE the captured unit (it is ~12 small
+      launches); the per-layer D2D kv assembly is fixed-size/fixed-pointer
+      and captures as-is.
+   d. getenv() reads in the frame body bake their branch into the graph -
+      fine (env is static per run); just do not flip them mid-run.
+   The verify frame is FIXED-SHAPE per k (8 rows at k=7) - one graph per
+   (rows, kind); TP1 has no collectives; the module stream is non-default.
+
 1. Profile the drafter's phases (wrap them like the target's) and attack the
    ~80ms: incremental ctx-KV cache (the reference precomputes ONLY the new
    rows per round; we rebuild the window), and/or the prepped-K cache-attn
