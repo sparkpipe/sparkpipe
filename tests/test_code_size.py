@@ -627,8 +627,8 @@ from pathlib import Path
 # coalesced reads reach 266+). The deep-ring (4+ stages) is the
 # theory-backed path past it; the depth-2 ring is verified bit-exact at
 # parity with the direct kernel.
-# 172126 is the exact count.
-CEILING = 172126
+# 172144 is the exact count.
+CEILING = 172144
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
