@@ -35,8 +35,8 @@
 //   this kernel, first verified                 126.4
 //   + lean sync (verified this session, recipe below)  133.0-133.4
 //   + A-quantize moved to the consumer         127.3  (WORSE: serializes mma)
-   A-OVERLAP, D=4, quantize-from-global       176.8  VERIFIED BIT-EXACT
-   A-OVERLAP, D=2 (racy)                      176.3  ~3% corrupt
+//   A-OVERLAP, D=4, quantize-from-global       176.8  VERIFIED BIT-EXACT
+//   A-OVERLAP, D=2 (racy)                      176.3  ~3% corrupt
 //   STAGE_ONLY experiments (the decisive data):
 //     producers + inline A-quantize            ~136
 //     pure-B producers (no A work at all)      179.6-182.2
@@ -417,7 +417,12 @@ int main(int argc, char **argv)
 		double bytes = (double)payload_bytes + (double)scale_bytes + (double)M * K * 2u + (double)M * N * 2u;
 		double t0 = now_s();
 		for (int i = 0; i < iters; i++)
+		{
+#ifdef ISOLATED
+			CHECK(cudaStreamSynchronize(stream));
+#endif
 			CHECK(LaunchStaged(stream, payload, scale, in, K, out, N, M, K, N, depth));
+		}
 		CHECK(cudaStreamSynchronize(stream));
 		double dt = (now_s() - t0) / iters;
 		printf("staged M=%u K=%u N=%u depth=%u: %.3f ms/iter, effective %.1f GB/s (direct byte-load: 125.6; pure read: 266-276)\n",

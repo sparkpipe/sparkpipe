@@ -83,7 +83,11 @@ def main():
             # Only 128x128-divisible matrices convert: the native MMA needs
             # output%128 and input%128; small projections (GDN beta/decay,
             # 48-row outputs) stay F32B128 on the scalar path.
-            convertible = e["fmt"] == FMT_F32B128 and rows % 128 == 0 and cols % 128 == 0
+            # NOTE: the original version read the STALE parsing-loop rows/cols
+            # here - the gate silently failed for every entry and the tool
+            # degenerated to a byte-copy passthrough (the vacuous 0.0 error).
+            convertible = (e["fmt"] == FMT_F32B128 and
+                e["rows"] % 128 == 0 and e["cols"] % 128 == 0)
             if not convertible:
                 blob = raw[e["poff"] : e["poff"] + e["pbytes"]]
                 scale = raw[e["soff"] : e["soff"] + e["sbytes"]] if e["sbytes"] else b""
@@ -139,6 +143,11 @@ def main():
                 stats.append((e["kind"], e["layer"], rows, cols, max_rel, sum_rel / max(n_rel, 1)))
             e["new_poff"], e["new_pbytes"] = poff_new, pbytes_new
             e["new_soff"], e["new_sbytes"] = soff_new, sbytes_new
+        # rewrite the header's file_bytes (the loader bounds-checks offsets
+        # against it; the first repack left the ORIGINAL size and every tail
+        # entry past it failed validation)
+        f.seek(112)
+        f.write(struct.pack("<Q", cursor))
         # rewrite the directory in place with updated format/scale fields
         f.seek(dir_off)
         for e in entries:

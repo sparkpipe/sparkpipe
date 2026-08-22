@@ -173,6 +173,35 @@ What SOTA does that we don't (isolated):
    (tap-stability blocker, root-caused to the multi-row PREFILL attention
    kernel numerics).
 
+## 0d. THE MX-PACK POSTMORTEM (end of session) - read before any MX work
+
+The earlier "MX serving format" measurements were VACUOUS: the repack tool's
+convertibility gate read STALE parsing-loop variables (rows/cols from the
+LAST entry) so it never converted anything - it byte-copied the pack and the
+"lossless 0.0 error" was the absence of conversions. Every "MX" number before
+this correction was actually F32B128. Both tool bugs are now fixed and
+verified: the gate reads e["rows"]/e["cols"], and the header's file_bytes
+(offset 112) is rewritten (the loader bounds-checks offsets against it - the
+first fixed repack left the original 29.9GB size and every tail entry past
+it failed pack validation with a misleading kind/layer error).
+
+The REAL repack (tools/qwen36_stagepack_mx_repack.py, both fixes in) converts
+407 tensors with mean_rel ~2.3% (max_rel 0.98 on near-zero elements - the
+approved quantization trade) to /home/spark2/sparkdata/qwen38-mx2.tp1.qwen36sp
+(format histogram verified: {0:363, 6:407, 1:96}). It LOADS (validator ready
+lines) but the first frames fault with a deferred illegal-memory-access that
+surfaces at the mtp_emit sync - the faulting kernel is upstream in the
+verify-frame path with fmt-6 weights. THAT AUDIT is the next MX step: run
+with the mx2 pack + SPARK_QWEN36_WS_GEMM=0 (library native path) to see if
+the fault is the WS kernel in situ or the fmt-6 path generally, then
+compute-sanitize. Production is RESTORED to the F32B128 pack (verified:
+67.6s / 7.58 tps / stream e3838ba2bf2475d4).
+
+The warp-specialized kernel IS wired into SparkQwen36LaunchLinear (routes
+when a format-6 pack is loaded; kill-switch SPARK_QWEN36_WS_GEMM=0) - it is
+DORMANT on the F32B128 pack. Its isolated (dependency-cold) bench numbers:
+166.9-171.2 GB/s at the verify shapes vs the library kernel's 125.6.
+
 ## 1. Where We Are
 
 | Metric | O128 | GSM | Notes |

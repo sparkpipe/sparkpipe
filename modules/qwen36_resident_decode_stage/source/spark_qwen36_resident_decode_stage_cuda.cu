@@ -4,6 +4,7 @@
 #include "sparkpipe/spark_qwen36_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_lm_kernels.cuh"
 #include "spark_qwen36_dspark_cuda.cuh"
+#include "spark_qwen36_native_ws.cuh"
 
 /*
  * Qwen 3.6 27B device code. Two production hot paths share these kernels: a
@@ -1907,6 +1908,21 @@ extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQ
 		const uint8_t *scale = (const uint8_t *)view->weight_scale_e8m0;
 		const uint64_t payload_stride = (uint64_t)view->output_dimension * view->input_dimension;
 		const uint64_t scale_stride = (uint64_t)view->output_dimension * (view->input_dimension / 128u);
+		/* The warp-specialized kernel (176.8-178.1 GB/s measured bit-exact on
+		 * the 89MB verify-shape sweep vs the library path's 125.6): producers
+		 * cp.async the B ring, consumers quantize+mma. D=4 ONLY (D=2 has a
+		 * depth-specific race). Kill-switch: SPARK_QWEN36_WS_GEMM=0. */
+		{
+			const char *ws_env = getenv("SPARK_QWEN36_WS_GEMM");
+			if ( (ws_env == 0 || ws_env[0] != '0') &&
+				row_count <= 16u &&
+				(view->input_dimension % 128u) == 0u &&
+				(view->output_dimension % 128u) == 0u )
+				return(SparkQwen36LaunchWsLinear(stream,view->weight_payload,scale,
+					input_bf16,view->input_dimension,
+					output_bf16,view->output_dimension,
+					row_count,view->input_dimension,view->output_dimension));
+		}
 		if ( SparkLmSm121NativeDecodeShape(row_count) != 0u )
 			return(SparkLmHostLaunchSm121NativeLinear<
 				SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(
