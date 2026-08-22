@@ -103,9 +103,14 @@ is at or under fifty lines.
 
 ## Open by design
 
-The chunked prefill kernel (throughput only); the MTP draft/verify execution
-against the tree engine (weights load and verify today); the work-control
-residency layer that drives the KV client with the glm52 JIT discipline
-(lookahead, pressure limits, packet-zero priority); the tensor-core decode
-attention. Each is a bounded follow-up commit on this branch, none blocks
-bring-up.
+The work-control residency layer that drives the KV client with the glm52 JIT
+discipline (lookahead, pressure limits, packet-zero priority - today the client
+is opened and closed but not driven); the tensor-core decode attention (the
+wmma tiling of the three inner products). Each is a bounded follow-up commit on
+this branch, none blocks bring-up.
+
+The chunked prefill kernel and the MTP draft/verify rounds have landed since
+this list was written; so has the DSpark block drafter with its device-side
+candidate selector. Island mapping against the frozen hwiface v1:
+ISLAND_MAPPING.md in this directory.
+
