@@ -650,7 +650,14 @@ from pathlib import Path
 # 133.0, and the 180+ path (cp.async raw-A + shared-side quantize or a
 # third warp group; TMA for the last 45 to the 266 pure-read ceiling).
 # 172592 is the exact count.
-CEILING = 172592
+# +291: the production WS header fixed for deployment - the
+# prologue's b_scale_tile staging restored (the extraction regex had
+# deleted it; garbage scales corrupted everything), the producer's A-input
+# L2 prefetch restored (cold consumer reads cost 50 GB/s), and one-time
+# cudaFuncSetAttribute. Result: 173.9-175.6 GB/s bit-exact on every
+# production shape; O512 9.30 tps (+23%), E=4.94, bit-lossless.
+# 172883 is the exact count.
+CEILING = 172883
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
