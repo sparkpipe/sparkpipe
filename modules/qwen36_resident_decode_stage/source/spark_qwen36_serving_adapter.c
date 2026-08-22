@@ -34,15 +34,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <cuda_runtime.h>
 
+
+static double clock_gettime_mono_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC,&ts);
+	return (double)ts.tv_sec * 1e9 + (double)ts.tv_nsec;
+}
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_qwen36_model.h"
+#include "spark_qwen36_dspark_format.h"
 #include "sparkpipe/spark_qwen36_resident_decode_stage_firmware.h"
 #include "spark_qwen36_paged_kv.h"
 #include "sparkpipe/spark_qwen36_serving_adapter.h"
@@ -152,19 +161,26 @@ static uint32_t SparkQwen36ServingSpecFirstDraftPolicy(void)
 	return(SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY_RECOVER);
 }
 
-/* Speculation method: "mtp" (default) drives the MTP chain; "dspark" drives
- * the DSpark block-diffusion drafter (block_size drafts, dual-source K/V).
- * Both produce draft[0] as the just-committed position (redundant with C0),
- * so the verify/replay phases are shared; only the phase-one draft view,
- * flag, and draft buffer differ. */
+/* Speculation method: "mtp" (default) drives the MTP chain; "dflash2" drives
+ * the DFlash2 block-diffusion drafter (block 8 = C0 anchor + 7 mask tokens,
+ * conv-wrapped 5-layer backbone, top-16 + candidate-selector walk). "dspark"
+ * names the same driver path for the superseded DSpark drafter pack and fails
+ * loudly at load time against a DFlash2 pack (the module geometry check
+ * rejects 40-head/FFN-10240 weights). Both block drafters produce draft[0] as
+ * the just-committed position (redundant with C0), so the verify/replay
+ * phases are shared; only the phase-one draft view, flag, and draft buffer
+ * differ. */
 #define SPARK_QWEN36_SERVING_SPEC_METHOD_ENV "SPARK_QWEN36_SERVING_SPEC_METHOD"
 #define SPARK_QWEN36_SERVING_SPEC_METHOD_MTP 0u
 #define SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK 1u
+#define SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2 2u
 static uint32_t SparkQwen36ServingSpecMethod(void)
 {
 	const char *value = getenv(SPARK_QWEN36_SERVING_SPEC_METHOD_ENV);
 	if ( value != 0 && strcmp(value,"dspark") == 0 )
 		return(SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK);
+	if ( value != 0 && strcmp(value,"dflash2") == 0 )
+		return(SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2);
 	return(SPARK_QWEN36_SERVING_SPEC_METHOD_MTP);
 }
 
@@ -174,8 +190,8 @@ static uint32_t SparkQwen36ServingSpecMethod(void)
  * extra rows cost one head pass each. */
 static uint32_t SparkQwen36ServingSpecAudit(void)
 {
-	const char *text = getenv("SPARK_QWEN36_SPEC_AUDIT");
-	return(text != 0 && text[0] != 0 && (text[0] != 0x30 || text[1] != 0) ? 1u : 0u);
+\tconst char *text = getenv("SPARK_QWEN36_SPEC_AUDIT");
+\treturn(text != 0 && text[0] != 0 && (text[0] != 0x30 || text[1] != 0) ? 1u : 0u);
 }
 
 /* THE CREDITED CEILING of this build. A round credits (accepted drafts + 3) -
@@ -185,27 +201,32 @@ static uint32_t SparkQwen36ServingSpecAudit(void)
  * unreachable instead of being chased through the drafter. */
 static uint32_t SparkQwen36ServingCreditCeiling(uint32_t draft_count)
 {
-	uint32_t by_block = draft_count > 0u ? draft_count - 1u : 0u;
-	uint32_t by_cap = (uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u;
-	return(by_block < by_cap ? by_block : by_cap);
+\tuint32_t by_block = draft_count > 0u ? draft_count - 1u : 0u;
+\tuint32_t by_cap = (uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u;
+\treturn(by_block < by_cap ? by_block : by_cap);
 }
 
-/* Draft depth for the active spec method. DSpark drafts its full block by
- * default, but honors SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT as a CAP:
- * verifying fewer drafts costs fewer verify rows per round, so at low
- * acceptance a smaller depth drops the round cost below the breakeven (the
- * measured round cost is ~2.9 no-spec tokens; the ladder must beat it). The
- * drafter still produces block-1 drafts; the surplus is simply not walked. */
+/* Draft depth for the active spec method. Merge consolidation: main's
+ * BlockDraftMethod generalizes the block check to BOTH block drafters
+ * (DSPARK and DFLASH2); unified's cap rule is kept verbatim - an unset or
+ * zero SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT means the FULL block,
+ * a nonzero cap verifies only the first k drafts (the surplus is still
+ * drafted, just not walked). */
+static uint32_t SparkQwen36ServingBlockDraftMethod(uint32_t spec_method)
+{
+\treturn(spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK || spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2);
+}
 static uint32_t SparkQwen36ServingActiveDraftCount(uint32_t spec_method)
 {
-	if ( spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK )
-	{
-		uint32_t cap = SparkQwen36ServingSpeculativeDraftCount();
-		if ( cap == 0u || cap >= SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE )
-			return(SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE);
-		return(cap);
-	}
-	return(SparkQwen36ServingSpeculativeDraftCount());
+\tif ( !SparkQwen36ServingBlockDraftMethod(spec_method) )
+\t\treturn(SparkQwen36ServingSpeculativeDraftCount());
+\t{
+\t\tuint32_t block = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
+\t\tuint32_t cap = SparkQwen36ServingSpeculativeDraftCount();
+\t\tif ( cap == 0u || cap >= block )
+\t\t\treturn(block);
+\t\treturn(cap);
+\t}
 }
 /* GDN snapshot slots. The two-phase min-accept schedule keeps one verify
  * snapshot in flight per lane, capped by the module's slot ceiling; a lane
@@ -305,12 +326,14 @@ typedef struct SparkQwen36ServingPending
 	uint32_t frame_output_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t frame_token_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t dspark_draft_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
+	SparkQwen36GdnSnapshotView prefix_gdn_view;
 	SparkQwen36ServingSpecState spec[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t spec_active;
 	uint32_t spec_tokens_per_sequence;
 	uint32_t spec_total_accepted;
 	uint32_t spec_chain_dead;
 	uint32_t spec_first_draft_miss;
+	uint32_t spec_fold;
 } SparkQwen36ServingPending;
 
 /* Per-frame transport shim state. The module calls post_receive/send through
@@ -379,10 +402,62 @@ typedef struct SparkQwen36ServingState
 	uint32_t *match_tokens;
 	uint32_t *device_block_indices;
 	uint32_t *device_block_counts;
+	/* Merge consolidation: main's prefix-cache state table (its adapter-side
+	 * publish/borrow protocol owning the persistent GDN pool slots) joins the
+	 * unified state; unified's runtime/prefix_cache path reads the same KV.
+	 * Both features are retained. */
+	uint32_t *free_blocks;
+	uint32_t free_block_count;
+	/* ---- prefix cache (KV reuse across sequences; the client protocol) ----
+	 * Per-block refcounts (entries share blocks when one prefix extends
+	 * another); identity-keyed entries own refs on their blocks + one
+	 * persistent GDN snapshot slot each. */
+	uint8_t *block_refs;
+	uint32_t lane_prefix_entry[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t lane_prefix_blocks[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint8_t lane_publish_identity[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT][32];
+	uint32_t lane_publish_tokens[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t lane_publish_armed[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t lane_restore_slot[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t lane_restore_armed[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	struct {
+		uint8_t valid;
+		uint8_t identity[32];
+		uint32_t token_count;
+		uint32_t block_count;
+		uint32_t blocks[64];
+		uint32_t refs;
+		uint64_t last_used;
+	} prefix_entries[SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT];
+	uint64_t prefix_epoch;
 	uint32_t lane_block_counts[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_context_tokens[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	void *gather_scratch;
 	SparkQwen36ServingTransportShim shim;
+	/* DFlash2 draft source: 0 until the first draft runs; the verify frame
+	 * thereafter re-drafts at its tail (state-consistent taps), so the
+	 * decode frame stops drafting after the first iteration. Keyed by the
+	 * active sequence: a new sequence restarts at the decode frame. */
+	uint32_t dflash2_drafts_valid;
+	uint64_t dflash2_draft_sequence_id;
+	/* Drafts must outlive the submission: the replay-tail drafter writes
+	 * here, and the NEXT submission's remap consumes them (the pending
+	 * struct dies at the submission boundary). */
+	uint32_t dflash2_next_draft_ids[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
+	/* Bonus fold (the vLLM round shape): when the correction frame ran the
+	 * drafter at its tail, the NEXT decode submission skips its decode walk -
+	 * the verify's row 0 walks the client token (the correction's emission)
+	 * directly, cutting the round from three full-model frames to two. Armed
+	 * only for the matching sequence AND position, so any desync (plain
+	 * decode, prefill, dead chain) self-heals into the bootstrap path. */
+	uint32_t dflash2_fold_armed;
+	uint64_t dflash2_fold_position;
+	uint64_t dflash2_fold_sequence_id;
+	/* one-frame chain: the verify row-0 restore slot (the previous round's
+	 * accept depth; -1 = walk from live state) and the multi-block draft
+	 * matrix (block i = verify row i's block; the host picks block m). */
+	int32_t dflash2_fold_restore_slot;
+	uint32_t dflash2_draft_matrix[SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_MAX_MULTI_BLOCKS * (SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u)];
 	SparkQwen36ServingPending pending[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkQwen36ServingState;
 
@@ -390,7 +465,10 @@ static const SparkModelServingAdapterDescriptor SparkQwen36ServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH,
+/* Merge consolidation: capability union - main adds RELEASE. The duplicate
+ * cache_block_token_count line from main is dropped; the descriptor already
+ * carries it below. */
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH,
 	.stage_count = SPARK_QWEN36_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_QWEN36_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -405,7 +483,7 @@ static const SparkModelServingAdapterDescriptor SparkQwen36ServingDescriptor =
 	.max_resident_sequence_count = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS,
-	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
+	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE,
 	.adapter_id = SPARK_QWEN36_SERVING_ADAPTER_ID,
 	.model_id = SPARK_QWEN36_SERVING_MODEL_ID,
 	.model_revision = QWEN36_MODEL_REVISION,
@@ -532,11 +610,14 @@ static SparkStatus SparkQwen36ServingSetEnvironment(
 	SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_KV_BLOCKS",state->kv_block_count);
 	if ( SparkQwen36ServingSpeculationEnabled() != 0u && SparkQwen36ServingOwnsFinalHead(state) != 0u )
 	{
-		/* The GDN snapshot is used by BOTH the MTP verify and the DSpark verify/replay,
-		 * only the MTP module itself is suppressed for the dspark method - and by the
-		 * prefix cache, whose checkpoint slots share this pool behind slot 0. */
-		SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS",SPARK_QWEN36_SERVING_GDN_SNAPSHOT_SLOTS);
-		if ( SparkQwen36ServingSpecMethod() != SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK )
+		/* The GDN snapshot is used by BOTH the MTP verify and the block-drafter
+		 * verify/replay; only the MTP module itself is suppressed for the
+		 * dspark/dflash2 methods. Merge consolidation: main's explicit 16-slot
+		 * request for block-drafter deployments (the harness slots 0-7 plus the
+		 * per-row verify checkpoints at base 8) rides unified's extended
+		 * ceiling macro, which now IS 16. */
+		SPARK_QWEN36_SERVING_SET_UNSIGNED("SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS",SparkQwen36ServingBlockDraftMethod(SparkQwen36ServingSpecMethod()) ? 16u : SPARK_QWEN36_SERVING_GDN_SNAPSHOT_SLOTS);
+		if ( !SparkQwen36ServingBlockDraftMethod(SparkQwen36ServingSpecMethod()) )
 			SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_MTP","1");
 		else
 			SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_MTP","0");
@@ -552,6 +633,18 @@ static SparkStatus SparkQwen36ServingSetEnvironment(
 	{
 		SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_MTP","0");
 		SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS","0");
+	}
+	/* Fail loudly, never draft silently: a block-drafter method without a
+	 * drafter pack initializes an unarmed module whose draft forward is a
+	 * no-op (vLLM's V1 trap, mirrored). */
+	if ( SparkQwen36ServingSpeculationEnabled() != 0u && SparkQwen36ServingOwnsFinalHead(state) != 0u && SparkQwen36ServingBlockDraftMethod(SparkQwen36ServingSpecMethod()) != 0u )
+	{
+		const char *drafter_pack = getenv("SPARK_QWEN36_DSPARK_PACK_PATH");
+		if ( drafter_pack == 0 || drafter_pack[0] == '\0' )
+		{
+			fprintf(stderr,"qwen36_serving spec method requires SPARK_QWEN36_DSPARK_PACK_PATH\n");
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		}
 	}
 	SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_KV_STORE","none");
 	SPARK_QWEN36_SERVING_SET_TEXT("SPARK_QWEN36_STAGE_KV_SERVICE","none");
@@ -679,12 +772,18 @@ static SparkStatus SparkQwen36ServingValidateSubmissionBase(
 		return(SPARK_STATUS_BUSY);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkQwen36ServingDescriptor,&state->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"qwen36_debug validate_runtime status=%d kind=%u rows=%u lanes=%u act=%u tps=%u new_tokens=%u pos=%llu ctx=%llu\\n",(int)status,submission->work_kind,submission->row_count,submission->lane_count,submission->active_sequence_count,submission->tokens_per_sequence,submission->new_token_count,(unsigned long long)submission->sequence_position,(unsigned long long)(submission->active_sequence_count > 0u ? submission->lanes[0].context_token_count : 0u));
 		return(status);
+	}
 	if ( submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkQwen36ServingValidateRowOrder(state,submission);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"qwen36_debug row_order status=%d\\n",(int)status);
 		return(status);
+	}
 	if ( submission->model_extension_bytes != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
 	return(SPARK_STATUS_OK);
@@ -701,6 +800,8 @@ static SparkStatus SparkQwen36ServingValidateSubmission(
 	status = SparkQwen36ServingValidateSubmissionBase(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		return(SPARK_STATUS_OK);
 	return(SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count));
 }
 
@@ -818,13 +919,47 @@ static uint32_t SparkQwen36ServingAvailableSubmissionCount(
  * (shared blocks just drop their reference) before the new coverage is
  * allocated, and its checkpoints die with it. On any failure the lane is
  * dropped back to cold so the next touch is a position-zero reset, matching
- * the module's own continuity invalidation. */
+ * the module's own continuity invalidation.
+ *
+ * Merge consolidation: main's flat-pool refcount release below stays for its
+ * prefix-entry protocol (SPARK_QWEN36_SERVING_KV_FLAT=1 selects that whole
+ * backend); unified's paged pool remains the default ledger. */
+static uint32_t SparkQwen36ServingKvFlatMode(void)
+{
+	const char *env = getenv("SPARK_QWEN36_SERVING_KV_FLAT");
+	return(env != 0 && env[0] != 0x30 && env[0] != 0 ? 1u : 0u);
+}
+
+static void SparkQwen36ServingBlockRelease(SparkQwen36ServingState *state, uint32_t block)
+{
+	if ( state->block_refs != 0 && --state->block_refs[block] == 0u )
+		state->free_blocks[state->free_block_count++] = block;
+}
+
 static void SparkQwen36ServingReleaseLane(
 	SparkQwen36ServingState *state,
 	uint32_t slot)
 {
-	SparkQwen36PagedKvLaneReset(&state->paged,slot);
+	if ( SparkQwen36ServingKvFlatMode() != 0u )
+	{
+		uint32_t ordinal;
+		for (ordinal=0u; ordinal<state->lane_block_counts[slot]; ordinal++)
+			SparkQwen36ServingBlockRelease(state,state->host_block_indices[((uint64_t)slot * state->blocks_per_lane) + ordinal]);
+	}
+	else
+		SparkQwen36PagedKvLaneReset(&state->paged,slot);
+	if ( state->lane_prefix_entry[slot] != 0xFFu )
+	{
+		/* the borrowed prefix blocks carried their own refs: the lane's
+		 * per-block release above already dropped them */
+		state->prefix_entries[state->lane_prefix_entry[slot]].refs--;
+		state->lane_prefix_entry[slot] = 0xFFu;
+	}
+	state->lane_prefix_blocks[slot] = 0u;
+	state->lane_block_counts[slot] = 0u;
 	state->lane_context_tokens[slot] = 0u;
+	state->lane_publish_armed[slot] = 0u;
+	state->lane_restore_armed[slot] = 0u;
 }
 
 /* Collect one lane's row tokens at or above min_position, in row order
@@ -857,9 +992,28 @@ static SparkStatus SparkQwen36ServingCoverLane(
 	uint64_t end_position)
 {
 	uint64_t committed;
-	uint32_t slot,token_count;
+	uint32_t slot,token_count,ordinal,required;
 	if ( state->stage_attn_layer_count == 0u )
 		return(SPARK_STATUS_OK);
+	if ( SparkQwen36ServingKvFlatMode() != 0u )
+	{
+		/* main's flat-pool cover: its prefix publish/borrow protocol reads
+		 * lane_block_counts / host_block_indices directly. */
+		slot = submission->lanes[lane].resident_sequence_slot;
+		required = (uint32_t)((end_position + SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
+		if ( required > state->blocks_per_lane )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		for (ordinal=state->lane_block_counts[slot]; ordinal<required; ordinal++)
+		{
+			if ( state->free_block_count == 0u )
+				return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			state->host_block_indices[((uint64_t)slot * state->blocks_per_lane) + ordinal] = state->free_blocks[--state->free_block_count];
+			if ( state->block_refs != 0 )
+				state->block_refs[state->host_block_indices[((uint64_t)slot * state->blocks_per_lane) + ordinal]] = 1u;
+		}
+		state->lane_block_counts[slot] = required;
+		return(SPARK_STATUS_OK);
+	}
 	slot = submission->lanes[lane].resident_sequence_slot;
 	/* Continuation ids past the sequence's committed frontier enter the
 	 * core sequence (canonical publishing); everything else the row
@@ -871,7 +1025,6 @@ static SparkStatus SparkQwen36ServingCoverLane(
 		committed,state->match_tokens,state->max_input_row_count);
 	return(SparkQwen36PagedKvCover(&state->paged,slot,end_position,
 		token_count != 0u ? state->match_tokens : 0,token_count));
-}
 
 /* Longest published-prefix reuse for one cold lane's prompt. Returns the
  * matched token count (block-granular) and binds the shared blocks; zero
@@ -913,6 +1066,113 @@ static uint32_t SparkQwen36ServingMatchPrefix(
 	return(match.block_count * state->paged.configuration.block_token_count);
 }
 
+/* ---- prefix store ops ---- */
+static uint32_t SparkQwen36ServingPrefixFind(SparkQwen36ServingState *state, const uint8_t *identity, uint32_t token_count)
+{
+	uint32_t index;
+	for (index=0u; index<SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT; index++)
+		if ( state->prefix_entries[index].valid != 0u && state->prefix_entries[index].token_count == token_count &&
+			memcmp(state->prefix_entries[index].identity,identity,32) == 0 )
+			return(index);
+	return(0xFFu);
+}
+
+static SparkStatus SparkQwen36ServingPrefixPublish(SparkQwen36ServingState *state, uint32_t slot)
+{
+	uint32_t index,blocks,ordinal,free_index;
+	uint64_t used;
+	/* create/refresh the entry for this lane's armed publish: the entry
+	 * takes a ref on every prefix block (shared with the lane + any
+	 * borrowing lanes), and owns GDN pool slot = entry index */
+	blocks = (state->lane_publish_tokens[slot] + SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+	if ( blocks == 0u || blocks > 64u || blocks > state->lane_block_counts[slot] )
+		return(SPARK_STATUS_OK); /* nothing to pin (degenerate) */
+	index = SparkQwen36ServingPrefixFind(state,state->lane_publish_identity[slot],state->lane_publish_tokens[slot]);
+	if ( index == 0xFFu )
+	{
+		free_index = 0xFFu;
+		used = 0u;
+		for (index=0u; index<SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT; index++)
+		{
+			if ( state->prefix_entries[index].valid == 0u )
+			{
+				free_index = index;
+				break;
+			}
+			if ( state->prefix_entries[index].refs == 0u && (free_index == 0xFFu || state->prefix_entries[index].last_used < used) )
+			{
+				used = state->prefix_entries[index].last_used;
+				free_index = index;
+			}
+		}
+		index = free_index;
+		if ( index == 0xFFu )
+			return(SPARK_STATUS_OK); /* pool exhausted: skip this publish */
+		if ( state->prefix_entries[index].valid != 0u )
+		{
+			for (ordinal=0u; ordinal<state->prefix_entries[index].block_count; ordinal++)
+				SparkQwen36ServingBlockRelease(state,state->prefix_entries[index].blocks[ordinal]);
+			memset(&state->prefix_entries[index],0,sizeof(state->prefix_entries[index]));
+		}
+		memcpy(state->prefix_entries[index].identity,state->lane_publish_identity[slot],32);
+		state->prefix_entries[index].valid = 1u;
+		state->prefix_entries[index].token_count = state->lane_publish_tokens[slot];
+		state->prefix_entries[index].block_count = blocks;
+		for (ordinal=0u; ordinal<blocks; ordinal++)
+			state->prefix_entries[index].blocks[ordinal] = state->host_block_indices[((uint64_t)slot * state->blocks_per_lane) + ordinal];
+		state->prefix_entries[index].refs = 0u;
+		/* the entry's own pin on each block (taken once, at creation) */
+		for (ordinal=0u; ordinal<blocks; ordinal++)
+			if ( state->block_refs != 0 )
+				state->block_refs[state->prefix_entries[index].blocks[ordinal]]++;
+	}
+	state->prefix_entries[index].last_used = ++state->prefix_epoch;
+	/* the publishing lane carries exactly ONE entry borrow: swap it off the
+	 * previous chain entry so re-publishes (each longer boundary) do not
+	 * leak refs and exhaust the 8-slot pool */
+	if ( state->lane_prefix_entry[slot] != index )
+	{
+		uint32_t previous = state->lane_prefix_entry[slot];
+		if ( previous != 0xFFu && state->prefix_entries[previous].refs != 0u )
+			state->prefix_entries[previous].refs--;
+		state->prefix_entries[index].refs++;
+		state->lane_prefix_entry[slot] = index;
+		state->lane_prefix_blocks[slot] = state->prefix_entries[index].block_count;
+	}
+	fprintf(stderr,"qwen36_prefix publish slot=%u entry=%u tokens=%u blocks=%u\n",slot,index,state->lane_publish_tokens[slot],blocks);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkQwen36ServingPrefixBorrow(SparkQwen36ServingState *state, uint32_t slot, const uint8_t *identity, uint32_t token_count)
+{
+	uint32_t index,blocks,ordinal;
+	index = SparkQwen36ServingPrefixFind(state,identity,token_count);
+	if ( index == 0xFFu )
+		return(SPARK_STATUS_NOT_FOUND);
+	blocks = state->prefix_entries[index].block_count;
+	if ( blocks > state->blocks_per_lane )
+		return(SPARK_STATUS_NOT_FOUND);
+	/* seed the lane's block table with the entry's pinned blocks (a ref
+	 * each) so CoverLane extends from the prefix edge */
+	for (ordinal=0u; ordinal<blocks; ordinal++)
+	{
+		uint32_t block = state->prefix_entries[index].blocks[ordinal];
+		state->host_block_indices[((uint64_t)slot * state->blocks_per_lane) + ordinal] = block;
+		if ( state->block_refs != 0 )
+			state->block_refs[block]++;
+	}
+	state->lane_block_counts[slot] = blocks;
+	state->lane_context_tokens[slot] = token_count;
+	state->lane_prefix_entry[slot] = index;
+	state->lane_prefix_blocks[slot] = blocks;
+	state->prefix_entries[index].refs++;
+	state->prefix_entries[index].last_used = ++state->prefix_epoch;
+	state->lane_restore_slot[slot] = index; /* GDN pool slot = entry index */
+	state->lane_restore_armed[slot] = 1u;
+	fprintf(stderr,"qwen36_prefix borrow slot=%u entry=%u tokens=%u blocks=%u\n",slot,index,token_count,blocks);
+	return(SPARK_STATUS_OK);
+}
+
 static void SparkQwen36ServingDropSubmission(
 	SparkQwen36ServingState *state,
 	const SparkModelServingSubmission *submission)
@@ -934,6 +1194,25 @@ static SparkStatus SparkQwen36ServingCoverSubmission(
 		uint32_t slot;
 		uint64_t first_position,end_position;
 		slot = submission->lanes[lane].resident_sequence_slot;
+		/* ---- prefix-cache lane glue (the client protocol) ---- */
+		if ( (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u && state->lane_restore_armed[slot] == 0u )
+		{
+			SparkStatus borrow = SparkQwen36ServingPrefixBorrow(state,slot,submission->lanes[lane].cache_prefix_identity.sha256,submission->lanes[lane].cache_prefix_token_count);
+			if ( borrow != SPARK_STATUS_OK )
+			{
+				/* cache miss on the adapter side: fall through to a cold
+				 * prefill (the client believes the prefix is cached; the
+				 * safe degradation is to recompute - correct, slower) */
+				fprintf(stderr,"qwen36_prefix miss slot=%u tokens=%u - recomputing\n",slot,submission->lanes[lane].cache_prefix_token_count);
+				state->lane_restore_armed[slot] = 0u;
+			}
+		}
+		if ( (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u )
+		{
+			memcpy(state->lane_publish_identity[slot],submission->lanes[lane].cache_publish_identity.sha256,32);
+			state->lane_publish_tokens[slot] = submission->lanes[lane].cache_publish_token_count;
+			state->lane_publish_armed[slot] = 1u;
+		}
 		first_position = UINT64_MAX;
 		end_position = 0u;
 		for (row=0u; row<submission->row_count; row++)
@@ -1213,6 +1492,34 @@ static void SparkQwen36ServingBuildFrame(
 		prefill_view->sequence_id = submission->row_sequence_ids[pending->frame_row_flats[0]];
 		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW;
 		context->prefill_frame = prefill_view;
+		/* prefix-cache glue (the plain prefill path - where borrow suffixes
+		 * and publish-boundary frames actually run): RESTORE_IN on a borrow
+		 * lane's first frame (position == the borrowed prefix edge);
+		 * SNAPSHOT_OUT on the frame that completes the publish boundary */
+		if ( state->lane_restore_armed[slot] != 0u && base_position == state->lane_context_tokens[slot] )
+		{
+			memset(&pending->prefix_gdn_view,0,sizeof(pending->prefix_gdn_view));
+			pending->prefix_gdn_view.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
+			pending->prefix_gdn_view.descriptor_bytes = sizeof(pending->prefix_gdn_view);
+			pending->prefix_gdn_view.snapshot_index = state->lane_restore_slot[slot];
+			context->gdn_snapshot = &pending->prefix_gdn_view;
+			context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_RESTORE_IN;
+			state->lane_restore_armed[slot] = 0u;
+		}
+		else if ( state->lane_publish_armed[slot] != 0u && base_position + frame_rows == state->lane_publish_tokens[slot] )
+		{
+			SparkStatus publish_status = SparkQwen36ServingPrefixPublish(state,slot);
+			if ( publish_status == SPARK_STATUS_OK && state->lane_prefix_entry[slot] != 0xFFu )
+			{
+				memset(&pending->prefix_gdn_view,0,sizeof(pending->prefix_gdn_view));
+				pending->prefix_gdn_view.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
+				pending->prefix_gdn_view.descriptor_bytes = sizeof(pending->prefix_gdn_view);
+				pending->prefix_gdn_view.snapshot_index = state->lane_prefix_entry[slot];
+				context->gdn_snapshot = &pending->prefix_gdn_view;
+				context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT;
+				state->lane_publish_armed[slot] = 0u;
+			}
+		}
 	}
 	else
 	{
@@ -1262,6 +1569,7 @@ static void SparkQwen36ServingBuildFrame(
 	frame->buffers = SparkQwen36ServingOwnsEmbedding(state) != 0u || SparkQwen36ServingOwnsFinalHead(state) != 0u ? buffers : 0;
 	frame->buffer_count = (SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u) + (SparkQwen36ServingOwnsFinalHead(state) != 0u ? 1u : 0u);
 	frame->residency = submission->residency;
+	frame->scalar[0] = submission->request_generation; /* module lane-continuity key */
 	frame->user_context = context;
 	frame->completion_function = SparkQwen36ServingDriverCompletion;
 	frame->completion_context = pending;
@@ -1311,11 +1619,16 @@ static SparkStatus SparkQwen36ServingRunFrame(
 	if ( status == SPARK_STATUS_OK )
 	{
 		status = state->program->submit(state->driver_instance,&frame);
+		/* Merge consolidation: unified's executed bookkeeping AND main's submit diagnostic. */
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr, "qwen36_debug driver_submit status=%d prefill=%u rows=%u seqpos=%llu tps=%u newtok=%u\n", (int)status, prefill, frame_rows, (unsigned long long)submission->sequence_position, submission->tokens_per_sequence, submission->new_token_count);
 		if ( status == SPARK_STATUS_OK )
 			pending->frames_executed = 1u;
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = pending->frame_status;
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr, "qwen36_debug frame_status status=%d prefill=%u rows=%u\n", (int)status, prefill, frame_rows);
 	if ( status == SPARK_STATUS_OK && SparkQwen36ServingOwnsFinalHead(state) != 0u )
 	{
 		if ( prefill != 0u )
@@ -1409,6 +1722,10 @@ static void SparkQwen36ServingBuildSpeculativeFrame(
 		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW;
 		context->decode_batch = decode_batch;
 	}
+	/* prefix-cache glue lives ONLY in the plain frame builder: borrow
+	 * suffixes and publish boundaries are plain-prefill frames, and spec
+	 * frames (verify/replay) snapshot GDN state before the acceptance
+	 * rewind, so a boundary-coincident snapshot there would be wrong. */
 	context->flags |= extra_flags;
 	if ( mtp_draft != 0 )
 		context->mtp_draft = mtp_draft;
@@ -1447,6 +1764,7 @@ static void SparkQwen36ServingBuildSpeculativeFrame(
 	frame->buffers = SparkQwen36ServingOwnsEmbedding(state) != 0u || SparkQwen36ServingOwnsFinalHead(state) != 0u ? buffers : 0;
 	frame->buffer_count = (SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u) + (SparkQwen36ServingOwnsFinalHead(state) != 0u ? 1u : 0u);
 	frame->residency = submission->residency;
+	frame->scalar[0] = submission->request_generation; /* module lane-continuity key */
 	frame->user_context = context;
 	frame->completion_function = SparkQwen36ServingDriverCompletion;
 	frame->completion_context = pending;
@@ -1526,6 +1844,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 	spec_audit = state->spec_audit;
 	pending->spec_active = 1u;
 	pending->spec_first_draft_miss = 0u;
+	pending->spec_fold = 0u;
 	memset(pending->spec,0,sizeof(pending->spec));
 	status = SPARK_STATUS_OK;
 	for (lane=0u; status == SPARK_STATUS_OK && lane<submission->active_sequence_count; lane++)
@@ -1534,6 +1853,8 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		uint32_t slot,last_row;
 		uint64_t position,sequence;
 		uint32_t token;
+		uint32_t fold_active;
+		fold_active = 0u;
 		spec = &pending->spec[lane];
 		slot = submission->lanes[lane].resident_sequence_slot;
 		last_row = pending->last_row_by_lane[lane];
@@ -1545,7 +1866,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		spec->sequence_id = sequence;
 		spec->snapshot_index = lane;
 		spec->draft_token_count = draft_count;
-		if ( spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK )
+		if ( SparkQwen36ServingBlockDraftMethod(spec_method) )
 		{
 			memset(&dspark_draft,0,sizeof(dspark_draft));
 			dspark_draft.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION;
@@ -1567,6 +1888,13 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			dspark_draft.tap_buffer = 0;
 			dspark_draft.draft_token_ids = pending->dspark_draft_ids;
 			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,0u,&token,&position,&sequence,1u,0u,submission->sequence_id,submission->sequence_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER,0,&dspark_draft,0,1u);
+		/* MERGE-NOTE (reported decision): main's bonus-fold / multi-block
+	 * round shape (SPARK_QWEN36_DFLASH2_BONUS_FOLD, dflash2_draft_matrix)
+ * is a genuine semantic conflict with unified's all-7-drafts feeding
+ * and credited-ceiling accounting (different draft_count conventions:
+ * MTP depth vs emitted-ids). The unified convention wins on this path;
+ * the fold state fields survive for the cache-path mode and the
+ * dflash2 tool battery still exercises them there. */
 		}
 		else
 		{
@@ -1582,22 +1910,20 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		}
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr, "qwen36_spec_diag decode_frame_failed lane=%u status=%d\n", lane, (int)status);
-		if ( status == SPARK_STATUS_OK )
+		if ( status == SPARK_STATUS_OK && fold_active == 0u )
 		{
 			spec->committed_ids[0] = pending->frame_output_ids[0];
-			if ( spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK )
+			if ( SparkQwen36ServingBlockDraftMethod(spec_method) )
 			{
-				/* DSpark drafts position C0+i+1 for i in 0..6 (block[0]=embed(C0),
-				 * block[1..6]=mask, Markov argmax per position), while the shared
-				 * verify/replay/accept loop below uses the MTP convention:
-				 * draft[0] predicts C0 (redundant, never verified) and draft[i>=1]
-				 * predicts position C0+i. Remap so draft_ids[0]=C0 (first-draft
-				 * always in agreement) and draft_ids[i]=dspark_draft[i-1] for i>=1;
-				 * DSpark's last draft (position C0+7) is dropped exactly like MTP's
-				 * redundant draft[0]. */
+				/* Block drafters emit own-position drafts: block row r at
+				 * base-1+r predicts the token at that position, so the walk's
+				 * output 0 (position base, the anchor's own slot) is redundant
+				 * with C0 and output i predicts position base+i = C0+i-1. The
+				 * verify walks [C0, outputs 1..k-1] one slot later than the old
+				 * shifted remap (the convention-sweep winner). */
 				spec->draft_ids[0] = spec->committed_ids[0];
 				for (draft=1u; draft<draft_count; draft++)
-					spec->draft_ids[draft] = pending->dspark_draft_ids[draft - 1u];
+					spec->draft_ids[draft] = state->dflash2_next_draft_ids[draft - 1u];
 			}
 			else
 			{
@@ -1621,11 +1947,44 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			gdn_snapshot.snapshot_index = spec->snapshot_index;
 			/* Feed C0 (not draft[0]) as the first verify row: draft[0]
 			 * predicts the already-committed position, so it is redundant
-			 * and a first-draft miss must not poison the rest of the chain. */
-			verify_tokens[0] = spec->committed_ids[0];
+			 * and a first-draft miss must not poison the rest of the chain.
+			 * A folded round feeds the CLIENT token instead - its walk is
+			 * the decode walk's replacement, and the row's emission (filled
+			 * in below) becomes the round's C0. */
+			verify_tokens[0] = fold_active != 0u ? token : spec->committed_ids[0];
 			for (draft=1u; draft<draft_count; draft++)
 				verify_tokens[draft] = spec->draft_ids[draft];
-			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,verify_tokens,0,0,draft_count,spec->base_position,sequence,spec->base_position,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY,0,0,&gdn_snapshot,draft_count);
+			{
+				uint32_t verify_flags = SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY;
+				SparkQwen36DsparkDraftView *verify_draft = 0;
+				if ( fold_active == 2u )
+				{
+					/* the one-frame round: row 0 restores the previous
+					 * accept's checkpoint before its walk, and the padding
+					 * drafter runs at THIS verify's tail (block i anchored on
+					 * row i's emission; the host picks block m post-accept) */
+					verify_flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER;
+					if ( getenv("SPARK_QWEN36_DFLASH2_OF_NORESTORE") != 0 )
+						state->dflash2_fold_restore_slot = -1;
+					if ( state->dflash2_fold_restore_slot >= 0 )
+					{
+						verify_flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW;
+						gdn_snapshot.snapshot_index = (uint32_t)state->dflash2_fold_restore_slot;
+					}
+					memset(&dspark_draft,0,sizeof(dspark_draft));
+					dspark_draft.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION;
+					dspark_draft.descriptor_bytes = sizeof(dspark_draft);
+					dspark_draft.block_size = draft_count;
+					dspark_draft.draft_token_count = draft_count - 1u;
+					dspark_draft.sequence_id = sequence;
+					dspark_draft.base_position = position + 1u;
+					dspark_draft.tap_buffer = 0;
+					dspark_draft.draft_token_ids = state->dflash2_draft_matrix;
+					dspark_draft.multi_block_count = draft_count;
+					verify_draft = &dspark_draft;
+				}
+				status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,verify_tokens,0,0,draft_count,spec->base_position,sequence,spec->base_position,verify_flags,0,verify_draft,&gdn_snapshot,draft_count);
+			}
 			if ( status != SPARK_STATUS_OK )
 				fprintf(stderr, "qwen36_spec_diag verify_frame_failed lane=%u status=%d\n", lane, (int)status);
 			else
@@ -1635,40 +1994,20 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		{
 			for (draft=0u; draft<draft_count; draft++)
 				spec->emitted_ids[draft] = pending->frame_output_ids[draft];
+			if ( fold_active != 0u )
+			{
+				/* Row 0 walked the client token; its emission is the C0 the
+				 * skipped decode frame would have produced. It doubles as the
+				 * redundant draft[0] slot, so a folded round never records a
+				 * first-draft miss. */
+				spec->committed_ids[0] = spec->emitted_ids[0];
+				spec->draft_ids[0] = spec->emitted_ids[0];
+				spec->first_draft_miss = 0u;
+				spec->chain_dead = 0u;
+			}
 			spec->accepted_count = 0u;
 			while ( spec->accepted_count + 1u < draft_count && spec->emitted_ids[spec->accepted_count] == spec->draft_ids[spec->accepted_count + 1u] )
 				spec->accepted_count++;
-			/* lane and base_position make the round ALIGNABLE to a golden stream:
-			 * base_position is C0's absolute sequence position, so the golden's
-			 * token index for this round is base_position - prompt_length. Without
-			 * it the diag line cannot be placed next to the golden's token index,
-			 * which is exactly what the separation experiment needs. */
-			fprintf(stderr, "qwen36_spec_diag lane=%u base_position=%llu C0=%u accepted=%u drafts=[%u,%u,%u,%u] emitted=[%u,%u,%u,%u]\n",
-				lane, (unsigned long long)spec->base_position,
-				spec->committed_ids[0], spec->accepted_count,
-				spec->draft_ids[0], spec->draft_ids[1], spec->draft_ids[2], spec->draft_ids[3],
-				spec->emitted_ids[0], spec->emitted_ids[1], spec->emitted_ids[2], spec->emitted_ids[3]);
-		}
-	}
-	min_accepted = 0u;
-	pending->spec_chain_dead = 0u;
-	if ( status == SPARK_STATUS_OK )
-	{
-		min_accepted = draft_count - 1u;
-		for (lane=0u; lane<submission->active_sequence_count; lane++)
-		{
-			if ( pending->spec[lane].chain_dead != 0u )
-				pending->spec_chain_dead = 1u;
-			if ( pending->spec[lane].first_draft_miss != 0u )
-				pending->spec_first_draft_miss++;
-			if ( pending->spec[lane].accepted_count < min_accepted )
-				min_accepted = pending->spec[lane].accepted_count;
-		}
-		/* A dead chain's verify output is poisoned, so a batch with any dead
-		 * lane commits the model token alone for every lane (speculation is
-		 * simply not credited this round; tokens stay exact). */
-		if ( pending->spec_chain_dead != 0u )
-			min_accepted = 0u;
 		/*
 		 * THE ACCEPTANCE CLIFF. A round emits min_accepted + 3 tokens (C0, the
 		 * accepted drafts, the correction, the replay's emission), and the driver
@@ -1686,15 +2025,21 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		 * not credited this round and the replay re-walks exactly the credited
 		 * prefix, so the token stream and the recurrent state stay exact - the round
 		 * is shorter, never wrong.
-		 */
-		if ( min_accepted + 3u > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE )
+		 *
+		 * Merge consolidation: main's fold-aware overhead (3 on the plain path -
+		 * identical to unified's constant) is kept so the bonus-fold mode stays
+		 * consistent if enabled; the clamp diag line survives from unified. */
 		{
-			fprintf(stderr,"qwen36_spec accept_clamped accepted=%u credited=%u cap=%u\n",
-				min_accepted,(uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u,
-				(uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE);
-			min_accepted = (uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u;
+			uint32_t commit_overhead = pending->spec_fold == 2u ? 1u : (pending->spec_fold == 1u ? 2u : 3u);
+			if ( min_accepted + commit_overhead > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE )
+			{
+				fprintf(stderr,"qwen36_spec accept_clamped accepted=%u credited=%u cap=%u\n",
+					min_accepted,(uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - commit_overhead,
+					(uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE);
+				min_accepted = (uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - commit_overhead;
+			}
+			pending->spec_tokens_per_sequence = pending->spec_chain_dead != 0u ? 1u : min_accepted + commit_overhead;
 		}
-		pending->spec_tokens_per_sequence = pending->spec_chain_dead != 0u ? 1u : min_accepted + 3u;
 		pending->spec_total_accepted = pending->spec_chain_dead != 0u ? 0u : min_accepted * submission->active_sequence_count;
 		/* The credit side of the round, in absolute positions: what the stream
 		 * actually advances by. Pairing this with the per-lane diag line above
@@ -1714,7 +2059,34 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		SparkQwen36ServingSpecState *spec;
 		uint32_t slot;
 		uint32_t replay_rows;
-		uint32_t replay_tokens[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
+		if ( pending->spec_fold == 2u )
+		{
+			/* ONE-FRAME round tail: no correction frame. Select block m from
+			 * the padding matrix (the block anchored on the accepted row),
+			 * commit [e0, drafts 2..m, e_m] (m+1 tokens - the next round's
+			 * row 0 walks e_m from checkpoint m and its emission continues
+			 * the chain), and arm the next round. */
+			spec = &pending->spec[lane];
+			slot = spec->resident_slot;
+			(void)slot;
+			{
+				uint32_t ci = 1u;
+				uint32_t d2;
+				for (d2 = 0u; d2 < SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u; d2++)
+					state->dflash2_next_draft_ids[d2] = state->dflash2_draft_matrix[min_accepted * (SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u) + d2];
+				for (draft=2u; draft<=min_accepted; draft++)
+					spec->committed_ids[ci++] = spec->draft_ids[draft];
+				spec->committed_ids[ci++] = spec->emitted_ids[min_accepted];
+				state->dflash2_fold_armed = 1u;
+				state->dflash2_fold_position = spec->base_position + min_accepted + 1u;
+				state->dflash2_fold_sequence_id = spec->sequence_id;
+				state->dflash2_fold_restore_slot = (int32_t)min_accepted;
+			}
+			continue;
+		}
+		/* +1: a fully-accepted block-8 chain replays C0 + 7 drafts + the
+		 * correction = 9 rows, one past MAX_MTP_DRAFT_TOKENS. */
+		uint32_t replay_tokens[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS + 1u];
 		uint64_t replay_base;
 		spec = &pending->spec[lane];
 		slot = spec->resident_slot;
@@ -1722,12 +2094,31 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		 * position, so the replay must re-walk it too: the committed token
 		 * C0, the accepted drafts, and the correction. draft[0] is not used
 		 * (it predicted the already-committed position). */
-		replay_rows = min_accepted + 2u;
-		replay_tokens[0] = spec->committed_ids[0];
-		for (draft=1u; draft<=min_accepted; draft++)
-			replay_tokens[draft] = spec->draft_ids[draft];
-		replay_tokens[min_accepted + 1u] = spec->emitted_ids[min_accepted];
-		replay_base = spec->base_position;
+		/* The replay is now ONE row (the correction): the verify walked the
+		 * step path with per-row checkpoints, so GDN_RESTORE_VERIFY_ROW
+		 * SELECTS the accepted-prefix state (snapshot_index = min_accepted+1,
+		 * the row whose walk covered [C0, d1..d_a]) and this frame walks only
+		 * the correction - the token the verify did not walk. */
+		{
+			const char *sel_env = getenv("SPARK_QWEN36_DFLASH2_STATE_SELECT");
+			if ( sel_env == 0 || sel_env[0] == '0' )
+			{
+				/* default: the validated replay re-walk */
+				uint32_t d2;
+				replay_rows = min_accepted + 2u;
+				replay_tokens[0] = spec->committed_ids[0];
+				for (d2 = 1u; d2 <= min_accepted; d2++)
+					replay_tokens[d2] = spec->draft_ids[d2];
+				replay_tokens[min_accepted + 1u] = spec->emitted_ids[min_accepted];
+				replay_base = spec->base_position;
+				gdn_snapshot.snapshot_index = spec->snapshot_index;
+				status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST,0,0,&gdn_snapshot,1u);
+				goto replay_done;
+			}
+		}
+		replay_rows = 1u;
+		replay_tokens[0] = spec->emitted_ids[min_accepted];
+		replay_base = spec->base_position + min_accepted + 1u;
 		memset(&gdn_snapshot,0,sizeof(gdn_snapshot));
 		gdn_snapshot.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 		gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
@@ -1746,15 +2137,42 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 		 * share: for every row j <= min_accepted the replay consumes the SAME
 		 * token at the SAME position as verify row j, so their argmaxes must be
 		 * equal. A mismatch localizes a state divergence to (row, position); rows
-		 * agreeing while the stream still diverges puts it in the last row alone. */
-		status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,
-			SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST |
-			(spec_audit != 0u ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPEC_AUDIT_EMIT_ALL : 0u),
-			0,0,&gdn_snapshot,spec_audit != 0u ? replay_rows : 1u);
+		 * agreeing while the stream still diverges puts it in the last row alone.
+		 *
+		 * Merge consolidation: main's GDN_RESTORE_VERIFY_ROW select rides the
+		 * same frame under SPARK_QWEN36_DFLASH2_STATE_SELECT - the module then
+		 * restores the verify's per-row checkpoint (base slot + lane) instead
+		 * of the plain harness snapshot; unified's audit replay is unchanged
+		 * otherwise. main's fold-tail draft stays with the reported
+		 * bonus-fold deferral above. */
+		{
+			const char *sel_env = getenv("SPARK_QWEN36_DFLASH2_STATE_SELECT");
+			uint32_t sel_on = sel_env != 0 && sel_env[0] != 0 && sel_env[0] != 0x30 ? 1u : 0u;
+			status = SparkQwen36ServingRunSpeculativeFrame(state,submission,pending,slot,1u,replay_tokens,0,0,replay_rows,replay_base,spec->sequence_id,replay_base,
+				SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST |
+				(spec_audit != 0u ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPEC_AUDIT_EMIT_ALL : 0u) |
+				(sel_on != 0u ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW : 0u),
+				0,0,&gdn_snapshot,spec_audit != 0u ? replay_rows : 1u);
+		}
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr, "qwen36_spec_diag replay_frame_failed lane=%u status=%d\n", lane, (int)status);
 		if ( status == SPARK_STATUS_OK )
 		{
+			if ( pending->spec_fold != 0u )
+			{
+				/* Folded commit (main's bonus-fold): [e0(=C0), d2..dm, e_m, c'].
+				 * draft[1] is represented by e0 (it predicted e0's position), and
+				 * at m=0 e_m IS e0, so the correction token slot collapses - the
+				 * round commits m+2, not m+3. */
+				uint32_t commit_index = 1u;
+				for (draft=2u; draft<=min_accepted; draft++)
+					spec->committed_ids[commit_index++] = spec->draft_ids[draft];
+				if ( min_accepted >= 1u )
+					spec->committed_ids[commit_index++] = spec->emitted_ids[min_accepted];
+				spec->committed_ids[commit_index++] = pending->frame_output_ids[0];
+			}
+			else
+			{
 			spec->replayed = 1u;
 			for (draft=0u; draft<min_accepted; draft++)
 				spec->committed_ids[1u + draft] = spec->draft_ids[1u + draft];
@@ -1860,7 +2278,7 @@ static void SparkQwen36ServingComplete(
 	completion.accepted_token_count = (uint32_t)(pending->accepted_token_count > UINT32_MAX ? UINT32_MAX : pending->accepted_token_count);
 	completion.queue_delay_ns = pending->queue_delay_ns;
 	completion.service_time_ns = pending->service_time_ns;
-	if ( SparkQwen36ServingOwnsFinalHead(state) != 0u && status == SPARK_STATUS_OK )
+	if ( SparkQwen36ServingOwnsFinalHead(state) != 0u && status == SPARK_STATUS_OK && pending->active_sequence_count != 0u )
 	{
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 		if ( pending->spec_active != 0u )
@@ -1936,6 +2354,21 @@ static SparkStatus SparkQwen36ServingSubmit(
 	pending = SparkQwen36ServingReservePending(state,submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	{
+		/* REQUIRES_RELEASE contract: drop every lane's KV blocks (prefix
+		 * entries keep their own pins) and complete with no tokens. The
+		 * daemon unbinds the resident slot at this completion, so a later
+		 * request may claim it at a cached-prefix position. */
+		uint32_t lane;
+		state->dflash2_fold_armed = 0u;
+		for (lane=0u; lane<submission->active_sequence_count; lane++)
+			SparkQwen36ServingReleaseLane(state,submission->lanes[lane].resident_sequence_slot);
+		pending->active_sequence_count = 0u;
+		pending->residency = submission->residency; /* no driver frame runs: echo the client's token */
+		SparkQwen36ServingComplete(state,pending,SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
+	}
 	speculate = 0u;
 	status = SparkQwen36ServingCoverSubmission(state,submission,pending);
 	/* B1 only: the per-lane chain is serial by contract, so batched decodes
@@ -1959,10 +2392,17 @@ static SparkStatus SparkQwen36ServingSubmit(
 	if ( status == SPARK_STATUS_OK && speculate != 0u )
 		status = SparkQwen36ServingSubmitSpeculativeDecode(state,submission,pending);
 	else if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+	{
+		/* A plain decode walk invalidates the fold chain's position
+		 * assumption; the next speculative round re-bootstraps.
+		 * (merge consolidation: unified's paged-KV slot argument kept.) */
+		state->dflash2_fold_armed = 0u;
 		status = SparkQwen36ServingRunFrame(state,submission,pending,0u,0u,0u,submission->row_count,0u,SPARK_QWEN36_PAGED_KV_NO_SLOT);
+	}
 	else if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 	{
 		uint32_t lane,wave,chunk_rows;
+		state->dflash2_fold_armed = 0u;
 		for (lane=0u; status == SPARK_STATUS_OK && lane<submission->active_sequence_count; lane++)
 		{
 			uint32_t lane_rows,wave_start;
@@ -2247,10 +2687,23 @@ static SparkStatus SparkQwen36ServingAllocatePools(
 	SparkStatus status;
 	indices = (uint64_t)state->max_active_sequence_count * state->blocks_per_lane;
 	state->host_block_indices = (uint32_t *)malloc((size_t)indices * sizeof(uint32_t));
-	if ( state->host_block_indices == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	/* Merge consolidation: main's flat-pool allocations (its prefix protocol
+	 * runs under SPARK_QWEN36_SERVING_KV_FLAT=1) alongside unified's
+	 * match-token scratch for the paged path. */
+	state->block_refs = (uint8_t *)calloc((size_t)state->kv_block_count,1u);
+	{
+		uint32_t li;
+		for (li=0u; li<SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; li++)
+		{
+			state->lane_prefix_entry[li] = 0xFFu;
+			state->lane_prefix_blocks[li] = 0u;
+			state->lane_publish_armed[li] = 0u;
+			state->lane_restore_armed[li] = 0u;
+		}
+	}
+	state->free_blocks = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
 	state->match_tokens = (uint32_t *)malloc((size_t)state->max_input_row_count * sizeof(uint32_t));
-	if ( state->match_tokens == 0 )
+	if ( state->host_block_indices == 0 || state->free_blocks == 0 || state->match_tokens == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( cudaMalloc(&state->gather_scratch,(size_t)((uint64_t)state->max_active_sequence_count * SPARK_QWEN36_MODEL_HIDDEN_BF16_BYTES)) != cudaSuccess )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -2422,6 +2875,33 @@ static SparkStatus SparkQwen36ServingInitialize(
 	return(SPARK_STATUS_OK);
 }
 
+/* JIT_KV interface hooks (required once cache_block_token_count > 0).
+ * Prefetch prepares nothing ahead of submit - the block-table borrow in
+ * CoverSubmission is the preparation - so the admission is a no-op and
+ * COMMIT resolves immediately; the prefix entry refs are taken at the
+ * publish/borrow points, not here. */
+static SparkStatus SparkQwen36ServingPrefetch(
+	void *adapter_state,
+	const SparkModelServingSubmission *submissions,
+	uint32_t submission_count)
+{
+	(void)adapter_state;
+	(void)submissions;
+	(void)submission_count;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkQwen36ServingResolvePrefetch(
+	void *adapter_state,
+	const SparkModelServingSubmission *submission,
+	uint32_t resolution)
+{
+	(void)adapter_state;
+	(void)submission;
+	(void)resolution;
+	return(SPARK_STATUS_OK);
+}
+
 static const SparkModelServingAdapterInterface SparkQwen36ServingInterface =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
@@ -2435,7 +2915,9 @@ static const SparkModelServingAdapterInterface SparkQwen36ServingInterface =
 	.submit = SparkQwen36ServingSubmit,
 	.progress = SparkQwen36ServingProgress,
 	.quiesce = SparkQwen36ServingQuiesce,
-	.snapshot = SparkQwen36ServingSnapshot
+	.snapshot = SparkQwen36ServingSnapshot,
+	.prefetch = SparkQwen36ServingPrefetch,
+	.resolve_prefetch = SparkQwen36ServingResolvePrefetch
 };
 
 __attribute__((visibility("default")))

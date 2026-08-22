@@ -487,6 +487,11 @@ static inline uint32_t SparkQwen36StagePackWeightClass(uint32_t weight_format)
 		return(SPARK_HYBRID_STAGEPACK_WEIGHT_MXFP4_E2M1);
 	if ( weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 		return(SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_F32B128);
+	/* Merge consolidation: origin/main's MX serving format (e8m0-tiled fp8)
+	 * joins the forward map; its byte accounting lives in the shared hybrid
+	 * core (payload 1 B/element, scale rows x columns/128 e8m0). */
+	if ( weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
+		return(SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_E8M0B128);
 	if ( weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 )
 		return(SPARK_HYBRID_STAGEPACK_WEIGHT_F32);
 	if ( weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U32 )

@@ -1690,7 +1690,6 @@ static SparkStatus SparkQwen36ModuleValidateSpeculation(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    }
     else if (resume != 0u || checkpoint != 0u)
     {
         /* unified's prefix cache shares a donor's recurrence through the
@@ -1788,6 +1787,7 @@ static SparkStatus SparkQwen36ModuleValidateFrame(
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT |
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW |
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT |
+static int zz_probe;
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_RESTORE_IN;
     const SparkQwen36ResidentDecodeStageFrameContext *context;
     const SparkQwen36KvBlockTableView *block_table;
@@ -2609,24 +2609,6 @@ static void SparkQwen36ModuleInvalidateLaneSequenceContinuity(
 /* The DSpark drafter: a 5-layer full-attention decoder that emits a 7-token
  * block. Weights are loaded from the separate drafter pack; the target's token
  * embedding and lm_head are shared (the drafter pack carries neither). */
-/* Host bf16 conversions for main's select-path dumps (from origin/main). */
-static inline float SparkQwen36ModuleBf16ToFloat(uint16_t h)
-{
-	uint32_t u = (uint32_t)h << 16u;
-	float f;
-	memcpy(&f,&u,sizeof(f));
-	return(f);
-}
-
-static inline uint16_t SparkQwen36ModuleFloatToBf16(float f)
-{
-	uint32_t u,lsb;
-	memcpy(&u,&f,sizeof(u));
-	lsb = (u >> 16u) & 1u;
-	u += 0x7FFFu + lsb;
-	return((uint16_t)(u >> 16u));
-}
-
 /* ===========================================================================
  * Merge consolidation of the DSpark/DFlash2 draft forward.
  *
@@ -2757,7 +2739,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkFullContextForward(
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->conv_attn_proj,norm,slot->dspark_conv_delta,B);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchDsparkConv(stream,norm,slot->dspark_conv_delta,lw->conv_attn_base_bf16,slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,0u);
+			error = SparkQwen36LaunchDsparkConv(stream,norm,slot->dspark_conv_delta,lw->conv_attn_base,slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,0u);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->q,slot->dspark_conv_out,q,B);
 		if ( error == cudaSuccess )
@@ -2774,7 +2756,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkFullContextForward(
 			error = SparkQwen36LaunchLinear(stream,&lw->o,attn_out,q,B);
 		/* attention_conv.finish: side-1 conv, then residual add 1 */
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchDsparkConv(stream,q,slot->dspark_conv_delta,(const void*)((const uint8_t*)lw->conv_attn_base_bf16 + (SPARK_QWEN36_DSPARK_CONV_KERNEL_SIZE * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES),slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,1u);
+			error = SparkQwen36LaunchDsparkConv(stream,q,slot->dspark_conv_delta,(const void*)((const uint8_t*)lw->conv_attn_base + (SPARK_QWEN36_DSPARK_CONV_KERNEL_SIZE * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES),slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,1u);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchResidualAdd(stream,block_hidden,slot->dspark_conv_out,B,H);
 		if ( error == cudaSuccess )
@@ -2783,7 +2765,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkFullContextForward(
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->conv_mlp_proj,norm,slot->dspark_conv_delta,B);
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchDsparkConv(stream,norm,slot->dspark_conv_delta,lw->conv_mlp_base_bf16,slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,0u);
+			error = SparkQwen36LaunchDsparkConv(stream,norm,slot->dspark_conv_delta,lw->conv_mlp_base,slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,0u);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchLinear(stream,&lw->gate,slot->dspark_conv_out,ffn,B);
 		if ( error == cudaSuccess )
@@ -2794,7 +2776,7 @@ static SparkStatus SparkQwen36ModuleRunDsparkFullContextForward(
 			error = SparkQwen36LaunchLinear(stream,&lw->down,up,q,B);
 		/* mlp_conv.finish: side-1 conv, then residual add 2 */
 		if ( error == cudaSuccess )
-			error = SparkQwen36LaunchDsparkConv(stream,q,slot->dspark_conv_delta,(const void*)((const uint8_t*)lw->conv_mlp_base_bf16 + (SPARK_QWEN36_DSPARK_CONV_KERNEL_SIZE * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES),slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,1u);
+			error = SparkQwen36LaunchDsparkConv(stream,q,slot->dspark_conv_delta,(const void*)((const uint8_t*)lw->conv_mlp_base + (SPARK_QWEN36_DSPARK_CONV_KERNEL_SIZE * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION) * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES),slot->dspark_conv_out,B,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION/SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,SPARK_QWEN36_DSPARK_CONV_GROUP_SIZE,1u);
 		if ( error == cudaSuccess )
 			error = SparkQwen36LaunchResidualAdd(stream,block_hidden,slot->dspark_conv_out,B,H);
 		status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"dspark_layer");
@@ -2975,7 +2957,6 @@ static uint32_t SparkQwen36ModuleUseDflash2CachePath(void)
 /* The adapter-facing entry point keeps main's five-argument signature
  * (row_tokens_host feeds the cache path's padding-select; unused by the
  * full-context path). */
-static SparkStatus SparkQwen36ModuleRunDflash2CacheForward(SparkQwen36ModuleState *state,SparkQwen36ModuleSlot *slot,const SparkQwen36DsparkDraftView *view,const uint32_t *row_tokens_host,uint32_t rows);
 static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
     SparkQwen36ModuleState *state,
     SparkQwen36ModuleSlot *slot,
@@ -3932,10 +3913,9 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		SparkQwen36ModuleDumpDeviceFile(path,(uint8_t *)state->gdn_pool.conv_tail_bf16 + (uint64_t)prefill->lane_index * tail_bytes,tail_bytes);
 	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
 		if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT) != 0u && context->gdn_snapshot != 0 )
 			status = SparkQwen36ModuleGdnPrefixTransfer(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
-		if ( capturing != 0 )
+			if ( capturing != 0 )
 			{
 				if ( cudaStreamEndCapture((cudaStream_t)slot->cuda_stream,&cap) == cudaSuccess && cap != 0 && status == SPARK_STATUS_OK )
 				{
@@ -3998,6 +3978,7 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 			}
 		}
 	}
+		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
 	/* Fingerprint the lane's recurrent state as this frame leaves it, naming the
 	 * frame kind so a spec log and a no-spec log line up by position: the first
 	 * position whose state hash differs is where the lane parted, which is the
@@ -4200,14 +4181,6 @@ SparkStatus SparkQwen36ResidentDecodeStageExecute(
             (state->owns_embedding != 0u && frame->buffer_count > 0u && frame->buffers != 0)
                 ? (const uint32_t *)frame->buffers[0].address : 0,
             rows);
-        if ( state->decode_state_dump_dir != 0 && status == SPARK_STATUS_OK )
-        {
-            char path[512];
-            snprintf(path,sizeof(path),"%s/decode_%llu_postforward.f32",state->decode_state_dump_dir,(unsigned long long)context->decode_batch->row_positions[0]);
-            SparkQwen36ModuleDumpDeviceFile(path,state->gdn_pool.state_f32 + (uint64_t)context->decode_batch->row_lane_indices[0] * state->gdn_pool.state_lane_stride_elements,state->gdn_pool.state_lane_stride_elements * sizeof(float));
-        }
-        SparkQwen36ModuleDsparkDiag("block_forward returned status=%d\n",(int)status);
-    }
     if (status == SPARK_STATUS_OK && prefill != 0 &&
         (context->flags &
          SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT) != 0u)

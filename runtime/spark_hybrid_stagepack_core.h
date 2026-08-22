@@ -15,8 +15,9 @@ extern "C" {
  *
  * The WIRE FORMATS stay per family (own magics, header layouts, entry
  * structs and weight-format enum values); what lives here is only what the
- * adopting loaders accept IDENTICALLY today: byte accounting for their five
- * weight classes, the scale-group rule, the period arithmetic behind the
+ * adopting loaders accept IDENTICALLY today: byte accounting for their six
+ * weight classes (the e8m0-tiled fp8 class arrived with a family's MX serving
+ * pack), the scale-group rule, the period arithmetic behind the
  * inventory counts, the layer-class resolution tail with its exact refusal
  * codes, and u32-prefix header comparison. A family adopts a piece by
  * forwarding its historical function name; where a family's on-disk
@@ -36,6 +37,7 @@ extern "C" {
 #define SPARK_HYBRID_STAGEPACK_WEIGHT_U32 2u
 #define SPARK_HYBRID_STAGEPACK_WEIGHT_MXFP4_E2M1 3u
 #define SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_F32B128 4u
+#define SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_E8M0B128 5u
 
 /* Full-attention layers among the first n of the stack: one phase in the
  * shared period puts them at period-1, 2*period-1, ..., so the count is
@@ -54,20 +56,24 @@ static inline uint64_t SparkHybridStagePackPayloadBytes(uint32_t weight_class,ui
 		return(elements / 2u);
 	if ( weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_F32 || weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_U32 )
 		return(elements * 4u);
-	if ( weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_F32B128 )
+	if ( weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_F32B128 ||
+		weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_E8M0B128 )
 		return(elements);
 	return(elements * 2u);
 }
 
 /* Scale-plane bytes: mxfp4 carries one e8m0 byte per 32-element group; fp8
- * e4m3 carries one f32 scale per 128x128 tile of the 2-D plane. Anything
- * else travels scale-free. */
+ * e4m3 carries one f32 scale per 128x128 tile of the 2-D plane; the e8m0-
+ * tiled fp8 class carries one e8m0 byte per row per 128-column group.
+ * Anything else travels scale-free. */
 static inline uint64_t SparkHybridStagePackScaleBytes(uint32_t weight_class,uint32_t rows,uint32_t columns)
 {
 	if ( weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_MXFP4_E2M1 )
 		return(((uint64_t)rows * (uint64_t)columns) / 32u);
 	if ( weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_F32B128 )
 		return(((uint64_t)rows / 128u) * ((uint64_t)columns / 128u) * 4u);
+	if ( weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_E8M0B128 )
+		return((uint64_t)rows * ((uint64_t)columns / 128u));
 	return(0u);
 }
 
@@ -75,7 +81,7 @@ static inline uint64_t SparkHybridStagePackScaleBytes(uint32_t weight_class,uint
  * 32 for mxfp4, 128 for fp8 tiles, zero for scale-free classes. */
 static inline uint32_t SparkHybridStagePackScaleGroupSizeOk(uint32_t weight_class,uint32_t declared_group_size)
 {
-	uint32_t expected = weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_MXFP4_E2M1 ? 32u : (weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_F32B128 ? 128u : 0u);
+	uint32_t expected = weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_MXFP4_E2M1 ? 32u : ((weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_F32B128 || weight_class == SPARK_HYBRID_STAGEPACK_WEIGHT_FP8_E4M3_E8M0B128) ? 128u : 0u);
 	return(declared_group_size == expected ? 1u : 0u);
 }
 
