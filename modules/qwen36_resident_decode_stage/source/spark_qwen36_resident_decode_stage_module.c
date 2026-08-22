@@ -218,6 +218,9 @@ typedef struct SparkQwen36ModuleState
 	void *tp_stream;
 	const char *decode_state_dump_dir;
 	uint32_t state_fingerprint;
+	/* Read once at Initialize: the fused small-batch FFN gate+up+swiglu stays
+	 * enabled unless SPARK_QWEN36_SMALL_BATCH_GEMM=0 (A/B escape hatch). */
+	uint32_t ffn_small_batch_gemm;
 	atomic_ullong submitted_count;
 	atomic_ullong completed_count;
 	atomic_ullong rejected_count;
@@ -235,6 +238,38 @@ typedef struct SparkQwen36ModuleState
 	uint64_t profile_frame_nanos;
 	uint32_t profile_frame_count;
 } SparkQwen36ModuleState;
+
+/*
+ * Bisect-dump writers. One device (or already-host) range becomes one file at
+ * the exact path the caller names, so every dump site keeps its documented
+ * file name and content layout. A failed copy, open or write is skipped
+ * silently: the dump path is diagnostics and never changes frame status.
+ */
+static void SparkQwen36ModuleDumpHostFile(const char *path, const void *host, uint64_t bytes)
+{
+	FILE *dump;
+	if ( path == 0 || host == 0 || bytes == 0u )
+		return;
+	dump = fopen(path,"wb");
+	if ( dump != 0 )
+	{
+		fwrite(host,1u,(size_t)bytes,dump);
+		fclose(dump);
+	}
+}
+
+static void SparkQwen36ModuleDumpDeviceFile(const char *path, const void *device, uint64_t bytes)
+{
+	void *host;
+	if ( path == 0 || device == 0 || bytes == 0u )
+		return;
+	host = malloc((size_t)bytes);
+	if ( host == 0 )
+		return;
+	if ( cudaMemcpy(host,device,(size_t)bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+		SparkQwen36ModuleDumpHostFile(path,host,bytes);
+	free(host);
+}
 
 static uint64_t SparkQwen36ProfileNow(void)
 {
@@ -1264,10 +1299,8 @@ static SparkStatus SparkQwen36ModuleRunFfn(SparkQwen36ModuleState *state, SparkQ
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
-	const char *ffn_gate_env;
 	error = SparkQwen36LaunchFusedResidualRmsNorm(stream,slot->hidden_bf16,slot->delta_bf16,mlp_norm_bf16,slot->normalized_bf16,rows,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION,SPARK_QWEN36_MODEL_RMS_NORM_EPSILON);
-	ffn_gate_env = getenv("SPARK_QWEN36_SMALL_BATCH_GEMM");
-	if ( error == cudaSuccess && (ffn_gate_env == 0 || strcmp(ffn_gate_env, "0") != 0) &&
+	if ( error == cudaSuccess && state->ffn_small_batch_gemm != 0u &&
 		rows >= 5u && rows <= SPARK_QWEN36_SMALL_BATCH_MAX_ROWS &&
 		weights->gate.weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
 		weights->up.weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
@@ -2299,6 +2332,17 @@ static void SparkQwen36ModuleInvalidateLaneSequenceContinuity(
 /* Placeholder forward: launched when a DSPARK_DRAFT_AFTER frame completes its
  * decode taps. Filled in with the projector -> 5-layer -> lm_head -> Markov
  * sequence once the parity harness is in place (acceptance bar = draft parity). */
+/* Rail-dump file naming: per-step mode keys every file by base position under
+ * SPARK_QWEN36_DSPARK_DUMP_DIR; first-frame mode writes fixed /tmp names. */
+static void SparkQwen36DsparkDumpPath(char *path, uint32_t bytes, uint32_t per_step,
+	const char *dir, const char *step_format, const char *once_path, uint64_t base_position)
+{
+	if ( per_step != 0u )
+		snprintf(path,(size_t)bytes,step_format,dir,(unsigned long long)base_position);
+	else
+		snprintf(path,(size_t)bytes,"%s",once_path);
+}
+
 static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 	SparkQwen36ModuleState *state,
 	SparkQwen36ModuleSlot *slot,
@@ -2509,36 +2553,19 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 				uint64_t base_position = view->base_position;
 				uint32_t anchor = 0u;
 				char path[512];
-				FILE *dump;
 				dspark_dump_done = 1;
 				if ( tap_host != 0 &&
 				     cudaMemcpy(tap_host,(uint8_t *)state->dspark_tap_ring_bf16 + (uint64_t)slot->dspark_lane_index * state->dspark_tap_ring_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES + ((base_position - 1u) & (uint64_t)SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY_MASK) * SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,(size_t)tap_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
 				     cudaMemcpy(&anchor,slot->output_token_ids,sizeof(anchor),cudaMemcpyDeviceToHost) == cudaSuccess )
 				{
-					if ( per_step != 0u )
-						snprintf(path,sizeof(path),"%s/step_%llu_taps.bin",dump_directory,(unsigned long long)base_position);
-					else
-						snprintf(path,sizeof(path),"/tmp/dspark_taps.bin");
-					dump = fopen(path,"wb");
-					if ( dump != 0 ) { fwrite(tap_host,1u,(size_t)tap_bytes,dump); fclose(dump); }
-					if ( per_step != 0u )
-						snprintf(path,sizeof(path),"%s/step_%llu_c0.bin",dump_directory,(unsigned long long)base_position);
-					else
-						snprintf(path,sizeof(path),"/tmp/dspark_c0.bin");
-					dump = fopen(path,"wb");
-					if ( dump != 0 ) { fwrite(&anchor,1u,sizeof(anchor),dump); fclose(dump); }
-					if ( per_step != 0u )
-						snprintf(path,sizeof(path),"%s/step_%llu_basepos.bin",dump_directory,(unsigned long long)base_position);
-					else
-						snprintf(path,sizeof(path),"/tmp/dspark_basepos.bin");
-					dump = fopen(path,"wb");
-					if ( dump != 0 ) { fwrite(&base_position,1u,sizeof(base_position),dump); fclose(dump); }
-					if ( per_step != 0u )
-						snprintf(path,sizeof(path),"%s/step_%llu_drafts.bin",dump_directory,(unsigned long long)base_position);
-					else
-						snprintf(path,sizeof(path),"/tmp/dspark_drafts.bin");
-					dump = fopen(path,"wb");
-					if ( dump != 0 ) { fwrite(view->draft_token_ids,1u,(size_t)(B - 1u) * sizeof(uint32_t),dump); fclose(dump); }
+					SparkQwen36DsparkDumpPath(path,(uint32_t)sizeof(path),per_step,dump_directory,"%s/step_%llu_taps.bin","/tmp/dspark_taps.bin",base_position);
+					SparkQwen36ModuleDumpHostFile(path,tap_host,tap_bytes);
+					SparkQwen36DsparkDumpPath(path,(uint32_t)sizeof(path),per_step,dump_directory,"%s/step_%llu_c0.bin","/tmp/dspark_c0.bin",base_position);
+					SparkQwen36ModuleDumpHostFile(path,&anchor,sizeof(anchor));
+					SparkQwen36DsparkDumpPath(path,(uint32_t)sizeof(path),per_step,dump_directory,"%s/step_%llu_basepos.bin","/tmp/dspark_basepos.bin",base_position);
+					SparkQwen36ModuleDumpHostFile(path,&base_position,sizeof(base_position));
+					SparkQwen36DsparkDumpPath(path,(uint32_t)sizeof(path),per_step,dump_directory,"%s/step_%llu_drafts.bin","/tmp/dspark_drafts.bin",base_position);
+					SparkQwen36ModuleDumpHostFile(path,view->draft_token_ids,(uint64_t)(B - 1u) * sizeof(uint32_t));
 					/* Per-step selector lattice, to localize the module-vs-oracle draft
 					 * divergences to the head (unary), the context gate, or the edge
 					 * lattice. 448 + 3584 + 7168 bytes per step, plus the two fields
@@ -2567,44 +2594,20 @@ static SparkStatus SparkQwen36ModuleRunDsparkBlockForward(
 						const uint64_t edge_bytes = (uint64_t)(B - 1u) * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K * sizeof(float);
 						const uint64_t hidden_bytes = (uint64_t)(B - 1u) * H * sizeof(uint16_t);
 						const uint64_t candidate_bytes = (uint64_t)(B - 1u) * SPARK_QWEN36_DSPARK_SELECTOR_TOP_K * sizeof(uint32_t);
-						void *unary_host = malloc((size_t)unary_bytes);
-						void *gate_host = malloc((size_t)gate_bytes);
-						void *edge_host = malloc((size_t)edge_bytes);
-						void *hidden_host = malloc((size_t)hidden_bytes);
-						void *candidate_host = malloc((size_t)candidate_bytes);
-						if ( unary_host != 0 && gate_host != 0 && edge_host != 0 &&
-						     hidden_host != 0 && candidate_host != 0 &&
-						     cudaMemcpy(unary_host,slot->dspark_selector.candidate_scores,(size_t)unary_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
-						     cudaMemcpy(gate_host,slot->dspark_selector.context_gate_bf16,(size_t)gate_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
-						     cudaMemcpy(edge_host,slot->dspark_selector.edges_f32,(size_t)edge_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
-						     /* norm + H is EXACTLY the pointer the selector was handed:
-						      * the same mask rows, after the same final norm, so the
-						      * dump cannot drift from what the head and the projection
-						      * actually read. */
-						     cudaMemcpy(hidden_host,norm + (uint64_t)H,(size_t)hidden_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
-						     cudaMemcpy(candidate_host,slot->dspark_selector.candidate_ids,(size_t)candidate_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
-						{
-							snprintf(path,sizeof(path),"%s/step_%llu_unary.f32",dump_directory,(unsigned long long)base_position);
-							dump = fopen(path,"wb");
-							if ( dump != 0 ) { fwrite(unary_host,1u,(size_t)unary_bytes,dump); fclose(dump); }
-							snprintf(path,sizeof(path),"%s/step_%llu_gate.bf16",dump_directory,(unsigned long long)base_position);
-							dump = fopen(path,"wb");
-							if ( dump != 0 ) { fwrite(gate_host,1u,(size_t)gate_bytes,dump); fclose(dump); }
-							snprintf(path,sizeof(path),"%s/step_%llu_edges.f32",dump_directory,(unsigned long long)base_position);
-							dump = fopen(path,"wb");
-							if ( dump != 0 ) { fwrite(edge_host,1u,(size_t)edge_bytes,dump); fclose(dump); }
-							snprintf(path,sizeof(path),"%s/step_%llu_hidden.bf16",dump_directory,(unsigned long long)base_position);
-							dump = fopen(path,"wb");
-							if ( dump != 0 ) { fwrite(hidden_host,1u,(size_t)hidden_bytes,dump); fclose(dump); }
-							snprintf(path,sizeof(path),"%s/step_%llu_cands.u32",dump_directory,(unsigned long long)base_position);
-							dump = fopen(path,"wb");
-							if ( dump != 0 ) { fwrite(candidate_host,1u,(size_t)candidate_bytes,dump); fclose(dump); }
-						}
-						free(unary_host);
-						free(gate_host);
-						free(edge_host);
-						free(hidden_host);
-						free(candidate_host);
+						/* norm + H is EXACTLY the pointer the selector was handed:
+						 * the same mask rows, after the same final norm, so the
+						 * dump cannot drift from what the head and the projection
+						 * actually read. */
+						snprintf(path,sizeof(path),"%s/step_%llu_unary.f32",dump_directory,(unsigned long long)base_position);
+						SparkQwen36ModuleDumpDeviceFile(path,slot->dspark_selector.candidate_scores,unary_bytes);
+						snprintf(path,sizeof(path),"%s/step_%llu_gate.bf16",dump_directory,(unsigned long long)base_position);
+						SparkQwen36ModuleDumpDeviceFile(path,slot->dspark_selector.context_gate_bf16,gate_bytes);
+						snprintf(path,sizeof(path),"%s/step_%llu_edges.f32",dump_directory,(unsigned long long)base_position);
+						SparkQwen36ModuleDumpDeviceFile(path,slot->dspark_selector.edges_f32,edge_bytes);
+						snprintf(path,sizeof(path),"%s/step_%llu_hidden.bf16",dump_directory,(unsigned long long)base_position);
+						SparkQwen36ModuleDumpDeviceFile(path,norm + (uint64_t)H,hidden_bytes);
+						snprintf(path,sizeof(path),"%s/step_%llu_cands.u32",dump_directory,(unsigned long long)base_position);
+						SparkQwen36ModuleDumpDeviceFile(path,slot->dspark_selector.candidate_ids,candidate_bytes);
 					}
 					fprintf(stderr,"%s dspark_dump position=%llu anchor=%u mode=%s\n",SPARK_QWEN36_MODULE_TAG,
 						(unsigned long long)base_position,anchor,per_step != 0u ? "per-step" : "first-frame");
@@ -2745,24 +2748,12 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		 * restore is right and the replay walk is the corruptor. */
 		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
 		const uint64_t tail_bytes = state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
-		float *host = (float *)malloc((size_t)state_bytes);
-		uint16_t *tail_host = (uint16_t *)malloc((size_t)tail_bytes);
 		char path[512];
-		FILE *dump;
 		cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
-		if ( host != 0 && tail_host != 0 &&
-		     cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)prefill->lane_index * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
-		     cudaMemcpy(tail_host,(uint8_t *)state->gdn_pool.conv_tail_bf16 + ((uint64_t)prefill->lane_index * tail_bytes),(size_t)tail_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
-		{
-			snprintf(path,sizeof(path),"%s/restore_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
-			dump = fopen(path,"wb");
-			if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
-			snprintf(path,sizeof(path),"%s/restore_%llu_tail.bf16",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
-			dump = fopen(path,"wb");
-			if ( dump != 0 ) { fwrite(tail_host,1u,(size_t)tail_bytes,dump); fclose(dump); }
-		}
-		free(host);
-		free(tail_host);
+		snprintf(path,sizeof(path),"%s/restore_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
+		SparkQwen36ModuleDumpDeviceFile(path,state->gdn_pool.state_f32 + (uint64_t)prefill->lane_index * state->gdn_pool.state_lane_stride_elements,state_bytes);
+		snprintf(path,sizeof(path),"%s/restore_%llu_tail.bf16",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
+		SparkQwen36ModuleDumpDeviceFile(path,(uint8_t *)state->gdn_pool.conv_tail_bf16 + (uint64_t)prefill->lane_index * tail_bytes,tail_bytes);
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleBeginHidden(state,slot,context,rows);
@@ -2772,18 +2763,9 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	 * first decode is. */
 	if ( status == SPARK_STATUS_OK && prefill != 0 && state->decode_state_dump_dir != 0 )
 	{
-		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
-		float *host = (float *)malloc((size_t)state_bytes);
 		char path[512];
-		FILE *dump;
-		uint32_t lane = prefill->lane_index;
-		if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
-		{
-			snprintf(path,sizeof(path),"%s/prefill_start_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
-			dump = fopen(path,"wb");
-			if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
-		}
-		free(host);
+		snprintf(path,sizeof(path),"%s/prefill_start_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
+		SparkQwen36ModuleDumpDeviceFile(path,state->gdn_pool.state_f32 + (uint64_t)prefill->lane_index * state->gdn_pool.state_lane_stride_elements,state->gdn_pool.state_lane_stride_elements * sizeof(float));
 	}
 	/* GDN entry state for the decode frame: the recurrence (state_f32) and the
 	 * conv tail as they are BEFORE the walk, so the spec-vs-no-spec diff at a
@@ -2792,46 +2774,23 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	{
 		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
 		const uint64_t tail_bytes = state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
-		float *state_host = (float *)malloc((size_t)state_bytes);
-		uint16_t *tail_host = (uint16_t *)malloc((size_t)tail_bytes);
+		const uint64_t position = context->decode_batch->row_positions[0];
+		const uint32_t lane = context->decode_batch->row_lane_indices[0];
 		char path[512];
-		FILE *dump;
-		uint64_t position = context->decode_batch->row_positions[0];
-		uint32_t lane = context->decode_batch->row_lane_indices[0];
-		if ( state_host != 0 && tail_host != 0 &&
-		     cudaMemcpy(state_host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
-		     cudaMemcpy(tail_host,(uint8_t *)state->gdn_pool.conv_tail_bf16 + ((uint64_t)lane * tail_bytes),(size_t)tail_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
-		{
-			snprintf(path,sizeof(path),"%s/decode_%llu_gdnstate.f32",state->decode_state_dump_dir,(unsigned long long)position);
-			dump = fopen(path,"wb");
-			if ( dump != 0 ) { fwrite(state_host,1u,(size_t)state_bytes,dump); fclose(dump); }
-			snprintf(path,sizeof(path),"%s/decode_%llu_gdntail.bf16",state->decode_state_dump_dir,(unsigned long long)position);
-			dump = fopen(path,"wb");
-			if ( dump != 0 ) { fwrite(tail_host,1u,(size_t)tail_bytes,dump); fclose(dump); }
-		}
-		free(state_host);
-		free(tail_host);
+		snprintf(path,sizeof(path),"%s/decode_%llu_gdnstate.f32",state->decode_state_dump_dir,(unsigned long long)position);
+		SparkQwen36ModuleDumpDeviceFile(path,state->gdn_pool.state_f32 + (uint64_t)lane * state->gdn_pool.state_lane_stride_elements,state_bytes);
+		snprintf(path,sizeof(path),"%s/decode_%llu_gdntail.bf16",state->decode_state_dump_dir,(unsigned long long)position);
+		SparkQwen36ModuleDumpDeviceFile(path,(uint8_t *)state->gdn_pool.conv_tail_bf16 + (uint64_t)lane * tail_bytes,tail_bytes);
 		/* The snapshot slot still holds the LAST verify frame's pre-walk state
 		 * (the restore reads it without clearing). Dumping it here says whether
 		 * the corruption predates the verify snapshot (drafter-forward residue)
 		 * or the restore failed to apply (snapshot content is clean). */
 		if ( state->gdn_snapshot_slot_count != 0u )
 		{
-			float *shot_host = (float *)malloc((size_t)state_bytes);
-			uint16_t *shot_tail = (uint16_t *)malloc((size_t)tail_bytes);
-			if ( shot_host != 0 && shot_tail != 0 &&
-			     cudaMemcpy(shot_host,state->snapshot_state_f32,(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
-			     cudaMemcpy(shot_tail,state->snapshot_tail_bf16,(size_t)tail_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
-			{
-				snprintf(path,sizeof(path),"%s/decode_%llu_snapshot.f32",state->decode_state_dump_dir,(unsigned long long)position);
-				dump = fopen(path,"wb");
-				if ( dump != 0 ) { fwrite(shot_host,1u,(size_t)state_bytes,dump); fclose(dump); }
-				snprintf(path,sizeof(path),"%s/decode_%llu_snapshottail.bf16",state->decode_state_dump_dir,(unsigned long long)position);
-				dump = fopen(path,"wb");
-				if ( dump != 0 ) { fwrite(shot_tail,1u,(size_t)tail_bytes,dump); fclose(dump); }
-			}
-			free(shot_host);
-			free(shot_tail);
+			snprintf(path,sizeof(path),"%s/decode_%llu_snapshot.f32",state->decode_state_dump_dir,(unsigned long long)position);
+			SparkQwen36ModuleDumpDeviceFile(path,state->snapshot_state_f32,state_bytes);
+			snprintf(path,sizeof(path),"%s/decode_%llu_snapshottail.bf16",state->decode_state_dump_dir,(unsigned long long)position);
+			SparkQwen36ModuleDumpDeviceFile(path,state->snapshot_tail_bf16,tail_bytes);
 		}
 	}
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
@@ -2859,18 +2818,9 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	 * from an env-dependent first decode. */
 	if ( status == SPARK_STATUS_OK && prefill != 0 && state->decode_state_dump_dir != 0 )
 	{
-		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
-		float *host = (float *)malloc((size_t)state_bytes);
 		char path[512];
-		FILE *dump;
-		uint32_t lane = prefill->lane_index;
-		if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
-		{
-			snprintf(path,sizeof(path),"%s/prefill_end_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
-			dump = fopen(path,"wb");
-			if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
-		}
-		free(host);
+		snprintf(path,sizeof(path),"%s/prefill_end_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
+		SparkQwen36ModuleDumpDeviceFile(path,state->gdn_pool.state_f32 + (uint64_t)prefill->lane_index * state->gdn_pool.state_lane_stride_elements,state->gdn_pool.state_lane_stride_elements * sizeof(float));
 	}
 	/* Post-walk state for EVERY decode frame (both boots dump this, so the
 	 * spec-vs-no-spec comparison at the first diverging position is aligned):
@@ -2880,38 +2830,20 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
 		const uint64_t position = context->decode_batch->row_positions[0];
 		const uint32_t lane = context->decode_batch->row_lane_indices[0];
-		float *host = (float *)malloc((size_t)state_bytes);
 		char path[512];
-		FILE *dump;
-		if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
-		{
-			snprintf(path,sizeof(path),"%s/decode_%llu_postwalk.f32",state->decode_state_dump_dir,(unsigned long long)position);
-			dump = fopen(path,"wb");
-			if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
-		}
-		free(host);
+		snprintf(path,sizeof(path),"%s/decode_%llu_postwalk.f32",state->decode_state_dump_dir,(unsigned long long)position);
+		SparkQwen36ModuleDumpDeviceFile(path,state->gdn_pool.state_f32 + (uint64_t)lane * state->gdn_pool.state_lane_stride_elements,state_bytes);
 	}
 	if ( status == SPARK_STATUS_OK && prefill == 0 && state->decode_state_dump_dir != 0 )
 	{
-		const uint64_t tap_bytes = (uint64_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
-		uint16_t *tap_host = (uint16_t *)malloc((size_t)tap_bytes);
-		uint16_t *hidden_host = (uint16_t *)malloc((size_t)SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t));
-		uint64_t position = context->decode_batch->row_positions[0];
+		const void *tap_source = (uint8_t *)state->dspark_tap_ring_bf16 +
+			(uint64_t)slot->dspark_lane_index * state->dspark_tap_ring_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES +
+			(context->decode_batch->row_positions[0] & (uint64_t)SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY_MASK) * SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
 		char path[512];
-		FILE *dump;
-		if ( tap_host != 0 && hidden_host != 0 &&
-		     cudaMemcpy(tap_host,(uint8_t *)state->dspark_tap_ring_bf16 + (uint64_t)slot->dspark_lane_index * state->dspark_tap_ring_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES + (position & (uint64_t)SPARK_QWEN36_DSPARK_TAP_RING_CAPACITY_MASK) * SPARK_QWEN36_DSPARK_TAP_ROW_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,(size_t)tap_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
-		     cudaMemcpy(hidden_host,slot->hidden_bf16,(size_t)SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess )
-		{
-			snprintf(path,sizeof(path),"%s/decode_%llu_taps.bin",state->decode_state_dump_dir,(unsigned long long)position);
-			dump = fopen(path,"wb");
-			if ( dump != 0 ) { fwrite(tap_host,1u,(size_t)tap_bytes,dump); fclose(dump); }
-			snprintf(path,sizeof(path),"%s/decode_%llu_hidden.bin",state->decode_state_dump_dir,(unsigned long long)position);
-			dump = fopen(path,"wb");
-			if ( dump != 0 ) { fwrite(hidden_host,1u,(size_t)SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),dump); fclose(dump); }
-		}
-		free(tap_host);
-		free(hidden_host);
+		snprintf(path,sizeof(path),"%s/decode_%llu_taps.bin",state->decode_state_dump_dir,(unsigned long long)context->decode_batch->row_positions[0]);
+		SparkQwen36ModuleDumpDeviceFile(path,tap_source,(uint64_t)SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t));
+		snprintf(path,sizeof(path),"%s/decode_%llu_hidden.bin",state->decode_state_dump_dir,(unsigned long long)context->decode_batch->row_positions[0]);
+		SparkQwen36ModuleDumpDeviceFile(path,slot->hidden_bf16,(uint64_t)SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t));
 	}
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u && state->decode_state_dump_dir != 0 )
 	{
@@ -2921,24 +2853,12 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		 * post-restore dump matched). */
 		const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
 		const uint64_t tail_bytes = state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
-		float *host = (float *)malloc((size_t)state_bytes);
-		uint16_t *tail_host = (uint16_t *)malloc((size_t)tail_bytes);
 		char path[512];
-		FILE *dump;
 		cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
-		if ( host != 0 && tail_host != 0 &&
-		     cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)prefill->lane_index * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess &&
-		     cudaMemcpy(tail_host,(uint8_t *)state->gdn_pool.conv_tail_bf16 + ((uint64_t)prefill->lane_index * tail_bytes),(size_t)tail_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
-		{
-			snprintf(path,sizeof(path),"%s/replaypost_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
-			dump = fopen(path,"wb");
-			if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
-			snprintf(path,sizeof(path),"%s/replaypost_%llu_tail.bf16",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
-			dump = fopen(path,"wb");
-			if ( dump != 0 ) { fwrite(tail_host,1u,(size_t)tail_bytes,dump); fclose(dump); }
-		}
-		free(host);
-		free(tail_host);
+		snprintf(path,sizeof(path),"%s/replaypost_%llu.f32",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
+		SparkQwen36ModuleDumpDeviceFile(path,state->gdn_pool.state_f32 + (uint64_t)prefill->lane_index * state->gdn_pool.state_lane_stride_elements,state_bytes);
+		snprintf(path,sizeof(path),"%s/replaypost_%llu_tail.bf16",state->decode_state_dump_dir,(unsigned long long)prefill->base_position);
+		SparkQwen36ModuleDumpDeviceFile(path,(uint8_t *)state->gdn_pool.conv_tail_bf16 + (uint64_t)prefill->lane_index * tail_bytes,tail_bytes);
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
@@ -3132,41 +3052,17 @@ SparkStatus SparkQwen36ResidentDecodeStageExecute(
              * corrupting phase (block forward vs the decode walk itself). */
             if ( state->decode_state_dump_dir != 0 )
             {
-                const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
-                const uint64_t tail_bytes = state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES;
-                const uint64_t position = context->decode_batch->row_positions[0];
-                const uint32_t lane = context->decode_batch->row_lane_indices[0];
-                float *host = (float *)malloc((size_t)state_bytes);
                 char path[512];
-                FILE *dump;
-                if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
-                {
-                    snprintf(path,sizeof(path),"%s/decode_%llu_preforward.f32",state->decode_state_dump_dir,(unsigned long long)position);
-                    dump = fopen(path,"wb");
-                    if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
-                }
-                free(host);
-                (void)tail_bytes;
+                snprintf(path,sizeof(path),"%s/decode_%llu_preforward.f32",state->decode_state_dump_dir,(unsigned long long)context->decode_batch->row_positions[0]);
+                SparkQwen36ModuleDumpDeviceFile(path,state->gdn_pool.state_f32 + (uint64_t)context->decode_batch->row_lane_indices[0] * state->gdn_pool.state_lane_stride_elements,state->gdn_pool.state_lane_stride_elements * sizeof(float));
             }
         }
         status = SparkQwen36ModuleRunDsparkBlockForward(state,slot,context->dspark_draft,rows);
+        if ( state->decode_state_dump_dir != 0 && status == SPARK_STATUS_OK )
         {
-            if ( state->decode_state_dump_dir != 0 && status == SPARK_STATUS_OK )
-            {
-                const uint64_t state_bytes = state->gdn_pool.state_lane_stride_elements * sizeof(float);
-                const uint64_t position = context->decode_batch->row_positions[0];
-                const uint32_t lane = context->decode_batch->row_lane_indices[0];
-                float *host = (float *)malloc((size_t)state_bytes);
-                char path[512];
-                FILE *dump;
-                if ( host != 0 && cudaMemcpy(host,state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),(size_t)state_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
-                {
-                    snprintf(path,sizeof(path),"%s/decode_%llu_postforward.f32",state->decode_state_dump_dir,(unsigned long long)position);
-                    dump = fopen(path,"wb");
-                    if ( dump != 0 ) { fwrite(host,1u,(size_t)state_bytes,dump); fclose(dump); }
-                }
-                free(host);
-            }
+            char path[512];
+            snprintf(path,sizeof(path),"%s/decode_%llu_postforward.f32",state->decode_state_dump_dir,(unsigned long long)context->decode_batch->row_positions[0]);
+            SparkQwen36ModuleDumpDeviceFile(path,state->gdn_pool.state_f32 + (uint64_t)context->decode_batch->row_lane_indices[0] * state->gdn_pool.state_lane_stride_elements,state->gdn_pool.state_lane_stride_elements * sizeof(float));
         }
         SparkQwen36ModuleDsparkDiag("block_forward returned status=%d\n",(int)status);
     }
@@ -3424,7 +3320,9 @@ SparkStatus SparkQwen36ResidentDecodeStageInitialize(
     state->ledger.module_tag = SPARK_QWEN36_MODULE_TAG;
     {
         const char *profile_env = getenv("SPARK_QWEN36_PROFILE");
+        const char *small_batch_env = getenv("SPARK_QWEN36_SMALL_BATCH_GEMM");
         state->profile_enabled = profile_env != 0 && strcmp(profile_env, "0") != 0 ? 1u : 0u;
+        state->ffn_small_batch_gemm = small_batch_env == 0 || strcmp(small_batch_env, "0") != 0 ? 1u : 0u;
     }
     atomic_init(&state->submitted_count, 0u);
     atomic_init(&state->completed_count, 0u);
