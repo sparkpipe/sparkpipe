@@ -439,6 +439,24 @@ Production launcher env: SPECULATE=1, SPEC_METHOD=dflash2, K=8,
 STATE_SELECT=1, BONUS_FOLD=2, BLOCK_KV=0, WINDOW=2048, CTX_CACHE=1,
 FRAME_GRAPH default on.
 
+ROUND STRUCTURE (2026-08-21, timestamped spec_diag): spec rounds are a
+FLAT ~222-231ms regardless of acceptance (accepted=7: 231ms mean,
+accepted=3: 227ms) - the state-select replay is one row + fold drafter,
+i.e. CHEAP AND CONSTANT. The round floor IS the verify frame streaming
+the full weight set at the WS kernel's 176 GB/s (~153ms of weights alone
+at 27GB/frame). Beating 32 tps decode at E~5.8-6.7 needs the FFN GEMM at
+200+ GB/s. EXPLORED AND CLOSED (tools/qwen36_multirow_dot_bench.cu):
+generalizing the 248 GB/s M=1 scalar GEMV to M rows tops at 160.3 GB/s
+(4-way group unroll, independent accumulator chains) - plain __ldg
+streaming is issue/LSU-bound at M>=8, and the WS cp.async pipeline still
+wins. The remaining kernel project is unchanged: leaner cp.async/TMA
+staging per the staged-bench ledger (prize: FFN 149->~70ms/round).
+NOTE: deep timing instrumentation INSIDE SubmitSpeculativeDecode breaks
+the first spec round with INVALID_ARGUMENT even though the diff is
+provably inert (timers + statics only) - that function is fragile to
+growth; the timestamped spec_diag line gives per-round walls without
+touching it.
+
 NOTE for wall comparisons: the reference spec stream on O512 was
 8fb03a865248fb0b/77 rounds; post-hist-reset acceptance shifted to
 d7f798801a6e43a6/88 rounds (deterministic x2, no-spec wall and per-round

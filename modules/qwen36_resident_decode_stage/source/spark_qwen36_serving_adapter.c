@@ -34,9 +34,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <cuda_runtime.h>
 
+
+static double clock_gettime_mono_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC,&ts);
+	return (double)ts.tv_sec * 1e9 + (double)ts.tv_nsec;
+}
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_json.h"
@@ -1762,7 +1770,8 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 				spec->accepted_count++;
 			if ( fold_active != 0u )
 				pending->spec_fold = fold_active;
-			fprintf(stderr, "qwen36_spec_diag C0=%u accepted=%u drafts=[%u,%u,%u,%u,%u,%u,%u,%u] emitted=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
+			fprintf(stderr, "qwen36_spec_diag t=%.6f C0=%u accepted=%u drafts=[%u,%u,%u,%u,%u,%u,%u,%u] emitted=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
+				(double)clock_gettime_mono_ns() * 1e-9,
 				spec->committed_ids[0], spec->accepted_count,
 				spec->draft_ids[0], spec->draft_ids[1], spec->draft_ids[2], spec->draft_ids[3],
 				spec->draft_ids[4], spec->draft_ids[5], spec->draft_ids[6], spec->draft_ids[7],
