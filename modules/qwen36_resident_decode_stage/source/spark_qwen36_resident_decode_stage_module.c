@@ -3934,44 +3934,44 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT) != 0u && context->gdn_snapshot != 0 )
 		status = SparkQwen36ModuleGdnPrefixTransfer(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
-		if ( capturing != 0 )
+	if ( capturing != 0 )
+		{
+			if ( cudaStreamEndCapture((cudaStream_t)slot->cuda_stream,&cap) == cudaSuccess && cap != 0 && status == SPARK_STATUS_OK )
 			{
-				if ( cudaStreamEndCapture((cudaStream_t)slot->cuda_stream,&cap) == cudaSuccess && cap != 0 && status == SPARK_STATUS_OK )
+				cudaGraphExec_t exec = 0;
+				if ( cudaGraphInstantiate(&exec,cap,0ull) == cudaSuccess && exec != 0 )
 				{
-					cudaGraphExec_t exec = 0;
-					if ( cudaGraphInstantiate(&exec,cap,0ull) == cudaSuccess && exec != 0 )
-					{
-						slot->graph_exec = exec;
-						/* the capture round did not execute - replay now so this
-						 * frame produces its output (the K3 pattern) */
-						if ( cudaGraphLaunch(exec,(cudaStream_t)slot->cuda_stream) == cudaSuccess )
-							status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)slot->cuda_stream),"graph_sync");
-						else
-						{
-							state->graphs_broken = 1u;
-							status = SPARK_STATUS_INTERNAL_ERROR;
-						}
-					}
+					slot->graph_exec = exec;
+					/* the capture round did not execute - replay now so this
+					 * frame produces its output (the K3 pattern) */
+					if ( cudaGraphLaunch(exec,(cudaStream_t)slot->cuda_stream) == cudaSuccess )
+						status = SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)slot->cuda_stream),"graph_sync");
 					else
 					{
 						state->graphs_broken = 1u;
 						status = SPARK_STATUS_INTERNAL_ERROR;
 					}
-					if ( cap != 0 )
-						(void)cudaGraphDestroy(cap);
 				}
 				else
 				{
-					if ( cap != 0 )
-						(void)cudaGraphDestroy(cap);
 					state->graphs_broken = 1u;
-					/* the recorded work did NOT execute and the GDN state mutation
-					 * makes a blind rerun unsafe - fail the frame loudly */
 					status = SPARK_STATUS_INTERNAL_ERROR;
 				}
+				if ( cap != 0 )
+					(void)cudaGraphDestroy(cap);
 			}
-			slot->capturing = 0u;
+			else
+			{
+				if ( cap != 0 )
+					(void)cudaGraphDestroy(cap);
+				state->graphs_broken = 1u;
+				/* the recorded work did NOT execute and the GDN state mutation
+				 * makes a blind rerun unsafe - fail the frame loudly */
+				status = SPARK_STATUS_INTERNAL_ERROR;
+			}
 		}
+		slot->capturing = 0u;
+	}
 	}
 	if ( status == SPARK_STATUS_OK && prefill == 0 && state->tap_capture_enabled != 0u )
 	{

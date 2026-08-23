@@ -334,8 +334,6 @@ static __global__ void SparkQwen36GdnStepKernel(const void *conv_out_bf16, const
     }
     __syncthreads();
     }
-    __syncthreads();
-    }
 }
 
 // Gated head norm: fp32 RMSNorm over one value head, times weight, times
