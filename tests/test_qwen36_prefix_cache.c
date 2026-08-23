@@ -64,6 +64,12 @@
  *      == pool with free-list disjointness and row hygiene after EVERY
  *      Cover call, >64 simulated B1 rounds crossing >=2 block boundaries,
  *      reuse ON and OFF, plus conserving teardown.
+ *   9. F2 feasibility accounting: up-front refusal must precede any
+ *      Cover; a passing feasibility check must never fail mid-coverage.
+ *  10. S512 scale (matrix top end): the driver's maximum declared batch
+ *      size B512 with shared AND diverging prefixes, mid-block admits,
+ *      eviction pressure, and spec rounds crossing block boundaries -
+ *      the F1 conservation invariant after every Cover at that B.
  */
 
 #define GATE_CAPTURE_ROWS 32u
@@ -603,6 +609,248 @@ static int F2ScenarioFeasibility(void)
 	SparkQwen36PagedKvDestroy(&cache);
 	return(0);
 }
+
+/* ---- CASE 10 support: S512 scale - completeness-matrix top end ----
+ * The completeness matrix binds to B1..max while the adapter-level
+ * pressure case stopped at B25. The driver's maximum declared batch
+ * size is SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT
+ * = 512 (modules/qwen36_resident_decode_stage/include/sparkpipe/
+ * spark_qwen36_resident_decode_stage_firmware.h; deployment description
+ * examples/model_descriptions/qwen36_resident_decode_stage_firmware.json
+ * "max_active_slots": 512) - so the matrix TOP END is B512, below the
+ * core gate's B1024 cells. This scenario drives the paged-KV unit at
+ * that B over a rotating residency (the F1 assertion pattern):
+ * shared AND diverging prefixes against WITNESSED donor checkpoints,
+ * mid-block admits (non-block-aligned prompts leave an open top
+ * block), eviction pressure (distinct publications exceed the pool so
+ * the borrow path's Trim must fire), and >=2 spec-decode rounds per
+ * lane crossing block boundaries - free-list conservation asserted
+ * after EVERY Cover call. */
+
+#define S_LANES SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT
+#define S_BLOCK_TOKENS 64u
+#define S_BLOCKS_PER_LANE 8u
+/* Pool deliberately SMALLER than the run's distinct publications
+ * (128 groups x ~3 published blocks) so the borrow path's LRU Trim
+ * MUST fire - measured via the core evicted counter. */
+#define S_POOL 256u
+#define S_CHECKPOINT_SLOTS 8u
+#define S_GROUP_SIZE 4u
+#define S_BATCH_LANES 64u
+#define S_ROUNDS_PER_LANE 160u
+
+static uint32_t s_table[S_LANES * S_BLOCKS_PER_LANE];
+static uint32_t s_counts[S_LANES];
+static int8_t s_in_free[S_POOL],s_in_use[S_POOL];
+
+/* The F1 invariant, dimensioned from the cache under test instead of
+ * the F1 constants: {free list} U {lane rows} U {live sequences} U
+ * {core LRU} == pool, free list disjoint from every in-use set, row
+ * hygiene past counts. Returns orphan count; S_POOL on a violation. */
+static uint32_t S512ConservationCheck(const SparkQwen36PagedKv *cache,
+	const char *where,uint32_t step)
+{
+	uint32_t i,ordinal,next,orphans;
+	memset(s_in_free,0,sizeof(s_in_free));
+	memset(s_in_use,0,sizeof(s_in_use));
+	next = cache->core.free_block_head;
+	while ( next != SPARK_PREFIX_CACHE_CORE_NO_BLOCK )
+	{
+		assert(next < S_POOL);
+		s_in_free[next] = 1;
+		next = cache->core.blocks[next].free_next;
+	}
+	next = cache->core.lru_head;
+	while ( next != SPARK_PREFIX_CACHE_CORE_NO_BLOCK )
+	{
+		assert(next < S_POOL);
+		s_in_use[next] = 1;
+		next = cache->core.blocks[next].lru_next;
+	}
+	for (i=0u; i<cache->configuration.lane_count; i++)
+		for (ordinal=0u; ordinal<cache->configuration.blocks_per_lane;
+			ordinal++)
+		{
+			uint32_t block = cache->blocks_by_lane[
+				i * cache->configuration.blocks_per_lane + ordinal];
+			if ( ordinal >= cache->counts_by_lane[i] )
+			{
+				if ( block != SPARK_QWEN36_PAGED_KV_NO_BLOCK )
+				{
+					fprintf(stderr,"S512FAIL[%s step %u]: lane %u ordinal %u >= count %u holds block %u (row hygiene)\n",
+						where,step,i,ordinal,
+						cache->counts_by_lane[i],block);
+					return(S_POOL);
+				}
+				continue;
+			}
+			assert(block != SPARK_QWEN36_PAGED_KV_NO_BLOCK &&
+				block < S_POOL);
+			s_in_use[block] = 1;
+		}
+	for (i=0u; i<cache->core.max_sequence_count; i++)
+	{
+		const SparkPrefixCacheCoreSequence *sequence =
+			&cache->core.sequences[i];
+		if ( sequence->used == 0u )
+			continue;
+		for (ordinal=0u; ordinal<sequence->block_count; ordinal++)
+		{
+			uint32_t block = cache->core.sequence_blocks[
+				i * cache->core.sequence_block_capacity + ordinal];
+			assert(block < S_POOL);
+			s_in_use[block] = 1;
+		}
+	}
+	orphans = 0u;
+	for (i=0u; i<S_POOL; i++)
+	{
+		if ( s_in_free[i] != 0 && s_in_use[i] != 0 )
+		{
+			fprintf(stderr,"S512FAIL[%s step %u]: block %u on free list AND in use\n",
+				where,step,i);
+			return(S_POOL);
+		}
+		if ( s_in_free[i] == 0 && s_in_use[i] == 0 )
+			orphans++;
+	}
+	if ( orphans != 0u )
+		fprintf(stderr,"S512FAIL[%s step %u]: %u orphaned blocks\n",
+			where,step,orphans);
+	return(orphans);
+}
+
+static int S512ScaleScenario(void)
+{
+	SparkQwen36PagedKv cache;
+	SparkQwen36PagedKvConfiguration configuration;
+	SparkQwen36PagedKvMatch match;
+	SparkPrefixCacheCoreStats stats_start,stats_end;
+	static uint32_t donor_tokens[130],diverge_tokens[130],
+		midblock_tokens[100];
+	uint32_t batch,group,round,i,slot;
+	SparkStatus status;
+	GatePagedKvFixture(&configuration,s_table,s_counts,S_LANES,
+		S_BLOCKS_PER_LANE,S_POOL,S_BLOCK_TOKENS,S_CHECKPOINT_SLOTS);
+	assert(SparkQwen36PagedKvInitialize(&cache,&configuration,s_table,
+		s_counts) == SPARK_STATUS_OK);
+	SparkPrefixCacheCoreQueryStats(&cache.core,&stats_start);
+	for (batch=0u; batch<S_LANES/S_BATCH_LANES; batch++)
+	{
+		for (group=0u; group<S_BATCH_LANES/S_GROUP_SIZE; group++)
+		{
+			/* One group = four roles over fresh lanes: the donor of a
+			 * unique root, an IDENTICAL sibling (full witnessed
+			 * resume), a DIVERGING sibling (block-granular resume),
+			 * and a MID-BLOCK admit (100 tokens: open top block). */
+			uint32_t lanes[S_GROUP_SIZE];
+			uint32_t index;
+			uint32_t base = 2000000u + batch * 100000u +
+				group * 4000u;
+			lanes[0] = batch * S_BATCH_LANES + group * S_GROUP_SIZE;
+			for (index=1u; index<S_GROUP_SIZE; index++)
+				lanes[index] = lanes[index - 1u] + 1u;
+			for (i=0u; i<130u; i++)
+			{
+				donor_tokens[i] = base + ((i * 13u) % 97u) * 7u;
+				diverge_tokens[i] = i < 64u ? donor_tokens[i] :
+					base + 500u + i;
+			}
+			for (i=0u; i<100u; i++)
+				midblock_tokens[i] = base + 900u + i * 11u;
+			/* Donor: full walk, checkpoints witnessed at 64 and 128. */
+			status = SparkQwen36PagedKvAdmit(&cache,lanes[0],
+				donor_tokens,130u,&match);
+			assert(status == SPARK_STATUS_OK);
+			assert(match.block_count == 0u);
+			assert(SparkQwen36PagedKvCommittedTokens(&cache,
+				lanes[0]) == 130u);
+			if ( SparkQwen36PagedKvCheckpointOffer(&cache,lanes[0],
+				64u,&slot) != 0u )
+				SparkQwen36PagedKvCheckpointCommit(&cache,lanes[0],
+					slot,64u);
+			if ( SparkQwen36PagedKvCheckpointOffer(&cache,lanes[0],
+				128u,&slot) != 0u )
+				SparkQwen36PagedKvCheckpointCommit(&cache,lanes[0],
+					slot,128u);
+			assert(S512ConservationCheck(&cache,"s/donor",
+				lanes[0]) == 0u);
+			/* Identical sibling: resumes at the deepest witnessed
+			 * boundary (both donor blocks shared verbatim). */
+			status = SparkQwen36PagedKvAdmit(&cache,lanes[1],
+				donor_tokens,130u,&match);
+			assert(status == SPARK_STATUS_OK);
+			assert(match.block_count == 2u);
+			assert(match.checkpoint_slot !=
+				SPARK_QWEN36_PAGED_KV_NO_SLOT);
+			/* Diverging sibling at token 64: block-granular resume. */
+			status = SparkQwen36PagedKvAdmit(&cache,lanes[2],
+				diverge_tokens,130u,&match);
+			assert(status == SPARK_STATUS_OK);
+			assert(match.block_count == 1u);
+			/* Walk the divergent tail canonically into a mid-block
+			 * frontier (64 -> 100). */
+			status = SparkQwen36PagedKvCover(&cache,lanes[2],100u,
+				diverge_tokens + 64u,36u);
+			assert(status == SPARK_STATUS_OK);
+			/* Mid-block admit: 100 tokens, open top block, no
+			 * witnessed match on a fresh root. */
+			status = SparkQwen36PagedKvAdmit(&cache,lanes[3],
+				midblock_tokens,100u,&match);
+			assert(status == SPARK_STATUS_OK);
+			assert(match.block_count == 0u);
+			assert(SparkQwen36PagedKvCommittedTokens(&cache,
+				lanes[3]) == 100u);
+			assert(S512ConservationCheck(&cache,"s/group",
+				lanes[3]) == 0u);
+			/* Spec-decode rounds for all four roles: per round the
+			 * plain row Cover(end = pos + 1) plus the speculative
+			 * extension Cover(end = pos + D + 2)-shaped jump, no
+			 * canonical tokens while scratch is outstanding. With
+			 * frontiers at 100/130 and 160 rounds the coverage
+			 * crosses block boundaries 192 AND 256 (>=(2) crossings)
+			 * under outstanding scratch. Conservation after EVERY
+			 * Cover. */
+			for (index=0u; index<S_GROUP_SIZE; index++)
+			{
+				uint64_t frontier = SparkQwen36PagedKvCommittedTokens(
+					&cache,lanes[index]);
+				for (round=0u; round<S_ROUNDS_PER_LANE; round++)
+				{
+					uint64_t pos = frontier + 1ull +
+						(uint64_t)round;
+					status = SparkQwen36PagedKvCover(&cache,
+						lanes[index],pos + 1ull,0,0);
+					assert(status == SPARK_STATUS_OK);
+					assert(S512ConservationCheck(&cache,
+						"s/pre",round) == 0u);
+					status = SparkQwen36PagedKvCover(&cache,
+						lanes[index],pos + 6ull,0,0);
+					assert(status == SPARK_STATUS_OK);
+					assert(S512ConservationCheck(&cache,
+						"s/spec",round) == 0u);
+				}
+				/* Teardown returns every outstanding scratch. */
+				SparkQwen36PagedKvLaneReset(&cache,lanes[index]);
+				assert(S512ConservationCheck(&cache,"s/reset",
+					round) == 0u);
+			}
+		}
+	}
+	SparkPrefixCacheCoreQueryStats(&cache.core,&stats_end);
+	/* Eviction pressure MUST have fired: 512 distinct publications
+	 * against a 1024-block pool with rotating residencies force Trim. */
+	assert(stats_end.evicted_block_count >
+		stats_start.evicted_block_count);
+	printf("s512_scale lanes=%u rounds_per_lane=%u matched_blocks=%llu appended_tokens=%llu evicted_blocks=%llu free=%u\n",
+		(unsigned)S_LANES,(unsigned)S_ROUNDS_PER_LANE,
+		(unsigned long long)stats_end.matched_block_count,
+		(unsigned long long)stats_end.appended_token_count,
+		(unsigned long long)stats_end.evicted_block_count,
+		SparkQwen36PagedKvFreeBlocks(&cache));
+	SparkQwen36PagedKvDestroy(&cache);
+	return(0);
+}
 int main(void)
 {
 	SparkModelServingAdapterConfiguration configuration;
@@ -905,6 +1153,61 @@ int main(void)
 		assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_SCHEMA_ERROR);
 		assert(adapter_state == 0);
 
+		/* ---------- CASE 5c: B512 top end - the driver's maximum
+		 * declared batch size (SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_
+		 * ACTIVE_SEQUENCE_COUNT = 512, spark_qwen36_resident_decode_
+		 * stage_firmware.h; deployment description "max_active_slots":
+		 * 512). The b25 pressure shape at the matrix top end: 512
+		 * resident sequences over shared roots and divergent tails,
+		 * slots spanning the full declared range. ---------------------- */
+		GateConfiguration(&configuration,TEST_QWEN36_SERVING_CONFIG_PATH,runtime_root,&test_state,
+			SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+			SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+			4096u,2048u);
+		adapter_state = 0;
+		assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
+		assert(gate_kv_blocks() == 2048u); /* physical pages wired */
+		gate_record_reset();
+		{
+			uint32_t root,length,statuses_ok,statuses_refused;
+			static uint32_t scale_tokens[GATE_MAX_ROWS];
+			statuses_ok = 0u;
+			statuses_refused = 0u;
+			for (root=0u; root<SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; root++)
+			{
+				length = 70u + ((root * 37u) % 300u);
+				for (row=0u; row<length && row<GATE_MAX_ROWS; row++)
+					scale_tokens[row] = row < 130u ?
+						300000u + (root / 8u) * 1000u + row :
+						300000u + root * 17u + row;
+				if ( root % 128u == 0u )
+					gate_record_reset(); /* ring capacity 8192 */
+				records_before = gate_record_count();
+				{
+					SparkStatus gate_status = GatePrefill(adapter_state,&test_state,
+						root % SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+						7001u + root,scale_tokens,length,11000u + root);
+					if ( gate_status == SPARK_STATUS_OK )
+					{
+						statuses_ok++;
+						assert(test_state.completion_count == 1u);
+					}
+					else
+					{
+						statuses_refused++;
+						fprintf(stderr,"b512_refused root=%u length=%u status=%d\n",
+							root,length,(int)gate_status);
+						assert(test_state.completion_count == 0u);
+					}
+				}
+			}
+			printf("b512_pressure ok=%u refused=%u\n",statuses_ok,statuses_refused);
+			assert(statuses_ok + statuses_refused ==
+				SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT);
+		}
+		assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
+		library.adapter_interface.destroy(adapter_state);
+
 		/* ---------- CASE 6: DECODE work with speculation ----------
 		 * Two resident lanes, many rounds of B1 speculative decode
 		 * alternating between them: each round covers the plain row
@@ -1027,6 +1330,10 @@ int main(void)
 		/* ---------- CASE 9: F2 feasibility accounting ---------- */
 		assert(F2ScenarioFeasibility() == 0);
 		printf("f2_feasibility PASS\n");
+
+		/* ---------- CASE 10: S512 scale - matrix top end ---------- */
+		assert(S512ScaleScenario() == 0);
+		printf("s512_conservation PASS\n");
 	}
 	assert(cudaStreamDestroy((cudaStream_t)test_state.execution_stream) == cudaSuccess);
 	printf("qwen36 prefix-cache gate PASS\n");

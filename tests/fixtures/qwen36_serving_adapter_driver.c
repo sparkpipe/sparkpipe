@@ -36,7 +36,13 @@
 /* TP4: the adapter sets a single module stage (SPARK_QWEN36_STAGE_COUNT=1,
  * STAGE_INDEX=0) on every rank. */
 #define TEST_QWEN36_DRIVER_STAGE_COUNT 1u
-#define TEST_QWEN36_DRIVER_CAPTURE_ROWS 32u
+/* Capture width: the adapter's prefill frames are block-aligned
+ * (SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS = 64 rows), and
+ * the completeness-matrix top end (max_active_slots = 512) produces
+ * exactly 64-row frames - so the capture must span a full block, not
+ * the historic 32. Widening only: every narrower frame records
+ * byte-identically. */
+#define TEST_QWEN36_DRIVER_CAPTURE_ROWS 64u
 #define TEST_QWEN36_DRIVER_RECORD_CAPACITY 8192u
 
 /* One submitted frame, as the prefix gate observes it. */
