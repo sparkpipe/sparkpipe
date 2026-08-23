@@ -700,7 +700,12 @@ from pathlib import Path
 # (watchdog-restart SEGV -> clean capacity_exceeded), daemon client-session
 # submission-id reset on hello, engine prefill lane concentration (full-
 # width frames instead of 1-row-per-lane at B>1).
-CEILING = 174145
+# 174603 (2026-08-23): daemon session-death slot unbind (the "all cells
+# fail until restart" poisoning fix), submission-rejection logging (daemon
+# + client), and node/model_api.c - the standard OpenAI-style HTTP entry
+# point (single engine session, health endpoint working; completion path
+# WIP - see the commit message).
+CEILING = 174603
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
