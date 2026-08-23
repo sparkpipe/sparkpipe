@@ -1693,7 +1693,7 @@ static SparkStatus SparkQwen36ModuleValidateSpeculation(
     checkpoint = context->flags &
         SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT;
     if (verify != 0u || restore != 0u || prefix_restore != 0u ||
-        prefix_snapshot != 0u)
+        (prefix_snapshot != 0u && checkpoint == 0u))
     {
         if (prefill == 0 || (verify != 0u && restore != 0u) ||
             (verify != 0u && prefill->base_position == 0u) ||
@@ -1712,6 +1712,29 @@ static SparkStatus SparkQwen36ModuleValidateSpeculation(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    }
+    else if (checkpoint != 0u && prefix_snapshot != 0u)
+    {
+        /* Colliding boundary frame: the walk ends exactly on a block
+         * boundary that is ALSO the publish boundary. The view keeps its
+         * GDN_CHECKPOINT meaning (the harness slot the post-walk capture
+         * writes); the prefix-pool destination rides reserved0 - accepted
+         * ONLY on this flag combination and only below the prefix slot
+         * count (ValidateFrame mirrors that rule). */
+        if (prefill == 0 ||
+            snapshot == 0 ||
+            snapshot->abi_version !=
+                SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION ||
+            snapshot->descriptor_bytes < (uint32_t)sizeof(*snapshot) ||
+            snapshot->reserved0 != 0u ||
+            (state->gdn_layer_count != 0u &&
+             (state->gdn_snapshot_slot_count == 0u ||
+              snapshot->snapshot_index >= state->gdn_snapshot_slot_count)) ||
+            context->reserved0 >=
+                SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
     }
     else if (resume != 0u || checkpoint != 0u)
     {
@@ -1845,7 +1868,18 @@ static SparkStatus SparkQwen36ModuleValidateFrame(
     if (context->abi_version !=
             SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION ||
         context->descriptor_bytes < (uint32_t)sizeof(*context) ||
-        context->reserved0 != 0u ||
+        /* reserved0 is zero except on a colliding checkpoint+publish
+         * frame, where it carries the prefix-pool destination of the
+         * SNAPSHOT_OUT transfer while gdn_snapshot keeps naming the
+         * checkpoint slot; bounded exactly as in the flag validation. */
+        (context->reserved0 != 0u &&
+         ((context->flags &
+           (SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT |
+            SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT)) !=
+              (SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT |
+               SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT) ||
+          context->reserved0 >=
+              SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT)) ||
         (context->flags & ~known_context_flags) != 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -3980,7 +4014,15 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
 	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT) != 0u && context->gdn_snapshot != 0 )
-		status = SparkQwen36ModuleGdnPrefixTransfer(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
+	{
+		/* On a colliding checkpoint+publish frame the view names the
+		 * checkpoint slot (the capture's destination) and the publish
+		 * destination rides reserved0 - the two-pool copy the single
+		 * view cannot express (byte-identity fix, 2026-08-23). */
+		uint32_t prefix_slot = (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT) != 0u ?
+			context->reserved0 : context->gdn_snapshot->snapshot_index;
+		status = SparkQwen36ModuleGdnPrefixTransfer(state,slot,prefill->lane_index,prefix_slot,0u);
+	}
 	if ( capturing != 0 )
 		{
 			if ( cudaStreamEndCapture((cudaStream_t)slot->cuda_stream,&cap) == cudaSuccess && cap != 0 && status == SPARK_STATUS_OK )

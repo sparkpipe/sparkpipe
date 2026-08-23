@@ -1520,7 +1520,26 @@ static void SparkQwen36ServingBuildFrame(
 				pending->prefix_gdn_view.abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 				pending->prefix_gdn_view.descriptor_bytes = sizeof(pending->prefix_gdn_view);
 				pending->prefix_gdn_view.snapshot_index = state->lane_prefix_entry[slot];
-				context->gdn_snapshot = &pending->prefix_gdn_view;
+				if ( (extra_flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT) != 0u )
+				{
+					/* Byte-identity root cause (2026-08-23): this frame is
+					 * BOTH a checkpoint boundary and the publish boundary,
+					 * and the old code rebound the SHARED gdn_snapshot view
+					 * to the prefix entry - so the module's post-walk
+					 * GDN_CHECKPOINT capture wrote the boundary witness into
+					 * snapshot_pool[lane_prefix_entry] (clobbering whatever
+					 * checkpoint lived there) while CheckpointCommit bound
+					 * the offered slot, which no frame ever wrote; later
+					 * PREFIX_RESUME restores read stale state and diverge
+					 * after the shared prefix. ONE view cannot name two
+					 * destinations: keep the view pointing at the checkpoint
+					 * slot (its capture meaning is unchanged module-side)
+					 * and carry the publish destination in reserved0, which
+					 * ValidateFrame accepts only on this flag combination. */
+					context->reserved0 = state->lane_prefix_entry[slot];
+				}
+				else
+					context->gdn_snapshot = &pending->prefix_gdn_view;
 				context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT;
 				state->lane_publish_armed[slot] = 0u;
 			}

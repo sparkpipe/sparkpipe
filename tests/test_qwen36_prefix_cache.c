@@ -204,6 +204,73 @@ static SparkStatus GatePrefill(void *adapter_state, GateState *test_state,
 	return(adapter_interface_global->submit(adapter_state,&submission));
 }
 
+/* Same single-lane prefill shape, plus the client CACHE_PUBLISH contract
+ * (deterministic token-derived identity + block-aligned token count) - the
+ * lane glue that arms the adapter's publish-boundary frame. CASE 11 needs
+ * this because the checkpoint/publish collision it guards only exists on
+ * a lane that publishes. */
+static SparkStatus GatePrefillPublish(void *adapter_state, GateState *test_state,
+	uint32_t slot, uint64_t sequence_id, const uint32_t *tokens,
+	uint32_t length, uint64_t submission_id)
+{
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lane;
+	static __thread uint32_t pub_row_lane[GATE_MAX_ROWS];
+	static __thread uint64_t pub_row_positions[GATE_MAX_ROWS],pub_row_sequences[GATE_MAX_ROWS];
+	uint32_t row,boundary;
+	memset(&submission,0,sizeof(submission));
+	memset(&lane,0,sizeof(lane));
+	for (row=0u; row<length; row++)
+	{
+		pub_row_lane[row] = 0u;
+		pub_row_positions[row] = row;
+		pub_row_sequences[row] = sequence_id;
+	}
+	lane.sequence_id = sequence_id;
+	lane.request_id = submission_id + 1000u;
+	lane.request_generation = 1u;
+	lane.step_generation = 1u;
+	lane.resident_sequence_slot = slot;
+	lane.context_token_count = length;
+	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	boundary = length - (length % SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
+	if ( boundary == 0u )
+		boundary = length;
+	lane.flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+	lane.cache_publish_token_count = boundary;
+	for (row=0u; row<32u; row++)
+		lane.cache_publish_identity.sha256[row] =
+			(uint8_t)(tokens[row % length] * 31u + row);
+	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission.tokens_per_sequence = 1u;
+	submission.submission_id = submission_id;
+	submission.request_id = submission_id + 1000u;
+	submission.sequence_id = sequence_id;
+	submission.control_generation = 1u;
+	submission.transaction_id = submission_id + 2000u;
+	submission.dispatch_generation = submission_id + 3000u;
+	submission.request_generation = 1u;
+	submission.step_generation = 1u;
+	submission.residency.word0 = submission_id;
+	submission.residency.word1 = 177u;
+	submission.residency.generation = 277u;
+	submission.residency.owner = 13u;
+	submission.active_sequence_count = 1u;
+	submission.new_token_count = length;
+	submission.lane_count = 1u;
+	submission.row_count = length;
+	submission.token_count = length;
+	submission.lanes = &lane;
+	submission.token_ids = tokens;
+	submission.row_positions = pub_row_positions;
+	submission.row_lane_indices = pub_row_lane;
+	submission.row_sequence_ids = pub_row_sequences;
+	test_state->completion_count = 0u;
+	return(adapter_interface_global->submit(adapter_state,&submission));
+}
+
 /* One single-lane DECODE submission: one row at `position` carrying the
  * previously accepted token id, OUTPUT_TOKEN set - the B1 shape the
  * speculative path requires. */
@@ -1350,6 +1417,90 @@ int main(void)
 		/* ---------- CASE 10: S512 scale - matrix top end ---------- */
 		assert(S512ScaleScenario() == 0);
 		printf("s512_conservation PASS\n");
+
+		/* ---------- CASE 11: checkpoint witness-chain law ----------
+		 * Device byte-identity root cause (2026-08-23): ONE donor frame can
+		 * be both the paged-Kv GDN_CHECKPOINT boundary and the flat-pool
+		 * publish boundary, and the publish branch rebound the SHARED
+		 * gdn_snapshot view - so the module wrote the boundary-192 witness
+		 * into the PREFIX entry's slot while CheckpointCommit recorded it
+		 * at its own slot. Later PREFIX_RESUME restores read a slot no
+		 * checkpoint frame ever wrote (or a shallower boundary's clobbered
+		 * slot). The fixture driver RECORDS each frame's snapshot view
+		 * index, so the law is host-visible with no device and no fixture
+		 * emulation change:
+		 *   (1) the donor's GDN_CHECKPOINT frames record DISTINCT indices
+		 *       (two boundaries on one device slot = one clobbered the
+		 *       other);
+		 *   (2) the publish-boundary frame - which under the bug rebinds
+		 *       the view to the prefix entry - must still record ITS OWN
+		 *       checkpoint slot index (distinctness in (1) covers it);
+		 *   (3) every PREFIX_RESUME index names the checkpoint frame whose
+		 *       walk ended exactly at the resume boundary. */
+		setenv("SPARK_QWEN36_SERVING_PREFIX_CACHE","1",1);
+		GateConfiguration(&configuration,TEST_QWEN36_SERVING_CONFIG_PATH,runtime_root,&test_state,8u,8u,1024u,512u);
+		adapter_state = 0;
+		assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
+		gate_record_reset();
+		records_before = gate_record_count();
+		assert(GatePrefillPublish(adapter_state,&test_state,2u,11001u,prompt_a,prompt_length,1200u) == SPARK_STATUS_OK);
+		{
+			uint32_t index,checkpoint_count;
+			uint32_t ends[8],slots[8];
+			const GateFrameRecord *resume_record = 0;
+			checkpoint_count = 0u;
+			for (index=records_before; index<gate_record_count(); index++)
+			{
+				const GateFrameRecord *record = gate_record_get(index);
+				if ( (record->context_flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT) == 0u )
+					continue;
+				assert(record->snapshot_index_present != 0u);
+				assert(checkpoint_count < 8u);
+				ends[checkpoint_count] = (uint32_t)(record->base_position + record->rows);
+				slots[checkpoint_count] = record->snapshot_index;
+				checkpoint_count++;
+			}
+			assert(checkpoint_count == 3u); /* boundaries 64,128,192 */
+			/* Law (1)+(2): one device slot per boundary - no duplicates. */
+			{
+				uint32_t i,j;
+				for (i=0u; i<checkpoint_count; i++)
+					for (j=i + 1u; j<checkpoint_count; j++)
+					{
+						assert(ends[i] != ends[j]);
+						assert(slots[i] != slots[j]);
+					}
+			}
+			/* Law (3): the resuming lane restores from the checkpoint frame
+			 * that walked its exact boundary. */
+			assert(GatePrefillPublish(adapter_state,&test_state,3u,11002u,prompt_a,prompt_length,1201u) == SPARK_STATUS_OK);
+			for (index=records_before; index<gate_record_count(); index++)
+			{
+				const GateFrameRecord *record = gate_record_get(index);
+				uint32_t i,matched_end;
+				if ( (record->context_flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME) == 0u )
+					continue;
+				assert(resume_record == 0); /* exactly one resume frame */
+				resume_record = record;
+				assert(record->snapshot_index_present != 0u);
+				matched_end = 0u;
+				for (i=0u; i<checkpoint_count; i++)
+					if ( slots[i] == record->snapshot_index )
+					{
+						matched_end = ends[i];
+						break;
+					}
+				assert(matched_end != 0u); /* index was actually written */
+				assert(matched_end == (uint32_t)record->base_position);
+			}
+			assert(resume_record != 0);
+			assert((uint32_t)resume_record->base_position == 192u);
+			printf("checkpoint_witness boundaries=3 resume_at=%u slot=%u\n",
+				(unsigned)resume_record->base_position,
+				resume_record->snapshot_index);
+		}
+		assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
+		library.adapter_interface.destroy(adapter_state);
 	}
 	assert(cudaStreamDestroy((cudaStream_t)test_state.execution_stream) == cudaSuccess);
 	printf("qwen36 prefix-cache gate PASS\n");

@@ -56,3 +56,6 @@ spec_squeezed_pool=30
 spec_diag_borrowed=1
 spec_diag_lines=140
 spec_diag_matched_blocks=0
+ckpt_witness_boundaries=3
+ckpt_witness_resume_at=192
+ckpt_witness_slot=2

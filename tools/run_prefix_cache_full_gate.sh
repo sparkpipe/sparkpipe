@@ -92,6 +92,17 @@ grep -q '^f1_conservation PASS' "$OUTDIR/qwen36.out" ||
     ' "$OUTDIR/core.out" | tr 'A-Z' 'a-z'
     # qwen36 gate: pressure, speculation, conservation feasibility
     awk '
+        # Checkpoint witness-chain law keys (byte-identity fix, 2026-08-23,
+        # ADDED DELIBERATELY together with their baseline entries in the same
+        # commit - never silently): CASE 11 pins that every donor checkpoint
+        # boundary records its OWN snapshot slot and a PREFIX_RESUME restores
+        # from exactly the frame that walked its boundary - the host-visible
+        # form of the device reuse-path corruption this lane fixed.
+        /^checkpoint_witness/ {
+            match($0, /boundaries=[0-9]+/); print "ckpt_witness_" substr($0, RSTART, RLENGTH);
+            match($0, /resume_at=[0-9]+/);  print "ckpt_witness_" substr($0, RSTART, RLENGTH);
+            match($0, /slot=[0-9]+/);       print "ckpt_witness_" substr($0, RSTART, RLENGTH);
+        }
         # Reuse observability keys (iteration 6, ADDED DELIBERATELY together
         # with their baseline entries in the same commit - never silently):
         # the merged per-lane diag line now carries matched_blocks=/borrowed=
