@@ -41,9 +41,13 @@
 #define SPARK_QWEN36_CONV SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS
 
 extern "C" cudaError_t SparkQwen36ConfigureCudaKernels(void);
-extern "C" cudaError_t SparkQwen36LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen36GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen36GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal);
+extern "C" cudaError_t SparkQwen36LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen36GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen36GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint8_t *row_snap_tails, uint64_t snap_tail_lane_stride, uint64_t snap_tail_layer_stride);
 extern "C" cudaError_t SparkQwen36LaunchDecayBeta(cudaStream_t stream, const void *decay_pre_bf16, const void *beta_pre_bf16, const SparkQwen36GdnLayerWeights *weights, float *log_decay_f32, float *beta_f32, uint32_t row_count);
-extern "C" cudaError_t SparkQwen36LaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkQwen36GdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal);
+/* The consolidation gave both GDN launchers per-row checkpoint parameters
+ * (row_snap_* + strides). This validator predates that feature and keeps
+ * verifying the recurrence itself: it passes null/zero so the kernels skip
+ * the snapshot writes exactly as they did before the merge. */
+extern "C" cudaError_t SparkQwen36LaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkQwen36GdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, float *row_snap_states, uint64_t snap_lane_stride, uint64_t snap_layer_stride);
 extern "C" cudaError_t SparkQwen36LaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const SparkQwen36GdnLayerWeights *weights, void *output_bf16, uint32_t row_count, float epsilon);
 extern "C" cudaError_t SparkQwen36LaunchAttnPrepare(cudaStream_t stream, void *q_fused_bf16, const void *k_bf16, const void *v_bf16, const SparkQwen36AttnLayerWeights *weights, void *kv_cache_bf16, const uint32_t *slot_mapping, const uint64_t *row_positions, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, float epsilon);
 extern "C" cudaError_t SparkQwen36LaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen36KvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride);
@@ -453,7 +457,7 @@ static int SparkQwen36ValCheckConv(SparkQwen36ValDevice *device)
 			/* One token per launch, one row per lane: the launcher consumes
 			 * row r's qkv row, so slide the window by handing it row r. */
 			if (error == cudaSuccess)
-				error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv + (uint64_t)token * 2u * SPARK_QWEN36_CONV,&device->gdn_weights,device->conv_out + (uint64_t)token * 2u * SPARK_QWEN36_CONV,&device->pool,device->lane_indices,2u,0u);
+				error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv + (uint64_t)token * 2u * SPARK_QWEN36_CONV,&device->gdn_weights,device->conv_out + (uint64_t)token * 2u * SPARK_QWEN36_CONV,&device->pool,device->lane_indices,2u,0u,0,0,0);
 			if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
 		}
 		if (error == cudaSuccess)
@@ -545,7 +549,7 @@ static int SparkQwen36ValCheckGdnStep(SparkQwen36ValDevice *device)
 		if (error == cudaSuccess) error = cudaMemcpy(device->cold,cold,sizeof(cold),cudaMemcpyHostToDevice);
 		if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,lanes,sizeof(lanes),cudaMemcpyHostToDevice);
 		if (error == cudaSuccess)
-			error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->qkv,device->log_decay,device->beta,&device->pool,device->core_out,device->lane_indices,2u,0u);
+			error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->qkv,device->log_decay,device->beta,&device->pool,device->core_out,device->lane_indices,2u,0u,0,0,0);
 		if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
 		if (error == cudaSuccess) error = cudaMemcpy(core_packed,device->core_out,2ull * SPARK_QWEN36_HEADS * SPARK_QWEN36_DV * sizeof(uint16_t),cudaMemcpyDeviceToHost);
 		if (error == cudaSuccess) error = cudaMemcpy(state_host,device->state,2ull * state_elements * sizeof(float),cudaMemcpyDeviceToHost);
@@ -1294,12 +1298,12 @@ static int SparkQwen36ValCheckSpecPathEquivalence(SparkQwen36ValDevice *device)
 	{
 		error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv + ((uint64_t)token * SPARK_QWEN36_CONV),
 			&device->gdn_weights,device->conv_out + ((uint64_t)token * SPARK_QWEN36_CONV),&device->pool,
-			device->lane_indices,1u,0u);
+			device->lane_indices,1u,0u,0,0,0);
 		if (error == cudaSuccess)
 			error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out + ((uint64_t)token * SPARK_QWEN36_CONV),
 				device->log_decay + ((uint64_t)token * SPARK_QWEN36_HEADS),device->beta + ((uint64_t)token * SPARK_QWEN36_HEADS),
 				&device->pool,device->core_out + ((uint64_t)token * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION),
-				device->lane_indices,1u,0u);
+				device->lane_indices,1u,0u,0,0,0);
 		if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
 	}
 	if (error == cudaSuccess) error = cudaMemcpy(state_chunk,device->state,state_elements * sizeof(float),cudaMemcpyDeviceToHost);
@@ -1391,20 +1395,20 @@ static int SparkQwen36ValCheckStepRowBatch(SparkQwen36ValDevice *device)
 	if (error == cudaSuccess) error = cudaMemcpy(device->cold,warm,tokens * sizeof(uint32_t),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,lanes,tokens * sizeof(uint32_t),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess)
-		error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv,&device->gdn_weights,device->conv_out,&device->pool,device->lane_indices,tokens,0u);
+		error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv,&device->gdn_weights,device->conv_out,&device->pool,device->lane_indices,tokens,0u,0,0,0);
 	if (error == cudaSuccess)
-		error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out,device->log_decay,device->beta,&device->pool,device->core_out,device->lane_indices,tokens,0u);
+		error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out,device->log_decay,device->beta,&device->pool,device->core_out,device->lane_indices,tokens,0u,0,0,0);
 	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
 	/* SERIAL: one row per launch on lane 1, same tokens in the same order. */
 	if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,one_lane,sizeof(one_lane),cudaMemcpyHostToDevice);
 	for (token = 0u; token < tokens && error == cudaSuccess; token++)
 	{
 		error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv + ((uint64_t)token * SPARK_QWEN36_CONV),
-			&device->gdn_weights,device->conv_out + ((uint64_t)token * SPARK_QWEN36_CONV),&device->pool,device->lane_indices,1u,0u);
+			&device->gdn_weights,device->conv_out + ((uint64_t)token * SPARK_QWEN36_CONV),&device->pool,device->lane_indices,1u,0u,0,0,0);
 		if (error == cudaSuccess)
 			error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out + ((uint64_t)token * SPARK_QWEN36_CONV),
 				device->log_decay + ((uint64_t)token * SPARK_QWEN36_HEADS),device->beta + ((uint64_t)token * SPARK_QWEN36_HEADS),
-				&device->pool,device->core_out + ((uint64_t)token * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION),device->lane_indices,1u,0u);
+				&device->pool,device->core_out + ((uint64_t)token * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION),device->lane_indices,1u,0u,0,0,0);
 		if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
 	}
 	if (error == cudaSuccess) error = cudaMemcpy(state_batch,device->state,state_elements * sizeof(float),cudaMemcpyDeviceToHost);
@@ -1492,19 +1496,19 @@ static int SparkQwen36ValCheckDriftAccumulation(SparkQwen36ValDevice *device)
 		for (row = 0u; row < rows_per_round && error == cudaSuccess; row++)
 		{
 			error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv + ((uint64_t)row * SPARK_QWEN36_CONV),
-				&device->gdn_weights,device->conv_out + ((uint64_t)row * SPARK_QWEN36_CONV),&device->pool,device->lane_indices,1u,0u);
+				&device->gdn_weights,device->conv_out + ((uint64_t)row * SPARK_QWEN36_CONV),&device->pool,device->lane_indices,1u,0u,0,0,0);
 			if (error == cudaSuccess)
 				error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out + ((uint64_t)row * SPARK_QWEN36_CONV),
 					device->log_decay + ((uint64_t)row * SPARK_QWEN36_HEADS),device->beta + ((uint64_t)row * SPARK_QWEN36_HEADS),
-					&device->pool,device->core_out + ((uint64_t)row * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION),device->lane_indices,1u,0u);
+					&device->pool,device->core_out + ((uint64_t)row * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION),device->lane_indices,1u,0u,0,0,0);
 		}
 		/* lane 1: the spec trajectory - one decode row through the step path, the
 		 * rest through the chunk path, which is what a replay frame does. */
 		if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,lane1,sizeof(lane1),cudaMemcpyHostToDevice);
 		if (error == cudaSuccess)
-			error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv,&device->gdn_weights,device->conv_out,&device->pool,device->lane_indices,1u,0u);
+			error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv,&device->gdn_weights,device->conv_out,&device->pool,device->lane_indices,1u,0u,0,0,0);
 		if (error == cudaSuccess)
-			error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out,device->log_decay,device->beta,&device->pool,device->core_out,device->lane_indices,1u,0u);
+			error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out,device->log_decay,device->beta,&device->pool,device->core_out,device->lane_indices,1u,0u,0,0,0);
 		if (error == cudaSuccess)
 			error = SparkQwen36LaunchChunkConv(cudaStreamPerThread,device->qkv + SPARK_QWEN36_CONV,&device->gdn_weights,
 				device->conv_out + SPARK_QWEN36_CONV,&device->pool,1u,rows_per_round - 1u,0u);
@@ -1633,11 +1637,11 @@ static int SparkQwen36ValCheckLayerAmplification(SparkQwen36ValDevice *device)
 		for (row = 0u; row < rows && error == cudaSuccess; row++)
 		{
 			error = SparkQwen36LaunchConvUpdate(cudaStreamPerThread,device->qkv + ((uint64_t)row * SPARK_QWEN36_CONV),
-				&device->gdn_weights,device->conv_out + ((uint64_t)row * SPARK_QWEN36_CONV),&pool,device->lane_indices,1u,layer);
+				&device->gdn_weights,device->conv_out + ((uint64_t)row * SPARK_QWEN36_CONV),&pool,device->lane_indices,1u,layer,0,0,0);
 			if (error == cudaSuccess)
 				error = SparkQwen36LaunchGdnStep(cudaStreamPerThread,device->conv_out + ((uint64_t)row * SPARK_QWEN36_CONV),
 					device->log_decay + ((uint64_t)row * SPARK_QWEN36_HEADS),device->beta + ((uint64_t)row * SPARK_QWEN36_HEADS),
-					&pool,device->core_out + ((uint64_t)row * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION),device->lane_indices,1u,layer);
+					&pool,device->core_out + ((uint64_t)row * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION),device->lane_indices,1u,layer,0,0,0);
 		}
 	/* lane 1: the replay trajectory - both rows in one chunk launch per layer. */
 	if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,lane1,sizeof(lane1),cudaMemcpyHostToDevice);
