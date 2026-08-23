@@ -192,7 +192,12 @@ static void TestHarnessInitialize(
 	harness->block_gen =
 	    (uint64_t *)calloc(harness->pool_block_count, sizeof(uint64_t));
 	harness->pool_gen = (uint64_t *)calloc(pool_slots, sizeof(uint64_t));
-	harness->stream_capacity = 1ull << 22;
+	/* Stream capacity scales with the population: the squeezed-pool curve
+	 * runs B512 populations whose emitted-token streams exceed the fixed
+	 * 4M-entry buffer that fits B25. Populations <=64 slots keep the
+	 * historic allocation, so every existing case is byte-identical. */
+	harness->stream_capacity = max_sequences > 64u ? (1ull << 23)
+	                                               : (1ull << 22);
 	harness->stream =
 	    (uint32_t *)malloc((size_t)harness->stream_capacity * sizeof(uint32_t));
 	assert(harness->pool_rows != 0 && harness->pool_written != 0 &&
@@ -1708,6 +1713,8 @@ static void TestPerfCell(uint32_t batch, uint64_t seed)
 	}
 }
 
+static void TestPerfSqueezeCurve(uint32_t batch, uint64_t seed);
+
 static void TestPerfReuseSavings(void)
 {
 	printf("perf_reuse_savings: MEASURED host-side walk simulation "
@@ -1716,7 +1723,128 @@ static void TestPerfReuseSavings(void)
 	TestPerfCell(1u, 0x9e3779b97f4a7c15ull ^ 1ull);
 	TestPerfCell(4u, 0x9e3779b97f4a7c15ull ^ 4ull);
 	TestPerfCell(25u, 0x9e3779b97f4a7c15ull ^ 25ull);
+	printf("perf_squeeze_curve: MEASURED squeezed-pool cells"
+	       " (same script, pool = measured distinct-publication footprint"
+	       " x {100,50,25}%%; evicted>0 asserted below 100%%)\n");
+	TestPerfSqueezeCurve(25u, 0x9e3779b97f4a7c15ull ^ 25ull);
+	TestPerfSqueezeCurve(512u, 0x9e3779b97f4a7c15ull ^ 512ull);
 }
+
+/* ---- squeezed-pool curve (completeness-matrix realism) ----------------
+ * The roomy cells above isolate reuse value in a cache-resident pool;
+ * every real deployment has a bounded KV pool. This curve re-runs the SAME
+ * population script with the pool sized as a percentage of the measured
+ * distinct-publication footprint, recording savings%, hit-rate (matched vs
+ * appended tokens), blocks claimed and evictions as a curve over pool
+ * size. Counters only - wall clock stays with the roomy cells. Eviction
+ * is ASSERTED (>0) in the squeezed cells, not hoped for. */
+
+typedef struct TestPerfPairResult
+{
+	uint64_t off_recomputed_rows;
+	uint64_t on_recomputed_rows;
+	uint64_t matched_tokens;
+	uint64_t appended_tokens;
+	uint64_t borrowed_blocks;
+	uint64_t evicted_blocks;
+	uint64_t stalls;
+	uint64_t used_blocks_end;
+}
+TestPerfPairResult;
+
+/* One lockstep ON/OFF population run at the given pool size (ON arm only;
+ * the OFF arm's pool is private and pool-size independent). */
+static void TestPerfRunPair(uint32_t batch, uint64_t seed,
+	uint32_t pool_blocks, uint32_t rounds, TestPerfPairResult *result)
+{
+	TestHarness on;
+	TestHarness off;
+	SparkPrefixCacheCoreStats stats;
+	memset(result, 0, sizeof(*result));
+	TestHarnessInitialize(&on, pool_blocks, batch, 1, seed, 96u,
+	    PERF_RELEASE_AT);
+	TestHarnessInitialize(&off, pool_blocks, batch, 0, seed, 96u,
+	    PERF_RELEASE_AT);
+	on.model_skip = 1;
+	off.model_skip = 1;
+	on.prompt_builder = TestPerfBuildPrompt;
+	off.prompt_builder = TestPerfBuildPrompt;
+	TestPerfRunPopulation(&on, &off, seed, batch, rounds);
+	assert(on.stream_length == off.stream_length);
+	assert(memcmp(on.stream, off.stream,
+	       (size_t)on.stream_length * sizeof(uint32_t)) == 0);
+	SparkPrefixCacheCoreQueryStats(&on.core, &stats);
+	result->matched_tokens =
+	    stats.matched_block_count * (uint64_t)on.block_token_count;
+	/* Accounting law holds under pressure too: recompute avoided EXACTLY
+	 * equals block-granular matched tokens. */
+	assert(off.recomputed_rows - on.recomputed_rows ==
+	       result->matched_tokens);
+	result->off_recomputed_rows = off.recomputed_rows;
+	result->on_recomputed_rows = on.recomputed_rows;
+	result->borrowed_blocks = on.blocks_borrowed;
+	result->appended_tokens = stats.appended_token_count;
+	result->evicted_blocks = stats.evicted_block_count;
+	result->stalls = stats.capacity_stall_count;
+	result->used_blocks_end = stats.used_block_count;
+	TestHarnessDestroy(&on);
+	TestHarnessDestroy(&off);
+}
+
+static void TestPerfSqueezeCurve(uint32_t batch, uint64_t seed)
+{
+	static const uint32_t pcts[] = { 100u, 50u, 25u };
+	TestPerfPairResult probe;
+	uint32_t index;
+	/* Probe run at the roomy sizing MEASURES this script's distinct-
+	 * publication footprint (core used_block_count at end of run); that
+	 * measured number is the squeeze denominator - never assumed. */
+	uint32_t rounds = batch <= 25u ? PERF_ROUNDS : 48u;
+	TestPerfRunPair(batch, seed, batch * 384u + 16u, rounds, &probe);
+	for (index = 0u; index < 3u; index++)
+	{
+		TestPerfPairResult result;
+		uint32_t pool_pct = pcts[index];
+		uint64_t pool_blocks;
+		double savings_pct, hit_rate_pct;
+		pool_blocks = probe.used_blocks_end * (uint64_t)pool_pct / 100ull;
+		/* Floor: the live working set must always fit, or nothing about
+		 * reuse-under-pressure is being measured (admits would stall
+		 * before any LRU decision matters). */
+		if (pool_blocks < (uint64_t)batch * 3ull + 16ull)
+			pool_blocks = (uint64_t)batch * 3ull + 16ull;
+		assert(pool_blocks <= 0xFFFFFFFFull);
+		TestPerfRunPair(batch, seed, (uint32_t)pool_blocks, rounds, &result);
+		/* Pressure is the POINT of the squeezed cells. */
+		if (pool_pct < 100u)
+			assert(result.evicted_blocks > 0ull);
+		savings_pct = 100.0 *
+		    (double)(result.off_recomputed_rows -
+		             result.on_recomputed_rows) /
+		    (double)result.off_recomputed_rows;
+		hit_rate_pct = 100.0 *
+		    (double)result.matched_tokens /
+		    (double)(result.matched_tokens + result.appended_tokens);
+		printf("perf_squeeze b=%u pool_pct=%u pool_blocks=%llu"
+		       " distinct_blocks=%llu savings_pct=%.1f"
+		       " matched_tokens=%llu appended_tokens=%llu"
+		       " borrowed_blocks=%llu evicted=%llu stalls=%llu\n",
+		    batch, pool_pct, (unsigned long long)pool_blocks,
+		    (unsigned long long)probe.used_blocks_end,
+		    savings_pct,
+		    (unsigned long long)result.matched_tokens,
+		    (unsigned long long)result.appended_tokens,
+		    (unsigned long long)result.borrowed_blocks,
+		    (unsigned long long)result.evicted_blocks,
+		    (unsigned long long)result.stalls);
+		printf("PERF_SQUEEZE_RESULT b=%u pool_pct=%u savings_pct=%.1f"
+		       " hit_rate_pct=%.1f blocks_claimed=%llu evicted=%llu\n",
+		    batch, pool_pct, savings_pct, hit_rate_pct,
+		    (unsigned long long)result.borrowed_blocks,
+		    (unsigned long long)result.evicted_blocks);
+	}
+}
+
 
 
 
