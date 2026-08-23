@@ -71,8 +71,9 @@ make -C modules/qwen36_resident_decode_stage -j8 publish \
   ALLOW_UNQUALIFIED_EXECUTION=1
 #   → expect: "qwen36_validation PASS"
 
-# step 2: node binaries (daemon + bench tool)
-make -j8 build/sparkpipe_model_residentd build/sparkpipe_model_batch
+# step 2: node binaries (daemon, bench tool, and the driver compiler)
+make -j8 build/sparkpipe_model_residentd build/sparkpipe_model_batch \
+  build/sparkpipe_model_compile
 
 # step 3: serving adapter (TP1)
 rm -f build/libqwen36_serving_adapter.so
