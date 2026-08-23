@@ -690,6 +690,9 @@ static void SparkModelBatchHandleRejected(
 {
 	uint32_t *request_slots;
 	uint32_t lane;
+	fprintf(stderr,"batch_rejected status=%u kind=%u submission=%llu\n",
+		(uint32_t)status,submission->work_kind,
+		(unsigned long long)submission->submission_id);
 	request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
 	for (lane=0u; lane<submission->lane_count; lane++)
 	{
