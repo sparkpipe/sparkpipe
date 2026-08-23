@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "prefix_cache.h"
 
@@ -68,6 +69,14 @@ static uint64_t TestOracleAdvance(uint64_t previous_row, uint32_t token_id)
 	return TestMix64(previous_row ^ TestMix64(token_id));
 }
 
+/* Monotonic wall clock for the MEASURED walk-cost case (PERF below). */
+static uint64_t TestNowNs(void)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
+
 typedef struct TestHarness
 {
 	SparkPrefixCacheCore core;
@@ -107,7 +116,38 @@ typedef struct TestHarness
 	uint32_t *off_owned;
 	uint64_t verify_row_checks;
 	uint64_t digest_checks;
+	/* ---- MEASURED walk-cost instrumentation (PERF case only) ----
+	 * model_skip switches the simulated device from "write always"
+	 * (the correctness cells' pessimistic semantics) to "compute a row
+	 * only when its physical block cannot already hold the final
+	 * value": a block whose generation is unchanged since the row was
+	 * written is read, not recomputed. Generations bump exactly at
+	 * fresh physical claims - the write region of every core call -
+	 * so a shared/matched published prefix is provably resident and
+	 * costs zero recompute. */
+	int model_skip;
+	uint64_t recomputed_rows;
+	uint64_t blocks_borrowed;
+	uint64_t committed_tokens;
+	uint64_t cover_ns;
+	uint64_t verify_ns;
+	uint64_t *block_gen;
+	uint64_t *pool_gen;
+	/* Prompt script source; defaults to TestBuildPrompt, overridden by
+	 * the PERF workload's serving-shaped shared-prefix builder. */
+	uint32_t (*prompt_builder)(struct TestHarness *, uint64_t, uint32_t,
+	    uint32_t, uint32_t *, uint32_t *);
 } TestHarness;
+
+/* Grouped prompt builder; forward-declared because the harness default
+ * wiring in TestHarnessInitialize points at it. */
+static uint32_t TestBuildPrompt(
+    TestHarness *harness,
+    uint64_t seed,
+    uint32_t slot,
+    uint32_t cycle,
+    uint32_t *out,
+    uint32_t *length_out);
 
 static void TestHarnessInitialize(
 	TestHarness *harness,
@@ -149,6 +189,9 @@ static void TestHarnessInitialize(
 	harness->off_free_stack = (uint32_t *)calloc(
 	    harness->pool_block_count, sizeof(uint32_t));
 	harness->off_owned = (uint32_t *)calloc(max_sequences, sizeof(uint32_t));
+	harness->block_gen =
+	    (uint64_t *)calloc(harness->pool_block_count, sizeof(uint64_t));
+	harness->pool_gen = (uint64_t *)calloc(pool_slots, sizeof(uint64_t));
 	harness->stream_capacity = 1ull << 22;
 	harness->stream =
 	    (uint32_t *)malloc((size_t)harness->stream_capacity * sizeof(uint32_t));
@@ -157,7 +200,9 @@ static void TestHarnessInitialize(
 	       harness->tokens != 0 && harness->oracle_rows != 0 &&
 	       harness->token_counts != 0 && harness->live != 0 &&
 	       harness->off_tables != 0 && harness->off_free_stack != 0 &&
-	       harness->off_owned != 0 && harness->stream != 0);
+	       harness->off_owned != 0 && harness->stream != 0 &&
+	       harness->block_gen != 0 && harness->pool_gen != 0);
+	harness->prompt_builder = TestBuildPrompt;
 	for (index = 0u; index < harness->pool_block_count; index++)
 	{
 		harness->off_free_stack[index] =
@@ -198,6 +243,8 @@ static void TestHarnessDestroy(TestHarness *harness)
 	free(harness->off_tables);
 	free(harness->off_free_stack);
 	free(harness->off_owned);
+	free(harness->block_gen);
+	free(harness->pool_gen);
 	free(harness->stream);
 	memset(harness, 0, sizeof(*harness));
 }
@@ -279,6 +326,7 @@ static void TestCommitTokens(
 	uint32_t index;
 	base = harness->token_counts[slot];
 	assert(base + count <= TEST_MAX_POSITIONS);
+	harness->committed_tokens += count;
 	for (index = 0u; index < count; index++)
 	{
 		harness->tokens[(size_t)slot * TEST_MAX_POSITIONS + base + index] =
@@ -316,11 +364,20 @@ static const uint32_t *TestSequenceTable(
 		 * the core claims open blocks. */
 		while (harness->off_owned[slot] < needed)
 		{
+			uint32_t claimed;
 			assert(harness->off_free_count > 0u);
+			claimed = harness->off_free_stack[--harness->off_free_count];
 			harness->off_tables[(size_t)slot * TEST_CAPACITY_BLOCKS +
-			                    harness->off_owned[slot]] =
-			    harness->off_free_stack[--harness->off_free_count];
+			                    harness->off_owned[slot]] = claimed;
 			harness->off_owned[slot]++;
+			if (harness->model_skip != 0)
+			{
+				/* Fresh physical claim: stale bytes must never
+				 * survive, so the generation bumps and the
+				 * claim counts as a borrow. */
+				harness->block_gen[claimed]++;
+				harness->blocks_borrowed++;
+			}
 		}
 		for (index = 0u; index < needed; index++)
 		{
@@ -336,9 +393,9 @@ static const uint32_t *TestSequenceTable(
 /* Write every not-yet-materialized row from from_position onward and
  * push what the kernels would read onto the emitted stream. */
 static void TestMaterializeTail(
-	TestHarness *harness,
-	uint32_t slot,
-	uint32_t from_position)
+    TestHarness *harness,
+    uint32_t slot,
+    uint32_t from_position)
 {
 	const uint32_t *table;
 	uint32_t table_count;
@@ -349,6 +406,8 @@ static void TestMaterializeTail(
 	uint32_t index;
 	uint32_t block_index;
 	uint32_t pool_slot;
+	uint64_t timer_start;
+	timer_start = TestNowNs();
 	token_count = harness->token_counts[slot];
 	table = TestSequenceTable(harness, slot, token_count, &table_count);
 	touched_count = 0u;
@@ -357,13 +416,31 @@ static void TestMaterializeTail(
 		block_index = table[position / harness->block_token_count];
 		pool_slot = (size_t)block_index * harness->block_token_count +
 		            position % harness->block_token_count;
-		/* Device semantics: a write ALWAYS lands, including on a
-		 * reallocated physical block. Exactness is not assumed here -
-		 * the full-prefix audit after every operation catches any
-		 * clobbered or stale visible row. */
-		harness->pool_written[pool_slot] = 1u;
-		harness->pool_rows[pool_slot] =
-		    harness->oracle_rows[slot][position];
+		if (harness->model_skip != 0 &&
+		    harness->pool_written[pool_slot] != 0u &&
+		    harness->pool_gen[pool_slot] == harness->block_gen[block_index])
+		{
+			/* Model-level reuse: the physical block generation is
+			 * unchanged since this row was written, so the block
+			 * still holds the final value - the device READS it
+			 * (shared published prefix or untouched tail), it does
+			 * not recompute it. */
+		}
+		else
+		{
+			/* Device semantics: a write ALWAYS lands, including on
+			 * a reallocated physical block (its generation bumped
+			 * at claim time, so stale bytes can never masquerade
+			 * as resident). Exactness is not assumed here - the
+			 * full-prefix audit after every operation catches any
+			 * clobbered or stale visible row. */
+			harness->pool_written[pool_slot] = 1u;
+			harness->pool_gen[pool_slot] =
+			    harness->block_gen[block_index];
+			harness->pool_rows[pool_slot] =
+			    harness->oracle_rows[slot][position];
+			harness->recomputed_rows++;
+		}
 		assert(harness->stream_length < harness->stream_capacity);
 		harness->stream[harness->stream_length++] =
 		    (uint32_t)harness->pool_rows[pool_slot];
@@ -379,6 +456,7 @@ static void TestMaterializeTail(
 			touched[touched_count++] = block_index;
 		}
 	}
+	harness->cover_ns += TestNowNs() - timer_start;
 	if (harness->reuse_on)
 	{
 		for (index = 0u; index < touched_count; index++)
@@ -413,6 +491,8 @@ static void TestVerifySequence(TestHarness *harness, uint32_t slot)
 	uint32_t pool_slot;
 	uint32_t seen_blocks[TEST_CAPACITY_BLOCKS + 2u];
 	uint32_t seen_count;
+	uint64_t timer_start;
+	timer_start = TestNowNs();
 	token_count = harness->token_counts[slot];
 	table = TestSequenceTable(harness, slot, token_count, &table_count);
 	seen_count = 0u;
@@ -456,8 +536,36 @@ static void TestVerifySequence(TestHarness *harness, uint32_t slot)
 			}
 		}
 	}
+	harness->verify_ns += TestNowNs() - timer_start;
 }
 
+
+/* MEASURED-case helper: after a core call whose WRITE REGION starts at
+ * ordinal `first_fresh_ordinal` (admit: matched_tokens/block_tokens;
+ * append: the block count before the burst), bump generations and count
+ * borrows for every physical block the call claimed fresh. Blocks below
+ * that ordinal are matched/shared attaches - their bytes are provably
+ * resident (a published block is immutable and only leaves the index
+ * when evicted, at which point it cannot match anymore), so they cost
+ * zero recompute and no borrow. */
+static void TestNoteWriteRegion(
+    TestHarness *harness,
+    uint32_t slot,
+    uint32_t token_count,
+    uint32_t first_fresh_ordinal)
+{
+	uint32_t table[TEST_CAPACITY_BLOCKS];
+	uint32_t table_count;
+	uint32_t ordinal;
+	assert(SparkPrefixCacheCoreBuildBlockTable(
+	           &harness->core, slot + 1u, token_count, table,
+	           TEST_CAPACITY_BLOCKS, &table_count) == SPARK_STATUS_OK);
+	for (ordinal = first_fresh_ordinal; ordinal < table_count; ordinal++)
+	{
+		harness->block_gen[table[ordinal]]++;
+		harness->blocks_borrowed++;
+	}
+}
 
 static void TestOpAdmit(
 	TestHarness *harness,
@@ -471,7 +579,7 @@ static void TestOpAdmit(
 	uint32_t needed;
 	uint32_t index;
 	assert(harness->live[slot] == 0u);
-	(void)TestBuildPrompt(harness, seed, slot, cycle, prompt, &length);
+	harness->prompt_builder(harness, seed, slot, cycle, prompt, &length);
 	needed = (length + harness->block_token_count - 1u) /
 	         harness->block_token_count;
 	if (harness->reuse_on)
@@ -481,15 +589,28 @@ static void TestOpAdmit(
 		    &matched_tokens) == SPARK_STATUS_OK);
 		assert(matched_tokens % harness->block_token_count == 0u);
 		assert(matched_tokens <= length);
+		if (harness->model_skip != 0)
+		{
+			TestNoteWriteRegion(
+			    harness, slot, length,
+			    matched_tokens / harness->block_token_count);
+		}
 	}
 	else
 	{
 		for (index = 0u; index < needed; index++)
 		{
+			uint32_t claimed;
 			assert(harness->off_free_count > 0u);
+			claimed = harness->off_free_stack[--harness->off_free_count];
 			harness->off_tables[
 			    (size_t)slot * TEST_CAPACITY_BLOCKS + index] =
-			    harness->off_free_stack[--harness->off_free_count];
+			    claimed;
+			if (harness->model_skip != 0)
+			{
+				harness->block_gen[claimed]++;
+				harness->blocks_borrowed++;
+			}
 		}
 		harness->off_owned[slot] = needed;
 	}
@@ -528,6 +649,13 @@ static void TestOpStep(
 	{
 		assert(SparkPrefixCacheCoreAppendTokens(
 		    &harness->core, slot + 1u, ids, burst) == SPARK_STATUS_OK);
+		if (harness->model_skip != 0)
+		{
+			TestNoteWriteRegion(
+			    harness, slot, base + burst,
+			    (base + harness->block_token_count - 1u) /
+			        harness->block_token_count);
+		}
 	}
 	TestCommitTokens(harness, slot, ids, burst);
 	TestMaterializeTail(harness, slot, base);
@@ -1337,6 +1465,260 @@ static void TestDecodeWithSpeculationConservation(void)
 }
 
 
+/* ---- MEASURED prefix-reuse walk-cost case (queue task: first measured
+ * performance evidence for this port) ----
+ *
+ * Serving-shaped shared-prefix workload: every prompt carries a 64-token
+ * (4-block) root shared across the whole batch, prompt groups share one
+ * extra family block, and every submission carries a unique divergent
+ * tail; retire-and-readmit churn resubmits against the resident cache so
+ * every admit after a root's first cold miss matches block-granular
+ * prefixes and then DIVERGES - exactly the traffic prefix caching exists
+ * for. The identical script runs reuse ON and OFF; the emitted streams
+ * must stay byte-identical.
+ *
+ * Walk-cost model (host simulation - device kernel time is NOT claimed):
+ * the simulated device computes a KV row only when its physical block
+ * cannot already hold the final value. Generations bump exactly at fresh
+ * physical claims (the write region of every core call), so matched/
+ * shared published prefixes are provably resident and cost zero
+ * recompute. Counters are exact, not sampled:
+ *   recomputed rows ON  = total tokens - matched tokens   (asserted)
+ *   recomputed rows OFF = total tokens
+ * Wall clock covers the Cover (row materialization) and verify walks.
+ * Timing is min-of-reps; treat it as order-of-magnitude evidence, the
+ * recompute-savings counters as the hard numbers. */
+
+#define PERF_ROUNDS 240u
+#define PERF_REPS 3u
+#define PERF_RELEASE_AT 140u
+
+typedef struct TestPerfModeResult
+{
+	uint64_t recomputed_rows;
+	uint64_t borrowed_blocks;
+	uint64_t committed_tokens;
+	uint64_t matched_tokens;
+	uint64_t appended_tokens;
+	uint64_t evicted_blocks;
+	uint64_t best_walk_ns;
+}
+TestPerfModeResult;
+
+static uint32_t TestPerfPromptToken(uint64_t salt, uint32_t a, uint32_t b)
+{
+	return (uint32_t)(TestMix64(salt ^ ((uint64_t)a << 24) ^
+	                    (uint64_t)b) >> 32) | 1u;
+}
+
+/* Pure function of (seed, slot, cycle): ON and OFF generate identical
+ * scripts. Roots are shared batch-wide, family tiers per group, tails
+ * unique per (slot, cycle) - shared AND diverging prefixes every round. */
+static uint32_t TestPerfBuildPrompt(
+    TestHarness *harness,
+    uint64_t seed,
+    uint32_t slot,
+    uint32_t cycle,
+    uint32_t *out,
+    uint32_t *length_out)
+{
+	uint32_t group;
+	uint32_t shared;
+	uint32_t position;
+	(void)harness;
+	group = slot % 5u;
+	shared = 64u + (slot % 3u) * 16u;
+	*length_out = 112u + ((slot * 13u + cycle * 29u) % 48u);
+	for (position = 0u; position < *length_out; position++)
+	{
+		if (position < 64u)
+		{
+			out[position] =
+			    TestPerfPromptToken(seed ^ 0x51ed2705ull, group, position);
+		}
+		else if (position < shared)
+		{
+			out[position] =
+			    TestPerfPromptToken(seed ^ 0x2545f491ull, group, position);
+		}
+		else
+		{
+			out[position] = TestPerfPromptToken(seed,
+			    slot ^ ((uint32_t)cycle << 8), position);
+		}
+	}
+	return group;
+}
+
+static void TestPerfRunPopulation(
+    TestHarness *on,
+    TestHarness *off,
+    uint64_t seed,
+    uint32_t batch,
+    uint32_t rounds)
+{
+	uint32_t cycle[TEST_MAX_SEQUENCE_SLOTS];
+	uint32_t slot;
+	uint32_t round_index;
+	memset(cycle, 0, sizeof(cycle));
+	for (slot = 0u; slot < batch; slot++)
+	{
+		TestOpAdmit(on, seed, slot, 0u);
+		TestOpAdmit(off, seed, slot, 0u);
+	}
+	for (round_index = 0u; round_index < rounds; round_index++)
+	{
+		for (slot = 0u; slot < batch; slot++)
+		{
+			uint32_t burst;
+			burst = 1u +
+			    (uint32_t)(TestMix64(seed ^ slot ^
+			                     ((uint64_t)round_index << 8)) % 4u);
+			TestOpStep(on, seed, slot, cycle[slot]++, burst);
+			TestOpStep(off, seed, slot, cycle[slot] - 1u, burst);
+			/* Retire-and-readmit churn: finished-length sequences
+			 * resubmit against the resident cache, matching their
+			 * roots and diverging in the tail. */
+			if (((slot + round_index) & 1u) == 0u &&
+			    on->token_counts[slot] >= PERF_RELEASE_AT)
+			{
+				TestOpRelease(on, slot);
+				TestOpRelease(off, slot);
+				cycle[slot]++;
+				TestOpAdmit(on, seed, slot, cycle[slot]);
+				TestOpAdmit(off, seed, slot, cycle[slot]);
+			}
+		}
+	}
+	for (slot = 0u; slot < batch; slot++)
+	{
+		if (on->live[slot] != 0u)
+		{
+			TestOpRelease(on, slot);
+			TestOpRelease(off, slot);
+		}
+	}
+}
+
+static void TestPerfCell(uint32_t batch, uint64_t seed)
+{
+	TestHarness on;
+	TestHarness off;
+	SparkPrefixCacheCoreStats stats;
+	TestPerfModeResult on_result;
+	TestPerfModeResult off_result;
+	uint64_t pool_blocks;
+	uint64_t walk_ns;
+	uint32_t rep;
+	memset(&on_result, 0, sizeof(on_result));
+	memset(&off_result, 0, sizeof(off_result));
+	/* Cache-resident regime: the pool holds the WHOLE run's distinct
+	 * content (~230 blocks/slot measured headroom), so no cached prefix
+	 * is ever evicted mid-run - the measurement isolates reuse value
+	 * from LRU-churn noise (pressure behavior is the correctness
+	 * cells' job). Asserted below via evicted == 0. */
+	pool_blocks = batch * 384u + 16u;
+	for (rep = 0u; rep < PERF_REPS; rep++)
+	{
+		uint64_t matched;
+		TestHarnessInitialize(&on, pool_blocks, batch, 1, seed, 96u,
+		    PERF_RELEASE_AT);
+		TestHarnessInitialize(&off, pool_blocks, batch, 0, seed, 96u,
+		    PERF_RELEASE_AT);
+		on.model_skip = 1;
+		off.model_skip = 1;
+		on.prompt_builder = TestPerfBuildPrompt;
+		off.prompt_builder = TestPerfBuildPrompt;
+		TestPerfRunPopulation(&on, &off, seed, batch, PERF_ROUNDS);
+		/* Correctness anchor: byte-identical visible streams. */
+		assert(on.stream_length == off.stream_length);
+		assert(memcmp(on.stream, off.stream,
+		       (size_t)on.stream_length * sizeof(uint32_t)) == 0);
+		/* Roomy-pool sanity: serving never refused an admit and the
+		 * cache stayed resident (no eviction mid-measurement). */
+		SparkPrefixCacheCoreQueryStats(&on.core, &stats);
+		assert(stats.capacity_stall_count == 0ull);
+		assert(stats.evicted_block_count == 0ull);
+		/* Determinism: every rep executes the identical script. */
+		if (rep != 0u)
+		{
+			assert(on_result.recomputed_rows == on.recomputed_rows);
+			assert(off_result.recomputed_rows == off.recomputed_rows);
+			assert(on_result.borrowed_blocks == on.blocks_borrowed);
+			assert(off_result.borrowed_blocks == off.blocks_borrowed);
+		}
+		matched = stats.matched_block_count * on.block_token_count;
+		assert(matched % on.block_token_count == 0ull);
+		/* Accounting law: recompute avoided EXACTLY equals matched
+		 * (block-granular) tokens - no hand-waving savings. */
+		assert(off.recomputed_rows - on.recomputed_rows == matched);
+		/* The core appended exactly the non-matched tokens. */
+		assert(stats.appended_token_count ==
+		       off.committed_tokens - matched);
+		assert(on.recomputed_rows < off.recomputed_rows);
+		on_result.recomputed_rows = on.recomputed_rows;
+		off_result.recomputed_rows = off.recomputed_rows;
+		on_result.borrowed_blocks = on.blocks_borrowed;
+		off_result.borrowed_blocks = off.blocks_borrowed;
+		on_result.matched_tokens = matched;
+		on_result.appended_tokens = stats.appended_token_count;
+		on_result.evicted_blocks = stats.evicted_block_count;
+		walk_ns = on.cover_ns + on.verify_ns;
+		if (rep == 0u || walk_ns < on_result.best_walk_ns)
+		{
+			on_result.best_walk_ns = walk_ns;
+		}
+		walk_ns = off.cover_ns + off.verify_ns;
+		if (rep == 0u || walk_ns < off_result.best_walk_ns)
+		{
+			off_result.best_walk_ns = walk_ns;
+		}
+		TestHarnessDestroy(&on);
+		TestHarnessDestroy(&off);
+	}
+	printf("perf b=%u mode=reuse-on  recomputed_rows=%" PRIu64
+	       " borrowed_blocks=%" PRIu64 " matched_tokens=%" PRIu64
+	       " evicted=%" PRIu64 " walk_us=%" PRIu64 "\n",
+	    batch, on_result.recomputed_rows, on_result.borrowed_blocks,
+	    on_result.matched_tokens, on_result.evicted_blocks,
+	    on_result.best_walk_ns / 1000ull);
+	printf("perf b=%u mode=reuse-off recomputed_rows=%" PRIu64
+	       " borrowed_blocks=%" PRIu64 " matched_tokens=0 evicted=0"
+	       " walk_us=%" PRIu64 "\n",
+	    batch, off_result.recomputed_rows, off_result.borrowed_blocks,
+	    off_result.best_walk_ns / 1000ull);
+	{
+		double savings_pct;
+		double speedup;
+		savings_pct = 100.0 *
+		    (double)(off_result.recomputed_rows -
+		             on_result.recomputed_rows) /
+		    (double)off_result.recomputed_rows;
+		speedup = (double)off_result.best_walk_ns /
+		          (double)on_result.best_walk_ns;
+		printf("PERF_RESULT b=%u recompute_off=%" PRIu64
+		       " recompute_on=%" PRIu64 " tokens_avoided=%" PRIu64
+		       " savings_pct=%.1f wall_off_us=%" PRIu64
+		       " wall_on_us=%" PRIu64 " speedup_x=%.2f\n",
+		    batch, off_result.recomputed_rows,
+		    on_result.recomputed_rows,
+		    off_result.recomputed_rows - on_result.recomputed_rows,
+		    savings_pct, off_result.best_walk_ns / 1000ull,
+		    on_result.best_walk_ns / 1000ull, speedup);
+	}
+}
+
+static void TestPerfReuseSavings(void)
+{
+	printf("perf_reuse_savings: MEASURED host-side walk simulation "
+	       "(shared-prefix workload with divergences; recompute counters "
+	       "exact, wall clock min-of-%u reps)\n", PERF_REPS);
+	TestPerfCell(1u, 0x9e3779b97f4a7c15ull ^ 1ull);
+	TestPerfCell(4u, 0x9e3779b97f4a7c15ull ^ 4ull);
+	TestPerfCell(25u, 0x9e3779b97f4a7c15ull ^ 25ull);
+}
+
+
 
 int main(void)
 {
@@ -1369,6 +1751,8 @@ int main(void)
 		    4u, 2u, 16u, 34u, 1, "squeezed",
 		    &row_checks, &digest_checks);
 	}
+	/* MEASURED prefix-reuse walk-cost evidence (B1/B4/B25, ON vs OFF). */
+	TestPerfReuseSavings();
 	printf("prefix-cache-core PASS rows_verified=%" PRIu64
 	       " digest_checks=%" PRIu64 "\n",
 	    row_checks, digest_checks);
