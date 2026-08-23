@@ -58,3 +58,24 @@ B4. Per-model matrix cells to SOTA bar
   lossless requirement before any change.
 - Stagepack collapse is the template: shared core + geometry tables beats
   four private copies everywhere.
+
+## PASS 4: Adapter layer comparison (drift analysis)
+
+Adapter sizes: qwen36=2984, dsv4=1515, glm52=1489, qwen38=1471, k3=502.
+Model-specific symbols: qwen36=311, glm52=159, k3=18.
+
+qwen36's adapter is 2x the others because DFlash2 added speculation state,
+draft view construction, accept-loop logic, replay handling, and per-lane
+snapshot management. The OTHER drivers will need the same features when they
+adopt DFlash2 - which means either (a) each driver duplicates qwen36's approach,
+or (b) the shared speculation machinery moves into stage_module_common or a new
+speculation_common module.
+
+DRIFT RISK: the serving_adapter.c files share the same fundamental contract
+(daemon -> module lifecycle: init, submit, complete, destroy) but each has grown
+model-specific extensions independently. The hw-interface definer's v1 freeze
+addresses the DEVICE side; the ADAPTER side needs equivalent treatment.
+
+RECOMMENDATION: extract the common adapter skeleton (env parsing, slot claiming,
+completion routing, residency bookkeeping) into runtime/adapter_common.h so new
+drivers get DFlash2 + prefix caching for free instead of copy-pasting from qwen36.
