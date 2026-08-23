@@ -1501,6 +1501,86 @@ int main(void)
 		}
 		assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 		library.adapter_interface.destroy(adapter_state);
+
+		/* ---------- CASE 12: cross-cycle reuse (checkpoint retention) ----
+		 * Engagement-depth root cause (2026-08-23, MEASURED): LaneReset
+		 * kills every checkpoint the finishing lane owns and every new
+		 * admit resets its lane FIRST - so a back-to-back SAME-LANE cycle
+		 * never reuses anything (device B1/B4 ON runs: ZERO
+		 * qwen36_prefix_reuse despite publications). The law: cycle N+1 on
+		 * the SAME resident slot must match cycle N's publications and
+		 * resume at their witnessed boundary.
+		 * ARMING: SPARK_QWEN36_CROSS_CYCLE_GATE=1. Unarmed the cell SKIPs
+		 * (exit 0, naming the absent piece) because safe retention is NOT
+		 * landable module-side today: a checkpoint's witness_block is a
+		 * bare index with NO pin, so core eviction can free the block and
+		 * recycle its index under different content - a retained witness
+		 * would then false-match WitnessedDepth and resume from the WRONG
+		 * recurrence (measured repro:
+		 * .agents/prefixcache-dev/tmp/q36_repro/repro_s512.c - capacity +
+		 * stale-witness failures). The fix needs a core-side witness-pin
+		 * (retain/release on commit/steal) or block-generation counter;
+		 * handed to pccore in pccore_witness_pin_handoff.md. When that
+		 * lands, arm this cell; it must go GREEN (cross_cycle_resume at
+		 * resumed_at=192 naming a cycle-N slot) and its keys join the
+		 * baseline DELIBERATELY. */
+		if ( getenv("SPARK_QWEN36_CROSS_CYCLE_GATE") == 0 )
+			printf("cross_cycle SKIP retention pending core witness-pin (see pccore_witness_pin_handoff.md)\n");
+		else
+		{
+		setenv("SPARK_QWEN36_SERVING_PREFIX_CACHE","1",1);
+		GateConfiguration(&configuration,TEST_QWEN36_SERVING_CONFIG_PATH,runtime_root,&test_state,8u,8u,1024u,512u);
+		adapter_state = 0;
+		assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
+		gate_record_reset();
+		records_before = gate_record_count();
+		/* Cycle N: donor walks and publishes on slot 2. */
+		assert(GatePrefillPublish(adapter_state,&test_state,2u,12001u,prompt_a,prompt_length,1300u) == SPARK_STATUS_OK);
+		{
+			uint32_t index,donor_checkpoint_slots[8],donor_checkpoint_ends[8],donor_count;
+			const GateFrameRecord *cross_resume = 0;
+			donor_count = 0u;
+			for (index=records_before; index<gate_record_count(); index++)
+			{
+				const GateFrameRecord *record = gate_record_get(index);
+				if ( (record->context_flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT) == 0u )
+					continue;
+				assert(donor_count < 8u);
+				donor_checkpoint_slots[donor_count] = record->snapshot_index;
+				donor_checkpoint_ends[donor_count] = (uint32_t)(record->base_position + record->rows);
+				donor_count++;
+			}
+			assert(donor_count == 3u); /* boundaries 64,128,192 bound in cycle N */
+			/* Cycle N+1: SAME resident slot, fresh sequence - the exact
+			 * back-to-back shape the device B1 cells ran. */
+			assert(GatePrefillPublish(adapter_state,&test_state,2u,12002u,prompt_a,prompt_length,1301u) == SPARK_STATUS_OK);
+			for (index=records_before; index<gate_record_count(); index++)
+			{
+				const GateFrameRecord *record = gate_record_get(index);
+				uint32_t k,matched_end;
+				if ( (record->context_flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME) == 0u )
+					continue;
+				assert(cross_resume == 0); /* exactly one cross-cycle resume */
+				cross_resume = record;
+				assert(record->snapshot_index_present != 0u);
+				matched_end = 0u;
+				for (k=0u; k<donor_count; k++)
+					if ( donor_checkpoint_slots[k] == record->snapshot_index )
+					{
+						matched_end = donor_checkpoint_ends[k];
+						break;
+					}
+				assert(matched_end != 0u); /* restores from a cycle-N witness */
+				assert(matched_end == (uint32_t)record->base_position);
+			}
+			assert(cross_resume != 0); /* THE LAW: cross-cycle reuse fires */
+			printf("cross_cycle_resume resumed_at=%u slot=%u\n",
+				(unsigned)cross_resume->base_position,
+				cross_resume->snapshot_index);
+		}
+		assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
+		library.adapter_interface.destroy(adapter_state);
+		}
 	}
 	assert(cudaStreamDestroy((cudaStream_t)test_state.execution_stream) == cudaSuccess);
 	printf("qwen36 prefix-cache gate PASS\n");
