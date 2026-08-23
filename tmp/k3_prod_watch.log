@@ -42,3 +42,6 @@
 2026-08-23T12:26:36Z 664975741568 | shards=0 | sums=no | procs=6 | {"name":"model.layers.40.router_bias","entry":{"offset":664975741568,"bytes":3584,"align":128,"kind":"f32","shape":[896] fleet_up=0
 2026-08-23T12:31:36Z 664975741568 | shards=0 | sums=no | procs=6 | {"name":"model.layers.40.router_bias","entry":{"offset":664975741568,"bytes":3584,"align":128,"kind":"f32","shape":[896] fleet_up=0
 2026-08-23T12:36:36Z 681965805568 | shards=0 | sums=no | procs=6 | {"name":"model.layers.41.router_bias","entry":{"offset":681965805568,"bytes":3584,"align":128,"kind":"f32","shape":[896] fleet_up=0
+2026-08-23T12:48:08Z 698955869568 | shards=0 | sums=no | procs=6 | {"name":"model.layers.42.router_bias","entry":{"offset":698955869568,"bytes":3584,"align":128,"kind":"f32","shape":[896] fleet_up=0
+2026-08-23T12:53:09Z 698955869568 | shards=0 | sums=no | procs=6 | {"name":"model.layers.42.router_bias","entry":{"offset":698955869568,"bytes":3584,"align":128,"kind":"f32","shape":[896] fleet_up=0
+2026-08-23T12:58:09Z 715623188352 | shards=0 | sums=no | procs=6 | {"name":"model.layers.43.router_bias","entry":{"offset":715623188352,"bytes":3584,"align":128,"kind":"f32","shape":[896] fleet_up=0

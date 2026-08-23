@@ -27,7 +27,7 @@ extern "C" {
  * The same input prefix hashes DIFFERENTLY under each variant by design.
  * Both bodies are byte-for-byte output-preserving ports of the local helpers
  * they replaced; do not merge them into one construction without pricing the
- * storage migration first (see .agents/coord/hwiface_dsv4_core_codesize_memo.md
+ * storage migration first (see the codesize memo
  * section 2). SparkPrefixHashMixU64 is the shared FNV mix step both cache-side
  * constructions (block chain and persisted content hash) are built on; it is
  * not itself a complete prefix identity.

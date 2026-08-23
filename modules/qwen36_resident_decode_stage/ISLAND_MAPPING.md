@@ -100,7 +100,7 @@ Verified in code 2026-08-22 (file:line):
    of the three inner products is the later commit). Biggest measured lever:
    ctx2048 decode loses 21-25% vs ctx512 (BENCH_ANALYSIS_20260822.md #2).
 2. Work-control residency layer - kv_client is opened/closed only
-   (module.c:2386/2404/4436); the glm52 JIT discipline (lookahead, pressure
+   (module.c:2404/2422/4478); the glm52 JIT discipline (lookahead, pressure
    limits, packet-zero priority) is not wired. Mooncake tier works but is not
    driven by work control.
 3. Serving context cap 8192 positions (adapter.c:95, owner's KV-limit decision);

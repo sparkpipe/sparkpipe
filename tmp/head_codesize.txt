@@ -1112,17 +1112,12 @@ from pathlib import Path
 # acquire fence + publish barrier; bench ledger updated with the in-situ
 # A/B (kernel-level +10%, end-to-end neutral, bit-exact).
 
-# +4239: consolidation merge (origin/main: WS kernel staging +10%, incident
-# fixes A/B/C) + peer iteration-2/3 delivery wave (prefix-cache core, fwrite
-# guards, k3 TP16 production scripts, glm52 shared-GEMM routing). tmp/ and
-# build/tmp/ experiment work-tree copies excluded from the count.
-CEILING = 189755
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
 # .agents holds per-model agent worktrees (full clones of this tree);
 # their copies are tooling infrastructure, not authored source, and must
 # never move the counter.
-EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'tmp', 'qualification',
+EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'qualification',
                       '__pycache__', '.agents', 'devcycle'}
 # tools/devcycle holds host-recovery / fleet-ops scripts (GRUB staging,
 # fstab fastboot fix): operational infrastructure, not serving-engine

@@ -1,0 +1,39 @@
+{
+  "stage_pack_path": "/home/sparkb/sparkdata/k3.mxfp4.tp16/packs/k3.tp16.rank11.pack",
+  "tp_degree": 16,
+  "tp_rank": 11,
+  "world_size": 16,
+  "max_sequences": 16,
+  "max_rows": 16,
+  "resident_capacity": 16,
+  "kv_pages": 2,
+  "capture_graphs": 1,
+  "hidden": 7168,
+  "device_collective": {
+    "backend": "nccl",
+    "backend_module_path": "lib/runtime_libs/libnccl.so.2",
+    "local_host": "sparkb",
+    "collective_identifier": 1,
+    "listen_port": 64620,
+    "connect_timeout_milli": 45000,
+    "operation_timeout_milli": 30000,
+    "peer_hosts": [
+      "10.20.0.10",
+      "10.20.0.11",
+      "10.20.0.12",
+      "10.20.0.13",
+      "10.20.0.14",
+      "10.20.0.15",
+      "10.20.0.16",
+      "10.20.0.17",
+      "10.20.0.18",
+      "10.20.0.19",
+      "10.20.0.20",
+      "10.20.0.21",
+      "10.20.0.22",
+      "10.20.0.23",
+      "10.20.0.24",
+      "10.20.0.25"
+    ]
+  }
+}

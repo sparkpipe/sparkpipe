@@ -13,6 +13,11 @@
 #include <time.h>
 
 #include <cuda_runtime.h>
+#else
+/* Non-CUDA host builds: forward-declare the one runtime call the pack-load preflight uses. */
+extern "C" int cudaMemGetInfo(size_t*,size_t*);
+extern "C" int cudaSuccess;
+#endif
 
 #include "sparkpipe/spark_qwen36_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_driver_support.h"
