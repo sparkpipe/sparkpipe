@@ -12,13 +12,13 @@ island-set EXTENSION (a coordinator/freeze act), not an interpretation.
 
 qwen36 = 48 GDN (gated delta net) layers + 16 full-attention layers, dense FFN,
 PP-Nx stage slices, MTP chain drafter + DSpark block drafter (device selector).
-Launchers: 45 SparkQwen36Launch* externs in module.c against the .cu archive.
+Launchers: 33 SparkQwen36Launch* externs in module.c against the .cu archive.
 
 | Island (freeze) | qwen36 functions today | File | Notes / class |
 |---|---|---|---|
 | E0 prologue.embed | LaunchEmbeddingGather via ModuleBeginHidden; stream expand n/a (no hybrid-GDN multi-stream) | module.c | C2 (integer gather) |
 | L1 boundary_norm_project | attention_norm RMSNorm + per-layer input projections: GdnLayer qkv/gate/beta/decay linears; AttnLayer query/key/value linears | module.c RunLayer/RunGdnLayer/RunAttnLayer | C3 |
-| L2 layer.attention (GDN half) | ConvUpdate, DecayBeta, GdnStep (decode/replay path); ChunkConv+GdnChunk (prefill chunks); GatedNorm; GDN output linear | RunGdnCoreDecode/Replay/Prefill | C3; step-vs-chunk path choice is a LOSSLESSNESS CONTRACT (module.c:1169) - a target may not fuse across it without re-proving bit-identity |
+| L2 layer.attention (GDN half) | ConvUpdate, DecayBeta, GdnStep (decode/replay path); ChunkConv+GdnChunk (prefill chunks); GatedNorm; GDN output linear | RunGdnCoreDecode/Replay/Prefill | C3; step-vs-chunk path choice is a LOSSLESSNESS CONTRACT (module.c:1387) - a target may not fuse across it without re-proving bit-identity |
 | L2 layer.attention (attn half) | AttnPrepare (rope+q-norm+k/v page write), AttnDecode (paged sparse decode over block table) | RunAttnLayer | C3; paged cache read efficiency is the measured ctx2048 gap (bench analysis #2) |
 | L3 layer.cache_transition | KV emission inside AttnPrepare (page-table write); GDN recurrence state_f32 + conv tails in gdn_pool (the recurrent "cache"); snapshot/restore pair | module.c GdnSnapshot, paged_kv.c | split verdict applies: page addresses/emit counters/ring indices C2; payload C3 |
 | L4 moe_routed | **n/a** - FFN is dense. Freeze island set has no dense-FFN row: extension needed (see 3) | - | - |
@@ -83,7 +83,7 @@ What this lane can do NOW without violating R7:
 
 ### qwen36 GB10 constant audit (F4 method)
 
-- SPARK_QWEN36_SMALL_BATCH_MAX_ROWS/TILE_N/K_CHUNK (module.c 273-275, mirrored
+- SPARK_QWEN36_SMALL_BATCH_MAX_ROWS/TILE_N/K_CHUNK (module.c 372-374, mirrored
   in .cu): small-batch GEMM tile selectors -> target-internal, sweepable.
 - SM121 capability guard + PTX image trap in .cu -> target fail-closed guard.
 - multiprocessor_count runtime query in module.c init -> descriptor field.
@@ -96,14 +96,14 @@ What this lane can do NOW without violating R7:
 ## 5. Declared limits and unsupported features (task 4 list; prefix caching excluded as known-missing, owned elsewhere)
 
 Verified in code 2026-08-22 (file:line):
-1. Tensor-core decode attention - NOT implemented (.cu:875 says the wmma tiling
+1. Tensor-core decode attention - NOT implemented (.cu:899 says the wmma tiling
    of the three inner products is the later commit). Biggest measured lever:
    ctx2048 decode loses 21-25% vs ctx512 (BENCH_ANALYSIS_20260822.md #2).
 2. Work-control residency layer - kv_client is opened/closed only
-   (module.c:2137/2155/3278); the glm52 JIT discipline (lookahead, pressure
+   (module.c:2386/2404/4436); the glm52 JIT discipline (lookahead, pressure
    limits, packet-zero priority) is not wired. Mooncake tier works but is not
    driven by work control.
-3. Serving context cap 8192 positions (adapter.c:90, owner's KV-limit decision);
+3. Serving context cap 8192 positions (adapter.c:95, owner's KV-limit decision);
    the bench server additionally capped max_model_len 4096, so cells beyond
    4096 remain unmeasured for any implementation.
 4. Stale README claims: "Open by design" still lists chunked prefill (landed:

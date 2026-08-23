@@ -83,6 +83,10 @@ typedef struct SparkGlm52ExecutionSlot
 	uint32_t *group_tile_prefix_w1;
 	uint32_t *group_tile_prefix_w2;
 	void *kv_access_error;
+	/* DFlash2 drafter tap staging: one arena row id per execution row,
+	 * uploaded at wave build and consumed by SparkGlm52LaunchDsparkTapStore
+	 * at each aux capture layer. */
+	uint32_t *dspark_tap_row_indices;
 } SparkGlm52ExecutionSlot;
 
 typedef struct SparkGlm52CudaWave
@@ -136,8 +140,14 @@ int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t loc
 int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave);
 cudaError_t SparkGlm52LaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
-cudaError_t SparkGlm52LaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
-cudaError_t SparkGlm52LaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
+/* Shared stage-module accumulate pair (runtime/stage_module_kernels.cuh);
+ * the private glm52 bodies were deleted by the naming/audit round. */
+#include "runtime/stage_module_kernels.h"
+/* DFlash2 drafter support: copy one aux-capture layer's hidden rows into the
+ * drafter's device tap arena. tap_row_indices holds one arena row index per
+ * wave row; the layer's vector lands at arena_base +
+ * tap_row*row_stride_elements + tap_index*hidden_dimension. */
+cudaError_t SparkGlm52LaunchDsparkTapStore(cudaStream_t stream,const void *hidden_bf16,const uint32_t *tap_row_indices,uint32_t tap_index,uint32_t row_count,uint32_t hidden_dimension,uint16_t *arena_base,uint64_t arena_row_stride_elements);
 int32_t SparkGlm52ConfigureCudaModule(uint32_t *multiprocessor_count);
 
 #ifdef __cplusplus

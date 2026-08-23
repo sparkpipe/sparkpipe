@@ -1,0 +1,2394 @@
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_residency sid=700 pending_sid=700 pending_origin=700 hex=bc02000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=0 lane=2 base=0 cursor=0 rows=8 flags=11 snap=0
+GATEWALK idx=1 lane=2 base=8 cursor=8 rows=8 flags=11 snap=0
+GATEWALK idx=2 lane=2 base=16 cursor=16 rows=8 flags=11 snap=0
+GATEWALK idx=3 lane=2 base=24 cursor=24 rows=8 flags=11 snap=0
+GATEWALK idx=4 lane=2 base=32 cursor=32 rows=8 flags=11 snap=0
+GATEWALK idx=5 lane=2 base=40 cursor=40 rows=8 flags=11 snap=0
+GATEWALK idx=6 lane=2 base=48 cursor=48 rows=8 flags=11 snap=0
+GATEWALK idx=7 lane=2 base=56 cursor=56 rows=8 flags=811 snap=0
+GATEWALK idx=8 lane=2 base=64 cursor=64 rows=8 flags=11 snap=0
+GATEWALK idx=9 lane=2 base=72 cursor=72 rows=8 flags=11 snap=0
+GATEWALK idx=10 lane=2 base=80 cursor=80 rows=8 flags=11 snap=0
+GATEWALK idx=11 lane=2 base=88 cursor=88 rows=8 flags=11 snap=0
+GATEWALK idx=12 lane=2 base=96 cursor=96 rows=8 flags=11 snap=0
+GATEWALK idx=13 lane=2 base=104 cursor=104 rows=8 flags=11 snap=0
+GATEWALK idx=14 lane=2 base=112 cursor=112 rows=8 flags=11 snap=0
+GATEWALK idx=15 lane=2 base=120 cursor=120 rows=8 flags=811 snap=1
+GATEWALK idx=16 lane=2 base=128 cursor=128 rows=8 flags=11 snap=0
+GATEWALK idx=17 lane=2 base=136 cursor=136 rows=8 flags=11 snap=0
+GATEWALK idx=18 lane=2 base=144 cursor=144 rows=8 flags=11 snap=0
+GATEWALK idx=19 lane=2 base=152 cursor=152 rows=8 flags=11 snap=0
+GATEWALK idx=20 lane=2 base=160 cursor=160 rows=8 flags=11 snap=0
+GATEWALK idx=21 lane=2 base=168 cursor=168 rows=8 flags=11 snap=0
+GATEWALK idx=22 lane=2 base=176 cursor=176 rows=8 flags=11 snap=0
+GATEWALK idx=23 lane=2 base=184 cursor=184 rows=8 flags=811 snap=2
+GATEWALK idx=24 lane=2 base=192 cursor=192 rows=8 flags=11 snap=0
+qwen36_prefix_reuse lane=0 slot=3 matched_blocks=3 resumed_at=192 checkpoint_slot=2
+qwen36_residency sid=701 pending_sid=701 pending_origin=701 hex=bd02000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=25 lane=3 base=192 cursor=192 rows=8 flags=411 snap=2
+qwen36_prefix_reuse lane=0 slot=4 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=702 pending_sid=702 pending_origin=702 hex=be02000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=26 lane=4 base=64 cursor=64 rows=8 flags=411 snap=0
+GATEWALK idx=27 lane=4 base=72 cursor=72 rows=8 flags=11 snap=0
+GATEWALK idx=28 lane=4 base=80 cursor=80 rows=8 flags=11 snap=0
+GATEWALK idx=29 lane=4 base=88 cursor=88 rows=8 flags=11 snap=0
+GATEWALK idx=30 lane=4 base=96 cursor=96 rows=8 flags=11 snap=0
+GATEWALK idx=31 lane=4 base=104 cursor=104 rows=8 flags=11 snap=0
+GATEWALK idx=32 lane=4 base=112 cursor=112 rows=8 flags=11 snap=0
+GATEWALK idx=33 lane=4 base=120 cursor=120 rows=8 flags=811 snap=3
+GATEWALK idx=34 lane=4 base=128 cursor=128 rows=8 flags=11 snap=0
+GATEWALK idx=35 lane=4 base=136 cursor=136 rows=8 flags=11 snap=0
+GATEWALK idx=36 lane=4 base=144 cursor=144 rows=8 flags=11 snap=0
+GATEWALK idx=37 lane=4 base=152 cursor=152 rows=8 flags=11 snap=0
+GATEWALK idx=38 lane=4 base=160 cursor=160 rows=8 flags=11 snap=0
+GATEWALK idx=39 lane=4 base=168 cursor=168 rows=8 flags=11 snap=0
+GATEWALK idx=40 lane=4 base=176 cursor=176 rows=8 flags=11 snap=0
+GATEWALK idx=41 lane=4 base=184 cursor=184 rows=8 flags=811 snap=4
+GATEWALK idx=42 lane=4 base=192 cursor=192 rows=8 flags=11 snap=0
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_residency sid=800 pending_sid=800 pending_origin=800 hex=2003000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=801 pending_sid=801 pending_origin=801 hex=2103000000000000b10000000000000015010000000000000d00000000000000
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_residency sid=900 pending_sid=900 pending_origin=900 hex=8403000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=3 matched_blocks=3 resumed_at=192 checkpoint_slot=2
+qwen36_residency sid=901 pending_sid=901 pending_origin=901 hex=8503000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=25 lane=3 base=192 cursor=192 rows=8 flags=411 snap=2
+qwen36_prefix_reuse lane=0 slot=4 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=902 pending_sid=902 pending_origin=902 hex=8603000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=26 lane=4 base=64 cursor=64 rows=8 flags=411 snap=0
+GATEWALK idx=27 lane=4 base=72 cursor=72 rows=8 flags=11 snap=0
+GATEWALK idx=28 lane=4 base=80 cursor=80 rows=8 flags=11 snap=0
+GATEWALK idx=29 lane=4 base=88 cursor=88 rows=8 flags=11 snap=0
+GATEWALK idx=30 lane=4 base=96 cursor=96 rows=8 flags=11 snap=0
+GATEWALK idx=31 lane=4 base=104 cursor=104 rows=8 flags=11 snap=0
+GATEWALK idx=32 lane=4 base=112 cursor=112 rows=8 flags=11 snap=0
+GATEWALK idx=33 lane=4 base=120 cursor=120 rows=8 flags=811 snap=3
+GATEWALK idx=34 lane=4 base=128 cursor=128 rows=8 flags=11 snap=0
+GATEWALK idx=35 lane=4 base=136 cursor=136 rows=8 flags=11 snap=0
+GATEWALK idx=36 lane=4 base=144 cursor=144 rows=8 flags=11 snap=0
+GATEWALK idx=37 lane=4 base=152 cursor=152 rows=8 flags=11 snap=0
+GATEWALK idx=38 lane=4 base=160 cursor=160 rows=8 flags=11 snap=0
+GATEWALK idx=39 lane=4 base=168 cursor=168 rows=8 flags=11 snap=0
+GATEWALK idx=40 lane=4 base=176 cursor=176 rows=8 flags=11 snap=0
+GATEWALK idx=41 lane=4 base=184 cursor=184 rows=8 flags=811 snap=4
+GATEWALK idx=42 lane=4 base=192 cursor=192 rows=8 flags=11 snap=0
+qwen36_residency sid=903 pending_sid=903 pending_origin=903 hex=8703000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=43 lane=5 base=0 cursor=0 rows=8 flags=11 snap=0
+GATEWALK idx=44 lane=5 base=8 cursor=8 rows=8 flags=11 snap=0
+GATEWALK idx=45 lane=5 base=16 cursor=16 rows=8 flags=11 snap=0
+GATEWALK idx=46 lane=5 base=24 cursor=24 rows=8 flags=11 snap=0
+GATEWALK idx=47 lane=5 base=32 cursor=32 rows=8 flags=11 snap=0
+GATEWALK idx=48 lane=5 base=40 cursor=40 rows=8 flags=11 snap=0
+GATEWALK idx=49 lane=5 base=48 cursor=48 rows=8 flags=11 snap=0
+GATEWALK idx=50 lane=5 base=56 cursor=56 rows=8 flags=811 snap=5
+GATEWALK idx=51 lane=5 base=64 cursor=64 rows=8 flags=11 snap=0
+GATEWALK idx=52 lane=5 base=72 cursor=72 rows=8 flags=11 snap=0
+GATEWALK idx=53 lane=5 base=80 cursor=80 rows=8 flags=11 snap=0
+GATEWALK idx=54 lane=5 base=88 cursor=88 rows=8 flags=11 snap=0
+GATEWALK idx=55 lane=5 base=96 cursor=96 rows=8 flags=11 snap=0
+GATEWALK idx=56 lane=5 base=104 cursor=104 rows=8 flags=11 snap=0
+GATEWALK idx=57 lane=5 base=112 cursor=112 rows=8 flags=11 snap=0
+GATEWALK idx=58 lane=5 base=120 cursor=120 rows=8 flags=811 snap=6
+GATEWALK idx=59 lane=5 base=128 cursor=128 rows=8 flags=11 snap=0
+GATEWALK idx=60 lane=5 base=136 cursor=136 rows=8 flags=11 snap=0
+GATEWALK idx=61 lane=5 base=144 cursor=144 rows=8 flags=11 snap=0
+GATEWALK idx=62 lane=5 base=152 cursor=152 rows=8 flags=11 snap=0
+GATEWALK idx=63 lane=5 base=160 cursor=160 rows=8 flags=11 snap=0
+GATEWALK idx=64 lane=5 base=168 cursor=168 rows=8 flags=11 snap=0
+GATEWALK idx=65 lane=5 base=176 cursor=176 rows=8 flags=11 snap=0
+GATEWALK idx=66 lane=5 base=184 cursor=184 rows=8 flags=811 snap=7
+GATEWALK idx=67 lane=5 base=192 cursor=192 rows=8 flags=11 snap=0
+qwen36_residency sid=910 pending_sid=910 pending_origin=910 hex=8e03000000000000000000000000000015010000000000000d00000000000000
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_residency sid=1000 pending_sid=1000 pending_origin=1000 hex=e803000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=3 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=1001 pending_sid=1001 pending_origin=1001 hex=e903000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=4 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=1002 pending_sid=1002 pending_origin=1002 hex=ea03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=5 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=1003 pending_sid=1003 pending_origin=1003 hex=eb03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=6 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=1004 pending_sid=1004 pending_origin=1004 hex=ec03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1005 pending_sid=1005 pending_origin=1005 hex=ed03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=8 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=1006 pending_sid=1006 pending_origin=1006 hex=ee03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=9 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=1007 pending_sid=1007 pending_origin=1007 hex=ef03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=10 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=1008 pending_sid=1008 pending_origin=1008 hex=f003000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=11 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=1009 pending_sid=1009 pending_origin=1009 hex=f103000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1010 pending_sid=1010 pending_origin=1010 hex=f203000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=13 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=1011 pending_sid=1011 pending_origin=1011 hex=f303000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=14 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=1012 pending_sid=1012 pending_origin=1012 hex=f403000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=15 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=1013 pending_sid=1013 pending_origin=1013 hex=f503000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=16 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=1014 pending_sid=1014 pending_origin=1014 hex=f603000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1015 pending_sid=1015 pending_origin=1015 hex=f703000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1016 pending_sid=1016 pending_origin=1016 hex=f803000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1017 pending_sid=1017 pending_origin=1017 hex=f903000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=20 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=1018 pending_sid=1018 pending_origin=1018 hex=fa03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=21 matched_blocks=2 resumed_at=128 checkpoint_slot=6
+qwen36_residency sid=1019 pending_sid=1019 pending_origin=1019 hex=fb03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1020 pending_sid=1020 pending_origin=1020 hex=fc03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1021 pending_sid=1021 pending_origin=1021 hex=fd03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1022 pending_sid=1022 pending_origin=1022 hex=fe03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1023 pending_sid=1023 pending_origin=1023 hex=ff03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1024 pending_sid=1024 pending_origin=1024 hex=0004000000000000b10000000000000015010000000000000d00000000000000
+VA_TRACE 172
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=70
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=0 length=70 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=107
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=1 length=107 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=144
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=2 length=144 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=181
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=3 length=181 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=218
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=4 length=218 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=255
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=5 length=255 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=292
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=6 length=292 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=329
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=7 length=329 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=366
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=8 length=366 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=103
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=9 length=103 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=140
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=10 length=140 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=177
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=11 length=177 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=214
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=12 length=214 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=251
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=13 length=251 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=288
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=14 length=288 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=325
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=15 length=325 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=362
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=16 length=362 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=99
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=17 length=99 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=136
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=18 length=136 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=173
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=19 length=173 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=210
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=20 length=210 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=247
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=21 length=247 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=284
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=22 length=284 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=321
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=23 length=321 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=358
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=24 length=358 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=95
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=25 length=95 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=132
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=26 length=132 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=169
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=27 length=169 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=206
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=28 length=206 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=243
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=29 length=243 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=280
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=30 length=280 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=317
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=31 length=317 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=354
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=32 length=354 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=91
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=33 length=91 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=128
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=34 length=128 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=165
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=35 length=165 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=202
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=36 length=202 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=239
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=37 length=239 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=276
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=38 length=276 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=313
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=39 length=313 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=350
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=40 length=350 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=87
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=41 length=87 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=124
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=42 length=124 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=161
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=43 length=161 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=198
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=44 length=198 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=235
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=45 length=235 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=272
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=46 length=272 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=309
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=47 length=309 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=346
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=48 length=346 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=83
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=49 length=83 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=120
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=50 length=120 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=157
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=51 length=157 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=194
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=52 length=194 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=231
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=53 length=231 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=268
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=54 length=268 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=305
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=55 length=305 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=342
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=56 length=342 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=79
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=57 length=79 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=116
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=58 length=116 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=153
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=59 length=153 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=190
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=60 length=190 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=227
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=61 length=227 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=264
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=62 length=264 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=301
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=63 length=301 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=338
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=64 length=338 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=75
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=65 length=75 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=112
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=66 length=112 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=149
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=67 length=149 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=186
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=68 length=186 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=223
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=69 length=223 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=260
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=70 length=260 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=297
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=71 length=297 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=334
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=72 length=334 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=71
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=73 length=71 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=108
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=74 length=108 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=145
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=75 length=145 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=182
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=76 length=182 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=219
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=77 length=219 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=256
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=78 length=256 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=293
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=79 length=293 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=330
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=80 length=330 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=367
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=81 length=367 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=104
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=82 length=104 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=141
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=83 length=141 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=178
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=84 length=178 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=215
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=85 length=215 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=252
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=86 length=252 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=289
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=87 length=289 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=326
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=88 length=326 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=363
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=89 length=363 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=100
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=90 length=100 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=137
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=91 length=137 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=174
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=92 length=174 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=211
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=93 length=211 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=248
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=94 length=248 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=285
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=95 length=285 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=322
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=96 length=322 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=359
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=97 length=359 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=96
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=98 length=96 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=133
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=99 length=133 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=170
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=100 length=170 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=207
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=101 length=207 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=244
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=102 length=244 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=281
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=103 length=281 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=318
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=104 length=318 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=355
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=105 length=355 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=92
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=106 length=92 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=129
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=107 length=129 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=166
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=108 length=166 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=203
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=109 length=203 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=240
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=110 length=240 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=277
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=111 length=277 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=314
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=112 length=314 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=351
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=113 length=351 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=88
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=114 length=88 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=125
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=115 length=125 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=162
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=116 length=162 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=199
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=117 length=199 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=236
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=118 length=236 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=273
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=119 length=273 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=310
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=120 length=310 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=347
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=121 length=347 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=84
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=122 length=84 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=121
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=123 length=121 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=158
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=124 length=158 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=195
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=125 length=195 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=232
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=126 length=232 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=269
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=127 length=269 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=306
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=128 length=306 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=343
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=129 length=343 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=80
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=130 length=80 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=117
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=131 length=117 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=154
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=132 length=154 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=191
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=133 length=191 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=228
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=134 length=228 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=265
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=135 length=265 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=302
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=136 length=302 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=339
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=137 length=339 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=76
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=138 length=76 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=113
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=139 length=113 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=150
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=140 length=150 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=187
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=141 length=187 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=224
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=142 length=224 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=261
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=143 length=261 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=298
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=144 length=298 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=335
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=145 length=335 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=72
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=146 length=72 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=109
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=147 length=109 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=146
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=148 length=146 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=183
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=149 length=183 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=220
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=150 length=220 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=257
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=151 length=257 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=294
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=152 length=294 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=331
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=153 length=331 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=368
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=154 length=368 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=105
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=155 length=105 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=142
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=156 length=142 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=179
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=157 length=179 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=216
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=158 length=216 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=253
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=159 length=253 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=290
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=160 length=290 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=327
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=161 length=327 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=364
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=162 length=364 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=101
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=163 length=101 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=138
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=164 length=138 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=175
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=165 length=175 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=212
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=166 length=212 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=249
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=167 length=249 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=286
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=168 length=286 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=323
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=169 length=323 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=360
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=170 length=360 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=97
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=171 length=97 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=134
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=172 length=134 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=171
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=173 length=171 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=208
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=174 length=208 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=245
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=175 length=245 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=282
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=176 length=282 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=319
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=177 length=319 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=356
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=178 length=356 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=93
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=179 length=93 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=130
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=180 length=130 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=167
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=181 length=167 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=204
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=182 length=204 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=241
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=183 length=241 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=278
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=184 length=278 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=315
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=185 length=315 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=352
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=186 length=352 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=89
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=187 length=89 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=126
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=188 length=126 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=163
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=189 length=163 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=200
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=190 length=200 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=237
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=191 length=237 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=274
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=192 length=274 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=311
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=193 length=311 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=348
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=194 length=348 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=85
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=195 length=85 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=122
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=196 length=122 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=159
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=197 length=159 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=196
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=198 length=196 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=233
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=199 length=233 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=270
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=200 length=270 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=307
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=201 length=307 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=344
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=202 length=344 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=81
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=203 length=81 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=118
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=204 length=118 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=155
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=205 length=155 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=192
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=206 length=192 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=229
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=207 length=229 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=266
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=208 length=266 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=303
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=209 length=303 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=340
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=210 length=340 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=77
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=211 length=77 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=114
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=212 length=114 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=151
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=213 length=151 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=188
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=214 length=188 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=225
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=215 length=225 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=262
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=216 length=262 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=299
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=217 length=299 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=336
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=218 length=336 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=73
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=219 length=73 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=110
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=220 length=110 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=147
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=221 length=147 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=184
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=222 length=184 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=221
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=223 length=221 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=258
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=224 length=258 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=295
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=225 length=295 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=332
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=226 length=332 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=369
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=227 length=369 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=106
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=228 length=106 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=143
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=229 length=143 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=180
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=230 length=180 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=217
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=231 length=217 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=254
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=232 length=254 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=291
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=233 length=291 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=328
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=234 length=328 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=365
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=235 length=365 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=102
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=236 length=102 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=139
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=237 length=139 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=176
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=238 length=176 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=213
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=239 length=213 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=250
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=240 length=250 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=287
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=241 length=287 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=324
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=242 length=324 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=361
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=243 length=361 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=98
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=244 length=98 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=135
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=245 length=135 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=172
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=246 length=172 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=209
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=247 length=209 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=246
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=248 length=246 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=283
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=249 length=283 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=320
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=250 length=320 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=357
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=251 length=357 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=94
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=252 length=94 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=131
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=253 length=131 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=168
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=254 length=168 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=205
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=255 length=205 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=242
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=256 length=242 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=279
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=257 length=279 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=316
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=258 length=316 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=353
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=259 length=353 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=90
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=260 length=90 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=127
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=261 length=127 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=164
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=262 length=164 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=201
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=263 length=201 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=238
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=264 length=238 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=275
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=265 length=275 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=312
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=266 length=312 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=349
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=267 length=349 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=86
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=268 length=86 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=123
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=269 length=123 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=160
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=270 length=160 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=197
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=271 length=197 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=234
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=272 length=234 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=271
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=273 length=271 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=308
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=274 length=308 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=345
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=275 length=345 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=82
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=276 length=82 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=119
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=277 length=119 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=156
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=278 length=156 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=193
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=279 length=193 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=230
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=280 length=230 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=267
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=281 length=267 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=304
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=282 length=304 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=341
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=283 length=341 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=78
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=284 length=78 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=115
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=285 length=115 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=152
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=286 length=152 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=189
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=287 length=189 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=226
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=288 length=226 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=263
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=289 length=263 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=300
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=290 length=300 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=337
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=291 length=337 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=74
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=292 length=74 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=111
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=293 length=111 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=148
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=294 length=148 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=185
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=295 length=185 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=222
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=296 length=222 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=259
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=297 length=259 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=296
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=298 length=296 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=333
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=299 length=333 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=70
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=300 length=70 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=107
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=301 length=107 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=144
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=302 length=144 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=181
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=303 length=181 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=218
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=304 length=218 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=255
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=305 length=255 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=292
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=306 length=292 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=329
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=307 length=329 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=366
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=308 length=366 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=103
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=309 length=103 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=140
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=310 length=140 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=177
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=311 length=177 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=214
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=312 length=214 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=251
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=313 length=251 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=288
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=314 length=288 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=325
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=315 length=325 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=362
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=316 length=362 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=99
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=317 length=99 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=136
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=318 length=136 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=173
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=319 length=173 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=210
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=320 length=210 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=247
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=321 length=247 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=284
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=322 length=284 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=321
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=323 length=321 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=358
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=324 length=358 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=95
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=325 length=95 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=132
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=326 length=132 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=169
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=327 length=169 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=206
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=328 length=206 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=243
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=329 length=243 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=280
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=330 length=280 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=317
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=331 length=317 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=354
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=332 length=354 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=91
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=333 length=91 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=128
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=334 length=128 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=165
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=335 length=165 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=202
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=336 length=202 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=239
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=337 length=239 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=276
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=338 length=276 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=313
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=339 length=313 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=350
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=340 length=350 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=87
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=341 length=87 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=124
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=342 length=124 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=161
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=343 length=161 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=198
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=344 length=198 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=235
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=345 length=235 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=272
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=346 length=272 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=309
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=347 length=309 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=346
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=348 length=346 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=83
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=349 length=83 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=120
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=350 length=120 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=157
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=351 length=157 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=194
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=352 length=194 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=231
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=353 length=231 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=268
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=354 length=268 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=305
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=355 length=305 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=342
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=356 length=342 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=79
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=357 length=79 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=116
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=358 length=116 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=153
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=359 length=153 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=190
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=360 length=190 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=227
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=361 length=227 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=264
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=362 length=264 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=301
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=363 length=301 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=338
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=364 length=338 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=75
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=365 length=75 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=112
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=366 length=112 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=149
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=367 length=149 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=186
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=368 length=186 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=223
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=369 length=223 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=260
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=370 length=260 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=297
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=371 length=297 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=334
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=372 length=334 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=71
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=373 length=71 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=108
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=374 length=108 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=145
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=375 length=145 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=182
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=376 length=182 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=219
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=377 length=219 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=256
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=378 length=256 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=293
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=379 length=293 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=330
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=380 length=330 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=367
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=381 length=367 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=104
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=382 length=104 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=141
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=383 length=141 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=178
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=384 length=178 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=215
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=385 length=215 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=252
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=386 length=252 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=289
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=387 length=289 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=326
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=388 length=326 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=363
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=389 length=363 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=100
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=390 length=100 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=137
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=391 length=137 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=174
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=392 length=174 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=211
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=393 length=211 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=248
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=394 length=248 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=285
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=395 length=285 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=322
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=396 length=322 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=359
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=397 length=359 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=96
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=398 length=96 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=133
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=399 length=133 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=170
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=400 length=170 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=207
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=401 length=207 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=244
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=402 length=244 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=281
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=403 length=281 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=318
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=404 length=318 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=355
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=405 length=355 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=92
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=406 length=92 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=129
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=407 length=129 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=166
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=408 length=166 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=203
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=409 length=203 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=240
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=410 length=240 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=277
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=411 length=277 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=314
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=412 length=314 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=351
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=413 length=351 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=88
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=414 length=88 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=125
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=415 length=125 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=162
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=416 length=162 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=199
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=417 length=199 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=236
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=418 length=236 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=273
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=419 length=273 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=310
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=420 length=310 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=347
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=421 length=347 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=84
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=422 length=84 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=121
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=423 length=121 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=158
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=424 length=158 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=195
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=425 length=195 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=232
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=426 length=232 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=269
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=427 length=269 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=306
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=428 length=306 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=343
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=429 length=343 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=80
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=430 length=80 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=117
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=431 length=117 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=154
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=432 length=154 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=191
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=433 length=191 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=228
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=434 length=228 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=265
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=435 length=265 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=302
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=436 length=302 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=339
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=437 length=339 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=76
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=438 length=76 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=113
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=439 length=113 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=150
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=440 length=150 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=187
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=441 length=187 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=224
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=442 length=224 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=261
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=443 length=261 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=298
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=444 length=298 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=335
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=445 length=335 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=72
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=446 length=72 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=109
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=447 length=109 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=146
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=448 length=146 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=183
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=449 length=183 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=220
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=450 length=220 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=257
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=451 length=257 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=294
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=452 length=294 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=331
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=453 length=331 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=368
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=454 length=368 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=105
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=455 length=105 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=142
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=456 length=142 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=179
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=457 length=179 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=216
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=458 length=216 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=253
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=459 length=253 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=290
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=460 length=290 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=327
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=461 length=327 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=364
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=462 length=364 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=101
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=463 length=101 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=138
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=464 length=138 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=175
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=465 length=175 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=212
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=466 length=212 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=249
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=467 length=249 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=286
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=468 length=286 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=323
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=469 length=323 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=360
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=470 length=360 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=97
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=471 length=97 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=134
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=472 length=134 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=171
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=473 length=171 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=208
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=474 length=208 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=245
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=475 length=245 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=282
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=476 length=282 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=319
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=477 length=319 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=356
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=478 length=356 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=93
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=479 length=93 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=130
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=480 length=130 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=167
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=481 length=167 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=204
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=482 length=204 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=241
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=483 length=241 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=278
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=484 length=278 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=315
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=485 length=315 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=352
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=486 length=352 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=89
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=487 length=89 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=126
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=488 length=126 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=163
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=489 length=163 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=200
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=490 length=200 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=237
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=491 length=237 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=274
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=492 length=274 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=311
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=493 length=311 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=348
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=494 length=348 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=85
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=495 length=85 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=122
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=496 length=122 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=159
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=497 length=159 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=196
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=498 length=196 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=233
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=499 length=233 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=270
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=500 length=270 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=307
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=501 length=307 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=344
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=502 length=344 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=81
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=503 length=81 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=118
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=504 length=118 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=155
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=505 length=155 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=192
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=506 length=192 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=229
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=507 length=229 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=266
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=508 length=266 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=303
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=509 length=303 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=340
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=510 length=340 status=1
+qwen36_debug driver_submit status=1 prefill=1 rows=64 seqpos=0 tps=1 newtok=77
+qwen36_debug frame_status status=1 prefill=1 rows=64
+b512_refused root=511 length=77 status=1
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_residency sid=1500 pending_sid=1500 pending_origin=1500 hex=dc05000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1501 pending_sid=1501 pending_origin=1501 hex=dd05000000000000b10000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=127 t=1398163.167103 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=127 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[127..129]
+qwen36_spec accepted=0
+qwen36_residency sid=1600 pending_sid=1600 pending_origin=1600 hex=4006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=127 t=1398163.167125 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=127 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[127..129]
+qwen36_spec accepted=0
+qwen36_residency sid=1601 pending_sid=1601 pending_origin=1601 hex=4106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=128 t=1398163.167138 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=128 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[128..130]
+qwen36_spec accepted=0
+qwen36_residency sid=1602 pending_sid=1602 pending_origin=1602 hex=4206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=128 t=1398163.167149 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=128 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[128..130]
+qwen36_spec accepted=0
+qwen36_residency sid=1603 pending_sid=1603 pending_origin=1603 hex=4306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=129 t=1398163.167161 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=129 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[129..131]
+qwen36_spec accepted=0
+qwen36_residency sid=1604 pending_sid=1604 pending_origin=1604 hex=4406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=129 t=1398163.167173 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=129 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[129..131]
+qwen36_spec accepted=0
+qwen36_residency sid=1605 pending_sid=1605 pending_origin=1605 hex=4506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=130 t=1398163.167184 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=130 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[130..132]
+qwen36_spec accepted=0
+qwen36_residency sid=1606 pending_sid=1606 pending_origin=1606 hex=4606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=130 t=1398163.167196 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=130 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[130..132]
+qwen36_spec accepted=0
+qwen36_residency sid=1607 pending_sid=1607 pending_origin=1607 hex=4706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=131 t=1398163.167207 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=131 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[131..133]
+qwen36_spec accepted=0
+qwen36_residency sid=1608 pending_sid=1608 pending_origin=1608 hex=4806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=131 t=1398163.167219 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=131 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[131..133]
+qwen36_spec accepted=0
+qwen36_residency sid=1609 pending_sid=1609 pending_origin=1609 hex=4906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=132 t=1398163.167234 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=132 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[132..134]
+qwen36_spec accepted=0
+qwen36_residency sid=1610 pending_sid=1610 pending_origin=1610 hex=4a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=132 t=1398163.167245 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=132 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[132..134]
+qwen36_spec accepted=0
+qwen36_residency sid=1611 pending_sid=1611 pending_origin=1611 hex=4b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=133 t=1398163.167257 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=133 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[133..135]
+qwen36_spec accepted=0
+qwen36_residency sid=1612 pending_sid=1612 pending_origin=1612 hex=4c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=133 t=1398163.167268 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=133 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[133..135]
+qwen36_spec accepted=0
+qwen36_residency sid=1613 pending_sid=1613 pending_origin=1613 hex=4d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=134 t=1398163.167279 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=134 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[134..136]
+qwen36_spec accepted=0
+qwen36_residency sid=1614 pending_sid=1614 pending_origin=1614 hex=4e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=134 t=1398163.167291 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=134 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[134..136]
+qwen36_spec accepted=0
+qwen36_residency sid=1615 pending_sid=1615 pending_origin=1615 hex=4f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=135 t=1398163.167302 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=135 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[135..137]
+qwen36_spec accepted=0
+qwen36_residency sid=1616 pending_sid=1616 pending_origin=1616 hex=5006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=135 t=1398163.167314 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=135 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[135..137]
+qwen36_spec accepted=0
+qwen36_residency sid=1617 pending_sid=1617 pending_origin=1617 hex=5106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=136 t=1398163.167325 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=136 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[136..138]
+qwen36_spec accepted=0
+qwen36_residency sid=1618 pending_sid=1618 pending_origin=1618 hex=5206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=136 t=1398163.167340 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=136 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[136..138]
+qwen36_spec accepted=0
+qwen36_residency sid=1619 pending_sid=1619 pending_origin=1619 hex=5306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=137 t=1398163.167351 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=137 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[137..139]
+qwen36_spec accepted=0
+qwen36_residency sid=1620 pending_sid=1620 pending_origin=1620 hex=5406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=137 t=1398163.167363 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=137 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[137..139]
+qwen36_spec accepted=0
+qwen36_residency sid=1621 pending_sid=1621 pending_origin=1621 hex=5506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=138 t=1398163.167374 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=138 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[138..140]
+qwen36_spec accepted=0
+qwen36_residency sid=1622 pending_sid=1622 pending_origin=1622 hex=5606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=138 t=1398163.167386 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=138 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[138..140]
+qwen36_spec accepted=0
+qwen36_residency sid=1623 pending_sid=1623 pending_origin=1623 hex=5706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=139 t=1398163.167398 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=139 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[139..141]
+qwen36_spec accepted=0
+qwen36_residency sid=1624 pending_sid=1624 pending_origin=1624 hex=5806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=139 t=1398163.167409 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=139 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[139..141]
+qwen36_spec accepted=0
+qwen36_residency sid=1625 pending_sid=1625 pending_origin=1625 hex=5906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=140 t=1398163.167421 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=140 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[140..142]
+qwen36_spec accepted=0
+qwen36_residency sid=1626 pending_sid=1626 pending_origin=1626 hex=5a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=140 t=1398163.167437 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=140 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[140..142]
+qwen36_spec accepted=0
+qwen36_residency sid=1627 pending_sid=1627 pending_origin=1627 hex=5b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=141 t=1398163.167448 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=141 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[141..143]
+qwen36_spec accepted=0
+qwen36_residency sid=1628 pending_sid=1628 pending_origin=1628 hex=5c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=141 t=1398163.167460 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=141 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[141..143]
+qwen36_spec accepted=0
+qwen36_residency sid=1629 pending_sid=1629 pending_origin=1629 hex=5d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=142 t=1398163.167472 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=142 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[142..144]
+qwen36_spec accepted=0
+qwen36_residency sid=1630 pending_sid=1630 pending_origin=1630 hex=5e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=142 t=1398163.167483 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=142 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[142..144]
+qwen36_spec accepted=0
+qwen36_residency sid=1631 pending_sid=1631 pending_origin=1631 hex=5f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=143 t=1398163.167495 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=143 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[143..145]
+qwen36_spec accepted=0
+qwen36_residency sid=1632 pending_sid=1632 pending_origin=1632 hex=6006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=143 t=1398163.167506 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=143 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[143..145]
+qwen36_spec accepted=0
+qwen36_residency sid=1633 pending_sid=1633 pending_origin=1633 hex=6106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=144 t=1398163.167518 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=144 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[144..146]
+qwen36_spec accepted=0
+qwen36_residency sid=1634 pending_sid=1634 pending_origin=1634 hex=6206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=144 t=1398163.167529 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=144 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[144..146]
+qwen36_spec accepted=0
+qwen36_residency sid=1635 pending_sid=1635 pending_origin=1635 hex=6306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=145 t=1398163.167544 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=145 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[145..147]
+qwen36_spec accepted=0
+qwen36_residency sid=1636 pending_sid=1636 pending_origin=1636 hex=6406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=145 t=1398163.167555 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=145 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[145..147]
+qwen36_spec accepted=0
+qwen36_residency sid=1637 pending_sid=1637 pending_origin=1637 hex=6506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=146 t=1398163.167567 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=146 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[146..148]
+qwen36_spec accepted=0
+qwen36_residency sid=1638 pending_sid=1638 pending_origin=1638 hex=6606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=146 t=1398163.167578 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=146 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[146..148]
+qwen36_spec accepted=0
+qwen36_residency sid=1639 pending_sid=1639 pending_origin=1639 hex=6706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=147 t=1398163.167589 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=147 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[147..149]
+qwen36_spec accepted=0
+qwen36_residency sid=1640 pending_sid=1640 pending_origin=1640 hex=6806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=147 t=1398163.167601 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=147 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[147..149]
+qwen36_spec accepted=0
+qwen36_residency sid=1641 pending_sid=1641 pending_origin=1641 hex=6906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=148 t=1398163.167613 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=148 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[148..150]
+qwen36_spec accepted=0
+qwen36_residency sid=1642 pending_sid=1642 pending_origin=1642 hex=6a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=148 t=1398163.167624 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=148 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[148..150]
+qwen36_spec accepted=0
+qwen36_residency sid=1643 pending_sid=1643 pending_origin=1643 hex=6b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=149 t=1398163.167639 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=149 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[149..151]
+qwen36_spec accepted=0
+qwen36_residency sid=1644 pending_sid=1644 pending_origin=1644 hex=6c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=149 t=1398163.167651 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=149 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[149..151]
+qwen36_spec accepted=0
+qwen36_residency sid=1645 pending_sid=1645 pending_origin=1645 hex=6d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=150 t=1398163.167662 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=150 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[150..152]
+qwen36_spec accepted=0
+qwen36_residency sid=1646 pending_sid=1646 pending_origin=1646 hex=6e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=150 t=1398163.167674 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=150 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[150..152]
+qwen36_spec accepted=0
+qwen36_residency sid=1647 pending_sid=1647 pending_origin=1647 hex=6f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=151 t=1398163.167685 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=151 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[151..153]
+qwen36_spec accepted=0
+qwen36_residency sid=1648 pending_sid=1648 pending_origin=1648 hex=7006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=151 t=1398163.167697 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=151 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[151..153]
+qwen36_spec accepted=0
+qwen36_residency sid=1649 pending_sid=1649 pending_origin=1649 hex=7106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=152 t=1398163.167708 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=152 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[152..154]
+qwen36_spec accepted=0
+qwen36_residency sid=1650 pending_sid=1650 pending_origin=1650 hex=7206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=152 t=1398163.167719 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=152 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[152..154]
+qwen36_spec accepted=0
+qwen36_residency sid=1651 pending_sid=1651 pending_origin=1651 hex=7306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=153 t=1398163.167731 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=153 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[153..155]
+qwen36_spec accepted=0
+qwen36_residency sid=1652 pending_sid=1652 pending_origin=1652 hex=7406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=153 t=1398163.167745 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=153 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[153..155]
+qwen36_spec accepted=0
+qwen36_residency sid=1653 pending_sid=1653 pending_origin=1653 hex=7506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=154 t=1398163.167757 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=154 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[154..156]
+qwen36_spec accepted=0
+qwen36_residency sid=1654 pending_sid=1654 pending_origin=1654 hex=7606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=154 t=1398163.167768 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=154 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[154..156]
+qwen36_spec accepted=0
+qwen36_residency sid=1655 pending_sid=1655 pending_origin=1655 hex=7706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=155 t=1398163.167779 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=155 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[155..157]
+qwen36_spec accepted=0
+qwen36_residency sid=1656 pending_sid=1656 pending_origin=1656 hex=7806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=155 t=1398163.167791 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=155 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[155..157]
+qwen36_spec accepted=0
+qwen36_residency sid=1657 pending_sid=1657 pending_origin=1657 hex=7906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=156 t=1398163.167802 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=156 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[156..158]
+qwen36_spec accepted=0
+qwen36_residency sid=1658 pending_sid=1658 pending_origin=1658 hex=7a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=156 t=1398163.167813 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=156 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[156..158]
+qwen36_spec accepted=0
+qwen36_residency sid=1659 pending_sid=1659 pending_origin=1659 hex=7b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=157 t=1398163.167825 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=157 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[157..159]
+qwen36_spec accepted=0
+qwen36_residency sid=1660 pending_sid=1660 pending_origin=1660 hex=7c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=157 t=1398163.167837 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=157 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[157..159]
+qwen36_spec accepted=0
+qwen36_residency sid=1661 pending_sid=1661 pending_origin=1661 hex=7d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=158 t=1398163.167852 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=158 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[158..160]
+qwen36_spec accepted=0
+qwen36_residency sid=1662 pending_sid=1662 pending_origin=1662 hex=7e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=158 t=1398163.167864 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=158 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[158..160]
+qwen36_spec accepted=0
+qwen36_residency sid=1663 pending_sid=1663 pending_origin=1663 hex=7f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=159 t=1398163.167875 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=159 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[159..161]
+qwen36_spec accepted=0
+qwen36_residency sid=1664 pending_sid=1664 pending_origin=1664 hex=8006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=159 t=1398163.167887 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=159 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[159..161]
+qwen36_spec accepted=0
+qwen36_residency sid=1665 pending_sid=1665 pending_origin=1665 hex=8106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=160 t=1398163.167898 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=160 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[160..162]
+qwen36_spec accepted=0
+qwen36_residency sid=1666 pending_sid=1666 pending_origin=1666 hex=8206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=160 t=1398163.167910 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=160 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[160..162]
+qwen36_spec accepted=0
+qwen36_residency sid=1667 pending_sid=1667 pending_origin=1667 hex=8306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=161 t=1398163.167921 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=161 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[161..163]
+qwen36_spec accepted=0
+qwen36_residency sid=1668 pending_sid=1668 pending_origin=1668 hex=8406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=161 t=1398163.167932 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=161 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[161..163]
+qwen36_spec accepted=0
+qwen36_residency sid=1669 pending_sid=1669 pending_origin=1669 hex=8506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=162 t=1398163.167947 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=162 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[162..164]
+qwen36_spec accepted=0
+qwen36_residency sid=1670 pending_sid=1670 pending_origin=1670 hex=8606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=162 t=1398163.167959 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=162 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[162..164]
+qwen36_spec accepted=0
+qwen36_residency sid=1671 pending_sid=1671 pending_origin=1671 hex=8706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=163 t=1398163.167970 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=163 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[163..165]
+qwen36_spec accepted=0
+qwen36_residency sid=1672 pending_sid=1672 pending_origin=1672 hex=8806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=163 t=1398163.167982 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=163 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[163..165]
+qwen36_spec accepted=0
+qwen36_residency sid=1673 pending_sid=1673 pending_origin=1673 hex=8906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=164 t=1398163.167993 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=164 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[164..166]
+qwen36_spec accepted=0
+qwen36_residency sid=1674 pending_sid=1674 pending_origin=1674 hex=8a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=164 t=1398163.168004 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=164 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[164..166]
+qwen36_spec accepted=0
+qwen36_residency sid=1675 pending_sid=1675 pending_origin=1675 hex=8b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=165 t=1398163.168016 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=165 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[165..167]
+qwen36_spec accepted=0
+qwen36_residency sid=1676 pending_sid=1676 pending_origin=1676 hex=8c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=165 t=1398163.168027 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=165 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[165..167]
+qwen36_spec accepted=0
+qwen36_residency sid=1677 pending_sid=1677 pending_origin=1677 hex=8d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=166 t=1398163.168038 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=166 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[166..168]
+qwen36_spec accepted=0
+qwen36_residency sid=1678 pending_sid=1678 pending_origin=1678 hex=8e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=166 t=1398163.168053 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=166 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[166..168]
+qwen36_spec accepted=0
+qwen36_residency sid=1679 pending_sid=1679 pending_origin=1679 hex=8f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=167 t=1398163.168064 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=167 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[167..169]
+qwen36_spec accepted=0
+qwen36_residency sid=1680 pending_sid=1680 pending_origin=1680 hex=9006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=167 t=1398163.168076 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=167 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[167..169]
+qwen36_spec accepted=0
+qwen36_residency sid=1681 pending_sid=1681 pending_origin=1681 hex=9106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=168 t=1398163.168088 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=168 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[168..170]
+qwen36_spec accepted=0
+qwen36_residency sid=1682 pending_sid=1682 pending_origin=1682 hex=9206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=168 t=1398163.168099 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=168 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[168..170]
+qwen36_spec accepted=0
+qwen36_residency sid=1683 pending_sid=1683 pending_origin=1683 hex=9306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=169 t=1398163.168111 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=169 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[169..171]
+qwen36_spec accepted=0
+qwen36_residency sid=1684 pending_sid=1684 pending_origin=1684 hex=9406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=169 t=1398163.168122 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=169 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[169..171]
+qwen36_spec accepted=0
+qwen36_residency sid=1685 pending_sid=1685 pending_origin=1685 hex=9506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=170 t=1398163.168133 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=170 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[170..172]
+qwen36_spec accepted=0
+qwen36_residency sid=1686 pending_sid=1686 pending_origin=1686 hex=9606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=170 t=1398163.168148 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=170 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[170..172]
+qwen36_spec accepted=0
+qwen36_residency sid=1687 pending_sid=1687 pending_origin=1687 hex=9706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=171 t=1398163.168159 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=171 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[171..173]
+qwen36_spec accepted=0
+qwen36_residency sid=1688 pending_sid=1688 pending_origin=1688 hex=9806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=171 t=1398163.168171 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=171 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[171..173]
+qwen36_spec accepted=0
+qwen36_residency sid=1689 pending_sid=1689 pending_origin=1689 hex=9906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=172 t=1398163.168182 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=172 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[172..174]
+qwen36_spec accepted=0
+qwen36_residency sid=1690 pending_sid=1690 pending_origin=1690 hex=9a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=172 t=1398163.168193 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=172 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[172..174]
+qwen36_spec accepted=0
+qwen36_residency sid=1691 pending_sid=1691 pending_origin=1691 hex=9b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=173 t=1398163.168205 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=173 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[173..175]
+qwen36_spec accepted=0
+qwen36_residency sid=1692 pending_sid=1692 pending_origin=1692 hex=9c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=173 t=1398163.168216 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=173 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[173..175]
+qwen36_spec accepted=0
+qwen36_residency sid=1693 pending_sid=1693 pending_origin=1693 hex=9d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=174 t=1398163.168227 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=174 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[174..176]
+qwen36_spec accepted=0
+qwen36_residency sid=1694 pending_sid=1694 pending_origin=1694 hex=9e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=174 t=1398163.168239 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=174 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[174..176]
+qwen36_spec accepted=0
+qwen36_residency sid=1695 pending_sid=1695 pending_origin=1695 hex=9f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=175 t=1398163.168254 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=175 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[175..177]
+qwen36_spec accepted=0
+qwen36_residency sid=1696 pending_sid=1696 pending_origin=1696 hex=a006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=175 t=1398163.168266 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=175 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[175..177]
+qwen36_spec accepted=0
+qwen36_residency sid=1697 pending_sid=1697 pending_origin=1697 hex=a106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=176 t=1398163.168277 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=176 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[176..178]
+qwen36_spec accepted=0
+qwen36_residency sid=1698 pending_sid=1698 pending_origin=1698 hex=a206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=176 t=1398163.168289 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=176 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[176..178]
+qwen36_spec accepted=0
+qwen36_residency sid=1699 pending_sid=1699 pending_origin=1699 hex=a306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=177 t=1398163.168300 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=177 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[177..179]
+qwen36_spec accepted=0
+qwen36_residency sid=1700 pending_sid=1700 pending_origin=1700 hex=a406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=177 t=1398163.168312 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=177 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[177..179]
+qwen36_spec accepted=0
+qwen36_residency sid=1701 pending_sid=1701 pending_origin=1701 hex=a506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=178 t=1398163.168323 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=178 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[178..180]
+qwen36_spec accepted=0
+qwen36_residency sid=1702 pending_sid=1702 pending_origin=1702 hex=a606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=178 t=1398163.168335 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=178 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[178..180]
+qwen36_spec accepted=0
+qwen36_residency sid=1703 pending_sid=1703 pending_origin=1703 hex=a706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=179 t=1398163.168346 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=179 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[179..181]
+qwen36_spec accepted=0
+qwen36_residency sid=1704 pending_sid=1704 pending_origin=1704 hex=a806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=179 t=1398163.168361 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=179 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[179..181]
+qwen36_spec accepted=0
+qwen36_residency sid=1705 pending_sid=1705 pending_origin=1705 hex=a906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=180 t=1398163.168372 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=180 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[180..182]
+qwen36_spec accepted=0
+qwen36_residency sid=1706 pending_sid=1706 pending_origin=1706 hex=aa06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=180 t=1398163.168384 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=180 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[180..182]
+qwen36_spec accepted=0
+qwen36_residency sid=1707 pending_sid=1707 pending_origin=1707 hex=ab06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=181 t=1398163.168395 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=181 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[181..183]
+qwen36_spec accepted=0
+qwen36_residency sid=1708 pending_sid=1708 pending_origin=1708 hex=ac06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=181 t=1398163.168407 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=181 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[181..183]
+qwen36_spec accepted=0
+qwen36_residency sid=1709 pending_sid=1709 pending_origin=1709 hex=ad06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=182 t=1398163.168418 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=182 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[182..184]
+qwen36_spec accepted=0
+qwen36_residency sid=1710 pending_sid=1710 pending_origin=1710 hex=ae06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=182 t=1398163.168429 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=182 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[182..184]
+qwen36_spec accepted=0
+qwen36_residency sid=1711 pending_sid=1711 pending_origin=1711 hex=af06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=183 t=1398163.168441 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=183 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[183..185]
+qwen36_spec accepted=0
+qwen36_residency sid=1712 pending_sid=1712 pending_origin=1712 hex=b006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=183 t=1398163.168455 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=183 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[183..185]
+qwen36_spec accepted=0
+qwen36_residency sid=1713 pending_sid=1713 pending_origin=1713 hex=b106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=184 t=1398163.168467 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=184 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[184..186]
+qwen36_spec accepted=0
+qwen36_residency sid=1714 pending_sid=1714 pending_origin=1714 hex=b206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=184 t=1398163.168478 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=184 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[184..186]
+qwen36_spec accepted=0
+qwen36_residency sid=1715 pending_sid=1715 pending_origin=1715 hex=b306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=185 t=1398163.168489 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=185 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[185..187]
+qwen36_spec accepted=0
+qwen36_residency sid=1716 pending_sid=1716 pending_origin=1716 hex=b406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=185 t=1398163.168501 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=185 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[185..187]
+qwen36_spec accepted=0
+qwen36_residency sid=1717 pending_sid=1717 pending_origin=1717 hex=b506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=186 t=1398163.168512 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=186 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[186..188]
+qwen36_spec accepted=0
+qwen36_residency sid=1718 pending_sid=1718 pending_origin=1718 hex=b606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=186 t=1398163.168523 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=186 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[186..188]
+qwen36_spec accepted=0
+qwen36_residency sid=1719 pending_sid=1719 pending_origin=1719 hex=b706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=187 t=1398163.168535 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=187 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[187..189]
+qwen36_spec accepted=0
+qwen36_residency sid=1720 pending_sid=1720 pending_origin=1720 hex=b806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=187 t=1398163.168546 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=187 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[187..189]
+qwen36_spec accepted=0
+qwen36_residency sid=1721 pending_sid=1721 pending_origin=1721 hex=b906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=188 t=1398163.168561 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=188 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[188..190]
+qwen36_spec accepted=0
+qwen36_residency sid=1722 pending_sid=1722 pending_origin=1722 hex=ba06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=188 t=1398163.168572 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=188 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[188..190]
+qwen36_spec accepted=0
+qwen36_residency sid=1723 pending_sid=1723 pending_origin=1723 hex=bb06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=189 t=1398163.168583 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=189 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[189..191]
+qwen36_spec accepted=0
+qwen36_residency sid=1724 pending_sid=1724 pending_origin=1724 hex=bc06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=189 t=1398163.168595 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=189 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[189..191]
+qwen36_spec accepted=0
+qwen36_residency sid=1725 pending_sid=1725 pending_origin=1725 hex=bd06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=190 t=1398163.168606 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=190 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[190..192]
+qwen36_spec accepted=0
+qwen36_residency sid=1726 pending_sid=1726 pending_origin=1726 hex=be06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=190 t=1398163.168618 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=190 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[190..192]
+qwen36_spec accepted=0
+qwen36_residency sid=1727 pending_sid=1727 pending_origin=1727 hex=bf06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=191 t=1398163.168629 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=191 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[191..193]
+qwen36_spec accepted=0
+qwen36_residency sid=1728 pending_sid=1728 pending_origin=1728 hex=c006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=191 t=1398163.168640 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=191 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[191..193]
+qwen36_spec accepted=0
+qwen36_residency sid=1729 pending_sid=1729 pending_origin=1729 hex=c106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=192 t=1398163.168652 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=192 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[192..194]
+qwen36_spec accepted=0
+qwen36_residency sid=1730 pending_sid=1730 pending_origin=1730 hex=c206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=192 t=1398163.168668 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=192 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[192..194]
+qwen36_spec accepted=0
+qwen36_residency sid=1731 pending_sid=1731 pending_origin=1731 hex=c306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=193 t=1398163.168679 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=193 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[193..195]
+qwen36_spec accepted=0
+qwen36_residency sid=1732 pending_sid=1732 pending_origin=1732 hex=c406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=193 t=1398163.168690 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=193 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[193..195]
+qwen36_spec accepted=0
+qwen36_residency sid=1733 pending_sid=1733 pending_origin=1733 hex=c506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=194 t=1398163.168702 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=194 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[194..196]
+qwen36_spec accepted=0
+qwen36_residency sid=1734 pending_sid=1734 pending_origin=1734 hex=c606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=194 t=1398163.168713 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=194 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[194..196]
+qwen36_spec accepted=0
+qwen36_residency sid=1735 pending_sid=1735 pending_origin=1735 hex=c706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=195 t=1398163.168725 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=195 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[195..197]
+qwen36_spec accepted=0
+qwen36_residency sid=1736 pending_sid=1736 pending_origin=1736 hex=c806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=195 t=1398163.168736 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=195 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[195..197]
+qwen36_spec accepted=0
+qwen36_residency sid=1737 pending_sid=1737 pending_origin=1737 hex=c906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=196 t=1398163.168748 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=196 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[196..198]
+qwen36_spec accepted=0
+qwen36_residency sid=1738 pending_sid=1738 pending_origin=1738 hex=ca06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=196 t=1398163.168762 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=196 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[196..198]
+qwen36_spec accepted=0
+qwen36_residency sid=1739 pending_sid=1739 pending_origin=1739 hex=cb06000000000000b20000000000000015010000000000000d00000000000000
+Assertion failed: (stats_end.evicted_block_count > stats_start.evicted_block_count), function S512ScaleScenario, file test_qwen36_prefix_cache.c, line 841.
+b25_pressure ok=25 refused=0
+b512_pressure ok=0 refused=512
+spec_decode ok=140 rounds, lane rows grown to 4/4 blocks
+f1_conservation reuse-on: 140 rounds, max attached=5, final free=59
+f1_conservation reuse-off: 140 rounds, max attached=4, final free=60
+f1_conservation PASS
+f2_feasibility: refused UP FRONT (need 5, free 2) before any Cover
+f2_feasibility PASS

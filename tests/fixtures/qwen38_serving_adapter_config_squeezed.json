@@ -1,0 +1,7 @@
+{
+  "schema_version": 3,
+  "model_revision": "fp8-h8192-l92-gdn69-full23-e512k10-v248320-mtp1-d2dc3565-v1",
+  "stage_pack_path": "tests/fixtures/qwen38-stage.qwen38sp",
+  "max_sequence_positions": 256,
+  "tp_degree": 16
+}

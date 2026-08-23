@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -8,11 +9,11 @@
 int main(void)
 {
     static const char ValidJson[] =
-        "{\"name\":\"firmware\\nmodel\",\"unicode\":\"\\u03bb\",\"values\":[1,true,{\"x\":7}]}";
+        "{\"name\":\"firmware\\nmodel\",\"unicode\":\"\\u03bb\",\"values\":[1,true,{\"x\":7}],\"count\":42}";
     static const char InvalidJson[] = "{\"value\":1,}";
     static const char DuplicateJson[] = "{\"name\":1,\"name\":2,\"values\":[]}";
     static const char UnknownJson[] = "{\"name\":1,\"values\":[],\"stale\":true}";
-    static const char *const ExactMembers[] = {"name", "unicode", "values"};
+    static const char *const ExactMembers[] = {"name", "unicode", "values", "count"};
     static const char *const ShortMembers[] = {"name", "values"};
     static const char ExpectedAbcSha256[] = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     SparkJsonDocument document;
@@ -20,6 +21,7 @@ int main(void)
     int32_t name_token;
     int32_t unicode_token;
     int32_t values_token;
+    uint32_t member_value;
     char *decoded_text;
     char sha256[SPARK_SHA256_HEX_BYTES];
 
@@ -27,7 +29,7 @@ int main(void)
     assert(SparkJsonParseText(ValidJson, strlen(ValidJson), &document) == SPARK_STATUS_OK);
     root_token = SparkJsonGetRootToken(&document);
     assert(SparkJsonTokenIsType(&document, root_token, SPARK_JSON_TOKEN_OBJECT));
-    assert(SparkJsonValidateObjectMembersExact(&document, root_token, ExactMembers, 3u) == SPARK_STATUS_OK);
+    assert(SparkJsonValidateObjectMembersExact(&document, root_token, ExactMembers, 4u) == SPARK_STATUS_OK);
     assert(SparkJsonValidateObjectMembersExact(&document, root_token, ShortMembers, 2u) == SPARK_STATUS_SCHEMA_ERROR);
 
     name_token = SparkJsonFindObjectMember(&document, root_token, "name");
@@ -42,6 +44,10 @@ int main(void)
 
     values_token = SparkJsonFindObjectMember(&document, root_token, "values");
     assert(SparkJsonGetArrayElementCount(&document, values_token) == 3u);
+    /* Member convenience: found-and-parsed, missing-member schema error. */
+    assert(SparkJsonGetUInt32Member(&document, root_token, "count", &member_value) == SPARK_STATUS_OK);
+    assert(member_value == 42u);
+    assert(SparkJsonGetUInt32Member(&document, root_token, "absent_member", &member_value) == SPARK_STATUS_SCHEMA_ERROR);
     SparkJsonDocumentDestroy(&document);
 
     SparkJsonDocumentReset(&document);

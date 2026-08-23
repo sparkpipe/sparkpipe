@@ -92,6 +92,21 @@ grep -q '^f1_conservation PASS' "$OUTDIR/qwen36.out" ||
     ' "$OUTDIR/core.out" | tr 'A-Z' 'a-z'
     # qwen36 gate: pressure, speculation, conservation feasibility
     awk '
+        # Reuse observability keys (iteration 6, ADDED DELIBERATELY together
+        # with their baseline entries in the same commit - never silently):
+        # the merged per-lane diag line now carries matched_blocks=/borrowed=
+        # so a production log proves reuse fired. Captured: first-line values
+        # (deterministic counters) + total line count.
+        /^qwen36_spec_diag lane=/ {
+            lines++;
+            if ( seen == 0 ) {
+                seen = 1;
+                if ( match($0,/matched_blocks=[0-9]+/) )
+                    print "spec_diag_" substr($0,RSTART,RLENGTH);
+                if ( match($0,/borrowed=[0-9]+/) )
+                    print "spec_diag_" substr($0,RSTART,RLENGTH);
+            }
+        }
         /^b25_pressure/ {
             for (i=2;i<=NF;i++) if ($i ~ /=/) print "b25_" $i;
         }
@@ -107,6 +122,7 @@ grep -q '^f1_conservation PASS' "$OUTDIR/qwen36.out" ||
             match($0, /max attached=[0-9]+/); print "f1_off_" substr($0, RSTART, RLENGTH);
             match($0, /final free=[0-9]+/);   print "f1_off_" substr($0, RSTART, RLENGTH);
         }
+        END { print "spec_diag_lines=" lines+0 }
     ' "$OUTDIR/qwen36.out"
 } | LC_ALL=C sort > "$OUTDIR/measured.txt"
 

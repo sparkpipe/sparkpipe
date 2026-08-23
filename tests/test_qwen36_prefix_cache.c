@@ -1183,6 +1183,8 @@ int main(void)
 			uint32_t prompt_e[GATE_MAX_ROWS],prompt_f[GATE_MAX_ROWS];
 			uint32_t blocks_e[GATE_CAPTURE_ROWS],blocks_f[GATE_CAPTURE_ROWS];
 			uint32_t count_e,count_f,round,record;
+			FILE *diag_capture_file;
+			int diag_saved_fd;
 			count_e = UINT32_MAX;
 			count_f = UINT32_MAX;
 			for (row=0u; row<126u; row++)
@@ -1190,6 +1192,17 @@ int main(void)
 				prompt_e[row] = 30000u + row * 5u;
 				prompt_f[row] = 31000u + row * 5u;
 			}
+			/* Reuse observability gate: capture stderr for this whole case
+			 * so the merged per-lane diag line is asserted below - one line
+			 * per round, historic fields intact, plus matched_blocks= and
+			 * borrowed= so a production log proves reuse without re-running
+			 * this harness. */
+			diag_capture_file = tmpfile();
+			assert(diag_capture_file != 0);
+			diag_saved_fd = dup(fileno(stderr));
+			assert(diag_saved_fd >= 0);
+			fflush(stderr);
+			assert(dup2(fileno(diag_capture_file),fileno(stderr)) == 2);
 			assert(GatePrefill(adapter_state,&test_state,1u,6001u,prompt_e,126u,1500u) == SPARK_STATUS_OK);
 			{
 				SparkStatus gate_status = GatePrefill(adapter_state,&test_state,2u,6002u,prompt_f,126u,1501u);
@@ -1260,6 +1273,61 @@ int main(void)
 			assert(count_e >= 4u && count_f >= 4u);
 			printf("spec_decode ok=%u rounds, lane rows grown to %u/%u blocks\n",
 				140u,count_e,count_f);
+			/* Restore stderr, then assert the captured diag stream: exactly
+			 * one merged line per round; every line keeps the historic
+			 * fields in order and APPENDS matched_blocks= / borrowed= at
+			 * end of that SAME single line (zero added log volume; no
+			 * historic adjacency moves, so positional log parsers are
+			 * untouched by this change). */
+			fflush(stderr);
+			assert(dup2(diag_saved_fd,fileno(stderr)) == 2);
+			close(diag_saved_fd);
+			{
+				char *diag_buffer;
+				long diag_bytes;
+				uint32_t diag_lines = 0u;
+				const char *diag_cursor;
+				fflush(stderr);
+				diag_bytes = ftell(diag_capture_file);
+				assert(diag_bytes >= 0);
+				rewind(diag_capture_file);
+				diag_buffer = malloc((size_t)diag_bytes + 1u);
+				assert(diag_buffer != 0);
+				assert(fread(diag_buffer,1,(size_t)diag_bytes,
+					diag_capture_file) == (size_t)diag_bytes);
+				diag_buffer[diag_bytes] = 0;
+				fclose(diag_capture_file);
+				diag_cursor = diag_buffer;
+				while ( (diag_cursor = strstr(diag_cursor,
+					"qwen36_spec_diag lane=")) != 0 )
+				{
+					const char *line_end = strchr(diag_cursor,'\n');
+					const char *accepted_at = strstr(diag_cursor,"accepted=");
+					const char *matched_at = strstr(diag_cursor,"matched_blocks=");
+					const char *borrowed_at = strstr(diag_cursor,"borrowed=");
+					const char *drafts_at = strstr(diag_cursor," drafts=[");
+					const char *emitted_at = strstr(diag_cursor," emitted=[");
+					const char *base_at = strstr(diag_cursor,"base_position=");
+					diag_lines++;
+					assert(line_end != 0 && base_at != 0 && accepted_at != 0 &&
+						matched_at != 0 && borrowed_at != 0 && drafts_at != 0 &&
+						emitted_at != 0);
+					/* all fields on ONE line, historic order preserved, new
+					 * keys APPENDED after emitted=[ - nothing inserted between
+					 * historic fields (parser compatibility) */
+					assert(base_at < accepted_at && accepted_at < drafts_at &&
+						drafts_at < emitted_at && emitted_at < matched_at &&
+						matched_at < borrowed_at && borrowed_at < line_end);
+					diag_cursor = drafts_at;
+				}
+				assert(diag_lines == 140u);
+				/* Re-emit byte-for-byte: the capture must not change the
+				 * process's stderr flow - downstream (the full gate) still
+				 * sees exactly the lines it always did. */
+				fwrite(diag_buffer,1,(size_t)diag_bytes,stderr);
+				fflush(stderr);
+				free(diag_buffer);
+			}
 		}
 		assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 		library.adapter_interface.destroy(adapter_state);

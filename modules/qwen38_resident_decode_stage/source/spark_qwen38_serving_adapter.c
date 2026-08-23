@@ -45,6 +45,14 @@
 #include "sparkpipe/spark_qwen38_model.h"
 #include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_qwen38_serving_adapter.h"
+/* Port 2 of 4: the free-stack block allocator is replaced by the paged
+ * KV half over the GENERAL prefix-cache core (SparkPrefixCacheCore*),
+ * exactly per .agents/pccore-dev/port23_seam_decisions.md Part A. The
+ * paged cache owns allocation, content-addressed publishing, LCP
+ * matching at admit, refcounted sharing, LRU eviction, and release;
+ * this adapter keeps only geometry and the upload of the resulting
+ * lane table rows (its own cudaMemcpyAsync wrappers - unchanged). */
+#include "spark_qwen38_paged_kv.h"
 
 #ifndef QWEN38_MODEL_REVISION
 #error "QWEN38_MODEL_REVISION must name the exact source snapshot revision"
@@ -72,6 +80,14 @@
 #define SPARK_QWEN38_SERVING_STAGE_COUNT 16u
 #define SPARK_QWEN38_SERVING_DEFAULT_TP_DEGREE 4u
 #define SPARK_QWEN38_SERVING_MAX_PP_STAGE_COUNT 4u
+/* Descriptor face: the qualified TP16xPP1 deployment - ONE hybrid
+ * TP group covering all 92 layers, so the descriptor validates (per-
+ * stage counts were zero and failed SparkModelServingAdapterValidate
+ * Descriptor). Other topologies derive their per-stage geometry at
+ * initialize from the configuration's tp_degree. */
+#define SPARK_QWEN38_SERVING_HYBRID_GROUP_SIZE 16u
+#define SPARK_QWEN38_SERVING_DESCRIPTOR_STAGE_LAYER_COUNTS \
+	{92u,92u,92u,92u,92u,92u,92u,92u,92u,92u,92u,92u,92u,92u,92u,92u}
 /* Serving caps context at the model's native 262144 until the KV-tier
  * plan lands; the module's KV pool is sized from the deployment's
  * kv_block_count, and the cap merely refuses configs past the model. */
@@ -94,6 +110,19 @@ static const char *const SparkQwen38ServingConfigurationMembers[] =
 	"max_sequence_positions",
 	"tp_degree"
 };
+
+/* Prefix caching (paged KV over SparkPrefixCacheCore). On by default;
+ * "0" runs the same frames over a reuse-disabled ledger - that switch
+ * IS the A/B byte-identity gate, so it must stay a pure toggle: the
+ * walked rows, their tokens and every emitted id are identical either
+ * way, only the block LEDGER behind the lanes differs. */
+#define SPARK_QWEN38_SERVING_PREFIX_CACHE_ENV "SPARK_QWEN38_SERVING_PREFIX_CACHE"
+
+static uint32_t SparkQwen38ServingPrefixCacheEnabled(void)
+{
+	const char *value = getenv(SPARK_QWEN38_SERVING_PREFIX_CACHE_ENV);
+	return(value == 0 || value[0] == '\0' || strcmp(value,"0") != 0 ? 1u : 0u);
+}
 
 typedef struct SparkQwen38ServingPending
 {
@@ -179,8 +208,17 @@ typedef struct SparkQwen38ServingState
 	uint32_t *host_block_indices;
 	uint32_t *device_block_indices;
 	uint32_t *device_block_counts;
-	uint32_t *free_blocks;
-	uint32_t free_block_count;
+	/* Port 2: the LIFO free stack (free_blocks/free_block_count) is
+	 * GONE. The paged cache over SparkPrefixCacheCore is the single
+	 * block ledger: allocation, publish, match, share, evict, release.
+	 * reuse_enabled == 0 (env off or no checkpoint slots) keeps the same
+	 * ledger with matching disarmed - never a second mechanism. */
+	SparkQwen38PagedKv paged;
+	uint32_t paged_ready;
+	uint32_t prefix_enabled;
+	/* One lane's row ids gathered for admit/append (sized to the row
+	 * budget - a B512 deployment with long prompts collects 512 ids). */
+	uint32_t *match_tokens;
 	uint32_t lane_block_counts[SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_context_tokens[SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	void *gather_scratch;
@@ -202,8 +240,9 @@ static const SparkModelServingAdapterDescriptor SparkQwen38ServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP,
 	.stage_count = SPARK_QWEN38_SERVING_STAGE_COUNT,
+	.parallel_group_size = SPARK_QWEN38_SERVING_HYBRID_GROUP_SIZE,
 	.layer_count = SPARK_QWEN38_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = SPARK_QWEN38_MODEL_HIDDEN_DIMENSION,
@@ -226,7 +265,7 @@ static const SparkModelServingAdapterDescriptor SparkQwen38ServingDescriptor =
 	.model_revision = QWEN38_MODEL_REVISION,
 	.driver_program_name = SPARK_QWEN38_SERVING_PROGRAM_NAME,
 	.artifact_sha256 = QWEN38_CONTRACT_SHA256,
-	.stage_layer_counts = {0u,0u,0u,0u},
+	.stage_layer_counts = SPARK_QWEN38_SERVING_DESCRIPTOR_STAGE_LAYER_COUNTS,
 	.minimum_efficient_submission_row_count = 0u
 };
 
@@ -533,41 +572,102 @@ static uint32_t SparkQwen38ServingAvailableSubmissionCount(
 	return(available);
 }
 
-/* Lane block bookkeeping. A lane whose frame range starts at position zero
- * is a (re)start: its old blocks return to the free stack before the new
- * coverage is allocated. On any failure the lane is dropped back to cold so
+/* Lane block bookkeeping (port 2). A lane whose frame range starts at
+ * position zero is a (re)start: its core sequence is released - the
+ * published blocks STAY CACHED and become LCP-matchable for later
+ * admits instead of vanishing into a free stack - and any borrowed
+ * scratch returns. On any failure the lane is dropped back to cold so
  * the next touch is a position-zero reset, matching the module's own
  * continuity invalidation. */
 static void SparkQwen38ServingReleaseLane(
 	SparkQwen38ServingState *state,
 	uint32_t slot)
 {
-	uint32_t ordinal;
-	for (ordinal=0u; ordinal<state->lane_block_counts[slot]; ordinal++)
-		state->free_blocks[state->free_block_count++] = state->host_block_indices[((uint64_t)slot * state->blocks_per_lane) + ordinal];
-	state->lane_block_counts[slot] = 0u;
+	if ( state->paged_ready != 0u )
+		SparkQwen38PagedKvLaneReset(&state->paged,slot);
 	state->lane_context_tokens[slot] = 0u;
+}
+
+/* Collect one lane's row tokens at or above min_position, in row order
+ * (rows arrive position-ascending per lane). Returns the count. */
+static uint32_t SparkQwen38ServingGatherLaneTokens(
+	const SparkModelServingSubmission *submission,
+	uint32_t lane,
+	uint64_t min_position,
+	uint32_t *tokens,
+	uint32_t capacity)
+{
+	uint32_t row,count;
+	count = 0u;
+	for (row=0u; row<submission->row_count; row++)
+	{
+		if ( submission->row_lane_indices[row] != lane ||
+			submission->row_positions[row] < min_position )
+			continue;
+		if ( count == capacity )
+			break;
+		tokens[count++] = submission->token_ids[row];
+	}
+	return(count);
+}
+
+/* Longest published-prefix reuse for one cold lane's prompt: admit over
+ * the core, clamp to the deepest live witnessed checkpoint (the GDN
+ * law - 69 of 92 layers cannot skip a walk), and return the matched
+ * token count (block-granular; 0 = ordinary full walk). Port-2 scope:
+ * matched blocks are ADOPTED into the lane's ledger for sharing and
+ * accounting; the walked rows are unchanged until the CP-B modifiers
+ * land module-side (preflight §4b). */
+static uint32_t SparkQwen38ServingMatchPrefix(
+	SparkQwen38ServingState *state,
+	const SparkModelServingSubmission *submission,
+	uint32_t lane)
+{
+	SparkQwen38PagedKvMatch match;
+	uint32_t *tokens;
+	uint32_t count,slot;
+	tokens = state->match_tokens;
+	if ( state->prefix_enabled == 0u || state->stage_attn_layer_count == 0u ||
+		submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL ||
+		tokens == 0 )
+		return(0u);
+	count = SparkQwen38ServingGatherLaneTokens(submission,lane,0,tokens,state->max_input_row_count);
+	slot = submission->lanes[lane].resident_sequence_slot;
+	if ( count == 0u )
+		return(0u);
+	/* Admit binds the lane's core sequence over the whole prompt: the
+	 * core matches its published chains, the witness clamp keeps only
+	 * the deepest live witnessed boundary (re-admitting the truncated
+	 * shared prefix), and the appended tail publishes new boundaries so
+	 * this lane becomes a future donor. */
+	if ( SparkQwen38PagedKvAdmit(&state->paged,slot,tokens,count,&match) != SPARK_STATUS_OK || match.block_count == 0u )
+		return(0u);
+	fprintf(stderr,"qwen38_prefix_reuse lane=%u slot=%u matched_blocks=%u resumed_at=%u checkpoint_slot=%u\n",
+		lane,slot,match.block_count,match.block_count * state->paged.configuration.block_token_count,match.checkpoint_slot);
+	return(match.block_count * state->paged.configuration.block_token_count);
 }
 
 static SparkStatus SparkQwen38ServingCoverLane(
 	SparkQwen38ServingState *state,
-	uint32_t slot,
+	const SparkModelServingSubmission *submission,
+	uint32_t lane,
 	uint64_t end_position)
 {
-	uint32_t required,ordinal;
+	uint64_t committed;
+	uint32_t slot,token_count;
 	if ( state->stage_attn_layer_count == 0u )
 		return(SPARK_STATUS_OK);
-	required = (uint32_t)((end_position + SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
-	if ( required > state->blocks_per_lane )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for (ordinal=state->lane_block_counts[slot]; ordinal<required; ordinal++)
-	{
-		if ( state->free_block_count == 0u )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		state->host_block_indices[((uint64_t)slot * state->blocks_per_lane) + ordinal] = state->free_blocks[--state->free_block_count];
-	}
-	state->lane_block_counts[slot] = required;
-	return(SPARK_STATUS_OK);
+	slot = submission->lanes[lane].resident_sequence_slot;
+	/* Continuation ids past the sequence's committed frontier enter the
+	 * core sequence (canonical publishing); coverage growth beyond it
+	 * borrows private scratch. The old free stack answered "is there
+	 * room" with a pop AFTER partial lanes were already covered - the
+	 * paged cache reserves up front and Trims under pressure, so
+	 * exhaustion refuses BEFORE any lane is touched instead of dropping
+	 * a submission mid-extend. */
+	committed = SparkQwen38PagedKvCommittedTokens(&state->paged,slot);
+	token_count = SparkQwen38ServingGatherLaneTokens(submission,lane,committed,state->match_tokens,state->max_input_row_count);
+	return(SparkQwen38PagedKvCover(&state->paged,slot,end_position,token_count != 0u ? state->match_tokens : 0,token_count));
 }
 
 static void SparkQwen38ServingDropSubmission(
@@ -603,11 +703,26 @@ static SparkStatus SparkQwen38ServingCoverSubmission(
 		}
 		if ( first_position == 0u && state->lane_context_tokens[slot] != 0u )
 			SparkQwen38ServingReleaseLane(state,slot);
-		status = SparkQwen38ServingCoverLane(state,slot,end_position);
+		/* Cold PREFILL lanes are DEFERRED to the frame loop below: the
+		 * admit must see the witnesses earlier lanes of the SAME batched
+		 * submission bound, or intra-batch prefix sharing never fires.
+		 * Warm continuations (first position > 0) are covered here and
+		 * must NOT re-admit: Admit owns its lane from zero and would
+		 * reset a live residency. Pressure is Trim'd inside the
+		 * admit/borrow path, so exhaustion refuses up front - never as a
+		 * mid-extend CAPACITY_EXCEEDED. */
+		if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && first_position == 0u )
+			continue;
+		if ( end_position == 0u )
+			continue; /* nothing to cover (e.g. a release-shaped probe) */
+		status = SparkQwen38ServingCoverLane(state,submission,lane,end_position);
 		if ( status != SPARK_STATUS_OK )
 		{
 			/* Coverage failure is KV exhaustion: drop every lane the
-			 * submission touches so a partial allocation cannot linger. */
+			 * submission touches so a partial allocation cannot linger.
+			 * (The free stack's scratch-lifetime hazard class - the old
+			 * comment here documented it - cannot occur: every attached
+			 * block is core-ledger owned and LaneReset returns it.) */
 			SparkQwen38ServingDropSubmission(state,submission);
 			return(status);
 		}
@@ -953,16 +1068,66 @@ static SparkStatus SparkQwen38ServingSubmit(
 		uint32_t lane,wave,chunk_rows;
 		for (lane=0u; status == SPARK_STATUS_OK && lane<submission->active_sequence_count; lane++)
 		{
-			uint32_t lane_rows;
+			uint32_t lane_rows,slot;
+			uint64_t lane_first_position,lane_end_position;
+			slot = submission->lanes[lane].resident_sequence_slot;
+			lane_first_position = UINT64_MAX;
+			lane_end_position = 0u;
 			lane_rows = 0u;
 			for (wave=0u; wave<submission->row_count; wave++)
-				lane_rows += submission->row_lane_indices[wave] == lane ? 1u : 0u;
+				if ( submission->row_lane_indices[wave] == lane )
+				{
+					lane_rows++;
+					if ( submission->row_positions[wave] < lane_first_position )
+						lane_first_position = submission->row_positions[wave];
+					if ( submission->row_positions[wave] + 1u > lane_end_position )
+						lane_end_position = submission->row_positions[wave] + 1u;
+				}
+			if ( lane_first_position == 0u )
+			{
+				/* Deferred cold-lane admit (see CoverSubmission): the
+				 * donors ahead of this lane in THIS submission have run
+				 * and bound their publish-boundary witnesses. */
+				if ( state->lane_context_tokens[slot] != 0u )
+					SparkQwen38ServingReleaseLane(state,slot);
+				(void)SparkQwen38ServingMatchPrefix(state,submission,lane);
+				status = SparkQwen38ServingCoverLane(state,submission,lane,lane_end_position);
+				if ( status != SPARK_STATUS_OK )
+				{
+					/* Coverage failure is KV exhaustion: drop every lane
+					 * the submission touches so nothing partial lingers. */
+					SparkQwen38ServingDropSubmission(state,submission);
+					pending->active = 0u;
+					return(status);
+				}
+			}
 			for (wave=0u; status == SPARK_STATUS_OK && wave<lane_rows; wave+=chunk_rows)
 			{
 				chunk_rows = lane_rows - wave;
 				if ( chunk_rows > state->max_active_sequence_count )
 					chunk_rows = state->max_active_sequence_count;
 				status = SparkQwen38ServingRunFrame(state,submission,pending,1u,lane,wave,chunk_rows);
+				if ( status == SPARK_STATUS_OK && state->prefix_enabled != 0u && state->stage_attn_layer_count != 0u )
+				{
+					/* Every publish boundary this frame walked binds an
+					 * adapter-owned checkpoint slot (the qwen36
+					 * donor-witness pattern verbatim): the boundary is
+					 * recorded under the lane's block at that ordinal,
+					 * and only a matcher whose attached block IS that
+					 * witness may clamp to it. The GDN recurrence
+					 * capture itself rides the CP-B modifier landing
+					 * (preflight §4b); the witness bookkeeping lands
+					 * now so the ledger is already clamp-correct. */
+					uint64_t chunk_end = lane_first_position + wave + chunk_rows;
+					uint64_t boundary = lane_first_position + wave;
+					uint32_t checkpoint_slot;
+					boundary -= boundary % SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+					for (boundary += SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+						boundary <= chunk_end;
+						boundary += SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS)
+						if ( SparkQwen38PagedKvCheckpointOffer(&state->paged,slot,boundary,&checkpoint_slot) != 0u )
+							SparkQwen38PagedKvCheckpointCommit(&state->paged,slot,checkpoint_slot,boundary);
+				}
 			}
 		}
 	}
@@ -1068,8 +1233,15 @@ static void SparkQwen38ServingDestroy(void *adapter_state)
 		(void)cudaFree(state->device_block_counts);
 	if ( state->gather_scratch != 0 )
 		(void)cudaFree(state->gather_scratch);
+	if ( state->paged_ready != 0u )
+	{
+		/* Conserving teardown: every attached block returns through the
+		 * core ledger before the pool itself dies. */
+		SparkQwen38PagedKvDestroy(&state->paged);
+		state->paged_ready = 0u;
+	}
 	free(state->host_block_indices);
-	free(state->free_blocks);
+	free(state->match_tokens);
 	free(state);
 }
 
@@ -1112,21 +1284,71 @@ static SparkStatus SparkQwen38ServingLoadDriver(
 	return(status == SPARK_STATUS_OK && state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : status);
 }
 
+/* KV bytes for ONE 64-token block across this stage's attention-layer
+ * slice at the rank-local KV-head share - computed from stage geometry,
+ * never hardcoded (seam memo A.1): an attention row is K+V x
+ * head_dimension bf16 per LOCAL KV head per layer (kernels take
+ * rank-local heads), times the block's token count. GDN state pools
+ * (the other 69 layers) stay lane-local and NEVER join this pool. */
+static uint64_t SparkQwen38ServingBlockStrideBytes(
+	const SparkQwen38ServingState *state)
+{
+	uint32_t tp_degree,local_heads;
+	tp_degree = state->tp_degree != 0u ? state->tp_degree : SPARK_QWEN38_SERVING_DEFAULT_TP_DEGREE;
+	local_heads = tp_degree <= SPARK_QWEN38_MODEL_ATTN_KV_HEAD_COUNT ?
+		SPARK_QWEN38_MODEL_ATTN_KV_HEAD_COUNT / tp_degree : 1u;
+	if ( local_heads == 0u )
+		local_heads = 1u;
+	return((uint64_t)state->stage_attn_layer_count * local_heads *
+		SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION * 2u *
+		SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES *
+		SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
+}
+
 static SparkStatus SparkQwen38ServingAllocatePools(
 	SparkQwen38ServingState *state)
 {
-	uint32_t block;
+	SparkQwen38PagedKvConfiguration paged_configuration;
 	uint64_t indices;
+	SparkStatus status;
 	indices = (uint64_t)state->max_active_sequence_count * state->blocks_per_lane;
 	state->host_block_indices = (uint32_t *)malloc((size_t)indices * sizeof(uint32_t));
-	state->free_blocks = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
-	if ( state->host_block_indices == 0 || state->free_blocks == 0 )
+	state->match_tokens = (uint32_t *)malloc((size_t)state->max_input_row_count * sizeof(uint32_t));
+	if ( state->host_block_indices == 0 || state->match_tokens == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for (block=0u; block<state->kv_block_count; block++)
-		state->free_blocks[block] = state->kv_block_count - 1u - block;
-	state->free_block_count = state->kv_block_count;
 	if ( cudaMalloc(&state->gather_scratch,(size_t)((uint64_t)state->max_active_sequence_count * SPARK_QWEN38_MODEL_HIDDEN_BF16_BYTES)) != cudaSuccess )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	/* The paged KV cache binds the GENERAL prefix-cache core for block
+	 * lifetime, content-addressed publishing and admit matching; the
+	 * adapter half keeps only geometry and the checkpoint gating. It
+	 * borrows this adapter's table rows as its storage, so the uploaded
+	 * table IS the paged view - one source of truth. The free stack is
+	 * gone: the core free list is the only allocation ledger. */
+	memset(&paged_configuration,0,sizeof(paged_configuration));
+	paged_configuration.block_token_count = SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+	/* Lanes ARE resident slots: the table must span the whole slot space
+	 * (resident_sequence_capacity), not just the active wave - a slot
+	 * beyond the active count is still a legal residency target. */
+	paged_configuration.lane_count = state->resident_sequence_capacity;
+	paged_configuration.blocks_per_lane = state->blocks_per_lane;
+	paged_configuration.physical_page_capacity = state->kv_block_count;
+	/* The pool IS the index bound: this module has no JIT_KV page-budget
+	 * channel (its runtime-limit page capacities are pinned zero), so
+	 * logical == physical - every resident block can be indexed. */
+	paged_configuration.logical_page_capacity = state->kv_block_count;
+	/* Reuse needs somewhere to put a donor recurrence witness: a stage
+	 * with no GDN layers cannot bind one, so reuse stays off there.
+	 * Adapter-owned slots (the module's own snapshot pool stays at 0). */
+	paged_configuration.checkpoint_slot_count =
+		state->prefix_enabled != 0u &&
+		(state->stage_layer_count - state->stage_attn_layer_count) != 0u ?
+		SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_GDN_SNAPSHOT_SLOTS : 0u;
+	paged_configuration.block_stride_bytes = SparkQwen38ServingBlockStrideBytes(state);
+	status = SparkQwen38PagedKvInitialize(&state->paged,&paged_configuration,
+		state->host_block_indices,state->lane_block_counts);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	state->paged_ready = 1u;
 	if ( state->stage_attn_layer_count != 0u )
 	{
 		if ( cudaMalloc((void **)&state->device_block_indices,(size_t)(indices * sizeof(uint32_t))) != cudaSuccess || cudaMalloc((void **)&state->device_block_counts,(size_t)(state->max_active_sequence_count * sizeof(uint32_t))) != cudaSuccess )
@@ -1183,6 +1405,7 @@ static SparkStatus SparkQwen38ServingInitialize(
 	state->max_active_sequence_count = configuration->runtime_limits.max_active_sequence_count;
 	state->max_input_row_count = configuration->runtime_limits.max_input_row_count;
 	state->resident_sequence_capacity = configuration->runtime_limits.resident_sequence_capacity;
+	state->prefix_enabled = SparkQwen38ServingPrefixCacheEnabled();
 	state->runtime_limits = configuration->runtime_limits;
 	state->completion_function = configuration->completion_function;
 	state->completion_context = configuration->completion_context;

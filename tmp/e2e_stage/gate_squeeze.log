@@ -1,0 +1,25 @@
+== prefix-cache FULL gate (from-scratch rebuild + counter diff) ==
+-- removing both gate binaries; rebuilding dependency closure --
+-- rebuild OK: both binaries recreated after run start --
+tools/run_prefix_cache_full_gate.sh: line 65: 66758 Abort trap: 6           TMPDIR=${TMPDIR:-$OUTDIR} sh -c "'./$CORE_BIN'" > "$OUTDIR/core.out" 2>&1
+B1024 roomy    PASS rows=662302 stream=208960 matched_blocks=7520 evicted=0 stalls=0
+B1024 squeezed PASS rows=1097232 stream=414722 matched_blocks=18418 evicted=44 stalls=0
+perf_reuse_savings: MEASURED host-side walk simulation (shared-prefix workload with divergences; recompute counters exact, wall clock min-of-3 reps)
+perf b=1 mode=reuse-on  recomputed_rows=4910 borrowed_blocks=326 matched_tokens=3840 evicted=0 walk_us=160
+perf b=1 mode=reuse-off recomputed_rows=8750 borrowed_blocks=566 matched_tokens=0 evicted=0 walk_us=137
+PERF_RESULT b=1 recompute_off=8750 recompute_on=4910 tokens_avoided=3840 savings_pct=43.9 wall_off_us=137 wall_on_us=160 speedup_x=0.86
+perf b=4 mode=reuse-on  recomputed_rows=17499 borrowed_blocks=1169 matched_tokens=19184 evicted=0 walk_us=665
+perf b=4 mode=reuse-off recomputed_rows=36683 borrowed_blocks=2368 matched_tokens=0 evicted=0 walk_us=602
+PERF_RESULT b=4 recompute_off=36683 recompute_on=17499 tokens_avoided=19184 savings_pct=52.3 wall_off_us=602 wall_on_us=665 speedup_x=0.91
+perf b=25 mode=reuse-on  recomputed_rows=102521 borrowed_blocks=6895 matched_tokens=125792 evicted=0 walk_us=4638
+perf b=25 mode=reuse-off recomputed_rows=228313 borrowed_blocks=14757 matched_tokens=0 evicted=0 walk_us=3954
+PERF_RESULT b=25 recompute_off=228313 recompute_on=102521 tokens_avoided=125792 savings_pct=55.1 wall_off_us=3954 wall_on_us=4638 speedup_x=0.85
+perf_squeeze_curve: MEASURED squeezed-pool cells (same script, pool = measured distinct-publication footprint x {100,50,25}%; evicted>0 asserted below 100%)
+perf_squeeze b=25 pool_pct=100 pool_blocks=5499 distinct_blocks=5499 savings_pct=55.1 matched_tokens=125792 appended_tokens=102521 borrowed_blocks=6895 evicted=24 stalls=0
+PERF_SQUEEZE_RESULT b=25 pool_pct=100 savings_pct=55.1 hit_rate_pct=55.1 blocks_claimed=6895 evicted=24
+perf_squeeze b=25 pool_pct=50 pool_blocks=2749 distinct_blocks=5499 savings_pct=55.1 matched_tokens=125792 appended_tokens=102521 borrowed_blocks=6895 evicted=2774 stalls=0
+PERF_SQUEEZE_RESULT b=25 pool_pct=50 savings_pct=55.1 hit_rate_pct=55.1 blocks_claimed=6895 evicted=2774
+perf_squeeze b=25 pool_pct=25 pool_blocks=1374 distinct_blocks=5499 savings_pct=55.1 matched_tokens=125792 appended_tokens=102521 borrowed_blocks=6895 evicted=4149 stalls=0
+PERF_SQUEEZE_RESULT b=25 pool_pct=25 savings_pct=55.1 hit_rate_pct=55.1 blocks_claimed=6895 evicted=4149
+Assertion failed: (harness->stream_length < harness->stream_capacity), function TestMaterializeTail, file test_prefix_cache_core.c, line 444.
+FULL-GATE FAIL: core gate exited 134 (see build/gate/core.out)

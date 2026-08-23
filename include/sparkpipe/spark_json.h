@@ -53,6 +53,10 @@ SparkStatus SparkJsonCopyRawValue(const SparkJsonDocument *document, int32_t tok
 SparkStatus SparkJsonGetUInt32(const SparkJsonDocument *document, int32_t token_index, uint32_t *value);
 SparkStatus SparkJsonGetUInt64(const SparkJsonDocument *document, int32_t token_index, uint64_t *value);
 SparkStatus SparkJsonGetBoolean(const SparkJsonDocument *document, int32_t token_index, bool *value);
+/* Convenience used by every model serving adapter: look up a named object
+ * member and read it as an unsigned integer. A missing member is a schema
+ * error (the adapters' long-standing private-helper semantics). */
+SparkStatus SparkJsonGetUInt32Member(const SparkJsonDocument *document, int32_t object_token_index, const char *member_name, uint32_t *value);
 
 #ifdef __cplusplus
 }

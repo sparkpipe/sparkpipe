@@ -1,0 +1,16 @@
+== prefix-cache FULL gate (from-scratch rebuild + counter diff) ==
+-- removing both gate binaries; rebuilding dependency closure --
+-- rebuild OK: both binaries recreated after run start --
+--- build/gate/baseline.sorted	2026-08-23 12:22:42
++++ build/gate/measured.txt	2026-08-23 12:22:42
+@@ -47,6 +47,9 @@
+ f1_on_max attached=5
+ rows_verified=1803972
+ spec_decode_ok=140
++spec_diag_borrowed=1
++spec_diag_lines=140
++spec_diag_matched_blocks=0
+ spec_roomy_evicted=0
+ spec_roomy_peak_blocks=8
+ spec_roomy_pool=64
+FULL-GATE FAIL: MEASURED COUNTER DRIFT vs baseline tools/prefix_cache_full_gate_baseline.txt (diff in build/gate/counter_diff.txt). If intentional, re-baseline deliberately.

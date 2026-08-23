@@ -3366,24 +3366,41 @@ static SparkStatus SparkQwen36ModuleRunDflash2CacheForward(
 				rows_sample[4] = nkv - 1u;
 				cudaStreamSynchronize(stream);
 				sf = fopen("/tmp/l0_sample_rows.txt","w");
-				for (si = 0u; si < sample_count; si++)
-					fprintf(sf,"%u\n",rows_sample[si]);
-				fclose(sf);
+				if ( sf != 0 )
+				{
+					for (si = 0u; si < sample_count; si++)
+						fprintf(sf,"%u\n",rows_sample[si]);
+					fclose(sf);
+				}
 				sf = fopen("/tmp/l0_kv_k.bin","wb");
-				for (si = 0u; si < sample_count; si++)
-					{ uint16_t rowbuf[1024]; cudaMemcpy(rowbuf,kv_k + (uint64_t)rows_sample[si] * 1024u,sizeof(rowbuf),cudaMemcpyDeviceToHost); fwrite(rowbuf,1,sizeof(rowbuf),sf); }
-				fclose(sf);
+				if ( sf != 0 )
+				{
+					for (si = 0u; si < sample_count; si++)
+						{ uint16_t rowbuf[1024]; cudaMemcpy(rowbuf,kv_k + (uint64_t)rows_sample[si] * 1024u,sizeof(rowbuf),cudaMemcpyDeviceToHost); fwrite(rowbuf,1,sizeof(rowbuf),sf); }
+					fclose(sf);
+				}
 				sf = fopen("/tmp/l0_kv_v.bin","wb");
-				for (si = 0u; si < sample_count; si++)
-					{ uint16_t rowbuf[1024]; cudaMemcpy(rowbuf,kv_v + (uint64_t)rows_sample[si] * 1024u,sizeof(rowbuf),cudaMemcpyDeviceToHost); fwrite(rowbuf,1,sizeof(rowbuf),sf); }
-				fclose(sf);
+				if ( sf != 0 )
+				{
+					for (si = 0u; si < sample_count; si++)
+						{ uint16_t rowbuf[1024]; cudaMemcpy(rowbuf,kv_v + (uint64_t)rows_sample[si] * 1024u,sizeof(rowbuf),cudaMemcpyDeviceToHost); fwrite(rowbuf,1,sizeof(rowbuf),sf); }
+					fclose(sf);
+				}
 				sf = fopen("/tmp/l0_q.bin","wb");
-				for (si = 0u; si < 2u; si++)
-					{ uint16_t rowbuf[4096]; cudaMemcpy(rowbuf,q + (uint64_t)si * 4096u,sizeof(rowbuf),cudaMemcpyDeviceToHost); fwrite(rowbuf,1,sizeof(rowbuf),sf); }
-				fclose(sf);
+				if ( sf != 0 )
+				{
+					for (si = 0u; si < 2u; si++)
+						{ uint16_t rowbuf[4096]; cudaMemcpy(rowbuf,q + (uint64_t)si * 4096u,sizeof(rowbuf),cudaMemcpyDeviceToHost); fwrite(rowbuf,1,sizeof(rowbuf),sf); }
+					fclose(sf);
+				}
 				sf = fopen("/tmp/l0_attn.bin","wb");
-				{ uint16_t rowbuf[4096]; cudaMemcpy(rowbuf,attn_out,sizeof(rowbuf),cudaMemcpyDeviceToHost); fwrite(rowbuf,1,sizeof(rowbuf),sf); }
-				fclose(sf);
+				if ( sf != 0 )
+				{
+					uint16_t rowbuf[4096];
+					cudaMemcpy(rowbuf,attn_out,sizeof(rowbuf),cudaMemcpyDeviceToHost);
+					fwrite(rowbuf,1,sizeof(rowbuf),sf);
+					fclose(sf);
+				}
 			}
 		}
 		if ( error == cudaSuccess )
@@ -3448,14 +3465,21 @@ static SparkStatus SparkQwen36ModuleRunDflash2CacheForward(
 			{
 				/* one-shot parity dump: taps + C0 + logits + final hidden */
 				dflash2_dump_done = 1;
-				FILE *df;
 				cudaMemcpy(slot->dspark_logits_host,logits,(size_t)B * V * 2u,cudaMemcpyDeviceToHost);
 				uint16_t *taps_host = (uint16_t *)malloc((size_t)5u * H * 2u);
-				cudaMemcpy(taps_host,slot->dspark_tap_buffer,(size_t)5u * H * 2u,cudaMemcpyDeviceToHost);
-				df = fopen("/tmp/dflash2_taps.bin","wb"); fwrite(taps_host,1,(size_t)5u * H * 2u,df); fclose(df); free(taps_host);
-				df = fopen("/tmp/dflash2_c0.bin","wb"); fwrite(&prev,1,4u,df); fclose(df);
-				df = fopen("/tmp/dflash2_logits.bin","wb"); fwrite(slot->dspark_logits_host,1,(size_t)B * V * 2u,df); fclose(df);
-				df = fopen("/tmp/dflash2_hidden.bin","wb"); fwrite(slot->dspark_hidden_host,1,(size_t)B * H * 2u,df); fclose(df);
+				if ( taps_host != 0 )
+					cudaMemcpy(taps_host,slot->dspark_tap_buffer,(size_t)5u * H * 2u,cudaMemcpyDeviceToHost);
+				/* Writes go through the guarded diagnostics writer: this site
+				 * runs UNCONDITIONALLY on the first DFlash2 forward of every
+				 * process, so an unwritable target (a /tmp dump left root-owned
+				 * by a root-mode daemon run) handed fwrite a NULL FILE* and
+				 * SIGSEGV'd the daemon on the first decode continuation. A
+				 * failed dump skips silently per the module's dump policy. */
+				SparkQwen36ModuleDumpHostFile("/tmp/dflash2_taps.bin",taps_host,(uint64_t)5u * H * 2u);
+				free(taps_host);
+				SparkQwen36ModuleDumpHostFile("/tmp/dflash2_c0.bin",&prev,4u);
+				SparkQwen36ModuleDumpHostFile("/tmp/dflash2_logits.bin",slot->dspark_logits_host,(uint64_t)B * V * 2u);
+				SparkQwen36ModuleDumpHostFile("/tmp/dflash2_hidden.bin",slot->dspark_hidden_host,(uint64_t)B * H * 2u);
 				fprintf(stderr,"dflash2_dump c0=%u\n",prev);
 			}
 		}

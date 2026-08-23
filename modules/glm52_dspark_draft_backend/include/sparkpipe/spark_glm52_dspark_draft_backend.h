@@ -168,6 +168,14 @@ SparkStatus SparkGlm52DsparkDraftBackendTakeBatchResults(
     uint32_t result_capacity,
     uint32_t *result_count);
 
+/* Forget a lane's staged context (sequence ended / resident slot reassigned).
+ * The next StageBatch for that lane must start at sequence_position 1; the
+ * drafter's context K/V beyond the reset counter is never read. */
+SparkStatus SparkGlm52DsparkDraftBackendResetLanes(
+    SparkGlm52DsparkDraftBackend *backend,
+    const uint32_t *lane_indices,
+    uint32_t lane_count);
+
 #ifdef __cplusplus
 }
 

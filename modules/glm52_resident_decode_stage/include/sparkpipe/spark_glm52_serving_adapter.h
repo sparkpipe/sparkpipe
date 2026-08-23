@@ -6,7 +6,9 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION 3u
+/* v4: adds the DFlash2 speculator stanza (speculation_enabled,
+ * speculation_draft_count, dspark_pack_path). */
+#define SPARK_GLM52_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION 4u
 
 const SparkModelServingAdapterInterface *
 SparkModelServingAdapterGetInterface(void);

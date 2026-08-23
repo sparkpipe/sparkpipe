@@ -53,3 +53,6 @@ spec_roomy_pool=64
 spec_squeezed_evicted=4
 spec_squeezed_peak_blocks=8
 spec_squeezed_pool=30
+spec_diag_borrowed=1
+spec_diag_lines=140
+spec_diag_matched_blocks=0

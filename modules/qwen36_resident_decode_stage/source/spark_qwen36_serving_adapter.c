@@ -1064,6 +1064,10 @@ static uint32_t SparkQwen36ServingMatchPrefix(
 	fprintf(stderr,"qwen36_prefix_reuse lane=%u slot=%u matched_blocks=%u resumed_at=%u checkpoint_slot=%u\n",
 		lane,slot,match.block_count,match.block_count *
 		state->paged.configuration.block_token_count,*module_slot_out);
+	/* One field, two writers (main's prefix-entry attach writes it too):
+	 * the lane's resume depth, so the merged spec diag line can carry
+	 * reuse observability without a second query path. */
+	state->lane_prefix_blocks[slot] = match.block_count;
 	return(match.block_count * state->paged.configuration.block_token_count);
 }
 
@@ -2015,15 +2019,39 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			 * (unified): base_position is C0's absolute sequence position, so the
 			 * golden's token index for this round is base_position - prompt_length.
 			 * The wall-clock term is main's round-timing probe; one line carries
-			 * both so the per-round log stays single-line. */
-			fprintf(stderr, "qwen36_spec_diag lane=%u base_position=%llu t=%.6f C0=%u accepted=%u drafts=[%u,%u,%u,%u,%u,%u,%u,%u] emitted=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
-				lane,(unsigned long long)spec->base_position,
-				(double)clock_gettime_mono_ns() * 1e-9,
-				spec->committed_ids[0], spec->accepted_count,
-				spec->draft_ids[0], spec->draft_ids[1], spec->draft_ids[2], spec->draft_ids[3],
-				spec->draft_ids[4], spec->draft_ids[5], spec->draft_ids[6], spec->draft_ids[7],
-				spec->emitted_ids[0], spec->emitted_ids[1], spec->emitted_ids[2], spec->emitted_ids[3],
-				spec->emitted_ids[4], spec->emitted_ids[5], spec->emitted_ids[6], spec->emitted_ids[7]);
+			 * both so the per-round log stays single-line. Reuse observability
+			 * rides the same line: matched_blocks is the lane's resume depth
+			 * (paged-Kv admit match, 0 = no reuse) and borrowed is the scratch
+			 * this lane holds beyond its committed coverage - derived from the
+			 * lane table + committed-tokens state feasibility already tracks,
+			 * no new query path. A production log line therefore proves reuse
+			 * fired without re-running the gate harness. New keys append at
+			 * END of line: no historic field adjacency moves, so log
+			 * parsers that pin accepted= immediately before drafts=[ (e.g.
+			 * tools/qwen36_dspark_round_audit.py) are untouched BY THIS
+			 * CHANGE. */
+			{
+				uint32_t diag_slot = pending->resident_slots[lane];
+				uint64_t diag_committed = state->paged_ready != 0u ?
+					SparkQwen36PagedKvCommittedTokens(&state->paged,diag_slot) : 0ull;
+				uint64_t diag_committed_blocks = (diag_committed +
+					SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) /
+					SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+				uint32_t diag_borrowed =
+					state->lane_block_counts[diag_slot] >= diag_committed_blocks ?
+					state->lane_block_counts[diag_slot] -
+					(uint32_t)diag_committed_blocks : 0u;
+				fprintf(stderr, "qwen36_spec_diag lane=%u base_position=%llu t=%.6f C0=%u accepted=%u drafts=[%u,%u,%u,%u,%u,%u,%u,%u] emitted=[%u,%u,%u,%u,%u,%u,%u,%u] matched_blocks=%u borrowed=%u\n",
+					lane,(unsigned long long)spec->base_position,
+					(double)clock_gettime_mono_ns() * 1e-9,
+					spec->committed_ids[0], spec->accepted_count,
+					spec->draft_ids[0], spec->draft_ids[1], spec->draft_ids[2], spec->draft_ids[3],
+					spec->draft_ids[4], spec->draft_ids[5], spec->draft_ids[6], spec->draft_ids[7],
+					spec->emitted_ids[0], spec->emitted_ids[1], spec->emitted_ids[2], spec->emitted_ids[3],
+					spec->emitted_ids[4], spec->emitted_ids[5], spec->emitted_ids[6], spec->emitted_ids[7],
+					state->lane_prefix_blocks[diag_slot],
+					diag_borrowed);
+			}
 		}
 	}
 	min_accepted = 0u;

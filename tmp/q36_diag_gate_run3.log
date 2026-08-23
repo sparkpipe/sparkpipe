@@ -1,0 +1,5 @@
+== prefix-cache FULL gate (from-scratch rebuild + counter diff) ==
+-- removing both gate binaries; rebuilding dependency closure --
+-- rebuild OK: both binaries recreated after run start --
+-- counters identical to baseline (58 keys) --
+prefix-cache FULL gate PASS (rebuild verified, both gates green, zero counter drift)

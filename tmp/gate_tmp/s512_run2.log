@@ -1,0 +1,1676 @@
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_residency sid=700 pending_sid=700 pending_origin=700 hex=bc02000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=0 lane=2 base=0 cursor=0 rows=8 flags=11 snap=0
+GATEWALK idx=1 lane=2 base=8 cursor=8 rows=8 flags=11 snap=0
+GATEWALK idx=2 lane=2 base=16 cursor=16 rows=8 flags=11 snap=0
+GATEWALK idx=3 lane=2 base=24 cursor=24 rows=8 flags=11 snap=0
+GATEWALK idx=4 lane=2 base=32 cursor=32 rows=8 flags=11 snap=0
+GATEWALK idx=5 lane=2 base=40 cursor=40 rows=8 flags=11 snap=0
+GATEWALK idx=6 lane=2 base=48 cursor=48 rows=8 flags=11 snap=0
+GATEWALK idx=7 lane=2 base=56 cursor=56 rows=8 flags=811 snap=0
+GATEWALK idx=8 lane=2 base=64 cursor=64 rows=8 flags=11 snap=0
+GATEWALK idx=9 lane=2 base=72 cursor=72 rows=8 flags=11 snap=0
+GATEWALK idx=10 lane=2 base=80 cursor=80 rows=8 flags=11 snap=0
+GATEWALK idx=11 lane=2 base=88 cursor=88 rows=8 flags=11 snap=0
+GATEWALK idx=12 lane=2 base=96 cursor=96 rows=8 flags=11 snap=0
+GATEWALK idx=13 lane=2 base=104 cursor=104 rows=8 flags=11 snap=0
+GATEWALK idx=14 lane=2 base=112 cursor=112 rows=8 flags=11 snap=0
+GATEWALK idx=15 lane=2 base=120 cursor=120 rows=8 flags=811 snap=1
+GATEWALK idx=16 lane=2 base=128 cursor=128 rows=8 flags=11 snap=0
+GATEWALK idx=17 lane=2 base=136 cursor=136 rows=8 flags=11 snap=0
+GATEWALK idx=18 lane=2 base=144 cursor=144 rows=8 flags=11 snap=0
+GATEWALK idx=19 lane=2 base=152 cursor=152 rows=8 flags=11 snap=0
+GATEWALK idx=20 lane=2 base=160 cursor=160 rows=8 flags=11 snap=0
+GATEWALK idx=21 lane=2 base=168 cursor=168 rows=8 flags=11 snap=0
+GATEWALK idx=22 lane=2 base=176 cursor=176 rows=8 flags=11 snap=0
+GATEWALK idx=23 lane=2 base=184 cursor=184 rows=8 flags=811 snap=2
+GATEWALK idx=24 lane=2 base=192 cursor=192 rows=8 flags=11 snap=0
+qwen36_prefix_reuse lane=0 slot=3 matched_blocks=3 resumed_at=192 checkpoint_slot=2
+qwen36_residency sid=701 pending_sid=701 pending_origin=701 hex=bd02000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=25 lane=3 base=192 cursor=192 rows=8 flags=411 snap=2
+qwen36_prefix_reuse lane=0 slot=4 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=702 pending_sid=702 pending_origin=702 hex=be02000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=26 lane=4 base=64 cursor=64 rows=8 flags=411 snap=0
+GATEWALK idx=27 lane=4 base=72 cursor=72 rows=8 flags=11 snap=0
+GATEWALK idx=28 lane=4 base=80 cursor=80 rows=8 flags=11 snap=0
+GATEWALK idx=29 lane=4 base=88 cursor=88 rows=8 flags=11 snap=0
+GATEWALK idx=30 lane=4 base=96 cursor=96 rows=8 flags=11 snap=0
+GATEWALK idx=31 lane=4 base=104 cursor=104 rows=8 flags=11 snap=0
+GATEWALK idx=32 lane=4 base=112 cursor=112 rows=8 flags=11 snap=0
+GATEWALK idx=33 lane=4 base=120 cursor=120 rows=8 flags=811 snap=3
+GATEWALK idx=34 lane=4 base=128 cursor=128 rows=8 flags=11 snap=0
+GATEWALK idx=35 lane=4 base=136 cursor=136 rows=8 flags=11 snap=0
+GATEWALK idx=36 lane=4 base=144 cursor=144 rows=8 flags=11 snap=0
+GATEWALK idx=37 lane=4 base=152 cursor=152 rows=8 flags=11 snap=0
+GATEWALK idx=38 lane=4 base=160 cursor=160 rows=8 flags=11 snap=0
+GATEWALK idx=39 lane=4 base=168 cursor=168 rows=8 flags=11 snap=0
+GATEWALK idx=40 lane=4 base=176 cursor=176 rows=8 flags=11 snap=0
+GATEWALK idx=41 lane=4 base=184 cursor=184 rows=8 flags=811 snap=4
+GATEWALK idx=42 lane=4 base=192 cursor=192 rows=8 flags=11 snap=0
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_residency sid=800 pending_sid=800 pending_origin=800 hex=2003000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=801 pending_sid=801 pending_origin=801 hex=2103000000000000b10000000000000015010000000000000d00000000000000
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_residency sid=900 pending_sid=900 pending_origin=900 hex=8403000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=3 matched_blocks=3 resumed_at=192 checkpoint_slot=2
+qwen36_residency sid=901 pending_sid=901 pending_origin=901 hex=8503000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=25 lane=3 base=192 cursor=192 rows=8 flags=411 snap=2
+qwen36_prefix_reuse lane=0 slot=4 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=902 pending_sid=902 pending_origin=902 hex=8603000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=26 lane=4 base=64 cursor=64 rows=8 flags=411 snap=0
+GATEWALK idx=27 lane=4 base=72 cursor=72 rows=8 flags=11 snap=0
+GATEWALK idx=28 lane=4 base=80 cursor=80 rows=8 flags=11 snap=0
+GATEWALK idx=29 lane=4 base=88 cursor=88 rows=8 flags=11 snap=0
+GATEWALK idx=30 lane=4 base=96 cursor=96 rows=8 flags=11 snap=0
+GATEWALK idx=31 lane=4 base=104 cursor=104 rows=8 flags=11 snap=0
+GATEWALK idx=32 lane=4 base=112 cursor=112 rows=8 flags=11 snap=0
+GATEWALK idx=33 lane=4 base=120 cursor=120 rows=8 flags=811 snap=3
+GATEWALK idx=34 lane=4 base=128 cursor=128 rows=8 flags=11 snap=0
+GATEWALK idx=35 lane=4 base=136 cursor=136 rows=8 flags=11 snap=0
+GATEWALK idx=36 lane=4 base=144 cursor=144 rows=8 flags=11 snap=0
+GATEWALK idx=37 lane=4 base=152 cursor=152 rows=8 flags=11 snap=0
+GATEWALK idx=38 lane=4 base=160 cursor=160 rows=8 flags=11 snap=0
+GATEWALK idx=39 lane=4 base=168 cursor=168 rows=8 flags=11 snap=0
+GATEWALK idx=40 lane=4 base=176 cursor=176 rows=8 flags=11 snap=0
+GATEWALK idx=41 lane=4 base=184 cursor=184 rows=8 flags=811 snap=4
+GATEWALK idx=42 lane=4 base=192 cursor=192 rows=8 flags=11 snap=0
+qwen36_residency sid=903 pending_sid=903 pending_origin=903 hex=8703000000000000b10000000000000015010000000000000d00000000000000
+GATEWALK idx=43 lane=5 base=0 cursor=0 rows=8 flags=11 snap=0
+GATEWALK idx=44 lane=5 base=8 cursor=8 rows=8 flags=11 snap=0
+GATEWALK idx=45 lane=5 base=16 cursor=16 rows=8 flags=11 snap=0
+GATEWALK idx=46 lane=5 base=24 cursor=24 rows=8 flags=11 snap=0
+GATEWALK idx=47 lane=5 base=32 cursor=32 rows=8 flags=11 snap=0
+GATEWALK idx=48 lane=5 base=40 cursor=40 rows=8 flags=11 snap=0
+GATEWALK idx=49 lane=5 base=48 cursor=48 rows=8 flags=11 snap=0
+GATEWALK idx=50 lane=5 base=56 cursor=56 rows=8 flags=811 snap=5
+GATEWALK idx=51 lane=5 base=64 cursor=64 rows=8 flags=11 snap=0
+GATEWALK idx=52 lane=5 base=72 cursor=72 rows=8 flags=11 snap=0
+GATEWALK idx=53 lane=5 base=80 cursor=80 rows=8 flags=11 snap=0
+GATEWALK idx=54 lane=5 base=88 cursor=88 rows=8 flags=11 snap=0
+GATEWALK idx=55 lane=5 base=96 cursor=96 rows=8 flags=11 snap=0
+GATEWALK idx=56 lane=5 base=104 cursor=104 rows=8 flags=11 snap=0
+GATEWALK idx=57 lane=5 base=112 cursor=112 rows=8 flags=11 snap=0
+GATEWALK idx=58 lane=5 base=120 cursor=120 rows=8 flags=811 snap=6
+GATEWALK idx=59 lane=5 base=128 cursor=128 rows=8 flags=11 snap=0
+GATEWALK idx=60 lane=5 base=136 cursor=136 rows=8 flags=11 snap=0
+GATEWALK idx=61 lane=5 base=144 cursor=144 rows=8 flags=11 snap=0
+GATEWALK idx=62 lane=5 base=152 cursor=152 rows=8 flags=11 snap=0
+GATEWALK idx=63 lane=5 base=160 cursor=160 rows=8 flags=11 snap=0
+GATEWALK idx=64 lane=5 base=168 cursor=168 rows=8 flags=11 snap=0
+GATEWALK idx=65 lane=5 base=176 cursor=176 rows=8 flags=11 snap=0
+GATEWALK idx=66 lane=5 base=184 cursor=184 rows=8 flags=811 snap=7
+GATEWALK idx=67 lane=5 base=192 cursor=192 rows=8 flags=11 snap=0
+qwen36_residency sid=910 pending_sid=910 pending_origin=910 hex=8e03000000000000000000000000000015010000000000000d00000000000000
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_residency sid=1000 pending_sid=1000 pending_origin=1000 hex=e803000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=3 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=1001 pending_sid=1001 pending_origin=1001 hex=e903000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=4 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=1002 pending_sid=1002 pending_origin=1002 hex=ea03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=5 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=1003 pending_sid=1003 pending_origin=1003 hex=eb03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=6 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=1004 pending_sid=1004 pending_origin=1004 hex=ec03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1005 pending_sid=1005 pending_origin=1005 hex=ed03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=8 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=1006 pending_sid=1006 pending_origin=1006 hex=ee03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=9 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=1007 pending_sid=1007 pending_origin=1007 hex=ef03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=10 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=1008 pending_sid=1008 pending_origin=1008 hex=f003000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=11 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=1009 pending_sid=1009 pending_origin=1009 hex=f103000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1010 pending_sid=1010 pending_origin=1010 hex=f203000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=13 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=1011 pending_sid=1011 pending_origin=1011 hex=f303000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=14 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=1012 pending_sid=1012 pending_origin=1012 hex=f403000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=15 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=1013 pending_sid=1013 pending_origin=1013 hex=f503000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=16 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=1014 pending_sid=1014 pending_origin=1014 hex=f603000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1015 pending_sid=1015 pending_origin=1015 hex=f703000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1016 pending_sid=1016 pending_origin=1016 hex=f803000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1017 pending_sid=1017 pending_origin=1017 hex=f903000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=20 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=1018 pending_sid=1018 pending_origin=1018 hex=fa03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=21 matched_blocks=2 resumed_at=128 checkpoint_slot=6
+qwen36_residency sid=1019 pending_sid=1019 pending_origin=1019 hex=fb03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1020 pending_sid=1020 pending_origin=1020 hex=fc03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1021 pending_sid=1021 pending_origin=1021 hex=fd03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1022 pending_sid=1022 pending_origin=1022 hex=fe03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1023 pending_sid=1023 pending_origin=1023 hex=ff03000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1024 pending_sid=1024 pending_origin=1024 hex=0004000000000000b10000000000000015010000000000000d00000000000000
+VA_TRACE 172
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_residency sid=11000 pending_sid=11000 pending_origin=11000 hex=f82a000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=1 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11001 pending_sid=11001 pending_origin=11001 hex=f92a000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=2 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11002 pending_sid=11002 pending_origin=11002 hex=fa2a000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=3 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11003 pending_sid=11003 pending_origin=11003 hex=fb2a000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=4 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11004 pending_sid=11004 pending_origin=11004 hex=fc2a000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=5 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11005 pending_sid=11005 pending_origin=11005 hex=fd2a000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=6 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11006 pending_sid=11006 pending_origin=11006 hex=fe2a000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=7 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11007 pending_sid=11007 pending_origin=11007 hex=ff2a000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11008 pending_sid=11008 pending_origin=11008 hex=002b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=9 matched_blocks=1 resumed_at=64 checkpoint_slot=8
+qwen36_residency sid=11009 pending_sid=11009 pending_origin=11009 hex=012b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=10 matched_blocks=2 resumed_at=128 checkpoint_slot=9
+qwen36_residency sid=11010 pending_sid=11010 pending_origin=11010 hex=022b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=11 matched_blocks=2 resumed_at=128 checkpoint_slot=9
+qwen36_residency sid=11011 pending_sid=11011 pending_origin=11011 hex=032b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=12 matched_blocks=2 resumed_at=128 checkpoint_slot=9
+qwen36_residency sid=11012 pending_sid=11012 pending_origin=11012 hex=042b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=13 matched_blocks=2 resumed_at=128 checkpoint_slot=9
+qwen36_residency sid=11013 pending_sid=11013 pending_origin=11013 hex=052b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=14 matched_blocks=2 resumed_at=128 checkpoint_slot=9
+qwen36_residency sid=11014 pending_sid=11014 pending_origin=11014 hex=062b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=15 matched_blocks=2 resumed_at=128 checkpoint_slot=9
+qwen36_residency sid=11015 pending_sid=11015 pending_origin=11015 hex=072b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11016 pending_sid=11016 pending_origin=11016 hex=082b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11017 pending_sid=11017 pending_origin=11017 hex=092b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=18 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11018 pending_sid=11018 pending_origin=11018 hex=0a2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=19 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11019 pending_sid=11019 pending_origin=11019 hex=0b2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=20 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11020 pending_sid=11020 pending_origin=11020 hex=0c2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=21 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11021 pending_sid=11021 pending_origin=11021 hex=0d2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=22 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11022 pending_sid=11022 pending_origin=11022 hex=0e2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=23 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11023 pending_sid=11023 pending_origin=11023 hex=0f2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11024 pending_sid=11024 pending_origin=11024 hex=102b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11025 pending_sid=11025 pending_origin=11025 hex=112b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=26 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11026 pending_sid=11026 pending_origin=11026 hex=122b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=27 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11027 pending_sid=11027 pending_origin=11027 hex=132b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=28 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11028 pending_sid=11028 pending_origin=11028 hex=142b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=29 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11029 pending_sid=11029 pending_origin=11029 hex=152b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=30 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11030 pending_sid=11030 pending_origin=11030 hex=162b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=31 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11031 pending_sid=11031 pending_origin=11031 hex=172b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11032 pending_sid=11032 pending_origin=11032 hex=182b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11033 pending_sid=11033 pending_origin=11033 hex=192b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=34 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11034 pending_sid=11034 pending_origin=11034 hex=1a2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=35 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11035 pending_sid=11035 pending_origin=11035 hex=1b2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=36 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11036 pending_sid=11036 pending_origin=11036 hex=1c2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=37 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11037 pending_sid=11037 pending_origin=11037 hex=1d2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=38 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11038 pending_sid=11038 pending_origin=11038 hex=1e2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=39 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11039 pending_sid=11039 pending_origin=11039 hex=1f2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11040 pending_sid=11040 pending_origin=11040 hex=202b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11041 pending_sid=11041 pending_origin=11041 hex=212b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=42 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11042 pending_sid=11042 pending_origin=11042 hex=222b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=43 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11043 pending_sid=11043 pending_origin=11043 hex=232b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=44 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11044 pending_sid=11044 pending_origin=11044 hex=242b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=45 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11045 pending_sid=11045 pending_origin=11045 hex=252b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=46 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11046 pending_sid=11046 pending_origin=11046 hex=262b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=47 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11047 pending_sid=11047 pending_origin=11047 hex=272b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11048 pending_sid=11048 pending_origin=11048 hex=282b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11049 pending_sid=11049 pending_origin=11049 hex=292b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=50 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11050 pending_sid=11050 pending_origin=11050 hex=2a2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=51 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11051 pending_sid=11051 pending_origin=11051 hex=2b2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=52 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11052 pending_sid=11052 pending_origin=11052 hex=2c2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=53 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11053 pending_sid=11053 pending_origin=11053 hex=2d2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=54 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11054 pending_sid=11054 pending_origin=11054 hex=2e2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=55 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11055 pending_sid=11055 pending_origin=11055 hex=2f2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11056 pending_sid=11056 pending_origin=11056 hex=302b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11057 pending_sid=11057 pending_origin=11057 hex=312b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=58 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11058 pending_sid=11058 pending_origin=11058 hex=322b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=59 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11059 pending_sid=11059 pending_origin=11059 hex=332b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=60 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11060 pending_sid=11060 pending_origin=11060 hex=342b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=61 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11061 pending_sid=11061 pending_origin=11061 hex=352b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=62 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11062 pending_sid=11062 pending_origin=11062 hex=362b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=63 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11063 pending_sid=11063 pending_origin=11063 hex=372b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11064 pending_sid=11064 pending_origin=11064 hex=382b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11065 pending_sid=11065 pending_origin=11065 hex=392b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=66 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11066 pending_sid=11066 pending_origin=11066 hex=3a2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=67 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11067 pending_sid=11067 pending_origin=11067 hex=3b2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=68 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11068 pending_sid=11068 pending_origin=11068 hex=3c2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=69 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11069 pending_sid=11069 pending_origin=11069 hex=3d2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=70 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11070 pending_sid=11070 pending_origin=11070 hex=3e2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=71 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11071 pending_sid=11071 pending_origin=11071 hex=3f2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11072 pending_sid=11072 pending_origin=11072 hex=402b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11073 pending_sid=11073 pending_origin=11073 hex=412b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=74 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11074 pending_sid=11074 pending_origin=11074 hex=422b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=75 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11075 pending_sid=11075 pending_origin=11075 hex=432b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=76 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11076 pending_sid=11076 pending_origin=11076 hex=442b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=77 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11077 pending_sid=11077 pending_origin=11077 hex=452b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=78 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11078 pending_sid=11078 pending_origin=11078 hex=462b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=79 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11079 pending_sid=11079 pending_origin=11079 hex=472b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11080 pending_sid=11080 pending_origin=11080 hex=482b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11081 pending_sid=11081 pending_origin=11081 hex=492b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11082 pending_sid=11082 pending_origin=11082 hex=4a2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=83 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11083 pending_sid=11083 pending_origin=11083 hex=4b2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=84 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11084 pending_sid=11084 pending_origin=11084 hex=4c2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=85 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11085 pending_sid=11085 pending_origin=11085 hex=4d2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=86 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11086 pending_sid=11086 pending_origin=11086 hex=4e2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=87 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11087 pending_sid=11087 pending_origin=11087 hex=4f2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11088 pending_sid=11088 pending_origin=11088 hex=502b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11089 pending_sid=11089 pending_origin=11089 hex=512b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11090 pending_sid=11090 pending_origin=11090 hex=522b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=91 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11091 pending_sid=11091 pending_origin=11091 hex=532b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=92 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11092 pending_sid=11092 pending_origin=11092 hex=542b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=93 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11093 pending_sid=11093 pending_origin=11093 hex=552b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=94 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11094 pending_sid=11094 pending_origin=11094 hex=562b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=95 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11095 pending_sid=11095 pending_origin=11095 hex=572b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11096 pending_sid=11096 pending_origin=11096 hex=582b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11097 pending_sid=11097 pending_origin=11097 hex=592b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11098 pending_sid=11098 pending_origin=11098 hex=5a2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=99 matched_blocks=1 resumed_at=64 checkpoint_slot=11
+qwen36_residency sid=11099 pending_sid=11099 pending_origin=11099 hex=5b2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=100 matched_blocks=1 resumed_at=64 checkpoint_slot=11
+qwen36_residency sid=11100 pending_sid=11100 pending_origin=11100 hex=5c2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=101 matched_blocks=1 resumed_at=64 checkpoint_slot=11
+qwen36_residency sid=11101 pending_sid=11101 pending_origin=11101 hex=5d2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=102 matched_blocks=1 resumed_at=64 checkpoint_slot=11
+qwen36_residency sid=11102 pending_sid=11102 pending_origin=11102 hex=5e2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=103 matched_blocks=1 resumed_at=64 checkpoint_slot=11
+qwen36_residency sid=11103 pending_sid=11103 pending_origin=11103 hex=5f2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11104 pending_sid=11104 pending_origin=11104 hex=602b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11105 pending_sid=11105 pending_origin=11105 hex=612b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11106 pending_sid=11106 pending_origin=11106 hex=622b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=107 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11107 pending_sid=11107 pending_origin=11107 hex=632b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=108 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11108 pending_sid=11108 pending_origin=11108 hex=642b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=109 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11109 pending_sid=11109 pending_origin=11109 hex=652b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=110 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11110 pending_sid=11110 pending_origin=11110 hex=662b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=111 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11111 pending_sid=11111 pending_origin=11111 hex=672b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11112 pending_sid=11112 pending_origin=11112 hex=682b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11113 pending_sid=11113 pending_origin=11113 hex=692b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11114 pending_sid=11114 pending_origin=11114 hex=6a2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=115 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11115 pending_sid=11115 pending_origin=11115 hex=6b2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=116 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11116 pending_sid=11116 pending_origin=11116 hex=6c2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=117 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11117 pending_sid=11117 pending_origin=11117 hex=6d2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=118 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11118 pending_sid=11118 pending_origin=11118 hex=6e2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=119 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11119 pending_sid=11119 pending_origin=11119 hex=6f2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11120 pending_sid=11120 pending_origin=11120 hex=702b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11121 pending_sid=11121 pending_origin=11121 hex=712b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11122 pending_sid=11122 pending_origin=11122 hex=722b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=123 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11123 pending_sid=11123 pending_origin=11123 hex=732b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=124 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11124 pending_sid=11124 pending_origin=11124 hex=742b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=125 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11125 pending_sid=11125 pending_origin=11125 hex=752b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=126 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11126 pending_sid=11126 pending_origin=11126 hex=762b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=127 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11127 pending_sid=11127 pending_origin=11127 hex=772b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11128 pending_sid=11128 pending_origin=11128 hex=782b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11129 pending_sid=11129 pending_origin=11129 hex=792b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11130 pending_sid=11130 pending_origin=11130 hex=7a2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=131 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11131 pending_sid=11131 pending_origin=11131 hex=7b2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=132 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11132 pending_sid=11132 pending_origin=11132 hex=7c2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=133 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11133 pending_sid=11133 pending_origin=11133 hex=7d2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=134 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11134 pending_sid=11134 pending_origin=11134 hex=7e2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=135 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11135 pending_sid=11135 pending_origin=11135 hex=7f2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11136 pending_sid=11136 pending_origin=11136 hex=802b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11137 pending_sid=11137 pending_origin=11137 hex=812b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11138 pending_sid=11138 pending_origin=11138 hex=822b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=139 matched_blocks=1 resumed_at=64 checkpoint_slot=8
+qwen36_residency sid=11139 pending_sid=11139 pending_origin=11139 hex=832b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=140 matched_blocks=1 resumed_at=64 checkpoint_slot=8
+qwen36_residency sid=11140 pending_sid=11140 pending_origin=11140 hex=842b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=141 matched_blocks=1 resumed_at=64 checkpoint_slot=8
+qwen36_residency sid=11141 pending_sid=11141 pending_origin=11141 hex=852b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=142 matched_blocks=1 resumed_at=64 checkpoint_slot=8
+qwen36_residency sid=11142 pending_sid=11142 pending_origin=11142 hex=862b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=143 matched_blocks=1 resumed_at=64 checkpoint_slot=8
+qwen36_residency sid=11143 pending_sid=11143 pending_origin=11143 hex=872b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11144 pending_sid=11144 pending_origin=11144 hex=882b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11145 pending_sid=11145 pending_origin=11145 hex=892b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11146 pending_sid=11146 pending_origin=11146 hex=8a2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=147 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11147 pending_sid=11147 pending_origin=11147 hex=8b2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=148 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11148 pending_sid=11148 pending_origin=11148 hex=8c2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=149 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11149 pending_sid=11149 pending_origin=11149 hex=8d2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=150 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11150 pending_sid=11150 pending_origin=11150 hex=8e2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=151 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11151 pending_sid=11151 pending_origin=11151 hex=8f2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11152 pending_sid=11152 pending_origin=11152 hex=902b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11153 pending_sid=11153 pending_origin=11153 hex=912b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11154 pending_sid=11154 pending_origin=11154 hex=922b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11155 pending_sid=11155 pending_origin=11155 hex=932b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=156 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11156 pending_sid=11156 pending_origin=11156 hex=942b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=157 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11157 pending_sid=11157 pending_origin=11157 hex=952b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=158 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11158 pending_sid=11158 pending_origin=11158 hex=962b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=159 matched_blocks=1 resumed_at=64 checkpoint_slot=3
+qwen36_residency sid=11159 pending_sid=11159 pending_origin=11159 hex=972b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11160 pending_sid=11160 pending_origin=11160 hex=982b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11161 pending_sid=11161 pending_origin=11161 hex=992b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11162 pending_sid=11162 pending_origin=11162 hex=9a2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11163 pending_sid=11163 pending_origin=11163 hex=9b2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=164 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11164 pending_sid=11164 pending_origin=11164 hex=9c2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=165 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11165 pending_sid=11165 pending_origin=11165 hex=9d2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=166 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11166 pending_sid=11166 pending_origin=11166 hex=9e2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=167 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11167 pending_sid=11167 pending_origin=11167 hex=9f2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11168 pending_sid=11168 pending_origin=11168 hex=a02b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11169 pending_sid=11169 pending_origin=11169 hex=a12b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11170 pending_sid=11170 pending_origin=11170 hex=a22b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11171 pending_sid=11171 pending_origin=11171 hex=a32b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=172 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11172 pending_sid=11172 pending_origin=11172 hex=a42b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=173 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11173 pending_sid=11173 pending_origin=11173 hex=a52b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=174 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11174 pending_sid=11174 pending_origin=11174 hex=a62b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=175 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11175 pending_sid=11175 pending_origin=11175 hex=a72b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11176 pending_sid=11176 pending_origin=11176 hex=a82b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11177 pending_sid=11177 pending_origin=11177 hex=a92b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11178 pending_sid=11178 pending_origin=11178 hex=aa2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11179 pending_sid=11179 pending_origin=11179 hex=ab2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=180 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11180 pending_sid=11180 pending_origin=11180 hex=ac2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=181 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11181 pending_sid=11181 pending_origin=11181 hex=ad2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=182 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11182 pending_sid=11182 pending_origin=11182 hex=ae2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=183 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11183 pending_sid=11183 pending_origin=11183 hex=af2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11184 pending_sid=11184 pending_origin=11184 hex=b02b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11185 pending_sid=11185 pending_origin=11185 hex=b12b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11186 pending_sid=11186 pending_origin=11186 hex=b22b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11187 pending_sid=11187 pending_origin=11187 hex=b32b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=188 matched_blocks=1 resumed_at=64 checkpoint_slot=11
+qwen36_residency sid=11188 pending_sid=11188 pending_origin=11188 hex=b42b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=189 matched_blocks=1 resumed_at=64 checkpoint_slot=11
+qwen36_residency sid=11189 pending_sid=11189 pending_origin=11189 hex=b52b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=190 matched_blocks=1 resumed_at=64 checkpoint_slot=11
+qwen36_residency sid=11190 pending_sid=11190 pending_origin=11190 hex=b62b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=191 matched_blocks=1 resumed_at=64 checkpoint_slot=11
+qwen36_residency sid=11191 pending_sid=11191 pending_origin=11191 hex=b72b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11192 pending_sid=11192 pending_origin=11192 hex=b82b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11193 pending_sid=11193 pending_origin=11193 hex=b92b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11194 pending_sid=11194 pending_origin=11194 hex=ba2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11195 pending_sid=11195 pending_origin=11195 hex=bb2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=196 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11196 pending_sid=11196 pending_origin=11196 hex=bc2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=197 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11197 pending_sid=11197 pending_origin=11197 hex=bd2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=198 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11198 pending_sid=11198 pending_origin=11198 hex=be2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=199 matched_blocks=1 resumed_at=64 checkpoint_slot=1
+qwen36_residency sid=11199 pending_sid=11199 pending_origin=11199 hex=bf2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11200 pending_sid=11200 pending_origin=11200 hex=c02b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11201 pending_sid=11201 pending_origin=11201 hex=c12b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11202 pending_sid=11202 pending_origin=11202 hex=c22b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11203 pending_sid=11203 pending_origin=11203 hex=c32b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=204 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11204 pending_sid=11204 pending_origin=11204 hex=c42b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=205 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11205 pending_sid=11205 pending_origin=11205 hex=c52b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=206 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11206 pending_sid=11206 pending_origin=11206 hex=c62b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=207 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11207 pending_sid=11207 pending_origin=11207 hex=c72b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11208 pending_sid=11208 pending_origin=11208 hex=c82b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11209 pending_sid=11209 pending_origin=11209 hex=c92b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11210 pending_sid=11210 pending_origin=11210 hex=ca2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11211 pending_sid=11211 pending_origin=11211 hex=cb2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=212 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11212 pending_sid=11212 pending_origin=11212 hex=cc2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=213 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11213 pending_sid=11213 pending_origin=11213 hex=cd2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=214 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11214 pending_sid=11214 pending_origin=11214 hex=ce2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=215 matched_blocks=1 resumed_at=64 checkpoint_slot=13
+qwen36_residency sid=11215 pending_sid=11215 pending_origin=11215 hex=cf2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11216 pending_sid=11216 pending_origin=11216 hex=d02b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11217 pending_sid=11217 pending_origin=11217 hex=d12b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11218 pending_sid=11218 pending_origin=11218 hex=d22b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11219 pending_sid=11219 pending_origin=11219 hex=d32b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=220 matched_blocks=1 resumed_at=64 checkpoint_slot=2
+qwen36_residency sid=11220 pending_sid=11220 pending_origin=11220 hex=d42b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=221 matched_blocks=1 resumed_at=64 checkpoint_slot=2
+qwen36_residency sid=11221 pending_sid=11221 pending_origin=11221 hex=d52b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=222 matched_blocks=1 resumed_at=64 checkpoint_slot=2
+qwen36_residency sid=11222 pending_sid=11222 pending_origin=11222 hex=d62b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=223 matched_blocks=1 resumed_at=64 checkpoint_slot=2
+qwen36_residency sid=11223 pending_sid=11223 pending_origin=11223 hex=d72b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11224 pending_sid=11224 pending_origin=11224 hex=d82b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11225 pending_sid=11225 pending_origin=11225 hex=d92b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11226 pending_sid=11226 pending_origin=11226 hex=da2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11227 pending_sid=11227 pending_origin=11227 hex=db2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11228 pending_sid=11228 pending_origin=11228 hex=dc2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=229 matched_blocks=1 resumed_at=64 checkpoint_slot=8
+qwen36_residency sid=11229 pending_sid=11229 pending_origin=11229 hex=dd2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=230 matched_blocks=1 resumed_at=64 checkpoint_slot=8
+qwen36_residency sid=11230 pending_sid=11230 pending_origin=11230 hex=de2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=231 matched_blocks=1 resumed_at=64 checkpoint_slot=8
+qwen36_residency sid=11231 pending_sid=11231 pending_origin=11231 hex=df2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11232 pending_sid=11232 pending_origin=11232 hex=e02b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11233 pending_sid=11233 pending_origin=11233 hex=e12b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11234 pending_sid=11234 pending_origin=11234 hex=e22b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11235 pending_sid=11235 pending_origin=11235 hex=e32b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11236 pending_sid=11236 pending_origin=11236 hex=e42b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=237 matched_blocks=1 resumed_at=64 checkpoint_slot=14
+qwen36_residency sid=11237 pending_sid=11237 pending_origin=11237 hex=e52b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=238 matched_blocks=1 resumed_at=64 checkpoint_slot=14
+qwen36_residency sid=11238 pending_sid=11238 pending_origin=11238 hex=e62b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=239 matched_blocks=1 resumed_at=64 checkpoint_slot=14
+qwen36_residency sid=11239 pending_sid=11239 pending_origin=11239 hex=e72b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11240 pending_sid=11240 pending_origin=11240 hex=e82b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11241 pending_sid=11241 pending_origin=11241 hex=e92b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11242 pending_sid=11242 pending_origin=11242 hex=ea2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11243 pending_sid=11243 pending_origin=11243 hex=eb2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11244 pending_sid=11244 pending_origin=11244 hex=ec2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=245 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11245 pending_sid=11245 pending_origin=11245 hex=ed2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=246 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11246 pending_sid=11246 pending_origin=11246 hex=ee2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=247 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11247 pending_sid=11247 pending_origin=11247 hex=ef2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11248 pending_sid=11248 pending_origin=11248 hex=f02b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11249 pending_sid=11249 pending_origin=11249 hex=f12b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11250 pending_sid=11250 pending_origin=11250 hex=f22b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11251 pending_sid=11251 pending_origin=11251 hex=f32b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11252 pending_sid=11252 pending_origin=11252 hex=f42b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=253 matched_blocks=1 resumed_at=64 checkpoint_slot=10
+qwen36_residency sid=11253 pending_sid=11253 pending_origin=11253 hex=f52b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=254 matched_blocks=1 resumed_at=64 checkpoint_slot=10
+qwen36_residency sid=11254 pending_sid=11254 pending_origin=11254 hex=f62b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=255 matched_blocks=1 resumed_at=64 checkpoint_slot=10
+qwen36_residency sid=11255 pending_sid=11255 pending_origin=11255 hex=f72b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11256 pending_sid=11256 pending_origin=11256 hex=f82b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11257 pending_sid=11257 pending_origin=11257 hex=f92b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11258 pending_sid=11258 pending_origin=11258 hex=fa2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11259 pending_sid=11259 pending_origin=11259 hex=fb2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11260 pending_sid=11260 pending_origin=11260 hex=fc2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=261 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11261 pending_sid=11261 pending_origin=11261 hex=fd2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=262 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11262 pending_sid=11262 pending_origin=11262 hex=fe2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=263 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11263 pending_sid=11263 pending_origin=11263 hex=ff2b000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11264 pending_sid=11264 pending_origin=11264 hex=002c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11265 pending_sid=11265 pending_origin=11265 hex=012c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11266 pending_sid=11266 pending_origin=11266 hex=022c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11267 pending_sid=11267 pending_origin=11267 hex=032c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11268 pending_sid=11268 pending_origin=11268 hex=042c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=269 matched_blocks=1 resumed_at=64 checkpoint_slot=6
+qwen36_residency sid=11269 pending_sid=11269 pending_origin=11269 hex=052c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=270 matched_blocks=1 resumed_at=64 checkpoint_slot=6
+qwen36_residency sid=11270 pending_sid=11270 pending_origin=11270 hex=062c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=271 matched_blocks=1 resumed_at=64 checkpoint_slot=6
+qwen36_residency sid=11271 pending_sid=11271 pending_origin=11271 hex=072c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11272 pending_sid=11272 pending_origin=11272 hex=082c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11273 pending_sid=11273 pending_origin=11273 hex=092c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11274 pending_sid=11274 pending_origin=11274 hex=0a2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11275 pending_sid=11275 pending_origin=11275 hex=0b2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11276 pending_sid=11276 pending_origin=11276 hex=0c2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=277 matched_blocks=1 resumed_at=64 checkpoint_slot=12
+qwen36_residency sid=11277 pending_sid=11277 pending_origin=11277 hex=0d2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=278 matched_blocks=1 resumed_at=64 checkpoint_slot=12
+qwen36_residency sid=11278 pending_sid=11278 pending_origin=11278 hex=0e2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=279 matched_blocks=1 resumed_at=64 checkpoint_slot=12
+qwen36_residency sid=11279 pending_sid=11279 pending_origin=11279 hex=0f2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11280 pending_sid=11280 pending_origin=11280 hex=102c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11281 pending_sid=11281 pending_origin=11281 hex=112c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11282 pending_sid=11282 pending_origin=11282 hex=122c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11283 pending_sid=11283 pending_origin=11283 hex=132c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11284 pending_sid=11284 pending_origin=11284 hex=142c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=285 matched_blocks=1 resumed_at=64 checkpoint_slot=2
+qwen36_residency sid=11285 pending_sid=11285 pending_origin=11285 hex=152c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=286 matched_blocks=1 resumed_at=64 checkpoint_slot=2
+qwen36_residency sid=11286 pending_sid=11286 pending_origin=11286 hex=162c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=287 matched_blocks=1 resumed_at=64 checkpoint_slot=2
+qwen36_residency sid=11287 pending_sid=11287 pending_origin=11287 hex=172c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11288 pending_sid=11288 pending_origin=11288 hex=182c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11289 pending_sid=11289 pending_origin=11289 hex=192c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11290 pending_sid=11290 pending_origin=11290 hex=1a2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11291 pending_sid=11291 pending_origin=11291 hex=1b2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11292 pending_sid=11292 pending_origin=11292 hex=1c2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=293 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11293 pending_sid=11293 pending_origin=11293 hex=1d2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=294 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11294 pending_sid=11294 pending_origin=11294 hex=1e2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=295 matched_blocks=1 resumed_at=64 checkpoint_slot=7
+qwen36_residency sid=11295 pending_sid=11295 pending_origin=11295 hex=1f2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11296 pending_sid=11296 pending_origin=11296 hex=202c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11297 pending_sid=11297 pending_origin=11297 hex=212c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11298 pending_sid=11298 pending_origin=11298 hex=222c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11299 pending_sid=11299 pending_origin=11299 hex=232c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11300 pending_sid=11300 pending_origin=11300 hex=242c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=301 matched_blocks=1 resumed_at=64 checkpoint_slot=12
+qwen36_residency sid=11301 pending_sid=11301 pending_origin=11301 hex=252c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=302 matched_blocks=1 resumed_at=64 checkpoint_slot=12
+qwen36_residency sid=11302 pending_sid=11302 pending_origin=11302 hex=262c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=303 matched_blocks=1 resumed_at=64 checkpoint_slot=12
+qwen36_residency sid=11303 pending_sid=11303 pending_origin=11303 hex=272c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11304 pending_sid=11304 pending_origin=11304 hex=282c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11305 pending_sid=11305 pending_origin=11305 hex=292c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11306 pending_sid=11306 pending_origin=11306 hex=2a2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11307 pending_sid=11307 pending_origin=11307 hex=2b2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11308 pending_sid=11308 pending_origin=11308 hex=2c2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11309 pending_sid=11309 pending_origin=11309 hex=2d2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=310 matched_blocks=1 resumed_at=64 checkpoint_slot=2
+qwen36_residency sid=11310 pending_sid=11310 pending_origin=11310 hex=2e2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=311 matched_blocks=1 resumed_at=64 checkpoint_slot=2
+qwen36_residency sid=11311 pending_sid=11311 pending_origin=11311 hex=2f2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11312 pending_sid=11312 pending_origin=11312 hex=302c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11313 pending_sid=11313 pending_origin=11313 hex=312c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11314 pending_sid=11314 pending_origin=11314 hex=322c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11315 pending_sid=11315 pending_origin=11315 hex=332c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11316 pending_sid=11316 pending_origin=11316 hex=342c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11317 pending_sid=11317 pending_origin=11317 hex=352c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=318 matched_blocks=1 resumed_at=64 checkpoint_slot=8
+qwen36_residency sid=11318 pending_sid=11318 pending_origin=11318 hex=362c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=319 matched_blocks=1 resumed_at=64 checkpoint_slot=8
+qwen36_residency sid=11319 pending_sid=11319 pending_origin=11319 hex=372c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11320 pending_sid=11320 pending_origin=11320 hex=382c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11321 pending_sid=11321 pending_origin=11321 hex=392c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11322 pending_sid=11322 pending_origin=11322 hex=3a2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11323 pending_sid=11323 pending_origin=11323 hex=3b2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11324 pending_sid=11324 pending_origin=11324 hex=3c2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11325 pending_sid=11325 pending_origin=11325 hex=3d2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=326 matched_blocks=1 resumed_at=64 checkpoint_slot=14
+qwen36_residency sid=11326 pending_sid=11326 pending_origin=11326 hex=3e2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=327 matched_blocks=1 resumed_at=64 checkpoint_slot=14
+qwen36_residency sid=11327 pending_sid=11327 pending_origin=11327 hex=3f2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11328 pending_sid=11328 pending_origin=11328 hex=402c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11329 pending_sid=11329 pending_origin=11329 hex=412c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11330 pending_sid=11330 pending_origin=11330 hex=422c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11331 pending_sid=11331 pending_origin=11331 hex=432c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11332 pending_sid=11332 pending_origin=11332 hex=442c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11333 pending_sid=11333 pending_origin=11333 hex=452c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=334 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11334 pending_sid=11334 pending_origin=11334 hex=462c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=335 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11335 pending_sid=11335 pending_origin=11335 hex=472c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11336 pending_sid=11336 pending_origin=11336 hex=482c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11337 pending_sid=11337 pending_origin=11337 hex=492c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11338 pending_sid=11338 pending_origin=11338 hex=4a2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11339 pending_sid=11339 pending_origin=11339 hex=4b2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11340 pending_sid=11340 pending_origin=11340 hex=4c2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11341 pending_sid=11341 pending_origin=11341 hex=4d2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=342 matched_blocks=1 resumed_at=64 checkpoint_slot=10
+qwen36_residency sid=11342 pending_sid=11342 pending_origin=11342 hex=4e2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=343 matched_blocks=1 resumed_at=64 checkpoint_slot=10
+qwen36_residency sid=11343 pending_sid=11343 pending_origin=11343 hex=4f2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11344 pending_sid=11344 pending_origin=11344 hex=502c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11345 pending_sid=11345 pending_origin=11345 hex=512c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11346 pending_sid=11346 pending_origin=11346 hex=522c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11347 pending_sid=11347 pending_origin=11347 hex=532c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11348 pending_sid=11348 pending_origin=11348 hex=542c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11349 pending_sid=11349 pending_origin=11349 hex=552c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=350 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11350 pending_sid=11350 pending_origin=11350 hex=562c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=351 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11351 pending_sid=11351 pending_origin=11351 hex=572c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11352 pending_sid=11352 pending_origin=11352 hex=582c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11353 pending_sid=11353 pending_origin=11353 hex=592c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11354 pending_sid=11354 pending_origin=11354 hex=5a2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11355 pending_sid=11355 pending_origin=11355 hex=5b2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11356 pending_sid=11356 pending_origin=11356 hex=5c2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11357 pending_sid=11357 pending_origin=11357 hex=5d2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=358 matched_blocks=1 resumed_at=64 checkpoint_slot=6
+qwen36_residency sid=11358 pending_sid=11358 pending_origin=11358 hex=5e2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=359 matched_blocks=1 resumed_at=64 checkpoint_slot=6
+qwen36_residency sid=11359 pending_sid=11359 pending_origin=11359 hex=5f2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11360 pending_sid=11360 pending_origin=11360 hex=602c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=361 matched_blocks=2 resumed_at=128 checkpoint_slot=7
+qwen36_residency sid=11361 pending_sid=11361 pending_origin=11361 hex=612c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=362 matched_blocks=2 resumed_at=128 checkpoint_slot=7
+qwen36_residency sid=11362 pending_sid=11362 pending_origin=11362 hex=622c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=363 matched_blocks=2 resumed_at=128 checkpoint_slot=7
+qwen36_residency sid=11363 pending_sid=11363 pending_origin=11363 hex=632c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=364 matched_blocks=2 resumed_at=128 checkpoint_slot=7
+qwen36_residency sid=11364 pending_sid=11364 pending_origin=11364 hex=642c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11365 pending_sid=11365 pending_origin=11365 hex=652c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=366 matched_blocks=1 resumed_at=64 checkpoint_slot=11
+qwen36_residency sid=11366 pending_sid=11366 pending_origin=11366 hex=662c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=367 matched_blocks=2 resumed_at=128 checkpoint_slot=7
+qwen36_residency sid=11367 pending_sid=11367 pending_origin=11367 hex=672c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11368 pending_sid=11368 pending_origin=11368 hex=682c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=369 matched_blocks=2 resumed_at=128 checkpoint_slot=12
+qwen36_residency sid=11369 pending_sid=11369 pending_origin=11369 hex=692c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=370 matched_blocks=2 resumed_at=128 checkpoint_slot=12
+qwen36_residency sid=11370 pending_sid=11370 pending_origin=11370 hex=6a2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=371 matched_blocks=2 resumed_at=128 checkpoint_slot=12
+qwen36_residency sid=11371 pending_sid=11371 pending_origin=11371 hex=6b2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=372 matched_blocks=2 resumed_at=128 checkpoint_slot=12
+qwen36_residency sid=11372 pending_sid=11372 pending_origin=11372 hex=6c2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11373 pending_sid=11373 pending_origin=11373 hex=6d2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=374 matched_blocks=1 resumed_at=64 checkpoint_slot=0
+qwen36_residency sid=11374 pending_sid=11374 pending_origin=11374 hex=6e2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=375 matched_blocks=2 resumed_at=128 checkpoint_slot=12
+qwen36_residency sid=11375 pending_sid=11375 pending_origin=11375 hex=6f2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11376 pending_sid=11376 pending_origin=11376 hex=702c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=377 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11377 pending_sid=11377 pending_origin=11377 hex=712c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=378 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11378 pending_sid=11378 pending_origin=11378 hex=722c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=379 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11379 pending_sid=11379 pending_origin=11379 hex=732c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=380 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11380 pending_sid=11380 pending_origin=11380 hex=742c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=381 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11381 pending_sid=11381 pending_origin=11381 hex=752c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11382 pending_sid=11382 pending_origin=11382 hex=762c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=383 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11383 pending_sid=11383 pending_origin=11383 hex=772c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11384 pending_sid=11384 pending_origin=11384 hex=782c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=385 matched_blocks=2 resumed_at=128 checkpoint_slot=7
+qwen36_residency sid=11385 pending_sid=11385 pending_origin=11385 hex=792c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=386 matched_blocks=2 resumed_at=128 checkpoint_slot=7
+qwen36_residency sid=11386 pending_sid=11386 pending_origin=11386 hex=7a2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=387 matched_blocks=2 resumed_at=128 checkpoint_slot=7
+qwen36_residency sid=11387 pending_sid=11387 pending_origin=11387 hex=7b2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=388 matched_blocks=2 resumed_at=128 checkpoint_slot=7
+qwen36_residency sid=11388 pending_sid=11388 pending_origin=11388 hex=7c2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=389 matched_blocks=2 resumed_at=128 checkpoint_slot=7
+qwen36_residency sid=11389 pending_sid=11389 pending_origin=11389 hex=7d2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11390 pending_sid=11390 pending_origin=11390 hex=7e2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=391 matched_blocks=2 resumed_at=128 checkpoint_slot=7
+qwen36_residency sid=11391 pending_sid=11391 pending_origin=11391 hex=7f2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11392 pending_sid=11392 pending_origin=11392 hex=802c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=393 matched_blocks=2 resumed_at=128 checkpoint_slot=12
+qwen36_residency sid=11393 pending_sid=11393 pending_origin=11393 hex=812c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=394 matched_blocks=2 resumed_at=128 checkpoint_slot=12
+qwen36_residency sid=11394 pending_sid=11394 pending_origin=11394 hex=822c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=395 matched_blocks=2 resumed_at=128 checkpoint_slot=12
+qwen36_residency sid=11395 pending_sid=11395 pending_origin=11395 hex=832c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=396 matched_blocks=2 resumed_at=128 checkpoint_slot=12
+qwen36_residency sid=11396 pending_sid=11396 pending_origin=11396 hex=842c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=397 matched_blocks=2 resumed_at=128 checkpoint_slot=12
+qwen36_residency sid=11397 pending_sid=11397 pending_origin=11397 hex=852c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11398 pending_sid=11398 pending_origin=11398 hex=862c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=399 matched_blocks=2 resumed_at=128 checkpoint_slot=12
+qwen36_residency sid=11399 pending_sid=11399 pending_origin=11399 hex=872c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11400 pending_sid=11400 pending_origin=11400 hex=882c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=401 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11401 pending_sid=11401 pending_origin=11401 hex=892c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=402 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11402 pending_sid=11402 pending_origin=11402 hex=8a2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=403 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11403 pending_sid=11403 pending_origin=11403 hex=8b2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=404 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11404 pending_sid=11404 pending_origin=11404 hex=8c2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=405 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11405 pending_sid=11405 pending_origin=11405 hex=8d2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11406 pending_sid=11406 pending_origin=11406 hex=8e2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=407 matched_blocks=2 resumed_at=128 checkpoint_slot=1
+qwen36_residency sid=11407 pending_sid=11407 pending_origin=11407 hex=8f2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11408 pending_sid=11408 pending_origin=11408 hex=902c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=409 matched_blocks=2 resumed_at=128 checkpoint_slot=6
+qwen36_residency sid=11409 pending_sid=11409 pending_origin=11409 hex=912c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=410 matched_blocks=2 resumed_at=128 checkpoint_slot=6
+qwen36_residency sid=11410 pending_sid=11410 pending_origin=11410 hex=922c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=411 matched_blocks=2 resumed_at=128 checkpoint_slot=6
+qwen36_residency sid=11411 pending_sid=11411 pending_origin=11411 hex=932c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=412 matched_blocks=2 resumed_at=128 checkpoint_slot=6
+qwen36_residency sid=11412 pending_sid=11412 pending_origin=11412 hex=942c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=413 matched_blocks=2 resumed_at=128 checkpoint_slot=6
+qwen36_residency sid=11413 pending_sid=11413 pending_origin=11413 hex=952c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11414 pending_sid=11414 pending_origin=11414 hex=962c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=415 matched_blocks=1 resumed_at=64 checkpoint_slot=10
+qwen36_residency sid=11415 pending_sid=11415 pending_origin=11415 hex=972c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11416 pending_sid=11416 pending_origin=11416 hex=982c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=417 matched_blocks=2 resumed_at=128 checkpoint_slot=11
+qwen36_residency sid=11417 pending_sid=11417 pending_origin=11417 hex=992c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=418 matched_blocks=2 resumed_at=128 checkpoint_slot=11
+qwen36_residency sid=11418 pending_sid=11418 pending_origin=11418 hex=9a2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=419 matched_blocks=2 resumed_at=128 checkpoint_slot=11
+qwen36_residency sid=11419 pending_sid=11419 pending_origin=11419 hex=9b2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=420 matched_blocks=2 resumed_at=128 checkpoint_slot=11
+qwen36_residency sid=11420 pending_sid=11420 pending_origin=11420 hex=9c2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=421 matched_blocks=2 resumed_at=128 checkpoint_slot=11
+qwen36_residency sid=11421 pending_sid=11421 pending_origin=11421 hex=9d2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11422 pending_sid=11422 pending_origin=11422 hex=9e2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=423 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11423 pending_sid=11423 pending_origin=11423 hex=9f2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11424 pending_sid=11424 pending_origin=11424 hex=a02c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=425 matched_blocks=2 resumed_at=128 checkpoint_slot=0
+qwen36_residency sid=11425 pending_sid=11425 pending_origin=11425 hex=a12c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=426 matched_blocks=2 resumed_at=128 checkpoint_slot=0
+qwen36_residency sid=11426 pending_sid=11426 pending_origin=11426 hex=a22c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=427 matched_blocks=2 resumed_at=128 checkpoint_slot=0
+qwen36_residency sid=11427 pending_sid=11427 pending_origin=11427 hex=a32c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=428 matched_blocks=2 resumed_at=128 checkpoint_slot=0
+qwen36_residency sid=11428 pending_sid=11428 pending_origin=11428 hex=a42c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=429 matched_blocks=2 resumed_at=128 checkpoint_slot=0
+qwen36_residency sid=11429 pending_sid=11429 pending_origin=11429 hex=a52c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11430 pending_sid=11430 pending_origin=11430 hex=a62c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=431 matched_blocks=1 resumed_at=64 checkpoint_slot=4
+qwen36_residency sid=11431 pending_sid=11431 pending_origin=11431 hex=a72c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11432 pending_sid=11432 pending_origin=11432 hex=a82c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=433 matched_blocks=2 resumed_at=128 checkpoint_slot=5
+qwen36_residency sid=11433 pending_sid=11433 pending_origin=11433 hex=a92c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=434 matched_blocks=2 resumed_at=128 checkpoint_slot=5
+qwen36_residency sid=11434 pending_sid=11434 pending_origin=11434 hex=aa2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=435 matched_blocks=2 resumed_at=128 checkpoint_slot=5
+qwen36_residency sid=11435 pending_sid=11435 pending_origin=11435 hex=ab2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=436 matched_blocks=2 resumed_at=128 checkpoint_slot=5
+qwen36_residency sid=11436 pending_sid=11436 pending_origin=11436 hex=ac2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=437 matched_blocks=2 resumed_at=128 checkpoint_slot=5
+qwen36_residency sid=11437 pending_sid=11437 pending_origin=11437 hex=ad2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11438 pending_sid=11438 pending_origin=11438 hex=ae2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=439 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11439 pending_sid=11439 pending_origin=11439 hex=af2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11440 pending_sid=11440 pending_origin=11440 hex=b02c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=441 matched_blocks=2 resumed_at=128 checkpoint_slot=10
+qwen36_residency sid=11441 pending_sid=11441 pending_origin=11441 hex=b12c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=442 matched_blocks=2 resumed_at=128 checkpoint_slot=10
+qwen36_residency sid=11442 pending_sid=11442 pending_origin=11442 hex=b22c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=443 matched_blocks=2 resumed_at=128 checkpoint_slot=10
+qwen36_residency sid=11443 pending_sid=11443 pending_origin=11443 hex=b32c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=444 matched_blocks=2 resumed_at=128 checkpoint_slot=10
+qwen36_residency sid=11444 pending_sid=11444 pending_origin=11444 hex=b42c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=445 matched_blocks=2 resumed_at=128 checkpoint_slot=10
+qwen36_residency sid=11445 pending_sid=11445 pending_origin=11445 hex=b52c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11446 pending_sid=11446 pending_origin=11446 hex=b62c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=447 matched_blocks=1 resumed_at=64 checkpoint_slot=14
+qwen36_residency sid=11447 pending_sid=11447 pending_origin=11447 hex=b72c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11448 pending_sid=11448 pending_origin=11448 hex=b82c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=449 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11449 pending_sid=11449 pending_origin=11449 hex=b92c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=450 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11450 pending_sid=11450 pending_origin=11450 hex=ba2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=451 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11451 pending_sid=11451 pending_origin=11451 hex=bb2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=452 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11452 pending_sid=11452 pending_origin=11452 hex=bc2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=453 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11453 pending_sid=11453 pending_origin=11453 hex=bd2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=454 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11454 pending_sid=11454 pending_origin=11454 hex=be2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11455 pending_sid=11455 pending_origin=11455 hex=bf2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11456 pending_sid=11456 pending_origin=11456 hex=c02c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=457 matched_blocks=2 resumed_at=128 checkpoint_slot=5
+qwen36_residency sid=11457 pending_sid=11457 pending_origin=11457 hex=c12c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=458 matched_blocks=2 resumed_at=128 checkpoint_slot=5
+qwen36_residency sid=11458 pending_sid=11458 pending_origin=11458 hex=c22c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=459 matched_blocks=2 resumed_at=128 checkpoint_slot=5
+qwen36_residency sid=11459 pending_sid=11459 pending_origin=11459 hex=c32c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=460 matched_blocks=2 resumed_at=128 checkpoint_slot=5
+qwen36_residency sid=11460 pending_sid=11460 pending_origin=11460 hex=c42c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=461 matched_blocks=2 resumed_at=128 checkpoint_slot=5
+qwen36_residency sid=11461 pending_sid=11461 pending_origin=11461 hex=c52c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=462 matched_blocks=2 resumed_at=128 checkpoint_slot=5
+qwen36_residency sid=11462 pending_sid=11462 pending_origin=11462 hex=c62c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11463 pending_sid=11463 pending_origin=11463 hex=c72c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11464 pending_sid=11464 pending_origin=11464 hex=c82c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=465 matched_blocks=2 resumed_at=128 checkpoint_slot=10
+qwen36_residency sid=11465 pending_sid=11465 pending_origin=11465 hex=c92c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=466 matched_blocks=2 resumed_at=128 checkpoint_slot=10
+qwen36_residency sid=11466 pending_sid=11466 pending_origin=11466 hex=ca2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=467 matched_blocks=2 resumed_at=128 checkpoint_slot=10
+qwen36_residency sid=11467 pending_sid=11467 pending_origin=11467 hex=cb2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=468 matched_blocks=2 resumed_at=128 checkpoint_slot=10
+qwen36_residency sid=11468 pending_sid=11468 pending_origin=11468 hex=cc2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=469 matched_blocks=2 resumed_at=128 checkpoint_slot=10
+qwen36_residency sid=11469 pending_sid=11469 pending_origin=11469 hex=cd2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=470 matched_blocks=2 resumed_at=128 checkpoint_slot=10
+qwen36_residency sid=11470 pending_sid=11470 pending_origin=11470 hex=ce2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11471 pending_sid=11471 pending_origin=11471 hex=cf2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11472 pending_sid=11472 pending_origin=11472 hex=d02c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=473 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11473 pending_sid=11473 pending_origin=11473 hex=d12c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=474 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11474 pending_sid=11474 pending_origin=11474 hex=d22c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=475 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11475 pending_sid=11475 pending_origin=11475 hex=d32c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=476 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11476 pending_sid=11476 pending_origin=11476 hex=d42c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=477 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11477 pending_sid=11477 pending_origin=11477 hex=d52c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=478 matched_blocks=2 resumed_at=128 checkpoint_slot=15
+qwen36_residency sid=11478 pending_sid=11478 pending_origin=11478 hex=d62c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11479 pending_sid=11479 pending_origin=11479 hex=d72c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11480 pending_sid=11480 pending_origin=11480 hex=d82c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=481 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=11481 pending_sid=11481 pending_origin=11481 hex=d92c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=482 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=11482 pending_sid=11482 pending_origin=11482 hex=da2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=483 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=11483 pending_sid=11483 pending_origin=11483 hex=db2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=484 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=11484 pending_sid=11484 pending_origin=11484 hex=dc2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=485 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=11485 pending_sid=11485 pending_origin=11485 hex=dd2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=486 matched_blocks=2 resumed_at=128 checkpoint_slot=4
+qwen36_residency sid=11486 pending_sid=11486 pending_origin=11486 hex=de2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11487 pending_sid=11487 pending_origin=11487 hex=df2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11488 pending_sid=11488 pending_origin=11488 hex=e02c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=489 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11489 pending_sid=11489 pending_origin=11489 hex=e12c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=490 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11490 pending_sid=11490 pending_origin=11490 hex=e22c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=491 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11491 pending_sid=11491 pending_origin=11491 hex=e32c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=492 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11492 pending_sid=11492 pending_origin=11492 hex=e42c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=493 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11493 pending_sid=11493 pending_origin=11493 hex=e52c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=494 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11494 pending_sid=11494 pending_origin=11494 hex=e62c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=495 matched_blocks=1 resumed_at=64 checkpoint_slot=9
+qwen36_residency sid=11495 pending_sid=11495 pending_origin=11495 hex=e72c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11496 pending_sid=11496 pending_origin=11496 hex=e82c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=497 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11497 pending_sid=11497 pending_origin=11497 hex=e92c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=498 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11498 pending_sid=11498 pending_origin=11498 hex=ea2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=499 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11499 pending_sid=11499 pending_origin=11499 hex=eb2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=500 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11500 pending_sid=11500 pending_origin=11500 hex=ec2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=501 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11501 pending_sid=11501 pending_origin=11501 hex=ed2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=502 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11502 pending_sid=11502 pending_origin=11502 hex=ee2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=503 matched_blocks=1 resumed_at=64 checkpoint_slot=15
+qwen36_residency sid=11503 pending_sid=11503 pending_origin=11503 hex=ef2c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=11504 pending_sid=11504 pending_origin=11504 hex=f02c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=505 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11505 pending_sid=11505 pending_origin=11505 hex=f12c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=506 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11506 pending_sid=11506 pending_origin=11506 hex=f22c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=507 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11507 pending_sid=11507 pending_origin=11507 hex=f32c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=508 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11508 pending_sid=11508 pending_origin=11508 hex=f42c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=509 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11509 pending_sid=11509 pending_origin=11509 hex=f52c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=510 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11510 pending_sid=11510 pending_origin=11510 hex=f62c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_prefix_reuse lane=0 slot=511 matched_blocks=1 resumed_at=64 checkpoint_slot=5
+qwen36_residency sid=11511 pending_sid=11511 pending_origin=11511 hex=f72c000000000000b10000000000000015010000000000000d00000000000000
+qwen36_serving spec_method=mtp (SPARK_QWEN36_SERVING_SPEC_METHOD=(unset))
+qwen36_residency sid=1500 pending_sid=1500 pending_origin=1500 hex=dc05000000000000b10000000000000015010000000000000d00000000000000
+qwen36_residency sid=1501 pending_sid=1501 pending_origin=1501 hex=dd05000000000000b10000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=127 t=1398401.552128 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=127 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[127..129]
+qwen36_spec accepted=0
+qwen36_residency sid=1600 pending_sid=1600 pending_origin=1600 hex=4006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=127 t=1398401.552144 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=127 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[127..129]
+qwen36_spec accepted=0
+qwen36_residency sid=1601 pending_sid=1601 pending_origin=1601 hex=4106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=128 t=1398401.552156 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=128 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[128..130]
+qwen36_spec accepted=0
+qwen36_residency sid=1602 pending_sid=1602 pending_origin=1602 hex=4206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=128 t=1398401.552168 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=128 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[128..130]
+qwen36_spec accepted=0
+qwen36_residency sid=1603 pending_sid=1603 pending_origin=1603 hex=4306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=129 t=1398401.552180 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=129 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[129..131]
+qwen36_spec accepted=0
+qwen36_residency sid=1604 pending_sid=1604 pending_origin=1604 hex=4406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=129 t=1398401.552191 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=129 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[129..131]
+qwen36_spec accepted=0
+qwen36_residency sid=1605 pending_sid=1605 pending_origin=1605 hex=4506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=130 t=1398401.552203 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=130 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[130..132]
+qwen36_spec accepted=0
+qwen36_residency sid=1606 pending_sid=1606 pending_origin=1606 hex=4606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=130 t=1398401.552219 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=130 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[130..132]
+qwen36_spec accepted=0
+qwen36_residency sid=1607 pending_sid=1607 pending_origin=1607 hex=4706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=131 t=1398401.552231 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=131 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[131..133]
+qwen36_spec accepted=0
+qwen36_residency sid=1608 pending_sid=1608 pending_origin=1608 hex=4806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=131 t=1398401.552243 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=131 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[131..133]
+qwen36_spec accepted=0
+qwen36_residency sid=1609 pending_sid=1609 pending_origin=1609 hex=4906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=132 t=1398401.552255 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=132 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[132..134]
+qwen36_spec accepted=0
+qwen36_residency sid=1610 pending_sid=1610 pending_origin=1610 hex=4a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=132 t=1398401.552267 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=132 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[132..134]
+qwen36_spec accepted=0
+qwen36_residency sid=1611 pending_sid=1611 pending_origin=1611 hex=4b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=133 t=1398401.552279 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=133 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[133..135]
+qwen36_spec accepted=0
+qwen36_residency sid=1612 pending_sid=1612 pending_origin=1612 hex=4c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=133 t=1398401.552291 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=133 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[133..135]
+qwen36_spec accepted=0
+qwen36_residency sid=1613 pending_sid=1613 pending_origin=1613 hex=4d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=134 t=1398401.552303 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=134 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[134..136]
+qwen36_spec accepted=0
+qwen36_residency sid=1614 pending_sid=1614 pending_origin=1614 hex=4e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=134 t=1398401.552321 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=134 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[134..136]
+qwen36_spec accepted=0
+qwen36_residency sid=1615 pending_sid=1615 pending_origin=1615 hex=4f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=135 t=1398401.552333 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=135 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[135..137]
+qwen36_spec accepted=0
+qwen36_residency sid=1616 pending_sid=1616 pending_origin=1616 hex=5006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=135 t=1398401.552345 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=135 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[135..137]
+qwen36_spec accepted=0
+qwen36_residency sid=1617 pending_sid=1617 pending_origin=1617 hex=5106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=136 t=1398401.552357 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=136 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[136..138]
+qwen36_spec accepted=0
+qwen36_residency sid=1618 pending_sid=1618 pending_origin=1618 hex=5206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=136 t=1398401.552369 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=136 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[136..138]
+qwen36_spec accepted=0
+qwen36_residency sid=1619 pending_sid=1619 pending_origin=1619 hex=5306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=137 t=1398401.552380 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=137 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[137..139]
+qwen36_spec accepted=0
+qwen36_residency sid=1620 pending_sid=1620 pending_origin=1620 hex=5406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=137 t=1398401.552392 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=137 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[137..139]
+qwen36_spec accepted=0
+qwen36_residency sid=1621 pending_sid=1621 pending_origin=1621 hex=5506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=138 t=1398401.552403 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=138 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[138..140]
+qwen36_spec accepted=0
+qwen36_residency sid=1622 pending_sid=1622 pending_origin=1622 hex=5606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=138 t=1398401.552415 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=138 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[138..140]
+qwen36_spec accepted=0
+qwen36_residency sid=1623 pending_sid=1623 pending_origin=1623 hex=5706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=139 t=1398401.552430 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=139 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[139..141]
+qwen36_spec accepted=0
+qwen36_residency sid=1624 pending_sid=1624 pending_origin=1624 hex=5806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=139 t=1398401.552441 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=139 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[139..141]
+qwen36_spec accepted=0
+qwen36_residency sid=1625 pending_sid=1625 pending_origin=1625 hex=5906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=140 t=1398401.552453 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=140 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[140..142]
+qwen36_spec accepted=0
+qwen36_residency sid=1626 pending_sid=1626 pending_origin=1626 hex=5a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=140 t=1398401.552464 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=140 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[140..142]
+qwen36_spec accepted=0
+qwen36_residency sid=1627 pending_sid=1627 pending_origin=1627 hex=5b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=141 t=1398401.552476 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=141 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[141..143]
+qwen36_spec accepted=0
+qwen36_residency sid=1628 pending_sid=1628 pending_origin=1628 hex=5c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=141 t=1398401.552487 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=141 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[141..143]
+qwen36_spec accepted=0
+qwen36_residency sid=1629 pending_sid=1629 pending_origin=1629 hex=5d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=142 t=1398401.552499 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=142 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[142..144]
+qwen36_spec accepted=0
+qwen36_residency sid=1630 pending_sid=1630 pending_origin=1630 hex=5e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=142 t=1398401.552510 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=142 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[142..144]
+qwen36_spec accepted=0
+qwen36_residency sid=1631 pending_sid=1631 pending_origin=1631 hex=5f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=143 t=1398401.552525 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=143 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[143..145]
+qwen36_spec accepted=0
+qwen36_residency sid=1632 pending_sid=1632 pending_origin=1632 hex=6006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=143 t=1398401.552537 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=143 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[143..145]
+qwen36_spec accepted=0
+qwen36_residency sid=1633 pending_sid=1633 pending_origin=1633 hex=6106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=144 t=1398401.552548 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=144 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[144..146]
+qwen36_spec accepted=0
+qwen36_residency sid=1634 pending_sid=1634 pending_origin=1634 hex=6206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=144 t=1398401.552560 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=144 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[144..146]
+qwen36_spec accepted=0
+qwen36_residency sid=1635 pending_sid=1635 pending_origin=1635 hex=6306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=145 t=1398401.552571 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=145 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[145..147]
+qwen36_spec accepted=0
+qwen36_residency sid=1636 pending_sid=1636 pending_origin=1636 hex=6406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=145 t=1398401.552589 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=145 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[145..147]
+qwen36_spec accepted=0
+qwen36_residency sid=1637 pending_sid=1637 pending_origin=1637 hex=6506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=146 t=1398401.552601 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=146 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[146..148]
+qwen36_spec accepted=0
+qwen36_residency sid=1638 pending_sid=1638 pending_origin=1638 hex=6606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=146 t=1398401.552612 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=146 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[146..148]
+qwen36_spec accepted=0
+qwen36_residency sid=1639 pending_sid=1639 pending_origin=1639 hex=6706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=147 t=1398401.552624 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=147 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[147..149]
+qwen36_spec accepted=0
+qwen36_residency sid=1640 pending_sid=1640 pending_origin=1640 hex=6806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=147 t=1398401.552639 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=147 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[147..149]
+qwen36_spec accepted=0
+qwen36_residency sid=1641 pending_sid=1641 pending_origin=1641 hex=6906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=148 t=1398401.552650 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=148 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[148..150]
+qwen36_spec accepted=0
+qwen36_residency sid=1642 pending_sid=1642 pending_origin=1642 hex=6a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=148 t=1398401.552662 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=148 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[148..150]
+qwen36_spec accepted=0
+qwen36_residency sid=1643 pending_sid=1643 pending_origin=1643 hex=6b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=149 t=1398401.552673 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=149 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[149..151]
+qwen36_spec accepted=0
+qwen36_residency sid=1644 pending_sid=1644 pending_origin=1644 hex=6c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=149 t=1398401.552685 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=149 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[149..151]
+qwen36_spec accepted=0
+qwen36_residency sid=1645 pending_sid=1645 pending_origin=1645 hex=6d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=150 t=1398401.552696 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=150 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[150..152]
+qwen36_spec accepted=0
+qwen36_residency sid=1646 pending_sid=1646 pending_origin=1646 hex=6e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=150 t=1398401.552708 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=150 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[150..152]
+qwen36_spec accepted=0
+qwen36_residency sid=1647 pending_sid=1647 pending_origin=1647 hex=6f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=151 t=1398401.552719 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=151 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[151..153]
+qwen36_spec accepted=0
+qwen36_residency sid=1648 pending_sid=1648 pending_origin=1648 hex=7006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=151 t=1398401.552731 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=151 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[151..153]
+qwen36_spec accepted=0
+qwen36_residency sid=1649 pending_sid=1649 pending_origin=1649 hex=7106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=152 t=1398401.552747 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=152 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[152..154]
+qwen36_spec accepted=0
+qwen36_residency sid=1650 pending_sid=1650 pending_origin=1650 hex=7206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=152 t=1398401.552758 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=152 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[152..154]
+qwen36_spec accepted=0
+qwen36_residency sid=1651 pending_sid=1651 pending_origin=1651 hex=7306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=153 t=1398401.552770 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=153 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[153..155]
+qwen36_spec accepted=0
+qwen36_residency sid=1652 pending_sid=1652 pending_origin=1652 hex=7406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=153 t=1398401.552781 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=153 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[153..155]
+qwen36_spec accepted=0
+qwen36_residency sid=1653 pending_sid=1653 pending_origin=1653 hex=7506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=154 t=1398401.552793 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=154 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[154..156]
+qwen36_spec accepted=0
+qwen36_residency sid=1654 pending_sid=1654 pending_origin=1654 hex=7606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=154 t=1398401.552805 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=154 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[154..156]
+qwen36_spec accepted=0
+qwen36_residency sid=1655 pending_sid=1655 pending_origin=1655 hex=7706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=155 t=1398401.552816 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=155 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[155..157]
+qwen36_spec accepted=0
+qwen36_residency sid=1656 pending_sid=1656 pending_origin=1656 hex=7806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=155 t=1398401.552827 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=155 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[155..157]
+qwen36_spec accepted=0
+qwen36_residency sid=1657 pending_sid=1657 pending_origin=1657 hex=7906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=156 t=1398401.552842 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=156 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[156..158]
+qwen36_spec accepted=0
+qwen36_residency sid=1658 pending_sid=1658 pending_origin=1658 hex=7a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=156 t=1398401.552854 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=156 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[156..158]
+qwen36_spec accepted=0
+qwen36_residency sid=1659 pending_sid=1659 pending_origin=1659 hex=7b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=157 t=1398401.552866 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=157 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[157..159]
+qwen36_spec accepted=0
+qwen36_residency sid=1660 pending_sid=1660 pending_origin=1660 hex=7c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=157 t=1398401.552877 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=157 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[157..159]
+qwen36_spec accepted=0
+qwen36_residency sid=1661 pending_sid=1661 pending_origin=1661 hex=7d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=158 t=1398401.552889 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=158 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[158..160]
+qwen36_spec accepted=0
+qwen36_residency sid=1662 pending_sid=1662 pending_origin=1662 hex=7e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=158 t=1398401.552901 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=158 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[158..160]
+qwen36_spec accepted=0
+qwen36_residency sid=1663 pending_sid=1663 pending_origin=1663 hex=7f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=159 t=1398401.552912 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=159 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[159..161]
+qwen36_spec accepted=0
+qwen36_residency sid=1664 pending_sid=1664 pending_origin=1664 hex=8006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=159 t=1398401.552924 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=159 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[159..161]
+qwen36_spec accepted=0
+qwen36_residency sid=1665 pending_sid=1665 pending_origin=1665 hex=8106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=160 t=1398401.552935 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=160 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[160..162]
+qwen36_spec accepted=0
+qwen36_residency sid=1666 pending_sid=1666 pending_origin=1666 hex=8206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=160 t=1398401.552950 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=160 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[160..162]
+qwen36_spec accepted=0
+qwen36_residency sid=1667 pending_sid=1667 pending_origin=1667 hex=8306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=161 t=1398401.552961 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=161 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[161..163]
+qwen36_spec accepted=0
+qwen36_residency sid=1668 pending_sid=1668 pending_origin=1668 hex=8406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=161 t=1398401.552973 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=161 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[161..163]
+qwen36_spec accepted=0
+qwen36_residency sid=1669 pending_sid=1669 pending_origin=1669 hex=8506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=162 t=1398401.552984 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=162 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[162..164]
+qwen36_spec accepted=0
+qwen36_residency sid=1670 pending_sid=1670 pending_origin=1670 hex=8606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=162 t=1398401.552996 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=162 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[162..164]
+qwen36_spec accepted=0
+qwen36_residency sid=1671 pending_sid=1671 pending_origin=1671 hex=8706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=163 t=1398401.553007 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=163 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[163..165]
+qwen36_spec accepted=0
+qwen36_residency sid=1672 pending_sid=1672 pending_origin=1672 hex=8806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=163 t=1398401.553019 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=163 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[163..165]
+qwen36_spec accepted=0
+qwen36_residency sid=1673 pending_sid=1673 pending_origin=1673 hex=8906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=164 t=1398401.553030 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=164 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[164..166]
+qwen36_spec accepted=0
+qwen36_residency sid=1674 pending_sid=1674 pending_origin=1674 hex=8a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=164 t=1398401.553042 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=164 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[164..166]
+qwen36_spec accepted=0
+qwen36_residency sid=1675 pending_sid=1675 pending_origin=1675 hex=8b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=165 t=1398401.553056 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=165 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[165..167]
+qwen36_spec accepted=0
+qwen36_residency sid=1676 pending_sid=1676 pending_origin=1676 hex=8c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=165 t=1398401.553068 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=165 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[165..167]
+qwen36_spec accepted=0
+qwen36_residency sid=1677 pending_sid=1677 pending_origin=1677 hex=8d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=166 t=1398401.553079 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=166 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[166..168]
+qwen36_spec accepted=0
+qwen36_residency sid=1678 pending_sid=1678 pending_origin=1678 hex=8e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=166 t=1398401.553091 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=166 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[166..168]
+qwen36_spec accepted=0
+qwen36_residency sid=1679 pending_sid=1679 pending_origin=1679 hex=8f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=167 t=1398401.553102 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=167 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[167..169]
+qwen36_spec accepted=0
+qwen36_residency sid=1680 pending_sid=1680 pending_origin=1680 hex=9006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=167 t=1398401.553114 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=167 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[167..169]
+qwen36_spec accepted=0
+qwen36_residency sid=1681 pending_sid=1681 pending_origin=1681 hex=9106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=168 t=1398401.553125 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=168 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[168..170]
+qwen36_spec accepted=0
+qwen36_residency sid=1682 pending_sid=1682 pending_origin=1682 hex=9206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=168 t=1398401.553137 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=168 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[168..170]
+qwen36_spec accepted=0
+qwen36_residency sid=1683 pending_sid=1683 pending_origin=1683 hex=9306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=169 t=1398401.553152 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=169 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[169..171]
+qwen36_spec accepted=0
+qwen36_residency sid=1684 pending_sid=1684 pending_origin=1684 hex=9406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=169 t=1398401.553164 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=169 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[169..171]
+qwen36_spec accepted=0
+qwen36_residency sid=1685 pending_sid=1685 pending_origin=1685 hex=9506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=170 t=1398401.553176 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=170 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[170..172]
+qwen36_spec accepted=0
+qwen36_residency sid=1686 pending_sid=1686 pending_origin=1686 hex=9606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=170 t=1398401.553187 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=170 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[170..172]
+qwen36_spec accepted=0
+qwen36_residency sid=1687 pending_sid=1687 pending_origin=1687 hex=9706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=171 t=1398401.553199 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=171 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[171..173]
+qwen36_spec accepted=0
+qwen36_residency sid=1688 pending_sid=1688 pending_origin=1688 hex=9806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=171 t=1398401.553210 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=171 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[171..173]
+qwen36_spec accepted=0
+qwen36_residency sid=1689 pending_sid=1689 pending_origin=1689 hex=9906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=172 t=1398401.553222 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=172 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[172..174]
+qwen36_spec accepted=0
+qwen36_residency sid=1690 pending_sid=1690 pending_origin=1690 hex=9a06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=172 t=1398401.553233 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=172 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[172..174]
+qwen36_spec accepted=0
+qwen36_residency sid=1691 pending_sid=1691 pending_origin=1691 hex=9b06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=173 t=1398401.553245 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=173 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[173..175]
+qwen36_spec accepted=0
+qwen36_residency sid=1692 pending_sid=1692 pending_origin=1692 hex=9c06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=173 t=1398401.553259 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=173 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[173..175]
+qwen36_spec accepted=0
+qwen36_residency sid=1693 pending_sid=1693 pending_origin=1693 hex=9d06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=174 t=1398401.553271 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=174 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[174..176]
+qwen36_spec accepted=0
+qwen36_residency sid=1694 pending_sid=1694 pending_origin=1694 hex=9e06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=174 t=1398401.553282 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=174 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[174..176]
+qwen36_spec accepted=0
+qwen36_residency sid=1695 pending_sid=1695 pending_origin=1695 hex=9f06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=175 t=1398401.553294 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=175 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[175..177]
+qwen36_spec accepted=0
+qwen36_residency sid=1696 pending_sid=1696 pending_origin=1696 hex=a006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=175 t=1398401.553305 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=175 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[175..177]
+qwen36_spec accepted=0
+qwen36_residency sid=1697 pending_sid=1697 pending_origin=1697 hex=a106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=176 t=1398401.553317 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=176 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[176..178]
+qwen36_spec accepted=0
+qwen36_residency sid=1698 pending_sid=1698 pending_origin=1698 hex=a206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=176 t=1398401.553328 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=176 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[176..178]
+qwen36_spec accepted=0
+qwen36_residency sid=1699 pending_sid=1699 pending_origin=1699 hex=a306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=177 t=1398401.553340 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=177 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[177..179]
+qwen36_spec accepted=0
+qwen36_residency sid=1700 pending_sid=1700 pending_origin=1700 hex=a406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=177 t=1398401.553355 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=177 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[177..179]
+qwen36_spec accepted=0
+qwen36_residency sid=1701 pending_sid=1701 pending_origin=1701 hex=a506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=178 t=1398401.553366 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=178 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[178..180]
+qwen36_spec accepted=0
+qwen36_residency sid=1702 pending_sid=1702 pending_origin=1702 hex=a606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=178 t=1398401.553378 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=178 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[178..180]
+qwen36_spec accepted=0
+qwen36_residency sid=1703 pending_sid=1703 pending_origin=1703 hex=a706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=179 t=1398401.553389 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=179 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[179..181]
+qwen36_spec accepted=0
+qwen36_residency sid=1704 pending_sid=1704 pending_origin=1704 hex=a806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=179 t=1398401.553401 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=179 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[179..181]
+qwen36_spec accepted=0
+qwen36_residency sid=1705 pending_sid=1705 pending_origin=1705 hex=a906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=180 t=1398401.553412 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=180 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[180..182]
+qwen36_spec accepted=0
+qwen36_residency sid=1706 pending_sid=1706 pending_origin=1706 hex=aa06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=180 t=1398401.553424 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=180 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[180..182]
+qwen36_spec accepted=0
+qwen36_residency sid=1707 pending_sid=1707 pending_origin=1707 hex=ab06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=181 t=1398401.553435 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=181 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[181..183]
+qwen36_spec accepted=0
+qwen36_residency sid=1708 pending_sid=1708 pending_origin=1708 hex=ac06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=181 t=1398401.553447 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=181 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[181..183]
+qwen36_spec accepted=0
+qwen36_residency sid=1709 pending_sid=1709 pending_origin=1709 hex=ad06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=182 t=1398401.553462 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=182 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[182..184]
+qwen36_spec accepted=0
+qwen36_residency sid=1710 pending_sid=1710 pending_origin=1710 hex=ae06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=182 t=1398401.553473 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=182 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[182..184]
+qwen36_spec accepted=0
+qwen36_residency sid=1711 pending_sid=1711 pending_origin=1711 hex=af06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=183 t=1398401.553485 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=183 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[183..185]
+qwen36_spec accepted=0
+qwen36_residency sid=1712 pending_sid=1712 pending_origin=1712 hex=b006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=183 t=1398401.553496 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=183 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[183..185]
+qwen36_spec accepted=0
+qwen36_residency sid=1713 pending_sid=1713 pending_origin=1713 hex=b106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=184 t=1398401.553507 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=184 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[184..186]
+qwen36_spec accepted=0
+qwen36_residency sid=1714 pending_sid=1714 pending_origin=1714 hex=b206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=184 t=1398401.553519 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=184 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[184..186]
+qwen36_spec accepted=0
+qwen36_residency sid=1715 pending_sid=1715 pending_origin=1715 hex=b306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=185 t=1398401.553530 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=185 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[185..187]
+qwen36_spec accepted=0
+qwen36_residency sid=1716 pending_sid=1716 pending_origin=1716 hex=b406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=185 t=1398401.553542 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=185 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[185..187]
+qwen36_spec accepted=0
+qwen36_residency sid=1717 pending_sid=1717 pending_origin=1717 hex=b506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=186 t=1398401.553553 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=186 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[186..188]
+qwen36_spec accepted=0
+qwen36_residency sid=1718 pending_sid=1718 pending_origin=1718 hex=b606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=186 t=1398401.553569 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=186 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[186..188]
+qwen36_spec accepted=0
+qwen36_residency sid=1719 pending_sid=1719 pending_origin=1719 hex=b706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=187 t=1398401.553581 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=187 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[187..189]
+qwen36_spec accepted=0
+qwen36_residency sid=1720 pending_sid=1720 pending_origin=1720 hex=b806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=187 t=1398401.553592 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=187 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[187..189]
+qwen36_spec accepted=0
+qwen36_residency sid=1721 pending_sid=1721 pending_origin=1721 hex=b906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=188 t=1398401.553606 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=188 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[188..190]
+qwen36_spec accepted=0
+qwen36_residency sid=1722 pending_sid=1722 pending_origin=1722 hex=ba06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=188 t=1398401.553617 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=188 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[188..190]
+qwen36_spec accepted=0
+qwen36_residency sid=1723 pending_sid=1723 pending_origin=1723 hex=bb06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=189 t=1398401.553629 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=189 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[189..191]
+qwen36_spec accepted=0
+qwen36_residency sid=1724 pending_sid=1724 pending_origin=1724 hex=bc06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=189 t=1398401.553641 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=189 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[189..191]
+qwen36_spec accepted=0
+qwen36_residency sid=1725 pending_sid=1725 pending_origin=1725 hex=bd06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=190 t=1398401.553653 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=190 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[190..192]
+qwen36_spec accepted=0
+qwen36_residency sid=1726 pending_sid=1726 pending_origin=1726 hex=be06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=190 t=1398401.553667 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=190 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[190..192]
+qwen36_spec accepted=0
+qwen36_residency sid=1727 pending_sid=1727 pending_origin=1727 hex=bf06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=191 t=1398401.553679 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=191 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[191..193]
+qwen36_spec accepted=0
+qwen36_residency sid=1728 pending_sid=1728 pending_origin=1728 hex=c006000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=191 t=1398401.553691 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=191 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[191..193]
+qwen36_spec accepted=0
+qwen36_residency sid=1729 pending_sid=1729 pending_origin=1729 hex=c106000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=192 t=1398401.553702 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=192 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[192..194]
+qwen36_spec accepted=0
+qwen36_residency sid=1730 pending_sid=1730 pending_origin=1730 hex=c206000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=192 t=1398401.553714 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=192 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[192..194]
+qwen36_spec accepted=0
+qwen36_residency sid=1731 pending_sid=1731 pending_origin=1731 hex=c306000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=193 t=1398401.553725 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=193 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[193..195]
+qwen36_spec accepted=0
+qwen36_residency sid=1732 pending_sid=1732 pending_origin=1732 hex=c406000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=193 t=1398401.553737 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=193 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[193..195]
+qwen36_spec accepted=0
+qwen36_residency sid=1733 pending_sid=1733 pending_origin=1733 hex=c506000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=194 t=1398401.553749 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=194 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[194..196]
+qwen36_spec accepted=0
+qwen36_residency sid=1734 pending_sid=1734 pending_origin=1734 hex=c606000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=194 t=1398401.553760 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=194 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[194..196]
+qwen36_spec accepted=0
+qwen36_residency sid=1735 pending_sid=1735 pending_origin=1735 hex=c706000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=195 t=1398401.553775 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=195 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[195..197]
+qwen36_spec accepted=0
+qwen36_residency sid=1736 pending_sid=1736 pending_origin=1736 hex=c806000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=195 t=1398401.553786 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=195 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[195..197]
+qwen36_spec accepted=0
+qwen36_residency sid=1737 pending_sid=1737 pending_origin=1737 hex=c906000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=196 t=1398401.553798 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=196 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[196..198]
+qwen36_spec accepted=0
+qwen36_residency sid=1738 pending_sid=1738 pending_origin=1738 hex=ca06000000000000b20000000000000015010000000000000d00000000000000
+qwen36_spec first_draft_miss lane=0 C0=4200 draft0=0 policy=recover
+qwen36_spec_diag lane=0 base_position=196 t=1398401.553810 C0=4200 accepted=0 drafts=[0,0,0,0,0,0,0,0] emitted=[4242,4242,0,0,0,0,0,0]
+qwen36_spec round_commit lane=0 base_position=196 accepted=0 min_accepted=0 credited=3 ceiling=1 positions=[196..198]
+qwen36_spec accepted=0
+qwen36_residency sid=1739 pending_sid=1739 pending_origin=1739 hex=cb06000000000000b20000000000000015010000000000000d00000000000000
+b25_pressure ok=25 refused=0
+b512_pressure ok=512 refused=0
+spec_decode ok=140 rounds, lane rows grown to 4/4 blocks
+f1_conservation reuse-on: 140 rounds, max attached=5, final free=59
+f1_conservation reuse-off: 140 rounds, max attached=4, final free=60
+f1_conservation PASS
+f2_feasibility: refused UP FRONT (need 5, free 2) before any Cover
+f2_feasibility PASS
+s512_scale lanes=512 rounds_per_lane=160 matched_blocks=384 appended_tokens=42752 evicted_blocks=262 free=6
+s512_conservation PASS
+qwen36 prefix-cache gate PASS

@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -8,6 +9,8 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#include "sparkpipe/spark_row_layout.h"
+#include "sparkpipe/spark_glm52_dspark.h"
 
 #ifndef GLM52_EXPERT_WEIGHT_CODEC
 #error "GLM52_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -27,9 +30,18 @@
 /* Deployment-facing geometry: 8 flat ranks, one per TP rank, single PP
  * stage. The residentd fans each submission out to every rank
  * (PARALLEL_FANOUT) and the firmware stage stays STAGE_COUNT=1; the
- * adapter maps flat rank -> tp_rank and pins the firmware stage to 0. */
+ * adapter maps flat rank -> tp_rank and pins the firmware stage to 0.
+ * The qwen36 TP1-build doctrine applies verbatim: a single-rank serving
+ * shape is a compile-time variant (-DSPARK_GLM52_SERVING_STAGE_COUNT=1
+ * -DSPARK_GLM52_SERVING_TP_DEGREE=1), and DFlash2 speculation is gated to
+ * exactly that shape - drafts materialize inside the one rank's module, so
+ * a fanout deployment would need a draft transport that does not exist. */
+#ifndef SPARK_GLM52_SERVING_STAGE_COUNT
 #define SPARK_GLM52_SERVING_STAGE_COUNT 8u
+#endif
+#ifndef SPARK_GLM52_SERVING_TP_DEGREE
 #define SPARK_GLM52_SERVING_TP_DEGREE 8u
+#endif
 #define SPARK_GLM52_SERVING_STAGE_LAYERS \
 	{78u,78u,78u,78u,78u,78u,78u,78u}
 #define SPARK_GLM52_SERVING_TOPOLOGY_FLAG \
@@ -62,7 +74,15 @@ static const char *const SparkGlm52ServingConfigurationMembers[] =
 	"execution_row_capacity",
 	"tp_degree",
 	"tp_rank",
-	"tp_collective"
+	/* v4: DFlash2 speculator stanza. enabled/draft_count ride every config
+	 * so a deployment declares its speculation posture explicitly; the
+	 * drafter artifact paths stay with the module's environment contract
+	 * (dspark_pack_path records the reference for the manifest audit).
+	 * tp_collective is REQUIRED for tp_degree > 1 and FORBIDDEN at 1 - it
+	 * left the exact-member list so the single-rank shape can omit it. */
+	"speculation_enabled",
+	"speculation_draft_count",
+	"dspark_pack_path"
 };
 
 typedef struct SparkGlm52ServingPending
@@ -84,7 +104,36 @@ typedef struct SparkGlm52ServingPending
 	uint32_t last_row_by_lane[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t output_token_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	/* Speculation frame payload (spec_active != 0u): the expanded verify /
+	 * draft-after batch lives here because the async chain reads it after
+	 * submit() returns, exactly like resident_slots above. */
+	uint32_t spec_active;
+	uint32_t spec_verify;
+	uint32_t spec_rows_per_lane;
+	uint32_t spec_row_token_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	uint32_t spec_draft_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT];
+	uint32_t spec_accept_counts[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t spec_row_positions[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	uint64_t spec_row_sequence_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	SparkGlm52ResidentDecodeStageDsparkDraftView spec_view;
+	SparkGlm52ResidentDecodeStageBatchView spec_batch;
+	SparkGlm52ResidentDecodeStageFrameContext spec_context;
+	SparkModelDriverBuffer spec_buffer;
+	SparkModelDriverFrame spec_frame;
 } SparkGlm52ServingPending;
+
+/* Per resident-slot speculation state: the latest drafts awaiting verify,
+ * the accept depth the NEXT submission must stamp, and the policy tap
+ * generation handed out when those drafts landed. */
+typedef struct SparkGlm52ServingLaneSpec
+{
+	uint64_t sequence_id;
+	uint64_t tap_generation;
+	uint32_t have_drafts;
+	uint32_t draft_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT];
+	uint32_t last_accepted_depth;
+	uint8_t pending_stamp;
+} SparkGlm52ServingLaneSpec;
 
 typedef struct SparkGlm52ServingState
 {
@@ -115,6 +164,15 @@ typedef struct SparkGlm52ServingState
 	char tp_collective_backend_path[SPARK_INTERNAL_PATH_BYTES];
 	uint32_t tp_collective_control_port_base;
 	SparkModelServingRuntimeLimits runtime_limits;
+	/* DFlash2 speculation (see SPARK_GLM52_SERVING_TP_DEGREE note: armed
+	 * only for the single-rank build). */
+	uint32_t speculate;
+	uint32_t speculate_draft_rows;
+	char dspark_pack_path[SPARK_INTERNAL_PATH_BYTES];
+	SparkGlm52ServingLaneSpec spec_lanes[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t *spec_stamp_scratch;
+	SparkGlm52DsparkSpeculator speculator;
+	SparkGlm52DsparkSequenceState spec_sequence_states[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkGlm52ServingPending pending[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkGlm52ServingState;
 
@@ -122,7 +180,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_GLM52_SERVING_TOPOLOGY_FLAG | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_GLM52_SERVING_TOPOLOGY_FLAG | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION,
 	.stage_count = SPARK_GLM52_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -136,7 +194,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.max_input_row_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
 	.max_resident_sequence_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
-	.max_speculative_token_count = 0u,
+	.max_speculative_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
 	.adapter_id = SPARK_GLM52_SERVING_ADAPTER_ID,
 	.model_id = SPARK_GLM52_SERVING_MODEL_ID,
@@ -148,16 +206,9 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.boundary_sideband_bytes_per_sequence = {0u}
 };
 
-static SparkStatus SparkGlm52ServingJsonUnsigned(
-	const SparkJsonDocument *document,
-	int32_t root,
-	const char *name,
-	uint32_t *value)
-{
-	int32_t token;
-	token = SparkJsonFindObjectMember(document,root,name);
-	return(token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt32(document,token,value));
-}
+/* Unsigned member reads go through the shared SparkJsonGetUInt32Member
+ * (runtime/json.c) - the naming/audit round retired this adapter's private
+ * copy, which every serving adapter had duplicated byte-for-byte. */
 
 static SparkStatus SparkGlm52ServingLoadTpAlgorithms(
 	const SparkJsonDocument *document,
@@ -355,14 +406,14 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 	if ( collective_identifier == 0u )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	state->tp_collective_identifier = collective_identifier;
-	status = SparkGlm52ServingJsonUnsigned(document,object,"listen_port",&port);
+	status = SparkJsonGetUInt32Member(document,object,"listen_port",&port);
 	if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
 	state->tp_listen_port = (uint16_t)port;
-	status = SparkGlm52ServingJsonUnsigned(document,object,"connect_timeout_milli",&state->tp_connect_timeout_milli);
+	status = SparkJsonGetUInt32Member(document,object,"connect_timeout_milli",&state->tp_connect_timeout_milli);
 	if ( status != SPARK_STATUS_OK || state->tp_connect_timeout_milli == 0u )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	status = SparkGlm52ServingJsonUnsigned(document,object,"operation_timeout_milli",&state->tp_operation_timeout_milli);
+	status = SparkJsonGetUInt32Member(document,object,"operation_timeout_milli",&state->tp_operation_timeout_milli);
 	if ( status != SPARK_STATUS_OK || state->tp_operation_timeout_milli == 0u )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
 	token = SparkJsonFindObjectMember(document,object,"peer_hosts");
@@ -413,11 +464,11 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 		status = SparkGlm52ServingLoadTpAlgorithms(document,object,
 			&state->tp_collective_topology);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm52ServingJsonUnsigned(document,object,
+			status = SparkJsonGetUInt32Member(document,object,
 				"direct_all_to_all_max_payload_bytes",
 				&state->tp_collective_topology.direct_all_to_all_max_payload_bytes);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm52ServingJsonUnsigned(document,object,
+			status = SparkJsonGetUInt32Member(document,object,
 				"split_ring_min_payload_bytes",
 				&state->tp_collective_topology.split_ring_min_payload_bytes);
 		if ( status == SPARK_STATUS_OK &&
@@ -458,7 +509,7 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkJsonValidateObjectMembersExact(&document,root,SparkGlm52ServingConfigurationMembers,(uint32_t)(sizeof(SparkGlm52ServingConfigurationMembers) / sizeof(SparkGlm52ServingConfigurationMembers[0])));
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingJsonUnsigned(&document,root,"schema_version",&schema_version);
+		status = SparkJsonGetUInt32Member(&document,root,"schema_version",&schema_version);
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_GLM52_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	token = status == SPARK_STATUS_OK ? SparkJsonFindObjectMember(&document,root,"model_revision") : -1;
@@ -471,17 +522,51 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK )
 		status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(&document,token,&relative_stage_pack_path);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
+		status = SparkJsonGetUInt32Member(&document,root,"max_sequence_positions",max_sequence_positions);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingJsonUnsigned(&document,root,"execution_row_capacity",execution_row_capacity);
+		status = SparkJsonGetUInt32Member(&document,root,"execution_row_capacity",execution_row_capacity);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingJsonUnsigned(&document,root,"tp_degree",tp_degree);
+		status = SparkJsonGetUInt32Member(&document,root,"tp_degree",tp_degree);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingJsonUnsigned(&document,root,"tp_rank",tp_rank);
+		status = SparkJsonGetUInt32Member(&document,root,"tp_rank",tp_rank);
 	if ( status == SPARK_STATUS_OK && (*tp_degree == 0u || *tp_rank >= *tp_degree) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK && *tp_degree != 1u )
+	{
+		if ( SparkJsonFindObjectMember(&document,root,"tp_collective") < 0 )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm52ServingLoadTpCollective(&document,root,runtime_root,state,*tp_degree);
+	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingLoadTpCollective(&document,root,runtime_root,state,*tp_degree);
+	{
+		token = SparkJsonFindObjectMember(&document,root,"speculation_enabled");
+		if ( status == SPARK_STATUS_OK && token >= 0 )
+		{
+			bool enabled = false;
+			if ( SparkJsonGetBoolean(&document,token,&enabled) == SPARK_STATUS_OK )
+				state->speculate = enabled ? 1u : 0u;
+			else
+				status = SPARK_STATUS_SCHEMA_ERROR;
+		}
+		token = SparkJsonFindObjectMember(&document,root,"speculation_draft_count");
+		if ( status == SPARK_STATUS_OK && token >= 0 )
+			status = SparkJsonGetUInt32(&document,token,&state->speculate_draft_rows);
+		token = SparkJsonFindObjectMember(&document,root,"dspark_pack_path");
+		if ( status == SPARK_STATUS_OK && token >= 0 )
+		{
+			char *recorded = 0;
+			status = SparkJsonCopyString(&document,token,&recorded);
+			if ( status == SPARK_STATUS_OK )
+			{
+				if ( strlen(recorded) >= sizeof(state->dspark_pack_path) )
+					status = SPARK_STATUS_SCHEMA_ERROR;
+				else
+					memcpy(state->dspark_pack_path,recorded,strlen(recorded) + 1u);
+			}
+			free(recorded);
+		}
+	}
 	SparkJsonDocumentDestroy(&document);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
@@ -496,8 +581,10 @@ static SparkStatus SparkGlm52ServingValidateRowOrder(
 {
 	uint8_t seen[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
 	uint64_t last_position[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint32_t lane,row,wave,maximum;
-	uint32_t counts[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
+	uint32_t occurrence_counts[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t wave_last_rows[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	SparkRowLayoutDenseLaneContext dense;
+	uint32_t lane,row;
 	for (row=0u; row<submission->row_count; row++)
 	{
 		lane = submission->row_lane_indices[row];
@@ -507,20 +594,11 @@ static SparkStatus SparkGlm52ServingValidateRowOrder(
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		seen[lane] = 1u;
 		last_position[lane] = submission->row_positions[row];
-		counts[lane]++;
 	}
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 		return(submission->row_count == submission->active_sequence_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-	maximum = 0u;
-	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		if ( counts[lane] > maximum )
-			maximum = counts[lane];
-	row = 0u;
-	for (wave=0u; wave<maximum; wave++)
-		for (lane=0u; lane<submission->active_sequence_count; lane++)
-			if ( counts[lane] > wave && (row >= submission->row_count || submission->row_lane_indices[row++] != lane) )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(row == submission->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+	dense.lane_count = submission->active_sequence_count;
+	return(SparkRowLayoutValidateRoundMajor(submission->row_count,submission->active_sequence_count,submission->row_lane_indices,SparkRowLayoutDenseLaneOrdinal,&dense,occurrence_counts,wave_last_rows));
 }
 
 static SparkGlm52ServingPending *SparkGlm52ServingReservePending(
@@ -572,6 +650,87 @@ static void SparkGlm52ServingOrphanDriverCompletion(
 		state->orphan_completion_count++;
 }
 
+
+/*
+ * Speculative completion: credit the accepted emissions, park the fresh
+ * drafts for the next round, and close the policy round.
+ *
+ * Verify rounds: the module computed each lane's accept depth from the same
+ * emissions this code reads; the policy's ResolveVerifierTokens recomputes
+ * it from (drafts, emissions) as an independent check - a divergence is an
+ * internal error, never a silent mis-credit. Committed tokens per lane are
+ * the first `committed` emissions; a multi-lane round credits the MINIMUM
+ * across lanes so the interleaved token_ids layout (lane * tps + step)
+ * stays dense, exactly qwen36's min-accepted doctrine. Non-verify rounds
+ * (draft-after decode) credit one token and only refresh the drafts.
+ */
+static void SparkGlm52ServingCompleteSpeculative(
+	SparkGlm52ServingPending *pending,
+	SparkGlm52ServingState *state,
+	SparkModelServingCompletion *completion)
+{
+	SparkGlm52ResidentDecodeStageDsparkDraftView *view = &pending->spec_view;
+	uint32_t lane,index,rows_per_lane,minimum_committed;
+	rows_per_lane = pending->spec_rows_per_lane;
+	minimum_committed = rows_per_lane;
+	for (lane=0u; lane<pending->active_sequence_count && pending->spec_verify != 0u; lane++)
+	{
+		uint32_t slot = pending->resident_slots[lane];
+		SparkGlm52ServingLaneSpec *spec = &state->spec_lanes[slot];
+		uint32_t draft_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT];
+		uint32_t emissions[SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_VERIFY_ROW_COUNT];
+		SparkGlm52DsparkVerifyResult verify_result;
+		if ( view->verified_row_count != rows_per_lane )
+		{
+			completion->status = SPARK_STATUS_INTERNAL_ERROR;
+			return;
+		}
+		for (index=1u; index<rows_per_lane; index++)
+			draft_ids[index - 1u] = spec->draft_ids[index];
+		for (index=0u; index<rows_per_lane; index++)
+			emissions[index] = pending->output_token_ids[index * pending->active_sequence_count + lane];
+		if ( SparkGlm52DsparkResolveVerifierTokens(draft_ids,rows_per_lane - 1u,emissions,rows_per_lane,&verify_result) != SPARK_STATUS_OK ||
+			verify_result.committed_token_count != view->accepted_token_counts[lane] + 1u )
+		{
+			completion->status = SPARK_STATUS_INTERNAL_ERROR;
+			return;
+		}
+		spec->last_accepted_depth = view->accepted_token_counts[lane];
+		spec->pending_stamp = 1u;
+		if ( verify_result.committed_token_count < minimum_committed )
+			minimum_committed = verify_result.committed_token_count;
+		(void)SparkGlm52DsparkCompleteVerify(&state->speculator,spec->sequence_id,&verify_result);
+	}
+	for (lane=0u; lane<pending->active_sequence_count; lane++)
+	{
+		uint32_t slot = pending->resident_slots[lane];
+		SparkGlm52ServingLaneSpec *spec = &state->spec_lanes[slot];
+		uint32_t index;
+		if ( view->draft_token_count > 0u )
+		{
+			spec->sequence_id = pending->spec_row_sequence_ids[lane];
+			for (index=0u; index<SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT; index++)
+				spec->draft_ids[index] = index < view->draft_token_count ? view->draft_token_ids[lane * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT + index] : 0u;
+			spec->have_drafts = 1u;
+			(void)SparkGlm52DsparkMarkVerifierTapsReady(&state->speculator,pending->request_id,spec->sequence_id,pending->sequence_position,&spec->tap_generation);
+		}
+	}
+	if ( pending->spec_verify != 0u )
+	{
+		completion->tokens_per_sequence = minimum_committed;
+		completion->token_count = pending->active_sequence_count * minimum_committed;
+		completion->accepted_token_count = 0u;
+		completion->completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
+		for (lane=0u; lane<pending->active_sequence_count; lane++)
+		{
+			uint32_t committed = state->spec_lanes[pending->resident_slots[lane]].last_accepted_depth + 1u;
+			completion->accepted_token_count += committed;
+			for (index=0u; index<minimum_committed; index++)
+				completion->token_ids[lane * minimum_committed + index] = pending->output_token_ids[index * pending->active_sequence_count + lane];
+		}
+	}
+}
+
 static void SparkGlm52ServingDriverCompletion(
 	void *completion_context,
 	const SparkModelDriverCompletion *driver_completion)
@@ -607,7 +766,9 @@ static void SparkGlm52ServingDriverCompletion(
 		completion.residency = driver_completion->residency;
 	else
 		state->orphan_completion_count++;
-	if ( state->stage_index + 1u == SPARK_GLM52_SERVING_STAGE_COUNT && completion.status == SPARK_STATUS_OK )
+	if ( state->stage_index + 1u == SPARK_GLM52_SERVING_STAGE_COUNT && completion.status == SPARK_STATUS_OK && pending->spec_active != 0u )
+		SparkGlm52ServingCompleteSpeculative(pending,state,&completion);
+	if ( state->stage_index + 1u == SPARK_GLM52_SERVING_STAGE_COUNT && completion.status == SPARK_STATUS_OK && pending->spec_active == 0u )
 	{
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->active_sequence_count;
@@ -655,6 +816,7 @@ static void SparkGlm52ServingDestroy(void *adapter_state)
 	if ( state->driver.interface != 0 && state->driver.interface->destroy != 0 && state->driver_instance != 0 )
 		state->driver.interface->destroy(state->driver_instance);
 	SparkUnloadModelDriver(&state->driver);
+	free(state->spec_stamp_scratch);
 	free(state);
 }
 
@@ -713,6 +875,103 @@ static SparkStatus SparkGlm52ServingValidateConfiguration(
 	if ( configuration->stage_index >= SPARK_GLM52_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_GLM52_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
+}
+
+/*
+ * Arm DFlash2 speculation. The single-rank build is a hard gate, not a
+ * preference: drafts materialize inside THIS process's module (the drafter
+ * archive links into the firmware stage), so a fanout deployment would need
+ * a draft-transport layer that does not exist yet - refuse loudly instead of
+ * drafting on one rank and silently verifying garbage on the others. The
+ * draft-row count is the verify depth: rows = [anchor, d_1..d_{rows-1}] out
+ * of the drafter's 7 emitted ids whose first slot restates the anchor.
+ */
+static SparkStatus SparkGlm52ServingPolicyDraftFunction(
+	void *context,
+	const SparkGlm52DsparkDraftRequest *request,
+	SparkGlm52DsparkDraftResult *result);
+
+static SparkStatus SparkGlm52ServingArmSpeculation(SparkGlm52ServingState *state,uint32_t tp_degree)
+{
+	SparkGlm52DsparkSpeculatorConfiguration configuration;
+	SparkGlm52DsparkModelContract contract;
+	const char *kill_switch;
+	uint32_t lane;
+	SparkStatus status;
+	if ( state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	kill_switch = getenv("SPARK_GLM52_SERVING_SPECULATE");
+	if ( kill_switch != 0 && strcmp(kill_switch,"0") == 0 )
+		state->speculate = 0u;
+	if ( state->speculate == 0u )
+		return(SPARK_STATUS_OK);
+	if ( SPARK_GLM52_SERVING_TP_DEGREE != 1u || SPARK_GLM52_SERVING_STAGE_COUNT != 1u || tp_degree != 1u )
+	{
+		(void)fprintf(stderr,"GLM52-ADAPTER speculation_refused tp_degree=%u stage_count=%u reason=draft_transport_not_wired_for_fanout\n",SPARK_GLM52_SERVING_TP_DEGREE,SPARK_GLM52_SERVING_STAGE_COUNT);
+		return(SPARK_STATUS_UNSUPPORTED);
+	}
+	if ( state->speculate_draft_rows == 0u )
+		state->speculate_draft_rows = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_VERIFY_ROW_COUNT;
+	if ( state->speculate_draft_rows < 2u || state->speculate_draft_rows > SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_VERIFY_ROW_COUNT )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	state->spec_stamp_scratch = (uint32_t *)malloc((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint32_t));
+	if ( state->spec_stamp_scratch == 0 )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( SparkGlm52DsparkBuildDefaultModelContract(&contract) != SPARK_STATUS_OK )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_DSPARK_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_GLM52_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES;
+	configuration.sequence_state_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
+	configuration.default_speculative_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT;
+	configuration.minimum_confidence_milli = SPARK_GLM52_DSPARK_DEFAULT_MIN_CONFIDENCE_MILLI;
+	configuration.realtime_minimum_confidence_milli = SPARK_GLM52_DSPARK_DEFAULT_REALTIME_MIN_CONFIDENCE_MILLI;
+	configuration.sequence_states = state->spec_sequence_states;
+	configuration.draft_function = SparkGlm52ServingPolicyDraftFunction;
+	configuration.draft_context = state;
+	configuration.model_contract = &contract;
+	status = SparkGlm52DsparkInitialize(&state->speculator,&configuration);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	for (lane=0u; lane<SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
+		state->spec_lanes[lane].sequence_id = 0u;
+	(void)fprintf(stderr,"GLM52-ADAPTER speculation_ready draft_rows=%u pack=%s\n",state->speculate_draft_rows,state->dspark_pack_path[0] != '\0' ? state->dspark_pack_path : "(module env)");
+	return(SPARK_STATUS_OK);
+}
+
+/* Policy transport stub: the drafter runs inside the module behind a frame,
+ * so by the time the adapter calls EnsureDraft for a lane the ids already
+ * sit in that lane's spec record. Confidence reports full until the draft
+ * view carries the backend's per-token confidence upstream. */
+static SparkStatus SparkGlm52ServingPolicyDraftFunction(
+	void *context,
+	const SparkGlm52DsparkDraftRequest *request,
+	SparkGlm52DsparkDraftResult *result)
+{
+	SparkGlm52ServingState *state;
+	uint32_t index;
+	state = (SparkGlm52ServingState *)context;
+	if ( state == 0 || request == 0 || result == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (index=0u; index<SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; index++)
+	{
+		SparkGlm52ServingLaneSpec *spec = &state->spec_lanes[index];
+		if ( spec->have_drafts != 0u && spec->sequence_id == request->sequence_id )
+		{
+			uint32_t count;
+			count = request->requested_token_count;
+			if ( count > SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT )
+				count = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT;
+			result->token_count = count;
+			for (index=0u; index<count; index++)
+			{
+				result->token_ids[index] = spec->draft_ids[index];
+				result->confidence_milli[index] = SPARK_GLM52_DSPARK_CONFIDENCE_MILLI_ONE;
+			}
+			return(SPARK_STATUS_OK);
+		}
+	}
+	return(SPARK_STATUS_NOT_FOUND);
 }
 
 static SparkStatus SparkGlm52ServingInitialize(
@@ -777,6 +1036,8 @@ static SparkStatus SparkGlm52ServingInitialize(
 		state->node_context.kv_backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
 		status = SparkGlm52ServingLoadDriver(state,configuration);
 	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52ServingArmSpeculation(state,tp_degree);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkGlm52ServingDestroy(state);
@@ -874,6 +1135,231 @@ static void SparkGlm52ServingBuildFrame(
 	frame->completion_context = pending;
 }
 
+
+/* ---- DFlash2 speculative decode (single-rank build) ---------------- */
+
+/* Admission evaluates the EXPANDED frame (the module sees rows_per_lane x
+ * lanes), never the one-row engine submission - same doctrine as qwen36's
+ * SparkAdmissionRequestFromFrame path. */
+static SparkStatus SparkGlm52ServingSubmitSpeculativeFrame(
+	SparkGlm52ServingState *state,
+	SparkModelDriverFrame *frame)
+{
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	SparkStatus status;
+	status = SparkAdmissionRequestFromFrame(state->program->program_id,frame,0,0u,&request);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkAdmissionEvaluateAndApply(state->driver.interface,state->driver_instance,&request,frame,&decision);
+	if ( status == SPARK_STATUS_OK )
+		status = state->program->submit(state->driver_instance,frame);
+	return(status);
+}
+
+/*
+ * Build ONE driver frame out of a one-row-per-lane decode submission.
+ *
+ * With drafts on every lane: a SPECULATIVE_VERIFY prefill-kind frame of
+ * speculate_draft_rows rows per lane - row 0 restates the engine's token
+ * (the previous round's committed emission), rows 1.. carry the drafter's
+ * proposals d_1..d_{rows-1}; d_0 is never fed (it predicts the position the
+ * committed token already occupies - qwen36's MTP doctrine). The accept
+ * stamps of the PREVIOUS verify round ride along for the lanes that owe
+ * them; the module reconciles its position books from them before the
+ * ordinary continuity check runs.
+ *
+ * Without drafts (bootstrap or post-fallback): a plain one-row decode frame
+ * with DSPARK_DRAFT_AFTER, which stages this round's anchor into the
+ * drafter and produces the block the NEXT submission verifies.
+ */
+static SparkStatus SparkGlm52ServingSubmitSpeculative(
+	SparkGlm52ServingState *state,
+	const SparkModelServingSubmission *submission,
+	SparkGlm52ServingPending *pending)
+{
+	SparkGlm52ResidentDecodeStageBatchView *batch;
+	SparkGlm52ResidentDecodeStageFrameContext *context;
+	SparkGlm52ResidentDecodeStageDsparkDraftView *view;
+	SparkModelDriverBuffer *buffer;
+	SparkModelDriverFrame *frame;
+	uint32_t lane,row,rows_per_lane,all_have_drafts;
+	all_have_drafts = 1u;
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+	{
+		uint32_t slot = submission->lanes[lane].resident_sequence_slot;
+		if ( slot >= SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || state->spec_lanes[slot].have_drafts == 0u || state->spec_lanes[slot].sequence_id != submission->row_sequence_ids[submission->row_lane_indices[lane]] )
+			all_have_drafts = 0u;
+	}
+	rows_per_lane = all_have_drafts != 0u ? state->speculate_draft_rows : 1u;
+	pending->spec_active = 1u;
+	pending->spec_verify = all_have_drafts;
+	pending->spec_rows_per_lane = rows_per_lane;
+	batch = &pending->spec_batch;
+	batch->abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION;
+	batch->descriptor_bytes = sizeof(*batch);
+	batch->active_sequence_count = submission->active_sequence_count;
+	batch->row_resident_slots = pending->resident_slots;
+	batch->row_positions = pending->spec_row_positions;
+	batch->row_sequence_ids = pending->spec_row_sequence_ids;
+	batch->token_ids = pending->spec_row_token_ids;
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+	{
+		uint32_t slot = submission->lanes[lane].resident_sequence_slot;
+		uint64_t position = submission->row_positions[submission->row_lane_indices[lane]];
+		uint64_t sequence = submission->row_sequence_ids[submission->row_lane_indices[lane]];
+		uint32_t token = submission->token_ids[submission->row_lane_indices[lane]];
+		for (row=0u; row<rows_per_lane; row++)
+		{
+			uint32_t expanded = row * submission->active_sequence_count + lane;
+			pending->resident_slots[expanded] = slot;
+			pending->spec_row_positions[expanded] = position + row;
+			pending->spec_row_sequence_ids[expanded] = sequence;
+			pending->spec_row_token_ids[expanded] = row == 0u ? token :
+				state->spec_lanes[slot].draft_ids[row];
+		}
+	}
+	batch->row_count = rows_per_lane * submission->active_sequence_count;
+	view = &pending->spec_view;
+	memset(view,0,sizeof(*view));
+	view->abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION;
+	view->descriptor_bytes = sizeof(*view);
+	view->requested_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT;
+	view->sequence_id = submission->sequence_id;
+	view->base_position = batch->row_positions[0];
+	view->draft_token_ids = pending->spec_draft_ids;
+	view->accepted_token_counts = pending->spec_accept_counts;
+	context = &pending->spec_context;
+	memset(context,0,sizeof(*context));
+	context->abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
+	context->descriptor_bytes = sizeof(*context);
+	context->batch = batch;
+	context->dspark_draft = view;
+	if ( all_have_drafts != 0u )
+	{
+		context->flags = SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL |
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY |
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER;
+		context->previous_verify_accepts = state->spec_stamp_scratch;
+		for (row=0u; row<batch->row_count; row++)
+		{
+			uint32_t slot = pending->resident_slots[row];
+			state->spec_stamp_scratch[row] = state->spec_lanes[slot].pending_stamp != 0u ?
+				state->spec_lanes[slot].last_accepted_depth : 0u;
+		}
+	}
+	else
+	{
+		context->flags = SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER;
+		context->previous_verify_accepts = 0;
+		/* This round moves every lane's anchor: stale drafts would verify
+		 * against a context that no longer exists. Drop them. */
+		for (lane=0u; lane<SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
+			state->spec_lanes[lane].have_drafts = 0u;
+	}
+	buffer = &pending->spec_buffer;
+	memset(buffer,0,sizeof(*buffer));
+	buffer->flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
+	buffer->address = pending->output_token_ids;
+	buffer->bytes = (uint64_t)batch->row_count * sizeof(uint32_t);
+	frame = &pending->spec_frame;
+	memset(frame,0,sizeof(*frame));
+	frame->request_id = submission->request_id;
+	frame->sequence_id = submission->sequence_id;
+	frame->sequence_position = submission->sequence_position;
+	frame->deadline_time_ns = submission->deadline_time_ns;
+	frame->active_slot_count = submission->active_sequence_count;
+	frame->new_token_count = batch->row_count;
+	frame->tokens_per_sequence = submission->tokens_per_sequence;
+	frame->priority = submission->priority;
+	frame->flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
+	frame->program_id = state->program->program_id;
+	frame->execution_stream = state->execution_stream;
+	frame->buffers = buffer;
+	frame->buffer_count = 1u;
+	frame->residency = submission->residency;
+	frame->user_context = context;
+	frame->completion_function = SparkGlm52ServingDriverCompletion;
+	frame->completion_context = pending;
+	return(SparkGlm52ServingSubmitSpeculativeFrame(state,frame));
+}
+
+
+/*
+ * Draft retrieval for the lanes of this submission: drive the neutral
+ * policy (taps were marked ready when the drafting frame completed), pull
+ * the verified draft through GetDraft, and park it in the lane's spec
+ * record for the frame builder. A lane whose policy state says "no draft"
+ * simply reports no drafts - the caller falls back to a plain drafting
+ * round for EVERY lane, keeping the batch shape uniform.
+ */
+static SparkStatus SparkGlm52ServingPrepareVerifyDrafts(
+	SparkGlm52ServingState *state,
+	const SparkModelServingSubmission *submission)
+{
+	SparkGlm52DsparkDraftRequest request;
+	SparkGlm52DsparkDraftResult draft;
+	uint32_t lane;
+	SparkStatus status;
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+	{
+		uint32_t slot = submission->lanes[lane].resident_sequence_slot;
+		SparkGlm52ServingLaneSpec *spec;
+		if ( slot >= SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		spec = &state->spec_lanes[slot];
+		if ( spec->have_drafts == 0u )
+			continue;
+		memset(&request,0,sizeof(request));
+		request.abi_version = SPARK_DSPARK_ABI_VERSION;
+		request.descriptor_bytes = SPARK_GLM52_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES;
+		request.requested_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT;
+		request.sequence_id = submission->row_sequence_ids[submission->row_lane_indices[lane]];
+		request.tap_generation = spec->tap_generation;
+		status = SparkGlm52DsparkEnsureDraft(&state->speculator,&request);
+		if ( status == SPARK_STATUS_NOT_FOUND )
+		{
+			spec->have_drafts = 0u;
+			continue;
+		}
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		status = SparkGlm52DsparkGetDraft(&state->speculator,request.sequence_id,&draft);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		if ( draft.token_count < state->speculate_draft_rows )
+		{
+			/* Policy (confidence) truncated below the verify depth: not a
+			 * failure, just nothing worth verifying this round. */
+			spec->have_drafts = 0u;
+			continue;
+		}
+		memcpy(spec->draft_ids,draft.token_ids,sizeof(spec->draft_ids));
+		spec->sequence_id = request.sequence_id;
+		spec->have_drafts = 1u;
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkGlm52ServingForgetAllSpeculation(
+	SparkGlm52ServingState *state,
+	const SparkModelServingSubmission *submission)
+{
+	uint32_t lane;
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+	{
+		uint32_t slot = submission->lanes[lane].resident_sequence_slot;
+		SparkGlm52ServingLaneSpec *spec;
+		if ( slot >= SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT )
+			continue;
+		spec = &state->spec_lanes[slot];
+		if ( spec->sequence_id != 0u )
+			(void)SparkGlm52DsparkCancelSequence(&state->speculator,spec->sequence_id);
+		memset(spec,0,sizeof(*spec));
+	}
+}
+
 static SparkStatus SparkGlm52ServingAdmit(
 	SparkGlm52ServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -908,6 +1394,17 @@ static SparkStatus SparkGlm52ServingSubmit(
 	pending = SparkGlm52ServingReservePending(state,submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
+	if ( state->speculate != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->active_sequence_count >= 1u )
+	{
+		status = SparkGlm52ServingPrepareVerifyDrafts(state,submission);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm52ServingSubmitSpeculative(state,submission,pending);
+		if ( status != SPARK_STATUS_OK )
+			pending->active = 0u;
+		return(status);
+	}
+	if ( state->speculate != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		SparkGlm52ServingForgetAllSpeculation(state,submission);
 	SparkGlm52ServingBuildFrame(state,submission,pending,&batch,&context,&buffer,&frame);
 	status = SparkGlm52ServingAdmit(state,submission,&frame);
 	if ( status == SPARK_STATUS_OK )

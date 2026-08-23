@@ -1,0 +1,1167 @@
+"""Enforce a monotonic ceiling for authored non-test source code.
+
+Generated build products, test fixtures, documentation, caches, and package
+receipts are not implementation source and must never move this number. The
+previous counter included generated model-driver C files under build/, so its
+ceiling changed depending on which tests had already run. This counter is
+stable before and after a clean build.
+"""
+import sys
+from pathlib import Path
+
+# Phase 6 adds lossless per-lane completion ownership at the rank boundary,
+# completion-to-transaction correlation, synchronous-callback deferral, strict
+# final-event identity propagation, and rollback-safe submission ownership. The
+# exact authored-source count at landing is retained so later changes remain
+# monotonic. The follow-up audit landing adds tools/verify_package_manifest.py
+# and wires more gates into tools/gates.sh; the ceiling moves by those
+# tooling lines (86), no production source grew for its own sake.
+# The audit-fix landing adds the mbarrier phase-parity model coverage
+# (test_mma_fragment_mapping.c, +89), the deterministic-failure paths and their
+# tests (node/backend.c +128, test_ring_service_backend_transactions.c +168),
+# the shared smem opt-in (runtime/launch.h, qwen/kimi call sites net negative),
+# and the new no-python/manifest gates; ceiling moves to the exact count.
+# The performance wave adds the tensor-map descriptor cache
+# (runtime/gemm_descriptor_cache.h + test), the comms arena (runtime/arena.h +
+# test), the RDMA eviction/batching/lane-rotation logic in rdma.cu, the BF16
+# collective path, and docs/archive/PERF_ROADMAP_2026-08-01.md; ceiling moves to the
+# exact count again.
+# The NVMe JIT KV tier (cache/nvme_tier.c + include/sparkpipe/spark_nvme_tier.h,
+# the tier-3 manager and lookahead prefetcher, ~1080 lines with its build and
+# gate wiring) lands alongside concurrent performance-wave work; ceiling moves
+# to the exact count again.
+# The K3 pack format V2 redesign (tools/k3_pack.py +400: the fused KDA
+# projection emission, the interleaved weight+scale relay and its numpy-free
+# fallback, the layout validator; tools/generate_k3_contract.py and
+# generated_config.h gain the pack constants and geometry checks) lands its
+# tooling lines; ceiling moves to the exact count.
+# The DSv4 driver audit (2026-08-01) adds the exact attention-bytes
+# derivation and the sparse-launch/rope-span defect flags to
+# inference/llms/deepseek_v4/layer.cuh (+70), the Pro launch-budget note to
+# deepseek_v4_pro/unity.cu (+10), and the two dsv4 gates' wiring in
+# tools/gates.sh and Makefile (+6); the quantise dedup is net-negative code.
+# Ceiling moves by those 86 lines; concurrent agents' in-flight growth is
+# theirs to account.
+# The D10 graph/gather/head wave adds the stage-side CUDA graph cache and
+# replay contract (inference/stage/graph_replay.h, 451), the dispatch.cu
+# capture wiring (+202 net), the head's chunked top-k pair with its launcher
+# (inference/kernels/head.cuh, +231), the route row-indirection consumer
+# contract (inference/kernels/route.cuh, +65), the slot-state field docs
+# (+9), and their build/gate wiring (Makefile +6, tools/gates.sh +10,
+# tools/build_head_topk.sh 25). Ceiling moves by those 999 lines; concurrent
+# agents' in-flight growth remains theirs to account.
+# The NVMe KV sizing work adds the estimator behind the dedicate-the-external
+# drive decision (tools/nvme_kv_estimate.py, 407), the tier's default
+# bandwidth/step-time assumptions from that analysis
+# (include/sparkpipe/spark_nvme_tier.h +19), and the gate wiring (Makefile +1,
+# tools/gates.sh +4); the test and the doc are excluded by construction.
+# Ceiling moves by those 431 lines; concurrent agents' in-flight growth
+# remains theirs to account.
+# The topology-switch landing adds the TP16<->PP16 switch state machine and
+# its strategy-neutral KV key scheme (scheduler/topology_switch.c, 646;
+# include/sparkpipe/spark_topology_switch.h, 350) and its build/gate wiring
+# (Makefile +6, tools/gates.sh +3) - 1,005 lines; the balance of the
+# exact-count move is concurrent agents' in-flight growth, theirs to
+# account.
+# The hardware-topology landing adds the generator/validator
+# (tools/generate_topology.py, 562) and its two generated C artifacts
+# (deployment/include/sparkpipe/spark_hardware_topology.h, 111;
+# deployment/src/spark_hardware_topology_tables.c, 285) plus the gate
+# wiring (Makefile +1, tools/gates.sh +3) - 962 lines; the balance of the
+# exact-count move is concurrent agents' in-flight growth, theirs to
+# account.
+# The batch-variant landing adds the per-family tuning headers
+# (modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_batch_tuning.h, 131;
+# modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_batch_tuning.h, 115),
+# the variant rules and all/variants/publish_variants targets in the glm52
+# module Makefile (+95 net), the firmware header's composed module ID (+5),
+# and the build/gate wiring (Makefile +25, tools/gates.sh +21) - 392 lines;
+# the test is excluded by construction. The balance of the exact-count move
+# is concurrent agents' in-flight growth, theirs to account.
+# The TP/PP recipe wave adds the recipe generator (tools/generate_recipe.py,
+# 914: family adapters over the authoritative contracts, the stage_plan.c
+# balancing DP mirrored, the k3 shard table built from k3_shard's own sets)
+# and its gate wiring (tools/gates.sh +8, Makefile +1) - 923 lines; the
+# test, the naming doc, the mimo25 contract JSON and the generated
+# examples/recipes/ set are excluded by construction. The balance of the
+# exact-count move is concurrent agents' in-flight growth, theirs to
+# account.
+# The K3 pack V2 shard wave teaches the TP tooling the V2 tensor names and
+# slice rules (tools/k3_shard.py +118: the fused q|k|v|beta per-section
+# head slice, the replicated decay|gate fusion, the interleaved expert
+# cell/k-tile splits with manifest repricing; tools/generate_recipe.py +8:
+# the scale-less expert classes and the 128-element k-tile group;
+# model-families/k3/.../spark_k3_tp_shard_table.h +4: the V2 suffixes) -
+# 130 lines. The balance of the exact-count move is concurrent agents'
+# in-flight growth, theirs to account.
+# The prefill/decode estimator landing adds tools/perf_estimate.py (649:
+# the launch/wall/collective/transport overlay on top of the imported
+# nvme_kv_estimate byte law, the chunked-prefill model, and the sm_121a
+# ptxas occupancy check) and its gate wiring (Makefile +1,
+# tools/gates.sh +4) - 654 lines; the test and the estimates doc are
+# excluded by construction. Ceiling moves to the exact count.
+# Phase 7 adds generation-carrying arena ownership, the explicit NVMe write
+# lifecycle and cancellation/heap safety, fail-closed KV access diagnostics,
+# contract-derived performance geometry, deterministic Git-independent source
+# packaging, and conservative receipt-bound status checks. The test and
+# documentation and raw qualification-evidence lines are excluded by
+# construction; 125577 is the exact authored non-test source count in the
+# deterministic Phase 7 source package.
+# Phase 10 adds the hardware-truth system: exact question/plan/policy/closure
+# tooling, GB10 CUDA and NVMe probes, production-provider wrappers, PMTU and
+# topology probes, deterministic runner configuration, exact cell execution,
+# node preflight, and the CUDA 13 sm_121a compile gate. The implementation
+# increase is the qualification surface needed to replace hard-coded GB10 and
+# network assumptions with retained measurements. The final source-package
+# hygiene correction adds explicit qualification-evidence file classification
+# (+16 authored lines); 134623 is the exact authored non-test source count at
+# the Phase 10 handoff landing.
+# The runtime-completion overlay adds the all-participant staged transaction
+# controller, acknowledged final-event ownership, bounded selective-ACK
+# transmission window, exact model-provider operation/precision contracts,
+# deterministic overlay application, and the no-undefined GLM final-artifact
+# receipt tools. The model-specific contracts remain under their family
+# directories rather than contaminating the neutral runtime. 136812 was the
+# resulting ceiling.
+# The host-portability correction adds 115 authored lines: portable PMTU wire
+# conversion and connected-UDP probing, plus Linux-AIO guards and Darwin host
+# syntax support for the NVMe probe. 136927 is the exact post-fix count.
+# The CUDA 13 hardware-probe correction replaces the removed device-property
+# memory clock field with cudaDeviceGetAttribute and fixes the NVMe candidate
+# names emitted by the qualification planner; the graph receipt contract adds
+# the planned mode to the emitted parameters; the remaining CUDA receipt
+# contracts add atomic mode and SMEM/thermal iteration fields; 136954 is the
+# exact count.
+# The hardware-probe failure contract adds the CUDA telemetry parser, the
+# NVMe device fingerprint correction, and fail-closed runner status handling;
+# the CUDA fingerprint contract correction adds the CPU-equivalent seed and
+# index reduction; 137007 is the exact count.
+# The DSV4 Flash resident-stage landing adds the stage runner, CUDA doorway,
+# stage-pack wire format, per-rank source staging, and driver smoke gate. Its
+# source is the implementation needed for a real PP13 stage, not generated
+# receipts or test fixtures; 146181 is the exact count after that landing.
+# The generalized model-serving landing adds the model-neutral adapter,
+# manifest, resident IPC/client/daemon, two-phase PP pipeline client, batched
+# token request engine, and pipeline-runtime topology builder. DSV4 contributes
+# only its family-owned adapter and frame translation. The 8,052-line increase
+# is this versioned ownership boundary plus fail-closed distributed lifecycle;
+# the final 43 lines make batch-engine shutdown cancel and release every live
+# resident sequence before destruction. Six module-build lines keep Make
+# targets relative and therefore valid in space-containing workspaces. This is
+# not generated output or a model-specific copy of common serving code; 154239
+# is the exact count after the landing.
+# The multi-session wave (merged as one span) adds the DSV4 Pro bring-up
+# (stagepacks, requant tool, runbook tooling), the Qwen 3.8 Max family and
+# resident stage, the Qwen TP4 deployment/bench tooling, the GLM52 TP8
+# additive path, and the devcycle coordination harness; the DRY consolidation
+# on the unified branch removes the duplicated Pro TP16 stagepack and
+# re-parameterizes the TP4xPP4 driver; 158323 is the exact count after that
+# consolidation lands.
+# The main wave landed after that consolidation adds the K3 TP4 runner,
+# dispatch, pack probe, and deploy/compile-gate tooling (#666), the GLM52
+# B8 and B16 batch classes with adapter variant-bucket fixes (#668, #669),
+# and the GLM52 accuracy fixes (#665); the unified branch folds it in as-is
+# (the shared-gemm provenance rename is line-neutral). 162375 is the exact
+# count after the integration; ceiling moves with it.
+# The DSV4 contract reconciliation teaches the generator the merged Pro
+# reality (first-light BF16 activations, FP8-expert codec selectability,
+# the Pro alias guard in the Flash header, the first-light note in the
+# normalized contract) so --check reproduces the checked-in files
+# byte-exact; 162411 is the exact count after it lands. Ceiling moves
+# with it.
+# The six-session integration wave (K3 TP4 layer-0, DSV4 DSpark
+# speculative loop, DSV4 Pro GA migration, Qwen 3.8 Max phase 2, Qwen TP4
+# phase 2, DSpark design docs) lands on the unified branch as merged
+# session machinery, plus the generator reconciliation for the GA 0813
+# checkpoint (3 packed draft layers, KV codec selectability); 165675 is
+# the exact count after the integration. Ceiling moves with it.
+# The DSpark drafter neutralization adds the per-model config header
+# (spark_dspark_drafter.h), the GLM52 selector/alias rewrite, and the
+# pinning test; 165811 is the exact count after it lands. Ceiling moves
+# with it.
+# The speculation-tree neutralization moves the tree machinery to
+# include/sparkpipe/spark_speculation_tree.h (GLM52 shape stays in the
+# family header with aliases) and adds its pinning test; 165905 is the
+# exact count after it lands. Ceiling moves with it.
+# The dispatch-policy extraction moves the 767-line neutral core into
+# include/sparkpipe/spark_speculation_policy.h + src/spark_speculation_policy.c
+# (GLM52 module shrinks to the 80 tap-plan lines; aliases keep consumers
+# untouched) and adds its pinning test; 165975 is the exact count after it
+# lands. Ceiling moves with it.
+# The glm52 contract generator gains the PP tap-plan constants in its
+# emission table; 165977 is the exact count after it lands. Ceiling moves
+# with it.
+# The shared packer core lands (tools/spark_pack_common.py, 309 lines)
+# and five packers migrate onto it (net -144); 166142 is the exact count
+# after it lands. Ceiling moves with it.
+# tools/devcycle (host-recovery / fleet-ops scripts) is reclassified out of
+# the authored-code budget (-1157); 164985 is the exact count after it.
+# The admission core lands (spark_admission.h 210 + spark_admission.c 188)
+# and collapses four serving-adapter admit wrappers + two module gates onto
+# it (net +319: +148 wrapper lines, -227 deleted); 165304 is the exact count
+# after it lands. The ceiling moves with it: the core is the DRY base the
+# KV seam, scheduler tables, and model gates build on.
+# The KV seam lands SparkKvModelTable + SparkKvBackendInitialize
+# (spark_kv_model_table.h 74 + cache/kv_model_table.c 93, +4 Makefile,
+# +1 sources.mk) as the single token-free fill point all four model adopters
+# consume; 165476 is the exact count after it lands. The DRY payoff (four
+# per-model fills -> one) realizes as model agents migrate onto it, so the
+# seam is additive now, net-negative later.
+# The GLM52 JIT-KV migration lands the complete unit: the model-family KV
+# geometry fill (spark_glm52_kv_geometry.h), the block-major Glm52Kv geometry
+# (layer.cuh), and the resident-stage rewrite (SparkGlm52PageCopy copy
+# primitive, SparkGlm52KvInitialize -> SparkKvBackendInitialize, and the
+# SparkGlm52AdmissionPredicate prepare/commit/abort tail). It is additive now:
+# the kernel's identity device page_table and the kv_cache device pool (now the
+# arena's key_device_base) are still the kernel's view, so the raw-init deletion
+# arrives with the page_table data-flow follow-up, not here. 165735 is the exact
+# count.
+# fleet_swap.sh converts the residentd launch from setsid to systemctl (+2)
+# so the OOM guardrail cgroup actually applies; 165737 is the exact count.
+# The GLM52 JIT-KV completion half lands (frame-completion CompleteLane /
+# RollbackLaneTransaction in the async callback, kv_backing_directory flows
+# from the serving config with a lenient default, ABI 3->4) (+42); the
+# net-negative deletion still rides with the page-table data-flow unit.
+# 165779 is the exact count.
+# The completion-tail now surfaces publish/rollback failures (page-cache status
+# flows into async->completion.status instead of (void)) (+2); 165781 is the
+# exact count.
+# The qwen36 speculation fix lands (+55): verify/replay frames feed the
+# committed token C0 instead of the redundant first draft (a first-draft miss
+# no longer poisons or zeroes the chain), the gate becomes a named
+# configurable policy (recover default / strict legacy for A/B), misses are
+# surfaced in telemetry + the completion model_extension receipt, and the
+# build gate publishes MTP_LAYER_COUNT=1 GDN_SNAPSHOT_SLOT_COUNT=8 so the GPU
+# validator exercises the MTP chain + GDN snapshot path it never ran before.
+# 165836 is the exact count.
+# The qwen36 TP1 serving-adapter build switch lands (+15):
+# SPARK_QWEN36_SERVING_TP_DEGREE becomes a #ifndef-overridable knob (4 default
+# TP4 unchanged / 1 TP1 single-rank / 0 legacy PP), and adapter_id, stage_count,
+# and stage_layer_counts derive from it so a TP1 adapter compiles from the same
+# source with zero TP4 behavior change. 165851 is the exact count.
+# The serial-TP replay harness lands (tests/serial_tp_replay.{h,c} + pinning
+# test + design doc): host collective emulation for iterative single-spark
+# correctness runs while the fleet is down. Harness body is in tests/ (excluded);
+# only the Makefile wiring (+5) counts. 165856 is the exact count.
+# The dsv4-flash k-sweep plumbing lands (+100): SPEC_STEP becomes an
+# overridable bucket knob (buckets 6/9/11 added to the allowlist + firmware
+# JSONs + serving-adapter sha map + build scripts) so k=5/8/10 drivers build
+# alongside k=7 for the DSpark sweep. 165956 is the exact count.
+# The dsv4-pro DSpark native-pass skeleton lands (+268): pinned drafter
+# shapes (128 attn heads / 1 MLA KV head / 512 head-dim / 3072 intermediate
+# from the GA rank-pack geometry), two new kernels (mean-reduction, main-KV
+# window write, confidence) + the mHC draft chain wired behind the MTP guard,
+# and the deployment-spec dataset names fixed (stale .b1024/.bf16 paths).
+# 166224 is the exact count.
+# The dsv4-pro DSpark pinning path lands (+16): the four draft shapes move into
+# dsv4_pro_authoritative.json + the contract generator (byte-exact) + the
+# generated model header, the neutral drafter table remaps to the Pro macros,
+# and a pinning test mirrors test_dspark_drafter_pin.c. 166240 is the exact
+# count.
+# The k3 w2 sharder+layer fix lands (+10): the w2 GEMM arg order matches the
+# pack layout (w2=[latent N, inter K]) at all three launch sites, and the
+# sharder output-splits w2 on whole 16-neuron cells (TP16 diagonal subgrid,
+# [224,192] per rank instead of full 3584). 166250 is the exact count.
+# The TILE_K=32 GEMM fallback lands (+58): LmGemmSelectTileK (preferred/32/0)
+# + LmGemmLaunchTileK in the shared launcher with a host-safe pinning test;
+# the kernel body was already TILE_K-generic. Unblocks K3 serial-TP16. 166308
+# is the exact count.
+# dsv4-flash spec-completion fixes land (+1): lane advance 1+accepted
+# unconditionally, max_speculative_token_count = SPEC_STEP (not block size),
+# and the completion schema gate widened by the speculative allowance.
+# 166309 is the exact count.
+# The k3 GEMM integration lands (+7): K3Project switches to LmGemmLaunchTileK
+# and unity.cu instantiates the TILE_K=32 kernel variants - the K3 half of the
+# fallback. 166316 is the exact count.
+# The qwen36 validator admits TP1 full-width into the whole-stack tier and
+# derives head_stage from STAGE_COUNT (+6); the TP1 topology knob's validation
+# path. 166322 is the exact count.
+# The client continuation-lease fix lands (+8): the lease advances by the
+# COMPLETION's emitted count (1+accepted) instead of the submission's chain
+# width, mirroring the residentd - the last gate before the dsv4-flash
+# k-sweep. 166330 is the exact count.
+# The k3 per-half serial-TP rework lands (+179): K3LaunchSliceHalf + the
+# stateful runner StepHalf (per-layer phase 0/1 sweeps with host all_reduce
+# between halves) - the mechanically-correct 9-AR-point TP16 replay plan. The
+# recurrent state-carry numerical bug is tracked separately. 166509 is the
+# exact count.
+# The qwen36 KV predicate fix lands (+5): a passing KV check now marks the
+# decision ACCEPTED explicitly (an untouched decision kept its init
+# rejection_reason and every passing admit was silently rejected - the
+# module_admit smoke's real root cause). 166514 is the exact count.
+# The continuation-lease generation fix lands (+5): the residentd fences the
+# lease with the CURRENT client generation (not the route-reservation-time
+# one), so reconnects during async spec bursts no longer leave a stale
+# lease_client_generation - the last k-sweep gate. 166519 is the exact count.
+# The residentd-side lease advance fix lands (+3): advance by the completion's
+# EMITTED count (1 + accepted, clamped) instead of the coordinator-rank chain
+# width - the batch side already mirrored this (c8f76e5), closing the final
+# spec-continuation divergence. 166522 is the exact count.
+# The k3 dense_row_offset fix lands (+1): the half-step path now writes the
+# per-step dense offsets (was fresh-zero, so every grouped GEMM produced zero
+# rows - the real missing-fold root cause). 166523 is the exact count.
+# The residentd poll-gating fix lands (+4): POLLOUT is always requested for a
+# connected client so the queued hello ACK flushes in the same iteration that
+# read the HELLO - the last k-sweep gate. 166527 is the exact count.
+# The k3 SiTU-sharding fix lands (+38): w1 becomes input-split (full cell
+# axis) and w2 output-split (full k axis) so gate|up is all-reduced BEFORE
+# the non-linear SiTU - the production diagonal layout applied SiTU to
+# rank-sliced partials (sum(SiTU(p)) != SiTU(sum(p))). 166565 is the exact
+# count.
+# dsv4-flash spec-verify fixes land (+11): the lane advance drops the
+# double-counted anchor (folded by the 1-row frame continuity), and the
+# completion schema gate applies to DECODE only (RELEASE carries
+# tokens_per_sequence == 0 by contract). 166576 is the exact count.
+# The k3 production phase-2 collective lands (+75): the gate|up all-reduce
+# before SiTU with the widened fused/staging buffers (24576 u16) - the
+# production-side completion of the SiTU numerics fix. 166651 is the exact
+# count.
+# The k3 phase-1 gemm init fix lands (+7): the fresh K3LayerLatentMoe call's
+# w2 launch now memsets and sets every field the grouped GEMM reads (the
+# uninitialised scale_a returned -41 on the golden's first MoE layer).
+# 166658 is the exact count.
+# The dsv4-flash QKV exactness fix lands (+5): the FP8 decode linear routes
+# ALL row counts to the exact batched kernel family instead of the MXFP8
+# native path, whose activation quantization diverged the 8-row DSpark
+# verify anchor (first divergent tensor: delta_wq_a). 166663 is the exact
+# count.
+# The exact-per-row pair + strided decode linear launchers land (+58):
+# multi-row frames now run the certified 1-row kernels per row instead of the
+# activation-quantizing native path (delta_wq_a/wo_b bit-identical to the
+# lean baseline). 166721 is the exact count.
+# The qwen36 FP8 pack path lands (+66): dtype-driven per-tensor FP8_E4M3
+# selection with F32 per-128x128 scales (format 5), the firmware enum, the
+# stagepack PayloadBytes/ScaleBytes, and module ValidateEntry - the BF16
+# round-trip path stays byte-compatible. The shared Linear kernel already
+# shipped the FP8 dot. 166787 is the exact count.
+# The dsv4-flash MoE exactness kernels land (+10): shared W13, routed W13
+# and W2 all run the certified B1 kernels for every row count (consecutive
+# row iteration + tile-N match for the batched route build) - moe_out now
+# bit-identical to the lean baseline. 166797 is the exact count.
+# The dsv4-flash ProjectHead exactness fix lands (+9): every verify row runs
+# the certified 1-row head instead of the screened-argmax route (hash
+# unchanged - proves the token-2 divergence is upstream, but the certified
+# head is the correct math regardless). 166806 is the exact count.
+# The qwen36 FP8 scale-offset + verify fixes land (+17): copy_scale reads the
+# scale tensor from its data offset (was header bytes -> NaN), and the verify()
+# re-parse path accepts the FP8 format. 166823 is the exact count.
+# The non-blocking token-emission fix lands (+66): emission decouples from
+# the decode loop (buffered snprintf + O_NONBLOCK write + retry + drain at
+# exit) - the host-side term that stalled B1 at the stdout reader's rate.
+# 166889 is the exact count.
+# The residentd poll-gating fix lands (+2): POLLOUT only when output is
+# pending (matching the client) - kills the 100%-CPU busy-spin over the GPU
+# decode that starved the completion callback (~8000x fewer Progress passes).
+# 166891 is the exact count.
+# The client PREPARE-flush fix lands (+12): the just-queued PREPARE flushes in
+# the same Progress that reads the completion (drops the one-iteration
+# deferral) - tightens the serial loop; the B1 bubble itself closes via
+# speculation overlap, not the scheduler. 166903 is the exact count.
+# The qwen36 MTP qualification lands (+37): the validator's whole-stack tier
+# arms STAGE_MTP=1 and adds an MTP_DRAFT_AFTER frame with an in-vocab draft
+# check (determinism rides the fresh-instance re-execution). 166940 is the
+# exact count.
+# The residentd loop reorder lands (+10): admission (spec phase-one
+# decode-draft) now runs BEFORE the phase-two scan so verify(N) and
+# decode-draft(N+1) overlap under max_inflight_submission_count; FIFO,
+# lease, and transport ordering all preserved. 166950 is the exact count.
+# The qwen36 DSpark drafter packer + format header land (+328): the 62-tensor
+# drafter (Doopeworld/Qwen3.8-27B-DSpark-vLLM, 1.36B params) packs into the
+# Q6SP wire format with 17 kinds and the module-side shape table - the rung-3
+# foundation (draft weights are public; no gate). 167278 is the exact count.
+# The dspark packer gains round-trip verification (+31): verify_payload()
+# re-reads the pack against the safetensors byte-for-byte, and the entries now
+# carry each tensor's own rows/cols (a leaked-loop-value bug it caught).
+# 167309 is the exact count.
+# The DSpark tap-capture foundation lands (+61): firmware ABI 4 with the
+# DSPARK_DRAFT_AFTER flag + draft view, and the module's per-slot tap buffer
+# capturing target hiddens at layers {4,16,28,40,52} during the decode loop.
+# 167370 is the exact count.
+# The dsv4-flash CSA isolation fixes land (+57): the prologue gates the
+# compressor/indexer to the anchor row for verify/pad frames (draft rows
+# never advance the committed state), and the commit replays rows 1..accepted
+# through the committed compressor (rejected rows keep the old value) - the
+# keep-old rollback contract. 167427 is the exact count.
+# The DSpark parity reference lands (+236): the numpy golden draft script
+# (tools/qwen36_dspark_reference.py) whose rope view bug was the last blocker
+# between the CUDA drafter and the reference tokens - the fixed script is
+# the bit-exact golden for draft parity and must stay in-tree.
+# 167663 is the exact count.
+# The multi-row exact-linear routing lands (+58): DecodeLinearPair and
+# StridedDecodeLinear multi-row launches now run the certified 1-row
+# kernel once per row (per-row activation quantization) instead of the
+# native MXFP8 per-tile route - the batch-coupled scale was the first
+# divergent tensor (delta_wq_a) in the DSpark verify island.
+# 167721 is the exact count.
+# The parity-verified DSpark drafter port lands (+628 net): the 5-layer
+# block-diffusion forward + device Markov head + serving-adapter dspark
+# wiring + C0-anchor/draft-remap fixes, rebased onto the landed tap-capture
+# foundation (the drafter is env-gated: SPARK_QWEN36_SERVING_SPEC_METHOD=
+# dspark + optional pack path; greedy baseline = 5.078 tok/s, 10.5% acc).
+# 168349 is the exact count.
+# The CUDA compile gate gains the qwen36 resident stage module (+9): the
+# DSpark port landed without sm_121a gate coverage (the gate listed only
+# glm52/dsv4 stages) - now the port's .cu is CI-compiled every push.
+# 168358 is the exact count.
+# DFlash2 W1+W8 lands (+170): the 21-kind drafter packer (81-tensor
+# inventory, selector codebook slots, grouped-conv kinds) and the numpy
+# parity oracles ported verbatim from the vLLM PR unit tests (the W2/W3
+# kernel gate - no upstream reference implementation exists).
+# 168528 is the exact count.
+# W8 main() wiring lands (+18): the DFlash2 full-forward numpy smoke
+# (sliding attention + conv wrapping + top-16 -> lattice -> walk) runs
+# end-to-end against the downloaded checkpoint - the end-to-end parity
+# reference for the W2/W3 kernels.
+# 168546 is the exact count.
+# W2 lands (+41): the fused grouped depthwise conv kernel (per-token
+# coefficients, block-boundary zeroing, one elementwise pass) + launch
+# wrapper - the DFlash2 drafter's first new kernel.
+# 168587 is the exact count.
+# +1 for the DRAFTER-path env override line in the DFlash2 reference.
+# 168588 is the exact count.
+# +1: the dspark .cuh includes the format header (W6 constants were
+# undefined in the CI gate compile - the qwen36 gate coverage caught it).
+# 168589 is the exact count.
+# +79: the W2 conv parity harness (kernel vs _grouped_conv oracle,
+# assert_allclose PASS) - the DFlash2 kernel regression gate.
+# 168668 is the exact count.
+# +9: W2 host wiring part 1 (conv weight struct + loading + side param).
+# 168677 is the exact count.
+# +19: W2 host wiring completes (layer-loop conv prepare/finish around
+# attention AND mlp, BF16 delta, scratch buffers).
+# 168696 is the exact count.
+# W4+W3 land (+1064): the candidate-selector kernels (top-16 over the
+# vocab, context gate, K x K edge lattice, greedy walk) + wrappers +
+# the bitwise parity validator. Spark0 validation: PARITY - 0 failing
+# comparisons (top ids/scores, gate, lattice, walk, fused path all
+# bitwise equal vs the stable-sort oracle).
+# 169760 is the exact count.
+# +77: the BF16-delta conv parity check script + harness rework (both
+# sides, bit-exact BF16 on spark3; sign-bit-only normalization noted).
+# 169837 is the exact count.
+# +3: selector header hygiene (the .cuh self-includes spark_lm_kernels
+# so it never depends on the includer's order; the merge's glued brace
+# splits back).
+# 169840 is the exact count.
+# +107: the W2 end-to-end parity harness (module block forward vs the
+# numpy reference full forward) - the validation rail W7 plugs into.
+# 169947 is the exact count.
+# +580: the independent W4/W3 cross-check harness (lane-2's file-based
+# tie-forced + truncation-load-bearing cases - the PRNG-mirrored landed
+# validator cannot force walk ties, so this closes that coverage gap;
+# mutation-verified 5/5).
+# 170527 is the exact count.
+# +157: the rule-proving harness upgrades the main selector validator:
+# the tie scale forces 14/14 tied walk maxima (>= walk moves 14/14) and
+# the truncation discriminator proves BF16-before-selection at full
+# scale (67/224 ids differ) with --require-discriminating anti-rot.
+# 170684 is the exact count.
+# +4: the slot-0 anchor branch comment (memory-safety-load-bearing -
+# without it the underflow indexes 4.3G out of bounds; do not simplify).
+# 170688 is the exact count.
+# The kernel lane's W7 replacement lands (+498 net): the selector emit
+# sequence defined ONCE (shared header, module AND host-path validator),
+# the B-vs-B-1 overrun guard, the dead logits tile + host codebook
+# mirrors deleted, the e2e rail's drafts gate. Host-path PARITY at
+# tie+full with a mutation test.
+# 171186 is the exact count.
+# +401: the W7 real-weight end-to-end gate - the module's emitted drafts
+# are bit-equal to the reference full forward on the real z-lab DFlash2
+# checkpoint (drafts 163572 235738 160199 87342 8624 6501 5162, unary
+# logits BITWISE equal, max|delta|=0) + the SPARK_QWEN36_TARGET override.
+# 171587 is the exact count.
+# +5: serving-path diagnostics (pack-load + block-forward entry fprintfs
+# to name the deployed arming failure).
+# 171592 is the exact count.
+# +9: the e2e rail honors the dump's own base_position (the silent
+# fallback to the synthetic 64 would hide RoPE position bugs).
+# 171601 is the exact count.
+# +27: the fail-loud misdeploy guards - an unarmed drafter on a DRAFT
+# frame now names the missing env var instead of serving [C0,0,0,...]
+# silently; initialize prints the process environment's pack path + spec
+# method; the adapter prints the method it selected.
+# 171628 is the exact count.
+# +73: the serving preflight script - mechanically proves the RUNNING
+# process's driver carries the W7 markers, the deploy root matches the
+# unit's RUNTIME_ROOT, and the process env has the pack path + dspark
+# method (the misdeploy class that burned the whole serving leg).
+# 171701 is the exact count.
+# +9: preflight truthfulness fix - the marker list still named the
+# pre-fail-loud revision's literals (dspark_block_forward entry /
+# dspark_selector) that NO current build contains, and the strings|grep -qF
+# check died on the pipefail/SIGPIPE trap so every marker check silently
+# FAILed even on correct drivers (cost: a wrong-deploy ghost chase on
+# spark3 on 2026-08-19). Markers now match the fail-loud literals and the
+# strings output is captured before grepping.
+# 171710 is the exact count.
+# +47: file-backed drafter diagnostics (kernel lane patch, coordinator-landed
+# with corrected rationale). The deployed unit sends stderr to a shared
+# append log that journalctl does not show and that every swapped instance
+# shares, so "nothing in the journal" was misread as "the code never ran".
+# Pack load (begin/OK/FAILED with errno and reason) and every frame's
+# routing decision (flags, dspark_after, armed, draft view, rows, status)
+# now append to SPARK_QWEN36_DSPARK_DIAG_PATH, default /tmp/dspark_diag.log
+# - the three facts the arming question needs, on a stable per-instance path.
+# 171757 is the exact count.
+# +52: verify-walk rollback repair (kernel lane). A verify frame walks the GDN
+# recurrence over drafted positions and only a GDN_RESTORE_FIRST replay puts it
+# back, but the replay loop was skipped for EVERY lane when any lane's chain was
+# dead (strict policy) and aborted midway when a replay frame failed - so a
+# healthy lane kept recurrent state advanced over tokens never committed AND
+# lane_next_positions parked at base+draft_count (the continuity check then
+# refuses the next decode - the live status=1/4 refusals). Every lane that
+# walked a verify now gets a one-row GDN_RESTORE_FIRST over the committed token
+# C0 when no replay ran for it.
+# 171809 is the exact count.
+# +173: the trajectory bisect rail (kernel lane). The module's draft dump gains
+# a per-step mode (SPARK_QWEN36_DSPARK_DUMP_DIR -> step_<position>_*.bin, every
+# frame, 51 KB/step) and tools/qwen36_dspark_trajectory_bisect.py turns the
+# series into the table that separates a DFlash2 defect from a target-trajectory
+# defect per step (module vs reference drafts, parity, distinct count, repeat
+# degeneracy, mean top-1 unary; then the first-divergence / first-degenerate
+# answers). The tap degeneracy at position 2 predates the token-15 divergence,
+# so the capture is the next suspect and this rail is how the next live run is
+# measured.
+# 171982 is the exact count.
+# +13: completion residency echo (27B lane analysis, coordinator-verified and
+# landed). The pending never anchored submission->residency at reservation and
+# every internal spec frame's driver completion overwrote pending->residency,
+# so a long request's final completion carried a drifted per-frame residency
+# and the runtime's exact-memcmp residency validation (reason=2) killed the
+# batch with status=4. The pending now anchors the submission's residency at
+# reservation and the driver-completion write is removed - the completion
+# echoes what the route's submission carried, which is the runtime contract.
+# 171995 is the exact count.
+# +14: residency echo diag (trajectory seam): the completion now prints the
+# echoed residency bytes plus the pending's current and origin submission ids,
+# so a residency-memcmp failure on a long/prefill-bearing request can be
+# attributed to a re-reserved pending vs a wire-side token difference.
+# 172009 is the exact count.
+# +24: the acceptance cliff fix (kernel lane). A round emits min_accepted+3
+# tokens and the driver contract caps a submission at 8, so DFlash2's full
+# acceptance (min_accepted=6 -> 9 tokens) got the next submission REFUSED
+# (INVALID_ARGUMENT), the refused submission dropped, and every lane it
+# touched cooled - the round after a peak accepts zero, and the dropped
+# round's tokens are re-derived from a cooled lane (the stream-divergence
+# source). Six accepted=6 lines in the deployed log pair one-for-one with six
+# refusals. The credited depth is now clamped to MAX-3 with the bound derived
+# from the contract constant; the replay re-walks exactly the credited prefix
+# so the stream and the recurrent state stay exact - shorter round, never wrong.
+# 172033 is the exact count.
+# +258: the speculative-KV invariants regression test (kernel lane): a GPU
+# validation that poisons the current row's slot, a slot above the context
+# length, and a history row inside the window, and proves the decode can read
+# none of the first two while demonstrably reading the third - the behavioural
+# half of the draft-KV isolation deviation audit. The two invariants
+# (write-before-read ordering in the attention layer; context_length excludes
+# speculative rows) are the whole safety argument for the committed-cache
+# design, so they are now a test instead of a comment, and the compile gate
+# wires the .cu so a future fused kernel or context-length change fails CI.
+# 172291 is the exact count.
+# +20: continuity-refusal naming (kernel lane). The four silent
+# INVALID_ARGUMENT producers in the lane-continuity validator (decode /
+# decode-new-sequence / prefill / prefill-new-sequence) now print the lane,
+# sequence, position and the expectation, so a repeated request failing with
+# status=1 names its producer instead of being guessed at. No behaviour change.
+# 172311 is the exact count.
+# +53: separation-experiment instrumentation (kernel lane, coordinator-merged
+# onto the cliff-fixed tree). The per-round diag line now carries lane +
+# base_position (C0's absolute sequence position, so a round can be placed
+# against the golden) and a round_commit line reports the credit side
+# (accepted/min_accepted/credited/positions), and the trajectory bisect tool
+# now ISSUES the verdict instead of describing it (STATE RESTORE/ROLLBACK vs
+# COMMIT/ACCOUNTING, or 'neither branch fires yet' - it refuses to guess).
+# 172364 is the exact count.
+# +16: residency-mismatch attribution diag in the shared residentd. When the
+# completion's residency token byte-differs from the route's submission
+# residency, the failure branch now prints both sides as hex (expected vs
+# echo) - the one line that separates a route-side wire/deserialize seam
+# from an adapter-side slot-lifecycle seam, two fixes in different files.
+# Diagnostic only.
+# 172380 is the exact count.
+# +32: per-step selector-lattice dumps (kernel lane). The live trace found
+# 7/37 steps where the module's drafts diverge from the oracle over the SAME
+# taps (capture proven clean) - walk flips at step 2-3 = accumulated BF16
+# truncation differences in the DFlash2 forward, costing ~19% of steps in
+# pure acceptance loss. Each step now dumps the top-16 unary logits, the
+# context gate and the K x K edge lattice; the oracle recomputes all three
+# from the taps, so the diff names the stage (W4 head vs W3 gate vs W3
+# edges vs the forward's final hidden).
+# 172412 is the exact count.
+# +13: full-32-byte residency-token prints (kernel lane). The earlier
+# diagnostics printed only word0 (the submission id) of the 32-byte token,
+# so every echo looked perfect while word1/generation/owner - the only
+# fields where a mismatch can live - were never printed. Both the adapter
+# echo and the residentd failure branch now print all 32 bytes.
+# 172425 is the exact count.
+# +18: non-destructive refusal (kernel lane). A submission refused BEFORE any
+# frame executed has not touched the lane's KV or GDN, so releasing it
+# destroyed a valid resident sequence. A per-pending frames_executed flag
+# (set at each driver submit success in both frame paths) now gates the
+# drop: pre-execution refusals keep the lane resident; the continuity
+# validator is the backstop for a wrongly-kept lane. The KV-exhaustion drop
+# is untouched. Pairs with the acceptance-cliff clamp for D-agnostic
+# losslessness.
+# 172443 is the exact count.
+# +31: decode-state dump (divergence bisect). With
+# SPARK_QWEN36_DECODE_STATE_DUMP_DIR set, every DECODE frame (verify/replay
+# prefills excluded) dumps its per-layer taps and its final pre-head hidden,
+# keyed by the decode row position - so a spec run and a no-spec run of the
+# same prompt can be diffed layer by layer to localize the silent
+# state divergence the roleplay/coding prompts reproduce (failing round is
+# always acc=0 with C0 itself non-golden).
+# 172474 is the exact count.
+# +27: GDN entry-state dump for the decode frames (same
+# SPARK_QWEN36_DECODE_STATE_DUMP_DIR gate). The recurrence (state_f32) and
+# the conv tail are dumped BEFORE the walk, so the spec-vs-no-spec diff at
+# the first diverging position separates a recurrence residue from a
+# KV/attention residue - the decisive datum for the silent divergence the
+# roleplay/coding prompts reproduce (state diverges at position 235, all
+# five tap layers, 44% of the final hidden).
+# 172501 is the exact count.
+# +22: snapshot-slot dump alongside the decode-entry GDN dump. The snapshot
+# slot holds the last verify frame's pre-walk state, so dumping it at the
+# next decode says whether the corruption predates the verify snapshot
+# (drafter-forward residue) or the restore failed to apply (snapshot content
+# clean) - the last discriminator for the position-235 whole-state
+# divergence.
+# 172523 is the exact count.
+# +10: the conv-delta buffer fix - THE silent-divergence root cause. The
+# drafter's projection kernels write B x 2 x KERNEL x H/GROUP FLOATS
+# (40,960 bytes) into dspark_conv_delta, but it was a HOST malloc sized as
+# uint16 elements (20,480 bytes): every projection overflowed 20,480 bytes
+# into the host heap via UVA, twice per layer per forward, spec runs only -
+# which is exactly why only the spec lane's state corrupted and why the
+# roleplay/coding streams diverged deterministically. Now a ledger device
+# allocation of the exact float count.
+# 172533 is the exact count.
+# +14: pointer inventory at slot allocation (the overlap bisect). The silent
+# divergence corrupts the target's gdn_pool during the drafter forward and
+# the scratch sizes are provably correct, so the remaining mechanism is an
+# overlap between the ledger-allocated device regions - the pointers are
+# now printed once per boot so the overlap names itself.
+# 172547 is the exact count.
+# +41: pre/post-forward GDN dumps (corruption-phase bisect). The MTP D=2
+# control is LOSSLESS on the diverging prompt, so the corruption is
+# drafter-forward-specific, yet the pointer inventory shows no overlap. The
+# lane's GDN state is now dumped immediately BEFORE and AFTER the block
+# forward, isolating the corrupting phase (block forward vs the decode walk
+# itself).
+# 172588 is the exact count.
+# +2: the pointer inventory now prints the GDN snapshot buffers and the
+# snapshot slot count - the speculation-enabled layout's extra allocations,
+# the last unprinted region in the overlap bisect.
+# 172590 is the exact count.
+# +37: prefill start/end state dumps (same decode-state gate). The spec and
+# no-spec lane states already differ at the FIRST decode's end on the same
+# build, so the divergence enters in the prefill or earlier; the prefill
+# start dump checks the lane reset and the prefill end dump separates an
+# env-dependent prefill from an env-dependent first decode.
+# 172627 is the exact count.
+# +19: post-walk GDN dump for EVERY decode frame (both boots), so the
+# spec-vs-no-spec comparison at the first diverging position is aligned -
+# the earlier 232 comparison mixed the spec's post-walk state with the
+# no-spec's pre-walk state (the preforward dump only fires in the draft
+# branch). This settles whether the first decode walk itself diverges or
+# the round-1 verify/replay corrupts a clean post-walk state.
+# 172646 is the exact count.
+# +38: post-restore and post-replay-walk state dumps (stream-synced). The
+# aligned chain showed the 232 post-walk state clean and the 235 entry
+# corrupted, so the corruption is in round 1's verify/replay - these two
+# dumps name whether the restore content or the replay walk is wrong in one
+# roleplay run.
+# 172684 is the exact count.
+# +16: the restore/replaypost dumps now also capture the conv tail - the
+# restore's tail copy was never verified (the state restore proved perfect
+# while the replay walk still diverges; the tail is the remaining half of
+# the recurrence).
+# 172700 is the exact count.
+# +630: the lattice stage verdict tooling (kernel lane): the stage table plus
+# the noise-floor/sensitivity/exact analyses prove the 8/34 module-vs-oracle
+# draft flips sit BELOW the oracle's own self-flip band (~50% under an equally
+# innocuous fp64 change) - sub-ULP candidate margins, not a fixable defect.
+# The per-step dump also gains the final-normed hidden and the candidate ids
+# so the last blind stage is observable. The bisect tool no longer calls a
+# draft divergence a DFlash2 defect.
+# 173330 is the exact count.
+# +5: the GDN-step row serialization - THE silent-divergence fix. The state
+# read-modify-write raced across a multi-row frame's parallel row blocks
+# (grid.y = row_count; last writer won per element, one row's accumulation
+# lost per frame), so the verify/replay frames left a wrong recurrence while
+# their per-row outputs stayed golden. Each head block now walks the rows
+# sequentially with a sync between rows and grid.y = 1 - a k-row frame
+# bit-matches k sequential single-row frames.
+# 173335 is the exact count.
+# +8: the conv-update row serialization - the same recurrence-race class as
+# the GDN step (the conv tail's read-modify-write raced across a multi-row
+# frame's parallel row blocks). Each channel block now walks the rows
+# sequentially with a sync between rows and grid.y = 1.
+# 173343 is the exact count.
+# +261: the acceptance profile tool (kernel lane). It cross-checks two
+# independent accountings per round and proves the oracle drafts earn the
+# SAME acceptance as the module's (0.853/round on the GLM capture) - the
+# 8/34 forward flips cost exactly zero, so forward bit-exactness is not the
+# acceptance lever. It also surfaces the zero-acceptance suffix (the context
+# collapse) whose onset is the live bisect target.
+# 173604 is the exact count.
+# +496: the context probe and contract sweep (kernel lane). The clean-context
+# measurement (0.550/round vs the spec's 0.853) plus the eight-variant wiring
+# sweep prove the acceptance gap is the PROMPT CLASS (thinking-style prose =
+# maximum entropy), not a kernel, not the context corruption - and the probe
+# dates the corruption (taps bit-identical at 232, 74-87% differing from 235)
+# as the recurrence race the serialization fixes.
+# 174100 is the exact count.
+# +116: the credited-ceiling fix + the spec audit (kernel lane). The adapter's
+# DSPARK_BLOCK_SIZE was 7 while the kernels walk 8, so the seventh draft was
+# discarded, capping the accept loop at 6, and the cliff clamp then capped the
+# CREDITED acceptance at FIVE - average acceptance >= 6 was arithmetically
+# impossible on that build no matter how good the drafter. Draft depth 7->8,
+# MAX_MTP_DRAFT_TOKENS 8->10, driver cap 8->10, draft_token_count = depth-1
+# (the module refuses anything but B-1), credited ceiling now 7 and printed
+# with every round. Plus SPARK_QWEN36_SPEC_AUDIT: the replay emits every row
+# and the adapter checks it against the verify row by row (the one committed
+# token that was previously checked against nothing).
+# 174216 is the exact count.
+# +272: the per-frame state fingerprint (kernel lane). With
+# SPARK_QWEN36_STATE_FINGERPRINT=1 every frame prints a strided 1024-element
+# FNV-1a hash of the lane's GDN state and conv tail (kind=decode/verify/
+# replay/prefill, position) - 4 KB per frame instead of 150 MB per position.
+# The first non-golden token was proven a DECODE frame's C0 (the round did
+# nothing wrong; the lane state was already wrong), so the fingerprint diff
+# by position between a spec and a no-spec run names whether a verify/replay
+# frame corrupts, the restore is incomplete, or the state is exonerated.
+# 174488 is the exact count.
+# +183: THE silent-divergence fix (kernel lane, hardware-measured) + the round
+# audit tool. The module has TWO recurrence implementations - the chunk path
+# (every prefill-shaped frame: prompt prefill, verify, REPLAY) and the step
+# path (plain decodes) - and a GPU validator proved 78% of the GDN state
+# differs between them at fp32-rounding magnitude; a recurrence REMEMBERS the
+# accumulated difference. Every spec round substituted a chunk-built state
+# for the step-built state the golden trajectory holds, accumulating once per
+# round: the acceptance decay, the tap divergence from position 235, and the
+# non-golden C0 at the first thin margin. The replay now walks the STEP path
+# (bit-identical to the decode sequence it replaces); the prompt prefill and
+# the verify keep the chunk path (no asymmetry - the no-spec run prefills the
+# same way, and the verify's state is discarded by the restore).
+# 174671 is the exact count.
+# +94: the step-path premise gate (kernel lane, GPU-proven): a k-row
+# same-lane step launch must equal k sequential one-row launches
+# (state_mismatch=0 tail_mismatch=0 worst_abs=0 measured on the GB10) - the
+# property the replay-step fix rests on, now a permanent validator case so a
+# regression in the row serialization fails a gate instead of silently
+# reopening the divergence.
+# 174765 is the exact count.
+# +14: the dspark verify-depth cap. SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT
+# now caps how many of the block's drafts the adapter walks (the module still
+# computes the full block; the surplus is dropped). At low acceptance the
+# verify walk dominates the round cost (~2.9 no-spec tokens), so a smaller
+# depth drops the round below the breakeven - the speed lever the measured
+# ladder needs to beat no-spec.
+# 174779 is the exact count.
+# +250: the path-substitution bounds (kernel lane retraction, recorded with
+# evidence): the chunk/step substitution drifts at most 5.96e-08 across 20
+# rounds and 2.98e-08 across 48 layers - three orders below the box's
+# measured 1.6e-05, so it is NOT the corruption. (The snapshot-slot
+# fingerprint attempt was REVERTED - its sampling crashed the daemon on
+# the box, core-dump; the per-frame fingerprint without the snapshot
+# sampling remains.)
+# 175029 is the exact count.
+# +6: gate the 5..8-row small-batch tiled linear path behind
+# SPARK_QWEN36_SMALL_BATCH_GEMM=1. The tiled kernel is the ONLY code that changes
+# between the D=4 lossless and D=6 diverged frames - the dispatch boundary is
+# exactly rows 5..8, which only verify (7 rows) and replay (min_accepted+2)
+# reach. Until it is proven bit-exact against the library path, 5..8 rows take
+# the library path the lossless controls prove correct.
+# 175035 is the exact count.
+# +4: the layer_amplification gate flips polarity. It demanded the
+# chunk-vs-step substitution AMPLIFY to explain the box (the dead-theory trial);
+# the retraction is now recorded evidence and the real cause - the 5..8-row
+# tiled linear dispatch - is fixed behind SPARK_QWEN36_SMALL_BATCH_GEMM=1, so the
+# gate asserts the retraction instead: amplification to within two orders of the
+# box's 1.6e-05 (absmean >= 1e-7) now fails it.
+# 175039 is the exact count.
+# +1: Destroy no longer free()s the slot's dspark_conv_delta - it is a
+# SparkStageModuleDeviceAllocate (cudaMalloc) pointer the ledger releases; the
+# free() on a device pointer crashed the module validator's rerun teardown
+# depending on buffer contents.
+# 175040 is the exact count.
+# +7: the VERIFY frame's GDN walks the step path (like the replay): the
+# verify's per-row head outputs feed the accept loop and the committed
+# correction, so they must be step-truth. The audit (replay_row_mismatch
+# verify=9045 replay=561) showed the chunk-built verify head flips at a thin
+# margin and commits the wrong correction.
+# 175047 is the exact count.
+# +138: the 8-row multi-row attention gate. An 8-row frame must bit-match eight
+# 1-row frames in BOTH the KV cache it writes and the per-row outputs (the
+# depth-8 verify geometry). The single-row reference loops all eight rows;
+# the earlier 2-row-only reference left rows 2..7 as calloc zeroes and so
+# misreported a per-row KV-write corruption that is actually bit-exact.
+# 175185 is the exact count.
+# +239: the DFlash2 full-sequence context fix (oracle agent, z-lab reference).
+# The drafter now captures every position's 5 tap-layer hiddens in a per-lane
+# 2048-slot ring and attends over N+8 keys (N context rows + 8 block rows) instead
+# of 9 keys from ONE tap position - the structural divergence that cost ~2.2x
+# accepted drafts vs z-lab. New kernels: tap-ring scatter, tiled-K N-row
+# projector (the 25600-wide fc), N+8-key attention with absolute rope positions.
+# 175424 is the exact count.
+# +1162: the qwen36 paged-KV / prefix-reuse port (prefixcache agent). The
+# module gains a physical-block KV pool with refcounted shared blocks and a
+# chain-hash prefix directory (spark_qwen36_paged_kv.c+h, +796 new), the
+# serving adapter swaps per-lane contiguous pools for block tables with
+# admit-time longest-published-prefix matching, block-boundary frame shaping,
+# PREFIX_RESUME/GDN_CHECKPOINT wiring and donor release-on-diverge
+# (+287), the module side publishes/feeds the block table and sizes its pool
+# from kv_logical/kv_physical_page_capacity (+76), the firmware header names
+# the block-table view types (+20), the JIT_KV runtime-limit rule lands in
+# the shared validator (+8) with the two runtime-limit fields (+8), build
+# wiring (+12); the stagepack header reformat is net -45. The feature
+# eliminates shared-prefix recompute for B1..B1024 resident decode; the gate
+# (tests/test_qwen36_prefix_cache.c, excluded here) proves reuse ON vs OFF
+# walk-identity at B1/B4/B25. Concurrent agents' in-flight growth is theirs
+# to account.
+# -86: the qwen36 port onto the general prefix-cache core (prefixcache
+# agent). The bespoke allocator/content-directory/matcher in
+# spark_qwen36_paged_kv.c+h (was +796, now 677: -119) is replaced by
+# SparkPrefixCacheCore* (runtime/prefix_cache.{c,h}, pccore's files - their
+# lines are already on this tree and theirs to account); the module half
+# keeps only GDN checkpoint binding with witness blocks and a small
+# scratch-borrow path for speculative coverage. The adapter rewires admit/
+# cover onto the core's sequence API (+33) and drops its dead free-block
+# mirror; build wiring is net 0 (-Iruntime on an existing line). The gate
+# re-proved reuse ON vs OFF walk-identity plus B25 pressure after the port.
+# +2466: peer round-2 feature wave (user-directed completeness): qwen36 prefix
+# caching + paged KV (general core runtime/prefix_cache.c + the model port), the
+# shared stagepack reader (runtime/spark_stagepack_reader.h + hybrid core; the
+# four private stagepack families collapse next round as pure deletion), glm52
+# GPU numerical validator restore, k3 TP16 pack production + e2e scripts.
+# (superseded by the post-merge ceiling at the end of the ledger)
+# ----------------------------------------------------------------------------
+# MERGE CONSOLIDATION (unified-consolidated): origin/main grew its own ledger
+# from the same 168677 base in parallel. Its entries are appended verbatim
+# below; the two branches' additions now coexist in ONE tree, so the ceiling
+# is re-measured post-merge (both histories are load-bearing documentation).
+# ----------------------------------------------------------------------------
+# --- origin/main parallel-branch entries (verbatim) ---
+# +111: DFlash2 module integration - selector weight loading + host mirrors
+# replacing the Markov slots, the conv-wrapped block forward (prepare/finish
+# per sublayer), the host top-16 + selector lattice + greedy walk pass, the
+# dflash2 adapter method (block 8), and the fail-loud drafter-pack guard.
+# 168788 is the exact count.
+# +60: env-gated DFlash2 stage-dump bisection (SPARK_QWEN36_DFLASH2_STAGE_DUMP)
+# - the parity-debug surface, removed after forward parity lands.
+# 168848 is the exact count.
+# +107: conv kernel reads the fused [B, sides, taps, groups] delta directly
+# (side param, full row stride - the pointer-offset variant read the wrong
+# rows) + the stage-bisect tool (tools/qwen36_dflash2_bisect.py).
+# 168955 is the exact count.
+# +11: spec acceptance clamped to the shared tokens-per-sequence ABI cap.
+# 168966 is the exact count.
+# +38: env-gated tap-capture/dump diagnostics (Nth-capture dump for
+# spec-vs-no-spec tap parity at matched positions).
+# 169004 is the exact count.
+# +47: verify-tail re-draft - the drafter consumes the verify frame's row-0
+# (anchor) hiddens so taps match the prefill-written committed trajectory
+# (decode-frame taps drift 5-16% over prefill state; acceptance collapsed).
+# 169051 is the exact count.
+# +3: the draft hangs off the replay tail (taps = last committed row),
+# not the verify tail (row 0 = the anchor itself - off-by-one vs training).
+# +19: drafter-run tap dump (SPARK_QWEN36_DFLASH2_RUN_DUMP=N) - the exact
+# taps the drafter consumed, for oracle replay.
+# 169089 is the exact count.
+# +47: cache-based drafter context (upstream precompute_and_store_context_kv):
+# per-position tap history, context-window fc/norm, per-layer staged K/V,
+# k/q prep + cache attention kernels; supersedes the dual-source attention.
+# 169136 is the exact count.
+# +163: pair-atomic rope prep + layer-0 stage dumps + the
+# cache-semantics checker tool (tools/qwen36_dflash2_cache_check.py).
+# 169299 is the exact count.
+# +10: bonus-token convention (anchor = the frame's last input row;
+# context window excludes the bonus position; adapter remap shifts).
+# 169309 is the exact count.
+# +6: serialize the GDN step + conv update rows (the recurrence races
+# across multi-row frames found by the DSV4 session - verify/replay left a
+# wrong GDN state while per-row outputs stayed golden; the tap-drift source).
+# 169315 is the exact count.
+# +4 more for the serialization (grid.y removals).
+# 169319 is the exact count.
+# +37: the replay walks the GDN STEP path (the DSV4 session's
+# silent-divergence fix, unified 2bd2673) - the chunk/step fp32-rounding
+# difference accumulated per round and decayed acceptance.
+# 169356 is the exact count.
+# +46: the drafter attention applies per-head norm+rope in f32 at
+# attention time (the original dual-source rounding path); the bf16
+# pre-prepped q/k flipped round-1 drafts.
+# 169402 is the exact count.
+# +4: tap-store grid.y channel tile.
+# 169406 is the exact count.
+# +5: the tap-layer evidence-trail comment (revert to [5,19,33,47,61]
+# after the reference cross-test).
+# 169411 is the exact count.
+# +24: bonus-token anchor (the frame's last input row) + the shifted
+# adapter remap - fixes the one-step-late drafts on natural text.
+# 169435 is the exact count.
+# +8: Nth-run neighborhood tap dump (context-convention sweep).
+# 169443 is the exact count.
+# +112: layer-0 stage dump Nth-gated to the ctx-dump round (the
+# device-vs-oracle forward divergence bisection on GSM inputs).
+# 169555 is the exact count.
+# +6: anchor-id dump in the ctx-dump round.
+# 169561 is the exact count.
+# +7: anchor-id dump with the ctx round.
+# 169568 is the exact count.
+# +85: state-select verify (the vLLM shape) - per-row GDN state+tail
+# checkpoints in the step kernels, checkpoint-select restore, 1-row replay.
+# 169653 is the exact count.
+# +2: checkpoint alloc moved after pool strides.
+# 169655 is the exact count.
+# -30: checkpoints reuse the GDN snapshot pool (no new buffers).
+# 169625 is the exact count.
+# +1: whitelist the select-restore flag.
+# 169626 is the exact count.
+# +8: the conv-tail per-row checkpoint (full bf16 elements - the
+# first attempt never landed and the restore read stale tails).
+# 169634 is the exact count.
+# +23: SPARK_QWEN36_DFLASH2_STATE_SELECT env gate (default OFF =
+# the validated replay path; the select path stays opt-in WIP).
+# 169657 is the exact count.
+# +2: checkpoint slot-base wiring.
+# 169659 is the exact count.
+# +108: the bonus fold (the vLLM round shape, SPARK_QWEN36_DFLASH2_BONUS_FOLD
+# env gate, default OFF) - the correction tail drafts (anchor = its emission)
+# and the next round's verify row 0 walks the client token in the decode
+# walk's place: 3 full-model frames per round drop to 2. Commit math is
+# shape-aware (m+2 folded vs m+3) and the fold disarms on any plain decode,
+# prefill, or bootstrap so desyncs self-heal.
+# 169767 is the exact count.
+# +19: deep-acceptance debugging instrumentation - the ctx dump's anchor
+# read moves to the frame EMISSION (the token the block actually embeds;
+# the input-row read mislabeled the oracle sweeps), the device's walk
+# output dumps beside the ctxwin taps, and the round diag prints all 8
+# draft/emitted positions (the collapse is position-2+ only).
+# 169786 is the exact count.
+# +154 (net, replacing the racy one-shot dumps): per-run parity captures at
+# the walk-end stream sync - taps slice + the TRUE walk anchor + the device
+# walk output, race-free, consumed round-by-round by the deep-parity scorer
+# to localize the position-2+ acceptance collapse (WIP instrumentation).
+# 169940 is the exact count.
+# +416 (tools incl.): THE conditioning fix, from the live convention sweep on
+# 44 O128 rounds (torch, tools/qwen36_dflash2_conv_sweep.py): the drafter
+# wants HF Qwen3 NeoX rope over the full 128-dim head (not interleaved-64),
+# the context must INCLUDE the walked row's tap g_P at RoPE position base-1 -
+# llama.cpp's seed pair (t_{P+1}, g_P) - and the walk emits own-position
+# drafts, so output 0 is redundant and the verify remap shifts by one
+# (draft_count caps at block-1). Sweep: p0 41%->70%, p1 31%->59%.
+# 170356 is the exact count.
+# +86: sweep-fix tail (adapter remap comment rewrite, module geometry comment,
+# draft-count block-1 cap wording).
+# 170442 is the exact count.
+# +2: parity tool default moves to the fixed geometry.
+# 170444 is the exact count.
+# +92: the ONE-FRAME round (SPARK_QWEN36_DFLASH2_BONUS_FOLD=2) - dspark view
+# ABI v2 gains multi_block_count (block i anchored on verify row i's emission
+# at base+i; the host picks block m post-accept), the module loops the block
+# forward per row, and the adapter runs the round as ONE verify frame (row 0
+# restores the previous accept's GDN checkpoint via GDN_RESTORE_VERIFY_ROW;
+# no correction frame), committing m+1 and arming slot m.
+# 170536 is the exact count.
+# +12: the one-frame bring-up - the continuity rule treats a VERIFY_ROW
+# restore like a full restore (the one-frame verify re-establishes the lane
+# at the branch point), plus bring-up trace prints (tail drafter status).
+# 170550 is the exact count.
+# +18: padding-select - the verify-tail drafter computes the verify's own
+# accept depth (emissions vs the walked rows, one tiny D2H) and drafts ONLY
+# block m; the per-block selector is host-bound so k-1 of k blocks were pure
+# overhead (measured: one-frame at 3 blocks ran 6.55 tok/s vs 8.76 2-frame).
+# 170572 is the exact count.
+# +78: the device-side selector front-end (fused top-16 + hidden projection
+# kernel, exact two-key order and mul+add rounding to bit-match the host
+# scalar path) + a compact ids/scores/hproj copy - removes the ~4MB logits
+# D2H and the ~25-35ms scalar 7x248320 insertion pass per drafter call.
+# 170650 is the exact count.
+# +62: the selector parity oracle (SPARK_QWEN36_DSPARK_SEL_CHECK=1 runs the
+# original scalar host pass beside the device kernel and prints divergences)
+# - it caught the kernel's rank>threads hproj hole (outputs 128..255 read as
+# zero, halving the walk's edge scores: -6% O128). Zero mismatches post-fix.
+# 170714 is the exact count.
+# +128: the vLLM input-parity harness - the reference driver is patched
+# (VLLM_DFLASH2_INPUT_DUMP) to dump its drafter-context hiddens/bonus/
+# positions per round; the harness runs OUR block forward + walk on those
+# exact inputs and scores draft agreement. Finding: perfect agreement on
+# structured stretches, ~50% divergence on varied rounds - the acceptance
+# mountain (their E=4.30 vs our ~1) localizes to the block invocation.
+# 170881 is the exact count.
+# +111: THE acceptance unlock in the engine - the drafter's NeoX-128 rope
+# (HF rotate_half over the full head, re-applied; the trained convention)
+# and the persistent block-KV history (per-layer raw k/v rows of every
+# block the drafter ran, keyed by position, attended after the current
+# block rows; SPARK_QWEN36_DFLASH2_BLOCK_KV=1). Both validated on the
+# reference input dumps: 87% pos-0 draft agreement, curve mirrors theirs.
+# 170992 is the exact count.
+# +199 stale at the handoff commit (506770e): the session's last tooling
+# commits (the fp8/bf16 tapdiff and layer-bisect tools) landed without
+# their ratchet - found when re-running the gate from a clean checkout.
+# +233: the argmax selection unlock - draft selection is the per-mask-row
+# full-vocab ARGMAX (the reference's SERVING path; the codebook walk is
+# dflash2-speculator code that never loads in vllm serve). The engine walk
+# is REPLACED by rank-0 selection (net engine shrink); the new lines are
+# the stage-diff tool (live-reference per-stage tensor comparison) and the
+# parity harness's SELECT_MODE (argmax default, walk modes kept for study).
+# 171424 is the exact count.
+# +213: the MX serving format - FP8_E4M3_E8M0B128 (format 6: E4M3 payload,
+# per-row e8m0 scales per 128-K group, the native SM121 block-scaled fp8 MMA
+# layout). Loader + byte-calcs + the SparkQwen36LaunchLinear dispatch route
+# (native launcher for its shapes, per-row loop for the rest), plus the
+# repack tool (tools/qwen36_stagepack_mx_repack.py - measured LOSSLESS: the
+# pack's tile scales are already powers of two, so the conversion is a pure
+# re-layout with zero quantization cost).
+# 171637 is the exact count.
+# +79: the engine-faithfulness proof - the numpy-oracle replay on the
+# engine's own full-prefix taps (new tool) matches the engine's argmax
+# drafts EXACTLY; the oracle's apply_rope_neox (the stale interleaved
+# variant kept for history); the ctxrun dump widened to the full prefix.
+# 171716 is the exact count.
+# +66: the incremental context cache - position-keyed per-layer K/V plus
+# the fc/normed watermark (the reference's precompute-and-store semantics:
+# only the round's NEW committed rows are projected; the wide fc runs
+# per-row to stay on the lean wide-B1 kernel). Stream-invariant (measured:
+# cache and no-cache produce identical token streams), O512 wall 70.6s ->
+# 67.7s and the window cost flattened (W=2048 == W=256, so the full window
+# rides free with the better acceptance).
+# 171782 is the exact count.
+# +83: the native-linear micro-benchmark tool (tools/qwen36_native_linear_bench.cu)
+# - the measured record for the FFN kernel project: the byte-load variant
+# WINS (125.6 GB/s vs 91.7/83.7 for 4-byte loads - the outstanding byte
+# transactions are the needed memory-level parallelism), K-split does not
+# help, and the path past ~125 GB/s is a cp.async shared-staged B tile.
+# 171865 is the exact count.
+# +225: the staged-B kernel exploration harness (tools/
+# qwen36_native_staged_bench.cu) - a bit-exact cp.async double-buffered
+# variant of the native MMA linear plus the PIPELINE-DEPTH LAW: this kernel
+# family's bandwidth ~= (in-flight bytes/CTA / DRAM latency) x resident
+# CTAs x SMs (16KB/600ns x 4.5 x 10 ~= the measured 113-125 GB/s; pure
+# coalesced reads reach 266+). The deep-ring (4+ stages) is the
+# theory-backed path past it; the depth-2 ring is verified bit-exact at
+# parity with the direct kernel.
+# 172144 is the exact count.
+# +328: the warp-specialized kernel SKETCH (tools/
+# qwen36_native_warp_specialized_bench.cu) - the design that escapes the
+# shared-budget tension (producer warps stream the B ring continuously,
+# consumer warps mma, collective A rendezvous). DEADLOCKS: the named-barrier
+# arrival matrix needs re-derivation (documented in the header). The
+# measured map it builds on lives in qwen36_native_staged_bench.cu.
+# 172472 is the exact count.
+# +101: the warp-specialized kernel VERIFIED BIT-EXACT
+# (139264/139264 at both depths) after fixing three subtle races (per-thread
+# cp.async groups need a group barrier before publish; the 2-slot A ring
+# needs consume-gating; spin gates need group barriers, not __syncwarp) and
+# the 512-thread launch (SPARK_LM_CTA_THREADS is 256 - the producers never
+# ran at 256). Perf at parity (126.4); the leaner-sync path to ~155 is
+# documented in the harness header.
+# 172573 is the exact count.
+# +19: the warp-specialized perf LEDGER - the decisive
+# STAGE_ONLY experiments (pure-B producers 179.6-182.2 GB/s; +A-inline 136;
+# +consumers 133; A-on-consumer 127 WORSE) proving the A-quantize is orphan
+# work needing overlap, the lean-sync recipe that reconstructs the verified
+# 133.0, and the 180+ path (cp.async raw-A + shared-side quantize or a
+# third warp group; TMA for the last 45 to the 266 pure-read ceiling).
+# 172592 is the exact count.
+# +291: the production WS header fixed for deployment - the
+# prologue's b_scale_tile staging restored (the extraction regex had
+# deleted it; garbage scales corrupted everything), the producer's A-input
+# L2 prefetch restored (cold consumer reads cost 50 GB/s), and one-time
+# cudaFuncSetAttribute. Result: 173.9-175.6 GB/s bit-exact on every
+# production shape; O512 9.30 tps (+23%), E=4.94, bit-lossless.
+# 172883 is the exact count.
+# +49: the M=1 GEMV fix and the cross-request stability fix.
+# SparkLmDotRowFp8E8m0 (the scalar decode for the e8m0 pack layout - at M=1
+# the pure-streaming GEMV measures 228 GB/s vs the WS kernel's 171; the
+# no-spec MX regression 103.5s -> 81.4s, parity with F32B128's 80.1s) plus
+# rows 1-4 routing to it; and the block-KV history reset on a backward base
+# (without it, later requests on the same daemon attend the previous
+# sequence's stale rows and acceptance collapses run over run: 57.6 -> 79.7
+# -> 85.2s measured on identical prompts; now stable 57.8/57.5/57.5s).
+# 172936 is the exact count.
+# +114: the frame-graph WIRING (opt-in, SPARK_QWEN36_FRAME_GRAPH=1):
+# per-(rows,prefill) capture in RunFrame, warm-then-capture-then-replay
+# (the K3 pattern), eager uploads outside, capture-aware syncs (Finish +
+# profile-head guarded), capture-fail = loud error (GDN rerun unsafe).
+# Two sync blockers found and fixed; a THIRD invalidating call remains in
+# the layer path (site=ffn cascade) - the hunt continues from
+# graphs_broken diagnostics. Default OFF; production verified unaffected
+# (80.9s no-spec, same stream).
+# 173061 is the exact count.
+# 173409 (2026-08-21): prefix caching - module prefix GDN pool + snapshot/
+# restore transfers + continuity exception for borrow lanes; adapter prefix
+# store (refcounted blocks, LRU entries), publish/borrow glue in the plain
+# frame builder, RELEASE submission path (REQUIRES_RELEASE + residency echo);
+# batch tool sequential_submissions mode (the arrival pattern the cache
+# serves). Verified: borrow bit-identical output, 11.2s saved per repeat.
+# 173452 (2026-08-21): drafter-history rollback hygiene - far-backward
+# vs intra-sequence rollback split (watermark rewind + stale-row filter),
+# lane continuity keyed on request generation (frame scalar[0]) with the
+# base-0 restart rule (same-batch reruns against a live daemon).
+# 173457 (2026-08-21): frame graphs default ON (kill-switch preserved) -
+# the spec-graph anomaly proved resolved (FFN TP-reduce guard); bit-identical
+# verified on both paths.
+# 173994 (2026-08-21): timestamped spec_diag round telemetry (adapter) +
+# the multi-row dot GEMM bench (tools/, four variants, negative-result
+# ledger: 160.3 GB/s best vs WS 176.8 - the M=1 248 GB/s scalar does not
+# generalize to M>=8).
+# 174101 (2026-08-21): plain-B WS kernel variant (uint4 load+store B
+# staging, default ON, kill-switch SPARK_QWEN36_WS_PLAIN=0) + consumer
+# acquire fence + publish barrier; bench ledger updated with the in-situ
+# A/B (kernel-level +10%, end-to-end neutral, bit-exact).
+# Post-merge measured count (set by the consolidation; see the commit message).
+# 185079 (2026-08-23): PP7 split table series — the contract's dspark section
+# gains pp_stage_layers [12,11x6] (generated into spark_glm52_model.h as
+# counts/first-layer initializers + the shared LayerHasFullIndexer macro);
+# firmware.h replaces the uniform FirstLayer multiply and odd/even parity
+# heuristic with geometry tables (TP8 1x78 + PP7) and a coverage-derived
+# boundary rule plus the DSA tap table; module configure resolves the triple
+# against those tables; dispatch_policy.c derives tap stages from the same
+# split table (pp_stage_layer_count -> pp_stage_max_layer_count); the packer
+# gains --split/--stage with a write() self-check; gen_deployment gains the
+# pp7 tree (56 per-(stage,rank) configs, manifest, non-colliding ports).
+#
+# 185516: glm52 round-major wave validation collapsed onto the shared
+# spark_row_layout.h validator (module -12, adapter -6, Makefile +34 gate
+# rule = +16 net); absorbs the +421 consolidation commit 7cfc7a6 landed
+# uncounted (gate red at pristine HEAD, reproduced: 185500 vs 185079).
+CEILING = 185516
+
+ROOT = Path(__file__).resolve().parent.parent
+EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
+# .agents holds per-model agent worktrees (full clones of this tree);
+# their copies are tooling infrastructure, not authored source, and must
+# never move the counter.
+EXCLUDED_COMPONENTS = {'tmp','tests', '.git', 'docs', 'build', 'qualification',
+                      '__pycache__', '.agents', 'devcycle'}
+# tools/devcycle holds host-recovery / fleet-ops scripts (GRUB staging,
+# fstab fastboot fix): operational infrastructure, not serving-engine
+# source, and must never consume the authored-code budget.
+
+
+def main():
+    total = 0
+    for path in ROOT.rglob('*'):
+        relative = path.relative_to(ROOT)
+        if not path.is_file():
+            continue
+        if any(component in EXCLUDED_COMPONENTS for component in relative.parts):
+            continue
+        if path.suffix in EXTENSIONS or path.name == 'Makefile':
+            total += sum(1 for _ in path.open(errors='surrogateescape'))
+    print(f"non-test authored lines: {total} (ceiling {CEILING})")
+    if total > CEILING:
+        print(f"\nFAIL authored code grew by {total - CEILING} over the ceiling; "
+              f"shrink it or justify a new ceiling in the same change")
+        return 1
+    if total < CEILING - 800:
+        print(f"note: ceiling is {CEILING - total} above reality; "
+              f"lower it with the next landing")
+    print("\nthe authored codebase did not grow")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

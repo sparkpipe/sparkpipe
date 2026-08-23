@@ -58,10 +58,14 @@ if [[ -z "${SPARK_GLM52_STAGE_PACK_PATH:-}" || ! -s "${SPARK_GLM52_STAGE_PACK_PA
 fi
 require_source_digest "${SPARK_GLM52_CUDA_VALIDATOR_SHA256:-}" "${cuda_validator}" "Glm52 CUDA validator"
 
-# The v1 validator exercises one dense layer's forward on synthetic weights;
-# it does not load the pack. The pack still gates here (non-empty, named by
-# the pinned configuration) because the receipt binds the configuration the
-# archive publishes under; the loader's own schema chain pins its content.
+# The validator walks three tiers on synthetic weights; it does not load the
+# pack: tier 1 is one dense layer's forward plus a bit-exact determinism
+# re-walk, tier 2a is the first routed-expert layer (router/top-k selection,
+# package-codec expert forwards, shared expert) and tier 2b is the DSA
+# indexer at context beyond the selection width. The pack still gates here
+# (non-empty, named by the pinned configuration) because the receipt binds
+# the configuration the archive publishes under; the loader's own schema
+# chain pins its content.
 codec_index=-1
 for index in "${!glm52_codecs[@]}"; do
     if [[ "${SPARK_GLM52_EXPERT_CODEC:-}" == "${glm52_codecs[${index}]}" ]]; then

@@ -12,7 +12,13 @@ Two pipeline shapes:
   per-node control/collective ports so no two processes share a port (the
   flat scheme's BASE+rank plan collides across groups).
 
-Both shapes emit manifest.json describing every expected pack identity; the
+- tp1 (--pipeline tp1): the single-rank DFlash2-serving shape - one node,
+  tp_degree 1, no tp_collective stanza, speculation enabled. This is the
+  shape the drafter requires: drafts materialize inside the one rank's
+  module, so fanout topologies stay speculation-free until a draft transport
+  exists (the adapter refuses them loudly).
+
+tp8 and pp7 emit manifest.json describing every expected pack identity; the
 three SHAs per pack are filled by the packing run (the generator only fixes
 paths and source-config inputs).
 
@@ -37,6 +43,19 @@ NODE_TARGET = "cuda.sm121.glm52.resident_decode_stage.bf16.expert_fp8"
 # The contract's PP7 split table (single source: model_contracts/glm52.json,
 # dspark.pp_stage_layers); keep in sync with it.
 PP7_SPLIT = [12, 11, 11, 11, 11, 11, 11]
+
+# DFlash2 speculator defaults. `dspark_pack_path` records where the drafter
+# artifacts live for the manifest audit; the module itself reads the
+# manifest/config/safetensors paths from its process environment at
+# Initialize (SPARK_GLM52_DSPARK_{MANIFEST,CONFIG,SAFETENSORS}), exactly the
+# qwen36 SPARK_QWEN36_DSPARK_PACK_PATH doctrine.
+SPECULATION = {
+    "speculation_enabled": False,
+    "speculation_draft_count": 7,
+    "dspark_pack_path": "packs/glm52_dspark_drafter",
+}
+
+SPECULATION_TP1 = dict(SPECULATION, speculation_enabled=True)
 
 TP_COLLECTIVE = {
     "backend": "hidden_transport",
@@ -66,8 +85,60 @@ def stage_config(rank: int) -> dict:
         "tp_degree": TP,
         "tp_rank": rank,
         "tp_collective": dict(TP_COLLECTIVE),
+        **SPECULATION,
     }
     return cfg
+
+
+def tp1_config() -> dict:
+    """The single-rank firmware config: no collective, speculation on."""
+    return {
+        "schema_version": 4,
+        "model_revision": MODEL_REVISION,
+        "expert_weight_codec": "fp8",
+        "stage_pack_path": "packs/glm52_tp1.fp8.glm52sp",
+        "max_sequence_positions": 4096,
+        "execution_row_capacity": 16,
+        "tp_degree": 1,
+        "tp_rank": 0,
+        **SPECULATION_TP1,
+    }
+
+
+def tp1_resident_deployment() -> dict:
+    host = HOSTS[0]
+    return {
+        "schema_version": 2,
+        "coordinator_rank_index": 0,
+        "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
+        "driver": {
+            "shared_object_path": "lib/model_driver.so",
+            "program_name": "resident_decode",
+        },
+        "runtime_limits": {
+            "max_inflight_submissions": 4,
+            "max_active_sequences": 16,
+            "max_input_rows": 16,
+            "resident_sequence_capacity": 16,
+            "kv_logical_page_capacity": 256,
+            "kv_physical_page_capacity": 64,
+        },
+        "nodes": [{
+            "rank_index": 0,
+            "stage_index": 0,
+            "runtime_root": RUNTIME_ROOT.format(host=host) + ".tp1",
+            "node_target": NODE_TARGET,
+            "transport_host": host,
+            "adapter_configuration_path": "config/glm52_tp1.json",
+            "kv_backing_directory": "/home/%s/kvcache/glm52.tp1" % host,
+            "kv_backing_maximum_bytes": 8589934592,
+            "control_endpoint": {
+                "kind": "tcp",
+                "host": host,
+                "port": CONTROL_BASE,
+            },
+        }],
+    }
 
 
 def resident_deployment() -> dict:
@@ -237,6 +308,18 @@ def write_json(path: str, payload) -> None:
         f.write("\n")
 
 
+def generate_tp1(out: str) -> None:
+    host_dir = os.path.join(out, HOSTS[0], "config")
+    os.makedirs(host_dir, exist_ok=True)
+    write_json(os.path.join(host_dir, "glm52_tp1.json"), tp1_config())
+    write_json(os.path.join(host_dir, "model_resident.json"),
+               tp1_resident_deployment())
+    print("generated tp1 DFlash2 deployment under %s "
+          "(build the adapter with ADAPTER_TOPOLOGY_FLAGS="
+          "'-DSPARK_GLM52_SERVING_STAGE_COUNT=1 -DSPARK_GLM52_SERVING_TP_DEGREE=1')"
+          % out)
+
+
 def generate_tp8(out: str) -> None:
     for rank, host in enumerate(HOSTS):
         host_dir = os.path.join(out, host, "config")
@@ -266,10 +349,13 @@ def generate_pp7(out: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate GLM52 deployments")
     parser.add_argument("output", nargs="?", default="/tmp/glm52-deploy")
-    parser.add_argument("--pipeline", choices=("tp8", "pp7"), default="tp8")
+    parser.add_argument("--pipeline", choices=("tp8", "pp7", "tp1"),
+                        default="tp8")
     args = parser.parse_args()
     if args.pipeline == "pp7":
         generate_pp7(args.output)
+    elif args.pipeline == "tp1":
+        generate_tp1(args.output)
     else:
         generate_tp8(args.output)
     return 0

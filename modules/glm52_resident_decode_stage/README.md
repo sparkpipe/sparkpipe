@@ -7,142 +7,107 @@ The fixed stage program is specialized for SM121 GLM 5.2 BF16 decode with 6144 h
 One submission executes this stream-ordered sequence:
 
 ```text
-attention RMSNorm
-BF16 Q latent / Q RoPE / K RoPE / KV latent projections
-driver-owned sparse-token selection
-RoPE + final-layout current KV write
-resident sparse MLA attention
-attention output projection + residual
-final RMSNorm + restricted-vocabulary logits + argmax
-MXFP4 E2M1/E8M0 MTP draft logits + argmax
-MTP verify / commit / rollback counters
-BF16 dense MLP layer progression for GLM 5.2's first dense layers
+embedding row into hidden, zero residual
+per layer: attention chunk
+  fused residual RMSNorm, Q/KV latent projections, q_a norm
+  DSA indexer on full-indexer layers when context > 2048 selected tokens
+  rope + current KV latent write, resident (sparse or dense) MLA attention
+  attention output projection
+per layer: MLP chunk - dense below layer 3, routed MoE above it
+  router GEMM, sigmoid top-k selection, renormalised mixture,
+  routed-expert grouped GEMMs in the package codec, weighted finalize,
+  shared expert summed ungated
+optional final head on the stage that owns it
 external completion
 ```
 
-The live layer-0 dense gate is:
+The stage's gates are the retained-receipt chain in
+`../resident_decode_stage_rules.mk`; the retired `validate_layer0_*` /
+`package_layer0_*` targets no longer exist. Every publish-shaped target
+requires nvcc for `sm_121a`, a readable stage pack at `STAGE_PACK_PATH`, and
+the executable validator wrapper; the validator source digest rides
+`SPARK_GLM52_CUDA_VALIDATOR_SHA256` inside `RUNTIME_CONFIGURATION`, so the
+configuration hash names the exact validator text that approved an artifact.
+
+Host-side checks (no GPU needed):
 
 ```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage validate_layer0_dense_bf16 MAX_STAGE_MICROSECONDS=10000
+make -C modules/glm52_resident_decode_stage contract \
+    EXPERT_CODEC=<int6|int7|int8|fp8|nvfp4|mxfp4> \
+    MODEL_REVISION=$(git rev-parse HEAD) CONTRACT_SHA256=<package sha>
+python3 tests/test_glm52_cuda_validator_tier2_oracle.py   # tier-2 oracle math, all six codecs
 ```
 
-The package-level gate, which uses a distinct validation recipe and then runs
-the generated driver/orchestrator path, is:
+Hardware validation of one codec configuration:
 
 ```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer0_dense_bf16 MAX_STAGE_MICROSECONDS=10000
+GLM52_MODEL_REVISION=$(git rev-parse HEAD) \
+GLM52_CONTRACT_SHA256=<sha from tools/glm52_model_contract.py --print-build-identity> \
+make -C modules/glm52_resident_decode_stage validate \
+    EXPERT_CODEC=fp8 MODEL_REVISION=$GLM52_MODEL_REVISION CONTRACT_SHA256=$GLM52_CONTRACT_SHA256
 ```
 
-The stronger combined layer-0 BF16 gate is:
+That compiles the module archive, runs the wrapper
+(`validation/validate_glm52_resident_decode_stage_cuda.sh`), which rebuilds
+core/runtime libraries, compiles the validator against the same defines the
+archive used, and executes three tiers against an fp32 CPU oracle: one dense
+layer's forward plus a bit-exact determinism re-walk (tier 1), the first
+routed-expert layer including router/top-k determinism, one expert forward
+element-wise, and a bit-exact leg re-run (tier 2a), and the DSA indexer at
+context 2065 > 2048 selected tokens with forced-selection-set verification
+(tier 2b). `publish` additionally retains the recipe, configuration hash and
+validator digest under the module library;
+`variants` / `publish_variants` repeat the archive (and validation) per batch
+bucket.
+
+The serving adapter builds separately:
 
 ```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer0_bf16 MAX_STAGE_MICROSECONDS=10000
+make -C modules/glm52_resident_decode_stage adapter EXPERT_CODEC=<c> ...
 ```
-
-That gate loads the real BF16 attention tensors, `post_attention_layernorm`, `gate_proj`,
-`up_proj`, and `down_proj` tensors for layer 0, runs the dense layer body on
-device, and then checks restricted logits against real checkpoint
-`lm_head.weight` rows.
-
-The strongest current B1 layer-0 gate also replaces the synthetic input hidden
-with one checkpoint embedding row:
-
-```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer0_embedding_bf16 MAX_STAGE_MICROSECONDS=10000
-```
-
-That gate loads `model.embed_tokens.weight[token]`, the layer-0 attention
-tensors, the layer-0 dense tensors, and restricted `lm_head.weight` rows, then
-runs the package/generated-driver path. It still seeds the previous KV cache;
-the next correctness gate is checkpoint-derived prefill/KV and reference
-activation comparison.
-
-The current strongest B1 layer-0 gate removes that seeded prior-KV assumption
-for the checked context window:
-
-```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer0_prefill_bf16 MAX_STAGE_MICROSECONDS=10000
-```
-
-That gate runs prior embedding rows through the same resident CUDA stage to
-populate remapped KV cache slots, restores the final input embedding row, and
-then checks the final attention result against the actual cache rows written by
-prefill. It still is not full GLM token equivalence; the next gate needs
-external reference activation comparison for the checkpoint-backed layer body.
-
-The strongest current sampled-reference gate is:
-
-```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer0_reference_bf16 MAX_STAGE_MICROSECONDS=10000
-```
-
-That gate keeps the prefilled KV setup and adds sampled CPU references for the
-checkpoint-backed layer-0 projection, RMSNorm, residual, and dense MLP
-boundaries. It intentionally stays validator-local; the model driver ABI does
-not learn GLM tensor names or reference math.
-
-The stronger layer-0 output-side full-reference gate is:
-
-```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer0_full_reference_bf16 MAX_STAGE_MICROSECONDS=10000
-```
-
-That gate preserves the sampled q/kv/gate/up coverage, then checks every
-output element of `o_proj`, the attention residual, post-attention RMSNorm,
-SwiGLU activation, and dense-down residual against validator CPU reference
-math. It still does not replace an external activation artifact for full-model
-equivalence.
-
-The same full-reference gate can be run over the other dense pre-MoE layers:
-
-```sh
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer1_full_reference_bf16 MAX_STAGE_MICROSECONDS=10000
-
-GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4 \
-GLM52_INPUT_TOKEN_ID=1000 \
-PATH=/usr/local/cuda-13.0/bin:$PATH \
-make -C modules/glm52_resident_decode_stage package_layer2_full_reference_bf16 MAX_STAGE_MICROSECONDS=10000
-```
-
-These targets load `model.layers.1.*` and `model.layers.2.*` respectively,
-matching the live GLM config's `first_k_dense_replace=3`. They are per-layer
-checks; they do not yet chain hidden activations through layers 0, 1, and 2.
 
 The node context binds resident weight pointers, paged KV cache, streams, workspaces, RoPE tables, token maps, and output buffers once when the driver instance is created. Per-submission inputs are only dynamic decode facts such as active sequence count, requested token count, sequence identity, deadline, priority, and residency token. The firmware admission function chooses the opaque pipeline slot; SparkPipe does not assign or interpret CUDA stream/KV ownership.
 
-The module also publishes direct admission and snapshot symbols. They expose only neutral scheduling data: accepted/rejected, dispatch slot, dispatch generation/cookies, private queue pressure, resident token capacity, active submissions, CUDA graph capture/replay counts, stale-admission count, and zero memcpy/host-staging counters.
+The module also publishes direct admission and snapshot symbols. They expose only neutral scheduling data: accepted/rejected, dispatch slot, dispatch generation/cookies, private queue pressure, resident token capacity, active submissions, stale-admission count, and zero memcpy/host-staging counters.
 
-Sparse-token selection has three modes. `preselected` is the intended production path: DSA or another model-specific policy produces sparse rows before graph replay. `copy_context_prefix` is a parallel bring-up path. `debug_serial_topk` is deliberately not a production mode.
+Sparse-token selection runs in-stage: on every full-indexer layer whose context exceeds `SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT` the indexer projects, norms, ropes, caches and scores index keys, then the shared radix top-k fixes the 2048 attended positions; shorter contexts and non-leader layers skip it (group-shared index state rides the wave's index ordinals, and pipeline-parallel stages ship selections through the sideband).
 
-Each pipeline slot may hold one captured CUDA graph for its fixed active-sequence shape. Production launch checking should be disabled; peek/sync modes exist for target bring-up. Completion is enqueued after the graph launch so the arithmetic graph stays reusable and the completion mechanism can later move to event polling or a doorbell without changing the captured graph.
-
-Normal publication validates a new archive exactly once:
+Normal publication validates a new archive exactly once per codec configuration:
 
 ```sh
 make -C modules/glm52_resident_decode_stage publish \
-    CUDA_ARCH=sm_121a \
-    MAX_STAGE_MICROSECONDS=<qualified-limit>
+    EXPERT_CODEC=<c> MODEL_REVISION=<rev> CONTRACT_SHA256=<sha> \
+    CUDA_ARCH=sm_121a
 ```
 
-The source is correctness-first until hardware profiling says which fused pieces should be replaced by tensor-core or persistent-kernel implementations. It must not be published unless the hardware validator passes the numerical checks and the maximum full-stage submission-to-completion latency ceiling.
+The source is correctness-first until hardware profiling says which fused pieces should be replaced by tensor-core or persistent-kernel implementations. It must not be published unless the hardware validator passes the numerical checks of all three tiers.
+
+## DFlash2 speculative decoding (DSpark drafter)
+
+The stage carries the second DFlash2 adoption (after qwen36/qwen38): the
+drafter engine is the `glm52_dspark_draft_backend` archive, ar'd into this
+module's link unit (`MODULE_EXTRA_ARCHIVE_OBJECTS` in
+`../resident_decode_stage_rules.mk`), so the published link-unit is
+self-contained. The round shape is the proven one-frame verify:
+
+- every aux capture layer {7,22,38,54,69} copies the wave's post-layer
+  hidden into the drafter's device tap arena (one ring row per walked token,
+  `(resident slot, position mod block)`-addressed);
+- a frame with `DSPARK_DRAFT_AFTER` ends at the head: the module computes
+  each lane's accept depth from its own emissions (verify frames), stages
+  each lane's anchor token into the drafter context, runs the block forward,
+  and hands the next block's ids to the adapter through the frame's draft
+  view;
+- the following submission walks `[anchor emission, d_1..d_6]` as a
+  `SPECULATIVE_VERIFY` prefill-kind frame; the adapter credits accepted+1
+  tokens and stamps the accept depth back on the next frame so EVERY rank
+  derives identical position books without a cross-rank reduction.
+
+Gates: `build/test_glm52_spec_verify_contract` pins the accept rule against
+the neutral policy's `ResolveVerifierTokens`, the stamp reconciliation space,
+and the shared tap geometry. Speculation arms only on single-rank builds
+(`SPARK_GLM52_SERVING_TP_DEGREE==1`, `SPARK_GLM52_SERVING_STAGE_COUNT==1`,
+module geometry stage_count==1/tp_degree==1) — a fanout deployment would
+need a draft transport that does not exist, and is refused loudly instead.
+Drafter numerics gate on GB10 via the backend's epoch-3 validator before any
+draft-path number is trusted.

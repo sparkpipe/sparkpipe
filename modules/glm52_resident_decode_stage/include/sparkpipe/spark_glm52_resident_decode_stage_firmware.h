@@ -17,7 +17,10 @@ extern "C" {
 #endif
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 4u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
+/* v2: the frame context gained the DSpark draft view plus the two
+ * speculation frame flags; both producers (module, serving adapter) ship in
+ * the same change, so no cross-version negotiation exists or is needed. */
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 2u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
 /*
  * Supported resident geometries. The default deployment is TP8: one firmware
@@ -46,12 +49,86 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT UINT32_C(0x00000004)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_INPUT UINT32_C(0x00000008)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT UINT32_C(0x00000010)
+/*
+ * Speculation (DFlash2/DSpark drafter) frame modifiers, mirroring the proven
+ * qwen36 surface:
+ *
+ * SPECULATIVE_VERIFY - a PREFILL-kind frame whose rows are [anchor emission,
+ * drafted tokens...] for ONE lane at consecutive positions; the head emits
+ * EVERY row's argmax instead of only the last row's. The adapter compares
+ * emissions against the drafted inputs and credits accepted+1 tokens; the
+ * module corrects the lane's next position through the accept stamp the
+ * following frame carries (see the draft view), so every TP rank derives
+ * identical bookkeeping without a cross-rank reduction.
+ *
+ * DSPARK_DRAFT_AFTER - after this frame's walk (and, for verify frames, its
+ * accept computation) the head-owning stage stages the anchor row's token,
+ * runs the DFlash2 block drafter over the captured aux taps, and fills the
+ * draft view's outputs. Stages that do not own the final head ignore the
+ * flag: taps and drafts exist only where the drafter runs.
+ */
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY UINT32_C(0x00000020)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER UINT32_C(0x00000040)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_KNOWN_FLAGS \
 	(SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL | \
 	 SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT | \
 	 SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT | \
 	 SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_INPUT | \
-	 SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT)
+	 SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT | \
+	 SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY | \
+	 SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER)
+
+/* Draft depth in the adapter's MTP convention: the drafter emits
+ * SPARK_GLM52_MODEL_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ids whose FIRST slot
+ * restates the anchor emission (mask row 0 predicts the committed token's
+ * own next position), so a verify frame walks 1 + (count - 1) rows. */
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE \
+	SPARK_GLM52_MODEL_DSPARK_BLOCK_SIZE
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT \
+	SPARK_GLM52_MODEL_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_VERIFY_ROW_COUNT \
+	(SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT)
+/* Tap arena ring: one arena row per (resident slot, position mod block), so
+ * every walked row of one frame lands in a distinct slot and stale rows are
+ * simply overwritten round to round. */
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_TAP_ROWS_PER_LANE \
+	SPARK_GLM52_MODEL_DSPARK_BLOCK_SIZE
+
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION 1u
+
+/*
+ * DSpark/DFlash2 draft view. The adapter owns every buffer; the module fills
+ * the outputs on the stage that owns the final head.
+ *
+ * Input (adapter -> module): sequence_id / base_position name the lane and
+ * the first walked row's absolute position; requested_token_count caps the
+ * draft depth; draft_token_ids receives requested_token_count ids per active
+ * lane (lane-major, dspark_draft stride
+ * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT).
+ *
+ * Output (module -> adapter): draft_token_count is the drafter's filled id
+ * count per lane (identical across lanes of one launch); under
+ * SPECULATIVE_VERIFY, verified_row_count is the walked row count per lane and
+ * accepted_token_counts[lane] is the module-computed accept depth (emissions
+ * vs walked rows) the adapter must credit and stamp forward - one source of
+ * truth, recomputed independently by no one. Both output arrays are
+ * adapter-owned: lengths are requested_token_count x active_sequence_count
+ * and active_sequence_count respectively (the frame's batch names that
+ * count), keeping this struct free of bucket-dependent sizes.
+ */
+typedef struct SparkGlm52ResidentDecodeStageDsparkDraftView
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t requested_token_count;
+	uint32_t reserved0;
+	uint64_t sequence_id;
+	uint64_t base_position;
+	uint32_t *draft_token_ids;
+	uint32_t *accepted_token_counts;
+	uint32_t draft_token_count;
+	uint32_t verified_row_count;
+} SparkGlm52ResidentDecodeStageDsparkDraftView;
 
 typedef struct SparkGlm52ResidentDecodeStageNodeContext
 {
@@ -115,6 +192,17 @@ typedef struct SparkGlm52ResidentDecodeStageFrameContext
 	uint64_t sideband_input_bytes;
 	void *sideband_output;
 	uint64_t sideband_output_bytes;
+	/* v2: DFlash2/DSpark speculation. dspark_draft is required non-null
+	 * exactly when DSPARK_DRAFT_AFTER is set and ignored otherwise.
+	 * previous_verify_accepts is required non-null when ANY lane of this
+	 * frame's batch carries a pending SPECULATIVE_VERIFY walk (module
+	 * records one per resident slot): it names one accept depth per row -
+	 * rows of a lane share that lane's depth - and the module validates the
+	 * frame's first row per such lane against start+depth+1 before applying
+	 * the position correction, so every rank derives identical bookkeeping
+	 * from adapter-supplied facts instead of a cross-rank reduction. */
+	const SparkGlm52ResidentDecodeStageDsparkDraftView *dspark_draft;
+	const uint32_t *previous_verify_accepts;
 } SparkGlm52ResidentDecodeStageFrameContext;
 
 typedef struct SparkGlm52ResidentDecodeStageGeometry

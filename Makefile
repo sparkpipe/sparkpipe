@@ -24,7 +24,7 @@ SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
 endif
 GLM52_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm52/include -Imodel-families/common/include
 QWEN36_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen36/include -Iruntime
-QWEN38_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen38/include
+QWEN38_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen38/include -Iruntime
 DSV4_DEFAULT_BATCH_FLAGS := -DSPARK_BATCH_BUCKET=1024u
 DSV4_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/include $(DSV4_DEFAULT_BATCH_FLAGS)
 K3_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include
@@ -161,6 +161,14 @@ QWEN36_MODEL_DESCRIPTION := examples/model_descriptions/qwen36_resident_decode_s
 QWEN36_MODEL_REVISION ?= bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1
 QWEN36_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN36_MODEL_DESCRIPTION)"; else shasum -a 256 "$(QWEN36_MODEL_DESCRIPTION)"; fi | awk '{print $$1}')
 QWEN36_SERVING_ADAPTER_FLAGS := -D_POSIX_C_SOURCE=200809L -DQWEN36_MODEL_REVISION=\"$(QWEN36_MODEL_REVISION)\" -DQWEN36_CONTRACT_SHA256=\"$(QWEN36_CONTRACT_SHA256)\"
+# qwen38-max serving adapter (port 2): paged KV over the general
+# prefix-cache core; the prefix-cache gate drives it through the fixture
+# driver below.
+QWEN38_SERVING_ADAPTER := build/libqwen38_serving_adapter.$(SHARED_LIBRARY_EXT)
+QWEN38_MODEL_DESCRIPTION := examples/model_descriptions/qwen38_resident_decode_stage_firmware.json
+QWEN38_MODEL_REVISION ?= fp8-h8192-l92-gdn69-full23-e512k10-v248320-mtp1-d2dc3565-v1
+QWEN38_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN38_MODEL_DESCRIPTION)"; else shasum -a 256 "$(QWEN38_MODEL_DESCRIPTION)"; fi | awk '{print $$1}')
+QWEN38_SERVING_ADAPTER_FLAGS := -D_POSIX_C_SOURCE=200809L -DQWEN38_MODEL_REVISION=\"$(QWEN38_MODEL_REVISION)\" -DQWEN38_CONTRACT_SHA256=\"$(QWEN38_CONTRACT_SHA256)\"
 
 TOOL_NAMES := \
     sparkpipe_module_publish \
@@ -212,6 +220,7 @@ TEST_NAMES := \
     test_kv_store \
     test_kv_cache \
     test_qwen36_prefix_cache \
+    test_qwen38_prefix_cache \
     test_prefix_cache_core \
 	test_k3_kv_cache \
     test_kv_model_table \
@@ -234,6 +243,8 @@ TEST_NAMES := \
     test_tp_device_collective_nccl \
     test_glm52_stagepack \
     test_glm52_pp7_configure \
+    test_glm52_round_major_contract \
+    test_glm52_spec_verify_contract \
     test_tokenizer \
     test_model_description \
     test_stage_module_common \
@@ -283,6 +294,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_quantized_cuda_contract.py \
 	tests/test_glm52_stage_pack.py \
 	tests/test_glm52_unity_precision_contract.py \
+	tests/test_glm52_cuda_validator_tier2_oracle.py \
 	tests/test_gqa_host.py \
 	tests/test_grouped_moe_source_contracts.py \
 	tests/test_hardware_topology.py \
@@ -370,6 +382,8 @@ TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE := \
     build/test_modules/libdsv4_tp4_pp4_serving_driver_module.$(SHARED_LIBRARY_EXT)
 TEST_QWEN36_SERVING_DRIVER_MODULE := \
     build/test_modules/libqwen36_serving_driver_module.$(SHARED_LIBRARY_EXT)
+TEST_QWEN38_SERVING_DRIVER_MODULE := \
+    build/test_modules/libqwen38_serving_driver_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_RESIDENT_TRANSPORT_MODULE := \
     build/test_modules/libmodel_resident_transport_module.$(SHARED_LIBRARY_EXT)
 TEST_VALIDATOR := build/test_module_validator
@@ -792,6 +806,16 @@ build/test_qwen36_serving_adapter: tests/test_qwen36_serving_adapter.c tests/fix
 build/test_qwen36_prefix_cache: tests/test_qwen36_prefix_cache.c tests/fixtures/qwen36_serving_adapter_config.json modules/qwen36_resident_decode_stage/source/spark_qwen36_paged_kv.c modules/qwen36_resident_decode_stage/source/spark_qwen36_paged_kv.h build/libqwen36_serving_adapter.dylib build/test_modules/libqwen36_serving_driver_module.dylib $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include -Imodules/qwen36_resident_decode_stage/source -DTEST_QWEN36_SERVING_ADAPTER_PATH=\"$(QWEN36_SERVING_ADAPTER)\" -DTEST_QWEN36_SERVING_DRIVER_PATH=\"$(TEST_QWEN36_SERVING_DRIVER_MODULE)\" -DTEST_QWEN36_SERVING_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config.json\" $(CFLAGS) tests/test_qwen36_prefix_cache.c modules/qwen36_resident_decode_stage/source/spark_qwen36_paged_kv.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
+# qwen38-max (port 2): serving adapter dylib over the paged KV + core.
+$(QWEN38_SERVING_ADAPTER): modules/qwen38_resident_decode_stage/source/spark_qwen38_serving_adapter.c modules/qwen38_resident_decode_stage/source/spark_qwen38_paged_kv.c modules/qwen38_resident_decode_stage/source/spark_qwen38_paged_kv.h modules/qwen38_resident_decode_stage/include/sparkpipe/spark_qwen38_serving_adapter.h modules/qwen38_resident_decode_stage/include/sparkpipe/spark_qwen38_resident_decode_stage_firmware.h $(QWEN38_MODEL_DESCRIPTION) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(QWEN38_INCLUDE_FLAGS) -Imodules/qwen38_resident_decode_stage/include $(CFLAGS) $(QWEN38_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/qwen38_resident_decode_stage/source/spark_qwen38_serving_adapter.c modules/qwen38_resident_decode_stage/source/spark_qwen38_paged_kv.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+$(TEST_QWEN38_SERVING_DRIVER_MODULE): tests/fixtures/qwen38_serving_adapter_driver.c modules/qwen38_resident_decode_stage/include/sparkpipe/spark_qwen38_resident_decode_stage_firmware.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(QWEN38_MODEL_DESCRIPTION) | build/test_modules
+	$(CC) $(CPPFLAGS) $(QWEN38_INCLUDE_FLAGS) -Imodules/qwen38_resident_decode_stage/include $(CFLAGS) $(QWEN38_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+build/test_qwen38_prefix_cache: tests/test_qwen38_prefix_cache.c tests/fixtures/qwen38_serving_adapter_config.json tests/fixtures/qwen38_serving_adapter_config_squeezed.json modules/qwen38_resident_decode_stage/source/spark_qwen38_paged_kv.c modules/qwen38_resident_decode_stage/source/spark_qwen38_paged_kv.h build/libqwen38_serving_adapter.dylib build/test_modules/libqwen38_serving_driver_module.dylib $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(QWEN38_INCLUDE_FLAGS) -Imodules/qwen38_resident_decode_stage/include -Imodules/qwen38_resident_decode_stage/source -DTEST_QWEN38_SERVING_ADAPTER_PATH=\"$(QWEN38_SERVING_ADAPTER)\" -DTEST_QWEN38_SERVING_DRIVER_PATH=\"$(TEST_QWEN38_SERVING_DRIVER_MODULE)\" -DTEST_QWEN38_SERVING_CONFIG_PATH=\"tests/fixtures/qwen38_serving_adapter_config.json\" -DTEST_QWEN38_SERVING_SQUEEZED_CONFIG_PATH=\"tests/fixtures/qwen38_serving_adapter_config_squeezed.json\" $(CFLAGS) tests/test_qwen38_prefix_cache.c modules/qwen38_resident_decode_stage/source/spark_qwen38_paged_kv.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
 
 # The K3 adapter links the CUDA serving TUs (runner, dispatch, driver) with
 # nvcc, so the rule is the single-spark gate's link line plus the shared libs.
@@ -890,14 +914,42 @@ build/test_glm52_stagepack: tests/test_glm52_stagepack.c modules/glm52_resident_
 # PP7 split dry proof: the harness includes the module translation unit
 # directly (white-box) so the configure chain's statics run on host; links
 # the model-common library for the stage-module ABI and TP collective stubs.
-build/test_glm52_pp7_configure: tests/test_glm52_pp7_configure.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c $(MODEL_COMMON_LIBRARY)
+# DFlash2 spec-verify contract gate: white-box like the PP7 dry proof -
+# includes the module TU so the pure accept rule, the stamp reconciliation
+# and the tap geometry run on host; links the glm52 host library for the
+# neutral policy core and the GLM52 dispatch policy (tap plan).
+build/test_glm52_spec_verify_contract: tests/test_glm52_spec_verify_contract.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c $(MODEL_COMMON_LIBRARY) $(GLM52_HOST_LIBRARY)
 	$(CC) $(GLM52_INCLUDE_FLAGS) -Imodules/glm52_resident_decode_stage/source \
 		-Imodules/glm52_resident_decode_stage/include \
+		-Imodules/glm52_dspark_draft_backend/include \
+		-DGLM52_EXPERT_WEIGHT_CODEC=5 \
+		-D'GLM52_EXPERT_CODEC_NAME="fp8"' \
+		-D'GLM52_MODEL_REVISION="spec-verify"' \
+		-D'GLM52_CONTRACT_SHA256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+		$(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_pp7_configure: tests/test_glm52_pp7_configure.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c $(MODEL_COMMON_LIBRARY) $(GLM52_HOST_LIBRARY)
+	$(CC) $(GLM52_INCLUDE_FLAGS) -Imodules/glm52_resident_decode_stage/source \
+		-Imodules/glm52_resident_decode_stage/include \
+		-Imodules/glm52_dspark_draft_backend/include \
 		-DGLM52_EXPERT_WEIGHT_CODEC=5 \
 		-D'GLM52_EXPERT_CODEC_NAME="fp8"' \
 		-D'GLM52_MODEL_REVISION="pp7-dry"' \
 		-D'GLM52_CONTRACT_SHA256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
 		$(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+# Round-major row-order collapse gate: white-box like the PP7 dry proof -
+# includes the module translation unit so the migrated round-major statics
+# run against verbatim pre-collapse oracle copies over an exhaustive sweep.
+build/test_glm52_round_major_contract: tests/test_glm52_round_major_contract.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c $(MODEL_COMMON_LIBRARY) $(GLM52_HOST_LIBRARY)
+	$(CC) $(GLM52_INCLUDE_FLAGS) -Imodules/glm52_resident_decode_stage/source \
+		-Imodules/glm52_resident_decode_stage/include \
+		-Imodules/glm52_dspark_draft_backend/include \
+		-DGLM52_EXPERT_WEIGHT_CODEC=5 \
+		-D'GLM52_EXPERT_CODEC_NAME="fp8"' \
+		-D'GLM52_MODEL_REVISION="round-major-dry"' \
+		-D'GLM52_CONTRACT_SHA256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+		$(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dspark_drafter_pin: tests/test_dspark_drafter_pin.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

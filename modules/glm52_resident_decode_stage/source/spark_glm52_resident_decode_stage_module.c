@@ -15,6 +15,9 @@
 #include "sparkpipe/spark_kv_model_table.h"
 #include "sparkpipe/spark_glm52_kv_geometry.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_row_layout.h"
+#include "sparkpipe/spark_glm52_dspark.h"
+#include "sparkpipe/spark_glm52_dspark_draft_backend.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #include "spark_glm52_stagepack_format.h"
 
@@ -30,6 +33,17 @@
 #define SPARK_GLM52_HEAD_TILE 1024u
 #define SPARK_GLM52_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_GLM52_KV_ACCESS_ERROR_WORD_COUNT 6u
+/* DFlash2 drafter wiring (queue: second DFlash2 adoption, qwen36 pattern).
+ * The drafter engine is the existing glm52_dspark_draft_backend archive; the
+ * module stages one anchor token per active lane per round, captures the aux
+ * taps {7,22,38,54,69} during the walk, and runs the block forward at the
+ * frame tail. Configuration rides the process environment exactly like
+ * qwen36's SPARK_QWEN36_DSPARK_PACK_PATH - no node-context ABI churn. */
+#define SPARK_GLM52_DSPARK_SPECULATOR_ENV "SPARK_GLM52_STAGE_SPECULATOR"
+#define SPARK_GLM52_DSPARK_MANIFEST_ENV "SPARK_GLM52_DSPARK_MANIFEST"
+#define SPARK_GLM52_DSPARK_CONFIG_ENV "SPARK_GLM52_DSPARK_CONFIG"
+#define SPARK_GLM52_DSPARK_SAFETENSORS_ENV "SPARK_GLM52_DSPARK_SAFETENSORS"
+#define SPARK_GLM52_DSPARK_PATH_BYTES 1024u
 
 typedef struct SparkGlm52ModuleState SparkGlm52ModuleState;
 
@@ -121,6 +135,26 @@ struct SparkGlm52ModuleState
 	void *tp_host_credit_send_bf16;
 	void *tp_host_credit_receive_bf16;
 	atomic_ullong tp_next_ordinal;
+	/* DFlash2 drafter (speculator_enabled gates every touch below). */
+	uint32_t speculator_enabled;
+	char dspark_manifest_path[SPARK_GLM52_DSPARK_PATH_BYTES];
+	char dspark_config_path[SPARK_GLM52_DSPARK_PATH_BYTES];
+	char dspark_safetensors_path[SPARK_GLM52_DSPARK_PATH_BYTES];
+	SparkGlm52DsparkDraftBackend dspark_backend;
+	uint32_t *dspark_tap_rows_host;
+	uint64_t dspark_verify_rounds;
+	uint64_t dspark_draft_rounds;
+	uint64_t dspark_accepted_token_count;
+	/* Per resident slot: drafter-relative staged token count, monotonic tap
+	 * generation, and the pending-verify record the NEXT frame's accept
+	 * stamps resolve (start position + walked row count of the last
+	 * SPECULATIVE_VERIFY walk on this slot). */
+	uint32_t *dspark_lane_staged_counts;
+	uint64_t *dspark_lane_tap_generations;
+	uint8_t *dspark_lane_pending_verify;
+	uint64_t *dspark_lane_verify_starts;
+	uint32_t *dspark_lane_verify_walked;
+	uint64_t *dspark_lane_last_sequence_ids;
 };
 
 static uint32_t SparkGlm52BytesAreZero(const uint8_t *bytes,uint32_t count)
@@ -151,6 +185,8 @@ static int32_t SparkGlm52ContractHash(uint8_t hash[SPARK_GLM52_STAGEPACK_SHA256_
 	}
 	return(0);
 }
+
+static SparkStatus SparkGlm52ModuleSpeculatorConfigure(SparkGlm52ModuleState *state);
 
 static SparkStatus SparkGlm52ModuleConfigure(
 	SparkGlm52ModuleState *state,
@@ -192,7 +228,94 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	state->execution_stream = host_services->execution_stream;
 	(void)snprintf(state->model_revision,sizeof(state->model_revision),"%s",context->model_revision);
 	*pack_path = context->stage_pack_path;
+	if ( SparkGlm52ModuleSpeculatorConfigure(state) != SPARK_STATUS_OK )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
+}
+
+/* Read the DFlash2 speculator switches once at configure time. Enabled
+ * requires the drafter artifact triple and a geometry where the whole ring
+ * is local (single stage, TP1): aux capture layers {7,22,38,54,69} span PP7
+ * stages {1,2,3,4,6}, so a pipelined speculator needs the boundary tap
+ * transport first and is refused loudly here rather than silently drafting
+ * from partial taps. */
+static SparkStatus SparkGlm52ModuleSpeculatorConfigure(SparkGlm52ModuleState *state)
+{
+	const char *enabled,*manifest,*config,*safetensors;
+	if ( state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	enabled = getenv(SPARK_GLM52_DSPARK_SPECULATOR_ENV);
+	if ( enabled == 0 || enabled[0] == '\0' || strcmp(enabled,"1") != 0 )
+		return(SPARK_STATUS_OK);
+	if ( state->geometry->stage_count != 1u || state->tp_degree != 1u )
+	{
+		(void)fprintf(stderr,"%s dspark_speculator_refused stage_count=%u tp_degree=%u reason=pipelined_tap_transport_not_wired\n",SPARK_GLM52_MODULE_TAG,state->geometry->stage_count,state->tp_degree);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	manifest = getenv(SPARK_GLM52_DSPARK_MANIFEST_ENV);
+	config = getenv(SPARK_GLM52_DSPARK_CONFIG_ENV);
+	safetensors = getenv(SPARK_GLM52_DSPARK_SAFETENSORS_ENV);
+	if ( manifest == 0 || manifest[0] == '\0' || config == 0 || config[0] == '\0' || safetensors == 0 || safetensors[0] == '\0' || strlen(manifest) >= sizeof(state->dspark_manifest_path) || strlen(config) >= sizeof(state->dspark_config_path) || strlen(safetensors) >= sizeof(state->dspark_safetensors_path) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	(void)snprintf(state->dspark_manifest_path,sizeof(state->dspark_manifest_path),"%s",manifest);
+	(void)snprintf(state->dspark_config_path,sizeof(state->dspark_config_path),"%s",config);
+	(void)snprintf(state->dspark_safetensors_path,sizeof(state->dspark_safetensors_path),"%s",safetensors);
+	state->speculator_enabled = 1u;
+	return(SPARK_STATUS_OK);
+}
+
+/* Bring the drafter engine up after the caches/slots exist: the backend
+ * borrows the execution stream so tap writes, staging gathers and the block
+ * forward are stream-ordered against the walk without extra events. */
+static SparkStatus SparkGlm52ModuleSpeculatorInitialize(SparkGlm52ModuleState *state)
+{
+	SparkGlm52DsparkDraftBackendConfiguration configuration;
+	SparkStatus status;
+	uint32_t lane;
+	if ( state == 0 || state->speculator_enabled == 0u )
+		return(SPARK_STATUS_OK);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_DSPARK_DRAFT_BACKEND_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_DSPARK_DRAFT_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES;
+	configuration.maximum_lane_count = state->resident_sequence_capacity;
+	configuration.maximum_context_token_count = state->max_sequence_positions;
+	configuration.restricted_vocabulary_count = 0u;
+	configuration.restricted_token_ids = 0;
+	configuration.manifest_path = state->dspark_manifest_path;
+	configuration.config_path = state->dspark_config_path;
+	configuration.safetensors_path = state->dspark_safetensors_path;
+	configuration.cuda_stream = state->execution_stream;
+	status = SparkGlm52DsparkDraftBackendInitialize(&state->dspark_backend,&configuration);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	state->dspark_tap_rows_host = (uint32_t *)malloc((uint64_t)state->execution_row_capacity * sizeof(uint32_t));
+	state->dspark_lane_staged_counts = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(uint32_t));
+	state->dspark_lane_tap_generations = (uint64_t *)calloc(state->resident_sequence_capacity,sizeof(uint64_t));
+	state->dspark_lane_pending_verify = (uint8_t *)calloc(state->resident_sequence_capacity,sizeof(uint8_t));
+	state->dspark_lane_verify_starts = (uint64_t *)calloc(state->resident_sequence_capacity,sizeof(uint64_t));
+	state->dspark_lane_verify_walked = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(uint32_t));
+	state->dspark_lane_last_sequence_ids = (uint64_t *)calloc(state->resident_sequence_capacity,sizeof(uint64_t));
+	if ( state->dspark_tap_rows_host == 0 || state->dspark_lane_staged_counts == 0 || state->dspark_lane_tap_generations == 0 || state->dspark_lane_pending_verify == 0 || state->dspark_lane_verify_starts == 0 || state->dspark_lane_verify_walked == 0 || state->dspark_lane_last_sequence_ids == 0 )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (lane=0u; lane<state->resident_sequence_capacity; lane++)
+		state->dspark_lane_tap_generations[lane] = 1u;
+	(void)fprintf(stderr,"%s dspark_speculator_ready lanes=%u block=%u draft_tokens=%u taps={7,22,38,54,69}\n",SPARK_GLM52_MODULE_TAG,state->resident_sequence_capacity,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT);
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkGlm52ModuleSpeculatorDestroy(SparkGlm52ModuleState *state)
+{
+	if ( state == 0 || state->speculator_enabled == 0u )
+		return;
+	SparkGlm52DsparkDraftBackendTeardown(&state->dspark_backend);
+	free(state->dspark_tap_rows_host);
+	free(state->dspark_lane_staged_counts);
+	free(state->dspark_lane_tap_generations);
+	free(state->dspark_lane_pending_verify);
+	free(state->dspark_lane_verify_starts);
+	free(state->dspark_lane_verify_walked);
+	free(state->dspark_lane_last_sequence_ids);
+	state->speculator_enabled = 0u;
 }
 
 static SparkStatus SparkGlm52PackFileSize(FILE *file,uint64_t *bytes)
@@ -613,6 +736,8 @@ static SparkStatus SparkGlm52AllocateSlots(SparkGlm52ModuleState *state)
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateSlotHidden(state,&state->slots[index]);
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateSlotMlp(state,&state->slots[index]);
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateSlotHead(state,&state->slots[index]);
+		if ( status == SPARK_STATUS_OK && state->speculator_enabled != 0u )
+			status = SparkGlm52AllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&state->slots[index].dspark_tap_row_indices);
 	}
 	return(status);
 }
@@ -849,40 +974,43 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 	return(SPARK_STATUS_OK);
 }
 
+/* The batch's first active_sequence_count rows name each lane's resident
+ * slot in lane order, so a linear scan over that prefix is the stable O(1)
+ * slot->lane ordinal the shared round-major layout needs. */
+static SparkStatus SparkGlm52BatchSlotOrdinal(
+	void *context,
+	uint32_t slot_id,
+	uint32_t *ordinal_out)
+{
+	const SparkGlm52ResidentDecodeStageBatchView *batch =
+		(const SparkGlm52ResidentDecodeStageBatchView *)context;
+	uint32_t lane;
+	if ( batch == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (lane=0u; lane<batch->active_sequence_count && batch->row_resident_slots[lane]!=slot_id; lane++)
+		;
+	if ( lane == batch->active_sequence_count )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*ordinal_out = lane;
+	return(SPARK_STATUS_OK);
+}
+
 static uint32_t SparkGlm52RoundMajorWaveRows(
 	const SparkGlm52ResidentDecodeStageBatchView *batch,
 	uint32_t first_row)
 {
-	uint32_t lane,current,count,next;
-	if ( batch == 0 || first_row >= batch->row_count || batch->active_sequence_count == 0u )
+	if ( batch == 0 )
 		return(0u);
-	current = batch->active_sequence_count;
-	for (lane=0u; lane<batch->active_sequence_count; lane++)
-		if ( batch->row_resident_slots[lane] == batch->row_resident_slots[first_row] )
-			current = lane;
-	if ( current == batch->active_sequence_count )
-		return(0u);
-	count = 1u;
-	while ( first_row + count < batch->row_count )
-	{
-		next = batch->active_sequence_count;
-		for (lane=0u; lane<batch->active_sequence_count; lane++)
-			if ( batch->row_resident_slots[lane] == batch->row_resident_slots[first_row + count] )
-				next = lane;
-		if ( next == batch->active_sequence_count || next <= current )
-			break;
-		current = next;
-		count++;
-	}
-	return(count);
+	return(SparkRowLayoutRoundMajorWaveRowCount(first_row,batch->row_count,batch->row_resident_slots,SparkGlm52BatchSlotOrdinal,(void *)batch));
 }
 
 static SparkStatus SparkGlm52ValidateRoundMajor(
 	const SparkGlm52ModuleState *state,
 	const SparkGlm52ResidentDecodeStageBatchView *batch)
 {
-	uint32_t counts[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint32_t lane,row,index,maximum,wave;
+	uint32_t occurrence_counts[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t wave_last_rows[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t lane,index;
 	if ( batch->row_count < batch->active_sequence_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	for (lane=0u; lane<batch->active_sequence_count; lane++)
@@ -893,23 +1021,7 @@ static SparkStatus SparkGlm52ValidateRoundMajor(
 			if ( batch->row_resident_slots[index] == batch->row_resident_slots[lane] )
 				return(SPARK_STATUS_DUPLICATE);
 	}
-	maximum = 0u;
-	for (row=0u; row<batch->row_count; row++)
-	{
-		for (lane=0u; lane<batch->active_sequence_count && batch->row_resident_slots[lane]!=batch->row_resident_slots[row]; lane++)
-			;
-		if ( lane == batch->active_sequence_count )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		counts[lane]++;
-		if ( counts[lane] > maximum )
-			maximum = counts[lane];
-	}
-	row = 0u;
-	for (wave=0u; wave<maximum; wave++)
-		for (lane=0u; lane<batch->active_sequence_count; lane++)
-			if ( counts[lane] > wave && (row >= batch->row_count || batch->row_resident_slots[row++] != batch->row_resident_slots[lane]) )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(row == batch->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkRowLayoutValidateRoundMajor(batch->row_count,batch->active_sequence_count,batch->row_resident_slots,SparkGlm52BatchSlotOrdinal,(void *)batch,occurrence_counts,wave_last_rows));
 }
 
 static SparkStatus SparkGlm52ValidateSequenceContinuity(
@@ -998,7 +1110,7 @@ static SparkStatus SparkGlm52ValidateFrame(
 {
 	const SparkGlm52ResidentDecodeStageFrameContext *context;
 	const SparkGlm52ResidentDecodeStageBatchView *batch;
-	uint32_t expected_flags,prefill;
+	uint32_t expected_flags,prefill,speculative,draft_after;
 	uint64_t boundary_bytes,sideband_bytes;
 	SparkStatus status;
 	if ( state == 0 || frame == 0 || context_out == 0 || frame->user_context == 0 || frame->execution_stream != state->execution_stream || frame->completion_function == 0 )
@@ -1016,11 +1128,41 @@ static SparkStatus SparkGlm52ValidateFrame(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->owns_embedding != 0u && batch->token_ids == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	/* Speculation flags: both demand a configured speculator, and the verify
+	 * fold is mandatory - a verify frame always drafts its successor block at
+	 * the tail, so SPECULATIVE_VERIFY without DSPARK_DRAFT_AFTER is a shape
+	 * nothing produces. Verify rides prefill-kind frames (qwen36 doctrine:
+	 * the multi-row walk must not trip the decode one-row-per-lane rule) with
+	 * exactly the block's row count per lane. */
+	speculative = (context->flags & SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u;
+	draft_after = (context->flags & SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u;
+	if ( speculative != 0u || draft_after != 0u )
+	{
+		const SparkGlm52ResidentDecodeStageDsparkDraftView *draft_view;
+		if ( state->speculator_enabled == 0u )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		if ( speculative != 0u )
+		{
+			if ( draft_after == 0u || prefill == 0u || context->dspark_draft == 0 || context->previous_verify_accepts == 0 )
+				return(SPARK_STATUS_SCHEMA_ERROR);
+			if ( batch->row_count % batch->active_sequence_count != 0u || batch->row_count / batch->active_sequence_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_VERIFY_ROW_COUNT )
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		else if ( context->dspark_draft == 0 )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		draft_view = context->dspark_draft;
+		if ( draft_view->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION || draft_view->descriptor_bytes != sizeof(*draft_view) || draft_view->reserved0 != 0u )
+			return(SPARK_STATUS_ABI_MISMATCH);
+		if ( draft_view->requested_token_count == 0u || draft_view->requested_token_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT || draft_view->draft_token_ids == 0 || draft_view->sequence_id == 0u )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	expected_flags = prefill != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
 	expected_flags |= state->owns_embedding == 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT : 0u;
 	expected_flags |= state->owns_final_head == 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT : 0u;
 	expected_flags |= SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->geometry,state->stage_index) != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_INPUT : 0u;
 	expected_flags |= SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->geometry,state->stage_index) != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT : 0u;
+	expected_flags |= speculative != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY : 0u;
+	expected_flags |= draft_after != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER : 0u;
 	if ( context->flags != expected_flags )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	boundary_bytes = (uint64_t)batch->row_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
@@ -1072,6 +1214,11 @@ typedef struct SparkGlm52TpChain
 	uint32_t stage;
 	uint32_t next_layer;
 	uint32_t active;
+	/* DFlash2: capture taps during this walk and draft at the tail. Only
+	 * the head-owning stage arms either - the drafter and its tap ring live
+	 * there. */
+	uint32_t dspark_capture;
+	uint32_t dspark_draft_after;
 } SparkGlm52TpChain;
 
 static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status);
@@ -1080,6 +1227,8 @@ static SparkStatus SparkGlm52EnqueueAsyncCompletion(
 	SparkGlm52ModuleState *state,
 	SparkGlm52ExecutionSlot *slot,
 	uint32_t slot_index);
+static void SparkGlm52TpChainFail(SparkGlm52TpChain *chain,SparkStatus status);
+static SparkStatus SparkGlm52DsparkRunDraftTail(SparkGlm52TpChain *chain);
 
 static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 {
@@ -1135,6 +1284,50 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->multiprocessor_count = state->multiprocessor_count;
 }
 
+/* Aux capture layer -> tap index, UINT32_MAX when the global layer carries
+ * no drafter tap. Same table the DSA sideband uses ({7,22,38,54,69}); the
+ * drafter's fused input consumes exactly these five hidden states. */
+static uint32_t SparkGlm52DsparkTapIndexForLayer(uint32_t global_layer)
+{
+	uint32_t index;
+	for (index=0u; index<SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_TAP_COUNT; index++)
+		if ( SparkGlm52ResidentDecodeStageDsaTaps[index].layer_index == global_layer )
+			return(index);
+	return(UINT32_MAX);
+}
+
+/* Per-wave arena row upload for tap capture: one ring row per walked token,
+ * (resident slot, position mod block) addressed so a frame's rows never
+ * collide and stale rounds simply overwrite. */
+static void SparkGlm52DsparkUploadTapRows(SparkGlm52TpChain *chain)
+{
+	SparkGlm52ModuleState *state;
+	SparkGlm52ExecutionSlot *slot;
+	uint32_t row;
+	cudaError_t error;
+	state = chain->state;
+	slot = chain->slot;
+	for (row=0u; row<chain->wave_rows; row++)
+		state->dspark_tap_rows_host[row] = slot->host_resident_slots[chain->first_row + row] * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_TAP_ROWS_PER_LANE +
+			(uint32_t)(slot->host_positions[chain->first_row + row] % SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_TAP_ROWS_PER_LANE);
+	error = cudaMemcpyAsync(slot->dspark_tap_row_indices,state->dspark_tap_rows_host,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->stream);
+	if ( error != cudaSuccess )
+		SparkGlm52TpChainFail(chain,SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"dspark_tap_rows_upload"));
+}
+
+/* Copy this wave's post-layer hidden into the drafter's tap arena at the
+ * given tap index. Stream-ordered behind the MLP finalize that produced the
+ * hidden and ahead of every later read on the same stream. */
+static void SparkGlm52DsparkCaptureTap(SparkGlm52TpChain *chain,uint32_t tap_index)
+{
+	SparkGlm52ExecutionSlot *slot;
+	cudaError_t error;
+	slot = chain->slot;
+	error = SparkGlm52LaunchDsparkTapStore((cudaStream_t)slot->stream,chain->slot->hidden_bf16,chain->slot->dspark_tap_row_indices,tap_index,chain->wave_rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(uint16_t *)chain->state->dspark_backend.device_tap_arena_bf16,chain->state->dspark_backend.tap_arena_lane_stride_bytes / sizeof(uint16_t));
+	if ( error != cudaSuccess )
+		SparkGlm52TpChainFail(chain,SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"dspark_tap_capture"));
+}
+
 static SparkStatus SparkGlm52ModuleCombineBf16(
 	void *combine_context,
 	void *destination_device,
@@ -1145,7 +1338,7 @@ static SparkStatus SparkGlm52ModuleCombineBf16(
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm52LaunchAccumAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension);
+	error = SparkStageLaunchAccumAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension);
 	return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"tp_all_reduce_sum"));
 }
 
@@ -1158,7 +1351,7 @@ static SparkStatus SparkGlm52ModuleCombineU64Max(
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm52LaunchAccumU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count);
+	error = SparkStageLaunchAccumU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count);
 	return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"tp_all_reduce_max_u64"));
 }
 
@@ -1397,6 +1590,8 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 	{
 	case SPARK_GLM52_CHAIN_STAGE_BEGIN:
 		SparkGlm52BuildWave(chain);
+		if ( chain->dspark_capture != 0u )
+			SparkGlm52DsparkUploadTapRows(chain);
 		if ( SparkGlm52LaunchCudaWaveBegin(&chain->wave) != 0 )
 		{
 			SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -1440,6 +1635,18 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm52TpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM52_CHAIN_STAGE_REDUCE_MLP:
+		/* The reduce completed the hidden stream for global layer
+		 * first_layer+next_layer: exactly where an aux capture tap reads
+		 * the post-layer residual stream. */
+		if ( chain->dspark_capture != 0u )
+		{
+			uint32_t tap_index;
+			tap_index = SparkGlm52DsparkTapIndexForLayer(chain->wave.first_layer_index + chain->next_layer);
+			if ( tap_index != UINT32_MAX )
+				SparkGlm52DsparkCaptureTap(chain,tap_index);
+			if ( chain->active == 0u )
+				return;
+		}
 		chain->next_layer++;
 		if ( chain->next_layer < chain->wave.layer_count )
 		{
@@ -1489,6 +1696,15 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
 			return;
 		}
+		if ( chain->dspark_draft_after != 0u && state->owns_final_head != 0u )
+		{
+			launch_status = SparkGlm52DsparkRunDraftTail(chain);
+			if ( launch_status != SPARK_STATUS_OK )
+			{
+				SparkGlm52TpChainFail(chain,launch_status);
+				return;
+			}
+		}
 		launch_status = SparkGlm52EnqueueAsyncCompletion(state,chain->slot,chain->slot_index);
 		if ( launch_status != SPARK_STATUS_OK )
 		{
@@ -1503,6 +1719,160 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 		return;
 	}
+}
+
+/*
+ * The accept rule, pure: emission j (round-major row j*lanes+lane) accepts
+ * the walked input of row (j+1)*lanes+lane. The draft tail stamps THIS
+ * depth into the view and the adapter re-derives it through the neutral
+ * policy's ResolveVerifierTokens; the white-box gate pins both derivations
+ * equal over exhaustive and randomized vectors.
+ */
+static uint32_t SparkGlm52DsparkVerifyAcceptDepth(
+	const uint32_t *output_token_ids,
+	const uint32_t *input_token_ids,
+	uint32_t rows_per_lane,
+	uint32_t active_sequence_count,
+	uint32_t lane)
+{
+	uint32_t depth = 0u;
+	if ( rows_per_lane <= 1u )
+		return(0u);
+	while ( depth + 1u < rows_per_lane &&
+		output_token_ids[depth * active_sequence_count + lane] ==
+		input_token_ids[(depth + 1u) * active_sequence_count + lane] )
+		depth++;
+	return(depth);
+}
+
+/*
+ * DFlash2 draft tail (DSPARK_DRAFT_AFTER, head-owning stage only).
+ *
+ * Runs after the head unpack copied this frame's argmaxes to host: one sync,
+ * then - for verify frames - the accept depth per lane (emission j vs the
+ * walked input of row j+1, round-major rows), which also selects each lane's
+ * ANCHOR row: its input token is the newest verified-correct token and its
+ * taps were captured during the walk. The anchor joins the drafter's context
+ * (StageBatch), the block forward runs over the captured taps
+ * (LaunchDraftBatch), and the drafted ids land in the adapter's view before
+ * the frame completes - the next submission verifies them. The pending-verify
+ * record arms here so the following frame MUST carry the accept stamps that
+ * reconcile every rank's position books.
+ */
+static SparkStatus SparkGlm52DsparkRunDraftTail(SparkGlm52TpChain *chain)
+{
+	SparkGlm52ModuleState *state;
+	SparkGlm52ExecutionSlot *slot;
+	SparkGlm52ResidentDecodeStageDsparkDraftView *view;
+	const SparkGlm52ResidentDecodeStageBatchView *batch;
+	SparkGlm52DsparkDraftBackendStage *stages;
+	SparkGlm52DsparkDraftRequest *requests;
+	SparkGlm52DsparkDraftResult *results;
+	uint32_t lane,anchor_row,rows_per_lane,accept,result_count;
+	uint64_t sequence_id;
+	SparkStatus status;
+	cudaError_t error;
+	state = chain->state;
+	slot = chain->slot;
+	batch = chain->batch;
+	view = (SparkGlm52ResidentDecodeStageDsparkDraftView *)chain->context->dspark_draft;
+	stages = (SparkGlm52DsparkDraftBackendStage *)calloc(batch->active_sequence_count,sizeof(*stages));
+	requests = (SparkGlm52DsparkDraftRequest *)calloc(batch->active_sequence_count,sizeof(*requests));
+	results = (SparkGlm52DsparkDraftResult *)calloc(batch->active_sequence_count,sizeof(*results));
+	if ( stages == 0 || requests == 0 || results == 0 )
+	{
+		free(stages);
+		free(requests);
+		free(results);
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	error = cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"dspark_tail_sync"));
+	rows_per_lane = (chain->context->flags & SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u ?
+		batch->row_count / batch->active_sequence_count : 1u;
+	for (lane=0u; lane<batch->active_sequence_count; lane++)
+	{
+		uint32_t resident_slot,staged;
+		if ( rows_per_lane > 1u )
+		{
+			accept = SparkGlm52DsparkVerifyAcceptDepth(slot->host_output_token_ids + chain->first_row,slot->host_token_ids + chain->first_row,rows_per_lane,batch->active_sequence_count,lane);
+			view->accepted_token_counts[lane] = accept;
+			anchor_row = accept * batch->active_sequence_count + lane;
+		}
+		else
+			anchor_row = lane;
+		resident_slot = batch->row_resident_slots[anchor_row];
+		sequence_id = batch->row_sequence_ids[anchor_row];
+		if ( state->dspark_lane_last_sequence_ids[resident_slot] != sequence_id )
+		{
+			status = SparkGlm52DsparkDraftBackendResetLanes(&state->dspark_backend,&resident_slot,1u);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+			state->dspark_lane_staged_counts[resident_slot] = 0u;
+			state->dspark_lane_last_sequence_ids[resident_slot] = sequence_id;
+		}
+		staged = ++state->dspark_lane_staged_counts[resident_slot];
+		stages[lane].sequence_id = sequence_id;
+		stages[lane].sequence_position = staged;
+		stages[lane].tap_generation = ++state->dspark_lane_tap_generations[resident_slot];
+		stages[lane].tap_row_index = resident_slot * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_TAP_ROWS_PER_LANE +
+			(uint32_t)(batch->row_positions[anchor_row] % SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_TAP_ROWS_PER_LANE);
+		stages[lane].backend_lane_index = resident_slot;
+		stages[lane].token_id = slot->host_token_ids[chain->first_row + anchor_row];
+		requests[lane].abi_version = SPARK_DSPARK_ABI_VERSION;
+		requests[lane].descriptor_bytes = SPARK_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES;
+		requests[lane].requested_token_count = view->requested_token_count;
+		requests[lane].active_sequence_index = resident_slot;
+		requests[lane].request_id = chain->frame->request_id;
+		requests[lane].sequence_id = sequence_id;
+		requests[lane].sequence_position = staged;
+		requests[lane].tap_generation = stages[lane].tap_generation;
+	}
+	status = SparkGlm52DsparkDraftBackendStageBatch(&state->dspark_backend,stages,batch->active_sequence_count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52DsparkDraftBackendLaunchDraftBatch(&state->dspark_backend,requests,batch->active_sequence_count);
+	if ( status == SPARK_STATUS_OK )
+	{
+		error = cudaEventSynchronize((cudaEvent_t)state->dspark_backend.completion_event);
+		if ( error != cudaSuccess )
+			status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"dspark_draft_event");
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52DsparkDraftBackendTakeBatchResults(&state->dspark_backend,results,batch->active_sequence_count,&result_count);
+	if ( status != SPARK_STATUS_OK )
+	{
+		free(stages);
+		free(requests);
+		free(results);
+		return(status);
+	}
+	for (lane=0u; lane<result_count; lane++)
+	{
+		uint32_t index;
+		for (index=0u; index<results[lane].token_count && index<view->requested_token_count; index++)
+			view->draft_token_ids[lane * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_TOKEN_COUNT + index] = results[lane].token_ids[index];
+	}
+	view->draft_token_count = result_count > 0u ? results[0].token_count : 0u;
+	view->verified_row_count = rows_per_lane > 1u ? rows_per_lane : 0u;
+	if ( rows_per_lane > 1u )
+	{
+		for (lane=0u; lane<batch->active_sequence_count; lane++)
+		{
+			uint32_t resident_slot;
+			resident_slot = batch->row_resident_slots[lane];
+			state->dspark_lane_pending_verify[resident_slot] = 1u;
+			state->dspark_lane_verify_starts[resident_slot] = batch->row_positions[lane];
+			state->dspark_lane_verify_walked[resident_slot] = rows_per_lane;
+			state->dspark_accepted_token_count += view->accepted_token_counts[lane] + 1u;
+		}
+		state->dspark_verify_rounds++;
+	}
+	state->dspark_draft_rounds++;
+	free(stages);
+	free(requests);
+	free(results);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkGlm52StageHostBatch(
@@ -1602,6 +1972,11 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 			if ( SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident],state->kv_lane_mutation_flags[resident]) != SPARK_STATUS_OK )
 				async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 			atomic_store_explicit(&state->lane_bound[resident],0u,memory_order_release);
+			/* A failed verify frame never happened as far as the sequence is
+			 * concerned: drop any pending accept-stamp record so a retry is
+			 * not asked to reconcile a walk that will not be stamped. */
+			if ( state->speculator_enabled != 0u )
+				state->dspark_lane_pending_verify[resident] = 0u;
 		}
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	}
@@ -1633,6 +2008,60 @@ static void SparkGlm52InvalidateClaimedLanes(
 		atomic_store_explicit(&state->lane_bound[lane_indices[lane]],0u,memory_order_release);
 }
 
+/*
+ * Accept-stamp resolution for lanes whose last frame was a SPECULATIVE_VERIFY
+ * walk. The module advanced those lanes naively through every walked row; the
+ * truth is start+accept_depth+1, and the adapter - which alone reads head
+ * outputs across ranks - carries the depth back on this frame, once per row,
+ * all rows of a lane equal. Applying it here means the ordinary continuity
+ * check below sees corrected positions and every rank derives identical
+ * books from identical frames. Fail-closed: missing/impossible stamps are
+ * schema errors, never silent acceptance.
+ */
+static SparkStatus SparkGlm52ApplyVerifyStamps(
+	SparkGlm52ModuleState *state,
+	const SparkGlm52ResidentDecodeStageBatchView *batch,
+	const uint32_t *row_accepts)
+{
+	uint8_t seen[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint8_t cleared[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t depth[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t row,slot;
+	if ( state->speculator_enabled == 0u )
+		return(SPARK_STATUS_OK);
+	memset(seen,0,sizeof(seen));
+	memset(cleared,0,sizeof(cleared));
+	for (row=0u; row<batch->row_count; row++)
+	{
+		slot = batch->row_resident_slots[row];
+		if ( slot >= state->resident_sequence_capacity )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( state->dspark_lane_pending_verify[slot] == 0u )
+			continue;
+		if ( batch->row_positions[row] == 0u )
+		{
+			cleared[slot] = 1u;
+			continue;
+		}
+		if ( seen[slot] == 0u )
+		{
+			depth[slot] = row_accepts[row];
+			if ( depth[slot] + 1u > state->dspark_lane_verify_walked[slot] )
+				return(SPARK_STATUS_SCHEMA_ERROR);
+			if ( batch->row_positions[row] != state->dspark_lane_verify_starts[slot] + (uint64_t)depth[slot] + 1u )
+				return(SPARK_STATUS_SCHEMA_ERROR);
+			atomic_store_explicit(&state->lane_next_positions[slot],batch->row_positions[row],memory_order_release);
+			seen[slot] = 1u;
+		}
+		else if ( row_accepts[row] != depth[slot] )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	for (slot=0u; slot<state->resident_sequence_capacity; slot++)
+		if ( seen[slot] != 0u || cleared[slot] != 0u )
+			state->dspark_lane_pending_verify[slot] = 0u;
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm52ExecuteBatch(
 	SparkGlm52ModuleState *state,
 	SparkModelDriverFrame *frame,
@@ -1654,7 +2083,9 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	continuity.bound = simulated_bound;
 	continuity.sequence_ids = simulated_sequence;
 	continuity.next_positions = simulated_next;
-	status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count,SparkGlm52PrepareClaimedContinuity,&continuity);
+	status = SparkGlm52ApplyVerifyStamps(state,batch,context->previous_verify_accepts);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count,SparkGlm52PrepareClaimedContinuity,&continuity);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	slot_index = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
@@ -1706,6 +2137,8 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	chain->next_wave_row = wave_rows;
 	chain->stage = SPARK_GLM52_CHAIN_STAGE_BEGIN;
 	chain->active = 1u;
+	chain->dspark_capture = state->speculator_enabled != 0u && (context->flags & SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u ? 1u : 0u;
+	chain->dspark_draft_after = chain->dspark_capture;
 	SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
 	return(SPARK_STATUS_OK);
 }
@@ -1762,8 +2195,11 @@ SparkStatus SparkGlm52ResidentDecodeStageAdmit(
 	table.max_active_sequence_count = state->resident_sequence_capacity;
 	table.max_input_row_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
 	table.max_sequence_positions = state->max_sequence_positions;
-	table.flags = SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS |
-		SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG;
+	/* Speculation verify frames are prefill-kind, so the decode shape rule
+	 * stays exact while speculating; the flag only relaxes when the drafter
+	 * is wired and a multi-row decode frame is a legitimate shape. */
+	table.flags = SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG |
+		(state->speculator_enabled != 0u ? 0u : SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS);
 	table.predicate = SparkGlm52AdmissionPredicate;
 	table.predicate_context = state;
 	table.cost = SparkGlm52AdmissionCost;
@@ -1810,6 +2246,7 @@ void SparkGlm52ResidentDecodeStageDestroy(void *module_state)
 	(void)cudaStreamSynchronize((cudaStream_t)state->execution_stream);
 	if ( state->tp_device_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+	SparkGlm52ModuleSpeculatorDestroy(state);
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&state->kv_page_store);
 	SparkGlm52ReleaseSlotHost(state);
@@ -1853,8 +2290,11 @@ static SparkStatus SparkGlm52InitializeState(
 		status = SparkGlm52AllocateSlots(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ModuleInitializeTpCollective(state,(const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52ModuleSpeculatorInitialize(state);
 	if ( status != SPARK_STATUS_OK )
 	{
+		SparkGlm52ModuleSpeculatorDestroy(state);
 		SparkGlm52ReleaseSlotHost(state);
 		SparkStageModuleLedgerRelease(&state->ledger);
 		free(state);

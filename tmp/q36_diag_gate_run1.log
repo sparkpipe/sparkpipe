@@ -1,0 +1,6 @@
+== prefix-cache FULL gate (from-scratch rebuild + counter diff) ==
+-- removing both gate binaries; rebuilding dependency closure --
+cc -I. -Iinclude -Isrc -Itests/cuda_stub -Iruntime -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -mcpu=native tests/test_prefix_cache_core.c build/libsparkpipe_model_common.a build/libsparkpipe_core.a  -ldl -pthread -o build/test_prefix_cache_core
+clang: error: unable to make temporary file: Operation not permitted
+make: *** [build/test_prefix_cache_core] Error 1
+FULL-GATE FAIL: rebuild failed (see build/gate/rebuild.log)

@@ -5,6 +5,7 @@
 
 #include "modules/glm52_resident_decode_stage/source/cuda/unity.cu"
 #include "spark_glm52_resident_decode_stage_internal.h"
+#include "runtime/stage_module_kernels.cuh"
 
 #define SPARK_GLM52_CUDA_THREADS 256u
 
@@ -146,36 +147,6 @@ static __device__ __forceinline__ void SparkGlm52StoreBf16Pair(void *base,uint64
 	((uint32_t *)base)[element] = packed;
 }
 
-static __global__ void SparkGlm52AccumAddKernel(
-	void *destination_bf16,
-	const void *source_bf16,
-	uint32_t row_count,
-	uint32_t width)
-{
-	uint32_t row = blockIdx.x,element;
-	uint64_t offset = ((uint64_t)row * width) >> 1u;
-	float2 destination_pair,source_pair;
-	if ( row >= row_count )
-		return;
-	for (element=threadIdx.x; element<(width >> 1u); element+=blockDim.x)
-	{
-		destination_pair = SparkGlm52LoadBf16Pair(destination_bf16,offset + element);
-		source_pair = SparkGlm52LoadBf16Pair(source_bf16,offset + element);
-		SparkGlm52StoreBf16Pair(destination_bf16,offset + element,destination_pair.x + source_pair.x,destination_pair.y + source_pair.y);
-	}
-}
-
-static __global__ void SparkGlm52AccumU64MaxKernel(
-	uint64_t *destination,
-	const uint64_t *source,
-	uint32_t element_count)
-{
-	uint32_t element;
-	element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( element < element_count && source[element] > destination[element] )
-		destination[element] = source[element];
-}
-
 extern "C" cudaError_t SparkGlm52LaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset)
 {
 	if ( scores == 0 || token_ids == 0 || maxloc == 0 || row_count == 0u )
@@ -192,19 +163,47 @@ extern "C" cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,cons
 	return(cudaPeekAtLastError());
 }
 
-extern "C" cudaError_t SparkGlm52LaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width)
+static __global__ void SparkGlm52DsparkTapStoreKernel(
+	const uint16_t *hidden_bf16,
+	const uint32_t *tap_row_indices,
+	uint32_t tap_index,
+	uint32_t row_count,
+	uint32_t hidden_dimension,
+	uint16_t *arena_base,
+	uint64_t arena_row_stride_elements)
 {
-	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u || width == 0u || (width & 1u) != 0u )
-		return(cudaErrorInvalidValue);
-	SparkGlm52AccumAddKernel<<<row_count,256u,0u,stream>>>(destination_bf16,source_bf16,row_count,width);
-	return(cudaPeekAtLastError());
+	uint64_t element = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	uint32_t row,column;
+	uint64_t destination;
+	if ( element >= (uint64_t)row_count * hidden_dimension )
+		return;
+	row = (uint32_t)(element / hidden_dimension);
+	column = (uint32_t)(element % hidden_dimension);
+	destination = (uint64_t)tap_row_indices[row] * arena_row_stride_elements +
+		(uint64_t)tap_index * hidden_dimension + column;
+	arena_base[destination] = hidden_bf16[element];
 }
 
-extern "C" cudaError_t SparkGlm52LaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
+/* Neutral-name thunks over the SHARED accumulate pair (the kernel bodies
+ * are single-sourced in runtime/stage_module_kernels.cuh - the naming/
+ * audit round deleted the private glm52 copies). */
+extern "C" cudaError_t SparkStageLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width)
 {
-	if ( destination == 0 || source == 0 || element_count == 0u )
+	return(SparkStageLaunchAccumAddInline(stream,destination_bf16,source_bf16,row_count,width));
+}
+
+extern "C" cudaError_t SparkStageLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
+{
+	return(SparkStageLaunchAccumU64MaxInline(stream,destination,source,element_count));
+}
+
+extern "C" cudaError_t SparkGlm52LaunchDsparkTapStore(cudaStream_t stream,const void *hidden_bf16,const uint32_t *tap_row_indices,uint32_t tap_index,uint32_t row_count,uint32_t hidden_dimension,uint16_t *arena_base,uint64_t arena_row_stride_elements)
+{
+	uint64_t element_count;
+	if ( hidden_bf16 == 0 || tap_row_indices == 0 || arena_base == 0 || row_count == 0u || hidden_dimension == 0u )
 		return(cudaErrorInvalidValue);
-	SparkGlm52AccumU64MaxKernel<<<(element_count + 255u) / 256u,256u,0u,stream>>>(destination,source,element_count);
+	element_count = (uint64_t)row_count * hidden_dimension;
+	SparkGlm52DsparkTapStoreKernel<<<(uint32_t)((element_count + 255u) / 256u),256u,0u,stream>>>(hidden_bf16,tap_row_indices,tap_index,row_count,hidden_dimension,arena_base,arena_row_stride_elements);
 	return(cudaPeekAtLastError());
 }
 

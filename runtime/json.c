@@ -906,6 +906,22 @@ SparkStatus SparkJsonGetUInt32(const SparkJsonDocument *document, int32_t token_
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkJsonGetUInt32Member(
+    const SparkJsonDocument *document,
+    int32_t object_token_index,
+    const char *member_name,
+    uint32_t *value)
+{
+    int32_t member;
+
+    member = SparkJsonFindObjectMember(document, object_token_index, member_name);
+    if (member < 0)
+    {
+        return SPARK_STATUS_SCHEMA_ERROR;
+    }
+    return SparkJsonGetUInt32(document, member, value);
+}
+
 SparkStatus SparkJsonGetBoolean(const SparkJsonDocument *document, int32_t token_index, bool *value)
 {
     const SparkJsonToken *token;

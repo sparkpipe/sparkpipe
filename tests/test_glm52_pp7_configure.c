@@ -349,12 +349,12 @@ int main(void)
 /* Link-only stubs: the dry proof never reaches the CUDA launchers, but the
  * whole module translation unit is linked, so their symbols must resolve. */
 #include <cuda_runtime.h>
-cudaError_t SparkGlm52LaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width)
+cudaError_t SparkStageLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width)
 {
 	(void)stream;(void)destination_bf16;(void)source_bf16;(void)row_count;(void)width;
 	return(1); /* cudaErrorNotSupported under the real runtime */
 }
-cudaError_t SparkGlm52LaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
+cudaError_t SparkStageLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
 {
 	(void)stream;(void)destination;(void)source;(void)element_count;
 	return(1); /* cudaErrorNotSupported under the real runtime */
@@ -364,6 +364,9 @@ int32_t SparkGlm52ConfigureCudaModule(uint32_t *multiprocessor_count)
 	(void)multiprocessor_count;
 	return(-1);
 }
+/* The module TU now carries the DFlash2 speculator; its backend entry
+ * points must resolve for the link (never reached on this dry path). */
+#include "glm52_dspark_backend_stubs.h"
 int32_t SparkGlm52LaunchCudaWave(const SparkGlm52CudaWave *wave) { (void)wave; return(-1); }
 int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave) { (void)wave; return(-1); }
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t local_layer) { (void)wave;(void)local_layer; return(-1); }

@@ -710,6 +710,31 @@ def main() -> int:
         and "NODE_CONTEXT_FLAG_ALLOW_UNQUALIFIED" not in firmware_header,
         "DSV4 module exposes a runtime qualification bypass",
     )
+
+    glm52_module = (
+        ROOT
+        / "modules/glm52_resident_decode_stage/source/"
+        "spark_glm52_resident_decode_stage_module.c"
+    ).read_text(encoding="utf-8")
+    glm52_adapter = (
+        ROOT
+        / "modules/glm52_resident_decode_stage/source/"
+        "spark_glm52_serving_adapter.c"
+    ).read_text(encoding="utf-8")
+    require(
+        "SparkRowLayoutValidateRoundMajor" in glm52_module
+        and "SparkRowLayoutRoundMajorWaveRowCount" in glm52_module,
+        "GLM52 module keeps a private round-major wave validator copy",
+    )
+    require(
+        "SparkRowLayoutValidateRoundMajor" in glm52_adapter,
+        "GLM52 adapter does not fail closed on non-wavefront prefill order",
+    )
+    require(
+        "counts[lane] > wave" not in glm52_module
+        and "counts[lane] > wave" not in glm52_adapter,
+        "GLM52 retains the hand-rolled round-major wave double loop",
+    )
     for config_name in (
         "dsv4_serving_adapter_config.json",
         "dsv4_serving_adapter_config_absolute.json",

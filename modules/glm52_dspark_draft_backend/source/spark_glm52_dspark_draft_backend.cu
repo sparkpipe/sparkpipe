@@ -2331,3 +2331,26 @@ SparkStatus SparkGlm52DsparkDraftBackendTakeBatchResults(
         SPARK_DSPARK_DRAFT_BACKEND_PENDING_NONE;
     return SPARK_STATUS_OK;
 }
+
+SparkStatus SparkGlm52DsparkDraftBackendResetLanes(
+    SparkGlm52DsparkDraftBackend *backend,
+    const uint32_t *lane_indices,
+    uint32_t lane_count)
+{
+    uint32_t index,lane_index;
+
+    if (backend == 0 || lane_indices == 0 ||
+        backend->abi_version != SPARK_DSPARK_DRAFT_BACKEND_ABI_VERSION)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    for (index=0u; index<lane_count; ++index)
+    {
+        lane_index = lane_indices[index];
+        if (lane_index >= backend->maximum_lane_count ||
+            backend->pending_operation_kind !=
+                SPARK_DSPARK_DRAFT_BACKEND_PENDING_NONE)
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        memset(&backend->lane_states[lane_index],0,
+               sizeof(backend->lane_states[lane_index]));
+    }
+    return SPARK_STATUS_OK;
+}

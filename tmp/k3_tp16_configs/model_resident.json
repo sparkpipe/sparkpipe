@@ -1,0 +1,266 @@
+{
+  "schema_version": 2,
+  "coordinator_rank_index": 0,
+  "adapter": {
+    "shared_object_path": "lib/libk3_serving_adapter.so"
+  },
+  "driver": {
+    "shared_object_path": "lib/libk3_serving_adapter.so",
+    "program_name": "k3"
+  },
+  "transport": {
+    "shared_object_path": "lib/hidden_transport.so",
+    "mode": "host-rdma",
+    "control_port_base": 62700
+  },
+  "runtime_limits": {
+    "max_inflight_submissions": 16,
+    "max_active_sequences": 16,
+    "max_input_rows": 16,
+    "resident_sequence_capacity": 16,
+    "kv_logical_page_capacity": 4096,
+    "kv_physical_page_capacity": 4096
+  },
+  "nodes": [
+    {
+      "rank_index": 0,
+      "stage_index": 0,
+      "runtime_root": "/home/spark0/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "spark0",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/spark0/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark0",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 1,
+      "stage_index": 0,
+      "runtime_root": "/home/spark1/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "spark1",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/spark1/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark1",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 2,
+      "stage_index": 0,
+      "runtime_root": "/home/spark2/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "spark2",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/spark2/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark2",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 3,
+      "stage_index": 0,
+      "runtime_root": "/home/spark3/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "spark3",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/spark3/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark3",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 4,
+      "stage_index": 0,
+      "runtime_root": "/home/spark4/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "spark4",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/spark4/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark4",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 5,
+      "stage_index": 0,
+      "runtime_root": "/home/spark5/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "spark5",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/spark5/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark5",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 6,
+      "stage_index": 0,
+      "runtime_root": "/home/spark6/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "spark6",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/spark6/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark6",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 7,
+      "stage_index": 0,
+      "runtime_root": "/home/spark7/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "spark7",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/spark7/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark7",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 8,
+      "stage_index": 0,
+      "runtime_root": "/home/spark8/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "spark8",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/spark8/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark8",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 9,
+      "stage_index": 0,
+      "runtime_root": "/home/spark9/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "spark9",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/spark9/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark9",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 10,
+      "stage_index": 0,
+      "runtime_root": "/home/sparka/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "sparka",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/sparka/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "sparka",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 11,
+      "stage_index": 0,
+      "runtime_root": "/home/sparkb/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "sparkb",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/sparkb/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "sparkb",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 12,
+      "stage_index": 0,
+      "runtime_root": "/home/sparkc/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "sparkc",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/sparkc/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "sparkc",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 13,
+      "stage_index": 0,
+      "runtime_root": "/home/sparkd/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "sparkd",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/sparkd/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "sparkd",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 14,
+      "stage_index": 0,
+      "runtime_root": "/home/sparke/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "sparke",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/sparke/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "sparke",
+        "port": 21480
+      }
+    },
+    {
+      "rank_index": 15,
+      "stage_index": 0,
+      "runtime_root": "/home/sparkf/sparkdata/k3.mxfp4.tp16",
+      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+      "transport_host": "sparkf",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/home/sparkf/sparkdata/k3.mxfp4.tp16/kvcache",
+      "kv_backing_maximum_bytes": 137438953472,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "sparkf",
+        "port": 21480
+      }
+    }
+  ]
+}
