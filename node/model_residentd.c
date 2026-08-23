@@ -1729,7 +1729,14 @@ static SparkStatus SparkModelResidentdProcessHello(
 		pthread_mutex_unlock(&runtime->mutex);
 	}
 	if ( status == SPARK_STATUS_OK && queue_status == SPARK_STATUS_OK )
+	{
 		runtime->client.hello_complete = 1u;
+		/* A new client session starts a fresh submission sequence: keep the
+		 * old session's watermark and a reconnecting client's ids 1,2,...
+		 * look stale (INVALID_ARGUMENT on every submit - the incident
+		 * where a second benchmark process interleaved with a live one) */
+		runtime->client.last_submission_id = 0u;
+	}
 	else
 		runtime->client.close_after_output = 1u;
 	return(queue_status);

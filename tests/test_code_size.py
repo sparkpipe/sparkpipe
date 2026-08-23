@@ -1111,24 +1111,8 @@ from pathlib import Path
 # staging, default ON, kill-switch SPARK_QWEN36_WS_PLAIN=0) + consumer
 # acquire fence + publish barrier; bench ledger updated with the in-situ
 # A/B (kernel-level +10%, end-to-end neutral, bit-exact).
-# Post-merge measured count (set by the consolidation; see the commit message).
-# 185079 (2026-08-23): PP7 split table series — the contract's dspark section
-# gains pp_stage_layers [12,11x6] (generated into spark_glm52_model.h as
-# counts/first-layer initializers + the shared LayerHasFullIndexer macro);
-# firmware.h replaces the uniform FirstLayer multiply and odd/even parity
-# heuristic with geometry tables (TP8 1x78 + PP7) and a coverage-derived
-# boundary rule plus the DSA tap table; module configure resolves the triple
-# against those tables; dispatch_policy.c derives tap stages from the same
-# split table (pp_stage_layer_count -> pp_stage_max_layer_count); the packer
-# gains --split/--stage with a write() self-check; gen_deployment gains the
-# pp7 tree (56 per-(stage,rank) configs, manifest, non-colliding ports).
-#
-# 185516: glm52 round-major wave validation collapsed onto the shared
-# spark_row_layout.h validator (module -12, adapter -6, Makefile +34 gate
-# rule = +16 net); absorbs the +421 consolidation commit 7cfc7a6 landed
-# uncounted (gate red at pristine HEAD, reproduced: 185500 vs 185079).
-CEILING = 185516
 
+CEILING = 185516
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
 # .agents holds per-model agent worktrees (full clones of this tree);

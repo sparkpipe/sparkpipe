@@ -877,6 +877,24 @@ static SparkStatus SparkQwen36ModuleLoadPack(SparkQwen36ModuleState *state, cons
 			status = SPARK_STATUS_VALIDATION_FAILED;
 		}
 	}
+	/* Device-memory preflight (the watchdog-restart SEGV fix): a second
+	 * daemon instance starting while another holds the GPU reaches
+	 * cudaMemcpy with corrupted CUDA state and jumps to a garbage PC
+	 * inside the pack loop (measured: core at LoadDeviceRegion -> 0x2480).
+	 * Refusing cleanly here turns that crash into the daemon's normal
+	 * phase=adapter_initialize capacity_exceeded report. */
+	if ( status == SPARK_STATUS_OK )
+	{
+		size_t device_free = 0u,device_total = 0u;
+		if ( cudaMemGetInfo(&device_free,&device_total) == cudaSuccess &&
+			(uint64_t)device_free < header.file_bytes )
+		{
+			fprintf(stderr,"%s pack_device_memory_insufficient free=%llu pack=%llu (another instance holding the GPU?)\n",
+				SPARK_QWEN36_MODULE_TAG,(unsigned long long)device_free,(unsigned long long)header.file_bytes);
+			fclose(file);
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+	}
 	directory = status == SPARK_STATUS_OK ? (SparkQwen36StagePackEntry *)malloc((size_t)header.tensor_count * sizeof(SparkQwen36StagePackEntry)) : 0;
 	if ( status == SPARK_STATUS_OK && directory == 0 )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
