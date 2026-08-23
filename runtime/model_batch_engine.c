@@ -1518,7 +1518,8 @@ static uint32_t SparkModelBatchSelectRequestPass(
 	uint32_t lane_limit,
 	uint32_t selection,
 	uint32_t maximum_priority,
-	uint32_t selected)
+	uint32_t selected,
+	uint32_t *prefill_span_budget)
 {
 	SparkModelBatchRequestState *request;
 	uint32_t aged,context,index,resident_bound,slot;
@@ -1550,7 +1551,20 @@ static uint32_t SparkModelBatchSelectRequestPass(
 				continue;
 			}
 		}
+		/* Prefill lane concentration (the B16 incident fix): the round
+		 * budget is CONSUMED by the lanes selected - a long-prompt lane
+		 * absorbs the whole budget (one full-width frame per submission
+		 * instead of N one-row frames, each a full weight pass); short
+		 * spans leave budget for more lanes in the same submission.
+		 * Single-request workloads are unchanged (one lane consumes it). */
 		engine->scratch_request_slots[selected++] = slot;
+		if ( prefill_span_budget != 0 )
+		{
+			uint32_t span = SparkModelBatchPrefillSpan(engine,request);
+			*prefill_span_budget = span < *prefill_span_budget ? *prefill_span_budget - span : 0u;
+			if ( *prefill_span_budget == 0u )
+				break;
+		}
 	}
 	return(selected);
 }
@@ -1576,6 +1590,7 @@ static uint32_t SparkModelBatchSelectRequests(
 	SparkModelBatchCacheDemand *cache_demand_pointer;
 	SparkModelBatchRequestState *request;
 	uint32_t index,inflight_by_kind[4],lane_limit,maximum_by_kind[4],maximum_priority,queued_by_kind[4],selected,state;
+	uint32_t prefill_span_budget;
 	maximum_priority = 0u;
 	state = SparkModelBatchStateForWork(work_kind);
 	SparkModelBatchCountDispatchableRequests(engine,queued_by_kind);
@@ -1605,14 +1620,18 @@ static uint32_t SparkModelBatchSelectRequests(
 	maximum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = SparkModelBatchMaximumLaneCount(engine,SPARK_MODEL_SERVING_WORK_KIND_DECODE);
 	maximum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_RELEASE] = SparkModelBatchMaximumLaneCount(engine,SPARK_MODEL_SERVING_WORK_KIND_RELEASE);
 	lane_limit = SparkModelBatchSchedulerPlanMixedLaneCount(queued_by_kind,maximum_by_kind,inflight_by_kind,work_kind,engine->submission_capacity);
+	prefill_span_budget = engine->max_prefill_rows;
 	selected = SparkModelBatchSelectRequestPass(engine,cache_demand_pointer,state,
-		work_kind,lane_limit,SPARK_MODEL_BATCH_SELECT_AGED,maximum_priority,0u);
+		work_kind,lane_limit,SPARK_MODEL_BATCH_SELECT_AGED,maximum_priority,0u,
+		work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? &prefill_span_budget : 0);
 	selected = SparkModelBatchSelectRequestPass(engine,cache_demand_pointer,state,
 		work_kind,lane_limit,SPARK_MODEL_BATCH_SELECT_PRIORITY,maximum_priority,
-		selected);
+		selected,
+		work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? &prefill_span_budget : 0);
 	selected = SparkModelBatchSelectRequestPass(engine,cache_demand_pointer,state,
 		work_kind,lane_limit,SPARK_MODEL_BATCH_SELECT_FILL,maximum_priority,
-		selected);
+		selected,
+		work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? &prefill_span_budget : 0);
 	SparkModelBatchUpdateRequestAges(engine,state,selected);
 	if ( selected != 0u )
 		engine->next_request_scan = (engine->scratch_request_slots[selected - 1u] + 1u) % engine->request_capacity;
