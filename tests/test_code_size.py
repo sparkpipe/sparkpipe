@@ -705,7 +705,10 @@ from pathlib import Path
 # + client), and node/model_api.c - the standard OpenAI-style HTTP entry
 # point (single engine session, health endpoint working; completion path
 # WIP - see the commit message).
-CEILING = 174603
+# 174635 (2026-08-23): null guards on ALL debug-dump file writes (the
+# "speculation does not work" report: CTX_DUMP/L0_DUMP env + failed fopen
+# = fwrite(NULL) SEGV on the first decode round).
+CEILING = 174635
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
