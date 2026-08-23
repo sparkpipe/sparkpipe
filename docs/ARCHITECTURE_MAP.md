@@ -79,3 +79,17 @@ addresses the DEVICE side; the ADAPTER side needs equivalent treatment.
 RECOMMENDATION: extract the common adapter skeleton (env parsing, slot claiming,
 completion routing, residency bookkeeping) into runtime/adapter_common.h so new
 drivers get DFlash2 + prefix caching for free instead of copy-pasting from qwen36.
+
+## PASS 5: Cross-driver duplication audit
+
+### CONFIRMED DUPLICATION
+| Pattern | Copies | Lines | Drivers affected |
+|---|---|---|---|
+| Paged KV implementation | 3 | ~1942 | qwen36 (716), qwen38 (725), dsv4 (501) |
+| Stagepack format/validator | 4 | ~1728 | dsv4 (464), qwen36 (550), qwen38 (432), glm52 (282) |
+| Adapter env/config approach | inconsistent | varies | qwen36=13 getenv, glm52=1, dsv4=0, k3=0 |
+
+### THE FIX PATH
+- Paged KV: extract runtime/paged_kv_common.c with per-model geometry callbacks
+- Stagepack: shared reader already landed (runtime/spark_stagepack_reader.h); DELETE the four private families
+- Adapter: extract runtime/adapter_common.h skeleton; each driver provides only model-specific hooks
