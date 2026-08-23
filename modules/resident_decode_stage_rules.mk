@@ -45,9 +45,9 @@ GPU_VALIDATOR_ARGUMENTS ?=
 
 BUILD_DIRECTORY ?= $(REPOSITORY_ROOT)/build/modules/$(MODULE_FAMILY)_resident_decode_stage
 MODULE_ARCHIVE ?= $(BUILD_DIRECTORY)/lib$(MODULE_FAMILY)_resident_decode_stage.a
+# prefix_cache.c deliberately excluded (R2-C3, 2026-08-23): no stage source references any SparkPrefixCacheCore* symbol - its consumers (serving-adapter .so, tests) link it via libsparkpipe_model_common.a; dsv4/glm52 already overrode this variable to drop it. Do not resurrect.
 MODULE_COMMON_HOST_SOURCES ?= \
-	$(REPOSITORY_ROOT)/runtime/stage_module_common.c \
-	$(REPOSITORY_ROOT)/runtime/prefix_cache.c
+	$(REPOSITORY_ROOT)/runtime/stage_module_common.c
 MODULE_HOST_SOURCES := \
 	$(MODULE_HOST_SOURCE) \
 	$(MODULE_COMMON_HOST_SOURCES) \

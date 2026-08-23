@@ -1,4 +1,3 @@
-#include <cublas_v2.h>
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <fcntl.h>
@@ -11,6 +10,12 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+/* The shared GEMM and norm stacks. The drafter keeps its block/MTP
+ * orchestration and borrows the tree's one GEMM implementation instead of
+ * carrying a second (cuBLAS) stack beside LmGemmLaunch. */
+#include "runtime/gemm.cuh"
+#include "inference/kernels/norm.cuh"
 
 #include "sparkpipe/spark_glm52_dspark_draft_backend.h"
 #include "sparkpipe/spark_json.h"
@@ -312,99 +317,6 @@ static SparkStatus SparkGlm52DsparkCudaStatus(cudaError_t status)
     return SPARK_STATUS_INTERNAL_ERROR;
 }
 
-static SparkStatus SparkGlm52DsparkCublasStatus(cublasStatus_t status)
-{
-    if (status == CUBLAS_STATUS_SUCCESS)
-        return SPARK_STATUS_OK;
-    fprintf(stderr, "dspark cublas error: %d\n", (int)status);
-    return SPARK_STATUS_INTERNAL_ERROR;
-}
-
-static __global__ void SparkGlm52DsparkRmsNormRowsKernel(
-    const uint16_t *__restrict__ input_bf16,
-    const uint16_t *__restrict__ norm_weight_bf16,
-    uint16_t *__restrict__ output_bf16,
-    uint32_t row_count,
-    uint32_t dimension)
-{
-    __shared__ float partials[SPARK_DSPARK_BACKEND_THREADS];
-    __shared__ float inverse_norm;
-    uint32_t row_index,element_index,stride_index;
-    uint64_t row_offset;
-    float sum,value;
-
-    row_index = blockIdx.x;
-    if (row_index >= row_count)
-        return;
-    row_offset = (uint64_t)row_index * (uint64_t)dimension;
-    sum = 0.0f;
-    for (element_index=threadIdx.x; element_index<dimension; element_index+=blockDim.x)
-    {
-        value = __bfloat162float(
-            ((const __nv_bfloat16 *)input_bf16)[row_offset + element_index]);
-        sum += value * value;
-    }
-    partials[threadIdx.x] = sum;
-    __syncthreads();
-    for (stride_index=blockDim.x/2u; stride_index>0u; stride_index/=2u)
-    {
-        if (threadIdx.x < stride_index)
-            partials[threadIdx.x] += partials[threadIdx.x + stride_index];
-        __syncthreads();
-    }
-    if (threadIdx.x == 0u)
-        inverse_norm = rsqrtf((partials[0] / (float)dimension) +
-            SPARK_DSPARK_RMS_NORM_EPSILON);
-    __syncthreads();
-    for (element_index=threadIdx.x; element_index<dimension; element_index+=blockDim.x)
-    {
-        value = __bfloat162float(
-            ((const __nv_bfloat16 *)input_bf16)[row_offset + element_index]);
-        value = __bfloat162float(__float2bfloat16(value * inverse_norm));
-        value = __bfloat162float(__float2bfloat16(value * __bfloat162float(
-            ((const __nv_bfloat16 *)norm_weight_bf16)[element_index])));
-        ((__nv_bfloat16 *)output_bf16)[row_offset + element_index] =
-            __float2bfloat16(value);
-    }
-}
-
-static __global__ void SparkGlm52DsparkAddBf16Kernel(
-    uint16_t *__restrict__ destination_bf16,
-    const uint16_t *__restrict__ addition_bf16,
-    uint32_t element_count)
-{
-    uint32_t element_index;
-    float value;
-
-    element_index = (blockIdx.x * blockDim.x) + threadIdx.x;
-    if (element_index >= element_count)
-        return;
-    value = __bfloat162float(
-        ((const __nv_bfloat16 *)destination_bf16)[element_index]) +
-        __bfloat162float(
-            ((const __nv_bfloat16 *)addition_bf16)[element_index]);
-    ((__nv_bfloat16 *)destination_bf16)[element_index] = __float2bfloat16(value);
-}
-
-static __global__ void SparkGlm52DsparkSwigluRowsKernel(
-    const uint16_t *__restrict__ gate_bf16,
-    const uint16_t *__restrict__ up_bf16,
-    uint16_t *__restrict__ output_bf16,
-    uint32_t element_count)
-{
-    uint32_t element_index;
-    float gate,up;
-
-    element_index = (blockIdx.x * blockDim.x) + threadIdx.x;
-    if (element_index >= element_count)
-        return;
-    gate = __bfloat162float(((const __nv_bfloat16 *)gate_bf16)[element_index]);
-    up = __bfloat162float(((const __nv_bfloat16 *)up_bf16)[element_index]);
-    gate = __bfloat162float(__float2bfloat16(
-        gate / (1.0f + expf(-gate))));
-    ((__nv_bfloat16 *)output_bf16)[element_index] = __float2bfloat16(gate * up);
-}
-
 static __global__ void SparkGlm52DsparkGatherStageTapsKernel(
     const uint16_t *__restrict__ tap_arena_bf16,
     const uint32_t *__restrict__ tap_row_indices,
@@ -487,6 +399,13 @@ static __global__ void SparkGlm52DsparkBuildQueryBlockBatchKernel(
         column_index];
 }
 
+/* Not routed onto inference/kernels: this is a FUSED per-head RMSNorm plus
+ * rotate-half RoPE in one pass over the q/k rows. The shared library expresses
+ * the pieces (LmFusedResidualRmsNormKernel norms whole rows; LmRopeKernel needs
+ * a materialised per-row position array), so the split costs an extra full
+ * read+write of every q/k row per layer and a position gather - a pass added,
+ * not a duplicate removed. Revisit only if kernels/ grows a per-head-norm rope
+ * primitive. */
 static __global__ void SparkGlm52DsparkHeadNormRopeBatchKernel(
     const uint16_t *__restrict__ input_bf16,
     const uint16_t *__restrict__ head_norm_weight_bf16,
@@ -727,6 +646,11 @@ static __global__ void SparkGlm52DsparkGatherMarkovBatchKernel(
             element_index];
 }
 
+/* Not routed onto inference/kernels/head.cuh: the drafter's argmax scores the
+ * SUM of two logit streams (hidden LM head + markov) under a restricted-vocab
+ * indirection, in one pass. LmHeadCandidateKernel scores one stream and its
+ * commit fixes ties differently, so routing means materialising the summed
+ * logits first - an extra full-vocabulary write+read per proposal. */
 static __global__ void SparkGlm52DsparkArgmaxBatchKernel(
     const uint16_t *__restrict__ block_logits_bf16,
     const uint16_t *__restrict__ markov_logits_bf16,
@@ -796,6 +720,10 @@ static __global__ void SparkGlm52DsparkArgmaxBatchKernel(
         token_ids_out[output_offset] = token_ids[0u];
 }
 
+/* Not routed onto inference/kernels: a single fused dot product over the
+ * concatenated (hidden ‖ markov-embedding) row with its own bias+sigmoid. No
+ * shared primitive covers the concatenation; expressing it means two kernels
+ * plus a pack pass for one scalar per lane and proposal. */
 static __global__ void SparkGlm52DsparkConfidenceBatchKernel(
     const uint16_t *__restrict__ block_final_bf16,
     const uint16_t *__restrict__ markov_embedding_bf16,
@@ -1221,12 +1149,8 @@ static SparkStatus SparkGlm52DsparkAllocateWorkspaces(
             attention_block_elements * sizeof(uint16_t));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkAllocate(
-            (void **)&backend->device_block_gate_bf16,
-            mlp_block_elements * sizeof(uint16_t));
-    if (status == SPARK_STATUS_OK)
-        status = SparkGlm52DsparkAllocate(
-            (void **)&backend->device_block_up_bf16,
-            mlp_block_elements * sizeof(uint16_t));
+            (void **)&backend->device_block_gate_up_bf16,
+            mlp_block_elements * 2u * sizeof(uint16_t));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkAllocate(
             (void **)&backend->device_block_mlp_bf16,
@@ -1323,6 +1247,17 @@ static SparkStatus SparkGlm52DsparkUploadRestrictedTokenIds(
     return status;
 }
 
+/* The tree's ONE GEMM stack (runtime/gemm.cuh). The drafter previously called
+ * cublasGemmEx here - the only cuBLAS dependency in the tree, a second GEMM
+ * implementation beside LmGemmLaunch for shapes (dense BF16 in/out, fp32
+ * accumulate) the shared stack already serves. TILE_N 128 and Format::kTileK
+ * divide every drafter dimension (hidden 6144, attention 4096, intermediate
+ * 12288, fused input 30720, vocabulary 154880): the launcher's shape checks
+ * hold at every call site rather than being trimmed to fit.
+ *
+ * accumulate != 0 folds the result into output_bf16 via the epilogue
+ * read-modify-write (accumulate == output), which is how the residual adds of
+ * the attention-out and down projections disappear as kernels. */
 static SparkStatus SparkGlm52DsparkLaunchGemm(
     SparkGlm52DsparkDraftBackend *backend,
     uint32_t weight_index,
@@ -1333,32 +1268,117 @@ static SparkStatus SparkGlm52DsparkLaunchGemm(
     uint32_t output_dimension,
     uint32_t accumulate)
 {
-    float alpha,beta;
-    cublasStatus_t status;
+    LmGemmArguments arguments;
+    int32_t status;
 
-    alpha = 1.0f;
-    beta = accumulate == 0u ? 0.0f : 1.0f;
-    status = cublasGemmEx(
-        (cublasHandle_t)backend->cublas_handle,
-        CUBLAS_OP_T,
-        CUBLAS_OP_N,
-        (int)output_dimension,
-        (int)row_count,
-        (int)input_dimension,
-        &alpha,
-        backend->device_weights[weight_index],
-        CUDA_R_16BF,
-        (int)input_dimension,
+    memset(&arguments,0,sizeof(arguments));
+    arguments.scale_a = LmScaleTensorNone();
+    arguments.scale_b = LmScaleTensorNone();
+    arguments.group_row_offset =
+        (const uint32_t *)backend->gemm_group_scratch;
+    arguments.activation_bytes = input_bf16;
+    arguments.output_bf16 = output_bf16;
+    if (accumulate != 0u)
+        arguments.accumulate_bf16 = output_bf16;
+    arguments.group_count = 1u;
+    status = LmGemmLaunch<
+        LmBf16Format,128u,LmBf16Format::kTileK,LM_PIPELINE_STAGES,8u>(
+            &arguments,
+            input_bf16,
+            backend->device_weights[weight_index],
+            row_count,
+            row_count,
+            1u,
+            1u,
+            input_dimension,
+            output_dimension,
+            backend->multiprocessor_count,
+            false,
+            (cudaStream_t)backend->cuda_stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        fprintf(stderr,"dspark gemm error: %d (in=%u out=%u rows=%u)\n",
+            (int)status,input_dimension,output_dimension,row_count);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
+}
+
+/* Output-slice form: the caller hands the row stride and column offset of a
+ * slice of a wider interleaved buffer (the up projection's half of the fused
+ * gate/up rows). */
+static SparkStatus SparkGlm52DsparkLaunchGemmOutputSlice(
+    SparkGlm52DsparkDraftBackend *backend,
+    uint32_t weight_index,
+    const uint16_t *input_bf16,
+    uint16_t *output_bf16,
+    uint32_t row_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t output_row_stride,
+    uint32_t output_column_offset)
+{
+    LmGemmArguments arguments;
+    int32_t status;
+
+    memset(&arguments,0,sizeof(arguments));
+    arguments.scale_a = LmScaleTensorNone();
+    arguments.scale_b = LmScaleTensorNone();
+    arguments.group_row_offset =
+        (const uint32_t *)backend->gemm_group_scratch;
+    arguments.activation_bytes = input_bf16;
+    arguments.output_bf16 = output_bf16;
+    arguments.output_row_stride = output_row_stride;
+    arguments.output_column_offset = output_column_offset;
+    arguments.group_count = 1u;
+    status = LmGemmLaunch<
+        LmBf16Format,128u,LmBf16Format::kTileK,LM_PIPELINE_STAGES,8u>(
+            &arguments,
+            input_bf16,
+            backend->device_weights[weight_index],
+            row_count,
+            row_count,
+            1u,
+            1u,
+            input_dimension,
+            output_dimension,
+            backend->multiprocessor_count,
+            false,
+            (cudaStream_t)backend->cuda_stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        fprintf(stderr,"dspark gemm error: %d (in=%u out=%u rows=%u)\n",
+            (int)status,input_dimension,output_dimension,row_count);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
+}
+
+/* Plain RMS norm over whole 6144-wide rows: the shared kernel with no
+ * residual. The drafter's private copy is gone. One numeric difference, noted
+ * for the epoch-3 re-run: the old copy rounded the normalised value to BF16
+ * before the weight multiply; LmFusedResidualRmsNormKernel keeps the chain in
+ * fp32 and rounds once. */
+static SparkStatus SparkGlm52DsparkRmsNormRows(
+    SparkGlm52DsparkDraftBackend *backend,
+    const uint16_t *input_bf16,
+    const uint16_t *norm_weight_bf16,
+    uint16_t *output_bf16,
+    uint32_t row_count)
+{
+    LmFusedResidualRmsNormKernel<SPARK_DSPARK_BACKEND_THREADS,uint16_t>
+        <<<row_count,SPARK_DSPARK_BACKEND_THREADS,
+        (SPARK_DSPARK_HIDDEN_DIMENSION + 8u) * sizeof(float),
+        (cudaStream_t)backend->cuda_stream>>>(
         input_bf16,
-        CUDA_R_16BF,
-        (int)input_dimension,
-        &beta,
+        0,
+        norm_weight_bf16,
+        0,
         output_bf16,
-        CUDA_R_16BF,
-        (int)output_dimension,
-        CUBLAS_COMPUTE_32F,
-        CUBLAS_GEMM_DEFAULT_TENSOR_OP);
-    return SparkGlm52DsparkCublasStatus(status);
+        SPARK_DSPARK_HIDDEN_DIMENSION,
+        SPARK_DSPARK_HIDDEN_DIMENSION,
+        (float)SPARK_DSPARK_RMS_NORM_EPSILON);
+    return SparkGlm52DsparkCudaStatus(cudaGetLastError());
 }
 
 static void SparkGlm52DsparkFillModelContract(
@@ -1454,12 +1474,22 @@ SparkStatus SparkGlm52DsparkDraftBackendInitialize(
             return status;
         backend->owns_cuda_stream = 1u;
     }
-    status = SparkGlm52DsparkCublasStatus(cublasCreate(
-        (cublasHandle_t *)&backend->cublas_handle));
+    {
+        int multiprocessor_count;
+
+        status = SparkGlm52DsparkCudaStatus(cudaDeviceGetAttribute(
+            &multiprocessor_count,cudaDevAttrMultiProcessorCount,0));
+        if (status == SPARK_STATUS_OK)
+            status = multiprocessor_count > 0
+                ? SPARK_STATUS_OK
+                : SPARK_STATUS_INTERNAL_ERROR;
+        if (status == SPARK_STATUS_OK)
+            backend->multiprocessor_count =
+                (uint32_t)multiprocessor_count;
+    }
     if (status == SPARK_STATUS_OK)
-        status = SparkGlm52DsparkCublasStatus(cublasSetStream(
-            (cublasHandle_t)backend->cublas_handle,
-            (cudaStream_t)backend->cuda_stream));
+        status = SparkGlm52DsparkAllocate(
+            (void **)&backend->gemm_group_scratch,2u * sizeof(uint32_t));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkSafetensorsOpen(
             configuration->safetensors_path, &safetensors);
@@ -1498,8 +1528,7 @@ static void SparkGlm52DsparkFreeDeviceWorkspaces(
         backend->device_block_query_bf16,
         backend->device_block_key_bf16,
         backend->device_block_value_bf16,
-        backend->device_block_gate_bf16,
-        backend->device_block_up_bf16,
+        backend->device_block_gate_up_bf16,
         backend->device_block_mlp_bf16,
         backend->device_block_final_bf16,
         backend->device_block_logits_bf16,
@@ -1532,8 +1561,8 @@ SparkStatus SparkGlm52DsparkDraftBackendTeardown(
         return SPARK_STATUS_INVALID_ARGUMENT;
     if (backend->cuda_stream != 0)
         cudaStreamSynchronize((cudaStream_t)backend->cuda_stream);
-    if (backend->cublas_handle != 0)
-        cublasDestroy((cublasHandle_t)backend->cublas_handle);
+    if (backend->gemm_group_scratch != 0)
+        cudaFree(backend->gemm_group_scratch);
     for (weight_index=0u;
          weight_index<SPARK_DSPARK_DRAFT_BACKEND_WEIGHT_COUNT;
          ++weight_index)
@@ -1783,18 +1812,13 @@ SparkStatus SparkGlm52DsparkDraftBackendStageBatch(
             SPARK_DSPARK_HIDDEN_DIMENSION,
             0u);
     if (status == SPARK_STATUS_OK)
-    {
-        SparkGlm52DsparkRmsNormRowsKernel<<<stage_count,
-            SPARK_DSPARK_BACKEND_THREADS,0u,
-            (cudaStream_t)backend->cuda_stream>>>(
+        status = SparkGlm52DsparkRmsNormRows(
+            backend,
             backend->device_block_normed_bf16,
             (const uint16_t *)backend->device_weights[
                 SPARK_DSPARK_WEIGHT_HIDDEN_NORM],
             backend->device_target_hidden_bf16,
-            stage_count,
-            SPARK_DSPARK_HIDDEN_DIMENSION);
-        status = SparkGlm52DsparkCudaStatus(cudaGetLastError());
-    }
+            stage_count);
     for (layer_index=0u;
          status == SPARK_STATUS_OK &&
              layer_index<SPARK_DSPARK_DRAFT_LAYER_COUNT;
@@ -1903,17 +1927,14 @@ static SparkStatus SparkGlm52DsparkBlockAttentionBatch(
     SparkStatus status;
 
     row_count = lane_count * SPARK_DSPARK_BLOCK_SIZE;
-    SparkGlm52DsparkRmsNormRowsKernel<<<row_count,
-        SPARK_DSPARK_BACKEND_THREADS,0u,
-        (cudaStream_t)backend->cuda_stream>>>(
+    status = SparkGlm52DsparkRmsNormRows(
+        backend,
         backend->device_block_hidden_bf16,
         (const uint16_t *)backend->device_weights[
             SparkGlm52DsparkLayerWeightIndex(
                 layer_index,SPARK_DSPARK_LAYER_WEIGHT_INPUT_NORM)],
         backend->device_block_normed_bf16,
-        row_count,
-        SPARK_DSPARK_HIDDEN_DIMENSION);
-    status = SparkGlm52DsparkCudaStatus(cudaGetLastError());
+        row_count);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
@@ -2000,58 +2021,56 @@ static SparkStatus SparkGlm52DsparkBlockMlpBatch(
     uint32_t lane_count,
     uint32_t layer_index)
 {
-    uint64_t element_count;
-    uint32_t row_count,block_count;
+    uint32_t row_count;
     SparkStatus status;
 
     row_count = lane_count * SPARK_DSPARK_BLOCK_SIZE;
-    SparkGlm52DsparkRmsNormRowsKernel<<<row_count,
-        SPARK_DSPARK_BACKEND_THREADS,0u,
-        (cudaStream_t)backend->cuda_stream>>>(
+    status = SparkGlm52DsparkRmsNormRows(
+        backend,
         backend->device_block_hidden_bf16,
         (const uint16_t *)backend->device_weights[
             SparkGlm52DsparkLayerWeightIndex(
                 layer_index,SPARK_DSPARK_LAYER_WEIGHT_POST_NORM)],
         backend->device_block_normed_bf16,
-        row_count,
-        SPARK_DSPARK_HIDDEN_DIMENSION);
-    status = SparkGlm52DsparkCudaStatus(cudaGetLastError());
+        row_count);
     if (status == SPARK_STATUS_OK)
-        status = SparkGlm52DsparkLaunchGemm(
+        status = SparkGlm52DsparkLaunchGemmOutputSlice(
             backend,
             SparkGlm52DsparkLayerWeightIndex(
                 layer_index,SPARK_DSPARK_LAYER_WEIGHT_GATE),
             backend->device_block_normed_bf16,
-            backend->device_block_gate_bf16,
+            backend->device_block_gate_up_bf16,
             row_count,
             SPARK_DSPARK_HIDDEN_DIMENSION,
             SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
+            SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION * 2u,
             0u);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    /* The up projection lands in the second half of the same interleaved
+     * row: gate first, which is exactly LmSiluMulKernel's gate_first=true
+     * layout. No repack pass exists or is needed. */
     if (status == SPARK_STATUS_OK)
-        status = SparkGlm52DsparkLaunchGemm(
+        status = SparkGlm52DsparkLaunchGemmOutputSlice(
             backend,
             SparkGlm52DsparkLayerWeightIndex(
                 layer_index,SPARK_DSPARK_LAYER_WEIGHT_UP),
             backend->device_block_normed_bf16,
-            backend->device_block_up_bf16,
+            backend->device_block_gate_up_bf16,
             row_count,
             SPARK_DSPARK_HIDDEN_DIMENSION,
             SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
-            0u);
+            SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION * 2u,
+            SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION);
     if (status != SPARK_STATUS_OK)
         return status;
-    element_count = (uint64_t)row_count *
-        SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION;
-    block_count = (uint32_t)((element_count +
-        SPARK_DSPARK_BACKEND_THREADS - 1u) /
-        SPARK_DSPARK_BACKEND_THREADS);
-    SparkGlm52DsparkSwigluRowsKernel<<<block_count,
-        SPARK_DSPARK_BACKEND_THREADS,0u,
+    LmSiluMulKernel<SPARK_DSPARK_BACKEND_THREADS>
+        <<<row_count,SPARK_DSPARK_BACKEND_THREADS,0u,
         (cudaStream_t)backend->cuda_stream>>>(
-        backend->device_block_gate_bf16,
-        backend->device_block_up_bf16,
+        backend->device_block_gate_up_bf16,
         backend->device_block_mlp_bf16,
-        (uint32_t)element_count);
+        SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
+        true);
     status = SparkGlm52DsparkCudaStatus(cudaGetLastError());
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
@@ -2059,25 +2078,12 @@ static SparkStatus SparkGlm52DsparkBlockMlpBatch(
             SparkGlm52DsparkLayerWeightIndex(
                 layer_index,SPARK_DSPARK_LAYER_WEIGHT_DOWN),
             backend->device_block_mlp_bf16,
-            backend->device_block_final_bf16,
+            backend->device_block_hidden_bf16,
             row_count,
             SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION,
             SPARK_DSPARK_HIDDEN_DIMENSION,
-            0u);
-    element_count =
-        (uint64_t)row_count * SPARK_DSPARK_HIDDEN_DIMENSION;
-    block_count = (uint32_t)((element_count +
-        SPARK_DSPARK_BACKEND_THREADS - 1u) /
-        SPARK_DSPARK_BACKEND_THREADS);
-    if (status == SPARK_STATUS_OK)
-        SparkGlm52DsparkAddBf16Kernel<<<block_count,
-            SPARK_DSPARK_BACKEND_THREADS,0u,
-            (cudaStream_t)backend->cuda_stream>>>(
-            backend->device_block_hidden_bf16,
-            backend->device_block_final_bf16,
-            (uint32_t)element_count);
-    return status == SPARK_STATUS_OK
-        ? SparkGlm52DsparkCudaStatus(cudaGetLastError()) : status;
+            1u);
+    return status;
 }
 
 static SparkStatus SparkGlm52DsparkLayerForwardBatch(
@@ -2085,38 +2091,26 @@ static SparkStatus SparkGlm52DsparkLayerForwardBatch(
     uint32_t lane_count,
     uint32_t layer_index)
 {
-    uint64_t element_count;
-    uint32_t row_count,block_count;
+    uint32_t row_count;
     SparkStatus status;
 
     row_count = lane_count * SPARK_DSPARK_BLOCK_SIZE;
     status = SparkGlm52DsparkBlockAttentionBatch(
         backend,lane_count,layer_index);
+    /* The attention-out projection accumulates straight into the residual
+     * stream: the epilogue read-modify-write replaces the standalone add
+     * kernel the cublas layout needed. */
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,
             SparkGlm52DsparkLayerWeightIndex(
                 layer_index,SPARK_DSPARK_LAYER_WEIGHT_O),
             backend->device_block_attention_bf16,
-            backend->device_block_final_bf16,
+            backend->device_block_hidden_bf16,
             row_count,
             SPARK_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION,
             SPARK_DSPARK_HIDDEN_DIMENSION,
-            0u);
-    element_count =
-        (uint64_t)row_count * SPARK_DSPARK_HIDDEN_DIMENSION;
-    block_count = (uint32_t)((element_count +
-        SPARK_DSPARK_BACKEND_THREADS - 1u) /
-        SPARK_DSPARK_BACKEND_THREADS);
-    if (status == SPARK_STATUS_OK)
-        SparkGlm52DsparkAddBf16Kernel<<<block_count,
-            SPARK_DSPARK_BACKEND_THREADS,0u,
-            (cudaStream_t)backend->cuda_stream>>>(
-            backend->device_block_hidden_bf16,
-            backend->device_block_final_bf16,
-            (uint32_t)element_count);
-    if (status == SPARK_STATUS_OK)
-        status = SparkGlm52DsparkCudaStatus(cudaGetLastError());
+            1u);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkBlockMlpBatch(
             backend,lane_count,layer_index);
@@ -2221,18 +2215,13 @@ SparkStatus SparkGlm52DsparkDraftBackendLaunchDraftBatch(
         status = SparkGlm52DsparkLayerForwardBatch(
             backend,lane_count,layer_index);
     if (status == SPARK_STATUS_OK)
-    {
-        SparkGlm52DsparkRmsNormRowsKernel<<<row_count,
-            SPARK_DSPARK_BACKEND_THREADS,0u,
-            (cudaStream_t)backend->cuda_stream>>>(
+        status = SparkGlm52DsparkRmsNormRows(
+            backend,
             backend->device_block_hidden_bf16,
             (const uint16_t *)backend->device_weights[
                 SPARK_DSPARK_WEIGHT_FINAL_NORM],
             backend->device_block_final_bf16,
-            row_count,
-            SPARK_DSPARK_HIDDEN_DIMENSION);
-        status = SparkGlm52DsparkCudaStatus(cudaGetLastError());
-    }
+            row_count);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkLaunchGemm(
             backend,

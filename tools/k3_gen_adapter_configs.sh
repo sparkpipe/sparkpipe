@@ -26,7 +26,9 @@ for i in $(seq 0 15); do
   if [ "$TP" = "4" ]; then
     pack="/home/$host/sparkdata/k3.mxfp4.tp4pp4/packs/k3.stage${stage}.rank0${rank}.pack"
   else
-    pack="/home/$host/sparkdata/k3.mxfp4.tp16/packs/k3.stage0.rank$(printf '%02d' "$rank").pack"
+    # Pack names follow tools/k3_deploy_tp16.sh / k3_tp16_pack_production.sh
+    # (k3.tp16.rankNN.pack), NOT the TP4 stage naming.
+    pack="/home/$host/sparkdata/k3.mxfp4.tp16/packs/k3.tp16.rank$(printf '%02d' "$rank").pack"
   fi
   {
     echo "{"
@@ -46,7 +48,10 @@ for i in $(seq 0 15); do
     echo "    \"local_host\": \"$host\","
     echo "    \"collective_identifier\": 1,"
     echo "    \"listen_port\": 64620,"
-    echo "    \"connect_timeout_milli\": 5000,"
+    # 45 s: ranks reach collective-create at very different times after
+    # loading multi-GB packs (measured 2026-08-23: 8 s expired -> INIT FAIL 4
+    # IO_ERROR on the TP4 slice gate; TP16 rank packs are ~25 GB each).
+    echo "    \"connect_timeout_milli\": 45000,"
     echo "    \"operation_timeout_milli\": 30000,"
     echo "    \"peer_hosts\": ["
     first=1

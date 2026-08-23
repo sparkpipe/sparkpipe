@@ -233,6 +233,7 @@ TEST_NAMES := \
     test_tp_device_collective \
     test_tp_device_collective_nccl \
     test_glm52_stagepack \
+    test_glm52_pp7_configure \
     test_tokenizer \
     test_model_description \
     test_stage_module_common \
@@ -275,6 +276,7 @@ PYTHON_TESTS := \
 	tests/test_production_selection_contract.py \
 	tests/test_gemm_k_alignment.py \
 	tests/test_glm52_dspark_manifest.py \
+	tests/test_glm52_dspark_backend_host_syntax.py \
 	tests/test_glm52_dspark_trace_quality.py \
 	tests/test_glm52_module_contract.py \
 	tests/test_glm52_layer_host.py \
@@ -465,7 +467,33 @@ build/obj/%.o: %.c | build
 $(CORE_LIBRARY): $(CORE_OBJECTS)
 	$(AR) rcs $@ $^
 
-$(MODEL_COMMON_LIBRARY): $(MODEL_COMMON_OBJECTS)
+# ar indexes archive members by BASENAME, so two path-preserving objects can
+# still collide inside one archive: cache/prefix_cache.o and
+# runtime/prefix_cache.o were both stored as "prefix_cache.o" in
+# libsparkpipe_model_common.a, and every consumer link re-derived debug-map
+# symbols against whichever member won (arm64 "could not find symbol
+# _SparkPrefixCacheCore*" warnings on each link). The on-disk objects keep
+# their full-path names - that map is what protects depfiles and parallel
+# builds - only the names handed to ar are flattened into directory-prefixed
+# hard links under build/ar_members/, which cannot collide unless two sources
+# share an entire directory AND basename. Scoped to this one library because
+# tools/audit_core_boundaries.py pins the other archives to bare basenames;
+# extend it there first if another archive ever grows a same-basename pair.
+AR_MEMBER_ROOT := build/ar_members
+
+sp_archive_member = $(AR_MEMBER_ROOT)/$(subst /,__,$(patsubst build/obj/%,%,$(1)))
+MODEL_COMMON_MEMBERS := $(foreach o,$(MODEL_COMMON_OBJECTS),$(call sp_archive_member,$(o)))
+
+define SP_ARCHIVE_MEMBER_RULE
+$(call sp_archive_member,$(1)): $(1) | $(AR_MEMBER_ROOT)
+	ln -f "$$<" "$$@"
+endef
+$(foreach o,$(MODEL_COMMON_OBJECTS),$(eval $(call SP_ARCHIVE_MEMBER_RULE,$(o))))
+
+$(AR_MEMBER_ROOT):
+	mkdir -p "$@"
+
+$(MODEL_COMMON_LIBRARY): $(MODEL_COMMON_MEMBERS)
 	$(AR) rcs $@ $^
 
 $(DEPLOYMENT_LIBRARY): $(DEPLOYMENT_OBJECTS)
@@ -761,8 +789,8 @@ build/test_dsv4_tp4_pp4_serving_adapter: tests/test_dsv4_tp4_pp4_serving_adapter
 build/test_qwen36_serving_adapter: tests/test_qwen36_serving_adapter.c tests/fixtures/qwen36_serving_adapter_config.json tests/fixtures/qwen36_serving_adapter_config_stale.json tests/fixtures/qwen36_serving_adapter_config_absolute.json tests/fixtures/qwen36_serving_adapter_config_overrun.json $(QWEN36_SERVING_ADAPTER) $(TEST_QWEN36_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include -DTEST_QWEN36_SERVING_ADAPTER_PATH=\"$(QWEN36_SERVING_ADAPTER)\" -DTEST_QWEN36_SERVING_DRIVER_PATH=\"$(TEST_QWEN36_SERVING_DRIVER_MODULE)\" -DTEST_QWEN36_SERVING_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config.json\" -DTEST_QWEN36_SERVING_STALE_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_stale.json\" -DTEST_QWEN36_SERVING_ABSOLUTE_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_absolute.json\" -DTEST_QWEN36_SERVING_OVERRUN_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_overrun.json\" $(CFLAGS) tests/test_qwen36_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-build/test_qwen36_prefix_cache: tests/test_qwen36_prefix_cache.c tests/fixtures/qwen36_serving_adapter_config.json build/libqwen36_serving_adapter.dylib build/test_modules/libqwen36_serving_driver_module.dylib $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include -DTEST_QWEN36_SERVING_ADAPTER_PATH=\"$(QWEN36_SERVING_ADAPTER)\" -DTEST_QWEN36_SERVING_DRIVER_PATH=\"$(TEST_QWEN36_SERVING_DRIVER_MODULE)\" -DTEST_QWEN36_SERVING_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config.json\" $(CFLAGS) tests/test_qwen36_prefix_cache.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+build/test_qwen36_prefix_cache: tests/test_qwen36_prefix_cache.c tests/fixtures/qwen36_serving_adapter_config.json modules/qwen36_resident_decode_stage/source/spark_qwen36_paged_kv.c modules/qwen36_resident_decode_stage/source/spark_qwen36_paged_kv.h build/libqwen36_serving_adapter.dylib build/test_modules/libqwen36_serving_driver_module.dylib $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include -Imodules/qwen36_resident_decode_stage/source -DTEST_QWEN36_SERVING_ADAPTER_PATH=\"$(QWEN36_SERVING_ADAPTER)\" -DTEST_QWEN36_SERVING_DRIVER_PATH=\"$(TEST_QWEN36_SERVING_DRIVER_MODULE)\" -DTEST_QWEN36_SERVING_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config.json\" $(CFLAGS) tests/test_qwen36_prefix_cache.c modules/qwen36_resident_decode_stage/source/spark_qwen36_paged_kv.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 
 # The K3 adapter links the CUDA serving TUs (runner, dispatch, driver) with
@@ -853,9 +881,23 @@ build/test_tp_device_collective_nccl: tests/test_tp_device_collective_nccl.c inc
 build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c model-families/glm52/include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_stagepack: tests/test_glm52_stagepack.c modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h
+build/test_glm52_stagepack: tests/test_glm52_stagepack.c modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h
 	$(CC) $(GLM52_INCLUDE_FLAGS) -Imodules/glm52_resident_decode_stage/source \
+		-Imodules/glm52_resident_decode_stage/include \
+		-D'GLM52_EXPERT_CODEC_NAME="host"' \
 		$(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+# PP7 split dry proof: the harness includes the module translation unit
+# directly (white-box) so the configure chain's statics run on host; links
+# the model-common library for the stage-module ABI and TP collective stubs.
+build/test_glm52_pp7_configure: tests/test_glm52_pp7_configure.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c $(MODEL_COMMON_LIBRARY)
+	$(CC) $(GLM52_INCLUDE_FLAGS) -Imodules/glm52_resident_decode_stage/source \
+		-Imodules/glm52_resident_decode_stage/include \
+		-DGLM52_EXPERT_WEIGHT_CODEC=5 \
+		-D'GLM52_EXPERT_CODEC_NAME="fp8"' \
+		-D'GLM52_MODEL_REVISION="pp7-dry"' \
+		-D'GLM52_CONTRACT_SHA256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+		$(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dspark_drafter_pin: tests/test_dspark_drafter_pin.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

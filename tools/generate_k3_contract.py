@@ -160,11 +160,12 @@ def render_header(source: dict[str, Any]) -> str:
         ("K3_PACK_INTERLEAVE_CELL_ROWS", "17u"),
         ("K3_PACK_INTERLEAVE_ROW_BYTES", "64u"),
         ("K3_PACK_INTERLEAVE_SCALE_BYTES", "4u"),
-        # The two fused KDA projection tensors, as row counts over hidden:
-        # q|k|v|beta (OUTPUT_DIM_HEADS) and decay_down|gate_down (REPLICATED).
+        # The fused KDA projection tensor, as a row count over hidden:
+        # q|k|v|beta (OUTPUT_DIM_HEADS). The released checkpoint keeps
+        # decay_down standalone and the gate full rank
+        # (docs/K3_GATE_RECONCILIATION.md), so there is no second fusion.
         ("K3_KDA_QKVB_FUSED_ROWS",
-         "(2u * K3_KDA_HEADS * K3_KDA_KEY_DIM + K3_KDA_HEADS * K3_KDA_VALUE_DIM + K3_KDA_HEADS)"),
-        ("K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS", "(2u * K3_KDA_KEY_DIM)")
+         "(2u * K3_KDA_HEADS * K3_KDA_KEY_DIM + K3_KDA_HEADS * K3_KDA_VALUE_DIM + K3_KDA_HEADS)")
     ]
 
     lines = [

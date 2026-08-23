@@ -23,8 +23,16 @@ archive: $(BACKEND_ARCHIVE)
 $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
 
+# Include paths: the drafter constants live in the neutral
+# spark_dspark_drafter.h (model-families/common) behind the GLM52 target table,
+# and the backend launches GEMMs through runtime/gemm.cuh, whose includes are
+# repo-root relative. The validator links -lcuda (the shared stack encodes TMA
+# descriptors through the driver API); cuBLAS is gone from the tree.
 $(BACKEND_OBJECT): source/spark_glm52_dspark_draft_backend.cu include/sparkpipe/spark_glm52_dspark_draft_backend.h | $(BUILD_DIRECTORY)
-	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -c $< -o $@
+	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) \
+		-I$(REPOSITORY_ROOT)/model-families/common/include \
+		-I$(REPOSITORY_ROOT)/model-families/glm52/include \
+		-I$(REPOSITORY_ROOT)/include -Iinclude -c $< -o $@
 
 $(BACKEND_ARCHIVE): $(BACKEND_OBJECT)
 	rm -f $@
@@ -32,9 +40,12 @@ $(BACKEND_ARCHIVE): $(BACKEND_OBJECT)
 
 $(VALIDATOR): validation/validate_glm52_dspark_epoch3_cuda.cu $(BACKEND_ARCHIVE)
 	$(MAKE) -C $(REPOSITORY_ROOT) build/libsparkpipe_model_common.a
-	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude \
+	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) \
+		-I$(REPOSITORY_ROOT)/model-families/common/include \
+		-I$(REPOSITORY_ROOT)/model-families/glm52/include \
+		-I$(REPOSITORY_ROOT)/include -Iinclude \
 		$< $(BACKEND_ARCHIVE) $(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
-		-lcublas -o $@
+		-lcuda -o $@
 
 validate_epoch3: $(VALIDATOR)
 	@test -s "$(DSPARK_MANIFEST)" || \

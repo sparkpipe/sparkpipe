@@ -1,9 +1,12 @@
 # K3 TP16 — pack production + end-to-end run plan
 
-Status: READY-TO-RUN. Every step is scripted or gated; what remains is
-hardware time. This closes PR #667's last two open items ("TP16 pack
+Status: FINALIZED for the Tuesday window (2026-08-23, unified `229526d`).
+Every step is scripted or gated; what remains is hardware time plus the two
+node/GPU gates in §T1. This closes PR #667's last two open items ("TP16 pack
 production", "end-to-end run") under the fleet rule that a measured window
-is only requested once everything before it is provably done.
+is only requested once everything before it is provably done. Gate-by-gate
+status at finalization: see "Gate status" below; execution order for the
+day: see "Tuesday run sheet".
 
 Classification discipline (same as `docs/K3_PERF.md`): every number below is
 **measured** or **analytical**
@@ -16,20 +19,43 @@ stays "RETRACTED (not hardware-measured)" until then.
 
 ---
 
+## Gate status at finalization (2026-08-23, unified `229526d`)
+
+| gate | status | evidence |
+| --- | --- | --- |
+| production pipeline dry run (synthetic TP16-closed ckpt → pack → shard ×16 → `SHA256SUMS.tp16`) | **DONE, measured** | `/tmp/k3_dryrun_r3`: 66 tensors @ tile_k 32 (28,311,264 payload B), 16/16 rank packs independently re-verified (`shasum -a 256 -c`), zero guard warnings; disk-guard negative control fired as designed; `tests/test_k3_pack.py` + `tests/test_k3_shard.py` exit 0 at `229526d` (`.agents/coord/logs/k3.log` 2026-08-23T05:05Z) |
+| deploy transfer+verify logic (`k3_deploy_tp16.sh`) | **DONE, measured** | stub-transport control run over the dry-run rank packs: happy path deploys spark0..sparkf (hex 0-9,a-f) and prints `16/16 rank packs verified`, exit 0; corrupted-destination negative control aborts with `SHA MISMATCH ... (want ... got ...)` exit 1. Only the real network hop remains untested (first contact on the node) |
+| 0.1 bd34381 classification port | **DONE on unified** | `tools/k3_shard.py` slices the three axis-riding 1-D tensors per rank (`HEAD_1D`: `kda_decay_bias`, `kda_head_log_scale`; `LATENT_1D`: `routed_norm_weight`) and reprices rank shapes; reassembly coverage lives in `tests/test_k3_shard.py` (rank shards concatenate to the pack; replicated controls stay equal). The side branch's content is superseded — do NOT merge `origin/k3-tp4-layer0`; it stays historical |
+| 0.2 offline equivalence gate on the fixed sharder | PENDING — needs node checkpoint | §T1 below |
+| 0.3 capture fidelity re-proof | PENDING — needs sparka GPU | §T1 below |
+| 0.4 PR #667 body update | PENDING | after 0.2/0.3 receipts land |
+
+Open-question disposition:
+
+1. **+43% payload receipt-vs-inventory gap** — NOT settled from this
+   workstation (no real stage-pack manifest locally). Decode conclusions are
+   unaffected: they anchor to the measured single-spark A1 step (55.5 ms),
+   not the byte model. Large-B prefill numbers stay quoted as bands until
+   §T0's two-minute reconciliation reads an existing stage-pack manifest's
+   tensor-bytes total on the node.
+2. **bd34381 fold-in vs separate land** — RESOLVED: fold-in; the content
+   already landed in `unified`'s sharder/tests (gate table above).
+3. **deploy rsync path untested** — DOWNGRADED: transfer/checksum/abort
+   logic now control-tested end to end (row above); only the physical
+   network leg awaits first contact.
+
 ## Phase 0 — pre-hardware gates (workstation / sparka, no ring needed)
 
 These block the run, not the packing. Do them while boxes are away.
 
-0.1 **Port the `bd34381` tensor-classification fix onto `unified`.** The
-side branch `origin/k3-tp4-layer0` slices `kda_decay_bias`,
-`kda_head_log_scale`, `routed_norm_weight` per rank; today's
-`tools/k3_shard.py` classifies them REPLICATED while the kernels index them
-rank-locally (`inference/kernels/linear_attn.cuh:106-116`,
-`layer.cuh:654-655`, `layer.cuh:948-949`) — ranks 1..3 consume rank 0's
-segments on all 69 KDA layers and every MoE layer. Port the classification
-change plus its `tests/test_k3_shard.py` reassembly coverage; pick ONE
-mechanism (per-rank slices at shard time OR per-rank offsets in
-bind/dispatch) and delete the other's temptation.
+0.1 **~~Port the `bd34381` tensor-classification fix onto `unified`.~~ DONE**
+(see gate table above; closed on `unified`, reassembly-covered by
+`tests/test_k3_shard.py`). Historical context: the side branch
+`origin/k3-tp4-layer0` sliced `kda_decay_bias`, `kda_head_log_scale`,
+`routed_norm_weight` per rank while the then-current `tools/k3_shard.py`
+classified them REPLICATED against rank-locally-indexing kernels — ranks
+1..3 consumed rank 0's segments on all 69 KDA layers and every MoE layer.
+The per-rank-slice-at-shard-time mechanism is the one that landed.
 
 0.2 **Re-run the offline equivalence gate on the fixed sharder.**
 `tools/k3_tp4_equivalence_check.py`, full vs 4-rank packs of the layers-0-3
@@ -142,6 +168,43 @@ the PR. Residual known debt rides separately (dead decay|gate-fusion tail,
 `test_k3_pack_layout.py` silently-green fixture, `k3_pack.py` off
 `spark_pack_common`) — none blocks closure; they are queued quality-law
 items.
+
+## Tuesday run sheet (execution order for the day)
+
+Times relative to window start W. Nothing consumes ring time before the
+Phase 3 swap; everything up to it is offline and cheap to abort.
+
+- **T0 — node, any free box, W−1h:**
+  1. `git -C <checkout> rev-parse --short HEAD` → record in the receipt
+     (`229526d` or later).
+  2. **+43% reconciliation (two minutes, non-blocking):** read any existing
+     stage-pack manifest's tensor-bytes total (or diff a fresh 4-layer slice
+     pack's payload bytes against its manifest sum). Record
+     receipt-vs-inventory ratio in the run log; quote prefill as bands
+     either way.
+  3. Start Phase 1 pack production (nohup command above). Multi-hour; this
+     is the long pole — start it first.
+- **T1 — sparka, parallel with the pack:** run gates 0.2 and 0.3 on the
+  fixed path:
+  `tools/k3_tp4_slice.sh <layers-0-3 stage pack> <prefix>` then
+  `tools/k3_tp4_equivalence_check.py FULL R0 R1 R2 R3` (receipt = max
+  relative deviation line), plus the capture-fidelity legs (no-capture
+  direct step-2 vs graph replay; fresh-run determinism). **RED on either =
+  STOP**: do not request the fleet window; debug offline. A red gate burns
+  zero ring time by construction.
+- **T2 — when the pack finishes:** Phase 2 deploy.
+  `tools/k3_deploy_tp16.sh /home/<node>/k3tp16prod` prints one verified
+  line per rank and finishes `16/16 rank packs verified`; a `SHA MISMATCH`
+  aborts nonzero and a rerun resumes via `rsync --append-verify`. Then
+  `tools/k3_gen_adapter_configs.sh OUT_DIR 16` +
+  `tools/k3_gen_deployment.sh model_resident.json 16`.
+- **W — Phase 3 window request:** save the `fleet_status.sh` probe output
+  WITH the receipt, then `tools/fleet_swap.sh k3`.
+- **In-window (Phase 4 order):** boot+register → single-token smoke vs the
+  sparka golden → graph-capture replay bit-identical → B1 decode ≥10 min
+  warm (accept 17–21 tok/s calibrated-band; investigate below 14) → prefill
+  B = 8/32/128/1024 (bands per the +43% caveat) → receipts under
+  `qualification/`.
 
 ## Rollback / abort posture
 

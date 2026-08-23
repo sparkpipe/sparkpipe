@@ -1,32 +1,8 @@
 #include "prefix_cache.h"
+#include "sparkpipe/spark_prefix_hash.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-#define CORE_HASH_OFFSET 14695981039346656037ull
-#define CORE_HASH_PRIME 1099511628211ull
-
-static uint64_t CoreChainHash(uint64_t parent_hash, const uint32_t *token_ids, uint32_t token_count)
-{
-	uint64_t hash;
-	uint32_t index;
-	uint32_t byte;
-	hash = CORE_HASH_OFFSET;
-	for (byte = 0u; byte < 8u; byte++)
-	{
-		hash ^= (parent_hash >> (uint64_t)(byte * 8u)) & 0xffull;
-		hash *= CORE_HASH_PRIME;
-	}
-	for (index = 0u; index < token_count; index++)
-	{
-		for (byte = 0u; byte < 4u; byte++)
-		{
-			hash ^= ((uint64_t)token_ids[index] >> (byte * 8u)) & 0xffull;
-			hash *= CORE_HASH_PRIME;
-		}
-	}
-	return hash;
-}
 
 SparkStatus SparkPrefixCacheCoreValidateGeometry(
 	const SparkPrefixCacheCoreConfiguration *configuration)
@@ -233,9 +209,10 @@ static uint32_t CoreCommittedTokens(const SparkPrefixCacheCore *core, const Spar
 	{
 		return 0u;
 	}
-	/* Reserved-but-empty private tails (ReservePrivateTail) hold no
-	 * tokens: skip them so the committed count is the exact token
-	 * mirror, never an overcount a caller could read blocks through. */
+	/* Defensive: a still-empty PRIVATE tail block would hold no tokens;
+	 * skip any so the committed count is the exact token mirror, never
+	 * an overcount a caller could read blocks through. (No current path
+	 * creates one - the reserved-tail API was removed as dead surface.) */
 	last_block = sequence->block_count - 1u;
 	while (last_block != 0u)
 	{
@@ -405,7 +382,7 @@ SparkStatus SparkPrefixCacheCoreAdmitSequence(
 	matched_block_count = 0u;
 	while (matched_block_count < full_block_count)
 	{
-		next_chain_hash = CoreChainHash(
+		next_chain_hash = SparkPrefixHashPlainChained(
 		    chain_hash,
 		    token_ids + (uint64_t)matched_block_count * core->block_token_count,
 		    core->block_token_count);
@@ -451,9 +428,8 @@ SparkStatus SparkPrefixCacheCoreAdmitSequence(
 }
 
 /* The open private slot every append must fill IN ORDER: the leftmost
- * private block with room. Reserved-but-empty tails (ReservePrivateTail)
- * sit after published blocks, so "last block" would fill them out of
- * order and break the correspondence between the token mirror and the
+ * private block with room. Scanning from the front (not taking "last
+ * block") keeps the correspondence between the token mirror and the
  * block ordinals a driver's table maps positions through. */
 static SparkPrefixCacheCoreBlock *CoreOpenBlock(
     SparkPrefixCacheCore *core,
@@ -532,7 +508,7 @@ SparkStatus SparkPrefixCacheCoreAppendTokens(
 			 * never linked, and Touch's unlink would treat its
 			 * NO_BLOCK lru_prev as list-head and wipe the chain. */
 			block_index = sequence->blocks[sequence->block_count - 1u];
-			block->chain_hash = CoreChainHash(
+			block->chain_hash = SparkPrefixHashPlainChained(
 			    sequence->running_chain_hash,
 			    block->token_ids,
 			    core->block_token_count);
@@ -590,76 +566,6 @@ SparkStatus SparkPrefixCacheCoreBuildBlockTable(
 		block_indices_out[index] = sequence->blocks[index];
 	}
 	*block_count_out = required_block_count;
-	return SPARK_STATUS_OK;
-}
-
-SparkStatus SparkPrefixCacheCoreReservePrivateTail(
-    SparkPrefixCacheCore *core,
-    uint64_t sequence_id,
-    uint32_t min_block_count)
-{
-	SparkPrefixCacheCoreSequence *sequence;
-	uint32_t sequence_index;
-	uint32_t block_index;
-	SparkStatus status;
-	if (core == 0)
-	{
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	}
-	status = CoreFindSequence(core, sequence_id, &sequence_index);
-	if (status != SPARK_STATUS_OK)
-	{
-		return status;
-	}
-	if (min_block_count > core->sequence_block_capacity)
-	{
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	}
-	sequence = &core->sequences[sequence_index];
-	while (sequence->block_count < min_block_count)
-	{
-		block_index = CoreAllocateOpenBlock(core);
-		if (block_index == SPARK_PREFIX_CACHE_CORE_NO_BLOCK)
-		{
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
-		}
-		sequence->blocks[sequence->block_count] = block_index;
-		sequence->block_count++;
-	}
-	return SPARK_STATUS_OK;
-}
-
-SparkStatus SparkPrefixCacheCoreCopyBlockList(
-    const SparkPrefixCacheCore *core,
-    uint64_t sequence_id,
-    uint32_t *block_indices_out,
-    uint32_t block_index_capacity,
-    uint32_t *block_count_out)
-{
-	SparkPrefixCacheCoreSequence *sequence;
-	uint32_t sequence_index;
-	uint32_t index;
-	SparkStatus status;
-	if (core == 0 || block_count_out == 0 ||
-	    block_indices_out == 0)
-	{
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	}
-	status = CoreFindSequence(core, sequence_id, &sequence_index);
-	if (status != SPARK_STATUS_OK)
-	{
-		return status;
-	}
-	sequence = &core->sequences[sequence_index];
-	if (sequence->block_count > block_index_capacity)
-	{
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	}
-	for (index = 0u; index < sequence->block_count; index++)
-	{
-		block_indices_out[index] = sequence->blocks[index];
-	}
-	*block_count_out = sequence->block_count;
 	return SPARK_STATUS_OK;
 }
 

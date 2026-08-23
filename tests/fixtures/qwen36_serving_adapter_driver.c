@@ -238,7 +238,13 @@ static SparkStatus TestQwen36ServingDriverSubmit(
 	}
 	else
 	{
-		if ( (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW) == 0u || context->decode_batch == 0 || context->prefill_frame != 0 || frame->active_slot_count != frame->new_token_count )
+		/* Plain batched decodes walk one row per active slot. A speculative
+		 * MTP_DRAFT_AFTER frame walks 1 + D rows on ONE resident slot (the
+		 * module contract's single-slot draft chain), so active_slot_count
+		 * == 1 with more rows than slots is a legal decode shape here. */
+		if ( (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW) == 0u || context->decode_batch == 0 || context->prefill_frame != 0 )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( frame->active_slot_count != frame->new_token_count && frame->active_slot_count != 1u )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		rows = context->decode_batch->row_count;
 	}
@@ -303,7 +309,12 @@ static SparkStatus TestQwen36ServingDriverSubmit(
 	}
 	tokens = (uint32_t *)frame->buffers[1].address;
 	if ( prefill != 0u )
-		tokens[0] = 4242u;
+	{
+		/* Every row of a prefill frame emits deterministically (a
+		 * speculative verify frame reads ALL D rows back host-side). */
+		for (row=0u; row<rows; row++)
+			tokens[row] = 4242u;
+	}
 	else
 		for (row=0u; row<rows; row++)
 			tokens[row] = 4200u + row;

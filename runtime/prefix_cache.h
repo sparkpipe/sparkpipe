@@ -167,10 +167,13 @@ typedef struct SparkPrefixCacheCore
  *    base + physical_index * block_stride_bytes. The core never reads
  *    or writes those bytes.
  * 2. KERNELS: after each rebuild of the lane set, upload the host
- *    mirrors with SparkStageModuleBlockTableUpload and read the table
- *    through SparkPrefixCacheCoreBlockTableView in every
- *    prefill/decode/verify walk, honoring the immutability rule
- *    documented on the view.
+ *    mirrors to the device through the stage's OWN queue/copy
+ *    primitives (its own stream and copy calls - the core defines no
+ *    upload helper). The SEAM is the row format, not a shared symbol:
+ *    keep the uploaded table shaped as SparkPrefixCacheCoreBlockTableView
+ *    (lane-major physical indices + counts) and read it through that
+ *    view in every prefill/decode/verify walk, honoring the immutability
+ *    rule documented on the view.
  * 3. TOKENS: call SparkPrefixCacheCoreAdmitSequence with the full
  *    prompt id array at submission, then
  *    SparkPrefixCacheCoreAppendTokens with every sampled id. The core
@@ -206,38 +209,6 @@ SparkStatus SparkPrefixCacheCoreAppendTokens(
     uint64_t sequence_id,
     const uint32_t *token_ids,
     uint32_t token_count);
-
-/*
- * Grow a sequence with freshly allocated, still-empty PRIVATE tail blocks
- * until it holds at least min_block_count blocks, WITHOUT recording any
- * token ids. This is how a driver pre-reserves decode/speculation KV
- * coverage whose tokens do not exist yet (draft/verify rows are only
- * known after earlier frames run): the reserved blocks receive their real
- * ids through later AppendTokens calls, and a reserved block that never
- * fills is simply released with its sequence - it never publishes and
- * never matches. Fails with CAPACITY_EXCEEDED (after self-trim) if the
- * pool cannot supply the missing blocks; a failed call may leave a
- * shorter partial reservation, which the caller releases as usual.
- */
-SparkStatus SparkPrefixCacheCoreReservePrivateTail(
-    SparkPrefixCacheCore *core,
-    uint64_t sequence_id,
-    uint32_t min_block_count);
-
-/*
- * Copy the sequence's physical block list - every block the sequence
- * currently holds, including reserved-but-still-empty tails - into
- * block_indices_out. This is the authoritative table row a driver
- * uploads: coverage may exceed the token mirror, so a driver must build
- * rows from this list rather than from BuildBlockTable when reserved
- * blocks exist.
- */
-SparkStatus SparkPrefixCacheCoreCopyBlockList(
-    const SparkPrefixCacheCore *core,
-    uint64_t sequence_id,
-    uint32_t *block_indices_out,
-    uint32_t block_index_capacity,
-    uint32_t *block_count_out);
 
 /* Fill block_indices_out with the physical blocks covering positions
  * [0, token_count) of the sequence. */

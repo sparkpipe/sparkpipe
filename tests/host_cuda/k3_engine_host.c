@@ -123,6 +123,11 @@ int main(void)
 	printf("out_a %u %u %u %u %u %u\n", out_a[0], out_a[1], out_a[2], out_a[3], out_a[4], out_a[5]);
 	printf("out_b %u %u\n", out_b[0], out_b[1]);
 	printf("out_c %u %u\n", out_c[0], out_c[1]);
+	// Acceptance counters (SURVEY_K3 #10): one verify commit offered three
+	// drafts and emitted two - proposed then accepted.
+	printf("drafts %llu %llu\n",
+		(unsigned long long)engine.drafts_proposed,
+		(unsigned long long)engine.drafts_accepted);
 
 	// --- The serving-bug scenarios, on the same engine now idle. -----------
 	printf("scenario serving_bugs\n");
@@ -201,6 +206,11 @@ int main(void)
 			if ( K3EngineCommitVerify(&engine, &step, accepted, bonus, 7u) != K3_ENGINE_OK )
 				return 15;
 			printf("out_e %u %u %u %u\n", out_e[0], out_e[1], out_e[2], out_e[3]);
+			// K3-009's commit offered three drafts, emitted two (301 then
+			// the EOS draft 7): cumulative proposed/accepted now 6/4.
+			printf("drafts %llu %llu\n",
+				(unsigned long long)engine.drafts_proposed,
+				(unsigned long long)engine.drafts_accepted);
 		}
 		// K3-008: three bad commits must fail closed without moving the
 		// machine - a duplicate of an already-committed step, a slot poked

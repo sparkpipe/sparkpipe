@@ -9,23 +9,44 @@ static const uint32_t SparkGlm52DsparkDefaultAuxLayerIds[
     SPARK_DSPARK_AUX_LAYER_COUNT] =
     SPARK_DSPARK_AUX_LAYER_IDS_INITIALIZER;
 
+/* The contract's split table (single source, shared with the resident
+ * module's configure chain and the stagepacker): per-stage layer counts and
+ * their prefix-sum first layers. No uniform layers-per-stage multiply. */
+static const uint32_t SparkGlm52DsparkPpStageLayerCounts[
+    SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT] =
+    SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNTS_INITIALIZER;
+static const uint32_t SparkGlm52DsparkPpStageFirstLayers[
+    SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT] =
+    SPARK_GLM52_MODEL_DSPARK_PP_STAGE_FIRST_LAYER_INITIALIZER;
+
 /* Single source of the tap-stage geometry: where an aux layer lands inside
- * the 13x6 PP ring. Both the builder and the validator derive from this, so
- * they cannot drift apart. */
+ * the split-table PP ring. Both the builder and the validator derive from
+ * this, so they cannot drift apart. */
 static void SparkGlm52DsparkFillExpectedTapStage(
     uint32_t aux_layer_id, SparkGlm52DsparkTapStage *tap_stage)
 {
     uint32_t target_layer_index =
         SPARK_GLM52_MODEL_DSPARK_AUX_CAPTURE_LAYER_INDEX(aux_layer_id);
+    uint32_t stage_index;
 
     memset(tap_stage, 0, sizeof(*tap_stage));
     tap_stage->target_layer_index = target_layer_index;
-    tap_stage->stage_index =
-        target_layer_index / SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNT;
+    for (stage_index = 0u;
+         stage_index < SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT;
+         ++stage_index)
+    {
+        if (target_layer_index <
+            SparkGlm52DsparkPpStageFirstLayers[stage_index] +
+                SparkGlm52DsparkPpStageLayerCounts[stage_index])
+        {
+            break;
+        }
+    }
+    tap_stage->stage_index = stage_index;
     tap_stage->stage_first_layer_index =
-        tap_stage->stage_index * SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNT;
+        SparkGlm52DsparkPpStageFirstLayers[stage_index];
     tap_stage->stage_layer_count =
-        SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNT;
+        SparkGlm52DsparkPpStageLayerCounts[stage_index];
     tap_stage->layer_offset_in_stage =
         target_layer_index - tap_stage->stage_first_layer_index;
 }
@@ -47,8 +68,8 @@ SparkStatus SparkGlm52DsparkBuildDefaultHiddenTapPlan(
     tap_plan->aux_layer_count = SPARK_DSPARK_AUX_LAYER_COUNT;
     tap_plan->hidden_dimension = SPARK_DSPARK_HIDDEN_DIMENSION;
     tap_plan->pp_stage_count = SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT;
-    tap_plan->pp_stage_layer_count =
-        SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNT;
+    tap_plan->pp_stage_max_layer_count =
+        SPARK_GLM52_MODEL_DSPARK_PP_STAGE_MAX_LAYER_COUNT;
 
     for (tap_index = 0u;
          tap_index < SPARK_DSPARK_AUX_LAYER_COUNT;
@@ -73,8 +94,8 @@ SparkStatus SparkGlm52DsparkValidateHiddenTapPlan(
         tap_plan->aux_layer_count != SPARK_DSPARK_AUX_LAYER_COUNT ||
         tap_plan->hidden_dimension != SPARK_DSPARK_HIDDEN_DIMENSION ||
         tap_plan->pp_stage_count != SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT ||
-        tap_plan->pp_stage_layer_count !=
-            SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNT ||
+        tap_plan->pp_stage_max_layer_count !=
+            SPARK_GLM52_MODEL_DSPARK_PP_STAGE_MAX_LAYER_COUNT ||
         tap_plan->reserved0 != 0u ||
         tap_plan->reserved1 != 0u)
     {

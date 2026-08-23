@@ -1112,7 +1112,17 @@ from pathlib import Path
 # acquire fence + publish barrier; bench ledger updated with the in-situ
 # A/B (kernel-level +10%, end-to-end neutral, bit-exact).
 # Post-merge measured count (set by the consolidation; see the commit message).
-CEILING = 184753
+# 185079 (2026-08-23): PP7 split table series — the contract's dspark section
+# gains pp_stage_layers [12,11x6] (generated into spark_glm52_model.h as
+# counts/first-layer initializers + the shared LayerHasFullIndexer macro);
+# firmware.h replaces the uniform FirstLayer multiply and odd/even parity
+# heuristic with geometry tables (TP8 1x78 + PP7) and a coverage-derived
+# boundary rule plus the DSA tap table; module configure resolves the triple
+# against those tables; dispatch_policy.c derives tap stages from the same
+# split table (pp_stage_layer_count -> pp_stage_max_layer_count); the packer
+# gains --split/--stage with a write() self-check; gen_deployment gains the
+# pp7 tree (56 per-(stage,rank) configs, manifest, non-colliding ports).
+CEILING = 185079
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

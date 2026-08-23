@@ -95,6 +95,13 @@ static void SparkTestDsparkDefaultTapPlanMatchesGlm52Ring(void)
     SparkGlm52DsparkHiddenTapPlan tap_plan;
     static const uint32_t expected_layers[SPARK_DSPARK_AUX_LAYER_COUNT] =
         { 7u, 22u, 38u, 54u, 69u };
+    /* PP7 split [12,11x6]: taps land in stages {0,1,3,4,6}. */
+    static const uint32_t expected_stages[SPARK_DSPARK_AUX_LAYER_COUNT] =
+        { 0u, 1u, 3u, 4u, 6u };
+    static const uint32_t expected_firsts[SPARK_DSPARK_AUX_LAYER_COUNT] =
+        { 0u, 12u, 34u, 45u, 67u };
+    static const uint32_t expected_counts[SPARK_DSPARK_AUX_LAYER_COUNT] =
+        { 12u, 11u, 11u, 11u, 11u };
     uint32_t tap_index;
 
     assert(SparkGlm52DsparkBuildDefaultHiddenTapPlan(
@@ -102,8 +109,10 @@ static void SparkTestDsparkDefaultTapPlanMatchesGlm52Ring(void)
     assert(SparkGlm52DsparkValidateHiddenTapPlan(
         &tap_plan) == SPARK_STATUS_OK);
     assert(tap_plan.aux_layer_count == SPARK_DSPARK_AUX_LAYER_COUNT);
-    assert(tap_plan.pp_stage_count == 13u);
-    assert(tap_plan.pp_stage_layer_count == 6u);
+    assert(tap_plan.pp_stage_count ==
+        SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT);
+    assert(tap_plan.pp_stage_max_layer_count ==
+        SPARK_GLM52_MODEL_DSPARK_PP_STAGE_MAX_LAYER_COUNT);
 
     for (tap_index = 0u;
          tap_index < SPARK_DSPARK_AUX_LAYER_COUNT;
@@ -113,10 +122,10 @@ static void SparkTestDsparkDefaultTapPlanMatchesGlm52Ring(void)
 
         tap_stage = &tap_plan.tap_stages[tap_index];
         assert(tap_stage->target_layer_index == expected_layers[tap_index]);
-        assert(tap_stage->stage_index == expected_layers[tap_index] / 6u);
+        assert(tap_stage->stage_index == expected_stages[tap_index]);
         assert(tap_stage->stage_first_layer_index ==
-            (expected_layers[tap_index] / 6u) * 6u);
-        assert(tap_stage->stage_layer_count == 6u);
+            expected_firsts[tap_index]);
+        assert(tap_stage->stage_layer_count == expected_counts[tap_index]);
         assert(tap_stage->layer_offset_in_stage ==
             expected_layers[tap_index] - tap_stage->stage_first_layer_index);
     }

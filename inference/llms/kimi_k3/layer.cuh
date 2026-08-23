@@ -49,20 +49,19 @@ static_assert(K3_KDA_A_LOG_SOURCE_HEADS == 128u && K3_KDA_HEADS == 96u, "A_log l
 #define K3_KDA_QK_DIM (K3_KDA_HEADS * K3_KDA_KEY_DIM)
 #define K3_KDA_V_DIM (K3_KDA_HEADS * K3_KDA_VALUE_DIM)
 
-// THE PACK V2 SECTION TABLE, AS ROW OFFSETS INTO THE FUSED TENSORS
+// THE PACK V2 SECTION TABLE, AS ROW OFFSETS INTO THE FUSED TENSOR
 // (docs/K3_PACK_FORMAT_V2.md). q|k|v|beta ship head-major in one tensor,
-// per-head widths 128/128/128/1; decay_down|gate_down ship replicated in the
-// other. The split kernel indexes by these and the static asserts tie the
-// table to K3_KDA_*_FUSED_ROWS - the constants the packer validates against -
+// per-head widths 128/128/128/1 - the only KDA fusion the released
+// checkpoint ships (docs/K3_GATE_RECONCILIATION.md: decay_down is the
+// standalone replicated bottleneck and the gate is full rank). The split
+// kernel indexes by these and the static assert ties the table to
+// K3_KDA_QKVB_FUSED_ROWS - the constant the packer validates against -
 // so a layout change fails here at compile time, not as misread rows.
 #define K3_KDA_QKVB_K_OFFSET K3_KDA_QK_DIM
 #define K3_KDA_QKVB_V_OFFSET (2u * K3_KDA_QK_DIM)
 #define K3_KDA_QKVB_BETA_OFFSET (2u * K3_KDA_QK_DIM + K3_KDA_V_DIM)
-#define K3_KDA_GATE_DOWN_OFFSET K3_KDA_KEY_DIM
 static_assert(K3_KDA_QKVB_BETA_OFFSET + K3_KDA_HEADS == K3_KDA_QKVB_FUSED_ROWS,
 	"the q|k|v|beta sections must tile the fused tensor exactly");
-static_assert(K3_KDA_GATE_DOWN_OFFSET + K3_KDA_KEY_DIM == K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS,
-	"the decay_down|gate_down sections must tile the fused tensor exactly");
 
 // MLA widths, IN THE ABSORBED FORM THE KERNEL IMPLEMENTS.
 //
@@ -229,17 +228,14 @@ struct K3LayerBuffers
 
 	uint16_t *hidden_bf16;
 	uint16_t *normed_bf16;
-	// THE WIDE FUSED-GEMM SCRATCHES. The two wide GEMMs land here at the pack's
-	// fused widths - rows x K3_KDA_QKVB_FUSED_ROWS and rows x
-	// K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS - and the split kernel copies the
-	// sections out dense, because every consumer (the convolutions, the
-	// up-projections, the sigmoid) reads dense rows and a strided view would
-	// make each of them carry the fused pitch. gate_latent_bf16 holds the gate
-	// down-projection's half across the delta rule until gate_up reads it;
-	// latent_bf16 alone cannot, because the decay half already lives there.
+	// THE WIDE FUSED-GEMM SCRATCH. The q|k|v|beta GEMM lands here at the
+	// pack's fused width - rows x K3_KDA_QKVB_FUSED_ROWS - and the split
+	// kernel copies the sections out dense, because every consumer (the
+	// convolutions, the up-projections, the sigmoid) reads dense rows and a
+	// strided view would make each of them carry the fused pitch. decay_down
+	// and the gate are standalone tensors now (docs/K3_GATE_RECONCILIATION.md),
+	// so they project straight into latent_bf16 and gate_bf16.
 	uint16_t *fused_qkvb_bf16;
-	uint16_t *fused_decay_gate_bf16;
-	uint16_t *gate_latent_bf16;
 	uint16_t *query_bf16;
 	uint16_t *key_bf16;
 	uint16_t *value_bf16;
@@ -583,12 +579,13 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	// K3-PERF-003, LANDED (pack V2). What stood here: six BF16 GEMM launches
 	// all reading normed_bf16, unfusable because the pack scattered the six
 	// weights and the TP tables gave them two shard classes. Pack V2 ships
-	// exactly the two tensors the fix wanted - q|k|v|beta fused OUTPUT_DIM_HEADS
-	// and decay_down|gate_down fused REPLICATED - so the block is now TWO wide
-	// GEMMs over one activation read each, plus one section split: four GEMM
-	// launches and four full-width activation reads are gone per KDA layer
-	// (roadmap D1 counts the launches; the roofline counts the reads). Both
-	// GEMMs run back to back precisely because they share the activation.
+	// q|k|v|beta as one fused OUTPUT_DIM_HEADS tensor (the released checkpoint
+	// keeps decay_down standalone and the gate full rank -
+	// docs/K3_GATE_RECONCILIATION.md), so the block is now THREE wide GEMMs
+	// over one activation read each, plus one section split: three GEMM
+	// launches and three full-width activation reads are gone per KDA layer
+	// (roadmap D1 counts the launches; the roofline counts the reads). All
+	// three run back to back precisely because they share the activation.
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_qkv_beta_weight,0,
 		b->fused_qkvb_bf16,rows,K3_HIDDEN,
 		K3_RANK_DIM(b,kda_qkvb_rows,K3_KDA_QKVB_FUSED_ROWS),multiprocessors,stream);

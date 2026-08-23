@@ -114,7 +114,7 @@ static inline uint32_t SparkGlm52StagePackLayerIsDense(uint32_t layer_index)
 
 static inline uint32_t SparkGlm52StagePackLayerHasFullIndexer(uint32_t layer_index)
 {
-	return(layer_index < 3u || (layer_index >= 6u && ((layer_index - 6u) % SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT) == 0u) ? 1u : 0u);
+	return(SPARK_GLM52_MODEL_LAYER_HAS_FULL_INDEXER(layer_index));
 }
 
 static inline uint32_t SparkGlm52StagePackKindIsGlobal(uint32_t tensor_kind)

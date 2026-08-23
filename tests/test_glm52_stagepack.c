@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "spark_glm52_stagepack_format.h"
+#include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 
 static void SparkTestHeaderLayout(void)
 {
@@ -155,11 +156,89 @@ static void SparkTestTpShardPolicy(void)
 	assert(SparkStagePackApplyShard(&base,7u,1u) == -3);
 }
 
+/* Uneven-split vectors (report §6.4): the PP7 split [12,11x6] tables, the
+ * prefix-sum FirstLayer derivation and the boundary rule redefined from
+ * indexer coverage. The old parity heuristic carried from stages {1,3,5};
+ * the truth under this grid is {1,5}. */
+static void SparkTestPp7SplitTables(void)
+{
+	const SparkGlm52ResidentDecodeStageGeometry *pp7;
+	const SparkGlm52ResidentDecodeStageGeometry *tp8;
+	static const uint32_t expected_counts[] =
+		{ 12u, 11u, 11u, 11u, 11u, 11u, 11u };
+	static const uint32_t expected_firsts[] =
+		{ 0u, 12u, 23u, 34u, 45u, 56u, 67u };
+	static const uint32_t expected_carries[] = { 0u, 1u, 0u, 0u, 0u, 1u, 0u };
+	uint32_t stage;
+
+	pp7 = SparkGlm52ResidentDecodeStageGeometryFor(
+		SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT);
+	tp8 = SparkGlm52ResidentDecodeStageGeometryFor(1u);
+	assert(tp8 == &SparkGlm52ResidentDecodeStageTp8Geometry);
+	assert(pp7 == &SparkGlm52ResidentDecodeStagePp7Geometry);
+	assert(pp7 != 0 && pp7->stage_count ==
+		SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT);
+	assert(SparkGlm52ResidentDecodeStageGeometryFor(13u) == 0);
+	assert(SparkGlm52ResidentDecodeStageGeometryFor(0u) == 0);
+	for (stage = 0u; stage < pp7->stage_count; stage++)
+	{
+		assert(SparkGlm52ResidentDecodeStageFirstLayer(pp7,stage) ==
+			expected_firsts[stage]);
+		assert(pp7->stage_layer_counts[stage] == expected_counts[stage]);
+		assert(SparkGlm52ResidentDecodeStageBoundaryCarriesDsa(pp7,stage) ==
+			expected_carries[stage]);
+		assert(SparkGlm52ResidentDecodeStageBoundaryCarriesDsa(pp7,stage) ==
+			(stage + 1u < pp7->stage_count &&
+				SparkGlm52StagePackLayerHasFullIndexer(
+					expected_firsts[stage] + expected_counts[stage] - 1u) ?
+				1u : 0u));
+	}
+	assert(SparkGlm52ResidentDecodeStageRequiresSidebandInput(pp7,2u) == 1u);
+	assert(SparkGlm52ResidentDecodeStageRequiresSidebandOutput(pp7,2u) == 0u);
+	assert(SparkGlm52ResidentDecodeStageRequiresSidebandOutput(pp7,5u) == 1u);
+	assert(SparkGlm52ResidentDecodeStageRequiresSidebandOutput(pp7,6u) == 0u);
+	/* The single-stage TP8 geometry has no interior boundary at all. */
+	assert(tp8->stage_count == 1u);
+	assert(SparkGlm52ResidentDecodeStageBoundaryCarriesDsa(tp8,0u) == 0u);
+	assert(SparkGlm52ResidentDecodeStageRequiresSidebandInput(tp8,0u) == 0u);
+	assert(SparkGlm52ResidentDecodeStageRequiresSidebandOutput(tp8,0u) == 0u);
+}
+
+/* The DSA tap table must stay the aux capture set {7,22,38,54,69} with the
+ * coverage flags derived, never asserted, from the shared indexer rule;
+ * pinned truth here is coverage {0,1,1,1,0} — layer 7 sits one past a
+ * full-indexer layer and 69 is three past one. */
+static void SparkTestDsaTapCoverage(void)
+{
+	static const uint32_t aux_ids[] =
+		SPARK_GLM52_MODEL_DSPARK_AUX_LAYER_IDS_INITIALIZER;
+	static const uint32_t expected_layers[] = { 7u, 22u, 38u, 54u, 69u };
+	static const uint32_t expected_coverage[] = { 0u, 1u, 1u, 1u, 0u };
+	uint32_t tap;
+
+	assert(SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_TAP_COUNT ==
+		SPARK_GLM52_MODEL_DSPARK_AUX_LAYER_COUNT);
+	for (tap = 0u; tap < SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_TAP_COUNT; tap++)
+	{
+		assert(SparkGlm52ResidentDecodeStageDsaTaps[tap].layer_index ==
+			aux_ids[tap] - SPARK_GLM52_MODEL_DSPARK_AUX_CAPTURE_LAYER_OFFSET);
+		assert(SparkGlm52ResidentDecodeStageDsaTaps[tap].layer_index ==
+			expected_layers[tap]);
+		assert(SparkGlm52ResidentDecodeStageDsaTaps[tap].full_indexer ==
+			expected_coverage[tap]);
+		assert(SparkGlm52ResidentDecodeStageDsaTaps[tap].full_indexer ==
+			SparkGlm52StagePackLayerHasFullIndexer(
+				SparkGlm52ResidentDecodeStageDsaTaps[tap].layer_index));
+	}
+}
+
 int main(void)
 {
 	SparkTestHeaderLayout();
 	SparkTestAllExpertCodecs();
 	SparkTestShapeContract();
 	SparkTestTpShardPolicy();
+	SparkTestPp7SplitTables();
+	SparkTestDsaTapCoverage();
 	return(0);
 }

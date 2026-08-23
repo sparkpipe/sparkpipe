@@ -22,7 +22,12 @@ static uint32_t SparkQwen36PagedKvRowBase(const SparkQwen36PagedKv *cache,
 
 /* Borrow one physical block from the core's free list for private
  * scratch. Evicts least-recently-used published blocks when the pool is
- * exhausted, exactly like the core's own open-block allocation. */
+ * exhausted, exactly like the core's own open-block allocation.
+ * Seam decision (audit DRY note): this is DELIBERATELY module-local -
+ * the core's dead ReservePrivateTail/CopyBlockList reserved-tail API is
+ * deleted and a shared borrow helper was rejected (core surface vs the
+ * Solutions/(codesize x 2) ceiling, zero callers once PRIVATE marks
+ * scratch), so this is the ONE borrow path any later port inherits. */
 static SparkStatus SparkQwen36PagedKvScratchBorrow(
 	SparkQwen36PagedKv *cache, uint32_t *block_out)
 {
@@ -34,16 +39,25 @@ static SparkStatus SparkQwen36PagedKvScratchBorrow(
 	block = cache->core.free_block_head;
 	cache->core.free_block_head =
 		cache->core.blocks[block].free_next;
-	cache->core.blocks[block].state = SPARK_PREFIX_CACHE_CORE_BLOCK_FREE;
+	/* Mark the block PRIVATE (the core's own open-block allocation
+	 * does exactly this): leaving it BLOCK_FREE made QueryStats count
+	 * in-use scratch as free, so SparkQwen36PagedKvFreeBlocks() and
+	 * the spec-coverage feasibility check over-reported pool room and
+	 * borrows failed mid-coverage instead of being refused up front.
+	 * PRIVATE keeps scratch out of free_block_count; it is still
+	 * invisible to Trim (never on the LRU) and to sequences (never in
+	 * a sequence's block list). */
+	cache->core.blocks[block].state = SPARK_PREFIX_CACHE_CORE_BLOCK_PRIVATE;
 	cache->core.blocks[block].reference_count = 0u;
 	cache->core.blocks[block].token_count = 0u;
 	*block_out = block;
 	return(SPARK_STATUS_OK);
 }
 
-/* Return borrowed scratch to the core free list (the same linkage the
- * core's single free path maintains; scratch never sits on the LRU or
- * content index, so nothing else needs clearing). */
+/* Return borrowed scratch to the core free list: PRIVATE -> FREE and
+ * back onto the same linkage the core's single free path maintains
+ * (scratch never sits on the LRU or content index, so nothing else
+ * needs clearing). */
 static void SparkQwen36PagedKvScratchReturn(SparkQwen36PagedKv *cache,
 	uint32_t block)
 {
@@ -56,12 +70,19 @@ static void SparkQwen36PagedKvScratchReturn(SparkQwen36PagedKv *cache,
 
 /* Sync the lane's table row from the cache state: the core-committed
  * prefix comes out of the sequence's block table, everything beyond it
- * is borrowed scratch. */
+ * is borrowed scratch. The committed frontier can only advance while NO
+ * scratch is outstanding (Cover refuses appends otherwise), so a row
+ * already holding scratch keeps it: resetting counts to the core-owned
+ * count here would discard the record of outstanding scratch and the
+ * next Cover would re-borrow straight over slots still naming last
+ * round's blocks - unreachable by Trim (never LRU/indexed) AND by
+ * LaneReset (now past counts_by_lane). Permanent leak per decode step.
+ * BuildBlockTable refreshes only the core-owned prefix slice in place. */
 static void SparkQwen36PagedKvSyncRow(SparkQwen36PagedKv *cache,
 	uint32_t lane)
 {
 	uint32_t row_base = SparkQwen36PagedKvRowBase(cache,lane);
-	uint32_t committed_blocks = 0u;
+	uint32_t committed_blocks = 0u,outstanding;
 	if ( cache->lane_live[lane] != 0u )
 	{
 		uint32_t tokens,blocks;
@@ -77,7 +98,12 @@ static void SparkQwen36PagedKvSyncRow(SparkQwen36PagedKv *cache,
 				cache->blocks_by_lane + row_base,blocks,
 				&committed_blocks);
 	}
+	outstanding = cache->counts_by_lane[lane];
 	cache->lane_core_blocks[lane] = committed_blocks;
+	/* Outstanding scratch survives the sync; the frontier can never be
+	 * below it while the record is valid (LaneReset zeroes both). */
+	if ( outstanding > committed_blocks )
+		return;
 	cache->counts_by_lane[lane] = committed_blocks;
 }
 
@@ -371,7 +397,11 @@ SparkStatus SparkQwen36PagedKvCover(SparkQwen36PagedKv *cache,
 		if ( status != SPARK_STATUS_OK )
 		{
 			/* Leave the partial growth visible: the caller drops the
-			 * whole submission on coverage failure. */
+			 * whole submission on coverage failure. The count moves
+			 * WITH each borrow so LaneReset can still return every
+			 * attached block - a count left behind here would orphan
+			 * the just-borrowed blocks exactly like the F1 bug. */
+			cache->counts_by_lane[lane] = count + appended;
 			return(status);
 		}
 		cache->blocks_by_lane[row_base + ordinal] = block;
@@ -475,6 +505,15 @@ void SparkQwen36PagedKvCheckpointCommit(SparkQwen36PagedKv *cache,
 	boundary = (uint32_t)(end_position /
 		cache->configuration.block_token_count);
 	if ( boundary == 0u || boundary > cache->lane_core_blocks[lane] )
+		return;
+	/* lane_core_blocks counts ceil(committed/BLOCK) blocks, so on a lane
+	 * whose committed token count is not block-aligned the top counted
+	 * block is still OPEN - later appends keep writing into it. A commit
+	 * whose end_position runs past the committed frontier rounds down
+	 * into that open block and binds the GDN witness to a mutable block
+	 * (audit F4): the witness must sit inside the committed tokens. */
+	if ( end_position >
+		SparkQwen36PagedKvCommittedTokens(cache,lane) )
 		return;
 	row_base = SparkQwen36PagedKvRowBase(cache,lane);
 	witness = cache->blocks_by_lane[row_base + boundary - 1u];

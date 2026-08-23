@@ -120,16 +120,25 @@ def main():
     bank = [list(embedding)]
     for l in range(LAYERS):
         gemms = per_layer[l]["gemms"]
-        # PACK V2 CONSUMPTION, PER KDA LAYER: the six projection GEMMs that
-        # read the normed input are exactly two wide ones, bound through
-        # K3BindLayer to the two fused pack tensors. Any other projection
-        # destination or weight here is the six-launch block come back.
+        # PACK V2 CONSUMPTION, PER KDA LAYER: of the projection GEMMs that
+        # read the normed input, only q|k|v|beta is fused and bound through
+        # K3BindLayer to the fused pack tensor (the released checkpoint keeps
+        # decay_down standalone - it projects into latent - and the gate full
+        # rank; docs/K3_GATE_RECONCILIATION.md). Any other fused destination
+        # or weight here is the six-launch block come back.
         if l % 4 != 3:
             fused = [(d, w) for _, d, w in gemms if d.startswith("fused_")]
-            if fused != [("fused_qkvb", "qkvb"),
-                         ("fused_decay_gate", "decay_gate")]:
+            if fused != [("fused_qkvb", "qkvb")]:
                 print(f"  FAIL layer {l}: fused projection GEMMs are "
-                      f"{fused}, not qkv|beta and decay|gate once each")
+                      f"{fused}, not qkv|beta exactly once")
+                failures += 1
+            decay = [(d, w) for _, d, w in gemms
+                     if (d, w) == ("latent", "decay_down")]
+            gate_writes = [1 for _, d, _ in gemms if d == "gate"]
+            if decay != [("latent", "decay_down")] or not gate_writes:
+                print(f"  FAIL layer {l}: the standalone projections are "
+                      f"{decay} plus {len(gate_writes)} gate writes, not "
+                      f"decay_down into latent once and the full-rank gate")
                 failures += 1
             stale = [d for _, d, _ in gemms
                      if d in ("query", "key", "value", "beta")]
@@ -137,9 +146,18 @@ def main():
                 print(f"  FAIL layer {l}: projections write {stale} directly; "
                       f"the sections come from the split, not a GEMM")
                 failures += 1
-        a = 0.125 * next(i for i, d, _ in gemms if d == "attention_out")
+        # a is the attention projection's write. MLA layers project into
+        # attention_out; the KDA o_proj lands in hidden instead - it must not
+        # write over its own input (the in-place GEMM race fix), and hidden is
+        # idle until the MLP, so the FIRST hidden write is the projection and
+        # the LAST one (plus shared) is the MLP's m.
+        attention_writes = [i for i, d, _ in gemms if d == "attention_out"]
         hidden_writes = [i for i, d, _ in gemms if d == "hidden"]
         shared_writes = [i for i, d, _ in gemms if d == "shared_out"]
+        if attention_writes:
+            a = 0.125 * attention_writes[0]
+        else:
+            a = 0.125 * hidden_writes[0]
         m = 0.125 * (hidden_writes[-1] + sum(shared_writes))
         boundary = (l % BLOCK) == 0
         if boundary and l > 0:

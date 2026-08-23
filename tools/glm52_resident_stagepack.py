@@ -379,10 +379,37 @@ class Packer:
 
     # -- writing -----------------------------------------------------------
 
+    def _verify_split_header(self, stage_count: int, stage_index: int,
+                             first_layer_index: int, layer_count: int,
+                             total_layer_count: int,
+                             split: Optional[List[int]]) -> None:
+        """Packer self-check (report §6.4): an internally inconsistent mint is
+        impossible even before any loader sees it. Split-driven packs must
+        satisfy the prefix-sum triple and positional globals gating."""
+        if split is None:
+            return
+        assert stage_count == len(split), "stage_count != split length"
+        assert 0 <= stage_index < stage_count, "stage_index out of range"
+        assert first_layer_index == sum(split[:stage_index]), \
+            "first_layer_index is not the prefix sum of the split"
+        assert layer_count == split[stage_index], \
+            "layer_count != this stage's split entry"
+        assert total_layer_count == sum(split), \
+            "split does not cover the model's layer count"
+        kinds = {item.entry.kind for item in self.plan}
+        assert (K_EMBEDDING in kinds) == (stage_index == 0), \
+            "embedding gating must be positional (stage 0 only)"
+        assert (bool(kinds & {K_FINAL_NORM, K_LM_HEAD})) == \
+            (stage_index == len(split) - 1), \
+            "head gating must be positional (last stage only)"
+
     def write(self, output_path: Path, model_revision: str,
               contract_sha256: bytes, source_config_sha256: bytes,
               pack_recipe_sha256: bytes, stage_count: int, stage_index: int,
-              first_layer_index: int, layer_count: int, total_layer_count: int):
+              first_layer_index: int, layer_count: int, total_layer_count: int,
+              split: Optional[List[int]] = None):
+        self._verify_split_header(stage_count, stage_index, first_layer_index,
+                                  layer_count, total_layer_count, split)
         entries = [item.entry for item in self.plan]
         tensor_count = len(entries)
         directory_offset = align_up(HEADER_BYTES, ALIGNMENT)
@@ -440,10 +467,18 @@ def main() -> int:
     parser.add_argument("--expert-dir", required=True,
                         help="FP8 checkpoint (routed experts)")
     parser.add_argument("--output", required=True)
-    parser.add_argument("--layer-range", default="0-77",
-                        help="inclusive layer range, e.g. 0-77 or 0-2 (ignored with --stage)")
+    parser.add_argument("--layer-range", default=None,
+                        help="inclusive layer range for a single-stage dev pack, "
+                             "e.g. 0-77 (default 0-77; mutually exclusive with --split)")
+    parser.add_argument("--split", default="",
+                        help="comma-separated per-stage layer counts defining the "
+                             "pipeline grid, e.g. 12,11,11,11,11,11,11; any "
+                             "(stage_count, layers_per_stage) shape, must sum to "
+                             "the model layer count")
     parser.add_argument("--stage", type=int, default=-1,
-                        help="PP13 stage 0-12: layers 6*stage..6*stage+5, globals gated")
+                        help="pipeline stage index k within --split: layers "
+                             "sum(split[:k])..+split[k]-1, embedding gated to "
+                             "stage 0, head to the last stage")
     parser.add_argument("--model-revision", default=SPINE_REVISION)
     parser.add_argument("--stage-count", type=int, default=1)
     parser.add_argument("--stage-index", type=int, default=0)
@@ -461,19 +496,40 @@ def main() -> int:
     stage_index = args.stage_index
     include_embedding = True
     include_head = True
-    if args.stage >= 0:
-        if args.stage >= 13:
-            raise PackFailure(f"--stage must be 0-12, got {args.stage}")
-        first = args.stage * 6
-        last = first + 5
-        stage_count = 13
+    split = None
+    if args.split:
+        if args.layer_range is not None:
+            raise PackFailure("--split and --layer-range are mutually exclusive")
+        try:
+            split = [int(v) for v in args.split.split(",")]
+        except ValueError:
+            raise PackFailure(f"--split must be comma integers, got {args.split!r}")
+        if not split or any(v < 1 for v in split):
+            raise PackFailure(f"--split counts must be >= 1, got {args.split!r}")
+        if sum(split) != contract["layer_count"]:
+            raise PackFailure(
+                f"--split sums to {sum(split)}, want layer_count "
+                f"{contract['layer_count']}")
+        if args.stage < 0:
+            raise PackFailure("--split requires --stage k (0-based)")
+        if args.stage >= len(split):
+            raise PackFailure(f"--stage {args.stage} out of range for split of "
+                              f"{len(split)} stages")
+        stage_count = len(split)
         stage_index = args.stage
-        include_embedding = args.stage == 0
-        include_head = args.stage == 12
+        first = sum(split[:stage_index])
+        last = first + split[stage_index] - 1
+        # Globals gate off position in the grid, never hardcoded indices;
+        # mirrors the loader's owns_embedding/owns_final_head derivation.
+        include_embedding = stage_index == 0
+        include_head = stage_index == len(split) - 1
+    elif args.stage >= 0:
+        raise PackFailure("--stage requires --split (no uniform stage grid exists)")
     else:
-        first, last = (int(v) for v in args.layer_range.split("-"))
+        layer_range = args.layer_range if args.layer_range is not None else "0-77"
+        first, last = (int(v) for v in layer_range.split("-"))
         if last < first or last >= contract["layer_count"]:
-            raise PackFailure(f"bad layer range {args.layer_range}")
+            raise PackFailure(f"bad layer range {layer_range}")
 
     spine = Reader(Path(args.spine_dir))
     experts = Reader(Path(args.expert_dir))
@@ -487,8 +543,8 @@ def main() -> int:
     contract_bytes = (repo_root / "examples" / "model_descriptions" /
                       "glm52_resident_decode_stage_fp8_firmware.json").read_bytes()
     source_config = json.dumps(
-        {"layer_range": f"{first}-{last}", "stage": args.stage,
-         "tp_degree": args.tp_degree, "tp_rank": args.tp_rank,
+        {"layer_range": f"{first}-{last}", "stage": stage_index,
+         "split": split, "tp_degree": args.tp_degree, "tp_rank": args.tp_rank,
          "spine_dir": args.spine_dir, "expert_dir": args.expert_dir},
         sort_keys=True)
     recipe = json.dumps({"tool": "glm52_resident_stagepack.py",
@@ -498,7 +554,7 @@ def main() -> int:
         Path(args.output), args.model_revision,
         sha256_bytes(contract_bytes), sha256_bytes(source_config.encode()),
         sha256_bytes(recipe.encode()), stage_count, stage_index,
-        first, last - first + 1, contract["layer_count"])
+        first, last - first + 1, contract["layer_count"], split=split)
     spine.close()
     experts.close()
     print(f"glm52sp written: {args.output} bytes={file_bytes} "

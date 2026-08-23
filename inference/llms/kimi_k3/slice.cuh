@@ -36,15 +36,16 @@ struct K3LayerWeights
 	const void *attn_norm_weight;
 	const void *mlp_norm_weight;
 
-	// KDA, PACK V2 (docs/K3_PACK_FORMAT_V2.md). The six projections that read
-	// the normed input are TWO tensors: kda_qkv_beta_weight fuses q|k|v|beta
-	// head-major (per-head widths 128/128/128/1), kda_decay_gate_down_weight
-	// fuses decay_down|gate_down replicated across TP. The V1 per-projection
-	// tensors no longer exist in the pack, so they no longer exist here. The
-	// layer derives the section offsets from K3_KDA_*_FUSED_ROWS in
-	// generated_config.h - the constants the packer validates against - and
-	// asserts the tiling at compile time; bind stays pointer arithmetic and
-	// no manifest JSON is parsed anywhere on this path.
+	// KDA, PACK V2 (docs/K3_PACK_FORMAT_V2.md). Of the six projections that
+	// read the normed input, q|k|v|beta ship as ONE fused tensor,
+	// kda_qkv_beta_weight, head-major (per-head widths 128/128/128/1); the
+	// released checkpoint keeps decay_down standalone replicated and the gate
+	// full rank, so neither is fused (docs/K3_GATE_RECONCILIATION.md). The V1
+	// per-projection tensors no longer exist in the pack, so they no longer
+	// exist here. The layer derives the section offsets from
+	// K3_KDA_QKVB_FUSED_ROWS in generated_config.h - the constant the packer
+	// validates against - and asserts the tiling at compile time; bind stays
+	// pointer arithmetic and no manifest JSON is parsed anywhere on this path.
 	const void *kda_qkv_beta_weight;
 	const void *kda_decay_down_weight;
 	const float *kda_q_conv_weight;
@@ -388,7 +389,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		// MLP-side retrieval: the retrieval's partial mix must contain the
 		// post-attention contribution on every rank.
 		if ( state->layer_collective != 0 )
-			state->layer_collective(state->collective_context,stream,layer,0u);
+			state->layer_collective(state->collective_context,(void *)stream,layer,0u);
 		// MLP-side retrieval, over the post-append bank and the post-attention
 		// partial. It runs at layer 0 as well: b_0 is in the bank by then.
 		K3AttnRes(buffers,buffers->attnres_mlp_weight,
@@ -406,14 +407,14 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			 * current 3*hidden host buffer). */
 			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
 			if ( status == LM_LAUNCH_OK && state->layer_collective != 0 )
-				state->layer_collective(state->collective_context,stream,layer,2u);
+				state->layer_collective(state->collective_context,(void *)stream,layer,2u);
 			if ( status == LM_LAUNCH_OK )
 				status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
 		}
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		if ( state->layer_collective != 0 )
-			state->layer_collective(state->collective_context,stream,layer,1u);
+			state->layer_collective(state->collective_context,(void *)stream,layer,1u);
 		// THE DRAFTER READS THE STREAM, AND THE PARTIAL IS THE STREAM. What
 		// flows between blocks under AttnRes is the running partial - the next
 		// block's first act is a retrieval that REPLACES its input - so the

@@ -1001,6 +1001,342 @@ static void TestPressureRejectionAndConsistency(void)
 	printf("pressure-rejection PASS\n");
 }
 
+/* ---- Decode-with-speculation conservation population (hard law) ----
+ *
+ * Permanent gate case per INTEGRATION.md "Completeness matrix" (audit
+ * F3): multi-round decode via AppendTokens/BuildBlockTable crossing at
+ * least two block boundaries per sequence, under mid-block admits and
+ * divergences, with FREE-LIST CONSERVATION asserted after every single
+ * core call: {true free list} U {blocks held by live sequences} U
+ * {cached published blocks with zero references} PARTITIONS the physical
+ * pool (no block in two sets, no block in none - the F1 leak class is a
+ * block in none), and the stats-reported free count equals the true
+ * free-list walk (the F2 class reports outstanding scratch as free).
+ * Runs twice inside this one case: a roomy pool where nothing is ever
+ * released, so the mandated two-set equation {free list} U {live-held}
+ * == pool holds exactly and zero eviction is possible; and a squeezed
+ * pool where retire-and-readmit churn forces LRU eviction mid-script -
+ * evicted > 0 is asserted, not hoped. Ports 2-4: copy this case verbatim
+ * and swap only the geometry numbers.
+ */
+
+#define TEST_SPEC_BLOCK_TOKENS 8u
+#define TEST_SPEC_SLOT_COUNT 3u
+#define TEST_SPEC_ROUND_COUNT 12u
+#define TEST_SPEC_LENGTH_CAP 72u
+#define TEST_SPEC_TABLE_CAPACITY 16u
+#define TEST_SPEC_MAX_POOL 256u
+
+static void TestSpecAssertConservation(
+	SparkPrefixCacheCore *core,
+	uint8_t *classes,
+	uint8_t *holds,
+	int strict_zero_cache)
+{
+	uint32_t index;
+	uint32_t ordinal;
+	uint32_t next;
+	uint32_t free_walked;
+	uint32_t live_held;
+	uint32_t cached_count;
+	SparkPrefixCacheCoreStats stats;
+	memset(classes, 0, core->block_count);
+	memset(holds, 0, core->block_count);
+	free_walked = 0u;
+	next = core->free_block_head;
+	while (next != SPARK_PREFIX_CACHE_CORE_NO_BLOCK)
+	{
+		assert(next < core->block_count);
+		/* A repeat visit means a double-return or a cycle. */
+		assert(classes[next] == 0u);
+		classes[next] = 1u;
+		free_walked++;
+		next = core->blocks[next].free_next;
+	}
+	live_held = 0u;
+	for (index = 0u; index < core->max_sequence_count; index++)
+	{
+		if (core->sequences[index].used == 0u)
+		{
+			continue;
+		}
+		for (ordinal = 0u; ordinal < core->sequences[index].block_count;
+		     ordinal++)
+		{
+			next = core->sequences[index].blocks[ordinal];
+			assert(next < core->block_count);
+			/* A live-held block must never ALSO sit on the free
+			 * list - that is accounting corruption. Sharing by
+			 * several live sequences IS legal: counted once here,
+			 * cross-checked against reference_count below. */
+			assert(classes[next] != 1u);
+			if (classes[next] == 0u)
+			{
+				classes[next] = 2u;
+				live_held++;
+			}
+			holds[next]++;
+		}
+	}
+	cached_count = 0u;
+	for (index = 0u; index < core->block_count; index++)
+	{
+		if (classes[index] == 2u)
+		{
+			/* Every reference is owned by exactly one holding
+			 * sequence slot: no leaked or phantom references. */
+			assert(holds[index] ==
+			       core->blocks[index].reference_count);
+			continue;
+		}
+		if (classes[index] != 0u)
+		{
+			continue;
+		}
+		/* The only legal way to be reachable from neither the free
+		 * list nor a live sequence is the finished-sequence cache:
+		 * published, zero references, LRU-evictable. Anything else
+		 * here is an orphaned block (the F1 class). */
+		assert(core->blocks[index].state ==
+		       SPARK_PREFIX_CACHE_CORE_BLOCK_PUBLISHED);
+		assert(core->blocks[index].reference_count == 0u);
+		classes[index] = 3u;
+		cached_count++;
+	}
+	SparkPrefixCacheCoreQueryStats(core, &stats);
+	/* The reported counter must match the true walk - never count
+	 * outstanding scratch as free (the F2 class). */
+	assert(stats.free_block_count == free_walked);
+	if (strict_zero_cache)
+	{
+		assert(cached_count == 0u);
+	}
+	assert(free_walked + live_held + cached_count == core->block_count);
+}
+
+static void TestSpecRunPopulation(
+	uint32_t pool_blocks,
+	int churn,
+	const char *label)
+{
+	SparkPrefixCacheCore core;
+	SparkPrefixCacheCoreConfiguration configuration;
+	SparkPrefixCacheCoreStats stats;
+	uint8_t classes[TEST_SPEC_MAX_POOL];
+	uint8_t holds[TEST_SPEC_MAX_POOL];
+	uint32_t prompt[TEST_SPEC_LENGTH_CAP];
+	uint32_t canon[TEST_SPEC_SLOT_COUNT][TEST_SPEC_LENGTH_CAP];
+	uint32_t canon_length[TEST_SPEC_SLOT_COUNT];
+	uint32_t draft[8u];
+	uint32_t table[TEST_SPEC_TABLE_CAPACITY];
+	uint32_t table_count;
+	uint8_t live[TEST_SPEC_SLOT_COUNT];
+	uint32_t round;
+	uint32_t slot;
+	uint32_t victim;
+	uint32_t position;
+	uint32_t draft_count;
+	uint32_t take_length;
+	uint32_t matched;
+	uint32_t trim_evicted;
+	uint32_t peak_blocks;
+	uint64_t seed = 0x2545f4914f6cdd1dull;
+	assert(pool_blocks <= TEST_SPEC_MAX_POOL);
+	memset(&configuration, 0, sizeof(configuration));
+	configuration.abi_version = SPARK_PREFIX_CACHE_CORE_ABI_VERSION;
+	configuration.descriptor_bytes =
+	    SPARK_PREFIX_CACHE_CORE_CONFIGURATION_DESCRIPTOR_BYTES;
+	configuration.block_token_count = TEST_SPEC_BLOCK_TOKENS;
+	configuration.block_stride_bytes = TEST_BLOCK_STRIDE_BYTES;
+	configuration.block_count = pool_blocks;
+	configuration.max_sequence_count = TEST_SPEC_SLOT_COUNT;
+	configuration.sequence_block_capacity = TEST_SPEC_TABLE_CAPACITY;
+	configuration.hash_bucket_count = TestNextPow2(pool_blocks) * 2u;
+	assert(SparkPrefixCacheCoreInitialize(&core, &configuration) ==
+	       SPARK_STATUS_OK);
+	memset(canon_length, 0, sizeof(canon_length));
+	memset(live, 0, sizeof(live));
+	peak_blocks = 0u;
+	for (round = 0u; round < TEST_SPEC_ROUND_COUNT; round++)
+	{
+		/* Slot 0 admits cold at round 0; slot 1 shares its first
+		 * eleven tokens then DIVERGES INSIDE BLOCK ONE (mid-block
+		 * admit: exactly one full block matches); slot 2 joins at
+		 * round 3 sharing fifteen tokens of slot 0's prompt - again
+		 * matched_tokens stops at the last FULL block. */
+		if (round == 0u || round == 3u)
+		{
+			slot = round == 0u ? 0u : 2u;
+			for (position = 0u; position < 20u; position++)
+			{
+				if (position < 15u)
+				{
+					prompt[position] = TestContinuationToken(
+					    seed, 0u, 0u, position);
+				}
+				else
+				{
+					prompt[position] = TestContinuationToken(
+					    seed ^ 0x77ull, slot, 0u, position);
+				}
+			}
+			memcpy(canon[slot], prompt, 20u * sizeof(uint32_t));
+			assert(SparkPrefixCacheCoreAdmitSequence(
+			    &core, slot + 1u, prompt, 20u, &matched) ==
+			       SPARK_STATUS_OK);
+			if (slot == 2u && !churn)
+			{
+				assert(matched == 8u);
+			}
+			assert(matched % TEST_SPEC_BLOCK_TOKENS == 0u);
+			assert(matched <= 20u);
+			canon_length[slot] = 20u;
+			live[slot] = 1u;
+			TestSpecAssertConservation(&core, classes, holds, !churn);
+		}
+		if (round == 0u)
+		{
+			/* Slot 1: same first block as slot 0, divergent tail
+			 * from token 11 on - private continuation. */
+			for (position = 0u; position < 20u; position++)
+			{
+				prompt[position] = position < 11u ?
+				    canon[0][position] :
+				    TestContinuationToken(seed ^ 0xeeull, 1u,
+				        0u, position);
+			}
+			memcpy(canon[1], prompt, 20u * sizeof(uint32_t));
+			assert(SparkPrefixCacheCoreAdmitSequence(
+			    &core, 2u, prompt, 20u, &matched) ==
+			       SPARK_STATUS_OK);
+			if (!churn)
+			{
+				assert(matched == 8u);
+			}
+			canon_length[1] = 20u;
+			live[1] = 1u;
+			TestSpecAssertConservation(&core, classes, holds, !churn);
+		}
+		/* Speculative decode rounds: each step appends a multi-token
+		 * DRAFT burst (2..5) per live sequence - the accepted-token
+		 * shape of speculation - so open blocks fill and publish
+		 * across block boundaries every two-ish rounds. */
+		for (slot = 0u; slot < TEST_SPEC_SLOT_COUNT; slot++)
+		{
+			if (live[slot] == 0u)
+			{
+				continue;
+			}
+			draft_count = 2u + ((round + slot) % 4u);
+			if (canon_length[slot] + draft_count >
+			    TEST_SPEC_LENGTH_CAP)
+			{
+				draft_count =
+				    TEST_SPEC_LENGTH_CAP - canon_length[slot];
+			}
+			if (draft_count != 0u)
+			{
+				for (position = 0u; position < draft_count;
+				     position++)
+				{
+					draft[position] = TestContinuationToken(
+					    seed ^ 0xa11ceull, slot, 0u,
+					    canon_length[slot] + position);
+				}
+				assert(SparkPrefixCacheCoreAppendTokens(
+				    &core, slot + 1u, draft, draft_count) ==
+				       SPARK_STATUS_OK);
+				memcpy(canon[slot] + canon_length[slot], draft,
+				    draft_count * sizeof(uint32_t));
+				canon_length[slot] += draft_count;
+				TestSpecAssertConservation(
+				    &core, classes, holds, !churn);
+			}
+			assert(SparkPrefixCacheCoreSequenceTokenCount(
+			           &core, slot + 1u) == canon_length[slot]);
+			assert(SparkPrefixCacheCoreBuildBlockTable(
+			    &core, slot + 1u, canon_length[slot], table,
+			    TEST_SPEC_TABLE_CAPACITY, &table_count) ==
+			       SPARK_STATUS_OK);
+			assert(table_count ==
+			       (canon_length[slot] + TEST_SPEC_BLOCK_TOKENS -
+			           1u) /
+			           TEST_SPEC_BLOCK_TOKENS);
+			if (table_count > peak_blocks)
+			{
+				peak_blocks = table_count;
+			}
+		}
+		/* Squeezed variant only: retire one sequence mid-population
+		 * and re-admit it from a TRUNCATED canonical prefix (21
+		 * tokens - not a block multiple - so the readmit is itself
+		 * a mid-block admit against whatever cache survived). This
+		 * churn is what pushes finished blocks through LRU eviction
+		 * while neighbours stay live. A real driver trims for
+		 * headroom; so does this script. */
+		if (churn && round >= 2u && round % 3u == 2u)
+		{
+			victim = round % TEST_SPEC_SLOT_COUNT;
+			if (live[victim] != 0u)
+			{
+				assert(SparkPrefixCacheCoreReleaseSequence(
+				    &core, victim + 1u) == SPARK_STATUS_OK);
+				live[victim] = 0u;
+				TestSpecAssertConservation(&core, classes, holds, 0);
+				take_length = canon_length[victim] > 21u ?
+				    21u : canon_length[victim];
+				assert(SparkPrefixCacheCoreAdmitSequence(
+				    &core, victim + 1u, canon[victim],
+				    take_length, &matched) == SPARK_STATUS_OK);
+				assert(matched % TEST_SPEC_BLOCK_TOKENS == 0u);
+				assert(matched <= take_length);
+				canon_length[victim] = take_length;
+				live[victim] = 1u;
+				assert(SparkPrefixCacheCoreTrim(
+				    &core, 2u, &trim_evicted) ==
+				       SPARK_STATUS_OK);
+				TestSpecAssertConservation(
+				    &core, classes, holds, 0);
+			}
+		}
+	}
+	/* Mandate: at least two block-boundary crossings were exercised -
+	 * a sequence must have grown past three blocks. */
+	assert(peak_blocks >= 3u);
+	SparkPrefixCacheCoreQueryStats(&core, &stats);
+	if (!churn)
+	{
+		/* Roomy pool, no releases: strict equation, zero eviction. */
+		assert(core.evicted_block_count == 0ull);
+		for (slot = 0u; slot < TEST_SPEC_SLOT_COUNT; slot++)
+		{
+			assert(live[slot] != 0u);
+		}
+	}
+	else
+	{
+		/* Pressure was real: eviction fired inside this case. */
+		assert(core.evicted_block_count > 0ull);
+	}
+	printf("spec-conservation %-8s PASS pool=%u peak_blocks=%u "
+	       "evicted=%" PRIu64 "\n",
+	    label, pool_blocks, peak_blocks, core.evicted_block_count);
+	SparkPrefixCacheCoreDestroy(&core);
+}
+
+static void TestDecodeWithSpeculationConservation(void)
+{
+	/* Roomy: nothing released, so {free list} U {live-held} == pool
+	 * must hold EXACTLY every step. Squeezed: release/readmit churn
+	 * under a pool that cannot hold the accumulated cache, so LRU
+	 * eviction fires mid-population and the three-set partition is
+	 * what conserves. Same case, both variants, as the law requires. */
+	TestSpecRunPopulation(64u, 0, "roomy");
+	TestSpecRunPopulation(30u, 1, "squeezed");
+	printf("decode-with-speculation-conservation PASS\n");
+}
+
+
 
 int main(void)
 {
@@ -1015,6 +1351,7 @@ int main(void)
 	TestReleaseRematch();
 	TestEvictionLruOrder();
 	TestPressureRejectionAndConsistency();
+	TestDecodeWithSpeculationConservation();
 	row_checks = 0ull;
 	digest_checks = 0ull;
 	for (index = 0u; index < sizeof(batches) / sizeof(batches[0]); index++)

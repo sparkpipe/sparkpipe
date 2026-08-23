@@ -10,6 +10,10 @@
 #include "sparkpipe/spark_model_serving_adapter.h"
 #include "sparkpipe/spark_qwen36_model.h"
 #include "sparkpipe/spark_qwen36_resident_decode_stage_firmware.h"
+/* Compiled in for the F1 conservation case (audit F3): the gate drives
+ * the paged-KV unit directly, at the adapter's exact per-round call
+ * pattern, and asserts free-list conservation after EVERY step. */
+#include "spark_qwen36_paged_kv.h"
 
 #ifndef TEST_QWEN36_SERVING_ADAPTER_PATH
 #define TEST_QWEN36_SERVING_ADAPTER_PATH ""
@@ -47,6 +51,19 @@
  *      snapshot state crossing lanes - resume frames name their OWN lane
  *      slot, and checkpoint slots are per-boundary, never shared between
  *      sequences within a round.
+ *   7. DECODE work with speculation (audit F3): multi-round B1 spec
+ *      residency over the paged KV - per round Cover(end=pos+1) plus the
+ *      speculative extension Cover(end=pos+D+2) - across two resident
+ *      lanes and block-boundary crossings. The lane's attached block row
+ *      must be STABLE across rounds (scratch persistence): a round that
+ *      re-borrows over slots still naming last round's scratch is the F1
+ *      orphaning mechanism and fails here.
+ *   8. F1 free-list conservation as a permanent unit-level case: driving
+ *      spark_qwen36_paged_kv.c directly (the audit-probe pattern),
+ *      {core free list} U {lane rows} U {live sequences} U {core LRU}
+ *      == pool with free-list disjointness and row hygiene after EVERY
+ *      Cover call, >64 simulated B1 rounds crossing >=2 block boundaries,
+ *      reuse ON and OFF, plus conserving teardown.
  */
 
 #define GATE_CAPTURE_ROWS 32u
@@ -181,6 +198,63 @@ static SparkStatus GatePrefill(void *adapter_state, GateState *test_state,
 	return(adapter_interface_global->submit(adapter_state,&submission));
 }
 
+/* One single-lane DECODE submission: one row at `position` carrying the
+ * previously accepted token id, OUTPUT_TOKEN set - the B1 shape the
+ * speculative path requires. */
+static SparkStatus GateDecode(void *adapter_state, GateState *test_state,
+	uint32_t slot, uint64_t sequence_id, uint64_t position,
+	uint32_t token_id, uint64_t submission_id)
+{
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lane;
+	uint32_t token_buffer;
+	uint32_t row_lane;
+	uint64_t row_position,row_sequence;
+	memset(&submission,0,sizeof(submission));
+	memset(&lane,0,sizeof(lane));
+	token_buffer = token_id;
+	row_lane = 0u;
+	row_position = position;
+	row_sequence = sequence_id;
+	lane.sequence_id = sequence_id;
+	lane.sequence_position = position;
+	lane.request_id = submission_id + 1000u;
+	lane.request_generation = 1u;
+	lane.step_generation = 1u;
+	lane.resident_sequence_slot = slot;
+	lane.context_token_count = position + 1u;
+	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.tokens_per_sequence = 1u;
+	submission.submission_id = submission_id;
+	submission.request_id = submission_id + 1000u;
+	submission.sequence_id = sequence_id;
+	submission.sequence_position = position;
+	submission.control_generation = 1u;
+	submission.transaction_id = submission_id + 2000u;
+	submission.dispatch_generation = submission_id + 3000u;
+	submission.request_generation = 1u;
+	submission.step_generation = 1u;
+	submission.residency.word0 = submission_id;
+	submission.residency.word1 = 178u;
+	submission.residency.generation = 277u;
+	submission.residency.owner = 13u;
+	submission.active_sequence_count = 1u;
+	submission.new_token_count = 1u;
+	submission.lane_count = 1u;
+	submission.row_count = 1u;
+	submission.token_count = 1u;
+	submission.lanes = &lane;
+	submission.token_ids = &token_buffer;
+	submission.row_positions = &row_position;
+	submission.row_lane_indices = &row_lane;
+	submission.row_sequence_ids = &row_sequence;
+	test_state->completion_count = 0u;
+	return(adapter_interface_global->submit(adapter_state,&submission));
+}
+
 
 /* Walk the records [from,to): assert the lane walked EXACTLY positions
  * [expected_start,length) with the expected tokens, and return the number
@@ -234,6 +308,300 @@ static uint32_t GateAssertWalk(const char *label, uint32_t from, uint32_t to,
 			assert(first->blocks[block] == donor_tail->blocks[block]);
 	}
 	return(resume_count);
+}
+
+/* ---- CASE 8 support: F1 free-list conservation, unit level ----
+ * Direct host-level driver of spark_qwen36_paged_kv.c (the audit-probe
+ * pattern), simulating the adapter's exact per-round B1 speculative
+ * decode call pattern: Cover(end = pos + 1) for the plain decode row,
+ * then Cover(end = pos + D + 2) for the speculative extension, with NO
+ * canonical tokens entering while scratch is outstanding and NO
+ * LaneReset between rounds of a continuing residency.
+ *
+ * Invariant asserted after EVERY Cover call:
+ *   {core free list} U {lane rows} U {live sequences} U {core LRU}
+ *   == pool
+ * with the free list disjoint from the in-use sets and row slots at
+ * ordinals >= counts_by_lane[lane] required to be NO_BLOCK. The F1 bug
+ * (SyncRow discarding outstanding-scratch records) orphans borrowed
+ * blocks - unreachable from every record - and/or leaves stale blocks
+ * in row slots beyond counts; both fail here. */
+
+#define F1_LANES 2u
+#define F1_BLOCKS_PER_LANE 32u
+#define F1_POOL 64u
+#define F1_BLOCK_TOKENS 64u
+/* >64 rounds; coverage crosses block boundaries twice (rounds ~56 and
+ * ~120 with the 130-token prompt). */
+#define F1_ROUNDS 140u
+
+static uint32_t f1_table[F1_LANES * F1_BLOCKS_PER_LANE];
+static uint32_t f1_counts[F1_LANES];
+
+static void F1Fill(uint32_t *tokens, uint32_t base, uint32_t count)
+{
+	uint32_t i;
+	for (i=0u; i<count; i++)
+		tokens[i] = base + i * 7u + 1u;
+}
+
+/* Returns the number of pool blocks unreachable from every record
+ * (orphans); POOL on the first hygiene violation. */
+static uint32_t F1ConservationCheck(const SparkQwen36PagedKv *cache,
+	const char *where, uint32_t step)
+{
+	int8_t in_free[F1_POOL],in_use[F1_POOL];
+	uint32_t i,ordinal,next,orphans;
+	memset(in_free,0,sizeof(in_free));
+	memset(in_use,0,sizeof(in_use));
+	next = cache->core.free_block_head;
+	while (next != SPARK_PREFIX_CACHE_CORE_NO_BLOCK)
+	{
+		assert(next < F1_POOL);
+		in_free[next] = 1;
+		next = cache->core.blocks[next].free_next;
+	}
+	/* Detached published blocks sit on the LRU (Trim recovers them). */
+	next = cache->core.lru_head;
+	while (next != SPARK_PREFIX_CACHE_CORE_NO_BLOCK)
+	{
+		assert(next < F1_POOL);
+		in_use[next] = 1;
+		next = cache->core.blocks[next].lru_next;
+	}
+	for (i=0u; i<F1_LANES; i++)
+		for (ordinal=0u; ordinal<F1_BLOCKS_PER_LANE; ordinal++)
+		{
+			uint32_t block = f1_table[i * F1_BLOCKS_PER_LANE + ordinal];
+			if ( ordinal >= f1_counts[i] )
+			{
+				if ( block != SPARK_QWEN36_PAGED_KV_NO_BLOCK )
+				{
+					fprintf(stderr,"F1FAIL[%s step %u]: lane %u ordinal %u >= count %u holds block %u (row hygiene)\n",
+						where,step,i,ordinal,f1_counts[i],block);
+					return(F1_POOL);
+				}
+				continue;
+			}
+			assert(block != SPARK_QWEN36_PAGED_KV_NO_BLOCK && block < F1_POOL);
+			in_use[block] = 1;
+		}
+	for (i=0u; i<cache->core.max_sequence_count; i++)
+	{
+		const SparkPrefixCacheCoreSequence *sequence =
+			&cache->core.sequences[i];
+		if ( sequence->used == 0u )
+			continue;
+		for (ordinal=0u; ordinal<sequence->block_count; ordinal++)
+		{
+			uint32_t block = cache->core.sequence_blocks[
+				i * cache->core.sequence_block_capacity + ordinal];
+			assert(block < F1_POOL);
+			in_use[block] = 1;
+		}
+	}
+	orphans = 0u;
+	for (i=0u; i<F1_POOL; i++)
+	{
+		if ( in_free[i] != 0 && in_use[i] != 0 )
+		{
+			fprintf(stderr,"F1FAIL[%s step %u]: block %u on free list AND in use\n",
+				where,step,i);
+			return(F1_POOL);
+		}
+		if ( in_free[i] == 0 && in_use[i] == 0 )
+			orphans++;
+	}
+	if ( orphans != 0u )
+		fprintf(stderr,"F1FAIL[%s step %u]: %u orphaned blocks\n",
+			where,step,orphans);
+	return(orphans);
+}
+
+/* Shared paged-Kv fixture setup for every unit-level scenario (F1/F2):
+ * zeroed configuration + geometry, row slots pre-filled NO_BLOCK and
+ * counts zeroed. One place to change when the fixture shape moves - the
+ * ports are told to copy these cases verbatim, so keep them DRY. */
+static void GatePagedKvFixture(SparkQwen36PagedKvConfiguration *configuration,
+	uint32_t *table,uint32_t *counts,uint32_t lane_count,
+	uint32_t blocks_per_lane,uint32_t pool,uint32_t block_tokens,
+	uint32_t checkpoint_slots)
+{
+	memset(configuration,0,sizeof(*configuration));
+	configuration->block_token_count = block_tokens;
+	configuration->lane_count = lane_count;
+	configuration->blocks_per_lane = blocks_per_lane;
+	configuration->physical_page_capacity = pool;
+	configuration->logical_page_capacity = pool;
+	configuration->checkpoint_slot_count = checkpoint_slots;
+	configuration->block_stride_bytes = 4096u;
+	memset(table,0xFF,(size_t)lane_count * blocks_per_lane *
+		sizeof(table[0]));
+	memset(counts,0,(size_t)lane_count * sizeof(counts[0]));
+}
+
+static int F1ScenarioReuseOn(void)
+{
+	SparkQwen36PagedKv cache;
+	SparkQwen36PagedKvConfiguration configuration;
+	SparkQwen36PagedKvMatch match;
+	uint32_t prompt[256],i,worst_counts;
+	SparkStatus status;
+	GatePagedKvFixture(&configuration,f1_table,f1_counts,F1_LANES,
+		F1_BLOCKS_PER_LANE,F1_POOL,F1_BLOCK_TOKENS,4u);
+	assert(SparkQwen36PagedKvInitialize(&cache,&configuration,f1_table,
+		f1_counts) == SPARK_STATUS_OK);
+	F1Fill(prompt,10000u,130u); /* 130 tokens: 2 full blocks + 1 open */
+	status = SparkQwen36PagedKvAdmit(&cache,0u,prompt,130u,&match);
+	assert(status == SPARK_STATUS_OK);
+	assert(F1ConservationCheck(&cache,"A/admit",0u) == 0u);
+	worst_counts = f1_counts[0];
+	for (i=0u; i<F1_ROUNDS; i++)
+	{
+		/* Accepted tokens advance the row; D=4 draft depth. */
+		uint64_t pos = 131ull + i;
+		status = SparkQwen36PagedKvCover(&cache,0u,pos + 1u,0,0);
+		assert(status == SPARK_STATUS_OK);
+		assert(F1ConservationCheck(&cache,"A/pre",i) == 0u);
+		status = SparkQwen36PagedKvCover(&cache,0u,pos + 6u,0,0);
+		assert(status == SPARK_STATUS_OK);
+		assert(F1ConservationCheck(&cache,"A/spec",i) == 0u);
+		if ( f1_counts[0] > worst_counts )
+			worst_counts = f1_counts[0];
+	}
+	printf("f1_conservation reuse-on: %u rounds, max attached=%u, final free=%u\n",
+		F1_ROUNDS,worst_counts,SparkQwen36PagedKvFreeBlocks(&cache));
+	/* Teardown must return every outstanding scratch block. */
+	SparkQwen36PagedKvLaneReset(&cache,0u);
+	assert(F1ConservationCheck(&cache,"A/reset",F1_ROUNDS) == 0u);
+	SparkQwen36PagedKvDestroy(&cache);
+	return(0);
+}
+
+static int F1ScenarioReuseOff(void)
+{
+	SparkQwen36PagedKv cache;
+	SparkQwen36PagedKvConfiguration configuration;
+	uint32_t prompt[256],i,worst_counts;
+	SparkStatus status;
+	GatePagedKvFixture(&configuration,f1_table,f1_counts,F1_LANES,
+		F1_BLOCKS_PER_LANE,F1_POOL,F1_BLOCK_TOKENS,0u);
+	assert(SparkQwen36PagedKvInitialize(&cache,&configuration,f1_table,
+		f1_counts) == SPARK_STATUS_OK);
+	F1Fill(prompt,20000u,70u);
+	/* Reuse-off admits bind no sequence: the lane runs pure scratch. */
+	status = SparkQwen36PagedKvAdmit(&cache,0u,prompt,70u,0);
+	assert(status == SPARK_STATUS_OK);
+	worst_counts = f1_counts[0];
+	for (i=0u; i<F1_ROUNDS; i++)
+	{
+		uint64_t pos = 71ull + i;
+		status = SparkQwen36PagedKvCover(&cache,0u,pos + 1u,0,0);
+		assert(status == SPARK_STATUS_OK);
+		assert(F1ConservationCheck(&cache,"B/cover",i) == 0u);
+		if ( f1_counts[0] > worst_counts )
+			worst_counts = f1_counts[0];
+	}
+	printf("f1_conservation reuse-off: %u rounds, max attached=%u, final free=%u\n",
+		F1_ROUNDS,worst_counts,SparkQwen36PagedKvFreeBlocks(&cache));
+	SparkQwen36PagedKvDestroy(&cache);
+	return(0);
+}
+
+/* ---- CASE 9 support: F2 feasibility accounting ----
+ * The F2 bug: ScratchBorrow popped the core free list but left
+ * state = BLOCK_FREE, so SparkQwen36PagedKvFreeBlocks() counted in-use
+ * scratch as free and the spec-coverage feasibility check
+ * (ExtendSpeculativeCoverage) passed when the pool had no room - the
+ * refusal then surfaced as a MID-COVERAGE CAPACITY_EXCEEDED from Cover
+ * instead of a clean up-front fall-back to plain batched decode. Worst
+ * on the reuse-OFF path where every attached block is scratch.
+ *
+ * Exhaustion-shaped unit scenario mirroring the adapter's exact
+ * two-phase contract: compute the growth a lane needs, compare it to
+ * FreeBlocks() BEFORE any borrow, and only then Cover. Guarantees:
+ *   1. accounting - FreeBlocks() + blocks held by lanes == pool at
+ *      every step (no phantom-free),
+ *   2. ordering - whenever the feasibility check passes, Cover MUST
+ *      succeed; whenever it refuses, no Cover is attempted. A
+ *      mid-coverage CAPACITY_EXCEEDED after a passing check is the F2
+ *      failure mode and fails here. */
+
+#define F2_POOL 12u
+#define F2_LANES 2u
+#define F2_BLOCKS_PER_LANE 16u
+#define F2_BLOCK_TOKENS 64u
+
+static uint32_t f2_table[F2_LANES * F2_BLOCKS_PER_LANE];
+static uint32_t f2_counts[F2_LANES];
+
+static int F2ScenarioFeasibility(void)
+{
+	SparkQwen36PagedKv cache;
+	SparkQwen36PagedKvConfiguration configuration;
+	uint32_t prompt[128],i,free_now,needed;
+	SparkStatus status;
+	GatePagedKvFixture(&configuration,f2_table,f2_counts,F2_LANES,
+		F2_BLOCKS_PER_LANE,F2_POOL,F2_BLOCK_TOKENS,0u);
+	assert(SparkQwen36PagedKvInitialize(&cache,&configuration,f2_table,
+		f2_counts) == SPARK_STATUS_OK);
+	for (i=0u; i<128u; i++)
+		prompt[i] = 40000u + i * 3u;
+	status = SparkQwen36PagedKvAdmit(&cache,0u,prompt,64u,0);
+	assert(status == SPARK_STATUS_OK);
+	/* Phase 1: drain the pool down to 2 free blocks through lane 0. */
+	for (i=1u; i<=10u; i++)
+	{
+		status = SparkQwen36PagedKvCover(&cache,0u,
+			(uint64_t)i * F2_BLOCK_TOKENS,0,0);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"F2FAIL: phase-1 Cover(end=%u) failed: %d\n",
+				i * F2_BLOCK_TOKENS,(int)status);
+			return(1);
+		}
+		free_now = SparkQwen36PagedKvFreeBlocks(&cache);
+		if ( free_now + f2_counts[0] != F2_POOL )
+		{
+			fprintf(stderr,"F2FAIL: phantom-free after end=%u: free=%u + attached=%u != pool=%u\n",
+				i * F2_BLOCK_TOKENS,free_now,f2_counts[0],
+				F2_POOL);
+			return(1);
+		}
+	}
+	assert(f2_counts[0] == 10u);
+	/* Phase 2: adapter-shaped decision for a lane-1 extension needing 5
+	 * blocks with only 2 truly free. */
+	free_now = SparkQwen36PagedKvFreeBlocks(&cache);
+	needed = 5u - f2_counts[1];
+	if ( needed > free_now )
+	{
+		printf("f2_feasibility: refused UP FRONT (need %u, free %u) before any Cover\n",
+			needed,free_now);
+	}
+	else
+	{
+		status = SparkQwen36PagedKvCover(&cache,1u,
+			5ull * F2_BLOCK_TOKENS,0,0);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"F2FAIL: feasibility PASSED (%u free reported) yet Cover failed mid-coverage: %d\n",
+				free_now,(int)status);
+			return(1);
+		}
+	}
+	/* Phase 3: teardown must still conserve every block. */
+	SparkQwen36PagedKvLaneReset(&cache,0u);
+	SparkQwen36PagedKvLaneReset(&cache,1u);
+	free_now = SparkQwen36PagedKvFreeBlocks(&cache);
+	if ( free_now != F2_POOL )
+	{
+		fprintf(stderr,"F2FAIL: teardown lost blocks: free=%u != pool=%u\n",
+			free_now,F2_POOL);
+		return(1);
+	}
+	SparkQwen36PagedKvDestroy(&cache);
+	return(0);
 }
 int main(void)
 {
@@ -536,6 +904,129 @@ int main(void)
 		adapter_state = 0;
 		assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_SCHEMA_ERROR);
 		assert(adapter_state == 0);
+
+		/* ---------- CASE 6: DECODE work with speculation ----------
+		 * Two resident lanes, many rounds of B1 speculative decode
+		 * alternating between them: each round covers the plain row
+		 * (end = pos + 1) AND the speculative extension
+		 * (end = pos + D + 2) with no canonical tokens entering while
+		 * scratch is outstanding. Assertions per round:
+		 *   - the submission completes (no mid-coverage CAPACITY_
+		 *     EXCEEDED surfacing as a dropped submission),
+		 *   - every frame the adapter built for the lane carries a block
+		 *     table row that only ever GROWS, never churns: blocks still
+		 *     attached at round N-1 are still attached - unchanged - at
+		 *     round N. A re-borrow over slots naming last round's scratch
+		 *     is the F1 orphaning mechanism.
+		 * The prompt length (126) puts the first boundary crossing inside
+		 * round zero and the second (~192) inside round ~126, so scratch
+		 * is outstanding across >64 rounds and >=2 crossings. */
+		setenv("SPARK_QWEN36_SERVING_PREFIX_CACHE","1",1);
+		setenv("SPARK_QWEN36_SERVING_SPECULATE","1",1);
+		GateConfiguration(&configuration,TEST_QWEN36_SERVING_CONFIG_PATH,runtime_root,&test_state,4u,4u,128u,128u);
+		adapter_state = 0;
+		assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
+		assert(gate_kv_blocks() == 128u); /* 2 lanes x 64 blocks */
+		gate_record_reset();
+		{
+			uint32_t prompt_e[GATE_MAX_ROWS],prompt_f[GATE_MAX_ROWS];
+			uint32_t blocks_e[GATE_CAPTURE_ROWS],blocks_f[GATE_CAPTURE_ROWS];
+			uint32_t count_e,count_f,round,record;
+			count_e = UINT32_MAX;
+			count_f = UINT32_MAX;
+			for (row=0u; row<126u; row++)
+			{
+				prompt_e[row] = 30000u + row * 5u;
+				prompt_f[row] = 31000u + row * 5u;
+			}
+			assert(GatePrefill(adapter_state,&test_state,1u,6001u,prompt_e,126u,1500u) == SPARK_STATUS_OK);
+			{
+				SparkStatus gate_status = GatePrefill(adapter_state,&test_state,2u,6002u,prompt_f,126u,1501u);
+				if ( gate_status != SPARK_STATUS_OK )
+					fprintf(stderr,"case6_prefill_F_status=%d\n",(int)gate_status);
+				assert(gate_status == SPARK_STATUS_OK);
+			}
+			/* Snapshot each lane's post-prefill block row: the LAST
+			 * record naming that lane's slot (the ring interleaves the
+			 * two lanes' frame sequences). */
+			for (record=gate_record_count(); record>0u; record--)
+			{
+				const GateFrameRecord *frame =
+					gate_record_get(record - 1u);
+				if ( count_e == UINT32_MAX && frame->lane_index == 1u )
+				{
+					count_e = frame->block_count;
+					memcpy(blocks_e,frame->blocks,sizeof(blocks_e));
+				}
+				if ( count_f == UINT32_MAX && frame->lane_index == 2u )
+				{
+					count_f = frame->block_count;
+					memcpy(blocks_f,frame->blocks,sizeof(blocks_f));
+				}
+			}
+			assert(count_e == 2u && count_f == 2u); /* ceil(126/64) */
+			for (round=0u; round<140u; round++)
+			{
+				uint32_t slot = round % 2u != 0u ? 1u : 2u;
+				uint32_t *blocks = slot == 1u ? blocks_e : blocks_f;
+				uint32_t *count = slot == 1u ? &count_e : &count_f;
+				uint64_t position = 126ull + (uint64_t)(round / 2u);
+				uint32_t seen_tail = 0u;
+				assert(GateDecode(adapter_state,&test_state,slot,
+					slot == 1u ? 6001u : 6002u,position,
+					8000u + round,1600u + round) == SPARK_STATUS_OK);
+				assert(test_state.completion_count == 1u);
+				/* The LAST record of this round names the lane's final
+				 * block-table row for the round. */
+				for (record=gate_record_count(); record>0u; record--)
+				{
+					const GateFrameRecord *frame =
+						gate_record_get(record - 1u);
+					if ( frame->lane_index != slot )
+						continue;
+					assert(frame->block_count >= *count);
+					for (row=0u; row<*count && row<frame->block_count &&
+						row<GATE_CAPTURE_ROWS; row++)
+						if ( frame->blocks[row] != blocks[row] )
+						{
+							fprintf(stderr,"case6_churn round=%u slot=%u ordinal=%u prev=%u now=%u prev_count=%u now_count=%u\n",
+								round,slot,row,blocks[row],
+								frame->blocks[row],*count,
+								frame->block_count);
+							assert(frame->blocks[row] == blocks[row]);
+						}
+					*count = frame->block_count;
+					for (row=0u; row<*count && row<GATE_CAPTURE_ROWS; row++)
+						blocks[row] = frame->blocks[row];
+					seen_tail++;
+					break;
+				}
+				assert(seen_tail == 1u);
+			}
+			/* Both lanes crossed into a fourth block while speculating
+			 * (end positions past 192): the boundary crossings happened
+			 * under outstanding scratch, not around it. */
+			assert(count_e >= 4u && count_f >= 4u);
+			printf("spec_decode ok=%u rounds, lane rows grown to %u/%u blocks\n",
+				140u,count_e,count_f);
+		}
+		assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
+		library.adapter_interface.destroy(adapter_state);
+		unsetenv("SPARK_QWEN36_SERVING_SPECULATE");
+
+		/* ---------- CASE 8: F1 free-list conservation ----------
+		 * The audit-probe pattern, permanent: drive the paged-KV unit
+		 * through >64 simulated B1 speculative rounds (crossing >=2 block
+		 * boundaries) and hold {free list} U {lane rows} U {live
+		 * sequences} U {core LRU} == pool after EVERY Cover call, reuse
+		 * ON and OFF, teardown included. */
+		assert(F1ScenarioReuseOn() == 0);
+		assert(F1ScenarioReuseOff() == 0);
+		printf("f1_conservation PASS\n");
+
+		/* ---------- CASE 9: F2 feasibility accounting ---------- */
+		assert(F2ScenarioFeasibility() == 0);
+		printf("f2_feasibility PASS\n");
 	}
 	assert(cudaStreamDestroy((cudaStream_t)test_state.execution_stream) == cudaSuccess);
 	printf("qwen36 prefix-cache gate PASS\n");

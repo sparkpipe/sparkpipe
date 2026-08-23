@@ -41,10 +41,13 @@ from glm52, each earned by the architecture:
   input FULL: after that all-reduce every rank holds the whole SiTU
   intermediate, so a rank's latent cells must read the whole k axis (the
   input-split form would pair its cells with its tiles alone and drop the
-  cross terms). Both axes divide at TP 1/2/4/8 on 128-element tiles; TP16
-  is REFUSED unless the pack carries 32-element tiles (224 = 7 x 32 for
-  the w1 k, 192 = 6 x 32 for the w2 k - and TP8 needs them too: 28 % 8
-  = 4. The packer's interleave_geometry already closes at tile_k 32)
+  cross terms). ONE split axis each, so divisibility is w1's k-tile count
+  against the degree: on 128-element tiles that is 28 tiles (3584/128) -
+  TP 1/2/4 pass, TP8 does not (28 % 8 = 4) - and w2's 224 cells are whole
+  at every degree this ring ships. TP8 and TP16 therefore REFUSE a
+  128-tile pack and need the 32-element one (112 k-tiles, 112/16 = 7
+  whole per rank: the TP16 w1 slice is 224 = 7 x 32; the packer's
+  interleave_geometry already closes at tile_k 32)
 """
 import json
 import mmap
@@ -105,8 +108,9 @@ INPUT_DIM = {"routed_up_weight"}
 CONCAT_OUTPUT = {"shared_w1_weight", "dense_gate_up_weight"}
 INPUT_DIM_PLAIN = {"shared_w2_weight", "dense_down_weight"}
 # the V2 interleaved expert tensors: one weight+scale stream each, no scale
-# planes. w1 output-splits on whole 16-neuron cells per gate|up half, w2
-# input-splits on whole 128-element k-tiles.
+# planes. w1 INPUT-splits on whole k-tiles (the gate|up output stays FULL
+# and is all-reduced before the SiTU), w2 OUTPUT-splits on whole 16-neuron
+# cells (the intermediate input stays FULL).
 EXPERT_CONCAT = {"expert_w1_weight"}
 EXPERT_INPUT = {"expert_w2_weight"}
 

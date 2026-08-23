@@ -112,8 +112,12 @@ typedef struct SparkGlm52DsparkHiddenTapPlan
     uint32_t descriptor_bytes;
     uint32_t aux_layer_count;
     uint32_t hidden_dimension;
+    /* Pipeline geometry of the ring the taps are taken from: the stage count
+     * and the largest per-stage layer count of the contract's split table
+     * (SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNTS_INITIALIZER). Per-stage
+     * placement lives in tap_stages; there is no uniform layers-per-stage. */
     uint32_t pp_stage_count;
-    uint32_t pp_stage_layer_count;
+    uint32_t pp_stage_max_layer_count;
     uint32_t reserved0;
     uint32_t reserved1;
     SparkGlm52DsparkTapStage tap_stages[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT];

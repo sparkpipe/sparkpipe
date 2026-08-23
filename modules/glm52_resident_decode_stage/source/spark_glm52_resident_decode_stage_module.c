@@ -55,6 +55,7 @@ struct SparkGlm52ModuleState
 	uint32_t stage_index;
 	uint32_t first_layer_index;
 	uint32_t layer_count;
+	const SparkGlm52ResidentDecodeStageGeometry *geometry;
 	uint32_t expert_weight_codec;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
@@ -70,9 +71,9 @@ struct SparkGlm52ModuleState
 	uint32_t owns_final_head;
 	void *execution_stream;
 	char model_revision[SPARK_GLM52_STAGEPACK_MODEL_REVISION_BYTES];
-	SparkGlm52LayerWeights layers[SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
-	uint32_t index_ordinal_by_local_layer[SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
-	uint64_t layer_seen[SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
+	SparkGlm52LayerWeights layers[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_LAYERS_PER_STAGE];
+	uint32_t index_ordinal_by_local_layer[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_LAYERS_PER_STAGE];
+	uint64_t layer_seen[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_LAYERS_PER_STAGE];
 	uint64_t global_seen;
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
@@ -163,7 +164,10 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	context = (const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context;
 	if ( context->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION || context->descriptor_bytes != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( context->stage_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index != SparkGlm52ResidentDecodeStageFirstLayer(context->stage_index) || context->layer_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > context->resident_sequence_capacity || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || context->kv_backing_directory == 0 || context->kv_backing_directory[0] == '\0' || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
+	/* The stage triple must resolve against a known geometry table (TP8
+	 * single-stage or the contract's PP7 split); no uniform multiply. */
+	state->geometry = SparkGlm52ResidentDecodeStageGeometryFor(context->stage_count);
+	if ( state->geometry == 0 || context->stage_index >= context->stage_count || context->first_layer_index != SparkGlm52ResidentDecodeStageFirstLayer(state->geometry,context->stage_index) || context->layer_count != state->geometry->stage_layer_counts[context->stage_index] || context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > context->resident_sequence_capacity || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || context->kv_backing_directory == 0 || context->kv_backing_directory[0] == '\0' || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u || context->expert_weight_codec == SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_UNSUPPORTED);
@@ -218,7 +222,7 @@ static SparkStatus SparkGlm52PackValidateHeader(
 		return(SPARK_STATUS_UNSUPPORTED);
 	if ( SparkGlm52StagePackHeaderTpDegree(header) == 0u || SparkGlm52StagePackHeaderTpDegree(header) != state->tp_degree || SparkGlm52StagePackHeaderTpRank(header) != state->tp_rank )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( header->tensor_count == 0u || header->tensor_count > SPARK_GLM52_STAGEPACK_MAX_TENSOR_COUNT || header->stage_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || header->stage_index != state->stage_index || header->first_layer_index != state->first_layer_index || header->layer_count != state->layer_count || header->total_layer_count != SPARK_GLM52_MODEL_LAYER_COUNT || header->hidden_dimension != SPARK_GLM52_MODEL_HIDDEN_DIMENSION || header->vocab_count != SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT || header->routed_expert_count != SPARK_GLM52_MODEL_MOE_EXPERT_COUNT )
+	if ( header->tensor_count == 0u || header->tensor_count > SPARK_GLM52_STAGEPACK_MAX_TENSOR_COUNT || header->stage_count != state->geometry->stage_count || header->stage_index != state->stage_index || header->first_layer_index != state->first_layer_index || header->layer_count != state->layer_count || header->total_layer_count != SPARK_GLM52_MODEL_LAYER_COUNT || header->hidden_dimension != SPARK_GLM52_MODEL_HIDDEN_DIMENSION || header->vocab_count != SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT || header->routed_expert_count != SPARK_GLM52_MODEL_MOE_EXPERT_COUNT )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( header->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 || header->expert_weight_codec != state->expert_weight_codec || header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_TARGET_MISMATCH);
@@ -1015,15 +1019,15 @@ static SparkStatus SparkGlm52ValidateFrame(
 	expected_flags = prefill != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
 	expected_flags |= state->owns_embedding == 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT : 0u;
 	expected_flags |= state->owns_final_head == 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT : 0u;
-	expected_flags |= SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index) != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_INPUT : 0u;
-	expected_flags |= SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->stage_index) != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT : 0u;
+	expected_flags |= SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->geometry,state->stage_index) != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_INPUT : 0u;
+	expected_flags |= SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->geometry,state->stage_index) != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT : 0u;
 	if ( context->flags != expected_flags )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	boundary_bytes = (uint64_t)batch->row_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
 	sideband_bytes = (uint64_t)batch->row_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SIDEBAND_BYTES_PER_ROW;
 	if ( (state->owns_embedding == 0u && (context->hidden_input_bf16 == 0 || context->hidden_input_bytes < boundary_bytes)) || (state->owns_embedding != 0u && (context->hidden_input_bf16 != 0 || context->hidden_input_bytes != 0u)) || (state->owns_final_head == 0u && (context->hidden_output_bf16 == 0 || context->hidden_output_bytes < boundary_bytes)) || (state->owns_final_head != 0u && (context->hidden_output_bf16 != 0 || context->hidden_output_bytes != 0u)) )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( (SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index) != 0u && (context->sideband_input == 0 || context->sideband_input_bytes < sideband_bytes)) || (SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index) == 0u && (context->sideband_input != 0 || context->sideband_input_bytes != 0u)) || (SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->stage_index) != 0u && (context->sideband_output == 0 || context->sideband_output_bytes < sideband_bytes)) || (SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->stage_index) == 0u && (context->sideband_output != 0 || context->sideband_output_bytes != 0u)) )
+	if ( (SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->geometry,state->stage_index) != 0u && (context->sideband_input == 0 || context->sideband_input_bytes < sideband_bytes)) || (SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->geometry,state->stage_index) == 0u && (context->sideband_input != 0 || context->sideband_input_bytes != 0u)) || (SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->geometry,state->stage_index) != 0u && (context->sideband_output == 0 || context->sideband_output_bytes < sideband_bytes)) || (SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->geometry,state->stage_index) == 0u && (context->sideband_output != 0 || context->sideband_output_bytes != 0u)) )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SparkGlm52ValidateRoundMajor(state,batch);
 	if ( status == SPARK_STATUS_OK )
@@ -1105,8 +1109,8 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->pages_per_sequence = state->pages_per_sequence;
 	wave->owns_embedding = state->owns_embedding;
 	wave->owns_final_head = state->owns_final_head;
-	wave->sideband_input = SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index);
-	wave->sideband_output = SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->stage_index);
+	wave->sideband_input = SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->geometry,state->stage_index);
+	wave->sideband_output = SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->geometry,state->stage_index);
 	wave->boundary_row_offset = chain->first_row;
 	wave->sideband_row_offset = chain->first_row;
 	wave->host_token_ids = state->owns_embedding != 0u ? slot->host_token_ids + chain->first_row : 0;

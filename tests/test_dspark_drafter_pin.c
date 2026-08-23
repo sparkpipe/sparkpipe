@@ -29,18 +29,31 @@ PIN(SPARK_DSPARK_DEFAULT_MIN_CONFIDENCE_MILLI == 350u);
 PIN(SPARK_DSPARK_DEFAULT_REALTIME_MIN_CONFIDENCE_MILLI == 250u);
 PIN(SPARK_DSPARK_POLICY_DEFAULT_FLAGS == 0xFu);
 PIN(SPARK_DSPARK_POLICY_REALTIME_PRIORITY_THRESHOLD == 4000000000u);
-PIN(SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT == 13u);
-PIN(SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNT == 6u);
+PIN(SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT == 7u);
+PIN(SPARK_GLM52_MODEL_DSPARK_PP_STAGE_MAX_LAYER_COUNT == 12u);
 
 int main(void)
 {
 	static const uint32_t aux_ids[] = SPARK_DSPARK_AUX_LAYER_IDS_INITIALIZER;
+	static const uint32_t pp_counts[] =
+		SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNTS_INITIALIZER;
+	static const uint32_t pp_firsts[] =
+		SPARK_GLM52_MODEL_DSPARK_PP_STAGE_FIRST_LAYER_INITIALIZER;
 	const uint32_t expected_aux[] = { 8u, 23u, 39u, 55u, 70u };
 	uint32_t index;
+	uint32_t layer_total = 0u;
 	for (index = 0u; index < SPARK_DSPARK_AUX_LAYER_COUNT; ++index)
 	{
 		if ( aux_ids[index] != expected_aux[index] )
 			return(1);
 	}
+	for (index = 0u; index < SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT; ++index)
+	{
+		if ( pp_counts[index] == 0u || pp_firsts[index] != layer_total )
+			return(2);
+		layer_total += pp_counts[index];
+	}
+	if ( layer_total != SPARK_GLM52_MODEL_LAYER_COUNT )
+		return(3);
 	return(0);
 }

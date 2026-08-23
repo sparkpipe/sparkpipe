@@ -113,7 +113,6 @@ DSPARK_INTEGER_MACROS = {
     "SPARK_GLM52_MODEL_DSPARK_MASK_TOKEN_ID": "mask_token_id",
     "SPARK_GLM52_MODEL_DSPARK_MAX_ANCHORS": "max_anchors",
     "SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT": "pp_stage_count",
-    "SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNT": "pp_stage_layer_count",
 }
 EOS_TOKEN_MACROS = {
     "SPARK_GLM52_MODEL_END_OF_TEXT_TOKEN_ID": "end_of_text",
@@ -169,6 +168,17 @@ def load_model_contract(root: Path | None = None) -> Dict[str, Any]:
         raise ValueError("invalid GLM-5.2 DSpark aux layer ids")
     if any(not isinstance(value, int) or value < 0 for value in aux_layer_ids):
         raise ValueError("invalid GLM-5.2 DSpark aux layer id")
+    pp_stage_layers = dspark.get("pp_stage_layers")
+    if (not isinstance(pp_stage_layers, list) or not pp_stage_layers or
+            any(not isinstance(value, int) or value <= 0
+                for value in pp_stage_layers)):
+        raise ValueError("invalid GLM-5.2 PP stage layer table")
+    if dspark["pp_stage_count"] != len(pp_stage_layers):
+        raise ValueError(
+            "GLM-5.2 PP stage count must equal the stage layer table length")
+    if sum(pp_stage_layers) != contract["layer_count"]:
+        raise ValueError(
+            "GLM-5.2 PP stage layer table must sum to the model layer count")
     eos_token_ids = contract.get("eos_token_ids")
     if not isinstance(eos_token_ids, dict):
         raise ValueError("invalid GLM-5.2 EOS token contract")
@@ -234,6 +244,26 @@ def render_c_header(contract: Dict[str, Any]) -> str:
     )
     for name, key in DSPARK_INTEGER_MACROS.items():
         lines.append(f"#define {name} {dspark[key]}u")
+    pp_stage_layers = dspark["pp_stage_layers"]
+    first_layers = []
+    stage_total = 0
+    for count in pp_stage_layers:
+        first_layers.append(stage_total)
+        stage_total += count
+    lines.append(
+        "#define SPARK_GLM52_MODEL_DSPARK_PP_STAGE_LAYER_COUNTS_INITIALIZER { "
+        + ", ".join(f"{value}u" for value in pp_stage_layers)
+        + " }"
+    )
+    lines.append(
+        "#define SPARK_GLM52_MODEL_DSPARK_PP_STAGE_FIRST_LAYER_INITIALIZER { "
+        + ", ".join(f"{value}u" for value in first_layers)
+        + " }"
+    )
+    lines.append(
+        "#define SPARK_GLM52_MODEL_DSPARK_PP_STAGE_MAX_LAYER_COUNT "
+        f"{max(pp_stage_layers)}u"
+    )
     lines.extend([
         "#define SPARK_GLM52_MODEL_MAX_SPECULATIVE_ROWS_PER_LANE \\",
         "\t(SPARK_GLM52_MODEL_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u)",
@@ -279,6 +309,10 @@ def render_c_header(contract: Dict[str, Any]) -> str:
         "\tSPARK_GLM52_MODEL_FP8_SCALE_COUNT( \\",
         "\t\tSPARK_GLM52_MODEL_HIDDEN_DIMENSION, \\",
         "\t\tSPARK_GLM52_MODEL_ATTENTION_PROJECTION_DIMENSION)",
+        "#define SPARK_GLM52_MODEL_LAYER_HAS_FULL_INDEXER(layer_index) \\",
+        "\t(((layer_index) < 3u || ((layer_index) >= 6u && \\",
+        "\t\t(((layer_index) - 6u) % \\",
+        "\t\t\tSPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT) == 0u)) ? 1u : 0u)",
         "",
     ])
     return "\n".join(lines)

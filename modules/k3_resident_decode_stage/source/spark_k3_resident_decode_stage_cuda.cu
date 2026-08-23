@@ -249,8 +249,6 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;            /* hidden */
 	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;            /* normed */
 	d->scratch_bytes += (size_t)max_rows * K3_KDA_QKVB_FUSED_ROWS * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_KEY_DIM * 2u;       /* gate_latent */
 	d->scratch_bytes += (size_t)max_rows * K3_MLA_Q_DIM * 2u;         /* query */
 	d->scratch_bytes += (size_t)max_rows * K3_KDA_QK_DIM * 2u;        /* key */
 	d->scratch_bytes += (size_t)max_rows * K3_KDA_V_DIM * 2u;         /* value */
@@ -280,8 +278,6 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	b->hidden_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_HIDDEN * 2u);
 	b->normed_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_HIDDEN * 2u);
 	b->fused_qkvb_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_QKVB_FUSED_ROWS * 2u);
-	b->fused_decay_gate_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS * 2u);
-	b->gate_latent_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_KEY_DIM * 2u);
 	b->query_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_MLA_Q_DIM * 2u);
 	b->key_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_QK_DIM * 2u);
 	b->value_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_V_DIM * 2u);

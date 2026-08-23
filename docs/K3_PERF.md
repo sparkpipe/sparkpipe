@@ -26,6 +26,38 @@ wraps the intended negatives to ~4.29e9 (bf16 0x4E80). The GEMM was summing
 poisoned test data faithfully - verified byte-exact across processes at
 every real K extent (7168/12288/33792) by the determinism probes.
 
+## 2026-08-23: equivalence re-proven on the classification-fixed sharder (#667 items 1a/1b/3 closed)
+
+With the tensor-classification fix on `unified` (`2bc40c4`: `kda_decay_bias`
+and `kda_head_log_scale` are HEAD_1D, `routed_norm_weight` LATENT_1D —
+per-rank slices, not replicas), the layers-0-3 slice pack was re-sliced and
+both post-fix receipts were re-taken on spark0 (GB10, nvcc 13.0,
+sm_121a, tree `229526d`). The pack is `/tmp/k3_slice_0_4.pack` on spark0
+(55.3 GB, manifest `first_layer: 0, layers: 4`); the fixed sharder cut it
+into **87 tensors x 4 rank packs** (~13.9 GB each).
+
+- **TP4-vs-full equivalence PASS.** Run in the gate's canonical form: four
+  concurrent single-spark processes on 127.0.0.1 with their true `--tp4 <r>`
+  rank (the real host-tier all-reduce), each dumping its POST-AR hidden,
+  compared against a full-pack tp1 run via
+  `tools/k3_tp4_equivalence_check.py --direct`. All four rank dumps are
+  bit-identical to each other; against the full run, **worst relative
+  deviation 0.02158 at column 2441, 0 of 7168 columns beyond the 0.03
+  tolerance** (max absolute delta 0.00586 ≈ 3 BF16 ULP at that magnitude;
+  1647 columns bit-exact). Operational note for re-runs: the sum-of-tp1-
+  dumps mode is NOT valid with vocab-sliced embeds unless every leg runs
+  its own true tp_rank — the runner offsets the embed row by
+  `tp_rank * vocab_slice_rows`, so tp1 legs with `tp_rank=0` on ranks 1-3
+  read the wrong token row and the offline sum diverges catastrophically
+  (observed worst rel 1.97 before switching to `--tp4`).
+- **Capture fidelity re-proven on the fixed path.** The single-spark step
+  gate (`tests/test_k3_runner_step.cu`) PASSES on both the full pack and a
+  rank pack: fresh-run determinism **0 mismatches beyond 4 ULP**, and the
+  no-capture direct step-2 vs graph replay comparison at the same recurrent
+  state is **0 mismatches** (full-pack warm replay 60.3 ms, rank-pack warm
+  replay 13.2 ms). The fidelity failure #667 recorded was the GEMM bugs'
+  symptom; it does not recur.
+
 ## Prefill + decode performance estimate
 
 tools/k3_tp4pp4_perf_estimate.py derives both numbers from the deployed

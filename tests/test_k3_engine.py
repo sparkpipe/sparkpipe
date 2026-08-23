@@ -198,6 +198,15 @@ def main():
         print("  FAIL acceptance did not land the drafts in the output")
         failures += 1
 
+    # acceptance counters (SURVEY_K3 #10): the main scenario's verify commit
+    # proposed three drafts and emitted two; K3-009's commit proposed three
+    # and emitted two (301 then the EOS draft) - cumulative 6/4.
+    drafts = re.findall(r"^drafts (\d+) (\d+)$", text, re.M)
+    if drafts != [("3", "2"), ("6", "4")]:
+        print(f"  FAIL draft acceptance counters are {drafts}, expected "
+              f"[('3', '2'), ('6', '4')]")
+        failures += 1
+
     # K3-006: the one-token prompt (request 4) opened in DECODE - a single
     # row at position 0, context 1, logits on that row - and ended on EOS
     d_runs = [s for st in bug_steps for s in st["seqs"] if s["request"] == 4]

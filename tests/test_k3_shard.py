@@ -6,9 +6,10 @@ put back together by its own rule and compared to the original bytes:
 replicated tensors equal on both ranks, head-block output splits concatenate,
 the fused kda_qkv_beta_weight rebuilds one contiguous section range per
 rank, input splits interleave column-wise, the concatenated gate|up tensors
-reassemble half by half per expert, expert w1's interleaved grid rebuilds
-cell range by cell range per (expert, k-tile, gate|up half), and expert w2's
-k-tile K split is a contiguous row range per expert. Then TP 4 on the same
+reassemble half by half, expert w1's interleaved grid rebuilds the FULL
+gate|up cell range over only its own contiguous k-tiles per expert (the
+K input split), and expert w2's cell axis output-splits as a contiguous row
+range per expert with the whole intermediate k axis intact. Then TP 4 on the same
 mini must be REFUSED - two heads do not split four ways, and two 128-element
 k-tiles do not split four ways either (the interleave coarsened V1's
 32-element K groups to whole k-tiles) - and the refusal must be loud, not a

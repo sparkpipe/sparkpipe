@@ -78,7 +78,13 @@ typedef struct SparkGlm52DsparkDraftBackend
     uint32_t pending_draft_lane_count;
     SparkGlm52DsparkModelContract contract;
     void *cuda_stream;
-    void *cublas_handle;
+    /* Shared-GEMM stack state (runtime/gemm.cuh): a two-word device scratch
+     * the dense launcher requires for its group-row offset, and the SM count
+     * captured once at Initialize so launches need no per-call device query.
+     * This slot replaced the cuBLAS handle: the drafter's GEMMs are plain
+     * dense BF16 projections and must not carry a second GEMM stack. */
+    void *gemm_group_scratch;
+    uint32_t multiprocessor_count;
     void *device_weights[SPARK_DSPARK_DRAFT_BACKEND_WEIGHT_COUNT];
     uint32_t *device_restricted_token_ids;
     uint16_t *device_tap_arena_bf16;
@@ -93,8 +99,10 @@ typedef struct SparkGlm52DsparkDraftBackend
     uint16_t *device_block_query_bf16;
     uint16_t *device_block_key_bf16;
     uint16_t *device_block_value_bf16;
-    uint16_t *device_block_gate_bf16;
-    uint16_t *device_block_up_bf16;
+    /* Gate and up projections share one buffer, interleaved per row (gate
+     * first): that is the layout LmSiluMulKernel consumes, so the two MLP
+     * GEMMs write their columns in place and no repack pass exists. */
+    uint16_t *device_block_gate_up_bf16;
     uint16_t *device_block_mlp_bf16;
     uint16_t *device_block_final_bf16;
     uint16_t *device_block_logits_bf16;

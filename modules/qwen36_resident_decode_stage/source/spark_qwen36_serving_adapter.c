@@ -190,8 +190,8 @@ static uint32_t SparkQwen36ServingSpecMethod(void)
  * extra rows cost one head pass each. */
 static uint32_t SparkQwen36ServingSpecAudit(void)
 {
-\tconst char *text = getenv("SPARK_QWEN36_SPEC_AUDIT");
-\treturn(text != 0 && text[0] != 0 && (text[0] != 0x30 || text[1] != 0) ? 1u : 0u);
+	const char *text = getenv("SPARK_QWEN36_SPEC_AUDIT");
+	return(text != 0 && text[0] != 0 && (text[0] != 0x30 || text[1] != 0) ? 1u : 0u);
 }
 
 /* THE CREDITED CEILING of this build. A round credits (accepted drafts + 3) -
@@ -201,9 +201,9 @@ static uint32_t SparkQwen36ServingSpecAudit(void)
  * unreachable instead of being chased through the drafter. */
 static uint32_t SparkQwen36ServingCreditCeiling(uint32_t draft_count)
 {
-\tuint32_t by_block = draft_count > 0u ? draft_count - 1u : 0u;
-\tuint32_t by_cap = (uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u;
-\treturn(by_block < by_cap ? by_block : by_cap);
+	uint32_t by_block = draft_count > 0u ? draft_count - 1u : 0u;
+	uint32_t by_cap = (uint32_t)SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE - 3u;
+	return(by_block < by_cap ? by_block : by_cap);
 }
 
 /* Draft depth for the active spec method. Merge consolidation: main's
@@ -214,19 +214,19 @@ static uint32_t SparkQwen36ServingCreditCeiling(uint32_t draft_count)
  * drafted, just not walked). */
 static uint32_t SparkQwen36ServingBlockDraftMethod(uint32_t spec_method)
 {
-\treturn(spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK || spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2);
+	return(spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK || spec_method == SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2);
 }
 static uint32_t SparkQwen36ServingActiveDraftCount(uint32_t spec_method)
 {
-\tif ( !SparkQwen36ServingBlockDraftMethod(spec_method) )
-\t\treturn(SparkQwen36ServingSpeculativeDraftCount());
-\t{
-\t\tuint32_t block = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
-\t\tuint32_t cap = SparkQwen36ServingSpeculativeDraftCount();
-\t\tif ( cap == 0u || cap >= block )
-\t\t\treturn(block);
-\t\treturn(cap);
-\t}
+	if ( !SparkQwen36ServingBlockDraftMethod(spec_method) )
+		return(SparkQwen36ServingSpeculativeDraftCount());
+	{
+		uint32_t block = SPARK_QWEN36_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
+		uint32_t cap = SparkQwen36ServingSpeculativeDraftCount();
+		if ( cap == 0u || cap >= block )
+			return(block);
+		return(cap);
+	}
 }
 /* GDN snapshot slots. The two-phase min-accept schedule keeps one verify
  * snapshot in flight per lane, capped by the module's slot ceiling; a lane
@@ -1025,6 +1025,7 @@ static SparkStatus SparkQwen36ServingCoverLane(
 		committed,state->match_tokens,state->max_input_row_count);
 	return(SparkQwen36PagedKvCover(&state->paged,slot,end_position,
 		token_count != 0u ? state->match_tokens : 0,token_count));
+}
 
 /* Longest published-prefix reuse for one cold lane's prompt. Returns the
  * matched token count (block-granular) and binds the shared blocks; zero
@@ -2008,6 +2009,42 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 			spec->accepted_count = 0u;
 			while ( spec->accepted_count + 1u < draft_count && spec->emitted_ids[spec->accepted_count] == spec->draft_ids[spec->accepted_count + 1u] )
 				spec->accepted_count++;
+			if ( fold_active != 0u )
+				pending->spec_fold = fold_active;
+			/* lane and base_position make the round ALIGNABLE to a golden stream
+			 * (unified): base_position is C0's absolute sequence position, so the
+			 * golden's token index for this round is base_position - prompt_length.
+			 * The wall-clock term is main's round-timing probe; one line carries
+			 * both so the per-round log stays single-line. */
+			fprintf(stderr, "qwen36_spec_diag lane=%u base_position=%llu t=%.6f C0=%u accepted=%u drafts=[%u,%u,%u,%u,%u,%u,%u,%u] emitted=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
+				lane,(unsigned long long)spec->base_position,
+				(double)clock_gettime_mono_ns() * 1e-9,
+				spec->committed_ids[0], spec->accepted_count,
+				spec->draft_ids[0], spec->draft_ids[1], spec->draft_ids[2], spec->draft_ids[3],
+				spec->draft_ids[4], spec->draft_ids[5], spec->draft_ids[6], spec->draft_ids[7],
+				spec->emitted_ids[0], spec->emitted_ids[1], spec->emitted_ids[2], spec->emitted_ids[3],
+				spec->emitted_ids[4], spec->emitted_ids[5], spec->emitted_ids[6], spec->emitted_ids[7]);
+		}
+	}
+	min_accepted = 0u;
+	pending->spec_chain_dead = 0u;
+	if ( status == SPARK_STATUS_OK )
+	{
+		min_accepted = draft_count - 1u;
+		for (lane=0u; lane<submission->active_sequence_count; lane++)
+		{
+			if ( pending->spec[lane].chain_dead != 0u )
+				pending->spec_chain_dead = 1u;
+			if ( pending->spec[lane].first_draft_miss != 0u )
+				pending->spec_first_draft_miss++;
+			if ( pending->spec[lane].accepted_count < min_accepted )
+				min_accepted = pending->spec[lane].accepted_count;
+		}
+		/* A dead chain's verify output is poisoned, so a batch with any dead
+		 * lane commits the model token alone for every lane (speculation is
+		 * simply not credited this round; tokens stay exact). */
+		if ( pending->spec_chain_dead != 0u )
+			min_accepted = 0u;
 		/*
 		 * THE ACCEPTANCE CLIFF. A round emits min_accepted + 3 tokens (C0, the
 		 * accepted drafts, the correction, the replay's emission), and the driver
@@ -2154,6 +2191,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 				(sel_on != 0u ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW : 0u),
 				0,0,&gdn_snapshot,spec_audit != 0u ? replay_rows : 1u);
 		}
+		replay_done:;
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr, "qwen36_spec_diag replay_frame_failed lane=%u status=%d\n", lane, (int)status);
 		if ( status == SPARK_STATUS_OK )
@@ -2206,6 +2244,7 @@ static SparkStatus SparkQwen36ServingSubmitSpeculativeDecode(
 					pending->spec_tokens_per_sequence);
 			}
 		}
+	}
 	}
 	/*
 	 * LOSSLESSNESS REPAIR - the verify walk is destructive and its rollback was
@@ -2875,33 +2914,6 @@ static SparkStatus SparkQwen36ServingInitialize(
 	return(SPARK_STATUS_OK);
 }
 
-/* JIT_KV interface hooks (required once cache_block_token_count > 0).
- * Prefetch prepares nothing ahead of submit - the block-table borrow in
- * CoverSubmission is the preparation - so the admission is a no-op and
- * COMMIT resolves immediately; the prefix entry refs are taken at the
- * publish/borrow points, not here. */
-static SparkStatus SparkQwen36ServingPrefetch(
-	void *adapter_state,
-	const SparkModelServingSubmission *submissions,
-	uint32_t submission_count)
-{
-	(void)adapter_state;
-	(void)submissions;
-	(void)submission_count;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen36ServingResolvePrefetch(
-	void *adapter_state,
-	const SparkModelServingSubmission *submission,
-	uint32_t resolution)
-{
-	(void)adapter_state;
-	(void)submission;
-	(void)resolution;
-	return(SPARK_STATUS_OK);
-}
-
 static const SparkModelServingAdapterInterface SparkQwen36ServingInterface =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
@@ -2915,9 +2927,7 @@ static const SparkModelServingAdapterInterface SparkQwen36ServingInterface =
 	.submit = SparkQwen36ServingSubmit,
 	.progress = SparkQwen36ServingProgress,
 	.quiesce = SparkQwen36ServingQuiesce,
-	.snapshot = SparkQwen36ServingSnapshot,
-	.prefetch = SparkQwen36ServingPrefetch,
-	.resolve_prefetch = SparkQwen36ServingResolvePrefetch
+	.snapshot = SparkQwen36ServingSnapshot
 };
 
 __attribute__((visibility("default")))

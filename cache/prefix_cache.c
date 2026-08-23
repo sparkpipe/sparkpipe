@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_prefix_cache.h"
+#include "sparkpipe/spark_prefix_hash.h"
 
 #include <string.h>
 
@@ -36,16 +37,6 @@ static uint32_t SparkPrefixCacheFullBlockTokenCount(
         cache->block_token_count);
 }
 
-static uint64_t SparkPrefixCacheMixU64(
-    uint64_t hash_value,
-    uint64_t value)
-{
-    hash_value ^= value;
-    hash_value *= 1099511628211ull;
-    hash_value ^= hash_value >> 32u;
-    return hash_value;
-}
-
 static uint32_t SparkPrefixCacheBucketIndex(
     uint64_t hash_value,
     uint32_t bucket_count)
@@ -66,9 +57,9 @@ static uint32_t SparkPrefixCacheEntryBucket(
 {
     uint64_t hash_value;
 
-    hash_value = SparkPrefixCacheMixU64(parent_hash, block_hash);
-    hash_value = SparkPrefixCacheMixU64(hash_value, content_hash);
-    hash_value = SparkPrefixCacheMixU64(
+    hash_value = SparkPrefixHashMixU64(parent_hash, block_hash);
+    hash_value = SparkPrefixHashMixU64(hash_value, content_hash);
+    hash_value = SparkPrefixHashMixU64(
         hash_value,
         ((uint64_t)first_token_index << 32u) | token_count);
     return SparkPrefixCacheBucketIndex(
@@ -82,7 +73,7 @@ static uint32_t SparkPrefixCacheBindingLookupBucket(
     uint32_t first_token_index)
 {
     return SparkPrefixCacheBucketIndex(
-        SparkPrefixCacheMixU64(sequence_id, first_token_index),
+        SparkPrefixHashMixU64(sequence_id, first_token_index),
         cache->binding_hash_bucket_count);
 }
 
@@ -105,12 +96,12 @@ static uint64_t SparkPrefixCacheHashBlockContent(
     hash_value = 7809847782465536322ull;
     for (token_index = 0u; token_index < token_count; ++token_index)
     {
-        hash_value = SparkPrefixCacheMixU64(
+        hash_value = SparkPrefixHashMixU64(
             hash_value,
             ((uint64_t)token_ids[token_index] << 1u) ^
                 (uint64_t)(token_index + 0x9e3779b9u));
     }
-    return SparkPrefixCacheMixU64(hash_value, token_count);
+    return SparkPrefixHashMixU64(hash_value, token_count);
 }
 
 uint64_t SparkPrefixCacheHashBlock(
@@ -118,18 +109,7 @@ uint64_t SparkPrefixCacheHashBlock(
     uint32_t token_count,
     uint64_t parent_hash)
 {
-    uint64_t hash_value;
-    uint32_t token_index;
-
-    hash_value = parent_hash ^ 1099511628211ull;
-    for (token_index = 0u; token_index < token_count; ++token_index)
-    {
-        hash_value = SparkPrefixCacheMixU64(
-            hash_value,
-            (uint64_t)token_ids[token_index] +
-                ((uint64_t)token_index << 32u));
-    }
-    return SparkPrefixCacheMixU64(hash_value, token_count);
+    return SparkPrefixHashPositionTagged(parent_hash, token_ids, token_count);
 }
 
 SparkStatus SparkPrefixCacheHashPromptTokens(
@@ -2608,10 +2588,10 @@ SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
                 operation_epoch);
             return SPARK_STATUS_CAPACITY_EXCEEDED;
         }
-        block_hash = SparkPrefixCacheMixU64(
-            SparkPrefixCacheMixU64(parent_hash, sequence_id),
+        block_hash = SparkPrefixHashMixU64(
+            SparkPrefixHashMixU64(parent_hash, sequence_id),
             first_token_index);
-        content_hash = SparkPrefixCacheMixU64(
+        content_hash = SparkPrefixHashMixU64(
             block_hash,
             operation_epoch);
         status = SparkPrefixCacheInstallEntry(

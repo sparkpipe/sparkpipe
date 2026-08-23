@@ -115,6 +115,12 @@ struct K3Engine
 	// the latest plan, or is one already committed, is stale or duplicated.
 	uint32_t plan_epoch;
 	uint32_t committed_epoch;
+	// DSpark acceptance instrumentation (SURVEY_K3 #10): draft tokens offered
+	// to verify commits and draft tokens those commits actually emitted. The
+	// per-workload acceptance rate is accepted/proposed - a drafter lands
+	// against this measurement, not a speedup hope. K3EngineInit zeroes both.
+	uint64_t drafts_proposed;
+	uint64_t drafts_accepted;
 };
 
 static int32_t K3EngineInit(struct K3Engine *engine, struct K3EngineRequest *request_storage, uint32_t request_capacity, uint32_t *slot_storage, uint32_t slot_capacity, uint32_t row_budget)
@@ -429,6 +435,7 @@ static int32_t K3EngineCommitVerify(struct K3Engine *engine, const struct K3Engi
 		{
 			token = request->draft[r];
 			request->output[request->generated++] = token;
+			engine->drafts_accepted += 1u;
 			if ( token == eos_token )
 			{
 				ended = 1u;
@@ -442,6 +449,10 @@ static int32_t K3EngineCommitVerify(struct K3Engine *engine, const struct K3Engi
 			if ( token == eos_token )
 				ended = 1u;
 		}
+		// Proposed counts every draft the verify offered, accepted only the
+		// ones emitted above - the honest numerator and denominator of the
+		// acceptance rate (SURVEY_K3 #10).
+		engine->drafts_proposed += request->draft_count;
 		request->draft_count = 0u;
 		if ( ended != 0u || request->generated >= request->max_new )
 			K3EngineFinishRequest(engine,request);

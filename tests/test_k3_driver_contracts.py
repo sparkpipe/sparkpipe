@@ -204,10 +204,15 @@ def main():
         print("  FAIL the fused projections lost their section split; every "
               "consumer reads dense rows, so the wide GEMM needs the split")
         failures += 1
-    for scratch in ("fused_qkvb_bf16", "fused_decay_gate_bf16",
-                    "gate_latent_bf16"):
-        if f"uint16_t *{scratch};" not in layer:
-            print(f"  FAIL K3LayerBuffers lost the {scratch} wide scratch")
+    # Released checkpoint (docs/K3_GATE_RECONCILIATION.md): q|k|v|beta is the
+    # only fused wide tensor - decay_down projects standalone into latent and
+    # the gate is full rank, so no decay|gate scratch exists.
+    if "uint16_t *fused_qkvb_bf16;" not in layer:
+        print("  FAIL K3LayerBuffers lost the fused_qkvb_bf16 wide scratch")
+        failures += 1
+    for gone_scratch in ("fused_decay_gate_bf16", "gate_latent_bf16"):
+        if f"uint16_t *{gone_scratch};" in layer or gone_scratch in slice_:
+            print(f"  FAIL the dead {gone_scratch} decay|gate scratch survives")
             failures += 1
 
     # -- the interleaved expert stream fails closed ---------------------------

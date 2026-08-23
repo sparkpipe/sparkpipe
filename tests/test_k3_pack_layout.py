@@ -133,10 +133,6 @@ def unit_sections():
           [0, 12288, 24576, 36864], "qkvb section offsets are wrong")
     check([s["rows_per_head"] for s in sections] == [128, 128, 128, 1],
           "qkvb per-head split widths are wrong")
-    sections, rows = k3_pack.kda_fused_decay_gate_down_sections(128)
-    check([s["name"] for s in sections] == ["decay_down", "gate_down"]
-          and rows == 256 and sections[1]["row_offset"] == 128,
-          "decay/gate down fused table is wrong")
 
 
 # -- end to end: pack the mini ----------------------------------------------------
@@ -178,7 +174,7 @@ def mini_checkpoint(root, latent=None, poison_scale=False):
                                               rand_bf16(hidden))
     for layer, kind in enumerate(config["layer_types"]):
         p = f"model.layers.{layer}."
-        a, m = p + "self_attn.", p + "mlp."
+        a, m = p + "self_attn.", p + "block_sparse_moe."
         t[p + "input_layernorm.weight"] = ("BF16", (hidden,), rand_bf16(hidden))
         t[p + "post_attention_layernorm.weight"] = ("BF16", (hidden,),
                                                     rand_bf16(hidden))
@@ -200,10 +196,10 @@ def mini_checkpoint(root, latent=None, poison_scale=False):
             t[a + "A_log"] = ("F32", (128,), rand_f32(128))
             t[a + "b_proj.weight"] = ("BF16", (g["kda_heads"], hidden),
                                       rand_bf16(g["kda_heads"] * hidden))
-            t[a + "g_a_proj.weight"] = ("BF16", (g["kda_head"], hidden),
-                                        rand_bf16(g["kda_head"] * hidden))
-            t[a + "g_b_proj.weight"] = ("BF16", (kda_dim, g["kda_head"]),
-                                        rand_bf16(kda_dim * g["kda_head"]))
+            # released checkpoint (full_rank_output_gate): the gate is the
+            # full-rank g_proj; the old low-rank g_a/g_b pair does not exist
+            t[a + "g_proj.weight"] = ("BF16", (kda_dim, hidden),
+                                      rand_bf16(kda_dim * hidden))
             t[a + "o_norm.weight"] = ("F32", (g["kda_head"],),
                                       rand_f32(g["kda_head"]))
             t[a + "o_proj.weight"] = ("BF16", (hidden, kda_dim),
@@ -224,11 +220,10 @@ def mini_checkpoint(root, latent=None, poison_scale=False):
             t[a + "kv_b_proj.weight"] = (
                 "BF16", (g["heads"] * (g["nope"] + g["v_head"]), g["kv_lora"]),
                 rand_bf16(g["heads"] * (g["nope"] + g["v_head"]) * g["kv_lora"]))
-            t[a + "g_a_proj.weight"] = ("BF16", (g["v_head"], hidden),
-                                        rand_bf16(g["v_head"] * hidden))
-            t[a + "g_b_proj.weight"] = (
-                "BF16", (g["heads"] * g["v_head"], g["v_head"]),
-                rand_bf16(g["heads"] * g["v_head"] * g["v_head"]))
+            # released checkpoint (full_rank_output_gate): full-rank g_proj
+            t[a + "g_proj.weight"] = (
+                "BF16", (g["heads"] * g["v_head"], hidden),
+                rand_bf16(g["heads"] * g["v_head"] * hidden))
             t[a + "o_proj.weight"] = (
                 "BF16", (hidden, g["heads"] * g["v_head"]),
                 rand_bf16(hidden * g["heads"] * g["v_head"]))
@@ -260,10 +255,15 @@ def mini_checkpoint(root, latent=None, poison_scale=False):
                     scale[0] = 0xFF
                 t[base + name + ".weight_scale"] = ("U8", (rows, cols // 32),
                                                     bytes(scale))
+    # The released Kimi-K3 checkpoint prefixes every tensor with
+    # "language_model." and the packer's source names follow it; like
+    # tests/test_k3_pack.py, the prefix is applied here at write time so the
+    # fixture dict's own keys stay unprefixed.
     header, offset, blobs = {}, 0, []
     for name, (dtype, shape, raw) in t.items():
-        header[name] = {"dtype": dtype, "shape": list(shape),
-                        "data_offsets": [offset, offset + len(raw)]}
+        header["language_model." + name] = {
+            "dtype": dtype, "shape": list(shape),
+            "data_offsets": [offset, offset + len(raw)]}
         blobs.append(raw)
         offset += len(raw)
     encoded = json.dumps(header, separators=(",", ":")).encode()
@@ -289,6 +289,113 @@ def read_pack(path):
     return version, manifest, base, tensor
 
 
+def assert_happy_pack(src, out):
+    """The happy-path assertions, held to a pack the real CLI produced."""
+    version, manifest, base, tensor = read_pack(out)
+    check(version == 2, f"pack version is {version}, not 2")
+    check(base % 128 == 0, "payload base is not 128-aligned")
+    fmt = manifest["format"]
+    check(fmt["alignment"] == 128 and fmt["version"] == 2,
+          "format block is wrong")
+    check(fmt["mxfp4_interleave"]["cell_rows"] == 17
+          and fmt["mxfp4_interleave"]["row_bytes"] == 64,
+          "format block interleave parameters are wrong")
+
+    entries = manifest["tensors"]
+    ordered = sorted(entries.items(), key=lambda kv: kv[1]["offset"])
+    check(all(e["offset"] % 128 == 0 for _, e in ordered),
+          "a tensor offset is not 128-aligned")
+    check(all(a[1]["offset"] + a[1]["bytes"] <= b[1]["offset"]
+              for a, b in zip(ordered, ordered[1:])),
+          "tensor extents overlap")
+    # consumption order: embed first; layers ascending; closers last
+    names = [n for n, _ in ordered]
+    check(names[0] == "model.embed_tokens.weight",
+          "embedding is not the first tensor")
+    check(names[-3:] == ["model.norm.weight", "model.attnres_out_weight",
+                         "lm_head.weight"],
+          f"closing tensors are not last: {names[-3:]}")
+    layer_of = [int(n.split(".")[2]) for n in names
+                if n.startswith("model.layers.")]
+    check(layer_of == sorted(layer_of), "layers are not emitted in order")
+
+    # the fused KDA tensors: bytes are the section concatenation, tables tile
+    p, a = "model.layers.0.", "model.layers.0.self_attn."
+    want = b"".join(src[a + n][2] for n in
+                    ("q_proj.weight", "k_proj.weight", "v_proj.weight",
+                     "b_proj.weight"))
+    check(tensor(p + "kda_qkv_beta_weight") == want,
+          "fused qkv|beta bytes are not the section concatenation")
+    entry = entries[p + "kda_qkv_beta_weight"]
+    check(entry["shard_class"] == "output_dim_heads",
+          "fused qkv|beta shard class is wrong")
+    check([s["row_offset"] for s in entry["sections"]] == [0, 128, 256, 384]
+          and entry["shape"] == [386, 64],
+          "fused qkv|beta section table does not tile the tensor")
+    # released checkpoint (full_rank_output_gate): decay_down is the
+    # standalone replicated bottleneck, decay_up rides f_b unchanged, and the
+    # gate is the checkpoint's full-rank g_proj - the decay|gate fusion does
+    # not exist in what ships (docs/K3_GATE_RECONCILIATION.md, the same
+    # contract tests/test_k3_pack.py holds)
+    check(tensor(p + "kda_decay_down_weight") ==
+          src[a + "f_a_proj.weight"][2],
+          "decay_down is not the checkpoint's f_a_proj")
+    check(entries[p + "kda_decay_down_weight"]["shard_class"] == "replicated",
+          "decay_down shard class is wrong")
+    check(tensor(p + "kda_decay_up_weight") ==
+          src[a + "f_b_proj.weight"][2],
+          "decay_up is not the checkpoint's f_b_proj")
+    check(tensor(p + "kda_gate_weight") == src[a + "g_proj.weight"][2],
+          "gate is not the checkpoint's full-rank g_proj")
+    check(entries[p + "kda_gate_weight"]["shard_class"] == "output_dim_heads",
+          "gate shard class is wrong")
+    for gone in ("kda_q_weight", "kda_k_weight", "kda_v_weight",
+                 "kda_beta_weight", "kda_decay_gate_down_weight",
+                 "kda_gate_down_weight", "expert_w1_scale",
+                 "expert_w2_scale"):
+        check(p + gone not in entries, f"{gone} should not exist in V2")
+
+    # the interleaved expert tensor, held to the checkpoint through the
+    # published addressing, cell by cell - not through the packer's relay
+    geom = k3_pack.interleave_geometry(2 * MINI["inter"], MINI["latent"],
+                                       MINI["experts"])
+    got = tensor(p + "expert_w1_weight")
+    check(len(got) == geom["tensor_bytes"],
+          "interleaved w1 byte count is off")
+    mismatches = 0
+    for e in range(MINI["experts"]):
+        pay = src[f"{p}block_sparse_moe.experts.{e}.w1.weight"][2] + \
+            src[f"{p}block_sparse_moe.experts.{e}.w3.weight"][2]
+        sc = src[f"{p}block_sparse_moe.experts.{e}.w1.weight_scale"][2] + \
+            src[f"{p}block_sparse_moe.experts.{e}.w3.weight_scale"][2]
+        for n in range(0, 2 * MINI["inter"], 16):
+            prow = n * (MINI["latent"] // 2)
+            at = k3_pack.interleave_byte_offset(geom, e, 0, n, "payload", 0)
+            mismatches += got[at:at + 64] != pay[prow:prow + 64]
+            srow = n * (MINI["latent"] // 32)
+            at = k3_pack.interleave_byte_offset(geom, e, 0, n, "scale", 0)
+            mismatches += got[at:at + 4] != sc[srow:srow + 4]
+    check(mismatches == 0,
+          f"interleaved w1 misplaces {mismatches} sampled rows")
+
+    # the gamma fold, recomputed independently in f64: f32-exact then RNE
+    gamma = struct.iter_unpack("<H", src[p + "self_attention_res_norm.weight"][2])
+    proj = struct.iter_unpack("<H", src[p + "self_attention_res_proj.weight"][2])
+    fused = tensor(p + "attnres_attn_weight")
+    mismatches = 0
+    for i, ((gv,), (pv,)) in enumerate(zip(gamma, proj)):
+        gf = struct.unpack("<f", struct.pack("<I", gv << 16))[0]
+        pf = struct.unpack("<f", struct.pack("<I", pv << 16))[0]
+        want = k3_pack.f32_list_to_bf16_raw([k3_pack.f32_round(gf * pf)])
+        mismatches += fused[2 * i:2 * i + 2] != want
+    check(mismatches == 0, "gamma fold is not the f32-exact product")
+
+    # A_log narrows to the runtime head count
+    check(tensor(p + "kda_head_log_scale") ==
+          src[a + "A_log"][2][:MINI["kda_heads"] * 4],
+          "A_log was not narrowed")
+
+
 def end_to_end():
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -298,99 +405,11 @@ def end_to_end():
                               str(root), str(out)],
                              capture_output=True, text=True)
         if run.returncode != 0:
-            print("  FAIL packer:", (run.stdout + run.stderr)[-400:])
-            return
-        version, manifest, base, tensor = read_pack(out)
-        check(version == 2, f"pack version is {version}, not 2")
-        check(base % 128 == 0, "payload base is not 128-aligned")
-        fmt = manifest["format"]
-        check(fmt["alignment"] == 128 and fmt["version"] == 2,
-              "format block is wrong")
-        check(fmt["mxfp4_interleave"]["cell_rows"] == 17
-              and fmt["mxfp4_interleave"]["row_bytes"] == 64,
-              "format block interleave parameters are wrong")
-
-        entries = manifest["tensors"]
-        ordered = sorted(entries.items(), key=lambda kv: kv[1]["offset"])
-        check(all(e["offset"] % 128 == 0 for _, e in ordered),
-              "a tensor offset is not 128-aligned")
-        check(all(a[1]["offset"] + a[1]["bytes"] <= b[1]["offset"]
-                  for a, b in zip(ordered, ordered[1:])),
-              "tensor extents overlap")
-        # consumption order: embed first; layers ascending; closers last
-        names = [n for n, _ in ordered]
-        check(names[0] == "model.embed_tokens.weight",
-              "embedding is not the first tensor")
-        check(names[-3:] == ["model.norm.weight", "model.attnres_out_weight",
-                             "lm_head.weight"],
-              f"closing tensors are not last: {names[-3:]}")
-        layer_of = [int(n.split(".")[2]) for n in names
-                    if n.startswith("model.layers.")]
-        check(layer_of == sorted(layer_of), "layers are not emitted in order")
-
-        # the fused KDA tensors: bytes are the section concatenation, tables tile
-        p, a = "model.layers.0.", "model.layers.0.self_attn."
-        want = b"".join(src[a + n][2] for n in
-                        ("q_proj.weight", "k_proj.weight", "v_proj.weight",
-                         "b_proj.weight"))
-        check(tensor(p + "kda_qkv_beta_weight") == want,
-              "fused qkv|beta bytes are not the section concatenation")
-        entry = entries[p + "kda_qkv_beta_weight"]
-        check(entry["shard_class"] == "output_dim_heads",
-              "fused qkv|beta shard class is wrong")
-        check([s["row_offset"] for s in entry["sections"]] == [0, 128, 256, 384]
-              and entry["shape"] == [386, 64],
-              "fused qkv|beta section table does not tile the tensor")
-        want = src[a + "f_a_proj.weight"][2] + src[a + "g_a_proj.weight"][2]
-        check(tensor(p + "kda_decay_gate_down_weight") == want,
-              "fused decay|gate down bytes are not the section concatenation")
-        check(entries[p + "kda_decay_gate_down_weight"]["shard_class"]
-              == "replicated", "fused decay|gate shard class is wrong")
-        for gone in ("kda_q_weight", "kda_k_weight", "kda_v_weight",
-                     "kda_beta_weight", "kda_decay_down_weight",
-                     "kda_gate_down_weight", "expert_w1_scale",
-                     "expert_w2_scale"):
-            check(p + gone not in entries, f"{gone} should not exist in V2")
-
-        # the interleaved expert tensor, held to the checkpoint through the
-        # published addressing, cell by cell - not through the packer's relay
-        geom = k3_pack.interleave_geometry(2 * MINI["inter"], MINI["latent"],
-                                           MINI["experts"])
-        got = tensor(p + "expert_w1_weight")
-        check(len(got) == geom["tensor_bytes"],
-              "interleaved w1 byte count is off")
-        mismatches = 0
-        for e in range(MINI["experts"]):
-            pay = src[f"{p}mlp.experts.{e}.w1.weight"][2] + \
-                src[f"{p}mlp.experts.{e}.w3.weight"][2]
-            sc = src[f"{p}mlp.experts.{e}.w1.weight_scale"][2] + \
-                src[f"{p}mlp.experts.{e}.w3.weight_scale"][2]
-            for n in range(0, 2 * MINI["inter"], 16):
-                prow = n * (MINI["latent"] // 2)
-                at = k3_pack.interleave_byte_offset(geom, e, 0, n, "payload", 0)
-                mismatches += got[at:at + 64] != pay[prow:prow + 64]
-                srow = n * (MINI["latent"] // 32)
-                at = k3_pack.interleave_byte_offset(geom, e, 0, n, "scale", 0)
-                mismatches += got[at:at + 4] != sc[srow:srow + 4]
-        check(mismatches == 0,
-              f"interleaved w1 misplaces {mismatches} sampled rows")
-
-        # the gamma fold, recomputed independently in f64: f32-exact then RNE
-        gamma = struct.iter_unpack("<H", src[p + "self_attention_res_norm.weight"][2])
-        proj = struct.iter_unpack("<H", src[p + "self_attention_res_proj.weight"][2])
-        fused = tensor(p + "attnres_attn_weight")
-        mismatches = 0
-        for i, ((gv,), (pv,)) in enumerate(zip(gamma, proj)):
-            gf = struct.unpack("<f", struct.pack("<I", gv << 16))[0]
-            pf = struct.unpack("<f", struct.pack("<I", pv << 16))[0]
-            want = k3_pack.f32_list_to_bf16_raw([k3_pack.f32_round(gf * pf)])
-            mismatches += fused[2 * i:2 * i + 2] != want
-        check(mismatches == 0, "gamma fold is not the f32-exact product")
-
-        # A_log narrows to the runtime head count
-        check(tensor(p + "kda_head_log_scale") ==
-              src[a + "A_log"][2][:MINI["kda_heads"] * 4],
-              "A_log was not narrowed")
+            # an aborted pack is a FAILURE, never a silent skip: record it and
+            # still run the refusal cases below
+            check(False, "packer: " + (run.stdout + run.stderr)[-400:])
+        else:
+            assert_happy_pack(src, out)
 
         # a checkpoint the interleave grid does not divide is refused
         for stale in root.iterdir():

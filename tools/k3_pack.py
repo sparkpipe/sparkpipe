@@ -9,15 +9,13 @@ transforms, each removing a defect the V1 format baked in:
 
   fused KDA     the six projections that read one normed KDA input shipped as
   projections   six tensors, so six GEMM launches read the same activation
-                (layer.cuh K3-PERF-003). One GEMM needs one base pointer, and
-                the TP shard table splits the six into two classes, so V2
-                emits TWO fused tensors per KDA layer, each carrying exactly
-                one shard class:
+                (layer.cuh K3-PERF-003). One GEMM needs one base pointer, so
+                V2 emits the one fusion the released checkpoint ships
+                (docs/K3_GATE_RECONCILIATION.md: decay_down stays standalone,
+                the gate is full rank):
                   kda_qkv_beta_weight       q|k|v|beta rows, one
                                             [sum_out, hidden] BF16 tensor,
                                             OUTPUT_DIM_HEADS
-                  kda_decay_gate_down_weight decay_down|gate_down rows,
-                                            REPLICATED
                 The manifest's per-tensor section table gives each section's
                 row offset and rows-per-head, so bind is pointer arithmetic.
 
@@ -73,6 +71,12 @@ import struct
 import sys
 from pathlib import Path
 
+# Make the sibling shared packer core importable however this tool is loaded.
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from spark_pack_common import PackFailure, SafetensorsSource  # noqa: E402
+
 try:
     import numpy as np
 except ImportError:  # layout logic below is stdlib-only; see module docstring
@@ -92,10 +96,6 @@ A_LOG_SOURCE_HEADS = 128
 KIND_BF16 = "bf16"
 KIND_F32 = "f32"
 KIND_MXFP4_INTERLEAVED = "mxfp4_ws_interleaved_v1"
-
-
-class PackFailure(RuntimeError):
-    pass
 
 
 # -- pure-python scalar helpers ----------------------------------------------
@@ -147,7 +147,8 @@ if np is not None:
 # heads, beta's single row per head included.
 
 def kda_fused_qkvb_sections(heads, key_dim, value_dim):
-    """q|k|v|beta: the OUTPUT_DIM_HEADS half of the six-way KDA fusion."""
+    """q|k|v|beta: the fused OUTPUT_DIM_HEADS section of the six-way KDA
+    fusion."""
     sections = []
     row = 0
     for name, rows, per_head in (
@@ -158,19 +159,6 @@ def kda_fused_qkvb_sections(heads, key_dim, value_dim):
         sections.append({"name": name, "row_offset": row, "rows": rows,
                          "rows_per_head": per_head})
         row += rows
-    return sections, row
-
-
-def kda_fused_decay_gate_down_sections(head_dim):
-    """decay_down|gate_down: the REPLICATED half. Bottleneck widths are not
-    head-split by the TP table, so rows_per_head is 0 - the section exists for
-    bind arithmetic, not for slicing."""
-    sections = []
-    row = 0
-    for name in ("decay_down", "gate_down"):
-        sections.append({"name": name, "row_offset": row, "rows": head_dim,
-                         "rows_per_head": 0})
-        row += head_dim
     return sections, row
 
 
@@ -308,51 +296,45 @@ def interleave(payload, scales, geom):
 
 # -- checkpoint reading --------------------------------------------------------
 
-class SafetensorDir:
-    """Minimal reader: index.json plus shards, or a single model.safetensors.
-    Returns raw bytes and the header's shape/dtype; interpretation is the
-    caller's."""
+class SafetensorDir(SafetensorsSource):
+    """K3 checkpoint reader on the shared packer core (the last of the six
+    packers off its embedded raw-bytes reader, docs/PACKER_CORE_PLAN.md).
+    Byte LOCATION is the base class's: index parsing, per-shard header
+    caching and payload-offset resolution. What this subclass adds is the
+    two serialisations this checkpoint ships - the sharded index AND the
+    released single model.safetensors - plus the raw accessors (dtype,
+    shape, bytes) whose interpretation stays here."""
 
     def __init__(self, model_dir):
-        self.model_dir = Path(model_dir)
-        index = self.model_dir / "model.safetensors.index.json"
+        model_dir = Path(model_dir)
+        index = model_dir / "model.safetensors.index.json"
+        single = model_dir / "model.safetensors"
+        if not index.is_file() and not single.is_file():
+            raise PackFailure(f"no safetensors index or file in {model_dir}")
         if index.is_file():
-            self.weight_map = json.loads(index.read_text())["weight_map"]
-        else:
-            single = self.model_dir / "model.safetensors"
-            if not single.is_file():
-                raise PackFailure(f"no safetensors index or file in {model_dir}")
-            self.weight_map = None
-            self.single = single.name
+            super().__init__(model_dir)
+            return
+        # Single-file serialisation: synthesise the weight map the shared
+        # core resolves through, one header read instead of an index parse.
+        # __metadata__ is header framing, not a tensor.
+        self.root = model_dir
         self.headers = {}
-
-    def _header(self, shard):
-        if shard not in self.headers:
-            path = self.model_dir / shard
-            with open(path, "rb") as handle:
-                length = struct.unpack("<Q", handle.read(8))[0]
-                header = json.loads(handle.read(length))
-            header.pop("__metadata__", None)
-            self.headers[shard] = (header, 8 + length)
-        return self.headers[shard]
+        self.data_start = {}
+        self.weight_map = {name: single.name
+                           for name in self.shard_header(single.name)
+                           if name != "__metadata__"}
+        self.config = json.loads((model_dir / "config.json").read_text())
 
     def names(self):
-        if self.weight_map is not None:
-            return set(self.weight_map)
-        return set(self._header(self.single)[0])
+        return set(self.weight_map)
 
     def tensor(self, name):
-        shard = self.weight_map.get(name) if self.weight_map is not None \
-            else (self.single if name in self._header(self.single)[0] else None)
-        if shard is None:
-            raise PackFailure(f"missing tensor: {name}")
-        header, base = self._header(shard)
-        entry = header[name]
+        shard, entry, offset = self.resolve(name)
         begin, end = entry["data_offsets"]
-        with open(self.model_dir / shard, "rb") as handle:
-            handle.seek(base + begin)
-            raw = handle.read(end - begin)
-        return entry["dtype"], tuple(entry["shape"]), raw
+        with open(self.root / shard, "rb") as handle:
+            handle.seek(offset)
+            return entry["dtype"], tuple(entry["shape"]), \
+                handle.read(end - begin)
 
     def expect(self, name, dtype, shape=None):
         got_dtype, got_shape, raw = self.tensor(name)
@@ -563,7 +545,7 @@ def validate_layout(manifest, config):
 def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
                 expert_tile_k=TILE_K):
     reader = SafetensorDir(model_dir)
-    config = json.loads((Path(model_dir) / "config.json").read_text())
+    config = reader.config
     # The Kimi-K3 checkpoint nests the model config under text_config.
     if isinstance(config.get("text_config"), dict):
         config = config["text_config"]
@@ -815,9 +797,7 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
                                 "cell_rows": CELL_PAYLOAD_ROWS + 1,
                                 "row_bytes": TILE_K * 4 // 8,
                                 "scale_bytes_per_neuron_tile": TILE_K // GROUP},
-           "kda_fused": {"qkvb_sections": ["q", "k", "v", "beta"],
-                         "decay_gate_down_sections": ["decay_down",
-                                                      "gate_down"]}}
+           "kda_fused": {"qkvb_sections": ["q", "k", "v", "beta"]}}
     manifest = json.dumps({"format": fmt, "config": echo,
                            "tensors": pack.manifest},
                           separators=(",", ":")).encode()

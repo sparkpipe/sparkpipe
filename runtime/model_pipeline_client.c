@@ -604,11 +604,11 @@ static SparkStatus SparkModelPipelineClientValidateConfiguration(
 	const SparkModelPipelineClientConfiguration *configuration)
 {
 	if ( configuration == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		do { fprintf(stderr,"PC_TRACE %d\n",__LINE__); return(SPARK_STATUS_INVALID_ARGUMENT); } while(0);
 	if ( configuration->abi_version != SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_PIPELINE_CLIENT_CONFIGURATION_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( configuration->deployment == 0 || configuration->runtime_root == 0 || configuration->connect_timeout_ms == 0u || configuration->completion_function == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		do { fprintf(stderr,"PC_TRACE %d\n",__LINE__); return(SPARK_STATUS_INVALID_ARGUMENT); } while(0);
 	return(SPARK_STATUS_OK);
 }
 
@@ -692,7 +692,7 @@ SparkStatus SparkModelPipelineClientConnect(
 	SparkStatus status;
 	uint32_t stage;
 	if ( pipeline_out == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		do { fprintf(stderr,"PC_TRACE %d\n",__LINE__); return(SPARK_STATUS_INVALID_ARGUMENT); } while(0);
 	*pipeline_out = 0;
 	status = SparkModelPipelineClientValidateConfiguration(configuration);
 	if ( status != SPARK_STATUS_OK )
@@ -759,14 +759,14 @@ SparkStatus SparkModelPipelineClientSubmit(
 	SparkStatus status;
 	uint32_t continuation,failed_stage_index,rank;
 	if ( pipeline == 0 || submission == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		do { fprintf(stderr,"PC_TRACE %d\n",__LINE__); return(SPARK_STATUS_INVALID_ARGUMENT); } while(0);
 	if ( pipeline->failed_status != SPARK_STATUS_OK )
 		return((SparkStatus)pipeline->failed_status);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(pipeline->adapter_descriptor,&pipeline->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->submission_id <= pipeline->last_submission_id )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		do { fprintf(stderr,"PC_TRACE %d\n",__LINE__); return(SPARK_STATUS_INVALID_ARGUMENT); } while(0);
 	status = SparkModelPipelineClientPreflight(pipeline,&failed_stage_index);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -853,7 +853,7 @@ SparkStatus SparkModelPipelineClientProgress(
 	SparkStatus status;
 	uint32_t rank;
 	if ( pipeline == 0 || maximum_message_count_per_rank == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		do { fprintf(stderr,"PC_TRACE %d\n",__LINE__); return(SPARK_STATUS_INVALID_ARGUMENT); } while(0);
 	if ( pipeline->failed_status != SPARK_STATUS_OK )
 	{
 		SparkModelPipelineClientFailTransactions(pipeline,(SparkStatus)pipeline->failed_status);
@@ -881,7 +881,7 @@ SparkStatus SparkModelPipelineClientGetPollDescriptors(
 	SparkStatus status;
 	uint32_t rank;
 	if ( pipeline == 0 || descriptors == 0 || descriptor_count_out == 0 || descriptor_capacity < pipeline->rank_count )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		do { fprintf(stderr,"PC_TRACE %d\n",__LINE__); return(SPARK_STATUS_INVALID_ARGUMENT); } while(0);
 	status = SPARK_STATUS_OK;
 	for (rank=0u; status==SPARK_STATUS_OK && rank<pipeline->rank_count; rank++)
 		status = SparkModelResidentClientGetPollDescriptor(pipeline->clients[rank],&descriptors[rank]);
@@ -896,7 +896,7 @@ SparkStatus SparkModelPipelineClientGetView(
 	SparkModelResidentClientView client_view;
 	uint32_t rank;
 	if ( pipeline == 0 || view == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		do { fprintf(stderr,"PC_TRACE %d\n",__LINE__); return(SPARK_STATUS_INVALID_ARGUMENT); } while(0);
 	memset(view,0,sizeof(*view));
 	view->abi_version = SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION;
 	view->descriptor_bytes = SPARK_MODEL_PIPELINE_CLIENT_VIEW_BYTES;

@@ -756,7 +756,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 		 * TP rank, cross-checked against the stage config below. */
 		state->node_context.stage_index = 0u;
 		state->node_context.first_layer_index = 0u;
-		state->node_context.layer_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE;
+		state->node_context.layer_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_LAYERS_PER_STAGE;
 		state->node_context.expert_weight_codec = GLM52_EXPERT_WEIGHT_CODEC;
 		state->node_context.resident_sequence_capacity = state->resident_sequence_capacity;
 		state->node_context.pipeline_slot_count = state->pipeline_slot_count;

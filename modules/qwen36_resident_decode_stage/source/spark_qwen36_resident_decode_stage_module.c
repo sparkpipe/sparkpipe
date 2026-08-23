@@ -1078,7 +1078,6 @@ static SparkStatus SparkQwen36ModuleAllocateSlotControl(SparkQwen36ModuleState *
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN36_DSPARK_CONTEXT_MAX + SPARK_QWEN36_DSPARK_BLOCK_SIZE) * SPARK_QWEN36_DSPARK_ATTN_KV_HEADS * SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_context_k_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN36_DSPARK_CONTEXT_MAX + SPARK_QWEN36_DSPARK_BLOCK_SIZE) * SPARK_QWEN36_DSPARK_ATTN_KV_HEADS * SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_context_v_bf16);
-		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_tap_buffer);
 	/* Merge consolidation: main's cache-path per-slot tap staging buffer. */
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_QWEN36_DSPARK_TARGET_TAP_COUNT * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * SPARK_QWEN36_MODEL_BF16_ELEMENT_BYTES,&slot->dspark_tap_buffer);
@@ -3933,8 +3932,8 @@ static SparkStatus SparkQwen36ModuleRunFrame(SparkQwen36ModuleState *state, Spar
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleFinish(state,slot,context,frame,prefill,rows);
-		if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT) != 0u && context->gdn_snapshot != 0 )
-			status = SparkQwen36ModuleGdnPrefixTransfer(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
+	if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT) != 0u && context->gdn_snapshot != 0 )
+		status = SparkQwen36ModuleGdnPrefixTransfer(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
 		if ( capturing != 0 )
 			{
 				if ( cudaStreamEndCapture((cudaStream_t)slot->cuda_stream,&cap) == cudaSuccess && cap != 0 && status == SPARK_STATUS_OK )
