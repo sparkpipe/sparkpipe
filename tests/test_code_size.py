@@ -696,7 +696,11 @@ from pathlib import Path
 # staging, default ON, kill-switch SPARK_QWEN36_WS_PLAIN=0) + consumer
 # acquire fence + publish barrier; bench ledger updated with the in-situ
 # A/B (kernel-level +10%, end-to-end neutral, bit-exact).
-CEILING = 174101
+# 174145 (2026-08-23): incident fixes - pack-load device-memory preflight
+# (watchdog-restart SEGV -> clean capacity_exceeded), daemon client-session
+# submission-id reset on hello, engine prefill lane concentration (full-
+# width frames instead of 1-row-per-lane at B>1).
+CEILING = 174145
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
