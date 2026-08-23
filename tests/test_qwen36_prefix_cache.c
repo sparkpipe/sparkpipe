@@ -351,19 +351,23 @@ static void F1Fill(uint32_t *tokens, uint32_t base, uint32_t count)
 		tokens[i] = base + i * 7u + 1u;
 }
 
-/* Returns the number of pool blocks unreachable from every record
- * (orphans); POOL on the first hygiene violation. */
-static uint32_t F1ConservationCheck(const SparkQwen36PagedKv *cache,
-	const char *where, uint32_t step)
+/* THE lane invariant, ONE implementation for every scale (DRY: the F1
+ * B1 cases and the B512 scale case assert the same law): {free list} U
+ * {lane rows} U {live sequences} U {core LRU} == pool, free list
+ * disjoint from every in-use set, row hygiene past counts. Dimensions
+ * come from the cache under test; pool/buffers/tag come from the
+ * caller. Returns orphan count; pool-cap on a violation. */
+static uint32_t GateFreeListConservation(const SparkQwen36PagedKv *cache,
+	const char *tag,const char *where,uint32_t step,
+	int8_t *in_free,int8_t *in_use,uint32_t pool)
 {
-	int8_t in_free[F1_POOL],in_use[F1_POOL];
 	uint32_t i,ordinal,next,orphans;
-	memset(in_free,0,sizeof(in_free));
-	memset(in_use,0,sizeof(in_use));
+	memset(in_free,0,(size_t)pool);
+	memset(in_use,0,(size_t)pool);
 	next = cache->core.free_block_head;
 	while (next != SPARK_PREFIX_CACHE_CORE_NO_BLOCK)
 	{
-		assert(next < F1_POOL);
+		assert(next < pool);
 		in_free[next] = 1;
 		next = cache->core.blocks[next].free_next;
 	}
@@ -371,25 +375,29 @@ static uint32_t F1ConservationCheck(const SparkQwen36PagedKv *cache,
 	next = cache->core.lru_head;
 	while (next != SPARK_PREFIX_CACHE_CORE_NO_BLOCK)
 	{
-		assert(next < F1_POOL);
+		assert(next < pool);
 		in_use[next] = 1;
 		next = cache->core.blocks[next].lru_next;
 	}
-	for (i=0u; i<F1_LANES; i++)
-		for (ordinal=0u; ordinal<F1_BLOCKS_PER_LANE; ordinal++)
+	for (i=0u; i<cache->configuration.lane_count; i++)
+		for (ordinal=0u; ordinal<cache->configuration.blocks_per_lane;
+			ordinal++)
 		{
-			uint32_t block = f1_table[i * F1_BLOCKS_PER_LANE + ordinal];
-			if ( ordinal >= f1_counts[i] )
+			uint32_t block = cache->blocks_by_lane[
+				i * cache->configuration.blocks_per_lane + ordinal];
+			if ( ordinal >= cache->counts_by_lane[i] )
 			{
 				if ( block != SPARK_QWEN36_PAGED_KV_NO_BLOCK )
 				{
-					fprintf(stderr,"F1FAIL[%s step %u]: lane %u ordinal %u >= count %u holds block %u (row hygiene)\n",
-						where,step,i,ordinal,f1_counts[i],block);
-					return(F1_POOL);
+					fprintf(stderr,"%sFAIL[%s step %u]: lane %u ordinal %u >= count %u holds block %u (row hygiene)\n",
+						tag,where,step,i,ordinal,
+						cache->counts_by_lane[i],block);
+					return(pool);
 				}
 				continue;
 			}
-			assert(block != SPARK_QWEN36_PAGED_KV_NO_BLOCK && block < F1_POOL);
+			assert(block != SPARK_QWEN36_PAGED_KV_NO_BLOCK &&
+				block < pool);
 			in_use[block] = 1;
 		}
 	for (i=0u; i<cache->core.max_sequence_count; i++)
@@ -402,26 +410,35 @@ static uint32_t F1ConservationCheck(const SparkQwen36PagedKv *cache,
 		{
 			uint32_t block = cache->core.sequence_blocks[
 				i * cache->core.sequence_block_capacity + ordinal];
-			assert(block < F1_POOL);
+			assert(block < pool);
 			in_use[block] = 1;
 		}
 	}
 	orphans = 0u;
-	for (i=0u; i<F1_POOL; i++)
+	for (i=0u; i<pool; i++)
 	{
 		if ( in_free[i] != 0 && in_use[i] != 0 )
 		{
-			fprintf(stderr,"F1FAIL[%s step %u]: block %u on free list AND in use\n",
-				where,step,i);
-			return(F1_POOL);
+			fprintf(stderr,"%sFAIL[%s step %u]: block %u on free list AND in use\n",
+				tag,where,step,i);
+			return(pool);
 		}
 		if ( in_free[i] == 0 && in_use[i] == 0 )
 			orphans++;
 	}
 	if ( orphans != 0u )
-		fprintf(stderr,"F1FAIL[%s step %u]: %u orphaned blocks\n",
-			where,step,orphans);
+		fprintf(stderr,"%sFAIL[%s step %u]: %u orphaned blocks\n",
+			tag,where,step,orphans);
 	return(orphans);
+}
+
+/* F1 wrapper: same invariant, B1-scale buffers. */
+static uint32_t F1ConservationCheck(const SparkQwen36PagedKv *cache,
+	const char *where, uint32_t step)
+{
+	int8_t in_free[F1_POOL],in_use[F1_POOL];
+	return(GateFreeListConservation(cache,"F1",where,step,
+		in_free,in_use,F1_POOL));
 }
 
 /* Shared paged-Kv fixture setup for every unit-level scenario (F1/F2):
@@ -643,81 +660,12 @@ static uint32_t s_table[S_LANES * S_BLOCKS_PER_LANE];
 static uint32_t s_counts[S_LANES];
 static int8_t s_in_free[S_POOL],s_in_use[S_POOL];
 
-/* The F1 invariant, dimensioned from the cache under test instead of
- * the F1 constants: {free list} U {lane rows} U {live sequences} U
- * {core LRU} == pool, free list disjoint from every in-use set, row
- * hygiene past counts. Returns orphan count; S_POOL on a violation. */
+/* S512 wrapper: the SAME invariant core as F1, B512-scale buffers. */
 static uint32_t S512ConservationCheck(const SparkQwen36PagedKv *cache,
 	const char *where,uint32_t step)
 {
-	uint32_t i,ordinal,next,orphans;
-	memset(s_in_free,0,sizeof(s_in_free));
-	memset(s_in_use,0,sizeof(s_in_use));
-	next = cache->core.free_block_head;
-	while ( next != SPARK_PREFIX_CACHE_CORE_NO_BLOCK )
-	{
-		assert(next < S_POOL);
-		s_in_free[next] = 1;
-		next = cache->core.blocks[next].free_next;
-	}
-	next = cache->core.lru_head;
-	while ( next != SPARK_PREFIX_CACHE_CORE_NO_BLOCK )
-	{
-		assert(next < S_POOL);
-		s_in_use[next] = 1;
-		next = cache->core.blocks[next].lru_next;
-	}
-	for (i=0u; i<cache->configuration.lane_count; i++)
-		for (ordinal=0u; ordinal<cache->configuration.blocks_per_lane;
-			ordinal++)
-		{
-			uint32_t block = cache->blocks_by_lane[
-				i * cache->configuration.blocks_per_lane + ordinal];
-			if ( ordinal >= cache->counts_by_lane[i] )
-			{
-				if ( block != SPARK_QWEN36_PAGED_KV_NO_BLOCK )
-				{
-					fprintf(stderr,"S512FAIL[%s step %u]: lane %u ordinal %u >= count %u holds block %u (row hygiene)\n",
-						where,step,i,ordinal,
-						cache->counts_by_lane[i],block);
-					return(S_POOL);
-				}
-				continue;
-			}
-			assert(block != SPARK_QWEN36_PAGED_KV_NO_BLOCK &&
-				block < S_POOL);
-			s_in_use[block] = 1;
-		}
-	for (i=0u; i<cache->core.max_sequence_count; i++)
-	{
-		const SparkPrefixCacheCoreSequence *sequence =
-			&cache->core.sequences[i];
-		if ( sequence->used == 0u )
-			continue;
-		for (ordinal=0u; ordinal<sequence->block_count; ordinal++)
-		{
-			uint32_t block = cache->core.sequence_blocks[
-				i * cache->core.sequence_block_capacity + ordinal];
-			assert(block < S_POOL);
-			s_in_use[block] = 1;
-		}
-	}
-	orphans = 0u;
-	for (i=0u; i<S_POOL; i++)
-	{
-		if ( s_in_free[i] != 0 && s_in_use[i] != 0 )
-		{
-			fprintf(stderr,"S512FAIL[%s step %u]: block %u on free list AND in use\n",
-				where,step,i);
-			return(S_POOL);
-		}
-		if ( s_in_free[i] == 0 && s_in_use[i] == 0 )
-			orphans++;
-	}
-	if ( orphans != 0u )
-		fprintf(stderr,"S512FAIL[%s step %u]: %u orphaned blocks\n",
-			where,step,orphans);
-	return(orphans);
+	return(GateFreeListConservation(cache,"S512",where,step,
+		s_in_free,s_in_use,S_POOL));
 }
 
 static int S512ScaleScenario(void)
