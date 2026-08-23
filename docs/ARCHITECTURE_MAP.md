@@ -61,3 +61,22 @@ logic exist in both? Owner: pccore dev to confirm the layering; auditor to verif
 - MERGE-NOTE: main's bonus-fold/multi-block draft-count convention vs unified's
   all-7-drafts + credited-ceiling accounting - unified wins default path;
   main's fold machinery opt-in behind SPARK_QWEN36_DFLASH2_CACHE_PATH=1.
+
+## PASS 2: runtime/stage_module_common.c contract inventory (1137 ln)
+The module-host contract EVERY resident driver links. Exported families:
+1. **Env/config**: EnvironmentText/Unsigned/Unsigned64 - per-module env parsing with [min,max] clamping.
+2. **Device allocation ledger**: DeviceAllocate/Zeroed, RecordAllocation, LedgerRollback, LedgerRelease (cudaMalloc tracking; release frees all). THE allocation path for all drivers' device buffers.
+3. **CUDA fork**: CudaForkInitialize/Begin/Join/Destroy (aux-stream parallel legs - e.g., glm52/qwen36 shared-expert overlap).
+4. **Read-ahead**: ReadAheadInitialize/Arm/Join/Destroy.
+5. **Pack I/O**: PackRead, LoadDeviceRegion (pack -> device regions).
+6. **Admission**: AdmissionDecisionInitialize/Accept/Reject (+ validity).
+7. **Runtime snapshot**: RuntimeSnapshotInitialize.
+8. **Slot/index claims**: SlotClaim, IndexSetClaim(+Ordinal,+Prepare), IndexSetRelease, SlotAvailableCount, SlotCountFree, WaitForSlots, SlotRelease, CompleteAndReleaseClaims.
+9. **Diagnostics**: CudaStatus (error wrapper w/ module tag).
+
+CONSUMERS: all six drivers link this. ANY change here affects every model simultaneously - changes require per-driver regression runs (the completeness matrix per affected driver).
+
+AUDIT NOTES (pass 2):
+- stage_module_common has NO model-specific code - clean shared layer. ✓
+- qwen36's pccore prefix_cache.c lives in runtime/ alongside - correct placement per layering.
+- OPEN: cache/prefix_cache.c vs runtime/prefix_cache.c layering question (see §3) - pccore dev to confirm interlock.
