@@ -95,7 +95,7 @@ static double clock_gettime_mono_ns(void)
  * until the long-context KV plan lands, far under the module's 256K admit
  * ceiling. The KV pool is sized from this cap, so a conforming deployment
  * can never exhaust blocks. */
-#define SPARK_QWEN36_SERVING_MAX_SEQUENCE_POSITIONS_CAP 8192u
+#define SPARK_QWEN36_SERVING_MAX_SEQUENCE_POSITIONS_CAP 262144u
 #define SPARK_QWEN36_SERVING_REQUIRED_PROGRAM_FLAGS \
 	(SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | \
