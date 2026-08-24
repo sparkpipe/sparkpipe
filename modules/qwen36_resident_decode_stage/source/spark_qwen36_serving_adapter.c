@@ -1413,6 +1413,37 @@ static uint64_t SparkQwen36ServingLaneRowPosition(
 	return(UINT64_MAX);
 }
 
+/* Frame-context wiring identical in every frame builder: KV block-table
+ * binding when attention layers exist, hidden transport plumbing, and the
+ * shim base/row defaults. */
+static void SparkQwen36ServingFillContextCommon(
+	SparkQwen36ServingState *state,
+	const SparkModelServingSubmission *submission,
+	SparkQwen36ResidentDecodeStageFrameContext *context,
+	uint32_t frame_rows)
+{
+	if ( state->stage_attn_layer_count != 0u )
+	{
+		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE;
+		context->kv_block_table = &state->block_table;
+	}
+	if ( SparkQwen36ServingOwnsEmbedding(state) == 0u )
+	{
+		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT;
+		context->hidden_input_transport_session = (SparkHiddenTransportSession *)&state->shim;
+		context->hidden_input_post_receive_function = SparkQwen36ServingPostReceive;
+	}
+	if ( SparkQwen36ServingNeedsHiddenOutput(state) != 0u )
+	{
+		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT;
+		context->hidden_output_transport_session = (SparkHiddenTransportSession *)&state->shim;
+		context->hidden_output_send_function = SparkQwen36ServingSend;
+	}
+	state->shim.input_base = submission->hidden_input_address;
+	state->shim.input_rows = frame_rows;
+	state->shim.output_base = submission->hidden_output_address;
+}
+
 static void SparkQwen36ServingBuildFrame(
 	SparkQwen36ServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -1448,26 +1479,7 @@ static void SparkQwen36ServingBuildFrame(
 		gdn_snapshot->reserved0 = 0u;
 		context->gdn_snapshot = gdn_snapshot;
 	}
-	if ( state->stage_attn_layer_count != 0u )
-	{
-		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE;
-		context->kv_block_table = &state->block_table;
-	}
-	if ( SparkQwen36ServingOwnsEmbedding(state) == 0u )
-	{
-		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT;
-		context->hidden_input_transport_session = (SparkHiddenTransportSession *)&state->shim;
-		context->hidden_input_post_receive_function = SparkQwen36ServingPostReceive;
-	}
-	if ( SparkQwen36ServingNeedsHiddenOutput(state) != 0u )
-	{
-		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT;
-		context->hidden_output_transport_session = (SparkHiddenTransportSession *)&state->shim;
-		context->hidden_output_send_function = SparkQwen36ServingSend;
-	}
-	state->shim.input_base = submission->hidden_input_address;
-	state->shim.input_rows = frame_rows;
-	state->shim.output_base = submission->hidden_output_address;
+	SparkQwen36ServingFillContextCommon(state,submission,context,frame_rows);
 	if ( prefill != 0u )
 	{
 		/* Round-major submissions interleave lanes by wave, so with unequal
@@ -1700,25 +1712,7 @@ static void SparkQwen36ServingBuildSpeculativeFrame(
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);
-	if ( state->stage_attn_layer_count != 0u )
-	{
-		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE;
-		context->kv_block_table = &state->block_table;
-	}
-	if ( SparkQwen36ServingOwnsEmbedding(state) == 0u )
-	{
-		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT;
-		context->hidden_input_transport_session = (SparkHiddenTransportSession *)&state->shim;
-		context->hidden_input_post_receive_function = SparkQwen36ServingPostReceive;
-	}
-	if ( SparkQwen36ServingNeedsHiddenOutput(state) != 0u )
-	{
-		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT;
-		context->hidden_output_transport_session = (SparkHiddenTransportSession *)&state->shim;
-		context->hidden_output_send_function = SparkQwen36ServingSend;
-	}
-	state->shim.input_base = submission->hidden_input_address;
-	state->shim.input_rows = frame_rows;
+	SparkQwen36ServingFillContextCommon(state,submission,context,frame_rows);
 	state->shim.input_row_map = 0;
 	state->shim.output_base = submission->hidden_output_address;
 	state->shim.output_row_map = 0;

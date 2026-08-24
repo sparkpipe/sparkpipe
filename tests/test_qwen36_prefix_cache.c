@@ -149,16 +149,20 @@ static void GateConfiguration(SparkModelServingAdapterConfiguration *configurati
 }
 
 /* One single-lane prefill submission carrying tokens[0..length) at
- * positions [0..length). */
-static SparkStatus GatePrefill(void *adapter_state, GateState *test_state,
+ * positions [0..length). With publish != 0 the lane additionally carries
+ * the client CACHE_PUBLISH contract (deterministic token-derived identity
+ * + block-aligned token count) - the glue that arms the adapter's
+ * publish-boundary frame. CASE 11 needs that because the checkpoint/publish
+ * collision it guards only exists on a lane that publishes. */
+static SparkStatus GateSubmitPrefill(void *adapter_state, GateState *test_state,
 	uint32_t slot, uint64_t sequence_id, const uint32_t *tokens,
-	uint32_t length, uint64_t submission_id)
+	uint32_t length, uint64_t submission_id, int publish)
 {
 	SparkModelServingSubmission submission;
 	SparkModelServingLane lane;
 	static __thread uint32_t row_lane[GATE_MAX_ROWS];
 	static __thread uint64_t row_positions[GATE_MAX_ROWS],row_sequences[GATE_MAX_ROWS];
-	uint32_t row;
+	uint32_t row,boundary;
 	memset(&submission,0,sizeof(submission));
 	memset(&lane,0,sizeof(lane));
 	for (row=0u; row<length; row++)
@@ -174,6 +178,17 @@ static SparkStatus GatePrefill(void *adapter_state, GateState *test_state,
 	lane.resident_sequence_slot = slot;
 	lane.context_token_count = length;
 	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	if ( publish != 0 )
+	{
+		boundary = length - (length % SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
+		if ( boundary == 0u )
+			boundary = length;
+		lane.flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+		lane.cache_publish_token_count = boundary;
+		for (row=0u; row<32u; row++)
+			lane.cache_publish_identity.sha256[row] =
+				(uint8_t)(tokens[row % length] * 31u + row);
+	}
 	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
@@ -204,71 +219,20 @@ static SparkStatus GatePrefill(void *adapter_state, GateState *test_state,
 	return(adapter_interface_global->submit(adapter_state,&submission));
 }
 
-/* Same single-lane prefill shape, plus the client CACHE_PUBLISH contract
- * (deterministic token-derived identity + block-aligned token count) - the
- * lane glue that arms the adapter's publish-boundary frame. CASE 11 needs
- * this because the checkpoint/publish collision it guards only exists on
- * a lane that publishes. */
+static SparkStatus GatePrefill(void *adapter_state, GateState *test_state,
+	uint32_t slot, uint64_t sequence_id, const uint32_t *tokens,
+	uint32_t length, uint64_t submission_id)
+{
+	return(GateSubmitPrefill(adapter_state,test_state,slot,sequence_id,
+		tokens,length,submission_id,0));
+}
+
 static SparkStatus GatePrefillPublish(void *adapter_state, GateState *test_state,
 	uint32_t slot, uint64_t sequence_id, const uint32_t *tokens,
 	uint32_t length, uint64_t submission_id)
 {
-	SparkModelServingSubmission submission;
-	SparkModelServingLane lane;
-	static __thread uint32_t pub_row_lane[GATE_MAX_ROWS];
-	static __thread uint64_t pub_row_positions[GATE_MAX_ROWS],pub_row_sequences[GATE_MAX_ROWS];
-	uint32_t row,boundary;
-	memset(&submission,0,sizeof(submission));
-	memset(&lane,0,sizeof(lane));
-	for (row=0u; row<length; row++)
-	{
-		pub_row_lane[row] = 0u;
-		pub_row_positions[row] = row;
-		pub_row_sequences[row] = sequence_id;
-	}
-	lane.sequence_id = sequence_id;
-	lane.request_id = submission_id + 1000u;
-	lane.request_generation = 1u;
-	lane.step_generation = 1u;
-	lane.resident_sequence_slot = slot;
-	lane.context_token_count = length;
-	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
-	boundary = length - (length % SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
-	if ( boundary == 0u )
-		boundary = length;
-	lane.flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
-	lane.cache_publish_token_count = boundary;
-	for (row=0u; row<32u; row++)
-		lane.cache_publish_identity.sha256[row] =
-			(uint8_t)(tokens[row % length] * 31u + row);
-	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
-	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
-	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
-	submission.tokens_per_sequence = 1u;
-	submission.submission_id = submission_id;
-	submission.request_id = submission_id + 1000u;
-	submission.sequence_id = sequence_id;
-	submission.control_generation = 1u;
-	submission.transaction_id = submission_id + 2000u;
-	submission.dispatch_generation = submission_id + 3000u;
-	submission.request_generation = 1u;
-	submission.step_generation = 1u;
-	submission.residency.word0 = submission_id;
-	submission.residency.word1 = 177u;
-	submission.residency.generation = 277u;
-	submission.residency.owner = 13u;
-	submission.active_sequence_count = 1u;
-	submission.new_token_count = length;
-	submission.lane_count = 1u;
-	submission.row_count = length;
-	submission.token_count = length;
-	submission.lanes = &lane;
-	submission.token_ids = tokens;
-	submission.row_positions = pub_row_positions;
-	submission.row_lane_indices = pub_row_lane;
-	submission.row_sequence_ids = pub_row_sequences;
-	test_state->completion_count = 0u;
-	return(adapter_interface_global->submit(adapter_state,&submission));
+	return(GateSubmitPrefill(adapter_state,test_state,slot,sequence_id,
+		tokens,length,submission_id,1));
 }
 
 /* One single-lane DECODE submission: one row at `position` carrying the
