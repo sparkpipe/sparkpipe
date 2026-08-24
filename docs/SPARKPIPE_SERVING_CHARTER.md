@@ -87,3 +87,30 @@ Work items, in order:
   model_batch_engine the CLI tool uses.
 - No multi-node in the API layer: TP/PP belongs to the deployment
   config (see the TP4xPP4 estimates in the release notes).
+
+## The 2.5TB backing-store budget (measured arithmetic, 2026-08-24)
+
+Qwen3.8-27B per-token attention KV: 16 attn layers x (2 x 4 GQA KV
+heads x 256 dim x 2B BF16) = 64 KiB/token. The 48 GDN layers are
+recurrent - fixed state per LANE (order MB/lane), not per token; the
+hybrid layout is what makes this model 4x cheaper per token than a
+standard 64-layer attention model. Sanity check: the current in-VRAM
+pool (8192 blocks x 64 tokens x 64 KiB = 34 GB) + 28 GB weights matches
+the observed device_gib=77.7.
+
+| Workload | KV bytes | vs 2.5TB budget |
+|---|---|---|
+| B1024 x 256k (this model, BF16 KV) | 17.6 TB | 7.0x OVER - 14% fits |
+| B1024 x 37k / B512 x 74k / B156 x 256k | 2.5 TB | exactly the horizon |
+| B1024 x 256k, FP8 KV | 8.8 TB | 3.5x over |
+| B1024 x 256k, std 64-layer 8-KV-head model, BF16 | 70 TB | 28x over |
+
+Conclusions: (1) 2.5TB does NOT cover full B1024x256k for this model in
+BF16 KV; treat it as the LRU horizon, not the workload promise. (2) The
+pager must apply BACKPRESSURE (admit fewer lanes / shorter contexts /
+evict cold prefixes) rather than thrash - a thrashing round reads its KV
+from the backing store at disk bandwidth (~7-14 GB/s NVMe) vs 273 GB/s
+VRAM: a 20-40x cliff on evicted blocks. (3) FP8 KV halves everything
+(kv_cache_codec exists) and should be part of the B1024 plan. (4) The
+per-token cost formula scales any future model: attn_layers x 2 x
+kv_heads x head_dim x bytes_per_element.
