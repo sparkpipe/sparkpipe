@@ -1444,6 +1444,38 @@ static void SparkQwen36ServingFillContextCommon(
 	state->shim.output_base = submission->hidden_output_address;
 }
 
+/* One writer for the driver-frame envelope identity shared by the plain and
+ * speculative builders: every field except sequence id/position and slot
+ * count, which are caller-owned policy. */
+static void SparkQwen36ServingFillFrameCommon(SparkQwen36ServingState *state, const SparkModelServingSubmission *submission,
+	SparkQwen36ServingPending *pending, uint32_t prefill, uint32_t frame_rows, uint64_t frame_sequence_id,
+	uint64_t frame_sequence_position, uint32_t active_slot_count, SparkQwen36ResidentDecodeStageFrameContext *context,
+	SparkModelDriverBuffer *buffers, SparkModelDriverFrame *frame)
+{
+	memset(frame,0,sizeof(*frame));
+	frame->request_id = submission->request_id;
+	frame->sequence_id = frame_sequence_id;
+	frame->sequence_position = frame_sequence_position;
+	frame->deadline_time_ns = submission->deadline_time_ns;
+	frame->active_slot_count = active_slot_count;
+	frame->new_token_count = frame_rows;
+	frame->tokens_per_sequence = submission->tokens_per_sequence;
+	frame->priority = submission->priority;
+	frame->flags = prefill != 0u ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : 0u;
+	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
+	frame->program_id = state->program->program_id;
+	frame->execution_stream = state->execution_stream;
+	frame->buffers = SparkQwen36ServingOwnsEmbedding(state) != 0u || SparkQwen36ServingOwnsFinalHead(state) != 0u ? buffers : 0;
+	frame->buffer_count = (SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u) + (SparkQwen36ServingOwnsFinalHead(state) != 0u ? 1u : 0u);
+	frame->residency = submission->residency;
+	frame->scalar[0] = submission->request_generation; /* module lane-continuity key */
+	frame->user_context = context;
+	frame->completion_function = SparkQwen36ServingDriverCompletion;
+	frame->completion_context = pending;
+	pending->frame_sequence_id = frame->sequence_id;
+	pending->frame_sequence_position = frame->sequence_position;
+}
+
 static void SparkQwen36ServingBuildFrame(
 	SparkQwen36ServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -1589,28 +1621,11 @@ static void SparkQwen36ServingBuildFrame(
 		buffers[out_index].address = pending->frame_output_ids;
 		buffers[out_index].bytes = (uint64_t)(prefill != 0u ? 1u : frame_rows) * sizeof(uint32_t);
 	}
-	memset(frame,0,sizeof(*frame));
-	frame->request_id = submission->request_id;
-	frame->sequence_id = prefill != 0u ? prefill_view->sequence_id : submission->sequence_id;
-	frame->sequence_position = prefill != 0u ? base_position : submission->sequence_position;
-	frame->deadline_time_ns = submission->deadline_time_ns;
-	frame->active_slot_count = prefill != 0u ? 1u : submission->active_sequence_count;
-	frame->new_token_count = frame_rows;
-	frame->tokens_per_sequence = submission->tokens_per_sequence;
-	frame->priority = submission->priority;
-	frame->flags = prefill != 0u ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : 0u;
-	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
-	frame->program_id = state->program->program_id;
-	frame->execution_stream = state->execution_stream;
-	frame->buffers = SparkQwen36ServingOwnsEmbedding(state) != 0u || SparkQwen36ServingOwnsFinalHead(state) != 0u ? buffers : 0;
-	frame->buffer_count = (SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u) + (SparkQwen36ServingOwnsFinalHead(state) != 0u ? 1u : 0u);
-	frame->residency = submission->residency;
-	frame->scalar[0] = submission->request_generation; /* module lane-continuity key */
-	frame->user_context = context;
-	frame->completion_function = SparkQwen36ServingDriverCompletion;
-	frame->completion_context = pending;
-	pending->frame_sequence_id = frame->sequence_id;
-	pending->frame_sequence_position = frame->sequence_position;
+	SparkQwen36ServingFillFrameCommon(state,submission,pending,prefill,frame_rows,
+		prefill != 0u ? prefill_view->sequence_id : submission->sequence_id,
+		prefill != 0u ? base_position : submission->sequence_position,
+		prefill != 0u ? 1u : submission->active_sequence_count,
+		context,buffers,frame);
 }
 
 static SparkStatus SparkQwen36ServingAdmit(
@@ -1766,28 +1781,7 @@ static void SparkQwen36ServingBuildSpeculativeFrame(
 		buffers[out_index].address = pending->frame_output_ids;
 		buffers[out_index].bytes = (uint64_t)output_id_count * sizeof(uint32_t);
 	}
-	memset(frame,0,sizeof(*frame));
-	frame->request_id = submission->request_id;
-	frame->sequence_id = frame_sequence_id;
-	frame->sequence_position = frame_sequence_position;
-	frame->deadline_time_ns = submission->deadline_time_ns;
-	frame->active_slot_count = 1u;
-	frame->new_token_count = frame_rows;
-	frame->tokens_per_sequence = submission->tokens_per_sequence;
-	frame->priority = submission->priority;
-	frame->flags = prefill != 0u ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : 0u;
-	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
-	frame->program_id = state->program->program_id;
-	frame->execution_stream = state->execution_stream;
-	frame->buffers = SparkQwen36ServingOwnsEmbedding(state) != 0u || SparkQwen36ServingOwnsFinalHead(state) != 0u ? buffers : 0;
-	frame->buffer_count = (SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u) + (SparkQwen36ServingOwnsFinalHead(state) != 0u ? 1u : 0u);
-	frame->residency = submission->residency;
-	frame->scalar[0] = submission->request_generation; /* module lane-continuity key */
-	frame->user_context = context;
-	frame->completion_function = SparkQwen36ServingDriverCompletion;
-	frame->completion_context = pending;
-	pending->frame_sequence_id = frame->sequence_id;
-	pending->frame_sequence_position = frame->sequence_position;
+	SparkQwen36ServingFillFrameCommon(state,submission,pending,prefill,frame_rows,frame_sequence_id,frame_sequence_position,1u,context,buffers,frame);
 }
 
 static SparkStatus SparkQwen36ServingRunSpeculativeFrame(
