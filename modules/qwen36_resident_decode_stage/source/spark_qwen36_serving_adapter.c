@@ -1476,6 +1476,33 @@ static void SparkQwen36ServingFillFrameCommon(SparkQwen36ServingState *state, co
 	pending->frame_sequence_position = frame->sequence_position;
 }
 
+/* One writer for the frame token/output buffer pair (the driver-visible
+ * I/O contract of every frame builder); output token count is caller policy. */
+static void SparkQwen36ServingFillTokenBuffers(
+	SparkQwen36ServingState *state,
+	SparkQwen36ServingPending *pending,
+	uint32_t frame_rows,
+	uint32_t output_token_count,
+	SparkModelDriverBuffer *buffers)
+{
+	uint32_t out_index;
+	memset(buffers,0,sizeof(SparkModelDriverBuffer[2]));
+	if ( SparkQwen36ServingOwnsEmbedding(state) != 0u )
+	{
+		buffers[0].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
+		buffers[0].address = pending->frame_token_ids;
+		buffers[0].bytes = (uint64_t)frame_rows * sizeof(uint32_t);
+	}
+	if ( SparkQwen36ServingOwnsFinalHead(state) != 0u )
+	{
+		out_index = SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u;
+		buffers[out_index].slot = 1u;
+		buffers[out_index].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
+		buffers[out_index].address = pending->frame_output_ids;
+		buffers[out_index].bytes = (uint64_t)output_token_count * sizeof(uint32_t);
+	}
+}
+
 static void SparkQwen36ServingBuildFrame(
 	SparkQwen36ServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -1605,22 +1632,7 @@ static void SparkQwen36ServingBuildFrame(
 		context->flags |= SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW;
 		context->decode_batch = decode_batch;
 	}
-	memset(buffers,0,sizeof(SparkModelDriverBuffer[2]));
-	if ( SparkQwen36ServingOwnsEmbedding(state) != 0u )
-	{
-		buffers[0].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
-		buffers[0].address = pending->frame_token_ids;
-		buffers[0].bytes = (uint64_t)frame_rows * sizeof(uint32_t);
-	}
-	if ( SparkQwen36ServingOwnsFinalHead(state) != 0u )
-	{
-		uint32_t out_index;
-		out_index = SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u;
-		buffers[out_index].slot = 1u;
-		buffers[out_index].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
-		buffers[out_index].address = pending->frame_output_ids;
-		buffers[out_index].bytes = (uint64_t)(prefill != 0u ? 1u : frame_rows) * sizeof(uint32_t);
-	}
+	SparkQwen36ServingFillTokenBuffers(state,pending,frame_rows,prefill != 0u ? 1u : frame_rows,buffers);
 	SparkQwen36ServingFillFrameCommon(state,submission,pending,prefill,frame_rows,
 		prefill != 0u ? prefill_view->sequence_id : submission->sequence_id,
 		prefill != 0u ? base_position : submission->sequence_position,
@@ -1723,7 +1735,6 @@ static void SparkQwen36ServingBuildSpeculativeFrame(
 	SparkModelDriverBuffer *buffers,
 	SparkModelDriverFrame *frame)
 {
-	uint32_t out_index;
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);
@@ -1766,21 +1777,7 @@ static void SparkQwen36ServingBuildSpeculativeFrame(
 		context->dspark_draft = dspark_draft;
 	if ( gdn_snapshot != 0 )
 		context->gdn_snapshot = gdn_snapshot;
-	memset(buffers,0,sizeof(SparkModelDriverBuffer[2]));
-	if ( SparkQwen36ServingOwnsEmbedding(state) != 0u )
-	{
-		buffers[0].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
-		buffers[0].address = pending->frame_token_ids;
-		buffers[0].bytes = (uint64_t)frame_rows * sizeof(uint32_t);
-	}
-	if ( SparkQwen36ServingOwnsFinalHead(state) != 0u )
-	{
-		out_index = SparkQwen36ServingOwnsEmbedding(state) != 0u ? 1u : 0u;
-		buffers[out_index].slot = 1u;
-		buffers[out_index].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
-		buffers[out_index].address = pending->frame_output_ids;
-		buffers[out_index].bytes = (uint64_t)output_id_count * sizeof(uint32_t);
-	}
+	SparkQwen36ServingFillTokenBuffers(state,pending,frame_rows,output_id_count,buffers);
 	SparkQwen36ServingFillFrameCommon(state,submission,pending,prefill,frame_rows,frame_sequence_id,frame_sequence_position,1u,context,buffers,frame);
 }
 
