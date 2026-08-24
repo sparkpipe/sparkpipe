@@ -711,7 +711,7 @@ from pathlib import Path
 # 174923 (2026-08-24): JIT-KV design contract + backing-store tier 1
 # (runtime/spark_kv_backing.c: slot file, alloc/free, 4 MiB block I/O,
 # horizon exhaustion -> backpressure signal; unit test ALL PASS).
-CEILING = 175187
+CEILING = 175188
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
