@@ -28,6 +28,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <errno.h>
+#include <poll.h>
 #include <stdint.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -133,14 +134,41 @@ static uint32_t model_api_execute(ModelApiRequest *request)
 		pthread_mutex_unlock(&api_state.mutex);
 		return(500u);
 	}
+	/* EXACT model_batch Run shape: Progress + poll descriptors. The
+	 * pipeline client needs its socket polled between Progress calls
+	 * to process completions (the tight Progress-only spin verified to
+	 * stall after prefill - completions sit unread). */
 	while ( request->done == 0 && api_state.stopping == 0 )
 	{
+		SparkModelResidentClientPollDescriptor descriptors[4];
+		uint32_t descriptor_count = 0u;
 		status = SparkModelBatchEngineProgress(api_state.engine,4u);
 		if ( status != SPARK_STATUS_OK )
 		{
 			request->done = 1;
 			request->status = (uint32_t)status;
+			break;
 		}
+		status = SparkModelBatchEngineGetPollDescriptors(api_state.engine,
+			descriptors,4u,&descriptor_count);
+		if ( status == SPARK_STATUS_OK && descriptor_count > 0u )
+		{
+			struct pollfd poll_descriptors[4];
+			uint32_t index2;
+			for ( index2 = 0u; index2 < descriptor_count; index2++ )
+			{
+				poll_descriptors[index2].fd = descriptors[index2].fd;
+				poll_descriptors[index2].events = 0;
+				poll_descriptors[index2].revents = 0;
+				if ( (descriptors[index2].events & 1u) != 0u )
+					poll_descriptors[index2].events |= POLLIN;
+				if ( (descriptors[index2].events & 2u) != 0u )
+					poll_descriptors[index2].events |= POLLOUT;
+			}
+			(void)poll(poll_descriptors,(nfds_t)descriptor_count,10);
+		}
+		else
+			usleep(1000);
 	}
 	pthread_mutex_lock(&api_state.mutex);
 	api_state.inflight[slot - 1u] = 0;
