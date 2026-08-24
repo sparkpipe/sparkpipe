@@ -93,3 +93,27 @@ drivers get DFlash2 + prefix caching for free instead of copy-pasting from qwen3
 - Paged KV: extract runtime/paged_kv_common.c with per-model geometry callbacks
 - Stagepack: shared reader already landed (runtime/spark_stagepack_reader.h); DELETE the four private families
 - Adapter: extract runtime/adapter_common.h skeleton; each driver provides only model-specific hooks
+
+## PASS 6: K3 driver audit findings
+
+### P1 DEFECTS (blocking TP16 boot)
+- F1: runner.cu hard-requires host tp_collective when tp_degree>1; adapter only supplies device_collective at degree 16; host TCP tier caps at 4 ranks. INVALID_ARGUMENT at init.
+- F2: bind.c layer-92 bind divergence — pure period-4 rule misses trailing-layer exception (layer 92 = MLA per checkpoint/pool-sizing/packer). Tests only cover layers 0/1/3.
+- Head exchange must stay f32 (bf16 NCCL can't carry vocab-scale token ids).
+
+### P2 DEFECTS
+- NULL-lane deref in 2-rank hidden-transport combine
+- ~20 unchecked cudaMallocs + init-failure leaks (munmap of registered region)
+- kind-blind expert_interleave
+- graph capture × NCCL completions never proven with live device tier
+- accepted_token_count over-reports copied tokens
+
+### DRY VIOLATIONS
+- Layer-kind truth ×3 sources
+- Slice geometry literals ×4
+- gate|up sizing ×3
+- Twin device-tier submission blocks
+- Weight-name tables ×3
+
+### CLOSURE PLAN
+Step A (workstation): D1/F2 fix + bind-test extension to {0,1,2,3,92} + stage-3 slice; F1 fix; ride-alongs F3/F4/F7. Step B: T1 gates with device-tier legs. Steps C/D: tile_k-32 pack, deploy, window boot→smoke→capture→B1. Step E: close #667.
