@@ -16,3 +16,5 @@
 | qwen36->qwen38 directory/symbol rename | coordinator + glm52 (timing) | QUEUED - window open (glm dev paused) | mechanical but touches active files |
 | glm52-named general code -> shared layers | glm52 | QUEUED | same disease as stagepack families |
 | GB10 hardcode sweep -> parameterization | hwiface definer | IN PROGRESS | part of v1/v2 |
+
+| Residentd endpoint connection leak — CLOSE-WAIT sockets accumulate per client session; after ~N sessions new connections fail with IO_ERROR | dsv4-flash dev | OPEN | model_residentd.c endpoint accept/close path; repro: run model_batch twice without restarting daemon; second run gets status=4 |
