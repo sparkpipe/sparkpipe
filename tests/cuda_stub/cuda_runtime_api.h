@@ -93,6 +93,10 @@ cudaError_t cudaStreamWaitEvent(
     unsigned int flags);
 cudaError_t cudaDeviceSynchronize(void);
 cudaError_t cudaDeviceGetAttribute(int *value, int attribute, int device);
+/* Declaration only, like cudaDeviceGetAttribute: the qwen36 module's
+ * pack-load OOM preflight calls this, and the host contract target
+ * (-fsyntax-only) needs the prototype; no host gate executes it. */
+cudaError_t cudaMemGetInfo(size_t *free_bytes, size_t *total_bytes);
 cudaError_t cudaEventCreate(cudaEvent_t *event);
 cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event, unsigned int flags);
 cudaError_t cudaEventDestroy(cudaEvent_t event);
