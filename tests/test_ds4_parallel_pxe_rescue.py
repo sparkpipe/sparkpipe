@@ -1,5 +1,9 @@
 import importlib.util
 from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 
 
@@ -49,6 +53,18 @@ class ParallelPxeRescueTest(unittest.TestCase):
             MODULE.REPOSITORY_SCRIPT,
             "tools/devcycle/ds4_parallel_pxe_rescue.py",
         )
+
+    def test_staged_remote_installer_starts_outside_a_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            staged = Path(directory) / "ds4_parallel_pxe_rescue.py"
+            shutil.copyfile(SCRIPT,staged)
+            result = subprocess.run(
+                [sys.executable,str(staged),"--help"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode,0,result.stderr)
 
     def test_service_is_manual_and_bounded(self) -> None:
         result = MODULE.service_config()

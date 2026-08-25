@@ -18,8 +18,12 @@ import sys
 import tempfile
 
 
-ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_SCRIPT = "tools/devcycle/ds4_parallel_pxe_rescue.py"
+SCRIPT_PATH = Path(__file__).resolve()
+ROOT = next(
+    (parent for parent in SCRIPT_PATH.parents if parent / REPOSITORY_SCRIPT == SCRIPT_PATH),
+    None,
+)
 DEFAULT_SERVER = "spark0"
 DEFAULT_INTERFACE = "enP7s7"
 DEFAULT_SERVER_IP = "192.168.50.128"
@@ -599,12 +603,18 @@ def ssh(server: str,*argv: str,input_bytes: bytes | None = None,timeout: int = 1
     return(run(["ssh","-T","-o","BatchMode=yes","-o","ConnectTimeout=8",server,*argv],input_bytes=input_bytes,timeout=timeout))
 
 
+def repository_root() -> Path:
+    if ROOT is None:
+        raise PxeRescueError("controller must run from a SparkPipe checkout")
+    return(ROOT)
+
+
 def source_commit(ref: str) -> str:
-    return(command(["git","-C",str(ROOT),"rev-parse","--verify",ref]))
+    return(command(["git","-C",str(repository_root()),"rev-parse","--verify",ref]))
 
 
 def committed_script(ref: str) -> bytes:
-    return(run(["git","-C",str(ROOT),"show",f"{ref}:{REPOSITORY_SCRIPT}"]).stdout)
+    return(run(["git","-C",str(repository_root()),"show",f"{ref}:{REPOSITORY_SCRIPT}"]).stdout)
 
 
 def stage_controller(server: str,ref: str) -> str:
